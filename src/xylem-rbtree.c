@@ -80,50 +80,127 @@ _rbtree_insert_color(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
 
     while ((parent = node->parent) && parent->color == RB_RED) {
         gparent = parent->parent;
+
+        /* Case A: Parent is left child of grandparent */
         if (parent == gparent->left) {
-            {
-                register xylem_rbtree_node_t* uncle = gparent->right;
-                if (uncle && uncle->color == RB_RED) {
-                    uncle->color = RB_BLACK;
-                    parent->color = RB_BLACK;
-                    gparent->color = RB_RED;
-                    node = gparent;
-                    continue;
-                }
+            xylem_rbtree_node_t* uncle = gparent->right;
+
+            /**
+             * Subcase A1: Uncle is RED or NULL
+             * Action: Recolor and move conflict upward.
+             *
+             * Before recoloring:
+             *        (B) gparent
+             *        /          \
+             *    (R) parent   (R) uncle
+             *      /
+             *   (R) node   ¡û newly inserted
+             *
+             * After recoloring:
+             *        (R) gparent   ¡û may cause new violation with its parent
+             *        /          \
+             *    (B) parent   (B) uncle
+             *      /
+             *   (R) node
+             */
+            if (uncle && uncle->color == RB_RED) {
+                uncle->color = RB_BLACK;
+                parent->color = RB_BLACK;
+                gparent->color = RB_RED;
+                node = gparent;
+                continue;
             }
+
+            /**
+             * Subcase A2: Uncle is BLACK or NULL
+             * Two possibilities based on node's position.
+             *
+             * If node is RIGHT child of parent ¡ú "triangle" case:
+             *        (B) gparent
+             *        /
+             *    (R) parent
+             *          \
+             *        (R) node
+             *
+             * Step 1: Left-rotate at parent ¡ú becomes "line" case:
+             *        (B) gparent
+             *        /
+             *    (R) node
+             *      /
+             * (R) parent
+             */
             if (parent->right == node) {
-                register xylem_rbtree_node_t* tmp;
+                xylem_rbtree_node_t* tmp;
+
                 _rbtree_rotate_left(parent, tree);
                 tmp = parent;
                 parent = node;
                 node = tmp;
             }
+
+            /**
+             * Now in "line" case (node is LEFT child of parent):
+             *        (B) gparent
+             *        /
+             *    (R) parent
+             *      /
+             * (R) node
+             *
+             * Step 2: Recolor + right-rotate at gparent:
+             * - Set parent to BLACK
+             * - Set gparent to RED
+             * - Right-rotate gparent
+             *
+             * Result:
+             *        (B) parent
+             *        /        \
+             *   (R) node   (R) gparent
+             *                     \
+             *                   (B) uncle (unchanged)
+             *
+             * No more red-red conflict. Black-height preserved.
+             */
             parent->color = RB_BLACK;
             gparent->color = RB_RED;
             _rbtree_rotate_right(gparent, tree);
         } else {
-            {
-                register xylem_rbtree_node_t* uncle = gparent->left;
-                if (uncle && uncle->color == RB_RED) {
-                    uncle->color = RB_BLACK;
-                    parent->color = RB_BLACK;
-                    gparent->color = RB_RED;
-                    node = gparent;
-                    continue;
-                }
+            /* Case B: Parent is right child of grandparent (symmetric) */
+            xylem_rbtree_node_t* uncle = gparent->left;
+
+            /**
+             * Subcase B1: Uncle is RED
+             * Same logic as A1, mirrored.
+             */
+            if (uncle && uncle->color == RB_RED) {
+                uncle->color = RB_BLACK;
+                parent->color = RB_BLACK;
+                gparent->color = RB_RED;
+                node = gparent;
+                continue;
             }
+
+            /**
+             * Subcase B2: Uncle is BLACK
+             * If node is LEFT child ¡ú "triangle", do right rotation first.
+             */
             if (parent->left == node) {
-                register xylem_rbtree_node_t* tmp;
+                xylem_rbtree_node_t* tmp;
                 _rbtree_rotate_right(parent, tree);
                 tmp = parent;
                 parent = node;
                 node = tmp;
             }
+
+            /**
+             * "Line" case: node is RIGHT child of parent.
+             * Recolor + left-rotate at gparent.
+             */
             parent->color = RB_BLACK;
             gparent->color = RB_RED;
             _rbtree_rotate_left(gparent, tree);
         }
     }
+    /* root must be BLACK */
     tree->root->color = RB_BLACK;
 }
 
@@ -131,74 +208,84 @@ static void _rbtree_erase_color(
     xylem_rbtree_node_t* node,
     xylem_rbtree_node_t* parent,
     xylem_rbtree_t*      tree) {
-    xylem_rbtree_node_t* other;
     while ((!node || node->color == RB_BLACK) && node != tree->root) {
         if (parent->left == node) {
-            other = parent->right;
-            if (!other) {
-                return;
-            }
-            if (other->color == RB_RED) {
+            xylem_rbtree_node_t* other = parent->right;
+
+            if (other && other->color == RB_RED) {
                 other->color = RB_BLACK;
                 parent->color = RB_RED;
                 _rbtree_rotate_left(parent, tree);
                 other = parent->right;
             }
-            if ((!other->left || other->left->color == RB_BLACK) &&
-                (!other->right || other->right->color == RB_BLACK)) {
-                other->color = RB_RED;
+            if ((!other || !other->left || other->left->color == RB_BLACK) &&
+                (!other || !other->right || other->right->color == RB_BLACK)) {
+                if (other) {
+                    other->color = RB_RED;
+                }
                 node = parent;
                 parent = node->parent;
             } else {
-                if (!other->right || other->right->color == RB_BLACK) {
-                    if (other->left) {
+                if (!other || !other->right ||
+                    other->right->color == RB_BLACK) {
+                    if (other && other->left) {
                         other->left->color = RB_BLACK;
                     }
-                    other->color = RB_RED;
-                    _rbtree_rotate_right(other, tree);
-                    other = parent->right;
+                    if (other) {
+                        other->color = RB_RED;
+                        _rbtree_rotate_right(other, tree);
+                        other = parent->right;
+                    }
                 }
-                other->color = parent->color;
-                parent->color = RB_BLACK;
-                if (other->right) {
-                    other->right->color = RB_BLACK;
+                if (other) {
+                    other->color = parent->color;
+                    parent->color = RB_BLACK;
+                    if (other->right) {
+                        other->right->color = RB_BLACK;
+                    }
+                    _rbtree_rotate_left(parent, tree);
                 }
-                _rbtree_rotate_left(parent, tree);
                 node = tree->root;
                 break;
             }
         } else {
-            other = parent->left;
-            if (other) {
-                if (other->color == RB_RED) {
-                    other->color = RB_BLACK;
-                    parent->color = RB_RED;
-                    _rbtree_rotate_right(parent, tree);
-                    other = parent->left;
-                }
-                if ((!other->left || other->left->color == RB_BLACK) &&
-                    (!other->right || other->right->color == RB_BLACK)) {
+            xylem_rbtree_node_t* other = parent->left;
+
+            if (other && other->color == RB_RED) {
+                other->color = RB_BLACK;
+                parent->color = RB_RED;
+                _rbtree_rotate_right(parent, tree);
+                other = parent->left;
+            }
+
+            if ((!other || !other->left || other->left->color == RB_BLACK) &&
+                (!other || !other->right || other->right->color == RB_BLACK)) {
+                if (other) {
                     other->color = RB_RED;
-                    node = parent;
-                    parent = node->parent;
-                } else {
-                    if (!other->left || other->left->color == RB_BLACK) {
-                        if (other->right) {
-                            other->right->color = RB_BLACK;
-                        }
+                }
+                node = parent;
+                parent = node->parent;
+            } else {
+                if (!other || !other->left || other->left->color == RB_BLACK) {
+                    if (other && other->right) {
+                        other->right->color = RB_BLACK;
+                    }
+                    if (other) {
                         other->color = RB_RED;
                         _rbtree_rotate_left(other, tree);
                         other = parent->left;
                     }
+                }
+                if (other) {
                     other->color = parent->color;
                     parent->color = RB_BLACK;
                     if (other->left) {
                         other->left->color = RB_BLACK;
                     }
                     _rbtree_rotate_right(parent, tree);
-                    node = tree->root;
-                    break;
                 }
+                node = tree->root;
+                break;
             }
         }
     }
@@ -220,6 +307,7 @@ void
 xylem_rbtree_insert(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
     xylem_rbtree_node_t** p = &(tree->root);
     xylem_rbtree_node_t*  parent = NULL;
+
     while (*p) {
         parent = *p;
         int r = tree->cmp_nn(
@@ -238,9 +326,6 @@ xylem_rbtree_insert(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
 }
 
 void xylem_rbtree_erase(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
-    if (!tree || !node) {
-        return;
-    }
     xylem_rbtree_node_t *child, *parent;
     int                  color;
 
@@ -304,16 +389,10 @@ color:
 }
 
 bool xylem_rbtree_empty(xylem_rbtree_t* tree) {
-    if (!tree) {
-        return true;
-    }
     return (tree->root == NULL);
 }
 
 xylem_rbtree_node_t* xylem_rbtree_find(xylem_rbtree_t* tree, const void* key) {
-    if (!tree || !key) {
-        return NULL;
-    }
     xylem_rbtree_node_t* n = tree->root;
     while (n) {
         int r = tree->cmp_kn(key, (const xylem_rbtree_node_t*)n);
@@ -329,9 +408,6 @@ xylem_rbtree_node_t* xylem_rbtree_find(xylem_rbtree_t* tree, const void* key) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_next(xylem_rbtree_node_t* node) {
-    if (!node) {
-        return NULL;
-    }
     xylem_rbtree_node_t* parent;
 
     if (node->right) {
@@ -354,9 +430,6 @@ xylem_rbtree_node_t* xylem_rbtree_next(xylem_rbtree_node_t* node) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_prev(xylem_rbtree_node_t* node) {
-    if (!node) {
-        return NULL;
-    }
     xylem_rbtree_node_t* parent;
 
     if (node->left) {
@@ -375,9 +448,6 @@ xylem_rbtree_node_t* xylem_rbtree_prev(xylem_rbtree_node_t* node) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_first(xylem_rbtree_t* tree) {
-    if (!tree) {
-        return NULL;
-    }
     xylem_rbtree_node_t* n;
     n = tree->root;
     if (!n) {
@@ -390,9 +460,6 @@ xylem_rbtree_node_t* xylem_rbtree_first(xylem_rbtree_t* tree) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_last(xylem_rbtree_t* tree) {
-    if (!tree) {
-        return NULL;
-    }
     xylem_rbtree_node_t* n;
     n = tree->root;
     if (!n) {

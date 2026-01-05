@@ -203,7 +203,7 @@ static void test_heap_remove_arbitrary(void) {
         {.value = 5}};
 
     xylem_heap_init(&heap, _test_cmp_min);
-    /*
+    /**
      * Final min-heap structure after inserting [1, 4, 2, 3, 6, 5]:
      *
      *           1                ¡û root (min)
@@ -238,7 +238,7 @@ static void test_heap_remove_arbitrary(void) {
         {.value = 6},   // 8
         {.value = 7}    // 9 ¡û last node
     };
-    /*
+    /**
      * Final min-heap structure after inserting the following values in
      * level-order: [1, 2, 100, 3, 4, 200, 300, 5, 6, 7]
      *

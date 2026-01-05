@@ -28,8 +28,8 @@ _Pragma("once")
 typedef struct xylem_rbtree_node_s xylem_rbtree_node_t;
 typedef struct xylem_rbtree_s      xylem_rbtree_t;
 
-typedef int (*xylem_rbtree_cmp_nn_fn_t)(const xylem_rbtree_node_t* first, const xylem_rbtree_node_t* second);
-typedef int (*xylem_rbtree_cmp_kn_fn_t)(const void* key, const xylem_rbtree_node_t* node);
+typedef int (*xylem_rbtree_cmp_nn_fn_t)(const xylem_rbtree_node_t* child, const xylem_rbtree_node_t* parent);
+typedef int (*xylem_rbtree_cmp_kn_fn_t)(const void* key, const xylem_rbtree_node_t* parent);
 
 struct xylem_rbtree_node_s {
     struct xylem_rbtree_node_s* parent;
