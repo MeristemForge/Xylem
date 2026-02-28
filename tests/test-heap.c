@@ -27,29 +27,20 @@ typedef struct test_item_s {
     xylem_heap_node_t node;
 } test_item_t;
 
-static int _test_cmp_min(const xylem_heap_node_t* child, const xylem_heap_node_t* parent) {
+static int _test_cmp_min(
+    const xylem_heap_node_t* child,
+    const xylem_heap_node_t* parent) {
     const test_item_t* c = xylem_heap_entry(child, test_item_t, node);
     const test_item_t* p = xylem_heap_entry(parent, test_item_t, node);
-
-    if (c->value < p->value) {
-        return -1;
-    }
-    if (c->value > p->value) {
-        return 1;
-    }
+    if (c->value < p->value) return -1;
+    if (c->value > p->value) return 1;
     return 0;
 }
 
-/**
- * Helper: validate that the heap's tree structure is a complete binary tree
- * and that the heap-order property holds (parent <= children for min-heap).
- */
+/* BFS validation: completeness + heap-order property. */
 static bool _validate_heap(const xylem_heap_t* heap) {
-    if (heap->root == NULL) {
-        return true;
-    }
+    if (heap->root == NULL) return true;
 
-    /* BFS to check completeness and heap order */
     xylem_heap_node_t* queue[1024];
     size_t             front = 0, back = 0;
     queue[back++] = heap->root;
@@ -58,34 +49,23 @@ static bool _validate_heap(const xylem_heap_t* heap) {
     size_t count = 0;
 
     while (front < back) {
-        xylem_heap_node_t* node = queue[front++];
-
-        if (node == NULL) {
+        xylem_heap_node_t* n = queue[front++];
+        if (n == NULL) {
             seen_null = true;
             continue;
         }
-
-        if (seen_null) {
-            /* Non-null after null violates completeness */
-            return false;
-        }
+        if (seen_null) return false; /* non-null after null -> not complete */
         count++;
 
-        /* Check heap order: child >= parent (min-heap) */
-        if (node->left) {
-            if (heap->cmp(node->left, node) < 0) {
-                return false; // child < parent ¡ú invalid
-            }
-            queue[back++] = node->left;
+        if (n->left) {
+            if (heap->cmp(n->left, n) < 0) return false;
+            queue[back++] = n->left;
         } else {
             queue[back++] = NULL;
         }
-
-        if (node->right) {
-            if (heap->cmp(node->right, node) < 0) {
-                return false;
-            }
-            queue[back++] = node->right;
+        if (n->right) {
+            if (heap->cmp(n->right, n) < 0) return false;
+            queue[back++] = n->right;
         } else {
             queue[back++] = NULL;
         }
@@ -93,27 +73,19 @@ static bool _validate_heap(const xylem_heap_t* heap) {
     return count == heap->nelts;
 }
 
-/**
- * Test xylem_heap_init: verifies that the heap is properly initialized
- * with a NULL root, zero element count, and the provided comparison function.
- */
+/* Init: NULL root, zero count, correct comparator. */
 static void test_heap_init(void) {
     xylem_heap_t heap;
-
     xylem_heap_init(&heap, _test_cmp_min);
-
     ASSERT(heap.root == NULL);
     ASSERT(heap.nelts == 0);
     ASSERT(heap.cmp == _test_cmp_min);
 }
 
-/**
- * Test xylem_heap_insert and xylem_heap_root: inserts a single node
- * and checks that it becomes the root.
- */
+/* Insert single node: becomes root. */
 static void test_heap_insert_single(void) {
     xylem_heap_t heap;
-    test_item_t item = {.value = 42};
+    test_item_t  item = {.value = 42};
 
     xylem_heap_init(&heap, _test_cmp_min);
     xylem_heap_insert(&heap, &item.node);
@@ -125,13 +97,10 @@ static void test_heap_insert_single(void) {
     ASSERT(item.node.right == NULL);
 }
 
-/**
- * Test xylem_heap_empty: checks that empty() returns true for a new
- * heap and false after insertion.
- */
+/* Empty check before and after insert. */
 static void test_heap_empty(void) {
     xylem_heap_t heap;
-    test_item_t item = {.value = 10};
+    test_item_t  item = {.value = 10};
 
     xylem_heap_init(&heap, _test_cmp_min);
     ASSERT(xylem_heap_empty(&heap) == true);
@@ -140,153 +109,104 @@ static void test_heap_empty(void) {
     ASSERT(xylem_heap_empty(&heap) == false);
 }
 
-/**
- * Test xylem_heap_insert multiple nodes: verifies heap property is
- * maintained after inserting several items into a min-heap.
- */
+/* Multiple inserts: root must be the minimum. */
 static void test_heap_insert_multiple(void) {
     xylem_heap_t heap;
-    test_item_t items[] = {
+    test_item_t  items[] = {
         {.value = 3}, {.value = 2}, {.value = 1}, {.value = 2}};
 
     xylem_heap_init(&heap, _test_cmp_min);
-
-    for (int i = 0; i < sizeof(items) / sizeof(items[0]); ++i) {
+    for (int i = 0; i < 4; i++) {
         xylem_heap_insert(&heap, &items[i].node);
     }
     ASSERT(heap.nelts == 4);
 
-    /* Root must be the smallest */
-    test_item_t* root_item =
+    test_item_t* root =
         xylem_heap_entry(xylem_heap_root(&heap), test_item_t, node);
-    ASSERT(root_item->value == 1);
+    ASSERT(root->value == 1);
 }
 
-/**
- * Test repeated dequeue until empty.
- */
+/* Dequeue all: values come out in non-decreasing order. */
 static void test_heap_dequeue_all(void) {
     xylem_heap_t heap;
     test_item_t  items[10];
-    for (int i = 0; i < 10; ++i) {
-        items[i].value = i * 2 + (i % 3); // Some random-ish pattern
+    for (int i = 0; i < 10; i++) {
+        items[i].value = i * 2 + (i % 3);
     }
 
     xylem_heap_init(&heap, _test_cmp_min);
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 10; i++) {
         xylem_heap_insert(&heap, &items[i].node);
     }
 
-    int last_value = -1;
+    int last = -1;
     while (!xylem_heap_empty(&heap)) {
-        test_item_t* current =
+        test_item_t* cur =
             xylem_heap_entry(xylem_heap_root(&heap), test_item_t, node);
-        ASSERT(current->value >= last_value); // Should be non-decreasing
-        last_value = current->value;
+        ASSERT(cur->value >= last);
+        last = cur->value;
         xylem_heap_dequeue(&heap);
     }
     ASSERT(heap.nelts == 0);
 }
 
-/**
- * Test removes a non-root node and
- * checks heap size and integrity.
- */
+/* Remove arbitrary (non-root) nodes. */
 static void test_heap_remove_arbitrary(void) {
     xylem_heap_t heap;
-    test_item_t items_down[] = {
-        {.value = 1},
-        {.value = 4},
-        {.value = 2},
-        {.value = 3},
-        {.value = 6},
-        {.value = 5}};
+    test_item_t  items[] = {
+        {.value = 1}, {.value = 4}, {.value = 2},
+        {.value = 3}, {.value = 6}, {.value = 5}};
 
     xylem_heap_init(&heap, _test_cmp_min);
-    /**
-     * Final min-heap structure after inserting [1, 4, 2, 3, 6, 5]:
-     *
-     *           1                ¡û root (min)
-     *         /   \
-     *        4     2             ¡û level 1
-     *       / \   /
-     *      3   6 5               ¡û level 2 (last level, left-filled)
-     *
-     */
-    for (int i = 0; i < sizeof(items_down) / sizeof(items_down[0]); ++i) {
-        xylem_heap_insert(&heap, &items_down[i].node);
+    for (int i = 0; i < 6; i++) {
+        xylem_heap_insert(&heap, &items[i].node);
     }
     ASSERT(heap.nelts == 6);
-    
-    // Walk down;
-    xylem_heap_remove(&heap, &items_down[1].node);
+
+    /* Remove non-root node (value=4) */
+    xylem_heap_remove(&heap, &items[1].node);
     ASSERT(heap.nelts == 5);
 
+    /* Drain and verify order */
     while (!xylem_heap_empty(&heap)) {
         xylem_heap_dequeue(&heap);
     }
 
-    test_item_t items_up[] = {
-        {.value = 1},   // 0
-        {.value = 2},   // 1
-        {.value = 100}, // 2
-        {.value = 3},   // 3
-        {.value = 4},   // 4
-        {.value = 200}, // 5 ¡û DELETE THIS
-        {.value = 300}, // 6
-        {.value = 5},   // 7
-        {.value = 6},   // 8
-        {.value = 7}    // 9 ¡û last node
-    };
-    /**
-     * Final min-heap structure after inserting the following values in
-     * level-order: [1, 2, 100, 3, 4, 200, 300, 5, 6, 7]
-     *
-     * This is a valid min-heap because every parent ¡Ü its children.
-     *
-     * Tree representation (complete binary tree, filled left to right):
-     *
-     *                     1                          ¡û root (minimum)
-     *                /         \
-     *               2           100                  ¡û level 1
-     *             /   \        /    \
-     *            3     4      200    300             ¡û level 2
-     *           / \   /
-     *          5   6 7                               ¡û level 3
-     */
-    for (int i = 0; i < sizeof(items_up) / sizeof(items_up[0]); ++i) {
-        xylem_heap_insert(&heap, &items_up[i].node);
+    /* Test walk-up case: remove a node whose replacement bubbles up */
+    test_item_t items2[] = {
+        {.value = 1},   {.value = 2},   {.value = 100},
+        {.value = 3},   {.value = 4},   {.value = 200},
+        {.value = 300}, {.value = 5},   {.value = 6},
+        {.value = 7}};
+
+    for (int i = 0; i < 10; i++) {
+        xylem_heap_insert(&heap, &items2[i].node);
     }
     ASSERT(heap.nelts == 10);
 
-    // Walk up;
-    xylem_heap_remove(&heap, &items_up[5].node);
+    xylem_heap_remove(&heap, &items2[5].node); /* remove 200 */
     ASSERT(heap.nelts == 9);
 }
 
-/**
- * Test structural integrity after many operations.
- */
+/* Structural integrity: validate after every insert and dequeue. */
 static void test_heap_structure_integrity(void) {
     xylem_heap_t heap;
     test_item_t  items[15];
-    for (int i = 0; i < 15; ++i) {
-        items[i].value = 15 - i; // Insert 15,14,...,1 ¡ú reverse order
+    for (int i = 0; i < 15; i++) {
+        items[i].value = 15 - i; /* reverse order */
     }
 
     xylem_heap_init(&heap, _test_cmp_min);
-    for (int i = 0; i < 15; ++i) {
+    for (int i = 0; i < 15; i++) {
         xylem_heap_insert(&heap, &items[i].node);
-        ASSERT(_validate_heap(&heap)); // Validate after every insert!
+        ASSERT(_validate_heap(&heap));
     }
 
-    /* Now dequeue half */
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 7; i++) {
         xylem_heap_dequeue(&heap);
         ASSERT(_validate_heap(&heap));
     }
 
-    /* Remove arbitrary middle node */
     xylem_heap_remove(&heap, &items[5].node);
     ASSERT(_validate_heap(&heap));
 }

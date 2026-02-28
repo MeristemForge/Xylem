@@ -27,7 +27,7 @@ _Pragma("once")
  * @brief Encode binary data using standard Base64 (RFC 4648 compliant).
  *
  * Encodes input bytes into a Base64 string using the standard alphabet
- * (A每Z, a每z, 0每9, '+', '/') and always appends '=' padding as needed.
+ * (A-Z, a-z, 0-9, '+', '/') and always appends '=' padding as needed.
  *
  * @param src   Pointer to the input binary data.
  * @param slen  Length of the input data in bytes.
@@ -38,7 +38,7 @@ _Pragma("once")
  *
  * @note The caller must ensure that:
  *       dlen >= ((slen + 2) / 3) * 4
- *       Examples: slen=3 ↙ dlen≡4; slen=1 ↙ dlen≡4; slen=0 ↙ dlen≡0.
+ *       Examples: slen=3 -> dlen>=4; slen=1 -> dlen>=4; slen=0 -> dlen>=0.
  */
 extern int xylem_base64_encode_std(const uint8_t* src, int slen, uint8_t* dst, int dlen);
 
@@ -60,14 +60,14 @@ extern int xylem_base64_encode_std(const uint8_t* src, int slen, uint8_t* dst, i
  * @note The caller must ensure that:
  *       dlen >= ((slen + 3) / 4) * 3
  *       This is the maximum possible output size (even if the input contains padding).
- *       Examples: slen=4 ↙ dlen≡3; slen=8 ↙ dlen≡6.
+ *       Examples: slen=4 -> dlen>=3; slen=8 -> dlen>=6.
  */
 extern int xylem_base64_decode_std(const uint8_t* src, int slen, uint8_t* dst, int dlen);
 
 /**
  * @brief Encode binary data using URL-safe Base64 (RFC 4648, Section 5).
  *
- * Encodes input bytes using the URL-safe alphabet (A每Z, a每z, 0每9, '-', '_').
+ * Encodes input bytes using the URL-safe alphabet (A-Z, a-z, 0-9, '-', '_').
  * Padding with '=' is optional and controlled by the `padding` parameter.
  *
  * @param src      Pointer to the input binary data.

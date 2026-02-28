@@ -40,9 +40,55 @@ struct xylem_heap_s {
     int (*cmp)(const xylem_heap_node_t* child, const xylem_heap_node_t* parent);
 };
 
+/**
+ * @brief Initialize a binary min-heap.
+ *
+ * @param heap  Pointer to the heap structure to initialize.
+ * @param cmp   Comparator function. Returns negative if child should be
+ *              closer to root than parent (i.e., child has higher priority).
+ */
 extern void xylem_heap_init(xylem_heap_t* heap, int (*cmp)(const xylem_heap_node_t* child, const xylem_heap_node_t* parent));
+
+/**
+ * @brief Insert a node into the heap.
+ *
+ * @param heap  Pointer to the heap.
+ * @param node  Pointer to the intrusive node to insert. The caller embeds
+ *              this node in their own struct and recovers it with xylem_heap_entry().
+ */
 extern void xylem_heap_insert(xylem_heap_t* heap, xylem_heap_node_t* node);
+
+/**
+ * @brief Remove a specific node from the heap.
+ *
+ * @param heap  Pointer to the heap.
+ * @param node  Pointer to the node to remove. Must be currently in the heap.
+ */
 extern void xylem_heap_remove(xylem_heap_t* heap, xylem_heap_node_t* node);
+
+/**
+ * @brief Remove the root (highest-priority) node from the heap.
+ *
+ * No-op if the heap is empty.
+ *
+ * @param heap  Pointer to the heap.
+ */
 extern void xylem_heap_dequeue(xylem_heap_t* heap);
+
+/**
+ * @brief Check whether the heap is empty.
+ *
+ * @param heap  Pointer to the heap.
+ *
+ * @return true if the heap contains no nodes, false otherwise.
+ */
 extern bool xylem_heap_empty(xylem_heap_t* heap);
+
+/**
+ * @brief Return the root (highest-priority) node without removing it.
+ *
+ * @param heap  Pointer to the heap.
+ *
+ * @return Pointer to the root node, or NULL if the heap is empty.
+ */
 extern xylem_heap_node_t* xylem_heap_root(xylem_heap_t* heap);

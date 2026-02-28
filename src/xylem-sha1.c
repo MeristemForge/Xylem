@@ -31,9 +31,10 @@
 #include "xylem.h"
 
 struct xylem_sha1_s {
-    uint32_t state[5];
-    uint32_t count[2];
     uint8_t  buffer[64];
+    uint32_t datalen;
+    uint64_t bitlen;
+    uint32_t state[5];
 };
 
 static inline uint32_t _sha1_rol32(uint32_t value, int bits) {
@@ -113,59 +114,58 @@ xylem_sha1_t* xylem_sha1_create(void) {
     ctx->state[2] = 0x98BADCFE;
     ctx->state[3] = 0x10325476;
     ctx->state[4] = 0xC3D2E1F0;
-    ctx->count[0] = 0;
-    ctx->count[1] = 0;
+    ctx->datalen = 0;
+    ctx->bitlen = 0;
     return ctx;
 }
 
 void xylem_sha1_update(xylem_sha1_t* ctx, const uint8_t* data, size_t len) {
-    uint32_t i, j;
-    j = ctx->count[0];
-    if ((ctx->count[0] += ((uint32_t)len << 3)) < j) {
-        ctx->count[1]++;
-    }
-    ctx->count[1] += (uint32_t)(len >> 29);
-    j = (j >> 3) & 63;
+    size_t i = 0;
+    while (i < len) {
+        size_t space = 64 - ctx->datalen;
+        size_t to_copy = (len - i < space) ? len - i : space;
+        memcpy(ctx->buffer + ctx->datalen, data + i, to_copy);
+        ctx->datalen += (uint32_t)to_copy;
+        i += to_copy;
 
-    if ((j + len) > 63) {
-        memcpy(&ctx->buffer[j], data, (i = 64 - j));
-        _sha1_transform(ctx->state, ctx->buffer);
-        for (; i + 64 <= len; i += 64) {
-            _sha1_transform(ctx->state, &data[i]);
+        if (ctx->datalen == 64) {
+            _sha1_transform(ctx->state, ctx->buffer);
+            ctx->bitlen += 512;
+            ctx->datalen = 0;
         }
-        j = 0;
-    } else {
-        i = 0;
     }
-    memcpy(&ctx->buffer[j], &data[i], len - i);
 }
 
 void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
-    uint64_t bitlen = ((uint64_t)ctx->count[1] << 32) | ctx->count[0];
-    uint32_t bytelen = (uint32_t)(bitlen >> 3);
-    uint32_t pos = bytelen & 63;
+    uint32_t orig_datalen = ctx->datalen;
+    uint64_t total_bitlen = ctx->bitlen + ((uint64_t)orig_datalen * 8);
 
-    ctx->buffer[pos++] = 0x80;
+    ctx->buffer[orig_datalen] = 0x80;
+    ctx->datalen = orig_datalen + 1;
 
-    if (pos > 55) {
-        while (pos < 64) {
-            ctx->buffer[pos++] = 0;
+    if (orig_datalen < 56) {
+        while (ctx->datalen < 56) {
+            ctx->buffer[ctx->datalen++] = 0;
+        }
+    } else {
+        while (ctx->datalen < 64) {
+            ctx->buffer[ctx->datalen++] = 0;
         }
         _sha1_transform(ctx->state, ctx->buffer);
-        pos = 0;
-    }
-    while (pos < 56) {
-        ctx->buffer[pos++] = 0;
+        ctx->datalen = 0;
+        while (ctx->datalen < 56) {
+            ctx->buffer[ctx->datalen++] = 0;
+        }
     }
 
-    ctx->buffer[56] = (uint8_t)((bitlen >> 56) & 0xFF);
-    ctx->buffer[57] = (uint8_t)((bitlen >> 48) & 0xFF);
-    ctx->buffer[58] = (uint8_t)((bitlen >> 40) & 0xFF);
-    ctx->buffer[59] = (uint8_t)((bitlen >> 32) & 0xFF);
-    ctx->buffer[60] = (uint8_t)((bitlen >> 24) & 0xFF);
-    ctx->buffer[61] = (uint8_t)((bitlen >> 16) & 0xFF);
-    ctx->buffer[62] = (uint8_t)((bitlen >> 8) & 0xFF);
-    ctx->buffer[63] = (uint8_t)((bitlen)&0xFF);
+    ctx->buffer[56] = (uint8_t)(total_bitlen >> 56);
+    ctx->buffer[57] = (uint8_t)(total_bitlen >> 48);
+    ctx->buffer[58] = (uint8_t)(total_bitlen >> 40);
+    ctx->buffer[59] = (uint8_t)(total_bitlen >> 32);
+    ctx->buffer[60] = (uint8_t)(total_bitlen >> 24);
+    ctx->buffer[61] = (uint8_t)(total_bitlen >> 16);
+    ctx->buffer[62] = (uint8_t)(total_bitlen >> 8);
+    ctx->buffer[63] = (uint8_t)(total_bitlen);
 
     _sha1_transform(ctx->state, ctx->buffer);
 
@@ -176,5 +176,6 @@ void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
 }
 
 void xylem_sha1_destroy(xylem_sha1_t* ctx) {
+    memset(ctx, 0, sizeof(xylem_sha1_t));
     free(ctx);
 }

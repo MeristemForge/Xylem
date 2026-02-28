@@ -44,12 +44,83 @@ struct xylem_rbtree_s {
     xylem_rbtree_cmp_kn_fn_t cmp_kn;
 };
 
+/**
+ * @brief Initialize a red-black tree.
+ *
+ * @param tree    Pointer to the tree structure to initialize.
+ * @param cmp_nn  Node-node comparator. Returns negative if child sorts before parent.
+ * @param cmp_kn  Key-node comparator for lookups via xylem_rbtree_find().
+ */
 extern void xylem_rbtree_init(xylem_rbtree_t* tree, xylem_rbtree_cmp_nn_fn_t cmp_nn, xylem_rbtree_cmp_kn_fn_t cmp_kn);
+
+/**
+ * @brief Insert a node into the tree.
+ *
+ * @param tree  Pointer to the tree.
+ * @param node  Pointer to the intrusive node to insert. Recover the container
+ *              with xylem_rbtree_entry().
+ */
 extern void xylem_rbtree_insert(xylem_rbtree_t* tree, xylem_rbtree_node_t* node);
+
+/**
+ * @brief Remove a node from the tree.
+ *
+ * @param tree  Pointer to the tree.
+ * @param node  Pointer to the node to remove. Must be currently in the tree.
+ */
 extern void xylem_rbtree_erase(xylem_rbtree_t* tree, xylem_rbtree_node_t* node);
+
+/**
+ * @brief Check whether the tree is empty.
+ *
+ * @param tree  Pointer to the tree.
+ *
+ * @return true if the tree contains no nodes, false otherwise.
+ */
 extern bool xylem_rbtree_empty(xylem_rbtree_t* tree);
+
+/**
+ * @brief Find a node by key using the cmp_kn comparator.
+ *
+ * @param tree  Pointer to the tree.
+ * @param key   Pointer to the key to search for.
+ *
+ * @return Pointer to the matching node, or NULL if not found.
+ */
 extern xylem_rbtree_node_t* xylem_rbtree_find(xylem_rbtree_t* tree, const void* key);
+
+/**
+ * @brief Return the in-order successor of a node.
+ *
+ * @param node  Pointer to the current node.
+ *
+ * @return Pointer to the next node, or NULL if node is the last.
+ */
 extern xylem_rbtree_node_t* xylem_rbtree_next(xylem_rbtree_node_t* node);
+
+/**
+ * @brief Return the in-order predecessor of a node.
+ *
+ * @param node  Pointer to the current node.
+ *
+ * @return Pointer to the previous node, or NULL if node is the first.
+ */
 extern xylem_rbtree_node_t* xylem_rbtree_prev(xylem_rbtree_node_t* node);
+
+/**
+ * @brief Return the smallest (leftmost) node in the tree.
+ *
+ * @param tree  Pointer to the tree.
+ *
+ * @return Pointer to the first node, or NULL if the tree is empty.
+ */
 extern xylem_rbtree_node_t* xylem_rbtree_first(xylem_rbtree_t* tree);
+
+/**
+ * @brief Return the largest (rightmost) node in the tree.
+ *
+ * @param tree  Pointer to the tree.
+ *
+ * @return Pointer to the last node, or NULL if the tree is empty.
+ */
 extern xylem_rbtree_node_t* xylem_rbtree_last(xylem_rbtree_t* tree);

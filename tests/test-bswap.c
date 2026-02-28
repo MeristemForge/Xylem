@@ -22,78 +22,39 @@
 #include "xylem.h"
 #include "assert.h"
 
-// Helper to extract bit representation of float
 static inline uint32_t float_bits(float f) {
     uint32_t u;
     memcpy(&u, &f, sizeof(u));
     return u;
 }
 
-// Helper to extract bit representation of double
 static inline uint64_t double_bits(double d) {
     uint64_t u;
     memcpy(&u, &d, sizeof(u));
     return u;
 }
 
-/**
- * @brief Test byte-swapping of a 16-bit unsigned integer with a typical value.
- *
- * Verifies that xylem_bswap correctly reverses the byte order of a uint16_t.
- * Input: 0x1234 ¡ú Expected output: 0x3412.
- */
+/* uint16: 0x1234 -> 0x3412 */
 static void test_bswap_uint16_typical(void) {
-    uint16_t input = 0x1234U;
-    uint16_t expected = 0x3412U;
-    ASSERT(xylem_bswap(input) == expected);
+    ASSERT(xylem_bswap((uint16_t)0x1234U) == 0x3412U);
 }
 
-/**
- * @brief Test byte-swapping of a 16-bit signed integer at boundary value -1.
- *
- * Ensures correct handling of signed integers by testing the all-ones pattern
- * (0xFFFF), which represents -1 in two's complement. Byte swap should yield
- * the same bit pattern and thus the same value.
- */
+/* int16: -1 (0xFFFF) swaps to itself. */
 static void test_bswap_int16_boundary(void) {
-    int16_t input = -1; // Bit pattern: 0xFFFF
-    int16_t expected = -1;
-    ASSERT(xylem_bswap(input) == expected);
+    ASSERT(xylem_bswap((int16_t)-1) == -1);
 }
 
-/**
- * @brief Test byte-swapping of a 32-bit unsigned integer with a multi-byte
- * pattern.
- *
- * Validates 4-byte reversal: 0x12345678 ¡ú 0x78563412.
- * This covers the core logic for 32-bit word swapping.
- */
+/* uint32: 0x12345678 -> 0x78563412 */
 static void test_bswap_uint32_typical(void) {
-    uint32_t input = 0x12345678U;
-    uint32_t expected = 0x78563412U;
-    ASSERT(xylem_bswap(input) == expected);
+    ASSERT(xylem_bswap((uint32_t)0x12345678U) == 0x78563412U);
 }
 
-/**
- * @brief Test byte-swapping of a 64-bit unsigned integer with asymmetric bytes.
- *
- * Uses a non-palindromic 8-byte pattern to ensure full reversal:
- * 0x0123456789ABCDEF ¡ú 0xEFCDAB8967452301.
- * Tests correctness across all 8 byte positions.
- */
+/* uint64: 0x0123456789ABCDEF -> 0xEFCDAB8967452301 */
 static void test_bswap_uint64_typical(void) {
-    uint64_t input = 0x0123456789ABCDEFULL;
-    uint64_t expected = 0xEFCDAB8967452301ULL;
-    ASSERT(xylem_bswap(input) == expected);
+    ASSERT(xylem_bswap((uint64_t)0x0123456789ABCDEFULL) == 0xEFCDAB8967452301ULL);
 }
 
-/**
- * @brief Test byte-swapping of a 32-bit float via bit-pattern validation.
- *
- * Since floating-point values cannot be compared by numeric equality after
- * byte swapping, this test verifies that the underlying bit representation
- * is correctly reversed using memcpy and uint32_t comparison.
- */
+/* float: verify bit-pattern reversal via uint32 comparison. */
 static void test_bswap_float_bitpattern(void) {
     float    input = 123.456f;
     uint32_t original_bits = float_bits(input);
@@ -102,14 +63,7 @@ static void test_bswap_float_bitpattern(void) {
     ASSERT(swapped_bits == xylem_bswap_u32(original_bits));
 }
 
-/**
- * @brief Test byte-swapping of a double by verifying bit-pattern correctness.
- *
- * Since byte swapping may destroy the IEEE 754 NaN structure (by moving
- * exponent bits out of position), we do NOT ASSERT that the result is NaN.
- * Instead, we verify that the underlying bits were correctly reversed,
- * which is the sole responsibility of xylem_bswap.
- */
+/* double NaN: verify bit-pattern reversal via uint64 comparison. */
 static void test_bswap_double_nan(void) {
     double   input = NAN;
     uint64_t original_bits = double_bits(input);
@@ -118,13 +72,7 @@ static void test_bswap_double_nan(void) {
     ASSERT(swapped_bits == xylem_bswap_u64(original_bits));
 }
 
-/**
- * @brief Test zero-value consistency across all supported types.
- *
- * Zero has the same representation regardless of endianness or sign.
- * This test ensures that byte-swapping zero yields zero for every type,
- * providing a lightweight sanity check for all code paths.
- */
+/* Zero swaps to zero for all types. */
 static void test_bswap_zero_all_types(void) {
     ASSERT(xylem_bswap((uint16_t)0) == 0);
     ASSERT(xylem_bswap((int16_t)0) == 0);
@@ -136,6 +84,19 @@ static void test_bswap_zero_all_types(void) {
     ASSERT(xylem_bswap(0.0) == 0.0);
 }
 
+/* Double swap (swap twice) recovers the original value. */
+static void test_bswap_roundtrip(void) {
+    ASSERT(xylem_bswap(xylem_bswap((uint16_t)0xABCDU)) == 0xABCDU);
+    ASSERT(xylem_bswap(xylem_bswap((uint32_t)0xDEADBEEFU)) == 0xDEADBEEFU);
+    ASSERT(xylem_bswap(xylem_bswap((uint64_t)0xCAFEBABEDEADFACEULL)) == 0xCAFEBABEDEADFACEULL);
+
+    float f = 3.14f;
+    ASSERT(float_bits(xylem_bswap(xylem_bswap(f))) == float_bits(f));
+
+    double d = 2.71828;
+    ASSERT(double_bits(xylem_bswap(xylem_bswap(d))) == double_bits(d));
+}
+
 int main(void) {
     test_bswap_uint16_typical();
     test_bswap_int16_boundary();
@@ -144,6 +105,6 @@ int main(void) {
     test_bswap_float_bitpattern();
     test_bswap_double_nan();
     test_bswap_zero_all_types();
-
+    test_bswap_roundtrip();
     return 0;
 }

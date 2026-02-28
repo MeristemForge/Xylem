@@ -25,8 +25,46 @@ _Pragma("once")
 
 typedef struct xylem_waitgroup_s xylem_waitgroup_t;
 
+/**
+ * @brief Create a new waitgroup.
+ *
+ * Allocates and initializes a waitgroup with an internal counter of zero.
+ *
+ * @return Pointer to the new waitgroup, or NULL on allocation failure.
+ */
 extern xylem_waitgroup_t* xylem_waitgroup_create(void);
+
+/**
+ * @brief Increment the waitgroup counter.
+ *
+ * Adds @p delta to the internal counter. Must be called before the
+ * corresponding work is dispatched.
+ *
+ * @param waitgroup  Pointer to the waitgroup.
+ * @param delta      Number of work items to add.
+ */
 extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
+
+/**
+ * @brief Decrement the waitgroup counter by one.
+ *
+ * Signals that one unit of work has completed. When the counter reaches
+ * zero, all threads blocked in xylem_waitgroup_wait() are woken.
+ *
+ * @param waitgroup  Pointer to the waitgroup.
+ */
 extern void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup);
+
+/**
+ * @brief Block until the waitgroup counter reaches zero.
+ *
+ * @param waitgroup  Pointer to the waitgroup.
+ */
 extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
+
+/**
+ * @brief Destroy the waitgroup and free its resources.
+ *
+ * @param waitgroup  Pointer to the waitgroup.
+ */
 extern void xylem_waitgroup_destroy(xylem_waitgroup_t* waitgroup);
