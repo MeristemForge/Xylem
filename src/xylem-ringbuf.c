@@ -148,9 +148,6 @@ xylem_ringbuf_t* xylem_ringbuf_create(size_t esize, size_t bufsize) {
 }
 
 void xylem_ringbuf_destroy(xylem_ringbuf_t* ring) {
-    if (!ring) {
-        return;
-    }
     free(ring->buf);
     free(ring);
 }

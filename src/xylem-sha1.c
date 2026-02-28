@@ -119,9 +119,6 @@ xylem_sha1_t* xylem_sha1_create(void) {
 }
 
 void xylem_sha1_update(xylem_sha1_t* ctx, const uint8_t* data, size_t len) {
-    if (!ctx || !data || len == 0) {
-        return;
-    }
     uint32_t i, j;
     j = ctx->count[0];
     if ((ctx->count[0] += ((uint32_t)len << 3)) < j) {
@@ -144,9 +141,6 @@ void xylem_sha1_update(xylem_sha1_t* ctx, const uint8_t* data, size_t len) {
 }
 
 void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
-    if (!ctx || !digest) {
-        return;
-    }
     uint64_t bitlen = ((uint64_t)ctx->count[1] << 32) | ctx->count[0];
     uint32_t bytelen = (uint32_t)(bitlen >> 3);
     uint32_t pos = bytelen & 63;
@@ -182,7 +176,5 @@ void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
 }
 
 void xylem_sha1_destroy(xylem_sha1_t* ctx) {
-    if (ctx) {
-        free(ctx);
-    }
+    free(ctx);
 }

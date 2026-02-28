@@ -128,9 +128,6 @@ xylem_sha256_t* xylem_sha256_create(void) {
 }
 
 void xylem_sha256_update(xylem_sha256_t* ctx, const uint8_t* data, size_t len) {
-    if (!ctx || !data || len == 0) {
-        return;
-    }
     size_t i = 0;
     while (i < len) {
         size_t space = 64 - ctx->datalen;
@@ -148,9 +145,6 @@ void xylem_sha256_update(xylem_sha256_t* ctx, const uint8_t* data, size_t len) {
 }
 
 void xylem_sha256_final(xylem_sha256_t* ctx, uint8_t digest[32]) {
-    if (!ctx || !digest) {
-        return;
-    }
     uint32_t orig_datalen = ctx->datalen;
     uint64_t total_bitlen = ctx->bitlen + ((uint64_t)orig_datalen * 8);
 
@@ -191,8 +185,6 @@ void xylem_sha256_final(xylem_sha256_t* ctx, uint8_t digest[32]) {
 }
 
 void xylem_sha256_destroy(xylem_sha256_t* ctx) {
-    if (ctx) {
-        memset(ctx, 0, sizeof(xylem_sha256_t));
-        free(ctx);
-    }
+    memset(ctx, 0, sizeof(xylem_sha256_t));
+    free(ctx);
 }

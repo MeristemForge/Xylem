@@ -43,7 +43,6 @@ static void test_create_destroy(void) {
     xylem_waitgroup_t* wg = xylem_waitgroup_create();
     ASSERT(wg != NULL);
     xylem_waitgroup_destroy(wg);
-    xylem_waitgroup_destroy(NULL);
 }
 
 static void test_basic_operations(void) {
@@ -139,17 +138,10 @@ static void test_concurrent_stress(void) {
     xylem_waitgroup_destroy(wg);
 }
 
-static void test_null_safety(void) {
-    xylem_waitgroup_add(NULL, 10);
-    xylem_waitgroup_done(NULL);
-    xylem_waitgroup_wait(NULL);
-    xylem_waitgroup_destroy(NULL);
-}
 
 int main(void) {
     test_create_destroy();
     test_basic_operations();
-    test_null_safety();
     test_repeated_done();
     test_large_delta();
     test_multiple_threads();
