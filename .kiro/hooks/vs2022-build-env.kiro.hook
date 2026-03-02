@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "VS2022 Build Environment",
+  "description": "在执行 shell 命令（如 cmake、ctest、编译运行等）之前，提醒 agent 使用带有 VS2022 开发者环境的命令行，确保编译工具链可用。",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "shell"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "如果当前要执行的命令涉及编译、构建或运行程序（如 cmake、ctest、msbuild、cl、link 等），请确保命令通过 VS2022 开发者命令行环境执行。具体做法是在命令前加上初始化脚本调用，例如：cmd /c \"call \\\"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat\\\" x64 && <your_command>\"。如果命令与编译运行无关（如 ls、cat、echo 等），则无需修改。"
+  }
+}

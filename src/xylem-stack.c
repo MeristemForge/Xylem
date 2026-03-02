@@ -19,43 +19,36 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "xylem.h"
 
-#include <assert.h>
-#include <complex.h>
-#include <ctype.h>
-#include <errno.h>
-#include <fenv.h>
-#include <float.h>
-#include <inttypes.h>
-#include <limits.h>
-#include <locale.h>
-#include <math.h>
-#include <setjmp.h>
-#include <signal.h>
-#include <stdalign.h>
-#include <stdarg.h>
-#include <stdatomic.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <string.h>
+void xylem_stack_init(xylem_stack_t* stack) {
+    stack->top = NULL;
+    stack->nelts = 0;
+}
 
-#include "deprecated/c11-threads.h"
+bool xylem_stack_empty(xylem_stack_t* stack) {
+    return stack->nelts == 0;
+}
 
-#include "xylem/xylem-sha1.h"
-#include "xylem/xylem-list.h"
-#include "xylem/xylem-heap.h"
-#include "xylem/xylem-bswap.h"
-#include "xylem/xylem-sha256.h"
-#include "xylem/xylem-base64.h"
-#include "xylem/xylem-queue.h"
-#include "xylem/xylem-rbtree.h"
-#include "xylem/xylem-stack.h"
-#include "xylem/xylem-varint.h"
-#include "xylem/xylem-ringbuf.h"
-#include "xylem/xylem-thrdpool.h"
-#include "xylem/xylem-waitgroup.h"
+size_t xylem_stack_len(xylem_stack_t* stack) {
+    return stack->nelts;
+}
+
+void xylem_stack_push(xylem_stack_t* stack, xylem_stack_node_t* node) {
+    node->next = stack->top;
+    stack->top = node;
+    stack->nelts++;
+}
+
+xylem_stack_node_t* xylem_stack_pop(xylem_stack_t* stack) {
+    if (stack->top == NULL) return NULL;
+    xylem_stack_node_t* node = stack->top;
+    stack->top = node->next;
+    node->next = NULL;
+    stack->nelts--;
+    return node;
+}
+
+xylem_stack_node_t* xylem_stack_peek(xylem_stack_t* stack) {
+    return stack->top;
+}

@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "Sync Docs on Code Change",
+  "description": "当项目中的 C 源文件或头文件被编辑时，自动检查并同步更新相关的 markdown 文档（如 README.md、docs/ 下的文档、以及 .kiro/steering/ 下的产品/结构描述文件），确保文档与代码保持一致。",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "*.c",
+      "*.h",
+      "CMakeLists.txt"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A project source file was just edited. Review the change and determine if any markdown documentation needs to be updated to stay in sync. Check these docs for relevance: README.md, docs/build.md, docs/FAQ.md, .kiro/steering/product.md, .kiro/steering/structure.md. Only update docs that are actually affected by the code change — for example, if a public API was added/removed/renamed, a new module was created, build configuration changed, or module descriptions are now outdated. If no doc updates are needed, do nothing."
+  }
+}

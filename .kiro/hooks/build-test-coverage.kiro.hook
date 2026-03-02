@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Build, Test & Coverage",
+  "description": "配置并编译项目（开启测试、ASAN、覆盖率），运行测试并生成覆盖率报告，最后自动在浏览器中打开报告。",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "cmake -B out -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_ASAN=ON -DXYLEM_ENABLE_COVERAGE=ON && cmake --build out --config Debug && cmake --build out --target coverage && start out/coverage/index.html"
+  }
+}

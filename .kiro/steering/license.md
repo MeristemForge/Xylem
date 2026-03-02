@@ -1,3 +1,12 @@
+---
+inclusion: auto
+---
+
+# License Header
+
+Every `.c` and `.h` file must start with this MIT license block at the very top:
+
+```c
 /** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -18,44 +27,8 @@
  *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  *  IN THE SOFTWARE.
  */
+```
 
-_Pragma("once")
-
-#include <assert.h>
-#include <complex.h>
-#include <ctype.h>
-#include <errno.h>
-#include <fenv.h>
-#include <float.h>
-#include <inttypes.h>
-#include <limits.h>
-#include <locale.h>
-#include <math.h>
-#include <setjmp.h>
-#include <signal.h>
-#include <stdalign.h>
-#include <stdarg.h>
-#include <stdatomic.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <string.h>
-
-#include "deprecated/c11-threads.h"
-
-#include "xylem/xylem-sha1.h"
-#include "xylem/xylem-list.h"
-#include "xylem/xylem-heap.h"
-#include "xylem/xylem-bswap.h"
-#include "xylem/xylem-sha256.h"
-#include "xylem/xylem-base64.h"
-#include "xylem/xylem-queue.h"
-#include "xylem/xylem-rbtree.h"
-#include "xylem/xylem-stack.h"
-#include "xylem/xylem-varint.h"
-#include "xylem/xylem-ringbuf.h"
-#include "xylem/xylem-thrdpool.h"
-#include "xylem/xylem-waitgroup.h"
+After the license block:
+- Headers: `_Pragma("once")` then `#include "xylem.h"`
+- Source files: `#include "xylem.h"` as the first include

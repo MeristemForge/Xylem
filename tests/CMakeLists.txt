@@ -4,8 +4,11 @@ project(tests LANGUAGES C)
 
 include(xylem-utils)
 
+xylem_add_test(list)
 xylem_add_test(heap)
 xylem_add_test(sha1)
+xylem_add_test(queue)
+xylem_add_test(stack)
 xylem_add_test(sha256)
 xylem_add_test(bswap)
 xylem_add_test(base64)

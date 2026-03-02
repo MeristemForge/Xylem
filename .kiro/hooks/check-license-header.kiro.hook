@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Check License Header on Write",
+  "description": "After the agent writes a .c or .h file, checks if the MIT license copyright header is present at the top. If missing, prepends it automatically.",
+  "version": "1",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A file was just written. If the file is a .c or .h source file, check whether it starts with the MIT license copyright header block (/** Copyright (c) 2026-2036, Jin.Wu ... */). If the header is missing, prepend it at the very top of the file before any existing content. Do not modify files that already have the header or that are not .c/.h files."
+  }
+}
