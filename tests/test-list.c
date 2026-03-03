@@ -107,11 +107,45 @@ static void test_list_entry(void) {
     ASSERT(recovered->value == 42);
 }
 
+static void test_list_swap(void) {
+    xylem_list_t l1, l2;
+    test_item_t  a = {.value = 1};
+    test_item_t  b = {.value = 2};
+    test_item_t  c = {.value = 3};
+
+    xylem_list_init(&l1);
+    xylem_list_init(&l2);
+
+    /* Swap two empty lists */
+    xylem_list_swap(&l1, &l2);
+    ASSERT(xylem_list_empty(&l1));
+    ASSERT(xylem_list_empty(&l2));
+
+    /* Swap non-empty with empty */
+    xylem_list_push_back(&l1, &a.node);
+    xylem_list_push_back(&l1, &b.node);
+    xylem_list_swap(&l1, &l2);
+    ASSERT(xylem_list_empty(&l1));
+    ASSERT(xylem_list_len(&l2) == 2);
+    ASSERT(xylem_list_front(&l2) == &a.node);
+    ASSERT(xylem_list_back(&l2) == &b.node);
+
+    /* Swap non-empty with non-empty */
+    xylem_list_push_back(&l1, &c.node);
+    xylem_list_swap(&l1, &l2);
+    ASSERT(xylem_list_len(&l1) == 2);
+    ASSERT(xylem_list_len(&l2) == 1);
+    ASSERT(xylem_list_front(&l1) == &a.node);
+    ASSERT(xylem_list_back(&l1) == &b.node);
+    ASSERT(xylem_list_front(&l2) == &c.node);
+}
+
 int main(void) {
     test_list_init();
     test_list_push_front();
     test_list_push_back();
     test_list_remove();
     test_list_entry();
+    test_list_swap();
     return 0;
 }

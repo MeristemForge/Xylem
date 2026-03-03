@@ -70,31 +70,43 @@ xylem_list_node_t* xylem_list_back(xylem_list_t* list) {
 }
 
 void xylem_list_swap(xylem_list_t* a, xylem_list_t* b) {
-    xylem_list_t tmp;
+    if (a == b) return;
 
-    /* Save a's state. */
-    tmp.head  = a->head;
-    tmp.nelts = a->nelts;
+    bool a_empty = (a->nelts == 0);
+    bool b_empty = (b->nelts == 0);
 
-    /* Move b into a. */
-    if (b->nelts > 0) {
-        a->head        = b->head;
+    if (a_empty && b_empty) return;
+
+    if (a_empty) {
+        a->head.next = b->head.next;
+        a->head.prev = b->head.prev;
         a->head.next->prev = &a->head;
         a->head.prev->next = &a->head;
-    } else {
-        a->head.prev = &a->head;
-        a->head.next = &a->head;
-    }
-    a->nelts = b->nelts;
-
-    /* Move saved a into b. */
-    if (tmp.nelts > 0) {
-        b->head        = tmp.head;
+        b->head.next = &b->head;
+        b->head.prev = &b->head;
+    } else if (b_empty) {
+        b->head.next = a->head.next;
+        b->head.prev = a->head.prev;
         b->head.next->prev = &b->head;
         b->head.prev->next = &b->head;
+        a->head.next = &a->head;
+        a->head.prev = &a->head;
     } else {
-        b->head.prev = &b->head;
-        b->head.next = &b->head;
+        xylem_list_node_t* tmp_next = a->head.next;
+        xylem_list_node_t* tmp_prev = a->head.prev;
+
+        a->head.next = b->head.next;
+        a->head.prev = b->head.prev;
+        b->head.next = tmp_next;
+        b->head.prev = tmp_prev;
+
+        a->head.next->prev = &a->head;
+        a->head.prev->next = &a->head;
+        b->head.next->prev = &b->head;
+        b->head.prev->next = &b->head;
     }
-    b->nelts = tmp.nelts;
+
+    size_t tmp = a->nelts;
+    a->nelts   = b->nelts;
+    b->nelts   = tmp;
 }

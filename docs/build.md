@@ -11,9 +11,8 @@ The exact commands depend on whether your CMake generator is **single-config** (
 - A C11-compatible compiler:
   - **Windows**: MSVC (Visual Studio 2019+) or Clang-cl
   - **Linux/macOS**: GCC ≥ 7 or Clang ≥ 6
-- (Optional) For code coverage:
-  - **Windows**: [OpenCppCoverage](https://github.com/OpenCppCoverage/OpenCppCoverage) in your `PATH`
-  - **Linux**: Install `lcov` and `genhtml`  
+- (Optional) For code coverage (**Linux only**):
+  - Install `lcov` and `genhtml`  
     ```bash
     sudo apt install lcov      # Debian/Ubuntu
     ```
@@ -95,18 +94,10 @@ ctest --test-dir out --output-on-failure
 
 ---
 
-## 📊 Generate Code Coverage Report
+## 📊 Generate Code Coverage Report (Linux Only)
 
 First, enable coverage during configuration:
 
-#### Multi-Config (e.g., Windows)
-```bash
-cmake -B out -DXYLEM_ENABLE_COVERAGE=ON
-cmake --build out --config Debug
-cmake --build out --target coverage
-```
-
-#### Single-Config (e.g., Linux)
 ```bash
 cmake -B out -DXYLEM_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build out -j 8
@@ -118,9 +109,7 @@ cmake --build out --target coverage
 out/coverage
 ```
 
-> 💡 **Platform Notes**:
-> - **Windows**: Requires `OpenCppCoverage` in `PATH`
-> - **Linux**: Requires `lcov` and `genhtml`
+> 💡 Requires `lcov` and `genhtml`
 
 ---
 

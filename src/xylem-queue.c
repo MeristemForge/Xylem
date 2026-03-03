@@ -35,7 +35,7 @@ size_t xylem_queue_len(xylem_queue_t* queue) {
     return queue->nelts;
 }
 
-void xylem_queue_push(xylem_queue_t* queue, xylem_queue_node_t* node) {
+void xylem_queue_enqueue(xylem_queue_t* queue, xylem_queue_node_t* node) {
     node->prev = queue->head.prev;
     node->next = &queue->head;
     queue->head.prev->next = node;
@@ -43,7 +43,7 @@ void xylem_queue_push(xylem_queue_t* queue, xylem_queue_node_t* node) {
     queue->nelts++;
 }
 
-xylem_queue_node_t* xylem_queue_pop(xylem_queue_t* queue) {
+xylem_queue_node_t* xylem_queue_dequeue(xylem_queue_t* queue) {
     if (xylem_queue_empty(queue)) return NULL;
     xylem_queue_node_t* node = queue->head.next;
     node->next->prev = &queue->head;
@@ -65,30 +65,43 @@ xylem_queue_node_t* xylem_queue_back(xylem_queue_t* queue) {
 }
 
 void xylem_queue_swap(xylem_queue_t* queue1, xylem_queue_t* queue2) {
-    xylem_queue_t tmp;
+    if (queue1 == queue2) return;
 
-    if (xylem_queue_empty(queue1) && xylem_queue_empty(queue2)) return;
+    bool q1_empty = (queue1->nelts == 0);
+    bool q2_empty = (queue2->nelts == 0);
 
-    tmp = *queue1;
+    if (q1_empty && q2_empty) return;
 
-    if (xylem_queue_empty(queue2)) {
-        queue1->head.prev = &queue1->head;
-        queue1->head.next = &queue1->head;
-    } else {
-        queue1->head = queue2->head;
+    if (q1_empty) {
+        queue1->head.next = queue2->head.next;
+        queue1->head.prev = queue2->head.prev;
         queue1->head.next->prev = &queue1->head;
         queue1->head.prev->next = &queue1->head;
-    }
-
-    if (xylem_queue_empty(&tmp)) {
-        queue2->head.prev = &queue2->head;
         queue2->head.next = &queue2->head;
+        queue2->head.prev = &queue2->head;
+    } else if (q2_empty) {
+        queue2->head.next = queue1->head.next;
+        queue2->head.prev = queue1->head.prev;
+        queue2->head.next->prev = &queue2->head;
+        queue2->head.prev->next = &queue2->head;
+        queue1->head.next = &queue1->head;
+        queue1->head.prev = &queue1->head;
     } else {
-        queue2->head = tmp.head;
+        xylem_list_node_t* tmp_next = queue1->head.next;
+        xylem_list_node_t* tmp_prev = queue1->head.prev;
+
+        queue1->head.next = queue2->head.next;
+        queue1->head.prev = queue2->head.prev;
+        queue2->head.next = tmp_next;
+        queue2->head.prev = tmp_prev;
+
+        queue1->head.next->prev = &queue1->head;
+        queue1->head.prev->next = &queue1->head;
         queue2->head.next->prev = &queue2->head;
         queue2->head.prev->next = &queue2->head;
     }
 
-    queue1->nelts = queue2->nelts;
-    queue2->nelts = tmp.nelts;
+    size_t tmp     = queue1->nelts;
+    queue1->nelts  = queue2->nelts;
+    queue2->nelts  = tmp;
 }

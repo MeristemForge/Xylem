@@ -1,10 +1,10 @@
 {
   "enabled": true,
   "name": "Auto Commit & Push",
-  "description": "When the agent stops, automatically stage all changes, generate a commit message based on the diff, commit, and push to origin main.",
+  "description": "Manually triggered: stage all changes, generate a commit message based on the diff, commit, and push to origin main.",
   "version": "1",
   "when": {
-    "type": "agentStop"
+    "type": "userTriggered"
   },
   "then": {
     "type": "askAgent",

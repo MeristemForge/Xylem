@@ -70,7 +70,7 @@ extern size_t xylem_queue_len(xylem_queue_t* queue);
  * @param queue  Pointer to the queue.
  * @param node   Pointer to the intrusive node to enqueue.
  */
-extern void xylem_queue_push(xylem_queue_t* queue, xylem_queue_node_t* node);
+extern void xylem_queue_enqueue(xylem_queue_t* queue, xylem_queue_node_t* node);
 
 /**
  * @brief Dequeue and return the front node from the queue.
@@ -79,7 +79,7 @@ extern void xylem_queue_push(xylem_queue_t* queue, xylem_queue_node_t* node);
  *
  * @return Pointer to the dequeued node, or NULL if the queue is empty.
  */
-extern xylem_queue_node_t* xylem_queue_pop(xylem_queue_t* queue);
+extern xylem_queue_node_t* xylem_queue_dequeue(xylem_queue_t* queue);
 
 /**
  * @brief Return the front node without removing it.

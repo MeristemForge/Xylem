@@ -41,25 +41,21 @@
 
 #### Q: How do I generate a code coverage report for my tests?
 
-> **A:** ✅ Generating a coverage report requires three steps:
+> **A:** ✅ Coverage is supported on **Linux only**. Generating a report requires three steps:
 >
 > ```bash
 > # 1. Configure with coverage enabled
-> cmake -B out -DXYLEM_ENABLE_COVERAGE=ON
+> cmake -B out -DXYLEM_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
 >
-> # 2. Build the executable (use --config only for multi-config generators)
-> cmake --build out --config Debug -j 8
+> # 2. Build
+> cmake --build out -j 8
 >
 > # 3. Generate the HTML coverage report
 > cmake --build out --target coverage
 > ```
 >
 > 📁 The final report is available at `out/coverage`.  
-> 💡 **Platform notes**:  
-> - **Windows**: Requires [OpenCppCoverage](https://github.com/OpenCppCoverage/OpenCppCoverage) in your `PATH`.  
-> - **Linux**: Requires `lcov` and `genhtml` (e.g., `sudo apt install lcov`).
-> 
-> 📌 Note: On single-config generators (e.g., Ninja or Makefiles on Linux), omit `--config Debug` in step 2, as the build type is set during configuration via `-DCMAKE_BUILD_TYPE=Debug`.
+> 💡 Requires `lcov` and `genhtml` (e.g., `sudo apt install lcov`).
 
 --- 
 
