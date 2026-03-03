@@ -104,3 +104,16 @@ extern xylem_list_node_t* xylem_list_front(xylem_list_t* list);
  * @return Pointer to the last node, or NULL if the list is empty.
  */
 extern xylem_list_node_t* xylem_list_back(xylem_list_t* list);
+
+/**
+ * @brief Swap the contents of two lists.
+ *
+ * After the call, list a holds the elements previously in b and vice versa.
+ * Useful for atomically draining a list: swap with an empty list, then
+ * process the non-empty one.
+ *
+ * @param a  Pointer to the first list.
+ * @param b  Pointer to the second list.
+ */
+extern void xylem_list_swap(xylem_list_t* a, xylem_list_t* b);
+

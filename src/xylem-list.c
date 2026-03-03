@@ -68,3 +68,33 @@ xylem_list_node_t* xylem_list_back(xylem_list_t* list) {
     if (xylem_list_empty(list)) return NULL;
     return list->head.prev;
 }
+
+void xylem_list_swap(xylem_list_t* a, xylem_list_t* b) {
+    xylem_list_t tmp;
+
+    /* Save a's state. */
+    tmp.head  = a->head;
+    tmp.nelts = a->nelts;
+
+    /* Move b into a. */
+    if (b->nelts > 0) {
+        a->head        = b->head;
+        a->head.next->prev = &a->head;
+        a->head.prev->next = &a->head;
+    } else {
+        a->head.prev = &a->head;
+        a->head.next = &a->head;
+    }
+    a->nelts = b->nelts;
+
+    /* Move saved a into b. */
+    if (tmp.nelts > 0) {
+        b->head        = tmp.head;
+        b->head.next->prev = &b->head;
+        b->head.prev->next = &b->head;
+    } else {
+        b->head.prev = &b->head;
+        b->head.next = &b->head;
+    }
+    b->nelts = tmp.nelts;
+}
