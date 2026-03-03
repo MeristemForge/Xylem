@@ -47,6 +47,11 @@ set(SRCS
 	src/xylem-ringbuf.c
 	src/xylem-thrdpool.c
 	src/xylem-waitgroup.c
+	src/xylem-xlist.c
+	src/xylem-xstack.c
+	src/xylem-xqueue.c
+	src/xylem-xheap.c
+	src/xylem-xrbtree.c
 )
 
 if(WIN32)

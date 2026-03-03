@@ -198,6 +198,9 @@ void xylem_heap_remove(xylem_heap_t* heap, xylem_heap_node_t* node) {
 }
 
 void xylem_heap_dequeue(xylem_heap_t* heap) {
+    if (heap->root == NULL) {
+        return;
+    }
     xylem_heap_remove(heap, heap->root);
 }
 

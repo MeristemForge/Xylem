@@ -59,3 +59,9 @@ _Pragma("once")
 #include "xylem/xylem-ringbuf.h"
 #include "xylem/xylem-thrdpool.h"
 #include "xylem/xylem-waitgroup.h"
+
+#include "xylem/xylem-xlist.h"
+#include "xylem/xylem-xstack.h"
+#include "xylem/xylem-xqueue.h"
+#include "xylem/xylem-xheap.h"
+#include "xylem/xylem-xrbtree.h"

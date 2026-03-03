@@ -181,16 +181,19 @@ size_t xylem_ringbuf_write(
     if (entry_count > avail) {
         entry_count = avail;
     }
-    uint32_t count32 = (uint32_t)entry_count;
 
-    _ringbuffer_internal_write(ring, buf, count32, ring->wpos);
-    ring->wpos += count32;
+    _ringbuffer_internal_write(ring, buf, (uint32_t)entry_count, ring->wpos);
+    ring->wpos += (uint32_t)entry_count;
 
     return entry_count;
 }
 
 size_t
 xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
+    size_t len = xylem_ringbuf_len(ring);
+    if (entry_count > len) {
+        entry_count = len;
+    }
     uint32_t count32 = (uint32_t)entry_count;
 
     uint32_t actual = _ringbuffer_internal_read_peek(ring, buf, count32);

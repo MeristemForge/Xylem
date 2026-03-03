@@ -35,7 +35,7 @@ size_t xylem_list_len(xylem_list_t* list) {
     return list->nelts;
 }
 
-void xylem_list_push_front(xylem_list_t* list, xylem_list_node_t* node) {
+void xylem_list_insert_head(xylem_list_t* list, xylem_list_node_t* node) {
     node->next = list->head.next;
     node->prev = &list->head;
     list->head.next->prev = node;
@@ -43,7 +43,7 @@ void xylem_list_push_front(xylem_list_t* list, xylem_list_node_t* node) {
     list->nelts++;
 }
 
-void xylem_list_push_back(xylem_list_t* list, xylem_list_node_t* node) {
+void xylem_list_insert_tail(xylem_list_t* list, xylem_list_node_t* node) {
     node->prev = list->head.prev;
     node->next = &list->head;
     list->head.prev->next = node;
@@ -59,14 +59,26 @@ void xylem_list_remove(xylem_list_t* list, xylem_list_node_t* node) {
     list->nelts--;
 }
 
-xylem_list_node_t* xylem_list_front(xylem_list_t* list) {
+xylem_list_node_t* xylem_list_head(xylem_list_t* list) {
     if (xylem_list_empty(list)) return NULL;
     return list->head.next;
 }
 
-xylem_list_node_t* xylem_list_back(xylem_list_t* list) {
+xylem_list_node_t* xylem_list_tail(xylem_list_t* list) {
     if (xylem_list_empty(list)) return NULL;
     return list->head.prev;
+}
+
+xylem_list_node_t* xylem_list_next(xylem_list_node_t* node) {
+    return node->next;
+}
+
+xylem_list_node_t* xylem_list_prev(xylem_list_node_t* node) {
+    return node->prev;
+}
+
+xylem_list_node_t* xylem_list_sentinel(xylem_list_t* list) {
+    return &list->head;
 }
 
 void xylem_list_swap(xylem_list_t* a, xylem_list_t* b) {

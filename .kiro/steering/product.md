@@ -13,6 +13,9 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **queue** | FIFO queue (built on list) | Intrusive |
 | **heap** | Binary min-heap | Intrusive |
 | **rbtree** | Red-black tree (key & node-node comparators) | Intrusive |
+| **xlist** | Non-intrusive doubly-linked list (built on list) | Non-intrusive |
+| **xstack** | Non-intrusive LIFO stack (built on stack) | Non-intrusive |
+| **xqueue** | Non-intrusive FIFO queue (built on queue) | Non-intrusive |
 | **ringbuf** | Ring buffer | Contiguous |
 
 ### Encoding & Hashing

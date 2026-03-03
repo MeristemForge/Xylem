@@ -9,6 +9,9 @@
 | Node types | `xylem_<module>_node_t` | `xylem_heap_node_t` |
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
 | Internal/static helpers | `_<name>` prefix | `_heap_node_swap` |
+| Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
+
+> **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
 

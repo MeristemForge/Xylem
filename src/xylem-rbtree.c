@@ -94,10 +94,10 @@ _rbtree_insert_color(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
              *        /          \
              *    (R) parent   (R) uncle
              *      /
-             *   (R) node   ¡û newly inserted
+             *   (R) node   <- newly inserted
              *
              * After recoloring:
-             *        (R) gparent   ¡û may cause new violation with its parent
+             *        (R) gparent   <- may cause new violation with its parent
              *        /          \
              *    (B) parent   (B) uncle
              *      /
@@ -115,14 +115,14 @@ _rbtree_insert_color(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
              * Subcase A2: Uncle is BLACK or NULL
              * Two possibilities based on node's position.
              *
-             * If node is RIGHT child of parent ¡ú "triangle" case:
+             * If node is RIGHT child of parent -> "triangle" case:
              *        (B) gparent
              *        /
              *    (R) parent
              *          \
              *        (R) node
              *
-             * Step 1: Left-rotate at parent ¡ú becomes "line" case:
+             * Step 1: Left-rotate at parent -> becomes "line" case:
              *        (B) gparent
              *        /
              *    (R) node
@@ -181,7 +181,7 @@ _rbtree_insert_color(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
 
             /**
              * Subcase B2: Uncle is BLACK
-             * If node is LEFT child ¡ú "triangle", do right rotation first.
+             * If node is LEFT child -> "triangle", do right rotation first.
              */
             if (parent->left == node) {
                 xylem_rbtree_node_t* tmp;
@@ -212,78 +212,57 @@ static void _rbtree_erase_color(
         if (parent->left == node) {
             xylem_rbtree_node_t* other = parent->right;
 
-            if (other && other->color == RB_RED) {
+            if (other->color == RB_RED) {
                 other->color = RB_BLACK;
                 parent->color = RB_RED;
                 _rbtree_rotate_left(parent, tree);
                 other = parent->right;
             }
-            if ((!other || !other->left || other->left->color == RB_BLACK) &&
-                (!other || !other->right || other->right->color == RB_BLACK)) {
-                if (other) {
-                    other->color = RB_RED;
-                }
+            if ((!other->left || other->left->color == RB_BLACK) &&
+                (!other->right || other->right->color == RB_BLACK)) {
+                other->color = RB_RED;
                 node = parent;
                 parent = node->parent;
             } else {
-                if (!other || !other->right ||
-                    other->right->color == RB_BLACK) {
-                    if (other && other->left) {
-                        other->left->color = RB_BLACK;
-                    }
-                    if (other) {
-                        other->color = RB_RED;
-                        _rbtree_rotate_right(other, tree);
-                        other = parent->right;
-                    }
+                if (!other->right || other->right->color == RB_BLACK) {
+                    other->left->color = RB_BLACK;
+                    other->color = RB_RED;
+                    _rbtree_rotate_right(other, tree);
+                    other = parent->right;
                 }
-                if (other) {
-                    other->color = parent->color;
-                    parent->color = RB_BLACK;
-                    if (other->right) {
-                        other->right->color = RB_BLACK;
-                    }
-                    _rbtree_rotate_left(parent, tree);
-                }
+                other->color = parent->color;
+                parent->color = RB_BLACK;
+                other->right->color = RB_BLACK;
+                _rbtree_rotate_left(parent, tree);
                 node = tree->root;
                 break;
             }
         } else {
             xylem_rbtree_node_t* other = parent->left;
 
-            if (other && other->color == RB_RED) {
+            if (other->color == RB_RED) {
                 other->color = RB_BLACK;
                 parent->color = RB_RED;
                 _rbtree_rotate_right(parent, tree);
                 other = parent->left;
             }
 
-            if ((!other || !other->left || other->left->color == RB_BLACK) &&
-                (!other || !other->right || other->right->color == RB_BLACK)) {
-                if (other) {
-                    other->color = RB_RED;
-                }
+            if ((!other->left || other->left->color == RB_BLACK) &&
+                (!other->right || other->right->color == RB_BLACK)) {
+                other->color = RB_RED;
                 node = parent;
                 parent = node->parent;
             } else {
-                if (!other || !other->left || other->left->color == RB_BLACK) {
-                    if (other && other->right) {
-                        other->right->color = RB_BLACK;
-                    }
-                    if (other) {
-                        other->color = RB_RED;
-                        _rbtree_rotate_left(other, tree);
-                        other = parent->left;
-                    }
+                if (!other->left || other->left->color == RB_BLACK) {
+                    other->right->color = RB_BLACK;
+                    other->color = RB_RED;
+                    _rbtree_rotate_left(other, tree);
+                    other = parent->left;
                 }
-                if (other) {
-                    other->color = parent->color;
-                    parent->color = RB_BLACK;
-                    if (other->left) {
-                        other->left->color = RB_BLACK;
-                    }
-                    _rbtree_rotate_right(parent, tree);
-                }
+                other->color = parent->color;
+                parent->color = RB_BLACK;
+                other->left->color = RB_BLACK;
+                _rbtree_rotate_right(parent, tree);
                 node = tree->root;
                 break;
             }

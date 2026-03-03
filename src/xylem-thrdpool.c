@@ -45,12 +45,13 @@ static int _thrdpool_thrdfunc(void* arg) {
         thrdpool_job_t* job = NULL;
 
         mtx_lock(&pool->mtx);
-        if (!pool->running) {
-            mtx_unlock(&pool->mtx);
-            break;
-        }
         while (pool->running && xylem_queue_empty(&pool->queue)) {
             cnd_wait(&pool->cnd, &pool->mtx);
+        }
+        /* Drain remaining jobs before exiting. */
+        if (!pool->running && xylem_queue_empty(&pool->queue)) {
+            mtx_unlock(&pool->mtx);
+            break;
         }
         xylem_queue_node_t* node = xylem_queue_dequeue(&pool->queue);
         if (node) {
@@ -67,9 +68,8 @@ static int _thrdpool_thrdfunc(void* arg) {
 }
 
 static void _thrdpool_thrd_create(xylem_thrdpool_t* pool) {
-    void* thrds;
-    mtx_lock(&pool->mtx);
-    thrds = realloc(pool->thrds, (pool->thrdcnt + 1) * sizeof(thrd_t));
+    void* thrds =
+        realloc(pool->thrds, (pool->thrdcnt + 1) * sizeof(thrd_t));
     if (thrds) {
         pool->thrds = thrds;
         int ret =
@@ -78,7 +78,6 @@ static void _thrdpool_thrd_create(xylem_thrdpool_t* pool) {
             pool->thrdcnt++;
         }
     }
-    mtx_unlock(&pool->mtx);
 }
 
 xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {

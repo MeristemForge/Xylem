@@ -157,18 +157,28 @@ static int _base64_decode(
         return -1;
     }
 
-    val = (table[src[0]] << 12) | (table[src[1]] << 6);
-    *tmp++ = val >> 10;
+    int8_t v0 = table[src[0]];
+    int8_t v1 = table[src[1]];
+    if (v0 < 0 || v1 < 0) {
+        return -1;
+    }
 
     if (slen == 2) {
-        if (val & 0x800003ff) {
+        val = (v0 << 12) | (v1 << 6);
+        if (val & 0x3ff) {
             return -1;
         }
+        *tmp++ = val >> 10;
     } else {
-        val |= table[src[2]];
-        if (val & 0x80000003) {
+        int8_t v2 = table[src[2]];
+        if (v2 < 0) {
             return -1;
         }
+        val = (v0 << 12) | (v1 << 6) | v2;
+        if (val & 0x3) {
+            return -1;
+        }
+        *tmp++ = val >> 10;
         *tmp++ = val >> 2;
     }
     return tmp - dst;
