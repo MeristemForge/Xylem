@@ -19,10 +19,37 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "xylem.h"
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
-#include "platform-info.h"
-#include "platform-io.h"
+uint64_t xylem_utils_getnow(xylem_time_precision_t precision) {
+    struct timespec tsc;
+    (void)timespec_get(&tsc, TIME_UTC);
+
+    switch (precision) {
+    case XYLEM_TIME_PRECISION_SEC:
+        return tsc.tv_sec;
+    case XYLEM_TIME_PRECISION_MSEC:
+        return tsc.tv_sec * 1000ULL + tsc.tv_nsec / 1000000ULL;
+    case XYLEM_TIME_PRECISION_USEC:
+        return tsc.tv_sec * 1000000ULL + tsc.tv_nsec / 1000ULL;
+    case XYLEM_TIME_PRECISION_NSEC:
+        return tsc.tv_sec * 1000000000ULL + tsc.tv_nsec;
+    default:
+        return UINT64_MAX;
+    }
+}
+
+xylem_endian_t xylem_utils_getendian(void) {
+    return (*((unsigned char*)(&(unsigned short){0x01}))) ? XYLEM_ENDIAN_LE
+                                                          : XYLEM_ENDIAN_BE;
+}
+
+int xylem_utils_getprng(int min, int max) {
+    static unsigned int seed = 0;
+    if (seed == 0) {
+        seed = (unsigned int)time(NULL);
+        srand(seed);
+    }
+    return min +
+           (int)((double)((double)(max) - (min) + 1.0) * (rand() / ((RAND_MAX) + 1.0)));
+}

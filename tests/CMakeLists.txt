@@ -22,6 +22,8 @@ xylem_add_test(xstack)
 xylem_add_test(xqueue)
 xylem_add_test(xheap)
 xylem_add_test(xrbtree)
+xylem_add_test(utils)
+xylem_add_test(logger)
 
 if(XYLEM_ENABLE_COVERAGE AND WIN32)
     find_program(OPENCPPCOVERAGE_BIN OpenCppCoverage)

@@ -19,10 +19,12 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-io.h"
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
-#include "platform-info.h"
-#include "platform-io.h"
+FILE* platform_io_fopen(const char* restrict file, const char* restrict mode) {
+    return fopen(file, mode);
+}
+
+int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap) {
+    return vsnprintf(str, size, format, ap);
+}

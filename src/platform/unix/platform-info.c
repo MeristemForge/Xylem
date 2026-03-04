@@ -19,10 +19,32 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-info.h"
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
-#include "platform-info.h"
-#include "platform-io.h"
+int platform_info_getcpus(void) {
+    return (int)sysconf(_SC_NPROCESSORS_ONLN);
+}
+
+platform_pid_t platform_info_getpid(void) {
+    return getpid();
+}
+
+void platform_info_getlocaltime(
+    const time_t* restrict time, struct tm* restrict tm) {
+    tzset();
+    localtime_r(time, tm);
+}
+
+#if defined(__APPLE__)
+platform_tid_t platform_info_gettid(void) {
+    uint64_t tid;
+    pthread_threadid_np(NULL, &tid);
+    return tid;
+}
+#endif
+
+#if defined(__linux__)
+platform_tid_t platform_info_gettid(void) {
+    return syscall(SYS_gettid);
+}
+#endif

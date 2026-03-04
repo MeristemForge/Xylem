@@ -34,6 +34,13 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 |--------|-------------|--------|
 | **waitgroup** | Thread synchronization primitive | ✅ |
 | **thrdpool** | Thread pool | ✅ |
+| **logger** | Leveled logging with optional async output | ✅ |
+
+### Utilities
+
+| Module | Description |
+|--------|-------------|
+| **utils** | Time, endianness detection, PRNG helpers |
 
 ## Design Philosophy
 

@@ -37,7 +37,7 @@ set(SRCS
 	src/xylem-heap.c
 	src/xylem-sha1.c
 	src/xylem-queue.c
-#	src/xylem-utils.c
+	src/xylem-utils.c
 	src/xylem-stack.c
 	src/xylem-bswap.c
 	src/xylem-rbtree.c
@@ -45,6 +45,7 @@ set(SRCS
 	src/xylem-sha256.c
 	src/xylem-base64.c
 	src/xylem-ringbuf.c
+	src/xylem-logger.c
 	src/xylem-thrdpool.c
 	src/xylem-waitgroup.c
 	src/xylem-xlist.c
@@ -55,14 +56,18 @@ set(SRCS
 )
 
 if(WIN32)
-	list(APPEND SRCS 
-
+	list(APPEND SRCS
+		src/platform/win/platform-info.c
+		src/platform/win/platform-io.c
+		src/platform/win/platform-socket.c
 	)
 endif()
 
 if(UNIX)
-	list(APPEND SRCS 
-
+	list(APPEND SRCS
+		src/platform/unix/platform-info.c
+		src/platform/unix/platform-io.c
+		src/platform/unix/platform-socket.c
 	)
 endif()
 

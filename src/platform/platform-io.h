@@ -21,8 +21,14 @@
 
 _Pragma("once")
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
-#include "platform-info.h"
-#include "platform-io.h"
+#include <stdio.h>
+#include <stdarg.h>
+
+#if defined(_WIN32)
+#define PLATFORM_PATH_SEPARATOR '\\'
+#else
+#define PLATFORM_PATH_SEPARATOR '/'
+#endif
+
+extern FILE* platform_io_fopen(const char* restrict file, const char* restrict mode);
+extern int   platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap);

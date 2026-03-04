@@ -65,3 +65,6 @@ _Pragma("once")
 #include "xylem/xylem-xqueue.h"
 #include "xylem/xylem-xheap.h"
 #include "xylem/xylem-xrbtree.h"
+
+#include "xylem/xylem-utils.h"
+#include "xylem/xylem-logger.h"

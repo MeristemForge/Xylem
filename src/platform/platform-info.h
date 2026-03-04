@@ -21,8 +21,27 @@
 
 _Pragma("once")
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
-#include "platform-info.h"
-#include "platform-io.h"
+#include <time.h>
+
+#if defined(__linux__)
+#include <sys/types.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+typedef pid_t platform_tid_t;
+typedef pid_t platform_pid_t;
+#elif defined(__APPLE__)
+#include <sys/types.h>
+#include <unistd.h>
+#include <pthread.h>
+typedef uint64_t platform_tid_t;
+typedef pid_t    platform_pid_t;
+#elif defined(_WIN32)
+#include <Windows.h>
+typedef DWORD platform_tid_t;
+typedef DWORD platform_pid_t;
+#endif
+
+extern platform_tid_t platform_info_gettid(void);
+extern platform_pid_t platform_info_getpid(void);
+extern int            platform_info_getcpus(void);
+extern void           platform_info_getlocaltime(const time_t* restrict time, struct tm* restrict tm);

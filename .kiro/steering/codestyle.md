@@ -15,6 +15,12 @@
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
 
+## Types
+
+- Prefer fixed-width integer types (`int8_t`, `int16_t`, `int32_t`, `int64_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
+- Exception: function return values and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results)
+- Use `size_t` for sizes and counts, `bool` for flags
+
 ## Formatting
 
 clang-format with LLVM base style:
