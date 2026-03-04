@@ -19,14 +19,45 @@
  *  IN THE SOFTWARE.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
+#include "platform/platform.h"
+#include "assert.h"
+#include <string.h>
+#include <time.h>
 
-#undef ASSERT
-#define ASSERT(expr)                                                           \
-    do {                                                                       \
-        if (!(expr)) {                                                         \
-            fprintf(stderr, "Test failed at %s:%d\n", __FILE__, __LINE__);     \
-            abort();                                                           \
-        }                                                                      \
-    } while (0)
+static void test_getcpus(void) {
+    int cpus = platform_info_getcpus();
+    ASSERT(cpus > 0);
+}
+
+static void test_getpid(void) {
+    platform_pid_t pid = platform_info_getpid();
+    ASSERT(pid > 0);
+}
+
+static void test_gettid(void) {
+    platform_tid_t tid = platform_info_gettid();
+    ASSERT(tid > 0);
+}
+
+static void test_getlocaltime(void) {
+    time_t    now = time(NULL);
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+
+    platform_info_getlocaltime(&now, &tm);
+
+    ASSERT(tm.tm_year >= 125); /* 2025+ */
+    ASSERT(tm.tm_mon >= 0 && tm.tm_mon <= 11);
+    ASSERT(tm.tm_mday >= 1 && tm.tm_mday <= 31);
+    ASSERT(tm.tm_hour >= 0 && tm.tm_hour <= 23);
+    ASSERT(tm.tm_min >= 0 && tm.tm_min <= 59);
+    ASSERT(tm.tm_sec >= 0 && tm.tm_sec <= 60);
+}
+
+int main(void) {
+    test_getcpus();
+    test_getpid();
+    test_gettid();
+    test_getlocaltime();
+    return 0;
+}

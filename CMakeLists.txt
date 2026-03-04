@@ -60,6 +60,7 @@ if(WIN32)
 		src/platform/win/platform-info.c
 		src/platform/win/platform-io.c
 		src/platform/win/platform-socket.c
+		src/platform/win/platform-poller.c
 	)
 endif()
 
@@ -68,6 +69,7 @@ if(UNIX)
 		src/platform/unix/platform-info.c
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-socket.c
+		src/platform/unix/platform-poller.c
 	)
 endif()
 
