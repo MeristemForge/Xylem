@@ -265,6 +265,10 @@ int platform_poller_wait(
 
     ULONG_PTR* keys =
         (ULONG_PTR*)malloc(sizeof(ULONG_PTR) * max_events);
+    if (!keys) {
+        free(entries);
+        return -1;
+    }
     int out = 0;
 
     for (ULONG i = 0; i < count; i++) {

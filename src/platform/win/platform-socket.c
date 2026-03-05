@@ -334,7 +334,9 @@ platform_sock_t platform_socket_listen(
         if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
             continue;
         }
-        platform_socket_enable_v6only(sock, false);
+        if (rp->ai_family == AF_INET6) {
+            platform_socket_enable_v6only(sock, false);
+        }
         if (protocol == SOCK_STREAM) {
             platform_socket_enable_reuseaddr(sock, true);
             platform_socket_enable_reuseport(sock, true);

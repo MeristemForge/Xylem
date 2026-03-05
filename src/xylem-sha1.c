@@ -165,7 +165,7 @@ void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
 
     _sha1_transform(ctx->state, ctx->buffer);
 
-    for (unsigned i = 0; i < 20; ++i) {
+    for (int i = 0; i < 20; ++i) {
         digest[i] =
             (uint8_t)((ctx->state[i >> 2] >> ((3 - (i & 3)) * 8)) & 0xFF);
     }
