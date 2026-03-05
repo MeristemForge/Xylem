@@ -68,7 +68,7 @@ static const uint32_t k[64] = {
 static inline void
 _sha256_transform(xylem_sha256_t* ctx, const uint8_t data[]) {
     uint32_t a, b, c, d, e, f, g, h, t1, t2, m[64];
-    uint32_t i, j;
+    int      i, j;
 
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
         m[i] = ((uint32_t)data[j + 0] << 24) | ((uint32_t)data[j + 1] << 16) |

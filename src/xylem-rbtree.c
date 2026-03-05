@@ -427,8 +427,7 @@ xylem_rbtree_node_t* xylem_rbtree_prev(xylem_rbtree_node_t* node) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_first(xylem_rbtree_t* tree) {
-    xylem_rbtree_node_t* n;
-    n = tree->root;
+    xylem_rbtree_node_t* n = tree->root;
     if (!n) {
         return NULL;
     }
@@ -439,8 +438,7 @@ xylem_rbtree_node_t* xylem_rbtree_first(xylem_rbtree_t* tree) {
 }
 
 xylem_rbtree_node_t* xylem_rbtree_last(xylem_rbtree_t* tree) {
-    xylem_rbtree_node_t* n;
-    n = tree->root;
+    xylem_rbtree_node_t* n = tree->root;
     if (!n) {
         return NULL;
     }

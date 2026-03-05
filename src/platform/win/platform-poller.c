@@ -20,7 +20,7 @@
  */
 
 #include "platform/platform-poller.h"
-#include <malloc.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---------- undocumented NT / AFD types ---------- */
@@ -247,7 +247,7 @@ int platform_poller_wait(
     platform_poller_sq_t* sq, platform_poller_cqe_t* cqe,
     int max_events, int timeout) {
     OVERLAPPED_ENTRY* entries =
-        (OVERLAPPED_ENTRY*)_malloca(sizeof(OVERLAPPED_ENTRY) * max_events);
+        (OVERLAPPED_ENTRY*)malloc(sizeof(OVERLAPPED_ENTRY) * max_events);
     ULONG count = 0;
 
     memset(cqe, 0, sizeof(platform_poller_cqe_t) * max_events);
@@ -256,7 +256,7 @@ int platform_poller_wait(
         *sq, entries, (ULONG)max_events, &count, (DWORD)timeout, FALSE);
     if (!ok) {
         DWORD err = GetLastError();
-        _freea(entries);
+        free(entries);
         if (err == WAIT_TIMEOUT) {
             return 0;
         }
@@ -264,7 +264,7 @@ int platform_poller_wait(
     }
 
     ULONG_PTR* keys =
-        (ULONG_PTR*)_malloca(sizeof(ULONG_PTR) * max_events);
+        (ULONG_PTR*)malloc(sizeof(ULONG_PTR) * max_events);
     int out = 0;
 
     for (ULONG i = 0; i < count; i++) {
@@ -309,7 +309,7 @@ int platform_poller_wait(
         }
     }
 
-    _freea(keys);
-    _freea(entries);
+    free(keys);
+    free(entries);
     return out;
 }

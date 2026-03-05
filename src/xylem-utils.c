@@ -53,5 +53,5 @@ int xylem_utils_getprng(int min, int max) {
         srand(s);
     }
     return min +
-           (int)((double)((double)(max) - (min) + 1.0) * (rand() / ((RAND_MAX) + 1.0)));
+           (int)((double)(max - min + 1) * (rand() / (RAND_MAX + 1.0)));
 }

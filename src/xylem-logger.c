@@ -93,8 +93,7 @@ static int _logger_build_message(
     int                  line,
     const char* restrict fmt,
     va_list              v) {
-    int       off = 0;
-    struct tm tm;
+    int off = 0;
 
     platform_tid_t tid = platform_info_gettid();
 
@@ -103,6 +102,7 @@ static int _logger_build_message(
         off = snprintf(buf, buflen, "%lu %s:%d ", (unsigned long)tid, file, line);
     } else {
         struct timespec tsc;
+        struct tm       tm;
         (void)timespec_get(&tsc, TIME_UTC);
         platform_info_getlocaltime(&tsc.tv_sec, &tm);
 
