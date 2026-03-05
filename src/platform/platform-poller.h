@@ -33,18 +33,12 @@ _Pragma("once")
 
 #if defined(__linux__) || defined(__APPLE__)
 typedef int platform_poller_sq_t;
+typedef int platform_poller_fd_t;
 #endif
 
 #if defined(_WIN32)
 #include "platform-socket.h"
 typedef HANDLE platform_poller_sq_t;
-#endif
-
-#if defined(__linux__) || defined(__APPLE__)
-typedef int platform_poller_fd_t;
-#endif
-
-#if defined(_WIN32)
 typedef SOCKET platform_poller_fd_t;
 #endif
 
@@ -60,10 +54,29 @@ typedef struct platform_poller_cqe_s {
     void*                ud;
 } platform_poller_cqe_t;
 
+/*
+ * platform_poller_sqe_t is a persistent per-fd structure. The caller
+ * allocates it, sets op/fd/ud, and passes it to add/mod/del. The same
+ * sqe pointer must be used for all operations on that fd. The caller
+ * is responsible for the sqe lifetime (must outlive the registration).
+ *
+ * On Unix (epoll/kqueue), registrations are level-triggered: wait()
+ * keeps reporting readiness until the condition clears.
+ *
+ * On Windows (IOCP + AFD_POLL), each wait() delivers at most one
+ * completion per sqe (one-shot). The caller must call mod() to
+ * re-arm the poll after processing an event.
+ *
+ * Internal IOCP/AFD state is embedded in the sqe via an opaque
+ * reserved area. Do not touch _reserved.
+ */
 typedef struct platform_poller_sqe_s {
     platform_poller_op_t op;
     platform_poller_fd_t fd;
     void*                ud;
+#if defined(_WIN32)
+    char                 _reserved[256];
+#endif
 } platform_poller_sqe_t;
 
 extern void platform_poller_init(platform_poller_sq_t* sq);
