@@ -87,8 +87,8 @@ void xylem_queue_swap(xylem_queue_t* queue1, xylem_queue_t* queue2) {
         queue1->head.next = &queue1->head;
         queue1->head.prev = &queue1->head;
     } else {
-        xylem_list_node_t* tmp_next = queue1->head.next;
-        xylem_list_node_t* tmp_prev = queue1->head.prev;
+        xylem_queue_node_t* tmp_next = queue1->head.next;
+        xylem_queue_node_t* tmp_prev = queue1->head.prev;
 
         queue1->head.next = queue2->head.next;
         queue1->head.prev = queue2->head.prev;

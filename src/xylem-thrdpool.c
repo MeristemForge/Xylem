@@ -31,7 +31,7 @@ struct thrdpool_job_s {
 
 struct xylem_thrdpool_s {
     thrd_t*       thrds;
-    size_t        thrdcnt;
+    int           thrdcnt;
     xylem_queue_t queue;
     mtx_t         mtx;
     cnd_t         cnd;
@@ -67,19 +67,6 @@ static int _thrdpool_thrdfunc(void* arg) {
     return 0;
 }
 
-static void _thrdpool_thrd_create(xylem_thrdpool_t* pool) {
-    void* thrds =
-        realloc(pool->thrds, (pool->thrdcnt + 1) * sizeof(thrd_t));
-    if (thrds) {
-        pool->thrds = thrds;
-        int ret =
-            thrd_create(pool->thrds + pool->thrdcnt, _thrdpool_thrdfunc, pool);
-        if (ret == thrd_success) {
-            pool->thrdcnt++;
-        }
-    }
-}
-
 xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
     xylem_thrdpool_t* pool = malloc(sizeof(xylem_thrdpool_t));
     if (!pool) {
@@ -91,9 +78,17 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
 
     pool->thrdcnt = 0;
     pool->running = true;
-    pool->thrds = NULL;
+    pool->thrds = malloc((size_t)nthrds * sizeof(thrd_t));
+    if (!pool->thrds) {
+        mtx_destroy(&pool->mtx);
+        cnd_destroy(&pool->cnd);
+        free(pool);
+        return NULL;
+    }
     for (int i = 0; i < nthrds; i++) {
-        _thrdpool_thrd_create(pool);
+        if (thrd_create(&pool->thrds[pool->thrdcnt], _thrdpool_thrdfunc, pool) == thrd_success) {
+            pool->thrdcnt++;
+        }
     }
     return pool;
 }

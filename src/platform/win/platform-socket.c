@@ -282,7 +282,7 @@ int platform_socket_socketpair(
 }
 
 const char* platform_socket_tostring(int error) {
-    static char buffer[512];
+    static _Thread_local char buffer[512];
     FormatMessage(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         NULL,

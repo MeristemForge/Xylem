@@ -133,7 +133,7 @@ void xylem_sha256_update(xylem_sha256_t* ctx, const uint8_t* data, size_t len) {
         size_t space = 64 - ctx->datalen;
         size_t to_copy = (len - i < space) ? len - i : space;
         memcpy(ctx->data + ctx->datalen, data + i, to_copy);
-        ctx->datalen += to_copy;
+        ctx->datalen += (uint32_t)to_copy;
         i += to_copy;
 
         if (ctx->datalen == 64) {

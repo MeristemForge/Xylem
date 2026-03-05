@@ -21,19 +21,8 @@
 
 _Pragma("once")
 
-#include <assert.h>
-#include <complex.h>
-#include <ctype.h>
 #include <errno.h>
-#include <fenv.h>
-#include <float.h>
-#include <inttypes.h>
 #include <limits.h>
-#include <locale.h>
-#include <math.h>
-#include <setjmp.h>
-#include <signal.h>
-#include <stdalign.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -41,30 +30,30 @@ _Pragma("once")
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <string.h>
+#include <time.h>
 
 #include "deprecated/c11-threads.h"
 
-#include "xylem/xylem-sha1.h"
-#include "xylem/xylem-list.h"
-#include "xylem/xylem-heap.h"
-#include "xylem/xylem-bswap.h"
-#include "xylem/xylem-sha256.h"
 #include "xylem/xylem-base64.h"
+#include "xylem/xylem-bswap.h"
+#include "xylem/xylem-heap.h"
+#include "xylem/xylem-list.h"
 #include "xylem/xylem-queue.h"
 #include "xylem/xylem-rbtree.h"
-#include "xylem/xylem-stack.h"
-#include "xylem/xylem-varint.h"
 #include "xylem/xylem-ringbuf.h"
+#include "xylem/xylem-sha1.h"
+#include "xylem/xylem-sha256.h"
+#include "xylem/xylem-stack.h"
 #include "xylem/xylem-thrdpool.h"
+#include "xylem/xylem-varint.h"
 #include "xylem/xylem-waitgroup.h"
 
-#include "xylem/xylem-xlist.h"
-#include "xylem/xylem-xstack.h"
-#include "xylem/xylem-xqueue.h"
 #include "xylem/xylem-xheap.h"
+#include "xylem/xylem-xlist.h"
+#include "xylem/xylem-xqueue.h"
 #include "xylem/xylem-xrbtree.h"
+#include "xylem/xylem-xstack.h"
 
-#include "xylem/xylem-utils.h"
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-utils.h"

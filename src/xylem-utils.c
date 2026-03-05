@@ -45,10 +45,12 @@ xylem_endian_t xylem_utils_getendian(void) {
 }
 
 int xylem_utils_getprng(int min, int max) {
-    static unsigned int seed = 0;
-    if (seed == 0) {
-        seed = (unsigned int)time(NULL);
-        srand(seed);
+    static _Atomic unsigned int seed = 0;
+    unsigned int s = atomic_load(&seed);
+    if (s == 0) {
+        s = (unsigned int)time(NULL);
+        atomic_store(&seed, s);
+        srand(s);
     }
     return min +
            (int)((double)((double)(max) - (min) + 1.0) * (rand() / ((RAND_MAX) + 1.0)));
