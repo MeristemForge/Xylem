@@ -102,14 +102,14 @@ static void test_nonblocking(void) {
 
 static void test_tostring(void) {
     /* just verify it returns a non-NULL string */
-    char* s = platform_socket_tostring(0);
+    const char* s = platform_socket_tostring(0);
     ASSERT(s != NULL);
 }
 
 static void test_listen_dial(void) {
     /* listen on a random port */
     platform_sock_t srv = platform_socket_listen(
-        "127.0.0.1", "0", SOCK_STREAM, 0, 1, false);
+        "127.0.0.1", "0", SOCK_STREAM, false);
     ASSERT(srv != PLATFORM_SO_ERROR_INVALID_SOCKET);
 
     /* get the port the OS assigned */

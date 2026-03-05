@@ -281,7 +281,7 @@ int platform_socket_socketpair(
     return 0;
 }
 
-char* platform_socket_tostring(int error) {
+const char* platform_socket_tostring(int error) {
     static char buffer[512];
     FormatMessage(
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
@@ -310,10 +310,8 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
 platform_sock_t platform_socket_listen(
     const char* restrict host,
     const char* restrict port,
-    int  protocol,
-    int  idx,
-    int  cores,
-    bool nonblocking) {
+    int                  protocol,
+    bool                 nonblocking) {
     platform_sock_t  sock;
     struct addrinfo  hints;
     struct addrinfo* res;
@@ -344,9 +342,6 @@ platform_sock_t platform_socket_listen(
         if (protocol == SOCK_DGRAM) {
             _socket_disable_udp_connreset(sock);
             platform_socket_set_rcvbuf(sock, INT32_MAX);
-            if (nonblocking) {
-                platform_socket_set_rss(sock, (uint16_t)idx, cores);
-            }
         }
         if (bind(sock, rp->ai_addr, (int)rp->ai_addrlen) ==
             PLATFORM_SO_ERROR_SOCKET_ERROR) {

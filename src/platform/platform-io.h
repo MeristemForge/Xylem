@@ -30,5 +30,29 @@ _Pragma("once")
 #define PLATFORM_PATH_SEPARATOR '/'
 #endif
 
+/**
+ * @brief Open a file with the given mode (portable wrapper).
+ *
+ * Uses fopen_s on MSVC, fopen elsewhere.
+ *
+ * @param file  Path to the file.
+ * @param mode  Open mode string (e.g. "r", "wb").
+ *
+ * @return FILE pointer on success, NULL on failure.
+ */
 extern FILE* platform_io_fopen(const char* restrict file, const char* restrict mode);
-extern int   platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap);
+
+/**
+ * @brief Format a string into a buffer (portable wrapper).
+ *
+ * Uses vsnprintf_s on MSVC, vsnprintf elsewhere.
+ *
+ * @param str     Destination buffer.
+ * @param size    Size of the destination buffer in bytes.
+ * @param format  printf-style format string.
+ * @param ap      Variable argument list.
+ *
+ * @return Number of characters written (excluding null terminator),
+ *         or a negative value on error.
+ */
+extern int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap);

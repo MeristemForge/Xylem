@@ -72,34 +72,280 @@ typedef SSIZE_T ssize_t;
 #pragma comment(lib, "ws2_32.lib")
 #endif
 
-extern void    platform_socket_startup(void);
-extern void    platform_socket_cleanup(void);
-extern void    platform_socket_close(platform_sock_t sock);
+/**
+ * @brief Initialize the platform socket subsystem.
+ *
+ * On Windows, calls WSAStartup. No-op on Unix.
+ */
+extern void platform_socket_startup(void);
+
+/**
+ * @brief Clean up the platform socket subsystem.
+ *
+ * On Windows, calls WSACleanup. No-op on Unix.
+ */
+extern void platform_socket_cleanup(void);
+
+/**
+ * @brief Close a socket.
+ *
+ * @param sock  Socket to close.
+ */
+extern void platform_socket_close(platform_sock_t sock);
+
+/**
+ * @brief Receive data from a connected socket.
+ *
+ * @param sock  Connected socket.
+ * @param buf   Buffer to receive into.
+ * @param size  Maximum number of bytes to receive.
+ *
+ * @return Number of bytes received, 0 on connection closed, or -1 on error.
+ */
 extern ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size);
+
+/**
+ * @brief Send data on a connected socket.
+ *
+ * @param sock  Connected socket.
+ * @param buf   Buffer containing data to send.
+ * @param size  Number of bytes to send.
+ *
+ * @return Number of bytes sent, or -1 on error.
+ */
 extern ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size);
+
+/**
+ * @brief Receive exactly size bytes from a connected socket.
+ *
+ * Loops internally until all bytes are received or an error occurs.
+ *
+ * @param sock  Connected socket.
+ * @param buf   Buffer to receive into.
+ * @param size  Exact number of bytes to receive.
+ *
+ * @return Total bytes received, or -1 on error.
+ */
 extern ssize_t platform_socket_recvall(platform_sock_t sock, void* buf, int size);
+
+/**
+ * @brief Send exactly size bytes on a connected socket.
+ *
+ * Loops internally until all bytes are sent or an error occurs.
+ *
+ * @param sock  Connected socket.
+ * @param buf   Buffer containing data to send.
+ * @param size  Exact number of bytes to send.
+ *
+ * @return Total bytes sent, or -1 on error.
+ */
 extern ssize_t platform_socket_sendall(platform_sock_t sock, const void* buf, int size);
+
+/**
+ * @brief Receive data from an unconnected (datagram) socket.
+ *
+ * @param sock   Socket to receive from.
+ * @param buf    Buffer to receive into.
+ * @param size   Maximum number of bytes to receive.
+ * @param ss     Pointer to receive the sender address.
+ * @param sslen  Pointer to the address length (in/out).
+ *
+ * @return Number of bytes received, or -1 on error.
+ */
 extern ssize_t platform_socket_recvfrom(platform_sock_t sock, void* buf, int size, struct sockaddr_storage* ss, socklen_t* sslen);
+
+/**
+ * @brief Send data to a specific address (datagram socket).
+ *
+ * @param sock   Socket to send from.
+ * @param buf    Buffer containing data to send.
+ * @param size   Number of bytes to send.
+ * @param ss     Pointer to the destination address.
+ * @param sslen  Length of the destination address.
+ *
+ * @return Number of bytes sent, or -1 on error.
+ */
 extern ssize_t platform_socket_sendto(platform_sock_t sock, const void* buf, int size, struct sockaddr_storage* ss, socklen_t sslen);
-extern int     platform_socket_socketpair(int domain, int type, int protocol, platform_sock_t socks[2]);
-extern char*   platform_socket_tostring(int error);
+
+/**
+ * @brief Create a pair of connected sockets.
+ *
+ * On Unix uses socketpair(). On Windows emulates via loopback TCP.
+ *
+ * @param domain    Protocol family (ignored, hardcoded per platform).
+ * @param type      Socket type (e.g. SOCK_STREAM).
+ * @param protocol  Protocol (typically 0).
+ * @param socks     Array of two sockets to receive the pair.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_socket_socketpair(int domain, int type, int protocol, platform_sock_t socks[2]);
+
+/**
+ * @brief Convert a socket error code to a human-readable string.
+ *
+ * @param error  Platform-specific error code.
+ *
+ * @return Pointer to a static string describing the error.
+ */
+extern const char* platform_socket_tostring(int error);
+
+/**
+ * @brief Accept an incoming connection.
+ *
+ * @param sock         Listening socket.
+ * @param nonblocking  If true, set the accepted socket to non-blocking mode.
+ *
+ * @return Accepted socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
 extern platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking);
-extern platform_sock_t platform_socket_listen(const char* restrict host, const char* restrict port, int protocol, int idx, int cores, bool nonblocking);
+
+/**
+ * @brief Create a listening (server) socket.
+ *
+ * @param host         Bind address (e.g. "0.0.0.0", "::").
+ * @param port         Bind port (e.g. "8080").
+ * @param protocol     IPPROTO_TCP or IPPROTO_UDP.
+ * @param nonblocking  If true, set the socket to non-blocking mode.
+ *
+ * @return Listening socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
+extern platform_sock_t platform_socket_listen(const char* restrict host, const char* restrict port, int protocol, bool nonblocking);
+
+/**
+ * @brief Create a client socket and connect to a remote host.
+ *
+ * @param host         Remote host address.
+ * @param port         Remote port.
+ * @param protocol     IPPROTO_TCP or IPPROTO_UDP.
+ * @param connected    Pointer to receive connection status (true if connected
+ *                     immediately, false if in progress for non-blocking).
+ * @param nonblocking  If true, set the socket to non-blocking mode.
+ *
+ * @return Connected socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
 extern platform_sock_t platform_socket_dial(const char* restrict host, const char* restrict port, int protocol, bool* connected, bool nonblocking);
 
+/**
+ * @brief Set the receive timeout on a socket.
+ *
+ * @param sock        Socket to configure.
+ * @param timeout_ms  Timeout in milliseconds (0 to disable).
+ */
 extern void platform_socket_set_rcvtimeout(platform_sock_t sock, int timeout_ms);
-extern void platform_socket_set_sndtimeout(platform_sock_t sock, int timeout_ms);
-extern void platform_socket_set_rcvbuf(platform_sock_t sock, int val);
-extern void platform_socket_set_sndbuf(platform_sock_t sock, int val);
-extern void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores);
-extern int  platform_socket_get_addressfamily(platform_sock_t sock);
-extern int  platform_socket_get_socktype(platform_sock_t sock);
-extern int  platform_socket_get_lasterror(void);
 
+/**
+ * @brief Set the send timeout on a socket.
+ *
+ * @param sock        Socket to configure.
+ * @param timeout_ms  Timeout in milliseconds (0 to disable).
+ */
+extern void platform_socket_set_sndtimeout(platform_sock_t sock, int timeout_ms);
+
+/**
+ * @brief Set the receive buffer size (SO_RCVBUF).
+ *
+ * @param sock  Socket to configure.
+ * @param val   Buffer size in bytes.
+ */
+extern void platform_socket_set_rcvbuf(platform_sock_t sock, int val);
+
+/**
+ * @brief Set the send buffer size (SO_SNDBUF).
+ *
+ * @param sock  Socket to configure.
+ * @param val   Buffer size in bytes.
+ */
+extern void platform_socket_set_sndbuf(platform_sock_t sock, int val);
+
+/**
+ * @brief Configure RSS (Receive Side Scaling) on a socket.
+ *
+ * @param sock   Socket to configure.
+ * @param idx    RSS queue index.
+ * @param cores  Number of CPU cores.
+ */
+extern void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores);
+
+/**
+ * @brief Get the address family of a socket.
+ *
+ * @param sock  Socket to query.
+ *
+ * @return Address family (e.g. AF_INET, AF_INET6), or -1 on error.
+ */
+extern int platform_socket_get_addressfamily(platform_sock_t sock);
+
+/**
+ * @brief Get the socket type (SOCK_STREAM, SOCK_DGRAM, etc.).
+ *
+ * @param sock  Socket to query.
+ *
+ * @return Socket type, or -1 on error.
+ */
+extern int platform_socket_get_socktype(platform_sock_t sock);
+
+/**
+ * @brief Get the last socket error code.
+ *
+ * On Windows returns WSAGetLastError(), on Unix returns errno.
+ *
+ * @return Platform-specific error code.
+ */
+extern int platform_socket_get_lasterror(void);
+
+/**
+ * @brief Enable or disable TCP_NODELAY (Nagle's algorithm).
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_nodelay(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable IPV6_V6ONLY.
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_v6only(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable SO_KEEPALIVE.
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_keepalive(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable TCP_MAXSEG clamping.
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_maxseg(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable non-blocking mode on a socket.
+ *
+ * @param sock  Socket to configure.
+ * @param on    true for non-blocking, false for blocking.
+ */
 extern void platform_socket_enable_nonblocking(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable SO_REUSEADDR.
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_reuseaddr(platform_sock_t sock, bool on);
+
+/**
+ * @brief Enable or disable SO_REUSEPORT (Unix only, no-op on Windows).
+ *
+ * @param sock  Socket to configure.
+ * @param on    true to enable, false to disable.
+ */
 extern void platform_socket_enable_reuseport(platform_sock_t sock, bool on);

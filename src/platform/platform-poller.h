@@ -29,8 +29,6 @@ _Pragma("once")
 #include <sys/event.h>
 #endif
 
-#define PLATFORM_POLLER_CQE_NUM 64
-
 #if defined(__linux__) || defined(__APPLE__)
 typedef int platform_poller_sq_t;
 typedef int platform_poller_fd_t;
@@ -60,15 +58,12 @@ typedef struct platform_poller_cqe_s {
  * sqe pointer must be used for all operations on that fd. The caller
  * is responsible for the sqe lifetime (must outlive the registration).
  *
- * On Unix (epoll/kqueue), registrations are level-triggered: wait()
- * keeps reporting readiness until the condition clears.
+ * All platforms use one-shot semantics: wait() delivers at most one
+ * completion per sqe. The caller must call mod() to re-arm the poll
+ * after processing an event.
  *
- * On Windows (IOCP + AFD_POLL), each wait() delivers at most one
- * completion per sqe (one-shot). The caller must call mod() to
- * re-arm the poll after processing an event.
- *
- * Internal IOCP/AFD state is embedded in the sqe via an opaque
- * reserved area. Do not touch _reserved.
+ * On Windows, internal IOCP/AFD state is embedded in the sqe via an
+ * opaque reserved area. Do not touch _reserved.
  */
 typedef struct platform_poller_sqe_s {
     platform_poller_op_t op;
@@ -79,9 +74,65 @@ typedef struct platform_poller_sqe_s {
 #endif
 } platform_poller_sqe_t;
 
-extern void platform_poller_init(platform_poller_sq_t* sq);
+/**
+ * @brief Initialize a poller instance.
+ *
+ * @param sq  Pointer to the poller handle to initialize.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_poller_init(platform_poller_sq_t* sq);
+
+/**
+ * @brief Destroy a poller instance and release resources.
+ *
+ * @param sq  Pointer to the poller handle.
+ */
 extern void platform_poller_destroy(platform_poller_sq_t* sq);
-extern void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
-extern void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
-extern void platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
-extern int  platform_poller_wait(platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout);
+
+/**
+ * @brief Register a file descriptor with the poller.
+ *
+ * @param sq   Pointer to the poller handle.
+ * @param sqe  Submission entry with op/fd/ud set by the caller.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
+
+/**
+ * @brief Modify (re-arm) a registered file descriptor.
+ *
+ * Must be called after wait() delivers a completion to re-arm the poll.
+ *
+ * @param sq   Pointer to the poller handle.
+ * @param sqe  Submission entry with updated op.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
+
+/**
+ * @brief Remove a file descriptor from the poller.
+ *
+ * @param sq   Pointer to the poller handle.
+ * @param sqe  Submission entry identifying the fd to remove.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
+
+/**
+ * @brief Wait for I/O events.
+ *
+ * @param sq          Pointer to the poller handle.
+ * @param cqe         Array to receive completion entries.
+ * @param max_events  Maximum number of events to return (size of cqe array).
+ * @param timeout     Timeout in milliseconds (-1 for infinite, 0 for non-blocking).
+ *
+ * @return Number of ready events (>= 0), or -1 on error.
+ */
+extern int platform_poller_wait(platform_poller_sq_t* sq,
+                                platform_poller_cqe_t* cqe,
+                                int max_events,
+                                int timeout);

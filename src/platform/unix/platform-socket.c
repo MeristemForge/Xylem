@@ -108,8 +108,6 @@ platform_sock_t platform_socket_listen(
     const char* restrict host,
     const char* restrict port,
     int                  protocol,
-    int                  idx,
-    int                  cores,
     bool                 nonblocking) {
     platform_sock_t  sock;
     struct addrinfo  hints;
@@ -140,9 +138,6 @@ platform_sock_t platform_socket_listen(
         platform_socket_enable_reuseport(sock, true);
         if (protocol == SOCK_DGRAM) {
             platform_socket_set_rcvbuf(sock, INT32_MAX);
-            if (nonblocking) {
-                platform_socket_set_rss(sock, idx, cores);
-            }
         }
         if (bind(sock, rp->ai_addr, rp->ai_addrlen) ==
             PLATFORM_SO_ERROR_SOCKET_ERROR) {
@@ -339,7 +334,7 @@ int platform_socket_socketpair(
     return socketpair(AF_LOCAL, type, protocol, socks);
 }
 
-char* platform_socket_tostring(int error) {
+const char* platform_socket_tostring(int error) {
     return strerror(error);
 }
 

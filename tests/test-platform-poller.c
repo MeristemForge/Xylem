@@ -24,9 +24,11 @@
 #include "assert.h"
 #include <string.h>
 
+#define MAX_CQE 64
+
 static void test_init_destroy(void) {
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
     platform_poller_destroy(&sq);
 }
 
@@ -36,21 +38,21 @@ static void test_add_and_wait_readable(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag = 42;
     platform_poller_sqe_t sqe = {0};
     sqe.op = PLATFORM_POLLER_RD_OP;
     sqe.fd = pair[0];
     sqe.ud = &tag;
-    platform_poller_add(&sq, &sqe);
+    ASSERT(platform_poller_add(&sq, &sqe) == 0);
 
     /* write to pair[1] so pair[0] becomes readable */
     const char* msg = "hi";
     platform_socket_send(pair[1], msg, 2);
 
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
-    int n = platform_poller_wait(&sq, cqe, 1000);
+    platform_poller_cqe_t cqe[MAX_CQE];
+    int n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
     ASSERT(n >= 1);
     ASSERT(cqe[0].ud == &tag);
     ASSERT(cqe[0].op & PLATFORM_POLLER_RD_OP);
@@ -72,18 +74,18 @@ static void test_writable(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag = 99;
     platform_poller_sqe_t sqe = {0};
     sqe.op = PLATFORM_POLLER_WR_OP;
     sqe.fd = pair[0];
     sqe.ud = &tag;
-    platform_poller_add(&sq, &sqe);
+    ASSERT(platform_poller_add(&sq, &sqe) == 0);
 
     /* a fresh socket should be writable immediately */
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
-    int n = platform_poller_wait(&sq, cqe, 1000);
+    platform_poller_cqe_t cqe[MAX_CQE];
+    int n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
     ASSERT(n >= 1);
     ASSERT(cqe[0].ud == &tag);
     ASSERT(cqe[0].op & PLATFORM_POLLER_WR_OP);
@@ -101,18 +103,18 @@ static void test_readwrite(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag = 7;
     platform_poller_sqe_t sqe = {0};
     sqe.op = PLATFORM_POLLER_RW_OP;
     sqe.fd = pair[0];
     sqe.ud = &tag;
-    platform_poller_add(&sq, &sqe);
+    ASSERT(platform_poller_add(&sq, &sqe) == 0);
 
     /* first wait: socket is writable, expect WR (and maybe RD if data ready) */
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
-    int n = platform_poller_wait(&sq, cqe, 1000);
+    platform_poller_cqe_t cqe[MAX_CQE];
+    int n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
     ASSERT(n >= 1);
     ASSERT(cqe[0].ud == &tag);
     ASSERT(cqe[0].op & PLATFORM_POLLER_WR_OP);
@@ -126,7 +128,7 @@ static void test_readwrite(void) {
 
     platform_poller_op_t got = PLATFORM_POLLER_NO_OP;
     for (int attempt = 0; attempt < 5 && !(got & PLATFORM_POLLER_RD_OP); attempt++) {
-        n = platform_poller_wait(&sq, cqe, 1000);
+        n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
         for (int i = 0; i < n; i++) {
             if (cqe[i].ud == &tag) {
                 got |= cqe[i].op;
@@ -156,22 +158,22 @@ static void test_mod(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag = 55;
     platform_poller_sqe_t sqe = {0};
     sqe.op = PLATFORM_POLLER_RD_OP;
     sqe.fd = pair[0];
     sqe.ud = &tag;
-    platform_poller_add(&sq, &sqe);
+    ASSERT(platform_poller_add(&sq, &sqe) == 0);
 
     /* mod to write-only */
     sqe.op = PLATFORM_POLLER_WR_OP;
-    platform_poller_mod(&sq, &sqe);
+    ASSERT(platform_poller_mod(&sq, &sqe) == 0);
 
     /* socket should be writable */
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
-    int n = platform_poller_wait(&sq, cqe, 1000);
+    platform_poller_cqe_t cqe[MAX_CQE];
+    int n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
     ASSERT(n >= 1);
     ASSERT(cqe[0].ud == &tag);
     ASSERT(cqe[0].op & PLATFORM_POLLER_WR_OP);
@@ -189,18 +191,18 @@ static void test_timeout(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag = 1;
     platform_poller_sqe_t sqe = {0};
     sqe.op = PLATFORM_POLLER_RD_OP;
     sqe.fd = pair[0];
     sqe.ud = &tag;
-    platform_poller_add(&sq, &sqe);
+    ASSERT(platform_poller_add(&sq, &sqe) == 0);
 
     /* no data written -- should timeout and return 0 */
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
-    int n = platform_poller_wait(&sq, cqe, 50);
+    platform_poller_cqe_t cqe[MAX_CQE];
+    int n = platform_poller_wait(&sq, cqe, MAX_CQE, 50);
     ASSERT(n == 0);
 
     platform_poller_del(&sq, &sqe);
@@ -218,29 +220,29 @@ static void test_multiple_fds(void) {
     ASSERT(ret == 0);
 
     platform_poller_sq_t sq;
-    platform_poller_init(&sq);
+    ASSERT(platform_poller_init(&sq) == 0);
 
     int32_t tag1 = 1, tag2 = 2;
     platform_poller_sqe_t sqe1 = {0};
     sqe1.op = PLATFORM_POLLER_RD_OP;
     sqe1.fd = pair1[0];
     sqe1.ud = &tag1;
-    platform_poller_add(&sq, &sqe1);
+    ASSERT(platform_poller_add(&sq, &sqe1) == 0);
 
     platform_poller_sqe_t sqe2 = {0};
     sqe2.op = PLATFORM_POLLER_RD_OP;
     sqe2.fd = pair2[0];
     sqe2.ud = &tag2;
-    platform_poller_add(&sq, &sqe2);
+    ASSERT(platform_poller_add(&sq, &sqe2) == 0);
 
     /* write to both */
     platform_socket_send(pair1[1], "a", 1);
     platform_socket_send(pair2[1], "b", 1);
 
-    platform_poller_cqe_t cqe[PLATFORM_POLLER_CQE_NUM];
+    platform_poller_cqe_t cqe[MAX_CQE];
     bool found1 = false, found2 = false;
     for (int attempt = 0; attempt < 5 && !(found1 && found2); attempt++) {
-        int n = platform_poller_wait(&sq, cqe, 1000);
+        int n = platform_poller_wait(&sq, cqe, MAX_CQE, 1000);
         for (int i = 0; i < n; i++) {
             if (cqe[i].ud == &tag1) found1 = true;
             if (cqe[i].ud == &tag2) found2 = true;

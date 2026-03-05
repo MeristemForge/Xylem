@@ -20,6 +20,7 @@
  */
 
 #include "platform/platform-poller.h"
+#include <malloc.h>
 #include <string.h>
 
 /* ---------- undocumented NT / AFD types ---------- */
@@ -47,6 +48,7 @@ typedef struct _IO_STATUS_BLOCK {
 #define AFD_POLL_RECEIVE           0x0001
 #define AFD_POLL_RECEIVE_EXPEDITED 0x0002
 #define AFD_POLL_SEND              0x0004
+
 #define AFD_POLL_DISCONNECT        0x0008
 #define AFD_POLL_ABORT             0x0010
 #define AFD_POLL_LOCAL_CLOSE       0x0020
@@ -178,27 +180,28 @@ static void _poller_cancel_poll(platform_poller_sqe_t* sqe) {
 
 /* ---------- public API ---------- */
 
-void platform_poller_init(platform_poller_sq_t* sq) {
+int platform_poller_init(platform_poller_sq_t* sq) {
     if (!_NtDeviceIoControlFile) {
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         _NtDeviceIoControlFile = (_NtDeviceIoControlFile_fn)
             GetProcAddress(ntdll, "NtDeviceIoControlFile");
     }
     *sq = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    return (*sq == NULL) ? -1 : 0;
 }
 
 void platform_poller_destroy(platform_poller_sq_t* sq) {
     CloseHandle(*sq);
 }
 
-void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     _poller_state_t* st = _poller_get_state(sqe);
     memset(st, 0, sizeof(_poller_state_t));
     st->interest = sqe->op;
 
     st->peer_sock = _poller_create_peer(sqe->fd);
     if (st->peer_sock == INVALID_SOCKET) {
-        return;
+        return -1;
     }
 
     HANDLE h = CreateIoCompletionPort(
@@ -206,7 +209,7 @@ void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     if (!h) {
         closesocket(st->peer_sock);
         st->peer_sock = INVALID_SOCKET;
-        return;
+        return -1;
     }
 
     SetFileCompletionNotificationModes(
@@ -214,18 +217,20 @@ void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         FILE_SKIP_SET_EVENT_ON_HANDLE);
 
     _poller_submit_poll(sqe);
+    return 0;
 }
 
-void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     (void)sq;
     _poller_state_t* st = _poller_get_state(sqe);
 
     _poller_cancel_poll(sqe);
     st->interest = sqe->op;
     _poller_submit_poll(sqe);
+    return 0;
 }
 
-void platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     (void)sq;
     _poller_state_t* st = _poller_get_state(sqe);
 
@@ -235,27 +240,32 @@ void platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         closesocket(st->peer_sock);
         st->peer_sock = INVALID_SOCKET;
     }
+    return 0;
 }
 
 int platform_poller_wait(
-    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout) {
-    OVERLAPPED_ENTRY entries[PLATFORM_POLLER_CQE_NUM];
-    ULONG            count = 0;
+    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe,
+    int max_events, int timeout) {
+    OVERLAPPED_ENTRY* entries =
+        (OVERLAPPED_ENTRY*)_malloca(sizeof(OVERLAPPED_ENTRY) * max_events);
+    ULONG count = 0;
 
-    memset(cqe, 0, sizeof(platform_poller_cqe_t) * PLATFORM_POLLER_CQE_NUM);
+    memset(cqe, 0, sizeof(platform_poller_cqe_t) * max_events);
 
     BOOL ok = GetQueuedCompletionStatusEx(
-        *sq, entries, PLATFORM_POLLER_CQE_NUM, &count, (DWORD)timeout, FALSE);
+        *sq, entries, (ULONG)max_events, &count, (DWORD)timeout, FALSE);
     if (!ok) {
-        return 0;
+        DWORD err = GetLastError();
+        _freea(entries);
+        if (err == WAIT_TIMEOUT) {
+            return 0;
+        }
+        return -1;
     }
 
-    /*
-     * NtDeviceIoControlFile delivers ApcContext as lpOverlapped in the
-     * OVERLAPPED_ENTRY, so entries[i].lpOverlapped == sqe pointer.
-     */
-    ULONG_PTR keys[PLATFORM_POLLER_CQE_NUM];
-    int       out = 0;
+    ULONG_PTR* keys =
+        (ULONG_PTR*)_malloca(sizeof(ULONG_PTR) * max_events);
+    int out = 0;
 
     for (ULONG i = 0; i < count; i++) {
         platform_poller_sqe_t* completed_sqe =
@@ -298,5 +308,8 @@ int platform_poller_wait(
             out++;
         }
     }
+
+    _freea(keys);
+    _freea(entries);
     return out;
 }

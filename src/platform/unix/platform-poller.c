@@ -29,12 +29,14 @@ void platform_poller_destroy(platform_poller_sq_t* sq) {
 }
 
 #if defined(__linux__)
-void platform_poller_init(platform_poller_sq_t* sq) {
+int platform_poller_init(platform_poller_sq_t* sq) {
     *sq = epoll_create1(0);
+    return (*sq == -1) ? -1 : 0;
 }
 
-void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct epoll_event ee = {0};
+    ee.events = EPOLLET | EPOLLONESHOT;
 
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
         ee.events |= EPOLLIN;
@@ -43,11 +45,12 @@ void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         ee.events |= EPOLLOUT;
     }
     ee.data.ptr = sqe->ud;
-    epoll_ctl(*sq, EPOLL_CTL_ADD, sqe->fd, &ee);
+    return epoll_ctl(*sq, EPOLL_CTL_ADD, sqe->fd, &ee);
 }
 
-void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct epoll_event ee = {0};
+    ee.events = EPOLLET | EPOLLONESHOT;
 
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
         ee.events |= EPOLLIN;
@@ -56,24 +59,25 @@ void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         ee.events |= EPOLLOUT;
     }
     ee.data.ptr = sqe->ud;
-    epoll_ctl(*sq, EPOLL_CTL_MOD, sqe->fd, &ee);
+    return epoll_ctl(*sq, EPOLL_CTL_MOD, sqe->fd, &ee);
 }
 
-void platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
-    epoll_ctl(*sq, EPOLL_CTL_DEL, sqe->fd, NULL);
+int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+    return epoll_ctl(*sq, EPOLL_CTL_DEL, sqe->fd, NULL);
 }
 
 int platform_poller_wait(
-    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout) {
-    struct epoll_event events[PLATFORM_POLLER_CQE_NUM] = {0};
-    memset(cqe, 0, sizeof(platform_poller_cqe_t) * PLATFORM_POLLER_CQE_NUM);
+    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe,
+    int max_events, int timeout) {
+    struct epoll_event events[max_events];
+    memset(cqe, 0, sizeof(platform_poller_cqe_t) * max_events);
 
     int n = 0;
     do {
-        n = epoll_wait(*sq, events, PLATFORM_POLLER_CQE_NUM, timeout);
+        n = epoll_wait(*sq, events, max_events, timeout);
     } while (n == -1 && errno == EINTR);
     if (n < 0) {
-        return 0;
+        return -1;
     }
     for (int i = 0; i < n; i++) {
         cqe[i].ud = events[i].data.ptr;
@@ -89,27 +93,35 @@ int platform_poller_wait(
 #endif
 
 #if defined(__APPLE__)
-void platform_poller_init(platform_poller_sq_t* sq) {
+int platform_poller_init(platform_poller_sq_t* sq) {
     *sq = kqueue();
+    return (*sq == -1) ? -1 : 0;
 }
 
-void platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
+    int           ret = 0;
 
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD, 0, 0, sqe->ud);
-        kevent(*sq, &ke, 1, NULL, 0, NULL);
+        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, sqe->ud);
+        if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
+            ret = -1;
+        }
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD, 0, 0, sqe->ud);
-        kevent(*sq, &ke, 1, NULL, 0, NULL);
+        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, sqe->ud);
+        if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
+            ret = -1;
+        }
     }
+    return ret;
 }
 
-void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
+    int           ret = 0;
 
-    /* remove filters no longer wanted, then add wanted ones */
+    /* delete filters no longer wanted */
     if (!(sqe->op & PLATFORM_POLLER_RD_OP)) {
         EV_SET(&ke, sqe->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         kevent(*sq, &ke, 1, NULL, 0, NULL);
@@ -118,47 +130,56 @@ void platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
         kevent(*sq, &ke, 1, NULL, 0, NULL);
     }
+    /* add/re-arm wanted filters */
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD, 0, 0, sqe->ud);
-        kevent(*sq, &ke, 1, NULL, 0, NULL);
+        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, sqe->ud);
+        if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
+            ret = -1;
+        }
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD, 0, 0, sqe->ud);
-        kevent(*sq, &ke, 1, NULL, 0, NULL);
+        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, sqe->ud);
+        if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
+            ret = -1;
+        }
     }
+    return ret;
 }
 
-void platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
+int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
+    int           ret = 0;
 
     EV_SET(&ke, sqe->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
     kevent(*sq, &ke, 1, NULL, 0, NULL);
 
     EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
     kevent(*sq, &ke, 1, NULL, 0, NULL);
+
+    return ret;
 }
 
 int platform_poller_wait(
-    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout) {
-    struct kevent events[PLATFORM_POLLER_CQE_NUM];
+    platform_poller_sq_t* sq, platform_poller_cqe_t* cqe,
+    int max_events, int timeout) {
+    struct kevent events[max_events];
 
-    memset(cqe, 0, sizeof(platform_poller_cqe_t) * PLATFORM_POLLER_CQE_NUM);
+    memset(cqe, 0, sizeof(platform_poller_cqe_t) * max_events);
     struct timespec ts = {0, 0};
     ts.tv_sec  = (timeout / 1000UL);
     ts.tv_nsec = ((timeout % 1000UL) * 1000000UL);
 
-    int n = kevent(*sq, NULL, 0, events, PLATFORM_POLLER_CQE_NUM, &ts);
+    int n = kevent(*sq, NULL, 0, events, max_events, &ts);
     if (n < 0) {
-        return 0;
+        return -1;
     }
 
     /*
      * kqueue returns separate events for READ and WRITE on the same fd.
      * Merge them into a single cqe entry keyed by ident (fd) to match
-     * epoll behavior. A parallel idents array tracks which fd each cqe
-     * slot corresponds to.
+     * epoll behavior.
      */
-    uintptr_t idents[PLATFORM_POLLER_CQE_NUM];
+    uintptr_t idents[max_events];
     int       out = 0;
     for (int i = 0; i < n; i++) {
         int found = -1;

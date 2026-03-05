@@ -22,19 +22,16 @@
 #include "xylem.h"
 
 typedef struct {
-    xylem_heap_node_t node;
-    void*             data;
+    xylem_heap_node_t     node;
+    void*                 data;
+    xylem_xheap_cmp_fn_t  cmp;
 } _xheap_node_t;
-
-/* File-scope cmp pointer, set before each intrusive heap operation. */
-xylem_xheap_cmp_fn_t _xheap_active_cmp = NULL;
 
 static int _xheap_cmp_bridge(
     const xylem_heap_node_t* child, const xylem_heap_node_t* parent) {
-    void* a = xylem_heap_entry((xylem_heap_node_t*)child, _xheap_node_t, node)->data;
-    void* b = xylem_heap_entry((xylem_heap_node_t*)parent, _xheap_node_t, node)->data;
-    extern xylem_xheap_cmp_fn_t _xheap_active_cmp;
-    return _xheap_active_cmp(a, b);
+    _xheap_node_t* a = xylem_heap_entry((xylem_heap_node_t*)child, _xheap_node_t, node);
+    _xheap_node_t* b = xylem_heap_entry((xylem_heap_node_t*)parent, _xheap_node_t, node);
+    return a->cmp(a->data, b->data);
 }
 
 void xylem_xheap_init(xylem_xheap_t* heap, xylem_xheap_cmp_fn_t cmp) {
@@ -54,7 +51,7 @@ int xylem_xheap_insert(xylem_xheap_t* heap, void* data) {
     _xheap_node_t* n = malloc(sizeof(_xheap_node_t));
     if (!n) return -1;
     n->data = data;
-    _xheap_active_cmp = heap->cmp;
+    n->cmp  = heap->cmp;
     xylem_heap_insert(&heap->heap, &n->node);
     return 0;
 }
@@ -67,7 +64,6 @@ void* xylem_xheap_root(xylem_xheap_t* heap) {
 void xylem_xheap_dequeue(xylem_xheap_t* heap) {
     xylem_heap_node_t* n = xylem_heap_root(&heap->heap);
     if (!n) return;
-    _xheap_active_cmp = heap->cmp;
     xylem_heap_dequeue(&heap->heap);
     free(xylem_heap_entry(n, _xheap_node_t, node));
 }

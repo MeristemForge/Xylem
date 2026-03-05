@@ -36,12 +36,39 @@ typedef pid_t platform_pid_t;
 typedef uint64_t platform_tid_t;
 typedef pid_t    platform_pid_t;
 #elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 typedef DWORD platform_tid_t;
 typedef DWORD platform_pid_t;
 #endif
 
+/**
+ * @brief Get the current thread ID.
+ *
+ * @return Platform-specific thread identifier.
+ */
 extern platform_tid_t platform_info_gettid(void);
+
+/**
+ * @brief Get the current process ID.
+ *
+ * @return Platform-specific process identifier.
+ */
 extern platform_pid_t platform_info_getpid(void);
-extern int            platform_info_getcpus(void);
-extern void           platform_info_getlocaltime(const time_t* restrict time, struct tm* restrict tm);
+
+/**
+ * @brief Get the number of logical CPU cores.
+ *
+ * @return Number of available logical processors.
+ */
+extern int platform_info_getcpus(void);
+
+/**
+ * @brief Convert a time_t value to local time.
+ *
+ * @param time  Pointer to the calendar time to convert.
+ * @param tm    Pointer to the struct tm to receive the result.
+ */
+extern void platform_info_getlocaltime(const time_t* restrict time, struct tm* restrict tm);

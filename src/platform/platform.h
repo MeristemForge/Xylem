@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-/* platform-socket.h must come before platform-info.h on Windows
- * to avoid winsock.h vs winsock2.h redefinition conflicts. */
-#include "platform-socket.h"
 #include "platform-info.h"
 #include "platform-io.h"
+#include "platform-socket.h"
