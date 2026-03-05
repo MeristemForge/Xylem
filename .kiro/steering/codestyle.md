@@ -1,3 +1,8 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "**/*.{c,h}"
+---
+
 # Code Style
 
 ## Naming

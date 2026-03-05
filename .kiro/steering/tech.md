@@ -1,3 +1,8 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "**/CMakeLists.txt,**/*.cmake"
+---
+
 # Tech Stack & Build
 
 ## Language & Standard
@@ -8,7 +13,7 @@
 
 ## Build System
 
-- CMake ≥ 3.16
+- CMake >= 3.16
 - Output directory: `out/`
 - Custom helpers: `cmake/xylem-utils.cmake`
 

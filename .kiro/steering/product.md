@@ -1,3 +1,7 @@
+---
+inclusion: manual
+---
+
 # Xylem
 
 Xylem is a pure C utility library that supplements (not replaces) the C11 standard. It provides cross-platform, reusable data structures and algorithms as a static or shared library.

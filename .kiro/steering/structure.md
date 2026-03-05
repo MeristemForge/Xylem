@@ -1,3 +1,7 @@
+---
+inclusion: manual
+---
+
 # Project Structure
 
 ```
