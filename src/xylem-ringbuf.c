@@ -95,20 +95,6 @@ static inline void _ringbuffer_internal_read(
     }
 }
 
-static inline uint32_t
-_ringbuffer_internal_read_peek(xylem_ringbuf_t* ring, void* buf, uint32_t len) {
-    uint64_t current_len = ring->wpos - ring->rpos;
-    if (current_len > UINT32_MAX) {
-        current_len = UINT32_MAX;
-    }
-    uint32_t actual_len = (uint32_t)current_len;
-    if (len > actual_len) {
-        len = actual_len;
-    }
-    _ringbuffer_internal_read(ring, buf, len, ring->rpos);
-    return len;
-}
-
 xylem_ringbuf_t* xylem_ringbuf_create(size_t esize, size_t bufsize) {
     if (esize == 0 || bufsize < esize) {
         return NULL;

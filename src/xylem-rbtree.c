@@ -306,7 +306,7 @@ xylem_rbtree_insert(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
 
 void xylem_rbtree_erase(xylem_rbtree_t* tree, xylem_rbtree_node_t* node) {
     xylem_rbtree_node_t *child, *parent;
-    int                  color;
+    char                 color;
 
     if (!node->left) {
         child = node->right;

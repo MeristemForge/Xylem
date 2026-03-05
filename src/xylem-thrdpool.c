@@ -73,8 +73,15 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
         return NULL;
     }
     xylem_queue_init(&pool->queue);
-    mtx_init(&pool->mtx, mtx_plain);
-    cnd_init(&pool->cnd);
+    if (mtx_init(&pool->mtx, mtx_plain) != thrd_success) {
+        free(pool);
+        return NULL;
+    }
+    if (cnd_init(&pool->cnd) != thrd_success) {
+        mtx_destroy(&pool->mtx);
+        free(pool);
+        return NULL;
+    }
 
     pool->thrdcnt = 0;
     pool->running = true;

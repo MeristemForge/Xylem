@@ -23,7 +23,7 @@ _Pragma("once")
 
 #include "xylem.h"
 
-#define xylem_heap_entry(x, t, m) ((t *)((char *)(x) - offsetof(t, m)))
+#define xylem_heap_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
 
 typedef struct xylem_heap_s      xylem_heap_t;
 typedef struct xylem_heap_node_s xylem_heap_node_t;
