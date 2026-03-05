@@ -19,6 +19,8 @@
  *  IN THE SOFTWARE.
  */
 
+_Pragma("once")
+
 #include <stdio.h>
 #include <stdlib.h>
 

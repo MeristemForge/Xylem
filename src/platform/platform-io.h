@@ -33,7 +33,7 @@ _Pragma("once")
 /**
  * @brief Open a file with the given mode (portable wrapper).
  *
- * Uses fopen_s on MSVC, fopen elsewhere.
+ * Uses _fsopen on MSVC for shared access, fopen elsewhere.
  *
  * @param file  Path to the file.
  * @param mode  Open mode string (e.g. "r", "wb").
@@ -45,7 +45,7 @@ extern FILE* platform_io_fopen(const char* restrict file, const char* restrict m
 /**
  * @brief Format a string into a buffer (portable wrapper).
  *
- * Uses vsnprintf_s on MSVC, vsnprintf elsewhere.
+ * Uses vsnprintf on all platforms.
  *
  * @param str     Destination buffer.
  * @param size    Size of the destination buffer in bytes.

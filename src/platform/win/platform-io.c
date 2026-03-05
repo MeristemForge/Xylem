@@ -27,5 +27,5 @@ FILE* platform_io_fopen(const char* restrict file, const char* restrict mode) {
 }
 
 int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap) {
-    return vsprintf_s(str, size, format, ap);
+    return vsnprintf(str, size, format, ap);
 }

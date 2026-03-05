@@ -33,26 +33,26 @@ include_directories(
 )
 
 set(SRCS
-	src/xylem-list.c
-	src/xylem-heap.c
-	src/xylem-sha1.c
-	src/xylem-queue.c
-	src/xylem-utils.c
-	src/xylem-stack.c
-	src/xylem-bswap.c
-	src/xylem-rbtree.c
-	src/xylem-varint.c
-	src/xylem-sha256.c
 	src/xylem-base64.c
-	src/xylem-ringbuf.c
+	src/xylem-bswap.c
+	src/xylem-heap.c
+	src/xylem-list.c
 	src/xylem-logger.c
+	src/xylem-queue.c
+	src/xylem-rbtree.c
+	src/xylem-ringbuf.c
+	src/xylem-sha1.c
+	src/xylem-sha256.c
+	src/xylem-stack.c
 	src/xylem-thrdpool.c
+	src/xylem-utils.c
+	src/xylem-varint.c
 	src/xylem-waitgroup.c
-	src/xylem-xlist.c
-	src/xylem-xstack.c
-	src/xylem-xqueue.c
 	src/xylem-xheap.c
+	src/xylem-xlist.c
+	src/xylem-xqueue.c
 	src/xylem-xrbtree.c
+	src/xylem-xstack.c
 )
 
 if(WIN32)
