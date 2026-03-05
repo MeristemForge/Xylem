@@ -390,6 +390,7 @@ platform_sock_t platform_socket_dial(
     if (getaddrinfo(host, port, &hints, &res)) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
+    *connected = false;
     for (rp = res; rp != NULL; rp = rp->ai_next) {
         sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
@@ -410,12 +411,9 @@ platform_sock_t platform_socket_dial(
                 platform_socket_close(sock);
                 continue;
             }
-            if (WSAGetLastError() == WSAEWOULDBLOCK) {
-                break;
-            }
-        } else {
-            *connected = true;
+            break;
         }
+        *connected = true;
         break;
     }
     if (rp == NULL) {

@@ -59,8 +59,8 @@ if(WIN32)
 	list(APPEND SRCS
 		src/platform/win/platform-info.c
 		src/platform/win/platform-io.c
-		src/platform/win/platform-socket.c
 		src/platform/win/platform-poller.c
+		src/platform/win/platform-socket.c
 	)
 endif()
 
@@ -68,8 +68,8 @@ if(UNIX)
 	list(APPEND SRCS
 		src/platform/unix/platform-info.c
 		src/platform/unix/platform-io.c
-		src/platform/unix/platform-socket.c
 		src/platform/unix/platform-poller.c
+		src/platform/unix/platform-socket.c
 	)
 endif()
 

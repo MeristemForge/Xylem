@@ -27,13 +27,13 @@ uint64_t xylem_utils_getnow(xylem_time_precision_t precision) {
 
     switch (precision) {
     case XYLEM_TIME_PRECISION_SEC:
-        return tsc.tv_sec;
+        return (uint64_t)tsc.tv_sec;
     case XYLEM_TIME_PRECISION_MSEC:
-        return tsc.tv_sec * 1000ULL + tsc.tv_nsec / 1000000ULL;
+        return (uint64_t)tsc.tv_sec * 1000ULL + (uint64_t)tsc.tv_nsec / 1000000ULL;
     case XYLEM_TIME_PRECISION_USEC:
-        return tsc.tv_sec * 1000000ULL + tsc.tv_nsec / 1000ULL;
+        return (uint64_t)tsc.tv_sec * 1000000ULL + (uint64_t)tsc.tv_nsec / 1000ULL;
     case XYLEM_TIME_PRECISION_NSEC:
-        return tsc.tv_sec * 1000000000ULL + tsc.tv_nsec;
+        return (uint64_t)tsc.tv_sec * 1000000000ULL + (uint64_t)tsc.tv_nsec;
     default:
         return UINT64_MAX;
     }

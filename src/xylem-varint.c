@@ -66,10 +66,10 @@ bool xylem_varint_decode(
             return false;
         }
         uint8_t byte = buf[p++];
-        if (shift >= 64) {
+        if (shift == 63 && (byte & 0x7F) > 1) {
             return false;
         }
-        if (shift == 63 && (byte & 0x7F) > 1) {
+        if (shift > 63) {
             return false;
         }
         value |= ((uint64_t)(byte & 0x7F)) << shift;
@@ -78,9 +78,6 @@ bool xylem_varint_decode(
             break;
         }
         shift += 7;
-        if (shift > 63) {
-            return false;
-        }
     }
     *pos = p;
     if (out_value) {
