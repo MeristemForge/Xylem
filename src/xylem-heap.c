@@ -205,7 +205,7 @@ void xylem_heap_dequeue(xylem_heap_t* heap) {
 }
 
 bool xylem_heap_empty(xylem_heap_t* heap) {
-    return heap->nelts == 0 && heap->root == NULL;
+    return heap->nelts == 0;
 }
 
 xylem_heap_node_t* xylem_heap_root(xylem_heap_t* heap) {

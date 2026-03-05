@@ -73,7 +73,7 @@ static int _base64_encode(
     uint32_t val = 0;
 
     while (slen >= 3) {
-        val = src[0] << 16 | src[1] << 8 | src[2];
+        val = (uint32_t)src[0] << 16 | (uint32_t)src[1] << 8 | src[2];
 
         *tmp++ = table[val >> 18];
         *tmp++ = table[(val >> 12) & 0x3f];
@@ -86,7 +86,7 @@ static int _base64_encode(
 
     switch (slen) {
     case 2:
-        val = src[0] << 16 | src[1] << 8;
+        val = (uint32_t)src[0] << 16 | (uint32_t)src[1] << 8;
 
         *tmp++ = table[val >> 18];
         *tmp++ = table[(val >> 12) & 0x3f];
@@ -97,7 +97,7 @@ static int _base64_encode(
         }
         break;
     case 1:
-        val = src[0] << 16;
+        val = (uint32_t)src[0] << 16;
 
         *tmp++ = table[val >> 18];
         *tmp++ = table[(val >> 12) & 0x3f];

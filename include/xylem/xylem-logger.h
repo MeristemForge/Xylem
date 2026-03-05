@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include <stdbool.h>
+#include "xylem.h"
 
 #define xylem_logd(...)    xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
 #define xylem_logi(...)    xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO,  __FILE__, __LINE__, __VA_ARGS__)

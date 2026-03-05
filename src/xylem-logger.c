@@ -184,8 +184,7 @@ static void _async_log(
 
 /* call_once callback for initialization. */
 static void _logger_do_init(void) {
-    if (_init_level > XYLEM_LOGGER_LEVEL_ERROR ||
-        _init_level < XYLEM_LOGGER_LEVEL_DEBUG) {
+    if (_init_level > XYLEM_LOGGER_LEVEL_ERROR) {
         _logger.level = XYLEM_LOGGER_LEVEL_INFO;
     } else {
         _logger.level = _init_level;
