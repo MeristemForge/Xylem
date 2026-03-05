@@ -248,6 +248,9 @@ int platform_poller_wait(
     int max_events, int timeout) {
     OVERLAPPED_ENTRY* entries =
         (OVERLAPPED_ENTRY*)malloc(sizeof(OVERLAPPED_ENTRY) * max_events);
+    if (!entries) {
+        return -1;
+    }
     ULONG count = 0;
 
     memset(cqe, 0, sizeof(platform_poller_cqe_t) * max_events);

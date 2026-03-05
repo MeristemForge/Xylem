@@ -29,7 +29,7 @@ static atomic_flag initialized = ATOMIC_FLAG_INIT;
 
 static inline void _socket_disable_udp_connreset(platform_sock_t sock) {
     int   on = 0;
-    DWORD noused;
+    DWORD unused;
     WSAIoctl(
         sock,
         SIO_UDP_CONNRESET,
@@ -37,7 +37,7 @@ static inline void _socket_disable_udp_connreset(platform_sock_t sock) {
         sizeof(int),
         NULL,
         0,
-        &noused,
+        &unused,
         NULL,
         NULL);
 }
@@ -70,7 +70,7 @@ void platform_socket_enable_v6only(platform_sock_t sock, bool on) {
 
 void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores) {
     (void)(cores);
-    DWORD nouse;
+    DWORD unused;
     WSAIoctl(
         sock,
         SIO_CPU_AFFINITY,
@@ -78,7 +78,7 @@ void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores) {
         sizeof(uint16_t),
         NULL,
         0,
-        &nouse,
+        &unused,
         NULL,
         NULL);
 }
@@ -337,10 +337,8 @@ platform_sock_t platform_socket_listen(
         if (rp->ai_family == AF_INET6) {
             platform_socket_enable_v6only(sock, false);
         }
-        if (protocol == SOCK_STREAM) {
-            platform_socket_enable_reuseaddr(sock, true);
-            platform_socket_enable_reuseport(sock, true);
-        }
+        platform_socket_enable_reuseaddr(sock, true);
+        platform_socket_enable_reuseport(sock, true);
         if (protocol == SOCK_DGRAM) {
             _socket_disable_udp_connreset(sock);
             platform_socket_set_rcvbuf(sock, INT32_MAX);
