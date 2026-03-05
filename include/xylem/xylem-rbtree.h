@@ -23,7 +23,7 @@ _Pragma("once")
 
 #include "xylem.h"
 
-#define xylem_rbtree_entry(x, t, m) ((t*)((char*)(x)-offsetof(t, m)))
+#define xylem_rbtree_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
 
 typedef struct xylem_rbtree_node_s xylem_rbtree_node_t;
 typedef struct xylem_rbtree_s      xylem_rbtree_t;

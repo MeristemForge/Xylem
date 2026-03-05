@@ -152,18 +152,14 @@ void xylem_sha256_final(xylem_sha256_t* ctx, uint8_t digest[32]) {
     ctx->datalen = orig_datalen + 1;
 
     if (orig_datalen < 56) {
-        while (ctx->datalen < 56) {
-            ctx->data[ctx->datalen++] = 0;
-        }
+        memset(ctx->data + ctx->datalen, 0, 56 - ctx->datalen);
+        ctx->datalen = 56;
     } else {
-        while (ctx->datalen < 64) {
-            ctx->data[ctx->datalen++] = 0;
-        }
+        memset(ctx->data + ctx->datalen, 0, 64 - ctx->datalen);
+        ctx->datalen = 64;
         _sha256_transform(ctx, ctx->data);
-        ctx->datalen = 0;
-        while (ctx->datalen < 56) {
-            ctx->data[ctx->datalen++] = 0;
-        }
+        memset(ctx->data, 0, 56);
+        ctx->datalen = 56;
     }
     ctx->data[56] = (uint8_t)(total_bitlen >> 56);
     ctx->data[57] = (uint8_t)(total_bitlen >> 48);

@@ -196,8 +196,8 @@ xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     }
     uint32_t count32 = (uint32_t)entry_count;
 
-    uint32_t actual = _ringbuffer_internal_read_peek(ring, buf, count32);
-    ring->rpos += actual;
+    _ringbuffer_internal_read(ring, buf, count32, ring->rpos);
+    ring->rpos += count32;
 
-    return (size_t)actual;
+    return (size_t)count32;
 }

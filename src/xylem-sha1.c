@@ -144,18 +144,14 @@ void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
     ctx->datalen = orig_datalen + 1;
 
     if (orig_datalen < 56) {
-        while (ctx->datalen < 56) {
-            ctx->buffer[ctx->datalen++] = 0;
-        }
+        memset(ctx->buffer + ctx->datalen, 0, 56 - ctx->datalen);
+        ctx->datalen = 56;
     } else {
-        while (ctx->datalen < 64) {
-            ctx->buffer[ctx->datalen++] = 0;
-        }
+        memset(ctx->buffer + ctx->datalen, 0, 64 - ctx->datalen);
+        ctx->datalen = 64;
         _sha1_transform(ctx->state, ctx->buffer);
-        ctx->datalen = 0;
-        while (ctx->datalen < 56) {
-            ctx->buffer[ctx->datalen++] = 0;
-        }
+        memset(ctx->buffer, 0, 56);
+        ctx->datalen = 56;
     }
 
     ctx->buffer[56] = (uint8_t)(total_bitlen >> 56);

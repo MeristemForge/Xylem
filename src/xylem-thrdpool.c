@@ -21,9 +21,9 @@
 
 #include "xylem.h"
 
-typedef struct thrdpool_job_s thrdpool_job_t;
+typedef struct _thrdpool_job_s _thrdpool_job_t;
 
-struct thrdpool_job_s {
+struct _thrdpool_job_s {
     void (*routine)(void*);
     void*              arg;
     xylem_queue_node_t n;
@@ -42,7 +42,7 @@ static int _thrdpool_thrdfunc(void* arg) {
     xylem_thrdpool_t* pool = arg;
 
     while (true) {
-        thrdpool_job_t* job = NULL;
+        _thrdpool_job_t* job = NULL;
 
         mtx_lock(&pool->mtx);
         while (pool->running && xylem_queue_empty(&pool->queue)) {
@@ -55,7 +55,7 @@ static int _thrdpool_thrdfunc(void* arg) {
         }
         xylem_queue_node_t* node = xylem_queue_dequeue(&pool->queue);
         if (node) {
-            job = xylem_queue_entry(node, thrdpool_job_t, n);
+            job = xylem_queue_entry(node, _thrdpool_job_t, n);
         }
         mtx_unlock(&pool->mtx);
 
@@ -95,7 +95,7 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
 
 void xylem_thrdpool_post(
     xylem_thrdpool_t* restrict pool, void (*routine)(void*), void* arg) {
-    thrdpool_job_t* job = malloc(sizeof(thrdpool_job_t));
+    _thrdpool_job_t* job = malloc(sizeof(_thrdpool_job_t));
     if (job) {
         job->routine = routine;
         job->arg = arg;
@@ -119,7 +119,7 @@ void xylem_thrdpool_destroy(xylem_thrdpool_t* restrict pool) {
     while (!xylem_queue_empty(&pool->queue)) {
         xylem_queue_node_t* node = xylem_queue_dequeue(&pool->queue);
         if (node) {
-            free(xylem_queue_entry(node, thrdpool_job_t, n));
+            free(xylem_queue_entry(node, _thrdpool_job_t, n));
         }
     }
     mtx_destroy(&pool->mtx);

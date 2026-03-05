@@ -137,7 +137,7 @@ static int _base64_decode(
             if (!padding || slen != 4 || src[3] != '=') {
                 return -1;
             }
-            padding = 0;
+            padding = false;
             slen = src[2] == '=' ? 2 : 3;
             break;
         }
