@@ -87,7 +87,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
     if (!on) {
         return;
     }
-    int val = on ? 1 : 0;
+    int val = 1;
     int d = 60;
     int i = 1;  /* 1 second; same as default on win32 */
     int c = 10; /* 10 retries; same as hardcoded on win32 since vista */

@@ -20,7 +20,6 @@
  */
 
 #include "platform/platform.h"
-#include "platform/platform-poller.h"
 #include "assert.h"
 #include <string.h>
 
