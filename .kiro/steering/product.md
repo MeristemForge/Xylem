@@ -40,6 +40,12 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **thrdpool** | Thread pool | ✅ |
 | **logger** | Leveled logging with optional async output | ✅ |
 
+### Event Loop
+
+| Module | Description | Status |
+|--------|-------------|--------|
+| **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | 🚧 |
+
 ### Utilities
 
 | Module | Description |

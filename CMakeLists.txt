@@ -45,6 +45,7 @@ set(SRCS
 	src/xylem-sha256.c
 	src/xylem-stack.c
 	src/xylem-thrdpool.c
+	src/xylem-loop.c
 	src/xylem-utils.c
 	src/xylem-varint.c
 	src/xylem-waitgroup.c
@@ -61,6 +62,7 @@ if(WIN32)
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
 		src/platform/win/platform-socket.c
+		src/platform/win/wepoll/wepoll.c
 	)
 endif()
 

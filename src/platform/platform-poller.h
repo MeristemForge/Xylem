@@ -47,6 +47,8 @@ typedef enum platform_poller_op_e {
     PLATFORM_POLLER_RW_OP = 3,
 } platform_poller_op_t;
 
+#define PLATFORM_POLLER_CQE_NUM 64
+
 typedef struct platform_poller_cqe_s {
     platform_poller_op_t op;
     void*                ud;
@@ -58,20 +60,13 @@ typedef struct platform_poller_cqe_s {
  * sqe pointer must be used for all operations on that fd. The caller
  * is responsible for the sqe lifetime (must outlive the registration).
  *
- * All platforms use one-shot semantics: wait() delivers at most one
- * completion per sqe. The caller must call mod() to re-arm the poll
- * after processing an event.
- *
- * On Windows, internal IOCP/AFD state is embedded in the sqe via an
- * opaque reserved area. Do not touch _reserved.
+ * All platforms use level-triggered semantics: the poller will keep
+ * reporting readiness as long as the condition holds.
  */
 typedef struct platform_poller_sqe_s {
     platform_poller_op_t op;
     platform_poller_fd_t fd;
     void*                ud;
-#if defined(_WIN32)
-    char                 _reserved[256];
-#endif
 } platform_poller_sqe_t;
 
 /**
@@ -101,9 +96,7 @@ extern void platform_poller_destroy(platform_poller_sq_t* sq);
 extern int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe);
 
 /**
- * @brief Modify (re-arm) a registered file descriptor.
- *
- * Must be called after wait() delivers a completion to re-arm the poll.
+ * @brief Modify the interest set for a registered file descriptor.
  *
  * @param sq   Pointer to the poller handle.
  * @param sqe  Submission entry with updated op.
@@ -125,14 +118,12 @@ extern int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* 
 /**
  * @brief Wait for I/O events.
  *
- * @param sq          Pointer to the poller handle.
- * @param cqe         Array to receive completion entries.
- * @param max_events  Maximum number of events to return (size of cqe array).
- * @param timeout     Timeout in milliseconds (-1 for infinite, 0 for non-blocking).
+ * @param sq       Pointer to the poller handle.
+ * @param cqe      Array of PLATFORM_POLLER_CQE_NUM entries to receive results.
+ * @param timeout  Timeout in milliseconds (-1 for infinite, 0 for non-blocking).
  *
  * @return Number of ready events (>= 0), or -1 on error.
  */
 extern int platform_poller_wait(platform_poller_sq_t* sq,
                                 platform_poller_cqe_t* cqe,
-                                int max_events,
                                 int timeout);
