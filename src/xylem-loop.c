@@ -20,6 +20,7 @@
  */
 
 #include "xylem/xylem-loop.h"
+#include "xylem/xylem-logger.h"
 
 /* timer comparator: earlier deadline = higher priority */
 static int _loop_timer_cmp(const xylem_heap_node_t* a,
@@ -49,6 +50,11 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
 
 /* process all pending post requests */
 static void _loop_process_posts(xylem_loop_t* loop) {
+    /* Fast path: skip lock when queue is empty.
+     * A concurrent enqueue between this check and the lock is fine —
+     * the wakeup write will trigger another iteration. */
+    if (xylem_queue_empty(&loop->posts)) return;
+
     xylem_queue_t local;
     xylem_queue_init(&local);
 
@@ -120,6 +126,7 @@ int xylem_loop_init(xylem_loop_t* loop) {
     memset(loop, 0, sizeof(*loop));
 
     if (platform_poller_init(&loop->poller) != 0) {
+        xylem_loge("loop init: poller init failed");
         return -1;
     }
     xylem_heap_init(&loop->timers, _loop_timer_cmp);
@@ -127,12 +134,14 @@ int xylem_loop_init(xylem_loop_t* loop) {
     xylem_queue_init(&loop->posts);
 
     if (mtx_init(&loop->post_mtx, mtx_plain) != thrd_success) {
+        xylem_loge("loop init: mutex init failed");
         platform_poller_destroy(&loop->poller);
         return -1;
     }
 
     platform_sock_t pair[2];
     if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) != 0) {
+        xylem_loge("loop init: socketpair failed");
         mtx_destroy(&loop->post_mtx);
         platform_poller_destroy(&loop->poller);
         return -1;
@@ -149,6 +158,7 @@ int xylem_loop_init(xylem_loop_t* loop) {
     loop->wakeup_sqe.ud = NULL;
 
     if (platform_poller_add(&loop->poller, &loop->wakeup_sqe) != 0) {
+        xylem_loge("loop init: wakeup fd poller_add failed");
         platform_socket_close(loop->wakeup_rd);
         platform_socket_close(loop->wakeup_wr);
         mtx_destroy(&loop->post_mtx);
@@ -159,10 +169,12 @@ int xylem_loop_init(xylem_loop_t* loop) {
     atomic_store(&loop->stopped, false);
     _loop_update_time(loop);
 
+    xylem_logd("loop init ok");
     return 0;
 }
 
 void xylem_loop_destroy(xylem_loop_t* loop) {
+    xylem_logd("loop destroy");
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);
@@ -203,6 +215,7 @@ int xylem_loop_run(xylem_loop_t* loop) {
 }
 
 void xylem_loop_stop(xylem_loop_t* loop) {
+    xylem_logd("loop stop requested");
     atomic_store(&loop->stopped, true);
     /* wake up the poller in case it's blocked */
     char c = 1;
@@ -241,9 +254,15 @@ int xylem_loop_io_start(xylem_loop_io_t* io,
         rc = platform_poller_add(&io->loop->poller, &io->sqe);
         if (rc == 0) {
             io->registered = true;
+            xylem_logd("loop io_start: add fd=%d op=%d",
+                       (int)io->sqe.fd, (int)op);
         }
     } else {
         rc = platform_poller_mod(&io->loop->poller, &io->sqe);
+        if (rc == 0) {
+            xylem_logd("loop io_start: mod fd=%d op=%d",
+                       (int)io->sqe.fd, (int)op);
+        }
     }
     return rc;
 }
@@ -253,6 +272,7 @@ int xylem_loop_io_stop(xylem_loop_io_t* io) {
 
     int rc = platform_poller_del(&io->loop->poller, &io->sqe);
     if (rc == 0) {
+        xylem_logd("loop io_stop: del fd=%d", (int)io->sqe.fd);
         io->registered = false;
     }
     return rc;

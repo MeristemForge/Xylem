@@ -57,4 +57,5 @@ _Pragma("once")
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-loop.h"
+#include "xylem/xylem-addr.h"
 #include "xylem/xylem-utils.h"

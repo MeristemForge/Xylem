@@ -1,0 +1,249 @@
+# 实现计划: network-tcp-udp
+
+## 概述
+
+基于设计文档，为 Xylem C 工具库实现非阻塞 TCP 和 UDP 网络模块。按自底向上顺序构建：先扩展 ringbuf peek API，再实现地址工具，然后 TCP（帧解析 → 连接 → 服务端），最后 UDP，逐步集成并测试。
+
+## 任务
+
+- [x] 1. 扩展 ringbuf peek API
+  - [x] 1.1 在 `include/xylem/xylem-ringbuf.h` 中添加 `xylem_ringbuf_peek` 函数声明
+    - 添加 Doxygen 注释的 `extern size_t xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count);`
+    - 语义：将最多 entry_count 个条目复制到 buf，但不推进读指针（不消费数据）
+    - _需求: 6.4, 6.5, 6.6_
+  - [x] 1.2 在 `src/xylem-ringbuf.c` 中实现 `xylem_ringbuf_peek`
+    - 与 `xylem_ringbuf_read` 逻辑相同，但不更新 `ring->head`
+    - _需求: 6.4, 6.5, 6.6_
+  - [ ]* 1.3 在 `tests/test-ringbuf.c` 中添加 peek 单元测试
+    - 测试 peek 后数据仍在 ringbuf 中（len 不变）
+    - 测试 peek 后再 read 得到相同数据
+    - 测试 peek 请求超过可用数据时只返回可用量
+    - _需求: 6.4, 6.5, 6.6_
+
+- [x] 2. 实现地址工具模块 (xylem_addr)
+  - [x] 2.1 创建 `include/xylem/xylem-addr.h`
+    - MIT 许可证头
+    - 定义 `xylem_addr_t` 结构体（封装 `sockaddr_storage`）
+    - 定义 `xylem_buf_t` 结构体（`{char* base, size_t len}`）
+    - 声明 `xylem_addr_pton` 和 `xylem_addr_ntop`，带 Doxygen 注释
+    - _需求: 1.1, 1.2, 1.3, 1.4, 1.5_
+  - [x] 2.2 创建 `src/xylem-addr.c`
+    - MIT 许可证头
+    - 实现 `xylem_addr_pton`：解析 IPv4/IPv6 字符串 + 端口到 `sockaddr_storage`，使用 `inet_pton`
+    - 实现 `xylem_addr_ntop`：从 `sockaddr_storage` 提取主机字符串和端口，使用 `inet_ntop`
+    - 非法地址返回 -1
+    - _需求: 1.1, 1.2, 1.3, 1.4_
+  - [x] 2.3 在 `CMakeLists.txt` 的 SRCS 列表中添加 `src/xylem-addr.c`
+    - _需求: 1.1_
+
+  - [ ]* 2.4 创建 `tests/test-addr.c` 并编写地址工具单元测试
+    - MIT 许可证头
+    - 测试 IPv4 地址 pton + ntop 往返一致性
+    - 测试 IPv6 地址 pton + ntop 往返一致性
+    - 测试非法地址字符串返回 -1
+    - 测试 NULL 参数处理
+    - _需求: 1.1, 1.2, 1.3, 1.4, 1.5_
+  - [ ]* 2.5 编写地址往返属性测试
+    - **属性 P1: 地址往返一致性**
+    - 对合法 IPv4/IPv6 地址字符串和端口，pton 后 ntop 产生等价的规范化地址和相同端口
+    - **验证: 需求 1.5**
+  - [x] 2.6 在 `tests/CMakeLists.txt` 中添加 `xylem_add_test(addr)`
+    - _需求: 1.1_
+
+- [x] 3. 检查点 - 确保 ringbuf peek 和地址工具编译通过并测试正确
+  - 确保所有测试通过，如有问题请询问用户。
+
+- [x] 4. 实现 TCP 公共头文件和类型定义
+  - [x] 4.1 创建 `include/xylem/xylem-tcp.h`
+    - MIT 许可证头
+    - 包含 `xylem-addr.h`, `xylem-loop.h`, `xylem-ringbuf.h`, `xylem-queue.h`, `xylem-list.h`
+    - 定义 `xylem_tcp_framing_type_t` 枚举 (NONE/FIXED/LENGTH/DELIM/CUSTOM)
+    - 定义 `xylem_tcp_framing_t` 结构体（含 union 配置）
+    - 定义 `xylem_tcp_timeout_type_t` 枚举 (READ/WRITE/CONNECT)
+    - 定义 `xylem_tcp_state_t` 枚举 (CONNECTING/CONNECTED/CLOSING/CLOSED)
+    - 前向声明 `xylem_tcp_conn_t`, `xylem_tcp_server_t`
+    - 定义 `xylem_tcp_handler_t` 回调聚合结构体
+    - 定义 `xylem_tcp_opts_t` 选项结构体
+    - 定义 `xylem_tcp_write_req_t` 写请求节点结构体
+    - 定义 `xylem_tcp_conn_t` 连接结构体（含 IO、ringbuf、write_queue、定时器、重连字段）
+    - 定义 `xylem_tcp_server_t` 服务端结构体
+    - 声明公共 API：`xylem_tcp_listen`, `xylem_tcp_server_close`, `xylem_tcp_dial`, `xylem_tcp_send`, `xylem_tcp_close`, `xylem_tcp_conn_get_userdata`, `xylem_tcp_conn_set_userdata`，带 Doxygen 注释
+    - _需求: 2.1, 3.1, 6.1-6.9, 7.1-7.8, 10.1, 10.2, 13.1, 13.2_
+
+- [x] 5. 实现 TCP 帧解析核心
+  - [x] 5.1 创建 `src/xylem-tcp.c` 并实现帧解析内部函数
+    - MIT 许可证头
+    - 实现 `_tcp_frame_extract`：根据 framing type 从 ringbuf 提取完整帧
+    - FRAME_NONE: 返回所有可用字节
+    - FRAME_FIXED: 检查 avail >= frame_size，提取固定长度
+    - FRAME_LENGTH: peek 头部 1/2/4 字节，按 big_endian 配置解码载荷长度，检查 avail >= header + payload
+    - FRAME_DELIM: peek 全部数据搜索分隔符，提取分隔符前的数据
+    - FRAME_CUSTOM: 调用用户 parse 回调，根据返回值处理
+    - 使用 `xylem_ringbuf_peek` 实现非消费预览，成功后用 `xylem_ringbuf_read` 消费
+    - _需求: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9_
+  - [ ]* 5.2 编写固定长度帧属性测试
+    - **属性 P2: 帧完整性 (固定长度)**
+    - 对随机字节流和帧大小，每次 on_read 的 len == fsz，拼接结果等于原始数据前 (len/fsz)*fsz 字节
+    - **验证: 需求 6.2, 6.3**
+  - [ ]* 5.3 编写长度前缀帧属性测试
+    - **属性 P3: 帧完整性 (长度前缀)**
+    - 对合法长度前缀帧序列，每次 on_read 的 len == 头部编码的载荷长度，data == 原始载荷
+    - **验证: 需求 6.4**
+  - [ ]* 5.4 编写分隔符帧属性测试
+    - **属性 P4: 帧完整性 (分隔符)**
+    - on_read 的 data 不包含分隔符，所有回调数据 + delim 拼接等于原始数据
+    - **验证: 需求 6.5**
+
+- [x] 6. 实现 TCP 连接读写与状态管理
+  - [x] 6.1 在 `src/xylem-tcp.c` 中实现 TCP 连接 IO 回调和读取逻辑
+    - 实现 `_tcp_conn_io_cb`：处理 RD/WR 事件分发
+    - 实现 `_tcp_conn_on_readable`：recv 到临时缓冲区 → 写入 ringbuf → 重置心跳/读超时定时器 → 循环调用 `_tcp_frame_extract` 并触发 `on_read` 回调
+    - 处理 recv 返回 0（对端关闭）和 -1（错误/EAGAIN）
+    - _需求: 6.9, 8.1, 8.2, 9.1, 9.2, 12.1, 12.2, 12.3, 18.1_
+  - [x] 6.2 在 `src/xylem-tcp.c` 中实现写队列管理和刷新逻辑
+    - 实现 `xylem_tcp_send`：分配 write_req、复制数据、入队、若队列之前为空则注册 WR 兴趣
+    - 实现 `_tcp_flush_writes`：循环 dequeue + send，处理部分写入、EAGAIN、发送错误
+    - 发送完成调用 `on_write_done`，队列空时切回 RD 兴趣
+    - 发送错误时通知所有未完成 write_req 并关闭连接
+    - 连接已关闭时 `xylem_tcp_send` 返回 -1
+    - _需求: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 19.3_
+  - [x] 6.3 在 `src/xylem-tcp.c` 中实现连接状态机和优雅关闭
+    - 实现状态转换验证：仅允许 CONNECTING→CONNECTED, CONNECTING→CLOSED, CONNECTING→CONNECTING(重连), CONNECTED→CLOSING, CLOSING→CLOSED
+    - 实现 `xylem_tcp_close`：设置 CLOSING 状态，继续刷新写队列，队列空后 shutdown + on_close + 释放资源
+    - 实现 `_tcp_conn_start_close`：内部关闭入口，处理错误触发的关闭
+    - _需求: 10.1, 10.2, 11.1, 11.2, 11.3_
+  - [x] 6.4 在 `src/xylem-tcp.c` 中实现超时和心跳定时器
+    - 实现读超时定时器回调：到期时调用 `on_timeout(conn, READ)`，不自动关闭
+    - 实现写超时定时器：首次入队时启动，队列空时停止，到期时调用 `on_timeout(conn, WRITE)`
+    - 实现心跳定时器回调：到期时调用 `on_heartbeat_miss`
+    - 收到数据时重置读超时和心跳定时器
+    - _需求: 4.1, 4.2, 4.3, 8.1, 8.2, 8.3, 8.4, 9.1, 9.2_
+  - [x] 6.5 在 `src/xylem-tcp.c` 中实现用户数据 get/set
+    - 实现 `xylem_tcp_conn_get_userdata` 和 `xylem_tcp_conn_set_userdata`
+    - _需求: 13.1, 13.2_
+  - [ ]* 6.6 编写写入完整性属性测试
+    - **属性 P5: 写入完整性**
+    - 对所有通过 xylem_tcp_send 发送的数据，对端按序收到的字节流等于所有 send 数据按调用顺序拼接，且每个 write_req 完成时 on_write_done 被调用恰好一次
+    - **验证: 需求 7.2, 7.8**
+  - [ ]* 6.7 编写状态机合法转换属性测试
+    - **属性 P6: 状态机合法转换**
+    - 对所有 xylem_tcp_conn_t 实例，state 只能按规定路径转换，不存在其他转换
+    - **验证: 需求 10.1, 10.2**
+  - [ ]* 6.8 编写心跳检测属性测试
+    - **属性 P7: 心跳检测**
+    - 若 heartbeat_ms > 0 且在 heartbeat_ms 内未收到数据，on_heartbeat_miss 被调用恰好一次；收到数据则不被调用
+    - **验证: 需求 9.1, 9.2**
+  - [ ]* 6.9 编写超时回调语义属性测试
+    - **属性 P11: 超时回调语义**
+    - 超时到期时 on_timeout 被调用恰好一次，库不自动关闭连接
+    - **验证: 需求 8.1, 8.3, 8.4**
+
+- [x] 7. 实现 TCP 客户端异步连接与自动重连
+  - [x] 7.1 在 `src/xylem-tcp.c` 中实现 `xylem_tcp_dial`
+    - 分配 `xylem_tcp_conn_t`，创建非阻塞套接字，发起异步 connect
+    - 注册 WR 兴趣等待连接完成
+    - 若 connect_timeout_ms > 0 启动连接超时定时器
+    - 内存分配失败返回 NULL
+    - _需求: 3.1, 3.2, 3.3, 4.1, 19.2_
+  - [x] 7.2 在 `src/xylem-tcp.c` 中实现 `_tcp_try_connect` 连接完成回调
+    - getsockopt(SO_ERROR) == 0：状态转 CONNECTED，停止连接超时定时器，初始化 ringbuf，启动 RD 轮询，调用 on_connect
+    - 连接失败且有重连配额：调度重连
+    - 连接失败且无重连：进入 CLOSED，调用 on_close
+    - _需求: 3.2, 5.1, 5.4_
+  - [x] 7.3 在 `src/xylem-tcp.c` 中实现自动重连逻辑
+    - 实现 `_tcp_schedule_reconnect`：计算指数退避延迟 min(500 * 2^n, 30000) ms
+    - 实现 `_tcp_reconnect_timer_cb`：关闭旧 fd，创建新 socket，重新 connect
+    - 重连次数达到 reconnect_max 时停止并进入 CLOSED
+    - _需求: 5.1, 5.2, 5.3, 5.4_
+  - [ ]* 7.4 编写重连退避属性测试
+    - **属性 P8: 重连退避**
+    - 对 reconnect_count = n，延迟 == min(500 * 2^n, 30000) ms，总重连次数 <= reconnect_max
+    - **验证: 需求 5.2, 5.3**
+  - [ ]* 7.5 编写优雅关闭属性测试
+    - **属性 P9: 优雅关闭**
+    - xylem_tcp_close 后写队列数据被发送完毕，然后 shutdown，然后 on_close(0)，然后资源释放
+    - **验证: 需求 11.1, 11.2, 11.3**
+
+- [x] 8. 实现 TCP 服务端监听与接受
+  - [x] 8.1 在 `src/xylem-tcp.c` 中实现 `xylem_tcp_listen`
+    - 分配 `xylem_tcp_server_t`，创建非阻塞监听套接字，bind + listen
+    - 注册到事件循环，设置 RD 兴趣
+    - 内存分配失败返回 NULL
+    - _需求: 2.1, 19.1_
+  - [x] 8.2 在 `src/xylem-tcp.c` 中实现 `_tcp_server_io_cb` 接受连接回调
+    - 循环 accept 直到 EAGAIN
+    - 每个新连接：分配 conn，初始化 ringbuf/IO/定时器，调用 on_accept
+    - accept 非 EAGAIN 错误：记录日志继续
+    - 内存分配失败：关闭已接受的 fd 并记录日志
+    - _需求: 2.2, 2.3, 2.4, 2.5_
+  - [x] 8.3 在 `src/xylem-tcp.c` 中实现 `xylem_tcp_server_close`
+    - 停止接受新连接，已有连接不受影响
+    - _需求: 2.6_
+  - [x] 8.4 在 `CMakeLists.txt` 的 SRCS 列表中添加 `src/xylem-tcp.c`
+    - _需求: 2.1_
+
+- [x] 9. 检查点 - 确保 TCP 模块编译通过
+  - 确保所有测试通过，如有问题请询问用户。
+
+- [x] 10. 实现 UDP 模块
+  - [x] 10.1 创建 `include/xylem/xylem-udp.h`
+    - MIT 许可证头
+    - 包含 `xylem-addr.h`, `xylem-loop.h`
+    - 定义 `xylem_udp_handler_t` 回调结构体（on_read, on_close）
+    - 定义 `xylem_udp_t` 结构体（loop, io, fd, handler, read_timer, recv_buf[65536], closing, userdata）
+    - 声明公共 API：`xylem_udp_bind`, `xylem_udp_send`, `xylem_udp_mcast_join`, `xylem_udp_mcast_leave`, `xylem_udp_close`，带 Doxygen 注释
+    - _需求: 14.1, 15.1, 16.1, 16.2, 17.1_
+  - [x] 10.2 创建 `src/xylem-udp.c` 并实现 UDP 绑定与接收
+    - MIT 许可证头
+    - 实现 `xylem_udp_bind`：创建非阻塞 UDP 套接字，bind，注册到事件循环 RD 兴趣
+    - 实现 `_udp_io_cb`：recvfrom 到栈上 recv_buf，调用 on_read(udp, data, len, &sender_addr)
+    - 保持数据报边界：每次 on_read 对应一个完整数据报
+    - _需求: 14.1, 14.2, 14.3_
+  - [x] 10.3 在 `src/xylem-udp.c` 中实现 UDP 发送
+    - 实现 `xylem_udp_send`：调用 platform_socket_sendto，返回发送字节数或 -1
+    - _需求: 15.1, 15.2_
+  - [x] 10.4 在 `src/xylem-udp.c` 中实现组播加入/离开
+    - 实现 `xylem_udp_mcast_join`：setsockopt(IP_ADD_MEMBERSHIP)，失败返回 -1
+    - 实现 `xylem_udp_mcast_leave`：setsockopt(IP_DROP_MEMBERSHIP)，失败返回 -1
+    - _需求: 16.1, 16.2, 16.3_
+  - [x] 10.5 在 `src/xylem-udp.c` 中实现 UDP 关闭
+    - 实现 `xylem_udp_close`：关闭套接字，注销 IO 句柄，停止定时器，调用 on_close(udp, 0)
+    - _需求: 17.1_
+  - [x] 10.6 在 `CMakeLists.txt` 的 SRCS 列表中添加 `src/xylem-udp.c`
+    - _需求: 14.1_
+  - [ ]* 10.7 编写 UDP 数据报边界属性测试
+    - **属性 P10: UDP 数据报边界**
+    - 对所有通过 xylem_udp_send 发送的数据报，on_read 的 (data, len) 等于原始数据报，不存在合并或拆分
+    - **验证: 需求 14.3**
+
+- [-] 11. 集成测试
+  - [x] 11.1 创建 `tests/test-tcp.c` 并编写 TCP 集成测试
+    - MIT 许可证头
+    - TCP echo 测试：服务端 + 客户端在同一 loop，使用 FRAME_DELIM，发送/接收验证
+    - TCP 连接/断开生命周期测试：验证 on_connect, on_close 回调
+    - TCP 写入完成回调测试：验证 on_write_done 被调用
+    - TCP FRAME_FIXED 帧解析测试
+    - TCP FRAME_LENGTH 帧解析测试（含大小端）
+    - TCP 用户数据 get/set 测试
+    - TCP 连接已关闭时 send 返回 -1 测试
+    - _需求: 2.2, 3.2, 6.1-6.5, 7.1, 7.2, 7.7, 13.1, 13.2_
+  - [x] 11.2 创建 `tests/test-udp.c` 并编写 UDP 集成测试
+    - MIT 许可证头
+    - UDP 基本收发测试：bind + send + recvfrom 验证
+    - UDP 数据报边界测试：发送多个不同大小数据报，验证每次 on_read 对应一个完整数据报
+    - _需求: 14.1, 14.2, 14.3, 15.1_
+  - [x] 11.3 在 `tests/CMakeLists.txt` 中添加 `xylem_add_test(tcp)` 和 `xylem_add_test(udp)`
+    - _需求: 2.1, 14.1_
+
+- [x] 12. 最终检查点 - 确保所有测试通过
+  - 确保所有测试通过，如有问题请询问用户。
+
+## 备注
+
+- 标记 `*` 的任务为可选，可跳过以加快 MVP 进度
+- 每个任务引用具体需求编号以确保可追溯性
+- 检查点确保增量验证
+- 属性测试验证全称正确性属性（P1-P11）
+- 单元测试验证具体示例和边界条件
+- 所有 .c/.h 文件必须包含 MIT 许可证头
+- 帧解析属性测试（P2-P4）可使用手写 fuzzing 辅助实现，无需外部依赖

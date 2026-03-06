@@ -187,3 +187,16 @@ xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
 
     return (size_t)count32;
 }
+
+size_t
+xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
+    size_t len = xylem_ringbuf_len(ring);
+    if (entry_count > len) {
+        entry_count = len;
+    }
+    uint32_t count32 = (uint32_t)entry_count;
+
+    _ringbuffer_internal_read(ring, buf, count32, ring->rpos);
+
+    return (size_t)count32;
+}

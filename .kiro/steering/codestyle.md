@@ -26,6 +26,15 @@ fileMatchPattern: "**/*.{c,h}"
 - Exception: function return values and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results)
 - Use `size_t` for sizes and counts, `bool` for flags
 
+## Opaque Structs
+
+Non-intrusive types that users interact with only through pointers (handles) must use the opaque pattern:
+- Header: forward declaration + typedef only (`typedef struct xylem_foo_s xylem_foo_t;`)
+- Implementation (.c): full struct definition with fields
+- Users allocate via `create()` / module-specific constructors, never `sizeof()`
+
+Intrusive data structures (list, queue, stack, heap, rbtree, etc.) where users embed nodes into their own structs are exempt — their struct bodies must remain in headers.
+
 ## Formatting
 
 clang-format with LLVM base style:

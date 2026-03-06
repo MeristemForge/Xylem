@@ -117,3 +117,35 @@ extern size_t xylem_ringbuf_write(xylem_ringbuf_t* ring, const void* buf, size_t
  * @return Number of entries actually read.
  */
 extern size_t xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count);
+
+/**
+ * @brief Peek entries from the ring buffer without consuming them.
+ *
+ * Copies up to entry_count entries from the ring buffer into buf
+ * but does NOT advance the read position. The data remains available
+ * for subsequent read or peek calls.
+ *
+ * @param ring         Pointer to the ring buffer.
+ * @param buf          Destination buffer.
+ * @param entry_count  Maximum number of entries to peek.
+ *
+ * @return Number of entries actually copied.
+ */
+extern size_t xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count);
+
+
+/**
+ * @brief Peek entries from the ring buffer without consuming them.
+ *
+ * Copies up to entry_count entries from the ring buffer into buf
+ * but does NOT advance the read position. The data remains available
+ * for subsequent read or peek calls.
+ *
+ * @param ring         Pointer to the ring buffer.
+ * @param buf          Destination buffer.
+ * @param entry_count  Maximum number of entries to peek.
+ *
+ * @return Number of entries actually copied.
+ */
+extern size_t xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count);
+
