@@ -45,7 +45,9 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 
 | Module | Description | Status |
 |--------|-------------|--------|
-| **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | 🚧 |
+| **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | ✅ |
+| **tcp** | TCP client/server with framing, reconnect, heartbeat | ✅ |
+| **udp** | UDP datagram send/receive | ✅ |
 
 ### Utilities
 

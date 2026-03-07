@@ -230,9 +230,7 @@ typedef struct {
 #define T(fn) { #fn, fn }
 
 int main(void) {
-#ifdef _WIN32
     platform_socket_startup();
-#endif
 
     test_entry tests[] = {
         T(test_udp_echo),
@@ -248,8 +246,6 @@ int main(void) {
     }
     printf("all %zu udp tests passed\n", n);
 
-#ifdef _WIN32
     platform_socket_cleanup();
-#endif
     return 0;
 }

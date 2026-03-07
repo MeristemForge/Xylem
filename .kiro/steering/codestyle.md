@@ -52,7 +52,7 @@ Compound actions stay together: `xylem_timer_set_time` (not `xylem_timer_time_se
 
 ## Types
 
-- Prefer fixed-width integer types (`int8_t`, `int16_t`, `int32_t`, `int64_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
+- Prefer fixed-width integer types (`int8_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
 - Exception: function return values and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results)
 - Use `size_t` for sizes and counts, `bool` for flags
 - For printf: use `<inttypes.h>` macros (`PRIu64`, `PRId32`, `PRIx32`) instead of `%lu`, `%llu`

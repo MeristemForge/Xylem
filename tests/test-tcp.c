@@ -608,9 +608,7 @@ typedef struct {
 #define T(fn) { #fn, fn }
 
 int main(void) {
-#ifdef _WIN32
     platform_socket_startup();
-#endif
 
     test_entry tests[] = {
         T(test_tcp_echo_delim),
@@ -630,8 +628,6 @@ int main(void) {
     }
     printf("all %zu tcp tests passed\n", n);
 
-#ifdef _WIN32
     platform_socket_cleanup();
-#endif
     return 0;
 }

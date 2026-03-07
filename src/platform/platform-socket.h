@@ -45,6 +45,7 @@ _Pragma("once")
 #define PLATFORM_SO_ERROR_ETIMEDOUT       ETIMEDOUT
 #define PLATFORM_SO_ERROR_INVALID_SOCKET  -1
 #define PLATFORM_SO_ERROR_SOCKET_ERROR    -1
+#define PLATFORM_SHUT_WR                  SHUT_WR
 
 typedef int platform_sock_t;
 #endif
@@ -65,6 +66,7 @@ typedef int platform_sock_t;
 #define PLATFORM_SO_ERROR_ETIMEDOUT       WSAETIMEDOUT
 #define PLATFORM_SO_ERROR_INVALID_SOCKET  INVALID_SOCKET
 #define PLATFORM_SO_ERROR_SOCKET_ERROR    SOCKET_ERROR
+#define PLATFORM_SHUT_WR                  SD_SEND
 
 typedef SOCKET  platform_sock_t;
 typedef SSIZE_T ssize_t;

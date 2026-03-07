@@ -29,13 +29,6 @@
 
 #define XYLEM_TCP_DEFAULT_READ_BUF_SIZE 65536
 
-/* Portable shutdown direction constant */
-#if defined(_WIN32)
-#define XYLEM_SHUT_WR SD_SEND
-#else
-#define XYLEM_SHUT_WR SHUT_WR
-#endif
-
 /* ------------------------------------------------------------------ */
 /*  Internal struct definitions                                       */
 /* ------------------------------------------------------------------ */
@@ -502,7 +495,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 
     if (xylem_queue_empty(&conn->write_queue)) {
         /* No pending writes — shutdown and destroy immediately */
-        shutdown(conn->fd, XYLEM_SHUT_WR);
+        shutdown(conn->fd, PLATFORM_SHUT_WR);
         _tcp_conn_destroy(conn, 0);
     }
     /* Otherwise, _tcp_flush_writes will complete the close when
@@ -679,7 +672,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         /* Graceful close: queue drained, finish shutdown */
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
-        shutdown(conn->fd, XYLEM_SHUT_WR);
+        shutdown(conn->fd, PLATFORM_SHUT_WR);
         _tcp_conn_destroy(conn, 0);
     } else {
         /* Switch IO interest back to read-only */
@@ -837,11 +830,7 @@ static void _tcp_try_connect(xylem_loop_t* loop,
     int err    = 0;
     socklen_t errlen = sizeof(err);
 
-#if defined(_WIN32)
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
-#else
-    getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
-#endif
 
     xylem_logd("tcp conn fd=%d connect result SO_ERROR=%d",
                (int)conn->fd, err);
