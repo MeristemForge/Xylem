@@ -29,7 +29,7 @@ struct xylem_ringbuf_s {
     uint32_t esz;  /* entry size (bytes) */
 };
 
-static inline uint32_t _ringbuffer_rounddown_pow_of_two(uint32_t n) {
+static inline uint32_t _ringbuf_rounddown_pow2(uint32_t n) {
     if (n == 0) {
         return 0;
     }
@@ -41,7 +41,7 @@ static inline uint32_t _ringbuffer_rounddown_pow_of_two(uint32_t n) {
     return (n + 1) >> 1;
 }
 
-static inline void _ringbuffer_write_internal(
+static inline void _ringbuf_write_internal(
     xylem_ringbuf_t* ring, const void* src, uint32_t len, uint64_t off) {
 
     uint32_t idx = (uint32_t)(off & ring->mask);
@@ -68,7 +68,7 @@ static inline void _ringbuffer_write_internal(
     }
 }
 
-static inline void _ringbuffer_read_internal(
+static inline void _ringbuf_read_internal(
     xylem_ringbuf_t* ring, void* dst, uint32_t len, uint64_t off) {
 
     uint32_t idx = (uint32_t)(off & ring->mask);
@@ -110,7 +110,7 @@ xylem_ringbuf_t* xylem_ringbuf_create(size_t esize, size_t bufsize) {
         elem_count = UINT32_MAX;
     }
     uint32_t n = (uint32_t)elem_count;
-    uint32_t cap = _ringbuffer_rounddown_pow_of_two(n);
+    uint32_t cap = _ringbuf_rounddown_pow2(n);
     if (cap == 0) {
         return NULL;
     }
@@ -168,7 +168,7 @@ size_t xylem_ringbuf_write(
         entry_count = avail;
     }
 
-    _ringbuffer_write_internal(ring, buf, (uint32_t)entry_count, ring->wpos);
+    _ringbuf_write_internal(ring, buf, (uint32_t)entry_count, ring->wpos);
     ring->wpos += (uint32_t)entry_count;
 
     return entry_count;
@@ -182,7 +182,7 @@ xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     }
     uint32_t count32 = (uint32_t)entry_count;
 
-    _ringbuffer_read_internal(ring, buf, count32, ring->rpos);
+    _ringbuf_read_internal(ring, buf, count32, ring->rpos);
     ring->rpos += count32;
 
     return (size_t)count32;
@@ -196,7 +196,7 @@ xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     }
     uint32_t count32 = (uint32_t)entry_count;
 
-    _ringbuffer_read_internal(ring, buf, count32, ring->rpos);
+    _ringbuf_read_internal(ring, buf, count32, ring->rpos);
 
     return (size_t)count32;
 }

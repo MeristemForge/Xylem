@@ -138,7 +138,7 @@ static int _logger_build_message(
     return off;
 }
 
-static void _sync_log(
+static void _logger_sync_log(
     xylem_logger_level_t level,
     const char* restrict file,
     int                  line,
@@ -160,7 +160,7 @@ static void _sync_log(
     mtx_unlock(&_logger.mtx);
 }
 
-static void _async_log(
+static void _logger_async_log(
     xylem_logger_level_t level,
     const char* restrict file,
     int                  line,
@@ -260,9 +260,9 @@ void xylem_logger_log(
     va_list v;
     va_start(v, fmt);
     if (_logger.async) {
-        _async_log(level, p ? p + 1 : file, line, fmt, v);
+        _logger_async_log(level, p ? p + 1 : file, line, fmt, v);
     } else {
-        _sync_log(level, p ? p + 1 : file, line, fmt, v);
+        _logger_sync_log(level, p ? p + 1 : file, line, fmt, v);
     }
     va_end(v);
 }
