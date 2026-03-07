@@ -76,8 +76,8 @@ Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. S
 
 ## Types
 
-- Prefer fixed-width integer types (`int8_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
-- Exception: function return values, loop counters, and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results, boolean-like flags)
+- Use fixed-width integer types (`int8_t`, `uint8_t`, etc.) instead of plain `int`/`unsigned`
+- Exception: function return values, loop counters, and parameters may use `int` for error codes, comparator results, and boolean-like flags
 - Use `size_t` for sizes and counts, `bool` for flags
 - For printf: use `<inttypes.h>` macros (`PRIu64`, `PRId32`, `PRIx32`) instead of `%lu`, `%llu`
   - Example: `printf("value: %" PRIu64 "\n", my_uint64);`
@@ -96,6 +96,19 @@ Memory ownership determines the naming pattern:
 - `create`/`destroy` — module allocates and frees the struct internally
 
 Rule: opaque types must use `create`/`destroy` (caller can't `sizeof`). Intrusive types must use `init`/`deinit` (memory belongs to caller).
+
+```c
+/* init/deinit — caller owns the memory */
+xylem_list_t list;
+xylem_list_init(&list);
+/* ... use list ... */
+xylem_list_deinit(&list);
+
+/* create/destroy — module owns the memory */
+xylem_logger_t* logger = xylem_logger_create(cfg);
+/* ... use logger ... */
+xylem_logger_destroy(logger);
+```
 
 ### Related Verb Pairs
 
@@ -128,7 +141,7 @@ Static functions ordered by dependency (no forward declarations).
 
 ## Platform Layer
 
-Prefer C11 standard library interfaces (`thrd_sleep`, `timespec_get`, `<threads.h>`, etc.) over platform-specific APIs. Only use the platform layer when C11 has no equivalent (e.g. monotonic clock).
+Use C11 standard library interfaces (`thrd_sleep`, `timespec_get`, `<threads.h>`, etc.) instead of platform-specific APIs. Only use the platform layer when C11 has no equivalent (e.g. monotonic clock).
 
 Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`.
 
@@ -164,6 +177,8 @@ tests/test-<module>.c           # Unit tests
 
 ## Restricted Functions
 
+Applies to all `.c` and `.h` files in the project (including tests).
+
 | Banned | Replacement | Reason |
 |--------|-------------|--------|
 | `localtime`, `gmtime`, `ctime`, `asctime`, `strtok`, `strerror` | `_r` (POSIX) / `_s` (MSVC) variants | Return static buffer — not thread-safe, successive calls overwrite results |
@@ -172,7 +187,9 @@ tests/test-<module>.c           # Unit tests
 | `atoi`, `atof`, `atol` | `strtol`, `strtod` | No error detection — overflow is undefined behavior |
 | `memcpy` with overlapping regions | `memmove` | Overlapping src/dst is undefined behavior |
 
-## Cross-Platform Pitfalls
+## Cross-Platform Pitfalls (Reference)
+
+> This section is informational reference, not enforceable rules.
 
 - `long`: 4 bytes on Windows x64, 8 bytes on Linux/macOS x64
 - Stack size: Windows 1MB, Linux 8MB
@@ -186,12 +203,7 @@ tests/test-<module>.c           # Unit tests
 
 ## Formatting
 
-clang-format with LLVM base style:
-- 4-space indent, no tabs
-- Pointer left-aligned (`int* p`)
-- No bin-packing of arguments/parameters
-- Aligned consecutive declarations
-- No single-line functions
+clang-format with LLVM base style (see `.clang-format` for full config). Additional rule beyond the formatter:
 - All `if`/`else`/`for`/`while` bodies must use braces, even single statements
 
 ## Comments
@@ -240,5 +252,5 @@ static inline void _heap_swap_node(...) { ... }
 
 - `/* ... */` style (C11 compatible)
 - `/** ... */` when spanning multiple lines (block format: `/**` and `*/` on own lines)
-- Only where the intent cannot be understood from the code alone
+- Only to explain why, not what — if the comment restates the code, remove it
 - No decorative dividers
