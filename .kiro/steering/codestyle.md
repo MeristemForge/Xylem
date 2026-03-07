@@ -114,7 +114,7 @@ Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`.
 | Umbrella header | `src/platform/platform.h` only includes per-module headers — no declarations directly in it |
 | Per-module header | `src/platform/platform-<module>.h` declares that module's `platform_*` functions |
 | Prefix | `platform_<module>_<action>` (e.g. `platform_time_monotonic_nsec`) |
-| Implementation | One `.c` per module per platform (`src/platform/win/xylem-<module>.c`, `src/platform/unix/xylem-<module>.c`) |
+| Implementation | One `.c` per module per platform (`src/platform/win/platform-<module>.c`, `src/platform/unix/platform-<module>.c`) |
 | Scope | Only the minimal OS-specific logic; everything else stays in `src/xylem-<module>.c` |
 
 Public API functions belong in `src/xylem-<module>.c` and call `platform_*` helpers for OS-dependent parts. Never put public API implementations directly in platform files.
@@ -147,6 +147,24 @@ tests/test-<module>.c           # Unit tests
 | `gets` | `fgets` | Removed in C11 — unconditional buffer overflow |
 | `atoi`, `atof`, `atol` | `strtol`, `strtod` | No error detection — overflow is undefined behavior |
 | `memcpy` with overlapping regions | `memmove` | Overlapping src/dst is undefined behavior |
+
+## Build Configuration
+
+```bash
+# Debug build with symbols
+cmake -B out -DCMAKE_BUILD_TYPE=Debug
+
+# With ASAN for memory error detection
+cmake -B out -DXYLEM_ENABLE_ASAN=ON
+```
+
+## Cross-Platform Pitfalls
+
+- `long`: 4 bytes on Windows x64, 8 bytes on Linux/macOS x64
+- Stack size: Windows 1MB, Linux 8MB
+- Uninitialized memory may be zeroed in debug but not release — use ASAN
+- Signals: Windows uses SEH, Unix uses POSIX signals
+- Paths: `\` on Windows, `/` on Unix
 
 ## Headers
 
