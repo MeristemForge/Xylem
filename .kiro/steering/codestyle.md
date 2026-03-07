@@ -43,6 +43,9 @@ Every `.c` and `.h` file must start with the project license block:
 | Internal/static helpers | `_<name>` prefix | `_heap_node_swap` |
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
 
+Action (verb) goes last: `xylem_list_insert`, `xylem_heap_remove`.
+Compound actions stay together: `xylem_timer_set_time` (not `xylem_timer_time_set`).
+
 > **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
@@ -52,6 +55,9 @@ Every `.c` and `.h` file must start with the project license block:
 - Prefer fixed-width integer types (`int8_t`, `int16_t`, `int32_t`, `int64_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
 - Exception: function return values and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results)
 - Use `size_t` for sizes and counts, `bool` for flags
+- For printf: use `<inttypes.h>` macros (`PRIu64`, `PRId32`, `PRIx32`) instead of `%lu`, `%llu`
+  - Example: `printf("value: %" PRIu64 "\n", my_uint64);`
+  - Reason: `long` size varies across platforms (Windows 64-bit: 4 bytes, Linux 64-bit: 8 bytes)
 
 ## Opaque Structs
 
