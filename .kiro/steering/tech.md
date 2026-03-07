@@ -13,7 +13,7 @@ fileMatchPattern: "**/CMakeLists.txt,**/*.cmake"
 - Output: `out/`
 - Custom helpers: `cmake/xylem-utils.cmake`
 
-## CMake Options
+## Options
 
 | Option | Default | Purpose |
 |--------|---------|---------|
