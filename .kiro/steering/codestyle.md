@@ -36,37 +36,42 @@ Every `.c` and `.h` file must start with the project license block:
 
 | Category | Pattern | Example |
 |----------|---------|---------|
-| Public functions | `xylem_<module>_<action>` | `xylem_heap_insert` |
-
-Public function names have exactly three logical segments: `xylem`, `<module>`, and `<action>`. The `<module>` is always a single word. The `<action>` may be compound (verb + object with `_`), placing the verb first and the object last:
-- `xylem_list_insert` — module=`list`, action=`insert`
-- `xylem_loop_init_timer` — module=`loop`, action=`init_timer`
-- `xylem_loop_start_timer` — module=`loop`, action=`start_timer`
-- `xylem_loop_start_io` — module=`loop`, action=`start_io`
-- `xylem_timer_set_time` — module=`timer`, action=`set_time`
-
+| Public functions | `xylem_<module>_<action>` | `xylem_list_insert` |
+| Static functions | `_<module>_<action>` | `_tcp_flush_writes` |
+| Static callbacks | `_<module>_<subject>_<event>_cb` | `_tcp_conn_io_cb` |
 | Types | `xylem_<module>_t` | `xylem_list_t` |
 | Node types | `xylem_<module>_node_t` | `xylem_heap_node_t` |
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
-| Internal/static helpers | `_<module>_<action>` | `_tcp_flush_writes` |
-
-Static function names have two logical segments: `<module>` and `<action>`, prefixed with `_`. Same rules as public functions: module is a single word, action may be compound (verb first, object last):
-- `_heap_swap_node` — module=`heap`, action=`swap_node`
-- `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
-- `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
-
-**Callback exception:** Callback functions have three logical segments: `<module>`, `<subject>`, and `<event>`, with a `_cb` suffix: `_<module>_<subject>_<event>_cb`. The subject is the object that triggers the event. These describe events, not actions, so the verb-first rule does not apply:
-- `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
-- `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
-- `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
-- `_tcp_reconnect_timer_cb` — module=`tcp`, subject=`reconnect_timer`, event implied by suffix
-| Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
-| Static variables (file-scope) | `_<name>` prefix | `_echo_loop` |
+| Internal types (file-scope) | `_<name>_t` | `_xlist_node_t` |
+| Static variables (file-scope) | `_<name>` | `_echo_loop` |
 | Global variables (non-static) | no prefix | `stop_io` |
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
 
 > **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
+
+### Public Functions
+
+Three logical segments: `xylem`, `<module>`, `<action>`. Module is always a single word. Action may be compound (verb + object with `_`), verb first:
+- `xylem_list_insert` — module=`list`, action=`insert`
+- `xylem_loop_init_timer` — module=`loop`, action=`init_timer`
+- `xylem_loop_start_io` — module=`loop`, action=`start_io`
+- `xylem_timer_set_time` — module=`timer`, action=`set_time`
+
+### Static Functions
+
+Two logical segments: `<module>`, `<action>`, prefixed with `_`. Same rules as public: module is a single word, action may be compound (verb first):
+- `_heap_swap_node` — module=`heap`, action=`swap_node`
+- `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
+- `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
+
+### Static Callbacks
+
+Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject is the object that triggers the event. These describe events, not actions, so the verb-first rule does not apply:
+- `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
+- `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
+- `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
+- `_tcp_reconnect_timer_cb` — module=`tcp`, subject=`reconnect_timer`, event implied by suffix
 
 ## Types
 
