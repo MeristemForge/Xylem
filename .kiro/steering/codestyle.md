@@ -34,6 +34,13 @@ Every `.c` and `.h` file must start with the project license block:
 
 ## Naming
 
+Use the project name in lowercase as the namespace prefix. In C identifiers (functions, types, macros), replace hyphens with underscores. In file names, keep hyphens as-is.
+
+| Context | Project `mylib` | Project `hello-lib` |
+|---------|----------------|---------------------|
+| C identifier prefix | `mylib_` | `hello_lib_` |
+| Source file prefix | `mylib-` | `hello-lib-` |
+
 | Category | Pattern | Example |
 |----------|---------|---------|
 | Public functions | `xylem_<module>_<action>` | `xylem_list_insert` |
