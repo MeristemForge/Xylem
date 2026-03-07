@@ -104,6 +104,8 @@ Static functions ordered by dependency (no forward declarations).
 
 ## Platform Layer
 
+Prefer C11 standard library interfaces (`thrd_sleep`, `timespec_get`, `<threads.h>`, etc.) over platform-specific APIs. Only use the platform layer when C11 has no equivalent (e.g. monotonic clock).
+
 Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`. All platform functions are declared in `src/platform/platform.h` and use the `platform_` prefix.
 
 | Rule | Detail |
