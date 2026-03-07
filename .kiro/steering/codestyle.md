@@ -52,7 +52,7 @@ Every `.c` and `.h` file must start with the project license block:
 
 ### Public Functions
 
-Three logical segments: `xylem`, `<module>`, `<action>`. Module is always a single word. Action may be compound (verb + object with `_`), verb first:
+Three logical segments: `xylem`, `<module>`, `<action>`. Module is a single identifier without underscores. Action may be compound (verb + object with `_`), verb first:
 - `xylem_list_insert` — module=`list`, action=`insert`
 - `xylem_loop_init_timer` — module=`loop`, action=`init_timer`
 - `xylem_loop_start_io` — module=`loop`, action=`start_io`
@@ -60,14 +60,14 @@ Three logical segments: `xylem`, `<module>`, `<action>`. Module is always a sing
 
 ### Static Functions
 
-Two logical segments: `<module>`, `<action>`, prefixed with `_`. Same rules as public: module is a single word, action may be compound (verb first):
+Two logical segments: `<module>`, `<action>`, prefixed with `_`. Same rules as public: module is a single identifier without underscores, action may be compound (verb first):
 - `_heap_swap_node` — module=`heap`, action=`swap_node`
 - `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
 - `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
 
 ### Static Callbacks
 
-Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject is the object or concern that triggers the event, not the mechanism (use `reconnect` not `reconnect_timer`). These describe events, not actions, so the verb-first rule does not apply:
+Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject names the resource or concern being monitored (e.g. `conn`, `server`, `reconnect`), not the mechanism (use `reconnect` not `reconnect_timer`). These describe events, not actions, so the verb-first rule does not apply:
 - `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
 - `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
 - `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
@@ -77,7 +77,7 @@ Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. S
 ## Types
 
 - Prefer fixed-width integer types (`int8_t`, `uint8_t`, etc.) over plain `int`/`unsigned`
-- Exception: function return values and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results)
+- Exception: function return values, loop counters, and parameters may use `int` where semantically appropriate (e.g., error codes, comparator results, boolean-like flags)
 - Use `size_t` for sizes and counts, `bool` for flags
 - For printf: use `<inttypes.h>` macros (`PRIu64`, `PRId32`, `PRIx32`) instead of `%lu`, `%llu`
   - Example: `printf("value: %" PRIu64 "\n", my_uint64);`
@@ -220,28 +220,25 @@ Rules:
 - Align `@param` descriptions
 - Pure ASCII only — use `->` not `→`, `>=` not `≥`
 - Blank comment lines between sections
-- Concise, no filler
 
 ### Internal / Static Functions
 
-No Doxygen tags required. Use `/** ... */` for multi-line comments, `/* ... */` for single-line.
-Multi-line `/** ... */` must use the same block format as public API: `/**` on its own line, content on `*` lines, `*/` on its own line:
+No Doxygen tags required. Use `/** ... */` for multi-line comments, `/* ... */` for single-line:
 
 ```c
 /**
  * Common setup for a newly connected socket: init ringbuf, start IO,
  * start heartbeat/read timers. Does NOT call any handler callback.
  */
-static void _conn_setup(...) { ... }
+static void _tcp_setup_conn(...) { ... }
 
 /* Swap two heap nodes and update their positions. */
-static inline void _heap_node_swap(...) { ... }
+static inline void _heap_swap_node(...) { ... }
 ```
 
 ### Inline Comments
 
 - `/* ... */` style (C11 compatible)
 - `/** ... */` when spanning multiple lines (block format: `/**` and `*/` on own lines)
-- Only where code is non-obvious
+- Only where the intent cannot be understood from the code alone
 - No decorative dividers
-- Keep short
