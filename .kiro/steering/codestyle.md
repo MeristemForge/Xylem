@@ -55,10 +55,11 @@ Static function names have two logical segments: `<module>` and `<action>`, pref
 - `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
 - `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
 
-**Callback exception:** Functions that are event handlers (registered as callbacks) use `_<module>_<subject>_cb` format. The `_cb` suffix marks the function as a callback; the subject describes the event source. These describe events, not actions, so the verb-first rule does not apply:
-- `_tcp_conn_io_cb` — I/O event callback for a connection
-- `_tcp_conn_connected_cb` — callback when connection is established
-- `_tcp_reconnect_timer_cb` — timer callback for reconnect
+**Callback exception:** Callback functions have three logical segments: `<module>`, `<subject>`, and `<event>`, with a `_cb` suffix: `_<module>_<subject>_<event>_cb`. The subject is the object that triggers the event. These describe events, not actions, so the verb-first rule does not apply:
+- `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
+- `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
+- `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
+- `_tcp_reconnect_timer_cb` — module=`tcp`, subject=`reconnect_timer`, event implied by suffix
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
 | Static variables (file-scope) | `_<name>` prefix | `_echo_loop` |
 | Global variables (non-static) | no prefix | `stop_io` |
