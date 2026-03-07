@@ -10,7 +10,7 @@ fileMatchPattern: "**/*.{c,h}"
 Every `.c` and `.h` file must start with the project license block:
 
 ```c
-/** Copyright (c) {YEAR}, {AUTHOR} <{EMAIL}>
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -42,13 +42,13 @@ Every `.c` and `.h` file must start with the project license block:
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
 | Internal/static helpers | `_<name>` prefix | `_heap_node_swap` |
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
+| Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
+| Test files | `test-<module>.c` | `test-list.c` |
 
 Action (verb) goes last: `xylem_list_insert`, `xylem_heap_remove`.
 Compound actions stay together: `xylem_timer_set_time` (not `xylem_timer_time_set`).
 
 > **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
-| Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
-| Test files | `test-<module>.c` | `test-list.c` |
 
 ## Types
 
