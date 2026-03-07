@@ -73,6 +73,20 @@ Memory ownership determines the naming pattern:
 
 Rule: opaque types must use `create`/`destroy` (caller can't `sizeof`). Intrusive types must use `init`/`deinit` (memory belongs to caller).
 
+### Related Verb Pairs
+
+| Pair | Semantics | When to use |
+|------|-----------|-------------|
+| `open` / `close` | Access an external resource (file, connection, device) | The resource already exists; you're obtaining a handle to it |
+| `alloc` / `free` | Allocate raw memory, minimal or no initialization | Low-level allocators, memory pools |
+| `start` / `stop` | Control running state (repeatable) | Timers, workers, polling — can start/stop multiple times within one init/deinit lifecycle |
+| `acquire` / `release` | Obtain/return ownership or reference count | Reference-counted resources, shared handles |
+| `register` / `unregister` | Add/remove a callback or handler to a system | Event handlers, hooks, observers |
+| `attach` / `detach` | Associate/dissociate with a parent object | Mounting a child handle onto a loop or manager |
+| `bind` / `unbind` | Associate with an address, port, or resource | Network sockets, device endpoints |
+| `flush` | Push buffered data to its destination | Write buffers, log buffers — data is sent out, buffer may refill |
+| `drain` | Process/consume all pending items until empty | Work queues, event queues — items are consumed, queue ends up empty |
+
 ## Opaque Structs
 
 Non-intrusive types that users interact with only through pointers (handles) must use the opaque pattern:
