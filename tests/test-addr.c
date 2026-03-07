@@ -22,6 +22,15 @@
 #include "xylem.h"
 #include "assert.h"
 
+#define T(fn) { #fn, fn }
+
+typedef void (*test_fn)(void);
+
+typedef struct {
+    const char* name;
+    test_fn     fn;
+} test_entry;
+
 /* IPv4 pton + ntop round-trip */
 static void test_ipv4_roundtrip(void) {
     xylem_addr_t addr;
@@ -77,19 +86,8 @@ static void test_ipv4_wildcard(void) {
     ASSERT(port == 0);
 }
 
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
-
-#define T(fn) { #fn, fn }
-
 int main(void) {
-#ifdef _WIN32
     platform_socket_startup();
-#endif
 
     test_entry tests[] = {
         T(test_ipv4_roundtrip),
@@ -107,8 +105,6 @@ int main(void) {
     }
     printf("all %zu addr tests passed\n", n);
 
-#ifdef _WIN32
     platform_socket_cleanup();
-#endif
     return 0;
 }

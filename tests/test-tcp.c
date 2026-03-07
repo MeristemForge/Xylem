@@ -24,6 +24,14 @@
 #include <string.h>
 
 #define TCP_PORT 18080
+#define T(fn) { #fn, fn }
+
+typedef void (*test_fn)(void);
+
+typedef struct {
+    const char* name;
+    test_fn     fn;
+} test_entry;
 
 /* ------------------------------------------------------------------ */
 /*  Safety timer: stops the loop after 2 seconds to prevent hangs     */
@@ -597,15 +605,6 @@ static void test_tcp_send_after_close(void) {
 /* ------------------------------------------------------------------ */
 /*  Test runner                                                       */
 /* ------------------------------------------------------------------ */
-
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
-
-#define T(fn) { #fn, fn }
 
 int main(void) {
     platform_socket_startup();

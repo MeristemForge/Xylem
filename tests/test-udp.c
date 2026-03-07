@@ -23,6 +23,15 @@
 #include "assert.h"
 #include <string.h>
 
+#define T(fn) { #fn, fn }
+
+typedef void (*test_fn)(void);
+
+typedef struct {
+    const char* name;
+    test_fn     fn;
+} test_entry;
+
 /* ------------------------------------------------------------------ */
 /*  Safety timer: stops the loop after 2 seconds to prevent hangs     */
 /* ------------------------------------------------------------------ */
@@ -219,15 +228,6 @@ static void test_udp_datagram_boundary(void) {
 /* ------------------------------------------------------------------ */
 /*  Test runner                                                       */
 /* ------------------------------------------------------------------ */
-
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
-
-#define T(fn) { #fn, fn }
 
 int main(void) {
     platform_socket_startup();
