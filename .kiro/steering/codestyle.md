@@ -35,6 +35,34 @@ Non-intrusive types that users interact with only through pointers (handles) mus
 
 Intrusive data structures (list, queue, stack, heap, rbtree, etc.) where users embed nodes into their own structs are exempt — their struct bodies must remain in headers.
 
+## File Organization
+
+Order: License → includes → macros → structs → static functions → public functions
+
+Static functions ordered by dependency (no forward declarations).
+
+## Project Structure
+
+```
+include/xylem/xylem-<module>.h  # Public API
+src/xylem-<module>.c            # Implementation
+src/platform/win/               # Windows platform code
+src/platform/unix/              # Linux/macOS platform code
+tests/test-<module>.c           # Unit tests
+```
+
+### Adding a Module
+1. Create `include/xylem/xylem-<module>.h` with public API
+2. Create `src/xylem-<module>.c` with implementation
+3. Add to `SRCS` in root `CMakeLists.txt`
+4. Include in `include/xylem.h`
+5. Create `tests/test-<module>.c`
+6. Add `xylem_add_test(<module>)` to `tests/CMakeLists.txt`
+
+## Headers
+
+- Use `_Pragma("once")` for header guards
+
 ## Formatting
 
 clang-format with LLVM base style:
