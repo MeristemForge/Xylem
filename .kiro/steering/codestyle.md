@@ -59,6 +59,20 @@ Compound actions stay together: `xylem_timer_set_time` (not `xylem_timer_time_se
   - Example: `printf("value: %" PRIu64 "\n", my_uint64);`
   - Reason: `long` size varies across platforms (Windows 64-bit: 4 bytes, Linux 64-bit: 8 bytes)
 
+## Lifecycle Naming
+
+Memory ownership determines the naming pattern:
+
+| Owner | Create | Destroy | Usage |
+|-------|--------|---------|-------|
+| Caller (stack/embedded) | `init` | `deinit` | Intrusive types, short-lived objects |
+| Module (malloc inside) | `create` | `destroy` | Opaque types, dynamic lifetime |
+
+- `init`/`deinit` — caller provides memory, module only initializes/cleans up fields
+- `create`/`destroy` — module allocates and frees the struct internally
+
+Rule: opaque types must use `create`/`destroy` (caller can't `sizeof`). Intrusive types must use `init`/`deinit` (memory belongs to caller).
+
 ## Opaque Structs
 
 Non-intrusive types that users interact with only through pointers (handles) must use the opaque pattern:

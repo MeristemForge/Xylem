@@ -42,10 +42,10 @@ static void _reset_callback_state(void) {
     _cb_count = 0;
 }
 
-/* init/destroy without logging. */
+/* init/deinit without logging. */
 static void test_init_destroy(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 }
 
 /* log before init should not crash. */
@@ -67,7 +67,7 @@ static void test_callback_receives_message(void) {
     ASSERT(strstr(_cb_msg, "test.c:42") != NULL);
 
     xylem_logger_set_callback(NULL);
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 }
 
 /* level filtering: messages below threshold are suppressed. */
@@ -91,7 +91,7 @@ static void test_level_filtering(void) {
     ASSERT(_cb_level == XYLEM_LOGGER_LEVEL_ERROR);
 
     xylem_logger_set_callback(NULL);
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 }
 
 /* log macros produce correct levels. */
@@ -117,7 +117,7 @@ static void test_log_macros(void) {
     ASSERT(_cb_level == XYLEM_LOGGER_LEVEL_ERROR);
 
     xylem_logger_set_callback(NULL);
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 }
 
 /* file output: write to file and verify content. */
@@ -126,7 +126,7 @@ static void test_file_output(void) {
     xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 99, "file test %s", "ok");
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 
     FILE* f = fopen(LOG_FILE, "r");
     ASSERT(f != NULL);
@@ -157,7 +157,7 @@ static void test_async_mode(void) {
     ASSERT(strstr(_cb_msg, "async 456") != NULL);
 
     xylem_logger_set_callback(NULL);
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 }
 
 /* file rollover: file is truncated when exceeding max_file_size. */
@@ -172,7 +172,7 @@ static void test_file_rollover(void) {
     for (int32_t i = 0; i < 10; i++) {
         xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", i, "rollover line %d padding padding padding", i);
     }
-    xylem_logger_destroy();
+    xylem_logger_deinit();
 
     /* after rollover the file should be smaller than max_size + one log line */
     FILE* f = fopen(LOG_FILE, "rb");

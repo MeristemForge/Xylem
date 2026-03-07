@@ -124,7 +124,7 @@ static void test_udp_echo(void) {
      * the safety timer first to avoid dangling close_nodes. */
     _stop_safety_timer();
     xylem_loop_timer_close(&g_echo_send_timer);
-    xylem_loop_destroy(&g_echo_loop);
+    xylem_loop_deinit(&g_echo_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -213,7 +213,7 @@ static void test_udp_datagram_boundary(void) {
 
     _stop_safety_timer();
     xylem_loop_timer_close(&g_dgram_send_timer);
-    xylem_loop_destroy(&g_dgram_loop);
+    xylem_loop_deinit(&g_dgram_loop);
 }
 
 /* ------------------------------------------------------------------ */

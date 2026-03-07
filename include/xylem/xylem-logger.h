@@ -54,9 +54,9 @@ extern void xylem_logger_init(
     size_t               max_file_size);
 
 /**
- * @brief Destroy the logger and release resources.
+ * @brief Deinitialize the logger and release resources.
  */
-extern void xylem_logger_destroy(void);
+extern void xylem_logger_deinit(void);
 
 /**
  * @brief Set a custom callback for log output.

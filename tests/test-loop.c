@@ -29,7 +29,7 @@
 static void test_init_destroy(void) {
     xylem_loop_t loop;
     ASSERT(xylem_loop_init(&loop) == 0);
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -41,7 +41,7 @@ static void test_run_exits_no_handles(void) {
     ASSERT(xylem_loop_init(&loop) == 0);
     ASSERT(loop.active_count == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -71,7 +71,7 @@ static void test_timer_oneshot(void) {
     ASSERT(_oneshot_count == 1);
     ASSERT(loop.active_count == 0);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -102,7 +102,7 @@ static void test_timer_repeat(void) {
 
     ASSERT(_repeat_count == 3);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -144,7 +144,7 @@ static void test_timer_stop(void) {
 
     ASSERT(_stopped_timer_count == 0);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -178,7 +178,7 @@ static void test_timer_reset(void) {
     ASSERT(_reset_fire_time > 0);
     ASSERT(_reset_fire_time - before < 200);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -202,7 +202,7 @@ static void test_loop_now(void) {
     ASSERT(xylem_loop_timer_start(&timer, _on_check_now, 1, 0) == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,7 +242,7 @@ static void test_io_readable(void) {
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_read_count == 1);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
     platform_socket_close(pair[0]);
     platform_socket_close(pair[1]);
 }
@@ -278,7 +278,7 @@ static void test_io_writable(void) {
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_write_count == 1);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
     platform_socket_close(pair[0]);
     platform_socket_close(pair[1]);
 }
@@ -328,7 +328,7 @@ static void test_io_rearm(void) {
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_rearm_count == 3);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
     platform_socket_close(pair[0]);
     platform_socket_close(pair[1]);
 }
@@ -379,7 +379,7 @@ static void test_io_stop(void) {
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_stop_count == 0);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
     platform_socket_close(pair[0]);
     platform_socket_close(pair[1]);
 }
@@ -417,7 +417,7 @@ static void test_post_same_thread(void) {
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_post_count == 1);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -476,7 +476,7 @@ static void test_post_cross_thread(void) {
     /* drain closing queue manually since loop already exited */
     loop.active_count--;
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -501,7 +501,7 @@ static void test_stop_from_callback(void) {
     xylem_loop_timer_close(&timer);
     loop.active_count--;
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -550,7 +550,7 @@ static void test_timer_ordering(void) {
     ASSERT(_order_log[1] == 2);
     ASSERT(_order_log[2] == 3);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -600,7 +600,7 @@ static void test_io_and_timer(void) {
     ASSERT(_combined_io_fired == 1);
     ASSERT(_combined_timer_fired == 1);
 
-    xylem_loop_destroy(&loop);
+    xylem_loop_deinit(&loop);
     platform_socket_close(pair[0]);
     platform_socket_close(pair[1]);
 }

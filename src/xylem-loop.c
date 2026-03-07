@@ -173,8 +173,8 @@ int xylem_loop_init(xylem_loop_t* loop) {
     return 0;
 }
 
-void xylem_loop_destroy(xylem_loop_t* loop) {
-    xylem_logd("loop destroy");
+void xylem_loop_deinit(xylem_loop_t* loop) {
+    xylem_logd("loop deinit");
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);

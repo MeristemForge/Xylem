@@ -161,7 +161,7 @@ static void test_tcp_echo_delim(void) {
     _stop_safety_timer();
     if (g_echo_server) { xylem_tcp_server_close(g_echo_server); g_echo_server = NULL; }
 
-    xylem_loop_destroy(&g_echo_loop);
+    xylem_loop_deinit(&g_echo_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -259,7 +259,7 @@ static void test_tcp_lifecycle(void) {
     _stop_safety_timer();
     xylem_loop_timer_close(&g_life_check_timer);
     if (g_life_server) { xylem_tcp_server_close(g_life_server); g_life_server = NULL; }
-    xylem_loop_destroy(&g_life_loop);
+    xylem_loop_deinit(&g_life_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -350,7 +350,7 @@ static void test_tcp_write_done(void) {
     _stop_safety_timer();
     if (g_wd_server) { xylem_tcp_server_close(g_wd_server); g_wd_server = NULL; }
 
-    xylem_loop_destroy(&g_wd_loop);
+    xylem_loop_deinit(&g_wd_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -447,7 +447,7 @@ static void test_tcp_frame_fixed(void) {
     _stop_safety_timer();
     if (g_fix_server) { xylem_tcp_server_close(g_fix_server); g_fix_server = NULL; }
 
-    xylem_loop_destroy(&g_fix_loop);
+    xylem_loop_deinit(&g_fix_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -524,7 +524,7 @@ static void test_tcp_userdata(void) {
     _stop_safety_timer();
     if (g_ud_server) { xylem_tcp_server_close(g_ud_server); g_ud_server = NULL; }
 
-    xylem_loop_destroy(&g_ud_loop);
+    xylem_loop_deinit(&g_ud_loop);
 }
 
 /* ------------------------------------------------------------------ */
@@ -591,7 +591,7 @@ static void test_tcp_send_after_close(void) {
 
     _stop_safety_timer();
     if (g_sac_server) { xylem_tcp_server_close(g_sac_server); g_sac_server = NULL; }
-    xylem_loop_destroy(&g_sac_loop);
+    xylem_loop_deinit(&g_sac_loop);
 }
 
 /* ------------------------------------------------------------------ */

@@ -220,7 +220,7 @@ void xylem_logger_init(
     call_once(&_logger.once, _logger_do_init);
 }
 
-void xylem_logger_destroy(void) {
+void xylem_logger_deinit(void) {
     bool expected = true;
     if (atomic_compare_exchange_strong(&_logger.initialized, &expected, false)) {
         if (_logger.async) {

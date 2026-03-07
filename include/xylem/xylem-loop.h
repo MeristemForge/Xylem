@@ -105,13 +105,13 @@ struct xylem_loop_post_s {
 extern int xylem_loop_init(xylem_loop_t* loop);
 
 /**
- * @brief Destroy an event loop and release all resources.
+ * @brief Deinitialize an event loop and release all resources.
  *
- * All handles must be closed before calling destroy.
+ * All handles must be closed before calling deinit.
  *
  * @param loop  Pointer to the loop.
  */
-extern void xylem_loop_destroy(xylem_loop_t* loop);
+extern void xylem_loop_deinit(xylem_loop_t* loop);
 
 /**
  * @brief Run the event loop.
