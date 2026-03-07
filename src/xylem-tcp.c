@@ -29,10 +29,6 @@
 
 #define XYLEM_TCP_DEFAULT_READ_BUF_SIZE 65536
 
-/* ------------------------------------------------------------------ */
-/*  Internal struct definitions                                       */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_tcp_write_req_s {
     xylem_queue_node_t node;
     void*              data;
@@ -79,10 +75,6 @@ struct xylem_tcp_server_s {
     bool                 closing;
     xylem_loop_post_t    free_post;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Frame extraction                                                  */
-/* ------------------------------------------------------------------ */
 
 /* Extract one complete frame from the connection's ringbuf.
  * Returns > 0 on success (bytes consumed from ringbuf),
@@ -266,10 +258,6 @@ static ssize_t _tcp_frame_extract(xylem_tcp_conn_t* conn,
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Forward declarations                                              */
-/* ------------------------------------------------------------------ */
-
 static void _tcp_flush_writes(xylem_tcp_conn_t* conn);
 static void _tcp_conn_start_close(xylem_tcp_conn_t* conn, int err);
 static void _tcp_conn_io_cb(xylem_loop_t* loop,
@@ -285,10 +273,6 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
                               platform_poller_op_t revents);
 
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                           */
-/* ------------------------------------------------------------------ */
-
 /* Extract host string and port from xylem_addr_t into caller buffers. */
 static void _tcp_addr_to_hostport(xylem_addr_t* addr,
                                   char* host, size_t host_len,
@@ -302,10 +286,6 @@ static void _tcp_addr_to_hostport(xylem_addr_t* addr,
  * start heartbeat/read timers, call on_connect. */
 static void _tcp_conn_setup(xylem_tcp_conn_t* conn);
 static void _tcp_conn_on_connected(xylem_tcp_conn_t* conn);
-
-/* ------------------------------------------------------------------ */
-/*  Timer callbacks (Task 6.4)                                        */
-/* ------------------------------------------------------------------ */
 
 static void _tcp_read_timeout_cb(xylem_loop_t* loop,
                                  xylem_loop_timer_t* timer) {
@@ -348,10 +328,6 @@ static void _tcp_heartbeat_cb(xylem_loop_t* loop,
         conn->handler->on_heartbeat_miss(conn);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Connect-success helper                                            */
-/* ------------------------------------------------------------------ */
-
 /* Common setup for a newly connected socket: init ringbuf, start IO,
  * start heartbeat/read timers. Does NOT call any handler callback. */
 static void _tcp_conn_setup(xylem_tcp_conn_t* conn) {
@@ -381,10 +357,6 @@ static void _tcp_conn_on_connected(xylem_tcp_conn_t* conn) {
         conn->handler->on_connect(conn);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Deferred-free callbacks                                           */
-/* ------------------------------------------------------------------ */
-
 /* Post callback: free a connection after the current iteration. */
 static void _tcp_conn_free_cb(xylem_loop_t* loop,
                                xylem_loop_post_t* req) {
@@ -393,10 +365,6 @@ static void _tcp_conn_free_cb(xylem_loop_t* loop,
         xylem_list_entry(req, xylem_tcp_conn_t, free_post);
     free(conn);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Connection destroy helper (Task 6.3)                              */
-/* ------------------------------------------------------------------ */
 
 static void _tcp_conn_destroy(xylem_tcp_conn_t* conn, int err) {
     conn->state = XYLEM_TCP_STATE_CLOSED;
@@ -451,10 +419,6 @@ static void _tcp_conn_destroy(xylem_tcp_conn_t* conn, int err) {
     xylem_loop_post(conn->loop, &conn->free_post);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Error-triggered close (Task 6.3)                                  */
-/* ------------------------------------------------------------------ */
-
 static void _tcp_conn_start_close(xylem_tcp_conn_t* conn, int err) {
     if (conn->state == XYLEM_TCP_STATE_CLOSED ||
         conn->state == XYLEM_TCP_STATE_CLOSING)
@@ -480,10 +444,6 @@ static void _tcp_conn_start_close(xylem_tcp_conn_t* conn, int err) {
     _tcp_conn_destroy(conn, err);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Graceful close (Task 6.3)                                         */
-/* ------------------------------------------------------------------ */
-
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     if (conn->state == XYLEM_TCP_STATE_CLOSING ||
         conn->state == XYLEM_TCP_STATE_CLOSED)
@@ -501,10 +461,6 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     /* Otherwise, _tcp_flush_writes will complete the close when
      * the write queue empties and state is CLOSING. */
 }
-
-/* ------------------------------------------------------------------ */
-/*  Readable handler (Task 6.1)                                       */
-/* ------------------------------------------------------------------ */
 
 static void _tcp_conn_on_readable(xylem_tcp_conn_t* conn) {
     char tmp[16384];
@@ -576,10 +532,6 @@ static void _tcp_conn_on_readable(xylem_tcp_conn_t* conn) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Connection IO callback (Task 6.1)                                 */
-/* ------------------------------------------------------------------ */
-
 static void _tcp_conn_io_cb(xylem_loop_t* loop,
                             xylem_loop_io_t* io,
                             platform_poller_op_t revents) {
@@ -597,10 +549,6 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
     if (revents & PLATFORM_POLLER_WR_OP)
         _tcp_flush_writes(conn);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Write queue flush (Task 6.2)                                      */
-/* ------------------------------------------------------------------ */
 
 static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
     while (!xylem_queue_empty(&conn->write_queue)) {
@@ -681,10 +629,6 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Send API (Task 6.2)                                               */
-/* ------------------------------------------------------------------ */
-
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     if (conn->state == XYLEM_TCP_STATE_CLOSING ||
         conn->state == XYLEM_TCP_STATE_CLOSED)
@@ -720,10 +664,6 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  User data accessors (Task 6.5)                                    */
-/* ------------------------------------------------------------------ */
-
 void* xylem_tcp_conn_get_userdata(xylem_tcp_conn_t* conn) {
     return conn->userdata;
 }
@@ -731,10 +671,6 @@ void* xylem_tcp_conn_get_userdata(xylem_tcp_conn_t* conn) {
 void xylem_tcp_conn_set_userdata(xylem_tcp_conn_t* conn, void* ud) {
     conn->userdata = ud;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Auto-reconnect logic (Task 7.3)                                   */
-/* ------------------------------------------------------------------ */
 
 /* Schedule a reconnect attempt with exponential backoff. */
 static void _tcp_schedule_reconnect(xylem_tcp_conn_t* conn) {
@@ -814,10 +750,6 @@ static void _tcp_reconnect_timer_cb(xylem_loop_t* loop,
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Connect completion callback (Task 7.2)                            */
-/* ------------------------------------------------------------------ */
-
 static void _tcp_try_connect(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
                              platform_poller_op_t revents) {
@@ -850,10 +782,6 @@ static void _tcp_try_connect(xylem_loop_t* loop,
         }
     }
 }
-
-/* ------------------------------------------------------------------ */
-/*  Async dial (Task 7.1)                                             */
-/* ------------------------------------------------------------------ */
 
 xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_addr_t* addr,
@@ -934,10 +862,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     return conn;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Server accept callback (Task 8.2)                                 */
-/* ------------------------------------------------------------------ */
-
 static void _tcp_server_io_cb(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
                               platform_poller_op_t revents) {
@@ -1003,10 +927,6 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
     }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Server listen (Task 8.1)                                          */
-/* ------------------------------------------------------------------ */
-
 xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_tcp_handler_t* handler,
@@ -1063,10 +983,6 @@ static void _tcp_server_free_cb(xylem_loop_t* loop,
         xylem_list_entry(req, xylem_tcp_server_t, free_post);
     free(server);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Server close (Task 8.3)                                           */
-/* ------------------------------------------------------------------ */
 
 void xylem_tcp_server_close(xylem_tcp_server_t* server) {
     if (server->closing) return;

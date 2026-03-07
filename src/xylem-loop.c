@@ -118,10 +118,6 @@ static int _loop_next_timeout(xylem_loop_t* loop) {
     return (int)diff;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Lifecycle                                                         */
-/* ------------------------------------------------------------------ */
-
 int xylem_loop_init(xylem_loop_t* loop) {
     memset(loop, 0, sizeof(*loop));
 
@@ -226,10 +222,6 @@ uint64_t xylem_loop_now(xylem_loop_t* loop) {
     return loop->time;
 }
 
-/* ------------------------------------------------------------------ */
-/*  I/O                                                               */
-/* ------------------------------------------------------------------ */
-
 int xylem_loop_io_init(xylem_loop_t* loop,
                        xylem_loop_io_t* io,
                        platform_poller_fd_t fd) {
@@ -286,10 +278,6 @@ void xylem_loop_io_close(xylem_loop_io_t* io) {
     xylem_queue_enqueue(&io->loop->closing, &io->close_node);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Timer                                                             */
-/* ------------------------------------------------------------------ */
-
 int xylem_loop_timer_init(xylem_loop_t* loop,
                           xylem_loop_timer_t* timer) {
     memset(timer, 0, sizeof(*timer));
@@ -340,10 +328,6 @@ void xylem_loop_timer_close(xylem_loop_timer_t* timer) {
     }
     xylem_queue_enqueue(&timer->loop->closing, &timer->close_node);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Post (thread-safe)                                                */
-/* ------------------------------------------------------------------ */
 
 int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_t* req) {
     mtx_lock(&loop->post_mtx);

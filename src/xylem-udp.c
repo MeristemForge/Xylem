@@ -26,10 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/*  Internal struct definition                                        */
-/* ------------------------------------------------------------------ */
-
 struct xylem_udp_s {
     xylem_loop_t*         loop;
     xylem_loop_io_t       io;
@@ -39,10 +35,6 @@ struct xylem_udp_s {
     bool                  closing;
     xylem_loop_post_t     free_post;
 };
-
-/* ------------------------------------------------------------------ */
-/*  IO callback                                                       */
-/* ------------------------------------------------------------------ */
 
 /* Handle readable event: recvfrom into recv_buf, wrap sender in
  * xylem_addr_t, call handler->on_read. */
@@ -82,10 +74,6 @@ static void _udp_io_cb(xylem_loop_t* loop,
         if (udp->closing) return;
     }
 }
-
-/* ------------------------------------------------------------------ */
-/*  Bind                                                              */
-/* ------------------------------------------------------------------ */
 
 xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
                              xylem_addr_t* addr,
@@ -130,10 +118,6 @@ xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
     return udp;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Send                                                              */
-/* ------------------------------------------------------------------ */
-
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
     socklen_t addrlen = (dest->storage.ss_family == AF_INET6)
@@ -144,10 +128,6 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                                        &dest->storage, addrlen);
     return (n < 0) ? -1 : (int)n;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Multicast                                                         */
-/* ------------------------------------------------------------------ */
 
 int xylem_udp_mcast_join(xylem_udp_t* udp, const char* group) {
     struct ip_mreq mreq;
@@ -175,10 +155,6 @@ static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
     xylem_udp_t* udp = xylem_list_entry(req, xylem_udp_t, free_post);
     free(udp);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Close                                                             */
-/* ------------------------------------------------------------------ */
 
 void xylem_udp_close(xylem_udp_t* udp) {
     if (udp->closing) return;
