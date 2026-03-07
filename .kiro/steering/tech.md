@@ -55,6 +55,11 @@ cmake --build out --target coverage
 # Report: out/coverage/
 ```
 
+## Troubleshooting
+- Missing coverage tool: run `./scripts/install-deps.sh` (Linux/macOS) or `scripts/install-deps.ps1` (Windows)
+- Linux/macOS needs: lcov, genhtml
+- Windows needs: OpenCppCoverage
+
 ## Test Framework
 
 Custom `ASSERT(expr)` macro in `tests/assert.h` — prints `file:line` and aborts on failure.
