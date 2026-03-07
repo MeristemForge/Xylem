@@ -1,5 +1,6 @@
 ---
 inclusion: manual
+description: "Xylem project structure and directory layout"
 ---
 
 # Project Structure

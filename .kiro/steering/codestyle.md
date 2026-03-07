@@ -102,6 +102,19 @@ Order: License → includes → macros → structs → static functions → publ
 
 Static functions ordered by dependency (no forward declarations).
 
+## Platform Layer
+
+Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`. All platform functions are declared in `src/platform/platform.h` and use the `platform_` prefix.
+
+| Rule | Detail |
+|------|--------|
+| Prefix | `platform_<module>_<action>` (e.g. `platform_time_monotonic_nsec`) |
+| Declaration | All in `src/platform/platform.h` — callers include this single header |
+| Implementation | One `.c` per module per platform (`src/platform/win/xylem-<module>.c`, `src/platform/unix/xylem-<module>.c`) |
+| Scope | Only the minimal OS-specific logic; everything else stays in `src/xylem-<module>.c` |
+
+Public API functions belong in `src/xylem-<module>.c` and call `platform_*` helpers for OS-dependent parts. Never put public API implementations directly in platform files.
+
 ## Project Structure
 
 ```

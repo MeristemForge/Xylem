@@ -1,5 +1,6 @@
 ---
 inclusion: manual
+description: "Debugging guide with platform debuggers and MCP servers"
 ---
 
 # Debugging Guide

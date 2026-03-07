@@ -1,5 +1,6 @@
 ---
 inclusion: auto
+description: "Xylem project overview and module inventory"
 ---
 
 # Xylem
