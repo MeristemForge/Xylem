@@ -355,7 +355,7 @@ static void _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     }
 }
 
-static void _tcp_conn_on_connected(xylem_tcp_conn_t* conn) {
+static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
     _tcp_setup_conn(conn);
     xylem_logi("tcp conn fd=%d connected", (int)conn->fd);
 
@@ -454,7 +454,7 @@ static void _tcp_start_close_conn(xylem_tcp_conn_t* conn, int err) {
     _tcp_destroy_conn(conn, err);
 }
 
-static void _tcp_conn_on_readable(xylem_tcp_conn_t* conn) {
+static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
     char tmp[16384];
 
     /**
@@ -539,7 +539,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         xylem_list_entry(io, xylem_tcp_conn_t, io);
 
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _tcp_conn_on_readable(conn);
+        _tcp_conn_readable_cb(conn);
     }
 
     /* Guard: on_readable may have destroyed the connection */
@@ -704,7 +704,7 @@ static void _tcp_reconnect_timer_cb(xylem_loop_t* loop,
     dial->reconnect_count++;
 
     if (connected) {
-        _tcp_conn_on_connected(conn);
+        _tcp_conn_connected_cb(conn);
     } else {
         /* Connection in progress — wait for WR event */
         xylem_loop_start_io(&conn->io, PLATFORM_POLLER_WR_OP,
@@ -741,7 +741,7 @@ static void _tcp_try_connect(xylem_loop_t* loop,
     }
 
     if (err == 0) {
-        _tcp_conn_on_connected(conn);
+        _tcp_conn_connected_cb(conn);
     } else {
         if (conn->opts.reconnect_max > 0 &&
             dial->reconnect_count < conn->opts.reconnect_max) {
@@ -984,7 +984,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     xylem_loop_init_timer(loop, &dial->reconnect_timer);
 
     if (connected) {
-        _tcp_conn_on_connected(conn);
+        _tcp_conn_connected_cb(conn);
     } else {
         /* Connection in progress — wait for WR event */
         xylem_loop_start_io(&conn->io, PLATFORM_POLLER_WR_OP,

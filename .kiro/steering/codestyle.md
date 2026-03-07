@@ -55,9 +55,9 @@ Static function names have two logical segments: `<module>` and `<action>`, pref
 - `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
 - `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
 
-**Callback exception:** Functions that are event handlers (registered as callbacks) use `_<module>_<subject>_on_<event>` or `_<module>_<subject>_<event>_cb` format. These describe events, not actions, so the verb-first rule does not apply:
-- `_tcp_conn_on_connected` — callback when connection is established
+**Callback exception:** Functions that are event handlers (registered as callbacks) use `_<module>_<subject>_cb` format. The `_cb` suffix marks the function as a callback; the subject describes the event source. These describe events, not actions, so the verb-first rule does not apply:
 - `_tcp_conn_io_cb` — I/O event callback for a connection
+- `_tcp_conn_connected_cb` — callback when connection is established
 - `_tcp_reconnect_timer_cb` — timer callback for reconnect
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
 | Static variables (file-scope) | `_<name>` prefix | `_echo_loop` |
