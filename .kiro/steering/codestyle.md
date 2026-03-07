@@ -136,6 +136,16 @@ tests/test-<module>.c           # Unit tests
 6. Add `xylem_add_test(<module>)` to `tests/CMakeLists.txt`
 7. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
 
+## Restricted Functions
+
+| Banned | Replacement | Reason |
+|--------|-------------|--------|
+| `localtime`, `gmtime`, `ctime`, `asctime`, `strtok`, `strerror` | `_r` (POSIX) / `_s` (MSVC) variants | Return static buffer — not thread-safe, successive calls overwrite results |
+| `sprintf`, `strcpy`, `strcat` | `snprintf` | No bounds checking — buffer overflow risk |
+| `gets` | `fgets` | Removed in C11 — unconditional buffer overflow |
+| `atoi`, `atof`, `atol` | `strtol`, `strtod` | No error detection — overflow is undefined behavior |
+| `memcpy` with overlapping regions | `memmove` | Overlapping src/dst is undefined behavior |
+
 ## Headers
 
 - Use `_Pragma("once")` for header guards
