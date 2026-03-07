@@ -41,7 +41,9 @@ void xylem_stack_push(xylem_stack_t* stack, xylem_stack_node_t* node) {
 }
 
 xylem_stack_node_t* xylem_stack_pop(xylem_stack_t* stack) {
-    if (stack->top == NULL) return NULL;
+    if (stack->top == NULL) {
+        return NULL;
+    }
     xylem_stack_node_t* node = stack->top;
     stack->top = node->next;
     node->next = NULL;

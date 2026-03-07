@@ -24,7 +24,9 @@
 #include <string.h>
 
 int xylem_addr_pton(const char* host, uint16_t port, xylem_addr_t* addr) {
-    if (!host || !addr) return -1;
+    if (!host || !addr) {
+        return -1;
+    }
 
     memset(&addr->storage, 0, sizeof(addr->storage));
 
@@ -53,7 +55,9 @@ int xylem_addr_pton(const char* host, uint16_t port, xylem_addr_t* addr) {
 
 int xylem_addr_ntop(const xylem_addr_t* addr,
                     char* host, size_t hostlen, uint16_t* port) {
-    if (!addr || !host || !port) return -1;
+    if (!addr || !host || !port) {
+        return -1;
+    }
 
     switch (addr->storage.ss_family) {
     case AF_INET: {

@@ -44,7 +44,9 @@ void xylem_queue_enqueue(xylem_queue_t* queue, xylem_queue_node_t* node) {
 }
 
 xylem_queue_node_t* xylem_queue_dequeue(xylem_queue_t* queue) {
-    if (xylem_queue_empty(queue)) return NULL;
+    if (xylem_queue_empty(queue)) {
+        return NULL;
+    }
     xylem_queue_node_t* node = queue->head.next;
     node->next->prev = &queue->head;
     queue->head.next = node->next;
@@ -55,22 +57,30 @@ xylem_queue_node_t* xylem_queue_dequeue(xylem_queue_t* queue) {
 }
 
 xylem_queue_node_t* xylem_queue_front(xylem_queue_t* queue) {
-    if (xylem_queue_empty(queue)) return NULL;
+    if (xylem_queue_empty(queue)) {
+        return NULL;
+    }
     return queue->head.next;
 }
 
 xylem_queue_node_t* xylem_queue_back(xylem_queue_t* queue) {
-    if (xylem_queue_empty(queue)) return NULL;
+    if (xylem_queue_empty(queue)) {
+        return NULL;
+    }
     return queue->head.prev;
 }
 
 void xylem_queue_swap(xylem_queue_t* queue1, xylem_queue_t* queue2) {
-    if (queue1 == queue2) return;
+    if (queue1 == queue2) {
+        return;
+    }
 
     bool q1_empty = (queue1->nelts == 0);
     bool q2_empty = (queue2->nelts == 0);
 
-    if (q1_empty && q2_empty) return;
+    if (q1_empty && q2_empty) {
+        return;
+    }
 
     if (q1_empty) {
         queue1->head.next = queue2->head.next;

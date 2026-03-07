@@ -28,7 +28,9 @@ typedef struct {
 
 static inline _xqueue_node_t* _xqueue_alloc_node(void* data) {
     _xqueue_node_t* n = malloc(sizeof(_xqueue_node_t));
-    if (!n) return NULL;
+    if (!n) {
+        return NULL;
+    }
     n->data = data;
     return n;
 }

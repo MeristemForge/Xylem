@@ -60,12 +60,16 @@ void xylem_list_remove(xylem_list_t* list, xylem_list_node_t* node) {
 }
 
 xylem_list_node_t* xylem_list_head(xylem_list_t* list) {
-    if (xylem_list_empty(list)) return NULL;
+    if (xylem_list_empty(list)) {
+        return NULL;
+    }
     return list->head.next;
 }
 
 xylem_list_node_t* xylem_list_tail(xylem_list_t* list) {
-    if (xylem_list_empty(list)) return NULL;
+    if (xylem_list_empty(list)) {
+        return NULL;
+    }
     return list->head.prev;
 }
 
@@ -82,12 +86,16 @@ xylem_list_node_t* xylem_list_sentinel(xylem_list_t* list) {
 }
 
 void xylem_list_swap(xylem_list_t* a, xylem_list_t* b) {
-    if (a == b) return;
+    if (a == b) {
+        return;
+    }
 
     bool a_empty = (a->nelts == 0);
     bool b_empty = (b->nelts == 0);
 
-    if (a_empty && b_empty) return;
+    if (a_empty && b_empty) {
+        return;
+    }
 
     if (a_empty) {
         a->head.next = b->head.next;
