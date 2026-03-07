@@ -1,4 +1,4 @@
-/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+﻿/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -32,25 +32,25 @@ typedef struct {
     test_fn     fn;
 } test_entry;
 
-static xylem_loop_timer_t g_safety_timer;
+static xylem_loop_timer_t _safety_timer;
 
 /* Test 1: UDP echo */
-static xylem_loop_t g_echo_loop;
-static xylem_udp_t* g_echo_receiver = NULL;
-static xylem_udp_t* g_echo_sender   = NULL;
-static int    g_echo_read_called = 0;
-static char   g_echo_data[64];
-static size_t g_echo_data_len = 0;
-static xylem_loop_timer_t g_echo_send_timer;
+static xylem_loop_t _echo_loop;
+static xylem_udp_t* _echo_receiver = NULL;
+static xylem_udp_t* _echo_sender   = NULL;
+static int    _echo_read_called = 0;
+static char   _echo_data[64];
+static size_t _echo_data_len = 0;
+static xylem_loop_timer_t _echo_send_timer;
 
 /* Test 2: UDP datagram boundary */
-static xylem_loop_t g_dgram_loop;
-static xylem_udp_t* g_dgram_receiver = NULL;
-static xylem_udp_t* g_dgram_sender   = NULL;
-static int    g_dgram_read_count = 0;
-static size_t g_dgram_sizes[3];
-static char   g_dgram_bufs[3][4];
-static xylem_loop_timer_t g_dgram_send_timer;
+static xylem_loop_t _dgram_loop;
+static xylem_udp_t* _dgram_receiver = NULL;
+static xylem_udp_t* _dgram_sender   = NULL;
+static int    _dgram_read_count = 0;
+static size_t _dgram_sizes[3];
+static char   _dgram_bufs[3][4];
+static xylem_loop_timer_t _dgram_send_timer;
 
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
@@ -60,23 +60,23 @@ static void _safety_timer_cb(xylem_loop_t* loop,
 }
 
 static void _start_safety_timer(xylem_loop_t* loop) {
-    xylem_loop_timer_init(loop, &g_safety_timer);
-    xylem_loop_timer_start(&g_safety_timer, _safety_timer_cb, 2000, 0);
+    xylem_loop_timer_init(loop, &_safety_timer);
+    xylem_loop_timer_start(&_safety_timer, _safety_timer_cb, 2000, 0);
 }
 
 static void _stop_safety_timer(void) {
-    xylem_loop_timer_close(&g_safety_timer);
+    xylem_loop_timer_close(&_safety_timer);
 }
 
 static void _echo_on_read(xylem_udp_t* udp, void* data, size_t len,
                            xylem_addr_t* addr) {
     (void)udp; (void)addr;
-    g_echo_read_called = 1;
-    if (len < sizeof(g_echo_data)) {
-        memcpy(g_echo_data, data, len);
-        g_echo_data_len = len;
+    _echo_read_called = 1;
+    if (len < sizeof(_echo_data)) {
+        memcpy(_echo_data, data, len);
+        _echo_data_len = len;
     }
-    xylem_loop_stop(&g_echo_loop);
+    xylem_loop_stop(&_echo_loop);
 }
 
 static void _echo_send_timer_cb(xylem_loop_t* loop,
@@ -84,16 +84,16 @@ static void _echo_send_timer_cb(xylem_loop_t* loop,
     (void)loop; (void)timer;
     xylem_addr_t dest;
     xylem_addr_pton("127.0.0.1", 18081, &dest);
-    xylem_udp_send(g_echo_sender, &dest, "hello", 5);
+    xylem_udp_send(_echo_sender, &dest, "hello", 5);
 }
 
 static void test_udp_echo(void) {
-    xylem_loop_init(&g_echo_loop);
-    _start_safety_timer(&g_echo_loop);
+    xylem_loop_init(&_echo_loop);
+    _start_safety_timer(&_echo_loop);
 
-    g_echo_read_called = 0;
-    g_echo_data_len    = 0;
-    memset(g_echo_data, 0, sizeof(g_echo_data));
+    _echo_read_called = 0;
+    _echo_data_len    = 0;
+    memset(_echo_data, 0, sizeof(_echo_data));
 
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", 18081, &recv_addr);
@@ -102,46 +102,46 @@ static void test_udp_echo(void) {
         .on_read = _echo_on_read,
     };
 
-    g_echo_receiver = xylem_udp_bind(&g_echo_loop, &recv_addr,
+    _echo_receiver = xylem_udp_bind(&_echo_loop, &recv_addr,
                                       &recv_handler);
-    ASSERT(g_echo_receiver != NULL);
+    ASSERT(_echo_receiver != NULL);
 
     xylem_addr_t send_addr;
     xylem_addr_pton("127.0.0.1", 18082, &send_addr);
 
     xylem_udp_handler_t send_handler = {0};
 
-    g_echo_sender = xylem_udp_bind(&g_echo_loop, &send_addr,
+    _echo_sender = xylem_udp_bind(&_echo_loop, &send_addr,
                                     &send_handler);
-    ASSERT(g_echo_sender != NULL);
+    ASSERT(_echo_sender != NULL);
 
-    xylem_loop_timer_init(&g_echo_loop, &g_echo_send_timer);
-    xylem_loop_timer_start(&g_echo_send_timer, _echo_send_timer_cb,
+    xylem_loop_timer_init(&_echo_loop, &_echo_send_timer);
+    xylem_loop_timer_start(&_echo_send_timer, _echo_send_timer_cb,
                            10, 0);
 
-    xylem_loop_run(&g_echo_loop);
+    xylem_loop_run(&_echo_loop);
 
-    ASSERT(g_echo_read_called == 1);
-    ASSERT(g_echo_data_len == 5);
-    ASSERT(memcmp(g_echo_data, "hello", 5) == 0);
+    ASSERT(_echo_read_called == 1);
+    ASSERT(_echo_data_len == 5);
+    ASSERT(memcmp(_echo_data, "hello", 5) == 0);
 
     _stop_safety_timer();
-    xylem_loop_timer_close(&g_echo_send_timer);
-    xylem_loop_deinit(&g_echo_loop);
+    xylem_loop_timer_close(&_echo_send_timer);
+    xylem_loop_deinit(&_echo_loop);
 }
 
 static void _dgram_on_read(xylem_udp_t* udp, void* data, size_t len,
                             xylem_addr_t* addr) {
     (void)udp; (void)addr;
-    if (g_dgram_read_count < 3) {
-        g_dgram_sizes[g_dgram_read_count] = len;
-        if (len <= sizeof(g_dgram_bufs[0])) {
-            memcpy(g_dgram_bufs[g_dgram_read_count], data, len);
+    if (_dgram_read_count < 3) {
+        _dgram_sizes[_dgram_read_count] = len;
+        if (len <= sizeof(_dgram_bufs[0])) {
+            memcpy(_dgram_bufs[_dgram_read_count], data, len);
         }
-        g_dgram_read_count++;
+        _dgram_read_count++;
     }
-    if (g_dgram_read_count >= 3) {
-        xylem_loop_stop(&g_dgram_loop);
+    if (_dgram_read_count >= 3) {
+        xylem_loop_stop(&_dgram_loop);
     }
 }
 
@@ -150,18 +150,18 @@ static void _dgram_send_timer_cb(xylem_loop_t* loop,
     (void)loop; (void)timer;
     xylem_addr_t dest;
     xylem_addr_pton("127.0.0.1", 18083, &dest);
-    xylem_udp_send(g_dgram_sender, &dest, "A", 1);
-    xylem_udp_send(g_dgram_sender, &dest, "BB", 2);
-    xylem_udp_send(g_dgram_sender, &dest, "CCC", 3);
+    xylem_udp_send(_dgram_sender, &dest, "A", 1);
+    xylem_udp_send(_dgram_sender, &dest, "BB", 2);
+    xylem_udp_send(_dgram_sender, &dest, "CCC", 3);
 }
 
 static void test_udp_datagram_boundary(void) {
-    xylem_loop_init(&g_dgram_loop);
-    _start_safety_timer(&g_dgram_loop);
+    xylem_loop_init(&_dgram_loop);
+    _start_safety_timer(&_dgram_loop);
 
-    g_dgram_read_count = 0;
-    memset(g_dgram_sizes, 0, sizeof(g_dgram_sizes));
-    memset(g_dgram_bufs, 0, sizeof(g_dgram_bufs));
+    _dgram_read_count = 0;
+    memset(_dgram_sizes, 0, sizeof(_dgram_sizes));
+    memset(_dgram_bufs, 0, sizeof(_dgram_bufs));
 
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", 18083, &recv_addr);
@@ -170,36 +170,36 @@ static void test_udp_datagram_boundary(void) {
         .on_read = _dgram_on_read,
     };
 
-    g_dgram_receiver = xylem_udp_bind(&g_dgram_loop, &recv_addr,
+    _dgram_receiver = xylem_udp_bind(&_dgram_loop, &recv_addr,
                                        &recv_handler);
-    ASSERT(g_dgram_receiver != NULL);
+    ASSERT(_dgram_receiver != NULL);
 
     xylem_addr_t send_addr;
     xylem_addr_pton("127.0.0.1", 18084, &send_addr);
 
     xylem_udp_handler_t send_handler = {0};
 
-    g_dgram_sender = xylem_udp_bind(&g_dgram_loop, &send_addr,
+    _dgram_sender = xylem_udp_bind(&_dgram_loop, &send_addr,
                                      &send_handler);
-    ASSERT(g_dgram_sender != NULL);
+    ASSERT(_dgram_sender != NULL);
 
-    xylem_loop_timer_init(&g_dgram_loop, &g_dgram_send_timer);
-    xylem_loop_timer_start(&g_dgram_send_timer, _dgram_send_timer_cb,
+    xylem_loop_timer_init(&_dgram_loop, &_dgram_send_timer);
+    xylem_loop_timer_start(&_dgram_send_timer, _dgram_send_timer_cb,
                            10, 0);
 
-    xylem_loop_run(&g_dgram_loop);
+    xylem_loop_run(&_dgram_loop);
 
-    ASSERT(g_dgram_read_count == 3);
-    ASSERT(g_dgram_sizes[0] == 1);
-    ASSERT(g_dgram_sizes[1] == 2);
-    ASSERT(g_dgram_sizes[2] == 3);
-    ASSERT(memcmp(g_dgram_bufs[0], "A", 1) == 0);
-    ASSERT(memcmp(g_dgram_bufs[1], "BB", 2) == 0);
-    ASSERT(memcmp(g_dgram_bufs[2], "CCC", 3) == 0);
+    ASSERT(_dgram_read_count == 3);
+    ASSERT(_dgram_sizes[0] == 1);
+    ASSERT(_dgram_sizes[1] == 2);
+    ASSERT(_dgram_sizes[2] == 3);
+    ASSERT(memcmp(_dgram_bufs[0], "A", 1) == 0);
+    ASSERT(memcmp(_dgram_bufs[1], "BB", 2) == 0);
+    ASSERT(memcmp(_dgram_bufs[2], "CCC", 3) == 0);
 
     _stop_safety_timer();
-    xylem_loop_timer_close(&g_dgram_send_timer);
-    xylem_loop_deinit(&g_dgram_loop);
+    xylem_loop_timer_close(&_dgram_send_timer);
+    xylem_loop_deinit(&_dgram_loop);
 }
 
 int main(void) {

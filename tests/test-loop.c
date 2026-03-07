@@ -32,11 +32,11 @@ static int               _io_write_count;
 static int               _io_rearm_count;
 static platform_sock_t   _io_rearm_wr;
 static int               _io_stop_count;
-xylem_loop_io_t*         _g_stop_io;
+xylem_loop_io_t*         stop_io;
 static int               _post_count;
-static xylem_loop_post_t _g_post_req;
-static xylem_loop_t*     _g_cross_loop;
-static xylem_loop_post_t _g_cross_post;
+static xylem_loop_post_t _post_req;
+static xylem_loop_t*     _cross_loop;
+static xylem_loop_post_t _cross_post;
 static int               _cross_post_count;
 static int               _order_log[3];
 static int               _order_idx;
@@ -296,8 +296,8 @@ static void _on_io_stopped(xylem_loop_t* loop,
 }
 
 static void _on_stop_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
-    xylem_loop_io_stop(_g_stop_io);
-    xylem_loop_io_close(_g_stop_io);
+    xylem_loop_io_stop(stop_io);
+    xylem_loop_io_close(stop_io);
     xylem_loop_timer_close(timer);
 }
 
@@ -316,7 +316,7 @@ static void test_io_stop(void) {
     ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
     ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_RD_OP, _on_io_stopped) == 0);
 
-    _g_stop_io = &io;
+    stop_io = &io;
 
     ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
     ASSERT(xylem_loop_timer_start(&timer, _on_stop_trigger, 10, 0) == 0);
@@ -334,9 +334,9 @@ static void _on_post(xylem_loop_t* loop, xylem_loop_post_t* req) {
 }
 
 static void _on_post_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
-    _g_post_req.cb = _on_post;
-    _g_post_req.ud = NULL;
-    xylem_loop_post(loop, &_g_post_req);
+    _post_req.cb = _on_post;
+    _post_req.ud = NULL;
+    xylem_loop_post(loop, &_post_req);
     xylem_loop_timer_close(timer);
 }
 
@@ -372,9 +372,9 @@ static int _poster_thread(void* arg) {
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 20000000 }; /* 20ms */
     thrd_sleep(&ts, NULL);
 
-    _g_cross_post.cb = _on_cross_post;
-    _g_cross_post.ud = NULL;
-    xylem_loop_post(loop, &_g_cross_post);
+    _cross_post.cb = _on_cross_post;
+    _cross_post.ud = NULL;
+    xylem_loop_post(loop, &_cross_post);
     return 0;
 }
 

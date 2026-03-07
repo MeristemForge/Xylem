@@ -1,4 +1,4 @@
-/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+﻿/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -22,11 +22,11 @@
 #include "xylem.h"
 #include "assert.h"
 
-static atomic_int g_counter;
+static atomic_int _counter;
 
 static void _increment(void* arg) {
     (void)arg;
-    atomic_fetch_add(&g_counter, 1);
+    atomic_fetch_add(&_counter, 1);
 }
 
 /* Test: create and immediately destroy an empty pool. */
@@ -39,7 +39,7 @@ static void test_create_destroy(void) {
 /* Test: post jobs and verify all are executed. */
 static void test_post_jobs(void) {
     enum { N = 100 };
-    atomic_store(&g_counter, 0);
+    atomic_store(&_counter, 0);
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(4);
     ASSERT(pool != NULL);
@@ -49,13 +49,13 @@ static void test_post_jobs(void) {
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&g_counter) == N);
+    ASSERT(atomic_load(&_counter) == N);
 }
 
 /* Test: single thread pool works correctly. */
 static void test_single_thread(void) {
     enum { N = 50 };
-    atomic_store(&g_counter, 0);
+    atomic_store(&_counter, 0);
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
     ASSERT(pool != NULL);
@@ -65,7 +65,7 @@ static void test_single_thread(void) {
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&g_counter) == N);
+    ASSERT(atomic_load(&_counter) == N);
 }
 
 typedef struct {
@@ -116,7 +116,7 @@ static void test_job_args(void) {
 /* Test: many threads with many jobs. */
 static void test_many_threads(void) {
     enum { N = 200 };
-    atomic_store(&g_counter, 0);
+    atomic_store(&_counter, 0);
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(16);
     ASSERT(pool != NULL);
@@ -126,7 +126,7 @@ static void test_many_threads(void) {
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&g_counter) == N);
+    ASSERT(atomic_load(&_counter) == N);
 }
 
 int main(void) {
