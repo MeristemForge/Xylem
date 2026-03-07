@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "windbg": {
+      "command": "python",
+      "args": ["-m", "mcp_windbg"],
+      "env": {
+        "_NT_SYMBOL_PATH": "SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols"
+      },
+      "disabled": false,
+      "autoApprove": [],
+      "_comment": "Windows: CDB/WinDbg (pip install mcp-windbg, requires Python >= 3.10) — https://github.com/svnscha/mcp-windbg"
+    },
+    "lldb": {
+      "command": "python3",
+      "args": ["/path/to/lldb-mcp/lldb_mcp.py"],
+      "disabled": true,
+      "autoApprove": [],
+      "_comment": "macOS/Linux: LLDB (git clone + python) — https://github.com/stass/lldb-mcp"
+    },
+    "gdb": {
+      "command": "uvx",
+      "args": ["mcp-gdb"],
+      "env": {},
+      "disabled": true,
+      "autoApprove": [],
+      "_comment": "Linux: GDB (uvx mcp-gdb) — https://github.com/signal-slot/mcp-gdb"
+    }
+  }
+}
