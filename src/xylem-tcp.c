@@ -273,7 +273,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn);
 static void _tcp_try_connect(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
                              platform_poller_op_t revents);
-static void _tcp_reconnect_timer_cb(xylem_loop_t* loop,
+static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer);
 
 /* Extract host string and port from xylem_addr_t into caller buffers. */
@@ -319,7 +319,7 @@ static void _tcp_connect_timeout_cb(xylem_loop_t* loop,
     }
 }
 
-static void _tcp_heartbeat_cb(xylem_loop_t* loop,
+static void _tcp_heartbeat_timeout_cb(xylem_loop_t* loop,
                                xylem_loop_timer_t* timer) {
     (void)loop;
     xylem_tcp_conn_t* conn =
@@ -343,7 +343,7 @@ static void _tcp_setup_conn(xylem_tcp_conn_t* conn) {
 
     if (conn->opts.heartbeat_ms > 0) {
         xylem_loop_start_timer(&conn->heartbeat_timer,
-                               _tcp_heartbeat_cb,
+                               _tcp_heartbeat_timeout_cb,
                                conn->opts.heartbeat_ms,
                                conn->opts.heartbeat_ms);
     }
@@ -653,7 +653,7 @@ static void _tcp_schedule_reconnect(xylem_tcp_conn_t* conn) {
     if (delay > 30000) delay = 30000;
 
     xylem_loop_start_timer(&dial->reconnect_timer,
-                           _tcp_reconnect_timer_cb,
+                           _tcp_reconnect_timeout_cb,
                            delay, 0);
     xylem_logi("tcp conn fd=%d scheduling reconnect #%u in %llu ms",
                (int)conn->fd, dial->reconnect_count + 1,
@@ -661,7 +661,7 @@ static void _tcp_schedule_reconnect(xylem_tcp_conn_t* conn) {
 }
 
 /* Reconnect timer fires: close old socket, create new one, re-dial. */
-static void _tcp_reconnect_timer_cb(xylem_loop_t* loop,
+static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer) {
     (void)loop;
     _tcp_dial_priv_t* dial =

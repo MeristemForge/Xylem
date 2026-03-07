@@ -67,11 +67,12 @@ Two logical segments: `<module>`, `<action>`, prefixed with `_`. Same rules as p
 
 ### Static Callbacks
 
-Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject is the object that triggers the event. These describe events, not actions, so the verb-first rule does not apply:
+Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject is the object or concern that triggers the event, not the mechanism (use `reconnect` not `reconnect_timer`). These describe events, not actions, so the verb-first rule does not apply:
 - `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
 - `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
 - `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
-- `_tcp_reconnect_timer_cb` — module=`tcp`, subject=`reconnect_timer`, event implied by suffix
+- `_tcp_write_timeout_cb` — module=`tcp`, subject=`write`, event=`timeout`
+- `_tcp_reconnect_timeout_cb` — module=`tcp`, subject=`reconnect`, event=`timeout`
 
 ## Types
 
