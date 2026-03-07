@@ -42,6 +42,7 @@ Every `.c` and `.h` file must start with the project license block:
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
 | Internal/static helpers | `_<name>` prefix | `_heap_node_swap` |
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
+| Static global variables | `g_<name>` prefix | `g_echo_loop` |
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
 
@@ -98,7 +99,7 @@ Intrusive data structures (list, queue, stack, heap, rbtree, etc.) where users e
 
 ## File Organization
 
-Order: License -> includes -> macros -> structs -> static functions -> public functions
+Order: License -> includes -> macros -> structs -> static variables -> static functions -> public functions
 
 Static functions ordered by dependency (no forward declarations).
 
@@ -210,4 +211,5 @@ static inline void _heap_node_swap(...) { ... }
 
 - `/* ... */` style (C11 compatible)
 - Only where code is non-obvious
+- No decorative dividers
 - Keep short

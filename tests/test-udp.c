@@ -32,9 +32,25 @@ typedef struct {
     test_fn     fn;
 } test_entry;
 
-/* ------------------------------------------------------------------ */
-/*  Safety timer: stops the loop after 2 seconds to prevent hangs     */
-/* ------------------------------------------------------------------ */
+static xylem_loop_timer_t g_safety_timer;
+
+/* Test 1: UDP echo */
+static xylem_loop_t g_echo_loop;
+static xylem_udp_t* g_echo_receiver = NULL;
+static xylem_udp_t* g_echo_sender   = NULL;
+static int    g_echo_read_called = 0;
+static char   g_echo_data[64];
+static size_t g_echo_data_len = 0;
+static xylem_loop_timer_t g_echo_send_timer;
+
+/* Test 2: UDP datagram boundary */
+static xylem_loop_t g_dgram_loop;
+static xylem_udp_t* g_dgram_receiver = NULL;
+static xylem_udp_t* g_dgram_sender   = NULL;
+static int    g_dgram_read_count = 0;
+static size_t g_dgram_sizes[3];
+static char   g_dgram_bufs[3][4];
+static xylem_loop_timer_t g_dgram_send_timer;
 
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
@@ -42,8 +58,6 @@ static void _safety_timer_cb(xylem_loop_t* loop,
     fprintf(stderr, "SAFETY TIMEOUT: test hung, stopping loop\n");
     xylem_loop_stop(loop);
 }
-
-static xylem_loop_timer_t g_safety_timer;
 
 static void _start_safety_timer(xylem_loop_t* loop) {
     xylem_loop_timer_init(loop, &g_safety_timer);
@@ -53,20 +67,6 @@ static void _start_safety_timer(xylem_loop_t* loop) {
 static void _stop_safety_timer(void) {
     xylem_loop_timer_close(&g_safety_timer);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 1: UDP echo — basic send/receive                             */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_echo_loop;
-static xylem_udp_t* g_echo_receiver = NULL;
-static xylem_udp_t* g_echo_sender   = NULL;
-static int    g_echo_read_called = 0;
-static char   g_echo_data[64];
-static size_t g_echo_data_len = 0;
-
-/* Timer to trigger the send after the loop is running */
-static xylem_loop_timer_t g_echo_send_timer;
 
 static void _echo_on_read(xylem_udp_t* udp, void* data, size_t len,
                            xylem_addr_t* addr) {
@@ -95,7 +95,6 @@ static void test_udp_echo(void) {
     g_echo_data_len    = 0;
     memset(g_echo_data, 0, sizeof(g_echo_data));
 
-    /* Bind receiver on 127.0.0.1:18081 */
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", 18081, &recv_addr);
 
@@ -107,7 +106,6 @@ static void test_udp_echo(void) {
                                       &recv_handler);
     ASSERT(g_echo_receiver != NULL);
 
-    /* Bind sender on 127.0.0.1:18082 */
     xylem_addr_t send_addr;
     xylem_addr_pton("127.0.0.1", 18082, &send_addr);
 
@@ -117,7 +115,6 @@ static void test_udp_echo(void) {
                                     &send_handler);
     ASSERT(g_echo_sender != NULL);
 
-    /* Use a short timer to send after the loop starts */
     xylem_loop_timer_init(&g_echo_loop, &g_echo_send_timer);
     xylem_loop_timer_start(&g_echo_send_timer, _echo_send_timer_cb,
                            10, 0);
@@ -128,27 +125,10 @@ static void test_udp_echo(void) {
     ASSERT(g_echo_data_len == 5);
     ASSERT(memcmp(g_echo_data, "hello", 5) == 0);
 
-    /* Close handles while loop can still process the closing queue.
-     * xylem_udp_close frees the struct immediately, so we must stop
-     * the safety timer first to avoid dangling close_nodes. */
     _stop_safety_timer();
     xylem_loop_timer_close(&g_echo_send_timer);
     xylem_loop_deinit(&g_echo_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 2: UDP datagram boundary preservation                        */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_dgram_loop;
-static xylem_udp_t* g_dgram_receiver = NULL;
-static xylem_udp_t* g_dgram_sender   = NULL;
-static int    g_dgram_read_count = 0;
-static size_t g_dgram_sizes[3];
-static char   g_dgram_bufs[3][4];
-
-/* Timer to send the 3 datagrams after both sockets are ready */
-static xylem_loop_timer_t g_dgram_send_timer;
 
 static void _dgram_on_read(xylem_udp_t* udp, void* data, size_t len,
                             xylem_addr_t* addr) {
@@ -183,7 +163,6 @@ static void test_udp_datagram_boundary(void) {
     memset(g_dgram_sizes, 0, sizeof(g_dgram_sizes));
     memset(g_dgram_bufs, 0, sizeof(g_dgram_bufs));
 
-    /* Bind receiver on 127.0.0.1:18083 */
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", 18083, &recv_addr);
 
@@ -195,7 +174,6 @@ static void test_udp_datagram_boundary(void) {
                                        &recv_handler);
     ASSERT(g_dgram_receiver != NULL);
 
-    /* Bind sender on 127.0.0.1:18084 */
     xylem_addr_t send_addr;
     xylem_addr_pton("127.0.0.1", 18084, &send_addr);
 
@@ -205,7 +183,6 @@ static void test_udp_datagram_boundary(void) {
                                      &send_handler);
     ASSERT(g_dgram_sender != NULL);
 
-    /* Use a short timer to send after the loop starts */
     xylem_loop_timer_init(&g_dgram_loop, &g_dgram_send_timer);
     xylem_loop_timer_start(&g_dgram_send_timer, _dgram_send_timer_cb,
                            10, 0);
@@ -224,10 +201,6 @@ static void test_udp_datagram_boundary(void) {
     xylem_loop_timer_close(&g_dgram_send_timer);
     xylem_loop_deinit(&g_dgram_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test runner                                                       */
-/* ------------------------------------------------------------------ */
 
 int main(void) {
     platform_socket_startup();

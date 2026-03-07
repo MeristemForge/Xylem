@@ -33,9 +33,59 @@ typedef struct {
     test_fn     fn;
 } test_entry;
 
-/* ------------------------------------------------------------------ */
-/*  Safety timer: stops the loop after 2 seconds to prevent hangs     */
-/* ------------------------------------------------------------------ */
+static xylem_loop_timer_t g_safety_timer;
+
+/* Test 1: TCP echo with FRAME_DELIM */
+static xylem_tcp_conn_t*   g_echo_server_conn = NULL;
+static xylem_tcp_conn_t*   g_echo_client_conn = NULL;
+static xylem_tcp_server_t* g_echo_server      = NULL;
+static xylem_loop_t        g_echo_loop;
+static int    g_echo_accept_called  = 0;
+static int    g_echo_connect_called = 0;
+static int    g_echo_read_called    = 0;
+static char   g_echo_received[64];
+static size_t g_echo_received_len = 0;
+
+/* Test 2: TCP lifecycle */
+static xylem_loop_t        g_life_loop;
+static xylem_tcp_server_t* g_life_server   = NULL;
+static xylem_tcp_conn_t*   g_life_srv_conn = NULL;
+static int g_life_cli_connect = 0;
+static int g_life_cli_close   = 0;
+static int g_life_srv_accept  = 0;
+static int g_life_srv_close   = 0;
+static xylem_loop_timer_t  g_life_check_timer;
+
+/* Test 3: TCP write done */
+static xylem_loop_t        g_wd_loop;
+static xylem_tcp_server_t* g_wd_server   = NULL;
+static xylem_tcp_conn_t*   g_wd_srv_conn = NULL;
+static xylem_tcp_conn_t*   g_wd_cli_conn = NULL;
+static int    g_wd_called  = 0;
+static int    g_wd_status  = -1;
+static size_t g_wd_len     = 0;
+
+/* Test 4: TCP FRAME_FIXED */
+static xylem_loop_t        g_fix_loop;
+static xylem_tcp_server_t* g_fix_server   = NULL;
+static xylem_tcp_conn_t*   g_fix_srv_conn = NULL;
+static xylem_tcp_conn_t*   g_fix_cli_conn = NULL;
+static int  g_fix_read_count = 0;
+static char g_fix_frames[2][4];
+
+/* Test 5: TCP userdata */
+static xylem_loop_t        g_ud_loop;
+static xylem_tcp_server_t* g_ud_server   = NULL;
+static xylem_tcp_conn_t*   g_ud_srv_conn = NULL;
+static xylem_tcp_conn_t*   g_ud_cli_conn = NULL;
+static int g_ud_value    = 42;
+static int g_ud_verified = 0;
+
+/* Test 6: TCP send after close */
+static xylem_loop_t        g_sac_loop;
+static xylem_tcp_server_t* g_sac_server      = NULL;
+static int                 g_sac_send_result = 0;
+static int                 g_sac_tested      = 0;
 
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
@@ -43,8 +93,6 @@ static void _safety_timer_cb(xylem_loop_t* loop,
     fprintf(stderr, "SAFETY TIMEOUT: test hung, stopping loop\n");
     xylem_loop_stop(loop);
 }
-
-static xylem_loop_timer_t g_safety_timer;
 
 static void _start_safety_timer(xylem_loop_t* loop) {
     xylem_loop_timer_init(loop, &g_safety_timer);
@@ -54,20 +102,6 @@ static void _start_safety_timer(xylem_loop_t* loop) {
 static void _stop_safety_timer(void) {
     xylem_loop_timer_close(&g_safety_timer);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 1: TCP echo with FRAME_DELIM                                 */
-/* ------------------------------------------------------------------ */
-
-static xylem_tcp_conn_t* g_echo_server_conn = NULL;
-static xylem_tcp_conn_t* g_echo_client_conn = NULL;
-static xylem_tcp_server_t* g_echo_server    = NULL;
-static xylem_loop_t g_echo_loop;
-static int g_echo_accept_called  = 0;
-static int g_echo_connect_called = 0;
-static int g_echo_read_called    = 0;
-static char g_echo_received[64];
-static size_t g_echo_received_len = 0;
 
 static void _echo_srv_on_accept(xylem_tcp_conn_t* conn) {
     g_echo_server_conn = conn;
@@ -81,7 +115,6 @@ static void _echo_srv_on_close(xylem_tcp_conn_t* conn, int err) {
 
 static void _echo_srv_on_read(xylem_tcp_conn_t* conn,
                                void* data, size_t len) {
-    /* Echo data back with delimiter so client can parse the frame */
     char buf[128];
     if (len + 2 <= sizeof(buf)) {
         memcpy(buf, data, len);
@@ -93,7 +126,6 @@ static void _echo_srv_on_read(xylem_tcp_conn_t* conn,
 
 static void _echo_cli_on_connect(xylem_tcp_conn_t* conn) {
     g_echo_connect_called = 1;
-    /* Send "hello\r\n" */
     xylem_tcp_send(conn, "hello\r\n", 7);
 }
 
@@ -105,7 +137,6 @@ static void _echo_cli_on_read(xylem_tcp_conn_t* conn,
         memcpy(g_echo_received, data, len);
         g_echo_received_len = len;
     }
-    /* Just stop the loop. Cleanup is handled after loop exits. */
     xylem_loop_stop(&g_echo_loop);
 }
 
@@ -163,26 +194,10 @@ static void test_tcp_echo_delim(void) {
     ASSERT(g_echo_received_len == 5);
     ASSERT(memcmp(g_echo_received, "hello", 5) == 0);
 
-    /* Stop safety timer first, then close server.
-     * xylem_tcp_server_close frees the server immediately, which
-     * invalidates its IO close_node in the closing queue. */
     _stop_safety_timer();
     if (g_echo_server) { xylem_tcp_server_close(g_echo_server); g_echo_server = NULL; }
-
     xylem_loop_deinit(&g_echo_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 2: TCP lifecycle (connect + close)                           */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_life_loop;
-static xylem_tcp_server_t* g_life_server = NULL;
-static xylem_tcp_conn_t* g_life_srv_conn = NULL;
-static int g_life_cli_connect = 0;
-static int g_life_cli_close   = 0;
-static int g_life_srv_accept  = 0;
-static int g_life_srv_close   = 0;
 
 static void _life_srv_on_accept(xylem_tcp_conn_t* conn) {
     g_life_srv_accept = 1;
@@ -196,23 +211,17 @@ static void _life_srv_on_close(xylem_tcp_conn_t* conn, int err) {
 
 static void _life_cli_on_connect(xylem_tcp_conn_t* conn) {
     g_life_cli_connect = 1;
-    /* Immediately close the client connection */
     xylem_tcp_close(conn);
 }
 
 static void _life_cli_on_close(xylem_tcp_conn_t* conn, int err) {
     (void)conn; (void)err;
     g_life_cli_close = 1;
-    /* Wait a bit for server side to detect close, then stop */
 }
-
-/* Timer to check if server-side close happened, then stop loop */
-static xylem_loop_timer_t g_life_check_timer;
 
 static void _life_check_cb(xylem_loop_t* loop,
                             xylem_loop_timer_t* timer) {
     (void)timer;
-    /* Close server-side conn if still open */
     if (g_life_srv_conn && !g_life_srv_close) {
         xylem_tcp_close(g_life_srv_conn);
     }
@@ -254,7 +263,6 @@ static void test_tcp_lifecycle(void) {
                                            &cli_handler, &opts);
     ASSERT(cli != NULL);
 
-    /* Give time for server to detect the close */
     xylem_loop_timer_init(&g_life_loop, &g_life_check_timer);
     xylem_loop_timer_start(&g_life_check_timer, _life_check_cb, 200, 0);
 
@@ -269,18 +277,6 @@ static void test_tcp_lifecycle(void) {
     if (g_life_server) { xylem_tcp_server_close(g_life_server); g_life_server = NULL; }
     xylem_loop_deinit(&g_life_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 3: TCP write done callback                                   */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_wd_loop;
-static xylem_tcp_server_t* g_wd_server = NULL;
-static xylem_tcp_conn_t* g_wd_srv_conn = NULL;
-static xylem_tcp_conn_t* g_wd_cli_conn = NULL;
-static int g_wd_called    = 0;
-static int g_wd_status    = -1;
-static size_t g_wd_len    = 0;
 
 static void _wd_srv_on_accept(xylem_tcp_conn_t* conn) {
     g_wd_srv_conn = conn;
@@ -302,8 +298,6 @@ static void _wd_cli_on_write_done(xylem_tcp_conn_t* conn,
     g_wd_called = 1;
     g_wd_status = status;
     g_wd_len    = len;
-
-    /* Stop loop — cleanup after loop exits */
     xylem_loop_stop(&g_wd_loop);
 }
 
@@ -354,22 +348,10 @@ static void test_tcp_write_done(void) {
     ASSERT(g_wd_status == 0);
     ASSERT(g_wd_len == 4);
 
-    /* Skip manual conn cleanup to avoid use-after-free in closing queue */
     _stop_safety_timer();
     if (g_wd_server) { xylem_tcp_server_close(g_wd_server); g_wd_server = NULL; }
-
     xylem_loop_deinit(&g_wd_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 4: TCP FRAME_FIXED framing                                   */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_fix_loop;
-static xylem_tcp_server_t* g_fix_server = NULL;
-static xylem_tcp_conn_t* g_fix_srv_conn = NULL;
-static int g_fix_read_count = 0;
-static char g_fix_frames[2][4];
 
 static void _fix_srv_on_accept(xylem_tcp_conn_t* conn) {
     g_fix_srv_conn = conn;
@@ -388,18 +370,14 @@ static void _fix_srv_on_read(xylem_tcp_conn_t* conn,
         memcpy(g_fix_frames[g_fix_read_count], data, 4);
     }
     g_fix_read_count++;
-
     if (g_fix_read_count >= 2) {
         xylem_loop_stop(&g_fix_loop);
     }
 }
 
 static void _fix_cli_on_connect(xylem_tcp_conn_t* conn) {
-    /* Send 8 bytes = 2 frames of 4 bytes each */
     xylem_tcp_send(conn, "ABCDEFGH", 8);
 }
-
-static xylem_tcp_conn_t* g_fix_cli_conn = NULL;
 
 static void _fix_cli_on_close(xylem_tcp_conn_t* conn, int err) {
     (void)err;
@@ -412,6 +390,7 @@ static void test_tcp_frame_fixed(void) {
 
     g_fix_read_count = 0;
     g_fix_srv_conn   = NULL;
+    g_fix_cli_conn   = NULL;
     g_fix_server     = NULL;
     memset(g_fix_frames, 0, sizeof(g_fix_frames));
 
@@ -451,23 +430,10 @@ static void test_tcp_frame_fixed(void) {
     ASSERT(memcmp(g_fix_frames[0], "ABCD", 4) == 0);
     ASSERT(memcmp(g_fix_frames[1], "EFGH", 4) == 0);
 
-    /* Skip manual conn cleanup to avoid use-after-free in closing queue */
     _stop_safety_timer();
     if (g_fix_server) { xylem_tcp_server_close(g_fix_server); g_fix_server = NULL; }
-
     xylem_loop_deinit(&g_fix_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 5: TCP userdata get/set                                      */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_ud_loop;
-static xylem_tcp_server_t* g_ud_server = NULL;
-static xylem_tcp_conn_t* g_ud_srv_conn = NULL;
-static xylem_tcp_conn_t* g_ud_cli_conn = NULL;
-static int g_ud_value = 42;
-static int g_ud_verified = 0;
 
 static void _ud_srv_on_accept(xylem_tcp_conn_t* conn) {
     g_ud_srv_conn = conn;
@@ -476,8 +442,6 @@ static void _ud_srv_on_accept(xylem_tcp_conn_t* conn) {
     ASSERT(got == &g_ud_value);
     ASSERT(*(int*)got == 42);
     g_ud_verified = 1;
-
-    /* Stop loop — cleanup after loop exits */
     xylem_loop_stop(&g_ud_loop);
 }
 
@@ -528,35 +492,18 @@ static void test_tcp_userdata(void) {
 
     ASSERT(g_ud_verified == 1);
 
-    /* Skip manual conn cleanup to avoid use-after-free in closing queue */
     _stop_safety_timer();
     if (g_ud_server) { xylem_tcp_server_close(g_ud_server); g_ud_server = NULL; }
-
     xylem_loop_deinit(&g_ud_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test 6: TCP send after close returns -1                           */
-/*  Strategy: client connects, sends data to keep write queue busy,   */
-/*  then calls xylem_tcp_close (CLOSING state). A subsequent send     */
-/*  on the CLOSING conn should return -1.                             */
-/* ------------------------------------------------------------------ */
-
-static xylem_loop_t g_sac_loop;
-static xylem_tcp_server_t* g_sac_server = NULL;
-static int g_sac_send_result = 0;
-static int g_sac_tested = 0;
 
 static void _sac_srv_on_accept(xylem_tcp_conn_t* conn) {
     (void)conn;
 }
 
 static void _sac_cli_on_connect(xylem_tcp_conn_t* conn) {
-    /* Enqueue a write so close doesn't immediately destroy the conn */
     xylem_tcp_send(conn, "pending", 7);
-    /* Now close — conn enters CLOSING state with pending write */
     xylem_tcp_close(conn);
-    /* Send on CLOSING conn should return -1 */
     g_sac_send_result = xylem_tcp_send(conn, "x", 1);
     g_sac_tested = 1;
     xylem_loop_stop(&g_sac_loop);
@@ -601,10 +548,6 @@ static void test_tcp_send_after_close(void) {
     if (g_sac_server) { xylem_tcp_server_close(g_sac_server); g_sac_server = NULL; }
     xylem_loop_deinit(&g_sac_loop);
 }
-
-/* ------------------------------------------------------------------ */
-/*  Test runner                                                       */
-/* ------------------------------------------------------------------ */
 
 int main(void) {
     platform_socket_startup();
