@@ -1,4 +1,4 @@
-﻿/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -95,12 +95,12 @@ static void _safety_timer_cb(xylem_loop_t* loop,
 }
 
 static void _start_safety_timer(xylem_loop_t* loop) {
-    xylem_loop_timer_init(loop, &_safety_timer);
-    xylem_loop_timer_start(&_safety_timer, _safety_timer_cb, 2000, 0);
+    xylem_loop_init_timer(loop, &_safety_timer);
+    xylem_loop_start_timer(&_safety_timer, _safety_timer_cb, 2000, 0);
 }
 
 static void _stop_safety_timer(void) {
-    xylem_loop_timer_close(&_safety_timer);
+    xylem_loop_close_timer(&_safety_timer);
 }
 
 static void _echo_srv_on_accept(xylem_tcp_conn_t* conn) {
@@ -195,7 +195,7 @@ static void test_tcp_echo_delim(void) {
     ASSERT(memcmp(_echo_received, "hello", 5) == 0);
 
     _stop_safety_timer();
-    if (_echo_server) { xylem_tcp_server_close(_echo_server); _echo_server = NULL; }
+    if (_echo_server) { xylem_tcp_close_server(_echo_server); _echo_server = NULL; }
     xylem_loop_deinit(&_echo_loop);
 }
 
@@ -263,8 +263,8 @@ static void test_tcp_lifecycle(void) {
                                            &cli_handler, &opts);
     ASSERT(cli != NULL);
 
-    xylem_loop_timer_init(&_life_loop, &_life_check_timer);
-    xylem_loop_timer_start(&_life_check_timer, _life_check_cb, 200, 0);
+    xylem_loop_init_timer(&_life_loop, &_life_check_timer);
+    xylem_loop_start_timer(&_life_check_timer, _life_check_cb, 200, 0);
 
     xylem_loop_run(&_life_loop);
 
@@ -273,8 +273,8 @@ static void test_tcp_lifecycle(void) {
     ASSERT(_life_srv_accept == 1);
 
     _stop_safety_timer();
-    xylem_loop_timer_close(&_life_check_timer);
-    if (_life_server) { xylem_tcp_server_close(_life_server); _life_server = NULL; }
+    xylem_loop_close_timer(&_life_check_timer);
+    if (_life_server) { xylem_tcp_close_server(_life_server); _life_server = NULL; }
     xylem_loop_deinit(&_life_loop);
 }
 
@@ -349,7 +349,7 @@ static void test_tcp_write_done(void) {
     ASSERT(_wd_len == 4);
 
     _stop_safety_timer();
-    if (_wd_server) { xylem_tcp_server_close(_wd_server); _wd_server = NULL; }
+    if (_wd_server) { xylem_tcp_close_server(_wd_server); _wd_server = NULL; }
     xylem_loop_deinit(&_wd_loop);
 }
 
@@ -431,14 +431,14 @@ static void test_tcp_frame_fixed(void) {
     ASSERT(memcmp(_fix_frames[1], "EFGH", 4) == 0);
 
     _stop_safety_timer();
-    if (_fix_server) { xylem_tcp_server_close(_fix_server); _fix_server = NULL; }
+    if (_fix_server) { xylem_tcp_close_server(_fix_server); _fix_server = NULL; }
     xylem_loop_deinit(&_fix_loop);
 }
 
 static void _ud_srv_on_accept(xylem_tcp_conn_t* conn) {
     _ud_srv_conn = conn;
-    xylem_tcp_conn_set_userdata(conn, &_ud_value);
-    void* got = xylem_tcp_conn_get_userdata(conn);
+    xylem_tcp_set_userdata(conn, &_ud_value);
+    void* got = xylem_tcp_get_userdata(conn);
     ASSERT(got == &_ud_value);
     ASSERT(*(int*)got == 42);
     _ud_verified = 1;
@@ -493,7 +493,7 @@ static void test_tcp_userdata(void) {
     ASSERT(_ud_verified == 1);
 
     _stop_safety_timer();
-    if (_ud_server) { xylem_tcp_server_close(_ud_server); _ud_server = NULL; }
+    if (_ud_server) { xylem_tcp_close_server(_ud_server); _ud_server = NULL; }
     xylem_loop_deinit(&_ud_loop);
 }
 
@@ -545,7 +545,7 @@ static void test_tcp_send_after_close(void) {
     ASSERT(_sac_send_result == -1);
 
     _stop_safety_timer();
-    if (_sac_server) { xylem_tcp_server_close(_sac_server); _sac_server = NULL; }
+    if (_sac_server) { xylem_tcp_close_server(_sac_server); _sac_server = NULL; }
     xylem_loop_deinit(&_sac_loop);
 }
 

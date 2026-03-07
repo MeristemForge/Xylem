@@ -36,8 +36,10 @@ struct xylem_udp_s {
     xylem_loop_post_t     free_post;
 };
 
-/* Handle readable event: recvfrom into recv_buf, wrap sender in
- * xylem_addr_t, call handler->on_read. */
+/**
+ * Handle readable event: recvfrom into recv_buf, wrap sender in
+ * xylem_addr_t, call handler->on_read.
+ */
 static void _udp_io_cb(xylem_loop_t* loop,
                         xylem_loop_io_t* io,
                         platform_poller_op_t revents) {
@@ -45,10 +47,14 @@ static void _udp_io_cb(xylem_loop_t* loop,
     (void)revents;
     xylem_udp_t* udp = xylem_list_entry(io, xylem_udp_t, io);
 
-    if (udp->closing) return;
+    if (udp->closing) {
+        return;
+    }
 
-    /* Loop recvfrom until EAGAIN to drain the kernel buffer in one
-     * IO callback, avoiding repeated poller wakeups under LT. */
+    /**
+     * Loop recvfrom until EAGAIN to drain the kernel buffer in one
+     * IO callback, avoiding repeated poller wakeups under LT.
+     */
     for (;;) {
         struct sockaddr_storage sender;
         socklen_t              sender_len = sizeof(sender);
@@ -59,8 +65,9 @@ static void _udp_io_cb(xylem_loop_t* loop,
         if (n < 0) {
             int err = platform_socket_get_lasterror();
             if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK)
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 return;
+            }
             xylem_logw("udp fd=%d recvfrom error=%d", (int)udp->fd, err);
             return;
         }
@@ -71,8 +78,17 @@ static void _udp_io_cb(xylem_loop_t* loop,
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, &addr);
         }
 
-        if (udp->closing) return;
+        if (udp->closing) {
+            return;
+        }
     }
+}
+
+/* Post callback: free a UDP handle after the current iteration. */
+static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
+    (void)loop;
+    xylem_udp_t* udp = xylem_list_entry(req, xylem_udp_t, free_post);
+    free(udp);
 }
 
 xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
@@ -111,8 +127,8 @@ xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
     udp->handler = handler;
     udp->closing = false;
 
-    xylem_loop_io_init(loop, &udp->io, fd);
-    xylem_loop_io_start(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+    xylem_loop_init_io(loop, &udp->io, fd);
+    xylem_loop_start_io(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
 
     xylem_logi("udp fd=%d bound", (int)fd);
     return udp;
@@ -129,44 +145,42 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     return (n < 0) ? -1 : (int)n;
 }
 
-int xylem_udp_mcast_join(xylem_udp_t* udp, const char* group) {
+int xylem_udp_join_mcast(xylem_udp_t* udp, const char* group) {
     struct ip_mreq mreq;
     memset(&mreq, 0, sizeof(mreq));
-    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1)
+    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1) {
         return -1;
+    }
     mreq.imr_interface.s_addr = htonl(INADDR_ANY);
     return setsockopt(udp->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                       (const char*)&mreq, sizeof(mreq)) == 0 ? 0 : -1;
 }
 
-int xylem_udp_mcast_leave(xylem_udp_t* udp, const char* group) {
+int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group) {
     struct ip_mreq mreq;
     memset(&mreq, 0, sizeof(mreq));
-    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1)
+    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1) {
         return -1;
+    }
     mreq.imr_interface.s_addr = htonl(INADDR_ANY);
     return setsockopt(udp->fd, IPPROTO_IP, IP_DROP_MEMBERSHIP,
                       (const char*)&mreq, sizeof(mreq)) == 0 ? 0 : -1;
 }
 
-/* Post callback: free a UDP handle after the current iteration. */
-static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
-    (void)loop;
-    xylem_udp_t* udp = xylem_list_entry(req, xylem_udp_t, free_post);
-    free(udp);
-}
-
 void xylem_udp_close(xylem_udp_t* udp) {
-    if (udp->closing) return;
+    if (udp->closing) {
+        return;
+    }
     xylem_logd("udp fd=%d closing", (int)udp->fd);
     udp->closing = true;
 
-    xylem_loop_io_stop(&udp->io);
+    xylem_loop_stop_io(&udp->io);
     udp->loop->active_count--;
     platform_socket_close(udp->fd);
 
-    if (udp->handler && udp->handler->on_close)
+    if (udp->handler && udp->handler->on_close) {
         udp->handler->on_close(udp, 0);
+    }
 
     /* Defer free to next loop iteration so close_node stays valid */
     udp->free_post.cb = _udp_free_cb;

@@ -24,10 +24,6 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-/* ------------------------------------------------------------------ */
-/*  Enums                                                             */
-/* ------------------------------------------------------------------ */
-
 typedef enum xylem_tcp_framing_type_e {
     XYLEM_TCP_FRAME_NONE,
     XYLEM_TCP_FRAME_FIXED,
@@ -49,10 +45,6 @@ typedef enum xylem_tcp_state_e {
     XYLEM_TCP_STATE_CLOSED,
 } xylem_tcp_state_t;
 
-/* ------------------------------------------------------------------ */
-/*  Framing config                                                    */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_tcp_framing_s {
     xylem_tcp_framing_type_t type;
     union {
@@ -63,16 +55,8 @@ typedef struct xylem_tcp_framing_s {
     };
 } xylem_tcp_framing_t;
 
-/* ------------------------------------------------------------------ */
-/*  Forward declarations                                              */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_tcp_conn_s   xylem_tcp_conn_t;
 typedef struct xylem_tcp_server_s xylem_tcp_server_t;
-
-/* ------------------------------------------------------------------ */
-/*  Handler                                                           */
-/* ------------------------------------------------------------------ */
 
 typedef struct xylem_tcp_handler_s {
     void (*on_connect)(xylem_tcp_conn_t* conn);
@@ -86,10 +70,6 @@ typedef struct xylem_tcp_handler_s {
     void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);
 } xylem_tcp_handler_t;
 
-/* ------------------------------------------------------------------ */
-/*  Options                                                           */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_tcp_opts_s {
     xylem_tcp_framing_t framing;
     uint64_t connect_timeout_ms;
@@ -99,10 +79,6 @@ typedef struct xylem_tcp_opts_s {
     uint32_t reconnect_max;
     size_t   read_buf_size;
 } xylem_tcp_opts_t;
-
-/* ------------------------------------------------------------------ */
-/*  Public API                                                        */
-/* ------------------------------------------------------------------ */
 
 /**
  * @brief Create a TCP server and start listening.
@@ -131,7 +107,7 @@ extern xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
  *
  * @param server  Server handle.
  */
-extern void xylem_tcp_server_close(xylem_tcp_server_t* server);
+extern void xylem_tcp_close_server(xylem_tcp_server_t* server);
 
 /**
  * @brief Initiate an asynchronous TCP connection.
@@ -185,7 +161,7 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
  *
  * @return User data pointer.
  */
-extern void* xylem_tcp_conn_get_userdata(xylem_tcp_conn_t* conn);
+extern void* xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
 
 /**
  * @brief Set user data on a connection.
@@ -193,4 +169,4 @@ extern void* xylem_tcp_conn_get_userdata(xylem_tcp_conn_t* conn);
  * @param conn  Connection handle.
  * @param ud    User data pointer.
  */
-extern void xylem_tcp_conn_set_userdata(xylem_tcp_conn_t* conn, void* ud);
+extern void xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);

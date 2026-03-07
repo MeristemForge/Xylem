@@ -37,18 +37,33 @@ Every `.c` and `.h` file must start with the project license block:
 | Category | Pattern | Example |
 |----------|---------|---------|
 | Public functions | `xylem_<module>_<action>` | `xylem_heap_insert` |
+
+Public function names have exactly three logical segments: `xylem`, `<module>`, and `<action>`. The `<module>` is always a single word. The `<action>` may be compound (verb + object with `_`), placing the verb first and the object last:
+- `xylem_list_insert` — module=`list`, action=`insert`
+- `xylem_loop_init_timer` — module=`loop`, action=`init_timer`
+- `xylem_loop_start_timer` — module=`loop`, action=`start_timer`
+- `xylem_loop_start_io` — module=`loop`, action=`start_io`
+- `xylem_timer_set_time` — module=`timer`, action=`set_time`
+
 | Types | `xylem_<module>_t` | `xylem_list_t` |
 | Node types | `xylem_<module>_node_t` | `xylem_heap_node_t` |
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
-| Internal/static helpers | `_<name>` prefix | `_heap_node_swap` |
+| Internal/static helpers | `_<module>_<action>` | `_tcp_flush_writes` |
+
+Static function names have two logical segments: `<module>` and `<action>`, prefixed with `_`. Same rules as public functions: module is a single word, action may be compound (verb first, object last):
+- `_heap_swap_node` — module=`heap`, action=`swap_node`
+- `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
+- `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
+
+**Callback exception:** Functions that are event handlers (registered as callbacks) use `_<module>_<subject>_on_<event>` or `_<module>_<subject>_<event>_cb` format. These describe events, not actions, so the verb-first rule does not apply:
+- `_tcp_conn_on_connected` — callback when connection is established
+- `_tcp_conn_io_cb` — I/O event callback for a connection
+- `_tcp_reconnect_timer_cb` — timer callback for reconnect
 | Internal types (file-scope) | `_<name>_t` prefix | `_xlist_node_t` |
 | Static variables (file-scope) | `_<name>` prefix | `_echo_loop` |
 | Global variables (non-static) | no prefix | `stop_io` |
 | Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
-
-Action (verb) goes last: `xylem_list_insert`, `xylem_heap_remove`.
-Compound actions stay together: `xylem_timer_set_time` (not `xylem_timer_time_set`).
 
 > **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
 
@@ -170,6 +185,7 @@ clang-format with LLVM base style:
 - No bin-packing of arguments/parameters
 - Aligned consecutive declarations
 - No single-line functions
+- All `if`/`else`/`for`/`while` bodies must use braces, even single statements
 
 ## Comments
 
@@ -201,9 +217,16 @@ Rules:
 
 ### Internal / Static Functions
 
-No Doxygen required. A short `/* ... */` one-liner if the name isn't self-explanatory:
+No Doxygen tags required. Use `/** ... */` for multi-line comments, `/* ... */` for single-line.
+Multi-line `/** ... */` must use the same block format as public API: `/**` on its own line, content on `*` lines, `*/` on its own line:
 
 ```c
+/**
+ * Common setup for a newly connected socket: init ringbuf, start IO,
+ * start heartbeat/read timers. Does NOT call any handler callback.
+ */
+static void _conn_setup(...) { ... }
+
 /* Swap two heap nodes and update their positions. */
 static inline void _heap_node_swap(...) { ... }
 ```
@@ -211,6 +234,7 @@ static inline void _heap_node_swap(...) { ... }
 ### Inline Comments
 
 - `/* ... */` style (C11 compatible)
+- `/** ... */` when spanning multiple lines (block format: `/**` and `*/` on own lines)
 - Only where code is non-obvious
 - No decorative dividers
 - Keep short

@@ -59,16 +59,18 @@ int xylem_addr_ntop(const xylem_addr_t* addr,
     case AF_INET: {
         const struct sockaddr_in* sin =
             (const struct sockaddr_in*)&addr->storage;
-        if (!inet_ntop(AF_INET, &sin->sin_addr, host, (socklen_t)hostlen))
+        if (!inet_ntop(AF_INET, &sin->sin_addr, host, (socklen_t)hostlen)) {
             return -1;
+        }
         *port = ntohs(sin->sin_port);
         return 0;
     }
     case AF_INET6: {
         const struct sockaddr_in6* sin6 =
             (const struct sockaddr_in6*)&addr->storage;
-        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, host, (socklen_t)hostlen))
+        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, host, (socklen_t)hostlen)) {
             return -1;
+        }
         *port = ntohs(sin6->sin6_port);
         return 0;
     }

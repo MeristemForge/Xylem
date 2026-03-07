@@ -22,7 +22,7 @@
 #include "xylem.h"
 
 /* swap parent with child. child moves closer to the root, parent moves away. */
-static void _heap_node_swap(
+static void _heap_swap_node(
     xylem_heap_t* heap, xylem_heap_node_t* parent, xylem_heap_node_t* child) {
     xylem_heap_node_t* sibling;
     xylem_heap_node_t  t;
@@ -78,14 +78,16 @@ xylem_heap_insert(xylem_heap_t* heap, xylem_heap_node_t* node) {
     node->right = NULL;
     node->parent = NULL;
 
-    /* calculate the path from the root to the insertion point.  this is a min
+    /**
+     * Calculate the path from the root to the insertion point.  This is a min
      * heap so we always insert at the left-most free node of the bottom row.
      */
     path = 0;
     for (k = 0, n = 1 + heap->nelts; n >= 2; k += 1, n /= 2) {
         path = (path << 1) | (n & 1);
     }
-    /* now traverse the heap using the path we calculated in the previous step.
+    /**
+     * Now traverse the heap using the path we calculated in the previous step.
      */
     parent = child = &heap->root;
     while (k > 0) {
@@ -102,11 +104,12 @@ xylem_heap_insert(xylem_heap_t* heap, xylem_heap_node_t* node) {
     node->parent = *parent;
     *child = node;
     heap->nelts += 1;
-    /* walk up the tree and check at each node if the heap property holds.
-     * it's a min heap so parent < child must be true.
+    /**
+     * Walk up the tree and check at each node if the heap property holds.
+     * It's a min heap so parent < child must be true.
      */
     while (node->parent != NULL && heap->cmp(node, node->parent) < 0) {
-        _heap_node_swap(heap, node->parent, node);
+        _heap_swap_node(heap, node->parent, node);
     }
 }
 
@@ -121,14 +124,16 @@ void xylem_heap_remove(xylem_heap_t* heap, xylem_heap_node_t* node) {
     if (heap->nelts == 0) {
         return;
     }
-    /* calculate the path from the min (the root) to the max, the left-most node
+    /**
+     * Calculate the path from the min (the root) to the max, the left-most node
      * of the bottom row.
      */
     path = 0;
     for (k = 0, n = heap->nelts; n >= 2; k += 1, n /= 2) {
         path = (path << 1) | (n & 1);
     }
-    /* now traverse the heap using the path we calculated in the previous step.
+    /**
+     * Now traverse the heap using the path we calculated in the previous step.
      */
     max = &heap->root;
     while (k > 0) {
@@ -171,8 +176,9 @@ void xylem_heap_remove(xylem_heap_t* heap, xylem_heap_node_t* node) {
     } else {
         node->parent->right = child;
     }
-    /* walk down the subtree and check at each node if the heap property holds.
-     * it's a min heap so parent < child must be true.  if the parent is bigger,
+    /**
+     * Walk down the subtree and check at each node if the heap property holds.
+     * It's a min heap so parent < child must be true.  If the parent is bigger,
      * swap it with the smallest child.
      */
     for (;;) {
@@ -186,14 +192,15 @@ void xylem_heap_remove(xylem_heap_t* heap, xylem_heap_node_t* node) {
         if (smallest == child) {
             break;
         }
-        _heap_node_swap(heap, child, smallest);
+        _heap_swap_node(heap, child, smallest);
     }
-    /* walk up the subtree and check that each parent is less than the node
-     * this is required, because `max` node is not guaranteed to be the
-     * actual maximum in tree
+    /**
+     * Walk up the subtree and check that each parent is less than the node.
+     * This is required, because `max` node is not guaranteed to be the
+     * actual maximum in tree.
      */
     while (child->parent != NULL && heap->cmp(child, child->parent) < 0) {
-        _heap_node_swap(heap, child->parent, child);
+        _heap_swap_node(heap, child->parent, child);
     }
 }
 

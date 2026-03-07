@@ -396,12 +396,14 @@ xylem_rbtree_node_t* xylem_rbtree_next(xylem_rbtree_node_t* node) {
         }
         return node;
     }
-    /* No right-hand children.  Everything down and left is
-       smaller than us, so any 'next' node must be in the general
-       direction of our parent. Go up the tree; any time the
-       ancestor is a right-hand child of its parent, keep going
-       up. First time it's a left-hand child of its parent, said
-       parent is our 'next' node. */
+    /**
+     * No right-hand children.  Everything down and left is
+     * smaller than us, so any 'next' node must be in the general
+     * direction of our parent. Go up the tree; any time the
+     * ancestor is a right-hand child of its parent, keep going
+     * up. First time it's a left-hand child of its parent, said
+     * parent is our 'next' node.
+     */
     while ((parent = node->parent) && node == parent->right) {
         node = parent;
     }
@@ -418,8 +420,10 @@ xylem_rbtree_node_t* xylem_rbtree_prev(xylem_rbtree_node_t* node) {
         }
         return node;
     }
-    /* No left-hand children. Go up till we find an ancestor which
-       is a right-hand child of its parent */
+    /**
+     * No left-hand children. Go up till we find an ancestor which
+     * is a right-hand child of its parent.
+     */
     while ((parent = node->parent) && node == parent->left) {
         node = parent;
     }

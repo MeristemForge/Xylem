@@ -26,7 +26,7 @@ typedef struct {
     void*             data;
 } _xlist_node_t;
 
-static inline _xlist_node_t* _xlist_node_alloc(void* data) {
+static inline _xlist_node_t* _xlist_alloc_node(void* data) {
     _xlist_node_t* n = malloc(sizeof(_xlist_node_t));
     if (!n) return NULL;
     n->data = data;
@@ -46,14 +46,14 @@ size_t xylem_xlist_len(xylem_xlist_t* list) {
 }
 
 int xylem_xlist_insert_head(xylem_xlist_t* list, void* data) {
-    _xlist_node_t* n = _xlist_node_alloc(data);
+    _xlist_node_t* n = _xlist_alloc_node(data);
     if (!n) return -1;
     xylem_list_insert_head(&list->list, &n->node);
     return 0;
 }
 
 int xylem_xlist_insert_tail(xylem_xlist_t* list, void* data) {
-    _xlist_node_t* n = _xlist_node_alloc(data);
+    _xlist_node_t* n = _xlist_alloc_node(data);
     if (!n) return -1;
     xylem_list_insert_tail(&list->list, &n->node);
     return 0;

@@ -26,7 +26,7 @@ typedef struct {
     void*              data;
 } _xqueue_node_t;
 
-static inline _xqueue_node_t* _xqueue_node_alloc(void* data) {
+static inline _xqueue_node_t* _xqueue_alloc_node(void* data) {
     _xqueue_node_t* n = malloc(sizeof(_xqueue_node_t));
     if (!n) return NULL;
     n->data = data;
@@ -46,7 +46,7 @@ size_t xylem_xqueue_len(xylem_xqueue_t* queue) {
 }
 
 int xylem_xqueue_enqueue(xylem_xqueue_t* queue, void* data) {
-    _xqueue_node_t* n = _xqueue_node_alloc(data);
+    _xqueue_node_t* n = _xqueue_alloc_node(data);
     if (!n) return -1;
     xylem_queue_enqueue(&queue->queue, &n->node);
     return 0;

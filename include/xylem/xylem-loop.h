@@ -24,18 +24,10 @@ _Pragma("once")
 #include "xylem.h"
 #include "platform/platform.h"
 
-/* ------------------------------------------------------------------ */
-/*  Forward declarations                                              */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_loop_s       xylem_loop_t;
 typedef struct xylem_loop_io_s    xylem_loop_io_t;
 typedef struct xylem_loop_timer_s xylem_loop_timer_t;
 typedef struct xylem_loop_post_s  xylem_loop_post_t;
-
-/* ------------------------------------------------------------------ */
-/*  Callback typedefs                                                 */
-/* ------------------------------------------------------------------ */
 
 typedef void (*xylem_loop_io_fn_t)(xylem_loop_t* loop,
                                    xylem_loop_io_t* io,
@@ -46,10 +38,6 @@ typedef void (*xylem_loop_timer_fn_t)(xylem_loop_t* loop,
 
 typedef void (*xylem_loop_post_fn_t)(xylem_loop_t* loop,
                                      xylem_loop_post_t* req);
-
-/* ------------------------------------------------------------------ */
-/*  Structures                                                        */
-/* ------------------------------------------------------------------ */
 
 struct xylem_loop_s {
     platform_poller_sq_t  poller;
@@ -88,10 +76,6 @@ struct xylem_loop_post_s {
     xylem_loop_post_fn_t  cb;
     void*                 ud;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Lifecycle                                                         */
-/* ------------------------------------------------------------------ */
 
 /**
  * @brief Initialize an event loop.
@@ -147,14 +131,10 @@ extern void xylem_loop_stop(xylem_loop_t* loop);
  */
 extern uint64_t xylem_loop_now(xylem_loop_t* loop);
 
-/* ------------------------------------------------------------------ */
-/*  I/O                                                               */
-/* ------------------------------------------------------------------ */
-
 /**
  * @brief Initialize an I/O handle and bind it to a file descriptor.
  *
- * Does not start polling. Call xylem_loop_io_start() to begin.
+ * Does not start polling. Call xylem_loop_start_io() to begin.
  *
  * @param loop  Pointer to the loop.
  * @param io    Pointer to the I/O handle to initialize.
@@ -162,7 +142,7 @@ extern uint64_t xylem_loop_now(xylem_loop_t* loop);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_io_init(xylem_loop_t* loop,
+extern int xylem_loop_init_io(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
                               platform_poller_fd_t fd);
 
@@ -179,7 +159,7 @@ extern int xylem_loop_io_init(xylem_loop_t* loop,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_io_start(xylem_loop_io_t* io,
+extern int xylem_loop_start_io(xylem_loop_io_t* io,
                                platform_poller_op_t op,
                                xylem_loop_io_fn_t cb);
 
@@ -187,13 +167,13 @@ extern int xylem_loop_io_start(xylem_loop_io_t* io,
  * @brief Stop polling on an I/O handle.
  *
  * Removes the fd from the poller. The handle remains valid and can
- * be re-started with xylem_loop_io_start().
+ * be re-started with xylem_loop_start_io().
  *
  * @param io  Pointer to the I/O handle.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_io_stop(xylem_loop_io_t* io);
+extern int xylem_loop_stop_io(xylem_loop_io_t* io);
 
 /**
  * @brief Close an I/O handle.
@@ -204,23 +184,19 @@ extern int xylem_loop_io_stop(xylem_loop_io_t* io);
  *
  * @param io  Pointer to the I/O handle.
  */
-extern void xylem_loop_io_close(xylem_loop_io_t* io);
-
-/* ------------------------------------------------------------------ */
-/*  Timer                                                             */
-/* ------------------------------------------------------------------ */
+extern void xylem_loop_close_io(xylem_loop_io_t* io);
 
 /**
  * @brief Initialize a timer handle.
  *
- * Does not start the timer. Call xylem_loop_timer_start() to begin.
+ * Does not start the timer. Call xylem_loop_start_timer() to begin.
  *
  * @param loop   Pointer to the loop.
  * @param timer  Pointer to the timer handle to initialize.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_timer_init(xylem_loop_t* loop,
+extern int xylem_loop_init_timer(xylem_loop_t* loop,
                                  xylem_loop_timer_t* timer);
 
 /**
@@ -237,7 +213,7 @@ extern int xylem_loop_timer_init(xylem_loop_t* loop,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_timer_start(xylem_loop_timer_t* timer,
+extern int xylem_loop_start_timer(xylem_loop_timer_t* timer,
                                   xylem_loop_timer_fn_t cb,
                                   uint64_t timeout_ms,
                                   uint64_t repeat_ms);
@@ -246,13 +222,13 @@ extern int xylem_loop_timer_start(xylem_loop_timer_t* timer,
  * @brief Stop a running timer.
  *
  * Removes the timer from the heap. The handle remains valid and can
- * be re-started with xylem_loop_timer_start().
+ * be re-started with xylem_loop_start_timer().
  *
  * @param timer  Pointer to the timer handle.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_timer_stop(xylem_loop_timer_t* timer);
+extern int xylem_loop_stop_timer(xylem_loop_timer_t* timer);
 
 /**
  * @brief Reset a running timer with a new timeout.
@@ -265,7 +241,7 @@ extern int xylem_loop_timer_stop(xylem_loop_timer_t* timer);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_loop_timer_reset(xylem_loop_timer_t* timer,
+extern int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
                                   uint64_t timeout_ms);
 
 /**
@@ -277,11 +253,7 @@ extern int xylem_loop_timer_reset(xylem_loop_timer_t* timer,
  *
  * @param timer  Pointer to the timer handle.
  */
-extern void xylem_loop_timer_close(xylem_loop_timer_t* timer);
-
-/* ------------------------------------------------------------------ */
-/*  Post (thread-safe)                                                */
-/* ------------------------------------------------------------------ */
+extern void xylem_loop_close_timer(xylem_loop_timer_t* timer);
 
 /**
  * @brief Post a callback to be executed on the loop thread.

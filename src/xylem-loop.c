@@ -23,7 +23,7 @@
 #include "xylem/xylem-logger.h"
 
 /* timer comparator: earlier deadline = higher priority */
-static int _loop_timer_cmp(const xylem_heap_node_t* a,
+static int _loop_cmp_timer(const xylem_heap_node_t* a,
                            const xylem_heap_node_t* b) {
     const xylem_loop_timer_t* ta =
         xylem_heap_entry(a, xylem_loop_timer_t, heap_node);
@@ -50,10 +50,14 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
 
 /* process all pending post requests */
 static void _loop_process_posts(xylem_loop_t* loop) {
-    /* Fast path: skip lock when queue is empty.
+    /**
+     * Fast path: skip lock when queue is empty.
      * A concurrent enqueue between this check and the lock is fine —
-     * the wakeup write will trigger another iteration. */
-    if (xylem_queue_empty(&loop->posts)) return;
+     * the wakeup write will trigger another iteration.
+     */
+    if (xylem_queue_empty(&loop->posts)) {
+        return;
+    }
 
     xylem_queue_t local;
     xylem_queue_init(&local);
@@ -125,7 +129,7 @@ int xylem_loop_init(xylem_loop_t* loop) {
         xylem_loge("loop init: poller init failed");
         return -1;
     }
-    xylem_heap_init(&loop->timers, _loop_timer_cmp);
+    xylem_heap_init(&loop->timers, _loop_cmp_timer);
     xylem_queue_init(&loop->closing);
     xylem_queue_init(&loop->posts);
 
@@ -222,7 +226,7 @@ uint64_t xylem_loop_now(xylem_loop_t* loop) {
     return loop->time;
 }
 
-int xylem_loop_io_init(xylem_loop_t* loop,
+int xylem_loop_init_io(xylem_loop_t* loop,
                        xylem_loop_io_t* io,
                        platform_poller_fd_t fd) {
     memset(io, 0, sizeof(*io));
@@ -235,7 +239,7 @@ int xylem_loop_io_init(xylem_loop_t* loop,
     return 0;
 }
 
-int xylem_loop_io_start(xylem_loop_io_t* io,
+int xylem_loop_start_io(xylem_loop_io_t* io,
                         platform_poller_op_t op,
                         xylem_loop_io_fn_t cb) {
     io->sqe.op = op;
@@ -259,7 +263,7 @@ int xylem_loop_io_start(xylem_loop_io_t* io,
     return rc;
 }
 
-int xylem_loop_io_stop(xylem_loop_io_t* io) {
+int xylem_loop_stop_io(xylem_loop_io_t* io) {
     if (!io->registered) return 0;
 
     int rc = platform_poller_del(&io->loop->poller, &io->sqe);
@@ -270,7 +274,7 @@ int xylem_loop_io_stop(xylem_loop_io_t* io) {
     return rc;
 }
 
-void xylem_loop_io_close(xylem_loop_io_t* io) {
+void xylem_loop_close_io(xylem_loop_io_t* io) {
     if (io->registered) {
         platform_poller_del(&io->loop->poller, &io->sqe);
         io->registered = false;
@@ -278,7 +282,7 @@ void xylem_loop_io_close(xylem_loop_io_t* io) {
     xylem_queue_enqueue(&io->loop->closing, &io->close_node);
 }
 
-int xylem_loop_timer_init(xylem_loop_t* loop,
+int xylem_loop_init_timer(xylem_loop_t* loop,
                           xylem_loop_timer_t* timer) {
     memset(timer, 0, sizeof(*timer));
     timer->loop   = loop;
@@ -288,7 +292,7 @@ int xylem_loop_timer_init(xylem_loop_t* loop,
     return 0;
 }
 
-int xylem_loop_timer_start(xylem_loop_timer_t* timer,
+int xylem_loop_start_timer(xylem_loop_timer_t* timer,
                            xylem_loop_timer_fn_t cb,
                            uint64_t timeout_ms,
                            uint64_t repeat_ms) {
@@ -303,7 +307,7 @@ int xylem_loop_timer_start(xylem_loop_timer_t* timer,
     return 0;
 }
 
-int xylem_loop_timer_stop(xylem_loop_timer_t* timer) {
+int xylem_loop_stop_timer(xylem_loop_timer_t* timer) {
     if (!timer->active) return 0;
 
     xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
@@ -311,7 +315,7 @@ int xylem_loop_timer_stop(xylem_loop_timer_t* timer) {
     return 0;
 }
 
-int xylem_loop_timer_reset(xylem_loop_timer_t* timer,
+int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
                            uint64_t timeout_ms) {
     if (!timer->active) return -1;
 
@@ -321,7 +325,7 @@ int xylem_loop_timer_reset(xylem_loop_timer_t* timer,
     return 0;
 }
 
-void xylem_loop_timer_close(xylem_loop_timer_t* timer) {
+void xylem_loop_close_timer(xylem_loop_timer_t* timer) {
     if (timer->active) {
         xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
         timer->active = false;

@@ -25,15 +25,15 @@
 #define THREAD_COUNT    10
 #define STRESS_THREADS  20
 
-static atomic_int worker_completed = 0;
-static atomic_int worker_started = 0;
+static atomic_int _worker_completed = 0;
+static atomic_int _worker_started = 0;
 
 static int _worker_thread(void* arg) {
     xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
-    atomic_fetch_add(&worker_started, 1);
+    atomic_fetch_add(&_worker_started, 1);
     struct timespec ts = {.tv_nsec = 1000000};
     thrd_sleep(&ts, NULL);
-    atomic_fetch_add(&worker_completed, 1);
+    atomic_fetch_add(&_worker_completed, 1);
     xylem_waitgroup_done(wg);
     return 0;
 }
@@ -84,8 +84,8 @@ static void test_basic_operations(void) {
 /* Multiple threads: wait blocks until all done. */
 static void test_multiple_threads(void) {
     thrd_t threads[THREAD_COUNT];
-    worker_completed = 0;
-    worker_started = 0;
+    _worker_completed = 0;
+    _worker_started = 0;
 
     xylem_waitgroup_t* wg = xylem_waitgroup_create();
     ASSERT(wg != NULL);
@@ -95,12 +95,12 @@ static void test_multiple_threads(void) {
         ASSERT(thrd_create(&threads[i], _worker_thread, wg) == thrd_success);
     }
 
-    while (atomic_load(&worker_started) < THREAD_COUNT) {
+    while (atomic_load(&_worker_started) < THREAD_COUNT) {
         thrd_yield();
     }
 
     xylem_waitgroup_wait(wg);
-    ASSERT(atomic_load(&worker_completed) == THREAD_COUNT);
+    ASSERT(atomic_load(&_worker_completed) == THREAD_COUNT);
 
     /* Second wait should return immediately. */
     xylem_waitgroup_wait(wg);

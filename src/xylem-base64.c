@@ -21,13 +21,13 @@
 
 #include "xylem.h"
 
-static const char b64_enc_std[65] =
+static const char _b64_enc_std[65] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static const char b64_enc_url[65] =
+static const char _b64_enc_url[65] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-static const int8_t b64_dec_std[256] = {
+static const int8_t _b64_dec_std[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, 62, -1, -1, -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60,
@@ -43,7 +43,7 @@ static const int8_t b64_dec_std[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
-static const int8_t b64_dec_url[256] = {
+static const int8_t _b64_dec_url[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, 52, 53, 54, 55, 56, 57, 58, 59, 60,
@@ -186,20 +186,20 @@ static int _base64_decode(
 
 int xylem_base64_encode_std(
     const uint8_t* src, int slen, uint8_t* dst, int dlen) {
-    return _base64_encode(src, slen, dst, dlen, b64_enc_std, true);
+    return _base64_encode(src, slen, dst, dlen, _b64_enc_std, true);
 }
 
 int xylem_base64_decode_std(
     const uint8_t* src, int slen, uint8_t* dst, int dlen) {
-    return _base64_decode(src, slen, dst, dlen, b64_dec_std, true);
+    return _base64_decode(src, slen, dst, dlen, _b64_dec_std, true);
 }
 
 int xylem_base64_encode_url(
     const uint8_t* src, int slen, uint8_t* dst, int dlen, bool padding) {
-    return _base64_encode(src, slen, dst, dlen, b64_enc_url, padding);
+    return _base64_encode(src, slen, dst, dlen, _b64_enc_url, padding);
 }
 
 int xylem_base64_decode_url(
     const uint8_t* src, int slen, uint8_t* dst, int dlen, bool padding) {
-    return _base64_decode(src, slen, dst, dlen, b64_dec_url, padding);
+    return _base64_decode(src, slen, dst, dlen, _b64_dec_url, padding);
 }

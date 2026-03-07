@@ -41,7 +41,7 @@ static inline uint32_t _ringbuffer_rounddown_pow_of_two(uint32_t n) {
     return (n + 1) >> 1;
 }
 
-static inline void _ringbuffer_internal_write(
+static inline void _ringbuffer_write_internal(
     xylem_ringbuf_t* ring, const void* src, uint32_t len, uint64_t off) {
 
     uint32_t idx = (uint32_t)(off & ring->mask);
@@ -68,7 +68,7 @@ static inline void _ringbuffer_internal_write(
     }
 }
 
-static inline void _ringbuffer_internal_read(
+static inline void _ringbuffer_read_internal(
     xylem_ringbuf_t* ring, void* dst, uint32_t len, uint64_t off) {
 
     uint32_t idx = (uint32_t)(off & ring->mask);
@@ -168,7 +168,7 @@ size_t xylem_ringbuf_write(
         entry_count = avail;
     }
 
-    _ringbuffer_internal_write(ring, buf, (uint32_t)entry_count, ring->wpos);
+    _ringbuffer_write_internal(ring, buf, (uint32_t)entry_count, ring->wpos);
     ring->wpos += (uint32_t)entry_count;
 
     return entry_count;
@@ -182,7 +182,7 @@ xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     }
     uint32_t count32 = (uint32_t)entry_count;
 
-    _ringbuffer_internal_read(ring, buf, count32, ring->rpos);
+    _ringbuffer_read_internal(ring, buf, count32, ring->rpos);
     ring->rpos += count32;
 
     return (size_t)count32;
@@ -196,7 +196,7 @@ xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     }
     uint32_t count32 = (uint32_t)entry_count;
 
-    _ringbuffer_internal_read(ring, buf, count32, ring->rpos);
+    _ringbuffer_read_internal(ring, buf, count32, ring->rpos);
 
     return (size_t)count32;
 }

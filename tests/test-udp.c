@@ -1,4 +1,4 @@
-﻿/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
@@ -60,12 +60,12 @@ static void _safety_timer_cb(xylem_loop_t* loop,
 }
 
 static void _start_safety_timer(xylem_loop_t* loop) {
-    xylem_loop_timer_init(loop, &_safety_timer);
-    xylem_loop_timer_start(&_safety_timer, _safety_timer_cb, 2000, 0);
+    xylem_loop_init_timer(loop, &_safety_timer);
+    xylem_loop_start_timer(&_safety_timer, _safety_timer_cb, 2000, 0);
 }
 
 static void _stop_safety_timer(void) {
-    xylem_loop_timer_close(&_safety_timer);
+    xylem_loop_close_timer(&_safety_timer);
 }
 
 static void _echo_on_read(xylem_udp_t* udp, void* data, size_t len,
@@ -115,8 +115,8 @@ static void test_udp_echo(void) {
                                     &send_handler);
     ASSERT(_echo_sender != NULL);
 
-    xylem_loop_timer_init(&_echo_loop, &_echo_send_timer);
-    xylem_loop_timer_start(&_echo_send_timer, _echo_send_timer_cb,
+    xylem_loop_init_timer(&_echo_loop, &_echo_send_timer);
+    xylem_loop_start_timer(&_echo_send_timer, _echo_send_timer_cb,
                            10, 0);
 
     xylem_loop_run(&_echo_loop);
@@ -126,7 +126,7 @@ static void test_udp_echo(void) {
     ASSERT(memcmp(_echo_data, "hello", 5) == 0);
 
     _stop_safety_timer();
-    xylem_loop_timer_close(&_echo_send_timer);
+    xylem_loop_close_timer(&_echo_send_timer);
     xylem_loop_deinit(&_echo_loop);
 }
 
@@ -183,8 +183,8 @@ static void test_udp_datagram_boundary(void) {
                                      &send_handler);
     ASSERT(_dgram_sender != NULL);
 
-    xylem_loop_timer_init(&_dgram_loop, &_dgram_send_timer);
-    xylem_loop_timer_start(&_dgram_send_timer, _dgram_send_timer_cb,
+    xylem_loop_init_timer(&_dgram_loop, &_dgram_send_timer);
+    xylem_loop_start_timer(&_dgram_send_timer, _dgram_send_timer_cb,
                            10, 0);
 
     xylem_loop_run(&_dgram_loop);
@@ -198,7 +198,7 @@ static void test_udp_datagram_boundary(void) {
     ASSERT(memcmp(_dgram_bufs[2], "CCC", 3) == 0);
 
     _stop_safety_timer();
-    xylem_loop_timer_close(&_dgram_send_timer);
+    xylem_loop_close_timer(&_dgram_send_timer);
     xylem_loop_deinit(&_dgram_loop);
 }
 

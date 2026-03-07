@@ -24,25 +24,13 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-/* ------------------------------------------------------------------ */
-/*  Forward declarations                                              */
-/* ------------------------------------------------------------------ */
-
 typedef struct xylem_udp_s xylem_udp_t;
-
-/* ------------------------------------------------------------------ */
-/*  Handler                                                           */
-/* ------------------------------------------------------------------ */
 
 typedef struct xylem_udp_handler_s {
     void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
                     xylem_addr_t* addr);
     void (*on_close)(xylem_udp_t* udp, int err);
 } xylem_udp_handler_t;
-
-/* ------------------------------------------------------------------ */
-/*  Public API                                                        */
-/* ------------------------------------------------------------------ */
 
 /**
  * @brief Bind a UDP socket and start receiving.
@@ -82,7 +70,7 @@ extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_udp_mcast_join(xylem_udp_t* udp, const char* group);
+extern int xylem_udp_join_mcast(xylem_udp_t* udp, const char* group);
 
 /**
  * @brief Leave a multicast group.
@@ -92,7 +80,7 @@ extern int xylem_udp_mcast_join(xylem_udp_t* udp, const char* group);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_udp_mcast_leave(xylem_udp_t* udp, const char* group);
+extern int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group);
 
 /**
  * @brief Close a UDP handle.

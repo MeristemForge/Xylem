@@ -59,7 +59,7 @@ static void test_run_exits_no_handles(void) {
 
 static void _on_oneshot(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _oneshot_count++;
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_timer_oneshot(void) {
@@ -69,10 +69,10 @@ static void test_timer_oneshot(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
     ASSERT(loop.active_count == 1);
 
-    ASSERT(xylem_loop_timer_start(&timer, _on_oneshot, 10, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_oneshot, 10, 0) == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
 
     ASSERT(_oneshot_count == 1);
@@ -84,7 +84,7 @@ static void test_timer_oneshot(void) {
 static void _on_repeat(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _repeat_count++;
     if (_repeat_count >= 3) {
-        xylem_loop_timer_close(timer);
+        xylem_loop_close_timer(timer);
     }
 }
 
@@ -95,9 +95,9 @@ static void test_timer_repeat(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
 
-    ASSERT(xylem_loop_timer_start(&timer, _on_repeat, 10, 10) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_repeat, 10, 10) == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
 
     ASSERT(_repeat_count == 3);
@@ -110,9 +110,9 @@ static void _on_stopped_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
 }
 
 static void _on_stopper(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
-    xylem_loop_timer_stop(_victim_timer);
-    xylem_loop_timer_close(_victim_timer);
-    xylem_loop_timer_close(timer);
+    xylem_loop_stop_timer(_victim_timer);
+    xylem_loop_close_timer(_victim_timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_timer_stop(void) {
@@ -123,13 +123,13 @@ static void test_timer_stop(void) {
     xylem_loop_timer_t victim;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &stopper) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &victim) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &stopper) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &victim) == 0);
 
     _victim_timer = &victim;
 
-    ASSERT(xylem_loop_timer_start(&stopper, _on_stopper, 10, 0) == 0);
-    ASSERT(xylem_loop_timer_start(&victim, _on_stopped_timer, 50, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&stopper, _on_stopper, 10, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&victim, _on_stopped_timer, 50, 0) == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
 
     ASSERT(_stopped_timer_count == 0);
@@ -139,7 +139,7 @@ static void test_timer_stop(void) {
 
 static void _on_reset_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _reset_fire_time = xylem_loop_now(loop);
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_timer_reset(void) {
@@ -149,10 +149,10 @@ static void test_timer_reset(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
 
-    ASSERT(xylem_loop_timer_start(&timer, _on_reset_timer, 500, 0) == 0);
-    ASSERT(xylem_loop_timer_reset(&timer, 10) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_reset_timer, 500, 0) == 0);
+    ASSERT(xylem_loop_reset_timer(&timer, 10) == 0);
 
     uint64_t before = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     ASSERT(xylem_loop_run(&loop) == 0);
@@ -166,7 +166,7 @@ static void test_timer_reset(void) {
 static void _on_check_now(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     uint64_t t = xylem_loop_now(loop);
     ASSERT(t > 0);
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_loop_now(void) {
@@ -176,8 +176,8 @@ static void test_loop_now(void) {
     ASSERT(xylem_loop_init(&loop) == 0);
     ASSERT(xylem_loop_now(&loop) > 0);
 
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
-    ASSERT(xylem_loop_timer_start(&timer, _on_check_now, 1, 0) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_check_now, 1, 0) == 0);
     ASSERT(xylem_loop_run(&loop) == 0);
 
     xylem_loop_deinit(&loop);
@@ -190,7 +190,7 @@ static void _on_io_readable(xylem_loop_t* loop,
     char buf[16];
     platform_socket_recv(io->sqe.fd, buf, sizeof(buf));
     _io_read_count++;
-    xylem_loop_io_close(io);
+    xylem_loop_close_io(io);
 }
 
 static void test_io_readable(void) {
@@ -205,8 +205,8 @@ static void test_io_readable(void) {
     xylem_loop_io_t io;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
-    ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_RD_OP, _on_io_readable) == 0);
+    ASSERT(xylem_loop_init_io(&loop, &io, pair[0]) == 0);
+    ASSERT(xylem_loop_start_io(&io, PLATFORM_POLLER_RD_OP, _on_io_readable) == 0);
 
     platform_socket_send(pair[1], "hello", 5);
 
@@ -223,7 +223,7 @@ static void _on_io_writable(xylem_loop_t* loop,
                             platform_poller_op_t revents) {
     ASSERT(revents & PLATFORM_POLLER_WR_OP);
     _io_write_count++;
-    xylem_loop_io_close(io);
+    xylem_loop_close_io(io);
 }
 
 static void test_io_writable(void) {
@@ -237,8 +237,8 @@ static void test_io_writable(void) {
     xylem_loop_io_t io;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
-    ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_WR_OP, _on_io_writable) == 0);
+    ASSERT(xylem_loop_init_io(&loop, &io, pair[0]) == 0);
+    ASSERT(xylem_loop_start_io(&io, PLATFORM_POLLER_WR_OP, _on_io_writable) == 0);
 
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_write_count == 1);
@@ -257,9 +257,9 @@ static void _on_io_rearm(xylem_loop_t* loop,
 
     if (_io_rearm_count < 3) {
         platform_socket_send(_io_rearm_wr, "x", 1);
-        xylem_loop_io_start(io, PLATFORM_POLLER_RD_OP, _on_io_rearm);
+        xylem_loop_start_io(io, PLATFORM_POLLER_RD_OP, _on_io_rearm);
     } else {
-        xylem_loop_io_close(io);
+        xylem_loop_close_io(io);
     }
 }
 
@@ -276,8 +276,8 @@ static void test_io_rearm(void) {
     xylem_loop_io_t io;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
-    ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_RD_OP, _on_io_rearm) == 0);
+    ASSERT(xylem_loop_init_io(&loop, &io, pair[0]) == 0);
+    ASSERT(xylem_loop_start_io(&io, PLATFORM_POLLER_RD_OP, _on_io_rearm) == 0);
 
     platform_socket_send(pair[1], "a", 1);
 
@@ -296,9 +296,9 @@ static void _on_io_stopped(xylem_loop_t* loop,
 }
 
 static void _on_stop_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
-    xylem_loop_io_stop(stop_io);
-    xylem_loop_io_close(stop_io);
-    xylem_loop_timer_close(timer);
+    xylem_loop_stop_io(stop_io);
+    xylem_loop_close_io(stop_io);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_io_stop(void) {
@@ -313,13 +313,13 @@ static void test_io_stop(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
-    ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_RD_OP, _on_io_stopped) == 0);
+    ASSERT(xylem_loop_init_io(&loop, &io, pair[0]) == 0);
+    ASSERT(xylem_loop_start_io(&io, PLATFORM_POLLER_RD_OP, _on_io_stopped) == 0);
 
     stop_io = &io;
 
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
-    ASSERT(xylem_loop_timer_start(&timer, _on_stop_trigger, 10, 0) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_stop_trigger, 10, 0) == 0);
 
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_io_stop_count == 0);
@@ -337,7 +337,7 @@ static void _on_post_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _post_req.cb = _on_post;
     _post_req.ud = NULL;
     xylem_loop_post(loop, &_post_req);
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_post_same_thread(void) {
@@ -347,8 +347,8 @@ static void test_post_same_thread(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
-    ASSERT(xylem_loop_timer_start(&timer, _on_post_trigger, 10, 0) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_post_trigger, 10, 0) == 0);
 
     ASSERT(xylem_loop_run(&loop) == 0);
     ASSERT(_post_count == 1);
@@ -386,8 +386,8 @@ static void test_post_cross_thread(void) {
 
     ASSERT(xylem_loop_init(&loop) == 0);
 
-    ASSERT(xylem_loop_timer_init(&loop, &keepalive) == 0);
-    ASSERT(xylem_loop_timer_start(&keepalive, _on_keepalive, 5000, 0) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &keepalive) == 0);
+    ASSERT(xylem_loop_start_timer(&keepalive, _on_keepalive, 5000, 0) == 0);
 
     thrd_t thr;
     ASSERT(thrd_create(&thr, _poster_thread, &loop) == thrd_success);
@@ -397,7 +397,7 @@ static void test_post_cross_thread(void) {
 
     thrd_join(thr, NULL);
 
-    xylem_loop_timer_close(&keepalive);
+    xylem_loop_close_timer(&keepalive);
     loop.active_count--;
 
     xylem_loop_deinit(&loop);
@@ -412,12 +412,12 @@ static void test_stop_from_callback(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
-    ASSERT(xylem_loop_timer_start(&timer, _on_stop_loop, 10, 0) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_stop_loop, 10, 0) == 0);
 
     ASSERT(xylem_loop_run(&loop) == 0);
 
-    xylem_loop_timer_close(&timer);
+    xylem_loop_close_timer(&timer);
     loop.active_count--;
 
     xylem_loop_deinit(&loop);
@@ -425,17 +425,17 @@ static void test_stop_from_callback(void) {
 
 static void _on_order_a(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 1;
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void _on_order_b(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 2;
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void _on_order_c(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 3;
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_timer_ordering(void) {
@@ -446,13 +446,13 @@ static void test_timer_ordering(void) {
     xylem_loop_timer_t ta, tb, tc;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &ta) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &tb) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &tc) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &ta) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &tb) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &tc) == 0);
 
-    ASSERT(xylem_loop_timer_start(&tc, _on_order_c, 30, 0) == 0);
-    ASSERT(xylem_loop_timer_start(&tb, _on_order_b, 20, 0) == 0);
-    ASSERT(xylem_loop_timer_start(&ta, _on_order_a, 10, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&tc, _on_order_c, 30, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&tb, _on_order_b, 20, 0) == 0);
+    ASSERT(xylem_loop_start_timer(&ta, _on_order_a, 10, 0) == 0);
 
     ASSERT(xylem_loop_run(&loop) == 0);
 
@@ -470,12 +470,12 @@ static void _on_combined_io(xylem_loop_t* loop,
     char buf[16];
     platform_socket_recv(io->sqe.fd, buf, sizeof(buf));
     _combined_io_fired = 1;
-    xylem_loop_io_close(io);
+    xylem_loop_close_io(io);
 }
 
 static void _on_combined_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _combined_timer_fired = 1;
-    xylem_loop_timer_close(timer);
+    xylem_loop_close_timer(timer);
 }
 
 static void test_io_and_timer(void) {
@@ -492,10 +492,10 @@ static void test_io_and_timer(void) {
     xylem_loop_timer_t timer;
 
     ASSERT(xylem_loop_init(&loop) == 0);
-    ASSERT(xylem_loop_io_init(&loop, &io, pair[0]) == 0);
-    ASSERT(xylem_loop_io_start(&io, PLATFORM_POLLER_RD_OP, _on_combined_io) == 0);
-    ASSERT(xylem_loop_timer_init(&loop, &timer) == 0);
-    ASSERT(xylem_loop_timer_start(&timer, _on_combined_timer, 20, 0) == 0);
+    ASSERT(xylem_loop_init_io(&loop, &io, pair[0]) == 0);
+    ASSERT(xylem_loop_start_io(&io, PLATFORM_POLLER_RD_OP, _on_combined_io) == 0);
+    ASSERT(xylem_loop_init_timer(&loop, &timer) == 0);
+    ASSERT(xylem_loop_start_timer(&timer, _on_combined_timer, 20, 0) == 0);
 
     platform_socket_send(pair[1], "x", 1);
 

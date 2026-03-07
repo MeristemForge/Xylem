@@ -26,7 +26,7 @@ typedef struct {
     void*              data;
 } _xstack_node_t;
 
-static inline _xstack_node_t* _xstack_node_alloc(void* data) {
+static inline _xstack_node_t* _xstack_alloc_node(void* data) {
     _xstack_node_t* n = malloc(sizeof(_xstack_node_t));
     if (!n) return NULL;
     n->data = data;
@@ -46,7 +46,7 @@ size_t xylem_xstack_len(xylem_xstack_t* stack) {
 }
 
 int xylem_xstack_push(xylem_xstack_t* stack, void* data) {
-    _xstack_node_t* n = _xstack_node_alloc(data);
+    _xstack_node_t* n = _xstack_alloc_node(data);
     if (!n) return -1;
     xylem_stack_push(&stack->stack, &n->node);
     return 0;

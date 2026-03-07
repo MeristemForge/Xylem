@@ -23,10 +23,6 @@ _Pragma("once")
 
 #include "platform/platform-socket.h"
 
-/* ------------------------------------------------------------------ */
-/*  Types                                                             */
-/* ------------------------------------------------------------------ */
-
 /**
  * @brief Unified network address wrapper.
  *
@@ -47,10 +43,6 @@ typedef struct xylem_buf_s {
     char*  base;
     size_t len;
 } xylem_buf_t;
-
-/* ------------------------------------------------------------------ */
-/*  Public API                                                        */
-/* ------------------------------------------------------------------ */
 
 /**
  * @brief Convert a host string and port into an xylem_addr_t.
