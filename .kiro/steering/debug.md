@@ -22,23 +22,10 @@ Start a debug server, then tell the AI agent to connect. The agent handles break
 ### Windows (CDB)
 
 ```bash
-# Start CDB remote debug server (pick any free port)
 cdb -server tcp:port=5005 -o out\Debug\<program>.exe
 ```
 
 Then tell the agent to connect with: `tcp:Port=5005,Server=localhost`
-
-### Linux (GDB)
-
-```bash
-gdb -ex "target remote :5005" ./out/<program>
-```
-
-### macOS (LLDB)
-
-```bash
-lldb ./out/<program>
-```
 
 ## Tips
 

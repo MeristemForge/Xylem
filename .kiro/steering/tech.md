@@ -3,18 +3,14 @@ inclusion: fileMatch
 fileMatchPattern: "**/CMakeLists.txt,**/*.cmake"
 ---
 
-# Tech Stack & Build
+# Build System
 
-## Language & Standard
-
+## Stack
 - C11 (`CMAKE_C_STANDARD 11`, extensions enabled)
 - `_Pragma("once")` instead of traditional include guards
 - C11 atomics (Windows requires `/experimental:c11atomics`)
-
-## Build System
-
 - CMake >= 3.16
-- Output directory: `out/`
+- Output: `out/`
 - Custom helpers: `cmake/xylem-utils.cmake`
 
 ## CMake Options
@@ -28,8 +24,7 @@ fileMatchPattern: "**/CMakeLists.txt,**/*.cmake"
 | `XYLEM_ENABLE_DYNAMIC_LIBRARY` | OFF | Shared lib instead of static |
 | `XYLEM_ENABLE_COVERAGE` | OFF | Code coverage |
 
-## Common Commands
-
+## Commands
 ```bash
 # Configure & build (tests enabled by default)
 cmake -B out
