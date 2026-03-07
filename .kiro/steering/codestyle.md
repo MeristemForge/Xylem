@@ -106,12 +106,14 @@ Static functions ordered by dependency (no forward declarations).
 
 Prefer C11 standard library interfaces (`thrd_sleep`, `timespec_get`, `<threads.h>`, etc.) over platform-specific APIs. Only use the platform layer when C11 has no equivalent (e.g. monotonic clock).
 
-Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`. All platform functions are declared in `src/platform/platform.h` and use the `platform_` prefix.
+Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`.
 
 | Rule | Detail |
 |------|--------|
+| No `#ifdef` in `src/` | Source files outside `platform/` must not contain platform conditionals (`#ifdef _WIN32`, `#ifdef __linux__`, etc.). All platform differences go through `platform/` |
+| Umbrella header | `src/platform/platform.h` only includes per-module headers — no declarations directly in it |
+| Per-module header | `src/platform/platform-<module>.h` declares that module's `platform_*` functions |
 | Prefix | `platform_<module>_<action>` (e.g. `platform_time_monotonic_nsec`) |
-| Declaration | All in `src/platform/platform.h` — callers include this single header |
 | Implementation | One `.c` per module per platform (`src/platform/win/xylem-<module>.c`, `src/platform/unix/xylem-<module>.c`) |
 | Scope | Only the minimal OS-specific logic; everything else stays in `src/xylem-<module>.c` |
 
