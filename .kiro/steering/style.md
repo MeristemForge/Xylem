@@ -32,30 +32,47 @@ Every `.c` and `.h` file must start with the project license block:
  */
 ```
 
-## Naming
+## Naming Convention
 
-Use the project name in lowercase as the namespace prefix. In C identifiers (functions, types, macros), replace hyphens with underscores. In file names, keep hyphens as-is.
+**Prefix Rule:** Use your project name in lowercase as the namespace prefix. In C identifiers (functions, types, macros), replace hyphens with underscores. In file names, keep hyphens as-is.
 
 | Context | Project `mylib` | Project `hello-lib` |
 |---------|----------------|---------------------|
 | C identifier prefix | `mylib_` | `hello_lib_` |
 | Source file prefix | `mylib-` | `hello-lib-` |
 
-| Category | Pattern | Example |
-|----------|---------|---------|
+| Category | Pattern | Example (project: `xylem`) |
+|----------|---------|---------------------------|
 | Public functions | `xylem_<module>_<action>` | `xylem_list_insert` |
 | Static functions | `_<module>_<action>` | `_tcp_flush_writes` |
 | Static callbacks | `_<module>_<subject>_<event>_cb` | `_tcp_conn_io_cb` |
 | Types | `xylem_<module>_t` | `xylem_list_t` |
 | Node types | `xylem_<module>_node_t` | `xylem_heap_node_t` |
 | Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
-| Internal types (file-scope) | `_<name>_t` | `_xlist_node_t` |
+| Internal types (file-scope) | `_<name>_t` | `_node_t` |
 | Static variables (file-scope) | `_<name>` | `_echo_loop` |
 | Global variables (non-static) | no prefix | `stop_io` |
-| Source files | `xylem-<module>.c`, `xylem-<module>.h` | `xylem-list.c` |
+| Source files | `xylem-<module>.c` | `xylem-list.c` |
 | Test files | `test-<module>.c` | `test-list.c` |
 
-> **Note:** The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern. This convention is consistent with projects like libuv and nginx.
+### Derived Forms
+
+The `xylem` placeholder is used as-is in file names and CMake identifiers. In C identifiers, hyphens are replaced with underscores:
+
+| Context | `xylem` | `XYLEM` |
+|---------|---------|---------|
+| File names | `xylem-list.c` | — |
+| CMake target | `add_library(xylem ...)` | — |
+| CMake options | — | `XYLEM_ENABLE_TESTING` |
+| CMake functions | `xylem_apply_sanitizer(...)` | — |
+| C function prefix | `xylem_list_insert()` | — |
+| C type prefix | `xylem_list_t` | — |
+| Include directory | `include/xylem/` | — |
+| Umbrella header | `xylem.h` | — |
+
+> When the project name has no hyphens (e.g. `xylem`), all forms are identical — no conversion needed.
+
+> The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern.
 
 ### Public Functions
 
@@ -163,7 +180,7 @@ Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`.
 
 Public API functions belong in `src/xylem-<module>.c` and call `platform_*` helpers for OS-dependent parts. Never put public API implementations directly in platform files.
 
-## Project Structure
+## Project Structure (Library)
 
 ```
 include/xylem/xylem-<module>.h  # Public API
@@ -171,9 +188,10 @@ src/xylem-<module>.c            # Implementation
 src/platform/win/               # Windows platform code
 src/platform/unix/              # Linux/macOS platform code
 tests/test-<module>.c           # Unit tests
+examples/                       # Example programs
 ```
 
-### Adding a Module
+### Adding a Module (Library)
 1. Create `include/xylem/xylem-<module>.h` with public API
 2. Create `src/xylem-<module>.c` with implementation
 3. Add to `SRCS` in root `CMakeLists.txt`
@@ -261,3 +279,23 @@ static inline void _heap_swap_node(...) { ... }
 - `/** ... */` when spanning multiple lines (block format: `/**` and `*/` on own lines)
 - Only to explain why, not what — if the comment restates the code, remove it
 - No decorative dividers
+
+## Test Convention
+
+Custom `ASSERT(expr)` macro in `tests/assert.h` — prints `file:line` and aborts on failure. Do not use standard `<assert.h>`.
+
+Tests are plain C executables: `main()` calls `static void test_*()` functions. One test file per module: `tests/test-<module>.c`.
+
+```c
+#include "assert.h"
+
+static void test_insert(void) {
+    /* ... */
+    ASSERT(result == 0);
+}
+
+int main(void) {
+    test_insert();
+    return 0;
+}
+```
