@@ -25,16 +25,17 @@
 #include "xylem/xylem-queue.h"
 #include "xylem/xylem-list.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #define XYLEM_TCP_DEFAULT_READ_BUF_SIZE 65536
 
-typedef struct xylem_tcp_write_req_s {
+typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;
     void*              data;
     size_t             len;
     size_t             offset;
-} xylem_tcp_write_req_t;
+} _tcp_write_req_t;
 
 /**
  * Dial-private state: only allocated for outbound (dialed) connections.
@@ -441,8 +442,8 @@ static void _tcp_start_close_conn(xylem_tcp_conn_t* conn, int err) {
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
             xylem_queue_dequeue(&conn->write_queue);
-        xylem_tcp_write_req_t* req =
-            xylem_queue_entry(node, xylem_tcp_write_req_t, node);
+        _tcp_write_req_t* req =
+            xylem_queue_entry(node, _tcp_write_req_t, node);
 
         if (conn->handler && conn->handler->on_write_done) {
             conn->handler->on_write_done(conn, req->data, req->len, err);
@@ -556,8 +557,8 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* front =
             xylem_queue_front(&conn->write_queue);
-        xylem_tcp_write_req_t* req =
-            xylem_queue_entry(front, xylem_tcp_write_req_t, node);
+        _tcp_write_req_t* req =
+            xylem_queue_entry(front, _tcp_write_req_t, node);
 
         char*  ptr = (char*)req->data + req->offset;
         size_t rem = req->len - req->offset;
@@ -582,8 +583,8 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
-                    xylem_tcp_write_req_t* wr =
-                        xylem_queue_entry(qn, xylem_tcp_write_req_t, node);
+                    _tcp_write_req_t* wr =
+                        xylem_queue_entry(qn, _tcp_write_req_t, node);
                     if (conn->handler && conn->handler->on_write_done) {
                         conn->handler->on_write_done(conn, wr->data,
                                                      wr->len, err);
@@ -655,9 +656,9 @@ static void _tcp_schedule_reconnect(xylem_tcp_conn_t* conn) {
     xylem_loop_start_timer(&dial->reconnect_timer,
                            _tcp_reconnect_timeout_cb,
                            delay, 0);
-    xylem_logi("tcp conn fd=%d scheduling reconnect #%u in %llu ms",
+    xylem_logi("tcp conn fd=%d scheduling reconnect #%u in %" PRIu64 " ms",
                (int)conn->fd, dial->reconnect_count + 1,
-               (unsigned long long)delay);
+               delay);
 }
 
 /* Reconnect timer fires: close old socket, create new one, re-dial. */
@@ -881,7 +882,7 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
         return -1;
 
     /* Single allocation: req header + data payload */
-    xylem_tcp_write_req_t* req = malloc(sizeof(*req) + len);
+    _tcp_write_req_t* req = malloc(sizeof(*req) + len);
     if (!req) return -1;
 
     req->data   = (char*)req + sizeof(*req);

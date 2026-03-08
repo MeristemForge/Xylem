@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "platform/platform.h"
 
+#include <inttypes.h>
+
 #define BUFSIZE 4096
 
 typedef struct _logger_s      _logger_t;
@@ -99,7 +101,7 @@ static int _logger_build_message(
 
     if (has_callback) {
         /* callback mode: just tid file:line prefix */
-        off = snprintf(buf, buflen, "%lu %s:%d ", (unsigned long)tid, file, line);
+        off = snprintf(buf, buflen, "%" PRIu64 " %s:%d ", (uint64_t)tid, file, line);
     } else {
         struct timespec tsc;
         struct tm       tm;
@@ -109,7 +111,7 @@ static int _logger_build_message(
         off = snprintf(
             buf,
             buflen,
-            "%04d-%02d-%02d %02d:%02d:%02d.%03d %lu %5s %s:%d ",
+            "%04d-%02d-%02d %02d:%02d:%02d.%03d %" PRIu64 " %5s %s:%d ",
             tm.tm_year + 1900,
             tm.tm_mon + 1,
             tm.tm_mday,
@@ -117,7 +119,7 @@ static int _logger_build_message(
             tm.tm_min,
             tm.tm_sec,
             (int)(tsc.tv_nsec / 1000000UL),
-            (unsigned long)tid,
+            (uint64_t)tid,
             _levels[level],
             file,
             line);

@@ -1,4 +1,4 @@
-/** Copyright (c) 2025, Wu Jin <wujin.developer@gmail.com>
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy
  *  of this software and associated documentation files (the "Software"), to
