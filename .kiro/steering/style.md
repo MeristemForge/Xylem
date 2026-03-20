@@ -1,100 +1,50 @@
----
-inclusion: fileMatch
-fileMatchPattern: "**/*.{c,h}"
----
-
 # Code Style
 
 ## License Header
 
-Every `.c` and `.h` file must start with the project license block:
-
-```c
-/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
- *
- *  Permission is hereby granted, free of charge, to any person obtaining a copy
- *  of this software and associated documentation files (the "Software"), to
- *  deal in the Software without restriction, including without limitation the
- *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- *  sell copies of the Software, and to permit persons to whom the Software is
- *  furnished to do so, subject to the following conditions:
- *
- *  The above copyright notice and this permission notice shall be included in
- *  all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- *  IN THE SOFTWARE.
- */
-```
+Every `.c` and `.h` file must start with the project license text as a `/** ... */` comment. Read the content from the project root `LICENSE` file.
 
 ## Naming Convention
 
-**Prefix Rule:** Use your project name in lowercase as the namespace prefix. In C identifiers (functions, types, macros), replace hyphens with underscores. In file names, keep hyphens as-is.
+### Prefix Rule
 
-| Context | Project `mylib` | Project `hello-lib` |
-|---------|----------------|---------------------|
-| C identifier prefix | `mylib_` | `hello_lib_` |
-| Source file prefix | `mylib-` | `hello-lib-` |
+`<project>` is the project name from `CMakeLists.txt`.
 
-| Category | Pattern | Example (project: `xylem`) |
-|----------|---------|---------------------------|
-| Public functions | `xylem_<module>_<action>` | `xylem_list_insert` |
-| Static functions | `_<module>_<action>` | `_tcp_flush_writes` |
-| Static callbacks | `_<module>_<subject>_<event>_cb` | `_tcp_conn_io_cb` |
-| Types | `xylem_<module>_t` | `xylem_list_t` |
-| Node types | `xylem_<module>_node_t` | `xylem_heap_node_t` |
-| Function pointer typedefs | `xylem_<module>_<purpose>_fn_t` | `xylem_rbtree_cmp_fn_t` |
-| Internal types (file-scope) | `_<name>_t` | `_node_t` |
-| Static variables (file-scope) | `_<name>` | `_echo_loop` |
-| Global variables (non-static) | no prefix | `stop_io` |
-| Source files | `xylem-<module>.c` | `xylem-list.c` |
-| Test files | `test-<module>.c` | `test-list.c` |
-
-### Derived Forms
-
-The `xylem` placeholder is used as-is in file names and CMake identifiers. In C identifiers, hyphens are replaced with underscores:
-
-| Context | `xylem` | `XYLEM` |
-|---------|---------|---------|
-| File names | `xylem-list.c` | — |
-| CMake target | `add_library(xylem ...)` | — |
-| CMake options | — | `XYLEM_ENABLE_TESTING` |
-| CMake functions | `xylem_apply_sanitizer(...)` | — |
-| C function prefix | `xylem_list_insert()` | — |
-| C type prefix | `xylem_list_t` | — |
-| Include directory | `include/xylem/` | — |
-| Umbrella header | `xylem.h` | — |
-
-> When the project name has no hyphens (e.g. `xylem`), all forms are identical — no conversion needed.
+| Category | Pattern |
+|----------|---------|
+| Public functions | `<project>_<module>_<action>` |
+| Static functions | `_<module>_<action>` |
+| Static callbacks | `_<module>_<subject>_<event>_cb` |
+| Types | `<project>_<module>_t` |
+| Node types | `<project>_<module>_node_t` |
+| Function pointer typedefs | `<project>_<module>_<purpose>_fn_t` |
+| Internal types (file-scope) | `_<name>_t` |
+| Static variables (file-scope) | `_<name>` |
+| Global variables (non-static, in `.c` files) | `snake_case`, no prefix |
+| Source files | `<project>-<module>.c` |
+| Test files | `test-<module>.c` |
+| Include directory | `include/<project>/` |
+| Umbrella header | `include/<project>.h` |
 
 > The `_` prefix for file-scope static functions and internal types is technically reserved by C11 (§7.1.3), but is used intentionally here. These symbols are never exported and do not enter the linker symbol table, so conflicts with the implementation are not a practical concern.
 
 ### Public Functions
 
-Three logical segments: `xylem`, `<module>`, `<action>`. Module is a single identifier without underscores. Action may be compound (verb + object with `_`), verb first:
-- `xylem_list_insert` — module=`list`, action=`insert`
-- `xylem_loop_init_timer` — module=`loop`, action=`init_timer`
-- `xylem_loop_start_io` — module=`loop`, action=`start_io`
-- `xylem_timer_set_time` — module=`timer`, action=`set_time`
+Three segments: `<project>`, `<module>`, `<action>`. Module is a single identifier without underscores. Action may be compound (verb + object with `_`), verb first:
+- `<project>_list_insert` — module=`list`, action=`insert`
+- `<project>_loop_init_timer` — module=`loop`, action=`init_timer`
+- `<project>_timer_set_time` — module=`timer`, action=`set_time`
 
 ### Static Functions
 
-Two logical segments: `<module>`, `<action>`, prefixed with `_`. Same rules as public: module is a single identifier without underscores, action may be compound (verb first):
+Two segments: `<module>`, `<action>`, prefixed with `_`. Same rules as public:
 - `_heap_swap_node` — module=`heap`, action=`swap_node`
 - `_tcp_flush_writes` — module=`tcp`, action=`flush_writes`
-- `_tcp_setup_conn` — module=`tcp`, action=`setup_conn`
 
 ### Static Callbacks
 
-Three logical segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject names the resource or concern being monitored (e.g. `conn`, `server`, `reconnect`), not the mechanism (use `reconnect` not `reconnect_timer`). These describe events, not actions, so the verb-first rule does not apply:
+Three segments: `<module>`, `<subject>`, `<event>`, with `_cb` suffix. Subject names the resource being monitored, not the mechanism. These describe events, not actions, so the verb-first rule does not apply:
 - `_tcp_conn_io_cb` — module=`tcp`, subject=`conn`, event=`io`
-- `_tcp_conn_connected_cb` — module=`tcp`, subject=`conn`, event=`connected`
-- `_tcp_server_io_cb` — module=`tcp`, subject=`server`, event=`io`
 - `_tcp_write_timeout_cb` — module=`tcp`, subject=`write`, event=`timeout`
 - `_tcp_reconnect_timeout_cb` — module=`tcp`, subject=`reconnect`, event=`timeout`
 
@@ -123,15 +73,15 @@ Rule: opaque types must use `create`/`destroy` (caller can't `sizeof`). Intrusiv
 
 ```c
 /* init/deinit — caller owns the memory */
-xylem_list_t list;
-xylem_list_init(&list);
+<project>_list_t list;
+<project>_list_init(&list);
 /* ... use list ... */
-xylem_list_deinit(&list);
+<project>_list_deinit(&list);
 
 /* create/destroy — module owns the memory */
-xylem_logger_t* logger = xylem_logger_create(cfg);
+<project>_logger_t* logger = <project>_logger_create(cfg);
 /* ... use logger ... */
-xylem_logger_destroy(logger);
+<project>_logger_destroy(logger);
 ```
 
 ### Related Verb Pairs
@@ -151,7 +101,7 @@ xylem_logger_destroy(logger);
 ## Opaque Structs
 
 Non-intrusive types that users interact with only through pointers (handles) must use the opaque pattern:
-- Header: forward declaration + typedef only (`typedef struct xylem_foo_s xylem_foo_t;`)
+- Header: forward declaration + typedef only (`typedef struct <project>_foo_s <project>_foo_t;`)
 - Implementation (.c): full struct definition with fields
 - Users allocate via `create()` / module-specific constructors, never `sizeof()`
 
@@ -165,40 +115,38 @@ Static functions ordered by dependency (no forward declarations).
 
 ## Platform Layer
 
-Use C11 standard library interfaces (`thrd_sleep`, `timespec_get`, `<threads.h>`, etc.) instead of platform-specific APIs. Only use the platform layer when C11 has no equivalent (e.g. monotonic clock).
+All platform-specific code lives exclusively under `src/platform/`. Source files outside `platform/` must not contain platform conditionals (`#ifdef _WIN32`, `#ifdef __linux__`, etc.).
 
-Platform-specific code lives under `src/platform/win/` and `src/platform/unix/`.
+Prefer cross-platform APIs wherever possible. Use the platform layer only when no cross-platform equivalent exists.
 
 | Rule | Detail |
 |------|--------|
-| No `#ifdef` in `src/` | Source files outside `platform/` must not contain platform conditionals (`#ifdef _WIN32`, `#ifdef __linux__`, etc.). All platform differences go through `platform/` |
 | Umbrella header | `src/platform/platform.h` only includes per-module headers — no declarations directly in it |
 | Per-module header | `src/platform/platform-<module>.h` declares that module's `platform_*` functions |
 | Prefix | `platform_<module>_<action>` (e.g. `platform_time_monotonic_nsec`) |
 | Implementation | One `.c` per module per platform (`src/platform/win/platform-<module>.c`, `src/platform/unix/platform-<module>.c`) |
-| Scope | Only the minimal OS-specific logic; everything else stays in `src/xylem-<module>.c` |
+| Scope | Only the minimal OS-specific logic; everything else stays in `src/<project>-<module>.c` |
 
-Public API functions belong in `src/xylem-<module>.c` and call `platform_*` helpers for OS-dependent parts. Never put public API implementations directly in platform files.
+Public API functions belong in `src/<project>-<module>.c` and call `platform_*` helpers for OS-dependent parts. Never put public API implementations directly in platform files.
 
-## Project Structure (Library)
+## Adding a Module
 
-```
-include/xylem/xylem-<module>.h  # Public API
-src/xylem-<module>.c            # Implementation
-src/platform/win/               # Windows platform code
-src/platform/unix/              # Linux/macOS platform code
-tests/test-<module>.c           # Unit tests
-examples/                       # Example programs
-```
+### Library
+1. If `include/<project>/` does not exist, create it
+2. Create `include/<project>/<project>-<module>.h` with public API
+3. Create `src/<project>-<module>.c` with implementation
+4. Add to `SRCS` in root `CMakeLists.txt`
+5. Include in `include/<project>.h`
+6. Create `tests/test-<module>.c`
+7. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
+8. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
 
-### Adding a Module (Library)
-1. Create `include/xylem/xylem-<module>.h` with public API
-2. Create `src/xylem-<module>.c` with implementation
-3. Add to `SRCS` in root `CMakeLists.txt`
-4. Include in `include/xylem.h`
-5. Create `tests/test-<module>.c`
-6. Add `xylem_add_test(<module>)` to `tests/CMakeLists.txt`
-7. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
+### Executable
+1. Create `src/<project>-<module>.c` and `src/<project>-<module>.h`
+2. Add to `SRCS` in root `CMakeLists.txt`
+3. Create `tests/test-<module>.c`
+4. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
+5. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
 
 ## Restricted Functions
 
@@ -212,19 +160,124 @@ Applies to all `.c` and `.h` files in the project (including tests).
 | `atoi`, `atof`, `atol` | `strtol`, `strtod` | No error detection — overflow is undefined behavior |
 | `memcpy` with overlapping regions | `memmove` | Overlapping src/dst is undefined behavior |
 
-## Cross-Platform Pitfalls (Reference)
-
-> This section is informational reference, not enforceable rules.
-
-- `long`: 4 bytes on Windows x64, 8 bytes on Linux/macOS x64
-- Stack size: Windows 1MB, Linux 8MB
-- Uninitialized memory may be zeroed in debug but not release — use ASAN
-- Signals: Windows uses SEH, Unix uses POSIX signals
-- Paths: `\` on Windows, `/` on Unix
-
 ## Headers
 
 - Use `_Pragma("once")` for header guards
+
+## Test Code
+
+### File Scope
+
+Applies to `tests/test-<module>.c` files and `tests/CMakeLists.txt`.
+
+### Framework
+
+No external test framework. Tests use the custom `ASSERT(expr)` macro from `tests/assert.h`. Do not use standard `<assert.h>` or any third-party test library.
+
+### Test File Structure
+
+One test file per module: `tests/test-<module>.c`. Each file follows this structure:
+
+```c
+#include "assert.h"
+#include "<project>-<module>.h"  /* or the relevant header */
+
+static void test_<case>(void) {
+    /* setup */
+    /* action */
+    /* assert */
+    ASSERT(result == expected);
+}
+
+int main(void) {
+    test_<case>();
+    return 0;
+}
+```
+
+| Rule | Detail |
+|------|--------|
+| Entry point | `main()` calls `static void test_*()` functions sequentially |
+| Return value | `main()` returns `0` on success; `ASSERT` calls `abort()` on failure |
+| No test runner | Each test executable is self-contained — no shared `main()` across modules |
+
+### Naming
+
+| Category | Pattern | Example |
+|----------|---------|---------|
+| Test file | `test-<module>.c` | `test-list.c` |
+| Test function | `static void test_<case>(void)` | `test_insert`, `test_remove_empty` |
+| Test executable | `test-<module>` (created by CMake) | `test-list` |
+
+Test function names use `snake_case`. The `<case>` part describes the scenario, not the function under test:
+- `test_insert` ✓ — tests the insert operation
+- `test_insert_duplicate` ✓ — tests inserting a duplicate
+- `test_mylib_list_insert` ✗ — do not repeat the module/project prefix
+
+### Registration
+
+Add each test module in `tests/CMakeLists.txt` using the helper function:
+
+```cmake
+<project>_add_test(<module>)
+```
+
+This creates executable `test-<module>` from `tests/test-<module>.c`, linked against `<project>`, with sanitizers and coverage applied automatically.
+
+Do not create test executables manually with `add_executable` in `tests/CMakeLists.txt`.
+
+### Test Organization
+
+#### One Concern Per Function
+
+Each `test_*` function tests one behavior. Do not combine multiple unrelated assertions in a single function.
+
+```c
+/* Correct — one concern */
+static void test_insert(void) {
+    <project>_list_t list;
+    <project>_list_init(&list);
+    int32_t rc = <project>_list_insert(&list, 42);
+    ASSERT(rc == 0);
+    ASSERT(<project>_list_size(&list) == 1);
+    <project>_list_deinit(&list);
+}
+
+/* Correct — separate concern */
+static void test_insert_duplicate(void) {
+    <project>_list_t list;
+    <project>_list_init(&list);
+    <project>_list_insert(&list, 42);
+    int32_t rc = <project>_list_insert(&list, 42);
+    ASSERT(rc == -1);
+    <project>_list_deinit(&list);
+}
+```
+
+#### Cleanup on Every Path
+
+Every `test_*` function must call `deinit`/`destroy`/`close` for all resources it creates, even if the test is expected to pass. This ensures sanitizers (ASAN) report accurate leak information.
+
+#### No Global State
+
+Test functions must not depend on execution order. Each function sets up its own state from scratch. Do not use file-scope variables to share state between test functions.
+
+### Prohibited Test Patterns
+
+| Pattern | Why | Fix |
+|---------|-----|-----|
+| `#include <assert.h>` | Standard assert has no file:line output and may be disabled by `NDEBUG` | Use `#include "assert.h"` (project macro) |
+| `sleep()` / `thrd_sleep()` in tests | Flaky timing-dependent tests | Use deterministic synchronization or callbacks |
+| `printf` as the only validation | Output is not checked automatically | Use `ASSERT()` to validate results |
+| Shared mutable file-scope variables | Creates order-dependent tests | Initialize all state inside each `test_*` function |
+
+### Coverage Requirements
+
+| Rule | Detail |
+|------|--------|
+| Target | Every public function must have at least one test that exercises its success path |
+| Error paths | Functions with error returns must have tests that trigger each distinct error condition |
+| Platform code | Platform-specific code is tested on its native platform only — do not mock platform functions |
 
 ## Formatting
 
@@ -275,27 +328,19 @@ static inline void _heap_swap_node(...) { ... }
 
 ### Inline Comments
 
+Applies to comments inside function bodies in `.c` files.
+
 - `/* ... */` style (C11 compatible)
 - `/** ... */` when spanning multiple lines (block format: `/**` and `*/` on own lines)
-- Only to explain why, not what — if the comment restates the code, remove it
-- No decorative dividers
-
-## Test Convention
-
-Custom `ASSERT(expr)` macro in `tests/assert.h` — prints `file:line` and aborts on failure. Do not use standard `<assert.h>`.
-
-Tests are plain C executables: `main()` calls `static void test_*()` functions. One test file per module: `tests/test-<module>.c`.
+- A comment must explain *why* the code does something, not *what* it does. If the comment restates the code, remove it.
+- No decorative dividers (lines of `===`, `---`, `***`, etc.)
 
 ```c
-#include "assert.h"
+/* Correct — explains why */
+/* Reserve extra byte for null terminator required by snprintf. */
+uint8_t buf[len + 1];
 
-static void test_insert(void) {
-    /* ... */
-    ASSERT(result == 0);
-}
-
-int main(void) {
-    test_insert();
-    return 0;
-}
+/* Incorrect — restates the code */
+/* Add 1 to len. */
+uint8_t buf[len + 1];
 ```

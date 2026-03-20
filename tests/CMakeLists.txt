@@ -33,6 +33,25 @@ xylem_add_test(addr)
 xylem_add_test(tcp)
 xylem_add_test(udp)
 
+if(XYLEM_ENABLE_TLS)
+    xylem_add_test(tls)
+    target_link_libraries(test-tls PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    xylem_add_test(dtls)
+    target_link_libraries(test-dtls PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    if(WIN32)
+        target_link_libraries(test-tls PRIVATE crypt32)
+        target_link_libraries(test-dtls PRIVATE crypt32)
+
+        # OpenSSL DLLs on Windows need OPENSSL_Applink for stdio interop.
+        find_file(OPENSSL_APPLINK_SOURCE applink.c
+            PATHS "${OPENSSL_INCLUDE_DIR}/openssl")
+        if(OPENSSL_APPLINK_SOURCE)
+            target_sources(test-tls PRIVATE "${OPENSSL_APPLINK_SOURCE}")
+            target_sources(test-dtls PRIVATE "${OPENSSL_APPLINK_SOURCE}")
+        endif()
+    endif()
+endif()
+
 if(XYLEM_ENABLE_COVERAGE AND WIN32)
     find_program(OPENCPPCOVERAGE_BIN OpenCppCoverage)
     if(OPENCPPCOVERAGE_BIN)

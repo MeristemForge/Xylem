@@ -31,6 +31,7 @@ struct xylem_udp_s {
     xylem_loop_io_t       io;
     platform_sock_t       fd;
     xylem_udp_handler_t*  handler;
+    void*                 userdata;
     char                  recv_buf[65536];
     bool                  closing;
     xylem_loop_post_t     free_post;
@@ -187,4 +188,12 @@ void xylem_udp_close(xylem_udp_t* udp) {
     /* Defer free to next loop iteration so close_node stays valid */
     udp->free_post.cb = _udp_free_cb;
     xylem_loop_post(udp->loop, &udp->free_post);
+}
+
+void* xylem_udp_get_userdata(xylem_udp_t* udp) {
+    return udp->userdata;
+}
+
+void xylem_udp_set_userdata(xylem_udp_t* udp, void* ud) {
+    udp->userdata = ud;
 }

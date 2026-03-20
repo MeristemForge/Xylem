@@ -11,6 +11,7 @@ option(XYLEM_ENABLE_TSAN  "enable data race detection" OFF)
 option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
+option(XYLEM_ENABLE_TLS "enable TLS/DTLS support (requires OpenSSL)" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -76,6 +77,12 @@ if(UNIX)
 		src/platform/unix/platform-poller.c
 		src/platform/unix/platform-socket.c
 	)
+endif()
+
+if(XYLEM_ENABLE_TLS)
+	find_package(OpenSSL REQUIRED)
+	list(APPEND SRCS src/xylem-tls.c src/xylem-dtls.c)
+	include_directories(${OPENSSL_INCLUDE_DIR})
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)

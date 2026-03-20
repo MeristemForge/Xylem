@@ -91,3 +91,20 @@ extern int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group);
  * @param udp  UDP handle.
  */
 extern void xylem_udp_close(xylem_udp_t* udp);
+
+/**
+ * @brief Get user data attached to a UDP handle.
+ *
+ * @param udp  UDP handle.
+ *
+ * @return User data pointer.
+ */
+extern void* xylem_udp_get_userdata(xylem_udp_t* udp);
+
+/**
+ * @brief Set user data on a UDP handle.
+ *
+ * @param udp  UDP handle.
+ * @param ud   User data pointer.
+ */
+extern void xylem_udp_set_userdata(xylem_udp_t* udp, void* ud);

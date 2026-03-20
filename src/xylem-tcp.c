@@ -75,6 +75,7 @@ struct xylem_tcp_server_s {
     xylem_tcp_handler_t* handler;
     xylem_tcp_opts_t     opts;
     xylem_list_t         connections;
+    void*                userdata;
     bool                 closing;
     xylem_loop_post_t    free_post;
 };
@@ -840,6 +841,7 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
 
         /* Add to server's connections list */
         conn->server = server;
+        conn->userdata = server->userdata;
         xylem_list_insert_tail(&server->connections,
                                &conn->server_node);
 
@@ -1097,4 +1099,12 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
     xylem_logi("tcp server fd=%d listening on %s:%s",
                (int)fd, host, port_str);
     return server;
+}
+
+void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server) {
+    return server->userdata;
+}
+
+void xylem_tcp_server_set_userdata(xylem_tcp_server_t* server, void* ud) {
+    server->userdata = ud;
 }

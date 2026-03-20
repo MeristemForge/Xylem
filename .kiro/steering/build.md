@@ -1,138 +1,146 @@
----
-inclusion: fileMatch
-fileMatchPattern: "**/CMakeLists.txt,**/*.cmake"
----
+# Build Instructions
 
-# Build System
+This guide covers building, testing, and generating coverage reports on Windows and Unix using CMake.
+The exact commands depend on whether your CMake generator is single-config (e.g., Ninja, Unix Makefiles) or multi-config (e.g., Visual Studio, Ninja Multi-Config).
 
-## Stack
+## Prerequisites
 
-- C11, CMake >= 3.16
-- Output directory: `out/`
+- CMake >= 3.16
+- A C11-compatible compiler:
+  - Windows: MSVC (Visual Studio 2022+) or Clang-cl
+  - Linux/macOS: GCC >= 7 or Clang >= 6
+- (Optional) For code coverage:
+  - Linux: `lcov` and `genhtml` (`sudo apt install lcov`)
+  - Windows: OpenCppCoverage (install via `scripts/install-deps.ps1`)
 
-## CMake Rules
+## Configure the Build
 
-### Option Naming
+### Generator Types
 
-All project-level options use `XYLEM_ENABLE_<FEATURE>`:
+| Platform | Default Generator | Type |
+|----------|-------------------|------|
+| Windows | Visual Studio | Multi-config |
+| Linux/macOS | Unix Makefiles | Single-config |
+| Any (explicit) | Ninja | Single-config |
+| Any (explicit) | Ninja Multi-Config | Multi-config |
 
-| Option | Default | Purpose |
-|--------|---------|---------|
-| `XYLEM_ENABLE_TESTING` | OFF | Unit tests |
-| `XYLEM_ENABLE_ASAN` | OFF | AddressSanitizer |
-| `XYLEM_ENABLE_TSAN` | OFF | ThreadSanitizer |
-| `XYLEM_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer |
-| `XYLEM_ENABLE_COVERAGE` | OFF | Code coverage |
-| `XYLEM_ENABLE_DYNAMIC_LIBRARY` | OFF | Shared lib (library projects only) |
+You can force a specific generator with `-G "Generator Name"`.
 
-Do not add options without the `XYLEM_ENABLE_` prefix.
+### Multi-Config Generators
 
-### Adding Source Files
-
-Add new `.c` files to the `SRCS` list in root `CMakeLists.txt`. Platform-specific sources go in the `WIN32` or `UNIX` conditional blocks:
-
-```cmake
-set(SRCS
-    src/xylem-<module>.c
-)
-if(WIN32)
-    list(APPEND SRCS src/platform/win/platform-<module>.c)
-endif()
-if(UNIX)
-    list(APPEND SRCS src/platform/unix/platform-<module>.c)
-endif()
-```
-
-### Adding Tests
-
-Use the helper function in `tests/CMakeLists.txt`:
-
-```cmake
-xylem_add_test(<module>)
-```
-
-This creates executable `test-<module>` from `tests/test-<module>.c`, linked against `xylem`.
-
-### Applying Sanitizers
-
-Use the helper function from `cmake/xylem-utils.cmake`:
-
-```cmake
-xylem_apply_sanitizer(<target> XYLEM_ENABLE_ASAN address)
-xylem_apply_sanitizer(<target> XYLEM_ENABLE_TSAN thread)
-xylem_apply_sanitizer(<target> XYLEM_ENABLE_UBSAN undefined)
-```
-
-Do not add sanitizer flags manually with `target_compile_options`.
-
-### Prohibited Patterns
-
-- No hardcoded absolute paths
-- No `find_package` without version constraints
-- No `CMAKE_C_FLAGS` modification — use `target_compile_options` on specific targets
-- No `link_directories` — use `target_link_libraries` with full paths or imported targets
-
-## Commands
-
-### Build
+Supports Debug, Release, etc. in one build directory.
 
 ```bash
 cmake -B out
-cmake --build out
+cmake -B out -G "Visual Studio 17 2022"
+cmake -B out -G "Ninja Multi-Config"
 ```
 
-### Test
+### Single-Config Generators
+
+One build type per directory — specify at configure time.
 
 ```bash
-# Windows (multi-config generator)
+cmake -B out -DCMAKE_BUILD_TYPE=Debug
+cmake -B out -G Ninja -DCMAKE_BUILD_TYPE=Debug
+```
+
+Common values for `CMAKE_BUILD_TYPE`: Debug, Release, RelWithDebInfo, MinSizeRel
+
+## Build
+
+### Multi-Config
+```bash
+cmake --build out --config Debug -j 8
+```
+
+### Single-Config
+```bash
+cmake --build out -j 8
+```
+
+## Run Tests
+
+### Multi-Config
+```bash
 ctest --test-dir out -C Debug --output-on-failure
+```
 
-# Linux/macOS
+### Single-Config
+```bash
 ctest --test-dir out --output-on-failure
 ```
 
-### Sanitizer Build
+### Running a Single Test
 
 ```bash
-# AddressSanitizer
-cmake -B out -DXYLEM_ENABLE_ASAN=ON
-cmake --build out
+ctest --test-dir out -R <module> --output-on-failure
+```
 
-# ThreadSanitizer
-cmake -B out -DXYLEM_ENABLE_TSAN=ON
-cmake --build out
+Example: `ctest --test-dir out -R list --output-on-failure` runs only `test-list`.
 
-# UndefinedBehaviorSanitizer
-cmake -B out -DXYLEM_ENABLE_UBSAN=ON
+## Sanitizers
+
+Run the full test suite with each sanitizer to catch different classes of bugs.
+
+```bash
+cmake -B out -D<PROJECT>_ENABLE_ASAN=ON
 cmake --build out
 ```
 
-ASAN and TSAN cannot be enabled simultaneously.
+| Sanitizer | What it catches | Option |
+|-----------|----------------|--------|
+| ASAN | Buffer overflow, use-after-free, memory leaks | `-D<PROJECT>_ENABLE_ASAN=ON` |
+| TSAN | Data races, deadlocks | `-D<PROJECT>_ENABLE_TSAN=ON` |
+| UBSAN | Undefined behavior (signed overflow, null deref, etc.) | `-D<PROJECT>_ENABLE_UBSAN=ON` |
 
-### Coverage (Linux/macOS only)
+ASAN and TSAN cannot be enabled simultaneously. Run them in separate builds.
 
-Requires: `lcov`, `genhtml`. Testing must be enabled (`XYLEM_ENABLE_TESTING=ON`, which is the default).
+## Code Coverage
+
+Coverage requires `<PROJECT>_ENABLE_TESTING=ON` and `<PROJECT>_ENABLE_COVERAGE=ON`.
+
+### Linux/macOS
 
 ```bash
-cmake -B out -DXYLEM_ENABLE_COVERAGE=ON -DXYLEM_ENABLE_TESTING=ON
-cmake --build out
-ctest --test-dir out --output-on-failure
-```
-
-Coverage report is generated by the `coverage` target in `tests/CMakeLists.txt`:
-
-```bash
+cmake -B out -D<PROJECT>_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build out -j 8
 cmake --build out --target coverage
-# Report: out/coverage/index.html
 ```
 
-### Coverage (Windows)
+Requires `lcov` and `genhtml`.
 
-Requires: OpenCppCoverage. Testing must be enabled.
+### Windows
 
 ```bash
-cmake -B out -DXYLEM_ENABLE_COVERAGE=ON -DXYLEM_ENABLE_TESTING=ON
+cmake -B out -D<PROJECT>_ENABLE_COVERAGE=ON
 cmake --build out --config Debug
 cmake --build out --target coverage
-# Report: out/coverage/index.html
 ```
+
+Requires OpenCppCoverage.
+
+HTML report is generated at `out/coverage/`.
+
+## Install
+
+### Multi-Config
+```bash
+cmake --install out --config Debug
+```
+
+### Single-Config
+```bash
+cmake --install out
+```
+
+## Quick Reference
+
+| Step | Multi-Config | Single-Config |
+|------|-------------|---------------|
+| Configure | No `-DCMAKE_BUILD_TYPE` | Must set `-DCMAKE_BUILD_TYPE=Debug` |
+| Build | `--build ... --config Debug` | `--build ...` (no `--config`) |
+| Test | `ctest ... -C Debug` | `ctest ...` (no `-C`) |
+| Install | `--install ... --config Debug` | `--install ...` (no `--config`) |
+
+> For CI scripts: always pass `--config` and `-C` — they are safely ignored on single-config generators.

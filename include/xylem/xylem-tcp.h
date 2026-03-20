@@ -170,3 +170,21 @@ extern void* xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
  * @param ud    User data pointer.
  */
 extern void xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
+
+/**
+ * @brief Get user data attached to a TCP server.
+ *
+ * @param server  Server handle.
+ *
+ * @return User data pointer.
+ */
+extern void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server);
+
+/**
+ * @brief Set user data on a TCP server.
+ *
+ * @param server  Server handle.
+ * @param ud      User data pointer.
+ */
+extern void xylem_tcp_server_set_userdata(xylem_tcp_server_t* server,
+                                          void* ud);
