@@ -92,14 +92,18 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
     xylem_ringbuf_t* ring  = conn->read_buf;
     size_t           avail = xylem_ringbuf_len(ring);
 
-    if (avail == 0) return 0;
+    if (avail == 0) {
+        return 0;
+    }
 
     switch (conn->opts.framing.type) {
 
     case XYLEM_TCP_FRAME_NONE: {
         /* Return all available bytes */
         void* buf = malloc(avail);
-        if (!buf) return -1;
+        if (!buf) {
+            return -1;
+        }
 
         xylem_ringbuf_read(ring, buf, avail);
         *frame_out     = buf;
@@ -109,11 +113,17 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
 
     case XYLEM_TCP_FRAME_FIXED: {
         size_t fsz = conn->opts.framing.fixed.frame_size;
-        if (fsz == 0) return -1;
-        if (avail < fsz) return 0;
+        if (fsz == 0) {
+            return -1;
+        }
+        if (avail < fsz) {
+            return 0;
+        }
 
         void* buf = malloc(fsz);
-        if (!buf) return -1;
+        if (!buf) {
+            return -1;
+        }
 
         xylem_ringbuf_read(ring, buf, fsz);
         *frame_out     = buf;
@@ -123,8 +133,12 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
 
     case XYLEM_TCP_FRAME_LENGTH: {
         uint8_t hdr_sz = conn->opts.framing.length.header_bytes;
-        if (hdr_sz != 1 && hdr_sz != 2 && hdr_sz != 4) return -1;
-        if (avail < hdr_sz) return 0;
+        if (hdr_sz != 1 && hdr_sz != 2 && hdr_sz != 4) {
+            return -1;
+        }
+        if (avail < hdr_sz) {
+            return 0;
+        }
 
         /* Peek header bytes without consuming */
         uint8_t hdr[4];
@@ -155,10 +169,14 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
         }
 
         size_t total = (size_t)hdr_sz + payload_len;
-        if (avail < total) return 0;
+        if (avail < total) {
+            return 0;
+        }
 
         void* buf = malloc(payload_len);
-        if (!buf) return -1;
+        if (!buf) {
+            return -1;
+        }
 
         /**
          * Discard header, then read payload — two ringbuf ops but
@@ -175,11 +193,15 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
     case XYLEM_TCP_FRAME_DELIM: {
         const char* delim     = conn->opts.framing.delim.delim;
         size_t      delim_len = conn->opts.framing.delim.delim_len;
-        if (!delim || delim_len == 0) return -1;
+        if (!delim || delim_len == 0) {
+            return -1;
+        }
 
         /* Peek all available data into a temporary buffer */
         void* peek_buf = malloc(avail);
-        if (!peek_buf) return -1;
+        if (!peek_buf) {
+            return -1;
+        }
 
         xylem_ringbuf_peek(ring, peek_buf, avail);
 
@@ -190,7 +212,9 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
         if (delim_len == 1) {
             /* Fast path: single-byte delimiter */
             const char* p = (const char*)memchr(data, delim[0], avail);
-            if (p) found_at = (ssize_t)(p - data);
+            if (p) {
+                found_at = (ssize_t)(p - data);
+            }
         } else {
             for (size_t i = 0; i + delim_len <= avail; i++) {
                 if (memcmp(data + i, delim, delim_len) == 0) {
@@ -228,11 +252,15 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
     }
 
     case XYLEM_TCP_FRAME_CUSTOM: {
-        if (!conn->opts.framing.custom.parse) return -1;
+        if (!conn->opts.framing.custom.parse) {
+            return -1;
+        }
 
         /* Peek all available data */
         void* peek_buf = malloc(avail);
-        if (!peek_buf) return -1;
+        if (!peek_buf) {
+            return -1;
+        }
 
         xylem_ringbuf_peek(ring, peek_buf, avail);
 
@@ -521,8 +549,9 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
 
             /* User may have closed the connection in on_read */
             if (conn->state == XYLEM_TCP_STATE_CLOSED ||
-                conn->state == XYLEM_TCP_STATE_CLOSING)
+                conn->state == XYLEM_TCP_STATE_CLOSING) {
                 return;
+            }
         } else if (rc == 0) {
             break;
         } else {
@@ -651,7 +680,9 @@ static void _tcp_schedule_reconnect(xylem_tcp_conn_t* conn) {
 
     /* Exponential backoff: min(500 << count, 30000) ms */
     uint64_t delay = 500ULL << dial->reconnect_count;
-    if (delay > 30000) delay = 30000;
+    if (delay > 30000) {
+        delay = 30000;
+    }
 
     xylem_loop_start_timer(&dial->reconnect_timer,
                            _tcp_reconnect_timeout_cb,
@@ -830,7 +861,9 @@ static void _tcp_server_free_cb(xylem_loop_t* loop,
 }
 
 void xylem_tcp_close_server(xylem_tcp_server_t* server) {
-    if (server->closing) return;
+    if (server->closing) {
+        return;
+    }
 
     xylem_logi("tcp server fd=%d closing", (int)server->fd);
     server->closing = true;
@@ -858,8 +891,9 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
 
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     if (conn->state == XYLEM_TCP_STATE_CLOSING ||
-        conn->state == XYLEM_TCP_STATE_CLOSED)
+        conn->state == XYLEM_TCP_STATE_CLOSED) {
         return;
+    }
 
     xylem_logd("tcp conn fd=%d graceful close requested",
                (int)conn->fd);
@@ -878,12 +912,15 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     if (conn->state == XYLEM_TCP_STATE_CLOSING ||
-        conn->state == XYLEM_TCP_STATE_CLOSED)
+        conn->state == XYLEM_TCP_STATE_CLOSED) {
         return -1;
+    }
 
     /* Single allocation: req header + data payload */
     _tcp_write_req_t* req = malloc(sizeof(*req) + len);
-    if (!req) return -1;
+    if (!req) {
+        return -1;
+    }
 
     req->data   = (char*)req + sizeof(*req);
     req->len    = len;
@@ -924,7 +961,9 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_tcp_handler_t* handler,
                                  xylem_tcp_opts_t* opts) {
     xylem_tcp_conn_t* conn = calloc(1, sizeof(*conn));
-    if (!conn) return NULL;
+    if (!conn) {
+        return NULL;
+    }
 
     _tcp_dial_priv_t* dial = calloc(1, sizeof(*dial));
     if (!dial) {
@@ -1006,7 +1045,9 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
                                      xylem_tcp_handler_t* handler,
                                      xylem_tcp_opts_t* opts) {
     xylem_tcp_server_t* server = calloc(1, sizeof(*server));
-    if (!server) return NULL;
+    if (!server) {
+        return NULL;
+    }
 
     /* Copy options (use defaults if NULL) */
     if (opts) {

@@ -95,7 +95,9 @@ xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
                              xylem_addr_t* addr,
                              xylem_udp_handler_t* handler) {
     xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
-    if (!udp) return NULL;
+    if (!udp) {
+        return NULL;
+    }
 
     /* Determine address family and address length */
     int       af      = (int)addr->storage.ss_family;

@@ -30,8 +30,12 @@ static int _loop_cmp_timer(const xylem_heap_node_t* a,
     const xylem_loop_timer_t* tb =
         xylem_heap_entry(b, xylem_loop_timer_t, heap_node);
 
-    if (ta->timeout < tb->timeout) return -1;
-    if (ta->timeout > tb->timeout) return  1;
+    if (ta->timeout < tb->timeout) {
+        return -1;
+    }
+    if (ta->timeout > tb->timeout) {
+        return 1;
+    }
     return 0;
 }
 
@@ -44,7 +48,9 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
     char buf[64];
     for (;;) {
         ssize_t n = platform_socket_recv(loop->wakeup_rd, buf, sizeof(buf));
-        if (n <= 0) break;
+        if (n <= 0) {
+            break;
+        }
     }
 }
 
@@ -79,12 +85,16 @@ static void _loop_process_posts(xylem_loop_t* loop) {
 static void _loop_process_timers(xylem_loop_t* loop) {
     for (;;) {
         xylem_heap_node_t* root = xylem_heap_root(&loop->timers);
-        if (!root) break;
+        if (!root) {
+            break;
+        }
 
         xylem_loop_timer_t* timer =
             xylem_heap_entry(root, xylem_loop_timer_t, heap_node);
 
-        if (timer->timeout > loop->time) break;
+        if (timer->timeout > loop->time) {
+            break;
+        }
 
         xylem_heap_dequeue(&loop->timers);
 
@@ -110,15 +120,21 @@ static void _loop_process_closing(xylem_loop_t* loop) {
 /* calculate timeout for poller_wait from nearest timer */
 static int _loop_next_timeout(xylem_loop_t* loop) {
     xylem_heap_node_t* root = xylem_heap_root(&loop->timers);
-    if (!root) return -1;
+    if (!root) {
+        return -1;
+    }
 
     xylem_loop_timer_t* timer =
         xylem_heap_entry(root, xylem_loop_timer_t, heap_node);
 
-    if (timer->timeout <= loop->time) return 0;
+    if (timer->timeout <= loop->time) {
+        return 0;
+    }
 
     uint64_t diff = timer->timeout - loop->time;
-    if (diff > INT32_MAX) return INT32_MAX;
+    if (diff > INT32_MAX) {
+        return INT32_MAX;
+    }
     return (int)diff;
 }
 
@@ -264,7 +280,9 @@ int xylem_loop_start_io(xylem_loop_io_t* io,
 }
 
 int xylem_loop_stop_io(xylem_loop_io_t* io) {
-    if (!io->registered) return 0;
+    if (!io->registered) {
+        return 0;
+    }
 
     int rc = platform_poller_del(&io->loop->poller, &io->sqe);
     if (rc == 0) {
@@ -308,7 +326,9 @@ int xylem_loop_start_timer(xylem_loop_timer_t* timer,
 }
 
 int xylem_loop_stop_timer(xylem_loop_timer_t* timer) {
-    if (!timer->active) return 0;
+    if (!timer->active) {
+        return 0;
+    }
 
     xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     timer->active = false;
@@ -317,7 +337,9 @@ int xylem_loop_stop_timer(xylem_loop_timer_t* timer) {
 
 int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
                            uint64_t timeout_ms) {
-    if (!timer->active) return -1;
+    if (!timer->active) {
+        return -1;
+    }
 
     xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     timer->timeout = timer->loop->time + timeout_ms;
