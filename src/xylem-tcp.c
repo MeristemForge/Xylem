@@ -641,6 +641,13 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
             }
 
             free(req);
+
+            /* Reset write timeout for the next pending request */
+            if (conn->opts.write_timeout_ms > 0 &&
+                !xylem_queue_empty(&conn->write_queue)) {
+                xylem_loop_reset_timer(&conn->write_timer,
+                                       conn->opts.write_timeout_ms);
+            }
         } else {
             /* Partial write — wait for next WR event */
             xylem_logd("tcp conn fd=%d partial write %zd/%zu",
