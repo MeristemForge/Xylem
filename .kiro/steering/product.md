@@ -54,6 +54,12 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **tls** | TLS client/server over TCP (OpenSSL, ALPN, SNI) | ✅ |
 | **dtls** | DTLS client/server over UDP (OpenSSL, cookie verification) | ✅ |
 
+### Serialization
+
+| Module | Description |
+|--------|-------------|
+| **json** | JSON parse, build, and serialize (backed by yyjson) |
+
 ### Utilities
 
 | Module | Description |

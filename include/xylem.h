@@ -55,6 +55,7 @@ _Pragma("once")
 #include "xylem/xylem-xrbtree.h"
 #include "xylem/xylem-xstack.h"
 
+#include "xylem/xylem-json.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-addr.h"

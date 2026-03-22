@@ -31,6 +31,7 @@ endif()
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/yyjson
 )
 
 set(SRCS
@@ -59,6 +60,8 @@ set(SRCS
 	src/xylem-xqueue.c
 	src/xylem-xrbtree.c
 	src/xylem-xstack.c
+	src/xylem-json.c
+	src/yyjson/yyjson.c
 )
 
 if(WIN32)

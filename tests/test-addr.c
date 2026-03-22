@@ -128,7 +128,7 @@ static void _start_resolve_cb(xylem_loop_t* loop,
                        _ctx->resolve_cb, _ctx);
 }
 
-/* Resolve localhost asynchronously — success path. */
+/* Resolve localhost asynchronously - success path. */
 static void test_resolve_localhost(void) {
     _resolve_ctx_t ctx = {0};
     ctx.status     = -1;
@@ -153,7 +153,7 @@ static void test_resolve_localhost(void) {
     xylem_loop_deinit(&ctx.loop);
 }
 
-/* Resolve non-existent host — error path. */
+/* Resolve non-existent host - error path. */
 static void test_resolve_fail(void) {
     _resolve_ctx_t ctx = {0};
     ctx.status     = 0;
@@ -178,7 +178,7 @@ static void test_resolve_fail(void) {
     xylem_loop_deinit(&ctx.loop);
 }
 
-/* Resolve a public hostname — verifies real DNS works. */
+/* Resolve a public hostname - verifies real DNS works. */
 static void test_resolve_remote(void) {
     _resolve_ctx_t ctx = {0};
     ctx.status     = -1;

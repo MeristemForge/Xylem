@@ -32,6 +32,7 @@ xylem_add_test(xstack)
 xylem_add_test(addr)
 xylem_add_test(tcp)
 xylem_add_test(udp)
+xylem_add_test(json)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)
