@@ -108,6 +108,15 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
         return NULL;
     }
 
+    /**
+     * SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER is not needed here because we
+     * use memory BIOs. SSL_write only writes into an in-memory buffer,
+     * never directly to a socket, so it always completes in a single call
+     * and never returns SSL_ERROR_WANT_WRITE during data transfer. The
+     * flag is only necessary with socket BIOs where SSL_write may
+     * partially complete and require a retry with the same buffer pointer.
+     */
+
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
     SSL_CTX_set_cookie_generate_cb(ctx->ssl_ctx, _dtls_cookie_generate_cb);
     SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _dtls_cookie_verify_cb);
@@ -136,8 +145,8 @@ int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
     return 0;
 }
 
-int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_path) {
-    if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_path, NULL) != 1) {
+int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
+    if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
         return -1;
     }
     return 0;

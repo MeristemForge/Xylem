@@ -73,12 +73,12 @@ extern int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
  * @brief Set CA certificate for peer verification.
  *
  * @param ctx      Context handle.
- * @param ca_path  Path to CA certificate file or directory.
+ * @param ca_file  Path to CA certificate file (PEM format).
  *
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx,
-                                 const char* ca_path);
+                                 const char* ca_file);
 
 /**
  * @brief Enable or disable peer certificate verification.

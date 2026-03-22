@@ -18,7 +18,7 @@ Add TLS (Transport Layer Security) support to Xylem, built on top of the existin
 - `xylem_tls_ctx_create()` — create a reusable TLS context (wraps `SSL_CTX`)
 - `xylem_tls_ctx_destroy()` — free context and associated resources
 - `xylem_tls_ctx_load_cert(ctx, cert_path, key_path)` — load certificate chain and private key from PEM files
-- `xylem_tls_ctx_set_ca(ctx, ca_path)` — set CA certificate file or directory for peer verification
+- `xylem_tls_ctx_set_ca(ctx, ca_file)` — set CA certificate file for peer verification
 - `xylem_tls_ctx_set_verify(ctx, enable)` — enable/disable peer certificate verification (default: enabled)
 - `xylem_tls_ctx_set_alpn(ctx, protocols, count)` — set ALPN protocol list for negotiation
 - One context can be shared across multiple connections and servers
