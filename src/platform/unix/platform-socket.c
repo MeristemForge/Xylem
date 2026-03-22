@@ -333,7 +333,9 @@ int platform_socket_socketpair(
 }
 
 const char* platform_socket_tostring(int error) {
-    return strerror(error);
+    static _Thread_local char buf[512];
+    strerror_r(error, buf, sizeof(buf));
+    return buf;
 }
 
 int platform_socket_get_lasterror(void) {

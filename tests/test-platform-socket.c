@@ -172,6 +172,5 @@ int main(void) {
     test_listen_dial();
     test_set_buffers();
 
-    platform_socket_cleanup();
     return 0;
 }

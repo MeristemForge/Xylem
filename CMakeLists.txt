@@ -34,6 +34,7 @@ include_directories(
 )
 
 set(SRCS
+	src/xylem.c
 	src/xylem-addr.c
 	src/xylem-tcp.c
 	src/xylem-udp.c

@@ -267,6 +267,5 @@ int main(void) {
     test_timeout();
     test_multiple_fds();
 
-    platform_socket_cleanup();
     return 0;
 }

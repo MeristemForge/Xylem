@@ -87,7 +87,7 @@ static void test_ipv4_wildcard(void) {
 }
 
 int main(void) {
-    platform_socket_startup();
+    xylem_startup();
 
     test_entry tests[] = {
         T(test_ipv4_roundtrip),
@@ -105,6 +105,6 @@ int main(void) {
     }
     printf("all %zu addr tests passed\n", n);
 
-    platform_socket_cleanup();
+    xylem_cleanup();
     return 0;
 }

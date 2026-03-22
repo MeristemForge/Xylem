@@ -64,5 +64,6 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 
 - Zero external dependencies beyond C11 stdlib
 - Intrusive data structures — embed `xylem_<module>_node_t`, recover container via `xylem_*_entry()`
+- One-time global init via `xylem_startup()` / `xylem_cleanup()` (required before using networking modules)
 - Error codes (typically `-1`) over exceptions or global state
 - Cross-platform: Windows (MSVC) + Unix (GCC/Clang)

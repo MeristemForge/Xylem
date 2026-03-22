@@ -203,7 +203,7 @@ static void test_udp_datagram_boundary(void) {
 }
 
 int main(void) {
-    platform_socket_startup();
+    xylem_startup();
 
     test_entry tests[] = {
         T(test_udp_echo),
@@ -219,6 +219,6 @@ int main(void) {
     }
     printf("all %zu udp tests passed\n", n);
 
-    platform_socket_cleanup();
+    xylem_cleanup();
     return 0;
 }

@@ -550,7 +550,7 @@ static void test_tcp_send_after_close(void) {
 }
 
 int main(void) {
-    platform_socket_startup();
+    xylem_startup();
 
     test_entry tests[] = {
         T(test_tcp_echo_delim),
@@ -570,6 +570,6 @@ int main(void) {
     }
     printf("all %zu tcp tests passed\n", n);
 
-    platform_socket_cleanup();
+    xylem_cleanup();
     return 0;
 }

@@ -59,3 +59,22 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-utils.h"
+
+/**
+ * @brief Initialize the Xylem library.
+ *
+ * Must be called once before any other xylem_* function. On Windows this
+ * calls WSAStartup; on Unix it is a no-op today but may initialize
+ * future global state (e.g. OpenSSL).
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_startup(void);
+
+/**
+ * @brief Clean up the Xylem library.
+ *
+ * Call once after all Xylem resources have been released. Reverses the
+ * effect of xylem_startup().
+ */
+extern void xylem_cleanup(void);

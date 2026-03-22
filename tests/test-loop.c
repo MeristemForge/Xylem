@@ -509,7 +509,7 @@ static void test_io_and_timer(void) {
 }
 
 int main(void) {
-    platform_socket_startup();
+    xylem_startup();
 
     test_init_destroy();
     test_run_exits_no_handles();
@@ -528,6 +528,6 @@ int main(void) {
     test_timer_ordering();
     test_io_and_timer();
 
-    platform_socket_cleanup();
+    xylem_cleanup();
     return 0;
 }
