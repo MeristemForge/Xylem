@@ -174,7 +174,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     if (udp->closing) {
         return;
     }
-    xylem_logd("udp fd=%d closing", (int)udp->fd);
+    xylem_logi("udp fd=%d closing", (int)udp->fd);
     udp->closing = true;
 
     xylem_loop_stop_io(&udp->io);

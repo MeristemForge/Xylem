@@ -185,12 +185,12 @@ int xylem_loop_init(xylem_loop_t* loop) {
     atomic_store(&loop->stopped, false);
     _loop_update_time(loop);
 
-    xylem_logd("loop init ok");
+    xylem_logi("loop init ok");
     return 0;
 }
 
 void xylem_loop_deinit(xylem_loop_t* loop) {
-    xylem_logd("loop deinit");
+    xylem_logi("loop deinit");
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);
@@ -231,7 +231,7 @@ int xylem_loop_run(xylem_loop_t* loop) {
 }
 
 void xylem_loop_stop(xylem_loop_t* loop) {
-    xylem_logd("loop stop requested");
+    xylem_logi("loop stop requested");
     atomic_store(&loop->stopped, true);
     /* wake up the poller in case it's blocked */
     char c = 1;

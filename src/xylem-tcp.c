@@ -433,7 +433,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                                              (int)sizeof(tmp));
 
         if (nread == 0) {
-            xylem_logd("tcp conn fd=%d peer closed", (int)conn->fd);
+            xylem_logi("tcp conn fd=%d peer closed", (int)conn->fd);
             _tcp_start_close_conn(conn, 0);
             return;
         }
@@ -800,7 +800,7 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
         xylem_list_insert_tail(&server->connections,
                                &conn->server_node);
 
-        xylem_logd("tcp server fd=%d accepted conn fd=%d",
+        xylem_logi("tcp server fd=%d accepted conn fd=%d",
                    (int)server->fd, (int)client_fd);
 
         if (server->handler && server->handler->on_accept) {
@@ -856,7 +856,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
         return;
     }
 
-    xylem_logd("tcp conn fd=%d graceful close requested",
+    xylem_logi("tcp conn fd=%d graceful close requested",
                (int)conn->fd);
     conn->state = XYLEM_TCP_STATE_CLOSING;
 
