@@ -896,3 +896,857 @@ static void test_prop_custom_header_round_trip(void) { ... }
 - 客户端带自定义 Authorization 头发送请求，服务器验证收到该头部
 - 服务器带自定义 Set-Cookie 头发送响应，客户端验证收到该头部
 - 客户端自定义 Connection: close 覆盖默认 keep-alive，验证连接关闭行为
+
+
+---
+
+## 服务器端 Chunked Transfer Encoding 响应设计（Requirements 25）
+
+### Overview
+
+为服务器端连接添加 chunked transfer encoding 写入能力。当响应体大小未知时（如流式生成内容），服务器可以逐块发送数据，无需预先计算 Content-Length。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| API 粒度 | start / send_chunk / end 三步式 | 与 HTTP chunked 协议语义一一对应，简洁明确 |
+| 内部状态追踪 | conn 新增 `chunked_active` 标志 | 防止在非 chunked 模式下误调用 send_chunk |
+| keep-alive 处理 | end_chunked 中处理 | 与 conn_send 的 keep-alive 逻辑一致 |
+
+### Components and Interfaces
+
+#### 新增公共 API（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/**
+ * @brief Begin a chunked HTTP response.
+ *
+ * Sends the status line and headers with Transfer-Encoding: chunked.
+ * No Content-Length header is included. After this call, use
+ * xylem_http_conn_send_chunk() to send data and
+ * xylem_http_conn_end_chunked() to finish.
+ *
+ * @param conn          Connection handle.
+ * @param status_code   HTTP status code (e.g. 200).
+ * @param content_type  Content-Type header value, or NULL.
+ * @param headers       Custom response headers, or NULL.
+ * @param header_count  Number of custom response headers.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
+                                          int status_code,
+                                          const char* content_type,
+                                          const xylem_http_hdr_t* headers,
+                                          size_t header_count);
+
+/**
+ * @brief Send a single chunk of data.
+ *
+ * Formats and sends one HTTP chunk: {hex_size}\r\n{data}\r\n.
+ * If len is 0 this is a no-op and returns 0.
+ *
+ * @param conn  Connection handle.
+ * @param data  Chunk payload.
+ * @param len   Payload length in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_chunk(xylem_http_conn_t* conn,
+                                       const void* data, size_t len);
+
+/**
+ * @brief End a chunked response.
+ *
+ * Sends the terminating chunk (0\r\n\r\n). Handles keep-alive:
+ * resets the parser for the next request or closes the connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_end_chunked(xylem_http_conn_t* conn);
+```
+
+#### 内部状态变更
+
+`xylem_http_conn_s` 新增字段：
+
+```c
+struct xylem_http_conn_s {
+    /* ... 现有字段 ... */
+    bool chunked_active;  /* chunked 响应进行中 */
+};
+```
+
+#### 实现逻辑
+
+`xylem_http_conn_start_chunked`：
+1. 检查 conn 非 NULL 且未关闭
+2. 构建响应头：status line + Transfer-Encoding: chunked + 自定义 headers + Content-Type（如有）
+3. 不写 Content-Length
+4. 发送 headers，设置 `chunked_active = true`
+
+`xylem_http_conn_send_chunk`：
+1. 检查 conn 非 NULL、未关闭、`chunked_active == true`
+2. len == 0 时直接返回 0
+3. 格式化 `{hex(len)}\r\n{data}\r\n` 并发送
+
+`xylem_http_conn_end_chunked`：
+1. 检查 conn 非 NULL、未关闭、`chunked_active == true`
+2. 发送 `0\r\n\r\n`
+3. 设置 `chunked_active = false`
+4. 处理 keep-alive（与 conn_send 后的逻辑一致）
+
+
+---
+
+## 客户端 Cookie 管理设计（Requirements 26）
+
+### Overview
+
+为客户端添加可选的 cookie jar 机制。用户创建 `xylem_http_cookie_jar_t` 并通过 opts 传入，客户端自动解析 Set-Cookie 响应头存入 jar，并在后续请求中自动附加匹配的 Cookie 头。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| Cookie 存储 | 不透明类型 + create/destroy | 符合项目 opaque 类型规范 |
+| 线程安全 | 不保证 | 与客户端 TLS 配置一致，单线程使用 |
+| Cookie 匹配 | domain + path + secure | RFC 6265 最小子集，满足常见场景 |
+| 过期处理 | 发送时惰性检查 | 避免后台定时器，简化实现 |
+
+### Components and Interfaces
+
+#### 新增公共类型和 API（`include/xylem/http/xylem-http-client.h`）
+
+```c
+/* 不透明类型 */
+typedef struct xylem_http_cookie_jar_s xylem_http_cookie_jar_t;
+
+/**
+ * @brief Create an empty cookie jar.
+ * @return Cookie jar handle, or NULL on allocation failure.
+ */
+extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
+
+/**
+ * @brief Destroy a cookie jar and free all stored cookies.
+ * @param jar  Cookie jar handle, or NULL (no-op).
+ */
+extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
+```
+
+#### opts 扩展
+
+```c
+typedef struct {
+    uint64_t                     timeout_ms;
+    int                          max_redirects;
+    size_t                       max_body_size;
+    const xylem_http_hdr_t*      headers;
+    size_t                       header_count;
+    xylem_http_cookie_jar_t*     cookie_jar;  /* 可选，NULL 禁用 */
+} xylem_http_cli_opts_t;
+```
+
+#### 内部数据结构
+
+```c
+/* 单个 cookie */
+typedef struct {
+    char*    name;
+    char*    value;
+    char*    domain;
+    char*    path;
+    uint64_t expires_ms;   /* 绝对过期时间（毫秒），0 = 会话 cookie */
+    bool     secure;
+    bool     http_only;
+} _http_cookie_t;
+
+/* Cookie jar 内部 */
+struct xylem_http_cookie_jar_s {
+    _http_cookie_t* cookies;
+    size_t          count;
+    size_t          cap;
+};
+```
+
+#### 实现逻辑
+
+Set-Cookie 解析（`_http_cookie_parse`）：
+1. 从 `Set-Cookie` header value 中提取 `name=value`（第一个 `=` 分割）
+2. 解析 `;` 分隔的属性：Domain、Path、Expires、Max-Age、Secure、HttpOnly
+3. Domain 缺省为请求 host，Path 缺省为请求路径的目录部分
+4. Max-Age 优先于 Expires（RFC 6265 §5.3）
+5. 同 domain+path+name 的 cookie 覆盖旧值
+
+Cookie 匹配（`_http_cookie_match`）：
+1. 检查 domain 是否匹配（尾部匹配，如 `.example.com` 匹配 `api.example.com`）
+2. 检查 path 是否为请求路径的前缀
+3. 检查 secure 属性（仅 HTTPS 时匹配）
+4. 检查过期时间（惰性移除过期 cookie）
+
+请求发送时（`_http_client_exec` 中）：
+1. 如果 opts->cookie_jar 非 NULL，遍历 jar 匹配当前 URL
+2. 拼接 `Cookie: name1=value1; name2=value2` 作为自定义 header 传入序列化器
+
+响应接收后（`_http_client_exec` 中）：
+1. 如果 opts->cookie_jar 非 NULL，遍历响应 headers 查找所有 `Set-Cookie`
+2. 解析并存入 jar
+
+---
+
+## Range 请求支持设计（Requirements 27）
+
+### Overview
+
+客户端通过 opts 中的 range 字段发送 Range 请求头。服务器端提供 `xylem_http_conn_send_partial` 便捷函数发送 206 Partial Content 响应。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 客户端 Range | opts 字符串字段 | 灵活，用户可传任意 Range 格式 |
+| 服务器 Range | 专用函数 | 自动生成 Content-Range header，减少出错 |
+| 416 处理 | send_partial 内部判断 | 统一错误处理 |
+
+### Components and Interfaces
+
+#### 客户端 opts 扩展
+
+```c
+typedef struct {
+    /* ... 现有字段 ... */
+    const char* range;  /* Range header value, e.g. "bytes=0-1023", NULL 禁用 */
+} xylem_http_cli_opts_t;
+```
+
+#### 服务器新增 API（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/**
+ * @brief Send a 206 Partial Content response.
+ *
+ * Includes Content-Range header. If range_start > range_end or
+ * range_end >= total_size, sends 416 Range Not Satisfiable instead.
+ *
+ * @param conn          Connection handle.
+ * @param content_type  Content-Type header value.
+ * @param body          Partial body data.
+ * @param body_len      Partial body length.
+ * @param range_start   First byte position (inclusive).
+ * @param range_end     Last byte position (inclusive).
+ * @param total_size    Total resource size in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_partial(xylem_http_conn_t* conn,
+                                         const char* content_type,
+                                         const void* body, size_t body_len,
+                                         size_t range_start,
+                                         size_t range_end,
+                                         size_t total_size);
+```
+
+#### 实现逻辑
+
+`xylem_http_conn_send_partial`：
+1. 检查 range_start <= range_end 且 range_end < total_size
+2. 不满足时发送 416 响应：`Content-Range: bytes */{total_size}`
+3. 满足时构建响应：status 206、`Content-Range: bytes {start}-{end}/{total}`、Content-Type、body
+4. 内部复用 `xylem_http_conn_send` 并通过自定义 headers 传入 Content-Range
+
+客户端 Range 处理：
+1. `_http_client_exec` 中检查 opts->range
+2. 非 NULL 时将 `Range: {value}` 作为额外自定义 header 追加到序列化器
+
+---
+
+## 服务器端 CORS 支持设计（Requirements 28）
+
+### Overview
+
+提供 CORS 辅助函数，根据配置和请求 Origin 生成 CORS 响应头数组。用户在 on_request 回调中调用此函数，将输出的 headers 传给 `xylem_http_conn_send`。这是纯工具函数，不修改服务器核心逻辑。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| API 风格 | 纯函数输出 header 数组 | 不侵入服务器核心，用户完全控制何时使用 |
+| 配置类型 | 非不透明结构体 | 字段少且固定，栈上分配即可 |
+| Origin 匹配 | `"*"` 通配符 + 精确列表 | 覆盖最常见场景 |
+| 输出方式 | 调用者提供 buffer | 避免内部 malloc，零分配 |
+
+### Components and Interfaces
+
+#### 新增公共类型和 API（`include/xylem/http/xylem-http-utils.h`）
+
+```c
+/**
+ * @brief CORS configuration.
+ *
+ * All string fields are non-owning pointers. The caller must ensure
+ * they remain valid for the duration of the xylem_http_cors_headers call.
+ */
+typedef struct {
+    const char*  allowed_origins;    /* 逗号分隔的 origin 列表，或 "*" */
+    const char*  allowed_methods;    /* 逗号分隔，如 "GET, POST, PUT" */
+    const char*  allowed_headers;    /* 逗号分隔，如 "Content-Type, Authorization" */
+    const char*  expose_headers;     /* 逗号分隔，可选，NULL 省略 */
+    int          max_age;            /* preflight 缓存秒数，0 省略 */
+    bool         allow_credentials;  /* true 时输出 Allow-Credentials: true */
+} xylem_http_cors_t;
+
+/**
+ * @brief Generate CORS response headers.
+ *
+ * Writes CORS headers into the caller-provided buffer based on the
+ * configuration and the request Origin value. For preflight requests
+ * (is_preflight = true), additional headers are included.
+ *
+ * @param cors           CORS configuration, or NULL (returns 0).
+ * @param origin         Request Origin header value, or NULL.
+ * @param is_preflight   true if this is an OPTIONS preflight request.
+ * @param out            Output header array (caller-provided buffer).
+ * @param out_cap        Capacity of the output array.
+ *
+ * @return Number of headers written, or -1 if out_cap is insufficient.
+ */
+extern int xylem_http_cors_headers(const xylem_http_cors_t* cors,
+                                    const char* origin,
+                                    bool is_preflight,
+                                    xylem_http_hdr_t* out,
+                                    size_t out_cap);
+```
+
+#### 实现逻辑
+
+`xylem_http_cors_headers`：
+1. cors 为 NULL 或 origin 为 NULL 时返回 0
+2. 检查 origin 是否匹配 allowed_origins：
+   - `"*"` 匹配所有
+   - 否则逗号分割 allowed_origins，逐个 trim 后精确比较
+3. 不匹配时返回 0（不输出任何 header）
+4. 匹配时输出 `Access-Control-Allow-Origin`：
+   - allow_credentials 为 true 时使用实际 origin 值（不能用 `"*"`）
+   - 否则使用配置值（`"*"` 或实际 origin）
+5. allow_credentials 为 true 时输出 `Access-Control-Allow-Credentials: true`
+6. expose_headers 非 NULL 时输出 `Access-Control-Expose-Headers`
+7. is_preflight 为 true 时额外输出：
+   - `Access-Control-Allow-Methods`
+   - `Access-Control-Allow-Headers`
+   - max_age > 0 时输出 `Access-Control-Max-Age`
+
+注意：输出的 header value 字符串指向 cors 配置中的原始字符串（非拥有指针），因此 cors 配置必须在 headers 使用期间保持有效。max_age 值需要格式化为字符串，使用调用者栈上的 buffer（函数文档中说明）。
+
+#### 使用示例
+
+```c
+static void on_request(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                        void* userdata) {
+    xylem_http_cors_t cors = {
+        .allowed_origins   = "https://example.com, https://app.example.com",
+        .allowed_methods   = "GET, POST, PUT, DELETE",
+        .allowed_headers   = "Content-Type, Authorization",
+        .allow_credentials = true,
+    };
+
+    const char* origin = xylem_http_req_header(req, "Origin");
+    bool is_preflight = (strcmp(xylem_http_req_method(req), "OPTIONS") == 0)
+                     && xylem_http_req_header(req, "Access-Control-Request-Method");
+
+    xylem_http_hdr_t cors_hdrs[8];
+    char max_age_buf[16];
+    int n = xylem_http_cors_headers(&cors, origin, is_preflight,
+                                     cors_hdrs, 8);
+
+    if (is_preflight) {
+        xylem_http_conn_send(conn, 204, NULL, NULL, 0, cors_hdrs, n);
+        return;
+    }
+
+    /* 正常请求处理... */
+    xylem_http_conn_send(conn, 200, "application/json",
+                          body, body_len, cors_hdrs, n);
+}
+```
+
+---
+
+## 服务器端 SSE (Server-Sent Events) 设计（Requirements 29）
+
+### Overview
+
+基于 chunked transfer encoding 实现 SSE 协议。SSE 本质上是 `Content-Type: text/event-stream` 的 chunked 响应，每个事件按 SSE 格式（`event:` / `data:` / 空行分隔）作为一个 chunk 发送。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 实现方式 | 基于 chunked API | SSE 就是特定格式的 chunked 流，复用已有能力 |
+| API 粒度 | start_sse / send_event / send_sse_data / end_sse | 覆盖常见 SSE 使用模式 |
+| 多行 data | 自动分割 | RFC 规范要求每行一个 `data:` 前缀 |
+
+### Components and Interfaces
+
+#### 新增公共 API（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/**
+ * @brief Begin an SSE (Server-Sent Events) stream.
+ *
+ * Sends status 200 with Content-Type: text/event-stream,
+ * Cache-Control: no-cache, and Connection: keep-alive headers
+ * using chunked transfer encoding internally.
+ *
+ * @param conn          Connection handle.
+ * @param headers       Additional custom headers, or NULL.
+ * @param header_count  Number of custom headers.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_start_sse(xylem_http_conn_t* conn,
+                                      const xylem_http_hdr_t* headers,
+                                      size_t header_count);
+
+/**
+ * @brief Send an SSE event with optional event type.
+ *
+ * Formats: "event: {event}\ndata: {data}\n\n" when event is non-NULL,
+ * or "data: {data}\n\n" when event is NULL. Multi-line data is split
+ * into separate "data:" lines.
+ *
+ * @param conn   Connection handle.
+ * @param event  Event type string, or NULL for data-only.
+ * @param data   Event data string.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_event(xylem_http_conn_t* conn,
+                                       const char* event,
+                                       const char* data);
+
+/**
+ * @brief Send a data-only SSE message.
+ *
+ * Shorthand for xylem_http_conn_send_event(conn, NULL, data).
+ *
+ * @param conn  Connection handle.
+ * @param data  Event data string.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_sse_data(xylem_http_conn_t* conn,
+                                          const char* data);
+
+/**
+ * @brief End an SSE stream.
+ *
+ * Sends the terminating chunk and handles keep-alive/close.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_end_sse(xylem_http_conn_t* conn);
+```
+
+#### 实现逻辑
+
+`xylem_http_conn_start_sse`：
+1. 构建固定 headers：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`
+2. 将用户自定义 headers 与固定 headers 合并
+3. 调用 `xylem_http_conn_start_chunked(conn, 200, "text/event-stream", merged_headers, count)`
+
+`xylem_http_conn_send_event`：
+1. 构建 SSE 格式字符串到临时 buffer
+2. 如果 event 非 NULL，写入 `event: {event}\n`
+3. 按 `\n` 分割 data，每行写入 `data: {line}\n`
+4. 写入空行 `\n` 作为事件结束
+5. 调用 `xylem_http_conn_send_chunk` 发送整个事件
+
+`xylem_http_conn_send_sse_data`：
+- 直接调用 `xylem_http_conn_send_event(conn, NULL, data)`
+
+`xylem_http_conn_end_sse`：
+- 直接调用 `xylem_http_conn_end_chunked(conn)`
+
+---
+
+## 服务器端 Multipart/Form-Data 解析设计（Requirements 30）
+
+### Overview
+
+提供独立的 multipart/form-data 解析函数，用户在 on_request 回调中调用，传入 Content-Type（含 boundary）和 body 数据，返回解析后的 part 列表。这是纯解析工具，不修改服务器核心逻辑。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 解析方式 | 一次性全量解析 | body 已在内存中（受 max_body_size 限制），无需流式 |
+| 类型 | 不透明类型 + create/destroy | 符合项目规范 |
+| boundary 提取 | 从 Content-Type 中自动提取 | 用户无需手动解析 |
+| 内存管理 | 解析结果拥有所有数据的拷贝 | 解析结果独立于原始 body 生命周期 |
+
+### Components and Interfaces
+
+#### 新增公共类型和 API（`include/xylem/http/xylem-http-utils.h`）
+
+```c
+/* 不透明类型 */
+typedef struct xylem_http_multipart_s xylem_http_multipart_t;
+
+/**
+ * @brief Parse a multipart/form-data request body.
+ *
+ * Extracts the boundary from content_type and splits the body
+ * into individual parts.
+ *
+ * @param content_type  Content-Type header value (must contain boundary).
+ * @param body          Request body data.
+ * @param body_len      Request body length.
+ *
+ * @return Parsed multipart handle, or NULL on error.
+ */
+extern xylem_http_multipart_t* xylem_http_multipart_parse(
+    const char* content_type, const void* body, size_t body_len);
+
+/**
+ * @brief Get the number of parts.
+ * @param mp  Multipart handle.
+ * @return Number of parts.
+ */
+extern size_t xylem_http_multipart_count(const xylem_http_multipart_t* mp);
+
+/**
+ * @brief Get the name field of a part (from Content-Disposition).
+ * @param mp     Multipart handle.
+ * @param index  Part index (0-based).
+ * @return Name string, or NULL if not present.
+ */
+extern const char* xylem_http_multipart_name(
+    const xylem_http_multipart_t* mp, size_t index);
+
+/**
+ * @brief Get the filename field of a part (from Content-Disposition).
+ * @param mp     Multipart handle.
+ * @param index  Part index (0-based).
+ * @return Filename string, or NULL if not present.
+ */
+extern const char* xylem_http_multipart_filename(
+    const xylem_http_multipart_t* mp, size_t index);
+
+/**
+ * @brief Get the Content-Type of a part.
+ * @param mp     Multipart handle.
+ * @param index  Part index (0-based).
+ * @return Content-Type string, or NULL if not present.
+ */
+extern const char* xylem_http_multipart_content_type(
+    const xylem_http_multipart_t* mp, size_t index);
+
+/**
+ * @brief Get the body data of a part.
+ * @param mp     Multipart handle.
+ * @param index  Part index (0-based).
+ * @return Pointer to part body data.
+ */
+extern const void* xylem_http_multipart_data(
+    const xylem_http_multipart_t* mp, size_t index);
+
+/**
+ * @brief Get the body data length of a part.
+ * @param mp     Multipart handle.
+ * @param index  Part index (0-based).
+ * @return Part body length in bytes.
+ */
+extern size_t xylem_http_multipart_data_len(
+    const xylem_http_multipart_t* mp, size_t index);
+
+/**
+ * @brief Destroy a multipart result and free all memory.
+ * @param mp  Multipart handle, or NULL (no-op).
+ */
+extern void xylem_http_multipart_destroy(xylem_http_multipart_t* mp);
+```
+
+#### 内部数据结构
+
+```c
+typedef struct {
+    char*    name;           /* Content-Disposition name */
+    char*    filename;       /* Content-Disposition filename, 可为 NULL */
+    char*    content_type;   /* part 的 Content-Type, 可为 NULL */
+    uint8_t* data;           /* part body 数据（拷贝） */
+    size_t   data_len;
+} _http_multipart_part_t;
+
+struct xylem_http_multipart_s {
+    _http_multipart_part_t* parts;
+    size_t                  count;
+    size_t                  cap;
+};
+```
+
+#### 解析算法
+
+`xylem_http_multipart_parse`：
+1. 从 Content-Type 中提取 boundary（查找 `boundary=`，支持带引号和不带引号）
+2. 构造分隔符 `--{boundary}` 和终止符 `--{boundary}--`
+3. 在 body 中查找第一个分隔符，跳过 preamble
+4. 循环处理每个 part：
+   a. 查找下一个分隔符确定 part 范围
+   b. 在 part 中查找 `\r\n\r\n` 分隔 headers 和 body
+   c. 解析 part headers：Content-Disposition（提取 name、filename）、Content-Type
+   d. 拷贝 part body 数据
+5. 遇到终止符时停止
+6. 任何解析错误返回 NULL
+
+Content-Disposition 解析：
+- 格式：`form-data; name="field1"; filename="file.txt"`
+- 提取 `name=` 和 `filename=` 的值，支持带引号和不带引号
+
+---
+
+## 服务器端路由系统设计（Requirements 31）
+
+### Overview
+
+提供轻量级路由表，用户注册 method + path pattern -> handler 映射，在 on_request 回调中调用 dispatch 函数自动匹配并调用对应 handler。路由表独立于服务器实例，可复用。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 类型 | 不透明类型 + create/destroy | 符合项目规范 |
+| 匹配策略 | 精确匹配优先，前缀匹配次之（最长前缀） | 简单直观，覆盖常见场景 |
+| 存储 | 动态数组线性扫描 | 路由数量通常很少（<100），线性扫描足够 |
+| handler 签名 | 复用 `xylem_http_on_request_fn_t` | 用户无需学习新回调类型 |
+| 404 处理 | dispatch 内部发送 | 减少用户样板代码 |
+
+### Components and Interfaces
+
+#### 新增公共类型和 API（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/* 不透明类型 */
+typedef struct xylem_http_router_s xylem_http_router_t;
+
+/**
+ * @brief Create an empty router.
+ * @return Router handle, or NULL on allocation failure.
+ */
+extern xylem_http_router_t* xylem_http_router_create(void);
+
+/**
+ * @brief Destroy a router and free all registered routes.
+ * @param router  Router handle, or NULL (no-op).
+ */
+extern void xylem_http_router_destroy(xylem_http_router_t* router);
+
+/**
+ * @brief Register a route.
+ *
+ * @param router    Router handle.
+ * @param method    HTTP method (e.g. "GET"), or NULL to match all methods.
+ * @param pattern   Path pattern: exact (e.g. "/api/users") or prefix
+ *                  with trailing "*" (e.g. "/static/*").
+ * @param handler   Request handler callback.
+ * @param userdata  User data passed to the handler.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_router_add(xylem_http_router_t* router,
+                                  const char* method,
+                                  const char* pattern,
+                                  xylem_http_on_request_fn_t handler,
+                                  void* userdata);
+
+/**
+ * @brief Dispatch a request to the matching route handler.
+ *
+ * Looks up the best matching route by method and URL path.
+ * Exact matches take priority over prefix matches; among prefix
+ * matches the longest prefix wins. Sends 404 if no route matches.
+ *
+ * @param router  Router handle.
+ * @param conn    Connection handle.
+ * @param req     Request handle.
+ *
+ * @return 0 if a handler was called, -1 if 404 was sent.
+ */
+extern int xylem_http_router_dispatch(xylem_http_router_t* router,
+                                       xylem_http_conn_t* conn,
+                                       xylem_http_req_t* req);
+```
+
+#### 内部数据结构
+
+```c
+typedef struct {
+    char*                        method;    /* NULL = 匹配所有方法 */
+    char*                        pattern;   /* 路径模式 */
+    bool                         is_prefix; /* pattern 以 "*" 结尾 */
+    size_t                       prefix_len;/* 前缀长度（不含 "*"） */
+    xylem_http_on_request_fn_t   handler;
+    void*                        userdata;
+} _http_route_t;
+
+struct xylem_http_router_s {
+    _http_route_t* routes;
+    size_t         count;
+    size_t         cap;
+};
+```
+
+#### 匹配算法
+
+`xylem_http_router_dispatch`：
+1. 获取请求的 method 和 url
+2. 遍历所有路由，收集匹配项：
+   a. method 匹配：route.method 为 NULL 或与请求 method 大小写不敏感相等
+   b. path 匹配：
+      - 精确匹配：`strcmp(url, pattern) == 0`
+      - 前缀匹配：`strncmp(url, pattern, prefix_len) == 0`
+3. 选择最佳匹配：
+   - 精确匹配优先于前缀匹配
+   - 多个前缀匹配时选择 prefix_len 最大的
+   - method 精确匹配优先于 method 为 NULL 的通配路由
+4. 找到匹配时调用 `handler(conn, req, route.userdata)`，返回 0
+5. 无匹配时发送 404 Not Found，返回 -1
+
+#### 使用示例
+
+```c
+static void handle_users(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                          void* ud) {
+    xylem_http_conn_send(conn, 200, "application/json",
+                          "{\"users\":[]}", 12, NULL, 0);
+}
+
+static void handle_static(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                            void* ud) {
+    /* 根据 xylem_http_req_url(req) 提供静态文件 */
+}
+
+static void on_request(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                        void* userdata) {
+    xylem_http_router_t* router = userdata;
+    xylem_http_router_dispatch(router, conn, req);
+}
+
+int main(void) {
+    xylem_http_router_t* router = xylem_http_router_create();
+    xylem_http_router_add(router, "GET", "/api/users", handle_users, NULL);
+    xylem_http_router_add(router, NULL, "/static/*", handle_static, NULL);
+
+    xylem_http_srv_cfg_t cfg = { .host = "0.0.0.0", .port = 8080,
+                                  .on_request = on_request,
+                                  .userdata = router };
+    /* ... create and start server ... */
+}
+```
+
+
+---
+
+## 新增功能 Correctness Properties
+
+### Property 12: Chunked response 格式正确性
+
+*For any* valid status code, content type, and sequence of chunk data payloads, the output produced by `start_chunked` + N × `send_chunk` + `end_chunked` SHALL be a valid HTTP/1.1 chunked response that llhttp can parse, recovering the concatenation of all chunk payloads as the response body.
+
+**Validates: Requirements 25.1, 25.2, 25.3, 25.4**
+
+### Property 13: Cookie Set-Cookie parse round-trip
+
+*For any* valid Set-Cookie header string containing name, value, and optional attributes (Domain, Path, Secure, HttpOnly, Max-Age), parsing the header into a cookie struct and then matching against the original URL SHALL correctly determine whether the cookie should be sent.
+
+**Validates: Requirements 26.4, 26.5, 26.6, 26.7**
+
+### Property 14: Multipart boundary extraction and part splitting
+
+*For any* valid multipart/form-data body constructed with a known boundary and N parts (each with name, optional filename, optional content-type, and body data), `xylem_http_multipart_parse` SHALL return exactly N parts with matching name, filename, content-type, and body data.
+
+**Validates: Requirements 30.2, 30.3, 30.4, 30.5, 30.6, 30.7**
+
+### Property 15: Router dispatch 精确匹配优先
+
+*For any* router containing both an exact route and a prefix route that both match a given URL, `xylem_http_router_dispatch` SHALL always invoke the exact match handler, never the prefix match handler.
+
+**Validates: Requirements 31.5, 31.7**
+
+### Property 16: CORS header 生成正确性
+
+*For any* valid CORS configuration and request Origin that matches allowed_origins, `xylem_http_cors_headers` SHALL output an `Access-Control-Allow-Origin` header. When `allow_credentials` is true, the Allow-Origin value SHALL NOT be `"*"`.
+
+**Validates: Requirements 28.3, 28.4**
+
+### Property 17: Range 响应 Content-Range 正确性
+
+*For any* valid range_start, range_end, total_size where start <= end < total, `xylem_http_conn_send_partial` SHALL produce a 206 response with `Content-Range: bytes {start}-{end}/{total}`. For invalid ranges, it SHALL produce a 416 response.
+
+**Validates: Requirements 27.5, 27.6**
+
+---
+
+## 新增功能 Testing Strategy
+
+### 新增单元测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_chunked_start_end` | start_chunked + end_chunked 基本流程 |
+| `test_chunked_send_empty` | send_chunk len=0 为 no-op |
+| `test_chunked_on_closed` | 关闭连接后调用返回 -1 |
+| `test_cookie_jar_create_destroy` | cookie jar 生命周期 |
+| `test_cookie_parse_basic` | 基本 Set-Cookie 解析 |
+| `test_cookie_match_domain` | domain 匹配逻辑 |
+| `test_cookie_match_path` | path 前缀匹配 |
+| `test_cookie_secure_flag` | Secure cookie 仅 HTTPS |
+| `test_cookie_expired` | 过期 cookie 不发送 |
+| `test_range_206_response` | 正常 206 响应格式 |
+| `test_range_416_invalid` | 无效 range 返回 416 |
+| `test_cors_wildcard_origin` | `"*"` 匹配所有 origin |
+| `test_cors_specific_origin` | 精确 origin 匹配 |
+| `test_cors_credentials_no_wildcard` | credentials 时不用 `"*"` |
+| `test_cors_preflight_headers` | preflight 额外 headers |
+| `test_cors_null_config` | NULL config 返回 0 |
+| `test_sse_start_end` | SSE 流基本流程 |
+| `test_sse_event_format` | event + data 格式正确 |
+| `test_sse_multiline_data` | 多行 data 分割 |
+| `test_multipart_parse_basic` | 基本 multipart 解析 |
+| `test_multipart_with_filename` | 含 filename 的 part |
+| `test_multipart_invalid_boundary` | 无效 boundary 返回 NULL |
+| `test_multipart_destroy_null` | destroy(NULL) 为 no-op |
+| `test_router_exact_match` | 精确路由匹配 |
+| `test_router_prefix_match` | 前缀路由匹配 |
+| `test_router_exact_over_prefix` | 精确优先于前缀 |
+| `test_router_longest_prefix` | 最长前缀优先 |
+| `test_router_404` | 无匹配返回 404 |
+| `test_router_method_null` | method=NULL 匹配所有 |
+| `test_router_destroy_null` | destroy(NULL) 为 no-op |
+
+### 新增属性测试
+
+```c
+/* Feature: http, Property 12: Chunked response format correctness */
+static void test_prop_chunked_round_trip(void) { ... }
+
+/* Feature: http, Property 13: Cookie Set-Cookie parse round-trip */
+static void test_prop_cookie_parse_match(void) { ... }
+
+/* Feature: http, Property 14: Multipart boundary extraction and part splitting */
+static void test_prop_multipart_round_trip(void) { ... }
+
+/* Feature: http, Property 15: Router dispatch exact match priority */
+static void test_prop_router_exact_priority(void) { ... }
+
+/* Feature: http, Property 16: CORS header generation correctness */
+static void test_prop_cors_headers(void) { ... }
+
+/* Feature: http, Property 17: Range response Content-Range correctness */
+static void test_prop_range_content_range(void) { ... }
+```

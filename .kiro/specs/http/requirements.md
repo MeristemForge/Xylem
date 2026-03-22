@@ -316,3 +316,111 @@
 1. FOR ALL valid custom header name-value pairs provided to the Request_Serializer, serializing the request and then parsing via llhttp SHALL recover all custom header names and values
 2. FOR ALL valid custom header name-value pairs provided to `xylem_http_conn_send`, serializing the response and then parsing via llhttp SHALL recover all custom header names and values
 3. WHEN a custom header overrides an auto-generated header, the parsed result SHALL contain the custom value and not the auto-generated value
+
+
+### Requirement 25: 服务器端 Chunked Transfer Encoding 响应
+
+**User Story:** 作为开发者，我希望服务器能以 chunked 方式逐步发送响应数据，以便在响应体大小未知时（如流式生成内容）也能正确传输。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Connection SHALL provide `xylem_http_conn_start_chunked` to begin a chunked response, sending the status line, headers（含 `Transfer-Encoding: chunked`），但不发送 body
+2. THE HTTP_Connection SHALL provide `xylem_http_conn_send_chunk` to send a single chunk,格式为 `{hex_size}\r\n{data}\r\n`
+3. THE HTTP_Connection SHALL provide `xylem_http_conn_end_chunked` to send the terminating chunk `0\r\n\r\n`，标志响应结束
+4. WHEN `xylem_http_conn_start_chunked` is called, THE HTTP_Connection SHALL NOT include a Content-Length header in the response
+5. WHEN `xylem_http_conn_send_chunk` is called with data of length 0, THE HTTP_Connection SHALL treat it as a no-op and return 0
+6. WHEN `xylem_http_conn_end_chunked` is called, THE HTTP_Connection SHALL handle keep-alive: 如果连接是 keep-alive 则重置解析器等待下一个请求，否则关闭连接
+7. IF any chunked API is called on a closed connection, THEN THE HTTP_Connection SHALL return -1
+
+### Requirement 26: 客户端 Cookie 管理
+
+**User Story:** 作为开发者，我希望客户端能自动解析响应中的 Set-Cookie 头并在后续请求中发送 Cookie，以便与需要会话管理的服务器交互。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Client SHALL provide `xylem_http_cookie_jar_t` 不透明类型，用于存储 cookie 集合
+2. THE HTTP_Client SHALL provide `xylem_http_cookie_jar_create` 和 `xylem_http_cookie_jar_destroy` 管理 cookie jar 生命周期
+3. THE `xylem_http_cli_opts_t` SHALL provide a `cookie_jar` field of type `xylem_http_cookie_jar_t*`，传入时启用自动 cookie 管理
+4. WHEN a response contains `Set-Cookie` headers and a cookie_jar is provided, THE HTTP_Client SHALL parse cookie name、value、path、domain、expires/max-age、secure、httponly 属性并存入 cookie jar
+5. WHEN a request is sent with a cookie_jar, THE HTTP_Client SHALL 自动从 cookie jar 中匹配当前 URL 的 domain 和 path，将匹配的 cookie 以 `Cookie: name1=value1; name2=value2` 格式添加到请求头
+6. THE HTTP_Client SHALL respect cookie 的 Secure 属性：仅在 HTTPS 请求中发送标记为 Secure 的 cookie
+7. THE HTTP_Client SHALL respect cookie 的 Path 属性：仅当请求路径以 cookie path 为前缀时发送该 cookie
+8. THE HTTP_Client SHALL respect cookie 的 Expires/Max-Age 属性：过期的 cookie 不发送且从 jar 中移除
+9. WHEN cookie_jar is NULL in opts, THE HTTP_Client SHALL not perform any cookie management（行为与现有实现一致）
+
+### Requirement 27: Range 请求支持
+
+**User Story:** 作为开发者，我希望客户端能发送 Range 请求获取部分内容，服务器能正确响应 206 Partial Content，以便支持断点续传和大文件分段下载。
+
+#### Acceptance Criteria
+
+1. THE `xylem_http_cli_opts_t` SHALL provide a `range` field of type `const char*`，用于设置 Range 请求头（如 `"bytes=0-1023"`）
+2. WHEN range is set in opts, THE HTTP_Client SHALL add `Range: {value}` header to the request
+3. THE HTTP_Server SHALL provide `xylem_http_conn_send_partial` to send a 206 Partial Content response，包含 Content-Range header
+4. `xylem_http_conn_send_partial` SHALL accept parameters: conn, content_type, body, body_len, range_start, range_end, total_size
+5. WHEN `xylem_http_conn_send_partial` is called, THE HTTP_Connection SHALL serialize a response with status 206, `Content-Range: bytes {start}-{end}/{total}` header, and the partial body
+6. WHEN range_start > range_end or range_end >= total_size, THE HTTP_Connection SHALL send a 416 Range Not Satisfiable response with `Content-Range: bytes */{total}` header
+7. WHEN range is NULL in opts, THE HTTP_Client SHALL not add a Range header（行为与现有实现一致）
+
+### Requirement 28: 服务器端 CORS 支持
+
+**User Story:** 作为开发者，我希望服务器能方便地设置 CORS 响应头，以便允许浏览器跨域访问我的 API。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Server SHALL provide `xylem_http_cors_t` 结构体类型，包含 `allowed_origins`、`allowed_methods`、`allowed_headers`、`expose_headers`、`max_age`、`allow_credentials` 字段
+2. THE HTTP_Server SHALL provide `xylem_http_cors_headers` 函数，接受 `xylem_http_cors_t*` 配置和请求的 Origin header 值，输出一组 `xylem_http_hdr_t` 数组
+3. WHEN the request Origin matches `allowed_origins`（支持 `"*"` 通配符和精确匹配列表），THE function SHALL output `Access-Control-Allow-Origin` header
+4. WHEN `allow_credentials` is true, THE function SHALL output `Access-Control-Allow-Credentials: true` header，且 `Access-Control-Allow-Origin` 不得为 `"*"`（使用实际 origin 值）
+5. WHEN the request is a preflight request (OPTIONS method with `Access-Control-Request-Method` header), THE function SHALL additionally output `Access-Control-Allow-Methods`、`Access-Control-Allow-Headers`、`Access-Control-Max-Age` headers
+6. THE function SHALL return the number of output headers,调用者使用输出的 `xylem_http_hdr_t` 数组传给 `xylem_http_conn_send`
+7. WHEN cors config is NULL, THE function SHALL return 0（不输出任何 header）
+
+### Requirement 29: 服务器端 SSE (Server-Sent Events)
+
+**User Story:** 作为开发者，我希望服务器能以 SSE 协议向客户端推送事件流，以便实现实时通知、LLM 流式输出等场景。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Connection SHALL provide `xylem_http_conn_start_sse` to begin an SSE stream，发送 status 200、`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive` headers
+2. THE HTTP_Connection SHALL provide `xylem_http_conn_send_event` to send a single SSE event，格式为 `event: {event}\ndata: {data}\n\n`（event 参数可选，为 NULL 时省略 event 行）
+3. THE HTTP_Connection SHALL provide `xylem_http_conn_send_sse_data` to send a data-only SSE message，格式为 `data: {data}\n\n`
+4. WHEN data contains newlines, THE HTTP_Connection SHALL split data into multiple `data:` lines（每行一个 `data:` 前缀）
+5. THE HTTP_Connection SHALL provide `xylem_http_conn_end_sse` to end the SSE stream and handle keep-alive/close
+6. SSE 内部使用 chunked transfer encoding 传输，`xylem_http_conn_start_sse` 内部调用 `xylem_http_conn_start_chunked`
+7. IF any SSE API is called on a closed connection, THEN THE HTTP_Connection SHALL return -1
+
+### Requirement 30: 服务器端 Multipart/Form-Data 解析
+
+**User Story:** 作为开发者，我希望服务器能解析 multipart/form-data 请求体，以便处理文件上传和表单提交。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Server SHALL provide `xylem_http_multipart_t` 不透明类型，表示解析后的 multipart 数据
+2. THE HTTP_Server SHALL provide `xylem_http_multipart_parse` 函数，接受请求的 Content-Type header 值（含 boundary）和 body 数据，返回 `xylem_http_multipart_t*`
+3. THE HTTP_Server SHALL provide `xylem_http_multipart_count` 返回 part 数量
+4. THE HTTP_Server SHALL provide `xylem_http_multipart_name` 返回指定 part 的 name 字段（来自 Content-Disposition）
+5. THE HTTP_Server SHALL provide `xylem_http_multipart_filename` 返回指定 part 的 filename 字段（来自 Content-Disposition），无 filename 时返回 NULL
+6. THE HTTP_Server SHALL provide `xylem_http_multipart_content_type` 返回指定 part 的 Content-Type，无该 header 时返回 NULL
+7. THE HTTP_Server SHALL provide `xylem_http_multipart_data` 和 `xylem_http_multipart_data_len` 返回指定 part 的 body 数据和长度
+8. THE HTTP_Server SHALL provide `xylem_http_multipart_destroy` 释放所有解析结果
+9. IF the Content-Type does not contain a valid boundary, THEN `xylem_http_multipart_parse` SHALL return NULL
+10. IF the body is malformed (missing boundary delimiters), THEN `xylem_http_multipart_parse` SHALL return NULL
+
+### Requirement 31: 服务器端路由系统
+
+**User Story:** 作为开发者，我希望服务器提供简单的路由注册机制，以便根据 URL 路径和 HTTP 方法自动分发请求到对应的处理函数，而不需要在 on_request 回调中手动编写 if/else 链。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Server SHALL provide `xylem_http_router_t` 不透明类型，表示路由表
+2. THE HTTP_Server SHALL provide `xylem_http_router_create` 和 `xylem_http_router_destroy` 管理路由表生命周期
+3. THE HTTP_Server SHALL provide `xylem_http_router_add` 注册路由规则，接受 method（如 "GET"）、path pattern、handler 回调和 userdata
+4. path pattern 支持精确匹配（如 `"/api/users"`）和前缀匹配（以 `"*"` 结尾，如 `"/static/*"`）
+5. THE HTTP_Server SHALL provide `xylem_http_router_dispatch` 函数，接受 router、conn、req，根据请求的 method 和 URL 查找匹配的路由并调用对应 handler
+6. WHEN no route matches, THE `xylem_http_router_dispatch` SHALL send a 404 Not Found response
+7. WHEN multiple routes match, THE router SHALL prefer exact match over prefix match；多个前缀匹配时选择最长前缀
+8. THE router handler callback type SHALL be `xylem_http_on_request_fn_t`（与 on_request 回调签名一致），以便用户可以直接复用现有处理函数
+9. method 参数为 NULL 时表示匹配所有 HTTP 方法
+10. THE `xylem_http_router_add` SHALL return 0 on success, -1 on failure (e.g. duplicate route, allocation failure)
+
