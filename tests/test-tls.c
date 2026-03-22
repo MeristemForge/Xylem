@@ -152,24 +152,20 @@ static xylem_tls_t*       _server_conn;
 static xylem_tls_server_t* _tls_server;
 
 static void _on_server_accept(xylem_tls_t* tls) {
-    fprintf(stderr, "  [srv] on_accept\n");
     _server_accepted = true;
     _server_conn = tls;
 }
 
 static void _on_client_connect(xylem_tls_t* tls) {
-    fprintf(stderr, "  [cli] on_connect\n");
     _client_connected = true;
     xylem_tls_send(tls, "hello", 5);
 }
 
 static void _on_server_read(xylem_tls_t* tls, void* data, size_t len) {
-    fprintf(stderr, "  [srv] on_read len=%zu\n", len);
     xylem_tls_send(tls, data, len);
 }
 
 static void _on_client_read(xylem_tls_t* tls, void* data, size_t len) {
-    fprintf(stderr, "  [cli] on_read len=%zu\n", len);
     (void)tls;
     _client_received = true;
     if (len < sizeof(_recv_buf)) {
@@ -181,7 +177,6 @@ static void _on_client_read(xylem_tls_t* tls, void* data, size_t len) {
 
 static void _on_client_write_done(xylem_tls_t* tls,
                                   void* data, size_t len, int status) {
-    fprintf(stderr, "  [cli] on_write_done status=%d\n", status);
     (void)tls;
     (void)data;
     (void)len;
@@ -190,7 +185,6 @@ static void _on_client_write_done(xylem_tls_t* tls,
 }
 
 static void _on_client_close(xylem_tls_t* tls, int err) {
-    fprintf(stderr, "  [cli] on_close err=%d\n", err);
     (void)tls;
     (void)err;
     _client_closed = true;
@@ -200,7 +194,6 @@ static void _on_client_close(xylem_tls_t* tls, int err) {
 }
 
 static void _on_server_conn_close(xylem_tls_t* tls, int err) {
-    fprintf(stderr, "  [srv] on_close err=%d\n", err);
     (void)tls;
     (void)err;
     _server_conn_closed = true;
@@ -376,31 +369,20 @@ static void test_sni_hostname(void) {
 
 int main(void) {
     /* Task 10: context tests */
-    fprintf(stderr, "test_ctx_create_destroy\n");
     test_ctx_create_destroy();
-    fprintf(stderr, "test_load_cert_valid\n");
     test_load_cert_valid();
-    fprintf(stderr, "test_load_cert_invalid\n");
     test_load_cert_invalid();
-    fprintf(stderr, "test_set_ca\n");
     test_set_ca();
-    fprintf(stderr, "test_set_verify\n");
     test_set_verify();
-    fprintf(stderr, "test_set_alpn\n");
     test_set_alpn();
 
     /* Task 11: handshake and data transfer */
-    fprintf(stderr, "test_handshake_and_echo\n");
     test_handshake_and_echo();
 
     /* Task 12: error cases and ALPN */
-    fprintf(stderr, "test_handshake_failure_wrong_ca\n");
     test_handshake_failure_wrong_ca();
-    fprintf(stderr, "test_alpn_negotiation\n");
     test_alpn_negotiation();
-    fprintf(stderr, "test_sni_hostname\n");
     test_sni_hostname();
 
-    fprintf(stderr, "all tests passed\n");
     return 0;
 }

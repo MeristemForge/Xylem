@@ -334,6 +334,9 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
         if (dtls->handler->on_read) {
             dtls->handler->on_read(dtls, buf, (size_t)n);
         }
+        if (dtls->closing) {
+            return;
+        }
     }
 
     int err = SSL_get_error(dtls->ssl, n);
@@ -398,6 +401,9 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
             if (dtls->handler->on_read) {
                 dtls->handler->on_read(dtls, buf, (size_t)n);
+            }
+            if (dtls->closing) {
+                return;
             }
         }
 

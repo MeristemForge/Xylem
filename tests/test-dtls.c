@@ -152,24 +152,20 @@ static xylem_dtls_t*         _server_sess;
 static xylem_dtls_server_t*  _dtls_server;
 
 static void _on_server_accept(xylem_dtls_t* dtls) {
-    fprintf(stderr, "  [srv] on_accept\n");
     _server_accepted = true;
     _server_sess = dtls;
 }
 
 static void _on_client_connect(xylem_dtls_t* dtls) {
-    fprintf(stderr, "  [cli] on_connect\n");
     _client_connected = true;
     xylem_dtls_send(dtls, "hello", 5);
 }
 
 static void _on_server_read(xylem_dtls_t* dtls, void* data, size_t len) {
-    fprintf(stderr, "  [srv] on_read len=%zu\n", len);
     xylem_dtls_send(dtls, data, len);
 }
 
 static void _on_client_read(xylem_dtls_t* dtls, void* data, size_t len) {
-    fprintf(stderr, "  [cli] on_read len=%zu\n", len);
     (void)dtls;
     _client_received = true;
     if (len < sizeof(_recv_buf)) {
@@ -181,7 +177,6 @@ static void _on_client_read(xylem_dtls_t* dtls, void* data, size_t len) {
 
 static void _on_client_write_done(xylem_dtls_t* dtls,
                                   void* data, size_t len, int status) {
-    fprintf(stderr, "  [cli] on_write_done status=%d\n", status);
     (void)dtls;
     (void)data;
     (void)len;
@@ -190,7 +185,6 @@ static void _on_client_write_done(xylem_dtls_t* dtls,
 }
 
 static void _on_client_close(xylem_dtls_t* dtls, int err) {
-    fprintf(stderr, "  [cli] on_close err=%d\n", err);
     (void)dtls;
     (void)err;
     _client_closed = true;
@@ -200,7 +194,6 @@ static void _on_client_close(xylem_dtls_t* dtls, int err) {
 }
 
 static void _on_server_sess_close(xylem_dtls_t* dtls, int err) {
-    fprintf(stderr, "  [srv] on_close err=%d\n", err);
     (void)dtls;
     (void)err;
     _server_sess_closed = true;
@@ -210,7 +203,6 @@ static void _on_server_sess_close(xylem_dtls_t* dtls, int err) {
 static void test_handshake_and_echo(void) {
     const char* cert = "test_dtls_hs_cert.pem";
     const char* key  = "test_dtls_hs_key.pem";
-    fprintf(stderr, "  generating certs...\n");
     ASSERT(_gen_self_signed(cert, key) == 0);
 
     _server_accepted    = false;
@@ -223,11 +215,9 @@ static void test_handshake_and_echo(void) {
     _recv_len           = 0;
     memset(_recv_buf, 0, sizeof(_recv_buf));
 
-    fprintf(stderr, "  loop init...\n");
     ASSERT(xylem_loop_init(&_loop) == 0);
 
     /* Server context with cert. */
-    fprintf(stderr, "  creating server ctx...\n");
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
     ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
@@ -242,12 +232,10 @@ static void test_handshake_and_echo(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 15433, &addr);
 
-    fprintf(stderr, "  dtls_listen...\n");
     _dtls_server = xylem_dtls_listen(&_loop, &addr, srv_ctx, &srv_handler);
     ASSERT(_dtls_server != NULL);
 
     /* Client context -- disable verify for self-signed. */
-    fprintf(stderr, "  creating client ctx...\n");
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
     xylem_dtls_ctx_set_verify(cli_ctx, false);
@@ -259,12 +247,10 @@ static void test_handshake_and_echo(void) {
         .on_close      = _on_client_close,
     };
 
-    fprintf(stderr, "  dtls_dial...\n");
     xylem_dtls_t* client = xylem_dtls_dial(&_loop, &addr, cli_ctx,
                                            &cli_handler);
     ASSERT(client != NULL);
 
-    fprintf(stderr, "  loop_run...\n");
     xylem_loop_run(&_loop);
 
     ASSERT(_server_accepted == true);
@@ -357,30 +343,15 @@ static void test_alpn_negotiation(void) {
 }
 
 int main(void) {
-    /* Task 20: context tests */
-    fprintf(stderr, "test_ctx_create_destroy\n");
     test_ctx_create_destroy();
-    fprintf(stderr, "test_load_cert_valid\n");
     test_load_cert_valid();
-    fprintf(stderr, "test_load_cert_invalid\n");
     test_load_cert_invalid();
-    fprintf(stderr, "test_set_ca\n");
     test_set_ca();
-    fprintf(stderr, "test_set_verify\n");
     test_set_verify();
-    fprintf(stderr, "test_set_alpn\n");
     test_set_alpn();
-
-    /* Task 21: handshake and data transfer */
-    fprintf(stderr, "test_handshake_and_echo\n");
     test_handshake_and_echo();
-
-    /* Task 22: error cases */
-    fprintf(stderr, "test_handshake_failure_wrong_ca\n");
     test_handshake_failure_wrong_ca();
-    fprintf(stderr, "test_alpn_negotiation\n");
     test_alpn_negotiation();
 
-    fprintf(stderr, "all tests passed\n");
     return 0;
 }

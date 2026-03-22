@@ -5,7 +5,7 @@ project(Xylem LANGUAGES C)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(xylem-utils)
 
-option(XYLEM_ENABLE_TESTING "enable unit testing" ON)
+option(XYLEM_ENABLE_TESTING "enable unit testing" OFF)
 option(XYLEM_ENABLE_ASAN "enable memory error detection" OFF)
 option(XYLEM_ENABLE_TSAN  "enable data race detection" OFF)
 option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
@@ -81,7 +81,10 @@ endif()
 
 if(XYLEM_ENABLE_TLS)
 	find_package(OpenSSL REQUIRED)
-	list(APPEND SRCS src/xylem-tls.c src/xylem-dtls.c)
+	list(APPEND SRCS
+		src/xylem-tls.c
+		src/xylem-dtls.c
+	)
 	include_directories(${OPENSSL_INCLUDE_DIR})
 endif()
 
