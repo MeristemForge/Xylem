@@ -63,11 +63,11 @@ typedef struct {
     bool                       expect_continue;
     bool                       continue_received;
     int                        redirects_remaining;
+    size_t                     max_body_size;
 } _http_client_ctx_t;
 
-static _Thread_local uint64_t _http_timeout_ms    = 30000;
-static _Thread_local int      _http_max_redirects  = 0;
-static _Thread_local size_t   _http_max_body_size  = 10485760; /* 10 MiB */
+#define DEFAULT_TIMEOUT_MS   30000
+#define DEFAULT_MAX_BODY     10485760 /* 10 MiB */
 
 /* Stop and close the timeout timer, then stop the event loop. */
 static void _http_client_abort(_http_client_ctx_t* ctx) {
@@ -133,7 +133,7 @@ static int _http_res_body_cb(llhttp_t* parser,
         return 0;
     }
 
-    if (ctx->res->body_len + len > _http_max_body_size) {
+    if (ctx->res->body_len + len > ctx->max_body_size) {
         return HPE_USER;
     }
 
@@ -151,18 +151,6 @@ static int _http_res_message_complete_cb(llhttp_t* parser) {
     _http_client_ctx_t* ctx = parser->data;
     ctx->done = true;
     return HPE_PAUSED;
-}
-
-void xylem_http_cli_set_timeout(uint64_t timeout_ms) {
-    _http_timeout_ms = timeout_ms;
-}
-
-void xylem_http_cli_set_follow_redirects(int max_redirects) {
-    _http_max_redirects = max_redirects;
-}
-
-void xylem_http_cli_set_max_body_size(size_t max_bytes) {
-    _http_max_body_size = (max_bytes == 0) ? 10485760 : max_bytes;
 }
 
 int xylem_http_cli_res_status(const xylem_http_cli_res_t* res) {
@@ -381,10 +369,15 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
                                            const char* url,
                                            const void* body,
                                            size_t body_len,
-                                           const char* content_type) {
+                                           const char* content_type,
+                                           const xylem_http_cli_opts_t* opts) {
     if (!method || !url) {
         return NULL;
     }
+
+    uint64_t timeout_ms    = (opts && opts->timeout_ms)    ? opts->timeout_ms    : DEFAULT_TIMEOUT_MS;
+    int      max_redirects = (opts)                        ? opts->max_redirects  : 0;
+    size_t   max_body_size = (opts && opts->max_body_size) ? opts->max_body_size  : DEFAULT_MAX_BODY;
 
     _http_client_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -397,7 +390,8 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
     ctx.body                = body;
     ctx.body_len            = body_len;
     ctx.content_type        = content_type;
-    ctx.redirects_remaining = _http_max_redirects;
+    ctx.redirects_remaining = max_redirects;
+    ctx.max_body_size       = max_body_size;
 
     if (xylem_loop_init(&ctx.loop) != 0) {
         return NULL;
@@ -432,10 +426,10 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
         ctx.parser.data = &ctx;
 
         xylem_loop_init_timer(&ctx.loop, &ctx.timeout_timer);
-        if (_http_timeout_ms > 0) {
+        if (timeout_ms > 0) {
             xylem_loop_start_timer(&ctx.timeout_timer,
                                    _http_client_timeout_cb,
-                                   _http_timeout_ms, 0);
+                                   timeout_ms, 0);
         }
 
         xylem_addr_resolve_t* resolve_req =
@@ -469,28 +463,33 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
     return ctx.res;
 }
 
-xylem_http_cli_res_t* xylem_http_cli_get(const char* url) {
-    return _http_client_exec("GET", url, NULL, 0, NULL);
+xylem_http_cli_res_t* xylem_http_cli_get(const char* url,
+                                         const xylem_http_cli_opts_t* opts) {
+    return _http_client_exec("GET", url, NULL, 0, NULL, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
-                                  const void* body, size_t body_len,
-                                  const char* content_type) {
-    return _http_client_exec("POST", url, body, body_len, content_type);
+                                          const void* body, size_t body_len,
+                                          const char* content_type,
+                                          const xylem_http_cli_opts_t* opts) {
+    return _http_client_exec("POST", url, body, body_len, content_type, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_put(const char* url,
-                                 const void* body, size_t body_len,
-                                 const char* content_type) {
-    return _http_client_exec("PUT", url, body, body_len, content_type);
+                                         const void* body, size_t body_len,
+                                         const char* content_type,
+                                         const xylem_http_cli_opts_t* opts) {
+    return _http_client_exec("PUT", url, body, body_len, content_type, opts);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_delete(const char* url) {
-    return _http_client_exec("DELETE", url, NULL, 0, NULL);
+xylem_http_cli_res_t* xylem_http_cli_delete(const char* url,
+                                            const xylem_http_cli_opts_t* opts) {
+    return _http_client_exec("DELETE", url, NULL, 0, NULL, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_patch(const char* url,
-                                   const void* body, size_t body_len,
-                                   const char* content_type) {
-    return _http_client_exec("PATCH", url, body, body_len, content_type);
+                                           const void* body, size_t body_len,
+                                           const char* content_type,
+                                           const xylem_http_cli_opts_t* opts) {
+    return _http_client_exec("PATCH", url, body, body_len, content_type, opts);
 }

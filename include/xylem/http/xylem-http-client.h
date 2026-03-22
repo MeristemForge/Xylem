@@ -28,35 +28,17 @@ _Pragma("once")
 typedef struct xylem_http_cli_res_s xylem_http_cli_res_t;
 
 /**
- * @brief Set the timeout for subsequent client requests.
+ * @brief Per-request options for the HTTP client.
  *
- * Covers the entire request lifecycle: DNS resolution, connection,
- * sending, and receiving. Set to 0 to wait indefinitely.
- *
- * @param timeout_ms  Timeout in milliseconds. Default is 30000.
+ * Pass NULL to any request function to use defaults.
+ * Zero-initialized fields use their default values:
+ *   timeout_ms = 30000, max_redirects = 0, max_body_size = 10 MiB.
  */
-extern void xylem_http_cli_set_timeout(uint64_t timeout_ms);
-
-/**
- * @brief Enable or disable automatic redirect following.
- *
- * When enabled, 301/302/307/308 responses are followed automatically
- * up to the specified maximum. Set to 0 to disable (default).
- *
- * @param max_redirects  Maximum number of redirects to follow.
- */
-extern void xylem_http_cli_set_follow_redirects(int max_redirects);
-
-
-/**
- * @brief Set the maximum response body size for the client.
- *
- * Responses exceeding this limit cause the request to abort and
- * return NULL. Set to 0 to use the default (10 MiB).
- *
- * @param max_bytes  Maximum body size in bytes.
- */
-extern void xylem_http_cli_set_max_body_size(size_t max_bytes);
+typedef struct {
+    uint64_t timeout_ms;
+    int      max_redirects;
+    size_t   max_body_size;
+} xylem_http_cli_opts_t;
 
 /**
  * @brief Send a synchronous HTTP GET request.
@@ -65,13 +47,15 @@ extern void xylem_http_cli_set_max_body_size(size_t max_bytes);
  * connects via TCP or TLS based on the URL scheme, sends the
  * request, and blocks until the response is received.
  *
- * @param url  Full URL string (e.g. "http://example.com/path").
+ * @param url   Full URL string (e.g. "http://example.com/path").
+ * @param opts  Per-request options, or NULL for defaults.
  *
  * @return Response handle on success, NULL on any error.
  *
  * @note The caller must free the response with xylem_http_cli_res_destroy().
  */
-extern xylem_http_cli_res_t* xylem_http_cli_get(const char* url);
+extern xylem_http_cli_res_t* xylem_http_cli_get(const char* url,
+                                                 const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP POST request.
@@ -80,14 +64,17 @@ extern xylem_http_cli_res_t* xylem_http_cli_get(const char* url);
  * @param body          Request body, or NULL for empty body.
  * @param body_len      Body length in bytes.
  * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
  *
  * @return Response handle on success, NULL on any error.
  *
  * @note The caller must free the response with xylem_http_cli_res_destroy().
  */
 extern xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
-                                          const void* body, size_t body_len,
-                                          const char* content_type);
+                                                  const void* body,
+                                                  size_t body_len,
+                                                  const char* content_type,
+                                                  const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP PUT request.
@@ -96,25 +83,30 @@ extern xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
  * @param body          Request body, or NULL for empty body.
  * @param body_len      Body length in bytes.
  * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
  *
  * @return Response handle on success, NULL on any error.
  *
  * @note The caller must free the response with xylem_http_cli_res_destroy().
  */
 extern xylem_http_cli_res_t* xylem_http_cli_put(const char* url,
-                                         const void* body, size_t body_len,
-                                         const char* content_type);
+                                                 const void* body,
+                                                 size_t body_len,
+                                                 const char* content_type,
+                                                 const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP DELETE request.
  *
- * @param url  Full URL string.
+ * @param url   Full URL string.
+ * @param opts  Per-request options, or NULL for defaults.
  *
  * @return Response handle on success, NULL on any error.
  *
  * @note The caller must free the response with xylem_http_cli_res_destroy().
  */
-extern xylem_http_cli_res_t* xylem_http_cli_delete(const char* url);
+extern xylem_http_cli_res_t* xylem_http_cli_delete(const char* url,
+                                                    const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP PATCH request.
@@ -123,14 +115,17 @@ extern xylem_http_cli_res_t* xylem_http_cli_delete(const char* url);
  * @param body          Request body, or NULL for empty body.
  * @param body_len      Body length in bytes.
  * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
  *
  * @return Response handle on success, NULL on any error.
  *
  * @note The caller must free the response with xylem_http_cli_res_destroy().
  */
 extern xylem_http_cli_res_t* xylem_http_cli_patch(const char* url,
-                                           const void* body, size_t body_len,
-                                           const char* content_type);
+                                                   const void* body,
+                                                   size_t body_len,
+                                                   const char* content_type,
+                                                   const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Get the HTTP status code from a response.
@@ -154,7 +149,7 @@ extern int xylem_http_cli_res_status(const xylem_http_cli_res_t* res);
  * @note The returned pointer is valid until xylem_http_cli_res_destroy().
  */
 extern const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
-                                          const char* name);
+                                              const char* name);
 
 /**
  * @brief Get the response body data.
