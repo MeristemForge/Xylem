@@ -181,7 +181,7 @@ static void test_file_rollover(void) {
     long size = ftell(f);
     fclose(f);
 
-    /* file must have been truncated — should be well under 2x threshold */
+    /* file must have been truncated -- should be well under 2x threshold */
     ASSERT(size < (long)(max_size * 2));
 
     /* file should contain the last written line, not the first */

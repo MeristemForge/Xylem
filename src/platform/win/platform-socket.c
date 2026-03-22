@@ -103,7 +103,7 @@ void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
         return;
     }
     int af = platform_socket_get_addressfamily(sock);
-    /*
+    /**
      * Windows doesn't support setting TCP_MAXSEG but IP_PMTUDISC_DONT forces
      * the MSS to the protocol minimum which is what we want here.
      */

@@ -26,10 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Internal types                                                      */
-/* ------------------------------------------------------------------ */
-
 typedef struct _tls_write_req_s {
     const void* data;
     size_t      len;
@@ -67,51 +63,6 @@ struct xylem_tls_server_s {
     bool                  closing;
 };
 
-/* ------------------------------------------------------------------ */
-/* Forward declarations for internal TCP handler callbacks             */
-/* ------------------------------------------------------------------ */
-
-static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn);
-static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn);
-static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
-                             void* data, size_t len);
-static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* conn,
-                                   void* data, size_t len, int status);
-static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err);
-static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
-                                xylem_tcp_timeout_type_t type);
-static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn);
-
-/**
- * Per-server TCP handler used for accepted connections.
- * The TLS server pointer is stored via xylem_tcp_server_set_userdata
- * and recovered in the accept callback via xylem_tcp_conn_t's
- * server->userdata.
- */
-static xylem_tcp_handler_t _tls_tcp_server_handler = {
-    .on_accept        = _tls_tcp_accept_cb,
-    .on_connect       = _tls_tcp_connect_cb,
-    .on_read          = _tls_tcp_read_cb,
-    .on_write_done    = _tls_tcp_write_done_cb,
-    .on_close         = _tls_tcp_close_cb,
-    .on_timeout       = _tls_tcp_timeout_cb,
-    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
-};
-
-/* Client-side handler (no server context needed). */
-static xylem_tcp_handler_t _tls_tcp_client_handler = {
-    .on_connect       = _tls_tcp_connect_cb,
-    .on_read          = _tls_tcp_read_cb,
-    .on_write_done    = _tls_tcp_write_done_cb,
-    .on_close         = _tls_tcp_close_cb,
-    .on_timeout       = _tls_tcp_timeout_cb,
-    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
-};
-
-/* ------------------------------------------------------------------ */
-/* ALPN server select callback                                         */
-/* ------------------------------------------------------------------ */
-
 static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
                                unsigned char* outlen,
                                const unsigned char* in,
@@ -127,10 +78,6 @@ static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
     }
     return SSL_TLSEXT_ERR_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Context API                                                         */
-/* ------------------------------------------------------------------ */
 
 xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
     xylem_tls_ctx_t* ctx = calloc(1, sizeof(*ctx));
@@ -207,20 +154,12 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     ctx->alpn_wire     = wire;
     ctx->alpn_wire_len = total;
 
-    /* Client side: set offered protocols. */
     SSL_CTX_set_alpn_protos(ctx->ssl_ctx, wire, (unsigned int)total);
-
-    /* Server side: set select callback. */
     SSL_CTX_set_alpn_select_cb(ctx->ssl_ctx, _tls_alpn_select_cb, ctx);
 
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Memory BIO helpers (Task 4)                                         */
-/* ------------------------------------------------------------------ */
-
-/* Read pending ciphertext from write BIO and send via TCP. */
 static void _tls_flush_write_bio(xylem_tls_t* tls) {
     char buf[16384];
     int  n;
@@ -230,21 +169,15 @@ static void _tls_flush_write_bio(xylem_tls_t* tls) {
     }
 }
 
-/* Feed received ciphertext into the read BIO. */
 static void _tls_feed_read_bio(xylem_tls_t* tls, void* data, size_t len) {
     BIO_write(tls->read_bio, data, (int)len);
 }
-
-/* ------------------------------------------------------------------ */
-/* Handshake state machine (Task 5)                                    */
-/* ------------------------------------------------------------------ */
 
 static void _tls_do_handshake(xylem_tls_t* tls) {
     int rc  = SSL_do_handshake(tls->ssl);
     int err = SSL_get_error(tls->ssl, rc);
 
     if (rc == 1) {
-        /* Handshake complete. */
         tls->handshake_done = true;
         _tls_flush_write_bio(tls);
 
@@ -265,12 +198,11 @@ static void _tls_do_handshake(xylem_tls_t* tls) {
         return;
     }
 
-    /* Handshake failure. */
+    /* Flush any pending alert before tearing down the TCP connection. */
     _tls_flush_write_bio(tls);
     xylem_tcp_close(tls->tcp);
 }
 
-/* Create SSL object with memory BIOs for a connection. */
 static int _tls_init_ssl(xylem_tls_t* tls) {
     tls->ssl = SSL_new(tls->ctx->ssl_ctx);
     if (!tls->ssl) {
@@ -289,11 +221,6 @@ static int _tls_init_ssl(xylem_tls_t* tls) {
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* TCP handler bridge callbacks (Tasks 5-7)                            */
-/* ------------------------------------------------------------------ */
-
-/* TCP connected — client side: init SSL, set SNI, start handshake. */
 static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
 
@@ -312,7 +239,6 @@ static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn) {
     _tls_do_handshake(tls);
 }
 
-/* TCP accepted — server side: init SSL, start server handshake. */
 static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_server_t* server =
         (xylem_tls_server_t*)xylem_tcp_get_userdata(conn);
@@ -328,10 +254,12 @@ static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
     tls->handler = server->handler;
     tls->server  = server;
 
-    /* Re-bind TCP userdata to the new TLS connection. */
+    /**
+     * TCP accept callback initially carries the server pointer;
+     * rebind to the per-connection TLS handle from here on.
+     */
     xylem_tcp_set_userdata(conn, tls);
 
-    /* Track in server's connection list. */
     xylem_list_insert_tail(&server->connections, &tls->server_node);
 
     if (_tls_init_ssl(tls) != 0) {
@@ -345,7 +273,6 @@ static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
     _tls_do_handshake(tls);
 }
 
-/* TCP data received — feed to BIO, then handshake or decrypt. */
 static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
                              void* data, size_t len) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
@@ -357,11 +284,8 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
         if (!tls->handshake_done) {
             return;
         }
-        /* Handshake just completed — fall through to drain any
-         * application data that arrived in the same TCP read. */
     }
 
-    /* Post-handshake: decrypt and deliver plaintext. */
     char buf[16384];
     int  n;
 
@@ -373,7 +297,6 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
 
     int err = SSL_get_error(tls->ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN) {
-        /* Peer sent close_notify. */
         xylem_tls_close(tls);
         return;
     }
@@ -383,7 +306,6 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-/* TCP write completed — bridge to TLS on_write_done. */
 static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* conn,
                                    void* data, size_t len, int status) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
@@ -402,7 +324,6 @@ static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-/* TCP closed — clean up SSL state, notify user. */
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
 
@@ -421,7 +342,6 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     free(tls);
 }
 
-/* TCP timeout — forward to TLS handler. */
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
                                 xylem_tcp_timeout_type_t type) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
@@ -431,7 +351,6 @@ static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-/* TCP heartbeat miss — forward to TLS handler. */
 static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
 
@@ -440,9 +359,29 @@ static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Public connection API (Tasks 7-8)                                   */
-/* ------------------------------------------------------------------ */
+/**
+ * Per-server TCP handler used for accepted connections.
+ * The TLS server pointer is stored via xylem_tcp_server_set_userdata
+ * and recovered in the accept callback.
+ */
+static xylem_tcp_handler_t _tls_tcp_server_handler = {
+    .on_accept        = _tls_tcp_accept_cb,
+    .on_connect       = _tls_tcp_connect_cb,
+    .on_read          = _tls_tcp_read_cb,
+    .on_write_done    = _tls_tcp_write_done_cb,
+    .on_close         = _tls_tcp_close_cb,
+    .on_timeout       = _tls_tcp_timeout_cb,
+    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
+};
+
+static xylem_tcp_handler_t _tls_tcp_client_handler = {
+    .on_connect       = _tls_tcp_connect_cb,
+    .on_read          = _tls_tcp_read_cb,
+    .on_write_done    = _tls_tcp_write_done_cb,
+    .on_close         = _tls_tcp_close_cb,
+    .on_timeout       = _tls_tcp_timeout_cb,
+    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
+};
 
 int xylem_tls_send(xylem_tls_t* tls, const void* data, size_t len) {
     if (!tls->handshake_done || tls->closing) {
@@ -532,10 +471,6 @@ void xylem_tls_set_userdata(xylem_tls_t* tls, void* ud) {
     tls->userdata = ud;
 }
 
-/* ------------------------------------------------------------------ */
-/* Server API (Task 9)                                                 */
-/* ------------------------------------------------------------------ */
-
 xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_tls_ctx_t* ctx,
@@ -573,7 +508,6 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
     }
     server->closing = true;
 
-    /* Close all active TLS connections. */
     xylem_list_node_t* node = xylem_list_head(&server->connections);
     xylem_list_node_t* sentinel = xylem_list_sentinel(&server->connections);
     while (node && node != sentinel) {

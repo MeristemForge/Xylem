@@ -111,7 +111,7 @@ static void test_incremental(void) {
     xylem_sha1_destroy(ctx);
 }
 
-/* exactly 55 bytes — max single-block message (padding fits in same block) */
+/* exactly 55 bytes -- max single-block message (padding fits in same block) */
 static void test_55_bytes(void) {
     xylem_sha1_t* ctx = xylem_sha1_create();
     ASSERT(ctx);

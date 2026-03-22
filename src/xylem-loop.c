@@ -58,7 +58,7 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
 static void _loop_process_posts(xylem_loop_t* loop) {
     /**
      * Fast path: skip lock when queue is empty.
-     * A concurrent enqueue between this check and the lock is fine —
+     * A concurrent enqueue between this check and the lock is fine --
      * the wakeup write will trigger another iteration.
      */
     if (xylem_queue_empty(&loop->posts)) {
@@ -213,7 +213,7 @@ int xylem_loop_run(xylem_loop_t* loop) {
         /* process I/O completions */
         for (int i = 0; i < n; i++) {
             if (cqes[i].ud == NULL) {
-                /* wakeup fd fired — drain so LT doesn't keep firing */
+                /* wakeup fd fired -- drain so LT doesn't keep firing */
                 _loop_drain_wakeup(loop);
                 continue;
             }
@@ -223,7 +223,7 @@ int xylem_loop_run(xylem_loop_t* loop) {
 
         _loop_process_posts(loop);
         _loop_process_timers(loop);
-        /* process posts again — timers may have called post() inline */
+        /* process posts again -- timers may have called post() inline */
         _loop_process_posts(loop);
         _loop_process_closing(loop);
     }

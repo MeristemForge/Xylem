@@ -28,10 +28,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Helper: generate self-signed cert + key to temp files               */
-/* ------------------------------------------------------------------ */
-
 static int _gen_self_signed(const char* cert_path, const char* key_path) {
     EVP_PKEY* pkey = EVP_PKEY_new();
     if (!pkey) {
@@ -84,10 +80,6 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
     EVP_PKEY_free(pkey);
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* Task 20: Context and basic setup tests                              */
-/* ------------------------------------------------------------------ */
 
 static void test_ctx_create_destroy(void) {
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
@@ -146,10 +138,6 @@ static void test_set_alpn(void) {
     ASSERT(xylem_dtls_ctx_set_alpn(ctx, protos, 2) == 0);
     xylem_dtls_ctx_destroy(ctx);
 }
-
-/* ------------------------------------------------------------------ */
-/* Task 21: Client/server handshake and data transfer tests            */
-/* ------------------------------------------------------------------ */
 
 static xylem_loop_t          _loop;
 static bool                  _server_accepted;
@@ -258,7 +246,7 @@ static void test_handshake_and_echo(void) {
     _dtls_server = xylem_dtls_listen(&_loop, &addr, srv_ctx, &srv_handler);
     ASSERT(_dtls_server != NULL);
 
-    /* Client context — disable verify for self-signed. */
+    /* Client context -- disable verify for self-signed. */
     fprintf(stderr, "  creating client ctx...\n");
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
@@ -294,10 +282,6 @@ static void test_handshake_and_echo(void) {
     remove(cert);
     remove(key);
 }
-
-/* ------------------------------------------------------------------ */
-/* Task 22: Error cases                                                */
-/* ------------------------------------------------------------------ */
 
 static bool _handshake_failed;
 
@@ -371,10 +355,6 @@ static void test_alpn_negotiation(void) {
 
     xylem_dtls_ctx_destroy(ctx);
 }
-
-/* ------------------------------------------------------------------ */
-/* Main                                                                */
-/* ------------------------------------------------------------------ */
 
 int main(void) {
     /* Task 20: context tests */

@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "Sync product.md on new module",
+  "description": "When a new .c or .h file is created under src/ or include/, reminds the agent to update .kiro/steering/product.md with the new module information.",
+  "version": "1",
+  "when": {
+    "type": "fileCreated",
+    "patterns": [
+      "src/*.c",
+      "include/xylem/*.h"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A new source or header file was just created. Check if it represents a new module and, if so, update .kiro/steering/product.md to include it in the appropriate section of the module inventory."
+  }
+}

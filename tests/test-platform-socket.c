@@ -86,7 +86,7 @@ static void test_nonblocking(void) {
     int ret = platform_socket_socketpair(0, SOCK_STREAM, 0, pair);
     ASSERT(ret == 0);
 
-    /* set nonblocking and try recv on empty socket — should fail immediately */
+    /* set nonblocking and try recv on empty socket -- should fail immediately */
     platform_socket_enable_nonblocking(pair[0], true);
     char buf[4];
     ssize_t n = platform_socket_recv(pair[0], buf, sizeof(buf));

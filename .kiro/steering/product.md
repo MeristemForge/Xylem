@@ -21,6 +21,8 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **xlist** | Non-intrusive doubly-linked list (built on list) | Non-intrusive |
 | **xstack** | Non-intrusive LIFO stack (built on stack) | Non-intrusive |
 | **xqueue** | Non-intrusive FIFO queue (built on queue) | Non-intrusive |
+| **xheap** | Non-intrusive binary min-heap (built on heap) | Non-intrusive |
+| **xrbtree** | Non-intrusive red-black tree (built on rbtree) | Non-intrusive |
 | **ringbuf** | Ring buffer | Contiguous |
 
 ### Encoding & Hashing
@@ -41,13 +43,16 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **thrdpool** | Thread pool | ✅ |
 | **logger** | Leveled logging with optional async output | ✅ |
 
-### Event Loop
+### Networking & Event Loop
 
 | Module | Description | Status |
 |--------|-------------|--------|
+| **addr** | Unified network address wrapper (IPv4/IPv6) | ✅ |
 | **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | ✅ |
 | **tcp** | TCP client/server with framing, reconnect, heartbeat | ✅ |
 | **udp** | UDP datagram send/receive | ✅ |
+| **tls** | TLS client/server over TCP (OpenSSL, ALPN, SNI) | ✅ |
+| **dtls** | DTLS client/server over UDP (OpenSSL, cookie verification) | ✅ |
 
 ### Utilities
 

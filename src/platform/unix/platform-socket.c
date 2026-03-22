@@ -429,7 +429,7 @@ void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
     if (!on) {
         return;
     }
-    /*
+    /**
      * On macOS, TCP_NOOPT seems to be the only way to restrict MSS to the
      * minimum. It strips all options out of the SYN packet which forces the
      * remote party to fall back to the minimum MSS.

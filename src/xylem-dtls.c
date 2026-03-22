@@ -30,10 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Internal types                                                      */
-/* ------------------------------------------------------------------ */
-
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
     uint8_t* alpn_wire;
@@ -66,10 +62,6 @@ struct xylem_dtls_server_s {
     bool                   closing;
 };
 
-/* ------------------------------------------------------------------ */
-/* Cookie callbacks for DTLS server                                    */
-/* ------------------------------------------------------------------ */
-
 static int _dtls_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
                                     unsigned int* cookie_len) {
     (void)ssl;
@@ -83,14 +75,10 @@ static int _dtls_cookie_verify_cb(SSL* ssl, const unsigned char* cookie,
     (void)ssl;
     (void)cookie;
     (void)cookie_len;
-    /* Accept all cookies — the cookie exchange itself provides
+    /** Accept all cookies -- the cookie exchange itself provides
      * sufficient DoS protection by verifying the client's address. */
     return 1;
 }
-
-/* ------------------------------------------------------------------ */
-/* ALPN server select callback                                         */
-/* ------------------------------------------------------------------ */
 
 static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
                                 unsigned char* outlen,
@@ -107,10 +95,6 @@ static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
     }
     return SSL_TLSEXT_ERR_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Context API                                                         */
-/* ------------------------------------------------------------------ */
 
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     xylem_dtls_ctx_t* ctx = calloc(1, sizeof(*ctx));
@@ -194,10 +178,6 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Memory BIO helpers                                                  */
-/* ------------------------------------------------------------------ */
-
 static void _dtls_flush_write_bio(xylem_dtls_t* dtls) {
     char buf[16384];
     int  n;
@@ -211,10 +191,6 @@ static void _dtls_feed_read_bio(xylem_dtls_t* dtls,
                                 void* data, size_t len) {
     BIO_write(dtls->read_bio, data, (int)len);
 }
-
-/* ------------------------------------------------------------------ */
-/* Retransmission timer                                                */
-/* ------------------------------------------------------------------ */
 
 static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
                                         xylem_loop_timer_t* timer) {
@@ -248,10 +224,6 @@ static void _dtls_stop_retransmit(xylem_dtls_t* dtls) {
         xylem_loop_stop_timer(&dtls->retransmit_timer);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* SSL init and handshake helpers                                      */
-/* ------------------------------------------------------------------ */
 
 static int _dtls_init_ssl(xylem_dtls_t* dtls) {
     dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
@@ -298,14 +270,10 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
         return;
     }
 
-    /* Handshake failure. */
+    /* Flush any pending alert before tearing down. */
     _dtls_flush_write_bio(dtls);
     xylem_dtls_close(dtls);
 }
-
-/* ------------------------------------------------------------------ */
-/* Address comparison and session lookup                               */
-/* ------------------------------------------------------------------ */
 
 static bool _dtls_addr_equal(xylem_addr_t* a, xylem_addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
@@ -345,10 +313,6 @@ static xylem_dtls_t* _dtls_find_session(xylem_dtls_server_t* server,
     return NULL;
 }
 
-/* ------------------------------------------------------------------ */
-/* Client UDP read callback                                            */
-/* ------------------------------------------------------------------ */
-
 static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     (void)addr;
@@ -361,11 +325,8 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
         if (!dtls->handshake_done) {
             return;
         }
-        /* Handshake just completed — fall through to drain any
-         * application data that arrived in the same UDP read. */
     }
 
-    /* Post-handshake: decrypt and deliver plaintext. */
     char buf[16384];
     int  n;
 
@@ -386,8 +347,10 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
     }
 }
 
-/* Post callback: decrement the timer's active_count contribution
- * and free the session. The timer was already stopped in close(). */
+/**
+ * Deferred free so the session pointer stays valid through the
+ * current loop iteration's callback chain.
+ */
 static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
     xylem_dtls_t* dtls = xylem_list_entry(req, xylem_dtls_t, free_post);
     loop->active_count--;
@@ -408,10 +371,6 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err) {
     xylem_loop_post(dtls->retransmit_timer.loop, &dtls->free_post);
 }
 
-/* ------------------------------------------------------------------ */
-/* Server UDP read callback                                            */
-/* ------------------------------------------------------------------ */
-
 static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     xylem_dtls_server_t* server =
@@ -421,11 +380,9 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    /* Look up existing session by peer address. */
     xylem_dtls_t* dtls = _dtls_find_session(server, addr);
 
     if (dtls) {
-        /* Existing session — feed data and continue. */
         _dtls_feed_read_bio(dtls, data, len);
 
         if (!dtls->handshake_done) {
@@ -433,8 +390,6 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
             if (!dtls->handshake_done) {
                 return;
             }
-            /* Handshake just completed — fall through to drain any
-             * application data that arrived in the same UDP read. */
         }
 
         char buf[16384];
@@ -453,7 +408,6 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    /* New peer — create session and start server handshake. */
     dtls = calloc(1, sizeof(*dtls));
     if (!dtls) {
         return;
@@ -487,10 +441,6 @@ static void _dtls_server_close_cb(xylem_udp_t* udp, int err) {
         (xylem_dtls_server_t*)xylem_udp_get_userdata(udp);
     free(server);
 }
-
-/* ------------------------------------------------------------------ */
-/* Public connection API                                               */
-/* ------------------------------------------------------------------ */
 
 static xylem_udp_handler_t _dtls_client_udp_handler = {
     .on_read  = _dtls_client_read_cb,
@@ -572,8 +522,10 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
     }
 
     if (dtls->server) {
-        /* Server-side session: detach from server list, clean up
-         * SSL state, notify user. The shared UDP socket stays open. */
+        /**
+         * Server-side session: detach from server list, clean up
+         * SSL state, notify user. The shared UDP socket stays open.
+         */
         xylem_list_remove(&dtls->server->sessions, &dtls->server_node);
 
         if (dtls->ssl) {
@@ -589,9 +541,11 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
         dtls->free_post.cb = _dtls_free_cb;
         xylem_loop_post(dtls->retransmit_timer.loop, &dtls->free_post);
     } else {
-        /* Client-side: close the dedicated UDP socket. The
+        /**
+         * Client-side: close the dedicated UDP socket. The
          * _dtls_client_close_cb will free SSL and notify user.
-         * Defer free so close_node stays valid. */
+         * Defer free so close_node stays valid.
+         */
         xylem_udp_close(dtls->udp);
     }
 }
@@ -618,10 +572,6 @@ void* xylem_dtls_get_userdata(xylem_dtls_t* dtls) {
 void xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud) {
     dtls->userdata = ud;
 }
-
-/* ------------------------------------------------------------------ */
-/* Server API                                                          */
-/* ------------------------------------------------------------------ */
 
 static xylem_udp_handler_t _dtls_server_udp_handler = {
     .on_read  = _dtls_server_read_cb,
@@ -661,7 +611,6 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
     }
     server->closing = true;
 
-    /* Close all active sessions. */
     while (!xylem_list_empty(&server->sessions)) {
         xylem_list_node_t* node = xylem_list_head(&server->sessions);
         xylem_dtls_t* dtls =
@@ -669,6 +618,6 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
         xylem_dtls_close(dtls);
     }
 
-    /* Close the shared UDP socket. _dtls_server_close_cb frees server. */
+    /* _dtls_server_close_cb frees server. */
     xylem_udp_close(server->udp);
 }
