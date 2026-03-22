@@ -23,6 +23,10 @@ _Pragma("once")
 
 #include "platform/platform-socket.h"
 
+typedef struct xylem_loop_s      xylem_loop_t;
+typedef struct xylem_thrdpool_s  xylem_thrdpool_t;
+typedef struct xylem_addr_resolve_s xylem_addr_resolve_t;
+
 /**
  * @brief Unified network address wrapper.
  *
@@ -43,6 +47,17 @@ typedef struct xylem_buf_s {
     char*  base;
     size_t len;
 } xylem_buf_t;
+
+/**
+ * @brief Callback invoked when asynchronous DNS resolution completes.
+ *
+ * @param addrs    Array of resolved addresses, or NULL on failure.
+ * @param count    Number of addresses in the array.
+ * @param status   0 on success, -1 on failure.
+ * @param userdata User-supplied pointer from xylem_addr_resolve().
+ */
+typedef void (*xylem_addr_resolve_fn_t)(xylem_addr_t* addrs, size_t count,
+                                        int status, void* userdata);
 
 /**
  * @brief Convert a host string and port into an xylem_addr_t.
@@ -73,3 +88,38 @@ extern int xylem_addr_pton(const char* host, uint16_t port, xylem_addr_t* addr);
  */
 extern int xylem_addr_ntop(const xylem_addr_t* addr,
                            char* host, size_t hostlen, uint16_t* port);
+
+/**
+ * @brief Resolve a hostname asynchronously using a thread pool.
+ *
+ * Submits a getaddrinfo call to the thread pool. When resolution
+ * completes, the callback is invoked on the loop thread via
+ * xylem_loop_post(). The returned handle can be used to cancel
+ * a pending request.
+ *
+ * @param loop      Event loop for callback delivery.
+ * @param pool      Thread pool for background resolution.
+ * @param host      Hostname or IP address string to resolve.
+ * @param port      Port number.
+ * @param cb        Callback invoked with the result.
+ * @param userdata  Opaque pointer passed to the callback.
+ *
+ * @return Resolve handle on success, NULL on allocation failure.
+ */
+extern xylem_addr_resolve_t* xylem_addr_resolve(xylem_loop_t* loop,
+                                                xylem_thrdpool_t* pool,
+                                                const char* host,
+                                                uint16_t port,
+                                                xylem_addr_resolve_fn_t cb,
+                                                void* userdata);
+
+/**
+ * @brief Cancel a pending asynchronous resolve request.
+ *
+ * If the request has not yet been delivered to the loop thread,
+ * the callback will not be invoked. If the request has already
+ * completed, this is a no-op.
+ *
+ * @param req  Resolve handle returned by xylem_addr_resolve().
+ */
+extern void xylem_addr_resolve_cancel(xylem_addr_resolve_t* req);

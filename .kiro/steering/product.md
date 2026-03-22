@@ -47,7 +47,7 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 
 | Module | Description | Status |
 |--------|-------------|--------|
-| **addr** | Unified network address wrapper (IPv4/IPv6) | ✅ |
+| **addr** | Unified network address wrapper (IPv4/IPv6) with async DNS resolution | ✅ |
 | **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | ✅ |
 | **tcp** | TCP client/server with framing, reconnect, heartbeat | ✅ |
 | **udp** | UDP datagram send/receive | ✅ |

@@ -24,14 +24,6 @@
 #include <string.h>
 
 #define TCP_PORT 18080
-#define T(fn) { #fn, fn }
-
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
 
 static xylem_loop_timer_t _safety_timer;
 
@@ -90,7 +82,6 @@ static int                 _sac_tested      = 0;
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
     (void)timer;
-    fprintf(stderr, "SAFETY TIMEOUT: test hung, stopping loop\n");
     xylem_loop_stop(loop);
 }
 
@@ -552,23 +543,12 @@ static void test_tcp_send_after_close(void) {
 int main(void) {
     xylem_startup();
 
-    test_entry tests[] = {
-        T(test_tcp_echo_delim),
-        T(test_tcp_lifecycle),
-        T(test_tcp_write_done),
-        T(test_tcp_frame_fixed),
-        T(test_tcp_userdata),
-        T(test_tcp_send_after_close),
-    };
-
-    size_t n = sizeof(tests) / sizeof(tests[0]);
-    for (size_t i = 0; i < n; i++) {
-        printf("  %s ... ", tests[i].name);
-        fflush(stdout);
-        tests[i].fn();
-        printf("ok\n");
-    }
-    printf("all %zu tcp tests passed\n", n);
+    test_tcp_echo_delim();
+    test_tcp_lifecycle();
+    test_tcp_write_done();
+    test_tcp_frame_fixed();
+    test_tcp_userdata();
+    test_tcp_send_after_close();
 
     xylem_cleanup();
     return 0;

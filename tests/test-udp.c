@@ -23,15 +23,6 @@
 #include "assert.h"
 #include <string.h>
 
-#define T(fn) { #fn, fn }
-
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
-
 static xylem_loop_timer_t _safety_timer;
 
 /* Test 1: UDP echo */
@@ -55,7 +46,6 @@ static xylem_loop_timer_t _dgram_send_timer;
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
     (void)timer;
-    fprintf(stderr, "SAFETY TIMEOUT: test hung, stopping loop\n");
     xylem_loop_stop(loop);
 }
 
@@ -205,19 +195,8 @@ static void test_udp_datagram_boundary(void) {
 int main(void) {
     xylem_startup();
 
-    test_entry tests[] = {
-        T(test_udp_echo),
-        T(test_udp_datagram_boundary),
-    };
-
-    size_t n = sizeof(tests) / sizeof(tests[0]);
-    for (size_t i = 0; i < n; i++) {
-        printf("  %s ... ", tests[i].name);
-        fflush(stdout);
-        tests[i].fn();
-        printf("ok\n");
-    }
-    printf("all %zu udp tests passed\n", n);
+    test_udp_echo();
+    test_udp_datagram_boundary();
 
     xylem_cleanup();
     return 0;

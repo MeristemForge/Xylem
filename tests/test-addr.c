@@ -22,15 +22,6 @@
 #include "xylem.h"
 #include "assert.h"
 
-#define T(fn) { #fn, fn }
-
-typedef void (*test_fn)(void);
-
-typedef struct {
-    const char* name;
-    test_fn     fn;
-} test_entry;
-
 /* IPv4 pton + ntop round-trip */
 static void test_ipv4_roundtrip(void) {
     xylem_addr_t addr;
@@ -86,24 +77,163 @@ static void test_ipv4_wildcard(void) {
     ASSERT(port == 0);
 }
 
+/**
+ * Context for async resolve tests. Passed via userdata to the resolve
+ * callback, and via file-scope pointer to timer callbacks (timer has
+ * no ud field).
+ */
+typedef struct {
+    xylem_loop_t      loop;
+    xylem_thrdpool_t* pool;
+    int               status;
+    size_t            count;
+    const char*       host;
+    xylem_addr_resolve_fn_t resolve_cb;
+} _resolve_ctx_t;
+
+static _resolve_ctx_t* _ctx;
+
+static void _on_resolved(xylem_addr_t* addrs, size_t count,
+                         int status, void* userdata) {
+    _resolve_ctx_t* ctx = userdata;
+    ctx->status = status;
+    ctx->count  = count;
+
+    for (size_t i = 0; i < count; i++) {
+        ASSERT(addrs[i].storage.ss_family == AF_INET ||
+               addrs[i].storage.ss_family == AF_INET6);
+    }
+
+    xylem_loop_stop(&ctx->loop);
+}
+
+static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
+                             int status, void* userdata) {
+    (void)addrs;
+    _resolve_ctx_t* ctx = userdata;
+    ctx->status = status;
+    ctx->count  = count;
+    xylem_loop_stop(&ctx->loop);
+}
+
+static void _start_resolve_cb(xylem_loop_t* loop,
+                               xylem_loop_timer_t* timer) {
+    (void)loop;
+    xylem_loop_close_timer(timer);
+
+    /* Keep the loop alive until the resolve callback fires. */
+    _ctx->loop.active_count++;
+
+    xylem_addr_resolve(&_ctx->loop, _ctx->pool, _ctx->host, 80,
+                       _ctx->resolve_cb, _ctx);
+}
+
+/* Resolve localhost asynchronously — success path. */
+static void test_resolve_localhost(void) {
+    _resolve_ctx_t ctx = {0};
+    ctx.status     = -1;
+    ctx.count      = 0;
+    ctx.host       = "localhost";
+    ctx.resolve_cb = _on_resolved;
+    _ctx = &ctx;
+
+    xylem_loop_init(&ctx.loop);
+    ctx.pool = xylem_thrdpool_create(1);
+
+    xylem_loop_timer_t timer;
+    xylem_loop_init_timer(&ctx.loop, &timer);
+    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+
+    xylem_loop_run(&ctx.loop);
+
+    ASSERT(ctx.status == 0);
+    ASSERT(ctx.count > 0);
+
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_loop_deinit(&ctx.loop);
+}
+
+/* Resolve non-existent host — error path. */
+static void test_resolve_fail(void) {
+    _resolve_ctx_t ctx = {0};
+    ctx.status     = 0;
+    ctx.count      = 99;
+    ctx.host       = "this.host.does.not.exist.invalid";
+    ctx.resolve_cb = _on_resolve_fail;
+    _ctx = &ctx;
+
+    xylem_loop_init(&ctx.loop);
+    ctx.pool = xylem_thrdpool_create(1);
+
+    xylem_loop_timer_t timer;
+    xylem_loop_init_timer(&ctx.loop, &timer);
+    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+
+    xylem_loop_run(&ctx.loop);
+
+    ASSERT(ctx.status == -1);
+    ASSERT(ctx.count == 0);
+
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_loop_deinit(&ctx.loop);
+}
+
+/* Resolve a public hostname — verifies real DNS works. */
+static void test_resolve_remote(void) {
+    _resolve_ctx_t ctx = {0};
+    ctx.status     = -1;
+    ctx.count      = 0;
+    ctx.host       = "www.baidu.com";
+    ctx.resolve_cb = _on_resolved;
+    _ctx = &ctx;
+
+    xylem_loop_init(&ctx.loop);
+    ctx.pool = xylem_thrdpool_create(1);
+
+    xylem_loop_timer_t timer;
+    xylem_loop_init_timer(&ctx.loop, &timer);
+    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+
+    xylem_loop_run(&ctx.loop);
+
+    ASSERT(ctx.status == 0);
+    ASSERT(ctx.count > 0);
+
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_loop_deinit(&ctx.loop);
+}
+
+/* NULL parameters return NULL. */
+static void test_resolve_null_params(void) {
+    xylem_loop_t loop;
+    xylem_loop_init(&loop);
+    xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
+
+    ASSERT(xylem_addr_resolve(NULL, pool, "localhost", 80,
+                              _on_resolved, NULL) == NULL);
+    ASSERT(xylem_addr_resolve(&loop, NULL, "localhost", 80,
+                              _on_resolved, NULL) == NULL);
+    ASSERT(xylem_addr_resolve(&loop, pool, NULL, 80,
+                              _on_resolved, NULL) == NULL);
+    ASSERT(xylem_addr_resolve(&loop, pool, "localhost", 80,
+                              NULL, NULL) == NULL);
+
+    xylem_thrdpool_destroy(pool);
+    xylem_loop_deinit(&loop);
+}
+
 int main(void) {
     xylem_startup();
 
-    test_entry tests[] = {
-        T(test_ipv4_roundtrip),
-        T(test_ipv6_roundtrip),
-        T(test_invalid_address),
-        T(test_null_params),
-        T(test_ipv4_wildcard),
-    };
-
-    size_t n = sizeof(tests) / sizeof(tests[0]);
-    for (size_t i = 0; i < n; i++) {
-        printf("  %s ... ", tests[i].name);
-        tests[i].fn();
-        printf("ok\n");
-    }
-    printf("all %zu addr tests passed\n", n);
+    test_ipv4_roundtrip();
+    test_ipv6_roundtrip();
+    test_invalid_address();
+    test_null_params();
+    test_ipv4_wildcard();
+    test_resolve_localhost();
+    test_resolve_remote();
+    test_resolve_fail();
+    test_resolve_null_params();
 
     xylem_cleanup();
     return 0;
