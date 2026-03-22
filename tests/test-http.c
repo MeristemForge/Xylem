@@ -20,7 +20,8 @@
  */
 
 #include "assert.h"
-#include "xylem/http/xylem-http-url.h"
+#include "http-common.h"
+#include "xylem/http/xylem-http-utils.h"
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/http/xylem-http-server.h"
 #include "xylem/xylem-loop.h"
@@ -122,6 +123,125 @@ static void test_srv_create_null_cfg(void) {
     ASSERT(xylem_http_srv_create(&loop, NULL) == NULL);
 }
 
+static void test_srv_create_destroy(void) {
+    xylem_loop_t loop;
+    xylem_loop_init(&loop);
+
+    xylem_http_srv_cfg_t cfg = {0};
+    cfg.port = 0;
+    xylem_http_srv_t* srv = xylem_http_srv_create(&loop, &cfg);
+    ASSERT(srv != NULL);
+    xylem_http_srv_destroy(srv);
+
+    xylem_loop_deinit(&loop);
+}
+
+static void test_srv_destroy_null(void) {
+    /* destroy(NULL) must be a no-op */
+    xylem_http_srv_destroy(NULL);
+}
+
+static void test_srv_start_null(void) {
+    ASSERT(xylem_http_srv_start(NULL) == -1);
+}
+
+static void test_srv_stop_null(void) {
+    /* stop(NULL) must be a no-op, not crash */
+    xylem_http_srv_stop(NULL);
+}
+
+static void test_req_serialize_custom_headers(void) {
+    http_url_t url;
+    http_url_parse("http://example.com/path", &url);
+
+    xylem_http_hdr_t hdrs[] = {
+        { "Authorization", "Bearer token123" },
+        { "X-Custom", "value" },
+    };
+
+    size_t len;
+    char* buf = http_req_serialize("GET", &url, NULL, 0, NULL, false, &len,
+                                   hdrs, 2);
+    ASSERT(buf != NULL);
+    ASSERT(strstr(buf, "Authorization: Bearer token123\r\n") != NULL);
+    ASSERT(strstr(buf, "X-Custom: value\r\n") != NULL);
+    ASSERT(strstr(buf, "Host: example.com\r\n") != NULL);
+    free(buf);
+}
+
+static void test_req_serialize_override_host(void) {
+    http_url_t url;
+    http_url_parse("http://example.com/path", &url);
+
+    xylem_http_hdr_t hdrs[] = {
+        { "Host", "custom-host.com" },
+    };
+
+    size_t len;
+    char* buf = http_req_serialize("GET", &url, NULL, 0, NULL, false, &len,
+                                   hdrs, 1);
+    ASSERT(buf != NULL);
+    /* Custom Host present */
+    ASSERT(strstr(buf, "Host: custom-host.com\r\n") != NULL);
+    /* Auto-generated Host absent */
+    ASSERT(strstr(buf, "Host: example.com\r\n") == NULL);
+    free(buf);
+}
+
+static void test_req_serialize_override_content_type(void) {
+    http_url_t url;
+    http_url_parse("http://example.com/", &url);
+
+    xylem_http_hdr_t hdrs[] = {
+        { "content-type", "text/plain" },
+    };
+
+    size_t len;
+    char* buf = http_req_serialize("POST", &url, "body", 4,
+                                   "application/json", false, &len,
+                                   hdrs, 1);
+    ASSERT(buf != NULL);
+    /* Custom Content-Type present */
+    ASSERT(strstr(buf, "content-type: text/plain\r\n") != NULL);
+    /* Auto-generated Content-Type absent */
+    ASSERT(strstr(buf, "Content-Type: application/json\r\n") == NULL);
+    free(buf);
+}
+
+static void test_req_serialize_no_custom_headers(void) {
+    http_url_t url;
+    http_url_parse("http://example.com/", &url);
+
+    size_t len_with;
+    char* buf_with = http_req_serialize("GET", &url, NULL, 0, NULL, false,
+                                        &len_with, NULL, 0);
+    ASSERT(buf_with != NULL);
+    ASSERT(strstr(buf_with, "Host: example.com\r\n") != NULL);
+    ASSERT(strstr(buf_with, "Connection: keep-alive\r\n") != NULL);
+    free(buf_with);
+}
+
+static void test_req_serialize_custom_headers_before_auto(void) {
+    http_url_t url;
+    http_url_parse("http://example.com/", &url);
+
+    xylem_http_hdr_t hdrs[] = {
+        { "X-First", "1" },
+    };
+
+    size_t len;
+    char* buf = http_req_serialize("GET", &url, NULL, 0, NULL, false, &len,
+                                   hdrs, 1);
+    ASSERT(buf != NULL);
+    /* Custom header appears before Host */
+    char* custom_pos = strstr(buf, "X-First: 1\r\n");
+    char* host_pos   = strstr(buf, "Host: example.com\r\n");
+    ASSERT(custom_pos != NULL);
+    ASSERT(host_pos != NULL);
+    ASSERT(custom_pos < host_pos);
+    free(buf);
+}
+
 int main(void) {
     /* URL percent-encoding */
     test_url_encode_unreserved();
@@ -138,9 +258,20 @@ int main(void) {
     /* Request accessors */
     test_req_accessors_null();
 
-    /* Server create */
+    /* Server lifecycle */
     test_srv_create_null_loop();
     test_srv_create_null_cfg();
+    test_srv_create_destroy();
+    test_srv_destroy_null();
+    test_srv_start_null();
+    test_srv_stop_null();
+
+    /* Custom headers */
+    test_req_serialize_custom_headers();
+    test_req_serialize_override_host();
+    test_req_serialize_override_content_type();
+    test_req_serialize_no_custom_headers();
+    test_req_serialize_custom_headers_before_auto();
 
     return 0;
 }

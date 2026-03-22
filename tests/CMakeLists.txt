@@ -34,6 +34,7 @@ xylem_add_test(tcp)
 xylem_add_test(udp)
 xylem_add_test(json)
 xylem_add_test(http)
+target_include_directories(test-http PRIVATE "${CMAKE_SOURCE_DIR}/src/http")
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)

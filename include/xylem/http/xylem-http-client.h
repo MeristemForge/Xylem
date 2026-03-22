@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include "xylem/http/xylem-http-utils.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -32,12 +34,15 @@ typedef struct xylem_http_cli_res_s xylem_http_cli_res_t;
  *
  * Pass NULL to any request function to use defaults.
  * Zero-initialized fields use their default values:
- *   timeout_ms = 30000, max_redirects = 0, max_body_size = 10 MiB.
+ *   timeout_ms = 30000, max_redirects = 0, max_body_size = 10 MiB,
+ *   headers = NULL, header_count = 0.
  */
 typedef struct {
-    uint64_t timeout_ms;
-    int      max_redirects;
-    size_t   max_body_size;
+    uint64_t                timeout_ms;
+    int                     max_redirects;
+    size_t                  max_body_size;
+    const xylem_http_hdr_t* headers;      /**< Custom request headers, NULL for none. */
+    size_t                  header_count;  /**< Number of custom request headers. */
 } xylem_http_cli_opts_t;
 
 /**

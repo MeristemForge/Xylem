@@ -24,6 +24,17 @@ _Pragma("once")
 #include <stddef.h>
 
 /**
+ * @brief HTTP header name-value pair for public API use.
+ *
+ * Non-owning pointers: the caller must ensure the strings remain
+ * valid for the duration of the API call that receives them.
+ */
+typedef struct {
+    const char* name;  /**< Header name (e.g. "Authorization"). */
+    const char* value; /**< Header value (e.g. "Bearer token"). */
+} xylem_http_hdr_t;
+
+/**
  * @brief Percent-encode a string for use in URL path or query.
  *
  * Encodes reserved and non-ASCII bytes as %XX sequences per RFC 3986.

@@ -181,7 +181,9 @@ bool http_is_unreserved(uint8_t c) {
 char* http_req_serialize(const char* method, const http_url_t* url,
                          const void* body, size_t body_len,
                          const char* content_type, bool expect_continue,
-                         size_t* out_len) {
+                         size_t* out_len,
+                         const xylem_http_hdr_t* custom_headers,
+                         size_t custom_header_count) {
     char host_val[280];
     bool is_default_port =
         (strcmp(url->scheme, "http") == 0 && url->port == 80) ||
@@ -194,12 +196,47 @@ char* http_req_serialize(const char* method, const http_url_t* url,
                  url->host, url->port);
     }
 
+    /* Check which auto-generated headers are overridden by custom ones. */
+    bool host_overridden           = false;
+    bool content_length_overridden = false;
+    bool content_type_overridden   = false;
+    bool connection_overridden     = false;
+    bool expect_overridden         = false;
+
+    size_t custom_est = 0;
+    for (size_t i = 0; i < custom_header_count; i++) {
+        if (!custom_headers[i].name || !custom_headers[i].value) {
+            continue;
+        }
+        custom_est += strlen(custom_headers[i].name)
+                    + 2 /* ": " */
+                    + strlen(custom_headers[i].value)
+                    + 2; /* "\r\n" */
+
+        if (http_header_eq(custom_headers[i].name, "Host")) {
+            host_overridden = true;
+        }
+        if (http_header_eq(custom_headers[i].name, "Content-Length")) {
+            content_length_overridden = true;
+        }
+        if (http_header_eq(custom_headers[i].name, "Content-Type")) {
+            content_type_overridden = true;
+        }
+        if (http_header_eq(custom_headers[i].name, "Connection")) {
+            connection_overridden = true;
+        }
+        if (http_header_eq(custom_headers[i].name, "Expect")) {
+            expect_overridden = true;
+        }
+    }
+
     /**
      * Estimate buffer size:
-     * request line + Host + Content-Length + Content-Type +
-     * Connection + Expect + CRLF + body
+     * request line + custom headers + Host + Content-Length +
+     * Content-Type + Connection + Expect + CRLF + body
      */
     size_t est = strlen(method) + 1 + strlen(url->path) + 11
+               + custom_est
                + 6 + strlen(host_val) + 2
                + 30
                + 24
@@ -225,23 +262,41 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     off += (size_t)snprintf(buf + off, est - off, "%s %s HTTP/1.1\r\n",
                             method, url->path);
 
-    off += (size_t)snprintf(buf + off, est - off, "Host: %s\r\n", host_val);
-
-    if (body_len > 0 || strcmp(method, "POST") == 0 ||
-        strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Content-Length: %zu\r\n", body_len);
+    /* Write custom headers first. */
+    for (size_t i = 0; i < custom_header_count; i++) {
+        if (!custom_headers[i].name || !custom_headers[i].value) {
+            continue;
+        }
+        off += (size_t)snprintf(buf + off, est - off, "%s: %s\r\n",
+                                custom_headers[i].name,
+                                custom_headers[i].value);
     }
 
-    if (content_type) {
+    /* Write auto-generated headers, skipping overridden ones. */
+    if (!host_overridden) {
+        off += (size_t)snprintf(buf + off, est - off,
+                                "Host: %s\r\n", host_val);
+    }
+
+    if (!content_length_overridden) {
+        if (body_len > 0 || strcmp(method, "POST") == 0 ||
+            strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
+            off += (size_t)snprintf(buf + off, est - off,
+                                    "Content-Length: %zu\r\n", body_len);
+        }
+    }
+
+    if (!content_type_overridden && content_type) {
         off += (size_t)snprintf(buf + off, est - off,
                                 "Content-Type: %s\r\n", content_type);
     }
 
-    off += (size_t)snprintf(buf + off, est - off,
-                            "Connection: keep-alive\r\n");
+    if (!connection_overridden) {
+        off += (size_t)snprintf(buf + off, est - off,
+                                "Connection: keep-alive\r\n");
+    }
 
-    if (expect_continue) {
+    if (!expect_overridden && expect_continue) {
         off += (size_t)snprintf(buf + off, est - off,
                                 "Expect: 100-continue\r\n");
     }

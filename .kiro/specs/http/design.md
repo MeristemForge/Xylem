@@ -631,3 +631,268 @@ static void test_prop_url_encode_round_trip(void) { ... }
 - Body 大小限制（413 响应）
 - 100-Continue 流程
 - 空闲连接超时
+
+
+---
+
+## 自定义 HTTP 头部设计（Requirements 22-24）
+
+### Overview
+
+为客户端请求和服务器响应添加自定义 HTTP 头部支持。用户可在发起请求时通过 `xylem_http_cli_opts_t` 传入自定义请求头，也可在服务器回调中通过 `xylem_http_conn_send` 传入自定义响应头。自定义头部优先于自动生成的头部（Host、Content-Length、Content-Type、Connection、Expect），通过 `http_header_eq`（已有）进行大小写不敏感的覆盖检测。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 公共头部类型 | `xylem_http_hdr_t`，定义在新建的 `xylem-http-common.h` | 客户端和服务器公共头文件都需要此类型，避免重复定义或循环依赖 |
+| 指针语义 | `const char* name` / `const char* value`（非拥有） | 用户提供的字符串只需在请求调用期间有效，无需内部拷贝 |
+| 序列化顺序 | 自定义头部先写，自动生成头部后写（跳过被覆盖的） | 保证自定义头部出现在前面，且覆盖逻辑简单 |
+| 覆盖检测 | 复用已有 `http_header_eq` | 大小写不敏感 ASCII 比较，符合 RFC 7230 §3.2 |
+| 向后兼容 | opts 为 NULL 或 header_count 为 0 时行为不变 | 零初始化的 opts 自动兼容 |
+
+### Architecture
+
+```mermaid
+graph LR
+    subgraph "新增公共头文件"
+        COMMON_H["include/xylem/http/xylem-http-common.h<br>xylem_http_hdr_t"]
+    end
+
+    subgraph "客户端"
+        CLI_H["xylem-http-client.h<br>#include xylem-http-common.h"]
+        CLI_OPTS["xylem_http_cli_opts_t<br>+ headers: const xylem_http_hdr_t*<br>+ header_count: size_t"]
+        CLI_C["xylem-http-client.c<br>_http_client_connect_cb()"]
+    end
+
+    subgraph "服务器"
+        SRV_H["xylem-http-server.h<br>#include xylem-http-common.h"]
+        SRV_SEND["xylem_http_conn_send()<br>+ headers, header_count 参数"]
+        SRV_C["xylem-http-server.c<br>xylem_http_conn_send()"]
+    end
+
+    subgraph "内部"
+        SERIALIZE["http_req_serialize()<br>+ custom_headers, custom_header_count"]
+        HEADER_EQ["http_header_eq() (已有)"]
+    end
+
+    COMMON_H --> CLI_H
+    COMMON_H --> SRV_H
+    CLI_OPTS --> CLI_C
+    CLI_C --> SERIALIZE
+    SRV_SEND --> SRV_C
+    SERIALIZE --> HEADER_EQ
+    SRV_C --> HEADER_EQ
+```
+
+### Components and Interfaces
+
+#### 新增公共头文件：`include/xylem/http/xylem-http-common.h`
+
+```c
+_Pragma("once")
+
+/**
+ * @brief HTTP header name-value pair for public API use.
+ *
+ * Non-owning pointers: the caller must ensure the strings remain
+ * valid for the duration of the API call that receives them.
+ */
+typedef struct {
+    const char* name;   /**< Header name (e.g. "Authorization"). */
+    const char* value;  /**< Header value (e.g. "Bearer token"). */
+} xylem_http_hdr_t;
+```
+
+#### 客户端 opts 扩展
+
+`xylem_http_cli_opts_t` 新增两个字段：
+
+```c
+typedef struct {
+    uint64_t                timeout_ms;
+    int                     max_redirects;
+    size_t                  max_body_size;
+    const xylem_http_hdr_t* headers;       /* 自定义请求头数组，NULL 表示无 */
+    size_t                  header_count;   /* 自定义请求头数量 */
+} xylem_http_cli_opts_t;
+```
+
+零初始化时 `headers = NULL`、`header_count = 0`，行为与现有实现完全一致。
+
+#### 服务器 `xylem_http_conn_send` 签名变更
+
+```c
+extern int xylem_http_conn_send(xylem_http_conn_t* conn,
+                                int status_code,
+                                const char* content_type,
+                                const void* body, size_t body_len,
+                                const xylem_http_hdr_t* headers,
+                                size_t header_count);
+```
+
+新增 `headers` 和 `header_count` 参数。传 NULL/0 时行为与现有实现一致。
+
+#### 内部 `http_req_serialize` 签名变更
+
+```c
+extern char* http_req_serialize(const char* method, const http_url_t* url,
+                                const void* body, size_t body_len,
+                                const char* content_type,
+                                bool expect_continue, size_t* out_len,
+                                const xylem_http_hdr_t* custom_headers,
+                                size_t custom_header_count);
+```
+
+新增 `custom_headers` 和 `custom_header_count` 参数。
+
+### 序列化逻辑
+
+#### 客户端请求序列化（`http_req_serialize` 更新）
+
+序列化顺序：
+
+```
+{METHOD} {path} HTTP/1.1\r\n
+{custom_header_1}: {value_1}\r\n      ← 自定义头部先写
+{custom_header_2}: {value_2}\r\n
+Host: {host}[:{port}]\r\n             ← 仅当自定义头部未覆盖 Host 时
+Content-Length: {body_len}\r\n         ← 仅当自定义头部未覆盖 Content-Length 时
+Content-Type: {content_type}\r\n       ← 仅当自定义头部未覆盖 Content-Type 时
+Connection: keep-alive\r\n             ← 仅当自定义头部未覆盖 Connection 时
+Expect: 100-continue\r\n               ← 仅当自定义头部未覆盖 Expect 时
+\r\n
+{body}
+```
+
+覆盖检测伪代码：
+
+```c
+/* 对每个自动生成的 header，检查是否被自定义 header 覆盖 */
+bool host_overridden = false;
+bool content_length_overridden = false;
+bool content_type_overridden = false;
+bool connection_overridden = false;
+bool expect_overridden = false;
+
+for (size_t i = 0; i < custom_header_count; i++) {
+    if (http_header_eq(custom_headers[i].name, "Host"))           host_overridden = true;
+    if (http_header_eq(custom_headers[i].name, "Content-Length")) content_length_overridden = true;
+    if (http_header_eq(custom_headers[i].name, "Content-Type"))   content_type_overridden = true;
+    if (http_header_eq(custom_headers[i].name, "Connection"))     connection_overridden = true;
+    if (http_header_eq(custom_headers[i].name, "Expect"))         expect_overridden = true;
+}
+
+/* 先写自定义头部 */
+for (size_t i = 0; i < custom_header_count; i++) {
+    write_header(custom_headers[i].name, custom_headers[i].value);
+}
+
+/* 再写未被覆盖的自动生成头部 */
+if (!host_overridden)           write_header("Host", host_val);
+if (!content_length_overridden) write_header("Content-Length", ...);
+if (!content_type_overridden && content_type) write_header("Content-Type", content_type);
+if (!connection_overridden)     write_header("Connection", "keep-alive");
+if (!expect_overridden && expect_continue) write_header("Expect", "100-continue");
+```
+
+#### 服务器响应序列化（`xylem_http_conn_send` 更新）
+
+序列化顺序：
+
+```
+HTTP/1.1 {status} {reason}\r\n
+{custom_header_1}: {value_1}\r\n      ← 自定义头部先写
+{custom_header_2}: {value_2}\r\n
+Content-Type: {content_type}\r\n       ← 仅当未被覆盖时
+Content-Length: {body_len}\r\n         ← 仅当未被覆盖时
+\r\n
+{body}
+```
+
+覆盖检测逻辑与客户端相同，使用 `http_header_eq` 检查 Content-Type 和 Content-Length。
+
+### 客户端调用链路
+
+`_http_client_exec` 从 `opts` 中提取 `headers` 和 `header_count`，存入 `_http_client_ctx_t`。在 `_http_client_connect_cb` 中传递给 `http_req_serialize`：
+
+```c
+/* _http_client_exec 中 */
+const xylem_http_hdr_t* custom_headers = (opts) ? opts->headers      : NULL;
+size_t custom_header_count             = (opts) ? opts->header_count  : 0;
+
+/* _http_client_connect_cb 中 */
+char* req_buf = http_req_serialize(ctx->method, &ctx->url,
+                                   ctx->body, ctx->body_len,
+                                   ctx->content_type,
+                                   use_continue, &req_len,
+                                   ctx->custom_headers,
+                                   ctx->custom_header_count);
+```
+
+所有请求方法（GET、POST、PUT、DELETE、PATCH）共享 `_http_client_exec`，因此自动支持自定义头部。
+
+### Data Models 更新
+
+`_http_client_ctx_t` 新增字段：
+
+```c
+typedef struct {
+    /* ... 现有字段 ... */
+    const xylem_http_hdr_t* custom_headers;      /* 来自 opts */
+    size_t                  custom_header_count;
+} _http_client_ctx_t;
+```
+
+### Error Handling 更新
+
+- 自定义头部中的 NULL name 或 NULL value：`http_req_serialize` 跳过该条目（防御性编程）
+- 自定义头部导致 buffer 估算不足：`http_req_serialize` 在估算 buffer 大小时累加所有自定义头部的 name + value 长度
+- `xylem_http_conn_send` 中自定义头部导致 malloc 失败：返回 -1
+
+### Correctness Properties 更新
+
+### Property 10: 自定义请求头序列化正确性
+
+*For any* set of custom headers and any valid HTTP request components (method, URL, body, content-type), serializing the request with custom headers SHALL produce a message where: (a) all custom headers appear in the output, (b) custom headers appear before auto-generated headers, (c) when a custom header name matches an auto-generated header name (case-insensitive), the auto-generated header is absent and only the custom value appears, (d) when no custom header overrides an auto-generated header, the auto-generated header appears as normal.
+
+**Validates: Requirements 22.2, 22.3, 22.4, 22.5**
+
+### Property 11: 自定义头部 round-trip
+
+*For any* set of valid custom header name-value pairs, serializing an HTTP request (or response) with those custom headers and then parsing the result via llhttp SHALL recover all custom header names and values. When a custom header overrides an auto-generated header, the parsed result SHALL contain the custom value, not the auto-generated value.
+
+**Validates: Requirements 24.1, 24.2, 24.3**
+
+### Testing Strategy 更新
+
+#### 新增单元测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_req_serialize_custom_headers` | 自定义头部出现在序列化结果中 |
+| `test_req_serialize_override_host` | 自定义 Host 覆盖自动生成的 Host |
+| `test_req_serialize_override_content_type` | 自定义 Content-Type 覆盖自动生成的 |
+| `test_req_serialize_no_custom_headers` | header_count=0 时输出与原实现一致 |
+| `test_conn_send_custom_headers` | 服务器响应包含自定义头部 |
+| `test_conn_send_override_content_length` | 自定义 Content-Length 覆盖自动生成的 |
+| `test_conn_send_no_custom_headers` | 无自定义头部时输出与原实现一致 |
+
+#### 新增属性测试
+
+```c
+/* Feature: http, Property 10: Custom request header serialization correctness */
+static void test_prop_custom_req_headers(void) { ... }
+
+/* Feature: http, Property 11: Custom header round-trip */
+static void test_prop_custom_header_round_trip(void) { ... }
+```
+
+每个属性测试最少运行 100 次迭代，使用 theft 库生成随机有效的 header name-value 对。
+
+#### 集成测试更新
+
+在现有集成测试中增加：
+- 客户端带自定义 Authorization 头发送请求，服务器验证收到该头部
+- 服务器带自定义 Set-Cookie 头发送响应，客户端验证收到该头部
+- 客户端自定义 Connection: close 覆盖默认 keep-alive，验证连接关闭行为

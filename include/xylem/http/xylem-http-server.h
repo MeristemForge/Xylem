@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include "xylem/http/xylem-http-utils.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -161,20 +163,26 @@ extern size_t xylem_http_req_body_len(const xylem_http_req_t* req);
  * @brief Send an HTTP response on a connection.
  *
  * Serializes a complete HTTP/1.1 response with status line,
- * Content-Type, Content-Length, and body.
+ * Content-Type, Content-Length, and body. Custom headers are
+ * written before auto-generated headers; a custom header whose
+ * name matches an auto-generated one (case-insensitive) overrides it.
  *
  * @param conn          Connection handle.
  * @param status_code   HTTP status code (e.g. 200, 404).
  * @param content_type  Content-Type header value.
  * @param body          Response body, or NULL for empty body.
  * @param body_len      Body length in bytes.
+ * @param headers       Custom response headers, or NULL for none.
+ * @param header_count  Number of custom response headers.
  *
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_http_conn_send(xylem_http_conn_t* conn,
                                  int status_code,
                                  const char* content_type,
-                                 const void* body, size_t body_len);
+                                 const void* body, size_t body_len,
+                                 const xylem_http_hdr_t* headers,
+                                 size_t header_count);
 
 /**
  * @brief Close a client connection.

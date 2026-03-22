@@ -21,7 +21,7 @@
 
 #include "http-common.h"
 
-#include "xylem/http/xylem-http-url.h"
+#include "xylem/http/xylem-http-utils.h"
 
 #include <stdlib.h>
 

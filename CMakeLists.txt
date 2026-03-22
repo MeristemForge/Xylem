@@ -31,7 +31,7 @@ endif()
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/yyjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
     ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
 )
 
@@ -61,12 +61,12 @@ set(SRCS
 	src/xylem-xqueue.c
 	src/xylem-xrbtree.c
 	src/xylem-xstack.c
-	src/xylem-json.c
-	src/yyjson/yyjson.c
+	src/json/xylem-json.c
+	src/json/yyjson/yyjson.c
 	src/http/http-common.c
 	src/http/xylem-http-client.c
 	src/http/xylem-http-server.c
-	src/http/xylem-http-url.c
+	src/http/xylem-http-utils.c
 	src/http/http-transport-tcp.c
 	src/http/llhttp/llhttp.c
 	src/http/llhttp/http.c

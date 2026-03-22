@@ -50,7 +50,7 @@ typedef struct {
     const void*                body;
     size_t                     body_len;
     const char*                content_type;
-    xylem_http_cli_res_t*          res;
+    xylem_http_cli_res_t*      res;
     llhttp_t                   parser;
     llhttp_settings_t          settings;
     char*                      cur_header_name;
@@ -64,13 +64,15 @@ typedef struct {
     bool                       continue_received;
     int                        redirects_remaining;
     size_t                     max_body_size;
-} _http_client_ctx_t;
+    const xylem_http_hdr_t*    custom_headers;
+    size_t                     custom_header_count;
+} _cli_ctx_t;
 
 #define DEFAULT_TIMEOUT_MS   30000
 #define DEFAULT_MAX_BODY     10485760 /* 10 MiB */
 
 /* Stop and close the timeout timer, then stop the event loop. */
-static void _http_client_abort(_http_client_ctx_t* ctx) {
+static void _cli_abort(_cli_ctx_t* ctx) {
     if (ctx->timeout_timer.active) {
         xylem_loop_stop_timer(&ctx->timeout_timer);
     }
@@ -78,9 +80,9 @@ static void _http_client_abort(_http_client_ctx_t* ctx) {
     xylem_loop_stop(&ctx->loop);
 }
 
-static int _http_res_header_field_cb(llhttp_t* parser,
+static int _cli_res_header_field_cb(llhttp_t* parser,
                                      const char* at, size_t len) {
-    _http_client_ctx_t* ctx = parser->data;
+    _cli_ctx_t* ctx = parser->data;
 
     free(ctx->cur_header_name);
     ctx->cur_header_name = malloc(len + 1);
@@ -93,9 +95,9 @@ static int _http_res_header_field_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _http_res_header_value_cb(llhttp_t* parser,
+static int _cli_res_header_value_cb(llhttp_t* parser,
                                      const char* at, size_t len) {
-    _http_client_ctx_t* ctx = parser->data;
+    _cli_ctx_t* ctx = parser->data;
     if (!ctx->cur_header_name || !ctx->res) {
         return 0;
     }
@@ -113,8 +115,8 @@ static int _http_res_header_value_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _http_res_headers_complete_cb(llhttp_t* parser) {
-    _http_client_ctx_t* ctx = parser->data;
+static int _cli_res_headers_complete_cb(llhttp_t* parser) {
+    _cli_ctx_t* ctx = parser->data;
     if (ctx->res) {
         ctx->res->status_code = (int)parser->status_code;
     }
@@ -126,9 +128,9 @@ static int _http_res_headers_complete_cb(llhttp_t* parser) {
     return 0;
 }
 
-static int _http_res_body_cb(llhttp_t* parser,
+static int _cli_res_body_cb(llhttp_t* parser,
                              const char* at, size_t len) {
-    _http_client_ctx_t* ctx = parser->data;
+    _cli_ctx_t* ctx = parser->data;
     if (!ctx->res) {
         return 0;
     }
@@ -147,57 +149,18 @@ static int _http_res_body_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _http_res_message_complete_cb(llhttp_t* parser) {
-    _http_client_ctx_t* ctx = parser->data;
+static int _cli_res_message_complete_cb(llhttp_t* parser) {
+    _cli_ctx_t* ctx = parser->data;
     ctx->done = true;
     return HPE_PAUSED;
 }
 
-int xylem_http_cli_res_status(const xylem_http_cli_res_t* res) {
-    if (!res) {
-        return 0;
-    }
-    return res->status_code;
-}
-
-
-const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
-                                  const char* name) {
-    if (!res || !name) {
-        return NULL;
-    }
-    return http_header_find(res->headers, res->header_count, name);
-}
-
-const void* xylem_http_cli_res_body(const xylem_http_cli_res_t* res) {
-    if (!res) {
-        return NULL;
-    }
-    return res->body;
-}
-
-size_t xylem_http_cli_res_body_len(const xylem_http_cli_res_t* res) {
-    if (!res) {
-        return 0;
-    }
-    return res->body_len;
-}
-
-void xylem_http_cli_res_destroy(xylem_http_cli_res_t* res) {
-    if (!res) {
-        return;
-    }
-    http_headers_free(res->headers, res->header_count);
-    free(res->body);
-    free(res);
-}
-
-static void _http_client_timeout_cb(xylem_loop_t* loop,
+static void _cli_timeout_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer) {
     (void)loop;
-    _http_client_ctx_t* ctx =
-        (_http_client_ctx_t*)((char*)timer -
-            offsetof(_http_client_ctx_t, timeout_timer));
+    _cli_ctx_t* ctx =
+        (_cli_ctx_t*)((char*)timer -
+            offsetof(_cli_ctx_t, timeout_timer));
     ctx->timed_out = true;
     if (ctx->conn) {
         ctx->vt->close_conn(ctx->conn);
@@ -205,10 +168,10 @@ static void _http_client_timeout_cb(xylem_loop_t* loop,
     }
 }
 
-static void _http_client_read_cb(void* handle, void* user,
+static void _cli_conn_read_cb(void* handle, void* user,
                                  void* data, size_t len) {
     (void)handle;
-    _http_client_ctx_t* ctx = user;
+    _cli_ctx_t* ctx = user;
 
     enum llhttp_errno err = llhttp_execute(&ctx->parser, data, len);
 
@@ -241,9 +204,9 @@ static void _http_client_read_cb(void* handle, void* user,
     }
 }
 
-static void _http_client_connect_cb(void* handle, void* user) {
+static void _cli_conn_connect_cb(void* handle, void* user) {
     (void)handle;
-    _http_client_ctx_t* ctx = user;
+    _cli_ctx_t* ctx = user;
 
     bool use_continue = (ctx->body_len > 1024);
     ctx->expect_continue = use_continue;
@@ -252,7 +215,9 @@ static void _http_client_connect_cb(void* handle, void* user) {
     char* req_buf = http_req_serialize(ctx->method, &ctx->url,
                                        ctx->body, ctx->body_len,
                                        ctx->content_type,
-                                       use_continue, &req_len);
+                                       use_continue, &req_len,
+                                       ctx->custom_headers,
+                                       ctx->custom_header_count);
     if (!req_buf) {
         if (ctx->conn) {
             ctx->vt->close_conn(ctx->conn);
@@ -265,43 +230,43 @@ static void _http_client_connect_cb(void* handle, void* user) {
     free(req_buf);
 }
 
-static void _http_client_close_cb(void* handle, void* user, int err) {
+static void _cli_conn_close_cb(void* handle, void* user, int err) {
     (void)handle;
     (void)err;
-    _http_client_ctx_t* ctx = user;
+    _cli_ctx_t* ctx = user;
     ctx->conn = NULL;
-    _http_client_abort(ctx);
+    _cli_abort(ctx);
 }
 
-static void _http_client_resolve_cb(xylem_addr_t* addrs, size_t count,
+static void _cli_resolve_cb(xylem_addr_t* addrs, size_t count,
                                     int status, void* userdata) {
-    _http_client_ctx_t* ctx = userdata;
+    _cli_ctx_t* ctx = userdata;
 
     if (status != 0 || count == 0) {
-        _http_client_abort(ctx);
+        _cli_abort(ctx);
         return;
     }
 
     if (strcmp(ctx->url.scheme, "https") == 0) {
         ctx->vt = http_transport_tls();
         if (!ctx->vt) {
-            _http_client_abort(ctx);
+            _cli_abort(ctx);
             return;
         }
     } else {
         ctx->vt = http_transport_tcp();
     }
 
-    ctx->transport_cb.on_connect    = _http_client_connect_cb;
-    ctx->transport_cb.on_read       = _http_client_read_cb;
-    ctx->transport_cb.on_close      = _http_client_close_cb;
+    ctx->transport_cb.on_connect    = _cli_conn_connect_cb;
+    ctx->transport_cb.on_read       = _cli_conn_read_cb;
+    ctx->transport_cb.on_close      = _cli_conn_close_cb;
     ctx->transport_cb.on_write_done = NULL;
     ctx->transport_cb.on_accept     = NULL;
 
     ctx->conn = ctx->vt->dial(&ctx->loop, &addrs[0],
                               &ctx->transport_cb, ctx, NULL);
     if (!ctx->conn) {
-        _http_client_abort(ctx);
+        _cli_abort(ctx);
     }
 }
 
@@ -311,7 +276,7 @@ static void _http_client_resolve_cb(xylem_addr_t* addrs, size_t count,
  * On success, updates ctx->url and ctx->method for the next iteration,
  * destroys the current response, and returns true.
  */
-static bool _http_client_follow_redirect(_http_client_ctx_t* ctx) {
+static bool _cli_follow_redirect(_cli_ctx_t* ctx) {
     int status = ctx->res->status_code;
     if (ctx->redirects_remaining <= 0 ||
         (status != 301 && status != 302 &&
@@ -365,7 +330,7 @@ static bool _http_client_follow_redirect(_http_client_ctx_t* ctx) {
     return true;
 }
 
-static xylem_http_cli_res_t* _http_client_exec(const char* method,
+static xylem_http_cli_res_t* _cli_exec(const char* method,
                                            const char* url,
                                            const void* body,
                                            size_t body_len,
@@ -379,7 +344,7 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
     int      max_redirects = (opts)                        ? opts->max_redirects  : 0;
     size_t   max_body_size = (opts && opts->max_body_size) ? opts->max_body_size  : DEFAULT_MAX_BODY;
 
-    _http_client_ctx_t ctx;
+    _cli_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
 
     if (http_url_parse(url, &ctx.url) != 0) {
@@ -392,6 +357,8 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
     ctx.content_type        = content_type;
     ctx.redirects_remaining = max_redirects;
     ctx.max_body_size       = max_body_size;
+    ctx.custom_headers      = (opts) ? opts->headers      : NULL;
+    ctx.custom_header_count = (opts) ? opts->header_count  : 0;
 
     if (xylem_loop_init(&ctx.loop) != 0) {
         return NULL;
@@ -417,26 +384,26 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
         }
 
         llhttp_settings_init(&ctx.settings);
-        ctx.settings.on_header_field     = _http_res_header_field_cb;
-        ctx.settings.on_header_value     = _http_res_header_value_cb;
-        ctx.settings.on_headers_complete = _http_res_headers_complete_cb;
-        ctx.settings.on_body             = _http_res_body_cb;
-        ctx.settings.on_message_complete = _http_res_message_complete_cb;
+        ctx.settings.on_header_field     = _cli_res_header_field_cb;
+        ctx.settings.on_header_value     = _cli_res_header_value_cb;
+        ctx.settings.on_headers_complete = _cli_res_headers_complete_cb;
+        ctx.settings.on_body             = _cli_res_body_cb;
+        ctx.settings.on_message_complete = _cli_res_message_complete_cb;
         llhttp_init(&ctx.parser, HTTP_RESPONSE, &ctx.settings);
         ctx.parser.data = &ctx;
 
         xylem_loop_init_timer(&ctx.loop, &ctx.timeout_timer);
         if (timeout_ms > 0) {
             xylem_loop_start_timer(&ctx.timeout_timer,
-                                   _http_client_timeout_cb,
+                                   _cli_timeout_cb,
                                    timeout_ms, 0);
         }
 
         xylem_addr_resolve_t* resolve_req =
             xylem_addr_resolve(&ctx.loop, pool, ctx.url.host, ctx.url.port,
-                               _http_client_resolve_cb, &ctx);
+                               _cli_resolve_cb, &ctx);
         if (!resolve_req) {
-            _http_client_abort(&ctx);
+            _cli_abort(&ctx);
             xylem_http_cli_res_destroy(ctx.res);
             ctx.res = NULL;
             break;
@@ -453,7 +420,7 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
             break;
         }
 
-        if (!_http_client_follow_redirect(&ctx)) {
+        if (!_cli_follow_redirect(&ctx)) {
             break;
         }
     }
@@ -463,33 +430,71 @@ static xylem_http_cli_res_t* _http_client_exec(const char* method,
     return ctx.res;
 }
 
+int xylem_http_cli_res_status(const xylem_http_cli_res_t* res) {
+    if (!res) {
+        return 0;
+    }
+    return res->status_code;
+}
+
+const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
+                                      const char* name) {
+    if (!res || !name) {
+        return NULL;
+    }
+    return http_header_find(res->headers, res->header_count, name);
+}
+
+const void* xylem_http_cli_res_body(const xylem_http_cli_res_t* res) {
+    if (!res) {
+        return NULL;
+    }
+    return res->body;
+}
+
+size_t xylem_http_cli_res_body_len(const xylem_http_cli_res_t* res) {
+    if (!res) {
+        return 0;
+    }
+    return res->body_len;
+}
+
+void xylem_http_cli_res_destroy(xylem_http_cli_res_t* res) {
+    if (!res) {
+        return;
+    }
+    http_headers_free(res->headers, res->header_count);
+    free(res->body);
+    free(res);
+}
+
 xylem_http_cli_res_t* xylem_http_cli_get(const char* url,
                                          const xylem_http_cli_opts_t* opts) {
-    return _http_client_exec("GET", url, NULL, 0, NULL, opts);
+    return _cli_exec("GET", url, NULL, 0, NULL, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
                                           const void* body, size_t body_len,
                                           const char* content_type,
                                           const xylem_http_cli_opts_t* opts) {
-    return _http_client_exec("POST", url, body, body_len, content_type, opts);
+    return _cli_exec("POST", url, body, body_len, content_type, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_put(const char* url,
                                          const void* body, size_t body_len,
                                          const char* content_type,
                                          const xylem_http_cli_opts_t* opts) {
-    return _http_client_exec("PUT", url, body, body_len, content_type, opts);
+    return _cli_exec("PUT", url, body, body_len, content_type, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_delete(const char* url,
                                             const xylem_http_cli_opts_t* opts) {
-    return _http_client_exec("DELETE", url, NULL, 0, NULL, opts);
+    return _cli_exec("DELETE", url, NULL, 0, NULL, opts);
 }
 
 xylem_http_cli_res_t* xylem_http_cli_patch(const char* url,
                                            const void* body, size_t body_len,
                                            const char* content_type,
                                            const xylem_http_cli_opts_t* opts) {
-    return _http_client_exec("PATCH", url, body, body_len, content_type, opts);
+    return _cli_exec("PATCH", url, body, body_len, content_type, opts);
 }

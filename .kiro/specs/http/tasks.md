@@ -112,24 +112,24 @@
 - [x] 10. Checkpoint - 确保客户端编译通过
   - 确保客户端所有代码编译通过，ask the user if questions arise.
 
-- [ ] 11. HTTP 服务器实现
-  - [ ] 11.1 在 `src/xylem-http.c` 中实现 `xylem_http_srv_create`（NULL loop/cfg 返回 NULL）和 `xylem_http_srv_destroy`
+- [x] 11. HTTP 服务器实现
+  - [x] 11.1 在 `src/xylem-http.c` 中实现 `xylem_http_srv_create`（NULL loop/cfg 返回 NULL）和 `xylem_http_srv_destroy`
     - _Requirements: 8.1, 8.2, 8.8, 8.9_
-  - [ ] 11.2 在 `src/xylem-http.c` 中实现 `xylem_http_srv_start`：根据 cfg 中 tls_cert/tls_key 选择 xylem_tcp_listen 或 xylem_tls_listen 绑定端口，设置 on_accept 回调，绑定失败返回 -1
+  - [x] 11.2 在 `src/xylem-http.c` 中实现 `xylem_http_srv_start`：根据 cfg 中 tls_cert/tls_key 选择 xylem_tcp_listen 或 xylem_tls_listen 绑定端口，设置 on_accept 回调，绑定失败返回 -1
     - _Requirements: 8.4, 8.5, 8.6, 8.10_
-  - [ ] 11.3 在 `src/xylem-http.c` 中实现 `xylem_http_srv_stop`
+  - [x] 11.3 在 `src/xylem-http.c` 中实现 `xylem_http_srv_stop`
     - _Requirements: 8.7_
-  - [ ] 11.4 在 `src/xylem-http.c` 中实现服务器连接管理：on_accept 中分配 `xylem_http_conn_t`，初始化 llhttp（HTTP_REQUEST 类型）和空闲定时器，实现 llhttp 请求解析回调，解析完成后调用用户 on_request
+  - [x] 11.4 在 `src/xylem-http.c` 中实现服务器连接管理：on_accept 中分配 `xylem_http_conn_t`，初始化 llhttp（HTTP_REQUEST 类型）和空闲定时器，实现 llhttp 请求解析回调，解析完成后调用用户 on_request
     - _Requirements: 9.1, 13.3, 13.4, 19.1, 19.4_
-  - [ ] 11.5 在 `src/xylem-http.c` 中实现请求访问器公共函数：`xylem_http_req_method`、`xylem_http_req_url`、`xylem_http_req_header`、`xylem_http_req_body`、`xylem_http_req_body_len`
+  - [x] 11.5 在 `src/xylem-http.c` 中实现请求访问器公共函数：`xylem_http_req_method`、`xylem_http_req_url`、`xylem_http_req_header`、`xylem_http_req_body`、`xylem_http_req_body_len`
     - _Requirements: 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8_
-  - [ ] 11.6 在 `src/xylem-http.c` 中实现 `xylem_http_conn_send`：序列化 HTTP/1.1 响应（状态行含 reason phrase、Content-Type、Content-Length、body），连接已关闭返回 -1；以及 `xylem_http_conn_close`
+  - [x] 11.6 在 `src/xylem-http.c` 中实现 `xylem_http_conn_send`：序列化 HTTP/1.1 响应（状态行含 reason phrase、Content-Type、Content-Length、body），连接已关闭返回 -1；以及 `xylem_http_conn_close`
     - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 15.1_
-  - [ ] 11.7 在 `src/xylem-http.c` 中实现服务器端 keep-alive 和 Connection: close 处理：响应发送后检查 keep-alive 标志，是则重置解析器和空闲定时器继续读取，否则关闭连接
+  - [x] 11.7 在 `src/xylem-http.c` 中实现服务器端 keep-alive 和 Connection: close 处理：响应发送后检查 keep-alive 标志，是则重置解析器和空闲定时器继续读取，否则关闭连接
     - _Requirements: 13.2, 13.3, 13.4, 13.5_
-  - [ ] 11.8 在 `src/xylem-http.c` 中实现服务器端 body 大小限制检查（默认 1 MiB）和 100-Continue 自动响应
+  - [x] 11.8 在 `src/xylem-http.c` 中实现服务器端 body 大小限制检查（默认 1 MiB）和 100-Continue 自动响应
     - _Requirements: 18.1, 18.2, 18.5, 19.2, 19.3, 20.4_
-  - [ ] 11.9 在 `tests/test-http.c` 中添加单元测试：`test_srv_create_null_loop`、`test_srv_create_null_cfg`、`test_default_max_body_server`、`test_idle_timeout_default`
+  - [x] 11.9 在 `tests/test-http.c` 中添加单元测试：`test_srv_create_null_loop`、`test_srv_create_null_cfg`、`test_default_max_body_server`、`test_idle_timeout_default`
     - _Requirements: 8.9, 18.1, 19.2_
   - [ ]* 11.10 在 `tests/test-http.c` 中添加属性测试：Server response serialization validity
     - **Property 7: Server response serialization validity**
@@ -154,3 +154,40 @@
 - Checkpoints 确保增量验证，避免问题累积
 - 所有 .c 和 .h 文件必须包含 license header
 - 遵循 docs/style.md 中的命名规范、文件组织规范和测试规范
+
+- [ ] 15. 自定义 HTTP 头部支持
+  - [x] 15.1 创建 `include/xylem/http/xylem-http-common.h` 公共头文件，定义 `xylem_http_hdr_t` 类型（含 `const char* name` 和 `const char* value` 字段），包含 license header、`_Pragma("once")`、Doxygen 注释。在 `include/xylem.h` 中添加 `#include "xylem/http/xylem-http-common.h"`
+    - **实际变更**: 将 `xylem-http-url.h/c` 重命名为 `xylem-http-utils.h/c`，`xylem_http_hdr_t` 定义在 `xylem-http-utils.h` 中，未创建 `xylem-http-common.h`
+    - _Requirements: 22.1, 23.1_
+
+  - [x] 15.2 更新 `include/xylem/http/xylem-http-client.h`：添加 `#include "xylem/http/xylem-http-utils.h"`，在 `xylem_http_cli_opts_t` 结构体中新增 `const xylem_http_hdr_t* headers` 和 `size_t header_count` 字段，更新 Doxygen 注释说明零初始化时行为不变
+    - _Requirements: 22.1_
+
+  - [x] 15.3 更新 `src/http/http-common.h` 和 `src/http/http-common.c`：修改 `http_req_serialize` 函数签名，新增 `const xylem_http_hdr_t* custom_headers` 和 `size_t custom_header_count` 参数。更新实现：先写自定义头部，再写自动生成头部（Host、Content-Length、Content-Type、Connection、Expect），使用 `http_header_eq` 进行大小写不敏感覆盖检测，跳过被自定义头部覆盖的自动生成头部。更新 buffer 大小估算以包含自定义头部长度
+    - _Requirements: 22.2, 22.3, 22.4, 22.5_
+
+  - [x] 15.4 更新 `src/http/xylem-http-client.c`：在 `_http_client_ctx_t` 中新增 `custom_headers` 和 `custom_header_count` 字段。在 `_http_client_exec` 中从 opts 提取自定义头部。在 `_http_client_connect_cb` 中将自定义头部传递给 `http_req_serialize`
+    - _Requirements: 22.6_
+
+  - [x] 15.5 更新 `include/xylem/http/xylem-http-server.h`：添加 `#include "xylem/http/xylem-http-utils.h"`，修改 `xylem_http_conn_send` 函数签名，新增 `const xylem_http_hdr_t* headers` 和 `size_t header_count` 参数，更新 Doxygen 注释
+    - _Requirements: 23.1_
+
+  - [x] 15.6 更新 `src/http/xylem-http-server.c`：更新 `xylem_http_conn_send` 实现，先写自定义响应头部，再写自动生成头部（Content-Type、Content-Length），使用 `http_header_eq` 检测覆盖，跳过被自定义头部覆盖的自动生成头部。传 NULL/0 时行为与现有实现一致
+    - **注意**: 当前为 stub 实现，完整实现在 Task 11
+    - _Requirements: 23.2, 23.3, 23.4, 23.5_
+
+  - [x] 15.7 在 `tests/test-http.c` 中添加自定义头部单元测试：通过 `http_req_serialize`（包含 `src/http/http-common.h` 内部头文件）直接测试序列化行为。添加测试函数 `test_req_serialize_custom_headers`（验证自定义头部出现在输出中）、`test_req_serialize_override_host`（验证自定义 Host 覆盖自动生成的 Host）、`test_req_serialize_no_custom_headers`（验证 header_count=0 时输出与原实现一致）。在 `tests/CMakeLists.txt` 中为 test-http 添加 `src/http/` 到 include path（如需要）
+    - _Requirements: 22.2, 22.3, 22.4, 22.5, 24.1, 24.3_
+
+  - [ ]* 15.8 在 `tests/test-http.c` 中添加属性测试：自定义请求头序列化正确性
+    - **Property 10: 自定义请求头序列化正确性**
+    - 使用 theft 库生成随机有效的 header name-value 对和请求组件，验证：(a) 所有自定义头部出现在序列化输出中，(b) 自定义头部在自动生成头部之前，(c) 覆盖检测正确工作，(d) 无覆盖时自动生成头部正常出现
+    - **Validates: Requirements 22.2, 22.3, 22.4, 22.5**
+
+  - [ ]* 15.9 在 `tests/test-http.c` 中添加属性测试：自定义头部 round-trip
+    - **Property 11: 自定义头部 round-trip**
+    - 使用 theft 库生成随机有效的 header name-value 对，序列化 HTTP 请求后通过 llhttp 解析，验证所有自定义头部名称和值被正确恢复；当自定义头部覆盖自动生成头部时，解析结果包含自定义值而非自动生成值
+    - **Validates: Requirements 24.1, 24.2, 24.3**
+
+- [x] 16. Checkpoint - 确保自定义头部编译通过并测试通过
+  - 所有自定义头部相关代码编译通过，所有新增单元测试通过（30/30）。

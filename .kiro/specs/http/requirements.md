@@ -281,3 +281,38 @@
 3. THE HTTP_Client SHALL provide `xylem_http_url_decode` to decode a percent-encoded string
 4. THE URL_Parser SHALL preserve percent-encoded characters in the path when serializing the request line
 5. FOR ALL valid byte sequences, encoding then decoding SHALL produce the original byte sequence (round-trip property)
+
+### Requirement 22: 客户端自定义请求头
+
+**User Story:** 作为开发者，我希望在发起 HTTP 请求时能传入自定义请求头（如 Authorization、User-Agent、Accept），以便与需要特定头部的 API 交互。
+
+#### Acceptance Criteria
+
+1. THE `xylem_http_cli_opts_t` SHALL provide a `headers` field of type `http_header_t*` and a `header_count` field of type `size_t`，用于传入自定义请求头数组
+2. WHEN custom headers are provided in opts, THE Request_Serializer SHALL write custom headers into the serialized request message before auto-generated headers
+3. WHEN a custom header has the same name (case-insensitive) as an auto-generated header (Host, Content-Length, Content-Type, Connection, Expect), THE Request_Serializer SHALL use the custom header value and skip the auto-generated header
+4. WHEN no custom header overrides an auto-generated header, THE Request_Serializer SHALL produce the auto-generated header as before
+5. WHEN opts is NULL or header_count is 0, THE Request_Serializer SHALL produce the same output as the current implementation without custom headers
+6. THE HTTP_Client SHALL pass the custom headers from opts through to the Request_Serializer for all request methods (GET, POST, PUT, DELETE, PATCH)
+
+### Requirement 23: 服务端自定义响应头
+
+**User Story:** 作为开发者，我希望在发送 HTTP 响应时能设置自定义响应头（如 Set-Cookie、Cache-Control、CORS 头），以便控制客户端缓存和跨域行为。
+
+#### Acceptance Criteria
+
+1. THE `xylem_http_conn_send` function SHALL accept additional parameters for custom response headers: a `headers` array of type `const http_header_t*` and a `header_count` of type `size_t`
+2. WHEN custom response headers are provided, THE HTTP_Connection SHALL write custom headers into the serialized response before auto-generated headers (Content-Type, Content-Length)
+3. WHEN a custom response header has the same name (case-insensitive) as an auto-generated header (Content-Type, Content-Length), THE HTTP_Connection SHALL use the custom header value and skip the auto-generated header
+4. WHEN no custom response headers are provided (headers is NULL or header_count is 0), THE HTTP_Connection SHALL produce the same output as the current implementation
+5. THE HTTP_Connection SHALL return 0 from `xylem_http_conn_send` on success and -1 on failure, consistent with the existing behavior
+
+### Requirement 24: 自定义头部序列化 round-trip
+
+**User Story:** 作为开发者，我希望自定义头部在序列化后能被正确解析回来，以便确保头部数据在传输过程中不丢失。
+
+#### Acceptance Criteria
+
+1. FOR ALL valid custom header name-value pairs provided to the Request_Serializer, serializing the request and then parsing via llhttp SHALL recover all custom header names and values
+2. FOR ALL valid custom header name-value pairs provided to `xylem_http_conn_send`, serializing the response and then parsing via llhttp SHALL recover all custom header names and values
+3. WHEN a custom header overrides an auto-generated header, the parsed result SHALL contain the custom value and not the auto-generated value
