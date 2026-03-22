@@ -32,6 +32,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/yyjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
 )
 
 set(SRCS
@@ -62,6 +63,14 @@ set(SRCS
 	src/xylem-xstack.c
 	src/xylem-json.c
 	src/yyjson/yyjson.c
+	src/http/http-common.c
+	src/http/xylem-http-client.c
+	src/http/xylem-http-server.c
+	src/http/xylem-http-url.c
+	src/http/http-transport-tcp.c
+	src/http/llhttp/llhttp.c
+	src/http/llhttp/http.c
+	src/http/llhttp/api.c
 )
 
 if(WIN32)
@@ -88,8 +97,13 @@ if(XYLEM_ENABLE_TLS)
 	list(APPEND SRCS
 		src/xylem-tls.c
 		src/xylem-dtls.c
+		src/http/http-transport-tls.c
 	)
 	include_directories(${OPENSSL_INCLUDE_DIR})
+else()
+	list(APPEND SRCS
+		src/http/http-transport-tls-stub.c
+	)
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
@@ -99,6 +113,10 @@ else()
 endif()
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
+
+if(XYLEM_ENABLE_TLS)
+	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_ASAN address)
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_TSAN thread)

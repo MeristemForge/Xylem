@@ -131,7 +131,7 @@ Public API functions belong in `src/<project>-<module>.c` and call `platform_*` 
 
 ## Adding a Module
 
-### Library
+### Single-File Module (Library)
 1. If `include/<project>/` does not exist, create it
 2. Create `include/<project>/<project>-<module>.h` with public API
 3. Create `src/<project>-<module>.c` with implementation
@@ -140,6 +140,21 @@ Public API functions belong in `src/<project>-<module>.c` and call `platform_*` 
 6. Create `tests/test-<module>.c`
 7. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
 8. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
+
+### Multi-File Module (Library)
+
+When a module is complex enough to require multiple `.c` files, place all implementation files under `src/<module>/`:
+
+1. If `include/<project>/` does not exist, create it
+2. Create `include/<project>/<project>-<module>.h` with public API
+3. Create `src/<module>/` directory for implementation files
+4. Create `src/<module>/<project>-<module>.c` as the main implementation file; additional `.c` files go in the same directory
+5. Third-party libraries bundled with the module go in `src/<module>/<libname>/` (e.g. `src/http/llhttp/`)
+6. Add all `.c` files to `SRCS` in root `CMakeLists.txt`; add `src/<module>/<libname>/` to `include_directories` if needed
+7. Include in `include/<project>.h`
+8. Create `tests/test-<module>.c`
+9. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
+10. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
 
 ### Executable
 1. Create `src/<project>-<module>.c` and `src/<project>-<module>.h`
@@ -163,6 +178,7 @@ Applies to all `.c` and `.h` files in the project (including tests).
 ## Headers
 
 - Use `_Pragma("once")` for header guards
+- All non-static function declarations in `.h` files must use the `extern` keyword — both public API headers (`include/`) and internal headers (`src/`)
 
 ## Test Code
 
@@ -286,9 +302,9 @@ clang-format with LLVM base style (see `.clang-format` for full config). Additio
 
 ## Comments
 
-### Public API (Header Files)
+### Function Declarations (Header Files)
 
-All `extern` function declarations must have a Doxygen `/** ... */` block:
+All `extern` function declarations in `.h` files — both public API headers (`include/`) and internal headers (`src/`) — must have a Doxygen `/** ... */` block:
 
 ```c
 /**

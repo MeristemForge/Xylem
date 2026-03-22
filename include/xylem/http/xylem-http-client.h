@@ -1,0 +1,184 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
+_Pragma("once")
+
+#include <stddef.h>
+#include <stdint.h>
+
+/* Opaque types */
+typedef struct xylem_http_cli_res_s xylem_http_cli_res_t;
+
+/**
+ * @brief Set the timeout for subsequent client requests.
+ *
+ * Covers the entire request lifecycle: DNS resolution, connection,
+ * sending, and receiving. Set to 0 to wait indefinitely.
+ *
+ * @param timeout_ms  Timeout in milliseconds. Default is 30000.
+ */
+extern void xylem_http_cli_set_timeout(uint64_t timeout_ms);
+
+/**
+ * @brief Enable or disable automatic redirect following.
+ *
+ * When enabled, 301/302/307/308 responses are followed automatically
+ * up to the specified maximum. Set to 0 to disable (default).
+ *
+ * @param max_redirects  Maximum number of redirects to follow.
+ */
+extern void xylem_http_cli_set_follow_redirects(int max_redirects);
+
+
+/**
+ * @brief Set the maximum response body size for the client.
+ *
+ * Responses exceeding this limit cause the request to abort and
+ * return NULL. Set to 0 to use the default (10 MiB).
+ *
+ * @param max_bytes  Maximum body size in bytes.
+ */
+extern void xylem_http_cli_set_max_body_size(size_t max_bytes);
+
+/**
+ * @brief Send a synchronous HTTP GET request.
+ *
+ * Creates a temporary event loop internally, resolves the host,
+ * connects via TCP or TLS based on the URL scheme, sends the
+ * request, and blocks until the response is received.
+ *
+ * @param url  Full URL string (e.g. "http://example.com/path").
+ *
+ * @return Response handle on success, NULL on any error.
+ *
+ * @note The caller must free the response with xylem_http_cli_res_destroy().
+ */
+extern xylem_http_cli_res_t* xylem_http_cli_get(const char* url);
+
+/**
+ * @brief Send a synchronous HTTP POST request.
+ *
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL for empty body.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ *
+ * @return Response handle on success, NULL on any error.
+ *
+ * @note The caller must free the response with xylem_http_cli_res_destroy().
+ */
+extern xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
+                                          const void* body, size_t body_len,
+                                          const char* content_type);
+
+/**
+ * @brief Send a synchronous HTTP PUT request.
+ *
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL for empty body.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ *
+ * @return Response handle on success, NULL on any error.
+ *
+ * @note The caller must free the response with xylem_http_cli_res_destroy().
+ */
+extern xylem_http_cli_res_t* xylem_http_cli_put(const char* url,
+                                         const void* body, size_t body_len,
+                                         const char* content_type);
+
+/**
+ * @brief Send a synchronous HTTP DELETE request.
+ *
+ * @param url  Full URL string.
+ *
+ * @return Response handle on success, NULL on any error.
+ *
+ * @note The caller must free the response with xylem_http_cli_res_destroy().
+ */
+extern xylem_http_cli_res_t* xylem_http_cli_delete(const char* url);
+
+/**
+ * @brief Send a synchronous HTTP PATCH request.
+ *
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL for empty body.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ *
+ * @return Response handle on success, NULL on any error.
+ *
+ * @note The caller must free the response with xylem_http_cli_res_destroy().
+ */
+extern xylem_http_cli_res_t* xylem_http_cli_patch(const char* url,
+                                           const void* body, size_t body_len,
+                                           const char* content_type);
+
+/**
+ * @brief Get the HTTP status code from a response.
+ *
+ * @param res  Response handle.
+ *
+ * @return HTTP status code (e.g. 200, 404).
+ */
+extern int xylem_http_cli_res_status(const xylem_http_cli_res_t* res);
+
+/**
+ * @brief Get a response header value by name.
+ *
+ * Performs case-insensitive ASCII matching per RFC 7230.
+ *
+ * @param res   Response handle.
+ * @param name  Header name to look up.
+ *
+ * @return Header value string, or NULL if not found.
+ *
+ * @note The returned pointer is valid until xylem_http_cli_res_destroy().
+ */
+extern const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
+                                          const char* name);
+
+/**
+ * @brief Get the response body data.
+ *
+ * @param res  Response handle.
+ *
+ * @return Pointer to body bytes, or NULL if no body.
+ *
+ * @note The returned pointer is valid until xylem_http_cli_res_destroy().
+ */
+extern const void* xylem_http_cli_res_body(const xylem_http_cli_res_t* res);
+
+/**
+ * @brief Get the response body length.
+ *
+ * @param res  Response handle.
+ *
+ * @return Body length in bytes.
+ */
+extern size_t xylem_http_cli_res_body_len(const xylem_http_cli_res_t* res);
+
+/**
+ * @brief Destroy a response and free all associated memory.
+ *
+ * @param res  Response handle, or NULL (no-op).
+ */
+extern void xylem_http_cli_res_destroy(xylem_http_cli_res_t* res);

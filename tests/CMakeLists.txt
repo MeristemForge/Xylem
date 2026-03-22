@@ -33,6 +33,7 @@ xylem_add_test(addr)
 xylem_add_test(tcp)
 xylem_add_test(udp)
 xylem_add_test(json)
+xylem_add_test(http)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)
