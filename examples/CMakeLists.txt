@@ -16,6 +16,13 @@ target_link_libraries(udp-echo-server PRIVATE xylem)
 add_executable(udp-echo-client udp-echo-client.c)
 target_link_libraries(udp-echo-client PRIVATE xylem)
 
+# HTTP examples (always available)
+add_executable(http-echo-server http-echo-server.c)
+target_link_libraries(http-echo-server PRIVATE xylem)
+
+add_executable(http-echo-client http-echo-client.c)
+target_link_libraries(http-echo-client PRIVATE xylem)
+
 # TLS/DTLS examples (only when TLS is enabled)
 if(XYLEM_ENABLE_TLS)
     add_executable(tls-echo-server tls-echo-server.c)
@@ -29,4 +36,10 @@ if(XYLEM_ENABLE_TLS)
 
     add_executable(dtls-echo-client dtls-echo-client.c)
     target_link_libraries(dtls-echo-client PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
+
+    add_executable(https-echo-server https-echo-server.c)
+    target_link_libraries(https-echo-server PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
+
+    add_executable(https-echo-client https-echo-client.c)
+    target_link_libraries(https-echo-client PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
 endif()

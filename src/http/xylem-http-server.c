@@ -41,6 +41,8 @@ struct xylem_http_req_s {
     size_t         header_cap;
     uint8_t*       body;
     size_t         body_len;
+    http_header_t* params;
+    size_t         param_count;
 };
 
 struct xylem_http_conn_s {
@@ -72,6 +74,7 @@ static void _http_srv_req_reset(xylem_http_req_t* req) {
     free(req->url);
     http_headers_free(req->headers, req->header_count);
     free(req->body);
+    http_headers_free(req->params, req->param_count);
     memset(req, 0, sizeof(*req));
 }
 
@@ -585,6 +588,108 @@ int xylem_http_conn_send(xylem_http_conn_t* conn,
     return (rc == 0) ? 0 : -1;
 }
 
+int xylem_http_conn_send_partial(xylem_http_conn_t* conn,
+                                 const char* content_type,
+                                 const void* body, size_t body_len,
+                                 size_t range_start, size_t range_end,
+                                 size_t total_size,
+                                 const xylem_http_hdr_t* headers,
+                                 size_t header_count) {
+    if (!conn || conn->closed) {
+        return -1;
+    }
+
+    /* Validate range: start <= end < total_size. */
+    bool valid = (range_start <= range_end && range_end < total_size);
+    int status_code = valid ? 206 : 416;
+
+    /* Build Content-Range: "bytes 0-499/1234" or "bytes * /1234". */
+    char cr_buf[80];
+    if (valid) {
+        size_t p = 0;
+        memcpy(cr_buf, "bytes ", 6);
+        p += 6;
+        p += http_write_uint(cr_buf + p, range_start);
+        cr_buf[p++] = '-';
+        p += http_write_uint(cr_buf + p, range_end);
+        cr_buf[p++] = '/';
+        p += http_write_uint(cr_buf + p, total_size);
+        cr_buf[p] = '\0';
+    } else {
+        size_t p = 0;
+        memcpy(cr_buf, "bytes */", 8);
+        p += 8;
+        p += http_write_uint(cr_buf + p, total_size);
+        cr_buf[p] = '\0';
+    }
+
+    const char* check_names[] = { "Content-Type", "Content-Length",
+                                  "Content-Range" };
+    bool overridden[3];
+    size_t custom_est = http_header_scan(headers, header_count,
+                                         check_names, overridden, 3);
+    bool ct_overridden = overridden[0];
+    bool cl_overridden = overridden[1];
+    bool cr_overridden = overridden[2];
+
+    size_t cr_len = strlen(cr_buf);
+    size_t actual_body_len = valid ? body_len : 0;
+
+    size_t est = 40
+               + custom_est
+               + (content_type ? 14 + strlen(content_type) + 2 : 0)
+               + 16 + 20 + 2   /* Content-Length */
+               + 16 + cr_len + 2  /* Content-Range */
+               + 2             /* final CRLF */
+               + actual_body_len;
+
+    char* buf = malloc(est);
+    if (!buf) {
+        return -1;
+    }
+
+    size_t off = _http_srv_write_head(buf, status_code,
+                                      headers, header_count);
+
+    if (!cr_overridden) {
+        memcpy(buf + off, "Content-Range: ", 15);
+        off += 15;
+        memcpy(buf + off, cr_buf, cr_len);
+        off += cr_len;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+    if (!ct_overridden && content_type) {
+        memcpy(buf + off, "Content-Type: ", 14);
+        off += 14;
+        size_t ctlen = strlen(content_type);
+        memcpy(buf + off, content_type, ctlen);
+        off += ctlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+    if (!cl_overridden) {
+        memcpy(buf + off, "Content-Length: ", 16);
+        off += 16;
+        off += http_write_uint(buf + off, actual_body_len);
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+
+    buf[off++] = '\r';
+    buf[off++] = '\n';
+
+    if (valid && body && body_len > 0) {
+        memcpy(buf + off, body, body_len);
+        off += body_len;
+    }
+
+    int rc = conn->vt->send(conn->transport, buf, off);
+    free(buf);
+    return (rc == 0) ? 0 : -1;
+}
+
+
 int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
                                  int status_code,
                                  const char* content_type,
@@ -707,10 +812,501 @@ int xylem_http_conn_end_chunked(xylem_http_conn_t* conn) {
     return 0;
 }
 
+int xylem_http_conn_start_sse(xylem_http_conn_t* conn,
+                              const xylem_http_hdr_t* headers,
+                              size_t header_count) {
+    /* Merge caller headers with SSE-required headers. */
+    size_t extra = 2; /* Cache-Control + Connection */
+    size_t total = header_count + extra;
+    xylem_http_hdr_t* merged = malloc(total * sizeof(xylem_http_hdr_t));
+    if (!merged) {
+        return -1;
+    }
+
+    for (size_t i = 0; i < header_count; i++) {
+        merged[i] = headers[i];
+    }
+    merged[header_count].name     = "Cache-Control";
+    merged[header_count].value    = "no-cache";
+    merged[header_count + 1].name  = "Connection";
+    merged[header_count + 1].value = "keep-alive";
+
+    int rc = xylem_http_conn_start_chunked(conn, 200,
+                                           "text/event-stream",
+                                           merged, total);
+    free(merged);
+    return rc;
+}
+
+int xylem_http_conn_send_event(xylem_http_conn_t* conn,
+                               const char* event,
+                               const char* data) {
+    if (!conn || conn->closed || !conn->chunked_active) {
+        return -1;
+    }
+    if (!data) {
+        return -1;
+    }
+
+    /* Calculate required buffer size. */
+    size_t event_len = event ? strlen(event) : 0;
+    size_t data_len  = strlen(data);
+
+    /* Count newlines in data to determine number of data: lines. */
+    size_t line_count = 1;
+    for (size_t i = 0; i < data_len; i++) {
+        if (data[i] == '\n') {
+            line_count++;
+        }
+    }
+
+    /* "event: {event}\n" + line_count * "data: " + data + newlines + "\n" */
+    size_t est = (event ? 7 + event_len + 1 : 0)
+               + line_count * 6  /* "data: " per line */
+               + data_len
+               + line_count      /* '\n' per line */
+               + 1;              /* trailing '\n' for blank line */
+
+    char* buf = malloc(est);
+    if (!buf) {
+        return -1;
+    }
+
+    size_t off = 0;
+
+    if (event) {
+        memcpy(buf + off, "event: ", 7);
+        off += 7;
+        memcpy(buf + off, event, event_len);
+        off += event_len;
+        buf[off++] = '\n';
+    }
+
+    /* Split data by '\n' into multiple "data: " lines. */
+    const char* p = data;
+    const char* end = data + data_len;
+    while (p <= end) {
+        const char* nl = p;
+        while (nl < end && *nl != '\n') {
+            nl++;
+        }
+        size_t seg_len = (size_t)(nl - p);
+        memcpy(buf + off, "data: ", 6);
+        off += 6;
+        if (seg_len > 0) {
+            memcpy(buf + off, p, seg_len);
+            off += seg_len;
+        }
+        buf[off++] = '\n';
+        p = nl + 1;
+    }
+
+    /* Blank line terminates the event. */
+    buf[off++] = '\n';
+
+    int rc = xylem_http_conn_send_chunk(conn, buf, off);
+    free(buf);
+    return rc;
+}
+
+int xylem_http_conn_send_sse_data(xylem_http_conn_t* conn,
+                                  const char* data) {
+    return xylem_http_conn_send_event(conn, NULL, data);
+}
+
+int xylem_http_conn_end_sse(xylem_http_conn_t* conn) {
+    return xylem_http_conn_end_chunked(conn);
+}
+
 void xylem_http_conn_close(xylem_http_conn_t* conn) {
     if (!conn || conn->closed) {
         return;
     }
     conn->closed = true;
     conn->vt->close_conn(conn->transport);
+}
+
+const char* xylem_http_req_param(const xylem_http_req_t* req,
+                                 const char* name) {
+    if (!req || !name) {
+        return NULL;
+    }
+    for (size_t i = 0; i < req->param_count; i++) {
+        if (strcmp(req->params[i].name, name) == 0) {
+            return req->params[i].value;
+        }
+    }
+    return NULL;
+}
+
+/* Route segment types. */
+typedef enum {
+    _ROUTE_SEG_LITERAL,  /* exact text match */
+    _ROUTE_SEG_PARAM,    /* :name — captures one segment */
+    _ROUTE_SEG_WILDCARD  /* * — matches rest of path */
+} _route_seg_type_t;
+
+typedef struct {
+    _route_seg_type_t type;
+    char*             text;  /* literal text or param name (without ':') */
+    size_t            len;
+} _route_seg_t;
+
+typedef struct {
+    char*                      method;   /* NULL = match all */
+    _route_seg_t*              segs;
+    size_t                     seg_count;
+    xylem_http_on_request_fn_t handler;
+    void*                      userdata;
+} _http_route_t;
+
+struct xylem_http_router_s {
+    _http_route_t* routes;
+    size_t         count;
+    size_t         cap;
+};
+
+static void _http_route_free(_http_route_t* r) {
+    free(r->method);
+    for (size_t i = 0; i < r->seg_count; i++) {
+        free(r->segs[i].text);
+    }
+    free(r->segs);
+}
+
+/* Parse pattern into segments. Returns 0 on success. */
+static int _http_route_parse(const char* pattern, _route_seg_t** out_segs,
+                             size_t* out_count) {
+    if (!pattern || pattern[0] != '/') {
+        return -1;
+    }
+
+    size_t cap = 8;
+    _route_seg_t* segs = malloc(cap * sizeof(_route_seg_t));
+    if (!segs) {
+        return -1;
+    }
+    size_t count = 0;
+
+    const char* p = pattern + 1; /* skip leading '/' */
+
+    while (*p) {
+        if (count >= cap) {
+            cap *= 2;
+            _route_seg_t* tmp = realloc(segs, cap * sizeof(_route_seg_t));
+            if (!tmp) {
+                goto fail;
+            }
+            segs = tmp;
+        }
+
+        if (*p == '*') {
+            segs[count].type = _ROUTE_SEG_WILDCARD;
+            segs[count].text = NULL;
+            segs[count].len  = 0;
+            count++;
+            break; /* wildcard consumes the rest */
+        }
+
+        const char* seg_start = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        size_t seg_len = (size_t)(p - seg_start);
+
+        if (seg_len > 0 && seg_start[0] == ':') {
+            /* Path parameter. */
+            segs[count].type = _ROUTE_SEG_PARAM;
+            segs[count].len  = seg_len - 1;
+            segs[count].text = malloc(seg_len);
+            if (!segs[count].text) {
+                goto fail;
+            }
+            memcpy(segs[count].text, seg_start + 1, seg_len - 1);
+            segs[count].text[seg_len - 1] = '\0';
+        } else {
+            segs[count].type = _ROUTE_SEG_LITERAL;
+            segs[count].len  = seg_len;
+            segs[count].text = malloc(seg_len + 1);
+            if (!segs[count].text) {
+                goto fail;
+            }
+            memcpy(segs[count].text, seg_start, seg_len);
+            segs[count].text[seg_len] = '\0';
+        }
+        count++;
+
+        if (*p == '/') {
+            p++;
+        }
+    }
+
+    *out_segs  = segs;
+    *out_count = count;
+    return 0;
+
+fail:
+    for (size_t i = 0; i < count; i++) {
+        free(segs[i].text);
+    }
+    free(segs);
+    return -1;
+}
+
+static char* _http_srv_strdup(const char* s) {
+    size_t len = strlen(s);
+    char* d = malloc(len + 1);
+    if (d) {
+        memcpy(d, s, len + 1);
+    }
+    return d;
+}
+
+xylem_http_router_t* xylem_http_router_create(void) {
+    xylem_http_router_t* r = calloc(1, sizeof(*r));
+    return r;
+}
+
+void xylem_http_router_destroy(xylem_http_router_t* router) {
+    if (!router) {
+        return;
+    }
+    for (size_t i = 0; i < router->count; i++) {
+        _http_route_free(&router->routes[i]);
+    }
+    free(router->routes);
+    free(router);
+}
+
+int xylem_http_router_add(xylem_http_router_t* router,
+                          const char* method,
+                          const char* pattern,
+                          xylem_http_on_request_fn_t handler,
+                          void* userdata) {
+    if (!router || !pattern || !handler) {
+        return -1;
+    }
+
+    _route_seg_t* segs = NULL;
+    size_t seg_count = 0;
+    if (_http_route_parse(pattern, &segs, &seg_count) != 0) {
+        return -1;
+    }
+
+    if (router->count >= router->cap) {
+        size_t new_cap = router->cap ? router->cap * 2 : 8;
+        _http_route_t* tmp = realloc(router->routes,
+                                     new_cap * sizeof(_http_route_t));
+        if (!tmp) {
+            for (size_t i = 0; i < seg_count; i++) {
+                free(segs[i].text);
+            }
+            free(segs);
+            return -1;
+        }
+        router->routes = tmp;
+        router->cap = new_cap;
+    }
+
+    _http_route_t* route = &router->routes[router->count];
+    route->method    = method ? _http_srv_strdup(method) : NULL;
+    route->segs      = segs;
+    route->seg_count = seg_count;
+    route->handler   = handler;
+    route->userdata  = userdata;
+
+    if (method && !route->method) {
+        _http_route_free(route);
+        return -1;
+    }
+
+    router->count++;
+    return 0;
+}
+
+/*
+ * Match score: higher is better.
+ *   - Each literal segment: +3
+ *   - Each param segment:   +2
+ *   - Wildcard:             +1
+ *   - Specific method match: +1000
+ *   - NULL method (wildcard): +0
+ */
+typedef struct {
+    size_t          route_idx;
+    int             score;
+    /* Captured params during matching. */
+    http_header_t*  params;
+    size_t          param_count;
+} _route_match_t;
+
+static int _http_router_try_match(const _http_route_t* route,
+                                  const char* method,
+                                  const char* path,
+                                  _route_match_t* match) {
+    /* Check method. */
+    if (route->method && strcmp(route->method, method) != 0) {
+        return -1;
+    }
+
+    int score = route->method ? 1000 : 0;
+
+    const char* p = path;
+    if (*p == '/') {
+        p++;
+    }
+
+    /* Temporary param storage. */
+    http_header_t params[16];
+    size_t param_count = 0;
+
+    for (size_t i = 0; i < route->seg_count; i++) {
+        const _route_seg_t* seg = &route->segs[i];
+
+        if (seg->type == _ROUTE_SEG_WILDCARD) {
+            score += 1;
+            /* Wildcard matches the rest — success. */
+            match->score = score;
+            match->params = NULL;
+            match->param_count = 0;
+            if (param_count > 0) {
+                match->params = malloc(param_count * sizeof(http_header_t));
+                if (match->params) {
+                    for (size_t k = 0; k < param_count; k++) {
+                        match->params[k] = params[k];
+                    }
+                    match->param_count = param_count;
+                }
+            }
+            return 0;
+        }
+
+        /* Extract current path segment. */
+        const char* seg_start = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        size_t seg_len = (size_t)(p - seg_start);
+
+        if (seg_len == 0) {
+            return -1; /* path too short */
+        }
+
+        if (seg->type == _ROUTE_SEG_LITERAL) {
+            if (seg_len != seg->len || memcmp(seg_start, seg->text, seg_len) != 0) {
+                return -1;
+            }
+            score += 3;
+        } else if (seg->type == _ROUTE_SEG_PARAM) {
+            score += 2;
+            if (param_count < 16) {
+                /* Store param — we'll copy properly if this route wins. */
+                params[param_count].name  = seg->text;
+                params[param_count].value = (char*)seg_start;
+                param_count++;
+            }
+        }
+
+        if (*p == '/') {
+            p++;
+        }
+    }
+
+    /* All segments matched — path must also be fully consumed. */
+    if (*p != '\0') {
+        return -1;
+    }
+
+    match->score = score;
+    match->params = NULL;
+    match->param_count = 0;
+
+    if (param_count > 0) {
+        match->params = malloc(param_count * sizeof(http_header_t));
+        if (match->params) {
+            match->param_count = param_count;
+            /* Copy with proper allocation: name from seg->text,
+               value needs to be extracted from path segment. */
+            for (size_t k = 0; k < param_count; k++) {
+                const char* val_start = params[k].value;
+                /* Find end of this segment value. */
+                const char* val_end = val_start;
+                while (*val_end && *val_end != '/') {
+                    val_end++;
+                }
+                size_t vlen = (size_t)(val_end - val_start);
+                size_t nlen = strlen(params[k].name);
+                /* Single allocation for name + value. */
+                char* block = malloc(nlen + 1 + vlen + 1);
+                if (block) {
+                    memcpy(block, params[k].name, nlen);
+                    block[nlen] = '\0';
+                    memcpy(block + nlen + 1, val_start, vlen);
+                    block[nlen + 1 + vlen] = '\0';
+                    match->params[k].name  = block;
+                    match->params[k].value = block + nlen + 1;
+                } else {
+                    match->params[k].name  = NULL;
+                    match->params[k].value = NULL;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+int xylem_http_router_dispatch(xylem_http_router_t* router,
+                               xylem_http_conn_t* conn,
+                               xylem_http_req_t* req) {
+    if (!router || !conn || !req) {
+        return -1;
+    }
+
+    const char* method = req->method;
+    const char* path   = req->url;
+
+    _route_match_t best;
+    best.route_idx   = (size_t)-1;
+    best.score       = -1;
+    best.params      = NULL;
+    best.param_count = 0;
+
+    for (size_t i = 0; i < router->count; i++) {
+        _route_match_t m;
+        m.params = NULL;
+        m.param_count = 0;
+        if (_http_router_try_match(&router->routes[i], method, path, &m) == 0) {
+            if (m.score > best.score) {
+                /* Free previous best params. */
+                for (size_t k = 0; k < best.param_count; k++) {
+                    free(best.params[k].name);
+                }
+                free(best.params);
+                best = m;
+                best.route_idx = i;
+            } else {
+                /* Free this candidate's params. */
+                for (size_t k = 0; k < m.param_count; k++) {
+                    free(m.params[k].name);
+                }
+                free(m.params);
+            }
+        }
+    }
+
+    if (best.route_idx == (size_t)-1) {
+        xylem_http_conn_send(conn, 404, "text/plain",
+                             "Not Found", 9, NULL, 0);
+        return -1;
+    }
+
+    /* Attach params to req. */
+    req->params      = best.params;
+    req->param_count = best.param_count;
+
+    _http_route_t* route = &router->routes[best.route_idx];
+    route->handler(conn, req, route->userdata);
+
+    return 0;
 }

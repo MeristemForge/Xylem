@@ -106,7 +106,7 @@
     - _Requirements: 6.1, 6.2, 6.3, 6.4_
   - [x] 9.3 在 `src/xylem-http.c` 中实现 `xylem_http_put`、`xylem_http_delete`、`xylem_http_patch`
     - _Requirements: 17.1, 17.2, 17.3, 17.4_
-  - [ ] 9.4 在 `tests/test-http.c` 中添加单元测试：`test_empty_body_post`、`test_redirect_301_changes_method`、`test_redirect_307_preserves_method`
+  - [x] 9.4 在 `tests/test-http.c` 中添加单元测试：`test_empty_body_post`、`test_redirect_301_changes_method`、`test_redirect_307_preserves_method`
     - _Requirements: 6.4, 16.5, 16.6_
 
 - [x] 10. Checkpoint - 确保客户端编译通过
@@ -136,14 +136,14 @@
     - 使用 theft 库生成随机状态码、content type、body，验证 `xylem_http_conn_send` 产生的响应包含正确的状态行（含 reason phrase）、Content-Type、Content-Length 和 body
     - **Validates: Requirements 10.1, 15.1, 15.2, 15.3**
 
-- [ ] 12. Checkpoint - 确保所有测试通过
+- [x] 12. Checkpoint - 确保所有测试通过
   - 确保所有单元测试和属性测试通过，ask the user if questions arise.
 
 - [ ] 13. 集成测试
   - [ ]* 13.1 在 `tests/test-http.c` 中添加集成测试：在同一进程中启动 HTTP 服务器和客户端，验证 GET/POST 请求-响应周期、keep-alive 多请求复用、Connection: close 语义
     - _Requirements: 5.1, 6.1, 9.1, 10.1, 13.1, 13.2, 13.3, 13.4_
 
-- [ ] 14. Final checkpoint - 确保所有测试通过
+- [x] 14. Final checkpoint - 确保所有测试通过
   - 确保所有测试通过，ask the user if questions arise.
 
 ## Notes
@@ -155,7 +155,7 @@
 - 所有 .c 和 .h 文件必须包含 license header
 - 遵循 docs/style.md 中的命名规范、文件组织规范和测试规范
 
-- [ ] 15. 自定义 HTTP 头部支持
+- [x] 15. 自定义 HTTP 头部支持
   - [x] 15.1 创建 `include/xylem/http/xylem-http-common.h` 公共头文件，定义 `xylem_http_hdr_t` 类型（含 `const char* name` 和 `const char* value` 字段），包含 license header、`_Pragma("once")`、Doxygen 注释。在 `include/xylem.h` 中添加 `#include "xylem/http/xylem-http-common.h"`
     - **实际变更**: 将 `xylem-http-url.h/c` 重命名为 `xylem-http-utils.h/c`，`xylem_http_hdr_t` 定义在 `xylem-http-utils.h` 中，未创建 `xylem-http-common.h`
     - _Requirements: 22.1, 23.1_
@@ -192,7 +192,7 @@
 - [x] 16. Checkpoint - 确保自定义头部编译通过并测试通过
   - 所有自定义头部相关代码编译通过，所有新增单元测试通过（30/30）。
 
-- [ ] 17. 服务器端 Chunked Transfer Encoding 响应
+- [x] 17. 服务器端 Chunked Transfer Encoding 响应
   - [x] 17.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_start_chunked`、`xylem_http_conn_send_chunk`、`xylem_http_conn_end_chunked` 函数声明（含 Doxygen 注释）
     - _Requirements: 25.1, 25.2, 25.3_
   - [x] 17.2 在 `src/http/xylem-http-server.c` 的 `xylem_http_conn_s` 中新增 `bool chunked_active` 字段
@@ -209,7 +209,7 @@
     - **Property 12: Chunked response format correctness**
     - **Validates: Requirements 25.1, 25.2, 25.3, 25.4**
 
-- [ ] 18. Checkpoint - 确保 Chunked 功能编译通过并测试通过
+- [x] 18. Checkpoint - 确保 Chunked 功能编译通过并测试通过
 
 - [x] 19. 客户端 Cookie 管理
   - [x] 19.1 在 `include/xylem/http/xylem-http-client.h` 中添加 `xylem_http_cookie_jar_t` 前向声明、`xylem_http_cookie_jar_create`、`xylem_http_cookie_jar_destroy` 函数声明，在 `xylem_http_cli_opts_t` 中新增 `xylem_http_cookie_jar_t* cookie_jar` 字段
@@ -230,87 +230,87 @@
 
 - [x] 20. Checkpoint - 确保 Cookie 功能编译通过并测试通过
 
-- [ ] 21. Range 请求支持
-  - [ ] 21.1 在 `include/xylem/http/xylem-http-client.h` 的 `xylem_http_cli_opts_t` 中新增 `const char* range` 字段
+- [x] 21. Range 请求支持
+  - [x] 21.1 在 `include/xylem/http/xylem-http-client.h` 的 `xylem_http_cli_opts_t` 中新增 `const char* range` 字段
     - _Requirements: 27.1, 27.7_
-  - [ ] 21.2 在 `src/http/xylem-http-client.c` 的 `_http_client_exec` 中：当 opts->range 非 NULL 时，将 `Range: {value}` 作为额外自定义 header 传入序列化器
+  - [x] 21.2 在 `src/http/xylem-http-client.c` 的 `_http_client_exec` 中：当 opts->range 非 NULL 时，将 `Range: {value}` 作为额外自定义 header 传入序列化器
     - _Requirements: 27.2_
-  - [ ] 21.3 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_send_partial` 函数声明（含 Doxygen 注释）
+  - [x] 21.3 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_send_partial` 函数声明（含 Doxygen 注释）
     - _Requirements: 27.3, 27.4_
-  - [ ] 21.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_partial`：验证 range 有效性，有效时发送 206 + Content-Range header，无效时发送 416 + Content-Range: bytes */{total}
+  - [x] 21.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_partial`：验证 range 有效性，有效时发送 206 + Content-Range header，无效时发送 416 + Content-Range: bytes */{total}
     - _Requirements: 27.5, 27.6_
-  - [ ] 21.5 在 `tests/test-http.c` 中添加单元测试：`test_range_206_response`、`test_range_416_invalid`
+  - [x] 21.5 在 `tests/test-http.c` 中添加单元测试：`test_range_206_response`、`test_range_416_invalid`
     - _Requirements: 27.5, 27.6_
   - [ ]* 21.6 在 `tests/test-http.c` 中添加属性测试：Range 响应 Content-Range 正确性
     - **Property 17: Range response Content-Range correctness**
     - **Validates: Requirements 27.5, 27.6**
 
-- [ ] 22. Checkpoint - 确保 Range 功能编译通过并测试通过
+- [x] 22. Checkpoint - 确保 Range 功能编译通过并测试通过
 
-- [ ] 23. 服务器端 CORS 支持
-  - [ ] 23.1 在 `include/xylem/http/xylem-http-utils.h` 中添加 `xylem_http_cors_t` 结构体定义和 `xylem_http_cors_headers` 函数声明（含 Doxygen 注释）
+- [x] 23. 服务器端 CORS 支持
+  - [x] 23.1 在 `include/xylem/http/xylem-http-common.h` 中添加 `xylem_http_cors_t` 结构体定义和 `xylem_http_cors_headers` 函数声明（含 Doxygen 注释）
     - _Requirements: 28.1, 28.2_
-  - [ ] 23.2 在 `src/http/xylem-http-utils.c` 中实现 `xylem_http_cors_headers`：origin 匹配（`"*"` 通配符和逗号分隔精确列表）、输出 Access-Control-Allow-Origin、处理 credentials（不用 `"*"`）、preflight 额外 headers
+  - [x] 23.2 在 `src/http/xylem-http-common.c` 中实现 `xylem_http_cors_headers`：origin 匹配（`"*"` 通配符和逗号分隔精确列表）、输出 Access-Control-Allow-Origin、处理 credentials（不用 `"*"`）、preflight 额外 headers
     - _Requirements: 28.3, 28.4, 28.5, 28.6, 28.7_
 
-  - [ ] 23.3 在 `tests/test-http.c` 中添加单元测试：`test_cors_wildcard_origin`、`test_cors_specific_origin`、`test_cors_credentials_no_wildcard`、`test_cors_preflight_headers`、`test_cors_null_config`
+  - [x] 23.3 在 `tests/test-http.c` 中添加单元测试：`test_cors_wildcard_origin`、`test_cors_specific_origin`、`test_cors_credentials_no_wildcard`、`test_cors_preflight_headers`、`test_cors_null_config`
     - _Requirements: 28.3, 28.4, 28.5, 28.7_
   - [ ]* 23.4 在 `tests/test-http.c` 中添加属性测试：CORS header 生成正确性
     - **Property 16: CORS header generation correctness**
     - **Validates: Requirements 28.3, 28.4**
 
-- [ ] 24. Checkpoint - 确保 CORS 功能编译通过并测试通过
+- [x] 24. Checkpoint - 确保 CORS 功能编译通过并测试通过
 
-- [ ] 25. 服务器端 SSE (Server-Sent Events)
-  - [ ] 25.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_start_sse`、`xylem_http_conn_send_event`、`xylem_http_conn_send_sse_data`、`xylem_http_conn_end_sse` 函数声明（含 Doxygen 注释）
+- [x] 25. 服务器端 SSE (Server-Sent Events)
+  - [x] 25.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_start_sse`、`xylem_http_conn_send_event`、`xylem_http_conn_send_sse_data`、`xylem_http_conn_end_sse` 函数声明（含 Doxygen 注释）
     - _Requirements: 29.1, 29.2, 29.3, 29.5_
-  - [ ] 25.2 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_start_sse`：内部调用 `xylem_http_conn_start_chunked` 发送 status 200 + Content-Type: text/event-stream + Cache-Control: no-cache + Connection: keep-alive
+  - [x] 25.2 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_start_sse`：内部调用 `xylem_http_conn_start_chunked` 发送 status 200 + Content-Type: text/event-stream + Cache-Control: no-cache + Connection: keep-alive
     - _Requirements: 29.1, 29.6_
-  - [ ] 25.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_event`：构建 SSE 格式字符串（event: + data: 行 + 空行），多行 data 按 `\n` 分割为多个 `data:` 行，通过 `xylem_http_conn_send_chunk` 发送
+  - [x] 25.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_event`：构建 SSE 格式字符串（event: + data: 行 + 空行），多行 data 按 `\n` 分割为多个 `data:` 行，通过 `xylem_http_conn_send_chunk` 发送
     - _Requirements: 29.2, 29.4, 29.7_
-  - [ ] 25.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_sse_data`（调用 send_event(conn, NULL, data)）和 `xylem_http_conn_end_sse`（调用 end_chunked）
+  - [x] 25.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_sse_data`（调用 send_event(conn, NULL, data)）和 `xylem_http_conn_end_sse`（调用 end_chunked）
     - _Requirements: 29.3, 29.5_
-  - [ ] 25.5 在 `tests/test-http.c` 中添加单元测试：`test_sse_start_end`、`test_sse_event_format`、`test_sse_multiline_data`
+  - [x] 25.5 在 `tests/test-http.c` 中添加单元测试：`test_sse_start_end`、`test_sse_event_format`、`test_sse_multiline_data`
     - _Requirements: 29.1, 29.2, 29.4_
 
-- [ ] 26. Checkpoint - 确保 SSE 功能编译通过并测试通过
+- [x] 26. Checkpoint - 确保 SSE 功能编译通过并测试通过
 
-- [ ] 27. 服务器端 Multipart/Form-Data 解析
-  - [ ] 27.1 在 `include/xylem/http/xylem-http-utils.h` 中添加 `xylem_http_multipart_t` 前向声明和所有 multipart 公共函数声明（parse、count、name、filename、content_type、data、data_len、destroy），含 Doxygen 注释
+- [x] 27. 服务器端 Multipart/Form-Data 解析
+  - [x] 27.1 在 `include/xylem/http/xylem-http-common.h` 中添加 `xylem_http_multipart_t` 前向声明和所有 multipart 公共函数声明（parse、count、name、filename、content_type、data、data_len、destroy），含 Doxygen 注释
     - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7, 30.8_
-  - [ ] 27.2 在 `src/http/xylem-http-utils.c` 中定义 `_http_multipart_part_t` 和 `xylem_http_multipart_s` 内部结构体，实现 boundary 提取（从 Content-Type 中查找 `boundary=`）
+  - [x] 27.2 在 `src/http/xylem-http-common.c` 中定义 `_http_multipart_part_t` 和 `xylem_http_multipart_s` 内部结构体，实现 boundary 提取（从 Content-Type 中查找 `boundary=`）
     - _Requirements: 30.9_
-  - [ ] 27.3 在 `src/http/xylem-http-utils.c` 中实现 `xylem_http_multipart_parse`：按 boundary 分割 body，解析每个 part 的 Content-Disposition（name、filename）和 Content-Type，拷贝 part body 数据
+  - [x] 27.3 在 `src/http/xylem-http-common.c` 中实现 `xylem_http_multipart_parse`：按 boundary 分割 body，解析每个 part 的 Content-Disposition（name、filename）和 Content-Type，拷贝 part body 数据
     - _Requirements: 30.2, 30.4, 30.5, 30.6, 30.7, 30.9, 30.10_
-  - [ ] 27.4 在 `src/http/xylem-http-utils.c` 中实现 multipart 访问器函数（count、name、filename、content_type、data、data_len）和 destroy
+  - [x] 27.4 在 `src/http/xylem-http-common.c` 中实现 multipart 访问器函数（count、name、filename、content_type、data、data_len）和 destroy
     - _Requirements: 30.3, 30.4, 30.5, 30.6, 30.7, 30.8_
-  - [ ] 27.5 在 `tests/test-http.c` 中添加单元测试：`test_multipart_parse_basic`、`test_multipart_with_filename`、`test_multipart_invalid_boundary`、`test_multipart_destroy_null`
+  - [x] 27.5 在 `tests/test-http.c` 中添加单元测试：`test_multipart_parse_basic`、`test_multipart_with_filename`、`test_multipart_invalid_boundary`、`test_multipart_destroy_null`
     - _Requirements: 30.2, 30.5, 30.9, 30.8_
   - [ ]* 27.6 在 `tests/test-http.c` 中添加属性测试：Multipart boundary extraction and part splitting
     - **Property 14: Multipart boundary extraction and part splitting**
     - **Validates: Requirements 30.2, 30.3, 30.4, 30.5, 30.6, 30.7**
 
-- [ ] 28. Checkpoint - 确保 Multipart 功能编译通过并测试通过
+- [x] 28. Checkpoint - 确保 Multipart 功能编译通过并测试通过
 
-- [ ] 29. 服务器端路由系统
-  - [ ] 29.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_router_t` 前向声明和 `xylem_http_router_create`、`xylem_http_router_destroy`、`xylem_http_router_add`、`xylem_http_router_dispatch` 函数声明（含 Doxygen 注释）
+- [x] 29. 服务器端路由系统
+  - [x] 29.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_router_t` 前向声明和 `xylem_http_router_create`、`xylem_http_router_destroy`、`xylem_http_router_add`、`xylem_http_router_dispatch` 函数声明（含 Doxygen 注释）
     - _Requirements: 31.1, 31.2, 31.3, 31.5, 31.8_
-  - [ ] 29.2 在 `src/http/xylem-http-server.c` 中定义 `_http_route_t` 和 `xylem_http_router_s` 内部结构体，实现 `xylem_http_router_create` 和 `xylem_http_router_destroy`
+  - [x] 29.2 在 `src/http/xylem-http-server.c` 中定义 `_http_route_t` 和 `xylem_http_router_s` 内部结构体，实现 `xylem_http_router_create` 和 `xylem_http_router_destroy`
     - _Requirements: 31.1, 31.2_
-  - [ ] 29.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_router_add`：解析 pattern（检测尾部 `"*"` 标记前缀匹配），存入路由数组，重复路由返回 -1
+  - [x] 29.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_router_add`：解析 pattern（检测尾部 `"*"` 标记前缀匹配），存入路由数组，重复路由返回 -1
     - _Requirements: 31.3, 31.4, 31.9, 31.10_
-  - [ ] 29.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_router_dispatch`：遍历路由表匹配 method + path，精确匹配优先于前缀匹配，最长前缀优先，method 精确优先于 NULL 通配，无匹配时发送 404
+  - [x] 29.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_router_dispatch`：遍历路由表匹配 method + path，精确匹配优先于前缀匹配，最长前缀优先，method 精确优先于 NULL 通配，无匹配时发送 404
     - _Requirements: 31.5, 31.6, 31.7, 31.9_
-  - [ ] 29.5 在 `tests/test-http.c` 中添加单元测试：`test_router_exact_match`、`test_router_prefix_match`、`test_router_exact_over_prefix`、`test_router_longest_prefix`、`test_router_404`、`test_router_method_null`、`test_router_destroy_null`
+  - [x] 29.5 在 `tests/test-http.c` 中添加单元测试：`test_router_exact_match`、`test_router_prefix_match`、`test_router_exact_over_prefix`、`test_router_longest_prefix`、`test_router_404`、`test_router_method_null`、`test_router_destroy_null`
     - _Requirements: 31.2, 31.4, 31.5, 31.6, 31.7, 31.9_
   - [ ]* 29.6 在 `tests/test-http.c` 中添加属性测试：Router dispatch 精确匹配优先
     - **Property 15: Router dispatch exact match priority**
     - **Validates: Requirements 31.5, 31.7**
 
-- [ ] 30. Checkpoint - 确保路由系统编译通过并测试通过
+- [x] 30. Checkpoint - 确保路由系统编译通过并测试通过
 
 - [ ] 31. 新功能集成测试
   - [ ]* 31.1 在 `tests/test-http.c` 中添加集成测试：服务器使用 chunked 响应 + 客户端接收完整 body、SSE 事件流发送接收、路由 dispatch 端到端、Cookie 跨请求传递、Range 请求 206 响应
     - _Requirements: 25.1-25.6, 26.3-26.8, 27.1-27.6, 29.1-29.6, 31.5-31.7_
 
-- [ ] 32. Final checkpoint - 确保所有新功能测试通过
+- [x] 32. Final checkpoint - 确保所有新功能测试通过

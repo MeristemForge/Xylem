@@ -29,9 +29,10 @@ _Pragma("once")
 typedef struct xylem_loop_s xylem_loop_t;
 
 /* Opaque types */
-typedef struct xylem_http_req_s  xylem_http_req_t;
-typedef struct xylem_http_conn_s xylem_http_conn_t;
-typedef struct xylem_http_srv_s  xylem_http_srv_t;
+typedef struct xylem_http_req_s     xylem_http_req_t;
+typedef struct xylem_http_conn_s    xylem_http_conn_t;
+typedef struct xylem_http_srv_s     xylem_http_srv_t;
+typedef struct xylem_http_router_s  xylem_http_router_t;
 
 /**
  * @brief Server request callback.
@@ -236,8 +237,170 @@ extern int xylem_http_conn_send_chunk(xylem_http_conn_t* conn,
 extern int xylem_http_conn_end_chunked(xylem_http_conn_t* conn);
 
 /**
+ * @brief Send a partial content (206) or range-not-satisfiable (416) response.
+ *
+ * When range_start <= range_end and range_end < total_size, sends a
+ * 206 Partial Content response with the Content-Range header set to
+ * "bytes start-end/total". Otherwise sends a 416 Range Not Satisfiable
+ * response with Content-Range set to "bytes * /total".
+ *
+ * @param conn          Connection handle.
+ * @param content_type  Content-Type header value.
+ * @param body          Response body slice, or NULL for 416.
+ * @param body_len      Body length in bytes.
+ * @param range_start   First byte position of the range.
+ * @param range_end     Last byte position of the range (inclusive).
+ * @param total_size    Total size of the complete resource.
+ * @param headers       Custom response headers, or NULL for none.
+ * @param header_count  Number of custom response headers.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_partial(xylem_http_conn_t* conn,
+                                        const char* content_type,
+                                        const void* body, size_t body_len,
+                                        size_t range_start, size_t range_end,
+                                        size_t total_size,
+                                        const xylem_http_hdr_t* headers,
+                                        size_t header_count);
+
+/**
+ * @brief Begin a Server-Sent Events stream.
+ *
+ * Sends status 200 with Content-Type: text/event-stream,
+ * Cache-Control: no-cache, and Connection: keep-alive using
+ * chunked transfer encoding internally.
+ *
+ * @param conn          Connection handle.
+ * @param headers       Custom response headers, or NULL for none.
+ * @param header_count  Number of custom response headers.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_start_sse(xylem_http_conn_t* conn,
+                                     const xylem_http_hdr_t* headers,
+                                     size_t header_count);
+
+/**
+ * @brief Send a single SSE event.
+ *
+ * Formats the event as "event: {event}\ndata: {data}\n\n".
+ * When event is NULL, the "event:" line is omitted.
+ * Multi-line data is split into separate "data:" lines.
+ *
+ * @param conn   Connection handle.
+ * @param event  Event type string, or NULL for data-only.
+ * @param data   Event data string.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_event(xylem_http_conn_t* conn,
+                                      const char* event,
+                                      const char* data);
+
+/**
+ * @brief Send a data-only SSE message.
+ *
+ * Equivalent to xylem_http_conn_send_event(conn, NULL, data).
+ *
+ * @param conn  Connection handle.
+ * @param data  Event data string.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_send_sse_data(xylem_http_conn_t* conn,
+                                         const char* data);
+
+/**
+ * @brief End a Server-Sent Events stream.
+ *
+ * Sends the terminating chunk and handles keep-alive or close.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_end_sse(xylem_http_conn_t* conn);
+
+/**
  * @brief Close a client connection.
  *
  * @param conn  Connection handle.
  */
 extern void xylem_http_conn_close(xylem_http_conn_t* conn);
+
+/**
+ * @brief Get a path parameter value extracted during routing.
+ *
+ * When xylem_http_router_dispatch matches a route containing
+ * `:name` segments, the captured values are stored on the request
+ * and can be retrieved by name.
+ *
+ * @param req   Request handle.
+ * @param name  Parameter name (without the leading ':').
+ *
+ * @return Parameter value string, or NULL if not found.
+ *
+ * @note The returned pointer is valid until the request callback returns.
+ */
+extern const char* xylem_http_req_param(const xylem_http_req_t* req,
+                                        const char* name);
+
+/**
+ * @brief Create a router for dispatching requests by method and path.
+ *
+ * @return Router handle on success, NULL on allocation failure.
+ *
+ * @note The caller must free with xylem_http_router_destroy().
+ */
+extern xylem_http_router_t* xylem_http_router_create(void);
+
+/**
+ * @brief Destroy a router and free all registered routes.
+ *
+ * @param router  Router handle, or NULL (no-op).
+ */
+extern void xylem_http_router_destroy(xylem_http_router_t* router);
+
+/**
+ * @brief Register a route.
+ *
+ * Pattern syntax:
+ *   - Exact: "/api/users"
+ *   - Path param: "/user/:id" (matches one segment, captures value)
+ *   - Wildcard: "/static/*" (matches any suffix)
+ *
+ * Method is case-sensitive (e.g. "GET", "POST"). Pass NULL to
+ * match all HTTP methods.
+ *
+ * @param router   Router handle.
+ * @param method   HTTP method string, or NULL for all methods.
+ * @param pattern  URL path pattern.
+ * @param handler  Request handler callback.
+ * @param userdata User-supplied pointer passed to handler.
+ *
+ * @return 0 on success, -1 on failure (duplicate route, bad args).
+ */
+extern int xylem_http_router_add(xylem_http_router_t* router,
+                                 const char* method,
+                                 const char* pattern,
+                                 xylem_http_on_request_fn_t handler,
+                                 void* userdata);
+
+/**
+ * @brief Dispatch a request to the best matching route.
+ *
+ * Matching priority: exact > path-param > wildcard prefix.
+ * Among same type, longer patterns win. Specific method wins
+ * over NULL (all-methods) wildcard. If no route matches, sends
+ * a 404 Not Found response.
+ *
+ * @param router  Router handle.
+ * @param conn    Connection handle.
+ * @param req     Request handle.
+ *
+ * @return 0 if a route matched, -1 if 404 was sent.
+ */
+extern int xylem_http_router_dispatch(xylem_http_router_t* router,
+                                      xylem_http_conn_t* conn,
+                                      xylem_http_req_t* req);

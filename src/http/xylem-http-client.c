@@ -34,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct xylem_http_cli_res_s {
+struct xylem_http_res_s {
     int            status_code;
     http_header_t* headers;
     size_t         header_count;
@@ -52,7 +52,7 @@ typedef struct {
     const void*                body;
     size_t                     body_len;
     const char*                content_type;
-    xylem_http_cli_res_t*      res;
+    xylem_http_res_t*      res;
     llhttp_t                   parser;
     llhttp_settings_t          settings;
     char*                      cur_header_name;
@@ -69,6 +69,7 @@ typedef struct {
     const xylem_http_hdr_t*    custom_headers;
     size_t                     custom_header_count;
     xylem_http_cookie_jar_t*   cookie_jar;
+    const char*                range;
     xylem_http_hdr_t*          merged_headers;
     size_t                     merged_header_count;
 } _http_cli_ctx_t;
@@ -212,7 +213,7 @@ static int _http_cli_cookie_parse(const char* header, const char* req_host,
                    _http_cli_iprefix(p, "httponly", 8)) {
             out->http_only = true;
         }
-        /* Expires attribute intentionally not parsed â€” Max-Age takes precedence
+        /* Expires attribute intentionally not parsed â€?Max-Age takes precedence
          * and parsing HTTP-date is complex. Session cookies (expires=0) are the
          * default when neither Max-Age nor Expires is present. */
 
@@ -573,17 +574,34 @@ static void _http_cli_conn_connect_cb(void* handle, void* user) {
                                                 ctx->url.path);
     }
 
+    /* Count extra headers to inject (Cookie, Range). */
+    size_t extra = 0;
     if (cookie_val) {
-        /* Allocate merged array: custom headers + 1 Cookie header. */
-        ctx->merged_header_count = ctx->custom_header_count + 1;
+        extra++;
+    }
+    if (ctx->range) {
+        extra++;
+    }
+
+    if (extra > 0) {
+        ctx->merged_header_count = ctx->custom_header_count + extra;
         ctx->merged_headers = malloc(ctx->merged_header_count
                                      * sizeof(xylem_http_hdr_t));
         if (ctx->merged_headers) {
             for (size_t i = 0; i < ctx->custom_header_count; i++) {
                 ctx->merged_headers[i] = ctx->custom_headers[i];
             }
-            ctx->merged_headers[ctx->custom_header_count].name  = "Cookie";
-            ctx->merged_headers[ctx->custom_header_count].value = cookie_val;
+            size_t idx = ctx->custom_header_count;
+            if (cookie_val) {
+                ctx->merged_headers[idx].name  = "Cookie";
+                ctx->merged_headers[idx].value = cookie_val;
+                idx++;
+            }
+            if (ctx->range) {
+                ctx->merged_headers[idx].name  = "Range";
+                ctx->merged_headers[idx].value = ctx->range;
+                idx++;
+            }
             hdrs = ctx->merged_headers;
             hdr_count = ctx->merged_header_count;
         }
@@ -694,7 +712,7 @@ static bool _http_cli_follow_redirect(_http_cli_ctx_t* ctx) {
         return false;
     }
 
-    xylem_http_cli_res_destroy(ctx->res);
+    xylem_http_res_destroy(ctx->res);
     ctx->res = NULL;
     ctx->url = new_url;
     ctx->redirects_remaining--;
@@ -709,7 +727,7 @@ static bool _http_cli_follow_redirect(_http_cli_ctx_t* ctx) {
     return true;
 }
 
-static xylem_http_cli_res_t* _http_cli_exec(const char* method,
+static xylem_http_res_t* _http_cli_exec(const char* method,
                                             const char* url,
                                             const void* body,
                                             size_t body_len,
@@ -739,6 +757,7 @@ static xylem_http_cli_res_t* _http_cli_exec(const char* method,
     ctx.custom_headers      = (opts) ? opts->headers      : NULL;
     ctx.custom_header_count = (opts) ? opts->header_count  : 0;
     ctx.cookie_jar          = (opts) ? opts->cookie_jar    : NULL;
+    ctx.range               = (opts) ? opts->range         : NULL;
 
     if (xylem_loop_init(&ctx.loop) != 0) {
         return NULL;
@@ -784,7 +803,7 @@ static xylem_http_cli_res_t* _http_cli_exec(const char* method,
                                _http_cli_resolve_cb, &ctx);
         if (!resolve_req) {
             _http_cli_abort(&ctx);
-            xylem_http_cli_res_destroy(ctx.res);
+            xylem_http_res_destroy(ctx.res);
             ctx.res = NULL;
             break;
         }
@@ -795,7 +814,7 @@ static xylem_http_cli_res_t* _http_cli_exec(const char* method,
         ctx.cur_header_name = NULL;
 
         if (ctx.timed_out || !ctx.done) {
-            xylem_http_cli_res_destroy(ctx.res);
+            xylem_http_res_destroy(ctx.res);
             ctx.res = NULL;
             break;
         }
@@ -823,14 +842,14 @@ static xylem_http_cli_res_t* _http_cli_exec(const char* method,
     return ctx.res;
 }
 
-int xylem_http_cli_res_status(const xylem_http_cli_res_t* res) {
+int xylem_http_res_status(const xylem_http_res_t* res) {
     if (!res) {
         return 0;
     }
     return res->status_code;
 }
 
-const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
+const char* xylem_http_res_header(const xylem_http_res_t* res,
                                       const char* name) {
     if (!res || !name) {
         return NULL;
@@ -838,21 +857,21 @@ const char* xylem_http_cli_res_header(const xylem_http_cli_res_t* res,
     return http_header_find(res->headers, res->header_count, name);
 }
 
-const void* xylem_http_cli_res_body(const xylem_http_cli_res_t* res) {
+const void* xylem_http_res_body(const xylem_http_res_t* res) {
     if (!res) {
         return NULL;
     }
     return res->body;
 }
 
-size_t xylem_http_cli_res_body_len(const xylem_http_cli_res_t* res) {
+size_t xylem_http_res_body_len(const xylem_http_res_t* res) {
     if (!res) {
         return 0;
     }
     return res->body_len;
 }
 
-void xylem_http_cli_res_destroy(xylem_http_cli_res_t* res) {
+void xylem_http_res_destroy(xylem_http_res_t* res) {
     if (!res) {
         return;
     }
@@ -876,31 +895,31 @@ void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar) {
     free(jar);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_get(const char* url,
+xylem_http_res_t* xylem_http_cli_get(const char* url,
                                          const xylem_http_cli_opts_t* opts) {
     return _http_cli_exec("GET", url, NULL, 0, NULL, opts);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_post(const char* url,
+xylem_http_res_t* xylem_http_cli_post(const char* url,
                                           const void* body, size_t body_len,
                                           const char* content_type,
                                           const xylem_http_cli_opts_t* opts) {
     return _http_cli_exec("POST", url, body, body_len, content_type, opts);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_put(const char* url,
+xylem_http_res_t* xylem_http_cli_put(const char* url,
                                          const void* body, size_t body_len,
                                          const char* content_type,
                                          const xylem_http_cli_opts_t* opts) {
     return _http_cli_exec("PUT", url, body, body_len, content_type, opts);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_delete(const char* url,
+xylem_http_res_t* xylem_http_cli_delete(const char* url,
                                             const xylem_http_cli_opts_t* opts) {
     return _http_cli_exec("DELETE", url, NULL, 0, NULL, opts);
 }
 
-xylem_http_cli_res_t* xylem_http_cli_patch(const char* url,
+xylem_http_res_t* xylem_http_cli_patch(const char* url,
                                            const void* body, size_t body_len,
                                            const char* content_type,
                                            const xylem_http_cli_opts_t* opts) {
