@@ -60,7 +60,7 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-utils.h"
-#include "xylem/http/xylem-http-utils.h"
+#include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/http/xylem-http-server.h"
 

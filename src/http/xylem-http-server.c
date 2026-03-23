@@ -27,7 +27,7 @@
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-#include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +35,7 @@
 struct xylem_http_req_s {
     char           method[16];
     char*          url;
+    size_t         url_len;
     http_header_t* headers;
     size_t         header_count;
     size_t         header_cap;
@@ -52,6 +53,7 @@ struct xylem_http_conn_s {
     xylem_loop_timer_t         idle_timer;
     bool                       keep_alive;
     bool                       closed;
+    bool                       chunked_active;
     char*                      cur_header_name;
     size_t                     cur_header_name_len;
     bool                       expect_continue;
@@ -66,18 +68,18 @@ struct xylem_http_srv_s {
     bool                       running;
 };
 
-static void _srv_req_reset(xylem_http_req_t* req) {
+static void _http_srv_req_reset(xylem_http_req_t* req) {
     free(req->url);
     http_headers_free(req->headers, req->header_count);
     free(req->body);
     memset(req, 0, sizeof(*req));
 }
 
-static void _srv_conn_destroy(xylem_http_conn_t* conn) {
+static void _http_srv_conn_destroy(xylem_http_conn_t* conn) {
     if (!conn) {
         return;
     }
-    _srv_req_reset(&conn->req);
+    _http_srv_req_reset(&conn->req);
     free(conn->cur_header_name);
     if (conn->idle_timer.active) {
         xylem_loop_stop_timer(&conn->idle_timer);
@@ -86,36 +88,32 @@ static void _srv_conn_destroy(xylem_http_conn_t* conn) {
     free(conn);
 }
 
-static int _srv_parser_url_cb(llhttp_t* parser, const char* at, size_t len) {
+static int _http_srv_parser_url_cb(llhttp_t* parser, const char* at,
+                                   size_t len) {
     xylem_http_conn_t* conn = parser->data;
     xylem_http_req_t* req = &conn->req;
 
-    /* Accumulate URL fragments. */
-    char* tmp = realloc(req->url, (req->url ? strlen(req->url) : 0) + len + 1);
+    /* Accumulate URL fragments using tracked offset. */
+    char* tmp = realloc(req->url, req->url_len + len + 1);
     if (!tmp) {
         return HPE_USER;
     }
-    if (!req->url) {
-        memcpy(tmp, at, len);
-        tmp[len] = '\0';
-    } else {
-        size_t prev = strlen(tmp);
-        memcpy(tmp + prev, at, len);
-        tmp[prev + len] = '\0';
-    }
+    memcpy(tmp + req->url_len, at, len);
+    req->url_len += len;
+    tmp[req->url_len] = '\0';
     req->url = tmp;
     return 0;
 }
 
-static int _srv_parser_method_complete_cb(llhttp_t* parser) {
+static int _http_srv_parser_method_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
     const char* m = llhttp_method_name(llhttp_get_method(parser));
     snprintf(conn->req.method, sizeof(conn->req.method), "%s", m);
     return 0;
 }
 
-static int _srv_parser_header_field_cb(llhttp_t* parser,
-                                const char* at, size_t len) {
+static int _http_srv_parser_header_field_cb(llhttp_t* parser,
+                                            const char* at, size_t len) {
     xylem_http_conn_t* conn = parser->data;
 
     free(conn->cur_header_name);
@@ -129,8 +127,8 @@ static int _srv_parser_header_field_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _srv_parser_header_value_cb(llhttp_t* parser,
-                                const char* at, size_t len) {
+static int _http_srv_parser_header_value_cb(llhttp_t* parser,
+                                            const char* at, size_t len) {
     xylem_http_conn_t* conn = parser->data;
     if (!conn->cur_header_name) {
         return 0;
@@ -144,7 +142,8 @@ static int _srv_parser_header_value_cb(llhttp_t* parser,
     }
 
     /* Check for Expect: 100-continue. */
-    if (http_header_eq(conn->cur_header_name, "Expect")) {
+    if (conn->cur_header_name_len == 6 &&
+        http_header_eq(conn->cur_header_name, "Expect")) {
         char val[32];
         size_t copy_len = (len < sizeof(val) - 1) ? len : sizeof(val) - 1;
         memcpy(val, at, copy_len);
@@ -160,7 +159,7 @@ static int _srv_parser_header_value_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _srv_parser_headers_complete_cb(llhttp_t* parser) {
+static int _http_srv_parser_headers_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
 
     conn->keep_alive = llhttp_should_keep_alive(parser);
@@ -172,16 +171,34 @@ static int _srv_parser_headers_complete_cb(llhttp_t* parser) {
         conn->expect_continue = false;
     }
 
+    /* Pre-allocate body buffer if Content-Length is known. */
+    uint64_t content_length = parser->content_length;
+    if (content_length > 0 && content_length != ULLONG_MAX &&
+        content_length <= conn->srv->cfg.max_body_size) {
+        conn->req.body = malloc((size_t)content_length);
+        /* Allocation failure is non-fatal; realloc path handles it. */
+    }
+
     return 0;
 }
 
-static int _srv_parser_body_cb(llhttp_t* parser, const char* at, size_t len) {
+static int _http_srv_parser_body_cb(llhttp_t* parser, const char* at,
+                                    size_t len) {
     xylem_http_conn_t* conn = parser->data;
     xylem_http_req_t* req = &conn->req;
 
     /* Enforce max body size. */
     if (req->body_len + len > conn->srv->cfg.max_body_size) {
         return HPE_USER;
+    }
+
+    /* If body was pre-allocated from Content-Length, just memcpy. */
+    uint64_t content_length = parser->content_length;
+    if (req->body && content_length != ULLONG_MAX &&
+        req->body_len + len <= (size_t)content_length) {
+        memcpy(req->body + req->body_len, at, len);
+        req->body_len += len;
+        return 0;
     }
 
     uint8_t* tmp = realloc(req->body, req->body_len + len);
@@ -194,7 +211,7 @@ static int _srv_parser_body_cb(llhttp_t* parser, const char* at, size_t len) {
     return 0;
 }
 
-static int _srv_parser_message_complete_cb(llhttp_t* parser) {
+static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
 
     /* Reset idle timer — a complete request was received. */
@@ -211,8 +228,8 @@ static int _srv_parser_message_complete_cb(llhttp_t* parser) {
     return HPE_PAUSED;
 }
 
-static void _srv_idle_timeout_cb(xylem_loop_t* loop,
-                                 xylem_loop_timer_t* timer) {
+static void _http_srv_idle_timeout_cb(xylem_loop_t* loop,
+                                      xylem_loop_timer_t* timer) {
     (void)loop;
     xylem_http_conn_t* conn =
         (xylem_http_conn_t*)((char*)timer -
@@ -223,20 +240,45 @@ static void _srv_idle_timeout_cb(xylem_loop_t* loop,
     }
 }
 
-static void _srv_conn_init_parser(xylem_http_conn_t* conn) {
+static void _http_srv_conn_init_parser(xylem_http_conn_t* conn) {
     llhttp_settings_init(&conn->settings);
-    conn->settings.on_url              = _srv_parser_url_cb;
-    conn->settings.on_method_complete  = _srv_parser_method_complete_cb;
-    conn->settings.on_header_field     = _srv_parser_header_field_cb;
-    conn->settings.on_header_value     = _srv_parser_header_value_cb;
-    conn->settings.on_headers_complete = _srv_parser_headers_complete_cb;
-    conn->settings.on_body             = _srv_parser_body_cb;
-    conn->settings.on_message_complete = _srv_parser_message_complete_cb;
+    conn->settings.on_url              = _http_srv_parser_url_cb;
+    conn->settings.on_method_complete  = _http_srv_parser_method_complete_cb;
+    conn->settings.on_header_field     = _http_srv_parser_header_field_cb;
+    conn->settings.on_header_value     = _http_srv_parser_header_value_cb;
+    conn->settings.on_headers_complete = _http_srv_parser_headers_complete_cb;
+    conn->settings.on_body             = _http_srv_parser_body_cb;
+    conn->settings.on_message_complete = _http_srv_parser_message_complete_cb;
     llhttp_init(&conn->parser, HTTP_REQUEST, &conn->settings);
     conn->parser.data = conn;
 }
 
-static void _srv_conn_accept_cb(void* handle, void* ctx) {
+/**
+ * After a response is fully sent, either prepare for the next
+ * request (keep-alive) or close the connection.
+ */
+static void _http_srv_conn_finish_response(xylem_http_conn_t* conn) {
+    if (conn->keep_alive && !conn->closed) {
+        llhttp_resume(&conn->parser);
+        _http_srv_conn_init_parser(conn);
+
+        if (conn->srv->cfg.idle_timeout_ms > 0) {
+            if (conn->idle_timer.active) {
+                xylem_loop_reset_timer(&conn->idle_timer,
+                                       conn->srv->cfg.idle_timeout_ms);
+            } else {
+                xylem_loop_start_timer(&conn->idle_timer,
+                                       _http_srv_idle_timeout_cb,
+                                       conn->srv->cfg.idle_timeout_ms, 0);
+            }
+        }
+    } else if (!conn->closed) {
+        conn->closed = true;
+        conn->vt->close_conn(conn->transport);
+    }
+}
+
+static void _http_srv_conn_accept_cb(void* handle, void* ctx) {
     xylem_http_srv_t* srv = ctx;
 
     xylem_http_conn_t* conn = calloc(1, sizeof(*conn));
@@ -249,13 +291,13 @@ static void _srv_conn_accept_cb(void* handle, void* ctx) {
     conn->vt        = srv->vt;
     conn->transport = handle;
 
-    _srv_conn_init_parser(conn);
+    _http_srv_conn_init_parser(conn);
 
     /* Start idle timer. */
     xylem_loop_init_timer(srv->loop, &conn->idle_timer);
     if (srv->cfg.idle_timeout_ms > 0) {
         xylem_loop_start_timer(&conn->idle_timer,
-                               _srv_idle_timeout_cb,
+                               _http_srv_idle_timeout_cb,
                                srv->cfg.idle_timeout_ms, 0);
     }
 
@@ -263,8 +305,8 @@ static void _srv_conn_accept_cb(void* handle, void* ctx) {
     srv->vt->set_userdata(handle, conn);
 }
 
-static void _srv_conn_read_cb(void* handle, void* ctx,
-                         void* data, size_t len) {
+static void _http_srv_conn_read_cb(void* handle, void* ctx,
+                                   void* data, size_t len) {
     xylem_http_srv_t* srv = ctx;
 
     xylem_http_conn_t* conn = srv->vt->get_userdata(handle);
@@ -279,31 +321,13 @@ static void _srv_conn_read_cb(void* handle, void* ctx,
          * Message complete — the on_request callback has fired.
          * Prepare for the next request if keep-alive.
          */
-        _srv_req_reset(&conn->req);
+        _http_srv_req_reset(&conn->req);
         free(conn->cur_header_name);
         conn->cur_header_name = NULL;
         conn->cur_header_name_len = 0;
         conn->expect_continue = false;
 
-        if (conn->keep_alive && !conn->closed) {
-            llhttp_resume(&conn->parser);
-            _srv_conn_init_parser(conn);
-
-            /* Reset idle timer for next request. */
-            if (conn->srv->cfg.idle_timeout_ms > 0) {
-                if (conn->idle_timer.active) {
-                    xylem_loop_reset_timer(&conn->idle_timer,
-                                           conn->srv->cfg.idle_timeout_ms);
-                } else {
-                    xylem_loop_start_timer(&conn->idle_timer,
-                                           _srv_idle_timeout_cb,
-                                           conn->srv->cfg.idle_timeout_ms, 0);
-                }
-            }
-        } else if (!conn->closed) {
-            conn->closed = true;
-            conn->vt->close_conn(conn->transport);
-        }
+        _http_srv_conn_finish_response(conn);
         return;
     }
 
@@ -331,12 +355,12 @@ static void _srv_conn_read_cb(void* handle, void* ctx,
     }
 }
 
-static void _srv_conn_close_cb(void* handle, void* ctx, int err) {
+static void _http_srv_conn_close_cb(void* handle, void* ctx, int err) {
     (void)err;
     xylem_http_srv_t* srv = ctx;
     xylem_http_conn_t* conn = srv->vt->get_userdata(handle);
     if (conn) {
-        _srv_conn_destroy(conn);
+        _http_srv_conn_destroy(conn);
     }
 }
 
@@ -425,9 +449,9 @@ int xylem_http_srv_start(xylem_http_srv_t* srv) {
         return -1;
     }
 
-    srv->transport_cb.on_accept     = _srv_conn_accept_cb;
-    srv->transport_cb.on_read       = _srv_conn_read_cb;
-    srv->transport_cb.on_close      = _srv_conn_close_cb;
+    srv->transport_cb.on_accept     = _http_srv_conn_accept_cb;
+    srv->transport_cb.on_read       = _http_srv_conn_read_cb;
+    srv->transport_cb.on_close      = _http_srv_conn_close_cb;
     srv->transport_cb.on_connect    = NULL;
     srv->transport_cb.on_write_done = NULL;
 
@@ -457,6 +481,47 @@ void xylem_http_srv_stop(xylem_http_srv_t* srv) {
     srv->running = false;
 }
 
+
+
+/* Write status line + custom headers into buf. Returns bytes written. */
+static size_t _http_srv_write_head(char* buf, int status_code,
+                                   const xylem_http_hdr_t* headers,
+                                   size_t header_count) {
+    const char* reason = http_reason_phrase(status_code);
+    size_t reason_len = strlen(reason);
+    size_t off = 0;
+
+    /* "HTTP/1.1 " (9 bytes) */
+    memcpy(buf + off, "HTTP/1.1 ", 9);
+    off += 9;
+    /* Status code as 3 digits. */
+    buf[off++] = (char)('0' + status_code / 100);
+    buf[off++] = (char)('0' + (status_code / 10) % 10);
+    buf[off++] = (char)('0' + status_code % 10);
+    buf[off++] = ' ';
+    memcpy(buf + off, reason, reason_len);
+    off += reason_len;
+    buf[off++] = '\r';
+    buf[off++] = '\n';
+
+    for (size_t i = 0; i < header_count; i++) {
+        if (!headers[i].name || !headers[i].value) {
+            continue;
+        }
+        size_t nlen = strlen(headers[i].name);
+        size_t vlen = strlen(headers[i].value);
+        memcpy(buf + off, headers[i].name, nlen);
+        off += nlen;
+        buf[off++] = ':';
+        buf[off++] = ' ';
+        memcpy(buf + off, headers[i].value, vlen);
+        off += vlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+    return off;
+}
+
 int xylem_http_conn_send(xylem_http_conn_t* conn,
                          int status_code,
                          const char* content_type,
@@ -467,33 +532,19 @@ int xylem_http_conn_send(xylem_http_conn_t* conn,
         return -1;
     }
 
-    const char* reason = http_reason_phrase(status_code);
+    const char* check_names[] = { "Content-Type", "Content-Length" };
+    bool overridden[2];
+    size_t custom_est = http_header_scan(headers, header_count,
+                                         check_names, overridden, 2);
+    bool ct_overridden = overridden[0];
+    bool cl_overridden = overridden[1];
 
-    /* Check which auto-generated headers are overridden. */
-    bool ct_overridden = false;
-    bool cl_overridden = false;
-
-    size_t custom_est = 0;
-    for (size_t i = 0; i < header_count; i++) {
-        if (!headers[i].name || !headers[i].value) {
-            continue;
-        }
-        custom_est += strlen(headers[i].name) + 2
-                    + strlen(headers[i].value) + 2;
-        if (http_header_eq(headers[i].name, "Content-Type")) {
-            ct_overridden = true;
-        }
-        if (http_header_eq(headers[i].name, "Content-Length")) {
-            cl_overridden = true;
-        }
-    }
-
-    /* Estimate buffer: status line + headers + body. */
-    size_t est = 32 + strlen(reason)
+    /* "HTTP/1.1 XXX " (13) + reason (max ~24) + "\r\n" (2) = ~39 */
+    size_t est = 40
                + custom_est
-               + (content_type ? 16 + strlen(content_type) + 2 : 0)
-               + 32 /* Content-Length */
-               + 2  /* final CRLF */
+               + (content_type ? 14 + strlen(content_type) + 2 : 0)
+               + 16 + 20 + 2  /* "Content-Length: " + digits + "\r\n" */
+               + 2             /* final CRLF */
                + body_len;
 
     char* buf = malloc(est);
@@ -501,27 +552,24 @@ int xylem_http_conn_send(xylem_http_conn_t* conn,
         return -1;
     }
 
-    size_t off = 0;
-    off += (size_t)snprintf(buf + off, est - off,
-                            "HTTP/1.1 %d %s\r\n", status_code, reason);
+    size_t off = _http_srv_write_head(buf, status_code,
+                                      headers, header_count);
 
-    /* Custom headers first. */
-    for (size_t i = 0; i < header_count; i++) {
-        if (!headers[i].name || !headers[i].value) {
-            continue;
-        }
-        off += (size_t)snprintf(buf + off, est - off, "%s: %s\r\n",
-                                headers[i].name, headers[i].value);
-    }
-
-    /* Auto-generated headers, skipping overridden ones. */
     if (!ct_overridden && content_type) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Content-Type: %s\r\n", content_type);
+        memcpy(buf + off, "Content-Type: ", 14);
+        off += 14;
+        size_t ctlen = strlen(content_type);
+        memcpy(buf + off, content_type, ctlen);
+        off += ctlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
     }
     if (!cl_overridden) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Content-Length: %zu\r\n", body_len);
+        memcpy(buf + off, "Content-Length: ", 16);
+        off += 16;
+        off += http_write_uint(buf + off, body_len);
+        buf[off++] = '\r';
+        buf[off++] = '\n';
     }
 
     buf[off++] = '\r';
@@ -535,6 +583,128 @@ int xylem_http_conn_send(xylem_http_conn_t* conn,
     int rc = conn->vt->send(conn->transport, buf, off);
     free(buf);
     return (rc == 0) ? 0 : -1;
+}
+
+int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
+                                 int status_code,
+                                 const char* content_type,
+                                 const xylem_http_hdr_t* headers,
+                                 size_t header_count) {
+    if (!conn || conn->closed || conn->chunked_active) {
+        return -1;
+    }
+
+    const char* check_names[] = { "Transfer-Encoding", "Content-Type" };
+    bool overridden[2];
+    size_t custom_est = http_header_scan(headers, header_count,
+                                         check_names, overridden, 2);
+    bool te_overridden = overridden[0];
+    bool ct_overridden = overridden[1];
+
+    /* "HTTP/1.1 XXX " (13) + reason (max ~24) + "\r\n" (2) = ~39 */
+    size_t est = 40
+               + custom_est
+               + 28  /* "Transfer-Encoding: chunked\r\n" */
+               + (content_type ? 14 + strlen(content_type) + 2 : 0)
+               + 2;  /* final CRLF */
+
+    char* buf = malloc(est);
+    if (!buf) {
+        return -1;
+    }
+
+    size_t off = _http_srv_write_head(buf, status_code,
+                                      headers, header_count);
+
+    if (!te_overridden) {
+        memcpy(buf + off, "Transfer-Encoding: chunked\r\n", 28);
+        off += 28;
+    }
+    if (!ct_overridden && content_type) {
+        memcpy(buf + off, "Content-Type: ", 14);
+        off += 14;
+        size_t ctlen = strlen(content_type);
+        memcpy(buf + off, content_type, ctlen);
+        off += ctlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+
+    buf[off++] = '\r';
+    buf[off++] = '\n';
+
+    int rc = conn->vt->send(conn->transport, buf, off);
+    free(buf);
+
+    if (rc == 0) {
+        conn->chunked_active = true;
+    }
+    return (rc == 0) ? 0 : -1;
+}
+
+int xylem_http_conn_send_chunk(xylem_http_conn_t* conn,
+                               const void* data, size_t len) {
+    if (!conn || conn->closed || !conn->chunked_active) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+
+    /* Format: {hex_size}\r\n{data}\r\n */
+    char size_buf[20];
+    size_t size_len = 0;
+    /* Write hex digits in reverse, then flip. */
+    {
+        char tmp[16];
+        size_t n = 0;
+        size_t v = len;
+        do {
+            tmp[n++] = "0123456789abcdef"[v & 0xF];
+            v >>= 4;
+        } while (v > 0);
+        for (size_t k = 0; k < n; k++) {
+            size_buf[k] = tmp[n - 1 - k];
+        }
+        size_len = n;
+    }
+    size_buf[size_len++] = '\r';
+    size_buf[size_len++] = '\n';
+
+    size_t frame_len = size_len + len + 2;
+    char* frame = malloc(frame_len);
+    if (!frame) {
+        return -1;
+    }
+
+    memcpy(frame, size_buf, size_len);
+    memcpy(frame + size_len, data, len);
+    frame[frame_len - 2] = '\r';
+    frame[frame_len - 1] = '\n';
+
+    int rc = conn->vt->send(conn->transport, frame, frame_len);
+    free(frame);
+    return (rc == 0) ? 0 : -1;
+}
+
+int xylem_http_conn_end_chunked(xylem_http_conn_t* conn) {
+    if (!conn || conn->closed || !conn->chunked_active) {
+        return -1;
+    }
+
+    static const char terminator[] = "0\r\n\r\n";
+    int rc = conn->vt->send(conn->transport, terminator,
+                            sizeof(terminator) - 1);
+    conn->chunked_active = false;
+
+    if (rc != 0) {
+        return -1;
+    }
+
+    /* Handle keep-alive: prepare for next request or close. */
+    _http_srv_conn_finish_response(conn);
+
+    return 0;
 }
 
 void xylem_http_conn_close(xylem_http_conn_t* conn) {

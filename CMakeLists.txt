@@ -66,7 +66,7 @@ set(SRCS
 	src/http/http-common.c
 	src/http/xylem-http-client.c
 	src/http/xylem-http-server.c
-	src/http/xylem-http-utils.c
+	src/http/xylem-http-common.c
 	src/http/http-transport-tcp.c
 	src/http/llhttp/llhttp.c
 	src/http/llhttp/http.c

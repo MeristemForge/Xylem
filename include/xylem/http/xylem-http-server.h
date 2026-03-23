@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem/http/xylem-http-utils.h"
+#include "xylem/http/xylem-http-common.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -183,6 +183,57 @@ extern int xylem_http_conn_send(xylem_http_conn_t* conn,
                                  const void* body, size_t body_len,
                                  const xylem_http_hdr_t* headers,
                                  size_t header_count);
+
+/**
+ * @brief Begin a chunked transfer-encoded response.
+ *
+ * Sends the status line, Transfer-Encoding: chunked header,
+ * Content-Type, and any custom headers. Does not send a body.
+ * After this call, use xylem_http_conn_send_chunk() to send
+ * body fragments and xylem_http_conn_end_chunked() to finish.
+ *
+ * @param conn          Connection handle.
+ * @param status_code   HTTP status code (e.g. 200).
+ * @param content_type  Content-Type header value, or NULL.
+ * @param headers       Custom response headers, or NULL for none.
+ * @param header_count  Number of custom response headers.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
+                                         int status_code,
+                                         const char* content_type,
+                                         const xylem_http_hdr_t* headers,
+                                         size_t header_count);
+
+/**
+ * @brief Send a single chunk in a chunked response.
+ *
+ * Formats the data as a chunked transfer-encoding frame
+ * ({hex_size}\r\n{data}\r\n) and sends it on the connection.
+ *
+ * @param conn  Connection handle.
+ * @param data  Chunk data.
+ * @param len   Chunk length in bytes. If 0, this is a no-op.
+ *
+ * @return 0 on success, -1 on failure (connection closed or not
+ *         in chunked mode).
+ */
+extern int xylem_http_conn_send_chunk(xylem_http_conn_t* conn,
+                                      const void* data, size_t len);
+
+/**
+ * @brief End a chunked transfer-encoded response.
+ *
+ * Sends the terminating zero-length chunk (0\r\n\r\n) and
+ * handles keep-alive: resets the parser for the next request
+ * or closes the connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_end_chunked(xylem_http_conn_t* conn);
 
 /**
  * @brief Close a client connection.

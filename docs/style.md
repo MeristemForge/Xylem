@@ -146,15 +146,40 @@ Public API functions belong in `src/<project>-<module>.c` and call `platform_*` 
 When a module is complex enough to require multiple `.c` files, place all implementation files under `src/<module>/`:
 
 1. If `include/<project>/` does not exist, create it
-2. Create `include/<project>/<project>-<module>.h` with public API
-3. Create `src/<module>/` directory for implementation files
-4. Create `src/<module>/<project>-<module>.c` as the main implementation file; additional `.c` files go in the same directory
-5. Third-party libraries bundled with the module go in `src/<module>/<libname>/` (e.g. `src/http/llhttp/`)
-6. Add all `.c` files to `SRCS` in root `CMakeLists.txt`; add `src/<module>/<libname>/` to `include_directories` if needed
-7. Include in `include/<project>.h`
-8. Create `tests/test-<module>.c`
-9. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
-10. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
+2. Create `include/<project>/<module>/` directory for public headers
+3. Create public headers under `include/<project>/<module>/` (see naming rules below)
+4. Create `src/<module>/` directory for implementation files
+5. Create implementation `.c` files in `src/<module>/` (see naming rules below)
+6. Third-party libraries bundled with the module go in `src/<module>/<libname>/` (e.g. `src/http/llhttp/`)
+7. Add all `.c` files to `SRCS` in root `CMakeLists.txt`; add `src/<module>/<libname>/` to `include_directories` if needed
+8. Include all public headers in `include/<project>.h`
+9. Create `tests/test-<module>.c`
+10. Add `<project>_add_test(<module>)` to `tests/CMakeLists.txt`
+11. When adding files to `src/platform/win/` or `src/platform/unix/`, delete `.gitkeep` in that directory if it exists
+
+#### File Naming
+
+| Category | Pattern | Example (module=`http`) |
+|----------|---------|-------------------------|
+| Public headers | `include/<project>/<module>/<project>-<module>-<sub>.h` | `xylem-http-client.h`, `xylem-http-server.h`, `xylem-http-common.h` |
+| Public implementation | `src/<module>/<project>-<module>-<sub>.c` | `xylem-http-client.c`, `xylem-http-server.c`, `xylem-http-common.c` |
+| Internal headers | `src/<module>/<module>-<name>.h` (no `<project>-` prefix) | `http-common.h`, `http-transport.h` |
+| Internal implementation | `src/<module>/<module>-<name>.c` (no `<project>-` prefix) | `http-common.c`, `http-transport-tcp.c` |
+
+The `<project>-` prefix distinguishes public files from internal files. Files without the prefix are internal to the module and not part of the public API.
+
+#### Function Naming
+
+Function names reflect functional sub-categories, not file names. Do not put file-organization names (like `common`) into function names.
+
+| Category | Pattern | Example |
+|----------|---------|---------|
+| Public functions | `<project>_<module>_<subcategory>_<action>` | `xylem_http_cli_get`, `xylem_http_srv_create`, `xylem_http_url_encode` |
+| Static functions | `_<module>_<subcategory>_<action>` | `_http_cli_abort`, `_http_srv_conn_destroy` |
+| Static callbacks | `_<module>_<subcategory>_<subject>_<event>_cb` | `_http_cli_conn_read_cb`, `_http_srv_idle_timeout_cb` |
+| Internal shared functions | `<module>_<action>` (no `<project>_` prefix) | `http_url_parse`, `http_header_eq`, `http_reason_phrase` |
+
+Sub-categories are functional groupings (`cli`, `srv`, `url`, `cookie`, `header`), not file groupings (`common`, `client`, `server`). For example, a URL encode function in `xylem-http-common.c` is named `xylem_http_url_encode`, not `xylem_http_common_url_encode`.
 
 ### Executable
 1. Create `src/<project>-<module>.c` and `src/<project>-<module>.h`

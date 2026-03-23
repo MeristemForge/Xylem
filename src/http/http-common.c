@@ -21,24 +21,53 @@
 
 #include "http-common.h"
 
-#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 int http_hex_digit(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
+    static const int8_t _hex_table[256] = {
+        ['0'] = 0,  ['1'] = 1,  ['2'] = 2,  ['3'] = 3,
+        ['4'] = 4,  ['5'] = 5,  ['6'] = 6,  ['7'] = 7,
+        ['8'] = 8,  ['9'] = 9,
+        ['A'] = 10, ['B'] = 11, ['C'] = 12,
+        ['D'] = 13, ['E'] = 14, ['F'] = 15,
+        ['a'] = 10, ['b'] = 11, ['c'] = 12,
+        ['d'] = 13, ['e'] = 14, ['f'] = 15,
+    };
+    /* Table entries default to 0; distinguish '0' from invalid via range check. */
+    uint8_t u = (uint8_t)c;
+    int8_t v = _hex_table[u];
+    if (v != 0) {
+        return v;
     }
-    if (c >= 'A' && c <= 'F') {
-        return c - 'A' + 10;
-    }
-    if (c >= 'a' && c <= 'f') {
-        return c - 'a' + 10;
-    }
-    return -1;
+    return (c == '0') ? 0 : -1;
 }
+
+
+/* ASCII lowercase table for fast case-insensitive comparison. */
+const uint8_t http_lower_table[256] = {
+    0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+    16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+    32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
+    48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,
+    64,
+    'a','b','c','d','e','f','g','h','i','j','k','l','m',
+    'n','o','p','q','r','s','t','u','v','w','x','y','z',
+    91,92,93,94,95,96,
+    'a','b','c','d','e','f','g','h','i','j','k','l','m',
+    'n','o','p','q','r','s','t','u','v','w','x','y','z',
+    123,124,125,126,127,
+    128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,
+    144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,
+    160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,
+    176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,
+    192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,
+    208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,
+    224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,
+    240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,
+};
 
 
 int http_url_parse(const char* url, http_url_t* out) {
@@ -54,17 +83,18 @@ int http_url_parse(const char* url, http_url_t* out) {
     }
 
     size_t scheme_len = (size_t)(sep - url);
-    if (scheme_len == 0 || scheme_len >= sizeof(out->scheme)) {
+    /* Only "http" (4) and "https" (5) are valid. */
+    if (scheme_len != 4 && scheme_len != 5) {
         return -1;
     }
 
     for (size_t i = 0; i < scheme_len; i++) {
-        out->scheme[i] = (char)tolower((unsigned char)url[i]);
+        out->scheme[i] = (char)http_lower_table[(uint8_t)url[i]];
     }
     out->scheme[scheme_len] = '\0';
 
-    if (strcmp(out->scheme, "http") != 0 &&
-        strcmp(out->scheme, "https") != 0) {
+    if (memcmp(out->scheme, "http", 4) != 0 ||
+        (scheme_len == 5 && out->scheme[4] != 's')) {
         return -1;
     }
 
@@ -155,17 +185,25 @@ int http_url_serialize(const http_url_t* url, char* buf, size_t buf_size) {
 }
 
 
+/* RFC 3986 unreserved characters: A-Z a-z 0-9 - . _ ~ */
+static const uint8_t _unreserved_table[256] = {
+    ['-'] = 1, ['.'] = 1, ['_'] = 1, ['~'] = 1,
+    ['0'] = 1, ['1'] = 1, ['2'] = 1, ['3'] = 1, ['4'] = 1,
+    ['5'] = 1, ['6'] = 1, ['7'] = 1, ['8'] = 1, ['9'] = 1,
+    ['A'] = 1, ['B'] = 1, ['C'] = 1, ['D'] = 1, ['E'] = 1,
+    ['F'] = 1, ['G'] = 1, ['H'] = 1, ['I'] = 1, ['J'] = 1,
+    ['K'] = 1, ['L'] = 1, ['M'] = 1, ['N'] = 1, ['O'] = 1,
+    ['P'] = 1, ['Q'] = 1, ['R'] = 1, ['S'] = 1, ['T'] = 1,
+    ['U'] = 1, ['V'] = 1, ['W'] = 1, ['X'] = 1, ['Y'] = 1, ['Z'] = 1,
+    ['a'] = 1, ['b'] = 1, ['c'] = 1, ['d'] = 1, ['e'] = 1,
+    ['f'] = 1, ['g'] = 1, ['h'] = 1, ['i'] = 1, ['j'] = 1,
+    ['k'] = 1, ['l'] = 1, ['m'] = 1, ['n'] = 1, ['o'] = 1,
+    ['p'] = 1, ['q'] = 1, ['r'] = 1, ['s'] = 1, ['t'] = 1,
+    ['u'] = 1, ['v'] = 1, ['w'] = 1, ['x'] = 1, ['y'] = 1, ['z'] = 1,
+};
+
 bool http_is_unreserved(uint8_t c) {
-    if (c >= 'A' && c <= 'Z') {
-        return true;
-    }
-    if (c >= 'a' && c <= 'z') {
-        return true;
-    }
-    if (c >= '0' && c <= '9') {
-        return true;
-    }
-    return c == '-' || c == '.' || c == '_' || c == '~';
+    return _unreserved_table[c] != 0;
 }
 
 
@@ -185,68 +223,54 @@ char* http_req_serialize(const char* method, const http_url_t* url,
                          const xylem_http_hdr_t* custom_headers,
                          size_t custom_header_count) {
     char host_val[280];
+    size_t host_val_len;
     bool is_default_port =
         (strcmp(url->scheme, "http") == 0 && url->port == 80) ||
         (strcmp(url->scheme, "https") == 0 && url->port == 443);
 
     if (is_default_port) {
-        snprintf(host_val, sizeof(host_val), "%s", url->host);
+        host_val_len = strlen(url->host);
+        memcpy(host_val, url->host, host_val_len);
+        host_val[host_val_len] = '\0';
     } else {
-        snprintf(host_val, sizeof(host_val), "%s:%" PRIu16,
-                 url->host, url->port);
+        host_val_len = (size_t)snprintf(host_val, sizeof(host_val),
+                                        "%s:%" PRIu16,
+                                        url->host, url->port);
     }
 
     /* Check which auto-generated headers are overridden by custom ones. */
-    bool host_overridden           = false;
-    bool content_length_overridden = false;
-    bool content_type_overridden   = false;
-    bool connection_overridden     = false;
-    bool expect_overridden         = false;
-
-    size_t custom_est = 0;
-    for (size_t i = 0; i < custom_header_count; i++) {
-        if (!custom_headers[i].name || !custom_headers[i].value) {
-            continue;
-        }
-        custom_est += strlen(custom_headers[i].name)
-                    + 2 /* ": " */
-                    + strlen(custom_headers[i].value)
-                    + 2; /* "\r\n" */
-
-        if (http_header_eq(custom_headers[i].name, "Host")) {
-            host_overridden = true;
-        }
-        if (http_header_eq(custom_headers[i].name, "Content-Length")) {
-            content_length_overridden = true;
-        }
-        if (http_header_eq(custom_headers[i].name, "Content-Type")) {
-            content_type_overridden = true;
-        }
-        if (http_header_eq(custom_headers[i].name, "Connection")) {
-            connection_overridden = true;
-        }
-        if (http_header_eq(custom_headers[i].name, "Expect")) {
-            expect_overridden = true;
-        }
-    }
+    const char* check_names[] = {
+        "Host", "Content-Length", "Content-Type", "Connection", "Expect"
+    };
+    bool overridden[5];
+    size_t custom_est = http_header_scan(custom_headers, custom_header_count,
+                                         check_names, overridden, 5);
+    bool host_overridden           = overridden[0];
+    bool content_length_overridden = overridden[1];
+    bool content_type_overridden   = overridden[2];
+    bool connection_overridden     = overridden[3];
+    bool expect_overridden         = overridden[4];
 
     /**
      * Estimate buffer size:
-     * request line + custom headers + Host + Content-Length +
-     * Content-Type + Connection + Expect + CRLF + body
+     * request line: method SP path SP "HTTP/1.1\r\n" (9+2)
+     * Host: "Host: " (6) + host_val + "\r\n" (2)
+     * Content-Length: "Content-Length: " (16) + digits (up to 20) + "\r\n" (2)
+     * Connection: "Connection: keep-alive\r\n" (24)
+     * final CRLF (2)
      */
-    size_t est = strlen(method) + 1 + strlen(url->path) + 11
+    size_t est = strlen(method) + 1 + strlen(url->path) + 11  /* request line */
                + custom_est
-               + 6 + strlen(host_val) + 2
-               + 30
-               + 24
-               + 2;
+               + 6 + host_val_len + 2                          /* Host */
+               + 16 + 20 + 2                                  /* Content-Length */
+               + 24                                            /* Connection */
+               + 2;                                            /* final CRLF */
 
     if (content_type) {
-        est += 16 + strlen(content_type) + 2;
+        est += 14 + strlen(content_type) + 2;  /* "Content-Type: " + value + "\r\n" */
     }
     if (expect_continue) {
-        est += 26;
+        est += 24 + 2;  /* "Expect: 100-continue\r\n" */
     }
     if (!expect_continue) {
         est += body_len;
@@ -259,46 +283,73 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     size_t off = 0;
 
-    off += (size_t)snprintf(buf + off, est - off, "%s %s HTTP/1.1\r\n",
-                            method, url->path);
+    /* Request line: "METHOD /path HTTP/1.1\r\n" */
+    size_t method_len = strlen(method);
+    size_t path_len = strlen(url->path);
+    memcpy(buf + off, method, method_len);
+    off += method_len;
+    buf[off++] = ' ';
+    memcpy(buf + off, url->path, path_len);
+    off += path_len;
+    memcpy(buf + off, " HTTP/1.1\r\n", 11);
+    off += 11;
 
     /* Write custom headers first. */
     for (size_t i = 0; i < custom_header_count; i++) {
         if (!custom_headers[i].name || !custom_headers[i].value) {
             continue;
         }
-        off += (size_t)snprintf(buf + off, est - off, "%s: %s\r\n",
-                                custom_headers[i].name,
-                                custom_headers[i].value);
+        size_t nlen = strlen(custom_headers[i].name);
+        size_t vlen = strlen(custom_headers[i].value);
+        memcpy(buf + off, custom_headers[i].name, nlen);
+        off += nlen;
+        buf[off++] = ':';
+        buf[off++] = ' ';
+        memcpy(buf + off, custom_headers[i].value, vlen);
+        off += vlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
     }
 
     /* Write auto-generated headers, skipping overridden ones. */
     if (!host_overridden) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Host: %s\r\n", host_val);
+        memcpy(buf + off, "Host: ", 6);
+        off += 6;
+        memcpy(buf + off, host_val, host_val_len);
+        off += host_val_len;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
     }
 
     if (!content_length_overridden) {
         if (body_len > 0 || strcmp(method, "POST") == 0 ||
             strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
-            off += (size_t)snprintf(buf + off, est - off,
-                                    "Content-Length: %zu\r\n", body_len);
+            memcpy(buf + off, "Content-Length: ", 16);
+            off += 16;
+            off += http_write_uint(buf + off, body_len);
+            buf[off++] = '\r';
+            buf[off++] = '\n';
         }
     }
 
     if (!content_type_overridden && content_type) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Content-Type: %s\r\n", content_type);
+        memcpy(buf + off, "Content-Type: ", 14);
+        off += 14;
+        size_t ctlen = strlen(content_type);
+        memcpy(buf + off, content_type, ctlen);
+        off += ctlen;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
     }
 
     if (!connection_overridden) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Connection: keep-alive\r\n");
+        memcpy(buf + off, "Connection: keep-alive\r\n", 24);
+        off += 24;
     }
 
     if (!expect_overridden && expect_continue) {
-        off += (size_t)snprintf(buf + off, est - off,
-                                "Expect: 100-continue\r\n");
+        memcpy(buf + off, "Expect: 100-continue\r\n", 22);
+        off += 22;
     }
 
     buf[off++] = '\r';
@@ -315,15 +366,37 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     return buf;
 }
 
+size_t http_write_uint(char* buf, size_t val) {
+    /* Max 20 digits for 64-bit size_t. Write digits in reverse, then flip. */
+    char tmp[20];
+    size_t n = 0;
+    if (val == 0) {
+        buf[0] = '0';
+        return 1;
+    }
+    while (val > 0) {
+        tmp[n++] = (char)('0' + val % 10);
+        val /= 10;
+    }
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = tmp[n - 1 - i];
+    }
+    return n;
+}
+
 bool http_header_eq(const char* a, const char* b) {
-    for (;; a++, b++) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+    /* Fast path: if lengths differ, strings can't be equal. */
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    if (la != lb) {
+        return false;
+    }
+    for (size_t i = 0; i < la; i++) {
+        if (http_lower_table[(uint8_t)a[i]] != http_lower_table[(uint8_t)b[i]]) {
             return false;
         }
-        if (*a == '\0') {
-            return true;
-        }
     }
+    return true;
 }
 
 const char* http_header_find(const http_header_t* headers,
@@ -350,19 +423,18 @@ int http_header_add(http_header_t** headers, size_t* count,
         *cap = new_cap;
     }
 
-    char* n = malloc(name_len + 1);
-    char* v = malloc(value_len + 1);
-    if (!n || !v) {
-        free(n);
-        free(v);
+    /* Single allocation for both name and value strings. */
+    char* block = malloc(name_len + 1 + value_len + 1);
+    if (!block) {
         return -1;
     }
-    memcpy(n, name, name_len);
-    n[name_len] = '\0';
+    memcpy(block, name, name_len);
+    block[name_len] = '\0';
+    char* v = block + name_len + 1;
     memcpy(v, value, value_len);
     v[value_len] = '\0';
 
-    (*headers)[*count].name  = n;
+    (*headers)[*count].name  = block;
     (*headers)[*count].value = v;
     (*count)++;
     return 0;
@@ -370,12 +442,46 @@ int http_header_add(http_header_t** headers, size_t* count,
 
 void http_headers_free(http_header_t* headers, size_t count) {
     for (size_t i = 0; i < count; i++) {
+        /* name and value share a single allocation; value is inside the block. */
         free(headers[i].name);
-        free(headers[i].value);
     }
     free(headers);
 }
 
+
+size_t http_header_scan(const xylem_http_hdr_t* headers, size_t count,
+                        const char** check_names, bool* overridden,
+                        size_t check_count) {
+    size_t found = 0;
+    for (size_t j = 0; j < check_count; j++) {
+        overridden[j] = false;
+    }
+
+    size_t est = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (!headers[i].name || !headers[i].value) {
+            continue;
+        }
+        est += strlen(headers[i].name) + 2
+             + strlen(headers[i].value) + 2;
+
+        /* All check names already matched — skip inner loop. */
+        if (found >= check_count) {
+            continue;
+        }
+        for (size_t j = 0; j < check_count; j++) {
+            if (overridden[j]) {
+                continue;
+            }
+            if (http_header_eq(headers[i].name, check_names[j])) {
+                overridden[j] = true;
+                found++;
+                break;
+            }
+        }
+    }
+    return est;
+}
 
 const char* http_reason_phrase(int status) {
     switch (status) {

@@ -21,13 +21,14 @@
 
 _Pragma("once")
 
-#include "xylem/http/xylem-http-utils.h"
+#include "xylem/http/xylem-http-common.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 /* Opaque types */
-typedef struct xylem_http_cli_res_s xylem_http_cli_res_t;
+typedef struct xylem_http_cli_res_s        xylem_http_cli_res_t;
+typedef struct xylem_http_cookie_jar_s     xylem_http_cookie_jar_t;
 
 /**
  * @brief Per-request options for the HTTP client.
@@ -38,11 +39,12 @@ typedef struct xylem_http_cli_res_s xylem_http_cli_res_t;
  *   headers = NULL, header_count = 0.
  */
 typedef struct {
-    uint64_t                timeout_ms;
-    int                     max_redirects;
-    size_t                  max_body_size;
-    const xylem_http_hdr_t* headers;      /**< Custom request headers, NULL for none. */
-    size_t                  header_count;  /**< Number of custom request headers. */
+    uint64_t                    timeout_ms;
+    int                         max_redirects;
+    size_t                      max_body_size;
+    const xylem_http_hdr_t*     headers;      /**< Custom request headers, NULL for none. */
+    size_t                      header_count;  /**< Number of custom request headers. */
+    xylem_http_cookie_jar_t*    cookie_jar;    /**< Cookie jar for automatic cookie management, NULL to disable. */
 } xylem_http_cli_opts_t;
 
 /**
@@ -175,6 +177,26 @@ extern const void* xylem_http_cli_res_body(const xylem_http_cli_res_t* res);
  * @return Body length in bytes.
  */
 extern size_t xylem_http_cli_res_body_len(const xylem_http_cli_res_t* res);
+
+/**
+ * @brief Create a cookie jar for automatic cookie management.
+ *
+ * The jar stores cookies received via Set-Cookie response headers
+ * and automatically attaches matching cookies to subsequent requests
+ * when passed through xylem_http_cli_opts_t.cookie_jar.
+ *
+ * @return Cookie jar handle on success, NULL on allocation failure.
+ *
+ * @note The caller must free the jar with xylem_http_cookie_jar_destroy().
+ */
+extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
+
+/**
+ * @brief Destroy a cookie jar and free all stored cookies.
+ *
+ * @param jar  Cookie jar handle, or NULL (no-op).
+ */
+extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
 
 /**
  * @brief Destroy a response and free all associated memory.

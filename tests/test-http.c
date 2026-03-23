@@ -21,7 +21,7 @@
 
 #include "assert.h"
 #include "http-common.h"
-#include "xylem/http/xylem-http-utils.h"
+#include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/http/xylem-http-server.h"
 #include "xylem/xylem-loop.h"
@@ -242,6 +242,37 @@ static void test_req_serialize_custom_headers_before_auto(void) {
     free(buf);
 }
 
+static void test_chunked_start_null(void) {
+    /* start_chunked(NULL) must return -1 */
+    ASSERT(xylem_http_conn_start_chunked(NULL, 200, "text/plain", NULL, 0) == -1);
+}
+
+static void test_chunked_send_null(void) {
+    /* send_chunk(NULL) must return -1 */
+    ASSERT(xylem_http_conn_send_chunk(NULL, "data", 4) == -1);
+}
+
+static void test_chunked_send_zero_len(void) {
+    /* send_chunk with len=0 on NULL conn returns -1 (no conn) */
+    ASSERT(xylem_http_conn_send_chunk(NULL, NULL, 0) == -1);
+}
+
+static void test_chunked_end_null(void) {
+    /* end_chunked(NULL) must return -1 */
+    ASSERT(xylem_http_conn_end_chunked(NULL) == -1);
+}
+
+static void test_cookie_jar_create_destroy(void) {
+    xylem_http_cookie_jar_t* jar = xylem_http_cookie_jar_create();
+    ASSERT(jar != NULL);
+    xylem_http_cookie_jar_destroy(jar);
+}
+
+static void test_cookie_jar_destroy_null(void) {
+    /* destroy(NULL) must be a no-op */
+    xylem_http_cookie_jar_destroy(NULL);
+}
+
 int main(void) {
     /* URL percent-encoding */
     test_url_encode_unreserved();
@@ -272,6 +303,16 @@ int main(void) {
     test_req_serialize_override_content_type();
     test_req_serialize_no_custom_headers();
     test_req_serialize_custom_headers_before_auto();
+
+    /* Chunked transfer encoding */
+    test_chunked_start_null();
+    test_chunked_send_null();
+    test_chunked_send_zero_len();
+    test_chunked_end_null();
+
+    /* Cookie jar */
+    test_cookie_jar_create_destroy();
+    test_cookie_jar_destroy_null();
 
     return 0;
 }

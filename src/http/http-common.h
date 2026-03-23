@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem/http/xylem-http-utils.h"
+#include "xylem/http/xylem-http-common.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -161,6 +161,45 @@ extern int http_header_add(http_header_t** headers, size_t* count,
  * @param count    Number of headers.
  */
 extern void http_headers_free(http_header_t* headers, size_t count);
+
+/**
+ * @brief Estimate custom header total size and detect overrides.
+ *
+ * Iterates custom_headers, summing "name: value\r\n" lengths.
+ * For each name in check_names, sets the corresponding overridden
+ * flag to true if a custom header matches (case-insensitive).
+ *
+ * @param headers      Custom header array, or NULL.
+ * @param count        Number of custom headers.
+ * @param check_names  Array of auto-generated header names to check.
+ * @param overridden   Output flags, one per check_names entry.
+ * @param check_count  Number of entries in check_names / overridden.
+ *
+ * @return Total estimated byte size of all custom headers.
+ */
+extern size_t http_header_scan(const xylem_http_hdr_t* headers, size_t count,
+                               const char** check_names, bool* overridden,
+                               size_t check_count);
+
+/**
+ * @brief Write a size_t value as decimal digits into a buffer.
+ *
+ * Does NOT null-terminate. Caller must ensure buf has at least 20 bytes.
+ *
+ * @param buf  Output buffer.
+ * @param val  Value to convert.
+ *
+ * @return Number of bytes written.
+ */
+extern size_t http_write_uint(char* buf, size_t val);
+
+/**
+ * @brief ASCII lowercase lookup table (256 entries).
+ *
+ * Maps uppercase A-Z to lowercase a-z; all other bytes pass through.
+ * Used for fast case-insensitive comparisons without calling tolower().
+ */
+extern const uint8_t http_lower_table[256];
 
 /**
  * @brief Map an HTTP status code to its standard reason phrase.

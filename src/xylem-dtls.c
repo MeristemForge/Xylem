@@ -243,8 +243,13 @@ static int _dtls_init_ssl(xylem_dtls_t* dtls) {
     dtls->read_bio  = BIO_new(BIO_s_mem());
     dtls->write_bio = BIO_new(BIO_s_mem());
     if (!dtls->read_bio || !dtls->write_bio) {
+        /* BIO_free accepts NULL safely. */
+        BIO_free(dtls->read_bio);
+        BIO_free(dtls->write_bio);
         SSL_free(dtls->ssl);
-        dtls->ssl = NULL;
+        dtls->ssl       = NULL;
+        dtls->read_bio  = NULL;
+        dtls->write_bio = NULL;
         return -1;
     }
 
@@ -262,11 +267,11 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
         _dtls_stop_retransmit(dtls);
 
         if (dtls->server) {
-            if (dtls->handler->on_accept) {
+            if (dtls->handler && dtls->handler->on_accept) {
                 dtls->handler->on_accept(dtls);
             }
         } else {
-            if (dtls->handler->on_connect) {
+            if (dtls->handler && dtls->handler->on_connect) {
                 dtls->handler->on_connect(dtls);
             }
         }
@@ -340,7 +345,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
     int  n;
 
     while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
-        if (dtls->handler->on_read) {
+        if (dtls->handler && dtls->handler->on_read) {
             dtls->handler->on_read(dtls, buf, (size_t)n);
         }
         if (dtls->closing) {
@@ -371,11 +376,14 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
 
 static void _dtls_client_close_cb(xylem_udp_t* udp, int err) {
     xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
+    if (!dtls) {
+        return;
+    }
     if (dtls->ssl) {
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;
     }
-    if (dtls->handler->on_close) {
+    if (dtls->handler && dtls->handler->on_close) {
         dtls->handler->on_close(dtls, err);
     }
     /* Defer free to next loop iteration so close_node stays valid. */
@@ -408,7 +416,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         int  n;
 
         while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
-            if (dtls->handler->on_read) {
+            if (dtls->handler && dtls->handler->on_read) {
                 dtls->handler->on_read(dtls, buf, (size_t)n);
             }
             if (dtls->closing) {
@@ -418,6 +426,8 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
 
         int err = SSL_get_error(dtls->ssl, n);
         if (err == SSL_ERROR_ZERO_RETURN) {
+            xylem_dtls_close(dtls);
+        } else if (err != SSL_ERROR_WANT_READ) {
             xylem_dtls_close(dtls);
         }
         return;
@@ -437,6 +447,8 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     xylem_loop_init_timer(server->loop, &dtls->retransmit_timer);
 
     if (_dtls_init_ssl(dtls) != 0) {
+        /* Balance the active_count from xylem_loop_init_timer. */
+        server->loop->active_count--;
         free(dtls);
         return;
     }
@@ -493,7 +505,11 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
     xylem_loop_init_timer(loop, &dtls->retransmit_timer);
 
     if (_dtls_init_ssl(dtls) != 0) {
+        /* Balance the active_count from xylem_loop_init_timer. */
+        loop->active_count--;
+        xylem_udp_set_userdata(udp, NULL);
         xylem_udp_close(udp);
+        free(dtls);
         return NULL;
     }
 
@@ -516,7 +532,7 @@ int xylem_dtls_send(xylem_dtls_t* dtls,
 
     _dtls_flush_write_bio(dtls);
 
-    if (dtls->handler->on_write_done) {
+    if (dtls->handler && dtls->handler->on_write_done) {
         dtls->handler->on_write_done(dtls, (void*)data, len, 0);
     }
 
@@ -548,7 +564,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
             dtls->ssl = NULL;
         }
 
-        if (dtls->handler->on_close) {
+        if (dtls->handler && dtls->handler->on_close) {
             dtls->handler->on_close(dtls, 0);
         }
 
