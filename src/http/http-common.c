@@ -465,7 +465,7 @@ size_t http_header_scan(const xylem_http_hdr_t* headers, size_t count,
         est += strlen(headers[i].name) + 2
              + strlen(headers[i].value) + 2;
 
-        /* All check names already matched — skip inner loop. */
+        /* All check names already matched -- skip inner loop. */
         if (found >= check_count) {
             continue;
         }

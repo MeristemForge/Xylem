@@ -24,6 +24,32 @@ _Pragma("once")
 #include "xylem.h"
 
 /**
+ * @brief Compute the exact encoded size for Base64.
+ *
+ * Returns the number of bytes that xylem_base64_encode_std() or
+ * xylem_base64_encode_url() (with padding) will produce for a given
+ * input length.
+ *
+ * @param slen  Length of the input data in bytes.
+ *
+ * @return Exact encoded output size in bytes.
+ */
+extern int xylem_base64_encode_size(int slen);
+
+/**
+ * @brief Compute the maximum decoded size for Base64.
+ *
+ * Returns the maximum number of bytes that xylem_base64_decode_std() or
+ * xylem_base64_decode_url() may produce for a given encoded length.
+ * The actual decoded size may be smaller when padding is present.
+ *
+ * @param slen  Length of the Base64-encoded input in bytes.
+ *
+ * @return Maximum decoded output size in bytes.
+ */
+extern int xylem_base64_decode_size(int slen);
+
+/**
  * @brief Encode binary data using standard Base64 (RFC 4648 compliant).
  *
  * Encodes input bytes into a Base64 string using the standard alphabet
@@ -36,9 +62,7 @@ _Pragma("once")
  *
  * @return Number of bytes written to `dst` on success; -1 if `dlen` is insufficient.
  *
- * @note The caller must ensure that:
- *       dlen >= ((slen + 2) / 3) * 4
- *       Examples: slen=3 -> dlen>=4; slen=1 -> dlen>=4; slen=0 -> dlen>=0.
+ * @note Use xylem_base64_encode_size() to determine the required dlen.
  */
 extern int xylem_base64_encode_std(const uint8_t* src, int slen, uint8_t* dst, int dlen);
 
@@ -57,10 +81,7 @@ extern int xylem_base64_encode_std(const uint8_t* src, int slen, uint8_t* dst, i
  * @return Number of decoded bytes on success; -1 on error (e.g., invalid character,
  *         incorrect padding, or insufficient `dlen`).
  *
- * @note The caller must ensure that:
- *       dlen >= ((slen + 3) / 4) * 3
- *       This is the maximum possible output size (even if the input contains padding).
- *       Examples: slen=4 -> dlen>=3; slen=8 -> dlen>=6.
+ * @note Use xylem_base64_decode_size() to determine the required dlen.
  */
 extern int xylem_base64_decode_std(const uint8_t* src, int slen, uint8_t* dst, int dlen);
 
@@ -78,9 +99,7 @@ extern int xylem_base64_decode_std(const uint8_t* src, int slen, uint8_t* dst, i
  *
  * @return Number of bytes written to `dst` on success; -1 if `dlen` is insufficient.
  *
- * @note The caller must ensure that:
- *       dlen >= ((slen + 2) / 3) * 4
- *       This upper bound applies regardless of the `padding` setting.
+ * @note Use xylem_base64_encode_size() to determine the required dlen.
  */
 extern int xylem_base64_encode_url(const uint8_t* src, int slen, uint8_t* dst, int dlen, bool padding);
 
@@ -100,8 +119,6 @@ extern int xylem_base64_encode_url(const uint8_t* src, int slen, uint8_t* dst, i
  *
  * @return Number of decoded bytes on success; -1 on error.
  *
- * @note The caller must ensure that:
- *       dlen >= ((slen + 3) / 4) * 3
- *       This represents the theoretical maximum output size for any valid input.
+ * @note Use xylem_base64_decode_size() to determine the required dlen.
  */
 extern int xylem_base64_decode_url(const uint8_t* src, int slen, uint8_t* dst, int dlen, bool padding);

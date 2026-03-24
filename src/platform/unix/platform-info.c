@@ -35,6 +35,14 @@ void platform_info_getlocaltime(
     localtime_r(time, tm);
 }
 
+void platform_info_gmtime(const time_t* t, struct tm* tm) {
+    gmtime_r(t, tm);
+}
+
+time_t platform_info_mkgmtime(struct tm* tm) {
+    return timegm(tm);
+}
+
 #if defined(__APPLE__)
 platform_tid_t platform_info_gettid(void) {
     uint64_t tid;

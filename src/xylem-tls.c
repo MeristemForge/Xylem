@@ -23,13 +23,17 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int _tls_ex_data_idx = -1;
 
 struct xylem_tls_ctx_s {
     SSL_CTX* ssl_ctx;
     uint8_t* alpn_wire;   /* wire-format ALPN for client protos */
     size_t   alpn_wire_len;
+    FILE*    keylog_file;
 };
 
 struct xylem_tls_s {
@@ -56,6 +60,16 @@ struct xylem_tls_server_s {
     xylem_list_t          connections;
     bool                  closing;
 };
+
+static void _tls_keylog_cb(const SSL* ssl, const char* line) {
+    SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
+    xylem_tls_ctx_t* ctx =
+        (xylem_tls_ctx_t*)SSL_CTX_get_ex_data(ssl_ctx, _tls_ex_data_idx);
+    if (ctx && ctx->keylog_file) {
+        fprintf(ctx->keylog_file, "%s\n", line);
+        fflush(ctx->keylog_file);
+    }
+}
 
 static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
                                unsigned char* outlen,
@@ -96,6 +110,14 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
 
     /* Enable peer verification by default. */
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
+
+    /* Register ex_data index once for keylog callback to recover ctx. */
+    if (_tls_ex_data_idx == -1) {
+        _tls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL,
+                                                     NULL, NULL, NULL);
+    }
+    SSL_CTX_set_ex_data(ctx->ssl_ctx, _tls_ex_data_idx, ctx);
+
     return ctx;
 }
 
@@ -103,9 +125,37 @@ void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+    }
     SSL_CTX_free(ctx->ssl_ctx);
     free(ctx->alpn_wire);
     free(ctx);
+}
+
+int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
+    if (!ctx) {
+        return -1;
+    }
+
+    /* Close any previously opened keylog file. */
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+        ctx->keylog_file = NULL;
+    }
+
+    if (!path) {
+        SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
+        return 0;
+    }
+
+    ctx->keylog_file = fopen(path, "a");
+    if (!ctx->keylog_file) {
+        return -1;
+    }
+
+    SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tls_keylog_cb);
+    return 0;
 }
 
 int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
@@ -505,7 +555,7 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
 
     /**
      * Detach all TLS sessions from the server before closing them.
-     * xylem_tls_close is async — _tls_tcp_close_cb may fire after
+     * xylem_tls_close is async -- _tls_tcp_close_cb may fire after
      * server is freed, so tls->server must be NULL by then.
      */
     xylem_list_node_t* node = xylem_list_head(&server->connections);

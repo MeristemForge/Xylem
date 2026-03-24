@@ -55,6 +55,12 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **dtls** | DTLS client/server over UDP (OpenSSL, cookie verification) | ✅ |
 | **http** | HTTP/1.1 sync client and async server (built on tcp/tls, llhttp parser) | 🚧 |
 
+### Compression
+
+| Module | Description | Status |
+|--------|-------------|--------|
+| **gzip** | Gzip/deflate compression and decompression (bundled miniz) | ✅ |
+
 ### Serialization
 
 | Module | Description |

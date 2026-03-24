@@ -72,3 +72,24 @@ extern int platform_info_getcpus(void);
  * @param tm    Pointer to the struct tm to receive the result.
  */
 extern void platform_info_getlocaltime(const time_t* restrict time, struct tm* restrict tm);
+
+/**
+ * @brief Convert a time_t value to UTC broken-down time.
+ *
+ * Uses gmtime_s on Windows, gmtime_r on Unix.
+ *
+ * @param t   Pointer to the calendar time.
+ * @param tm  Pointer to the struct tm to receive the result.
+ */
+extern void platform_info_gmtime(const time_t* t, struct tm* tm);
+
+/**
+ * @brief Convert UTC broken-down time to time_t.
+ *
+ * Uses _mkgmtime on Windows, timegm on Unix.
+ *
+ * @param tm  Pointer to the UTC broken-down time.
+ *
+ * @return Corresponding time_t value, or (time_t)-1 on failure.
+ */
+extern time_t platform_info_mkgmtime(struct tm* tm);

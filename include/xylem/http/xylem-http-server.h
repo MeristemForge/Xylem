@@ -35,19 +35,62 @@ typedef struct xylem_http_srv_s     xylem_http_srv_t;
 typedef struct xylem_http_router_s  xylem_http_router_t;
 
 /**
+ * @brief Response writer handle.
+ *
+ * Alias for the connection handle, used in request callbacks to
+ * build and send the HTTP response (set_status, set_header, write).
+ * Conceptually equivalent to Go's http.ResponseWriter.
+ */
+typedef xylem_http_conn_t xylem_http_writer_t;
+
+/**
  * @brief Server request callback.
  *
  * Invoked when a complete HTTP request has been received. The
- * connection and request handles are valid only within this callback.
+ * writer and request handles are valid only within this callback.
  *
- * @param conn      Connection handle for sending the response.
+ * @param writer    Response writer for sending the response.
  * @param req       Parsed request (method, URL, headers, body).
  * @param userdata  User-supplied pointer from the server config.
  */
-typedef void (*xylem_http_on_request_fn_t)(xylem_http_conn_t* conn,
+typedef void (*xylem_http_on_request_fn_t)(xylem_http_writer_t* writer,
                                            xylem_http_req_t* req,
                                            void* userdata);
 
+/**
+ * @brief Middleware callback.
+ *
+ * Invoked before the route handler during xylem_http_router_dispatch().
+ * Middleware functions run in registration order. Return 0 to continue
+ * to the next middleware or the route handler. Return -1 to abort the
+ * chain (the middleware must send a response before returning -1).
+ *
+ * @param writer    Response writer for sending a response.
+ * @param req       Parsed request (method, URL, headers, body).
+ * @param userdata  User-supplied pointer from xylem_http_router_use().
+ *
+ * @return 0 to continue, -1 to abort the chain.
+ */
+typedef int (*xylem_http_middleware_fn_t)(xylem_http_writer_t* writer,
+                                         xylem_http_req_t* req,
+                                         void* userdata);
+
+
+/**
+ * @brief Gzip response compression options.
+ *
+ * Configure via xylem_http_srv_set_gzip(). When enabled, responses
+ * whose Content-Type matches a compressible MIME type and whose body
+ * exceeds min_size are automatically gzip-compressed if the client
+ * advertises Accept-Encoding: gzip.
+ */
+typedef struct {
+    bool        enabled;     /**< Global on/off switch, default false. */
+    int         level;       /**< Compression level 1-9, 0 = default (6). */
+    size_t      min_size;    /**< Minimum body size to compress, default 1024. */
+    const char* mime_types;  /**< Comma-separated compressible MIME types,
+                                  NULL = built-in defaults. */
+} xylem_http_gzip_opts_t;
 
 /**
  * @brief Server configuration.
@@ -112,6 +155,21 @@ extern void xylem_http_srv_stop(xylem_http_srv_t* srv);
 extern void xylem_http_srv_destroy(xylem_http_srv_t* srv);
 
 /**
+ * @brief Configure gzip response compression.
+ *
+ * When enabled, the server automatically compresses response bodies
+ * that match the configured MIME types and exceed the minimum size
+ * threshold, provided the client sends Accept-Encoding: gzip.
+ *
+ * @param srv   Server handle.
+ * @param opts  Gzip options. The struct is copied; the caller may
+ *              free it after this call. mime_types string must remain
+ *              valid for the server lifetime if non-NULL.
+ */
+extern void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
+                                    const xylem_http_gzip_opts_t* opts);
+
+/**
  * @brief Get the request method string.
  *
  * @param req  Request handle.
@@ -161,173 +219,82 @@ extern const void* xylem_http_req_body(const xylem_http_req_t* req);
 extern size_t xylem_http_req_body_len(const xylem_http_req_t* req);
 
 /**
- * @brief Send an HTTP response on a connection.
+ * @brief Build an SSE-formatted message string.
  *
- * Serializes a complete HTTP/1.1 response with status line,
- * Content-Type, Content-Length, and body. Custom headers are
- * written before auto-generated headers; a custom header whose
- * name matches an auto-generated one (case-insensitive) overrides it.
+ * Allocates and returns a string in SSE wire format:
+ * "event: {event}\ndata: {data}\n\n". When event is NULL,
+ * the "event:" line is omitted. Multi-line data is split
+ * into separate "data:" lines per the SSE specification.
  *
- * @param conn          Connection handle.
- * @param status_code   HTTP status code (e.g. 200, 404).
- * @param content_type  Content-Type header value.
- * @param body          Response body, or NULL for empty body.
- * @param body_len      Body length in bytes.
- * @param headers       Custom response headers, or NULL for none.
- * @param header_count  Number of custom response headers.
+ * The caller must free() the returned pointer.
  *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_http_conn_send(xylem_http_conn_t* conn,
-                                 int status_code,
-                                 const char* content_type,
-                                 const void* body, size_t body_len,
-                                 const xylem_http_hdr_t* headers,
-                                 size_t header_count);
-
-/**
- * @brief Begin a chunked transfer-encoded response.
- *
- * Sends the status line, Transfer-Encoding: chunked header,
- * Content-Type, and any custom headers. Does not send a body.
- * After this call, use xylem_http_conn_send_chunk() to send
- * body fragments and xylem_http_conn_end_chunked() to finish.
- *
- * @param conn          Connection handle.
- * @param status_code   HTTP status code (e.g. 200).
- * @param content_type  Content-Type header value, or NULL.
- * @param headers       Custom response headers, or NULL for none.
- * @param header_count  Number of custom response headers.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
-                                         int status_code,
-                                         const char* content_type,
-                                         const xylem_http_hdr_t* headers,
-                                         size_t header_count);
-
-/**
- * @brief Send a single chunk in a chunked response.
- *
- * Formats the data as a chunked transfer-encoding frame
- * ({hex_size}\r\n{data}\r\n) and sends it on the connection.
- *
- * @param conn  Connection handle.
- * @param data  Chunk data.
- * @param len   Chunk length in bytes. If 0, this is a no-op.
- *
- * @return 0 on success, -1 on failure (connection closed or not
- *         in chunked mode).
- */
-extern int xylem_http_conn_send_chunk(xylem_http_conn_t* conn,
-                                      const void* data, size_t len);
-
-/**
- * @brief End a chunked transfer-encoded response.
- *
- * Sends the terminating zero-length chunk (0\r\n\r\n) and
- * handles keep-alive: resets the parser for the next request
- * or closes the connection.
- *
- * @param conn  Connection handle.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_http_conn_end_chunked(xylem_http_conn_t* conn);
-
-/**
- * @brief Send a partial content (206) or range-not-satisfiable (416) response.
- *
- * When range_start <= range_end and range_end < total_size, sends a
- * 206 Partial Content response with the Content-Range header set to
- * "bytes start-end/total". Otherwise sends a 416 Range Not Satisfiable
- * response with Content-Range set to "bytes * /total".
- *
- * @param conn          Connection handle.
- * @param content_type  Content-Type header value.
- * @param body          Response body slice, or NULL for 416.
- * @param body_len      Body length in bytes.
- * @param range_start   First byte position of the range.
- * @param range_end     Last byte position of the range (inclusive).
- * @param total_size    Total size of the complete resource.
- * @param headers       Custom response headers, or NULL for none.
- * @param header_count  Number of custom response headers.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_http_conn_send_partial(xylem_http_conn_t* conn,
-                                        const char* content_type,
-                                        const void* body, size_t body_len,
-                                        size_t range_start, size_t range_end,
-                                        size_t total_size,
-                                        const xylem_http_hdr_t* headers,
-                                        size_t header_count);
-
-/**
- * @brief Begin a Server-Sent Events stream.
- *
- * Sends status 200 with Content-Type: text/event-stream,
- * Cache-Control: no-cache, and Connection: keep-alive using
- * chunked transfer encoding internally.
- *
- * @param conn          Connection handle.
- * @param headers       Custom response headers, or NULL for none.
- * @param header_count  Number of custom response headers.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_http_conn_start_sse(xylem_http_conn_t* conn,
-                                     const xylem_http_hdr_t* headers,
-                                     size_t header_count);
-
-/**
- * @brief Send a single SSE event.
- *
- * Formats the event as "event: {event}\ndata: {data}\n\n".
- * When event is NULL, the "event:" line is omitted.
- * Multi-line data is split into separate "data:" lines.
- *
- * @param conn   Connection handle.
  * @param event  Event type string, or NULL for data-only.
- * @param data   Event data string.
+ * @param data   Event data string (must not be NULL).
+ * @param len    If non-NULL, receives the byte length of the result.
+ *
+ * @return Heap-allocated SSE string, or NULL on failure.
+ */
+extern char* xylem_http_sse_build(const char* event,
+                                  const char* data,
+                                  size_t* len);
+
+/**
+ * @brief Buffer a response header.
+ *
+ * Accumulates headers until the first xylem_http_writer_write() call,
+ * which flushes them automatically. If a header with the same name
+ * already exists in the buffer, its value is replaced (last-write-wins).
+ *
+ * Must be called before the first write. Returns -1 if headers have
+ * already been sent.
+ *
+ * @param writer  Response writer handle.
+ * @param name    Header name (copied internally).
+ * @param value   Header value (copied internally).
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_conn_send_event(xylem_http_conn_t* conn,
-                                      const char* event,
-                                      const char* data);
+extern int xylem_http_writer_set_header(xylem_http_writer_t* writer,
+                                        const char* name,
+                                        const char* value);
 
 /**
- * @brief Send a data-only SSE message.
+ * @brief Set the response status code.
  *
- * Equivalent to xylem_http_conn_send_event(conn, NULL, data).
+ * Must be called before the first write. If not called, defaults
+ * to 200. Returns -1 if headers have already been sent.
  *
- * @param conn  Connection handle.
- * @param data  Event data string.
+ * @param writer       Response writer handle.
+ * @param status_code  HTTP status code (e.g. 200, 404).
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_conn_send_sse_data(xylem_http_conn_t* conn,
-                                         const char* data);
+extern int xylem_http_writer_set_status(xylem_http_writer_t* writer,
+                                        int status_code);
 
 /**
- * @brief End a Server-Sent Events stream.
+ * @brief Write response body data.
  *
- * Sends the terminating chunk and handles keep-alive or close.
+ * On the first call, automatically sends the status line and all
+ * buffered headers with Transfer-Encoding: chunked. Subsequent
+ * calls send additional chunks. The framework automatically
+ * finalizes the response when the request callback returns.
  *
- * @param conn  Connection handle.
+ * @param writer  Response writer handle.
+ * @param data    Body data to write.
+ * @param len     Data length in bytes. If 0, this is a no-op.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_conn_end_sse(xylem_http_conn_t* conn);
+extern int xylem_http_writer_write(xylem_http_writer_t* writer,
+                                   const void* data, size_t len);
 
 /**
- * @brief Close a client connection.
+ * @brief Close the underlying connection.
  *
- * @param conn  Connection handle.
+ * @param writer  Response writer handle.
  */
-extern void xylem_http_conn_close(xylem_http_conn_t* conn);
+extern void xylem_http_writer_close(xylem_http_writer_t* writer);
 
 /**
  * @brief Get a path parameter value extracted during routing.
@@ -388,7 +355,29 @@ extern int xylem_http_router_add(xylem_http_router_t* router,
                                  void* userdata);
 
 /**
+ * @brief Register a global middleware on the router.
+ *
+ * Middleware functions run in registration order before the matched
+ * route handler during xylem_http_router_dispatch(). If any middleware
+ * returns -1, the chain is aborted and the route handler is not called.
+ * The middleware that aborts is responsible for sending a response.
+ *
+ * @param router   Router handle.
+ * @param fn       Middleware callback.
+ * @param userdata User-supplied pointer passed to fn.
+ *
+ * @return 0 on success, -1 on failure (bad args, allocation error).
+ */
+extern int xylem_http_router_use(xylem_http_router_t* router,
+                                 xylem_http_middleware_fn_t fn,
+                                 void* userdata);
+
+/**
  * @brief Dispatch a request to the best matching route.
+ *
+ * Runs all registered middleware in order before calling the
+ * matched route handler. If any middleware returns -1, the chain
+ * is aborted and the handler is not called.
  *
  * Matching priority: exact > path-param > wildcard prefix.
  * Among same type, longer patterns win. Specific method wins
@@ -396,11 +385,48 @@ extern int xylem_http_router_add(xylem_http_router_t* router,
  * a 404 Not Found response.
  *
  * @param router  Router handle.
- * @param conn    Connection handle.
+ * @param writer  Response writer handle.
  * @param req     Request handle.
  *
- * @return 0 if a route matched, -1 if 404 was sent.
+ * @return 0 if a route matched, -1 if 404 was sent or middleware aborted.
  */
 extern int xylem_http_router_dispatch(xylem_http_router_t* router,
-                                      xylem_http_conn_t* conn,
+                                      xylem_http_writer_t* writer,
                                       xylem_http_req_t* req);
+
+/**
+ * @brief Static file server configuration.
+ *
+ * Pass to xylem_http_static_serve() to register a static file
+ * handler on a router prefix.
+ */
+typedef struct {
+    const char* root;          /**< File system root directory. */
+    const char* index_file;    /**< Default document, NULL = "index.html". */
+    int         max_age;       /**< Cache-Control max-age seconds, 0 = omit. */
+    bool        precompressed; /**< Look for .gz pre-compressed files. */
+} xylem_http_static_opts_t;
+
+/**
+ * @brief Register a static file handler on a router.
+ *
+ * Maps URL paths under prefix to files under opts->root.
+ * Supports GET and HEAD methods. Returns 404 for missing files,
+ * 405 for other methods, 403 for directory listings without an
+ * index file. Prevents path traversal attacks.
+ *
+ * When precompressed is true and the client accepts gzip, the
+ * handler looks for a .gz sibling file before reading the original.
+ *
+ * @param router  Router handle.
+ * @param prefix  URL prefix (e.g. "/static"). Must end with "/*"
+ *                or the function appends it internally.
+ * @param opts    Static file options. The struct is copied; root and
+ *                index_file strings must remain valid for the router
+ *                lifetime.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_static_serve(xylem_http_router_t* router,
+                                   const char* prefix,
+                                   const xylem_http_static_opts_t* opts);

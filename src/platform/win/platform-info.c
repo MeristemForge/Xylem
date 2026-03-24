@@ -40,3 +40,11 @@ void platform_info_getlocaltime(
     _tzset();
     localtime_s(tm, time);
 }
+
+void platform_info_gmtime(const time_t* t, struct tm* tm) {
+    gmtime_s(tm, t);
+}
+
+time_t platform_info_mkgmtime(struct tm* tm) {
+    return _mkgmtime(tm);
+}

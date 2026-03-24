@@ -187,7 +187,7 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
             /* max_age is stored as int; the caller's cors struct
                must remain valid, so we use a static buffer approach.
                Since this is single-threaded per request, a small
-               static buffer per call is fine — but we need the value
+               static buffer per call is fine -- but we need the value
                to persist. We use the fact that max_age fits in a
                fixed-size string. Caller must consume headers before
                the next call. */

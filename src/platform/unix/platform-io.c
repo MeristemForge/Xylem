@@ -21,6 +21,9 @@
 
 #include "platform/platform-io.h"
 
+#include <sys/types.h>
+#include <sys/stat.h>
+
 FILE* platform_io_fopen(const char* restrict file, const char* restrict mode) {
     return fopen(file, mode);
 }
@@ -28,3 +31,16 @@ FILE* platform_io_fopen(const char* restrict file, const char* restrict mode) {
 int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap) {
     return vsnprintf(str, size, format, ap);
 }
+
+int platform_io_stat(const char* path, platform_io_stat_t* out) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    out->size   = (int64_t)st.st_size;
+    out->mtime  = st.st_mtime;
+    out->is_dir = S_ISDIR(st.st_mode);
+    return 0;
+}
+
+

@@ -318,19 +318,21 @@
 3. WHEN a custom header overrides an auto-generated header, the parsed result SHALL contain the custom value and not the auto-generated value
 
 
-### Requirement 25: 服务器端 Chunked Transfer Encoding 响应
+### Requirement 25: 服务器端 Chunked Transfer Encoding 响应（已废弃 — 由 Requirement 32 write() 取代）
 
 **User Story:** 作为开发者，我希望服务器能以 chunked 方式逐步发送响应数据，以便在响应体大小未知时（如流式生成内容）也能正确传输。
 
+> **注意:** `begin_chunked`、`send_chunk`、`end_chunked` 已从公共 API 中移除。用户应使用 `write()` 发送流式数据（内部自动使用 chunked transfer encoding）。这些函数仍作为内部实现保留，但不再暴露给用户。
+
 #### Acceptance Criteria
 
-1. THE HTTP_Connection SHALL provide `xylem_http_conn_start_chunked` to begin a chunked response, sending the status line, headers（含 `Transfer-Encoding: chunked`），但不发送 body
-2. THE HTTP_Connection SHALL provide `xylem_http_conn_send_chunk` to send a single chunk,格式为 `{hex_size}\r\n{data}\r\n`
-3. THE HTTP_Connection SHALL provide `xylem_http_conn_end_chunked` to send the terminating chunk `0\r\n\r\n`，标志响应结束
-4. WHEN `xylem_http_conn_start_chunked` is called, THE HTTP_Connection SHALL NOT include a Content-Length header in the response
-5. WHEN `xylem_http_conn_send_chunk` is called with data of length 0, THE HTTP_Connection SHALL treat it as a no-op and return 0
-6. WHEN `xylem_http_conn_end_chunked` is called, THE HTTP_Connection SHALL handle keep-alive: 如果连接是 keep-alive 则重置解析器等待下一个请求，否则关闭连接
-7. IF any chunked API is called on a closed connection, THEN THE HTTP_Connection SHALL return -1
+1. ~~THE HTTP_Connection SHALL provide `xylem_http_conn_begin_chunked`~~ (removed from public API)
+2. ~~THE HTTP_Connection SHALL provide `xylem_http_conn_send_chunk`~~ (removed from public API)
+3. ~~THE HTTP_Connection SHALL provide `xylem_http_conn_end_chunked`~~ (removed from public API)
+4. WHEN `write()` is used, THE HTTP_Connection SHALL NOT include a Content-Length header unless the user explicitly set one via `set_header`
+5. WHEN `write()` is called with data of length 0, THE HTTP_Connection SHALL treat it as a no-op and return 0
+6. WHEN the request callback returns, THE framework SHALL automatically send the terminating chunk and handle keep-alive
+7. IF any write API is called on a closed connection, THEN THE HTTP_Connection SHALL return -1
 
 ### Requirement 26: 客户端 Cookie 管理
 
@@ -380,14 +382,16 @@
 
 **User Story:** 作为开发者，我希望服务器能以 SSE 协议向客户端推送事件流，以便实现实时通知、LLM 流式输出等场景。
 
+> **注意:** `begin_sse` 和 `end_sse` 已从公共 API 中移除。用户通过 `set_header("Content-Type", "text/event-stream")` + `send_event()`/`send_sse_data()` 发送 SSE 事件，框架自动处理 chunked 传输和流结束。`send_event` 和 `send_sse_data` 内部使用 `write()` 发送格式化的 SSE 数据。
+
 #### Acceptance Criteria
 
-1. THE HTTP_Connection SHALL provide `xylem_http_conn_start_sse` to begin an SSE stream，发送 status 200、`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive` headers
+1. ~~THE HTTP_Connection SHALL provide `xylem_http_conn_start_sse`~~ (removed — user sets headers manually via `set_header`)
 2. THE HTTP_Connection SHALL provide `xylem_http_conn_send_event` to send a single SSE event，格式为 `event: {event}\ndata: {data}\n\n`（event 参数可选，为 NULL 时省略 event 行）
 3. THE HTTP_Connection SHALL provide `xylem_http_conn_send_sse_data` to send a data-only SSE message，格式为 `data: {data}\n\n`
 4. WHEN data contains newlines, THE HTTP_Connection SHALL split data into multiple `data:` lines（每行一个 `data:` 前缀）
-5. THE HTTP_Connection SHALL provide `xylem_http_conn_end_sse` to end the SSE stream and handle keep-alive/close
-6. SSE 内部使用 chunked transfer encoding 传输，`xylem_http_conn_start_sse` 内部调用 `xylem_http_conn_start_chunked`
+5. ~~THE HTTP_Connection SHALL provide `xylem_http_conn_end_sse`~~ (removed — framework auto-finishes on callback return)
+6. SSE 内部使用 chunked transfer encoding 传输，`send_event`/`send_sse_data` 内部调用 `write()`
 7. IF any SSE API is called on a closed connection, THEN THE HTTP_Connection SHALL return -1
 
 ### Requirement 30: 服务器端 Multipart/Form-Data 解析
@@ -424,3 +428,60 @@
 9. method 参数为 NULL 时表示匹配所有 HTTP 方法
 10. THE `xylem_http_router_add` SHALL return 0 on success, -1 on failure (e.g. duplicate route, allocation failure)
 
+### Requirement 32: API 简化 — 删除 send/chunked/sse 公共函数，统一为 write()
+
+**User Story:** 作为开发者，我希望服务器端只需 `set_header()` + `set_status()` + `write()` 三个函数即可完成所有响应场景（与 Go `net/http` 的 `ResponseWriter` 一致），以便减少 API 认知负担。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Connection SHALL remove `xylem_http_conn_send` from the public API（删除声明和实现）
+2. THE HTTP_Connection SHALL remove `xylem_http_conn_begin_chunked` from the public API
+3. THE HTTP_Connection SHALL remove `xylem_http_conn_send_chunk` from the public API
+4. THE HTTP_Connection SHALL remove `xylem_http_conn_end_chunked` from the public API
+5. THE HTTP_Connection SHALL remove `xylem_http_conn_begin_sse` from the public API
+6. THE HTTP_Connection SHALL remove `xylem_http_conn_end_sse` from the public API
+7. THE HTTP_Connection SHALL keep `xylem_http_conn_send_event` and `xylem_http_conn_send_sse_data` in the public API, but change their internals to call `write()` instead of `send_chunk()`
+8. THE HTTP_Connection SHALL remove `xylem_http_conn_send_partial` from the public API（改为 static 内部函数，仅 static file handler 使用；用户可通过 `set_status(206)` + `set_header("Content-Range", ...)` + `set_header("Content-Length", ...)` + `write()` 实现相同功能）
+9. WHEN the user sets `Content-Length` via `set_header("Content-Length", "N")`, THE `write()` SHALL send raw data without chunked framing（Content-Length 模式）
+10. WHEN the user does NOT set `Content-Length`, THE `write()` SHALL use chunked transfer encoding（与当前行为一致）
+11. THE framework SHALL auto-finish the response when the `on_request` callback returns（与当前行为一致）
+12. ALL internal callers (router 404, static file handler, `send_partial`) SHALL be updated to use `set_header`/`set_status`/`write` or internal equivalents
+13. ALL examples SHALL be updated to use the new API
+14. ALL tests for deleted functions SHALL be removed; new tests for Content-Length mode SHALL be added
+
+### Requirement 33: write() 流式 gzip 压缩
+
+**User Story:** 作为开发者，我希望 `write()` 能自动对流式数据进行 gzip 压缩，以便在 chunked 传输模式下也能享受压缩带来的带宽节省。
+
+#### Acceptance Criteria
+
+1. WHEN gzip is enabled on the server AND the client sends `Accept-Encoding: gzip` AND the response Content-Type matches a compressible MIME type, THE `write()` SHALL automatically compress each chunk through a streaming gzip compressor
+2. THE HTTP_Connection SHALL maintain a `mz_stream` gzip context on the connection, initialized on the first `write()` call when gzip conditions are met
+3. WHEN streaming gzip is active, THE first `write()` SHALL add `Content-Encoding: gzip` and `Vary: Accept-Encoding` to the response headers before flushing them
+4. WHEN streaming gzip is active, each `write()` call SHALL pass data through `mz_deflate(MZ_SYNC_FLUSH)` and send the compressed output as a chunk
+5. WHEN the request callback returns and streaming gzip is active, THE framework SHALL finalize the gzip stream with `mz_deflate(MZ_FINISH)`, send any remaining compressed data, then send the terminating chunk
+6. WHEN the user explicitly sets `Content-Encoding` via `set_header`, THE `write()` SHALL NOT apply automatic gzip compression（用户已自行处理编码）
+7. WHEN the user sets `Content-Length` via `set_header`, THE `write()` SHALL NOT apply gzip compression（Content-Length 模式下压缩会改变长度，不兼容）
+8. THE streaming gzip context SHALL be cleaned up in `_http_srv_resp_reset` along with other writer state
+9. WHEN gzip compression fails (e.g. `mz_deflateInit2` returns error), THE `write()` SHALL fall back to sending uncompressed data
+
+
+### Requirement 34: SSLKEYLOGFILE 支持
+
+**User Story:** 作为开发者，我希望能通过 API 启用 TLS/DTLS key material 导出，以便我用 Wireshark 解密调试 HTTPS/DTLS 流量。
+
+> **注意:** 此功能通过 `xylem_tls_ctx_set_keylog` 和 `xylem_dtls_ctx_set_keylog` 两个 setter 函数启用，HTTPS server/client 通过 TLS 层自动继承。
+
+#### Acceptance Criteria
+
+1. THE `xylem_tls_ctx_t` SHALL provide `xylem_tls_ctx_set_keylog(ctx, path)` to enable keylog output to the specified file
+2. THE `xylem_dtls_ctx_t` SHALL provide `xylem_dtls_ctx_set_keylog(ctx, path)` to enable keylog output to the specified file
+3. WHEN `set_keylog` is called with a valid path, THE ctx SHALL open the file in append mode and register an OpenSSL keylog callback via `SSL_CTX_set_keylog_callback`
+4. WHEN the keylog callback is invoked, THE callback SHALL write the key line followed by a newline to the file and flush immediately
+5. WHEN `set_keylog` is called with NULL, THE ctx SHALL disable keylog output and close the file if open
+6. WHEN `set_keylog` is not called, THE ctx SHALL NOT register any keylog callback (zero overhead)
+7. THE keylog output format SHALL follow the NSS Key Log Format (as expected by Wireshark): one line per secret, format `<label> <client_random> <secret>`
+8. THE `fprintf` + `fflush` pattern SHALL be thread-safe by relying on stdio's internal locking (POSIX and Windows guarantee this)
+9. WHEN the HTTPS server or client creates a `xylem_tls_ctx_t` and calls `set_keylog`, THE keylog feature SHALL automatically apply to all connections using that ctx
+10. THE keylog file handle SHALL be stored per-ctx (not global), so different contexts can log to different files
+11. THE `xylem_tls_ctx_destroy` / `xylem_dtls_ctx_destroy` SHALL close the keylog file handle if open

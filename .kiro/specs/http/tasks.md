@@ -193,11 +193,11 @@
   - 所有自定义头部相关代码编译通过，所有新增单元测试通过（30/30）。
 
 - [x] 17. 服务器端 Chunked Transfer Encoding 响应
-  - [x] 17.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_start_chunked`、`xylem_http_conn_send_chunk`、`xylem_http_conn_end_chunked` 函数声明（含 Doxygen 注释）
+  - [x] 17.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_begin_chunked`、`xylem_http_conn_send_chunk`、`xylem_http_conn_end_chunked` 函数声明（含 Doxygen 注释）
     - _Requirements: 25.1, 25.2, 25.3_
   - [x] 17.2 在 `src/http/xylem-http-server.c` 的 `xylem_http_conn_s` 中新增 `bool chunked_active` 字段
     - _Requirements: 25.1_
-  - [x] 17.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_start_chunked`：序列化 status line + Transfer-Encoding: chunked + 自定义 headers + Content-Type（不含 Content-Length），发送后设置 `chunked_active = true`
+  - [x] 17.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_begin_chunked`：序列化 status line + Transfer-Encoding: chunked + 自定义 headers + Content-Type（不含 Content-Length），发送后设置 `chunked_active = true`
     - _Requirements: 25.1, 25.4, 25.7_
   - [x] 17.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_chunk`：格式化 `{hex_size}\r\n{data}\r\n` 并发送，len=0 时 no-op 返回 0，连接关闭或非 chunked 模式返回 -1
     - _Requirements: 25.2, 25.5, 25.7_
@@ -264,7 +264,7 @@
 - [x] 25. 服务器端 SSE (Server-Sent Events)
   - [x] 25.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_start_sse`、`xylem_http_conn_send_event`、`xylem_http_conn_send_sse_data`、`xylem_http_conn_end_sse` 函数声明（含 Doxygen 注释）
     - _Requirements: 29.1, 29.2, 29.3, 29.5_
-  - [x] 25.2 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_start_sse`：内部调用 `xylem_http_conn_start_chunked` 发送 status 200 + Content-Type: text/event-stream + Cache-Control: no-cache + Connection: keep-alive
+  - [x] 25.2 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_start_sse`：内部调用 `xylem_http_conn_begin_chunked` 发送 status 200 + Content-Type: text/event-stream + Cache-Control: no-cache + Connection: keep-alive
     - _Requirements: 29.1, 29.6_
   - [x] 25.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_send_event`：构建 SSE 格式字符串（event: + data: 行 + 空行），多行 data 按 `\n` 分割为多个 `data:` 行，通过 `xylem_http_conn_send_chunk` 发送
     - _Requirements: 29.2, 29.4, 29.7_
@@ -314,3 +314,87 @@
     - _Requirements: 25.1-25.6, 26.3-26.8, 27.1-27.6, 29.1-29.6, 31.5-31.7_
 
 - [x] 32. Final checkpoint - 确保所有新功能测试通过
+
+- [x] 33. Go-style Writer Mode 响应 API
+  - [x] 33.1 在 `xylem_http_conn_s` 中新增 writer state 字段：`resp_headers`（动态数组，拥有 name/value 内存）、`resp_header_count`、`resp_header_cap`、`resp_status`（默认 200）、`resp_headers_sent`（bool）
+    - _Requirements: 32.1, 32.2, 32.10_
+  - [x] 33.2 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_conn_set_header`、`xylem_http_conn_set_status`、`xylem_http_conn_write`、`xylem_http_conn_end` 函数声明（含 Doxygen 注释）
+    - _Requirements: 32.1, 32.2, 32.3, 32.5_
+  - [x] 33.3 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_set_header`：检查 headers 未发送，遍历缓冲区查找同名 header（大小写不敏感）替换或追加，strdup name/value
+    - _Requirements: 32.1, 32.6, 32.11_
+  - [x] 33.4 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_set_status`：检查 headers 未发送，设置 resp_status
+    - _Requirements: 32.2, 32.7_
+  - [x] 33.5 在 `src/http/xylem-http-server.c` 中实现内部 `_http_srv_flush_resp_headers` 辅助函数：构建并发送 status line + Transfer-Encoding: chunked + 所有缓冲 headers + CRLF，设置 resp_headers_sent=true 和 chunked_active=true
+    - _Requirements: 32.3, 32.4_
+  - [x] 33.6 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_write`：首次调用时调用 flush_resp_headers，然后发送 chunk 数据；len=0 时 no-op
+    - _Requirements: 32.3, 32.4, 32.12_
+  - [x] 33.7 在 `src/http/xylem-http-server.c` 中实现 `xylem_http_conn_end`：chunked_active 时发送 terminating chunk，处理 keep-alive 重置
+    - _Requirements: 32.5, 32.9_
+  - [x] 33.8 在 `_http_srv_conn_destroy` 和 keep-alive 重置路径中添加 writer state 清理：释放 resp_headers 中的 strdup 内存，重置 resp_status=200、resp_headers_sent=false
+    - _Requirements: 32.10_
+  - [x] 33.9 重构 `xylem_http_conn_send`：内部使用 writer state 缓冲 headers，走 Content-Length 路径（非 chunked）一次性发送 status line + headers + body，然后处理 keep-alive。保持现有 API 签名和行为不变
+    - _Requirements: 32.8_
+  - [x] 33.10 重构 `xylem_http_conn_begin_chunked`：内部使用 writer state 缓冲 headers，调用 flush_resp_headers 发送
+    - _Requirements: 32.8_
+  - [x] 33.11 在 `tests/test-http.c` 中添加 writer mode 单元测试：`test_writer_set_header_null`（返回 -1）、`test_writer_set_status_null`（返回 -1）、`test_writer_write_null`（返回 -1）、`test_writer_end_null`（返回 -1）、`test_writer_send_convenience`（send 仍正常工作）
+    - _Requirements: 32.6, 32.7, 32.12, 32.8_
+
+- [x] 34. API 简化 — 删除 send/chunked/sse 公共函数，统一为 write()，添加流式 gzip
+  - [x] 34.1 在 `xylem_http_conn_s` 中新增字段：`mz_stream* gzip_stream`、`bool gzip_active`、`bool cl_mode`
+    - _Requirements: 33.2_
+  - [x] 34.2 在 `src/http/xylem-http-server.c` 中实现 `_http_srv_should_gzip` 静态函数：检查服务器 gzip 启用、用户未设 Content-Encoding、用户未设 Content-Length、Content-Type 匹配、客户端 Accept-Encoding: gzip
+    - _Requirements: 33.1, 33.6, 33.7_
+  - [x] 34.3 修改 `xylem_http_conn_write`：首次调用时检查 gzip 条件，满足则 init mz_stream（windowBits=15+16 for gzip wrapper），添加 Content-Encoding: gzip + Vary: Accept-Encoding headers；检查 Content-Length header 决定 CL 模式 vs chunked 模式
+    - _Requirements: 33.1, 33.2, 33.3, 32.9, 32.10_
+  - [x] 34.4 修改 `xylem_http_conn_write`：gzip_active 时每次 write 通过 `mz_deflate(MZ_SYNC_FLUSH)` 压缩数据后发送 chunk；CL 模式时直接 raw send 不加 chunk framing
+    - _Requirements: 33.4, 32.9_
+  - [x] 34.5 修改 `_http_srv_flush_resp_headers`：检测 Content-Length header 已存在时不添加 Transfer-Encoding: chunked，设置 `cl_mode = true`
+    - _Requirements: 32.9_
+  - [x] 34.6 修改 `_http_srv_conn_read_cb` 的 auto-finish 路径：gzip_active 时先 `mz_deflate(MZ_FINISH)` 发送剩余压缩数据，再发送 terminating chunk；CL 模式时不发送 terminating chunk
+    - _Requirements: 33.5, 32.11_
+  - [x] 34.7 修改 `_http_srv_resp_reset`：清理 gzip_stream（`mz_deflateEnd` + free），重置 gzip_active 和 cl_mode
+    - _Requirements: 33.8_
+  - [x] 34.8 从 `include/xylem/http/xylem-http-server.h` 中删除以下函数声明：`xylem_http_conn_send`、`xylem_http_conn_begin_chunked`、`xylem_http_conn_send_chunk`、`xylem_http_conn_end_chunked`、`xylem_http_conn_begin_sse`、`xylem_http_conn_end_sse`
+    - _Requirements: 32.1, 32.2, 32.3, 32.4, 32.5, 32.6_
+  - [x] 34.9 在 `src/http/xylem-http-server.c` 中将 `xylem_http_conn_send`、`xylem_http_conn_begin_chunked`、`xylem_http_conn_send_chunk`、`xylem_http_conn_end_chunked`、`xylem_http_conn_begin_sse`、`xylem_http_conn_end_sse` 改为 static 函数（内部仍需使用）或删除不再需要的
+    - _Requirements: 32.1, 32.2, 32.3, 32.4, 32.5, 32.6_
+  - [x] 34.10 修改 `xylem_http_conn_send_event` 和 `xylem_http_conn_send_sse_data`：首次调用时自动 flush SSE headers（Content-Type: text/event-stream、Cache-Control: no-cache、Connection: keep-alive），内部仍通过 `_http_srv_send_chunk` 发送
+    - _Requirements: 32.7_
+  - [x] 34.11 修改 `xylem_http_conn_send_partial`：内部使用 writer state（set_status + resp_header_set + flush_resp_headers_cl），不依赖已删除的 send()
+    - _Requirements: 32.8_
+  - [x] 34.12 更新 router dispatch 和 static file handler 中的所有 `xylem_http_conn_send()` 调用：改用 `_http_srv_send()`（static 版本）
+    - _Requirements: 32.12_
+  - [x] 34.13 更新 `examples/http-echo-server.c`：删除 send/chunked/sse 用法，改用 write() API；SSE handler 使用 set_header + send_event
+    - _Requirements: 32.13_
+  - [x] 34.14 更新 `examples/https-echo-server.c`：同上
+    - _Requirements: 32.13_
+  - [x] 34.15 更新 `tests/test-http.c`：清空已废弃函数的测试体，添加 `test_write_zero_len` 和 `test_write_on_closed`
+    - _Requirements: 32.14, 33.1_
+  - [x] 34.16 构建并运行所有测试，确保通过（31/31 passed）
+    - _Requirements: all_
+
+- [x] 35. Checkpoint - 确保 API 简化 + 流式 gzip 编译通过并测试通过
+
+- [x] 36. SSLKEYLOGFILE 支持
+  - [x] 36.1 在 `xylem_tls_ctx_s` 结构体中添加 `FILE* keylog_file` 字段
+    - _Requirements: 34.10_
+  - [x] 36.2 在 `src/xylem-tls.c` 中实现 `_tls_keylog_cb` 回调：通过 `SSL_CTX_get_ex_data` 获取 ctx，`fprintf` + `fflush` 写入 keylog 文件
+    - _Requirements: 34.4, 34.7, 34.8_
+  - [x] 36.3 在 `src/xylem-tls.c` 中实现 `xylem_tls_ctx_set_keylog`：path 非 NULL 时 fopen append + `SSL_CTX_set_keylog_callback`，path 为 NULL 时关闭文件 + 取消回调
+    - _Requirements: 34.1, 34.3, 34.5, 34.6_
+  - [x] 36.4 在 `include/xylem/xylem-tls.h` 中添加 `xylem_tls_ctx_set_keylog` 函数声明（含 Doxygen 注释）
+    - _Requirements: 34.1_
+  - [x] 36.5 修改 `xylem_tls_ctx_destroy`：如果 `keylog_file` 非 NULL 则 fclose
+    - _Requirements: 34.11_
+  - [x] 36.6 在 `xylem_dtls_ctx_s` 结构体中添加 `FILE* keylog_file` 字段
+    - _Requirements: 34.10_
+  - [x] 36.7 在 `src/xylem-dtls.c` 中实现 `_dtls_keylog_cb` 和 `xylem_dtls_ctx_set_keylog`（与 TLS 版本相同模式）
+    - _Requirements: 34.2, 34.3, 34.4, 34.5, 34.6, 34.7, 34.8_
+  - [x] 36.8 在 `include/xylem/xylem-dtls.h` 中添加 `xylem_dtls_ctx_set_keylog` 函数声明（含 Doxygen 注释）
+    - _Requirements: 34.2_
+  - [x] 36.9 修改 `xylem_dtls_ctx_destroy`：如果 `keylog_file` 非 NULL 则 fclose
+    - _Requirements: 34.11_
+  - [x] 36.10 验证 HTTPS server/client 无需改动（用户在 ctx 上调 set_keylog 后，http-transport-tls.c 自动继承）
+    - _Requirements: 34.9_
+  - [x] 36.11 构建并运行所有测试，确保无回归（31/31 passed）
+    - _Requirements: all_

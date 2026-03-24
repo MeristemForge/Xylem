@@ -184,6 +184,14 @@ static int _base64_decode(
     return tmp - dst;
 }
 
+int xylem_base64_encode_size(int slen) {
+    return ((slen + 2) / 3) * 4;
+}
+
+int xylem_base64_decode_size(int slen) {
+    return ((slen + 3) / 4) * 3;
+}
+
 int xylem_base64_encode_std(
     const uint8_t* src, int slen, uint8_t* dst, int dlen) {
     return _base64_encode(src, slen, dst, dlen, _b64_enc_std, true);

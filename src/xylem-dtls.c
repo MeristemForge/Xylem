@@ -27,13 +27,17 @@
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int _dtls_ex_data_idx = -1;
 
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
     uint8_t* alpn_wire;
     size_t   alpn_wire_len;
+    FILE*    keylog_file;
 };
 
 struct xylem_dtls_s {
@@ -61,6 +65,16 @@ struct xylem_dtls_server_s {
     xylem_list_t           sessions;
     bool                   closing;
 };
+
+static void _dtls_keylog_cb(const SSL* ssl, const char* line) {
+    SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
+    xylem_dtls_ctx_t* ctx =
+        (xylem_dtls_ctx_t*)SSL_CTX_get_ex_data(ssl_ctx, _dtls_ex_data_idx);
+    if (ctx && ctx->keylog_file) {
+        fprintf(ctx->keylog_file, "%s\n", line);
+        fflush(ctx->keylog_file);
+    }
+}
 
 static int _dtls_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
                                     unsigned int* cookie_len) {
@@ -121,6 +135,13 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     SSL_CTX_set_cookie_generate_cb(ctx->ssl_ctx, _dtls_cookie_generate_cb);
     SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _dtls_cookie_verify_cb);
 
+    /* Register ex_data index once for keylog callback to recover ctx. */
+    if (_dtls_ex_data_idx == -1) {
+        _dtls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL,
+                                                      NULL, NULL, NULL);
+    }
+    SSL_CTX_set_ex_data(ctx->ssl_ctx, _dtls_ex_data_idx, ctx);
+
     return ctx;
 }
 
@@ -128,9 +149,37 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+    }
     SSL_CTX_free(ctx->ssl_ctx);
     free(ctx->alpn_wire);
     free(ctx);
+}
+
+int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
+    if (!ctx) {
+        return -1;
+    }
+
+    /* Close any previously opened keylog file. */
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+        ctx->keylog_file = NULL;
+    }
+
+    if (!path) {
+        SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
+        return 0;
+    }
+
+    ctx->keylog_file = fopen(path, "a");
+    if (!ctx->keylog_file) {
+        return -1;
+    }
+
+    SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _dtls_keylog_cb);
+    return 0;
 }
 
 int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,

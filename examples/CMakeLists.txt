@@ -23,6 +23,9 @@ target_link_libraries(http-echo-server PRIVATE xylem)
 add_executable(http-echo-client http-echo-client.c)
 target_link_libraries(http-echo-client PRIVATE xylem)
 
+add_executable(http-static-server http-static-server.c)
+target_link_libraries(http-static-server PRIVATE xylem)
+
 # TLS/DTLS examples (only when TLS is enabled)
 if(XYLEM_ENABLE_TLS)
     add_executable(tls-echo-server tls-echo-server.c)
@@ -42,4 +45,7 @@ if(XYLEM_ENABLE_TLS)
 
     add_executable(https-echo-client https-echo-client.c)
     target_link_libraries(https-echo-client PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
+
+    add_executable(https-static-server https-static-server.c)
+    target_link_libraries(https-static-server PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
 endif()

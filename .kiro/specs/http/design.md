@@ -935,7 +935,7 @@ static void test_prop_custom_header_round_trip(void) { ... }
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_conn_start_chunked(xylem_http_conn_t* conn,
+extern int xylem_http_conn_begin_chunked(xylem_http_conn_t* conn,
                                           int status_code,
                                           const char* content_type,
                                           const xylem_http_hdr_t* headers,
@@ -982,7 +982,7 @@ struct xylem_http_conn_s {
 
 #### 实现逻辑
 
-`xylem_http_conn_start_chunked`：
+`xylem_http_conn_begin_chunked`：
 1. 检查 conn 非 NULL 且未关闭
 2. 构建响应头：status line + Transfer-Encoding: chunked + 自定义 headers + Content-Type（如有）
 3. 不写 Content-Length
@@ -1358,7 +1358,7 @@ extern int xylem_http_conn_end_sse(xylem_http_conn_t* conn);
 `xylem_http_conn_start_sse`：
 1. 构建固定 headers：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`
 2. 将用户自定义 headers 与固定 headers 合并
-3. 调用 `xylem_http_conn_start_chunked(conn, 200, "text/event-stream", merged_headers, count)`
+3. 调用 `xylem_http_conn_begin_chunked(conn, 200, "text/event-stream", merged_headers, count)`
 
 `xylem_http_conn_send_event`：
 1. 构建 SSE 格式字符串到临时 buffer
@@ -1656,7 +1656,7 @@ int main(void) {
 
 ### Property 12: Chunked response 格式正确性
 
-*For any* valid status code, content type, and sequence of chunk data payloads, the output produced by `start_chunked` + N × `send_chunk` + `end_chunked` SHALL be a valid HTTP/1.1 chunked response that llhttp can parse, recovering the concatenation of all chunk payloads as the response body.
+*For any* valid status code, content type, and sequence of chunk data payloads, the output produced by `begin_chunked` + N × `send_chunk` + `end_chunked` SHALL be a valid HTTP/1.1 chunked response that llhttp can parse, recovering the concatenation of all chunk payloads as the response body.
 
 **Validates: Requirements 25.1, 25.2, 25.3, 25.4**
 
@@ -1698,7 +1698,7 @@ int main(void) {
 
 | 测试函数 | 覆盖内容 |
 |----------|----------|
-| `test_chunked_start_end` | start_chunked + end_chunked 基本流程 |
+| `test_chunked_begin_end` | begin_chunked + end_chunked 基本流程 |
 | `test_chunked_send_empty` | send_chunk len=0 为 no-op |
 | `test_chunked_on_closed` | 关闭连接后调用返回 -1 |
 | `test_cookie_jar_create_destroy` | cookie jar 生命周期 |
@@ -1750,3 +1750,825 @@ static void test_prop_cors_headers(void) { ... }
 /* Feature: http, Property 17: Range response Content-Range correctness */
 static void test_prop_range_content_range(void) { ... }
 ```
+
+
+---
+
+## Go-style Writer Mode 响应 API 设计（Requirements 32）
+
+### Overview
+
+借鉴 Go `net/http` 的 `ResponseWriter` 模式，为服务器端连接添加增量式响应构建能力。用户可以先通过 `set_header` 缓冲响应头，通过 `set_status` 设置状态码，然后通过 `write` 写入 body 数据。第一次 `write` 调用时自动发送 status line 和所有缓冲的 headers（隐式 header flush）。后续 `write` 调用使用 chunked transfer encoding 发送数据块。最后通过 `end` 结束响应。
+
+现有的 `xylem_http_conn_send` 保留为便捷函数，内部重构为使用 writer mode API。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| API 风格 | Go ResponseWriter 模式 | 用户明确要求，增量构建比一次性传参更灵活 |
+| Header 缓冲 | conn 内部动态数组 | 简单直接，headers 数量通常很少 |
+| 默认状态码 | 200 | 与 Go 行为一致，最常见场景无需显式设置 |
+| 隐式 header flush | 第一次 write 时自动发送 | 与 Go 行为一致，减少用户样板代码 |
+| chunked 模式 | 多次 write 自动启用 | write 模式下 body 大小未知，chunked 是唯一选择 |
+| send() 保留 | 便捷函数，内部使用 writer API | 向后兼容，简单场景仍可一行搞定 |
+| header 覆盖 | 同名 header last-write-wins | 简单直观，与 Go `Header().Set()` 语义一致 |
+
+### Architecture
+
+```
+用户代码                          conn 内部状态
+────────                          ──────────────
+set_header("X-Foo", "bar")  -->  resp_headers[] 缓冲
+set_header("X-Baz", "qux")  -->  resp_headers[] 缓冲
+set_status(201)              -->  resp_status = 201
+
+write(data1, len1)           -->  [headers_sent == false]
+                                   1. 发送 status line (201)
+                                   2. 发送 Transfer-Encoding: chunked
+                                   3. 发送所有 resp_headers[]
+                                   4. 发送 \r\n
+                                   5. headers_sent = true
+                                   6. 发送 chunk(data1)
+
+write(data2, len2)           -->  [headers_sent == true]
+                                   发送 chunk(data2)
+
+end()                        -->  发送 terminating chunk (0\r\n\r\n)
+                                   处理 keep-alive
+```
+
+### Components and Interfaces
+
+#### conn 新增字段
+
+```c
+struct xylem_http_conn_s {
+    /* ... 现有字段 ... */
+
+    /* Writer mode state */
+    xylem_http_hdr_t*  resp_headers;      /* 缓冲的响应头（拥有 name/value 内存） */
+    size_t             resp_header_count;
+    size_t             resp_header_cap;
+    int                resp_status;        /* 响应状态码，默认 200 */
+    bool               resp_headers_sent;  /* headers 是否已发送 */
+};
+```
+
+注意：`resp_headers` 中的 `name` 和 `value` 是 `strdup` 拷贝的，conn 拥有内存。这与公共 API 中 `xylem_http_hdr_t` 的非拥有语义不同，但内部实现需要拥有内存以支持跨调用缓冲。
+
+#### 新增公共 API（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/**
+ * @brief Buffer a response header.
+ *
+ * Accumulates headers until the first xylem_http_conn_write() call,
+ * which flushes them automatically. If a header with the same name
+ * already exists in the buffer, its value is replaced (last-write-wins).
+ *
+ * Must be called before the first write. Returns -1 if headers have
+ * already been sent.
+ *
+ * @param conn   Connection handle.
+ * @param name   Header name (copied internally).
+ * @param value  Header value (copied internally).
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_set_header(xylem_http_conn_t* conn,
+                                      const char* name,
+                                      const char* value);
+
+/**
+ * @brief Set the response status code.
+ *
+ * Must be called before the first write. If not called, defaults
+ * to 200. Returns -1 if headers have already been sent.
+ *
+ * @param conn         Connection handle.
+ * @param status_code  HTTP status code (e.g. 200, 404).
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_set_status(xylem_http_conn_t* conn,
+                                      int status_code);
+
+/**
+ * @brief Write response body data.
+ *
+ * On the first call, automatically sends the status line and all
+ * buffered headers with Transfer-Encoding: chunked. Subsequent
+ * calls send additional chunks. Call xylem_http_conn_end() when
+ * done writing.
+ *
+ * @param conn  Connection handle.
+ * @param data  Body data to write.
+ * @param len   Data length in bytes. If 0, this is a no-op.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_write(xylem_http_conn_t* conn,
+                                 const void* data, size_t len);
+
+/**
+ * @brief Finalize the response.
+ *
+ * If the response used chunked encoding (via write()), sends the
+ * terminating zero-length chunk. Handles keep-alive: resets the
+ * connection for the next request or closes it.
+ *
+ * If no write() was called (e.g. after send()), this is a no-op
+ * for the chunked terminator but still handles keep-alive.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_conn_end(xylem_http_conn_t* conn);
+```
+
+### 实现逻辑
+
+#### `xylem_http_conn_set_header`
+
+1. 检查 conn 非 NULL、未关闭、`resp_headers_sent == false`
+2. 遍历 `resp_headers[]` 查找同名 header（大小写不敏感）
+3. 找到则 `free` 旧 value，`strdup` 新 value 替换
+4. 未找到则追加新条目（`strdup` name 和 value），必要时扩容
+
+#### `xylem_http_conn_set_status`
+
+1. 检查 conn 非 NULL、未关闭、`resp_headers_sent == false`
+2. 设置 `conn->resp_status = status_code`
+
+#### `xylem_http_conn_write`
+
+1. 检查 conn 非 NULL、未关闭
+2. len == 0 时返回 0
+3. 如果 `resp_headers_sent == false`（首次 write）：
+   a. 构建 header buffer：status line + `Transfer-Encoding: chunked\r\n` + 所有 `resp_headers[]` + `\r\n`
+   b. 发送 header buffer
+   c. 设置 `resp_headers_sent = true`、`chunked_active = true`
+4. 发送 chunk：`{hex(len)}\r\n{data}\r\n`
+
+#### `xylem_http_conn_end`
+
+1. 检查 conn 非 NULL、未关闭
+2. 如果 `chunked_active == true`：
+   a. 发送 terminating chunk `0\r\n\r\n`
+   b. 设置 `chunked_active = false`
+3. 处理 keep-alive（与现有 `_http_srv_after_response` 逻辑一致）
+
+#### `xylem_http_conn_send` 重构
+
+现有 `send()` 内部重构为：
+
+```c
+int xylem_http_conn_send(conn, status_code, content_type,
+                         body, body_len, headers, header_count) {
+    /* 设置状态码 */
+    conn->resp_status = status_code;
+
+    /* 缓冲用户自定义 headers */
+    for (i = 0; i < header_count; i++) {
+        _http_srv_resp_header_add(conn, headers[i].name, headers[i].value);
+    }
+
+    /* 缓冲 Content-Type（如果未被自定义 header 覆盖） */
+    if (content_type && !_http_srv_resp_header_has(conn, "Content-Type")) {
+        _http_srv_resp_header_add(conn, "Content-Type", content_type);
+    }
+
+    /* 一次性发送：status line + headers + Content-Length + body */
+    /* 注意：send() 使用 Content-Length 模式，不用 chunked */
+    _http_srv_flush_headers_with_body(conn, body, body_len);
+
+    /* 处理 keep-alive */
+    _http_srv_after_response(conn);
+}
+```
+
+注意：`send()` 走 Content-Length 路径（body 大小已知），不走 chunked 路径。这与 `write()` 的 chunked 路径不同。
+
+#### `begin_chunked` 重构
+
+现有 `begin_chunked()` 也重构为使用 writer state：
+
+```c
+int xylem_http_conn_begin_chunked(conn, status_code, content_type,
+                                   headers, header_count) {
+    conn->resp_status = status_code;
+    /* 缓冲 headers... */
+    /* 缓冲 Content-Type... */
+    /* 调用内部 flush headers with chunked... */
+}
+```
+
+### Writer State 重置
+
+在 `_http_srv_req_reset` 或 keep-alive 重置路径中，清理 writer state：
+
+```c
+/* 释放缓冲的响应头 */
+for (size_t i = 0; i < conn->resp_header_count; i++) {
+    free((char*)conn->resp_headers[i].name);
+    free((char*)conn->resp_headers[i].value);
+}
+free(conn->resp_headers);
+conn->resp_headers = NULL;
+conn->resp_header_count = 0;
+conn->resp_header_cap = 0;
+conn->resp_status = 200;
+conn->resp_headers_sent = false;
+```
+
+### Data Models 更新
+
+`xylem_http_conn_s` 新增字段（见上方 conn 新增字段）。
+
+### Error Handling 更新
+
+- `set_header` / `set_status` 在 headers 已发送后调用：返回 -1
+- `set_header` 中 `strdup` 失败：返回 -1
+- `write` 中 header flush 的 malloc 失败：返回 -1
+- `write` 中 chunk 发送失败：返回 -1
+- `end` 在连接已关闭后调用：返回 -1
+
+### Correctness Properties 更新
+
+#### Property 18: Writer mode header buffering
+
+*For any* sequence of `set_header` calls followed by a `write` call, the flushed HTTP response SHALL contain all buffered headers. When the same header name is set multiple times, only the last value SHALL appear in the output.
+
+**Validates: Requirements 32.1, 32.3, 32.11**
+
+#### Property 19: Writer mode default status
+
+*For any* `write` call without a preceding `set_status` call, the flushed HTTP response status line SHALL contain status code 200.
+
+**Validates: Requirements 32.2**
+
+#### Property 20: Writer mode post-flush rejection
+
+*For any* `set_header` or `set_status` call after `write` has been called at least once, the function SHALL return -1.
+
+**Validates: Requirements 32.6, 32.7**
+
+### Testing Strategy 更新
+
+#### 新增单元测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_writer_set_header_basic` | set_header 缓冲 header 后 write 发送 |
+| `test_writer_set_status` | set_status 设置非默认状态码 |
+| `test_writer_default_status` | 不调用 set_status 时默认 200 |
+| `test_writer_set_header_after_write` | write 后调用 set_header 返回 -1 |
+| `test_writer_set_status_after_write` | write 后调用 set_status 返回 -1 |
+| `test_writer_set_header_replace` | 同名 header 替换旧值 |
+| `test_writer_write_zero_len` | write len=0 为 no-op |
+| `test_writer_send_convenience` | send() 仍然正常工作 |
+
+#### 使用示例
+
+```c
+/* Go-style writer mode（推荐） */
+static void handle_api(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                        void* ud) {
+    xylem_http_conn_set_header(conn, "Content-Type", "application/json");
+    xylem_http_conn_set_header(conn, "X-Request-Id", "abc123");
+    xylem_http_conn_set_status(conn, 200);
+
+    const char* chunk1 = "{\"users\":[";
+    xylem_http_conn_write(conn, chunk1, strlen(chunk1));
+
+    const char* chunk2 = "{\"name\":\"alice\"}";
+    xylem_http_conn_write(conn, chunk2, strlen(chunk2));
+
+    const char* chunk3 = "]}";
+    xylem_http_conn_write(conn, chunk3, strlen(chunk3));
+
+    xylem_http_conn_end(conn);
+}
+
+/* 便捷模式（简单场景） */
+static void handle_health(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                           void* ud) {
+    xylem_http_conn_send(conn, 200, "text/plain", "ok", 2, NULL, 0);
+}
+```
+
+
+---
+
+## API 简化 + 流式 gzip 设计（Requirements 32, 33）
+
+### Overview
+
+删除 `send()`、`begin_chunked()`、`send_chunk()`、`end_chunked()`、`begin_sse()`、`end_sse()` 六个公共函数，统一为 Go-style 三函数 API：`set_header()` + `set_status()` + `write()`。同时为 `write()` 添加流式 gzip 压缩能力，使 chunked 传输模式下也能自动压缩。
+
+保留的公共函数：
+- `send_partial()` — 206 Range 响应有特殊语义（Content-Range header），保留为便捷函数
+- `send_event()` / `send_sse_data()` — SSE 格式化辅助，内部改为调用 `write()`
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 删除 send() | 是 | write() 完全覆盖其功能；Content-Length 模式通过 `set_header("Content-Length", "N")` 实现 |
+| 删除 begin/end_chunked | 是 | write() 自动使用 chunked；用户无需关心传输编码 |
+| 删除 begin/end_sse | 是 | 用户通过 set_header 设置 SSE headers，send_event 内部调用 write() |
+| Content-Length 检测 | 检查 resp_headers 中是否有 Content-Length | 与 Go 行为一致：用户手动设 CL 则走 raw 模式 |
+| 流式 gzip | mz_deflateInit2 + MZ_SYNC_FLUSH per write | 每次 write 产生可独立解压的 gzip 数据块 |
+| gzip 上下文生命周期 | conn 级别，首次 write 时 init，resp_reset 时 end | 与 writer state 生命周期一致 |
+| gzip + Content-Length | 不兼容，跳过 gzip | 压缩改变长度，CL 模式下不能压缩 |
+| gzip 失败回退 | 发送未压缩数据 | 不因压缩失败导致请求失败 |
+
+### Architecture
+
+```
+用户代码                              conn 内部状态
+────────                              ──────────────
+set_header("Content-Type", "text/html")
+set_status(200)
+
+write(data1, len1)               -->  [headers_sent == false]
+                                       1. 检查 gzip 条件（Accept-Encoding + Content-Type + opts）
+                                       2. 如果 gzip：init mz_stream，添加 Content-Encoding: gzip + Vary
+                                       3. 检查是否有 Content-Length header
+                                       4a. 有 CL：flush headers（无 TE: chunked），raw send
+                                       4b. 无 CL：flush headers（含 TE: chunked），send chunk
+                                       5. headers_sent = true
+                                       6. 如果 gzip：deflate(data1, SYNC_FLUSH) -> send compressed
+
+write(data2, len2)               -->  [headers_sent == true]
+                                       如果 gzip：deflate(data2, SYNC_FLUSH) -> send chunk
+                                       否则：send chunk (或 raw send if CL mode)
+
+[callback returns]               -->  框架自动 finish：
+                                       如果 gzip_active：deflate(FINISH) -> send final data
+                                       如果 chunked_active：send "0\r\n\r\n"
+                                       _http_srv_conn_finish_response()
+```
+
+### Content-Length 模式
+
+当用户通过 `set_header("Content-Length", "N")` 设置了 Content-Length 时：
+
+1. `_http_srv_flush_resp_headers` 检测到 Content-Length 已存在
+2. 不添加 `Transfer-Encoding: chunked`
+3. 设置 `conn->cl_mode = true`（新增字段）
+4. 后续 `write()` 调用直接发送 raw 数据，不加 chunk framing
+5. 不启用 gzip（压缩会改变长度）
+6. 框架 auto-finish 时不发送 terminating chunk
+
+```c
+/* Content-Length 模式示例 */
+static void handle_fixed(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                          void* ud) {
+    const char* body = "Hello, World!";
+    char cl[16];
+    snprintf(cl, sizeof(cl), "%zu", strlen(body));
+    xylem_http_conn_set_header(conn, "Content-Type", "text/plain");
+    xylem_http_conn_set_header(conn, "Content-Length", cl);
+    xylem_http_conn_write(conn, body, strlen(body));
+}
+```
+
+### 流式 gzip 设计
+
+#### conn 新增字段
+
+```c
+struct xylem_http_conn_s {
+    /* ... 现有字段 ... */
+
+    /* Streaming gzip state */
+    mz_stream*  gzip_stream;    /* NULL when gzip inactive */
+    bool        gzip_active;    /* true when streaming gzip is in use */
+    bool        cl_mode;        /* true when Content-Length mode (no chunked) */
+};
+```
+
+#### gzip 条件判断
+
+在首次 `write()` 调用时（`resp_headers_sent == false`），检查以下条件：
+
+```c
+static bool _http_srv_should_gzip(xylem_http_conn_t* conn) {
+    /* 1. 服务器 gzip 已启用 */
+    if (!conn->srv->gzip_opts.enabled) return false;
+
+    /* 2. 用户未手动设置 Content-Encoding */
+    if (_http_srv_resp_header_has(conn, "Content-Encoding")) return false;
+
+    /* 3. 用户未设置 Content-Length（CL 模式不兼容 gzip） */
+    if (_http_srv_resp_header_has(conn, "Content-Length")) return false;
+
+    /* 4. Content-Type 匹配可压缩类型 */
+    const char* ct = _http_srv_resp_header_get(conn, "Content-Type");
+    if (!_http_gzip_type_ok(&conn->srv->gzip_opts, ct)) return false;
+
+    /* 5. 客户端接受 gzip */
+    if (!_http_gzip_accepted(&conn->req)) return false;
+
+    return true;
+}
+```
+
+#### gzip 初始化（首次 write）
+
+```c
+/* 在 _http_srv_flush_resp_headers 之前调用 */
+if (_http_srv_should_gzip(conn)) {
+    conn->gzip_stream = calloc(1, sizeof(mz_stream));
+    int rc = mz_deflateInit2(conn->gzip_stream,
+                             conn->srv->gzip_opts.level,
+                             MZ_DEFLATED,
+                             15 + 16,  /* windowBits=15 + gzip wrapper */
+                             9, MZ_DEFAULT_STRATEGY);
+    if (rc == MZ_OK) {
+        conn->gzip_active = true;
+        _http_srv_resp_header_set(conn, "Content-Encoding", "gzip");
+        _http_srv_resp_header_set(conn, "Vary", "Accept-Encoding");
+    } else {
+        free(conn->gzip_stream);
+        conn->gzip_stream = NULL;
+        /* 回退：不压缩 */
+    }
+}
+```
+
+`windowBits = 15 + 16` 告诉 miniz 生成 gzip 格式（含 gzip header/trailer），而非 raw deflate。
+
+#### 每次 write 的 gzip 处理
+
+```c
+if (conn->gzip_active) {
+    /* 压缩 data 并发送 */
+    size_t bound = mz_deflateBound(conn->gzip_stream, len);
+    uint8_t* cbuf = malloc(bound);
+    conn->gzip_stream->next_in = (const uint8_t*)data;
+    conn->gzip_stream->avail_in = (unsigned int)len;
+    conn->gzip_stream->next_out = cbuf;
+    conn->gzip_stream->avail_out = (unsigned int)bound;
+
+    mz_deflate(conn->gzip_stream, MZ_SYNC_FLUSH);
+
+    size_t compressed_len = bound - conn->gzip_stream->avail_out;
+    if (compressed_len > 0) {
+        /* 发送压缩后的 chunk */
+        _http_srv_send_chunk_raw(conn, cbuf, compressed_len);
+    }
+    free(cbuf);
+} else {
+    /* 未压缩：直接发送 chunk 或 raw */
+    ...
+}
+```
+
+#### auto-finish 时的 gzip 终结
+
+在 `_http_srv_conn_read_cb` 的 `HPE_PAUSED` 路径中：
+
+```c
+if (conn->gzip_active && !conn->closed) {
+    /* Finalize gzip stream */
+    uint8_t final_buf[128];
+    conn->gzip_stream->next_in = NULL;
+    conn->gzip_stream->avail_in = 0;
+    conn->gzip_stream->next_out = final_buf;
+    conn->gzip_stream->avail_out = sizeof(final_buf);
+
+    mz_deflate(conn->gzip_stream, MZ_FINISH);
+
+    size_t final_len = sizeof(final_buf) - conn->gzip_stream->avail_out;
+    if (final_len > 0) {
+        _http_srv_send_chunk_raw(conn, final_buf, final_len);
+    }
+    /* gzip_stream cleanup happens in _http_srv_resp_reset */
+}
+
+if (conn->chunked_active && !conn->closed) {
+    /* Send terminating chunk */
+    conn->vt->send(conn->transport, "0\r\n\r\n", 5);
+    conn->chunked_active = false;
+}
+```
+
+#### gzip 清理（_http_srv_resp_reset）
+
+```c
+static void _http_srv_resp_reset(xylem_http_conn_t* conn) {
+    /* ... 现有 header 清理 ... */
+
+    if (conn->gzip_stream) {
+        mz_deflateEnd(conn->gzip_stream);
+        free(conn->gzip_stream);
+        conn->gzip_stream = NULL;
+    }
+    conn->gzip_active = false;
+    conn->cl_mode = false;
+}
+```
+
+### 删除的公共函数
+
+| 函数 | 替代方案 |
+|------|----------|
+| `xylem_http_conn_send(conn, status, ct, body, len, hdrs, n)` | `set_status(status)` + `set_header("Content-Type", ct)` + 自定义 headers + `set_header("Content-Length", len_str)` + `write(body, len)` |
+| `xylem_http_conn_begin_chunked(conn, status, ct, hdrs, n)` | `set_status(status)` + `set_header("Content-Type", ct)` + 自定义 headers（write 自动 chunked） |
+| `xylem_http_conn_send_chunk(conn, data, len)` | `write(data, len)` |
+| `xylem_http_conn_end_chunked(conn)` | 框架自动 finish |
+| `xylem_http_conn_begin_sse(conn, hdrs, n)` | `set_header("Content-Type", "text/event-stream")` + `set_header("Cache-Control", "no-cache")` |
+| `xylem_http_conn_end_sse(conn)` | 框架自动 finish |
+
+### 保留的公共函数
+
+| 函数 | 理由 |
+|------|------|
+| `xylem_http_conn_set_header` | 核心 API |
+| `xylem_http_conn_set_status` | 核心 API |
+| `xylem_http_conn_write` | 核心 API |
+| `xylem_http_conn_send_partial` | 206 Range 有特殊语义（Content-Range header + 416 错误处理） |
+| `xylem_http_conn_send_event` | SSE 格式化辅助，内部改用 write() |
+| `xylem_http_conn_send_sse_data` | SSE 格式化辅助，内部改用 write() |
+| `xylem_http_conn_close` | 连接管理 |
+
+### send_event / send_sse_data 内部重构
+
+```c
+int xylem_http_conn_send_event(xylem_http_conn_t* conn,
+                               const char* event,
+                               const char* data) {
+    if (!conn || conn->closed) return -1;
+    if (!data) return -1;
+
+    /* 构建 SSE 格式字符串（与现有逻辑相同） */
+    char* buf = _http_srv_format_sse(event, data, &buf_len);
+    if (!buf) return -1;
+
+    /* 改为调用 write() 而非 send_chunk() */
+    int rc = xylem_http_conn_write(conn, buf, buf_len);
+    free(buf);
+    return rc;
+}
+```
+
+### send_partial 内部重构
+
+`send_partial` 保留公共签名，内部改用 writer state：
+
+```c
+int xylem_http_conn_send_partial(conn, ct, body, body_len,
+                                  range_start, range_end, total_size,
+                                  headers, header_count) {
+    /* 设置 status + headers 到 writer state */
+    conn->resp_status = valid ? 206 : 416;
+    /* 缓冲 headers... */
+    /* 设置 Content-Range... */
+    /* 设置 Content-Length... */
+    /* flush headers + send body（CL 模式） */
+}
+```
+
+### router 404 内部重构
+
+```c
+/* 原来：xylem_http_conn_send(conn, 404, "text/plain", "Not Found", 9, NULL, 0) */
+/* 改为内部辅助函数 */
+static void _http_srv_send_error(xylem_http_conn_t* conn, int status,
+                                  const char* body, size_t body_len) {
+    char cl[16];
+    snprintf(cl, sizeof(cl), "%zu", body_len);
+    xylem_http_conn_set_status(conn, status);
+    xylem_http_conn_set_header(conn, "Content-Type", "text/plain");
+    xylem_http_conn_set_header(conn, "Content-Length", cl);
+    xylem_http_conn_write(conn, body, body_len);
+}
+```
+
+### Error Handling 更新
+
+- `write()` 在 CL 模式下发送超过 Content-Length 的数据：不做检查（与 Go 行为一致），由客户端处理
+- gzip init 失败：回退到未压缩模式，不返回错误
+- gzip deflate 失败：返回 -1（数据已损坏，无法恢复）
+
+### Correctness Properties 更新
+
+#### Property 21: Content-Length 模式
+
+*For any* response where the user sets `Content-Length` via `set_header` before calling `write()`, the flushed HTTP response SHALL NOT contain `Transfer-Encoding: chunked`, and the body data SHALL be sent without chunk framing.
+
+**Validates: Requirements 32.9**
+
+#### Property 22: 流式 gzip 正确性
+
+*For any* sequence of `write()` calls with gzip active, the concatenation of all compressed chunks SHALL form a valid gzip stream that decompresses to the concatenation of all original write data.
+
+**Validates: Requirements 33.1, 33.4, 33.5**
+
+#### Property 23: gzip 条件检测
+
+*For any* response where the user explicitly sets `Content-Encoding` or `Content-Length` via `set_header`, `write()` SHALL NOT apply automatic gzip compression.
+
+**Validates: Requirements 33.6, 33.7**
+
+### Testing Strategy 更新
+
+#### 删除的测试
+
+| 测试函数 | 原因 |
+|----------|------|
+| `test_chunked_send_empty` | begin_chunked/send_chunk 已删除 |
+| `test_chunked_on_closed` | begin_chunked/send_chunk 已删除 |
+| `test_sse_start_end` | begin_sse/end_sse 已删除 |
+| `test_writer_send_convenience` | send() 已删除 |
+
+#### 新增/修改的测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_write_zero_len` | write(len=0) 为 no-op |
+| `test_write_on_closed` | 关闭连接后 write 返回 -1 |
+| `test_write_cl_mode` | 设置 Content-Length 后 write 走 raw 模式 |
+| `test_write_chunked_default` | 不设 CL 时 write 走 chunked 模式 |
+| `test_sse_via_write` | send_event 通过 write 发送 SSE 数据 |
+| `test_sse_multiline_via_write` | 多行 data 通过 write 正确分割 |
+
+### 使用示例
+
+```c
+/* 简单响应（替代 send） */
+static void handle_hello(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                          void* ud) {
+    const char* body = "Hello, World!";
+    char cl[16];
+    snprintf(cl, sizeof(cl), "%zu", strlen(body));
+    xylem_http_conn_set_header(conn, "Content-Type", "text/plain");
+    xylem_http_conn_set_header(conn, "Content-Length", cl);
+    xylem_http_conn_write(conn, body, strlen(body));
+}
+
+/* 流式响应（替代 begin_chunked + send_chunk） */
+static void handle_stream(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                           void* ud) {
+    xylem_http_conn_set_header(conn, "Content-Type", "text/plain");
+    xylem_http_conn_write(conn, "part1 ", 6);
+    xylem_http_conn_write(conn, "part2 ", 6);
+    xylem_http_conn_write(conn, "part3",  5);
+    /* 框架自动 finish */
+}
+
+/* SSE（替代 begin_sse + send_event + end_sse） */
+static void handle_sse(xylem_http_conn_t* conn, xylem_http_req_t* req,
+                        void* ud) {
+    xylem_http_conn_set_header(conn, "Content-Type", "text/event-stream");
+    xylem_http_conn_set_header(conn, "Cache-Control", "no-cache");
+    xylem_http_conn_send_event(conn, "greeting", "hello");
+    xylem_http_conn_send_event(conn, "greeting", "world");
+    xylem_http_conn_send_sse_data(conn, "done");
+    /* 框架自动 finish */
+}
+
+/* 流式 gzip（自动压缩） */
+static void handle_gzip_stream(xylem_http_conn_t* conn,
+                                xylem_http_req_t* req, void* ud) {
+    xylem_http_conn_set_header(conn, "Content-Type", "text/html");
+    /* gzip 自动启用（如果服务器 gzip opts enabled + 客户端 Accept-Encoding: gzip） */
+    xylem_http_conn_write(conn, "<html>", 6);
+    xylem_http_conn_write(conn, "<body>large content...</body>", 29);
+    xylem_http_conn_write(conn, "</html>", 7);
+}
+```
+
+## SSLKEYLOGFILE 支持
+
+### 背景
+
+`SSLKEYLOGFILE` 是一个被 curl、Firefox、Chrome 等广泛支持的调试机制。TLS 实现将握手过程中的 key material 写入指定文件，Wireshark 读取该文件即可解密捕获的 TLS/DTLS 流量。输出格式为 NSS Key Log Format。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 触发方式 | 显式 API `set_keylog(ctx, path)` | 用户主动控制，按需启用 |
+| 实现位置 | `xylem-tls.c` + `xylem-dtls.c` | 最底层的 SSL_CTX 配置点，HTTPS 自动继承 |
+| 文件句柄管理 | per-ctx `FILE*` 存储在 ctx 结构体中 | 不同 ctx 可以输出到不同文件 |
+| 线程安全 | 依赖 stdio 内部锁 | POSIX 和 Windows 的 `fprintf` 都是线程安全的 |
+| 关闭时机 | `ctx_destroy` 时关闭文件 | 生命周期跟 ctx 绑定 |
+
+### API
+
+```c
+/* TLS */
+extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
+
+/* DTLS */
+extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path);
+```
+
+- `path` 非 NULL：打开文件（append 模式），注册 keylog 回调
+- `path` 为 NULL：关闭文件，取消回调
+- 返回 0 成功，-1 失败（如文件打开失败）
+
+### 影响范围
+
+```
+xylem_tls_ctx_set_keylog(ctx, path)
+    │
+    ├── xylem_tls_dial()         (TLS client)
+    ├── xylem_tls_listen()       (TLS server)
+    ├── http-transport-tls.c     (HTTPS client/server 内部)
+    └── examples: tls-*, https-*
+
+xylem_dtls_ctx_set_keylog(ctx, path)
+    │
+    ├── xylem_dtls_dial()        (DTLS client)
+    ├── xylem_dtls_listen()      (DTLS server)
+    └── examples: dtls-*
+```
+
+HTTPS 层（`http-transport-tls.c`）无需改动，用户在创建 ctx 后调用 `set_keylog` 即可。
+
+### 实现细节
+
+#### ctx 结构体变更
+
+```c
+struct xylem_tls_ctx_s {
+    SSL_CTX* ssl_ctx;
+    uint8_t* alpn_wire;
+    size_t   alpn_wire_len;
+    FILE*    keylog_file;    /* 新增 */
+};
+```
+
+#### set_keylog 实现
+
+```c
+static void _tls_keylog_cb(const SSL* ssl, const char* line) {
+    SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
+    xylem_tls_ctx_t* ctx = SSL_CTX_get_ex_data(ssl_ctx, ...);
+    if (ctx && ctx->keylog_file) {
+        fprintf(ctx->keylog_file, "%s\n", line);
+        fflush(ctx->keylog_file);
+    }
+}
+
+int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
+    if (!ctx) return -1;
+
+    /* 关闭已有的 keylog 文件 */
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+        ctx->keylog_file = NULL;
+    }
+
+    if (!path) {
+        SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
+        return 0;
+    }
+
+    ctx->keylog_file = fopen(path, "a");
+    if (!ctx->keylog_file) return -1;
+
+    SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tls_keylog_cb);
+    return 0;
+}
+```
+
+#### ctx_destroy 变更
+
+```c
+void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx) {
+    /* ... 现有清理 ... */
+    if (ctx->keylog_file) {
+        fclose(ctx->keylog_file);
+    }
+    /* ... */
+}
+```
+
+### 使用方式
+
+```c
+xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+xylem_tls_ctx_load_cert(ctx, "server.crt", "server.key");
+xylem_tls_ctx_set_keylog(ctx, "/tmp/keys.log");  /* 启用 keylog */
+
+/* 正常使用 ... */
+
+xylem_tls_ctx_destroy(ctx);  /* 自动关闭 keylog 文件 */
+
+/* Wireshark: Edit -> Preferences -> Protocols -> TLS
+   -> (Pre)-Master-Secret log filename -> /tmp/keys.log */
+```
+
+### 安全注意事项
+
+- 此功能仅在用户显式调用 `set_keylog` 时启用
+- 导出的 key material 可以解密所有使用该 ctx 的 TLS 会话
+- 生产环境不应启用此功能
+- 文件以 append 模式打开，不会覆盖已有内容

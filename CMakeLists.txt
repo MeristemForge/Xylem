@@ -33,6 +33,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
     ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
 )
 
 set(SRCS
@@ -71,6 +72,8 @@ set(SRCS
 	src/http/llhttp/llhttp.c
 	src/http/llhttp/http.c
 	src/http/llhttp/api.c
+	src/gzip/xylem-gzip.c
+	src/gzip/miniz/miniz.c
 )
 
 if(WIN32)

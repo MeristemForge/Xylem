@@ -101,6 +101,28 @@ extern int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
                                    const char** protocols, size_t count);
 
 /**
+ * @brief Enable DTLS key material logging for traffic analysis.
+ *
+ * Opens the specified file in append mode and registers an OpenSSL
+ * keylog callback on the context. All DTLS sessions using this context
+ * will write key material in NSS Key Log Format, which Wireshark can
+ * use to decrypt captured traffic.
+ *
+ * Passing NULL as path disables logging and closes the file.
+ * Calling again with a new path closes the previous file first.
+ *
+ * @param ctx   Context handle.
+ * @param path  File path to append key material to, or NULL to disable.
+ *
+ * @return 0 on success, -1 on failure (e.g. file open error).
+ *
+ * @note Do not enable in production. The exported key material can
+ *       decrypt all DTLS sessions using this context.
+ */
+extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
+                                     const char* path);
+
+/**
  * @brief Initiate an asynchronous DTLS connection.
  *
  * Creates a connected UDP socket to the target address, then

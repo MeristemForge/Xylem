@@ -168,6 +168,15 @@ When a module is complex enough to require multiple `.c` files, place all implem
 
 The `<project>-` prefix distinguishes public files from internal files. Files without the prefix are internal to the module and not part of the public API.
 
+When `<sub>` is already globally unique and self-descriptive, the `<module>` segment may be omitted from public file and implementation names. Use the full `<project>-<module>-<sub>` form when `<sub>` alone is ambiguous (e.g. `client`, `server`, `common`); use the short `<project>-<sub>` form when `<sub>` is unambiguous (e.g. `gzip`, `zip`).
+
+| Form | When to use | Example (module=`compress`) |
+|------|-------------|----------------------------|
+| `<project>-<module>-<sub>.h` | `<sub>` is generic (`client`, `server`) | `xylem-http-client.h` |
+| `<project>-<sub>.h` | `<sub>` is self-descriptive (`gzip`, `zip`) | `xylem-gzip.h`, `xylem-zip.h` |
+
+The same rule applies to implementation files: `xylem-gzip.c` instead of `xylem-compress-gzip.c`.
+
 #### Function Naming
 
 Function names reflect functional sub-categories, not file names. Do not put file-organization names (like `common`) into function names.

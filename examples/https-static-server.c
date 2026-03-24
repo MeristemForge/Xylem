@@ -20,19 +20,16 @@
  */
 
 /**
- * HTTPS Echo Server
+ * HTTPS Static File Server
  *
- * Same routes as http-echo-server but served over TLS.
+ * Same as http-static-server but served over TLS.
  * If cert.pem / key.pem are missing, generates a self-signed
  * certificate automatically via the openssl command-line tool.
  *
- *   Middleware: request logger, simple auth check
- *   GET  /              -> "Hello, Xylem! (HTTPS)"
- *   POST /echo          -> echoes the request body as JSON
- *   *    (no match)     -> 404 via router
+ *   GET /static/*  -> files from ./public/
  *
- * Usage: https-echo-server
- * Test:  https-echo-client  (or curl -k https://127.0.0.1:8443/)
+ * Usage: https-static-server
+ * Test:  curl -k https://127.0.0.1:8443/static/index.html
  */
 
 #include "xylem.h"
@@ -41,6 +38,7 @@
 #include <string.h>
 
 #define LISTEN_PORT 8443
+#define STATIC_ROOT "public"
 #define CERT_FILE   "cert.pem"
 #define KEY_FILE    "key.pem"
 
@@ -77,66 +75,7 @@ static int _ensure_cert(void) {
     return (rc == 0) ? 0 : -1;
 }
 
-/* Log every request: method + url. */
-static int _log_middleware(xylem_http_writer_t* w, xylem_http_req_t* req,
-                           void* ud) {
-    (void)w;
-    (void)ud;
-    xylem_logi("[req] %s %s", xylem_http_req_method(req),
-               xylem_http_req_url(req));
-    return 0;
-}
-
-/**
- * Reject requests without a valid Authorization header.
- * Accepts "Bearer xylem-demo-token" for demonstration purposes.
- */
-static int _auth_middleware(xylem_http_writer_t* w, xylem_http_req_t* req,
-                            void* ud) {
-    (void)ud;
-    const char* auth = xylem_http_req_header(req, "Authorization");
-    if (auth && strcmp(auth, "Bearer xylem-demo-token") == 0) {
-        return 0;
-    }
-    xylem_http_writer_set_status(w, 401);
-    xylem_http_writer_set_header(w, "Content-Type", "application/json");
-    const char* body = "{\"error\":\"unauthorized\"}";
-    xylem_http_writer_write(w, body, strlen(body));
-    return -1;
-}
-
-/* GET / */
-static void _handle_index(xylem_http_writer_t* w, xylem_http_req_t* req,
-                           void* ud) {
-    (void)req;
-    (void)ud;
-    xylem_http_writer_set_header(w, "Content-Type", "text/plain");
-    const char* body = "Hello, Xylem! (HTTPS)";
-    xylem_http_writer_write(w, body, strlen(body));
-}
-
-/* POST /echo */
-static void _handle_echo(xylem_http_writer_t* w, xylem_http_req_t* req,
-                          void* ud) {
-    (void)ud;
-    const void* body     = xylem_http_req_body(req);
-    size_t      body_len = xylem_http_req_body_len(req);
-
-    char buf[4096];
-    int n = snprintf(buf, sizeof(buf),
-                     "{\"method\":\"%s\",\"body\":\"%.*s\"}",
-                     xylem_http_req_method(req),
-                     (int)body_len, (const char*)body);
-    if (n < 0 || (size_t)n >= sizeof(buf)) {
-        xylem_http_writer_set_status(w, 500);
-        xylem_http_writer_set_header(w, "Content-Type", "text/plain");
-        xylem_http_writer_write(w, "response too large", 18);
-        return;
-    }
-    xylem_http_writer_set_header(w, "Content-Type", "application/json");
-    xylem_http_writer_write(w, buf, (size_t)n);
-}
-
+/* Dispatches requests through the router. */
 static void _on_request(xylem_http_writer_t* w, xylem_http_req_t* req,
                          void* ud) {
     (void)ud;
@@ -157,12 +96,13 @@ int main(void) {
 
     _router = xylem_http_router_create();
 
-    /* Register middleware (runs in order before route handlers). */
-    xylem_http_router_use(_router, _log_middleware, NULL);
-    xylem_http_router_use(_router, _auth_middleware, NULL);
-
-    xylem_http_router_add(_router, "GET",  "/",     _handle_index, NULL);
-    xylem_http_router_add(_router, "POST", "/echo", _handle_echo,  NULL);
+    xylem_http_static_opts_t opts = {
+        .root          = STATIC_ROOT,
+        .index_file    = "index.html",
+        .max_age       = 3600,
+        .precompressed = true,
+    };
+    xylem_http_static_serve(_router, "/static", &opts);
 
     xylem_http_srv_cfg_t cfg = {
         .host       = "127.0.0.1",
@@ -185,7 +125,8 @@ int main(void) {
         return 1;
     }
 
-    xylem_logi("https server listening on https://127.0.0.1:%d", LISTEN_PORT);
+    xylem_logi("serving %s/ at https://127.0.0.1:%d/static/",
+               STATIC_ROOT, LISTEN_PORT);
     xylem_loop_run(&loop);
 
     xylem_http_srv_destroy(srv);
