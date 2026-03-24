@@ -100,7 +100,7 @@ typedef struct {
  * @param origin        Request Origin header value, or NULL (returns 0).
  * @param is_preflight  True if this is an OPTIONS preflight request.
  * @param out           Output array of headers. Caller provides storage.
- *                      Must have room for at least 6 entries.
+ *                      Must have room for at least 7 entries.
  * @param out_cap       Capacity of the out array.
  *
  * @return Number of headers written to out, or 0 if origin does

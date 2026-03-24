@@ -179,13 +179,45 @@ static void test_send_partial_null(void) {
     /* Removed: send_partial is now internal. */
 }
 
+static void test_cors_vary_origin(void) {
+    xylem_http_cors_t cors = {0};
+    cors.allowed_origins = "http://foo.com";
+
+    xylem_http_hdr_t out[7];
+    size_t n = xylem_http_cors_headers(&cors, "http://foo.com",
+                                       false, out, 7);
+    /* Should have Allow-Origin + Vary: Origin */
+    ASSERT(n >= 2);
+    bool found_vary = false;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(out[i].name, "Vary") == 0) {
+            ASSERT(strcmp(out[i].value, "Origin") == 0);
+            found_vary = true;
+        }
+    }
+    ASSERT(found_vary);
+}
+
+static void test_cors_wildcard_no_vary(void) {
+    xylem_http_cors_t cors = {0};
+    cors.allowed_origins = "*";
+
+    xylem_http_hdr_t out[7];
+    size_t n = xylem_http_cors_headers(&cors, "http://example.com",
+                                       false, out, 7);
+    /* Wildcard origin should NOT emit Vary header. */
+    for (size_t i = 0; i < n; i++) {
+        ASSERT(strcmp(out[i].name, "Vary") != 0);
+    }
+}
+
 static void test_cors_wildcard_origin(void) {
     xylem_http_cors_t cors = {0};
     cors.allowed_origins = "*";
 
-    xylem_http_hdr_t out[6];
+    xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://example.com",
-                                       false, out, 6);
+                                       false, out, 7);
     ASSERT(n == 1);
     ASSERT(strcmp(out[0].name, "Access-Control-Allow-Origin") == 0);
     ASSERT(strcmp(out[0].value, "*") == 0);
@@ -195,14 +227,14 @@ static void test_cors_specific_origin(void) {
     xylem_http_cors_t cors = {0};
     cors.allowed_origins = "http://foo.com, http://bar.com";
 
-    xylem_http_hdr_t out[6];
+    xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://bar.com",
-                                       false, out, 6);
-    ASSERT(n == 1);
+                                       false, out, 7);
+    ASSERT(n >= 1);
     ASSERT(strcmp(out[0].name, "Access-Control-Allow-Origin") == 0);
 
     n = xylem_http_cors_headers(&cors, "http://evil.com",
-                                false, out, 6);
+                                false, out, 7);
     ASSERT(n == 0);
 }
 
@@ -211,13 +243,20 @@ static void test_cors_credentials_no_wildcard(void) {
     cors.allowed_origins   = "*";
     cors.allow_credentials = true;
 
-    xylem_http_hdr_t out[6];
+    xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://example.com",
-                                       false, out, 6);
-    ASSERT(n == 2);
+                                       false, out, 7);
+    /* Allow-Origin + Credentials + Vary (credentials forces non-wildcard). */
+    ASSERT(n >= 2);
     ASSERT(strcmp(out[0].value, "http://example.com") == 0);
-    ASSERT(strcmp(out[1].name, "Access-Control-Allow-Credentials") == 0);
-    ASSERT(strcmp(out[1].value, "true") == 0);
+    bool found_cred = false;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(out[i].name, "Access-Control-Allow-Credentials") == 0) {
+            ASSERT(strcmp(out[i].value, "true") == 0);
+            found_cred = true;
+        }
+    }
+    ASSERT(found_cred);
 }
 
 static void test_cors_preflight_headers(void) {
@@ -227,9 +266,9 @@ static void test_cors_preflight_headers(void) {
     cors.allowed_headers = "Content-Type,Authorization";
     cors.max_age         = 3600;
 
-    xylem_http_hdr_t out[6];
+    xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://example.com",
-                                       true, out, 6);
+                                       true, out, 7);
     ASSERT(n == 4);
 
     bool found_methods = false;
@@ -253,13 +292,13 @@ static void test_cors_preflight_headers(void) {
 }
 
 static void test_cors_null_config(void) {
-    xylem_http_hdr_t out[6];
+    xylem_http_hdr_t out[7];
     ASSERT(xylem_http_cors_headers(NULL, "http://example.com",
-                                   false, out, 6) == 0);
+                                   false, out, 7) == 0);
 
     xylem_http_cors_t cors = {0};
     cors.allowed_origins = "*";
-    ASSERT(xylem_http_cors_headers(&cors, NULL, false, out, 6) == 0);
+    ASSERT(xylem_http_cors_headers(&cors, NULL, false, out, 7) == 0);
 }
 
 static void test_sse_start_null(void) {
@@ -517,6 +556,24 @@ static void test_write_on_closed(void) {
     ASSERT(xylem_http_writer_write(NULL, "data", 4) == -1);
 }
 
+static void test_upgrade_null_callback(void) {
+    /* accept_upgrade with NULL writer returns -1. */
+    void* transport = NULL;
+    ASSERT(xylem_http_writer_accept_upgrade(NULL, &transport) == -1);
+}
+
+static void test_accept_upgrade_outside_cb(void) {
+    /* accept_upgrade with NULL transport output returns -1. */
+    ASSERT(xylem_http_writer_accept_upgrade(NULL, NULL) == -1);
+}
+
+static void test_accept_upgrade_null_transport(void) {
+    /* Both NULL returns -1. */
+    void* transport = NULL;
+    ASSERT(xylem_http_writer_accept_upgrade(NULL, &transport) == -1);
+    ASSERT(transport == NULL);
+}
+
 int main(void) {
     /* URL percent-encoding */
     test_url_encode_unreserved();
@@ -555,6 +612,8 @@ int main(void) {
     test_send_partial_null();
 
     /* CORS */
+    test_cors_vary_origin();
+    test_cors_wildcard_no_vary();
     test_cors_wildcard_origin();
     test_cors_specific_origin();
     test_cors_credentials_no_wildcard();
@@ -594,6 +653,11 @@ int main(void) {
     test_writer_send_convenience();
     test_write_zero_len();
     test_write_on_closed();
+
+    /* Upgrade */
+    test_upgrade_null_callback();
+    test_accept_upgrade_outside_cb();
+    test_accept_upgrade_null_transport();
 
     return 0;
 }

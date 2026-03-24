@@ -2572,3 +2572,539 @@ xylem_tls_ctx_destroy(ctx);  /* 自动关闭 keylog 文件 */
 - 导出的 key material 可以解密所有使用该 ctx 的 TLS 会话
 - 生产环境不应启用此功能
 - 文件以 append 模式打开，不会覆盖已有内容
+
+
+---
+
+## Vary 头自动管理设计（Requirements 35）
+
+### Overview
+
+当服务器根据请求头动态决定响应内容时（如 gzip 压缩依赖 `Accept-Encoding`、CORS 动态 origin 依赖 `Origin`），必须在响应中包含 `Vary` 头，告知缓存层（CDN/代理）同一 URL 可能因这些请求头不同而产生不同响应。当前实现中 gzip 路径已硬编码 `_http_srv_resp_header_set(conn, "Vary", "Accept-Encoding")`，但存在两个问题：
+
+1. `set` 语义是覆盖——如果用户先手动设置了 `Vary: Cookie`，gzip 路径会覆盖为 `Vary: Accept-Encoding`，丢失用户值
+2. CORS 动态 origin 匹配时未自动添加 `Vary: Origin`
+
+本设计引入 Vary_Manager 内部组件，统一管理 Vary 头的合并与去重。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 合并时机 | header flush 之前（`_http_srv_flush_resp_headers` 和 `_http_srv_flush_resp_headers_cl`） | 所有响应路径的最终出口，确保无遗漏 |
+| 合并算法 | 解析现有 Vary 值为字段列表，追加新字段，大小写不敏感去重 | 符合 RFC 7231 §7.1.4 |
+| `Vary: *` 处理 | 检测到 `*` 时跳过追加 | `*` 已表示因所有请求头而异，无需列举 |
+| CORS Vary: Origin | 在 `xylem_http_cors_headers` 输出中自动包含 | CORS 是独立工具函数，Vary: Origin 应由其负责 |
+| 实现位置 | `_http_srv_vary_ensure` 内部辅助函数 | 集中逻辑，避免散落在多处 |
+
+### Components and Interfaces
+
+#### 新增内部辅助函数
+
+```c
+/**
+ * Ensure a field name is present in the Vary header.
+ *
+ * If no Vary header exists, creates one with the given field.
+ * If Vary already exists, parses its comma-separated values and
+ * appends the field only if not already present (case-insensitive).
+ * If Vary is "*", does nothing.
+ *
+ * Must be called before headers are flushed.
+ */
+static void _http_srv_vary_ensure(xylem_http_conn_t* conn,
+                                  const char* field);
+```
+
+#### `xylem_http_cors_headers` 变更
+
+当 CORS 配置的 `allowed_origins` 不是 `"*"`（即动态 origin 匹配）且 origin 匹配成功时，在输出的 header 数组中额外追加 `Vary: Origin`。这确保调用者将 CORS headers 传给 `set_header` 后，Vary 值自动包含 Origin。
+
+```c
+/* 在 xylem_http_cors_headers 中，当 allowed_origins != "*" 且匹配成功时 */
+if (strcmp(cors->allowed_origins, "*") != 0) {
+    out[n].name  = "Vary";
+    out[n].value = "Origin";
+    n++;
+}
+```
+
+### 实现逻辑
+
+#### `_http_srv_vary_ensure` 算法
+
+```c
+static void _http_srv_vary_ensure(xylem_http_conn_t* conn,
+                                  const char* field) {
+    const char* existing = _http_srv_resp_header_get(conn, "Vary");
+
+    /* 无现有 Vary：直接设置 */
+    if (!existing) {
+        _http_srv_resp_header_set(conn, "Vary", field);
+        return;
+    }
+
+    /* Vary: * 时不追加 */
+    if (existing[0] == '*' && (existing[1] == '\0' || existing[1] == ',')) {
+        return;
+    }
+
+    /* 解析现有值，检查 field 是否已存在（大小写不敏感） */
+    const char* p = existing;
+    while (*p) {
+        /* 跳过前导空白和逗号 */
+        while (*p == ',' || *p == ' ') p++;
+        if (!*p) break;
+
+        /* 提取当前 token */
+        const char* start = p;
+        while (*p && *p != ',' && *p != ' ') p++;
+        size_t token_len = (size_t)(p - start);
+
+        /* 大小写不敏感比较 */
+        if (token_len == strlen(field) &&
+            strncasecmp(start, field, token_len) == 0) {
+            return;  /* 已存在，无需追加 */
+        }
+    }
+
+    /* 追加：构建 "existing, field" */
+    size_t elen = strlen(existing);
+    size_t flen = strlen(field);
+    char* merged = malloc(elen + 2 + flen + 1);  /* ", " + NUL */
+    if (!merged) return;
+    memcpy(merged, existing, elen);
+    merged[elen] = ',';
+    merged[elen + 1] = ' ';
+    memcpy(merged + elen + 2, field, flen);
+    merged[elen + 2 + flen] = '\0';
+
+    _http_srv_resp_header_set(conn, "Vary", merged);
+    free(merged);
+}
+```
+
+注意：`strncasecmp` 在 POSIX 上可用；Windows 上使用 `_strnicmp`。实际实现中使用项目已有的 `http_lower_table` 逐字符比较，与 `http_header_eq` 风格一致。
+
+#### gzip 路径变更
+
+将现有的 `_http_srv_resp_header_set(conn, "Vary", "Accept-Encoding")` 替换为 `_http_srv_vary_ensure(conn, "Accept-Encoding")`：
+
+```c
+/* 在 xylem_http_writer_write 的 gzip 初始化路径中 */
+if (rc == MZ_OK) {
+    conn->gzip_active = true;
+    _http_srv_resp_header_set(conn, "Content-Encoding", "gzip");
+    _http_srv_vary_ensure(conn, "Accept-Encoding");  /* 替换 set */
+}
+
+/* 在 _http_srv_send 的 one-shot gzip 路径中 */
+if (gzip_len < body_len) {
+    body_len = gzip_len;
+    _http_srv_resp_header_set(conn, "Content-Encoding", "gzip");
+    _http_srv_vary_ensure(conn, "Accept-Encoding");  /* 替换 set */
+}
+```
+
+#### CORS 路径变更
+
+在 `xylem_http_cors_headers` 中，当 `allowed_origins` 不是 `"*"` 且 origin 匹配成功时，额外输出 `Vary: Origin` header。调用者通过 `set_header` 将其设置到 conn 上，后续 gzip 路径的 `_http_srv_vary_ensure("Accept-Encoding")` 会正确合并。
+
+### Data Models 更新
+
+无新增字段。Vary 管理完全通过现有的 `resp_headers` 缓冲区实现。
+
+### Error Handling 更新
+
+- `_http_srv_vary_ensure` 中 malloc 失败：静默跳过（Vary 头缺失不影响功能正确性，仅影响缓存行为）
+- 用户设置无效 Vary 值（如空字符串）：保留原样，不做校验
+
+---
+
+## HTTP/1.1 Upgrade 机制设计（Requirements 36）
+
+### Overview
+
+HTTP/1.1 Upgrade 机制（RFC 7230 §6.7）允许客户端请求将当前连接切换到另一个协议（如 WebSocket）。服务器通过 `on_upgrade` 回调让用户决定是否接受升级。接受时发送 `101 Switching Protocols` 响应，将底层 transport handle 的所有权转移给用户，HTTP 层完全脱离该连接的管理。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 回调签名 | 复用 `xylem_http_on_request_fn_t`（writer + req + userdata） | 用户在回调中可读取请求头（如 `Sec-WebSocket-Key`），通过 writer 发送 101 |
+| Upgrade 检测 | llhttp `on_message_complete` 中检查 `F_CONNECTION_UPGRADE` 标志 | llhttp 已解析 `Connection: Upgrade`，无需手动检查 header |
+| accept_upgrade 返回值 | 通过 output 参数返回 transport handle | 函数返回 int（0/-1）表示成功/失败，transport 通过指针参数输出 |
+| 连接脱离 | 停止 idle timer、置 NULL transport、不调用 close | 所有权转移后 HTTP 层不再管理该连接 |
+| on_upgrade 为 NULL | 发送 501 + 关闭连接 | 明确拒绝，符合 HTTP 规范 |
+| 回调外调用 accept_upgrade | 返回 -1 | conn 上新增 `in_upgrade_cb` 标志位检测 |
+| 用户不调用 accept_upgrade | 回调返回后关闭连接 | 安全默认行为，避免连接泄漏 |
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant Client as 客户端
+    participant Parser as llhttp
+    participant Conn as xylem_http_conn_t
+    participant User as on_upgrade 回调
+    participant Transport as TCP/TLS handle
+
+    Client->>Parser: GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n...
+    Parser->>Conn: on_message_complete (F_CONNECTION_UPGRADE set)
+    Conn->>Conn: 检测 Upgrade 标志
+    alt on_upgrade 非 NULL
+        Conn->>User: on_upgrade(writer, req, userdata)
+        User->>Conn: xylem_http_writer_accept_upgrade(writer, &transport)
+        Conn->>Transport: 发送 101 Switching Protocols
+        Conn->>Conn: 停止 idle timer
+        Conn->>Conn: conn->transport = NULL（脱离）
+        Conn-->>User: return 0, *transport = handle
+        User->>Transport: 用户接管连接（如 WebSocket 握手）
+    else on_upgrade 为 NULL
+        Conn->>Transport: 发送 501 Not Implemented
+        Conn->>Transport: 关闭连接
+    end
+```
+
+### Components and Interfaces
+
+#### 新增公共类型（`include/xylem/http/xylem-http-server.h`）
+
+```c
+/**
+ * @brief Upgrade request callback.
+ *
+ * Invoked when a client sends a request with the Upgrade header.
+ * The callback receives the same parameters as on_request. To
+ * accept the upgrade, call xylem_http_writer_accept_upgrade()
+ * within this callback. If the callback returns without accepting,
+ * the connection is closed.
+ *
+ * @param writer    Response writer for sending the 101 response.
+ * @param req       Parsed request (contains Upgrade header value).
+ * @param userdata  User-supplied pointer from the server config.
+ */
+typedef void (*xylem_http_on_upgrade_fn_t)(xylem_http_writer_t* writer,
+                                           xylem_http_req_t* req,
+                                           void* userdata);
+```
+
+注意：`xylem_http_on_upgrade_fn_t` 的签名与 `xylem_http_on_request_fn_t` 完全相同。使用独立 typedef 是为了语义清晰——用户在 config 中看到 `on_upgrade` 字段时能明确其用途。
+
+#### `xylem_http_srv_cfg_t` 变更
+
+```c
+typedef struct xylem_http_srv_cfg_s {
+    const char*                  host;
+    uint16_t                     port;
+    xylem_http_on_request_fn_t   on_request;
+    void*                        userdata;
+    const char*                  tls_cert;
+    const char*                  tls_key;
+    size_t                       max_body_size;
+    uint64_t                     idle_timeout_ms;
+    xylem_http_on_upgrade_fn_t   on_upgrade;      /* 新增 */
+} xylem_http_srv_cfg_t;
+```
+
+零初始化时 `on_upgrade = NULL`，行为与现有实现完全一致（Upgrade 请求收到 501）。
+
+#### 新增公共 API
+
+```c
+/**
+ * @brief Accept an HTTP Upgrade request.
+ *
+ * Sends a 101 Switching Protocols response with the Upgrade and
+ * Connection: Upgrade headers. Detaches the underlying transport
+ * handle from HTTP connection management: stops the idle timer,
+ * stops HTTP parsing, and transfers ownership to the caller.
+ *
+ * Must be called from within the on_upgrade callback. Calling
+ * from any other context returns -1.
+ *
+ * After a successful call, the caller owns the transport handle
+ * and is responsible for reading, writing, and closing it.
+ *
+ * @param writer     Response writer handle (from on_upgrade callback).
+ * @param transport  Output: underlying transport handle. For plain
+ *                   HTTP this is xylem_tcp_conn_t*; for HTTPS this
+ *                   is xylem_tls_t*. Cast as needed.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_writer_accept_upgrade(xylem_http_writer_t* writer,
+                                            void** transport);
+```
+
+#### `xylem_http_conn_s` 变更
+
+```c
+struct xylem_http_conn_s {
+    /* ... 现有字段 ... */
+    bool  in_upgrade_cb;   /* true 仅在 on_upgrade 回调执行期间 */
+    bool  upgrade_accepted; /* true 表示 accept_upgrade 已调用 */
+};
+```
+
+### 实现逻辑
+
+#### Upgrade 检测（`_http_srv_parser_message_complete_cb` 变更）
+
+```c
+static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
+    xylem_http_conn_t* conn = parser->data;
+
+    /* Reset idle timer. */
+    if (conn->idle_timer.active && conn->srv->cfg.idle_timeout_ms > 0) {
+        xylem_loop_reset_timer(&conn->idle_timer,
+                               conn->srv->cfg.idle_timeout_ms);
+    }
+
+    /* Check for Upgrade request. */
+    bool is_upgrade = (parser->flags & F_CONNECTION_UPGRADE) != 0;
+
+    if (is_upgrade) {
+        if (conn->srv->cfg.on_upgrade) {
+            conn->in_upgrade_cb = true;
+            conn->srv->cfg.on_upgrade(conn, &conn->req,
+                                      conn->srv->cfg.userdata);
+            conn->in_upgrade_cb = false;
+
+            if (!conn->upgrade_accepted && !conn->closed) {
+                /* 用户未调用 accept_upgrade，关闭连接 */
+                conn->closed = true;
+                conn->vt->close_conn(conn->transport);
+            }
+        } else {
+            /* on_upgrade 为 NULL：发送 501 并关闭 */
+            _http_srv_send(conn, 501, "text/plain",
+                           "Not Implemented", 15);
+            conn->closed = true;
+            conn->vt->close_conn(conn->transport);
+        }
+    } else {
+        /* 正常请求分发 */
+        if (conn->srv->cfg.on_request) {
+            conn->srv->cfg.on_request(conn, &conn->req,
+                                      conn->srv->cfg.userdata);
+        }
+    }
+
+    return HPE_PAUSED;
+}
+```
+
+#### `xylem_http_writer_accept_upgrade` 实现
+
+```c
+int xylem_http_writer_accept_upgrade(xylem_http_writer_t* conn,
+                                     void** transport) {
+    if (!conn || !transport) return -1;
+    if (conn->closed) return -1;
+    if (!conn->in_upgrade_cb) return -1;  /* 非 on_upgrade 回调中调用 */
+    if (conn->upgrade_accepted) return -1; /* 重复调用 */
+
+    /* 获取请求中的 Upgrade 头值 */
+    const char* upgrade_val = http_header_find(
+        conn->req.headers, conn->req.header_count, "Upgrade");
+    if (!upgrade_val) upgrade_val = "websocket";  /* 防御性默认值 */
+
+    /* 构建 101 响应 */
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: %s\r\n"
+        "Connection: Upgrade\r\n"
+        "\r\n",
+        upgrade_val);
+
+    if (len < 0 || (size_t)len >= sizeof(buf)) return -1;
+
+    /* 发送 101 响应 */
+    int rc = conn->vt->send(conn->transport, buf, (size_t)len);
+    if (rc != 0) return -1;
+
+    /* 停止 idle timer */
+    if (conn->idle_timer.active) {
+        xylem_loop_stop_timer(&conn->idle_timer);
+    }
+
+    /* 输出 transport handle，转移所有权 */
+    *transport = conn->transport;
+
+    /* 脱离 HTTP 管理 */
+    conn->transport = NULL;
+    conn->upgrade_accepted = true;
+    conn->closed = true;  /* 防止后续 HTTP 操作 */
+
+    return 0;
+}
+```
+
+#### `_http_srv_conn_close_cb` 变更
+
+在连接关闭回调中，如果 `upgrade_accepted == true`，跳过 transport 释放（所有权已转移）：
+
+```c
+static void _http_srv_conn_close_cb(void* handle, void* ctx, int err) {
+    xylem_http_conn_t* conn = /* ... */;
+
+    /* 清理 HTTP 层资源 */
+    _http_srv_resp_reset(conn);
+    http_headers_free(conn->req.headers, conn->req.header_count);
+    free(conn->req.url);
+    free(conn->req.body);
+    free(conn->cur_header_name);
+
+    /* transport 已在 accept_upgrade 中转移，不需要关闭 */
+    free(conn);
+}
+```
+
+#### writer state 重置
+
+在 `_http_srv_resp_reset` 中重置 upgrade 相关标志：
+
+```c
+conn->in_upgrade_cb = false;
+conn->upgrade_accepted = false;
+```
+
+### Data Models 更新
+
+`xylem_http_srv_cfg_t` 新增 `on_upgrade` 字段（见上方）。
+
+`xylem_http_conn_s` 新增 `in_upgrade_cb` 和 `upgrade_accepted` 字段（见上方）。
+
+### Error Handling 更新
+
+| 场景 | 行为 |
+|------|------|
+| `accept_upgrade` 在非 `on_upgrade` 回调中调用 | 返回 -1 |
+| `accept_upgrade` 重复调用 | 返回 -1 |
+| `accept_upgrade` 在已关闭连接上调用 | 返回 -1 |
+| 101 响应发送失败 | 返回 -1，不转移所有权 |
+| `on_upgrade` 为 NULL 且收到 Upgrade 请求 | 发送 501，关闭连接 |
+| 用户在 `on_upgrade` 中未调用 `accept_upgrade` | 回调返回后关闭连接 |
+| Upgrade 头值过长导致 snprintf 截断 | 返回 -1 |
+
+### 使用示例
+
+```c
+static void on_upgrade(xylem_http_writer_t* writer,
+                       xylem_http_req_t* req, void* ud) {
+    const char* upgrade = xylem_http_req_header(req, "Upgrade");
+    if (!upgrade || strcasecmp(upgrade, "websocket") != 0) {
+        /* 不支持的协议，发送 400 */
+        xylem_http_writer_set_status(writer, 400);
+        xylem_http_writer_set_header(writer, "Content-Length", "0");
+        xylem_http_writer_write(writer, NULL, 0);
+        return;
+    }
+
+    void* transport = NULL;
+    if (xylem_http_writer_accept_upgrade(writer, &transport) == 0) {
+        /* 连接已升级，transport 现在由用户管理 */
+        /* 开始 WebSocket 握手... */
+        my_websocket_init((xylem_tcp_conn_t*)transport);
+    }
+}
+
+xylem_http_srv_cfg_t cfg = {
+    .host       = "0.0.0.0",
+    .port       = 8080,
+    .on_request = on_request,
+    .on_upgrade = on_upgrade,
+    .userdata   = NULL,
+};
+```
+
+---
+
+## Correctness Properties 更新（Requirements 35, 36）
+
+### Property 24: Vary 合并去重
+
+*For any* set of Vary field names contributed by multiple sources (user manual `set_header`, gzip auto-add, CORS auto-add), calling `_http_srv_vary_ensure` for each field SHALL produce a single comma-separated Vary header value containing all unique field names with no case-insensitive duplicates. The order of first appearance SHALL be preserved.
+
+**Validates: Requirements 35.3, 35.4, 35.6**
+
+### Property 25: gzip 自动添加 Vary: Accept-Encoding
+
+*For any* HTTP response where gzip compression is applied (server gzip enabled, client accepts gzip, Content-Type matches), the flushed response headers SHALL contain a Vary header whose value includes `Accept-Encoding`.
+
+**Validates: Requirements 35.1**
+
+### Property 26: CORS 动态 origin 自动添加 Vary: Origin
+
+*For any* CORS configuration with non-wildcard `allowed_origins` and a matching request Origin, `xylem_http_cors_headers` SHALL include `Vary: Origin` in its output header array.
+
+**Validates: Requirements 35.2**
+
+### Property 27: Upgrade 请求分发
+
+*For any* HTTP request containing the `Upgrade` header and `Connection: Upgrade`, the HTTP server SHALL invoke the `on_upgrade` callback (if non-NULL) instead of the `on_request` callback. For requests without the `Upgrade` header, the server SHALL invoke `on_request` as normal.
+
+**Validates: Requirements 36.3**
+
+### Property 28: accept_upgrade 101 响应格式
+
+*For any* call to `xylem_http_writer_accept_upgrade` within the `on_upgrade` callback, the sent response SHALL be a valid HTTP/1.1 `101 Switching Protocols` response containing `Upgrade: {value}` (copied from the request) and `Connection: Upgrade` headers.
+
+**Validates: Requirements 36.6**
+
+### Property 29: Upgrade 连接脱离
+
+*For any* connection where `xylem_http_writer_accept_upgrade` returns 0, the HTTP server SHALL have stopped the idle timer, set `conn->transport = NULL`, and the returned transport handle SHALL be non-NULL. The HTTP server SHALL NOT subsequently close or free the transport handle.
+
+**Validates: Requirements 36.8, 36.9**
+
+---
+
+## Testing Strategy 更新（Requirements 35, 36）
+
+### 新增单元测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_vary_ensure_empty` | 无现有 Vary 时设置新值 |
+| `test_vary_ensure_merge` | 现有 Vary 值与新字段合并 |
+| `test_vary_ensure_dedup` | 已存在的字段不重复添加（大小写不敏感） |
+| `test_vary_ensure_star` | `Vary: *` 时不追加 |
+| `test_cors_vary_origin` | 非通配 CORS 输出包含 `Vary: Origin` |
+| `test_cors_wildcard_no_vary` | 通配 `"*"` CORS 不输出 `Vary: Origin` |
+| `test_upgrade_null_callback` | `on_upgrade` 为 NULL 时收到 501 |
+| `test_accept_upgrade_outside_cb` | 非 `on_upgrade` 回调中调用返回 -1 |
+| `test_accept_upgrade_null_transport` | transport 参数为 NULL 时返回 -1 |
+
+### 新增属性测试
+
+```c
+/* Feature: http, Property 24: Vary merge dedup */
+static void test_prop_vary_merge_dedup(void) { ... }
+
+/* Feature: http, Property 25: gzip auto-adds Vary: Accept-Encoding */
+static void test_prop_vary_gzip(void) { ... }
+
+/* Feature: http, Property 26: CORS dynamic origin auto-adds Vary: Origin */
+static void test_prop_vary_cors_origin(void) { ... }
+
+/* Feature: http, Property 27: Upgrade request dispatch */
+static void test_prop_upgrade_dispatch(void) { ... }
+
+/* Feature: http, Property 28: accept_upgrade 101 response format */
+static void test_prop_accept_upgrade_101(void) { ... }
+
+/* Feature: http, Property 29: Upgrade connection detach */
+static void test_prop_upgrade_detach(void) { ... }
+```
+
+每个属性测试最少运行 100 次迭代，使用 theft 库生成随机输入。
+
+### 集成测试更新
+
+- 服务器启用 gzip + 用户手动设置 `Vary: Cookie`，验证响应 Vary 为 `Cookie, Accept-Encoding`
+- 服务器使用 CORS 动态 origin + gzip，验证响应 Vary 为 `Origin, Accept-Encoding`
+- 客户端发送 `Upgrade: websocket` 请求，服务器 `on_upgrade` 回调中调用 `accept_upgrade`，验证收到 101 响应且 transport handle 可用
+- 客户端发送 `Upgrade: websocket` 请求，服务器 `on_upgrade` 为 NULL，验证收到 501 响应

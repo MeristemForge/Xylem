@@ -25,6 +25,7 @@
 
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/xylem-addr.h"
+#include "xylem/xylem-gzip.h"
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-thrdpool.h"
 #include "xylem/xylem-utils.h"
@@ -213,7 +214,7 @@ static int _http_cli_cookie_parse(const char* header, const char* req_host,
                    _http_cli_iprefix(p, "httponly", 8)) {
             out->http_only = true;
         }
-        /* Expires attribute intentionally not parsed â€?Max-Age takes precedence
+        /* Expires attribute intentionally not parsed ï¿½?Max-Age takes precedence
          * and parsing HTTP-date is complex. Session cookies (expires=0) are the
          * default when neither Max-Age nor Expires is present. */
 
@@ -498,6 +499,43 @@ static int _http_cli_res_body_cb(llhttp_t* parser,
 
 static int _http_cli_res_message_complete_cb(llhttp_t* parser) {
     _http_cli_ctx_t* ctx = parser->data;
+
+    /* Auto-decompress gzip response body (RFC 9110 Â§8.4). */
+    if (ctx->res && ctx->res->body && ctx->res->body_len > 0) {
+        const char* ce = http_header_find(ctx->res->headers,
+                                          ctx->res->header_count,
+                                          "Content-Encoding");
+        if (ce && http_header_eq(ce, "gzip")) {
+            /* Try progressively larger buffers (4x, 8x, 16x). */
+            size_t src_len = ctx->res->body_len;
+            int rc = -1;
+            size_t mult = 4;
+            uint8_t* dec = NULL;
+            while (mult <= 16) {
+                size_t dec_cap = src_len * mult;
+                dec = malloc(dec_cap);
+                if (!dec) {
+                    break;
+                }
+                rc = xylem_gzip_decompress(ctx->res->body, src_len,
+                                           dec, dec_cap);
+                if (rc >= 0) {
+                    break;
+                }
+                free(dec);
+                dec = NULL;
+                mult *= 2;
+            }
+            if (rc >= 0 && dec) {
+                free(ctx->res->body);
+                ctx->res->body = dec;
+                ctx->res->body_len = (size_t)rc;
+            } else {
+                free(dec);
+            }
+        }
+    }
+
     ctx->done = true;
     return HPE_PAUSED;
 }
@@ -676,7 +714,7 @@ static void _http_cli_resolve_cb(xylem_addr_t* addrs, size_t count,
 static bool _http_cli_follow_redirect(_http_cli_ctx_t* ctx) {
     int status = ctx->res->status_code;
     if (ctx->redirects_remaining <= 0 ||
-        (status != 301 && status != 302 &&
+        (status != 301 && status != 302 && status != 303 &&
          status != 307 && status != 308)) {
         return false;
     }
@@ -717,7 +755,7 @@ static bool _http_cli_follow_redirect(_http_cli_ctx_t* ctx) {
     ctx->url = new_url;
     ctx->redirects_remaining--;
 
-    if (status == 301 || status == 302) {
+    if (status == 301 || status == 302 || status == 303) {
         ctx->method       = "GET";
         ctx->body         = NULL;
         ctx->body_len     = 0;

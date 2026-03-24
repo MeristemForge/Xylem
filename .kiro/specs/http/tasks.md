@@ -398,3 +398,47 @@
     - _Requirements: 34.9_
   - [x] 36.11 构建并运行所有测试，确保无回归（31/31 passed）
     - _Requirements: all_
+
+- [x] 37. Vary 头自动管理
+  - [x] 37.1 在 `src/http/xylem-http-server.c` 中实现 `_http_srv_vary_ensure` 静态辅助函数：确保指定字段名出现在 Vary 响应头中，支持逗号分隔值去重（大小写不敏感）、`Vary: *` 短路
+    - _Requirements: 35.1, 35.2, 35.3, 35.4_
+  - [x] 37.2 修改 gzip 路径中的 `Vary` 设置：将 `_http_srv_resp_header_set(conn, "Vary", "Accept-Encoding")` 替换为 `_http_srv_vary_ensure(conn, "Accept-Encoding")`
+    - _Requirements: 35.5_
+  - [x] 37.3 修改 `xylem_http_cors_headers`：当 `allowed_origins` 不是 `"*"` 时输出 `Vary: Origin`
+    - _Requirements: 35.6_
+  - [x] 37.4 在 `tests/test-http.c` 中添加 Vary 和 CORS Vary 单元测试：`test_cors_vary_origin`、`test_cors_wildcard_no_vary`
+    - _Requirements: 35.5, 35.6_
+  - [ ]* 37.5-37.7 属性测试（可选）
+
+- [x] 38. Checkpoint - 确保 Vary 功能编译通过并测试通过
+
+- [x] 39. Upgrade 机制 — 类型与声明
+  - [x] 39.1 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_on_upgrade_fn_t` 回调类型定义
+    - _Requirements: 36.1_
+  - [x] 39.2 在 `xylem_http_srv_cfg_t` 中添加 `on_upgrade` 字段
+    - _Requirements: 36.2_
+  - [x] 39.3 在 `include/xylem/http/xylem-http-server.h` 中添加 `xylem_http_writer_accept_upgrade` 函数声明（含 Doxygen 注释）
+    - _Requirements: 36.3_
+
+- [x] 40. Upgrade 机制 — 实现
+  - [x] 40.1 在 `xylem_http_conn_s` 中添加 `bool in_upgrade_cb` 和 `bool upgrade_accepted` 字段
+    - _Requirements: 36.4_
+  - [x] 40.2 修改 `_http_srv_parser_message_complete_cb`：检测 `F_CONNECTION_UPGRADE` 标志，分发到 `on_upgrade` 回调或发送 501
+    - _Requirements: 36.5, 36.6_
+  - [x] 40.3 实现 `xylem_http_writer_accept_upgrade`：发送 101 Switching Protocols，停止空闲定时器，转移 transport 所有权，脱离 HTTP 管理
+    - _Requirements: 36.3, 36.7_
+  - [x] 40.4 修改 `_http_srv_conn_read_cb` auto-finish 路径：当 `upgrade_accepted` 时跳过 gzip/chunked 终结，清理 conn 并销毁。在 `accept_upgrade` 中清除 transport userdata 防止 close 回调使用过期指针
+    - _Requirements: 36.8_
+  - [x] 40.5 修改 `_http_srv_resp_reset`：重置 `in_upgrade_cb = false` 和 `upgrade_accepted = false`
+    - _Requirements: 36.9_
+  - [x] 40.6 在 `tests/test-http.c` 中添加 Upgrade 单元测试：`test_upgrade_null_callback`、`test_accept_upgrade_outside_cb`、`test_accept_upgrade_null_transport`
+    - _Requirements: 36.3, 36.5_
+  - [ ]* 40.7-40.9 属性测试（可选）
+
+- [x] 41. Checkpoint - 确保 Upgrade 功能编译通过并测试通过
+
+- [ ] 42. 集成测试（可选）
+  - [ ]* 42.1 Vary + gzip 集成测试
+  - [ ]* 42.2 Upgrade + WebSocket 握手集成测试
+
+- [x] 43. Final checkpoint - 确保所有 Vary/Upgrade 测试通过

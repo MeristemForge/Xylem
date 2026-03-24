@@ -58,6 +58,23 @@ typedef void (*xylem_http_on_request_fn_t)(xylem_http_writer_t* writer,
                                            void* userdata);
 
 /**
+ * @brief Upgrade request callback.
+ *
+ * Invoked when a client sends a request with the Upgrade header
+ * and Connection: Upgrade. The callback receives the same parameters
+ * as on_request. To accept the upgrade, call
+ * xylem_http_writer_accept_upgrade() within this callback. If the
+ * callback returns without accepting, the connection is closed.
+ *
+ * @param writer    Response writer for sending the 101 response.
+ * @param req       Parsed request (contains Upgrade header value).
+ * @param userdata  User-supplied pointer from the server config.
+ */
+typedef void (*xylem_http_on_upgrade_fn_t)(xylem_http_writer_t* writer,
+                                           xylem_http_req_t* req,
+                                           void* userdata);
+
+/**
  * @brief Middleware callback.
  *
  * Invoked before the route handler during xylem_http_router_dispatch().
@@ -108,6 +125,7 @@ typedef struct xylem_http_srv_cfg_s {
     const char*                  tls_key;         /* PEM key path, NULL for plain HTTP */
     size_t                       max_body_size;   /* max request body, 0 = default 1 MiB */
     uint64_t                     idle_timeout_ms; /* idle timeout, 0 = disabled, default 60000 */
+    xylem_http_on_upgrade_fn_t   on_upgrade;      /* upgrade callback, NULL = reject with 501 */
 } xylem_http_srv_cfg_t;
 
 /**
@@ -295,6 +313,30 @@ extern int xylem_http_writer_write(xylem_http_writer_t* writer,
  * @param writer  Response writer handle.
  */
 extern void xylem_http_writer_close(xylem_http_writer_t* writer);
+
+/**
+ * @brief Accept an HTTP Upgrade request.
+ *
+ * Sends a 101 Switching Protocols response with the Upgrade and
+ * Connection: Upgrade headers. Detaches the underlying transport
+ * handle from HTTP connection management: stops the idle timer,
+ * stops HTTP parsing, and transfers ownership to the caller.
+ *
+ * Must be called from within the on_upgrade callback. Calling
+ * from any other context returns -1.
+ *
+ * After a successful call, the caller owns the transport handle
+ * and is responsible for reading, writing, and closing it.
+ *
+ * @param writer     Response writer handle (from on_upgrade callback).
+ * @param transport  Output: underlying transport handle. For plain
+ *                   HTTP this is xylem_tcp_conn_t*; for HTTPS this
+ *                   is xylem_tls_t*. Cast as needed.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_writer_accept_upgrade(xylem_http_writer_t* writer,
+                                            void** transport);
 
 /**
  * @brief Get a path parameter value extracted during routing.

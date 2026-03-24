@@ -15,6 +15,8 @@
 - **URL_Parser**: 内部 URL 解析组件，从 URL 字符串中提取 scheme、host、port、path
 - **llhttp**: Node.js 官方 HTTP 解析器，TypeScript 生成的 C 代码，用于解析 HTTP 请求和响应消息
 - **Request_Serializer**: 内部组件，将 HTTP 方法、URL、Headers 和 Body 序列化为符合 HTTP/1.1 规范的请求报文
+- **Vary_Manager**: 内部组件，负责在响应中管理 Vary 头的自动添加和合并，确保缓存层（CDN/代理）正确区分同一 URL 的不同变体
+- **Upgrade_Handler**: 服务器端协议升级处理组件，检测 HTTP/1.1 Upgrade 请求头，通过用户回调决定是否接受升级，接受时回复 101 Switching Protocols 并将底层 transport 句柄交给用户
 
 ## Requirements
 
@@ -485,3 +487,37 @@
 9. WHEN the HTTPS server or client creates a `xylem_tls_ctx_t` and calls `set_keylog`, THE keylog feature SHALL automatically apply to all connections using that ctx
 10. THE keylog file handle SHALL be stored per-ctx (not global), so different contexts can log to different files
 11. THE `xylem_tls_ctx_destroy` / `xylem_dtls_ctx_destroy` SHALL close the keylog file handle if open
+
+
+### Requirement 35: Vary 头自动管理
+
+**User Story:** 作为开发者，我希望服务器在根据请求头（如 Accept-Encoding、Origin）决定响应内容时，自动在响应中添加正确的 Vary 头，以便缓存层（CDN/代理）能正确区分同一 URL 的不同变体并分别缓存。
+
+#### Acceptance Criteria
+
+1. WHEN gzip compression is applied to the response, THE Vary_Manager SHALL automatically add `Accept-Encoding` to the Vary header value
+2. WHEN `xylem_http_cors_headers` outputs `Access-Control-Allow-Origin` with a non-`"*"` value (dynamic origin matching), THE Vary_Manager SHALL automatically add `Origin` to the Vary header value
+3. WHEN the user calls `set_header("Vary", value)` manually, THE Vary_Manager SHALL preserve the user-specified value and merge additional field names without duplication
+4. WHEN multiple sources (gzip, CORS, user) contribute Vary field names, THE Vary_Manager SHALL combine all field names into a single comma-separated Vary header value with no duplicates（大小写不敏感去重）
+5. WHEN no source contributes a Vary field name, THE HTTP_Connection SHALL NOT include a Vary header in the response
+6. THE Vary_Manager SHALL perform case-insensitive comparison when checking for duplicate field names in the Vary header
+7. WHEN the user sets `Vary: *`, THE Vary_Manager SHALL preserve `*` and not append additional field names（`*` 表示响应因所有请求头而异，无需列举具体字段）
+
+### Requirement 36: HTTP/1.1 Upgrade 机制（RFC 7230 §6.7）
+
+**User Story:** 作为开发者，我希望 HTTP 服务器能检测客户端的协议升级请求（如 WebSocket），并通过回调让我决定是否接受升级，以便在同一端口上同时支持 HTTP 和其他协议。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Server_Config SHALL provide an `on_upgrade` callback field of type `xylem_http_on_upgrade_fn_t`，当客户端发送包含 `Upgrade` 请求头的请求时被调用
+2. THE `xylem_http_on_upgrade_fn_t` callback SHALL receive the writer handle、request object、userdata，与 `on_request` 回调签名一致
+3. WHEN the HTTP parser detects a request with the `Upgrade` header, THE HTTP_Server SHALL invoke `on_upgrade` callback instead of `on_request` callback
+4. WHEN `on_upgrade` is NULL in the config and an Upgrade request is received, THE HTTP_Server SHALL respond with 501 Not Implemented and close the connection
+5. THE HTTP_Connection SHALL provide `xylem_http_writer_accept_upgrade` 函数，在 `on_upgrade` 回调中调用以接受协议升级
+6. WHEN `xylem_http_writer_accept_upgrade` is called, THE HTTP_Connection SHALL send a `101 Switching Protocols` response，包含 `Upgrade` 和 `Connection: Upgrade` 响应头，其中 `Upgrade` 值从请求的 `Upgrade` 头复制
+7. WHEN `xylem_http_writer_accept_upgrade` is called, THE HTTP_Connection SHALL return the underlying transport handle（`xylem_tcp_conn_t*` 或 `xylem_tls_t*`）via an output parameter，以便用户接管底层连接
+8. WHEN a connection is upgraded via `xylem_http_writer_accept_upgrade`, THE HTTP_Server SHALL detach the connection from HTTP connection management（停止 HTTP 解析、取消空闲定时器、不再处理 keep-alive）
+9. WHEN a connection is upgraded, THE HTTP_Server SHALL NOT free the underlying transport handle（所有权转移给用户，用户负责后续关闭和释放）
+10. IF `xylem_http_writer_accept_upgrade` is called outside of the `on_upgrade` callback, THEN THE HTTP_Connection SHALL return -1
+11. THE `xylem_http_writer_accept_upgrade` SHALL return 0 on success and -1 on failure
+12. WHEN the user does not call `xylem_http_writer_accept_upgrade` in the `on_upgrade` callback and the callback returns, THE HTTP_Server SHALL close the connection（用户拒绝升级但未发送响应时的默认行为）

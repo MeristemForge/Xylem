@@ -77,6 +77,9 @@ struct xylem_http_conn_s {
     mz_stream*                 gzip_stream;
     bool                       gzip_active;
     bool                       cl_mode;
+    /* Upgrade state */
+    bool                       in_upgrade_cb;
+    bool                       upgrade_accepted;
 };
 
 struct xylem_http_srv_s {
@@ -139,6 +142,9 @@ static const struct {
     {".map",  "application/json"},
     {NULL, NULL}
 };
+
+/* Forward declaration — defined later, needed by flush_resp_headers. */
+static size_t _http_format_date(time_t t, char* buf, size_t cap);
 
 static void _http_srv_req_reset(xylem_http_req_t* req) {
     free(req->url);
@@ -293,6 +299,14 @@ static int _http_srv_parser_body_cb(llhttp_t* parser, const char* at,
     return 0;
 }
 
+/* Forward declaration --_http_srv_send is defined below write(). */
+static int _http_srv_send(xylem_http_conn_t* conn,
+                          int status_code,
+                          const char* content_type,
+                          const void* body, size_t body_len,
+                          const xylem_http_hdr_t* headers,
+                          size_t header_count);
+
 static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
 
@@ -302,9 +316,34 @@ static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
                                conn->srv->cfg.idle_timeout_ms);
     }
 
-    /* Dispatch to user callback. */
-    if (conn->srv->cfg.on_request) {
-        conn->srv->cfg.on_request(conn, &conn->req, conn->srv->cfg.userdata);
+    /* Check for Upgrade request (Connection: Upgrade flag set by llhttp). */
+    bool is_upgrade = (parser->flags & F_CONNECTION_UPGRADE) != 0;
+
+    if (is_upgrade) {
+        if (conn->srv->cfg.on_upgrade) {
+            conn->in_upgrade_cb = true;
+            conn->srv->cfg.on_upgrade(conn, &conn->req,
+                                      conn->srv->cfg.userdata);
+            conn->in_upgrade_cb = false;
+
+            /* User did not accept — close the connection. */
+            if (!conn->upgrade_accepted && !conn->closed) {
+                conn->closed = true;
+                conn->vt->close_conn(conn->transport);
+            }
+        } else {
+            /* No on_upgrade callback: reject with 501. */
+            _http_srv_send(conn, 501, "text/plain",
+                           "Not Implemented", 15, NULL, 0);
+            conn->closed = true;
+            conn->vt->close_conn(conn->transport);
+        }
+    } else {
+        /* Normal request dispatch. */
+        if (conn->srv->cfg.on_request) {
+            conn->srv->cfg.on_request(conn, &conn->req,
+                                      conn->srv->cfg.userdata);
+        }
     }
 
     return HPE_PAUSED;
@@ -409,6 +448,8 @@ static void _http_srv_resp_reset(xylem_http_conn_t* conn) {
     }
     conn->gzip_active = false;
     conn->cl_mode = false;
+    conn->in_upgrade_cb = false;
+    conn->upgrade_accepted = false;
 }
 
 static void _http_srv_conn_read_cb(void* handle, void* ctx,
@@ -420,79 +461,115 @@ static void _http_srv_conn_read_cb(void* handle, void* ctx,
         return;
     }
 
-    enum llhttp_errno err = llhttp_execute(&conn->parser, data, len);
+    const char* p = (const char*)data;
+    size_t remaining = len;
 
-    if (err == HPE_PAUSED) {
-        /**
-         * Message complete --the on_request callback has fired.
-         * Auto-finish: finalize gzip stream if active, then send
-         * the terminating chunk (unless in CL mode).
-         */
-        if (conn->gzip_active && !conn->closed) {
-            /* Flush remaining compressed data with MZ_FINISH. */
-            uint8_t finish_buf[256];
-            conn->gzip_stream->next_in = NULL;
-            conn->gzip_stream->avail_in = 0;
-            conn->gzip_stream->next_out = finish_buf;
-            conn->gzip_stream->avail_out = sizeof(finish_buf);
+    while (remaining > 0 && !conn->closed) {
+        enum llhttp_errno err = llhttp_execute(&conn->parser, p, remaining);
 
-            int zrc = mz_deflate(conn->gzip_stream, MZ_FINISH);
-            size_t produced = sizeof(finish_buf) - conn->gzip_stream->avail_out;
-            if (produced > 0 && (zrc == MZ_OK || zrc == MZ_STREAM_END)) {
-                _http_srv_send_chunk(conn, finish_buf, produced);
+        if (err == HPE_PAUSED) {
+            /* Calculate consumed bytes before the pause point. */
+            size_t consumed =
+                (size_t)(llhttp_get_error_pos(&conn->parser) - p);
+            p += consumed;
+            remaining -= consumed;
+
+            /**
+             * Message complete — the on_request callback has fired.
+             * If upgrade was accepted, transport ownership transferred
+             * to user — skip auto-finish and destroy the conn.
+             */
+            if (conn->upgrade_accepted) {
+                _http_srv_req_reset(&conn->req);
+                free(conn->cur_header_name);
+                conn->cur_header_name = NULL;
+                conn->cur_header_name_len = 0;
+                _http_srv_resp_reset(conn);
+                _http_srv_conn_destroy(conn);
+                return;
             }
-            /* Handle case where finish_buf was too small. */
-            while (zrc == MZ_OK) {
+
+            /**
+             * Auto-finish: finalize gzip stream if active, then send
+             * the terminating chunk (unless in CL mode).
+             */
+            if (conn->gzip_active && !conn->closed) {
+                uint8_t finish_buf[256];
+                conn->gzip_stream->next_in = NULL;
+                conn->gzip_stream->avail_in = 0;
                 conn->gzip_stream->next_out = finish_buf;
                 conn->gzip_stream->avail_out = sizeof(finish_buf);
-                zrc = mz_deflate(conn->gzip_stream, MZ_FINISH);
-                produced = sizeof(finish_buf) - conn->gzip_stream->avail_out;
-                if (produced > 0) {
+
+                int zrc = mz_deflate(conn->gzip_stream, MZ_FINISH);
+                size_t produced =
+                    sizeof(finish_buf) - conn->gzip_stream->avail_out;
+                if (produced > 0 && (zrc == MZ_OK || zrc == MZ_STREAM_END)) {
                     _http_srv_send_chunk(conn, finish_buf, produced);
                 }
+                while (zrc == MZ_OK) {
+                    conn->gzip_stream->next_out = finish_buf;
+                    conn->gzip_stream->avail_out = sizeof(finish_buf);
+                    zrc = mz_deflate(conn->gzip_stream, MZ_FINISH);
+                    produced =
+                        sizeof(finish_buf) - conn->gzip_stream->avail_out;
+                    if (produced > 0) {
+                        _http_srv_send_chunk(conn, finish_buf, produced);
+                    }
+                }
+                conn->gzip_active = false;
             }
-            conn->gzip_active = false;
+
+            if (conn->chunked_active && !conn->closed) {
+                static const char terminator[] = "0\r\n\r\n";
+                conn->vt->send(conn->transport, terminator,
+                               sizeof(terminator) - 1);
+                conn->chunked_active = false;
+            }
+
+            _http_srv_req_reset(&conn->req);
+            free(conn->cur_header_name);
+            conn->cur_header_name = NULL;
+            conn->cur_header_name_len = 0;
+            conn->expect_continue = false;
+            _http_srv_resp_reset(conn);
+
+            /* Resume parser for next request on keep-alive. */
+            _http_srv_conn_finish_response(conn);
+
+            if (conn->closed) {
+                break;
+            }
+            /* Loop continues to parse remaining pipelined data. */
+            continue;
         }
 
-        if (conn->chunked_active && !conn->closed) {
-            static const char terminator[] = "0\r\n\r\n";
-            conn->vt->send(conn->transport, terminator,
-                           sizeof(terminator) - 1);
-            conn->chunked_active = false;
+        if (err == HPE_USER) {
+            /* Body too large — send 413 and close. */
+            if (!conn->closed) {
+                static const char resp_413[] =
+                    "HTTP/1.1 413 Payload Too Large\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n";
+                conn->vt->send(conn->transport, resp_413,
+                               sizeof(resp_413) - 1);
+                conn->closed = true;
+                conn->vt->close_conn(conn->transport);
+            }
+            return;
         }
 
-        _http_srv_req_reset(&conn->req);
-        free(conn->cur_header_name);
-        conn->cur_header_name = NULL;
-        conn->cur_header_name_len = 0;
-        conn->expect_continue = false;
-        _http_srv_resp_reset(conn);
-
-        _http_srv_conn_finish_response(conn);
-        return;
-    }
-
-    if (err == HPE_USER) {
-        /* Body too large --send 413 and close. */
-        if (!conn->closed) {
-            static const char resp_413[] =
-                "HTTP/1.1 413 Payload Too Large\r\n"
-                "Content-Length: 0\r\n"
-                "Connection: close\r\n"
-                "\r\n";
-            conn->vt->send(conn->transport, resp_413, sizeof(resp_413) - 1);
-            conn->closed = true;
-            conn->vt->close_conn(conn->transport);
+        if (err != HPE_OK) {
+            /* Parse error — close connection. */
+            if (!conn->closed) {
+                conn->closed = true;
+                conn->vt->close_conn(conn->transport);
+            }
+            return;
         }
-        return;
-    }
 
-    if (err != HPE_OK) {
-        /* Parse error --close connection. */
-        if (!conn->closed) {
-            conn->closed = true;
-            conn->vt->close_conn(conn->transport);
-        }
+        /* HPE_OK: all data consumed, need more. */
+        break;
     }
 }
 
@@ -855,6 +932,75 @@ static const char* _http_srv_resp_header_get(xylem_http_conn_t* conn,
 }
 
 /**
+ * Ensure a field name is present in the Vary header.
+ *
+ * If no Vary header exists, creates one with the given field.
+ * If Vary already exists, parses its comma-separated values and
+ * appends the field only if not already present (case-insensitive).
+ * If Vary is "*", does nothing.
+ */
+static void _http_srv_vary_ensure(xylem_http_conn_t* conn,
+                                  const char* field) {
+    const char* existing = _http_srv_resp_header_get(conn, "Vary");
+
+    if (!existing) {
+        _http_srv_resp_header_set(conn, "Vary", field);
+        return;
+    }
+
+    /* Vary: * means "varies on everything", no need to enumerate. */
+    if (existing[0] == '*' && (existing[1] == '\0' || existing[1] == ',')) {
+        return;
+    }
+
+    /* Check if field already present (case-insensitive token scan). */
+    size_t field_len = strlen(field);
+    const char* p = existing;
+    while (*p) {
+        while (*p == ',' || *p == ' ') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* start = p;
+        while (*p && *p != ',' && *p != ' ') {
+            p++;
+        }
+        size_t token_len = (size_t)(p - start);
+        if (token_len == field_len) {
+            bool eq = true;
+            for (size_t i = 0; i < token_len; i++) {
+                if (http_lower_table[(uint8_t)start[i]] !=
+                    http_lower_table[(uint8_t)field[i]]) {
+                    eq = false;
+                    break;
+                }
+            }
+            if (eq) {
+                return; /* Already present. */
+            }
+        }
+    }
+
+    /* Append: "existing, field" */
+    size_t elen = strlen(existing);
+    size_t flen = field_len;
+    char* merged = malloc(elen + 2 + flen + 1);
+    if (!merged) {
+        return; /* Silent fail — Vary missing won't break correctness. */
+    }
+    memcpy(merged, existing, elen);
+    merged[elen] = ',';
+    merged[elen + 1] = ' ';
+    memcpy(merged + elen + 2, field, flen);
+    merged[elen + 2 + flen] = '\0';
+
+    _http_srv_resp_header_set(conn, "Vary", merged);
+    free(merged);
+}
+
+/**
  * Decide whether streaming gzip should be activated for write() mode.
  * Checks: server gzip enabled, no user Content-Encoding, no user
  * Content-Length (CL mode skips gzip), Content-Type matches, and
@@ -895,6 +1041,20 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
                                            size_t content_length,
                                            char** out_buf,
                                            size_t* out_len) {
+    /* Auto-add Date header if not already set (RFC 9110 §6.6.1). */
+    if (!_http_srv_resp_header_has(conn, "Date")) {
+        char date_buf[32];
+        time_t now = time(NULL);
+        _http_format_date(now, date_buf, sizeof(date_buf));
+        _http_srv_resp_header_set(conn, "Date", date_buf);
+    }
+
+    /* Auto-add Connection: close when not keeping alive (RFC 9112 §9.6). */
+    if (!conn->keep_alive &&
+        !_http_srv_resp_header_has(conn, "Connection")) {
+        _http_srv_resp_header_set(conn, "Connection", "close");
+    }
+
     size_t est = 40 + 16 + 20 + 2 + 2; /* status line + CL header + CRLF */
     for (size_t i = 0; i < conn->resp_header_count; i++) {
         if (conn->resp_headers[i].name && conn->resp_headers[i].value) {
@@ -963,6 +1123,20 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
  * Otherwise sends Transfer-Encoding: chunked.
  */
 static int _http_srv_flush_resp_headers(xylem_http_conn_t* conn) {
+    /* Auto-add Date header if not already set (RFC 9110 §6.6.1). */
+    if (!_http_srv_resp_header_has(conn, "Date")) {
+        char date_buf[32];
+        time_t now = time(NULL);
+        _http_format_date(now, date_buf, sizeof(date_buf));
+        _http_srv_resp_header_set(conn, "Date", date_buf);
+    }
+
+    /* Auto-add Connection: close when not keeping alive (RFC 9112 §9.6). */
+    if (!conn->keep_alive &&
+        !_http_srv_resp_header_has(conn, "Connection")) {
+        _http_srv_resp_header_set(conn, "Connection", "close");
+    }
+
     bool has_cl = _http_srv_resp_header_has(conn, "Content-Length");
 
     size_t est = 40 + 2; /* status line + final CRLF */
@@ -1087,7 +1261,7 @@ int xylem_http_writer_write(xylem_http_writer_t* conn,
             conn->gzip_stream = s;
             conn->gzip_active = true;
             _http_srv_resp_header_set(conn, "Content-Encoding", "gzip");
-            _http_srv_resp_header_set(conn, "Vary", "Accept-Encoding");
+            _http_srv_vary_ensure(conn, "Accept-Encoding");
         }
 
         if (_http_srv_flush_resp_headers(conn) != 0) {
@@ -1165,7 +1339,7 @@ static int _http_srv_send(xylem_http_conn_t* conn,
         body     = gzip_buf;
         body_len = gzip_len;
         _http_srv_resp_header_set(conn, "Content-Encoding", "gzip");
-        _http_srv_resp_header_set(conn, "Vary", "Accept-Encoding");
+        _http_srv_vary_ensure(conn, "Accept-Encoding");
     }
 
     /* Set Content-Type if not overridden. */
@@ -1483,6 +1657,70 @@ void xylem_http_writer_close(xylem_http_writer_t* conn) {
     conn->vt->close_conn(conn->transport);
 }
 
+int xylem_http_writer_accept_upgrade(xylem_http_writer_t* conn,
+                                     void** transport) {
+    const char* upgrade_val;
+    char buf[256];
+    int len;
+    int rc;
+
+    if (!conn || !transport) {
+        return -1;
+    }
+    if (conn->closed) {
+        return -1;
+    }
+    if (!conn->in_upgrade_cb) {
+        return -1;
+    }
+    if (conn->upgrade_accepted) {
+        return -1;
+    }
+
+    /* Get the Upgrade header value from the request. */
+    upgrade_val = http_header_find(
+        conn->req.headers, conn->req.header_count, "Upgrade");
+    if (!upgrade_val) {
+        upgrade_val = "websocket";
+    }
+
+    /* Build 101 Switching Protocols response. */
+    len = snprintf(buf, sizeof(buf),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: %s\r\n"
+        "Connection: Upgrade\r\n"
+        "\r\n",
+        upgrade_val);
+
+    if (len < 0 || (size_t)len >= sizeof(buf)) {
+        return -1;
+    }
+
+    /* Send the 101 response. */
+    rc = conn->vt->send(conn->transport, buf, (size_t)len);
+    if (rc != 0) {
+        return -1;
+    }
+
+    /* Stop idle timer. */
+    if (conn->idle_timer.active) {
+        xylem_loop_stop_timer(&conn->idle_timer);
+    }
+
+    /* Transfer transport ownership to caller. */
+    *transport = conn->transport;
+
+    /* Clear userdata so the transport close callback won't use stale conn. */
+    conn->vt->set_userdata(conn->transport, NULL);
+
+    /* Detach from HTTP management. */
+    conn->transport = NULL;
+    conn->upgrade_accepted = true;
+    conn->closed = true;
+
+    return 0;
+}
+
 const char* xylem_http_req_param(const xylem_http_req_t* req,
                                  const char* name) {
     if (!req || !name) {
@@ -1730,6 +1968,43 @@ typedef struct {
     size_t          param_count;
 } _route_match_t;
 
+/**
+ * Check if a route's path pattern matches the given path, ignoring method.
+ * Used to distinguish 404 (no path match) from 405 (path matches, wrong method).
+ */
+static bool _http_route_path_matches(const _http_route_t* route,
+                                     const char* path) {
+    const char* p = path;
+    if (*p == '/') {
+        p++;
+    }
+
+    for (size_t i = 0; i < route->seg_count; i++) {
+        const _route_seg_t* seg = &route->segs[i];
+        if (seg->type == _ROUTE_SEG_WILDCARD) {
+            return true;
+        }
+        const char* seg_start = p;
+        while (*p && *p != '/') {
+            p++;
+        }
+        size_t seg_len = (size_t)(p - seg_start);
+        if (seg_len == 0) {
+            return false;
+        }
+        if (seg->type == _ROUTE_SEG_LITERAL) {
+            if (seg_len != seg->len ||
+                memcmp(seg_start, seg->text, seg_len) != 0) {
+                return false;
+            }
+        }
+        if (*p == '/') {
+            p++;
+        }
+    }
+    return (*p == '\0');
+}
+
 static int _http_router_try_match(const _http_route_t* route,
                                   const char* method,
                                   const char* path,
@@ -1886,8 +2161,61 @@ int xylem_http_router_dispatch(xylem_http_router_t* router,
     }
 
     if (best.route_idx == (size_t)-1) {
-        _http_srv_send(conn, 404, "text/plain",
-                             "Not Found", 9, NULL, 0);
+        /* Check if any route matches the path (ignoring method)
+           to distinguish 404 from 405 (RFC 9110 §15.5.6). */
+        bool path_matched = false;
+        char allow_buf[256];
+        size_t allow_off = 0;
+
+        for (size_t i = 0; i < router->count; i++) {
+            if (_http_route_path_matches(&router->routes[i], path)) {
+                path_matched = true;
+                if (router->routes[i].method) {
+                    const char* m = router->routes[i].method;
+                    size_t mlen = strlen(m);
+                    /* Avoid duplicates in allow_buf. */
+                    bool dup = false;
+                    if (allow_off > 0) {
+                        const char* s = allow_buf;
+                        while (s < allow_buf + allow_off) {
+                            const char* comma = strchr(s, ',');
+                            size_t slen = comma ? (size_t)(comma - s) : strlen(s);
+                            if (slen == mlen && memcmp(s, m, mlen) == 0) {
+                                dup = true;
+                                break;
+                            }
+                            s = comma ? comma + 2 : s + slen;
+                        }
+                    }
+                    if (!dup && allow_off + mlen + 3 < sizeof(allow_buf)) {
+                        if (allow_off > 0) {
+                            allow_buf[allow_off++] = ',';
+                            allow_buf[allow_off++] = ' ';
+                        }
+                        memcpy(allow_buf + allow_off, m, mlen);
+                        allow_off += mlen;
+                    }
+                }
+            }
+        }
+
+        if (path_matched && allow_off > 0) {
+            allow_buf[allow_off] = '\0';
+
+            /* Auto-handle OPTIONS requests (RFC 9110 §9.3.7). */
+            if (strcmp(method, "OPTIONS") == 0) {
+                xylem_http_hdr_t hdr = { "Allow", allow_buf };
+                _http_srv_send(conn, 204, NULL, NULL, 0, &hdr, 1);
+                return 0;
+            }
+
+            xylem_http_hdr_t hdr = { "Allow", allow_buf };
+            _http_srv_send(conn, 405, "text/plain",
+                                 "Method Not Allowed", 18, &hdr, 1);
+        } else {
+            _http_srv_send(conn, 404, "text/plain",
+                                 "Not Found", 9, NULL, 0);
+        }
         return -1;
     }
 
@@ -2105,6 +2433,227 @@ static time_t _http_parse_date(const char* str) {
     return platform_info_mkgmtime(&tm);
 }
 
+/**
+ * Resolve a request URL to a filesystem path. Strips the mount prefix,
+ * normalizes against traversal, appends index file for directories.
+ * Returns malloc'd path and fills *st, or returns NULL (caller sends error).
+ * *status receives the HTTP error code when NULL is returned.
+ */
+static char* _http_static_resolve(const void* userdata,
+                                  const char* url,
+                                  const char* index_file,
+                                  platform_io_stat_t* st,
+                                  int* status) {
+    const size_t* prefix_len_ptr =
+        (const size_t*)((const uint8_t*)userdata +
+                        sizeof(xylem_http_static_opts_t));
+    size_t prefix_len = *prefix_len_ptr;
+    const xylem_http_static_opts_t* opts =
+        (const xylem_http_static_opts_t*)userdata;
+
+    const char* rel = url;
+    if (strlen(url) >= prefix_len) {
+        rel = url + prefix_len;
+    }
+    while (*rel == '/') {
+        rel++;
+    }
+
+    const char* lookup = (*rel == '\0') ? index_file : rel;
+
+    char* norm = _http_static_normalize(lookup);
+    if (!norm) {
+        *status = 403;
+        return NULL;
+    }
+
+    char* fpath = _http_static_fullpath(opts->root, norm);
+    free(norm);
+    if (!fpath) {
+        *status = 500;
+        return NULL;
+    }
+
+    if (platform_io_stat(fpath, st) != 0) {
+        free(fpath);
+        *status = 404;
+        return NULL;
+    }
+
+    /* Directory: try index file inside it. */
+    if (st->is_dir) {
+        size_t fplen = strlen(fpath);
+        size_t ilen  = strlen(index_file);
+        char* ipath  = malloc(fplen + 1 + ilen + 1);
+        if (!ipath) {
+            free(fpath);
+            *status = 500;
+            return NULL;
+        }
+        memcpy(ipath, fpath, fplen);
+        ipath[fplen] = '/';
+        memcpy(ipath + fplen + 1, index_file, ilen);
+        ipath[fplen + 1 + ilen] = '\0';
+        free(fpath);
+        fpath = ipath;
+
+        if (platform_io_stat(fpath, st) != 0) {
+            free(fpath);
+            *status = 403;
+            return NULL;
+        }
+    }
+
+    return fpath;
+}
+
+/**
+ * Probe for a pre-compressed .gz variant. If found, replaces *fpath and *st
+ * with the .gz version and returns true.
+ */
+static bool _http_static_try_gz(const xylem_http_req_t* req,
+                                bool precompressed,
+                                char** fpath,
+                                platform_io_stat_t* st) {
+    if (!precompressed) {
+        return false;
+    }
+    const char* ae = http_header_find(req->headers, req->header_count,
+                                      "Accept-Encoding");
+    if (!ae || !strstr(ae, "gzip")) {
+        return false;
+    }
+
+    size_t fplen = strlen(*fpath);
+    char* gz_path = malloc(fplen + 4);
+    if (!gz_path) {
+        return false;
+    }
+    memcpy(gz_path, *fpath, fplen);
+    memcpy(gz_path + fplen, ".gz", 4);
+
+    platform_io_stat_t gz_st;
+    if (platform_io_stat(gz_path, &gz_st) != 0) {
+        free(gz_path);
+        return false;
+    }
+
+    free(*fpath);
+    *fpath = gz_path;
+    *st    = gz_st;
+    return true;
+}
+
+/**
+ * Determine MIME type. For .gz paths, strips the suffix first so the
+ * original extension is used.
+ */
+static const char* _http_static_content_type(const char* fpath, bool is_gz) {
+    if (!is_gz) {
+        return _http_static_mime(fpath);
+    }
+    size_t fplen = strlen(fpath);
+    if (fplen <= 3) {
+        return _http_static_mime(fpath);
+    }
+    char* orig = malloc(fplen - 2);
+    if (!orig) {
+        return _http_static_mime(fpath);
+    }
+    memcpy(orig, fpath, fplen - 3);
+    orig[fplen - 3] = '\0';
+    const char* mime = _http_static_mime(orig);
+    free(orig);
+    return mime;
+}
+
+/**
+ * Parse a Range header value against a known file size.
+ * Returns true if a valid byte range was parsed.
+ */
+static bool _http_static_parse_range(const char* hdr, size_t file_size,
+                                     size_t* out_start, size_t* out_end) {
+    if (!hdr || file_size == 0) {
+        return false;
+    }
+    if (strncmp(hdr, "bytes=", 6) != 0) {
+        return false;
+    }
+    const char* p = hdr + 6;
+
+    if (*p == '-') {
+        /* Suffix range: bytes=-N means last N bytes. */
+        p++;
+        size_t suffix = 0;
+        while (*p >= '0' && *p <= '9') {
+            suffix = suffix * 10 + (size_t)(*p - '0');
+            p++;
+        }
+        if (suffix > 0 && suffix <= file_size) {
+            *out_start = file_size - suffix;
+            *out_end   = file_size - 1;
+            return true;
+        }
+        return false;
+    }
+
+    if (*p < '0' || *p > '9') {
+        return false;
+    }
+
+    size_t start = 0;
+    while (*p >= '0' && *p <= '9') {
+        start = start * 10 + (size_t)(*p - '0');
+        p++;
+    }
+    if (*p != '-') {
+        return false;
+    }
+    p++;
+
+    size_t end;
+    if (*p >= '0' && *p <= '9') {
+        end = 0;
+        while (*p >= '0' && *p <= '9') {
+            end = end * 10 + (size_t)(*p - '0');
+            p++;
+        }
+    } else {
+        end = file_size - 1;
+    }
+
+    if (start <= end && end < file_size) {
+        *out_start = start;
+        *out_end   = end;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Read file content. For partial reads, seeks to offset first.
+ * Returns malloc'd buffer or NULL on error. Closes fp before returning.
+ */
+static uint8_t* _http_static_read_file(FILE* fp, size_t offset, size_t len) {
+    uint8_t* data = malloc(len);
+    if (!data) {
+        fclose(fp);
+        return NULL;
+    }
+    if (offset > 0 && fseek(fp, (long)offset, SEEK_SET) != 0) {
+        free(data);
+        fclose(fp);
+        return NULL;
+    }
+    if (fread(data, 1, len, fp) != len) {
+        free(data);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+    return data;
+}
+
 /* Static file request handler --registered as router callback. */
 static void _http_static_handler(xylem_http_conn_t* conn,
                                  xylem_http_req_t* req,
@@ -2122,84 +2671,20 @@ static void _http_static_handler(xylem_http_conn_t* conn,
         return;
     }
 
-    /* Extract relative path from URL after the wildcard prefix. */
-    const char* url = req->url;
-    const char* rel = url;
-
-    /* Skip the prefix portion --the router matched "prefix/*",
-       so the URL starts with the prefix. Find the part after it. */
-    /* The opts->root is the filesystem root; we need the URL path
-       relative to the mount point. The router stores the full URL,
-       so we need to find where the wildcard portion starts.
-       Convention: userdata points to a block containing opts + prefix_len. */
-    /* We store prefix_len right after the opts struct in the userdata block. */
-    const size_t* prefix_len_ptr =
-        (const size_t*)((const uint8_t*)userdata +
-                        sizeof(xylem_http_static_opts_t));
-    size_t prefix_len = *prefix_len_ptr;
-
-    if (strlen(url) >= prefix_len) {
-        rel = url + prefix_len;
-    }
-    /* Skip leading slash. */
-    while (*rel == '/') {
-        rel++;
-    }
-
-    /* Handle empty relative path --serve index file. */
     const char* index_file = opts->index_file ? opts->index_file : "index.html";
-    bool is_index = (*rel == '\0');
-    const char* lookup = is_index ? index_file : rel;
 
-    /* Normalize and check for traversal. */
-    char* norm = _http_static_normalize(lookup);
-    if (!norm) {
-        _http_srv_send(conn, 403, "text/plain",
-                             "Forbidden", 9, NULL, 0);
-        return;
-    }
-
-    /* Build full filesystem path. */
-    char* fpath = _http_static_fullpath(opts->root, norm);
-    free(norm);
-    if (!fpath) {
-        _http_srv_send(conn, 500, "text/plain",
-                             "Internal Server Error", 21, NULL, 0);
-        return;
-    }
-
-    /* Stat the file. */
+    /* Resolve URL to filesystem path. */
     platform_io_stat_t st;
-    if (platform_io_stat(fpath, &st) != 0) {
-        free(fpath);
-        _http_srv_send(conn, 404, "text/plain",
-                             "Not Found", 9, NULL, 0);
+    int err_status = 0;
+    char* fpath = _http_static_resolve(userdata, req->url, index_file,
+                                       &st, &err_status);
+    if (!fpath) {
+        const char* msg = (err_status == 404) ? "Not Found" :
+                          (err_status == 403) ? "Forbidden" :
+                                                "Internal Server Error";
+        size_t mlen = strlen(msg);
+        _http_srv_send(conn, err_status, "text/plain", msg, mlen, NULL, 0);
         return;
-    }
-
-    if (st.is_dir) {
-        size_t fplen = strlen(fpath);
-        size_t ilen = strlen(index_file);
-        char* ipath = malloc(fplen + 1 + ilen + 1);
-        if (!ipath) {
-            free(fpath);
-            _http_srv_send(conn, 500, "text/plain",
-                                 "Internal Server Error", 21, NULL, 0);
-            return;
-        }
-        memcpy(ipath, fpath, fplen);
-        ipath[fplen] = '/';
-        memcpy(ipath + fplen + 1, index_file, ilen);
-        ipath[fplen + 1 + ilen] = '\0';
-        free(fpath);
-        fpath = ipath;
-
-        if (platform_io_stat(fpath, &st) != 0) {
-            free(fpath);
-            _http_srv_send(conn, 403, "text/plain",
-                                 "Forbidden", 9, NULL, 0);
-            return;
-        }
     }
 
     /* Check If-Modified-Since. */
@@ -2215,46 +2700,10 @@ static void _http_static_handler(xylem_http_conn_t* conn,
     }
 
     /* Try pre-compressed .gz version. */
-    bool serve_gz = false;
-    char* gz_path = NULL;
-    if (opts->precompressed) {
-        const char* ae = http_header_find(req->headers, req->header_count,
-                                          "Accept-Encoding");
-        if (ae && strstr(ae, "gzip")) {
-            size_t fplen = strlen(fpath);
-            gz_path = malloc(fplen + 4);
-            if (gz_path) {
-                memcpy(gz_path, fpath, fplen);
-                memcpy(gz_path + fplen, ".gz", 4);
-                platform_io_stat_t gz_st;
-                if (platform_io_stat(gz_path, &gz_st) == 0) {
-                    serve_gz = true;
-                    free(fpath);
-                    fpath = gz_path;
-                    st = gz_st;
-                    gz_path = NULL;
-                }
-            }
-            free(gz_path);
-        }
-    }
+    bool serve_gz = _http_static_try_gz(req, opts->precompressed,
+                                        &fpath, &st);
 
-    /* Determine MIME type from original path (not .gz). */
-    const char* mime = _http_static_mime(fpath);
-    if (serve_gz) {
-        /* Strip .gz to get original extension. */
-        size_t fplen = strlen(fpath);
-        if (fplen > 3) {
-            char* orig = malloc(fplen - 2);
-            if (orig) {
-                memcpy(orig, fpath, fplen - 3);
-                orig[fplen - 3] = '\0';
-                mime = _http_static_mime(orig);
-                free(orig);
-            }
-        }
-    }
-
+    const char* mime = _http_static_content_type(fpath, serve_gz);
     size_t file_size = (size_t)st.size;
 
     /* Build common response headers. */
@@ -2282,7 +2731,6 @@ static void _http_static_handler(xylem_http_conn_t* conn,
         hdr_count++;
     }
 
-    /* Advertise Range support (skip for pre-compressed responses). */
     if (!serve_gz) {
         hdrs[hdr_count].name  = "Accept-Ranges";
         hdrs[hdr_count].value = "bytes";
@@ -2293,53 +2741,10 @@ static void _http_static_handler(xylem_http_conn_t* conn,
     const char* range_hdr = serve_gz ? NULL :
         http_header_find(req->headers, req->header_count, "Range");
 
-    bool has_range = false;
     size_t range_start = 0;
     size_t range_end   = 0;
-
-    if (range_hdr && file_size > 0) {
-        /* Parse "bytes=start-end" or "bytes=start-" or "bytes=-suffix". */
-        const char* p = range_hdr;
-        if (strncmp(p, "bytes=", 6) == 0) {
-            p += 6;
-            if (*p == '-') {
-                /* Suffix range: bytes=-N means last N bytes. */
-                p++;
-                size_t suffix = 0;
-                while (*p >= '0' && *p <= '9') {
-                    suffix = suffix * 10 + (size_t)(*p - '0');
-                    p++;
-                }
-                if (suffix > 0 && suffix <= file_size) {
-                    range_start = file_size - suffix;
-                    range_end   = file_size - 1;
-                    has_range   = true;
-                }
-            } else if (*p >= '0' && *p <= '9') {
-                range_start = 0;
-                while (*p >= '0' && *p <= '9') {
-                    range_start = range_start * 10 + (size_t)(*p - '0');
-                    p++;
-                }
-                if (*p == '-') {
-                    p++;
-                    if (*p >= '0' && *p <= '9') {
-                        range_end = 0;
-                        while (*p >= '0' && *p <= '9') {
-                            range_end = range_end * 10 + (size_t)(*p - '0');
-                            p++;
-                        }
-                    } else {
-                        /* Open-ended: bytes=start- */
-                        range_end = file_size - 1;
-                    }
-                    if (range_start <= range_end && range_end < file_size) {
-                        has_range = true;
-                    }
-                }
-            }
-        }
-    }
+    bool has_range = _http_static_parse_range(range_hdr, file_size,
+                                              &range_start, &range_end);
 
     /* Open file. */
     FILE* fp = platform_io_fopen(fpath, "rb");
@@ -2351,31 +2756,26 @@ static void _http_static_handler(xylem_http_conn_t* conn,
     }
 
     if (has_range) {
-        /* Serve partial content. */
         size_t slice_len = range_end - range_start + 1;
         uint8_t* data = NULL;
-
         if (!is_head) {
-            data = malloc(slice_len);
+            data = _http_static_read_file(fp, range_start, slice_len);
             if (!data) {
-                fclose(fp);
                 free(fpath);
                 _http_srv_send(conn, 500, "text/plain",
                                      "Internal Server Error", 21, NULL, 0);
                 return;
             }
-            if (fseek(fp, (long)range_start, SEEK_SET) != 0 ||
-                fread(data, 1, slice_len, fp) != slice_len) {
-                free(data);
-                fclose(fp);
-                free(fpath);
-                _http_srv_send(conn, 500, "text/plain",
-                                     "Internal Server Error", 21, NULL, 0);
-                return;
-            }
+        } else {
+            fclose(fp);
         }
-        fclose(fp);
-
+        /* HEAD: set Content-Length to actual slice size. */
+        if (is_head) {
+            char cl_buf[24];
+            size_t cl_len = http_write_uint(cl_buf, slice_len);
+            cl_buf[cl_len] = '\0';
+            _http_srv_resp_header_set(conn, "Content-Length", cl_buf);
+        }
         _http_srv_send_partial(conn, mime,
                                      is_head ? NULL : data,
                                      is_head ? 0 : slice_len,
@@ -2383,29 +2783,25 @@ static void _http_static_handler(xylem_http_conn_t* conn,
                                      hdrs, hdr_count);
         free(data);
     } else {
-        /* Serve full file. */
         uint8_t* data = NULL;
-
         if (!is_head) {
-            data = malloc(file_size);
+            data = _http_static_read_file(fp, 0, file_size);
             if (!data) {
-                fclose(fp);
                 free(fpath);
                 _http_srv_send(conn, 500, "text/plain",
                                      "Internal Server Error", 21, NULL, 0);
                 return;
             }
-            if (fread(data, 1, file_size, fp) != file_size) {
-                free(data);
-                fclose(fp);
-                free(fpath);
-                _http_srv_send(conn, 500, "text/plain",
-                                     "Internal Server Error", 21, NULL, 0);
-                return;
-            }
+        } else {
+            fclose(fp);
         }
-        fclose(fp);
-
+        /* HEAD: set Content-Length to actual file size, send no body. */
+        if (is_head) {
+            char cl_buf[24];
+            size_t cl_len = http_write_uint(cl_buf, file_size);
+            cl_buf[cl_len] = '\0';
+            _http_srv_resp_header_set(conn, "Content-Length", cl_buf);
+        }
         _http_srv_send(conn, 200, mime,
                              is_head ? NULL : data,
                              is_head ? 0 : file_size,

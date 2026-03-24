@@ -200,6 +200,16 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
         }
     }
 
+    /* When allowed_origins is not "*", the response varies by Origin.
+       Caches must key on the Origin header to avoid serving a response
+       allowed for one origin to a different origin. */
+    if (!(cors->allowed_origins[0] == '*' &&
+          cors->allowed_origins[1] == '\0') && n < out_cap) {
+        out[n].name  = "Vary";
+        out[n].value = "Origin";
+        n++;
+    }
+
     return n;
 }
 
