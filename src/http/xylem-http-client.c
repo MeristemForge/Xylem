@@ -450,7 +450,7 @@ static void _http_session_abort(_http_cli_ctx_t* ctx) {
     if (ctx->timeout_timer.active) {
         xylem_loop_stop_timer(&ctx->timeout_timer);
     }
-    xylem_loop_close_timer(&ctx->timeout_timer);
+    xylem_loop_deinit_timer(&ctx->timeout_timer);
     xylem_loop_stop(&ctx->loop);
 }
 
@@ -459,7 +459,7 @@ static void _http_cli_abort(_http_cli_ctx_t* ctx) {
     if (ctx->timeout_timer.active) {
         xylem_loop_stop_timer(&ctx->timeout_timer);
     }
-    xylem_loop_close_timer(&ctx->timeout_timer);
+    xylem_loop_deinit_timer(&ctx->timeout_timer);
     xylem_loop_stop(&ctx->loop);
 }
 

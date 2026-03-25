@@ -119,7 +119,7 @@ static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
 static void _start_resolve_cb(xylem_loop_t* loop,
                                xylem_loop_timer_t* timer) {
     (void)loop;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
     _ctx->loop.active_count++;

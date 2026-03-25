@@ -91,7 +91,7 @@ static void _start_safety_timer(xylem_loop_t* loop) {
 }
 
 static void _stop_safety_timer(void) {
-    xylem_loop_close_timer(&_safety_timer);
+    xylem_loop_deinit_timer(&_safety_timer);
 }
 
 static void _echo_srv_on_accept(xylem_tcp_conn_t* conn) {
@@ -264,7 +264,7 @@ static void test_tcp_lifecycle(void) {
     ASSERT(_life_srv_accept == 1);
 
     _stop_safety_timer();
-    xylem_loop_close_timer(&_life_check_timer);
+    xylem_loop_deinit_timer(&_life_check_timer);
     if (_life_server) { xylem_tcp_close_server(_life_server); _life_server = NULL; }
     xylem_loop_deinit(&_life_loop);
 }

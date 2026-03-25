@@ -292,7 +292,7 @@ int xylem_loop_stop_io(xylem_loop_io_t* io) {
     return rc;
 }
 
-void xylem_loop_close_io(xylem_loop_io_t* io) {
+void xylem_loop_deinit_io(xylem_loop_io_t* io) {
     if (io->registered) {
         platform_poller_del(&io->loop->poller, &io->sqe);
         io->registered = false;
@@ -347,7 +347,7 @@ int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
     return 0;
 }
 
-void xylem_loop_close_timer(xylem_loop_timer_t* timer) {
+void xylem_loop_deinit_timer(xylem_loop_timer_t* timer) {
     if (timer->active) {
         xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
         timer->active = false;

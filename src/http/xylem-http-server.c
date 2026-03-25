@@ -163,7 +163,7 @@ static void _http_srv_conn_destroy(xylem_http_conn_t* conn) {
     if (conn->idle_timer.active) {
         xylem_loop_stop_timer(&conn->idle_timer);
     }
-    xylem_loop_close_timer(&conn->idle_timer);
+    xylem_loop_deinit_timer(&conn->idle_timer);
     for (size_t i = 0; i < conn->resp_header_count; i++) {
         free((char*)conn->resp_headers[i].name);
         free((char*)conn->resp_headers[i].value);

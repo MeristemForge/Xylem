@@ -176,7 +176,7 @@ extern int xylem_loop_start_io(xylem_loop_io_t* io,
 extern int xylem_loop_stop_io(xylem_loop_io_t* io);
 
 /**
- * @brief Close an I/O handle.
+ * @brief Deinitialize an I/O handle.
  *
  * Stops polling if active and queues the handle for cleanup.
  * The handle must not be used after this call. Decrements the
@@ -184,7 +184,7 @@ extern int xylem_loop_stop_io(xylem_loop_io_t* io);
  *
  * @param io  Pointer to the I/O handle.
  */
-extern void xylem_loop_close_io(xylem_loop_io_t* io);
+extern void xylem_loop_deinit_io(xylem_loop_io_t* io);
 
 /**
  * @brief Initialize a timer handle.
@@ -245,7 +245,7 @@ extern int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
                                   uint64_t timeout_ms);
 
 /**
- * @brief Close a timer handle.
+ * @brief Deinitialize a timer handle.
  *
  * Stops the timer if active and queues the handle for cleanup.
  * The handle must not be used after this call. Decrements the
@@ -253,7 +253,7 @@ extern int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
  *
  * @param timer  Pointer to the timer handle.
  */
-extern void xylem_loop_close_timer(xylem_loop_timer_t* timer);
+extern void xylem_loop_deinit_timer(xylem_loop_timer_t* timer);
 
 /**
  * @brief Post a callback to be executed on the loop thread.

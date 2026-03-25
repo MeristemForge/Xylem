@@ -55,7 +55,7 @@ static void _start_safety_timer(xylem_loop_t* loop) {
 }
 
 static void _stop_safety_timer(void) {
-    xylem_loop_close_timer(&_safety_timer);
+    xylem_loop_deinit_timer(&_safety_timer);
 }
 
 static void _echo_on_read(xylem_udp_t* udp, void* data, size_t len,
@@ -116,7 +116,7 @@ static void test_udp_echo(void) {
     ASSERT(memcmp(_echo_data, "hello", 5) == 0);
 
     _stop_safety_timer();
-    xylem_loop_close_timer(&_echo_send_timer);
+    xylem_loop_deinit_timer(&_echo_send_timer);
     xylem_loop_deinit(&_echo_loop);
 }
 
@@ -188,7 +188,7 @@ static void test_udp_datagram_boundary(void) {
     ASSERT(memcmp(_dgram_bufs[2], "CCC", 3) == 0);
 
     _stop_safety_timer();
-    xylem_loop_close_timer(&_dgram_send_timer);
+    xylem_loop_deinit_timer(&_dgram_send_timer);
     xylem_loop_deinit(&_dgram_loop);
 }
 

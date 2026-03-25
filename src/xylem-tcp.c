@@ -28,7 +28,7 @@
 #include <inttypes.h>
 #include <string.h>
 
-#define XYLEM_TCP_DEFAULT_READ_BUF_SIZE 65536
+#define TCP_DEFAULT_READ_BUF_SIZE 65536
 
 typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;
@@ -969,7 +969,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     }
 
     if (conn->opts.read_buf_size == 0) {
-        conn->opts.read_buf_size = XYLEM_TCP_DEFAULT_READ_BUF_SIZE;
+        conn->opts.read_buf_size = TCP_DEFAULT_READ_BUF_SIZE;
     }
 
     conn->loop    = loop;
@@ -1036,7 +1036,7 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
     }
 
     if (server->opts.read_buf_size == 0) {
-        server->opts.read_buf_size = XYLEM_TCP_DEFAULT_READ_BUF_SIZE;
+        server->opts.read_buf_size = TCP_DEFAULT_READ_BUF_SIZE;
     }
 
     server->loop    = loop;

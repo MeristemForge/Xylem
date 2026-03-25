@@ -59,7 +59,7 @@ static void test_run_exits_no_handles(void) {
 
 static void _on_oneshot(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _oneshot_count++;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_timer_oneshot(void) {
@@ -84,7 +84,7 @@ static void test_timer_oneshot(void) {
 static void _on_repeat(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _repeat_count++;
     if (_repeat_count >= 3) {
-        xylem_loop_close_timer(timer);
+        xylem_loop_deinit_timer(timer);
     }
 }
 
@@ -111,8 +111,8 @@ static void _on_stopped_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
 
 static void _on_stopper(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     xylem_loop_stop_timer(_victim_timer);
-    xylem_loop_close_timer(_victim_timer);
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(_victim_timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_timer_stop(void) {
@@ -139,7 +139,7 @@ static void test_timer_stop(void) {
 
 static void _on_reset_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _reset_fire_time = xylem_loop_now(loop);
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_timer_reset(void) {
@@ -166,7 +166,7 @@ static void test_timer_reset(void) {
 static void _on_check_now(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     uint64_t t = xylem_loop_now(loop);
     ASSERT(t > 0);
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_loop_now(void) {
@@ -190,7 +190,7 @@ static void _on_io_readable(xylem_loop_t* loop,
     char buf[16];
     platform_socket_recv(io->sqe.fd, buf, sizeof(buf));
     _io_read_count++;
-    xylem_loop_close_io(io);
+    xylem_loop_deinit_io(io);
 }
 
 static void test_io_readable(void) {
@@ -223,7 +223,7 @@ static void _on_io_writable(xylem_loop_t* loop,
                             platform_poller_op_t revents) {
     ASSERT(revents & PLATFORM_POLLER_WR_OP);
     _io_write_count++;
-    xylem_loop_close_io(io);
+    xylem_loop_deinit_io(io);
 }
 
 static void test_io_writable(void) {
@@ -259,7 +259,7 @@ static void _on_io_rearm(xylem_loop_t* loop,
         platform_socket_send(_io_rearm_wr, "x", 1);
         xylem_loop_start_io(io, PLATFORM_POLLER_RD_OP, _on_io_rearm);
     } else {
-        xylem_loop_close_io(io);
+        xylem_loop_deinit_io(io);
     }
 }
 
@@ -297,8 +297,8 @@ static void _on_io_stopped(xylem_loop_t* loop,
 
 static void _on_stop_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     xylem_loop_stop_io(stop_io);
-    xylem_loop_close_io(stop_io);
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_io(stop_io);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_io_stop(void) {
@@ -337,7 +337,7 @@ static void _on_post_trigger(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _post_req.cb = _on_post;
     _post_req.ud = NULL;
     xylem_loop_post(loop, &_post_req);
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_post_same_thread(void) {
@@ -397,7 +397,7 @@ static void test_post_cross_thread(void) {
 
     thrd_join(thr, NULL);
 
-    xylem_loop_close_timer(&keepalive);
+    xylem_loop_deinit_timer(&keepalive);
     loop.active_count--;
 
     xylem_loop_deinit(&loop);
@@ -417,7 +417,7 @@ static void test_stop_from_callback(void) {
 
     ASSERT(xylem_loop_run(&loop) == 0);
 
-    xylem_loop_close_timer(&timer);
+    xylem_loop_deinit_timer(&timer);
     loop.active_count--;
 
     xylem_loop_deinit(&loop);
@@ -425,17 +425,17 @@ static void test_stop_from_callback(void) {
 
 static void _on_order_a(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 1;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void _on_order_b(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 2;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void _on_order_c(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _order_log[_order_idx++] = 3;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_timer_ordering(void) {
@@ -470,12 +470,12 @@ static void _on_combined_io(xylem_loop_t* loop,
     char buf[16];
     platform_socket_recv(io->sqe.fd, buf, sizeof(buf));
     _combined_io_fired = 1;
-    xylem_loop_close_io(io);
+    xylem_loop_deinit_io(io);
 }
 
 static void _on_combined_timer(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
     _combined_timer_fired = 1;
-    xylem_loop_close_timer(timer);
+    xylem_loop_deinit_timer(timer);
 }
 
 static void test_io_and_timer(void) {
