@@ -29,6 +29,19 @@ _Pragma("once")
 /* Opaque types */
 typedef struct xylem_http_res_s        xylem_http_res_t;
 typedef struct xylem_http_cookie_jar_s xylem_http_cookie_jar_t;
+typedef struct xylem_http_session_s    xylem_http_session_t;
+
+/**
+ * @brief Session configuration options.
+ *
+ * Pass NULL to xylem_http_session_create() to use defaults.
+ * Zero-initialized fields use their default values.
+ */
+typedef struct {
+    size_t                   max_idle_per_host; /**< Max idle conns per host:port:scheme, default 5. */
+    uint64_t                 idle_timeout_ms;   /**< Idle connection timeout in ms, default 90000. */
+    xylem_http_cookie_jar_t* cookie_jar;        /**< Shared cookie jar, NULL to disable. */
+} xylem_http_session_opts_t;
 
 /**
  * @brief Per-request options for the HTTP client.
@@ -62,8 +75,8 @@ typedef struct {
  *
  * @note The caller must free the response with xylem_http_res_destroy().
  */
-extern xylem_http_res_t* xylem_http_cli_get(const char* url,
-                                                 const xylem_http_cli_opts_t* opts);
+extern xylem_http_res_t* xylem_http_get(const char* url,
+                                             const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP POST request.
@@ -78,11 +91,11 @@ extern xylem_http_res_t* xylem_http_cli_get(const char* url,
  *
  * @note The caller must free the response with xylem_http_res_destroy().
  */
-extern xylem_http_res_t* xylem_http_cli_post(const char* url,
-                                                  const void* body,
-                                                  size_t body_len,
-                                                  const char* content_type,
-                                                  const xylem_http_cli_opts_t* opts);
+extern xylem_http_res_t* xylem_http_post(const char* url,
+                                              const void* body,
+                                              size_t body_len,
+                                              const char* content_type,
+                                              const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP PUT request.
@@ -97,11 +110,11 @@ extern xylem_http_res_t* xylem_http_cli_post(const char* url,
  *
  * @note The caller must free the response with xylem_http_res_destroy().
  */
-extern xylem_http_res_t* xylem_http_cli_put(const char* url,
-                                                 const void* body,
-                                                 size_t body_len,
-                                                 const char* content_type,
-                                                 const xylem_http_cli_opts_t* opts);
+extern xylem_http_res_t* xylem_http_put(const char* url,
+                                             const void* body,
+                                             size_t body_len,
+                                             const char* content_type,
+                                             const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP DELETE request.
@@ -113,8 +126,8 @@ extern xylem_http_res_t* xylem_http_cli_put(const char* url,
  *
  * @note The caller must free the response with xylem_http_res_destroy().
  */
-extern xylem_http_res_t* xylem_http_cli_delete(const char* url,
-                                                    const xylem_http_cli_opts_t* opts);
+extern xylem_http_res_t* xylem_http_delete(const char* url,
+                                                const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Send a synchronous HTTP PATCH request.
@@ -129,11 +142,11 @@ extern xylem_http_res_t* xylem_http_cli_delete(const char* url,
  *
  * @note The caller must free the response with xylem_http_res_destroy().
  */
-extern xylem_http_res_t* xylem_http_cli_patch(const char* url,
-                                                   const void* body,
-                                                   size_t body_len,
-                                                   const char* content_type,
-                                                   const xylem_http_cli_opts_t* opts);
+extern xylem_http_res_t* xylem_http_patch(const char* url,
+                                               const void* body,
+                                               size_t body_len,
+                                               const char* content_type,
+                                               const xylem_http_cli_opts_t* opts);
 
 /**
  * @brief Get the HTTP status code from a response.
@@ -205,3 +218,110 @@ extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
  * @param res  Response handle, or NULL (no-op).
  */
 extern void xylem_http_res_destroy(xylem_http_res_t* res);
+
+/**
+ * @brief Create an HTTP session with a connection pool.
+ *
+ * The session maintains a persistent event loop and reuses
+ * TCP/TLS connections across requests to the same host:port:scheme.
+ *
+ * @param opts  Session options, or NULL for defaults.
+ *
+ * @return Session handle on success, NULL on failure.
+ */
+extern xylem_http_session_t* xylem_http_session_create(
+    const xylem_http_session_opts_t* opts);
+
+/**
+ * @brief Destroy a session and close all pooled connections.
+ *
+ * @param session  Session handle, or NULL (no-op).
+ */
+extern void xylem_http_session_destroy(xylem_http_session_t* session);
+
+/**
+ * @brief Send a synchronous HTTP GET request using a session.
+ *
+ * Reuses pooled connections when available.
+ *
+ * @param session  Session handle.
+ * @param url      Full URL string.
+ * @param opts     Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_get(
+    xylem_http_session_t* session,
+    const char* url,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP POST request using a session.
+ *
+ * @param session       Session handle.
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_post(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP PUT request using a session.
+ *
+ * @param session       Session handle.
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_put(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP DELETE request using a session.
+ *
+ * @param session  Session handle.
+ * @param url      Full URL string.
+ * @param opts     Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_delete(
+    xylem_http_session_t* session,
+    const char* url,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP PATCH request using a session.
+ *
+ * @param session       Session handle.
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_patch(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);

@@ -112,9 +112,9 @@ typedef struct {
 /**
  * @brief Server configuration.
  *
- * Caller allocates on the stack and passes to xylem_http_srv_create().
+ * Caller allocates on the stack and passes to xylem_http_listen().
  * The strings pointed to by host, tls_cert, and tls_key must remain
- * valid until xylem_http_srv_destroy() is called.
+ * valid until xylem_http_close_server() is called.
  */
 typedef struct xylem_http_srv_cfg_s {
     const char*                  host;            /* bind address, e.g. "0.0.0.0" */
@@ -129,48 +129,33 @@ typedef struct xylem_http_srv_cfg_s {
 } xylem_http_srv_cfg_t;
 
 /**
- * @brief Create an HTTP server.
+ * @brief Create and start an HTTP server.
  *
- * The event loop is passed as a separate parameter, consistent
- * with xylem_tcp_listen and xylem_tls_listen.
+ * Allocates the server, configures it from cfg, binds to the
+ * configured host and port, and begins accepting connections.
+ * Uses xylem_tcp or xylem_tls depending on whether tls_cert
+ * and tls_key are set in the config.
+ *
+ * Consistent with xylem_tcp_listen and xylem_ws_listen.
  *
  * @param loop  Event loop the server runs on.
  * @param cfg   Server configuration.
  *
  * @return Server handle on success, NULL on failure.
  */
-extern xylem_http_srv_t* xylem_http_srv_create(xylem_loop_t* loop,
-                                                const xylem_http_srv_cfg_t* cfg);
+extern xylem_http_srv_t* xylem_http_listen(xylem_loop_t* loop,
+                                           const xylem_http_srv_cfg_t* cfg);
 
 /**
- * @brief Start the HTTP server.
+ * @brief Stop the HTTP server and free all resources.
  *
- * Binds to the configured host and port and begins accepting
- * connections. Uses xylem_tcp or xylem_tls depending on whether
- * tls_cert and tls_key are set in the config.
- *
- * @param srv  Server handle.
- *
- * @return 0 on success, -1 on failure (e.g. bind error).
- */
-extern int xylem_http_srv_start(xylem_http_srv_t* srv);
-
-/**
- * @brief Stop the HTTP server.
- *
- * Stops accepting new connections. Existing connections continue
+ * Stops accepting new connections, closes the listener, and
+ * frees the server handle. Existing connections continue
  * processing until they complete or are closed.
  *
- * @param srv  Server handle.
+ * @param srv  Server handle, or NULL (no-op).
  */
-extern void xylem_http_srv_stop(xylem_http_srv_t* srv);
-
-/**
- * @brief Destroy the HTTP server and free all resources.
- *
- * @param srv  Server handle.
- */
-extern void xylem_http_srv_destroy(xylem_http_srv_t* srv);
+extern void xylem_http_close_server(xylem_http_srv_t* srv);
 
 /**
  * @brief Configure gzip response compression.

@@ -20,12 +20,13 @@
  */
 
 /**
- * HTTP Echo Client
+ * HTTP Session Client
  *
- * Sends a GET and a POST to the http-echo-server, prints the
- * status code and response body for each.
+ * Demonstrates session-based connection pooling. Sends multiple
+ * requests to the same server, reusing the underlying TCP connection
+ * via HTTP keep-alive.
  *
- * Usage: http-echo-client
+ * Usage: http-session-client
  * Pair:  http-echo-server
  */
 
@@ -51,19 +52,31 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    /* GET / */
-    xylem_http_res_t* res = xylem_http_get(BASE_URL "/", NULL);
-    _print_res("GET /", res);
+    /* Create a session with default options. */
+    xylem_http_session_t* session = xylem_http_session_create(NULL);
+    if (!session) {
+        printf("failed to create session\n");
+        return 1;
+    }
 
-    /* POST /echo */
-    const char* body = "hello from xylem";
-    res = xylem_http_post(BASE_URL "/echo", body, strlen(body),
-                              "text/plain", NULL);
+    /* First GET — establishes a new connection. */
+    xylem_http_res_t* res = xylem_http_session_get(session,
+                                                    BASE_URL "/", NULL);
+    _print_res("GET / (1st)", res);
+
+    /* Second GET — reuses the pooled connection. */
+    res = xylem_http_session_get(session, BASE_URL "/", NULL);
+    _print_res("GET / (2nd)", res);
+
+    /* POST — also reuses the pooled connection. */
+    const char* body = "hello from session";
+    res = xylem_http_session_post(session, BASE_URL "/echo",
+                                  body, strlen(body),
+                                  "text/plain", NULL);
     _print_res("POST /echo", res);
 
-    /* GET /chunked */
-    res = xylem_http_get(BASE_URL "/chunked", NULL);
-    _print_res("GET /chunked", res);
+    /* Destroy session — closes all pooled connections. */
+    xylem_http_session_destroy(session);
 
     xylem_logger_deinit();
     xylem_cleanup();

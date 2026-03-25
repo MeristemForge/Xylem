@@ -3108,3 +3108,410 @@ static void test_prop_upgrade_detach(void) { ... }
 - 服务器使用 CORS 动态 origin + gzip，验证响应 Vary 为 `Origin, Accept-Encoding`
 - 客户端发送 `Upgrade: websocket` 请求，服务器 `on_upgrade` 回调中调用 `accept_upgrade`，验证收到 101 响应且 transport handle 可用
 - 客户端发送 `Upgrade: websocket` 请求，服务器 `on_upgrade` 为 NULL，验证收到 501 响应
+
+
+---
+
+## HTTP 客户端 Session（连接池与连接复用）设计（Requirements 37）
+
+### Overview
+
+为客户端添加 session 机制，在多次请求间复用 TCP/TLS 连接（HTTP keep-alive）。session 内部维护一个按 `host:port:scheme` 索引的连接池，使用 `xylem_xrbtree_t` 存储。每个池条目持有一个空闲连接列表（`xylem_xlist_t`）。session 请求函数仍为同步阻塞调用，对外行为与现有无 session API 一致。
+
+现有无 session API（`xylem_http_cli_get` 等）每次请求创建临时 `xylem_loop_t`，请求完成后关闭连接并销毁 loop。session 的核心区别是：session 拥有一个持久的 `xylem_loop_t`，请求完成后将连接归还到池中而非关闭，下次请求优先从池中取出空闲连接复用。
+
+### 设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 连接池索引 | `xylem_xrbtree_t`（字符串键 `host:port:scheme`） | O(log n) 查找，项目已有此数据结构 |
+| 每 host 空闲连接列表 | `xylem_xlist_t` | 项目已有非侵入式双向链表，支持 head/tail 操作 |
+| session 内部 loop | 持久 `xylem_loop_t`，session 生命周期内复用 | 避免每次请求创建/销毁 loop 的开销 |
+| 同步阻塞语义 | 每次请求调用 `xylem_loop_run`，完成后 `xylem_loop_stop` | 与现有无 session API 行为一致 |
+| 空闲连接清理 | 归还时检查 idle_timeout，取出时检查 stale | 惰性清理，无后台定时器 |
+| 线程安全 | 不保证 | 与现有客户端 API 一致，单线程使用 |
+| cookie_jar | opts 中传入，session 内所有请求共享 | 与现有 per-request cookie_jar 语义一致 |
+
+### Architecture
+
+```mermaid
+graph TD
+    subgraph "Public API"
+        SESSION_CREATE["xylem_http_session_create(opts)"]
+        SESSION_DESTROY["xylem_http_session_destroy(session)"]
+        SESSION_GET["xylem_http_session_get(session, url, opts)"]
+        SESSION_POST["xylem_http_session_post(session, url, ...)"]
+        SESSION_PUT["xylem_http_session_put(session, url, ...)"]
+        SESSION_DELETE["xylem_http_session_delete(session, url, opts)"]
+        SESSION_PATCH["xylem_http_session_patch(session, url, ...)"]
+    end
+
+    subgraph "Internal: xylem_http_session_s"
+        LOOP["xylem_loop_t (持久)"]
+        POOL["xylem_xrbtree_t pool<br>(key: host:port:scheme)"]
+        THRDPOOL["xylem_thrdpool_t* (DNS 解析)"]
+        OPTS["session_opts<br>(max_idle_per_host, idle_timeout_ms)"]
+    end
+
+    subgraph "Pool Entry: _http_session_pool_entry_t"
+        KEY["char key[320]<br>(host:port:scheme)"]
+        CONNS["xylem_xlist_t idle_conns"]
+    end
+
+    subgraph "Idle Connection: _http_session_idle_conn_t"
+        VT["const http_transport_vt_t* vt"]
+        TRANSPORT["void* transport"]
+        IDLE_TS["uint64_t idle_since_ms"]
+    end
+
+    SESSION_GET --> POOL
+    SESSION_POST --> POOL
+    POOL --> KEY
+    KEY --> CONNS
+    CONNS --> TRANSPORT
+    SESSION_CREATE --> LOOP
+    SESSION_CREATE --> THRDPOOL
+```
+
+### Components and Interfaces
+
+#### 新增公共类型（`include/xylem/http/xylem-http-client.h`）
+
+```c
+/* 不透明类型 */
+typedef struct xylem_http_session_s xylem_http_session_t;
+
+/**
+ * @brief Session configuration options.
+ *
+ * Pass NULL to xylem_http_session_create() to use defaults.
+ * Zero-initialized fields use their default values.
+ */
+typedef struct {
+    size_t                   max_idle_per_host;  /**< Max idle conns per host:port:scheme, default 5. */
+    uint64_t                 idle_timeout_ms;    /**< Idle connection timeout in ms, default 90000. */
+    xylem_http_cookie_jar_t* cookie_jar;         /**< Shared cookie jar, NULL to disable. */
+} xylem_http_session_opts_t;
+```
+
+#### 新增公共 API（`include/xylem/http/xylem-http-client.h`）
+
+```c
+/**
+ * @brief Create an HTTP session with a connection pool.
+ *
+ * The session maintains a persistent event loop and reuses
+ * TCP/TLS connections across requests to the same host:port:scheme.
+ *
+ * @param opts  Session options, or NULL for defaults.
+ *
+ * @return Session handle on success, NULL on failure.
+ */
+extern xylem_http_session_t* xylem_http_session_create(
+    const xylem_http_session_opts_t* opts);
+
+/**
+ * @brief Destroy a session and close all pooled connections.
+ *
+ * @param session  Session handle, or NULL (no-op).
+ */
+extern void xylem_http_session_destroy(xylem_http_session_t* session);
+
+/**
+ * @brief Send a synchronous HTTP GET request using a session.
+ *
+ * Reuses pooled connections when available.
+ *
+ * @param session  Session handle.
+ * @param url      Full URL string.
+ * @param opts     Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_get(
+    xylem_http_session_t* session,
+    const char* url,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP POST request using a session.
+ *
+ * @param session       Session handle.
+ * @param url           Full URL string.
+ * @param body          Request body, or NULL.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type header value.
+ * @param opts          Per-request options, or NULL for defaults.
+ *
+ * @return Response handle on success, NULL on any error.
+ */
+extern xylem_http_res_t* xylem_http_session_post(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP PUT request using a session.
+ */
+extern xylem_http_res_t* xylem_http_session_put(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP DELETE request using a session.
+ */
+extern xylem_http_res_t* xylem_http_session_delete(
+    xylem_http_session_t* session,
+    const char* url,
+    const xylem_http_cli_opts_t* opts);
+
+/**
+ * @brief Send a synchronous HTTP PATCH request using a session.
+ */
+extern xylem_http_res_t* xylem_http_session_patch(
+    xylem_http_session_t* session,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts);
+```
+
+### Data Models
+
+#### Session 内部结构体（定义在 `src/http/xylem-http-client.c` 中）
+
+```c
+/* 连接池中的单个空闲连接 */
+typedef struct {
+    const http_transport_vt_t* vt;           /* TCP 或 TLS vtable */
+    void*                      transport;    /* 底层 transport handle */
+    uint64_t                   idle_since_ms;/* 归还到池中的时间戳 */
+} _http_session_idle_conn_t;
+
+/* 连接池条目：一个 host:port:scheme 对应一组空闲连接 */
+typedef struct {
+    char            key[320];    /* "host:port:scheme"，如 "example.com:443:https" */
+    xylem_xlist_t   idle_conns;  /* _http_session_idle_conn_t* 的列表 */
+} _http_session_pool_entry_t;
+
+/* Session 内部 */
+struct xylem_http_session_s {
+    xylem_loop_t       loop;              /* 持久 event loop */
+    xylem_thrdpool_t*  pool;              /* DNS 解析线程池 */
+    xylem_xrbtree_t    conn_pool;         /* 连接池，key = host:port:scheme */
+    size_t             max_idle_per_host; /* 每 host 最大空闲连接数 */
+    uint64_t           idle_timeout_ms;   /* 空闲连接超时 */
+    xylem_http_cookie_jar_t* cookie_jar;  /* 共享 cookie jar */
+};
+```
+
+#### 连接池键格式
+
+键格式为 `host:port:scheme`，例如：
+- `example.com:80:http`
+- `example.com:443:https`
+- `api.example.com:8443:https`
+
+键由 `_http_session_make_key` 内部函数从 `http_url_t` 构建：
+
+```c
+static void _http_session_make_key(const http_url_t* url,
+                                   char* buf, size_t buf_size) {
+    snprintf(buf, buf_size, "%s:%u:%s",
+             url->host, (unsigned)url->port, url->scheme);
+}
+```
+
+#### xrbtree 比较函数
+
+```c
+/* data-data 比较：比较两个 pool entry 的 key */
+static int _http_session_pool_cmp_dd(const void* a, const void* b) {
+    const _http_session_pool_entry_t* ea = a;
+    const _http_session_pool_entry_t* eb = b;
+    return strcmp(ea->key, eb->key);
+}
+
+/* key-data 比较：比较字符串 key 与 pool entry 的 key */
+static int _http_session_pool_cmp_kd(const void* key, const void* data) {
+    const char* k = key;
+    const _http_session_pool_entry_t* e = data;
+    return strcmp(k, e->key);
+}
+```
+
+### Session 请求流程
+
+```mermaid
+sequenceDiagram
+    participant Caller as 调用者线程
+    participant Session as xylem_http_session_t
+    participant Pool as conn_pool (xrbtree)
+    participant Loop as 持久 xylem_loop
+    participant DNS as xylem_addr_resolve
+    participant Transport as TCP/TLS
+
+    Caller->>Session: xylem_http_session_get(url, opts)
+    Session->>Session: http_url_parse(url)
+    Session->>Session: _http_session_make_key(url)
+    Session->>Pool: xylem_xrbtree_find(key)
+
+    alt 池中有空闲连接
+        Pool-->>Session: pool_entry
+        Session->>Session: xylem_xlist_head(idle_conns)
+        Session->>Session: 检查 idle_timeout
+        alt 连接未过期
+            Session->>Session: xylem_xlist_remove(conn)
+            Session->>Session: 复用连接，跳过 DNS + dial
+            Session->>Transport: send(serialized request)
+        else 连接已过期
+            Session->>Session: 关闭过期连接
+            Session->>Session: 继续检查下一个或新建连接
+        end
+    else 池中无空闲连接
+        Session->>DNS: xylem_addr_resolve(host, port)
+        DNS-->>Session: on_resolve callback
+        Session->>Transport: vt->dial()
+        Transport-->>Session: on_connect callback
+        Session->>Transport: send(serialized request)
+    end
+
+    Transport-->>Session: on_read (response data)
+    Session->>Session: llhttp_execute(data)
+
+    alt Connection: keep-alive
+        Session->>Session: 检查池容量
+        alt 池未满 (< max_idle_per_host)
+            Session->>Pool: 归还连接到 idle_conns
+        else 池已满
+            Session->>Session: 关闭最旧的空闲连接
+            Session->>Pool: 归还新连接
+        end
+    else Connection: close
+        Session->>Transport: close connection
+    end
+
+    Session->>Loop: xylem_loop_stop()
+    Loop-->>Caller: xylem_loop_run() 返回
+    Caller->>Caller: 返回 res
+```
+
+### 空闲连接清理策略
+
+1. **取出时检查**：从池中取出连接时，检查 `idle_since_ms + idle_timeout_ms < now`，过期则关闭并继续查找下一个
+2. **归还时检查容量**：归还连接时，如果当前 host 的空闲连接数 >= `max_idle_per_host`，关闭列表尾部（最旧）的连接后再插入
+3. **stale 检测**：复用连接发送请求后，如果 transport 层报告连接已关闭（`on_close` 回调），session 透明地创建新连接重试
+4. **session destroy 时**：遍历 xrbtree 所有 pool entry，关闭所有空闲连接，释放所有内存
+
+### 与现有客户端内部的集成
+
+session 请求函数内部复用 `_http_cli_ctx_t` 的大部分逻辑（llhttp 回调、重定向处理、100-continue 等），主要区别：
+
+| 方面 | 无 session（`_http_cli_exec`） | 有 session（`_http_session_exec`） |
+|------|------|------|
+| event loop | 每次请求创建临时 loop | 使用 session 持久 loop |
+| DNS 线程池 | 每次请求创建临时 thrdpool | 使用 session 持久 thrdpool |
+| 连接建立 | 每次 DNS + dial | 优先从池中取出 |
+| 请求完成后 | 关闭连接 | keep-alive 时归还到池 |
+| cookie_jar | 来自 per-request opts | 优先使用 session opts，per-request opts 可覆盖 |
+
+实现方式：提取 `_http_cli_exec` 中的核心逻辑为可复用的内部函数，session 版本传入不同的 loop/pool/连接获取策略。
+
+```c
+/* 内部执行函数，session 和非 session 共用 */
+static xylem_http_res_t* _http_cli_exec_core(
+    xylem_loop_t* loop,
+    xylem_thrdpool_t* pool,
+    const char* method,
+    const char* url,
+    const void* body, size_t body_len,
+    const char* content_type,
+    const xylem_http_cli_opts_t* opts,
+    /* session 特有参数 */
+    void* existing_conn,                    /* 从池中取出的连接，NULL 表示新建 */
+    const http_transport_vt_t* existing_vt, /* 连接的 vtable */
+    bool* out_keep_alive                    /* 输出：是否 keep-alive */
+);
+```
+
+### Error Handling 更新
+
+| 场景 | 行为 |
+|------|------|
+| `xylem_http_session_create` 中 loop init 失败 | 返回 NULL |
+| `xylem_http_session_create` 中 thrdpool create 失败 | 清理 loop，返回 NULL |
+| `xylem_http_session_destroy(NULL)` | no-op |
+| 池中连接 stale（peer closed） | 丢弃连接，透明重试新连接 |
+| 池中连接 idle timeout | 关闭连接，继续查找或新建 |
+| xrbtree insert 失败（内存不足） | 关闭连接（不入池），请求本身仍成功 |
+| xlist insert 失败（内存不足） | 关闭连接（不入池），请求本身仍成功 |
+
+### Correctness Properties 更新
+
+#### Property 30: 连接复用 round-trip
+
+*For any* two sequential requests to the same `host:port:scheme` where the first response has `Connection: keep-alive`（或 HTTP/1.1 默认行为），the session SHALL reuse the same underlying transport connection for the second request instead of creating a new one.
+
+**Validates: Requirements 37.5, 37.6**
+
+#### Property 31: Connection: close 阻止连接入池
+
+*For any* response with `Connection: close` header, the session SHALL close the underlying transport connection after reading the response and SHALL NOT return it to the connection pool.
+
+**Validates: Requirements 37.7**
+
+#### Property 32: 池满时驱逐最旧连接
+
+*For any* `host:port:scheme` whose idle connection count equals `max_idle_per_host`, when a new connection is returned to the pool, the session SHALL close the oldest idle connection (smallest `idle_since_ms`) before adding the new one, maintaining the invariant that idle connection count never exceeds `max_idle_per_host`.
+
+**Validates: Requirements 37.10**
+
+#### Property 33: Stale 连接透明恢复
+
+*For any* pooled connection that has been closed by the peer (stale), when the session attempts to reuse it and detects the closure, the session SHALL discard the stale connection and transparently create a new connection to complete the request, returning a valid response to the caller.
+
+**Validates: Requirements 37.11**
+
+### Testing Strategy 更新
+
+#### 新增单元测试
+
+| 测试函数 | 覆盖内容 |
+|----------|----------|
+| `test_session_create_destroy` | session 创建和销毁基本流程 |
+| `test_session_create_null_opts` | NULL opts 使用默认值 |
+| `test_session_destroy_null` | destroy(NULL) 为 no-op |
+| `test_session_default_max_idle` | 默认 max_idle_per_host = 5 |
+| `test_session_default_idle_timeout` | 默认 idle_timeout_ms = 90000 |
+| `test_session_pool_key_format` | 池键格式为 "host:port:scheme" |
+
+#### 新增属性测试
+
+```c
+/* Feature: http, Property 30: Connection reuse round-trip */
+static void test_prop_session_conn_reuse(void) { ... }
+
+/* Feature: http, Property 31: Connection: close prevents pooling */
+static void test_prop_session_conn_close(void) { ... }
+
+/* Feature: http, Property 32: Pool eviction when full */
+static void test_prop_session_pool_eviction(void) { ... }
+
+/* Feature: http, Property 33: Stale connection transparent recovery */
+static void test_prop_session_stale_recovery(void) { ... }
+```
+
+每个属性测试最少运行 100 次迭代，使用 theft 库生成随机输入。
+
+#### 集成测试更新
+
+- session 发送两次 GET 到同一服务器，验证第二次复用连接
+- session 发送 GET 到服务器（响应 Connection: close），再发送第二次 GET，验证第二次建立新连接
+- session 配置 max_idle_per_host=1，发送两次请求后验证池中只有 1 个空闲连接
+- session 配置 idle_timeout_ms=1，等待后发送请求，验证过期连接被丢弃
+- session 使用共享 cookie_jar，验证 cookie 跨请求传递

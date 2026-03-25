@@ -521,3 +521,24 @@
 10. IF `xylem_http_writer_accept_upgrade` is called outside of the `on_upgrade` callback, THEN THE HTTP_Connection SHALL return -1
 11. THE `xylem_http_writer_accept_upgrade` SHALL return 0 on success and -1 on failure
 12. WHEN the user does not call `xylem_http_writer_accept_upgrade` in the `on_upgrade` callback and the callback returns, THE HTTP_Server SHALL close the connection（用户拒绝升级但未发送响应时的默认行为）
+
+### Requirement 37: HTTP 客户端 Session（连接池与连接复用）
+
+**User Story:** 作为开发者，我希望通过 session 对象在多次请求间复用 TCP/TLS 连接（HTTP keep-alive），以便减少连接建立开销、提升请求吞吐量。
+
+#### Acceptance Criteria
+
+1. THE HTTP_Client SHALL provide `xylem_http_session_t` 不透明类型，表示一个带连接池的客户端会话
+2. THE HTTP_Client SHALL provide `xylem_http_session_create` 函数，接受可选的 `xylem_http_session_opts_t*` 配置（NULL 使用默认值），返回 session 句柄
+3. THE HTTP_Client SHALL provide `xylem_http_session_destroy` 函数，关闭所有池中的空闲连接并释放 session 资源
+4. THE HTTP_Client SHALL provide 与现有无 session API 签名一致的 session 请求函数：`xylem_http_session_get`、`xylem_http_session_post`、`xylem_http_session_put`、`xylem_http_session_delete`、`xylem_http_session_patch`，第一个参数为 `xylem_http_session_t*`
+5. WHEN a session request function is called, THE session SHALL first check the connection pool for an idle connection matching the target host:port:scheme；IF a matching idle connection exists, THE session SHALL reuse it instead of creating a new connection
+6. WHEN a response is received with `Connection: keep-alive`（或 HTTP/1.1 默认行为），THE session SHALL return the connection to the pool for future reuse instead of closing it
+7. WHEN a response is received with `Connection: close`, THE session SHALL close the connection and not return it to the pool
+8. THE `xylem_http_session_opts_t` SHALL provide `max_idle_per_host` 字段（默认 5），限制每个 host:port:scheme 的最大空闲连接数
+9. THE `xylem_http_session_opts_t` SHALL provide `idle_timeout_ms` 字段（默认 90000 毫秒），空闲连接超过此时间自动关闭
+10. WHEN the pool for a given host:port:scheme is full (idle connections >= max_idle_per_host), THE session SHALL close the oldest idle connection before adding the new one
+11. WHEN a pooled connection is found to be stale (peer closed, read error), THE session SHALL discard it and create a new connection transparently
+12. THE session SHALL internally maintain an event loop for connection management；session 请求函数仍为同步阻塞调用，对外行为与现有无 session API 一致
+13. THE existing stateless API functions (`xylem_http_cli_get` 等) SHALL remain unchanged and continue to work without a session
+14. THE `xylem_http_session_opts_t` SHALL provide `cookie_jar` 字段（`xylem_http_cookie_jar_t*`），传入时 session 内所有请求自动共享 cookie 管理

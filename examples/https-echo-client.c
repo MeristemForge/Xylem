@@ -53,12 +53,12 @@ int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     /* GET / */
-    xylem_http_res_t* res = xylem_http_cli_get(BASE_URL "/", NULL);
+    xylem_http_res_t* res = xylem_http_get(BASE_URL "/", NULL);
     _print_res("GET /", res);
 
     /* POST /echo */
     const char* body = "hello from xylem (TLS)";
-    res = xylem_http_cli_post(BASE_URL "/echo", body, strlen(body),
+    res = xylem_http_post(BASE_URL "/echo", body, strlen(body),
                               "text/plain", NULL);
     _print_res("POST /echo", res);
 

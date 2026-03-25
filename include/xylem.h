@@ -64,6 +64,9 @@ _Pragma("once")
 #include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/http/xylem-http-server.h"
+#include "xylem/ws/xylem-ws-common.h"
+#include "xylem/ws/xylem-ws-client.h"
+#include "xylem/ws/xylem-ws-server.h"
 
 /**
  * @brief Initialize the Xylem library.

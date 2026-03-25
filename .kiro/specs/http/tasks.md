@@ -442,3 +442,39 @@
   - [ ]* 42.2 Upgrade + WebSocket 握手集成测试
 
 - [x] 43. Final checkpoint - 确保所有 Vary/Upgrade 测试通过
+
+
+- [x] 44. HTTP 客户端 Session（连接池与连接复用）
+  - [x] 44.1 在 `include/xylem/http/xylem-http-client.h` 中添加 `xylem_http_session_t` 前向声明、`xylem_http_session_opts_t` 结构体定义（含 `max_idle_per_host`、`idle_timeout_ms`、`cookie_jar` 字段）、`xylem_http_session_create`、`xylem_http_session_destroy`、`xylem_http_session_get`、`xylem_http_session_post`、`xylem_http_session_put`、`xylem_http_session_delete`、`xylem_http_session_patch` 函数声明（含 Doxygen 注释）
+    - _Requirements: 37.1, 37.2, 37.3, 37.4, 37.8, 37.9, 37.14_
+  - [x] 44.2 在 `src/http/xylem-http-client.c` 中定义内部结构体：`_http_session_idle_conn_t`（含 `vt`、`transport`、`idle_since_ms`）、`_http_session_pool_entry_t`（含 `key[320]`、`xylem_xlist_t idle_conns`）、`xylem_http_session_s`（含 `xylem_loop_t loop`、`xylem_thrdpool_t* pool`、`xylem_xrbtree_t conn_pool`、`max_idle_per_host`、`idle_timeout_ms`、`cookie_jar`）。实现 xrbtree 比较函数 `_http_session_pool_cmp_dd` 和 `_http_session_pool_cmp_kd`，以及键构建函数 `_http_session_make_key`
+    - _Requirements: 37.1, 37.5_
+  - [x] 44.3 在 `src/http/xylem-http-client.c` 中实现 `xylem_http_session_create`：初始化持久 `xylem_loop_t`、创建 `xylem_thrdpool_t`（1 线程）、初始化 `xylem_xrbtree_t`、从 opts 读取配置（NULL 时使用默认值 max_idle_per_host=5、idle_timeout_ms=90000）。实现 `xylem_http_session_destroy`：遍历 xrbtree 所有 pool entry，关闭所有空闲连接（调用 `vt->close_conn`），清理 xrbtree、销毁 thrdpool、deinit loop
+    - _Requirements: 37.2, 37.3, 37.8, 37.9, 37.12_
+  - [x] 44.4 在 `src/http/xylem-http-client.c` 中实现连接池内部辅助函数：`_http_session_pool_get`（从池中取出匹配 key 的空闲连接，跳过已过期的连接并关闭它们，返回 `_http_session_idle_conn_t*` 或 NULL）、`_http_session_pool_put`（将连接归还到池中，检查容量限制，池满时关闭最旧连接后插入）、`_http_session_pool_entry_find_or_create`（在 xrbtree 中查找或创建 pool entry）
+    - _Requirements: 37.5, 37.6, 37.9, 37.10_
+  - [x] 44.5 在 `src/http/xylem-http-client.c` 中实现 `_http_session_exec` 内部函数：复用 `_http_cli_ctx_t` 的 llhttp 回调和重定向逻辑，但使用 session 的持久 loop 和 thrdpool。请求开始时调用 `_http_session_pool_get` 尝试获取空闲连接；有空闲连接时跳过 DNS 解析和 dial，直接发送请求；无空闲连接时走正常 DNS + dial 流程。请求完成后检查 `Connection: close`：keep-alive 时调用 `_http_session_pool_put` 归还连接，close 时关闭连接。cookie_jar 优先使用 session 级别，per-request opts 可覆盖
+    - _Requirements: 37.5, 37.6, 37.7, 37.11, 37.12, 37.14_
+  - [x] 44.6 在 `src/http/xylem-http-client.c` 中实现 stale 连接检测与透明重试：当复用的空闲连接在发送请求后收到 `on_close` 回调（peer closed），标记连接为 stale，丢弃该连接，重新走 DNS + dial 流程建立新连接并重试请求
+    - _Requirements: 37.11_
+  - [x] 44.7 在 `src/http/xylem-http-client.c` 中实现 session 公共请求函数：`xylem_http_session_get`、`xylem_http_session_post`、`xylem_http_session_put`、`xylem_http_session_delete`、`xylem_http_session_patch`，每个函数调用 `_http_session_exec` 并传入对应的 method、body、content_type
+    - _Requirements: 37.4, 37.13_
+  - [x] 44.8 在 `tests/test-http.c` 中添加 session 单元测试：`test_session_create_destroy`（创建和销毁基本流程）、`test_session_create_null_opts`（NULL opts 使用默认值）、`test_session_destroy_null`（destroy(NULL) 为 no-op）、`test_session_default_max_idle`（默认 max_idle_per_host=5）、`test_session_default_idle_timeout`（默认 idle_timeout_ms=90000）、`test_session_pool_key_format`（池键格式为 "host:port:scheme"）
+    - _Requirements: 37.1, 37.2, 37.3, 37.8, 37.9_
+  - [ ]* 44.9 在 `tests/test-http.c` 中添加属性测试：连接复用 round-trip
+    - **Property 30: 连接复用 round-trip**
+    - 使用 theft 库生成随机 host:port:scheme 组合，验证两次请求到同一目标时第二次复用连接
+    - **Validates: Requirements 37.5, 37.6**
+  - [ ]* 44.10 在 `tests/test-http.c` 中添加属性测试：Connection: close 阻止连接入池
+    - **Property 31: Connection: close 阻止连接入池**
+    - **Validates: Requirements 37.7**
+  - [ ]* 44.11 在 `tests/test-http.c` 中添加属性测试：池满时驱逐最旧连接
+    - **Property 32: 池满时驱逐最旧连接**
+    - **Validates: Requirements 37.10**
+  - [ ]* 44.12 在 `tests/test-http.c` 中添加属性测试：Stale 连接透明恢复
+    - **Property 33: Stale 连接透明恢复**
+    - **Validates: Requirements 37.11**
+  - [x] 44.13 添加 session 使用示例到 `examples/http-echo-client.c`（或新建 `examples/http-session-client.c`）：演示 session 创建、多次请求复用连接、session 销毁
+    - _Requirements: 37.2, 37.3, 37.4, 37.5_
+
+- [x] 45. Checkpoint - 确保 Session 功能编译通过并测试通过

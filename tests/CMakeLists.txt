@@ -35,6 +35,7 @@ xylem_add_test(udp)
 xylem_add_test(json)
 xylem_add_test(http)
 xylem_add_test(gzip)
+xylem_add_test(ws)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)

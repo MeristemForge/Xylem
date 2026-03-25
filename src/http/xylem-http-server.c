@@ -618,8 +618,8 @@ size_t xylem_http_req_body_len(const xylem_http_req_t* req) {
     return req->body_len;
 }
 
-xylem_http_srv_t* xylem_http_srv_create(xylem_loop_t* loop,
-                                        const xylem_http_srv_cfg_t* cfg) {
+xylem_http_srv_t* xylem_http_listen(xylem_loop_t* loop,
+                                    const xylem_http_srv_cfg_t* cfg) {
     if (!loop || !cfg) {
         return NULL;
     }
@@ -649,24 +649,7 @@ xylem_http_srv_t* xylem_http_srv_create(xylem_loop_t* loop,
         srv->vt = http_transport_tcp();
     }
 
-    return srv;
-}
-
-void xylem_http_srv_destroy(xylem_http_srv_t* srv) {
-    if (!srv) {
-        return;
-    }
-    if (srv->running) {
-        xylem_http_srv_stop(srv);
-    }
-    free(srv);
-}
-
-int xylem_http_srv_start(xylem_http_srv_t* srv) {
-    if (!srv || srv->running) {
-        return -1;
-    }
-
+    /* Bind and start listening. */
     srv->transport_cb.on_accept     = _http_srv_conn_accept_cb;
     srv->transport_cb.on_read       = _http_srv_conn_read_cb;
     srv->transport_cb.on_close      = _http_srv_conn_close_cb;
@@ -676,27 +659,32 @@ int xylem_http_srv_start(xylem_http_srv_t* srv) {
     const char* host = srv->cfg.host ? srv->cfg.host : "0.0.0.0";
     xylem_addr_t addr;
     if (xylem_addr_pton(host, srv->cfg.port, &addr) != 0) {
-        return -1;
+        free(srv);
+        return NULL;
     }
 
     srv->listener = srv->vt->listen(srv->loop, &addr,
                                     &srv->transport_cb, srv, NULL,
                                     srv->cfg.tls_cert, srv->cfg.tls_key);
     if (!srv->listener) {
-        return -1;
+        free(srv);
+        return NULL;
     }
 
     srv->running = true;
-    return 0;
+    return srv;
 }
 
-void xylem_http_srv_stop(xylem_http_srv_t* srv) {
-    if (!srv || !srv->running) {
+void xylem_http_close_server(xylem_http_srv_t* srv) {
+    if (!srv) {
         return;
     }
-    srv->vt->close_server(srv->listener);
-    srv->listener = NULL;
-    srv->running = false;
+    if (srv->running) {
+        srv->vt->close_server(srv->listener);
+        srv->listener = NULL;
+        srv->running = false;
+    }
+    free(srv);
 }
 
 void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,

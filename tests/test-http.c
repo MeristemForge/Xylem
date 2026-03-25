@@ -113,13 +113,13 @@ static void test_req_accessors_null(void) {
 
 static void test_srv_create_null_loop(void) {
     xylem_http_srv_cfg_t cfg = {0};
-    ASSERT(xylem_http_srv_create(NULL, &cfg) == NULL);
+    ASSERT(xylem_http_listen(NULL, &cfg) == NULL);
 }
 
 static void test_srv_create_null_cfg(void) {
     /* Pass a non-NULL loop pointer but NULL cfg */
     xylem_loop_t loop;
-    ASSERT(xylem_http_srv_create(&loop, NULL) == NULL);
+    ASSERT(xylem_http_listen(&loop, NULL) == NULL);
 }
 
 static void test_srv_create_destroy(void) {
@@ -128,25 +128,27 @@ static void test_srv_create_destroy(void) {
 
     xylem_http_srv_cfg_t cfg = {0};
     cfg.port = 0;
-    xylem_http_srv_t* srv = xylem_http_srv_create(&loop, &cfg);
+    xylem_http_srv_t* srv = xylem_http_listen(&loop, &cfg);
     ASSERT(srv != NULL);
-    xylem_http_srv_destroy(srv);
+    xylem_http_close_server(srv);
 
     xylem_loop_deinit(&loop);
 }
 
 static void test_srv_destroy_null(void) {
-    /* destroy(NULL) must be a no-op */
-    xylem_http_srv_destroy(NULL);
+    /* close_server(NULL) must be a no-op */
+    xylem_http_close_server(NULL);
 }
 
 static void test_srv_start_null(void) {
-    ASSERT(xylem_http_srv_start(NULL) == -1);
+    /* listen(NULL, ...) returns NULL */
+    xylem_http_srv_cfg_t cfg = {0};
+    ASSERT(xylem_http_listen(NULL, &cfg) == NULL);
 }
 
 static void test_srv_stop_null(void) {
-    /* stop(NULL) must be a no-op, not crash */
-    xylem_http_srv_stop(NULL);
+    /* close_server(NULL) must be a no-op, not crash */
+    xylem_http_close_server(NULL);
 }
 
 static void test_chunked_start_null(void) {
@@ -574,6 +576,65 @@ static void test_accept_upgrade_null_transport(void) {
     ASSERT(transport == NULL);
 }
 
+static void test_session_create_destroy(void) {
+    xylem_http_session_t* s = xylem_http_session_create(NULL);
+    ASSERT(s != NULL);
+    xylem_http_session_destroy(s);
+}
+
+static void test_session_create_null_opts(void) {
+    xylem_http_session_t* s = xylem_http_session_create(NULL);
+    ASSERT(s != NULL);
+    xylem_http_session_destroy(s);
+}
+
+static void test_session_destroy_null(void) {
+    xylem_http_session_destroy(NULL);
+}
+
+static void test_session_create_with_opts(void) {
+    xylem_http_session_opts_t opts = {0};
+    opts.max_idle_per_host = 10;
+    opts.idle_timeout_ms   = 60000;
+    xylem_http_session_t* s = xylem_http_session_create(&opts);
+    ASSERT(s != NULL);
+    xylem_http_session_destroy(s);
+}
+
+static void test_session_create_with_cookie_jar(void) {
+    xylem_http_cookie_jar_t* jar = xylem_http_cookie_jar_create();
+    ASSERT(jar != NULL);
+    xylem_http_session_opts_t opts = {0};
+    opts.cookie_jar = jar;
+    xylem_http_session_t* s = xylem_http_session_create(&opts);
+    ASSERT(s != NULL);
+    xylem_http_session_destroy(s);
+    xylem_http_cookie_jar_destroy(jar);
+}
+
+static void test_session_get_null(void) {
+    ASSERT(xylem_http_session_get(NULL, "http://localhost", NULL) == NULL);
+}
+
+static void test_session_post_null(void) {
+    ASSERT(xylem_http_session_post(NULL, "http://localhost",
+                                   "x", 1, "text/plain", NULL) == NULL);
+}
+
+static void test_session_put_null(void) {
+    ASSERT(xylem_http_session_put(NULL, "http://localhost",
+                                  "x", 1, "text/plain", NULL) == NULL);
+}
+
+static void test_session_delete_null(void) {
+    ASSERT(xylem_http_session_delete(NULL, "http://localhost", NULL) == NULL);
+}
+
+static void test_session_patch_null(void) {
+    ASSERT(xylem_http_session_patch(NULL, "http://localhost",
+                                    "x", 1, "text/plain", NULL) == NULL);
+}
+
 int main(void) {
     /* URL percent-encoding */
     test_url_encode_unreserved();
@@ -658,6 +719,18 @@ int main(void) {
     test_upgrade_null_callback();
     test_accept_upgrade_outside_cb();
     test_accept_upgrade_null_transport();
+
+    /* Session */
+    test_session_create_destroy();
+    test_session_create_null_opts();
+    test_session_destroy_null();
+    test_session_create_with_opts();
+    test_session_create_with_cookie_jar();
+    test_session_get_null();
+    test_session_post_null();
+    test_session_put_null();
+    test_session_delete_null();
+    test_session_patch_null();
 
     return 0;
 }

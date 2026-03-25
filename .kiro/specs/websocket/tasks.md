@@ -1,0 +1,254 @@
+# Implementation Plan: WebSocket 模块
+
+## 概述
+
+按照设计文档，为 Xylem C 库实现 RFC 6455 WebSocket 协议支持。采用自底向上的实现策略：先实现无依赖的内部组件（UTF-8 校验、帧编解码、握手处理），再实现传输层抽象，最后实现客户端和服务端公共 API，逐步集成并通过测试验证。
+
+## Tasks
+
+- [x] 1. 搭建模块目录结构与公共类型定义
+  - [x] 1.1 创建公共头文件 `include/xylem/ws/xylem-ws-common.h`
+    - 定义 `xylem_ws_opcode_t`、`xylem_ws_state_t` 枚举
+    - 定义 `xylem_ws_conn_t`、`xylem_ws_server_t` 前向声明
+    - 定义 `xylem_ws_handler_t` 回调结构体（on_open, on_accept, on_message, on_ping, on_pong, on_close）
+    - 定义 `xylem_ws_opts_t` 选项结构体（max_message_size, fragment_threshold, handshake_timeout_ms, close_timeout_ms）
+    - _Requirements: 10.1, 10.3, 10.4, 14.1, 14.4_
+  - [x] 1.2 创建公共头文件 `include/xylem/ws/xylem-ws-client.h`
+    - 声明 `xylem_ws_dial`、`xylem_ws_send`、`xylem_ws_ping`、`xylem_ws_close`
+    - 声明 `xylem_ws_get_userdata`、`xylem_ws_set_userdata`
+    - _Requirements: 1.1, 1.2, 3.1, 3.2, 6.1, 7.1, 10.2_
+  - [x] 1.3 创建公共头文件 `include/xylem/ws/xylem-ws-server.h`
+    - 定义 `xylem_ws_srv_cfg_t` 服务端配置结构体
+    - 声明 `xylem_ws_listen`、`xylem_ws_close_server`
+    - _Requirements: 2.1, 12.2_
+  - [x] 1.4 创建空的实现文件骨架
+    - 创建 `src/ws/xylem-ws-common.c`（close 状态码校验等共享逻辑）
+    - 创建 `src/ws/xylem-ws-client.c`（空骨架）
+    - 创建 `src/ws/xylem-ws-server.c`（空骨架）
+    - 所有文件包含 license header
+    - _Requirements: 15.2, 15.3_
+  - [x] 1.5 更新构建系统
+    - 在根 `CMakeLists.txt` 的 `SRCS` 中添加所有 `src/ws/*.c` 文件
+    - 在 `include_directories` 中确保 `src/ws/` 内部头文件可被引用
+    - 在 `include/xylem.h` 中包含三个公共头文件
+    - 在 `tests/CMakeLists.txt` 中添加 `xylem_add_test(ws)`
+    - 创建空的 `tests/test-ws.c` 骨架（含 license、assert.h、空 main）
+    - _Requirements: 8.1, 8.2_
+
+- [x] 2. 实现 UTF-8 校验模块
+  - [x] 2.1 创建 `src/ws/ws-utf8.h` 和 `src/ws/ws-utf8.c`
+    - 实现 `ws_utf8_validate(const uint8_t* data, size_t len)` 函数
+    - 处理合法 UTF-8 序列、非法首字节、截断多字节序列、overlong 编码、代理对、超出 U+10FFFF 的码点
+    - _Requirements: 13.1, 13.2, 13.3_
+  - [ ]* 2.2 编写 UTF-8 校验属性测试
+    - **Property 10: UTF-8 校验正确性**
+    - 使用 theft 生成随机字节序列，与参考实现对比校验结果
+    - **Validates: Requirements 13.1**
+  - [ ]* 2.3 编写 UTF-8 校验单元测试
+    - 在 `tests/test-ws.c` 中添加测试：合法 ASCII、合法多字节、非法首字节、截断序列、overlong 编码、代理对 (U+D800-U+DFFF)、BOM (U+FEFF)
+    - _Requirements: 13.1_
+
+- [x] 3. 实现帧编解码模块
+  - [x] 3.1 创建 `src/ws/ws-frame.h` 和 `src/ws/ws-frame.c`
+    - 定义 `ws_frame_header_t` 结构体
+    - 实现 `ws_frame_decode_header`：解析帧头，返回 0 成功 / -1 数据不足 / -2 协议错误
+    - 实现 `ws_frame_encode_header`：编码帧头到缓冲区，返回写入字节数
+    - 实现 `ws_frame_apply_mask`：原地掩码/去掩码操作
+    - 支持三种长度编码（7-bit ≤125、16-bit 126-65535、64-bit >65535）
+    - 校验保留 opcode（3-7, 0xB-0xF）、控制帧 payload >125、控制帧 FIN=0
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 4.2, 4.5, 4.6, 4.7_
+  - [ ]* 3.2 编写帧编码/解码往返属性测试
+    - **Property 2: 帧编码/解码往返**
+    - 使用 theft 生成随机 opcode、payload（0-65536+ 字节）、mask 标志和 mask key，验证编码后解码恢复原始数据
+    - **Validates: Requirements 3.1, 3.2, 3.5, 3.6, 3.7, 11.1, 11.3**
+  - [ ]* 3.3 编写掩码对合性属性测试
+    - **Property 3: 掩码对合性（Involution）**
+    - 验证 `mask(mask(data, key), key) == data`
+    - **Validates: Requirements 3.3, 4.2, 11.2**
+  - [ ]* 3.4 编写服务端帧无掩码属性测试
+    - **Property 4: 服务端帧不含掩码**
+    - 验证服务端角色编码的帧头 MASK 位为 0 且无 masking key 字段
+    - **Validates: Requirements 3.4**
+  - [ ]* 3.5 编写保留 opcode 拒绝属性测试
+    - **Property 5: 保留 opcode 拒绝**
+    - 验证保留范围 opcode（3-7, 0xB-0xF）被帧解析器识别为协议错误
+    - **Validates: Requirements 4.5**
+  - [ ]* 3.6 编写帧编解码单元测试
+    - 在 `tests/test-ws.c` 中添加测试：三种长度编码边界（125/126/65535/65536）、掩码/无掩码、不完整帧头、保留 opcode、控制帧 payload >125、控制帧 FIN=0
+    - _Requirements: 3.5, 3.6, 3.7, 4.5, 4.6, 4.7, 11.1, 11.3_
+
+- [x] 4. Checkpoint — 确保基础组件测试通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 5. 实现握手处理模块
+  - [x] 5.1 创建 `src/ws/ws-handshake.h` 和 `src/ws/ws-handshake.c`
+    - 实现 `ws_handshake_gen_key`：生成 16 字节随机 Sec-WebSocket-Key 并 Base64 编码
+    - 实现 `ws_handshake_compute_accept`：SHA-1(key + GUID) 后 Base64 编码
+    - 实现 `ws_handshake_build_request`：构建客户端 HTTP Upgrade 请求
+    - 实现 `ws_handshake_validate_accept`：校验服务端 Accept 值
+    - 实现 `ws_handshake_build_response`：构建服务端 101 响应
+    - 复用 `xylem-sha1` 和 `xylem-base64` 模块
+    - _Requirements: 1.1, 1.3, 1.4, 1.5, 2.2, 2.3, 2.4_
+  - [ ]* 5.2 编写握手 Accept 值往返属性测试
+    - **Property 1: 握手 Accept 值计算往返**
+    - 使用 theft 生成随机 16 字节 key，验证 compute_accept 后 validate_accept 通过
+    - **Validates: Requirements 1.3**
+  - [ ]* 5.3 编写握手请求必需头部属性测试
+    - **Property 14: 握手请求包含必需头部**
+    - 验证生成的请求包含 `Upgrade: websocket`、`Connection: Upgrade`、`Sec-WebSocket-Version: 13`、合法 Base64 Key
+    - **Validates: Requirements 1.1**
+  - [ ]* 5.4 编写握手单元测试
+    - 在 `tests/test-ws.c` 中添加测试：Accept 计算已知向量、请求格式校验、缺少头部的 400 响应、版本错误的 426 响应
+    - _Requirements: 1.1, 1.3, 2.3, 2.4_
+
+- [x] 6. 实现 Close 状态码校验与 Close 帧编码
+  - [x] 6.1 在 `src/ws/xylem-ws-common.c` 中实现共享逻辑
+    - 实现发送端状态码校验函数（合法范围：1000-1003, 1007-1011, 3000-4999）
+    - 实现接收端状态码校验函数（拒绝范围：0-999, 1004-1006, 1015, 1016-2999）
+    - 实现 close 帧 payload 编码（2 字节网络字节序状态码 + reason 字符串）
+    - 实现 close 帧 payload 解析（0 字节 → 1005、1 字节 → 协议错误、≥2 字节 → 解析状态码 + reason）
+    - _Requirements: 7.1, 15.1, 15.2, 15.3, 15.4_
+  - [ ]* 6.2 编写 Close 帧编码属性测试
+    - **Property 8: Close 帧编码**
+    - 验证合法状态码和 reason 编码后 payload 格式正确
+    - **Validates: Requirements 7.1**
+  - [ ]* 6.3 编写保留 Close 状态码拒绝（接收端）属性测试
+    - **Property 12: 保留 Close 状态码拒绝（接收端）**
+    - **Validates: Requirements 15.2**
+  - [ ]* 6.4 编写非法 Close 状态码拒绝（发送端）属性测试
+    - **Property 13: 非法 Close 状态码拒绝（发送端）**
+    - **Validates: Requirements 15.3**
+  - [ ]* 6.5 编写 Close 状态码单元测试
+    - 在 `tests/test-ws.c` 中添加测试：合法/非法状态码、空 payload、1 字节 payload、reason UTF-8 校验
+    - _Requirements: 15.1, 15.2, 15.3, 15.4_
+
+- [x] 7. 实现传输层抽象
+  - [x] 7.1 创建 `src/ws/ws-transport.h`
+    - 定义 `ws_transport_cb_t` 回调结构体
+    - 定义 `ws_transport_vt_t` 虚函数表（dial, listen, send, close_conn, close_server, set_userdata, get_userdata）
+    - 声明 `ws_transport_tcp()` 和 `ws_transport_tls()`
+    - 复用 HTTP 模块的 `http_transport_vt_t` 模式
+    - _Requirements: 9.1, 9.2, 9.3_
+  - [x] 7.2 创建 `src/ws/ws-transport-tcp.c`
+    - 实现 TCP 传输适配，将 `xylem_tcp_handler_t` 回调转发到 `ws_transport_cb_t`
+    - _Requirements: 9.2_
+  - [x] 7.3 创建 `src/ws/ws-transport-tls.c` 和 `src/ws/ws-transport-tls-stub.c`
+    - TLS 传输适配（`XYLEM_ENABLE_TLS` 启用时编译）
+    - TLS 桩实现（`ws_transport_tls()` 返回 NULL）
+    - _Requirements: 9.3, 9.4_
+  - [x] 7.4 更新 `CMakeLists.txt` 中的 TLS 条件编译
+    - `XYLEM_ENABLE_TLS` 启用时编译 `ws-transport-tls.c`，否则编译 `ws-transport-tls-stub.c`
+    - _Requirements: 9.4_
+
+- [x] 8. Checkpoint — 确保传输层与基础组件编译通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 9. 实现客户端连接生命周期
+  - [x] 9.1 在 `src/ws/xylem-ws-client.c` 中实现 `xylem_ws_conn_t` 结构体定义
+    - 包含传输层句柄、状态机、接收缓冲、分片重组缓冲、握手状态、定时器等字段
+    - _Requirements: 8.1, 8.4_
+  - [x] 9.2 实现 `xylem_ws_dial`
+    - 解析 URL（ws:// → TCP, wss:// → TLS）
+    - 选择传输层虚函数表
+    - 发起底层连接，注册传输层回调
+    - 启动握手超时定时器
+    - _Requirements: 1.1, 1.2, 9.1, 9.2, 9.3, 9.4, 16.1, 16.2_
+  - [x] 9.3 实现客户端握手流程
+    - 连接建立后发送 HTTP Upgrade 请求
+    - 接收并解析 101 响应（复用 llhttp）
+    - 校验 Sec-WebSocket-Accept 值
+    - 握手成功 → 状态转为 OPEN，调用 `on_open`
+    - 握手失败 → 调用 `on_close`
+    - _Requirements: 1.1, 1.3, 1.4, 1.5_
+  - [x] 9.4 实现 `xylem_ws_send`
+    - 状态检查（仅 OPEN 状态允许发送）
+    - 客户端角色：生成随机 mask key，对 payload 掩码
+    - 超过 fragment_threshold 时自动分片
+    - 返回值：0 = 成功，-1 = 错误
+    - _Requirements: 3.1, 3.2, 3.3, 5.1, 5.2_
+  - [ ]* 9.5 编写分片往返属性测试
+    - **Property 6: 分片往返**
+    - 验证分片后重组恢复原始 payload 和 opcode
+    - **Validates: Requirements 5.1, 5.2, 5.3**
+  - [x] 9.6 实现接收数据处理管线
+    - 从传输层 on_read 回调接收原始字节
+    - 帧解码 → 去掩码 → 控制帧处理 / 数据帧重组
+    - 完整消息：text 帧执行 UTF-8 校验后调用 `on_message`
+    - 分片消息：缓冲并重组，完成后调用 `on_message`
+    - 超大消息检查（max_message_size）
+    - 协议错误检测（未掩码的客户端帧、已掩码的服务端帧、保留 opcode、控制帧 >125 字节、控制帧 FIN=0、分片中插入数据帧）
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 5.3, 5.4, 5.5, 13.1, 13.2, 14.2, 14.3_
+  - [ ]* 9.7 编写超大消息拒绝属性测试
+    - **Property 11: 超大消息拒绝**
+    - **Validates: Requirements 14.2, 14.3**
+  - [x] 9.8 实现 Ping/Pong 处理
+    - `xylem_ws_ping`：发送 ping 帧，payload >125 字节返回错误
+    - 收到 ping：自动回复 pong（相同 payload），调用 `on_ping`
+    - 收到 pong：调用 `on_pong`
+    - _Requirements: 6.1, 6.2, 6.3, 6.4_
+  - [ ]* 9.9 编写 Pong 回显 Ping payload 属性测试
+    - **Property 7: Pong 回显 Ping payload**
+    - **Validates: Requirements 6.2**
+  - [x] 9.10 实现关闭握手流程
+    - `xylem_ws_close`：校验状态码合法性，编码 close 帧，进入 CLOSING 状态
+    - CLOSING 状态：继续处理接收帧，丢弃发送数据帧
+    - 收到 close 帧（OPEN 状态）：回复 close 帧，关闭传输，调用 `on_close`
+    - 收到 close 帧（CLOSING 状态）：关闭传输，调用 `on_close`
+    - 异常断开（无 close 帧）：调用 `on_close`（状态码 1006）
+    - 关闭超时：强制关闭传输，调用 `on_close`
+    - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 15.3_
+  - [x] 9.11 实现 userdata 查询
+    - `xylem_ws_set_userdata` / `xylem_ws_get_userdata`
+    - _Requirements: 10.2_
+  - [ ]* 9.12 编写 Userdata 往返属性测试
+    - **Property 9: Userdata 往返**
+    - **Validates: Requirements 10.2**
+  - [x] 9.13 实现资源释放
+    - `on_close` 回调后释放所有内部缓冲区和状态
+    - 确保 `on_close` 返回后不再访问用户回调指针或 userdata
+    - _Requirements: 12.1, 12.3_
+
+- [x] 10. Checkpoint — 确保客户端核心功能测试通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+- [x] 11. 实现服务端连接管理
+  - [x] 11.1 在 `src/ws/xylem-ws-server.c` 中实现 `xylem_ws_server_t` 结构体定义
+    - 包含事件循环、传输层虚函数表、监听句柄、handler、opts 等字段
+    - _Requirements: 8.2_
+  - [x] 11.2 实现 `xylem_ws_listen`
+    - 根据 tls_cert/tls_key 是否提供选择 TCP 或 TLS 传输
+    - 启动底层服务端监听
+    - _Requirements: 2.1, 9.1_
+  - [x] 11.3 实现服务端握手流程
+    - 新连接到达后启动握手超时定时器
+    - 使用 llhttp 解析 HTTP Upgrade 请求
+    - 校验必需头部（Upgrade, Connection, Sec-WebSocket-Key, Sec-WebSocket-Version）
+    - 缺少头部 → 回复 400 Bad Request
+    - 版本非 13 → 回复 426 Upgrade Required（含 `Sec-WebSocket-Version: 13`）
+    - 校验通过 → 回复 101，调用 `on_accept`
+    - 握手超时 → 关闭连接（不发送 HTTP 响应）
+    - _Requirements: 2.2, 2.3, 2.4, 16.3, 16.4_
+  - [x] 11.4 实现 `xylem_ws_close_server`
+    - 停止接受新连接，释放服务端句柄资源
+    - 现有连接不受影响
+    - _Requirements: 12.2_
+  - [ ]* 11.5 编写服务端单元测试
+    - 在 `tests/test-ws.c` 中添加测试：服务端握手成功、缺少头部 400、版本错误 426、close_server 不影响现有连接
+    - _Requirements: 2.2, 2.3, 2.4, 12.2_
+
+- [x] 12. 最终集成与完整性验证
+  - [ ]* 13.1 编写集成单元测试
+    - 在 `tests/test-ws.c` 中添加测试：传输选择（ws:// → TCP、wss:// → TLS、wss:// 无 TLS → NULL）、资源管理（close 后释放）
+    - _Requirements: 9.2, 9.3, 9.4, 12.1_
+
+- [x] 13. Final checkpoint — 确保所有测试通过
+  - 确保所有测试通过，如有问题请向用户确认。
+
+## Notes
+
+- 标记 `*` 的子任务为可选，可跳过以加速 MVP 开发
+- 每个任务引用了具体的需求条款以确保可追溯性
+- Checkpoint 任务确保增量验证
+- 属性测试使用 theft 库，每个属性至少 100 次迭代
+- 属性测试注释格式：`/* Feature: websocket, Property N: 属性标题 */`
+- 单元测试使用 `tests/assert.h` 中的 `ASSERT` 宏

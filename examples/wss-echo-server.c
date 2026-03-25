@@ -20,29 +20,23 @@
  */
 
 /**
- * HTTPS Static File Server
+ * WebSocket Secure Echo Server
  *
- * Same as http-static-server but served over TLS.
- * If cert.pem / key.pem are missing, generates a self-signed
- * certificate automatically via the openssl command-line tool.
+ * Listens on 127.0.0.1:9003 with TLS and echoes back every WebSocket
+ * message. Automatically generates a self-signed certificate if none
+ * exists in the current directory.
  *
- *   GET /static/*  -> files from ./public/
- *
- * Usage: https-static-server
- * Test:  curl -k https://127.0.0.1:8443/static/index.html
+ * Usage: wss-echo-server
+ * Test:  wss-echo-client
  */
 
-#include "xylem.h"
+#include "xylem/ws/xylem-ws-server.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-#define LISTEN_PORT 8443
-#define STATIC_ROOT "public"
-#define CERT_FILE   "cert.pem"
-#define KEY_FILE    "key.pem"
-
-static xylem_http_router_t* _router;
+#define LISTEN_PORT 9003
+#define CERT_FILE   "wss-cert.pem"
+#define KEY_FILE    "wss-key.pem"
 
 static int _ensure_cert(void) {
     FILE* f = fopen(CERT_FILE, "r");
@@ -53,7 +47,7 @@ static int _ensure_cert(void) {
 
     xylem_logi("generating self-signed certificate...");
 
-    const char* cnf = "_xylem_tmp.cnf";
+    const char* cnf = "_xylem_wss_tmp.cnf";
     f = fopen(cnf, "w");
     if (!f) {
         return -1;
@@ -70,16 +64,29 @@ static int _ensure_cert(void) {
         "openssl req -x509 -newkey rsa:2048"
         " -keyout " KEY_FILE " -out " CERT_FILE
         " -days 365 -nodes"
-        " -config _xylem_tmp.cnf");
+        " -config _xylem_wss_tmp.cnf");
     remove(cnf);
     return (rc == 0) ? 0 : -1;
 }
 
-/* Dispatches requests through the router. */
-static void _on_request(xylem_http_writer_t* w, xylem_http_req_t* req,
-                         void* ud) {
-    (void)ud;
-    xylem_http_router_dispatch(_router, w, req);
+static void _on_accept(xylem_ws_conn_t* conn) {
+    (void)conn;
+    xylem_logi("tls client connected");
+}
+
+static void _on_message(xylem_ws_conn_t* conn,
+                        xylem_ws_opcode_t opcode,
+                        const void* data, size_t len) {
+    xylem_logi("recv %zu bytes: %.*s", len, (int)len, (const char*)data);
+    xylem_ws_send(conn, opcode, data, len);
+}
+
+static void _on_close(xylem_ws_conn_t* conn,
+                      uint16_t code, const char* reason, size_t reason_len) {
+    (void)conn;
+    (void)reason;
+    (void)reason_len;
+    xylem_logi("tls client disconnected (code=%u)", code);
 }
 
 int main(void) {
@@ -87,44 +94,36 @@ int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     if (_ensure_cert() != 0) {
-        xylem_loge("failed to generate certificate (is openssl installed?)");
+        xylem_loge("failed to generate certificate (is openssl in PATH?)");
         return 1;
     }
 
     xylem_loop_t loop;
     xylem_loop_init(&loop);
 
-    _router = xylem_http_router_create();
-
-    xylem_http_static_opts_t opts = {
-        .root          = STATIC_ROOT,
-        .index_file    = "index.html",
-        .max_age       = 3600,
-        .precompressed = true,
-    };
-    xylem_http_static_serve(_router, "/static", &opts);
-
-    xylem_http_srv_cfg_t cfg = {
-        .host       = "127.0.0.1",
-        .port       = LISTEN_PORT,
-        .on_request = _on_request,
-        .userdata   = NULL,
-        .tls_cert   = CERT_FILE,
-        .tls_key    = KEY_FILE,
+    xylem_ws_handler_t handler = {
+        .on_accept  = _on_accept,
+        .on_message = _on_message,
+        .on_close   = _on_close,
     };
 
-    xylem_http_srv_t* srv = xylem_http_listen(&loop, &cfg);
-    if (!srv) {
-        xylem_loge("failed to start https server on port %d", LISTEN_PORT);
+    xylem_ws_srv_cfg_t cfg = {
+        .host     = "127.0.0.1",
+        .port     = LISTEN_PORT,
+        .handler  = &handler,
+        .tls_cert = CERT_FILE,
+        .tls_key  = KEY_FILE,
+    };
+
+    xylem_ws_server_t* server = xylem_ws_listen(&loop, &cfg);
+    if (!server) {
+        xylem_loge("failed to listen on port %d", LISTEN_PORT);
         return 1;
     }
 
-    xylem_logi("serving %s/ at https://127.0.0.1:%d/static/",
-               STATIC_ROOT, LISTEN_PORT);
+    xylem_logi("wss echo server listening on 127.0.0.1:%d", LISTEN_PORT);
     xylem_loop_run(&loop);
 
-    xylem_http_close_server(srv);
-    xylem_http_router_destroy(_router);
     xylem_loop_deinit(&loop);
     xylem_logger_deinit();
     xylem_cleanup();

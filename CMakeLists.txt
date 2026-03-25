@@ -74,6 +74,13 @@ set(SRCS
 	src/http/llhttp/api.c
 	src/gzip/xylem-gzip.c
 	src/gzip/miniz/miniz.c
+	src/ws/ws-common.c
+	src/ws/xylem-ws-client.c
+	src/ws/xylem-ws-server.c
+	src/ws/ws-utf8.c
+	src/ws/ws-frame.c
+	src/ws/ws-handshake.c
+	src/ws/ws-transport-tcp.c
 )
 
 if(WIN32)
@@ -101,11 +108,13 @@ if(XYLEM_ENABLE_TLS)
 		src/xylem-tls.c
 		src/xylem-dtls.c
 		src/http/http-transport-tls.c
+		src/ws/ws-transport-tls.c
 	)
 	include_directories(${OPENSSL_INCLUDE_DIR})
 else()
 	list(APPEND SRCS
 		src/http/http-transport-tls-stub.c
+		src/ws/ws-transport-tls-stub.c
 	)
 endif()
 
