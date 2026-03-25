@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Sync compile_commands.json",
+  "description": "When compile_commands.json is updated by Ninja build, automatically copies it to the project root so clangd can find it for code navigation.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "out-ninja/compile_commands.json"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "powershell -Command \"Copy-Item 'out-ninja/compile_commands.json' 'compile_commands.json' -Force -ErrorAction SilentlyContinue\""
+  }
+}

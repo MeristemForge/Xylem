@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Copy compile_commands.json",
+  "description": "After a shell command runs, copies out-ninja/compile_commands.json to the project root so clangd can find it for code navigation.",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "powershell -Command \"Copy-Item 'out-ninja/compile_commands.json' 'compile_commands.json' -Force -ErrorAction SilentlyContinue\""
+  }
+}
