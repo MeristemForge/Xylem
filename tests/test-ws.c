@@ -219,7 +219,7 @@ static void test_utf8_valid_ascii(void) {
 }
 
 static void test_utf8_valid_multibyte(void) {
-    /* U+4F60 U+597D = "你好" in UTF-8: E4 BD A0 E5 A5 BD */
+    /* U+4F60 U+597D = "ni hao" in UTF-8: E4 BD A0 E5 A5 BD */
     const uint8_t data[] = {0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD};
     ASSERT(ws_utf8_validate(data, sizeof(data)) == 0);
 }

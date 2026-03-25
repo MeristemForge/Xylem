@@ -143,7 +143,7 @@ static const struct {
     {NULL, NULL}
 };
 
-/* Forward declaration — defined later, needed by flush_resp_headers. */
+/* Forward declaration -- defined later, needed by flush_resp_headers. */
 static size_t _http_format_date(time_t t, char* buf, size_t cap);
 
 static void _http_srv_req_reset(xylem_http_req_t* req) {
@@ -326,7 +326,7 @@ static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
                                       conn->srv->cfg.userdata);
             conn->in_upgrade_cb = false;
 
-            /* User did not accept — close the connection. */
+            /* User did not accept -- close the connection. */
             if (!conn->upgrade_accepted && !conn->closed) {
                 conn->closed = true;
                 conn->vt->close_conn(conn->transport);
@@ -475,9 +475,9 @@ static void _http_srv_conn_read_cb(void* handle, void* ctx,
             remaining -= consumed;
 
             /**
-             * Message complete — the on_request callback has fired.
+             * Message complete -- the on_request callback has fired.
              * If upgrade was accepted, transport ownership transferred
-             * to user — skip auto-finish and destroy the conn.
+             * to user -- skip auto-finish and destroy the conn.
              */
             if (conn->upgrade_accepted) {
                 _http_srv_req_reset(&conn->req);
@@ -544,7 +544,7 @@ static void _http_srv_conn_read_cb(void* handle, void* ctx,
         }
 
         if (err == HPE_USER) {
-            /* Body too large — send 413 and close. */
+            /* Body too large -- send 413 and close. */
             if (!conn->closed) {
                 static const char resp_413[] =
                     "HTTP/1.1 413 Payload Too Large\r\n"
@@ -560,7 +560,7 @@ static void _http_srv_conn_read_cb(void* handle, void* ctx,
         }
 
         if (err != HPE_OK) {
-            /* Parse error — close connection. */
+            /* Parse error -- close connection. */
             if (!conn->closed) {
                 conn->closed = true;
                 conn->vt->close_conn(conn->transport);
@@ -976,7 +976,7 @@ static void _http_srv_vary_ensure(xylem_http_conn_t* conn,
     size_t flen = field_len;
     char* merged = malloc(elen + 2 + flen + 1);
     if (!merged) {
-        return; /* Silent fail — Vary missing won't break correctness. */
+        return; /* Silent fail -- Vary missing won't break correctness. */
     }
     memcpy(merged, existing, elen);
     merged[elen] = ',';
@@ -1029,7 +1029,7 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
                                            size_t content_length,
                                            char** out_buf,
                                            size_t* out_len) {
-    /* Auto-add Date header if not already set (RFC 9110 §6.6.1). */
+    /* Auto-add Date header if not already set (RFC 9110 section 6.6.1). */
     if (!_http_srv_resp_header_has(conn, "Date")) {
         char date_buf[32];
         time_t now = time(NULL);
@@ -1037,7 +1037,7 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
         _http_srv_resp_header_set(conn, "Date", date_buf);
     }
 
-    /* Auto-add Connection: close when not keeping alive (RFC 9112 §9.6). */
+    /* Auto-add Connection: close when not keeping alive (RFC 9112 section 9.6). */
     if (!conn->keep_alive &&
         !_http_srv_resp_header_has(conn, "Connection")) {
         _http_srv_resp_header_set(conn, "Connection", "close");
@@ -1111,7 +1111,7 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
  * Otherwise sends Transfer-Encoding: chunked.
  */
 static int _http_srv_flush_resp_headers(xylem_http_conn_t* conn) {
-    /* Auto-add Date header if not already set (RFC 9110 §6.6.1). */
+    /* Auto-add Date header if not already set (RFC 9110 section 6.6.1). */
     if (!_http_srv_resp_header_has(conn, "Date")) {
         char date_buf[32];
         time_t now = time(NULL);
@@ -1119,7 +1119,7 @@ static int _http_srv_flush_resp_headers(xylem_http_conn_t* conn) {
         _http_srv_resp_header_set(conn, "Date", date_buf);
     }
 
-    /* Auto-add Connection: close when not keeping alive (RFC 9112 §9.6). */
+    /* Auto-add Connection: close when not keeping alive (RFC 9112 section 9.6). */
     if (!conn->keep_alive &&
         !_http_srv_resp_header_has(conn, "Connection")) {
         _http_srv_resp_header_set(conn, "Connection", "close");
@@ -2150,7 +2150,7 @@ int xylem_http_router_dispatch(xylem_http_router_t* router,
 
     if (best.route_idx == (size_t)-1) {
         /* Check if any route matches the path (ignoring method)
-           to distinguish 404 from 405 (RFC 9110 §15.5.6). */
+           to distinguish 404 from 405 (RFC 9110 section 15.5.6). */
         bool path_matched = false;
         char allow_buf[256];
         size_t allow_off = 0;
@@ -2190,7 +2190,7 @@ int xylem_http_router_dispatch(xylem_http_router_t* router,
         if (path_matched && allow_off > 0) {
             allow_buf[allow_off] = '\0';
 
-            /* Auto-handle OPTIONS requests (RFC 9110 §9.3.7). */
+            /* Auto-handle OPTIONS requests (RFC 9110 section 9.3.7). */
             if (strcmp(method, "OPTIONS") == 0) {
                 xylem_http_hdr_t hdr = { "Allow", allow_buf };
                 _http_srv_send(conn, 204, NULL, NULL, 0, &hdr, 1);

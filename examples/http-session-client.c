@@ -59,23 +59,23 @@ int main(void) {
         return 1;
     }
 
-    /* First GET — establishes a new connection. */
+    /* First GET -- establishes a new connection. */
     xylem_http_res_t* res = xylem_http_session_get(session,
                                                     BASE_URL "/", NULL);
     _print_res("GET / (1st)", res);
 
-    /* Second GET — reuses the pooled connection. */
+    /* Second GET -- reuses the pooled connection. */
     res = xylem_http_session_get(session, BASE_URL "/", NULL);
     _print_res("GET / (2nd)", res);
 
-    /* POST — also reuses the pooled connection. */
+    /* POST -- also reuses the pooled connection. */
     const char* body = "hello from session";
     res = xylem_http_session_post(session, BASE_URL "/echo",
                                   body, strlen(body),
                                   "text/plain", NULL);
     _print_res("POST /echo", res);
 
-    /* Destroy session — closes all pooled connections. */
+    /* Destroy session -- closes all pooled connections. */
     xylem_http_session_destroy(session);
 
     xylem_logger_deinit();

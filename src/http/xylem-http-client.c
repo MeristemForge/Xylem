@@ -257,7 +257,7 @@ static int _http_cli_cookie_parse(const char* header, const char* req_host,
                    _http_cli_iprefix(p, "httponly", 8)) {
             out->http_only = true;
         }
-        /* Expires attribute intentionally not parsed �?Max-Age takes precedence
+        /* Expires attribute intentionally not parsed -- Max-Age takes precedence
          * and parsing HTTP-date is complex. Session cookies (expires=0) are the
          * default when neither Max-Age nor Expires is present. */
 
@@ -552,7 +552,7 @@ static int _http_cli_res_body_cb(llhttp_t* parser,
 static int _http_cli_res_message_complete_cb(llhttp_t* parser) {
     _http_cli_ctx_t* ctx = parser->data;
 
-    /* Auto-decompress gzip response body (RFC 9110 §8.4). */
+    /* Auto-decompress gzip response body (RFC 9110 section 8.4). */
     if (ctx->res && ctx->res->body && ctx->res->body_len > 0) {
         const char* ce = http_header_find(ctx->res->headers,
                                           ctx->res->header_count,
