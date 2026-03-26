@@ -145,6 +145,9 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
  * @param len   Data length in bytes.
  *
  * @return 0 on success (enqueued), -1 on failure (connection closed).
+ *
+ * @note Not thread-safe. Must be called from the loop thread.
+ *       Use xylem_loop_post() to send from other threads.
  */
 extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
                           const void* data, size_t len);
@@ -156,6 +159,8 @@ extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
  * calls shutdown + close. Calls handler->on_close when done.
  *
  * @param conn  Connection handle.
+ *
+ * @note Not thread-safe. Must be called from the loop thread.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
 

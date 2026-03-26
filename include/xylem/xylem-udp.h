@@ -45,42 +45,46 @@ typedef struct xylem_udp_handler_s {
  *
  * @return UDP handle, or NULL on failure.
  */
-extern xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
+extern xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
+                                    xylem_addr_t* addr,
+                                    xylem_udp_handler_t* handler);
+
+/**
+ * @brief Create a connected UDP socket.
+ *
+ * Creates a non-blocking UDP socket connected to the specified
+ * remote address. Subsequent sends use xylem_udp_send() with
+ * dest=NULL. Incoming datagrams from the connected peer trigger
+ * handler->on_read.
+ *
+ * @param loop     Event loop.
+ * @param addr     Remote address to connect to.
+ * @param handler  Event callback set.
+ *
+ * @return UDP handle, or NULL on failure.
+ */
+extern xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
                                     xylem_addr_t* addr,
                                     xylem_udp_handler_t* handler);
 
 /**
  * @brief Send a UDP datagram.
  *
+ * If dest is NULL, sends on a connected socket (created with
+ * xylem_udp_dial()). Otherwise sends to the specified address.
+ *
  * @param udp   UDP handle.
- * @param dest  Destination address.
+ * @param dest  Destination address, or NULL for connected sockets.
  * @param data  Data to send.
  * @param len   Data length in bytes.
  *
  * @return Number of bytes sent, or -1 on failure.
+ *
+ * @note Not thread-safe. Must be called from the loop thread.
+ *       Use xylem_loop_post() to send from other threads.
  */
 extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                           const void* data, size_t len);
-
-/**
- * @brief Join a multicast group.
- *
- * @param udp    UDP handle.
- * @param group  Multicast group address string (IPv4).
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_udp_join_mcast(xylem_udp_t* udp, const char* group);
-
-/**
- * @brief Leave a multicast group.
- *
- * @param udp    UDP handle.
- * @param group  Multicast group address string (IPv4).
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group);
 
 /**
  * @brief Close a UDP handle.
@@ -89,6 +93,8 @@ extern int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group);
  * timers, and calls handler->on_close.
  *
  * @param udp  UDP handle.
+ *
+ * @note Not thread-safe. Must be called from the loop thread.
  */
 extern void xylem_udp_close(xylem_udp_t* udp);
 

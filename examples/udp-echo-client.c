@@ -31,7 +31,6 @@
 #include "xylem/xylem-udp.h"
 
 #define SERVER_PORT 9001
-#define CLIENT_PORT 9002
 
 static xylem_loop_t _loop;
 
@@ -49,22 +48,20 @@ int main(void) {
 
     xylem_loop_init(&_loop);
 
-    xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", CLIENT_PORT, &addr);
+    xylem_addr_t dest;
+    xylem_addr_pton("127.0.0.1", SERVER_PORT, &dest);
 
     xylem_udp_handler_t handler = {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_bind(&_loop, &addr, &handler);
+    xylem_udp_t* udp = xylem_udp_dial(&_loop, &dest, &handler);
     if (!udp) {
-        xylem_loge("failed to bind on port %d", CLIENT_PORT);
+        xylem_loge("failed to connect to 127.0.0.1:%d", SERVER_PORT);
         return 1;
     }
 
-    xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", SERVER_PORT, &dest);
-    xylem_udp_send(udp, &dest, "hello", 5);
+    xylem_udp_send(udp, NULL, "hello", 5);
     xylem_logi("sent: hello");
 
     xylem_loop_run(&_loop);

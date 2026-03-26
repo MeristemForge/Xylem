@@ -23,6 +23,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-list.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,7 +33,9 @@ struct xylem_udp_s {
     platform_sock_t       fd;
     xylem_udp_handler_t*  handler;
     void*                 userdata;
+    xylem_addr_t          peer;
     char                  recv_buf[65536];
+    bool                  connected;
     bool                  closing;
     xylem_loop_post_t     free_post;
 };
@@ -53,29 +56,40 @@ static void _udp_io_cb(xylem_loop_t* loop,
     }
 
     /**
-     * Loop recvfrom until EAGAIN to drain the kernel buffer in one
-     * IO callback, avoiding repeated poller wakeups under LT.
+     * Loop until EAGAIN to drain the kernel buffer in one IO callback,
+     * avoiding repeated poller wakeups under LT.
+     *
+     * Connected sockets use recv — macOS recvfrom on a connected UDP
+     * socket may not fill the sender address reliably.
      */
     for (;;) {
-        struct sockaddr_storage sender;
-        socklen_t              sender_len = sizeof(sender);
+        ssize_t n;
+        xylem_addr_t addr;
 
-        ssize_t n = platform_socket_recvfrom(udp->fd, udp->recv_buf,
-                                             (int)sizeof(udp->recv_buf),
-                                             &sender, &sender_len);
+        if (udp->connected) {
+            n = platform_socket_recv(udp->fd, udp->recv_buf,
+                                     (int)sizeof(udp->recv_buf));
+            addr = udp->peer;
+        } else {
+            struct sockaddr_storage sender;
+            socklen_t              sender_len = sizeof(sender);
+            n = platform_socket_recvfrom(udp->fd, udp->recv_buf,
+                                         (int)sizeof(udp->recv_buf),
+                                         &sender, &sender_len);
+            memcpy(&addr.storage, &sender, sizeof(sender));
+        }
+
         if (n < 0) {
             int err = platform_socket_get_lasterror();
             if (err == PLATFORM_SO_ERROR_EAGAIN ||
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 return;
             }
-            xylem_logw("udp fd=%d recvfrom error=%d", (int)udp->fd, err);
+            xylem_logw("udp fd=%d recv error=%d", (int)udp->fd, err);
             return;
         }
 
         if (n > 0 && udp->handler && udp->handler->on_read) {
-            xylem_addr_t addr;
-            memcpy(&addr.storage, &sender, sizeof(sender));
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, &addr);
         }
 
@@ -92,7 +106,7 @@ static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
     free(udp);
 }
 
-xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
+xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
                              xylem_addr_t* addr,
                              xylem_udp_handler_t* handler) {
     xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
@@ -100,45 +114,82 @@ xylem_udp_t* xylem_udp_bind(xylem_loop_t* loop,
         return NULL;
     }
 
-    /* Determine address family and address length */
-    int       af      = (int)addr->storage.ss_family;
-    socklen_t addrlen = (af == AF_INET6)
-                            ? (socklen_t)sizeof(struct sockaddr_in6)
-                            : (socklen_t)sizeof(struct sockaddr_in);
+    char host[INET6_ADDRSTRLEN];
+    char port_str[8];
+    uint16_t port = 0;
+    xylem_addr_ntop(addr, host, sizeof(host), &port);
+    snprintf(port_str, sizeof(port_str), "%u", port);
 
-    /* Create UDP socket */
-    platform_sock_t fd = (platform_sock_t)socket(af, SOCK_DGRAM,
-                                                  IPPROTO_UDP);
+    platform_sock_t fd = platform_socket_listen(host, port_str,
+                                                SOCK_DGRAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         free(udp);
         xylem_loge("udp bind: socket creation failed");
         return NULL;
     }
 
-    platform_socket_enable_nonblocking(fd, true);
-    platform_socket_enable_reuseaddr(fd, true);
-
-    if (bind(fd, (struct sockaddr*)&addr->storage, addrlen) != 0) {
-        xylem_loge("udp bind: bind() failed");
-        platform_socket_close(fd);
-        free(udp);
-        return NULL;
-    }
-
-    udp->loop    = loop;
-    udp->fd      = fd;
-    udp->handler = handler;
-    udp->closing = false;
+    udp->loop      = loop;
+    udp->fd        = fd;
+    udp->handler   = handler;
+    udp->connected = false;
+    udp->closing   = false;
 
     xylem_loop_init_io(loop, &udp->io, fd);
     xylem_loop_start_io(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
 
-    xylem_logi("udp fd=%d bound", (int)fd);
+    xylem_logi("udp fd=%d bound on %s:%s", (int)fd, host, port_str);
+    return udp;
+}
+
+xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
+                             xylem_addr_t* addr,
+                             xylem_udp_handler_t* handler) {
+    xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
+    if (!udp) {
+        return NULL;
+    }
+
+    char host[INET6_ADDRSTRLEN];
+    char port_str[8];
+    uint16_t port = 0;
+    xylem_addr_ntop(addr, host, sizeof(host), &port);
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    bool connected = false;
+    platform_sock_t fd = platform_socket_dial(host, port_str,
+                                              SOCK_DGRAM,
+                                              &connected, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        free(udp);
+        xylem_loge("udp dial: socket creation failed");
+        return NULL;
+    }
+
+    udp->loop      = loop;
+    udp->fd        = fd;
+    udp->handler   = handler;
+    udp->peer      = *addr;
+    udp->connected = true;
+    udp->closing   = false;
+
+    xylem_loop_init_io(loop, &udp->io, fd);
+    xylem_loop_start_io(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+
+    xylem_logi("udp fd=%d connected to %s:%s", (int)fd, host, port_str);
     return udp;
 }
 
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
+    if (udp->closing) {
+        return -1;
+    }
+
+    if (!dest) {
+        ssize_t n = platform_socket_send(udp->fd, data, (int)len);
+        return (n < 0) ? -1 : (int)n;
+    }
+
     socklen_t addrlen = (dest->storage.ss_family == AF_INET6)
                             ? (socklen_t)sizeof(struct sockaddr_in6)
                             : (socklen_t)sizeof(struct sockaddr_in);
@@ -146,28 +197,6 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     ssize_t n = platform_socket_sendto(udp->fd, data, (int)len,
                                        &dest->storage, addrlen);
     return (n < 0) ? -1 : (int)n;
-}
-
-int xylem_udp_join_mcast(xylem_udp_t* udp, const char* group) {
-    struct ip_mreq mreq;
-    memset(&mreq, 0, sizeof(mreq));
-    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1) {
-        return -1;
-    }
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    return setsockopt(udp->fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
-                      (const char*)&mreq, sizeof(mreq)) == 0 ? 0 : -1;
-}
-
-int xylem_udp_leave_mcast(xylem_udp_t* udp, const char* group) {
-    struct ip_mreq mreq;
-    memset(&mreq, 0, sizeof(mreq));
-    if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1) {
-        return -1;
-    }
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    return setsockopt(udp->fd, IPPROTO_IP, IP_DROP_MEMBERSHIP,
-                      (const char*)&mreq, sizeof(mreq)) == 0 ? 0 : -1;
 }
 
 void xylem_udp_close(xylem_udp_t* udp) {

@@ -256,3 +256,21 @@ extern xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
  * @param server  Server handle.
  */
 extern void xylem_tls_close_server(xylem_tls_server_t* server);
+
+/**
+ * @brief Get user data attached to a TLS server.
+ *
+ * @param server  Server handle.
+ *
+ * @return User data pointer.
+ */
+extern void* xylem_tls_server_get_userdata(xylem_tls_server_t* server);
+
+/**
+ * @brief Set user data on a TLS server.
+ *
+ * @param server  Server handle.
+ * @param ud      User data pointer.
+ */
+extern void xylem_tls_server_set_userdata(xylem_tls_server_t* server,
+                                          void* ud);

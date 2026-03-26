@@ -538,13 +538,8 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
     dtls->handler   = handler;
     dtls->peer_addr = *addr;
 
-    /* Bind to ephemeral port on same address family. */
-    xylem_addr_t bind_addr;
-    memset(&bind_addr, 0, sizeof(bind_addr));
-    bind_addr.storage.ss_family = addr->storage.ss_family;
-
-    xylem_udp_t* udp = xylem_udp_bind(loop, &bind_addr,
-                                       &_dtls_client_udp_handler);
+    xylem_udp_t* udp = xylem_udp_dial(loop, addr,
+                                      &_dtls_client_udp_handler);
     if (!udp) {
         free(dtls);
         return NULL;
@@ -675,7 +670,7 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop,
     server->loop    = loop;
     xylem_list_init(&server->sessions);
 
-    xylem_udp_t* udp = xylem_udp_bind(loop, addr,
+    xylem_udp_t* udp = xylem_udp_listen(loop, addr,
                                        &_dtls_server_udp_handler);
     if (!udp) {
         free(server);

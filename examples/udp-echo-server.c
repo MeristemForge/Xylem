@@ -56,7 +56,7 @@ int main(void) {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_bind(&loop, &addr, &handler);
+    xylem_udp_t* udp = xylem_udp_listen(&loop, &addr, &handler);
     if (!udp) {
         xylem_loge("failed to bind on port %d", LISTEN_PORT);
         return 1;

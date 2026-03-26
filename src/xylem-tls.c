@@ -58,6 +58,7 @@ struct xylem_tls_server_s {
     xylem_tcp_opts_t      opts;
     xylem_loop_t*         loop;
     xylem_list_t          connections;
+    void*                 userdata;
     bool                  closing;
 };
 
@@ -545,6 +546,14 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
     server->tcp_server = tcp_server;
     xylem_tcp_server_set_userdata(tcp_server, server);
     return server;
+}
+
+void* xylem_tls_server_get_userdata(xylem_tls_server_t* server) {
+    return server->userdata;
+}
+
+void xylem_tls_server_set_userdata(xylem_tls_server_t* server, void* ud) {
+    server->userdata = ud;
 }
 
 void xylem_tls_close_server(xylem_tls_server_t* server) {

@@ -50,7 +50,7 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **addr** | Unified network address wrapper (IPv4/IPv6) with async DNS resolution | ✅ |
 | **loop** | Event loop with I/O, timer, and post callbacks (built on platform poller) | ✅ |
 | **tcp** | TCP client/server with framing, reconnect, heartbeat | ✅ |
-| **udp** | UDP datagram send/receive | ✅ |
+| **udp** | UDP datagram send/receive, connected sockets | ✅ |
 | **tls** | TLS client/server over TCP (OpenSSL, ALPN, SNI) | ✅ |
 | **dtls** | DTLS client/server over UDP (OpenSSL, cookie verification) | ✅ |
 | **http** | HTTP/1.1 sync client and async server (built on tcp/tls, llhttp parser) | 🚧 |

@@ -92,7 +92,7 @@ static void test_udp_echo(void) {
         .on_read = _echo_on_read,
     };
 
-    _echo_receiver = xylem_udp_bind(&_echo_loop, &recv_addr,
+    _echo_receiver = xylem_udp_listen(&_echo_loop, &recv_addr,
                                       &recv_handler);
     ASSERT(_echo_receiver != NULL);
 
@@ -101,7 +101,7 @@ static void test_udp_echo(void) {
 
     xylem_udp_handler_t send_handler = {0};
 
-    _echo_sender = xylem_udp_bind(&_echo_loop, &send_addr,
+    _echo_sender = xylem_udp_listen(&_echo_loop, &send_addr,
                                     &send_handler);
     ASSERT(_echo_sender != NULL);
 
@@ -160,7 +160,7 @@ static void test_udp_datagram_boundary(void) {
         .on_read = _dgram_on_read,
     };
 
-    _dgram_receiver = xylem_udp_bind(&_dgram_loop, &recv_addr,
+    _dgram_receiver = xylem_udp_listen(&_dgram_loop, &recv_addr,
                                        &recv_handler);
     ASSERT(_dgram_receiver != NULL);
 
@@ -169,7 +169,7 @@ static void test_udp_datagram_boundary(void) {
 
     xylem_udp_handler_t send_handler = {0};
 
-    _dgram_sender = xylem_udp_bind(&_dgram_loop, &send_addr,
+    _dgram_sender = xylem_udp_listen(&_dgram_loop, &send_addr,
                                      &send_handler);
     ASSERT(_dgram_sender != NULL);
 

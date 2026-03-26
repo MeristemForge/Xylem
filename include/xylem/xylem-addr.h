@@ -38,17 +38,6 @@ typedef struct xylem_addr_s {
 } xylem_addr_t;
 
 /**
- * @brief Simple buffer descriptor.
- *
- * Lightweight {base, len} pair used for scatter/gather and
- * zero-copy patterns.
- */
-typedef struct xylem_buf_s {
-    char*  base;
-    size_t len;
-} xylem_buf_t;
-
-/**
  * @brief Callback invoked when asynchronous DNS resolution completes.
  *
  * @param addrs    Array of resolved addresses, or NULL on failure.
