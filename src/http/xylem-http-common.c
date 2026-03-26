@@ -23,6 +23,7 @@
 
 #include "xylem/http/xylem-http-common.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

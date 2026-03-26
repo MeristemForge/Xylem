@@ -307,6 +307,10 @@ static int _http_srv_send(xylem_http_conn_t* conn,
                           const xylem_http_hdr_t* headers,
                           size_t header_count);
 
+/* Forward declaration --_http_srv_send_chunk is defined below write(). */
+static int _http_srv_send_chunk(xylem_http_conn_t* conn,
+                                const void* data, size_t len);
+
 static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
 
