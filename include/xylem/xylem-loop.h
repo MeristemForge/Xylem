@@ -42,7 +42,6 @@ typedef void (*xylem_loop_post_fn_t)(xylem_loop_t* loop,
 struct xylem_loop_s {
     platform_poller_sq_t  poller;
     xylem_heap_t          timers;         /* timer min-heap */
-    xylem_queue_t         closing;        /* handles pending close */
     xylem_queue_t         posts;          /* post queue, drained on loop thread */
     platform_sock_t       wakeup_rd;      /* socketpair read end, registered in poller */
     platform_sock_t       wakeup_wr;      /* socketpair write end, written by post() */
@@ -57,7 +56,6 @@ struct xylem_loop_io_s {
     platform_poller_sqe_t sqe;
     xylem_loop_t*         loop;
     xylem_loop_io_fn_t    cb;
-    xylem_queue_node_t    close_node;
     bool                  registered;     /* fd added to poller (peer socket exists) */
 };
 
@@ -67,7 +65,6 @@ struct xylem_loop_timer_s {
     xylem_loop_timer_fn_t cb;
     uint64_t              timeout;        /* absolute expiry time (ms) */
     uint64_t              repeat;         /* repeat interval, 0 = one-shot */
-    xylem_queue_node_t    close_node;
     bool                  active;         /* currently in the timer heap */
 };
 

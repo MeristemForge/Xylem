@@ -108,15 +108,6 @@ static void _loop_process_timers(xylem_loop_t* loop) {
     }
 }
 
-/* process handles queued for close */
-static void _loop_process_closing(xylem_loop_t* loop) {
-    while (!xylem_queue_empty(&loop->closing)) {
-        xylem_queue_node_t* node = xylem_queue_dequeue(&loop->closing);
-        (void)node;
-        loop->active_count--;
-    }
-}
-
 /* calculate timeout for poller_wait from nearest timer */
 static int _loop_next_timeout(xylem_loop_t* loop) {
     xylem_heap_node_t* root = xylem_heap_root(&loop->timers);
@@ -146,7 +137,6 @@ int xylem_loop_init(xylem_loop_t* loop) {
         return -1;
     }
     xylem_heap_init(&loop->timers, _loop_cmp_timer);
-    xylem_queue_init(&loop->closing);
     xylem_queue_init(&loop->posts);
 
     if (mtx_init(&loop->post_mtx, mtx_plain) != thrd_success) {
@@ -225,7 +215,6 @@ int xylem_loop_run(xylem_loop_t* loop) {
         _loop_process_timers(loop);
         /* process posts again -- timers may have called post() inline */
         _loop_process_posts(loop);
-        _loop_process_closing(loop);
     }
     return 0;
 }
@@ -293,11 +282,8 @@ int xylem_loop_stop_io(xylem_loop_io_t* io) {
 }
 
 void xylem_loop_deinit_io(xylem_loop_io_t* io) {
-    if (io->registered) {
-        platform_poller_del(&io->loop->poller, &io->sqe);
-        io->registered = false;
-    }
-    xylem_queue_enqueue(&io->loop->closing, &io->close_node);
+    io->cb = NULL;
+    io->loop->active_count--;
 }
 
 int xylem_loop_init_timer(xylem_loop_t* loop,
@@ -348,11 +334,8 @@ int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
 }
 
 void xylem_loop_deinit_timer(xylem_loop_timer_t* timer) {
-    if (timer->active) {
-        xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
-        timer->active = false;
-    }
-    xylem_queue_enqueue(&timer->loop->closing, &timer->close_node);
+    timer->cb = NULL;
+    timer->loop->active_count--;
 }
 
 int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_t* req) {

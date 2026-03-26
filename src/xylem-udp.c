@@ -178,7 +178,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     udp->closing = true;
 
     xylem_loop_stop_io(&udp->io);
-    udp->loop->active_count--;
+    xylem_loop_deinit_io(&udp->io);
     platform_socket_close(udp->fd);
 
     if (udp->handler && udp->handler->on_close) {

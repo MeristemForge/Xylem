@@ -20,6 +20,7 @@
  */
 
 #include "xylem/xylem-tcp.h"
+#include "xylem/xylem-varint.h"
 #include "assert.h"
 #include <string.h>
 
@@ -78,6 +79,24 @@ static xylem_loop_t        _sac_loop;
 static xylem_tcp_server_t* _sac_server      = NULL;
 static int                 _sac_send_result = 0;
 static int                 _sac_tested      = 0;
+
+/* Test 7: TCP FRAME_LENGTH fixedint (2-byte big-endian) */
+static xylem_loop_t        _len_loop;
+static xylem_tcp_server_t* _len_server   = NULL;
+static xylem_tcp_conn_t*   _len_srv_conn = NULL;
+static xylem_tcp_conn_t*   _len_cli_conn = NULL;
+static int    _len_read_count = 0;
+static char   _len_received[64];
+static size_t _len_received_len = 0;
+
+/* Test 8: TCP FRAME_LENGTH varint */
+static xylem_loop_t        _var_loop;
+static xylem_tcp_server_t* _var_server   = NULL;
+static xylem_tcp_conn_t*   _var_srv_conn = NULL;
+static xylem_tcp_conn_t*   _var_cli_conn = NULL;
+static int    _var_read_count = 0;
+static char   _var_received[64];
+static size_t _var_received_len = 0;
 
 static void _safety_timer_cb(xylem_loop_t* loop,
                               xylem_loop_timer_t* timer) {
@@ -540,6 +559,182 @@ static void test_tcp_send_after_close(void) {
     xylem_loop_deinit(&_sac_loop);
 }
 
+static void _len_srv_on_accept(xylem_tcp_conn_t* conn) {
+    _len_srv_conn = conn;
+}
+
+static void _len_srv_on_close(xylem_tcp_conn_t* conn, int err) {
+    (void)err;
+    if (conn == _len_srv_conn) { _len_srv_conn = NULL; }
+}
+
+static void _len_srv_on_read(xylem_tcp_conn_t* conn,
+                              void* data, size_t len) {
+    (void)conn;
+    _len_read_count++;
+    if (len < sizeof(_len_received)) {
+        memcpy(_len_received, data, len);
+        _len_received_len = len;
+    }
+    xylem_loop_stop(&_len_loop);
+}
+
+static void _len_cli_on_connect(xylem_tcp_conn_t* conn) {
+    /* Send: [00 05] "HELLO" -- 2-byte big-endian length + payload */
+    uint8_t frame[7];
+    frame[0] = 0x00;
+    frame[1] = 0x05;
+    memcpy(frame + 2, "HELLO", 5);
+    xylem_tcp_send(conn, frame, sizeof(frame));
+}
+
+static void _len_cli_on_close(xylem_tcp_conn_t* conn, int err) {
+    (void)err;
+    if (conn == _len_cli_conn) { _len_cli_conn = NULL; }
+}
+
+static void test_tcp_frame_length_fixedint(void) {
+    xylem_loop_init(&_len_loop);
+    _start_safety_timer(&_len_loop);
+
+    _len_read_count    = 0;
+    _len_received_len  = 0;
+    _len_srv_conn      = NULL;
+    _len_cli_conn      = NULL;
+    _len_server        = NULL;
+    memset(_len_received, 0, sizeof(_len_received));
+
+    xylem_addr_t addr;
+    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+
+    xylem_tcp_handler_t srv_handler = {
+        .on_accept = _len_srv_on_accept,
+        .on_read   = _len_srv_on_read,
+        .on_close  = _len_srv_on_close,
+    };
+
+    xylem_tcp_opts_t opts = {0};
+    opts.framing.type                    = XYLEM_TCP_FRAME_LENGTH;
+    opts.framing.length.header_size      = 2;
+    opts.framing.length.field_offset     = 0;
+    opts.framing.length.field_size       = 2;
+    opts.framing.length.adjustment       = 0;
+    opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
+    opts.framing.length.field_big_endian = true;
+
+    _len_server = xylem_tcp_listen(&_len_loop, &addr,
+                                    &srv_handler, &opts);
+    ASSERT(_len_server != NULL);
+
+    xylem_tcp_handler_t cli_handler = {
+        .on_connect = _len_cli_on_connect,
+        .on_close   = _len_cli_on_close,
+    };
+
+    /* Client uses FRAME_NONE -- raw send */
+    xylem_tcp_opts_t cli_opts = {0};
+    _len_cli_conn = xylem_tcp_dial(&_len_loop, &addr,
+                                    &cli_handler, &cli_opts);
+    ASSERT(_len_cli_conn != NULL);
+
+    xylem_loop_run(&_len_loop);
+
+    ASSERT(_len_read_count == 1);
+    ASSERT(_len_received_len == 5);
+    ASSERT(memcmp(_len_received, "HELLO", 5) == 0);
+
+    _stop_safety_timer();
+    if (_len_server) { xylem_tcp_close_server(_len_server); _len_server = NULL; }
+    xylem_loop_deinit(&_len_loop);
+}
+
+static void _var_srv_on_accept(xylem_tcp_conn_t* conn) {
+    _var_srv_conn = conn;
+}
+
+static void _var_srv_on_close(xylem_tcp_conn_t* conn, int err) {
+    (void)err;
+    if (conn == _var_srv_conn) { _var_srv_conn = NULL; }
+}
+
+static void _var_srv_on_read(xylem_tcp_conn_t* conn,
+                              void* data, size_t len) {
+    (void)conn;
+    _var_read_count++;
+    if (len < sizeof(_var_received)) {
+        memcpy(_var_received, data, len);
+        _var_received_len = len;
+    }
+    xylem_loop_stop(&_var_loop);
+}
+
+static void _var_cli_on_connect(xylem_tcp_conn_t* conn) {
+    /* Send: [varint 5] "WORLD" -- varint length + payload */
+    uint8_t frame[16];
+    size_t pos = 0;
+    xylem_varint_encode(5, frame, sizeof(frame), &pos);
+    memcpy(frame + pos, "WORLD", 5);
+    xylem_tcp_send(conn, frame, pos + 5);
+}
+
+static void _var_cli_on_close(xylem_tcp_conn_t* conn, int err) {
+    (void)err;
+    if (conn == _var_cli_conn) { _var_cli_conn = NULL; }
+}
+
+static void test_tcp_frame_length_varint(void) {
+    xylem_loop_init(&_var_loop);
+    _start_safety_timer(&_var_loop);
+
+    _var_read_count    = 0;
+    _var_received_len  = 0;
+    _var_srv_conn      = NULL;
+    _var_cli_conn      = NULL;
+    _var_server        = NULL;
+    memset(_var_received, 0, sizeof(_var_received));
+
+    xylem_addr_t addr;
+    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+
+    xylem_tcp_handler_t srv_handler = {
+        .on_accept = _var_srv_on_accept,
+        .on_read   = _var_srv_on_read,
+        .on_close  = _var_srv_on_close,
+    };
+
+    xylem_tcp_opts_t opts = {0};
+    opts.framing.type                = XYLEM_TCP_FRAME_LENGTH;
+    opts.framing.length.header_size  = 1;
+    opts.framing.length.field_offset = 0;
+    opts.framing.length.field_size   = 1;
+    opts.framing.length.adjustment   = 0;
+    opts.framing.length.coding       = XYLEM_TCP_LENGTH_VARINT;
+
+    _var_server = xylem_tcp_listen(&_var_loop, &addr,
+                                    &srv_handler, &opts);
+    ASSERT(_var_server != NULL);
+
+    xylem_tcp_handler_t cli_handler = {
+        .on_connect = _var_cli_on_connect,
+        .on_close   = _var_cli_on_close,
+    };
+
+    xylem_tcp_opts_t cli_opts = {0};
+    _var_cli_conn = xylem_tcp_dial(&_var_loop, &addr,
+                                    &cli_handler, &cli_opts);
+    ASSERT(_var_cli_conn != NULL);
+
+    xylem_loop_run(&_var_loop);
+
+    ASSERT(_var_read_count == 1);
+    ASSERT(_var_received_len == 5);
+    ASSERT(memcmp(_var_received, "WORLD", 5) == 0);
+
+    _stop_safety_timer();
+    if (_var_server) { xylem_tcp_close_server(_var_server); _var_server = NULL; }
+    xylem_loop_deinit(&_var_loop);
+}
+
 int main(void) {
     xylem_startup();
 
@@ -549,6 +744,8 @@ int main(void) {
     test_tcp_frame_fixed();
     test_tcp_userdata();
     test_tcp_send_after_close();
+    test_tcp_frame_length_fixedint();
+    test_tcp_frame_length_varint();
 
     xylem_cleanup();
     return 0;

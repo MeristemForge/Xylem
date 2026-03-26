@@ -83,12 +83,13 @@ static void test_ipv4_wildcard(void) {
  * no ud field).
  */
 typedef struct {
-    xylem_loop_t      loop;
-    xylem_thrdpool_t* pool;
-    int               status;
-    size_t            count;
-    const char*       host;
+    xylem_loop_t          loop;
+    xylem_thrdpool_t*     pool;
+    int                   status;
+    size_t                count;
+    const char*           host;
     xylem_addr_resolve_fn_t resolve_cb;
+    xylem_loop_timer_t    keepalive;
 } _resolve_ctx_t;
 
 static _resolve_ctx_t* _ctx;
@@ -104,6 +105,7 @@ static void _on_resolved(xylem_addr_t* addrs, size_t count,
                addrs[i].storage.ss_family == AF_INET6);
     }
 
+    xylem_loop_deinit_timer(&ctx->keepalive);
     xylem_loop_stop(&ctx->loop);
 }
 
@@ -113,7 +115,13 @@ static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
     _resolve_ctx_t* ctx = userdata;
     ctx->status = status;
     ctx->count  = count;
+    xylem_loop_deinit_timer(&ctx->keepalive);
     xylem_loop_stop(&ctx->loop);
+}
+
+static void _keepalive_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
+    (void)loop;
+    (void)timer;
 }
 
 static void _start_resolve_cb(xylem_loop_t* loop,
@@ -122,7 +130,8 @@ static void _start_resolve_cb(xylem_loop_t* loop,
     xylem_loop_deinit_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
-    _ctx->loop.active_count++;
+    xylem_loop_init_timer(&_ctx->loop, &_ctx->keepalive);
+    xylem_loop_start_timer(&_ctx->keepalive, _keepalive_cb, 30000, 0);
 
     xylem_addr_resolve(&_ctx->loop, _ctx->pool, _ctx->host, 80,
                        _ctx->resolve_cb, _ctx);

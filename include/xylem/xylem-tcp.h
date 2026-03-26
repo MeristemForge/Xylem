@@ -38,18 +38,23 @@ typedef enum xylem_tcp_timeout_type_e {
     XYLEM_TCP_TIMEOUT_CONNECT,
 } xylem_tcp_timeout_type_t;
 
-typedef enum xylem_tcp_state_e {
-    XYLEM_TCP_STATE_CONNECTING,
-    XYLEM_TCP_STATE_CONNECTED,
-    XYLEM_TCP_STATE_CLOSING,
-    XYLEM_TCP_STATE_CLOSED,
-} xylem_tcp_state_t;
+typedef enum xylem_tcp_length_coding_e {
+    XYLEM_TCP_LENGTH_FIXEDINT,
+    XYLEM_TCP_LENGTH_VARINT,
+} xylem_tcp_length_coding_t;
 
 typedef struct xylem_tcp_framing_s {
     xylem_tcp_framing_type_t type;
     union {
         struct { size_t frame_size; }                          fixed;
-        struct { uint8_t header_bytes; bool big_endian; }      length;
+        struct {
+            uint32_t                  header_size;   /**< Fixed header size (payload starts after). */
+            uint32_t                  field_offset;  /**< Length field offset in header. */
+            uint32_t                  field_size;    /**< Length field size in bytes. */
+            int32_t                   adjustment;    /**< Length adjustment value. */
+            xylem_tcp_length_coding_t coding;        /**< FIXEDINT or VARINT. */
+            bool                      field_big_endian; /**< Byte order (FIXEDINT only). */
+        } length;
         struct { const char* delim; size_t delim_len; }        delim;
         struct { int (*parse)(const void* data, size_t len); } custom;
     };

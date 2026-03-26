@@ -21,7 +21,7 @@
 
 #include "xylem/xylem-tcp.h"
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-ringbuf.h"
+#include "xylem/xylem-varint.h"
 #include "xylem/xylem-queue.h"
 #include "xylem/xylem-list.h"
 
@@ -29,6 +29,13 @@
 #include <string.h>
 
 #define TCP_DEFAULT_READ_BUF_SIZE 65536
+
+typedef enum {
+    _TCP_STATE_CONNECTING,
+    _TCP_STATE_CONNECTED,
+    _TCP_STATE_CLOSING,
+    _TCP_STATE_CLOSED,
+} _tcp_state_t;
 
 typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;
@@ -59,8 +66,10 @@ struct xylem_tcp_conn_s {
     platform_sock_t       fd;
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    xylem_tcp_state_t     state;
-    xylem_ringbuf_t*      read_buf;
+    _tcp_state_t     state;
+    uint8_t*              read_buf;
+    size_t                read_len;
+    size_t                read_cap;
     xylem_queue_t         write_queue;
     xylem_loop_timer_t    read_timer;
     xylem_loop_timer_t    write_timer;
@@ -85,17 +94,17 @@ struct xylem_tcp_server_s {
 };
 
 /**
- * Extract one complete frame from the connection's ringbuf.
- * Returns > 0 on success (bytes consumed from ringbuf),
- * 0 if data insufficient, < 0 on error.
- * On success, *frame_out points to malloc'd frame data and
- * *frame_len_out is set. The caller must free *frame_out.
+ * Extract one complete frame from the connection's read buffer.
+ * Returns > 0 on success (bytes consumed), 0 if data insufficient,
+ * < 0 on error. On success, *frame_out points into conn->read_buf
+ * (zero-copy) and *frame_len_out is the payload length.
+ * The pointer is valid until the next recv or compact.
  */
 static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
                                   void** frame_out,
                                   size_t* frame_len_out) {
-    xylem_ringbuf_t* ring  = conn->read_buf;
-    size_t           avail = xylem_ringbuf_len(ring);
+    uint8_t* data  = conn->read_buf;
+    size_t   avail = conn->read_len;
 
     if (avail == 0) {
         return 0;
@@ -104,13 +113,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
     switch (conn->opts.framing.type) {
 
     case XYLEM_TCP_FRAME_NONE: {
-        void* buf = malloc(avail);
-        if (!buf) {
-            return -1;
-        }
-
-        xylem_ringbuf_read(ring, buf, avail);
-        *frame_out     = buf;
+        *frame_out     = data;
         *frame_len_out = avail;
         return (ssize_t)avail;
     }
@@ -124,75 +127,74 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
             return 0;
         }
 
-        void* buf = malloc(fsz);
-        if (!buf) {
-            return -1;
-        }
-
-        xylem_ringbuf_read(ring, buf, fsz);
-        *frame_out     = buf;
+        *frame_out     = data;
         *frame_len_out = fsz;
         return (ssize_t)fsz;
     }
 
     case XYLEM_TCP_FRAME_LENGTH: {
-        uint8_t hdr_sz = conn->opts.framing.length.header_bytes;
-        if (hdr_sz != 1 && hdr_sz != 2 && hdr_sz != 4) {
-            return -1;
-        }
+        uint32_t hdr_sz  = conn->opts.framing.length.header_size;
+        uint32_t len_off = conn->opts.framing.length.field_offset;
+        uint32_t len_sz  = conn->opts.framing.length.field_size;
+        int32_t  adj     = conn->opts.framing.length.adjustment;
+
+        /* Need at least the fixed header to read the length field. */
         if (avail < hdr_sz) {
             return 0;
         }
 
-        uint8_t hdr[4];
-        xylem_ringbuf_peek(ring, hdr, hdr_sz);
+        uint32_t effective_hdr = hdr_sz;
+        uint64_t payload_len = 0;
 
-        size_t payload_len = 0;
-        if (hdr_sz == 1) {
-            payload_len = hdr[0];
-        } else if (hdr_sz == 2) {
-            if (conn->opts.framing.length.big_endian) {
-                payload_len = ((size_t)hdr[0] << 8) | hdr[1];
+        if (conn->opts.framing.length.coding == XYLEM_TCP_LENGTH_FIXEDINT) {
+            if (len_sz == 0 || len_sz > 8) {
+                return -1;
+            }
+            if (avail < len_off + len_sz) {
+                return 0;
+            }
+
+            if (conn->opts.framing.length.field_big_endian) {
+                for (uint32_t i = 0; i < len_sz; i++) {
+                    payload_len = (payload_len << 8) | data[len_off + i];
+                }
             } else {
-                payload_len = hdr[0] | ((size_t)hdr[1] << 8);
+                for (uint32_t i = 0; i < len_sz; i++) {
+                    payload_len |= (uint64_t)data[len_off + i] << (i * 8);
+                }
             }
         } else {
-            if (conn->opts.framing.length.big_endian) {
-                payload_len = ((size_t)hdr[0] << 24) |
-                              ((size_t)hdr[1] << 16) |
-                              ((size_t)hdr[2] << 8)  |
-                              hdr[3];
-            } else {
-                payload_len = hdr[0]                  |
-                              ((size_t)hdr[1] << 8)   |
-                              ((size_t)hdr[2] << 16)  |
-                              ((size_t)hdr[3] << 24);
+            /* VARINT */
+            size_t pos = (size_t)len_off;
+            if (!xylem_varint_decode(data, avail, &pos, &payload_len)) {
+                if (avail < hdr_sz + 10) {
+                    return 0;
+                }
+                return -1;
             }
+            /* Varint may change effective header size. */
+            uint32_t varint_bytes = (uint32_t)(pos - len_off);
+            effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
-        size_t total = (size_t)hdr_sz + payload_len;
+        int64_t frame_size = (int64_t)effective_hdr + (int64_t)payload_len +
+                             (int64_t)adj;
+        if (frame_size <= 0) {
+            return -1;
+        }
+
+        size_t total = (size_t)frame_size;
         if (avail < total) {
             return 0;
         }
 
-        /* Discard the length header. */
-        xylem_ringbuf_read(ring, hdr, hdr_sz);
-
-        if (payload_len == 0) {
+        if (total <= effective_hdr) {
             *frame_out     = NULL;
             *frame_len_out = 0;
-            return (ssize_t)total;
+        } else {
+            *frame_out     = data + effective_hdr;
+            *frame_len_out = total - effective_hdr;
         }
-
-        void* buf = malloc(payload_len);
-        if (!buf) {
-            return -1;
-        }
-
-        xylem_ringbuf_read(ring, buf, payload_len);
-
-        *frame_out     = buf;
-        *frame_len_out = payload_len;
         return (ssize_t)total;
     }
 
@@ -203,20 +205,11 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
             return -1;
         }
 
-        void* peek_buf = malloc(avail);
-        if (!peek_buf) {
-            return -1;
-        }
-
-        xylem_ringbuf_peek(ring, peek_buf, avail);
-
-        const char* data = (const char*)peek_buf;
-        ssize_t     found_at = -1;
-
+        ssize_t found_at = -1;
         if (delim_len == 1) {
-            const char* p = (const char*)memchr(data, delim[0], avail);
+            const void* p = memchr(data, delim[0], avail);
             if (p) {
-                found_at = (ssize_t)(p - data);
+                found_at = (ssize_t)((const uint8_t*)p - data);
             }
         } else {
             for (size_t i = 0; i + delim_len <= avail; i++) {
@@ -228,28 +221,14 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
         }
 
         if (found_at < 0) {
-            free(peek_buf);
             return 0;
         }
 
         size_t frame_len   = (size_t)found_at;
         size_t consume_len = frame_len + delim_len;
 
-        /**
-         * Read consume_len into peek_buf to advance the ringbuf
-         * position. The data is identical to what peek already
-         * copied, so this just moves the read cursor forward.
-         */
-        xylem_ringbuf_read(ring, peek_buf, consume_len);
-        if (frame_len == 0) {
-            free(peek_buf);
-            *frame_out     = NULL;
-            *frame_len_out = 0;
-        } else {
-            void* trimmed = realloc(peek_buf, frame_len);
-            *frame_out     = trimmed ? trimmed : peek_buf;
-            *frame_len_out = frame_len;
-        }
+        *frame_out     = (frame_len > 0) ? data : NULL;
+        *frame_len_out = frame_len;
         return (ssize_t)consume_len;
     }
 
@@ -258,34 +237,17 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
             return -1;
         }
 
-        void* peek_buf = malloc(avail);
-        if (!peek_buf) {
-            return -1;
-        }
-
-        xylem_ringbuf_peek(ring, peek_buf, avail);
-
-        int rc = conn->opts.framing.custom.parse(peek_buf, avail);
+        int rc = conn->opts.framing.custom.parse(data, avail);
 
         if (rc > 0) {
             if ((size_t)rc > avail) {
-                free(peek_buf);
                 return -1;
             }
-
-            xylem_ringbuf_read(ring, peek_buf, (size_t)rc);
-
-            if ((size_t)rc < avail) {
-                void* trimmed = realloc(peek_buf, (size_t)rc);
-                *frame_out = trimmed ? trimmed : peek_buf;
-            } else {
-                *frame_out = peek_buf;
-            }
+            *frame_out     = data;
             *frame_len_out = (size_t)rc;
             return rc;
         }
 
-        free(peek_buf);
         return rc;
     }
 
@@ -357,7 +319,7 @@ static void _tcp_conn_free_cb(xylem_loop_t* loop,
 }
 
 static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
-    conn->state = XYLEM_TCP_STATE_CLOSED;
+    conn->state = _TCP_STATE_CLOSED;
     xylem_logd("tcp conn fd=%d destroy err=%d",
                (int)conn->fd, err);
 
@@ -367,25 +329,35 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
     }
 
     if (conn->dial) {
-        xylem_loop_stop_timer(&conn->dial->connect_timer);
-        conn->loop->active_count--;
-        xylem_loop_stop_timer(&conn->dial->reconnect_timer);
-        conn->loop->active_count--;
+        if (conn->dial->connect_timer.loop) {
+            xylem_loop_stop_timer(&conn->dial->connect_timer);
+            xylem_loop_deinit_timer(&conn->dial->connect_timer);
+        }
+        if (conn->dial->reconnect_timer.loop) {
+            xylem_loop_stop_timer(&conn->dial->reconnect_timer);
+            xylem_loop_deinit_timer(&conn->dial->reconnect_timer);
+        }
     }
 
-    xylem_loop_stop_timer(&conn->read_timer);
-    conn->loop->active_count--;
-    xylem_loop_stop_timer(&conn->write_timer);
-    conn->loop->active_count--;
-    xylem_loop_stop_timer(&conn->heartbeat_timer);
-    conn->loop->active_count--;
+    if (conn->read_timer.loop) {
+        xylem_loop_stop_timer(&conn->read_timer);
+        xylem_loop_deinit_timer(&conn->read_timer);
+    }
+    if (conn->write_timer.loop) {
+        xylem_loop_stop_timer(&conn->write_timer);
+        xylem_loop_deinit_timer(&conn->write_timer);
+    }
+    if (conn->heartbeat_timer.loop) {
+        xylem_loop_stop_timer(&conn->heartbeat_timer);
+        xylem_loop_deinit_timer(&conn->heartbeat_timer);
+    }
 
     xylem_loop_stop_io(&conn->io);
-    conn->loop->active_count--;
+    xylem_loop_deinit_io(&conn->io);
     platform_socket_close(conn->fd);
 
     if (conn->read_buf) {
-        xylem_ringbuf_destroy(conn->read_buf);
+        free(conn->read_buf);
         conn->read_buf = NULL;
     }
 
@@ -402,15 +374,15 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
     xylem_loop_post(conn->loop, &conn->free_post);
 }
 
-static void _tcp_start_close_conn(xylem_tcp_conn_t* conn, int err) {
-    if (conn->state == XYLEM_TCP_STATE_CLOSED ||
-        conn->state == XYLEM_TCP_STATE_CLOSING) {
+static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
+    if (conn->state == _TCP_STATE_CLOSED ||
+        conn->state == _TCP_STATE_CLOSING) {
         return;
     }
 
     xylem_logd("tcp conn fd=%d start_close err=%d",
                (int)conn->fd, err);
-    conn->state = XYLEM_TCP_STATE_CLOSING;
+    conn->state = _TCP_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
@@ -429,47 +401,42 @@ static void _tcp_start_close_conn(xylem_tcp_conn_t* conn, int err) {
 }
 
 static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
-    char tmp[16384];
-
-    /**
-     * Interleave recv and frame extraction: after each recv, try to
-     * extract frames immediately so the ringbuf stays drained. This
-     * prevents buffer-full data loss when the peer sends faster than
-     * one ringbuf capacity per IO callback.
-     */
     for (;;) {
-        ssize_t nread = platform_socket_recv(conn->fd, tmp,
-                                             (int)sizeof(tmp));
+        size_t space = conn->read_cap - conn->read_len;
+        if (space == 0) {
+            xylem_logw("tcp conn fd=%d read buffer full, closing",
+                       (int)conn->fd);
+            _tcp_close_conn(conn, -1);
+            return;
+        }
+
+        ssize_t nread = platform_socket_recv(
+            conn->fd, conn->read_buf + conn->read_len, (int)space);
 
         if (nread == 0) {
             xylem_logi("tcp conn fd=%d peer closed", (int)conn->fd);
-            _tcp_start_close_conn(conn, 0);
+            _tcp_close_conn(conn, 0);
             return;
         }
 
         if (nread < 0) {
             int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN) {
+            if (err == PLATFORM_SO_ERROR_EAGAIN ||
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 break;
             }
             xylem_logw("tcp conn fd=%d recv error=%d",
                        (int)conn->fd, err);
-            _tcp_start_close_conn(conn, err);
+            _tcp_close_conn(conn, err);
             return;
         }
 
-        size_t written = xylem_ringbuf_write(conn->read_buf, tmp,
-                                             (size_t)nread);
-        if (written < (size_t)nread) {
-            xylem_logw("tcp conn fd=%d read buffer overflow, closing",
-                       (int)conn->fd);
-            _tcp_start_close_conn(conn, -1);
-            return;
-        }
+        conn->read_len += (size_t)nread;
         xylem_logd("tcp conn fd=%d recv %zd bytes",
                    (int)conn->fd, nread);
 
-        /* Drain complete frames to free ringbuf space before next recv. */
+        /* Drain complete frames, then compact the buffer. */
+        size_t consumed = 0;
         for (;;) {
             void*  frame_data = NULL;
             size_t frame_len  = 0;
@@ -479,21 +446,34 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                 if (conn->handler && conn->handler->on_read) {
                     conn->handler->on_read(conn, frame_data, frame_len);
                 }
-                free(frame_data);
 
-                if (conn->state == XYLEM_TCP_STATE_CLOSED ||
-                    conn->state == XYLEM_TCP_STATE_CLOSING) {
+                consumed += (size_t)rc;
+                conn->read_buf += (size_t)rc;
+                conn->read_len -= (size_t)rc;
+
+                if (conn->state == _TCP_STATE_CLOSED ||
+                    conn->state == _TCP_STATE_CLOSING) {
                     return;
                 }
             } else if (rc == 0) {
                 break;
             } else {
-                _tcp_start_close_conn(conn, -1);
+                _tcp_close_conn(conn, -1);
                 return;
             }
         }
 
-        if ((size_t)nread < sizeof(tmp)) {
+        /* Restore read_buf pointer and compact remaining bytes. */
+        if (consumed > 0) {
+            conn->read_buf -= consumed;
+            if (conn->read_len > 0) {
+                memmove(conn->read_buf,
+                        conn->read_buf + consumed,
+                        conn->read_len);
+            }
+        }
+
+        if ((size_t)nread < space) {
             break;
         }
     }
@@ -523,7 +503,8 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
 
         if (n < 0) {
             int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN) {
+            if (err == PLATFORM_SO_ERROR_EAGAIN ||
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 return;
             }
 
@@ -534,7 +515,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
              * If already in graceful close, skip start_close (which
              * would bail on CLOSING state) and destroy directly.
              */
-            if (conn->state == XYLEM_TCP_STATE_CLOSING) {
+            if (conn->state == _TCP_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
@@ -548,7 +529,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
                 }
                 _tcp_destroy_conn(conn, err);
             } else {
-                _tcp_start_close_conn(conn, err);
+                _tcp_close_conn(conn, err);
             }
             return;
         }
@@ -568,7 +549,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
             free(req);
 
             /* User may have called close from on_write_done. */
-            if (conn->state == XYLEM_TCP_STATE_CLOSED) {
+            if (conn->state == _TCP_STATE_CLOSED) {
                 return;
             }
 
@@ -588,7 +569,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         xylem_loop_stop_timer(&conn->write_timer);
     }
 
-    if (conn->state == XYLEM_TCP_STATE_CLOSING) {
+    if (conn->state == _TCP_STATE_CLOSING) {
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -607,7 +588,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         _tcp_conn_readable_cb(conn);
     }
 
-    if (conn->state == XYLEM_TCP_STATE_CLOSED) {
+    if (conn->state == _TCP_STATE_CLOSED) {
         return;
     }
 
@@ -615,7 +596,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         _tcp_flush_writes(conn);
 
         /* Re-arm to read-only once the write queue drains */
-        if (conn->state == XYLEM_TCP_STATE_CONNECTED &&
+        if (conn->state == _TCP_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(&conn->io, PLATFORM_POLLER_RD_OP,
                                 _tcp_conn_io_cb);
@@ -624,20 +605,30 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
 }
 
 /**
- * Common setup for a newly connected socket: init ringbuf, start IO,
- * start heartbeat/read timers. Does NOT call any handler callback.
+ * Common setup for a newly connected socket: allocate read buffer,
+ * start IO, start heartbeat/read timers. Does NOT call any handler
+ * callback.
  */
 static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
-    conn->state    = XYLEM_TCP_STATE_CONNECTED;
-    conn->read_buf = xylem_ringbuf_create(1, conn->opts.read_buf_size);
+    conn->state    = _TCP_STATE_CONNECTED;
+    conn->read_buf = malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
     }
+    conn->read_len = 0;
+    conn->read_cap = conn->opts.read_buf_size;
 
-    xylem_loop_start_io(&conn->io, PLATFORM_POLLER_RD_OP,
-                        _tcp_conn_io_cb);
+    if (xylem_loop_start_io(&conn->io, PLATFORM_POLLER_RD_OP,
+                            _tcp_conn_io_cb) != 0) {
+        free(conn->read_buf);
+        conn->read_buf = NULL;
+        return -1;
+    }
 
     if (conn->opts.heartbeat_ms > 0) {
+        if (!conn->heartbeat_timer.loop) {
+            xylem_loop_init_timer(conn->loop, &conn->heartbeat_timer);
+        }
         xylem_loop_start_timer(&conn->heartbeat_timer,
                                _tcp_heartbeat_timeout_cb,
                                conn->opts.heartbeat_ms,
@@ -645,9 +636,18 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     }
 
     if (conn->opts.read_timeout_ms > 0) {
+        if (!conn->read_timer.loop) {
+            xylem_loop_init_timer(conn->loop, &conn->read_timer);
+        }
         xylem_loop_start_timer(&conn->read_timer,
                                _tcp_read_timeout_cb,
                                conn->opts.read_timeout_ms, 0);
+    }
+
+    if (conn->opts.write_timeout_ms > 0) {
+        if (!conn->write_timer.loop) {
+            xylem_loop_init_timer(conn->loop, &conn->write_timer);
+        }
     }
 
     return 0;
@@ -655,7 +655,7 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
 
 static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
     if (_tcp_setup_conn(conn) != 0) {
-        _tcp_start_close_conn(conn, -1);
+        _tcp_close_conn(conn, -1);
         return;
     }
     xylem_logi("tcp conn fd=%d connected", (int)conn->fd);
@@ -673,7 +673,7 @@ static void _tcp_start_reconnect_timer(xylem_tcp_conn_t* conn,
     if (dial->reconnect_count >= conn->opts.reconnect_max) {
         xylem_logw("tcp conn fd=%d reconnect limit reached (%u)",
                    (int)conn->fd, conn->opts.reconnect_max);
-        _tcp_start_close_conn(conn, PLATFORM_SO_ERROR_ETIMEDOUT);
+        _tcp_close_conn(conn, PLATFORM_SO_ERROR_ETIMEDOUT);
         return;
     }
 
@@ -752,7 +752,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
      */
     conn->io.sqe.fd     = fd;
     conn->io.registered  = false;
-    conn->state = XYLEM_TCP_STATE_CONNECTING;
+    conn->state = _TCP_STATE_CONNECTING;
     dial->reconnect_count++;
 
     if (connected) {
@@ -772,7 +772,6 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
 static void _tcp_server_io_cb(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
                               platform_poller_op_t revents) {
-    (void)loop;
     (void)revents;
     xylem_tcp_server_t* server =
         xylem_list_entry(io, xylem_tcp_server_t, io);
@@ -798,28 +797,17 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
             continue;
         }
 
-        conn->loop    = server->loop;
+        conn->loop    = loop;
         conn->fd      = client_fd;
         conn->handler = server->handler;
         conn->opts    = server->opts;
 
         xylem_queue_init(&conn->write_queue);
 
-        xylem_loop_init_io(server->loop, &conn->io, client_fd);
-
-        xylem_loop_init_timer(server->loop, &conn->read_timer);
-        xylem_loop_init_timer(server->loop, &conn->write_timer);
-        xylem_loop_init_timer(server->loop, &conn->heartbeat_timer);
+        xylem_loop_init_io(loop, &conn->io, client_fd);
 
         if (_tcp_setup_conn(conn) != 0) {
-            xylem_loop_stop_io(&conn->io);
-            loop->active_count--;
-            xylem_loop_stop_timer(&conn->read_timer);
-            loop->active_count--;
-            xylem_loop_stop_timer(&conn->write_timer);
-            loop->active_count--;
-            xylem_loop_stop_timer(&conn->heartbeat_timer);
-            loop->active_count--;
+            xylem_loop_deinit_io(&conn->io);
             platform_socket_close(client_fd);
             free(conn);
             continue;
@@ -861,7 +849,7 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
     server->closing = true;
 
     xylem_loop_stop_io(&server->io);
-    server->loop->active_count--;
+    xylem_loop_deinit_io(&server->io);
     platform_socket_close(server->fd);
 
     /**
@@ -881,14 +869,14 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
-    if (conn->state == XYLEM_TCP_STATE_CLOSING ||
-        conn->state == XYLEM_TCP_STATE_CLOSED) {
+    if (conn->state == _TCP_STATE_CLOSING ||
+        conn->state == _TCP_STATE_CLOSED) {
         return;
     }
 
     xylem_logi("tcp conn fd=%d graceful close requested",
                (int)conn->fd);
-    conn->state = XYLEM_TCP_STATE_CLOSING;
+    conn->state = _TCP_STATE_CLOSING;
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -901,8 +889,8 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
-    if (conn->state == XYLEM_TCP_STATE_CLOSING ||
-        conn->state == XYLEM_TCP_STATE_CLOSED) {
+    if (conn->state == _TCP_STATE_CLOSING ||
+        conn->state == _TCP_STATE_CLOSED) {
         return -1;
     }
 
@@ -974,7 +962,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     conn->loop    = loop;
     conn->handler = handler;
-    conn->state   = XYLEM_TCP_STATE_CONNECTING;
+    conn->state   = _TCP_STATE_CONNECTING;
 
     xylem_queue_init(&conn->write_queue);
 
@@ -1000,11 +988,12 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     xylem_loop_init_io(loop, &conn->io, conn->fd);
 
-    xylem_loop_init_timer(loop, &dial->connect_timer);
-    xylem_loop_init_timer(loop, &conn->read_timer);
-    xylem_loop_init_timer(loop, &conn->write_timer);
-    xylem_loop_init_timer(loop, &conn->heartbeat_timer);
-    xylem_loop_init_timer(loop, &dial->reconnect_timer);
+    if (conn->opts.connect_timeout_ms > 0) {
+        xylem_loop_init_timer(loop, &dial->connect_timer);
+    }
+    if (conn->opts.reconnect_max > 0) {
+        xylem_loop_init_timer(loop, &dial->reconnect_timer);
+    }
 
     if (connected) {
         _tcp_conn_connected_cb(conn);

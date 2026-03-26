@@ -856,13 +856,13 @@ static ssize_t _tcp_frame_extract(xylem_tcp_conn_t* conn,
         } else if (hdr_sz == 2) {
             uint16_t v;
             memcpy(&v, hdr, 2);
-            if (conn->opts.framing.length.big_endian)
+            if (conn->opts.framing.length.field_big_endian)
                 v = xylem_bswap_u16(v);  /* 网络序 -> 主机序 */
             payload_len = v;
         } else if (hdr_sz == 4) {
             uint32_t v;
             memcpy(&v, hdr, 4);
-            if (conn->opts.framing.length.big_endian)
+            if (conn->opts.framing.length.field_big_endian)
                 v = xylem_bswap_u32(v);
             payload_len = v;
         }

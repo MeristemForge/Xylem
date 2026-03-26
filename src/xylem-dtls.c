@@ -419,7 +419,8 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
  */
 static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
     xylem_dtls_t* dtls = xylem_list_entry(req, xylem_dtls_t, free_post);
-    loop->active_count--;
+    xylem_loop_stop_timer(&dtls->retransmit_timer);
+    xylem_loop_deinit_timer(&dtls->retransmit_timer);
     free(dtls);
 }
 
@@ -497,7 +498,8 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
 
     if (_dtls_init_ssl(dtls) != 0) {
         /* Balance the active_count from xylem_loop_init_timer. */
-        server->loop->active_count--;
+        xylem_loop_stop_timer(&dtls->retransmit_timer);
+        xylem_loop_deinit_timer(&dtls->retransmit_timer);
         free(dtls);
         return;
     }
@@ -555,7 +557,8 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
 
     if (_dtls_init_ssl(dtls) != 0) {
         /* Balance the active_count from xylem_loop_init_timer. */
-        loop->active_count--;
+        xylem_loop_stop_timer(&dtls->retransmit_timer);
+        xylem_loop_deinit_timer(&dtls->retransmit_timer);
         xylem_udp_set_userdata(udp, NULL);
         xylem_udp_close(udp);
         free(dtls);
