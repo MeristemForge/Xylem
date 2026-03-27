@@ -79,17 +79,16 @@ static void test_ipv4_wildcard(void) {
 
 /**
  * Context for async resolve tests. Passed via userdata to the resolve
- * callback, and via file-scope pointer to timer callbacks (timer has
- * no ud field).
+ * callback, and via file-scope pointer to timer callbacks.
  */
 typedef struct {
-    xylem_loop_t          loop;
-    xylem_thrdpool_t*     pool;
-    int                   status;
-    size_t                count;
-    const char*           host;
+    xylem_loop_t*           loop;
+    xylem_thrdpool_t*       pool;
+    int                     status;
+    size_t                  count;
+    const char*             host;
     xylem_addr_resolve_fn_t resolve_cb;
-    xylem_loop_timer_t    keepalive;
+    xylem_loop_timer_t*     keepalive;
 } _resolve_ctx_t;
 
 static _resolve_ctx_t* _ctx;
@@ -105,8 +104,8 @@ static void _on_resolved(xylem_addr_t* addrs, size_t count,
                addrs[i].storage.ss_family == AF_INET6);
     }
 
-    xylem_loop_deinit_timer(&ctx->keepalive);
-    xylem_loop_stop(&ctx->loop);
+    xylem_loop_destroy_timer(ctx->keepalive);
+    xylem_loop_stop(ctx->loop);
 }
 
 static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
@@ -115,25 +114,27 @@ static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
     _resolve_ctx_t* ctx = userdata;
     ctx->status = status;
     ctx->count  = count;
-    xylem_loop_deinit_timer(&ctx->keepalive);
-    xylem_loop_stop(&ctx->loop);
+    xylem_loop_destroy_timer(ctx->keepalive);
+    xylem_loop_stop(ctx->loop);
 }
 
-static void _keepalive_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer) {
+static void _keepalive_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer,
+                          void* ud) {
     (void)loop;
     (void)timer;
+    (void)ud;
 }
 
 static void _start_resolve_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer) {
-    (void)loop;
-    xylem_loop_deinit_timer(timer);
+                               xylem_loop_timer_t* timer,
+                               void* ud) {
+    xylem_loop_destroy_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
-    xylem_loop_init_timer(&_ctx->loop, &_ctx->keepalive);
-    xylem_loop_start_timer(&_ctx->keepalive, _keepalive_cb, 30000, 0);
+    _ctx->keepalive = xylem_loop_create_timer(_ctx->loop, NULL);
+    xylem_loop_start_timer(_ctx->keepalive, _keepalive_cb, 30000, 0);
 
-    xylem_addr_resolve(&_ctx->loop, _ctx->pool, _ctx->host, 80,
+    xylem_addr_resolve(_ctx->loop, _ctx->pool, _ctx->host, 80,
                        _ctx->resolve_cb, _ctx);
 }
 
@@ -146,20 +147,21 @@ static void test_resolve_localhost(void) {
     ctx.resolve_cb = _on_resolved;
     _ctx = &ctx;
 
-    xylem_loop_init(&ctx.loop);
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t timer;
-    xylem_loop_init_timer(&ctx.loop, &timer);
-    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    ASSERT(timer != NULL);
+    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
 
-    xylem_loop_run(&ctx.loop);
+    xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.status == 0);
     ASSERT(ctx.count > 0);
 
     xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_deinit(&ctx.loop);
+    xylem_loop_destroy(ctx.loop);
 }
 
 /* Resolve non-existent host - error path. */
@@ -171,20 +173,21 @@ static void test_resolve_fail(void) {
     ctx.resolve_cb = _on_resolve_fail;
     _ctx = &ctx;
 
-    xylem_loop_init(&ctx.loop);
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t timer;
-    xylem_loop_init_timer(&ctx.loop, &timer);
-    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    ASSERT(timer != NULL);
+    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
 
-    xylem_loop_run(&ctx.loop);
+    xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.status == -1);
     ASSERT(ctx.count == 0);
 
     xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_deinit(&ctx.loop);
+    xylem_loop_destroy(ctx.loop);
 }
 
 /* Resolve a public hostname - verifies real DNS works. */
@@ -196,39 +199,40 @@ static void test_resolve_remote(void) {
     ctx.resolve_cb = _on_resolved;
     _ctx = &ctx;
 
-    xylem_loop_init(&ctx.loop);
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t timer;
-    xylem_loop_init_timer(&ctx.loop, &timer);
-    xylem_loop_start_timer(&timer, _start_resolve_cb, 0, 0);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    ASSERT(timer != NULL);
+    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
 
-    xylem_loop_run(&ctx.loop);
+    xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.status == 0);
     ASSERT(ctx.count > 0);
 
     xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_deinit(&ctx.loop);
+    xylem_loop_destroy(ctx.loop);
 }
 
 /* NULL parameters return NULL. */
 static void test_resolve_null_params(void) {
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
+    ASSERT(loop != NULL);
     xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
 
     ASSERT(xylem_addr_resolve(NULL, pool, "localhost", 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(&loop, NULL, "localhost", 80,
+    ASSERT(xylem_addr_resolve(loop, NULL, "localhost", 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(&loop, pool, NULL, 80,
+    ASSERT(xylem_addr_resolve(loop, pool, NULL, 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(&loop, pool, "localhost", 80,
+    ASSERT(xylem_addr_resolve(loop, pool, "localhost", 80,
                               NULL, NULL) == NULL);
 
     xylem_thrdpool_destroy(pool);
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
 }
 
 int main(void) {

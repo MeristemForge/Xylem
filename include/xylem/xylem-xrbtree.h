@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include "xylem/xylem-rbtree.h"
 
 typedef int (*xylem_xrbtree_cmp_dd_fn_t)(const void* a, const void* b);
 typedef int (*xylem_xrbtree_cmp_kd_fn_t)(const void* key, const void* data);

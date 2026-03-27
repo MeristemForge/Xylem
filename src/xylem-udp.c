@@ -21,7 +21,8 @@
 
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-list.h"
+
+#include "xylem-loop-io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@
 
 struct xylem_udp_s {
     xylem_loop_t*         loop;
-    xylem_loop_io_t       io;
+    xylem_loop_io_t*      io;
     platform_sock_t       fd;
     xylem_udp_handler_t*  handler;
     void*                 userdata;
@@ -37,7 +38,6 @@ struct xylem_udp_s {
     char                  recv_buf[65536];
     bool                  connected;
     bool                  closing;
-    xylem_loop_post_t     free_post;
 };
 
 /**
@@ -46,10 +46,12 @@ struct xylem_udp_s {
  */
 static void _udp_io_cb(xylem_loop_t* loop,
                         xylem_loop_io_t* io,
-                        platform_poller_op_t revents) {
+                        platform_poller_op_t revents,
+                        void* ud) {
     (void)loop;
+    (void)io;
     (void)revents;
-    xylem_udp_t* udp = xylem_list_entry(io, xylem_udp_t, io);
+    xylem_udp_t* udp = (xylem_udp_t*)ud;
 
     if (udp->closing) {
         return;
@@ -59,7 +61,7 @@ static void _udp_io_cb(xylem_loop_t* loop,
      * Loop until EAGAIN to drain the kernel buffer in one IO callback,
      * avoiding repeated poller wakeups under LT.
      *
-     * Connected sockets use recv — macOS recvfrom on a connected UDP
+     * Connected sockets use recv �?macOS recvfrom on a connected UDP
      * socket may not fill the sender address reliably.
      */
     for (;;) {
@@ -100,9 +102,11 @@ static void _udp_io_cb(xylem_loop_t* loop,
 }
 
 /* Post callback: free a UDP handle after the current iteration. */
-static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
+static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+                         void* ud) {
     (void)loop;
-    xylem_udp_t* udp = xylem_list_entry(req, xylem_udp_t, free_post);
+    (void)req;
+    xylem_udp_t* udp = (xylem_udp_t*)ud;
     free(udp);
 }
 
@@ -134,8 +138,8 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
     udp->connected = false;
     udp->closing   = false;
 
-    xylem_loop_init_io(loop, &udp->io, fd);
-    xylem_loop_start_io(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+    udp->io = xylem_loop_create_io(loop, fd, udp);
+    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
 
     xylem_logi("udp fd=%d bound on %s:%s", (int)fd, host, port_str);
     return udp;
@@ -172,8 +176,8 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     udp->connected = true;
     udp->closing   = false;
 
-    xylem_loop_init_io(loop, &udp->io, fd);
-    xylem_loop_start_io(&udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+    udp->io = xylem_loop_create_io(loop, fd, udp);
+    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
 
     xylem_logi("udp fd=%d connected to %s:%s", (int)fd, host, port_str);
     return udp;
@@ -206,8 +210,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     xylem_logi("udp fd=%d closing", (int)udp->fd);
     udp->closing = true;
 
-    xylem_loop_stop_io(&udp->io);
-    xylem_loop_deinit_io(&udp->io);
+    xylem_loop_destroy_io(udp->io);
     platform_socket_close(udp->fd);
 
     if (udp->handler && udp->handler->on_close) {
@@ -215,8 +218,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     }
 
     /* Defer free to next loop iteration so close_node stays valid */
-    udp->free_post.cb = _udp_free_cb;
-    xylem_loop_post(udp->loop, &udp->free_post);
+    xylem_loop_post(udp->loop, _udp_free_cb, udp);
 }
 
 void* xylem_udp_get_userdata(xylem_udp_t* udp) {

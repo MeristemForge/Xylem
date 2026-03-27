@@ -28,6 +28,7 @@
  * Pair:  udp-echo-client
  */
 
+#include "xylem.h"
 #include "xylem/xylem-udp.h"
 
 #define LISTEN_PORT 9001
@@ -46,8 +47,7 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", LISTEN_PORT, &addr);
@@ -56,16 +56,16 @@ int main(void) {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_listen(&loop, &addr, &handler);
+    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
     if (!udp) {
         xylem_loge("failed to bind on port %d", LISTEN_PORT);
         return 1;
     }
 
     xylem_logi("udp echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stddef.h>
 
 typedef struct xylem_waitgroup_s xylem_waitgroup_t;
 

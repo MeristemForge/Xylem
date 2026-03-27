@@ -29,9 +29,10 @@
  * Pair:  wss-echo-server cert.pem key.pem
  */
 
+#include "xylem.h"
 #include "xylem/ws/xylem-ws-client.h"
 
-static xylem_loop_t _loop;
+static xylem_loop_t* _loop;
 
 static void _on_open(xylem_ws_conn_t* conn) {
     xylem_logi("tls handshake complete");
@@ -52,14 +53,14 @@ static void _on_close(xylem_ws_conn_t* conn,
     (void)reason;
     (void)reason_len;
     xylem_logi("disconnected (code=%u)", code);
-    xylem_loop_stop(&_loop);
+    xylem_loop_stop(_loop);
 }
 
 int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_init(&_loop);
+    _loop = xylem_loop_create();
 
     xylem_ws_handler_t handler = {
         .on_open    = _on_open,
@@ -67,7 +68,7 @@ int main(void) {
         .on_close   = _on_close,
     };
 
-    xylem_ws_conn_t* conn = xylem_ws_dial(&_loop,
+    xylem_ws_conn_t* conn = xylem_ws_dial(_loop,
                                           "wss://127.0.0.1:9003/echo",
                                           &handler, NULL);
     if (!conn) {
@@ -75,9 +76,9 @@ int main(void) {
         return 1;
     }
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

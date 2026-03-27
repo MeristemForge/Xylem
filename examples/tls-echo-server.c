@@ -30,6 +30,7 @@
  * Pair:  tls-echo-client
  */
 
+#include "xylem.h"
 #include "xylem/xylem-tls.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,8 +93,7 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     if (!ctx) {
@@ -124,7 +124,7 @@ int main(void) {
         .on_close  = _on_close,
     };
 
-    xylem_tls_server_t* server = xylem_tls_listen(&loop, &addr, ctx,
+    xylem_tls_server_t* server = xylem_tls_listen(loop, &addr, ctx,
                                                   &handler, NULL);
     if (!server) {
         xylem_loge("failed to listen on port %d", LISTEN_PORT);
@@ -133,10 +133,10 @@ int main(void) {
     }
 
     xylem_logi("tls echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
     xylem_tls_ctx_destroy(ctx);
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

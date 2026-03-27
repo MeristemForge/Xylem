@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-list.h"
 
 void xylem_list_init(xylem_list_t* list) {
     list->head.prev = &list->head;

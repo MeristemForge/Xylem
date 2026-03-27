@@ -19,7 +19,11 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-utils.h"
+
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <time.h>
 
 uint64_t xylem_utils_getnow(xylem_time_precision_t precision) {
     struct timespec tsc;

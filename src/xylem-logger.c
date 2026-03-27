@@ -19,7 +19,15 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-logger.h"
+#include "xylem/xylem-thrdpool.h"
+
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "deprecated/c11-threads.h"
 #include "platform/platform.h"
 
 #include <inttypes.h>

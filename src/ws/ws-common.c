@@ -158,6 +158,16 @@ void ws_conn_destroy(xylem_ws_conn_t* conn) {
     if (!conn) {
         return;
     }
+
+    if (conn->handshake_timer) {
+        xylem_loop_destroy_timer(conn->handshake_timer);
+        conn->handshake_timer = NULL;
+    }
+    if (conn->close_timer) {
+        xylem_loop_destroy_timer(conn->close_timer);
+        conn->close_timer = NULL;
+    }
+
     free(conn->recv_buf);
     conn->recv_buf = NULL;
     conn->recv_len = 0;
@@ -211,8 +221,20 @@ xylem_ws_conn_t* ws_conn_create(xylem_loop_t* loop,
     conn->recv_cap = WS_INITIAL_RECV_CAP;
 
     /* Initialize timers */
-    xylem_loop_init_timer(loop, &conn->handshake_timer);
-    xylem_loop_init_timer(loop, &conn->close_timer);
+    conn->handshake_timer = xylem_loop_create_timer(loop, conn);
+    conn->close_timer = xylem_loop_create_timer(loop, conn);
+
+    if (!conn->handshake_timer || !conn->close_timer) {
+        if (conn->handshake_timer) {
+            xylem_loop_destroy_timer(conn->handshake_timer);
+        }
+        if (conn->close_timer) {
+            xylem_loop_destroy_timer(conn->close_timer);
+        }
+        free(conn->recv_buf);
+        free(conn);
+        return NULL;
+    }
 
     return conn;
 }
@@ -225,11 +247,11 @@ void ws_conn_fire_close(xylem_ws_conn_t* conn, uint16_t code,
     conn->state = XYLEM_WS_STATE_CLOSED;
 
     /* Stop any active timers */
-    if (conn->handshake_timer.active) {
-        xylem_loop_stop_timer(&conn->handshake_timer);
+    if (conn->handshake_timer) {
+        xylem_loop_stop_timer(conn->handshake_timer);
     }
-    if (conn->close_timer.active) {
-        xylem_loop_stop_timer(&conn->close_timer);
+    if (conn->close_timer) {
+        xylem_loop_stop_timer(conn->close_timer);
     }
 
     if (conn->handler && conn->handler->on_close) {
@@ -240,10 +262,11 @@ void ws_conn_fire_close(xylem_ws_conn_t* conn, uint16_t code,
 }
 
 void ws_conn_close_timeout_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer) {
+                               xylem_loop_timer_t* timer,
+                               void* ud) {
     (void)loop;
-    xylem_ws_conn_t* conn = (xylem_ws_conn_t*)((char*)timer -
-        offsetof(xylem_ws_conn_t, close_timer));
+    (void)timer;
+    xylem_ws_conn_t* conn = ud;
     conn->vt->close_conn(conn->transport);
 }
 
@@ -252,7 +275,7 @@ void ws_conn_protocol_error(xylem_ws_conn_t* conn, uint16_t code) {
         conn->state = XYLEM_WS_STATE_CLOSING;
         conn->close_code = code;
         ws_conn_send_close_frame(conn, code, NULL, 0);
-        xylem_loop_start_timer(&conn->close_timer,
+        xylem_loop_start_timer(conn->close_timer,
                                ws_conn_close_timeout_cb,
                                conn->close_timeout_ms, 0);
     } else if (conn->state == XYLEM_WS_STATE_CLOSING) {
@@ -296,8 +319,8 @@ void ws_conn_handle_close_frame(xylem_ws_conn_t* conn,
         conn->vt->close_conn(conn->transport);
     } else if (conn->state == XYLEM_WS_STATE_CLOSING) {
         /* We initiated close, peer responded -- shut down */
-        if (conn->close_timer.active) {
-            xylem_loop_stop_timer(&conn->close_timer);
+        if (conn->close_timer) {
+            xylem_loop_stop_timer(conn->close_timer);
         }
         conn->vt->close_conn(conn->transport);
     }

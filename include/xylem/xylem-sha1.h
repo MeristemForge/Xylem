@@ -21,7 +21,8 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stddef.h>
+#include <stdint.h>
 
 typedef struct xylem_sha1_s xylem_sha1_t;
 

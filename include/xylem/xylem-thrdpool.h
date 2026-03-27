@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem.h"
-
 typedef struct xylem_thrdpool_s xylem_thrdpool_t;
 
 /**

@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include "xylem/xylem-heap.h"
 
 typedef int (*xylem_xheap_cmp_fn_t)(const void* a, const void* b);
 

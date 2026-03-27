@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-varint.h"
 
 bool xylem_varint_encode(
     uint64_t value, uint8_t* buf, size_t bufsize, size_t* pos) {

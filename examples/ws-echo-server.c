@@ -28,6 +28,7 @@
  * Test:  ws-echo-client  (or any WebSocket client connecting to ws://127.0.0.1:9002)
  */
 
+#include "xylem.h"
 #include "xylem/ws/xylem-ws-server.h"
 
 #define LISTEN_PORT 9002
@@ -56,8 +57,7 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     xylem_ws_handler_t handler = {
         .on_accept  = _on_accept,
@@ -71,16 +71,16 @@ int main(void) {
         .handler = &handler,
     };
 
-    xylem_ws_server_t* server = xylem_ws_listen(&loop, &cfg);
+    xylem_ws_server_t* server = xylem_ws_listen(loop, &cfg);
     if (!server) {
         xylem_loge("failed to listen on port %d", LISTEN_PORT);
         return 1;
     }
 
     xylem_logi("ws echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

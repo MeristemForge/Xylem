@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-xstack.h"
+
+#include <stdlib.h>
 
 typedef struct {
     xylem_stack_node_t node;

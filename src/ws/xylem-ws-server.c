@@ -107,10 +107,11 @@ static int _ws_srv_http_headers_complete_cb(llhttp_t* parser) {
 }
 
 static void _ws_srv_handshake_timeout_cb(xylem_loop_t* loop,
-                                         xylem_loop_timer_t* timer) {
+                                         xylem_loop_timer_t* timer,
+                                         void* ud) {
     (void)loop;
-    xylem_ws_conn_t* conn = (xylem_ws_conn_t*)((char*)timer -
-        offsetof(xylem_ws_conn_t, handshake_timer));
+    (void)timer;
+    xylem_ws_conn_t* conn = ud;
 
     /* Timeout: close without sending HTTP response */
     conn->vt->close_conn(conn->transport);
@@ -137,8 +138,8 @@ static void _ws_srv_process_handshake(xylem_ws_conn_t* conn,
     }
 
     /* Stop handshake timer */
-    if (conn->handshake_timer.active) {
-        xylem_loop_stop_timer(&conn->handshake_timer);
+    if (conn->handshake_timer) {
+        xylem_loop_stop_timer(conn->handshake_timer);
     }
 
     /* Validate required headers */
@@ -312,7 +313,7 @@ static void _ws_srv_transport_accept_cb(void* handle, void* ctx) {
     if (hs_timeout == 0) {
         hs_timeout = WS_DEFAULT_HANDSHAKE_TIMEOUT;
     }
-    xylem_loop_start_timer(&conn->handshake_timer,
+    xylem_loop_start_timer(conn->handshake_timer,
                            _ws_srv_handshake_timeout_cb,
                            hs_timeout, 0);
 }

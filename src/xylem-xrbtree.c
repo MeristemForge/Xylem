@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-xrbtree.h"
+
+#include <stdlib.h>
 
 typedef struct {
     xylem_rbtree_node_t        node;

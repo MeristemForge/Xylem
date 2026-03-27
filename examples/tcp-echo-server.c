@@ -29,6 +29,7 @@
  * Test:  tcp-echo-client  (or: echo "hello" | nc 127.0.0.1 9000)
  */
 
+#include "xylem.h"
 #include "xylem/xylem-tcp.h"
 #include <string.h>
 
@@ -61,8 +62,7 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", LISTEN_PORT, &addr);
@@ -78,7 +78,7 @@ int main(void) {
     opts.framing.delim.delim     = "\r\n";
     opts.framing.delim.delim_len = 2;
 
-    xylem_tcp_server_t* server = xylem_tcp_listen(&loop, &addr,
+    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
                                                   &handler, &opts);
     if (!server) {
         xylem_loge("failed to listen on port %d", LISTEN_PORT);
@@ -86,9 +86,9 @@ int main(void) {
     }
 
     xylem_logi("tcp echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

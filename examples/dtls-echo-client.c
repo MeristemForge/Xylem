@@ -30,11 +30,12 @@
  * Pair:  dtls-echo-server
  */
 
+#include "xylem.h"
 #include "xylem/xylem-dtls.h"
 
 #define SERVER_PORT 9444
 
-static xylem_loop_t _loop;
+static xylem_loop_t* _loop;
 
 static void _on_connect(xylem_dtls_t* dtls) {
     xylem_logi("dtls handshake complete");
@@ -49,14 +50,14 @@ static void _on_read(xylem_dtls_t* dtls, void* data, size_t len) {
 static void _on_close(xylem_dtls_t* dtls, int err) {
     (void)dtls;
     xylem_logi("disconnected (err=%d)", err);
-    xylem_loop_stop(&_loop);
+    xylem_loop_stop(_loop);
 }
 
 int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_init(&_loop);
+    _loop = xylem_loop_create();
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     if (!ctx) {
@@ -76,17 +77,17 @@ int main(void) {
         .on_close   = _on_close,
     };
 
-    xylem_dtls_t* dtls = xylem_dtls_dial(&_loop, &addr, ctx, &handler);
+    xylem_dtls_t* dtls = xylem_dtls_dial(_loop, &addr, ctx, &handler);
     if (!dtls) {
         xylem_loge("failed to connect");
         xylem_dtls_ctx_destroy(ctx);
         return 1;
     }
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
     xylem_dtls_ctx_destroy(ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

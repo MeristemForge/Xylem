@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-gzip.h"
+
+#include <string.h>
 #include "miniz.h"
 
 #define GZIP_HEADER_SIZE 10

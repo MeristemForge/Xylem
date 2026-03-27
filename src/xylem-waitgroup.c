@@ -19,7 +19,11 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-waitgroup.h"
+
+#include <stdlib.h>
+
+#include "deprecated/c11-threads.h"
 
 struct xylem_waitgroup_s {
     size_t cnt;

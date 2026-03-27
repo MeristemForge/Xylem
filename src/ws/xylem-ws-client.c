@@ -87,10 +87,11 @@ static int _ws_http_headers_complete_cb(llhttp_t* parser) {
 }
 
 static void _ws_handshake_timeout_cb(xylem_loop_t* loop,
-                                     xylem_loop_timer_t* timer) {
+                                     xylem_loop_timer_t* timer,
+                                     void* ud) {
     (void)loop;
-    xylem_ws_conn_t* conn = (xylem_ws_conn_t*)((char*)timer -
-        offsetof(xylem_ws_conn_t, handshake_timer));
+    (void)timer;
+    xylem_ws_conn_t* conn = ud;
 
     /* Handshake timed out -- close transport */
     conn->vt->close_conn(conn->transport);
@@ -112,8 +113,8 @@ static void _ws_process_handshake(xylem_ws_conn_t* conn,
     }
 
     /* Stop handshake timer */
-    if (conn->handshake_timer.active) {
-        xylem_loop_stop_timer(&conn->handshake_timer);
+    if (conn->handshake_timer) {
+        xylem_loop_stop_timer(conn->handshake_timer);
     }
 
     /* Validate 101 status */
@@ -372,10 +373,6 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
     llhttp_init(&conn->http_parser, HTTP_RESPONSE, &conn->http_settings);
     conn->http_parser.data = conn;
 
-    /* Initialize timers */
-    xylem_loop_init_timer(loop, &conn->handshake_timer);
-    xylem_loop_init_timer(loop, &conn->close_timer);
-
     /* Set up transport callbacks */
     conn->transport_cb.on_connect    = _ws_transport_connect_cb;
     conn->transport_cb.on_read       = _ws_transport_read_cb;
@@ -398,7 +395,7 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
     conn->transport = transport;
 
     /* Start handshake timeout */
-    xylem_loop_start_timer(&conn->handshake_timer,
+    xylem_loop_start_timer(conn->handshake_timer,
                            _ws_handshake_timeout_cb,
                            handshake_timeout, 0);
 
@@ -492,7 +489,7 @@ int xylem_ws_close(xylem_ws_conn_t* conn,
     ws_conn_send_close_frame(conn, code, reason, reason_len);
 
     /* Start close timeout */
-    xylem_loop_start_timer(&conn->close_timer,
+    xylem_loop_start_timer(conn->close_timer,
                            ws_conn_close_timeout_cb,
                            conn->close_timeout_ms, 0);
 

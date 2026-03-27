@@ -24,7 +24,6 @@ _Pragma("once")
 #include "xylem/ws/xylem-ws-common.h"
 #include "xylem/xylem-loop.h"
 
-#include <stddef.h>
 #include <stdint.h>
 
 /** WebSocket server configuration. */

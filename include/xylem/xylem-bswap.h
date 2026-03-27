@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdint.h>
 
 /**
  * @brief Byte-swap a value of various integer or floating-point types.

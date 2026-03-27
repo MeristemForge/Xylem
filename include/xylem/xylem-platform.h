@@ -19,56 +19,26 @@
  *  IN THE SOFTWARE.
  */
 
+_Pragma("once")
+
 /**
- * UDP Echo Client
+ * @brief Public platform type definitions.
  *
- * Sends "hello" to 127.0.0.1:9001, waits for the echo, then exits.
- *
- * Usage: udp-echo-client
- * Pair:  udp-echo-server
+ * Provides the minimal set of platform-specific types needed by the
+ * public API headers (sockaddr_storage, ssize_t, socklen_t). Internal
+ * code should continue to use src/platform/platform-socket.h for the
+ * full socket API.
  */
 
-#include "xylem.h"
-#include "xylem/xylem-udp.h"
+#include <stddef.h>
+#include <stdint.h>
 
-#define SERVER_PORT 9001
-
-static xylem_loop_t* _loop;
-
-static void _on_read(xylem_udp_t* udp, void* data, size_t len,
-                     xylem_addr_t* addr) {
-    (void)udp;
-    (void)addr;
-    xylem_logi("echo: %.*s", (int)len, (char*)data);
-    xylem_loop_stop(_loop);
-}
-
-int main(void) {
-    xylem_startup();
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-
-    _loop = xylem_loop_create();
-
-    xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", SERVER_PORT, &dest);
-
-    xylem_udp_handler_t handler = {
-        .on_read = _on_read,
-    };
-
-    xylem_udp_t* udp = xylem_udp_dial(_loop, &dest, &handler);
-    if (!udp) {
-        xylem_loge("failed to connect to 127.0.0.1:%d", SERVER_PORT);
-        return 1;
-    }
-
-    xylem_udp_send(udp, NULL, "hello", 5);
-    xylem_logi("sent: hello");
-
-    xylem_loop_run(_loop);
-
-    xylem_loop_destroy(_loop);
-    xylem_logger_deinit();
-    xylem_cleanup();
-    return 0;
-}
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <WinSock2.h>
+#include <ws2ipdef.h>
+#else
+#include <sys/socket.h>
+#endif

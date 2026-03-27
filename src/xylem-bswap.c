@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-bswap.h"
+
+#include <string.h>
 
 uint16_t xylem_bswap_u16(uint16_t val) {
     return (val << 8) | (val >> 8);

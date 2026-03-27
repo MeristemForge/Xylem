@@ -60,7 +60,7 @@ struct xylem_http_conn_s {
     llhttp_t                   parser;
     llhttp_settings_t          settings;
     xylem_http_req_t           req;
-    xylem_loop_timer_t         idle_timer;
+    xylem_loop_timer_t*        idle_timer;
     bool                       keep_alive;
     bool                       closed;
     bool                       chunked_active;
@@ -160,10 +160,8 @@ static void _http_srv_conn_destroy(xylem_http_conn_t* conn) {
     }
     _http_srv_req_reset(&conn->req);
     free(conn->cur_header_name);
-    if (conn->idle_timer.active) {
-        xylem_loop_stop_timer(&conn->idle_timer);
-    }
-    xylem_loop_deinit_timer(&conn->idle_timer);
+    xylem_loop_stop_timer(conn->idle_timer);
+    xylem_loop_destroy_timer(conn->idle_timer);
     for (size_t i = 0; i < conn->resp_header_count; i++) {
         free((char*)conn->resp_headers[i].name);
         free((char*)conn->resp_headers[i].value);
@@ -315,8 +313,8 @@ static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
     xylem_http_conn_t* conn = parser->data;
 
     /* Reset idle timer --a complete request was received. */
-    if (conn->idle_timer.active && conn->srv->cfg.idle_timeout_ms > 0) {
-        xylem_loop_reset_timer(&conn->idle_timer,
+    if (conn->srv->cfg.idle_timeout_ms > 0) {
+        xylem_loop_reset_timer(conn->idle_timer,
                                conn->srv->cfg.idle_timeout_ms);
     }
 
@@ -354,11 +352,11 @@ static int _http_srv_parser_message_complete_cb(llhttp_t* parser) {
 }
 
 static void _http_srv_idle_timeout_cb(xylem_loop_t* loop,
-                                      xylem_loop_timer_t* timer) {
+                                      xylem_loop_timer_t* timer,
+                                      void* ud) {
     (void)loop;
-    xylem_http_conn_t* conn =
-        (xylem_http_conn_t*)((char*)timer -
-            offsetof(xylem_http_conn_t, idle_timer));
+    (void)timer;
+    xylem_http_conn_t* conn = ud;
     if (!conn->closed) {
         conn->closed = true;
         conn->vt->close_conn(conn->transport);
@@ -388,14 +386,10 @@ static void _http_srv_conn_finish_response(xylem_http_conn_t* conn) {
         _http_srv_conn_init_parser(conn);
 
         if (conn->srv->cfg.idle_timeout_ms > 0) {
-            if (conn->idle_timer.active) {
-                xylem_loop_reset_timer(&conn->idle_timer,
-                                       conn->srv->cfg.idle_timeout_ms);
-            } else {
-                xylem_loop_start_timer(&conn->idle_timer,
-                                       _http_srv_idle_timeout_cb,
-                                       conn->srv->cfg.idle_timeout_ms, 0);
-            }
+            xylem_loop_stop_timer(conn->idle_timer);
+            xylem_loop_start_timer(conn->idle_timer,
+                                   _http_srv_idle_timeout_cb,
+                                   conn->srv->cfg.idle_timeout_ms, 0);
         }
     } else if (!conn->closed) {
         conn->closed = true;
@@ -420,9 +414,9 @@ static void _http_srv_conn_accept_cb(void* handle, void* ctx) {
     _http_srv_conn_init_parser(conn);
 
     /* Start idle timer. */
-    xylem_loop_init_timer(srv->loop, &conn->idle_timer);
+    conn->idle_timer = xylem_loop_create_timer(srv->loop, conn);
     if (srv->cfg.idle_timeout_ms > 0) {
-        xylem_loop_start_timer(&conn->idle_timer,
+        xylem_loop_start_timer(conn->idle_timer,
                                _http_srv_idle_timeout_cb,
                                srv->cfg.idle_timeout_ms, 0);
     }
@@ -1695,9 +1689,7 @@ int xylem_http_writer_accept_upgrade(xylem_http_writer_t* conn,
     }
 
     /* Stop idle timer. */
-    if (conn->idle_timer.active) {
-        xylem_loop_stop_timer(&conn->idle_timer);
-    }
+    xylem_loop_stop_timer(conn->idle_timer);
 
     /* Transfer transport ownership to caller. */
     *transport = conn->transport;

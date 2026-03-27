@@ -47,9 +47,9 @@ struct xylem_http_res_s {
 };
 
 typedef struct {
-    xylem_loop_t               loop;
+    xylem_loop_t*              loop;
     xylem_thrdpool_t*          pool;
-    xylem_loop_timer_t         timeout_timer;
+    xylem_loop_timer_t*        timeout_timer;
     http_url_t                 url;
     const char*                method;
     const void*                body;
@@ -95,7 +95,7 @@ typedef struct {
 } _http_session_pool_entry_t;
 
 struct xylem_http_session_s {
-    xylem_loop_t             loop;
+    xylem_loop_t*            loop;
     xylem_thrdpool_t*        pool;
     xylem_xrbtree_t          conn_pool;
     size_t                   max_idle_per_host;
@@ -447,20 +447,16 @@ static char* _http_cli_cookie_jar_build(const xylem_http_cookie_jar_t* jar,
 
 /* Session-specific abort: stop timer and loop but do NOT close conn. */
 static void _http_session_abort(_http_cli_ctx_t* ctx) {
-    if (ctx->timeout_timer.active) {
-        xylem_loop_stop_timer(&ctx->timeout_timer);
-    }
-    xylem_loop_deinit_timer(&ctx->timeout_timer);
-    xylem_loop_stop(&ctx->loop);
+    xylem_loop_stop_timer(ctx->timeout_timer);
+    xylem_loop_destroy_timer(ctx->timeout_timer);
+    xylem_loop_stop(ctx->loop);
 }
 
 /* Stop and close the timeout timer, then stop the event loop. */
 static void _http_cli_abort(_http_cli_ctx_t* ctx) {
-    if (ctx->timeout_timer.active) {
-        xylem_loop_stop_timer(&ctx->timeout_timer);
-    }
-    xylem_loop_deinit_timer(&ctx->timeout_timer);
-    xylem_loop_stop(&ctx->loop);
+    xylem_loop_stop_timer(ctx->timeout_timer);
+    xylem_loop_destroy_timer(ctx->timeout_timer);
+    xylem_loop_stop(ctx->loop);
 }
 
 static int _http_cli_res_header_field_cb(llhttp_t* parser,
@@ -593,11 +589,11 @@ static int _http_cli_res_message_complete_cb(llhttp_t* parser) {
 }
 
 static void _http_cli_timeout_cb(xylem_loop_t* loop,
-                                 xylem_loop_timer_t* timer) {
+                                 xylem_loop_timer_t* timer,
+                                 void* ud) {
     (void)loop;
-    _http_cli_ctx_t* ctx =
-        (_http_cli_ctx_t*)((char*)timer -
-            offsetof(_http_cli_ctx_t, timeout_timer));
+    (void)timer;
+    _http_cli_ctx_t* ctx = ud;
     ctx->timed_out = true;
     if (ctx->conn) {
         ctx->vt->close_conn(ctx->conn);
@@ -757,7 +753,7 @@ static void _http_cli_resolve_cb(xylem_addr_t* addrs, size_t count,
     ctx->transport_cb.on_write_done = NULL;
     ctx->transport_cb.on_accept     = NULL;
 
-    ctx->conn = ctx->vt->dial(&ctx->loop, &addrs[0],
+    ctx->conn = ctx->vt->dial(ctx->loop, &addrs[0],
                               &ctx->transport_cb, ctx, NULL);
     if (!ctx->conn) {
         _http_cli_abort(ctx);
@@ -856,13 +852,14 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
     ctx.cookie_jar          = (opts) ? opts->cookie_jar    : NULL;
     ctx.range               = (opts) ? opts->range         : NULL;
 
-    if (xylem_loop_init(&ctx.loop) != 0) {
+    ctx.loop = xylem_loop_create();
+    if (!ctx.loop) {
         return NULL;
     }
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
     if (!pool) {
-        xylem_loop_deinit(&ctx.loop);
+        xylem_loop_destroy(ctx.loop);
         return NULL;
     }
 
@@ -888,15 +885,15 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
         llhttp_init(&ctx.parser, HTTP_RESPONSE, &ctx.settings);
         ctx.parser.data = &ctx;
 
-        xylem_loop_init_timer(&ctx.loop, &ctx.timeout_timer);
+        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
         if (timeout_ms > 0) {
-            xylem_loop_start_timer(&ctx.timeout_timer,
+            xylem_loop_start_timer(ctx.timeout_timer,
                                    _http_cli_timeout_cb,
                                    timeout_ms, 0);
         }
 
         xylem_addr_resolve_t* resolve_req =
-            xylem_addr_resolve(&ctx.loop, pool, ctx.url.host, ctx.url.port,
+            xylem_addr_resolve(ctx.loop, pool, ctx.url.host, ctx.url.port,
                                _http_cli_resolve_cb, &ctx);
         if (!resolve_req) {
             _http_cli_abort(&ctx);
@@ -905,7 +902,7 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
             break;
         }
 
-        xylem_loop_run(&ctx.loop);
+        xylem_loop_run(ctx.loop);
 
         free(ctx.cur_header_name);
         ctx.cur_header_name = NULL;
@@ -933,7 +930,7 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
         }
     }
 
-    xylem_loop_deinit(&ctx.loop);
+    xylem_loop_destroy(ctx.loop);
     xylem_thrdpool_destroy(pool);
     free(ctx.merged_headers);
     return ctx.res;
@@ -1163,9 +1160,9 @@ static xylem_http_res_t* _http_session_exec(
         llhttp_init(&ctx.parser, HTTP_RESPONSE, &ctx.settings);
         ctx.parser.data = &ctx;
 
-        xylem_loop_init_timer(&ctx.loop, &ctx.timeout_timer);
+        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
         if (timeout_ms > 0) {
-            xylem_loop_start_timer(&ctx.timeout_timer,
+            xylem_loop_start_timer(ctx.timeout_timer,
                                    _http_cli_timeout_cb,
                                    timeout_ms, 0);
         }
@@ -1192,7 +1189,7 @@ static xylem_http_res_t* _http_session_exec(
             /* Directly send the request (skip DNS + dial). */
             _http_cli_conn_connect_cb(ctx.conn, &ctx);
 
-            xylem_loop_run(&ctx.loop);
+            xylem_loop_run(ctx.loop);
 
             free(ctx.cur_header_name);
             ctx.cur_header_name = NULL;
@@ -1217,9 +1214,9 @@ static xylem_http_res_t* _http_session_exec(
                 ctx.done = false;
                 ctx.timed_out = false;
 
-                xylem_loop_init_timer(&ctx.loop, &ctx.timeout_timer);
+                ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
                 if (timeout_ms > 0) {
-                    xylem_loop_start_timer(&ctx.timeout_timer,
+                    xylem_loop_start_timer(ctx.timeout_timer,
                                            _http_cli_timeout_cb,
                                            timeout_ms, 0);
                 }
@@ -1229,7 +1226,7 @@ static xylem_http_res_t* _http_session_exec(
 fresh_connect:
 
             xylem_addr_resolve_t* resolve_req =
-                xylem_addr_resolve(&ctx.loop, session->pool,
+                xylem_addr_resolve(ctx.loop, session->pool,
                                    ctx.url.host, ctx.url.port,
                                    _http_cli_resolve_cb, &ctx);
             if (!resolve_req) {
@@ -1239,7 +1236,7 @@ fresh_connect:
                 break;
             }
 
-            xylem_loop_run(&ctx.loop);
+            xylem_loop_run(ctx.loop);
 
             free(ctx.cur_header_name);
             ctx.cur_header_name = NULL;
@@ -1303,13 +1300,14 @@ xylem_http_session_t* xylem_http_session_create(
     if (!s) {
         return NULL;
     }
-    if (xylem_loop_init(&s->loop) != 0) {
+    s->loop = xylem_loop_create();
+    if (!s->loop) {
         free(s);
         return NULL;
     }
     s->pool = xylem_thrdpool_create(1);
     if (!s->pool) {
-        xylem_loop_deinit(&s->loop);
+        xylem_loop_destroy(s->loop);
         free(s);
         return NULL;
     }
@@ -1348,7 +1346,7 @@ void xylem_http_session_destroy(xylem_http_session_t* session) {
         free(entry);
     }
     xylem_thrdpool_destroy(session->pool);
-    xylem_loop_deinit(&session->loop);
+    xylem_loop_destroy(session->loop);
     free(session);
 }
 

@@ -19,7 +19,11 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-ringbuf.h"
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 struct xylem_ringbuf_s {
     char*    buf;

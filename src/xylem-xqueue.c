@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-xqueue.h"
+
+#include <stdlib.h>
 
 typedef struct {
     xylem_queue_node_t node;

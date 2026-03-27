@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-xlist.h"
+
+#include <stdlib.h>
 
 typedef struct {
     xylem_list_node_t node;

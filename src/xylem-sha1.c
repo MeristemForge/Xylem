@@ -28,7 +28,10 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-sha1.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 struct xylem_sha1_s {
     uint8_t  buffer[64];

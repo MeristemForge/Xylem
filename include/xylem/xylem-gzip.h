@@ -21,7 +21,8 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stddef.h>
+#include <stdint.h>
 
 /**
  * @brief Compute the maximum compressed size for gzip format.

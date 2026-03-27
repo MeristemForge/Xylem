@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-queue.h"
 
 void xylem_queue_init(xylem_queue_t* queue) {
     queue->head.prev = &queue->head;

@@ -21,7 +21,9 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 /**
  * @brief Compute the number of bytes needed to encode a value as a varint.

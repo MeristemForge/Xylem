@@ -30,6 +30,7 @@
  * Test:  wss-echo-client
  */
 
+#include "xylem.h"
 #include "xylem/ws/xylem-ws-server.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,8 +99,7 @@ int main(void) {
         return 1;
     }
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     xylem_ws_handler_t handler = {
         .on_accept  = _on_accept,
@@ -115,16 +115,16 @@ int main(void) {
         .tls_key  = KEY_FILE,
     };
 
-    xylem_ws_server_t* server = xylem_ws_listen(&loop, &cfg);
+    xylem_ws_server_t* server = xylem_ws_listen(loop, &cfg);
     if (!server) {
         xylem_loge("failed to listen on port %d", LISTEN_PORT);
         return 1;
     }
 
     xylem_logi("wss echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

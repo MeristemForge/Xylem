@@ -80,8 +80,8 @@ struct xylem_ws_conn_s {
     bool                     got_connection;
     bool                     parsing_accept_header;
 
-    xylem_loop_timer_t       handshake_timer;
-    xylem_loop_timer_t       close_timer;
+    xylem_loop_timer_t*      handshake_timer;
+    xylem_loop_timer_t*      close_timer;
 
     /* Current header field tracking for llhttp */
     const char*              current_header_field;
@@ -219,10 +219,12 @@ extern void ws_conn_send_close_frame(xylem_ws_conn_t* conn, uint16_t code,
  * close frame within the configured timeout.
  *
  * @param loop   Event loop.
- * @param timer  Timer that fired (embedded in the connection).
+ * @param timer  Timer that fired.
+ * @param ud     User data (xylem_ws_conn_t pointer).
  */
 extern void ws_conn_close_timeout_cb(xylem_loop_t* loop,
-                                     xylem_loop_timer_t* timer);
+                                     xylem_loop_timer_t* timer,
+                                     void* ud);
 
 /**
  * @brief Send a protocol error close frame and begin shutdown.

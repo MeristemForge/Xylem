@@ -52,9 +52,9 @@ struct xylem_dtls_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
-    xylem_loop_timer_t     retransmit_timer;
+    xylem_loop_t*          loop;
+    xylem_loop_timer_t*    retransmit_timer;
     xylem_list_node_t      server_node;
-    xylem_loop_post_t      free_post;
 };
 
 struct xylem_dtls_server_s {
@@ -236,6 +236,7 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
     return 0;
 }
 
+
 static void _dtls_flush_write_bio(xylem_dtls_t* dtls) {
     char buf[16384];
     int  n;
@@ -251,10 +252,11 @@ static void _dtls_feed_read_bio(xylem_dtls_t* dtls,
 }
 
 static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
-                                        xylem_loop_timer_t* timer) {
+                                        xylem_loop_timer_t* timer,
+                                        void* ud) {
     (void)loop;
-    xylem_dtls_t* dtls =
-        xylem_list_entry(timer, xylem_dtls_t, retransmit_timer);
+    (void)timer;
+    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
 
     DTLSv1_handle_timeout(dtls->ssl);
     _dtls_flush_write_bio(dtls);
@@ -268,19 +270,14 @@ static void _dtls_arm_retransmit(xylem_dtls_t* dtls) {
         if (ms == 0) {
             ms = 1;
         }
-        if (dtls->retransmit_timer.active) {
-            xylem_loop_reset_timer(&dtls->retransmit_timer, ms);
-        } else {
-            xylem_loop_start_timer(&dtls->retransmit_timer,
-                                   _dtls_retransmit_timeout_cb, ms, 0);
-        }
+        xylem_loop_stop_timer(dtls->retransmit_timer);
+        xylem_loop_start_timer(dtls->retransmit_timer,
+                               _dtls_retransmit_timeout_cb, ms, 0);
     }
 }
 
 static void _dtls_stop_retransmit(xylem_dtls_t* dtls) {
-    if (dtls->retransmit_timer.active) {
-        xylem_loop_stop_timer(&dtls->retransmit_timer);
-    }
+    xylem_loop_stop_timer(dtls->retransmit_timer);
 }
 
 static int _dtls_init_ssl(xylem_dtls_t* dtls) {
@@ -376,6 +373,7 @@ static xylem_dtls_t* _dtls_find_session(xylem_dtls_server_t* server,
     return NULL;
 }
 
+
 static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     (void)addr;
@@ -417,10 +415,12 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
  * Deferred free so the session pointer stays valid through the
  * current loop iteration's callback chain.
  */
-static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req) {
-    xylem_dtls_t* dtls = xylem_list_entry(req, xylem_dtls_t, free_post);
-    xylem_loop_stop_timer(&dtls->retransmit_timer);
-    xylem_loop_deinit_timer(&dtls->retransmit_timer);
+static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+                          void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+    xylem_loop_destroy_timer(dtls->retransmit_timer);
     free(dtls);
 }
 
@@ -437,8 +437,7 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err) {
         dtls->handler->on_close(dtls, err);
     }
     /* Defer free to next loop iteration so close_node stays valid. */
-    dtls->free_post.cb = _dtls_free_cb;
-    xylem_loop_post(dtls->retransmit_timer.loop, &dtls->free_post);
+    xylem_loop_post(dtls->loop, _dtls_free_cb, dtls);
 }
 
 static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
@@ -493,13 +492,12 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     dtls->handler   = server->handler;
     dtls->server    = server;
     dtls->peer_addr = *addr;
+    dtls->loop      = server->loop;
 
-    xylem_loop_init_timer(server->loop, &dtls->retransmit_timer);
+    dtls->retransmit_timer = xylem_loop_create_timer(server->loop, dtls);
 
     if (_dtls_init_ssl(dtls) != 0) {
-        /* Balance the active_count from xylem_loop_init_timer. */
-        xylem_loop_stop_timer(&dtls->retransmit_timer);
-        xylem_loop_deinit_timer(&dtls->retransmit_timer);
+        xylem_loop_destroy_timer(dtls->retransmit_timer);
         free(dtls);
         return;
     }
@@ -537,6 +535,7 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
     dtls->ctx       = ctx;
     dtls->handler   = handler;
     dtls->peer_addr = *addr;
+    dtls->loop      = loop;
 
     xylem_udp_t* udp = xylem_udp_dial(loop, addr,
                                       &_dtls_client_udp_handler);
@@ -548,12 +547,10 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
     dtls->udp = udp;
     xylem_udp_set_userdata(udp, dtls);
 
-    xylem_loop_init_timer(loop, &dtls->retransmit_timer);
+    dtls->retransmit_timer = xylem_loop_create_timer(loop, dtls);
 
     if (_dtls_init_ssl(dtls) != 0) {
-        /* Balance the active_count from xylem_loop_init_timer. */
-        xylem_loop_stop_timer(&dtls->retransmit_timer);
-        xylem_loop_deinit_timer(&dtls->retransmit_timer);
+        xylem_loop_destroy_timer(dtls->retransmit_timer);
         xylem_udp_set_userdata(udp, NULL);
         xylem_udp_close(udp);
         free(dtls);
@@ -616,8 +613,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
         }
 
         /* Defer free to next loop iteration so close_node stays valid. */
-        dtls->free_post.cb = _dtls_free_cb;
-        xylem_loop_post(dtls->retransmit_timer.loop, &dtls->free_post);
+        xylem_loop_post(dtls->loop, _dtls_free_cb, dtls);
     } else {
         /**
          * Client-side: close the dedicated UDP socket. The

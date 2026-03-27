@@ -118,21 +118,22 @@ static void test_srv_create_null_loop(void) {
 
 static void test_srv_create_null_cfg(void) {
     /* Pass a non-NULL loop pointer but NULL cfg */
-    xylem_loop_t loop;
-    ASSERT(xylem_http_listen(&loop, NULL) == NULL);
+    xylem_loop_t* loop = xylem_loop_create();
+    ASSERT(xylem_http_listen(loop, NULL) == NULL);
+    xylem_loop_destroy(loop);
 }
 
 static void test_srv_create_destroy(void) {
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
+    ASSERT(loop != NULL);
 
     xylem_http_srv_cfg_t cfg = {0};
     cfg.port = 0;
-    xylem_http_srv_t* srv = xylem_http_listen(&loop, &cfg);
+    xylem_http_srv_t* srv = xylem_http_listen(loop, &cfg);
     ASSERT(srv != NULL);
     xylem_http_close_server(srv);
 
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
 }
 
 static void test_srv_destroy_null(void) {

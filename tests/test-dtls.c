@@ -139,7 +139,7 @@ static void test_set_alpn(void) {
     xylem_dtls_ctx_destroy(ctx);
 }
 
-static xylem_loop_t          _loop;
+static xylem_loop_t*         _loop;
 static bool                  _server_accepted;
 static bool                  _client_connected;
 static bool                  _client_received;
@@ -215,7 +215,8 @@ static void test_handshake_and_echo(void) {
     _recv_len           = 0;
     memset(_recv_buf, 0, sizeof(_recv_buf));
 
-    ASSERT(xylem_loop_init(&_loop) == 0);
+    _loop = xylem_loop_create();
+    ASSERT(_loop != NULL);
 
     /* Server context with cert. */
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
@@ -232,7 +233,7 @@ static void test_handshake_and_echo(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 15433, &addr);
 
-    _dtls_server = xylem_dtls_listen(&_loop, &addr, srv_ctx, &srv_handler);
+    _dtls_server = xylem_dtls_listen(_loop, &addr, srv_ctx, &srv_handler);
     ASSERT(_dtls_server != NULL);
 
     /* Client context -- disable verify for self-signed. */
@@ -247,11 +248,11 @@ static void test_handshake_and_echo(void) {
         .on_close      = _on_client_close,
     };
 
-    xylem_dtls_t* client = xylem_dtls_dial(&_loop, &addr, cli_ctx,
+    xylem_dtls_t* client = xylem_dtls_dial(_loop, &addr, cli_ctx,
                                            &cli_handler);
     ASSERT(client != NULL);
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
     ASSERT(_server_accepted == true);
     ASSERT(_client_connected == true);
@@ -263,7 +264,7 @@ static void test_handshake_and_echo(void) {
 
     xylem_dtls_ctx_destroy(srv_ctx);
     xylem_dtls_ctx_destroy(cli_ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
 
     remove(cert);
     remove(key);
@@ -288,7 +289,8 @@ static void test_handshake_failure_wrong_ca(void) {
 
     _handshake_failed = false;
 
-    ASSERT(xylem_loop_init(&_loop) == 0);
+    _loop = xylem_loop_create();
+    ASSERT(_loop != NULL);
 
     /* Server with cert. */
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
@@ -302,7 +304,7 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 15434, &addr);
 
-    _dtls_server = xylem_dtls_listen(&_loop, &addr, srv_ctx, &srv_handler);
+    _dtls_server = xylem_dtls_listen(_loop, &addr, srv_ctx, &srv_handler);
     ASSERT(_dtls_server != NULL);
 
     /* Client with verification enabled, using wrong CA. */
@@ -314,17 +316,17 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_dtls_handler_t cli_handler = {0};
     cli_handler.on_close = _on_fail_close;
 
-    xylem_dtls_t* client = xylem_dtls_dial(&_loop, &addr, cli_ctx,
+    xylem_dtls_t* client = xylem_dtls_dial(_loop, &addr, cli_ctx,
                                            &cli_handler);
     ASSERT(client != NULL);
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
     ASSERT(_handshake_failed == true);
 
     xylem_dtls_ctx_destroy(srv_ctx);
     xylem_dtls_ctx_destroy(cli_ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
 
     remove(cert);
     remove(key);

@@ -29,12 +29,13 @@
  * Pair:  tcp-echo-server
  */
 
+#include "xylem.h"
 #include "xylem/xylem-tcp.h"
 #include <string.h>
 
 #define SERVER_PORT 9000
 
-static xylem_loop_t _loop;
+static xylem_loop_t* _loop;
 
 static void _on_connect(xylem_tcp_conn_t* conn) {
     xylem_logi("connected to server");
@@ -49,14 +50,14 @@ static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
 static void _on_close(xylem_tcp_conn_t* conn, int err) {
     (void)conn;
     xylem_logi("disconnected (err=%d)", err);
-    xylem_loop_stop(&_loop);
+    xylem_loop_stop(_loop);
 }
 
 int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_init(&_loop);
+    _loop = xylem_loop_create();
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", SERVER_PORT, &addr);
@@ -72,16 +73,16 @@ int main(void) {
     opts.framing.delim.delim     = "\r\n";
     opts.framing.delim.delim_len = 2;
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(&_loop, &addr,
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(_loop, &addr,
                                             &handler, &opts);
     if (!conn) {
         xylem_loge("failed to connect");
         return 1;
     }
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

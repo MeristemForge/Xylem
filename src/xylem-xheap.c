@@ -19,7 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-xheap.h"
+
+#include <stdlib.h>
 
 typedef struct {
     xylem_heap_node_t     node;

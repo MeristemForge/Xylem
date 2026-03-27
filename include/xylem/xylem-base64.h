@@ -21,7 +21,8 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 /**
  * @brief Compute the exact encoded size for Base64.

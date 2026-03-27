@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include "xylem/xylem-list.h"
 
 typedef struct xylem_xlist_s xylem_xlist_t;
 

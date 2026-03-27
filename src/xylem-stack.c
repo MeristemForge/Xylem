@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-stack.h"
 
 void xylem_stack_init(xylem_stack_t* stack) {
     stack->top = NULL;

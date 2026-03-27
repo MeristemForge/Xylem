@@ -412,7 +412,6 @@ static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
  */
 static xylem_tcp_handler_t _tls_tcp_server_handler = {
     .on_accept         = _tls_tcp_accept_cb,
-    .on_connect        = _tls_tcp_connect_cb,
     .on_read           = _tls_tcp_read_cb,
     .on_close          = _tls_tcp_close_cb,
     .on_timeout        = _tls_tcp_timeout_cb,

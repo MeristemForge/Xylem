@@ -21,7 +21,8 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 #define xylem_rbtree_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
 

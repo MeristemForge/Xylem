@@ -20,16 +20,63 @@
  */
 
 #include "xylem/xylem-loop.h"
+#include "xylem/xylem-heap.h"
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-queue.h"
+#include "xylem/xylem-utils.h"
 
-/* timer comparator: earlier deadline = higher priority */
-static int _loop_cmp_timer(const xylem_heap_node_t* a,
-                           const xylem_heap_node_t* b) {
+#include "platform/platform.h"
+#include "xylem-loop-io.h"
+
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "deprecated/c11-threads.h"
+
+struct xylem_loop_s {
+    platform_poller_sq_t  poller;
+    xylem_heap_t          timers;
+    xylem_queue_t         posts;
+    platform_sock_t       wakeup_rd;
+    platform_sock_t       wakeup_wr;
+    platform_poller_sqe_t wakeup_sqe;
+    mtx_t                 post_mtx;
+    size_t                active_count;
+    uint64_t              time;
+    _Atomic bool          stopped;
+};
+
+struct xylem_loop_io_s {
+    platform_poller_sqe_t sqe;
+    xylem_loop_t*         loop;
+    xylem_loop_io_fn_t    cb;
+    void*                 ud;
+    bool                  registered;
+};
+
+struct xylem_loop_timer_s {
+    xylem_heap_node_t     heap_node;
+    xylem_loop_t*         loop;
+    xylem_loop_timer_fn_t cb;
+    void*                 ud;
+    uint64_t              timeout;
+    uint64_t              repeat;
+    bool                  active;
+};
+
+struct xylem_loop_post_s {
+    xylem_queue_node_t   node;
+    xylem_loop_post_fn_t cb;
+    void*                ud;
+};
+
+static int
+_loop_cmp_timer(const xylem_heap_node_t* a, const xylem_heap_node_t* b) {
     const xylem_loop_timer_t* ta =
         xylem_heap_entry(a, xylem_loop_timer_t, heap_node);
     const xylem_loop_timer_t* tb =
         xylem_heap_entry(b, xylem_loop_timer_t, heap_node);
-
     if (ta->timeout < tb->timeout) {
         return -1;
     }
@@ -43,7 +90,6 @@ static void _loop_update_time(xylem_loop_t* loop) {
     loop->time = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 }
 
-/* drain the wakeup socketpair so it doesn't keep firing */
 static void _loop_drain_wakeup(xylem_loop_t* loop) {
     char buf[64];
     for (;;) {
@@ -54,74 +100,56 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
     }
 }
 
-/* process all pending post requests */
 static void _loop_process_posts(xylem_loop_t* loop) {
-    /**
-     * Fast path: skip lock when queue is empty.
-     * A concurrent enqueue between this check and the lock is fine --
-     * the wakeup write will trigger another iteration.
-     */
     if (xylem_queue_empty(&loop->posts)) {
         return;
     }
-
     xylem_queue_t local;
     xylem_queue_init(&local);
-
-    /* swap under lock to minimize hold time */
     mtx_lock(&loop->post_mtx);
     xylem_queue_swap(&loop->posts, &local);
     mtx_unlock(&loop->post_mtx);
-
     while (!xylem_queue_empty(&local)) {
         xylem_queue_node_t* node = xylem_queue_dequeue(&local);
-        xylem_loop_post_t*  req  =
+        xylem_loop_post_t*  req =
             xylem_queue_entry(node, xylem_loop_post_t, node);
-        req->cb(loop, req);
+        req->cb(loop, req, req->ud);
+        free(req);
     }
 }
 
-/* fire all expired timers */
 static void _loop_process_timers(xylem_loop_t* loop) {
     for (;;) {
         xylem_heap_node_t* root = xylem_heap_root(&loop->timers);
         if (!root) {
             break;
         }
-
         xylem_loop_timer_t* timer =
             xylem_heap_entry(root, xylem_loop_timer_t, heap_node);
-
         if (timer->timeout > loop->time) {
             break;
         }
-
         xylem_heap_dequeue(&loop->timers);
-
         if (timer->repeat > 0) {
             timer->timeout = loop->time + timer->repeat;
             xylem_heap_insert(&loop->timers, &timer->heap_node);
         } else {
             timer->active = false;
         }
-        timer->cb(loop, timer);
+        timer->cb(loop, timer, timer->ud);
     }
 }
 
-/* calculate timeout for poller_wait from nearest timer */
 static int _loop_next_timeout(xylem_loop_t* loop) {
     xylem_heap_node_t* root = xylem_heap_root(&loop->timers);
     if (!root) {
         return -1;
     }
-
     xylem_loop_timer_t* timer =
         xylem_heap_entry(root, xylem_loop_timer_t, heap_node);
-
     if (timer->timeout <= loop->time) {
         return 0;
     }
-
     uint64_t diff = timer->timeout - loop->time;
     if (diff > INT32_MAX) {
         return INT32_MAX;
@@ -129,29 +157,34 @@ static int _loop_next_timeout(xylem_loop_t* loop) {
     return (int)diff;
 }
 
-int xylem_loop_init(xylem_loop_t* loop) {
-    memset(loop, 0, sizeof(*loop));
+xylem_loop_t* xylem_loop_create(void) {
+    xylem_loop_t* loop = calloc(1, sizeof(*loop));
+    if (!loop) {
+        return NULL;
+    }
 
     if (platform_poller_init(&loop->poller) != 0) {
-        xylem_loge("loop init: poller init failed");
-        return -1;
+        free(loop);
+        return NULL;
     }
+
     xylem_heap_init(&loop->timers, _loop_cmp_timer);
     xylem_queue_init(&loop->posts);
 
     if (mtx_init(&loop->post_mtx, mtx_plain) != thrd_success) {
-        xylem_loge("loop init: mutex init failed");
         platform_poller_destroy(&loop->poller);
-        return -1;
+        free(loop);
+        return NULL;
     }
 
     platform_sock_t pair[2];
     if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) != 0) {
-        xylem_loge("loop init: socketpair failed");
         mtx_destroy(&loop->post_mtx);
         platform_poller_destroy(&loop->poller);
-        return -1;
+        free(loop);
+        return NULL;
     }
+
     loop->wakeup_rd = pair[0];
     loop->wakeup_wr = pair[1];
 
@@ -164,28 +197,34 @@ int xylem_loop_init(xylem_loop_t* loop) {
     loop->wakeup_sqe.ud = NULL;
 
     if (platform_poller_add(&loop->poller, &loop->wakeup_sqe) != 0) {
-        xylem_loge("loop init: wakeup fd poller_add failed");
         platform_socket_close(loop->wakeup_rd);
         platform_socket_close(loop->wakeup_wr);
         mtx_destroy(&loop->post_mtx);
         platform_poller_destroy(&loop->poller);
-        return -1;
+        free(loop);
+        return NULL;
     }
+
     loop->active_count = 0;
     atomic_store(&loop->stopped, false);
     _loop_update_time(loop);
 
-    xylem_logi("loop init ok");
-    return 0;
+    xylem_logi("loop create ok");
+    return loop;
 }
 
-void xylem_loop_deinit(xylem_loop_t* loop) {
-    xylem_logi("loop deinit");
+void xylem_loop_destroy(xylem_loop_t* loop) {
+    if (!loop) {
+        return;
+    }
+
+    xylem_logi("loop destroy");
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);
     mtx_destroy(&loop->post_mtx);
     platform_poller_destroy(&loop->poller);
+    free(loop);
 }
 
 int xylem_loop_run(xylem_loop_t* loop) {
@@ -203,12 +242,11 @@ int xylem_loop_run(xylem_loop_t* loop) {
         /* process I/O completions */
         for (int i = 0; i < n; i++) {
             if (cqes[i].ud == NULL) {
-                /* wakeup fd fired -- drain so LT doesn't keep firing */
                 _loop_drain_wakeup(loop);
                 continue;
             }
             xylem_loop_io_t* io = cqes[i].ud;
-            io->cb(io->loop, io, cqes[i].op);
+            io->cb(io->loop, io, cqes[i].op, io->ud);
         }
 
         _loop_process_posts(loop);
@@ -216,54 +254,56 @@ int xylem_loop_run(xylem_loop_t* loop) {
         /* process posts again -- timers may have called post() inline */
         _loop_process_posts(loop);
     }
+
     return 0;
 }
 
 void xylem_loop_stop(xylem_loop_t* loop) {
     xylem_logi("loop stop requested");
     atomic_store(&loop->stopped, true);
-    /* wake up the poller in case it's blocked */
     char c = 1;
     platform_socket_send(loop->wakeup_wr, &c, 1);
 }
 
-uint64_t xylem_loop_now(xylem_loop_t* loop) {
-    return loop->time;
-}
-
-int xylem_loop_init_io(xylem_loop_t* loop,
-                       xylem_loop_io_t* io,
-                       platform_poller_fd_t fd) {
-    memset(io, 0, sizeof(*io));
-    io->loop       = loop;
-    io->sqe.fd     = fd;
-    io->sqe.ud     = io;
+xylem_loop_io_t*
+xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd, void* ud) {
+    xylem_loop_io_t* io = calloc(1, sizeof(*io));
+    if (!io) {
+        return NULL;
+    }
+    io->loop = loop;
+    io->sqe.fd = fd;
+    io->sqe.ud = io;
+    io->ud = ud;
     io->registered = false;
-    io->cb         = NULL;
+    io->cb = NULL;
     loop->active_count++;
-    return 0;
+    return io;
 }
 
-int xylem_loop_start_io(xylem_loop_io_t* io,
-                        platform_poller_op_t op,
-                        xylem_loop_io_fn_t cb) {
-    io->sqe.op = op;
-    io->cb     = cb;
+void xylem_loop_destroy_io(xylem_loop_io_t* io) {
+    if (!io) {
+        return;
+    }
+    if (io->registered) {
+        xylem_loop_stop_io(io);
+    }
+    io->loop->active_count--;
+    free(io);
+}
 
+int xylem_loop_start_io(
+    xylem_loop_io_t* io, platform_poller_op_t op, xylem_loop_io_fn_t cb) {
+    io->sqe.op = op;
+    io->cb = cb;
     int rc;
     if (!io->registered) {
         rc = platform_poller_add(&io->loop->poller, &io->sqe);
         if (rc == 0) {
             io->registered = true;
-            xylem_logd("loop io_start: add fd=%d op=%d",
-                       (int)io->sqe.fd, (int)op);
         }
     } else {
         rc = platform_poller_mod(&io->loop->poller, &io->sqe);
-        if (rc == 0) {
-            xylem_logd("loop io_start: mod fd=%d op=%d",
-                       (int)io->sqe.fd, (int)op);
-        }
     }
     return rc;
 }
@@ -272,41 +312,49 @@ int xylem_loop_stop_io(xylem_loop_io_t* io) {
     if (!io->registered) {
         return 0;
     }
-
     int rc = platform_poller_del(&io->loop->poller, &io->sqe);
     if (rc == 0) {
-        xylem_logd("loop io_stop: del fd=%d", (int)io->sqe.fd);
         io->registered = false;
     }
     return rc;
 }
 
-void xylem_loop_deinit_io(xylem_loop_io_t* io) {
-    io->cb = NULL;
-    io->loop->active_count--;
-}
-
-int xylem_loop_init_timer(xylem_loop_t* loop,
-                          xylem_loop_timer_t* timer) {
-    memset(timer, 0, sizeof(*timer));
-    timer->loop   = loop;
+xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop, void* ud) {
+    xylem_loop_timer_t* timer = calloc(1, sizeof(*timer));
+    if (!timer) {
+        return NULL;
+    }
+    timer->loop = loop;
+    timer->ud = ud;
     timer->active = false;
-    timer->cb     = NULL;
+    timer->cb = NULL;
     loop->active_count++;
-    return 0;
+    return timer;
 }
 
-int xylem_loop_start_timer(xylem_loop_timer_t* timer,
-                           xylem_loop_timer_fn_t cb,
-                           uint64_t timeout_ms,
-                           uint64_t repeat_ms) {
+void xylem_loop_destroy_timer(xylem_loop_timer_t* timer) {
+    if (!timer) {
+        return;
+    }
+    if (timer->active) {
+        xylem_loop_stop_timer(timer);
+    }
+    timer->loop->active_count--;
+    free(timer);
+}
+
+int xylem_loop_start_timer(
+    xylem_loop_timer_t*   timer,
+    xylem_loop_timer_fn_t cb,
+    uint64_t              timeout_ms,
+    uint64_t              repeat_ms) {
     if (timer->active) {
         xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     }
-    timer->cb      = cb;
+    timer->cb = cb;
     timer->timeout = timer->loop->time + timeout_ms;
-    timer->repeat  = repeat_ms;
-    timer->active  = true;
+    timer->repeat = repeat_ms;
+    timer->active = true;
     xylem_heap_insert(&timer->loop->timers, &timer->heap_node);
     return 0;
 }
@@ -315,35 +363,32 @@ int xylem_loop_stop_timer(xylem_loop_timer_t* timer) {
     if (!timer->active) {
         return 0;
     }
-
     xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     timer->active = false;
     return 0;
 }
 
-int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
-                           uint64_t timeout_ms) {
+int xylem_loop_reset_timer(xylem_loop_timer_t* timer, uint64_t timeout_ms) {
     if (!timer->active) {
         return -1;
     }
-
     xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     timer->timeout = timer->loop->time + timeout_ms;
     xylem_heap_insert(&timer->loop->timers, &timer->heap_node);
     return 0;
 }
 
-void xylem_loop_deinit_timer(xylem_loop_timer_t* timer) {
-    timer->cb = NULL;
-    timer->loop->active_count--;
-}
-
-int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_t* req) {
+int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
+    xylem_loop_post_t* req = malloc(sizeof(*req));
+    if (!req) {
+        return -1;
+    }
+    req->cb = cb;
+    req->ud = ud;
     mtx_lock(&loop->post_mtx);
     xylem_queue_enqueue(&loop->posts, &req->node);
     mtx_unlock(&loop->post_mtx);
-
-    char c = 1;
+    char    c = 1;
     ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
     return (n > 0) ? 0 : -1;
 }

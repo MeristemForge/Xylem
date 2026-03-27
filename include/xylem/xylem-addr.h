@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "platform/platform-socket.h"
+#include "xylem/xylem-platform.h"
 
 typedef struct xylem_loop_s      xylem_loop_t;
 typedef struct xylem_thrdpool_s  xylem_thrdpool_t;

@@ -19,7 +19,13 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-thrdpool.h"
+#include "xylem/xylem-queue.h"
+
+#include <stdbool.h>
+#include <stdlib.h>
+
+#include "deprecated/c11-threads.h"
 
 typedef struct _thrdpool_job_s _thrdpool_job_t;
 

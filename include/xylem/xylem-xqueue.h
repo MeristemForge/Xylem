@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include "xylem/xylem-queue.h"
 
 typedef struct xylem_xqueue_s xylem_xqueue_t;
 

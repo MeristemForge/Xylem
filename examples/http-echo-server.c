@@ -168,8 +168,7 @@ int main(void) {
     xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t loop;
-    xylem_loop_init(&loop);
+    xylem_loop_t* loop = xylem_loop_create();
 
     _router = xylem_http_router_create();
 
@@ -190,18 +189,18 @@ int main(void) {
         .userdata   = NULL,
     };
 
-    xylem_http_srv_t* srv = xylem_http_listen(&loop, &cfg);
+    xylem_http_srv_t* srv = xylem_http_listen(loop, &cfg);
     if (!srv) {
         xylem_loge("failed to start http server on port %d", LISTEN_PORT);
         return 1;
     }
 
     xylem_logi("http server listening on http://127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(&loop);
+    xylem_loop_run(loop);
 
     xylem_http_close_server(srv);
     xylem_http_router_destroy(_router);
-    xylem_loop_deinit(&loop);
+    xylem_loop_destroy(loop);
     xylem_logger_deinit();
     xylem_cleanup();
     return 0;

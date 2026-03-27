@@ -21,7 +21,8 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 typedef struct xylem_ringbuf_s xylem_ringbuf_t;
 

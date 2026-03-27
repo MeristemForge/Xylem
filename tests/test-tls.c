@@ -139,17 +139,17 @@ static void test_set_alpn(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-static xylem_loop_t       _loop;
-static bool               _server_accepted;
-static bool               _client_connected;
-static bool               _client_received;
-static bool               _write_done;
-static bool               _client_closed;
-static bool               _server_conn_closed;
-static char               _recv_buf[256];
-static size_t             _recv_len;
-static xylem_tls_t*       _server_conn;
-static xylem_tls_server_t* _tls_server;
+static xylem_loop_t*        _loop;
+static bool                  _server_accepted;
+static bool                  _client_connected;
+static bool                  _client_received;
+static bool                  _write_done;
+static bool                  _client_closed;
+static bool                  _server_conn_closed;
+static char                  _recv_buf[256];
+static size_t                _recv_len;
+static xylem_tls_t*          _server_conn;
+static xylem_tls_server_t*   _tls_server;
 
 static void _on_server_accept(xylem_tls_t* tls) {
     _server_accepted = true;
@@ -215,7 +215,8 @@ static void test_handshake_and_echo(void) {
     _recv_len           = 0;
     memset(_recv_buf, 0, sizeof(_recv_buf));
 
-    ASSERT(xylem_loop_init(&_loop) == 0);
+    _loop = xylem_loop_create();
+    ASSERT(_loop != NULL);
 
     /* Server context with cert. */
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
@@ -232,7 +233,7 @@ static void test_handshake_and_echo(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 14433, &addr);
 
-    _tls_server = xylem_tls_listen(&_loop, &addr, srv_ctx,
+    _tls_server = xylem_tls_listen(_loop, &addr, srv_ctx,
                                    &srv_handler, NULL);
     ASSERT(_tls_server != NULL);
 
@@ -249,11 +250,11 @@ static void test_handshake_and_echo(void) {
     };
     ASSERT(_tls_server != NULL);
 
-    xylem_tls_t* client = xylem_tls_dial(&_loop, &addr, cli_ctx,
+    xylem_tls_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
                                          &cli_handler, NULL);
     ASSERT(client != NULL);
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
     ASSERT(_server_accepted == true);
     ASSERT(_client_connected == true);
@@ -265,7 +266,7 @@ static void test_handshake_and_echo(void) {
 
     xylem_tls_ctx_destroy(srv_ctx);
     xylem_tls_ctx_destroy(cli_ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
 
     remove(cert);
     remove(key);
@@ -290,7 +291,8 @@ static void test_handshake_failure_wrong_ca(void) {
 
     _handshake_failed = false;
 
-    ASSERT(xylem_loop_init(&_loop) == 0);
+    _loop = xylem_loop_create();
+    ASSERT(_loop != NULL);
 
     /* Server with cert. */
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
@@ -304,7 +306,7 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 14434, &addr);
 
-    _tls_server = xylem_tls_listen(&_loop, &addr, srv_ctx,
+    _tls_server = xylem_tls_listen(_loop, &addr, srv_ctx,
                                    &srv_handler, NULL);
     ASSERT(_tls_server != NULL);
 
@@ -317,17 +319,17 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_tls_handler_t cli_handler = {0};
     cli_handler.on_close = _on_fail_close;
 
-    xylem_tls_t* client = xylem_tls_dial(&_loop, &addr, cli_ctx,
+    xylem_tls_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
                                          &cli_handler, NULL);
     ASSERT(client != NULL);
 
-    xylem_loop_run(&_loop);
+    xylem_loop_run(_loop);
 
     ASSERT(_handshake_failed == true);
 
     xylem_tls_ctx_destroy(srv_ctx);
     xylem_tls_ctx_destroy(cli_ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
 
     remove(cert);
     remove(key);
@@ -355,16 +357,17 @@ static void test_sni_hostname(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 14435, &addr);
 
-    ASSERT(xylem_loop_init(&_loop) == 0);
+    _loop = xylem_loop_create();
+    ASSERT(_loop != NULL);
 
-    xylem_tls_t* tls = xylem_tls_dial(&_loop, &addr, ctx,
+    xylem_tls_t* tls = xylem_tls_dial(_loop, &addr, ctx,
                                       &handler, NULL);
     ASSERT(tls != NULL);
     ASSERT(xylem_tls_set_hostname(tls, "example.com") == 0);
 
     xylem_tls_close(tls);
     xylem_tls_ctx_destroy(ctx);
-    xylem_loop_deinit(&_loop);
+    xylem_loop_destroy(_loop);
 }
 
 int main(void) {

@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem.h"
+#include "xylem/xylem-heap.h"
 
 /* swap parent with child. child moves closer to the root, parent moves away. */
 static void _heap_swap_node(

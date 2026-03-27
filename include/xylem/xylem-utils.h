@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem.h"
+#include <stdint.h>
 
 typedef enum xylem_endian_e         xylem_endian_t;
 typedef enum xylem_time_precision_e xylem_time_precision_t;
