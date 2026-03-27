@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 /* Create with invalid params returns NULL. */
 static void test_create_invalid(void) {
     ASSERT(xylem_ringbuf_create(0, 16) == NULL);   /* esize=0 */

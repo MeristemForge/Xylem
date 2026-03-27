@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 /* IPv4 pton + ntop round-trip */
 static void test_ipv4_roundtrip(void) {
     xylem_addr_t addr;

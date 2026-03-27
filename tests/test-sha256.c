@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 static void _hex_digest(const uint8_t digest[32], char out[65]) {
     static const char hex[] = "0123456789abcdef";
     for (int i = 0; i < 32; i++) {

@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <stdatomic.h>
+
 #define THREAD_COUNT    10
 #define STRESS_THREADS  20
 

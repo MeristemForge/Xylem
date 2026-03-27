@@ -22,6 +22,9 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <stdatomic.h>
+#include <string.h>
+
 static atomic_int _counter;
 
 static void _increment(void* arg) {

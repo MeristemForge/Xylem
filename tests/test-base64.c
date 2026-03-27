@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 /* Empty input: both standard and URL-safe variants. */
 static void test_empty_input(void) {
     uint8_t enc[10], dec[10];

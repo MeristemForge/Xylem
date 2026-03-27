@@ -30,7 +30,9 @@
  */
 
 #include "xylem.h"
+
 #include <stdio.h>
+#include <string.h>
 
 #define BASE_URL "http://127.0.0.1:8080"
 

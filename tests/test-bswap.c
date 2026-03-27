@@ -21,7 +21,9 @@
 
 #include "xylem.h"
 #include "assert.h"
+
 #include <math.h>
+#include <string.h>
 
 static inline uint32_t float_bits(float f) {
     uint32_t u;

@@ -25,20 +25,22 @@
 #include "xylem/xylem-queue.h"
 #include "xylem/xylem-list.h"
 
+#include "platform/platform-socket.h"
 #include "xylem-loop-io.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define TCP_DEFAULT_READ_BUF_SIZE 65536
 
 typedef enum {
-    _TCP_STATE_CONNECTING,
-    _TCP_STATE_CONNECTED,
-    _TCP_STATE_CLOSING,
-    _TCP_STATE_CLOSED,
-} _tcp_state_t;
+    TCP_STATE_CONNECTING,
+    TCP_STATE_CONNECTED,
+    TCP_STATE_CLOSING,
+    TCP_STATE_CLOSED,
+} tcp_state_t;
 
 typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;
@@ -69,7 +71,7 @@ struct xylem_tcp_conn_s {
     platform_sock_t       fd;
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    _tcp_state_t          state;
+    tcp_state_t          state;
     uint8_t*              read_buf;
     size_t                read_len;
     size_t                read_cap;
@@ -320,7 +322,7 @@ static void _tcp_conn_free_cb(xylem_loop_t* loop,
 }
 
 static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
-    conn->state = _TCP_STATE_CLOSED;
+    conn->state = TCP_STATE_CLOSED;
     xylem_logd("tcp conn fd=%d destroy err=%d",
                (int)conn->fd, err);
 
@@ -363,14 +365,14 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
 }
 
 static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
-    if (conn->state == _TCP_STATE_CLOSED ||
-        conn->state == _TCP_STATE_CLOSING) {
+    if (conn->state == TCP_STATE_CLOSED ||
+        conn->state == TCP_STATE_CLOSING) {
         return;
     }
 
     xylem_logd("tcp conn fd=%d start_close err=%d",
                (int)conn->fd, err);
-    conn->state = _TCP_STATE_CLOSING;
+    conn->state = TCP_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
@@ -438,8 +440,8 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                 conn->read_buf += (size_t)rc;
                 conn->read_len -= (size_t)rc;
 
-                if (conn->state == _TCP_STATE_CLOSED ||
-                    conn->state == _TCP_STATE_CLOSING) {
+                if (conn->state == TCP_STATE_CLOSED ||
+                    conn->state == TCP_STATE_CLOSING) {
                     return;
                 }
             } else if (rc == 0) {
@@ -502,7 +504,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
             xylem_logw("tcp conn fd=%d send error=%d",
                        (int)conn->fd, err);
 
-            if (conn->state == _TCP_STATE_CLOSING) {
+            if (conn->state == TCP_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
@@ -535,7 +537,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
 
             free(req);
 
-            if (conn->state == _TCP_STATE_CLOSED) {
+            if (conn->state == TCP_STATE_CLOSED) {
                 return;
             }
 
@@ -555,7 +557,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         xylem_loop_stop_timer(conn->write_timer);
     }
 
-    if (conn->state == _TCP_STATE_CLOSING) {
+    if (conn->state == TCP_STATE_CLOSING) {
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -575,14 +577,14 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         _tcp_conn_readable_cb(conn);
     }
 
-    if (conn->state == _TCP_STATE_CLOSED) {
+    if (conn->state == TCP_STATE_CLOSED) {
         return;
     }
 
     if (revents & PLATFORM_POLLER_WR_OP) {
         _tcp_flush_writes(conn);
 
-        if (conn->state == _TCP_STATE_CONNECTED &&
+        if (conn->state == TCP_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
                                 _tcp_conn_io_cb);
@@ -596,7 +598,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
  * callback.
  */
 static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
-    conn->state    = _TCP_STATE_CONNECTED;
+    conn->state    = TCP_STATE_CONNECTED;
     conn->read_buf = malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
@@ -747,7 +749,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     conn->fd = fd;
     xylem_loop_destroy_io(conn->io);
     conn->io = xylem_loop_create_io(conn->loop, fd, conn);
-    conn->state = _TCP_STATE_CONNECTING;
+    conn->state = TCP_STATE_CONNECTING;
     dial->reconnect_count++;
 
     if (connected) {
@@ -865,14 +867,14 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
-    if (conn->state == _TCP_STATE_CLOSING ||
-        conn->state == _TCP_STATE_CLOSED) {
+    if (conn->state == TCP_STATE_CLOSING ||
+        conn->state == TCP_STATE_CLOSED) {
         return;
     }
 
     xylem_logi("tcp conn fd=%d graceful close requested",
                (int)conn->fd);
-    conn->state = _TCP_STATE_CLOSING;
+    conn->state = TCP_STATE_CLOSING;
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -881,8 +883,8 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
-    if (conn->state == _TCP_STATE_CLOSING ||
-        conn->state == _TCP_STATE_CLOSED) {
+    if (conn->state == TCP_STATE_CLOSING ||
+        conn->state == TCP_STATE_CLOSED) {
         return -1;
     }
 
@@ -954,7 +956,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     conn->loop    = loop;
     conn->handler = handler;
-    conn->state   = _TCP_STATE_CONNECTING;
+    conn->state   = TCP_STATE_CONNECTING;
 
     xylem_queue_init(&conn->write_queue);
 

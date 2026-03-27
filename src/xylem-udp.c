@@ -22,6 +22,7 @@
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-logger.h"
 
+#include "platform/platform-socket.h"
 #include "xylem-loop-io.h"
 
 #include <stdio.h>

@@ -19,17 +19,14 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/xylem-loop.h"
-#include "xylem/xylem-utils.h"
+#include "xylem.h"
 #include "assert.h"
 
 #include "xylem-loop-io.h"
-#include "platform/platform.h"
+#include "platform/platform-socket.h"
 
 #include <stdint.h>
 #include <string.h>
-
-#include "deprecated/c11-threads.h"
 
 static int                   _oneshot_count;
 static int                   _repeat_count;

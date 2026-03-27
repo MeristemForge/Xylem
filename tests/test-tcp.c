@@ -19,8 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/xylem-tcp.h"
-#include "xylem/xylem-varint.h"
+#include "xylem.h"
 #include "assert.h"
 #include <string.h>
 

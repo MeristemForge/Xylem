@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 /* Round-trip: gzip compress then decompress recovers original data. */
 static void test_compress_decompress(void) {
     const char *input = "Hello, gzip world! This is a test string.";

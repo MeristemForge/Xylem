@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/xylem-udp.h"
+#include "xylem.h"
 #include "assert.h"
 #include <string.h>
 

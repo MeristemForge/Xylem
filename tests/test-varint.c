@@ -22,6 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
+#include <string.h>
+
 /* Encode/decode zero. */
 static void test_basic_encode_decode(void) {
     uint8_t  buf[16];

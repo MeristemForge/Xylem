@@ -21,18 +21,6 @@
 
 _Pragma("once")
 
-#include <errno.h>
-#include <limits.h>
-#include <stdarg.h>
-#include <stdatomic.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-
 #include "deprecated/c11-threads.h"
 
 #include "xylem/xylem-base64.h"
@@ -59,7 +47,12 @@ _Pragma("once")
 #include "xylem/xylem-gzip.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-loop.h"
+#include "xylem/xylem-platform.h"
 #include "xylem/xylem-addr.h"
+#include "xylem/xylem-tcp.h"
+#include "xylem/xylem-udp.h"
+#include "xylem/xylem-tls.h"
+#include "xylem/xylem-dtls.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
