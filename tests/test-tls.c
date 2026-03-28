@@ -274,7 +274,13 @@ static void test_handshake_and_echo(void) {
 
 static bool _handshake_failed;
 
-static void _on_fail_close(xylem_tls_t* tls, int err) {
+static void _on_fail_cli_close(xylem_tls_t* tls, int err) {
+    (void)tls;
+    (void)err;
+    _handshake_failed = true;
+}
+
+static void _on_fail_srv_close(xylem_tls_t* tls, int err) {
     (void)tls;
     (void)err;
     _handshake_failed = true;
@@ -301,7 +307,7 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_handler_t srv_handler = {0};
-    srv_handler.on_close = _on_fail_close;
+    srv_handler.on_close = _on_fail_srv_close;
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", 14434, &addr);
@@ -317,7 +323,7 @@ static void test_handshake_failure_wrong_ca(void) {
     ASSERT(xylem_tls_ctx_set_ca(cli_ctx, cert2) == 0);
 
     xylem_tls_handler_t cli_handler = {0};
-    cli_handler.on_close = _on_fail_close;
+    cli_handler.on_close = _on_fail_cli_close;
 
     xylem_tls_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
                                          &cli_handler, NULL);

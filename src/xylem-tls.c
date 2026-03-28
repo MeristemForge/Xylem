@@ -372,13 +372,13 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
 
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
-    if (!tls || tls->closing) {
+    if (!tls) {
         return;
     }
-    tls->closing = true;
 
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);
+        tls->server = NULL;
     }
 
     if (tls->handler && tls->handler->on_close) {
@@ -560,7 +560,7 @@ void xylem_tls_server_set_userdata(xylem_tls_server_t* server, void* ud) {
 }
 
 void xylem_tls_close_server(xylem_tls_server_t* server) {
-    if (server->closing) {
+    if (!server || server->closing) {
         return;
     }
     server->closing = true;

@@ -425,7 +425,6 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
         xylem_logd("tcp conn fd=%d recv %zd bytes",
                    (int)conn->fd, nread);
 
-        size_t consumed = 0;
         for (;;) {
             void*  frame_data = NULL;
             size_t frame_len  = 0;
@@ -436,9 +435,13 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                     conn->handler->on_read(conn, frame_data, frame_len);
                 }
 
-                consumed += (size_t)rc;
-                conn->read_buf += (size_t)rc;
+                /* Compact so next extract sees correct data. */
                 conn->read_len -= (size_t)rc;
+                if (conn->read_len > 0) {
+                    memmove(conn->read_buf,
+                            conn->read_buf + (size_t)rc,
+                            conn->read_len);
+                }
 
                 if (conn->state == TCP_STATE_CLOSED ||
                     conn->state == TCP_STATE_CLOSING) {
@@ -449,15 +452,6 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
             } else {
                 _tcp_close_conn(conn, -1);
                 return;
-            }
-        }
-
-        if (consumed > 0) {
-            conn->read_buf -= consumed;
-            if (conn->read_len > 0) {
-                memmove(conn->read_buf,
-                        conn->read_buf + consumed,
-                        conn->read_len);
             }
         }
 
