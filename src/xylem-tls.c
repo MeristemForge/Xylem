@@ -21,6 +21,8 @@
 
 #include "xylem/xylem-tls.h"
 
+#include "xylem/xylem-list.h"
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <stdio.h>
