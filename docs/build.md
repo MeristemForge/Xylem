@@ -5,13 +5,14 @@ The exact commands depend on whether your CMake generator is single-config (e.g.
 
 ## Prerequisites
 
-- CMake >= 3.16
+- CMake >= 3.25
 - A C11-compatible compiler:
   - Windows: MSVC (Visual Studio 2022+) or Clang-cl
   - Linux/macOS: GCC >= 7 or Clang >= 6
+- (Optional) For TLS/DTLS support: OpenSSL >= 3.5
 - (Optional) For code coverage:
   - Linux: `lcov` and `genhtml` (`sudo apt install lcov`)
-  - Windows: OpenCppCoverage (install via `scripts/install-deps.ps1`)
+  - Windows: OpenCppCoverage (`winget install OpenCppCoverage.OpenCppCoverage`)
 
 ## Configure the Build
 

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.25)
 
 project(Xylem LANGUAGES C)
 
@@ -104,6 +104,10 @@ endif()
 
 if(XYLEM_ENABLE_TLS)
 	find_package(OpenSSL REQUIRED)
+
+	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
+	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
+
 	list(APPEND SRCS
 		src/xylem-tls.c
 		src/xylem-dtls.c
