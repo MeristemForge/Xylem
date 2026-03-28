@@ -362,7 +362,7 @@ extern void xylem_http_router_destroy(xylem_http_router_t* router);
  * Pattern syntax:
  *   - Exact: "/api/users"
  *   - Path param: "/user/:id" (matches one segment, captures value)
- *   - Wildcard: "/static/*" (matches any suffix)
+ *   - Wildcard: "/static/" + "*" (matches any suffix)
  *
  * Method is case-sensitive (e.g. "GET", "POST"). Pass NULL to
  * match all HTTP methods.
@@ -446,7 +446,7 @@ typedef struct {
  * handler looks for a .gz sibling file before reading the original.
  *
  * @param router  Router handle.
- * @param prefix  URL prefix (e.g. "/static"). Must end with "/*"
+ * @param prefix  URL prefix (e.g. "/static"). Must end with "/" + "*"
  *                or the function appends it internally.
  * @param opts    Static file options. The struct is copied; root and
  *                index_file strings must remain valid for the router

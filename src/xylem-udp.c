@@ -190,7 +190,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
         return -1;
     }
 
-    if (!dest) {
+    /* Connected sockets must use send(); sendto() with a dest address
+     * returns EISCONN on macOS/BSD (POSIX-permitted behavior). */
+    if (!dest || udp->connected) {
         ssize_t n = platform_socket_send(udp->fd, data, (int)len);
         return (n < 0) ? -1 : (int)n;
     }

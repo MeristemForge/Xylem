@@ -315,6 +315,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
     tls->ctx     = server->ctx;
     tls->handler = server->handler;
     tls->server  = server;
+    tls->userdata = server->userdata;
 
     /**
      * TCP accept callback initially carries the server pointer;
@@ -371,9 +372,10 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
 
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
-    if (!tls) {
+    if (!tls || tls->closing) {
         return;
     }
+    tls->closing = true;
 
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);
@@ -441,7 +443,7 @@ int xylem_tls_send(xylem_tls_t* tls, const void* data, size_t len) {
     _tls_flush_write_bio(tls);
 
     if (tls->handler && tls->handler->on_write_done) {
-        tls->handler->on_write_done(tls, (void*)data, len, 0);
+        tls->handler->on_write_done(tls, data, len, 0);
     }
 
     return 0;

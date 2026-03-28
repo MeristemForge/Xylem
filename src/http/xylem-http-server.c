@@ -699,10 +699,10 @@ void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
     }
 }
 
-/* Check if content_type matches a MIME pattern (prefix match for "text/*"). */
+/* Check if content_type matches a MIME pattern (prefix match for "text/" + "*"). */
 static bool _http_gzip_mime_match(const char* content_type, const char* pat) {
     size_t plen = strlen(pat);
-    /* Wildcard: "text/*" matches any "text/..." */
+    /* Wildcard: "text/" + "*" matches any "text/..." */
     if (plen >= 2 && pat[plen - 1] == '*' && pat[plen - 2] == '/') {
         return strncmp(content_type, pat, plen - 1) == 0;
     }
@@ -2803,21 +2803,21 @@ int xylem_http_static_serve(xylem_http_router_t* router,
         return -1;
     }
 
-    /* Build the wildcard pattern: prefix + "/*" if not already. */
+    /* Build the wildcard pattern: prefix + "/" + "*" if not already. */
     size_t plen = strlen(prefix);
     /* Trim trailing slash. */
     while (plen > 0 && prefix[plen - 1] == '/') {
         plen--;
     }
 
-    /* Calculate prefix_len for URL stripping (without "/*"). */
+    /* Calculate prefix_len for URL stripping (without "/" + "*"). */
     size_t prefix_len = plen;
     /* Ensure prefix starts with '/'. */
     if (plen == 0 || prefix[0] != '/') {
         return -1;
     }
 
-    char* pattern = malloc(plen + 3); /* "/prefix/*\0" */
+    char* pattern = malloc(plen + 3); /* "/prefix/" + "*\0" */
     if (!pattern) {
         return -1;
     }

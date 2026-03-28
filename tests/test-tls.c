@@ -176,7 +176,7 @@ static void _on_client_read(xylem_tls_t* tls, void* data, size_t len) {
 }
 
 static void _on_client_write_done(xylem_tls_t* tls,
-                                  void* data, size_t len, int status) {
+                                  const void* data, size_t len, int status) {
     (void)tls;
     (void)data;
     (void)len;

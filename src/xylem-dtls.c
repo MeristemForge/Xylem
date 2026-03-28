@@ -24,6 +24,8 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-udp.h"
 
+#include "platform/platform-socket.h"
+
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>

@@ -1224,7 +1224,7 @@ static xylem_http_res_t* _http_session_exec(
                 goto fresh_connect;
             }
         } else {
-fresh_connect:
+fresh_connect:;
 
             xylem_addr_resolve_t* resolve_req =
                 xylem_addr_resolve(ctx.loop, session->pool,

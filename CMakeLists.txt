@@ -28,14 +28,6 @@ if(WIN32)
 	add_compile_options("/experimental:c11atomics")
 endif()
 
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
-)
-
 set(SRCS
 	src/xylem.c
 	src/xylem-addr.c
@@ -114,7 +106,6 @@ if(XYLEM_ENABLE_TLS)
 		src/http/http-transport-tls.c
 		src/ws/ws-transport-tls.c
 	)
-	include_directories(${OPENSSL_INCLUDE_DIR})
 else()
 	list(APPEND SRCS
 		src/http/http-transport-tls-stub.c
@@ -127,6 +118,15 @@ if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
 else()
     add_library(xylem STATIC ${SRCS})
 endif()
+
+target_include_directories(xylem
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
+)
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
 

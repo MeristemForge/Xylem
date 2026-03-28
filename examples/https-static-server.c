@@ -26,7 +26,7 @@
  * If cert.pem / key.pem are missing, generates a self-signed
  * certificate automatically via the openssl command-line tool.
  *
- *   GET /static/*  -> files from ./public/
+ *   GET /static/(wildcard)  -> files from ./public/
  *
  * Usage: https-static-server
  * Test:  curl -k https://127.0.0.1:8443/static/index.html

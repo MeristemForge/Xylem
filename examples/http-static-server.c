@@ -26,7 +26,7 @@
  * Range requests, conditional caching (304), and optional
  * pre-compressed .gz file support.
  *
- *   GET /static/*  -> files from ./public/
+ *   GET /static/(wildcard)  -> files from ./public/
  *
  * Usage: http-static-server
  * Test:  curl http://127.0.0.1:8080/static/index.html
