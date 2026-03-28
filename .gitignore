@@ -4,3 +4,4 @@ out/
 compile_commands.json
 out-ninja/
 out-linux/
+.DS_Store
