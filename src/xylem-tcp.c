@@ -856,10 +856,11 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
 
     while (!xylem_list_empty(&server->connections)) {
         xylem_list_node_t* node = xylem_list_head(&server->connections);
-        xylem_list_remove(&server->connections, node);
         xylem_tcp_conn_t* conn =
             xylem_list_entry(node, xylem_tcp_conn_t, server_node);
+        xylem_list_remove(&server->connections, node);
         conn->server = NULL;
+        xylem_tcp_close(conn);
     }
 
     xylem_loop_post(server->loop, _tcp_server_free_cb, server);

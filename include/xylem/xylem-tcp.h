@@ -107,8 +107,8 @@ extern xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
 /**
  * @brief Close a TCP server.
  *
- * Stops accepting new connections. Existing connections are
- * not affected and must be closed individually.
+ * Stops accepting new connections and closes all existing
+ * connections accepted by this server.
  *
  * @param server  Server handle.
  */
