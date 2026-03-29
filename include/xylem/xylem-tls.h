@@ -220,6 +220,15 @@ extern const char* xylem_tls_get_alpn(xylem_tls_t* tls);
 extern const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls);
 
 /**
+ * @brief Get the event loop associated with a TLS connection.
+ *
+ * @param tls  TLS connection handle.
+ *
+ * @return Loop handle.
+ */
+extern xylem_loop_t* xylem_tls_get_loop(xylem_tls_t* tls);
+
+/**
  * @brief Get user data attached to a TLS connection.
  *
  * @param tls  TLS connection handle.

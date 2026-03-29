@@ -527,6 +527,14 @@ void* xylem_tls_get_userdata(xylem_tls_t* tls) {
     return tls->userdata;
 }
 
+const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls) {
+    return xylem_tcp_get_peer_addr(tls->tcp);
+}
+
+xylem_loop_t* xylem_tls_get_loop(xylem_tls_t* tls) {
+    return xylem_tcp_get_loop(tls->tcp);
+}
+
 void xylem_tls_set_userdata(xylem_tls_t* tls, void* ud) {
     tls->userdata = ud;
 }
