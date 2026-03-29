@@ -58,6 +58,7 @@ struct xylem_tls_server_s {
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
     xylem_tcp_opts_t      opts;
+    xylem_loop_t*         loop;
     xylem_list_t          connections;
     void*                 userdata;
     bool                  closing;
@@ -550,6 +551,7 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
 
     server->ctx     = ctx;
     server->handler = handler;
+    server->loop    = loop;
     xylem_list_init(&server->connections);
 
     if (opts) {
@@ -597,5 +599,5 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
     }
 
     xylem_tcp_close_server(server->tcp_server);
-    free(server);
+    xylem_loop_post(server->loop, _tls_free_cb, server);
 }
