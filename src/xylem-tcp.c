@@ -920,6 +920,10 @@ const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn) {
     return &conn->peer_addr;
 }
 
+xylem_loop_t* xylem_tcp_get_loop(xylem_tcp_conn_t* conn) {
+    return conn->loop;
+}
+
 void* xylem_tcp_get_userdata(xylem_tcp_conn_t* conn) {
     return conn->userdata;
 }

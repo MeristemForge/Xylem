@@ -178,6 +178,15 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
 extern const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn);
 
 /**
+ * @brief Get the event loop associated with a connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return Loop handle.
+ */
+extern xylem_loop_t* xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
+
+/**
  * @brief Get user data attached to a connection.
  *
  * @param conn  Connection handle.

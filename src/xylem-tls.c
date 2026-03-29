@@ -46,7 +46,6 @@ struct xylem_tls_s {
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;
-    xylem_loop_t*         loop;
     void*                 userdata;
     bool                  handshake_done;
     bool                  closing;
@@ -59,7 +58,6 @@ struct xylem_tls_server_s {
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    xylem_loop_t*         loop;
     xylem_list_t          connections;
     void*                 userdata;
     bool                  closing;
@@ -317,7 +315,6 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     tls->ctx     = server->ctx;
     tls->handler = server->handler;
     tls->server  = server;
-    tls->loop    = server->loop;
     tls->userdata = server->userdata;
 
     xylem_tcp_set_userdata(conn, tls);
@@ -403,7 +400,7 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
      * _tls_do_handshake) can still safely read tls->closing /
      * tls->handshake_done after a user callback triggers close.
      */
-    xylem_loop_post(tls->loop, _tls_free_cb, tls);
+    xylem_loop_post(xylem_tcp_get_loop(conn), _tls_free_cb, tls);
 }
 
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
@@ -475,7 +472,6 @@ xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
 
     tls->ctx     = ctx;
     tls->handler = handler;
-    tls->loop    = loop;
 
     xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
                                            &_tls_tcp_client_handler, opts);
@@ -547,7 +543,6 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
 
     server->ctx     = ctx;
     server->handler = handler;
-    server->loop    = loop;
     xylem_list_init(&server->connections);
 
     if (opts) {
