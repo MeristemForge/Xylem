@@ -38,7 +38,7 @@ struct xylem_tls_ctx_s {
     FILE*    keylog_file;
 };
 
-struct xylem_tls_s {
+struct xylem_tls_conn_s {
     SSL*                  ssl;
     BIO*                  read_bio;
     BIO*                  write_bio;
@@ -215,7 +215,7 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-static void _tls_flush_write_bio(xylem_tls_t* tls) {
+static void _tls_flush_write_bio(xylem_tls_conn_t* tls) {
     char buf[16384];
     int  n;
 
@@ -224,11 +224,11 @@ static void _tls_flush_write_bio(xylem_tls_t* tls) {
     }
 }
 
-static void _tls_feed_read_bio(xylem_tls_t* tls, void* data, size_t len) {
+static void _tls_feed_read_bio(xylem_tls_conn_t* tls, void* data, size_t len) {
     BIO_write(tls->read_bio, data, (int)len);
 }
 
-static void _tls_do_handshake(xylem_tls_t* tls) {
+static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     int rc  = SSL_do_handshake(tls->ssl);
     int err = SSL_get_error(tls->ssl, rc);
 
@@ -238,7 +238,7 @@ static void _tls_do_handshake(xylem_tls_t* tls) {
 
         if (tls->server) {
             if (tls->handler && tls->handler->on_accept) {
-                tls->handler->on_accept(tls);
+                tls->handler->on_accept(tls->server, tls);
             }
         } else {
             if (tls->handler && tls->handler->on_connect) {
@@ -258,7 +258,7 @@ static void _tls_do_handshake(xylem_tls_t* tls) {
     xylem_tcp_close(tls->tcp);
 }
 
-static int _tls_init_ssl(xylem_tls_t* tls) {
+static int _tls_init_ssl(xylem_tls_conn_t* tls) {
     tls->ssl = SSL_new(tls->ctx->ssl_ctx);
     if (!tls->ssl) {
         return -1;
@@ -282,7 +282,7 @@ static int _tls_init_ssl(xylem_tls_t* tls) {
 }
 
 static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn) {
-    xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
     if (_tls_init_ssl(tls) != 0) {
         xylem_tcp_close(conn);
@@ -304,7 +304,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     xylem_tls_server_t* server =
         (xylem_tls_server_t*)xylem_tcp_server_get_userdata(tcp_server);
 
-    xylem_tls_t* tls = calloc(1, sizeof(*tls));
+    xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
         xylem_tcp_set_userdata(conn, NULL);
         xylem_tcp_close(conn);
@@ -315,7 +315,6 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     tls->ctx     = server->ctx;
     tls->handler = server->handler;
     tls->server  = server;
-    tls->userdata = server->userdata;
 
     xylem_tcp_set_userdata(conn, tls);
 
@@ -332,7 +331,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
 
 static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
                              void* data, size_t len) {
-    xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
     _tls_feed_read_bio(tls, data, len);
 
@@ -376,7 +375,7 @@ static void _tls_free_cb(xylem_loop_t* loop,
 }
 
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
-    xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
     if (!tls) {
         return;
     }
@@ -405,7 +404,7 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
 
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
                                 xylem_tcp_timeout_type_t type) {
-    xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
     if (tls->handler && tls->handler->on_timeout) {
         tls->handler->on_timeout(tls, type);
@@ -413,7 +412,7 @@ static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
 }
 
 static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
-    xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
     if (tls->handler && tls->handler->on_heartbeat_miss) {
         tls->handler->on_heartbeat_miss(tls);
@@ -441,7 +440,7 @@ static xylem_tcp_handler_t _tls_tcp_client_handler = {
     .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
 };
 
-int xylem_tls_send(xylem_tls_t* tls, const void* data, size_t len) {
+int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     if (!tls->handshake_done || tls->closing) {
         return -1;
     }
@@ -460,12 +459,12 @@ int xylem_tls_send(xylem_tls_t* tls, const void* data, size_t len) {
     return 0;
 }
 
-xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
+xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                             xylem_addr_t* addr,
                             xylem_tls_ctx_t* ctx,
                             xylem_tls_handler_t* handler,
                             xylem_tcp_opts_t* opts) {
-    xylem_tls_t* tls = calloc(1, sizeof(*tls));
+    xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
         return NULL;
     }
@@ -485,7 +484,7 @@ xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
     return tls;
 }
 
-void xylem_tls_close(xylem_tls_t* tls) {
+void xylem_tls_close(xylem_tls_conn_t* tls) {
     if (tls->closing) {
         return;
     }
@@ -499,7 +498,7 @@ void xylem_tls_close(xylem_tls_t* tls) {
     xylem_tcp_close(tls->tcp);
 }
 
-int xylem_tls_set_hostname(xylem_tls_t* tls, const char* hostname) {
+int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname) {
     free(tls->hostname);
     tls->hostname = strdup(hostname);
     if (!tls->hostname) {
@@ -508,7 +507,7 @@ int xylem_tls_set_hostname(xylem_tls_t* tls, const char* hostname) {
     return 0;
 }
 
-const char* xylem_tls_get_alpn(xylem_tls_t* tls) {
+const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
     if (!tls->ssl) {
         return NULL;
     }
@@ -523,19 +522,19 @@ const char* xylem_tls_get_alpn(xylem_tls_t* tls) {
     return (const char*)proto;
 }
 
-void* xylem_tls_get_userdata(xylem_tls_t* tls) {
+void* xylem_tls_get_userdata(xylem_tls_conn_t* tls) {
     return tls->userdata;
 }
 
-const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls) {
+const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_conn_t* tls) {
     return xylem_tcp_get_peer_addr(tls->tcp);
 }
 
-xylem_loop_t* xylem_tls_get_loop(xylem_tls_t* tls) {
+xylem_loop_t* xylem_tls_get_loop(xylem_tls_conn_t* tls) {
     return xylem_tcp_get_loop(tls->tcp);
 }
 
-void xylem_tls_set_userdata(xylem_tls_t* tls, void* ud) {
+void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud) {
     tls->userdata = ud;
 }
 
@@ -591,7 +590,7 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
     xylem_list_node_t* node = xylem_list_head(&server->connections);
     xylem_list_node_t* sentinel = xylem_list_sentinel(&server->connections);
     while (node && node != sentinel) {
-        xylem_tls_t* tls = xylem_list_entry(node, xylem_tls_t, server_node);
+        xylem_tls_conn_t* tls = xylem_list_entry(node, xylem_tls_conn_t, server_node);
         node = xylem_list_next(node);
         tls->server = NULL;
         xylem_tls_close(tls);

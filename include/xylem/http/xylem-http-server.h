@@ -316,7 +316,7 @@ extern void xylem_http_writer_close(xylem_http_writer_t* writer);
  * @param writer     Response writer handle (from on_upgrade callback).
  * @param transport  Output: underlying transport handle. For plain
  *                   HTTP this is xylem_tcp_conn_t*; for HTTPS this
- *                   is xylem_tls_t*. Cast as needed.
+ *                   is xylem_tls_conn_t*. Cast as needed.
  *
  * @return 0 on success, -1 on failure.
  */

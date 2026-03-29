@@ -71,7 +71,7 @@ struct xylem_tcp_conn_s {
     platform_sock_t       fd;
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    tcp_state_t          state;
+    tcp_state_t           state;
     uint8_t*              read_buf;
     size_t                read_len;
     size_t                read_cap;

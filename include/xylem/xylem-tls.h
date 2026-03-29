@@ -25,20 +25,20 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-tcp.h"
 
-typedef struct xylem_tls_s        xylem_tls_t;
+typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
 typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
 typedef struct xylem_tls_handler_s {
-    void (*on_connect)(xylem_tls_t* tls);
-    void (*on_accept)(xylem_tls_t* tls);
-    void (*on_read)(xylem_tls_t* tls, void* data, size_t len);
-    void (*on_write_done)(xylem_tls_t* tls,
+    void (*on_connect)(xylem_tls_conn_t* tls);
+    void (*on_accept)(xylem_tls_server_t* server, xylem_tls_conn_t* tls);
+    void (*on_read)(xylem_tls_conn_t* tls, void* data, size_t len);
+    void (*on_write_done)(xylem_tls_conn_t* tls,
                           const void* data, size_t len, int status);
-    void (*on_timeout)(xylem_tls_t* tls,
+    void (*on_timeout)(xylem_tls_conn_t* tls,
                        xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_t* tls, int err);
-    void (*on_heartbeat_miss)(xylem_tls_t* tls);
+    void (*on_close)(xylem_tls_conn_t* tls, int err);
+    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
 } xylem_tls_handler_t;
 
 /**
@@ -150,7 +150,7 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
  *
  * @return TLS connection handle, or NULL on failure.
  */
-extern xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
+extern xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                                    xylem_addr_t* addr,
                                    xylem_tls_ctx_t* ctx,
                                    xylem_tls_handler_t* handler,
@@ -169,7 +169,7 @@ extern xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
  *
  * @return 0 on success (enqueued), -1 on failure.
  */
-extern int xylem_tls_send(xylem_tls_t* tls,
+extern int xylem_tls_send(xylem_tls_conn_t* tls,
                           const void* data, size_t len);
 
 /**
@@ -180,7 +180,7 @@ extern int xylem_tls_send(xylem_tls_t* tls,
  *
  * @param tls  TLS connection handle.
  */
-extern void xylem_tls_close(xylem_tls_t* tls);
+extern void xylem_tls_close(xylem_tls_conn_t* tls);
 
 /**
  * @brief Set SNI hostname for the connection.
@@ -193,7 +193,7 @@ extern void xylem_tls_close(xylem_tls_t* tls);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_tls_set_hostname(xylem_tls_t* tls, const char* hostname);
+extern int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname);
 
 /**
  * @brief Get the negotiated ALPN protocol.
@@ -205,7 +205,7 @@ extern int xylem_tls_set_hostname(xylem_tls_t* tls, const char* hostname);
  *
  * @return Null-terminated protocol string, or NULL.
  */
-extern const char* xylem_tls_get_alpn(xylem_tls_t* tls);
+extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 
 /**
  * @brief Get the peer address of a TLS connection.
@@ -217,7 +217,7 @@ extern const char* xylem_tls_get_alpn(xylem_tls_t* tls);
  *
  * @return Peer address, or NULL if not available.
  */
-extern const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls);
+extern const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_conn_t* tls);
 
 /**
  * @brief Get the event loop associated with a TLS connection.
@@ -226,7 +226,7 @@ extern const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls);
  *
  * @return Loop handle.
  */
-extern xylem_loop_t* xylem_tls_get_loop(xylem_tls_t* tls);
+extern xylem_loop_t* xylem_tls_get_loop(xylem_tls_conn_t* tls);
 
 /**
  * @brief Get user data attached to a TLS connection.
@@ -235,7 +235,7 @@ extern xylem_loop_t* xylem_tls_get_loop(xylem_tls_t* tls);
  *
  * @return User data pointer.
  */
-extern void* xylem_tls_get_userdata(xylem_tls_t* tls);
+extern void* xylem_tls_get_userdata(xylem_tls_conn_t* tls);
 
 /**
  * @brief Set user data on a TLS connection.
@@ -243,7 +243,7 @@ extern void* xylem_tls_get_userdata(xylem_tls_t* tls);
  * @param tls  TLS connection handle.
  * @param ud   User data pointer.
  */
-extern void xylem_tls_set_userdata(xylem_tls_t* tls, void* ud);
+extern void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud);
 
 /**
  * @brief Create a TLS server and start listening.

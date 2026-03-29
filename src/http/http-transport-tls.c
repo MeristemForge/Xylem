@@ -34,22 +34,24 @@ typedef struct {
     xylem_tls_ctx_t*     tls_ctx;
 } _tls_bridge_t;
 
-static void _tls_connect_cb(xylem_tls_t* tls) {
+static void _tls_connect_cb(xylem_tls_conn_t* tls) {
     _tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_connect(tls, br->ctx);
 }
 
-static void _tls_accept_cb(xylem_tls_t* tls) {
-    _tls_bridge_t* br = xylem_tls_get_userdata(tls);
+static void _tls_accept_cb(xylem_tls_server_t* server,
+                           xylem_tls_conn_t* tls) {
+    _tls_bridge_t* br = xylem_tls_server_get_userdata(server);
+    xylem_tls_set_userdata(tls, br);
     br->cb->on_accept(tls, br->ctx);
 }
 
-static void _tls_read_cb(xylem_tls_t* tls, void* data, size_t len) {
+static void _tls_read_cb(xylem_tls_conn_t* tls, void* data, size_t len) {
     _tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_read(tls, br->ctx, data, len);
 }
 
-static void _tls_close_cb(xylem_tls_t* tls, int err) {
+static void _tls_close_cb(xylem_tls_conn_t* tls, int err) {
     _tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_close(tls, br->ctx, err);
     free(br);
@@ -76,7 +78,7 @@ static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
         .on_close   = _tls_close_cb,
     };
 
-    xylem_tls_t* tls = xylem_tls_dial(loop, addr, br->tls_ctx,
+    xylem_tls_conn_t* tls = xylem_tls_dial(loop, addr, br->tls_ctx,
                                        &handler, opts);
     if (!tls) {
         xylem_tls_ctx_destroy(br->tls_ctx);
@@ -121,6 +123,7 @@ static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
         free(br);
         return NULL;
     }
+    xylem_tls_server_set_userdata(srv, br);
     return srv;
 }
 

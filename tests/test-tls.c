@@ -148,24 +148,26 @@ static bool                  _client_closed;
 static bool                  _server_conn_closed;
 static char                  _recv_buf[256];
 static size_t                _recv_len;
-static xylem_tls_t*          _server_conn;
+static xylem_tls_conn_t*          _server_conn;
 static xylem_tls_server_t*   _tls_server;
 
-static void _on_server_accept(xylem_tls_t* tls) {
+static void _on_server_accept(xylem_tls_server_t* server,
+                              xylem_tls_conn_t* tls) {
+    (void)server;
     _server_accepted = true;
     _server_conn = tls;
 }
 
-static void _on_client_connect(xylem_tls_t* tls) {
+static void _on_client_connect(xylem_tls_conn_t* tls) {
     _client_connected = true;
     xylem_tls_send(tls, "hello", 5);
 }
 
-static void _on_server_read(xylem_tls_t* tls, void* data, size_t len) {
+static void _on_server_read(xylem_tls_conn_t* tls, void* data, size_t len) {
     xylem_tls_send(tls, data, len);
 }
 
-static void _on_client_read(xylem_tls_t* tls, void* data, size_t len) {
+static void _on_client_read(xylem_tls_conn_t* tls, void* data, size_t len) {
     (void)tls;
     _client_received = true;
     if (len < sizeof(_recv_buf)) {
@@ -175,7 +177,7 @@ static void _on_client_read(xylem_tls_t* tls, void* data, size_t len) {
     xylem_tls_close(tls);
 }
 
-static void _on_client_write_done(xylem_tls_t* tls,
+static void _on_client_write_done(xylem_tls_conn_t* tls,
                                   const void* data, size_t len, int status) {
     (void)tls;
     (void)data;
@@ -184,7 +186,7 @@ static void _on_client_write_done(xylem_tls_t* tls,
     _write_done = true;
 }
 
-static void _on_client_close(xylem_tls_t* tls, int err) {
+static void _on_client_close(xylem_tls_conn_t* tls, int err) {
     (void)tls;
     (void)err;
     _client_closed = true;
@@ -193,7 +195,7 @@ static void _on_client_close(xylem_tls_t* tls, int err) {
     }
 }
 
-static void _on_server_conn_close(xylem_tls_t* tls, int err) {
+static void _on_server_conn_close(xylem_tls_conn_t* tls, int err) {
     (void)tls;
     (void)err;
     _server_conn_closed = true;
@@ -250,7 +252,7 @@ static void test_handshake_and_echo(void) {
     };
     ASSERT(_tls_server != NULL);
 
-    xylem_tls_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
+    xylem_tls_conn_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
                                          &cli_handler, NULL);
     ASSERT(client != NULL);
 
@@ -274,13 +276,13 @@ static void test_handshake_and_echo(void) {
 
 static bool _handshake_failed;
 
-static void _on_fail_cli_close(xylem_tls_t* tls, int err) {
+static void _on_fail_cli_close(xylem_tls_conn_t* tls, int err) {
     (void)tls;
     (void)err;
     _handshake_failed = true;
 }
 
-static void _on_fail_srv_close(xylem_tls_t* tls, int err) {
+static void _on_fail_srv_close(xylem_tls_conn_t* tls, int err) {
     (void)tls;
     (void)err;
     _handshake_failed = true;
@@ -325,7 +327,7 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_tls_handler_t cli_handler = {0};
     cli_handler.on_close = _on_fail_cli_close;
 
-    xylem_tls_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
+    xylem_tls_conn_t* client = xylem_tls_dial(_loop, &addr, cli_ctx,
                                          &cli_handler, NULL);
     ASSERT(client != NULL);
 
@@ -366,7 +368,7 @@ static void test_sni_hostname(void) {
     _loop = xylem_loop_create();
     ASSERT(_loop != NULL);
 
-    xylem_tls_t* tls = xylem_tls_dial(_loop, &addr, ctx,
+    xylem_tls_conn_t* tls = xylem_tls_dial(_loop, &addr, ctx,
                                       &handler, NULL);
     ASSERT(tls != NULL);
     ASSERT(xylem_tls_set_hostname(tls, "example.com") == 0);
