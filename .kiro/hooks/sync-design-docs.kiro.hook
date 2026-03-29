@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "name": "Sync Design Docs",
+  "description": "当 src/、include/ 或 tests/ 下的 .c/.h 文件变化时，检查 docs/ 下的设计文档和测试设计文档是否需要更新。更新完成后，将 docs/ 下的所有文档拷贝到 .kiro/steering/ 目录下。",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "src/*.c",
+      "src/**/*.c",
+      "include/**/*.h",
+      "tests/*.c"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A source or test file was just edited. Determine the file type and check if docs need updating.\n\n## For source files (src/ or include/):\nCheck if the change affects any of the 4 design documents under docs/ (tcp-design.md, udp-design.md, tls-design.md, dtls-design.md). Determine which module was changed by looking at the file path:\n- src/xylem-tcp.c or include/xylem/xylem-tcp.h → docs/tcp-design.md\n- src/xylem-udp.c or include/xylem/xylem-udp.h → docs/udp-design.md\n- src/xylem-tls.c or include/xylem/xylem-tls.h → docs/tls-design.md\n- src/xylem-dtls.c or include/xylem/xylem-dtls.h → docs/dtls-design.md\n- src/http/*, include/xylem/http/* → skip (no design doc yet)\n- src/ws/*, include/xylem/ws/* → skip (no design doc yet)\n- Other files → skip\n\nIf the changed file maps to a design doc, read both the changed source file and the current design doc. Compare the public API, internal structs, state machine, and key algorithms. If there are meaningful differences (new/removed/changed functions, struct fields, state transitions, or algorithm logic), update the design doc to reflect the current code. Do NOT update for cosmetic changes (comments, formatting, log messages).\n\n## For test files (tests/):\nCheck if the change affects any test design document under docs/. Determine which test doc by file path:\n- tests/test-tcp.c → docs/tcp-test.md\n- tests/test-udp.c → docs/udp-test.md (if exists)\n- tests/test-tls.c → docs/tls-test.md (if exists)\n- tests/test-dtls.c → docs/dtls-test.md (if exists)\n- Other test files → skip\n\nIf the changed test file maps to a test design doc AND the doc exists, read both the changed test file and the current test design doc. Compare the test function list, coverage table, and verification points. If there are meaningful differences (new/removed/renamed test functions, changed assertions, new coverage areas), update the test design doc. Do NOT update for cosmetic changes.\n\n## After any update:\nCopy ALL docs (design docs + test design docs) from docs/ to .kiro/steering/ using the same filenames. This ensures steering always has the latest versions."
+  }
+}
