@@ -95,7 +95,7 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	find_package(OpenSSL REQUIRED)
+	find_package(OpenSSL 3.5 REQUIRED)
 
 	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
