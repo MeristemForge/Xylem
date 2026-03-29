@@ -62,7 +62,7 @@ static void _udp_io_cb(xylem_loop_t* loop,
      * Loop until EAGAIN to drain the kernel buffer in one IO callback,
      * avoiding repeated poller wakeups under LT.
      *
-     * Connected sockets use recv �?macOS recvfrom on a connected UDP
+     * Connected sockets use recv because macOS recvfrom on a connected UDP
      * socket may not fill the sender address reliably.
      */
     for (;;) {
@@ -89,6 +89,9 @@ static void _udp_io_cb(xylem_loop_t* loop,
                 return;
             }
             xylem_logw("udp fd=%d recv error=%d", (int)udp->fd, err);
+            if (udp->handler && udp->handler->on_error) {
+                udp->handler->on_error(udp, err);
+            }
             return;
         }
 
@@ -187,6 +190,7 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
     if (udp->closing) {
+        xylem_logd("udp fd=%d send rejected (closing)", (int)udp->fd);
         return -1;
     }
 
@@ -194,6 +198,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
      * returns EISCONN on macOS/BSD (POSIX-permitted behavior). */
     if (!dest || udp->connected) {
         ssize_t n = platform_socket_send(udp->fd, data, (int)len);
+        if (n < 0) {
+            xylem_logw("udp fd=%d send error", (int)udp->fd);
+        }
         return (n < 0) ? -1 : (int)n;
     }
 
@@ -203,6 +210,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
 
     ssize_t n = platform_socket_sendto(udp->fd, data, (int)len,
                                        &dest->storage, addrlen);
+    if (n < 0) {
+        xylem_logw("udp fd=%d sendto error", (int)udp->fd);
+    }
     return (n < 0) ? -1 : (int)n;
 }
 
@@ -222,6 +232,10 @@ void xylem_udp_close(xylem_udp_t* udp) {
 
     /* Defer free to next loop iteration so close_node stays valid */
     xylem_loop_post(udp->loop, _udp_free_cb, udp);
+}
+
+xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp) {
+    return udp->loop;
 }
 
 void* xylem_udp_get_userdata(xylem_udp_t* udp) {

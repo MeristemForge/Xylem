@@ -29,6 +29,7 @@ typedef struct xylem_udp_s xylem_udp_t;
 typedef struct xylem_udp_handler_s {
     void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
                     xylem_addr_t* addr);
+    void (*on_error)(xylem_udp_t* udp, int err);
     void (*on_close)(xylem_udp_t* udp, int err);
 } xylem_udp_handler_t;
 
@@ -46,8 +47,8 @@ typedef struct xylem_udp_handler_s {
  * @return UDP handle, or NULL on failure.
  */
 extern xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
-                                    xylem_addr_t* addr,
-                                    xylem_udp_handler_t* handler);
+                                     xylem_addr_t* addr,
+                                     xylem_udp_handler_t* handler);
 
 /**
  * @brief Create a connected UDP socket.
@@ -97,6 +98,15 @@ extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
  * @note Not thread-safe. Must be called from the loop thread.
  */
 extern void xylem_udp_close(xylem_udp_t* udp);
+
+/**
+ * @brief Get the event loop associated with a UDP handle.
+ *
+ * @param udp  UDP handle.
+ *
+ * @return Loop handle.
+ */
+extern xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp);
 
 /**
  * @brief Get user data attached to a UDP handle.
