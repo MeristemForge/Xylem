@@ -270,9 +270,9 @@ extern xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
 /**
  * @brief Close a TLS server.
  *
- * Stops accepting new connections and closes the underlying
- * TCP server. Existing TLS connections are not affected and
- * must be closed individually.
+ * Stops accepting new connections, closes all existing TLS
+ * connections accepted by this server, and closes the underlying
+ * TCP server.
  *
  * @param server  Server handle.
  */
