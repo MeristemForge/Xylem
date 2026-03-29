@@ -145,14 +145,19 @@ static void* _tls_get_userdata(void* handle) {
     return xylem_tls_get_userdata(handle);
 }
 
+static const xylem_addr_t* _tls_get_peer_addr(void* handle) {
+    return xylem_tls_get_peer_addr(handle);
+}
+
 static const ws_transport_vt_t _tls_vt = {
-    .dial         = _tls_dial,
-    .listen       = _tls_listen,
-    .send         = _tls_send,
-    .close_conn   = _tls_close_conn,
-    .close_server = _tls_close_server,
-    .set_userdata = _tls_set_userdata,
-    .get_userdata = _tls_get_userdata,
+    .dial          = _tls_dial,
+    .listen        = _tls_listen,
+    .send          = _tls_send,
+    .close_conn    = _tls_close_conn,
+    .close_server  = _tls_close_server,
+    .set_userdata  = _tls_set_userdata,
+    .get_userdata  = _tls_get_userdata,
+    .get_peer_addr = _tls_get_peer_addr,
 };
 
 const ws_transport_vt_t* ws_transport_tls(void) {

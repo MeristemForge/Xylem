@@ -82,6 +82,7 @@ struct xylem_tcp_conn_s {
     _tcp_dial_priv_t*     dial;
     xylem_list_node_t     server_node;
     xylem_tcp_server_t*   server;
+    xylem_addr_t          peer_addr;
     void*                 userdata;
 };
 
@@ -811,15 +812,19 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
         }
 
         conn->server = server;
-        conn->userdata = server->userdata;
         xylem_list_insert_tail(&server->connections,
                                &conn->server_node);
+
+        /* Capture peer address from the accepted socket. */
+        socklen_t peer_len = sizeof(conn->peer_addr.storage);
+        getpeername(client_fd, (struct sockaddr*)&conn->peer_addr.storage,
+                    &peer_len);
 
         xylem_logi("tcp server fd=%d accepted conn fd=%d",
                    (int)server->fd, (int)client_fd);
 
         if (server->handler && server->handler->on_accept) {
-            server->handler->on_accept(conn);
+            server->handler->on_accept(server, conn);
         }
 
         if (server->closing) {
@@ -911,6 +916,10 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     return 0;
 }
 
+const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn) {
+    return &conn->peer_addr;
+}
+
 void* xylem_tcp_get_userdata(xylem_tcp_conn_t* conn) {
     return conn->userdata;
 }
@@ -939,6 +948,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     dial->reconnect_count = 0;
     dial->reconnect_cb    = _tcp_reconnect_timeout_cb;
     conn->dial            = dial;
+    conn->peer_addr       = *addr;
 
     if (opts) {
         conn->opts = *opts;

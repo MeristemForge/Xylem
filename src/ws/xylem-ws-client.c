@@ -496,6 +496,13 @@ int xylem_ws_close(xylem_ws_conn_t* conn,
     return 0;
 }
 
+const xylem_addr_t* xylem_ws_get_peer_addr(xylem_ws_conn_t* conn) {
+    if (!conn || !conn->vt || !conn->vt->get_peer_addr) {
+        return NULL;
+    }
+    return conn->vt->get_peer_addr(conn->transport);
+}
+
 void* xylem_ws_get_userdata(xylem_ws_conn_t* conn) {
     if (!conn) {
         return NULL;

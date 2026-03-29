@@ -37,8 +37,10 @@ static void _tcp_connect_cb(xylem_tcp_conn_t* conn) {
     br->cb->on_connect(conn, br->ctx);
 }
 
-static void _tcp_accept_cb(xylem_tcp_conn_t* conn) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _tcp_accept_cb(xylem_tcp_server_t* server,
+                           xylem_tcp_conn_t* conn) {
+    _tcp_bridge_t* br = xylem_tcp_server_get_userdata(server);
+    xylem_tcp_set_userdata(conn, br);
     br->cb->on_accept(conn, br->ctx);
 }
 

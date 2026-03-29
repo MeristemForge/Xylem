@@ -22,6 +22,7 @@
 _Pragma("once")
 
 #include "xylem/ws/xylem-ws-common.h"
+#include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
 #include <stddef.h>
@@ -93,6 +94,18 @@ extern int xylem_ws_ping(xylem_ws_conn_t* conn,
  */
 extern int xylem_ws_close(xylem_ws_conn_t* conn,
                           uint16_t code, const char* reason, size_t reason_len);
+
+/**
+ * @brief Get the peer address of a WebSocket connection.
+ *
+ * Returns the peer address from the underlying transport layer.
+ * The pointer is valid for the lifetime of the connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return Peer address, or NULL if not available.
+ */
+extern const xylem_addr_t* xylem_ws_get_peer_addr(xylem_ws_conn_t* conn);
 
 /**
  * @brief Get user data attached to a WebSocket connection.

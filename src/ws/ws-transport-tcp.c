@@ -37,8 +37,10 @@ static void _tcp_connect_cb(xylem_tcp_conn_t* conn) {
     br->cb->on_connect(conn, br->ctx);
 }
 
-static void _tcp_accept_cb(xylem_tcp_conn_t* conn) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _tcp_accept_cb(xylem_tcp_server_t* server,
+                           xylem_tcp_conn_t* conn) {
+    _tcp_bridge_t* br = xylem_tcp_server_get_userdata(server);
+    xylem_tcp_set_userdata(conn, br);
     br->cb->on_accept(conn, br->ctx);
 }
 
@@ -140,14 +142,19 @@ static void* _tcp_get_userdata(void* handle) {
     return xylem_tcp_get_userdata(handle);
 }
 
+static const xylem_addr_t* _tcp_get_peer_addr(void* handle) {
+    return xylem_tcp_get_peer_addr(handle);
+}
+
 static const ws_transport_vt_t _tcp_vt = {
-    .dial         = _tcp_dial,
-    .listen       = _tcp_listen,
-    .send         = _tcp_send,
-    .close_conn   = _tcp_close_conn,
-    .close_server = _tcp_close_server,
-    .set_userdata = _tcp_set_userdata,
-    .get_userdata = _tcp_get_userdata,
+    .dial          = _tcp_dial,
+    .listen        = _tcp_listen,
+    .send          = _tcp_send,
+    .close_conn    = _tcp_close_conn,
+    .close_server  = _tcp_close_server,
+    .set_userdata  = _tcp_set_userdata,
+    .get_userdata  = _tcp_get_userdata,
+    .get_peer_addr = _tcp_get_peer_addr,
 };
 
 const ws_transport_vt_t* ws_transport_tcp(void) {

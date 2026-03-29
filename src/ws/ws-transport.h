@@ -60,6 +60,7 @@ typedef struct {
     void  (*close_server)(void* handle);
     void  (*set_userdata)(void* handle, void* ud);
     void* (*get_userdata)(void* handle);
+    const xylem_addr_t* (*get_peer_addr)(void* handle);
 } ws_transport_vt_t;
 
 /**

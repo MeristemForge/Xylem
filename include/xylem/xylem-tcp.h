@@ -65,7 +65,7 @@ typedef struct xylem_tcp_server_s xylem_tcp_server_t;
 
 typedef struct xylem_tcp_handler_s {
     void (*on_connect)(xylem_tcp_conn_t* conn);
-    void (*on_accept)(xylem_tcp_conn_t* conn);
+    void (*on_accept)(xylem_tcp_server_t* server, xylem_tcp_conn_t* conn);
     void (*on_read)(xylem_tcp_conn_t* conn, void* data, size_t len);
     void (*on_write_done)(xylem_tcp_conn_t* conn,
                           void* data, size_t len, int status);
@@ -163,6 +163,19 @@ extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
  * @note Not thread-safe. Must be called from the loop thread.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
+
+/**
+ * @brief Get the peer address of a connection.
+ *
+ * Returns a pointer to the peer address stored at accept or
+ * connect time. The pointer is valid for the lifetime of the
+ * connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return Peer address, or NULL if not available.
+ */
+extern const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn);
 
 /**
  * @brief Get user data attached to a connection.

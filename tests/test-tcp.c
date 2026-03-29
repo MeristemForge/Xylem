@@ -114,7 +114,9 @@ static void _stop_safety_timer(void) {
     xylem_loop_destroy_timer(_safety_timer);
 }
 
-static void _echo_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _echo_srv_on_accept(xylem_tcp_server_t* server,
+                                xylem_tcp_conn_t* conn) {
+    (void)server;
     _echo_server_conn = conn;
     _echo_accept_called = 1;
 }
@@ -211,7 +213,9 @@ static void test_tcp_echo_delim(void) {
     xylem_loop_destroy(_echo_loop);
 }
 
-static void _life_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _life_srv_on_accept(xylem_tcp_server_t* server,
+                                xylem_tcp_conn_t* conn) {
+    (void)server;
     _life_srv_accept = 1;
     _life_srv_conn = conn;
 }
@@ -294,7 +298,9 @@ static void test_tcp_lifecycle(void) {
     xylem_loop_destroy(_life_loop);
 }
 
-static void _wd_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _wd_srv_on_accept(xylem_tcp_server_t* server,
+                              xylem_tcp_conn_t* conn) {
+    (void)server;
     _wd_srv_conn = conn;
 }
 
@@ -370,7 +376,9 @@ static void test_tcp_write_done(void) {
     xylem_loop_destroy(_wd_loop);
 }
 
-static void _fix_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _fix_srv_on_accept(xylem_tcp_server_t* server,
+                               xylem_tcp_conn_t* conn) {
+    (void)server;
     _fix_srv_conn = conn;
 }
 
@@ -453,7 +461,9 @@ static void test_tcp_frame_fixed(void) {
     xylem_loop_destroy(_fix_loop);
 }
 
-static void _ud_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _ud_srv_on_accept(xylem_tcp_server_t* server,
+                              xylem_tcp_conn_t* conn) {
+    (void)server;
     _ud_srv_conn = conn;
     xylem_tcp_set_userdata(conn, &_ud_value);
     void* got = xylem_tcp_get_userdata(conn);
@@ -516,7 +526,9 @@ static void test_tcp_userdata(void) {
     xylem_loop_destroy(_ud_loop);
 }
 
-static void _sac_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _sac_srv_on_accept(xylem_tcp_server_t* server,
+                               xylem_tcp_conn_t* conn) {
+    (void)server;
     (void)conn;
 }
 
@@ -569,7 +581,9 @@ static void test_tcp_send_after_close(void) {
     xylem_loop_destroy(_sac_loop);
 }
 
-static void _len_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _len_srv_on_accept(xylem_tcp_server_t* server,
+                               xylem_tcp_conn_t* conn) {
+    (void)server;
     _len_srv_conn = conn;
 }
 
@@ -659,7 +673,9 @@ static void test_tcp_frame_length_fixedint(void) {
     xylem_loop_destroy(_len_loop);
 }
 
-static void _var_srv_on_accept(xylem_tcp_conn_t* conn) {
+static void _var_srv_on_accept(xylem_tcp_server_t* server,
+                               xylem_tcp_conn_t* conn) {
+    (void)server;
     _var_srv_conn = conn;
 }
 

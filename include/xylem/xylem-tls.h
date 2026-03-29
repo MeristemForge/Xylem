@@ -208,6 +208,18 @@ extern int xylem_tls_set_hostname(xylem_tls_t* tls, const char* hostname);
 extern const char* xylem_tls_get_alpn(xylem_tls_t* tls);
 
 /**
+ * @brief Get the peer address of a TLS connection.
+ *
+ * Returns the peer address from the underlying TCP connection.
+ * The pointer is valid for the lifetime of the TLS connection.
+ *
+ * @param tls  TLS connection handle.
+ *
+ * @return Peer address, or NULL if not available.
+ */
+extern const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_t* tls);
+
+/**
  * @brief Get user data attached to a TLS connection.
  *
  * @param tls  TLS connection handle.

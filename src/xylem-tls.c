@@ -46,6 +46,7 @@ struct xylem_tls_s {
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;
+    xylem_loop_t*         loop;
     void*                 userdata;
     bool                  handshake_done;
     bool                  closing;
@@ -300,9 +301,10 @@ static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn) {
     _tls_do_handshake(tls);
 }
 
-static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
+static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
+                               xylem_tcp_conn_t* conn) {
     xylem_tls_server_t* server =
-        (xylem_tls_server_t*)xylem_tcp_get_userdata(conn);
+        (xylem_tls_server_t*)xylem_tcp_server_get_userdata(tcp_server);
 
     xylem_tls_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
@@ -315,12 +317,9 @@ static void _tls_tcp_accept_cb(xylem_tcp_conn_t* conn) {
     tls->ctx     = server->ctx;
     tls->handler = server->handler;
     tls->server  = server;
+    tls->loop    = server->loop;
     tls->userdata = server->userdata;
 
-    /**
-     * TCP accept callback initially carries the server pointer;
-     * rebind to the per-connection TLS handle from here on.
-     */
     xylem_tcp_set_userdata(conn, tls);
 
     xylem_list_insert_tail(&server->connections, &tls->server_node);
@@ -370,6 +369,15 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     }
 }
 
+/* Post callback: free a TLS handle after the current iteration. */
+static void _tls_free_cb(xylem_loop_t* loop,
+                         xylem_loop_post_t* req,
+                         void* ud) {
+    (void)loop;
+    (void)req;
+    free(ud);
+}
+
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     xylem_tls_t* tls = (xylem_tls_t*)xylem_tcp_get_userdata(conn);
     if (!tls) {
@@ -389,7 +397,13 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
         SSL_free(tls->ssl);
     }
     free(tls->hostname);
-    free(tls);
+
+    /**
+     * Defer free so callers higher on the stack (_tls_tcp_read_cb,
+     * _tls_do_handshake) can still safely read tls->closing /
+     * tls->handshake_done after a user callback triggers close.
+     */
+    xylem_loop_post(tls->loop, _tls_free_cb, tls);
 }
 
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
@@ -461,6 +475,7 @@ xylem_tls_t* xylem_tls_dial(xylem_loop_t* loop,
 
     tls->ctx     = ctx;
     tls->handler = handler;
+    tls->loop    = loop;
 
     xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
                                            &_tls_tcp_client_handler, opts);

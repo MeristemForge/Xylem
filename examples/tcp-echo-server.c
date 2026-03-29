@@ -35,7 +35,9 @@
 
 #define LISTEN_PORT 9000
 
-static void _on_accept(xylem_tcp_conn_t* conn) {
+static void _on_accept(xylem_tcp_server_t* server,
+                       xylem_tcp_conn_t* conn) {
+    (void)server;
     (void)conn;
     xylem_logi("client connected");
 }
