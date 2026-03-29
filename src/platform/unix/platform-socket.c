@@ -21,6 +21,7 @@
 
 #include "platform/platform-socket.h"
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 
 #define TCPv4_MSS 536
@@ -168,6 +169,7 @@ platform_sock_t platform_socket_listen(
 }
 
 void platform_socket_startup(void) {
+    signal(SIGPIPE, SIG_IGN);
 }
 
 void platform_socket_cleanup(void) {

@@ -22,6 +22,7 @@
 #include "xylem/xylem-tls.h"
 
 #include "xylem/xylem-list.h"
+#include "xylem/xylem-logger.h"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -238,10 +239,12 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
         _tls_flush_write_bio(tls);
 
         if (tls->server) {
+            xylem_logi("tls conn %p handshake complete (server)", (void*)tls);
             if (tls->handler && tls->handler->on_accept) {
                 tls->handler->on_accept(tls->server, tls);
             }
         } else {
+            xylem_logi("tls conn %p handshake complete (client)", (void*)tls);
             if (tls->handler && tls->handler->on_connect) {
                 tls->handler->on_connect(tls);
             }
@@ -255,6 +258,7 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     }
 
     /* Flush any pending alert before tearing down the TCP connection. */
+    xylem_logw("tls conn %p handshake failed ssl_err=%d", (void*)tls, err);
     _tls_flush_write_bio(tls);
     xylem_tcp_close(tls->tcp);
 }
@@ -262,6 +266,7 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
 static int _tls_init_ssl(xylem_tls_conn_t* tls) {
     tls->ssl = SSL_new(tls->ctx->ssl_ctx);
     if (!tls->ssl) {
+        xylem_logw("tls conn %p SSL_new failed", (void*)tls);
         return -1;
     }
 
@@ -285,6 +290,8 @@ static int _tls_init_ssl(xylem_tls_conn_t* tls) {
 static void _tls_tcp_connect_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
+    xylem_logd("tls conn %p tcp connected, starting handshake", (void*)tls);
+
     if (_tls_init_ssl(tls) != 0) {
         xylem_tcp_close(conn);
         return;
@@ -307,6 +314,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
 
     xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
+        xylem_logw("tls server accept: conn alloc failed");
         xylem_tcp_set_userdata(conn, NULL);
         xylem_tcp_close(conn);
         return;
@@ -357,11 +365,19 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
 
     int err = SSL_get_error(tls->ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN) {
+        xylem_logi("tls conn %p peer sent close_notify", (void*)tls);
         xylem_tls_close(tls);
         return;
     }
 
+    if (err == SSL_ERROR_WANT_WRITE) {
+        /* Renegotiation needs to send data; flush and wait for next read. */
+        _tls_flush_write_bio(tls);
+        return;
+    }
+
     if (err != SSL_ERROR_WANT_READ) {
+        xylem_logw("tls conn %p SSL_read error=%d", (void*)tls, err);
         xylem_tcp_close(tls->tcp);
     }
 }
@@ -380,6 +396,8 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     if (!tls) {
         return;
     }
+
+    xylem_logd("tls conn %p close err=%d", (void*)tls, err);
 
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);
@@ -407,6 +425,8 @@ static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
                                 xylem_tcp_timeout_type_t type) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
+    xylem_logw("tls conn %p timeout type=%d", (void*)tls, (int)type);
+
     if (tls->handler && tls->handler->on_timeout) {
         tls->handler->on_timeout(tls, type);
     }
@@ -414,6 +434,8 @@ static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
 
 static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
+
+    xylem_logw("tls conn %p heartbeat miss", (void*)tls);
 
     if (tls->handler && tls->handler->on_heartbeat_miss) {
         tls->handler->on_heartbeat_miss(tls);
@@ -443,11 +465,14 @@ static xylem_tcp_handler_t _tls_tcp_client_handler = {
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     if (!tls->handshake_done || tls->closing) {
+        xylem_logd("tls conn %p send rejected (handshake=%d closing=%d)",
+                   (void*)tls, tls->handshake_done, tls->closing);
         return -1;
     }
 
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
+        xylem_logw("tls conn %p SSL_write failed", (void*)tls);
         return -1;
     }
 
@@ -490,6 +515,8 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
         return;
     }
     tls->closing = true;
+
+    xylem_logi("tls conn %p close requested", (void*)tls);
 
     if (tls->ssl && tls->handshake_done) {
         SSL_shutdown(tls->ssl);
@@ -567,6 +594,8 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
 
     server->tcp_server = tcp_server;
     xylem_tcp_server_set_userdata(tcp_server, server);
+
+    xylem_logi("tls server %p listening", (void*)server);
     return server;
 }
 
@@ -583,6 +612,8 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
         return;
     }
     server->closing = true;
+
+    xylem_logi("tls server %p closing", (void*)server);
 
     /**
      * Detach all TLS sessions from the server before closing them.
