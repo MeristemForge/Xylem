@@ -265,7 +265,7 @@ flowchart TD
 
 从写队列头部取出请求，调用 `platform_socket_send`：
 
-- 完整发送：出队，回调 `on_write_done`，检查连接状态——若用户在回调中关闭了连接（`CLOSED` 或 `CLOSING`）则立即返回；否则处理下一个请求
+- 完整发送：出队，回调 `on_write_done`，处理下一个请求
 - 部分发送：更新 `offset`，等待下次可写事件
 - `EAGAIN`：直接返回，等待下次可写事件
 - 错误：若处于 `CLOSING` 状态则排空队列并销毁；否则 `close_conn`
@@ -282,9 +282,9 @@ flowchart TD
 |----------|----------|-----------|
 | `READ` | 连接空闲超过 `read_timeout_ms` | 仅通知用户（`on_timeout`） |
 | `WRITE` | 写操作未完成超过 `write_timeout_ms` | 仅通知用户（`on_timeout`） |
-| `CONNECT` | 非阻塞 connect 超过 `connect_timeout_ms` | 通知用户后，检查连接状态——若用户在 `on_timeout` 中关闭了连接则直接返回；否则停止 IO 监听，尝试重连或以 `ETIMEDOUT` 销毁连接 |
+| `CONNECT` | 非阻塞 connect 超过 `connect_timeout_ms` | 通知用户后，停止 IO 监听，尝试重连或以 `ETIMEDOUT` 销毁连接 |
 
-连接超时后先回调 `on_timeout`，然后检查连接状态：若用户在回调中调用了 `xylem_tcp_close`（状态变为 `CLOSING` 或 `CLOSED`），则不再执行后续的重连/销毁逻辑。否则停止 IO 监听，若 `reconnect_max > 0` 且未达上限，启动重连定时器；否则调用 `_tcp_destroy_conn(ETIMEDOUT)`。
+连接超时后的决策逻辑：若 `reconnect_max > 0` 且未达上限，启动重连定时器；否则调用 `_tcp_destroy_conn(ETIMEDOUT)`。
 
 ### 重连机制 — `_tcp_start_reconnect_timer`
 

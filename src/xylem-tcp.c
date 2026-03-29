@@ -303,6 +303,10 @@ static void _tcp_write_timeout_cb(xylem_loop_t* loop,
     }
 }
 
+static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err);
+static void _tcp_start_reconnect_timer(xylem_tcp_conn_t* conn,
+                                       xylem_loop_timer_fn_t cb);
+
 static void _tcp_connect_timeout_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer,
                                     void* ud) {
@@ -313,6 +317,23 @@ static void _tcp_connect_timeout_cb(xylem_loop_t* loop,
     xylem_logw("tcp conn fd=%d connect timeout", (int)conn->fd);
     if (conn->handler && conn->handler->on_timeout) {
         conn->handler->on_timeout(conn, XYLEM_TCP_TIMEOUT_CONNECT);
+    }
+
+    /* User may have closed the connection in on_timeout. */
+    if (conn->state == TCP_STATE_CLOSED ||
+        conn->state == TCP_STATE_CLOSING) {
+        return;
+    }
+
+    /* Stop watching the stale socket and attempt reconnect or close. */
+    xylem_loop_stop_io(conn->io);
+
+    _tcp_dial_priv_t* dial = conn->dial;
+    if (dial && conn->opts.reconnect_max > 0 &&
+        dial->reconnect_count < conn->opts.reconnect_max) {
+        _tcp_start_reconnect_timer(conn, dial->reconnect_cb);
+    } else {
+        _tcp_destroy_conn(conn, PLATFORM_SO_ERROR_ETIMEDOUT);
     }
 }
 
@@ -548,7 +569,8 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
 
             free(req);
 
-            if (conn->state == TCP_STATE_CLOSED) {
+            if (conn->state == TCP_STATE_CLOSED ||
+                conn->state == TCP_STATE_CLOSING) {
                 return;
             }
 

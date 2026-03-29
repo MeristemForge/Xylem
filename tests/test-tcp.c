@@ -1965,6 +1965,7 @@ static void test_reconnect_limit(void) {
 
     xylem_tcp_opts_t cli_opts = {0};
     cli_opts.reconnect_max = 1;
+    cli_opts.connect_timeout_ms = 1000;
 
     xylem_tcp_handler_t cli_handler = {
         .on_close = _reconnect_limit_close_cb,
