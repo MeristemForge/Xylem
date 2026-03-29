@@ -610,7 +610,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         _tcp_conn_readable_cb(conn);
     }
 
-    /* CLOSING is intentionally allowed through — flush_writes needs to
+    /* CLOSING is intentionally allowed through -- flush_writes needs to
      * drain the write queue before the connection is fully torn down. */
     if (conn->state == TCP_STATE_CLOSED) {
         return;

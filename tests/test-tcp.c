@@ -305,7 +305,7 @@ static void _cli_send_varint_cb(xylem_tcp_conn_t* conn) {
 static void _cli_send_len_adj_cb(xylem_tcp_conn_t* conn) {
     /**
      * Length field value includes header size.
-     * [0x00, 0x07, "HELLO"] — length=7 means total frame=7,
+     * [0x00, 0x07, "HELLO"] -- length=7 means total frame=7,
      * so payload = 7 - 2 (header) = 5.
      * With adjustment=-2: frame_size = 2 + 7 + (-2) = 7, payload = 7 - 2 = 5.
      */
@@ -431,7 +431,7 @@ static void test_close_server_idempotent(void) {
                                                    &handler, NULL);
     ASSERT(server != NULL);
 
-    /* Call close twice — second call must not crash. */
+    /* Call close twice -- second call must not crash. */
     xylem_tcp_close_server(server);
     xylem_tcp_close_server(server);
 
@@ -1651,7 +1651,7 @@ static void test_write_timeout(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
-    /* Server accepts but never reads — no on_read handler. */
+    /* Server accepts but never reads -- no on_read handler. */
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
                                                    &srv_handler, NULL);
@@ -1697,7 +1697,7 @@ static void _connect_timeout_close_cb(xylem_tcp_conn_t* conn, int err) {
         /**
          * On some platforms the connect fails immediately with
          * EHOSTUNREACH instead of timing out. Accept either path
-         * as valid — the important thing is the connection does
+         * as valid -- the important thing is the connection does
          * not succeed.
          */
         if (!ctx->verified) {
@@ -1717,7 +1717,7 @@ static void test_connect_timeout(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
 
-    /* RFC 5737 TEST-NET — unreachable, triggers connect timeout. */
+    /* RFC 5737 TEST-NET -- unreachable, triggers connect timeout. */
     xylem_addr_t addr;
     xylem_addr_pton("192.0.2.1", TCP_PORT, &addr);
 
@@ -1813,7 +1813,7 @@ static void _hb_reset_stop_cb(xylem_loop_t* loop,
 
 static void _hb_reset_miss_cb(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    /* Should NOT fire — mark it so we can detect failure. */
+    /* Should NOT fire -- mark it so we can detect failure. */
     ctx->verified = 1;
 }
 
@@ -1959,7 +1959,7 @@ static void test_reconnect_limit(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
 
-    /* Port 18081 — no server listening. */
+    /* Port 18081 -- no server listening. */
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT + 1, &addr);
 

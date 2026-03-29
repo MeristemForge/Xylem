@@ -328,6 +328,7 @@ static void _fail_srv_close_cb(xylem_tls_conn_t* tls, int err) {
     if (ctx) {
         ctx->close_called++;
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -954,7 +955,7 @@ static void test_close_server_idempotent(void) {
                                                    &srv_handler, NULL);
     ASSERT(server != NULL);
 
-    /* Call close twice — second call must not crash. */
+    /* Call close twice -- second call must not crash. */
     xylem_tls_close_server(server);
     xylem_tls_close_server(server);
 

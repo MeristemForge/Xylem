@@ -342,6 +342,9 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
                              void* data, size_t len) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
+    xylem_logd("tls conn %p tcp_read_cb len=%zu handshake_done=%d",
+               (void*)tls, len, tls->handshake_done);
+
     _tls_feed_read_bio(tls, data, len);
 
     if (!tls->handshake_done) {
