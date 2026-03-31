@@ -140,7 +140,7 @@ xylem_apply_sanitizer(xylem XYLEM_ENABLE_UBSAN undefined)
 
 if(XYLEM_ENABLE_COVERAGE AND UNIX)
     target_compile_options(xylem PRIVATE --coverage)
-    target_link_options(xylem PRIVATE --coverage)
+    target_link_options(xylem PUBLIC --coverage)
 endif()
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include DESTINATION . FILES_MATCHING PATTERN "*")

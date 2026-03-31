@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "name": "Code Style Check",
+  "description": "每次保存 .c 或 .h 文件后，自动检查修改部分是否符合 docs/style.md 中的代码风格规范",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/*.c",
+      "**/*.h"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review ONLY the changed/added lines in the edited file against the project style guide in docs/style.md. Focus on:\n\n1. Naming conventions (public functions: xylem_<module>_<action>, static functions: _<module>_<action>, static callbacks: _<module>_<subject>_<event>_cb, types: xylem_<module>_t)\n2. Fixed-width integer types (use int8_t/uint8_t/etc. instead of plain int/unsigned, except for return values, loop counters, error codes)\n3. Restricted functions (no sprintf/strcpy/strcat/gets/atoi/atof/atol/localtime/gmtime/ctime/asctime/strtok/strerror)\n4. Header guards must use _Pragma(\"once\"), extern on all non-static .h declarations\n5. Braces required on all if/else/for/while bodies\n6. Comments: Doxygen /** */ blocks on extern declarations in .h files; inline comments explain \"why\" not \"what\"; no decorative dividers\n7. File organization order: License -> includes -> macros -> structs -> variables -> static functions -> public functions\n8. Lifecycle naming: init/deinit for caller-owned memory, create/destroy for module-owned memory\n9. No platform conditionals (#ifdef _WIN32 etc.) outside src/platform/\n10. For test files: use project ASSERT macro from \"assert.h\", no global state, cleanup all resources\n\nIf everything looks good, say so briefly. If there are violations, list them with line references and suggest fixes. Be concise."
+  },
+  "workspaceFolderName": "Xylem",
+  "shortName": "check-code-style"
+}
