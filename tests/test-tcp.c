@@ -1900,7 +1900,7 @@ static void test_reconnect_limit(void) {
 
     /* Port 18081 -- no server listening. */
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT + 1, &addr);
+    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
     xylem_tcp_opts_t cli_opts = {0};
     cli_opts.reconnect_max = 1;
