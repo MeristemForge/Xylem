@@ -1644,7 +1644,7 @@ static void test_write_timeout(void) {
     ASSERT(loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, 10000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1680,68 +1680,6 @@ static void test_write_timeout(void) {
     xylem_loop_destroy(loop);
 }
 
-
-static void _connect_timeout_cb(xylem_tcp_conn_t* conn,
-                                 xylem_tcp_timeout_type_t type) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (type == XYLEM_TCP_TIMEOUT_CONNECT) {
-        ctx->verified = 1;
-    }
-    xylem_tcp_close(conn);
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _connect_timeout_close_cb(xylem_tcp_conn_t* conn, int err) {
-    (void)err;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        /**
-         * On some platforms the connect fails immediately with
-         * EHOSTUNREACH instead of timing out. Accept either path
-         * as valid -- the important thing is the connection does
-         * not succeed.
-         */
-        if (!ctx->verified) {
-            ctx->verified = 1;
-        }
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void test_connect_timeout(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    /* RFC 5737 TEST-NET -- unreachable, triggers connect timeout. */
-    xylem_addr_t addr;
-    xylem_addr_pton("192.0.2.1", TCP_PORT, &addr);
-
-    xylem_tcp_opts_t cli_opts = {0};
-    cli_opts.connect_timeout_ms = 200;
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_timeout = _connect_timeout_cb,
-        .on_close   = _connect_timeout_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &cli_opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
 
 
 static void _heartbeat_miss_cb(xylem_tcp_conn_t* conn) {
@@ -2377,7 +2315,6 @@ int main(void) {
     test_frame_custom_null_parse();
     test_read_timeout();
     test_write_timeout();
-    test_connect_timeout();
     test_heartbeat_miss();
     test_heartbeat_reset_on_data();
     test_reconnect_success();

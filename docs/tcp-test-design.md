@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-tcp.c` 包含 40 个测试函数，覆盖 `src/xylem-tcp.c` 的所有公共 API 和核心内部分支。
+`tests/test-tcp.c` 包含 39 个测试函数，覆盖 `src/xylem-tcp.c` 的所有公共 API 和核心内部分支。
 
 ## 测试基础设施
 
@@ -56,15 +56,16 @@
 | `test_frame_custom_negative` | CUSTOM parse→-1 | 帧提取错误，on_close 触发 |
 | `test_frame_custom_null_parse` | CUSTOM parse=NULL | 帧提取错误，on_close 触发 |
 
-### 超时和心跳（5 个）
+### 超时和心跳（4 个）
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
 | `test_read_timeout` | read_timeout_ms=100 | on_timeout(READ) 触发 |
 | `test_write_timeout` | write_timeout_ms=1 | 填满发送缓冲区后 on_timeout(WRITE) 触发 |
-| `test_connect_timeout` | connect_timeout_ms=200 | dial 192.0.2.1，on_timeout(CONNECT) 触发 |
 | `test_heartbeat_miss` | heartbeat_ms=100 | 无数据时 on_heartbeat_miss 触发 |
 | `test_heartbeat_reset_on_data` | heartbeat_ms=200 | 持续发数据，heartbeat_miss 不触发 |
+
+> `test_connect_timeout` 已移除。该测试依赖 RFC 5737 TEST-NET 地址（192.0.2.1）不可达来触发连接超时，但在 VPN/全局代理环境下这些地址可达（`connect` 返回 `SO_ERROR=0`），导致超时永远不会触发。由于无法找到一个在所有网络环境下都保证不可达的 IPv4 地址，该测试不具备可移植性，因此移除。`_tcp_connect_timeout_cb` 的逻辑仍通过 `test_reconnect_limit`（连接超时 → 重连耗尽）间接覆盖。
 
 ### 重连（2 个）
 
@@ -92,7 +93,7 @@
 | `_tcp_flush_writes` | 正常完成、写超时 |
 | `_tcp_close_conn` | 写队列 drain |
 | `_tcp_start_reconnect_timer` | 指数退避、达到上限 |
-| `_tcp_read/write/connect_timeout_cb` | 三种超时回调 |
+| `_tcp_read/write/connect_timeout_cb` | 读超时、写超时回调（连接超时通过 `test_reconnect_limit` 间接覆盖） |
 | `_tcp_heartbeat_timeout_cb` | 心跳超时 |
 | `xylem_tcp_close` | 空队列立即 shutdown、非空队列等 flush |
 | `xylem_tcp_close_server` | 带活跃连接关闭、幂等 |
