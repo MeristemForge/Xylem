@@ -57,12 +57,20 @@ if(XYLEM_ENABLE_COVERAGE AND WIN32)
     if(OPENCPPCOVERAGE_BIN)
         file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/src" SRC_DIR_NATIVE)
         file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/tests" TESTS_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/src/gzip/miniz" MINIZ_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/src/http/llhttp" LLHTTP_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/src/json/yyjson" YYJSON_DIR_NATIVE)
+        file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/src/platform/win/wepoll" WEPOLL_DIR_NATIVE)
         file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/coverage" COVERAGE_OUTPUT_DIR_NATIVE)
 
         add_custom_target(coverage
             COMMAND ${OPENCPPCOVERAGE_BIN}
                 "--sources=${SRC_DIR_NATIVE}"
                 "--excluded_sources=${TESTS_DIR_NATIVE}"
+                "--excluded_sources=${MINIZ_DIR_NATIVE}"
+                "--excluded_sources=${LLHTTP_DIR_NATIVE}"
+                "--excluded_sources=${YYJSON_DIR_NATIVE}"
+                "--excluded_sources=${WEPOLL_DIR_NATIVE}"
                 "--export_type=html:${COVERAGE_OUTPUT_DIR_NATIVE}"
                 "--cover_children"
                 "--"
@@ -85,6 +93,9 @@ if(XYLEM_ENABLE_COVERAGE AND UNIX)
             COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/coverage
             COMMAND ctest --test-dir ${CMAKE_BINARY_DIR} -C $<CONFIG> --output-on-failure
             COMMAND ${LCOV_BIN} --capture --directory . --output-file ${CMAKE_BINARY_DIR}/coverage/coverage.info
+            COMMAND ${LCOV_BIN} --remove ${CMAKE_BINARY_DIR}/coverage/coverage.info
+                    "*/miniz/*" "*/llhttp/*" "*/yyjson/*"
+                    --output-file ${CMAKE_BINARY_DIR}/coverage/coverage.info
             COMMAND ${GENHTML_BIN} ${CMAKE_BINARY_DIR}/coverage/coverage.info --output-directory ${CMAKE_BINARY_DIR}/coverage/html
             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
             COMMENT "generating html coverage report in coverage/html/index.html"
