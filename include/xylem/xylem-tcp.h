@@ -77,12 +77,12 @@ typedef struct xylem_tcp_handler_s {
 
 typedef struct xylem_tcp_opts_s {
     xylem_tcp_framing_t framing;
-    uint64_t connect_timeout_ms;
-    uint64_t read_timeout_ms;
-    uint64_t write_timeout_ms;
-    uint64_t heartbeat_ms;
-    uint32_t reconnect_max;
-    size_t   read_buf_size;
+    uint64_t            connect_timeout_ms;
+    uint64_t            read_timeout_ms;
+    uint64_t            write_timeout_ms;
+    uint64_t            heartbeat_ms;
+    uint32_t            reconnect_max;
+    size_t              read_buf_size;
 } xylem_tcp_opts_t;
 
 /**

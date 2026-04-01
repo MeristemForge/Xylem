@@ -24,6 +24,8 @@
 #include "xylem/xylem-list.h"
 #include "xylem/xylem-logger.h"
 
+#include "platform/platform-socket.h"
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <stdio.h>
@@ -258,7 +260,11 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     }
 
     /* Flush any pending alert before tearing down the TCP connection. */
-    xylem_logw("tls conn %p handshake failed ssl_err=%d", (void*)tls, err);
+    unsigned long ssl_err_code = ERR_peek_error();
+    const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+    xylem_logw("tls conn %p handshake failed ssl_err=%d (%s)",
+               (void*)tls, err,
+               ssl_err_str ? ssl_err_str : "unknown");
     _tls_flush_write_bio(tls);
     xylem_tcp_close(tls->tcp);
 }
@@ -380,7 +386,11 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     }
 
     if (err != SSL_ERROR_WANT_READ) {
-        xylem_logw("tls conn %p SSL_read error=%d", (void*)tls, err);
+        unsigned long ssl_err_code = ERR_peek_error();
+        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+        xylem_logw("tls conn %p SSL_read error=%d (%s)",
+                   (void*)tls, err,
+                   ssl_err_str ? ssl_err_str : "unknown");
         xylem_tcp_close(tls->tcp);
     }
 }
@@ -400,7 +410,9 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
         return;
     }
 
-    xylem_logd("tls conn %p close err=%d", (void*)tls, err);
+    xylem_logd("tls conn %p close err=%d (%s)",
+               (void*)tls, err,
+               err ? platform_socket_tostring(err) : "ok");
 
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);

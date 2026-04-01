@@ -88,7 +88,9 @@ static void _udp_io_cb(xylem_loop_t* loop,
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 return;
             }
-            xylem_logw("udp fd=%d recv error=%d", (int)udp->fd, err);
+            xylem_logw("udp fd=%d recv error=%d (%s)",
+                       (int)udp->fd, err,
+                       platform_socket_tostring(err));
             if (udp->handler && udp->handler->on_error) {
                 udp->handler->on_error(udp, err);
             }

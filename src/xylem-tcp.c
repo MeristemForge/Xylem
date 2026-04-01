@@ -361,8 +361,9 @@ static void _tcp_conn_free_cb(xylem_loop_t* loop,
 
 static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
     conn->state = TCP_STATE_CLOSED;
-    xylem_logd("tcp conn fd=%d destroy err=%d",
-               (int)conn->fd, err);
+    xylem_logd("tcp conn fd=%d destroy err=%d (%s)",
+               (int)conn->fd, err,
+               err ? platform_socket_tostring(err) : "ok");
 
     if (conn->server) {
         xylem_list_remove(&conn->server->connections, &conn->server_node);
@@ -408,8 +409,9 @@ static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
         return;
     }
 
-    xylem_logd("tcp conn fd=%d start_close err=%d",
-               (int)conn->fd, err);
+    xylem_logd("tcp conn fd=%d start_close err=%d (%s)",
+               (int)conn->fd, err,
+               err ? platform_socket_tostring(err) : "ok");
     conn->state = TCP_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {
@@ -453,8 +455,9 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 break;
             }
-            xylem_logw("tcp conn fd=%d recv error=%d",
-                       (int)conn->fd, err);
+            xylem_logw("tcp conn fd=%d recv error=%d (%s)",
+                       (int)conn->fd, err,
+                       platform_socket_tostring(err));
             _tcp_close_conn(conn, err);
             return;
         }
@@ -533,8 +536,9 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
                 return;
             }
 
-            xylem_logw("tcp conn fd=%d send error=%d",
-                       (int)conn->fd, err);
+            xylem_logw("tcp conn fd=%d send error=%d (%s)",
+                       (int)conn->fd, err,
+                       platform_socket_tostring(err));
 
             if (conn->state == TCP_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
@@ -740,8 +744,9 @@ static void _tcp_try_connect(xylem_loop_t* loop,
 
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
 
-    xylem_logd("tcp conn fd=%d connect result SO_ERROR=%d",
-               (int)conn->fd, err);
+    xylem_logd("tcp conn fd=%d connect result SO_ERROR=%d (%s)",
+               (int)conn->fd, err,
+               err ? platform_socket_tostring(err) : "ok");
 
     if (conn->opts.connect_timeout_ms > 0 && dial->connect_timer) {
         xylem_loop_stop_timer(dial->connect_timer);
@@ -820,8 +825,9 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 break;
             }
-            xylem_logw("tcp server fd=%d accept error=%d",
-                       (int)server->fd, err);
+            xylem_logw("tcp server fd=%d accept error=%d (%s)",
+                       (int)server->fd, err,
+                       platform_socket_tostring(err));
             continue;
         }
 
