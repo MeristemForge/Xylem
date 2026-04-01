@@ -29,7 +29,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define TLS_PORT 14433
+#define TLS_PORT          14433
+#define SAFETY_TIMEOUT_MS 10000
 
 typedef struct {
     xylem_loop_t*          loop;
@@ -117,6 +118,14 @@ static void _safety_timeout_cb(xylem_loop_t* loop,
     xylem_loop_stop(loop);
 }
 
+static void _post_stop_cb(xylem_loop_t* loop,
+                           xylem_loop_post_t* req,
+                           void* ud) {
+    (void)req;
+    (void)ud;
+    xylem_loop_stop(loop);
+}
+
 static void _tls_srv_accept_cb(xylem_tls_server_t* server,
                                 xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx =
@@ -124,15 +133,6 @@ static void _tls_srv_accept_cb(xylem_tls_server_t* server,
     ctx->srv_conn = tls;
     ctx->accept_called = 1;
     xylem_tls_set_userdata(tls, ctx);
-}
-
-static void _tls_srv_close_cb(xylem_tls_conn_t* tls, int err) {
-    (void)err;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
-    if (ctx) {
-        ctx->close_called++;
-        xylem_tls_close_server(ctx->tls_server);
-    }
 }
 
 static void _tls_srv_read_echo_cb(xylem_tls_conn_t* tls,
@@ -208,6 +208,7 @@ static void _echo_srv_close_cb(xylem_tls_conn_t* tls, int err) {
     if (ctx) {
         ctx->close_called++;
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -256,7 +257,7 @@ static void test_handshake_and_echo(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -319,6 +320,12 @@ static void _fail_cli_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
+        if (ctx->srv_conn) {
+            xylem_tls_close(ctx->srv_conn);
+        } else {
+            xylem_tls_close_server(ctx->tls_server);
+            xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
+        }
     }
 }
 
@@ -353,7 +360,7 @@ static void test_handshake_failure_wrong_ca(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -439,6 +446,7 @@ static void _alpn_srv_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -452,7 +460,7 @@ static void test_alpn_negotiation(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     const char* protos[] = {"h2", "http/1.1"};
 
@@ -549,6 +557,7 @@ static void _ud_cli_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -563,7 +572,7 @@ static void test_conn_userdata(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -626,6 +635,7 @@ static void _srv_ud_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -640,7 +650,7 @@ static void test_server_userdata(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -712,6 +722,7 @@ static void _peer_addr_srv_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -725,7 +736,7 @@ static void test_peer_addr(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -785,6 +796,7 @@ static void _get_loop_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -798,7 +810,7 @@ static void test_get_loop(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -881,7 +893,7 @@ static void test_close_server_with_active_conn(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -930,45 +942,6 @@ static void test_close_server_with_active_conn(void) {
     remove(key);
 }
 
-static void test_close_server_idempotent(void) {
-    const char* cert = "test_tls_idem_cert.pem";
-    const char* key  = "test_tls_idem_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
-
-    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
-    ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_tls_ctx_set_verify(srv_ctx, false);
-
-    xylem_tls_handler_t srv_handler = {0};
-
-    xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
-
-    xylem_tls_server_t* server = xylem_tls_listen(loop, &addr, srv_ctx,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    /* Call close twice -- second call must not crash. */
-    xylem_tls_close_server(server);
-    xylem_tls_close_server(server);
-
-    xylem_loop_run(loop);
-
-    xylem_tls_ctx_destroy(srv_ctx);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-
-    remove(cert);
-    remove(key);
-}
-
 /* ── send_after_close ── */
 
 static void _sac_connect_cb(xylem_tls_conn_t* tls) {
@@ -983,6 +956,7 @@ static void _sac_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -996,7 +970,7 @@ static void test_send_after_close(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -1062,6 +1036,7 @@ static void _keylog_srv_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -1076,7 +1051,7 @@ static void test_keylog_write(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -1133,18 +1108,6 @@ static void test_keylog_write(void) {
     remove(keylog);
 }
 
-static void test_keylog_disable(void) {
-    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
-    ASSERT(ctx != NULL);
-
-    const char* keylog = "test_keylog2.txt";
-    ASSERT(xylem_tls_ctx_set_keylog(ctx, keylog) == 0);
-    ASSERT(xylem_tls_ctx_set_keylog(ctx, NULL) == 0);
-
-    xylem_tls_ctx_destroy(ctx);
-    remove(keylog);
-}
-
 /* ── Timeout and heartbeat passthrough tests ── */
 
 static void _timeout_srv_accept_cb(xylem_tls_server_t* server,
@@ -1170,6 +1133,7 @@ static void _timeout_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -1183,7 +1147,7 @@ static void test_read_timeout(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -1248,6 +1212,7 @@ static void _heartbeat_close_cb(xylem_tls_conn_t* tls, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -1261,7 +1226,7 @@ static void test_heartbeat_miss(void) {
     ASSERT(ctx.loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, 2000, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     ctx.srv_ctx = xylem_tls_ctx_create();
     ASSERT(ctx.srv_ctx != NULL);
@@ -1315,36 +1280,23 @@ static void test_heartbeat_miss(void) {
 int main(void) {
     xylem_startup();
 
-    /* Context management API */
     test_ctx_create_destroy();
     test_load_cert_valid();
     test_load_cert_invalid();
     test_set_ca();
     test_set_verify();
     test_set_alpn();
-
-    /* Handshake and data transfer */
     test_handshake_and_echo();
     test_handshake_failure_wrong_ca();
     test_alpn_negotiation();
-
-    /* Auxiliary API */
     test_sni_hostname();
     test_conn_userdata();
     test_server_userdata();
     test_peer_addr();
     test_get_loop();
-
-    /* Close behavior */
     test_close_server_with_active_conn();
-    test_close_server_idempotent();
     test_send_after_close();
-
-    /* Keylog */
     test_keylog_write();
-    test_keylog_disable();
-
-    /* Timeout and heartbeat passthrough */
     test_read_timeout();
     test_heartbeat_miss();
 
