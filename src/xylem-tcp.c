@@ -622,7 +622,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         if (conn->state == TCP_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
-                                _tcp_conn_io_cb);
+                                _tcp_conn_io_cb, conn);
         }
     }
 }
@@ -642,7 +642,7 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     conn->read_cap = conn->opts.read_buf_size;
 
     if (xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
-                            _tcp_conn_io_cb) != 0) {
+                            _tcp_conn_io_cb, conn) != 0) {
         free(conn->read_buf);
         conn->read_buf = NULL;
         return -1;
@@ -651,12 +651,12 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     if (conn->opts.heartbeat_ms > 0) {
         if (!conn->heartbeat_timer) {
             conn->heartbeat_timer =
-                xylem_loop_create_timer(conn->loop, conn);
+                xylem_loop_create_timer(conn->loop);
         }
         if (conn->heartbeat_timer) {
             xylem_loop_start_timer(conn->heartbeat_timer,
                                    _tcp_heartbeat_timeout_cb,
-                                   conn->opts.heartbeat_ms,
+                                   conn, conn->opts.heartbeat_ms,
                                    conn->opts.heartbeat_ms);
         }
     }
@@ -664,19 +664,19 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     if (conn->opts.read_timeout_ms > 0) {
         if (!conn->read_timer) {
             conn->read_timer =
-                xylem_loop_create_timer(conn->loop, conn);
+                xylem_loop_create_timer(conn->loop);
         }
         if (conn->read_timer) {
             xylem_loop_start_timer(conn->read_timer,
                                    _tcp_read_timeout_cb,
-                                   conn->opts.read_timeout_ms, 0);
+                                   conn, conn->opts.read_timeout_ms, 0);
         }
     }
 
     if (conn->opts.write_timeout_ms > 0) {
         if (!conn->write_timer) {
             conn->write_timer =
-                xylem_loop_create_timer(conn->loop, conn);
+                xylem_loop_create_timer(conn->loop);
         }
     }
 
@@ -719,7 +719,7 @@ static void _tcp_start_reconnect_timer(xylem_tcp_conn_t* conn,
         delay = 30000;
     }
 
-    xylem_loop_start_timer(dial->reconnect_timer, cb, delay, 0);
+    xylem_loop_start_timer(dial->reconnect_timer, cb, conn, delay, 0);
     xylem_logi("tcp conn fd=%d scheduling reconnect #%u in %" PRIu64 " ms",
                (int)conn->fd, dial->reconnect_count + 1,
                delay);
@@ -784,7 +784,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
 
     conn->fd = fd;
     xylem_loop_destroy_io(conn->io);
-    conn->io = xylem_loop_create_io(conn->loop, fd, conn);
+    conn->io = xylem_loop_create_io(conn->loop, fd);
     conn->state = TCP_STATE_CONNECTING;
     dial->reconnect_count++;
 
@@ -792,12 +792,12 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
         _tcp_conn_connected_cb(conn);
     } else {
         xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
-                            _tcp_try_connect);
+                            _tcp_try_connect, conn);
 
         if (conn->opts.connect_timeout_ms > 0 && dial->connect_timer) {
             xylem_loop_start_timer(dial->connect_timer,
                                    _tcp_connect_timeout_cb,
-                                   conn->opts.connect_timeout_ms, 0);
+                                   conn, conn->opts.connect_timeout_ms, 0);
         }
     }
 }
@@ -840,7 +840,7 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
 
         xylem_queue_init(&conn->write_queue);
 
-        conn->io = xylem_loop_create_io(loop, client_fd, conn);
+        conn->io = xylem_loop_create_io(loop, client_fd);
         if (!conn->io) {
             platform_socket_close(client_fd);
             free(conn);
@@ -950,12 +950,12 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     if (was_empty) {
         xylem_loop_start_io(conn->io,
                             PLATFORM_POLLER_RD_OP | PLATFORM_POLLER_WR_OP,
-                            _tcp_conn_io_cb);
+                            _tcp_conn_io_cb, conn);
 
         if (conn->opts.write_timeout_ms > 0 && conn->write_timer) {
             xylem_loop_start_timer(conn->write_timer,
                                    _tcp_write_timeout_cb,
-                                   conn->opts.write_timeout_ms, 0);
+                                   conn, conn->opts.write_timeout_ms, 0);
         }
     }
 
@@ -1034,7 +1034,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     xylem_logi("tcp dial fd=%d to %s:%s", (int)fd,
                dial->host, dial->port_str);
 
-    conn->io = xylem_loop_create_io(loop, conn->fd, conn);
+    conn->io = xylem_loop_create_io(loop, conn->fd);
     if (!conn->io) {
         platform_socket_close(fd);
         free(dial);
@@ -1043,22 +1043,22 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     }
 
     if (conn->opts.connect_timeout_ms > 0) {
-        dial->connect_timer = xylem_loop_create_timer(loop, conn);
+        dial->connect_timer = xylem_loop_create_timer(loop);
     }
     if (conn->opts.reconnect_max > 0) {
-        dial->reconnect_timer = xylem_loop_create_timer(loop, conn);
+        dial->reconnect_timer = xylem_loop_create_timer(loop);
     }
 
     if (connected) {
         _tcp_conn_connected_cb(conn);
     } else {
         xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
-                            _tcp_try_connect);
+                            _tcp_try_connect, conn);
 
         if (conn->opts.connect_timeout_ms > 0 && dial->connect_timer) {
             xylem_loop_start_timer(dial->connect_timer,
                                    _tcp_connect_timeout_cb,
-                                   conn->opts.connect_timeout_ms, 0);
+                                   conn, conn->opts.connect_timeout_ms, 0);
         }
     }
 
@@ -1104,14 +1104,14 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
 
     server->fd = fd;
 
-    server->io = xylem_loop_create_io(loop, server->fd, server);
+    server->io = xylem_loop_create_io(loop, server->fd);
     if (!server->io) {
         platform_socket_close(fd);
         free(server);
         return NULL;
     }
     xylem_loop_start_io(server->io, PLATFORM_POLLER_RD_OP,
-                        _tcp_server_io_cb);
+                        _tcp_server_io_cb, server);
 
     xylem_logi("tcp server fd=%d listening on %s:%s",
                (int)fd, host, port_str);

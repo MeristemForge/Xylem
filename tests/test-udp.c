@@ -85,8 +85,8 @@ static void test_listen_recv(void) {
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &recv_addr);
@@ -104,8 +104,8 @@ static void test_listen_recv(void) {
     ASSERT(ctx.sender != NULL);
 
     xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop, &ctx);
-    xylem_loop_start_timer(send_timer, _lr_send_timer_cb, SEND_DELAY_MS, 0);
+        xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _lr_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -159,8 +159,8 @@ static void test_listen_send(void) {
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t a_addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &a_addr);
@@ -178,8 +178,8 @@ static void test_listen_send(void) {
     xylem_udp_set_userdata(ctx.receiver, &ctx);
 
     xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop, &ctx);
-    xylem_loop_start_timer(send_timer, _ls_send_timer_cb, SEND_DELAY_MS, 0);
+        xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _ls_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -239,8 +239,8 @@ static void test_dial_echo(void) {
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t srv_addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &srv_addr);
@@ -259,8 +259,8 @@ static void test_dial_echo(void) {
     xylem_udp_set_userdata(ctx.client, &ctx);
 
     xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop, &ctx);
-    xylem_loop_start_timer(send_timer, _de_send_timer_cb, SEND_DELAY_MS, 0);
+        xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _de_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -317,8 +317,8 @@ static void test_dial_addr(void) {
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t srv_addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &srv_addr);
@@ -336,8 +336,8 @@ static void test_dial_addr(void) {
     xylem_udp_set_userdata(ctx.client, &ctx);
 
     xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop, &ctx);
-    xylem_loop_start_timer(send_timer, _da_send_timer_cb, SEND_DELAY_MS, 0);
+        xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _da_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -395,8 +395,8 @@ static void test_datagram_boundary(void) {
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t recv_addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &recv_addr);
@@ -414,8 +414,8 @@ static void test_datagram_boundary(void) {
     ASSERT(ctx.sender != NULL);
 
     xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop, &ctx);
-    xylem_loop_start_timer(send_timer, _db_send_timer_cb, SEND_DELAY_MS, 0);
+        xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _db_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -448,8 +448,8 @@ static void test_close_idempotent(void) {
     xylem_udp_close(udp);
     xylem_udp_close(udp);
 
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(drain, _stop_cb, DRAIN_DELAY_MS, 0);
+    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
     xylem_loop_run(loop);
 
     xylem_loop_destroy_timer(drain);
@@ -479,8 +479,8 @@ static void test_close_callback(void) {
 
     xylem_udp_close(udp);
 
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(drain, _stop_cb, DRAIN_DELAY_MS, 0);
+    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
     xylem_loop_run(loop);
 
     ASSERT(results[0] == 1);
@@ -507,8 +507,8 @@ static void test_send_after_close(void) {
     xylem_addr_pton("127.0.0.1", PORT_B, &dest);
     int rc = xylem_udp_send(udp, &dest, "data", 4);
 
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(drain, _stop_cb, DRAIN_DELAY_MS, 0);
+    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
     xylem_loop_run(loop);
 
     ASSERT(rc == -1);

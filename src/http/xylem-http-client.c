@@ -886,11 +886,11 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
         llhttp_init(&ctx.parser, HTTP_RESPONSE, &ctx.settings);
         ctx.parser.data = &ctx;
 
-        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
+        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop);
         if (timeout_ms > 0) {
             xylem_loop_start_timer(ctx.timeout_timer,
                                    _http_cli_timeout_cb,
-                                   timeout_ms, 0);
+                                   &ctx, timeout_ms, 0);
         }
 
         xylem_addr_resolve_t* resolve_req =
@@ -1161,11 +1161,11 @@ static xylem_http_res_t* _http_session_exec(
         llhttp_init(&ctx.parser, HTTP_RESPONSE, &ctx.settings);
         ctx.parser.data = &ctx;
 
-        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
+        ctx.timeout_timer = xylem_loop_create_timer(ctx.loop);
         if (timeout_ms > 0) {
             xylem_loop_start_timer(ctx.timeout_timer,
                                    _http_cli_timeout_cb,
-                                   timeout_ms, 0);
+                                   &ctx, timeout_ms, 0);
         }
 
         /* Try to reuse a pooled connection. */
@@ -1215,11 +1215,11 @@ static xylem_http_res_t* _http_session_exec(
                 ctx.done = false;
                 ctx.timed_out = false;
 
-                ctx.timeout_timer = xylem_loop_create_timer(ctx.loop, &ctx);
+                ctx.timeout_timer = xylem_loop_create_timer(ctx.loop);
                 if (timeout_ms > 0) {
                     xylem_loop_start_timer(ctx.timeout_timer,
                                            _http_cli_timeout_cb,
-                                           timeout_ms, 0);
+                                           &ctx, timeout_ms, 0);
                 }
                 goto fresh_connect;
             }

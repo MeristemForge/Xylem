@@ -221,8 +221,8 @@ xylem_ws_conn_t* ws_conn_create(xylem_loop_t* loop,
     conn->recv_cap = WS_INITIAL_RECV_CAP;
 
     /* Initialize timers */
-    conn->handshake_timer = xylem_loop_create_timer(loop, conn);
-    conn->close_timer = xylem_loop_create_timer(loop, conn);
+    conn->handshake_timer = xylem_loop_create_timer(loop);
+    conn->close_timer = xylem_loop_create_timer(loop);
 
     if (!conn->handshake_timer || !conn->close_timer) {
         if (conn->handshake_timer) {
@@ -277,7 +277,7 @@ void ws_conn_protocol_error(xylem_ws_conn_t* conn, uint16_t code) {
         ws_conn_send_close_frame(conn, code, NULL, 0);
         xylem_loop_start_timer(conn->close_timer,
                                ws_conn_close_timeout_cb,
-                               conn->close_timeout_ms, 0);
+                               conn, conn->close_timeout_ms, 0);
     } else if (conn->state == XYLEM_WS_STATE_CLOSING) {
         conn->vt->close_conn(conn->transport);
     }

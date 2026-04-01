@@ -142,8 +142,8 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
     udp->connected = false;
     udp->closing   = false;
 
-    udp->io = xylem_loop_create_io(loop, fd, udp);
-    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+    udp->io = xylem_loop_create_io(loop, fd);
+    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d bound on %s:%s", (int)fd, host, port_str);
     return udp;
@@ -180,8 +180,8 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     udp->connected = true;
     udp->closing   = false;
 
-    udp->io = xylem_loop_create_io(loop, fd, udp);
-    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb);
+    udp->io = xylem_loop_create_io(loop, fd);
+    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d connected to %s:%s", (int)fd, host, port_str);
     return udp;

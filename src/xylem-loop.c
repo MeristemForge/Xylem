@@ -266,7 +266,7 @@ void xylem_loop_stop(xylem_loop_t* loop) {
 }
 
 xylem_loop_io_t*
-xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd, void* ud) {
+xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd) {
     xylem_loop_io_t* io = calloc(1, sizeof(*io));
     if (!io) {
         return NULL;
@@ -274,7 +274,7 @@ xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd, void* ud) {
     io->loop = loop;
     io->sqe.fd = fd;
     io->sqe.ud = io;
-    io->ud = ud;
+    io->ud = NULL;
     io->registered = false;
     io->cb = NULL;
     loop->active_count++;
@@ -293,9 +293,11 @@ void xylem_loop_destroy_io(xylem_loop_io_t* io) {
 }
 
 int xylem_loop_start_io(
-    xylem_loop_io_t* io, platform_poller_op_t op, xylem_loop_io_fn_t cb) {
+    xylem_loop_io_t* io, platform_poller_op_t op, xylem_loop_io_fn_t cb,
+    void* ud) {
     io->sqe.op = op;
     io->cb = cb;
+    io->ud = ud;
     int rc;
     if (!io->registered) {
         rc = platform_poller_add(&io->loop->poller, &io->sqe);
@@ -319,13 +321,13 @@ int xylem_loop_stop_io(xylem_loop_io_t* io) {
     return rc;
 }
 
-xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop, void* ud) {
+xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop) {
     xylem_loop_timer_t* timer = calloc(1, sizeof(*timer));
     if (!timer) {
         return NULL;
     }
     timer->loop = loop;
-    timer->ud = ud;
+    timer->ud = NULL;
     timer->active = false;
     timer->cb = NULL;
     loop->active_count++;
@@ -346,12 +348,14 @@ void xylem_loop_destroy_timer(xylem_loop_timer_t* timer) {
 int xylem_loop_start_timer(
     xylem_loop_timer_t*   timer,
     xylem_loop_timer_fn_t cb,
+    void*                 ud,
     uint64_t              timeout_ms,
     uint64_t              repeat_ms) {
     if (timer->active) {
         xylem_heap_remove(&timer->loop->timers, &timer->heap_node);
     }
     timer->cb = cb;
+    timer->ud = ud;
     timer->timeout = timer->loop->time + timeout_ms;
     timer->repeat = repeat_ms;
     timer->active = true;

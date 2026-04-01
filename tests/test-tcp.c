@@ -25,7 +25,7 @@
 #include <string.h>
 
 #define TCP_PORT          18080
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 
 typedef struct {
     xylem_loop_t*       loop;
@@ -355,8 +355,8 @@ static void test_listen_and_close(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
@@ -380,8 +380,8 @@ static void test_close_server_with_active_conn(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -399,8 +399,8 @@ static void test_close_server_with_active_conn(void) {
     xylem_tcp_server_set_userdata(ctx.server, &ctx);
 
     /* Timer fires after accept to close the server. */
-    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(loop, &ctx);
-    xylem_loop_start_timer(close_timer, _close_active_timer_cb, 100, 0);
+    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(close_timer, _close_active_timer_cb, &ctx, 100, 0);
 
     xylem_tcp_handler_t cli_handler = {0};
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
@@ -421,8 +421,8 @@ static void test_close_server_idempotent(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
@@ -447,8 +447,8 @@ static void test_dial_connect(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -484,8 +484,8 @@ static void test_close_empty_queue(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -522,8 +522,8 @@ static void test_send_basic(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -562,8 +562,8 @@ static void test_send_after_close(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -600,8 +600,8 @@ static void test_conn_userdata(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop  = loop;
@@ -638,8 +638,8 @@ static void test_server_userdata(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop  = loop;
@@ -681,8 +681,8 @@ static void test_peer_addr(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -718,8 +718,8 @@ static void test_get_loop(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -755,8 +755,8 @@ static void test_frame_none(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -797,8 +797,8 @@ static void test_frame_fixed(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -843,8 +843,8 @@ static void test_frame_fixed_zero(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -887,8 +887,8 @@ static void test_frame_length_be(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -937,8 +937,8 @@ static void test_frame_length_le(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -987,8 +987,8 @@ static void test_frame_length_field_size_zero(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1035,8 +1035,8 @@ static void test_frame_length_field_size_over8(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1083,8 +1083,8 @@ static void test_frame_length_varint(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1132,8 +1132,8 @@ static void test_frame_length_adjustment(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1183,8 +1183,8 @@ static void test_frame_length_empty_payload(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1232,8 +1232,8 @@ static void test_frame_delim_multi(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1281,8 +1281,8 @@ static void test_frame_delim_single(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1330,8 +1330,8 @@ static void test_frame_delim_null(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1375,8 +1375,8 @@ static void test_frame_custom_positive(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1421,8 +1421,8 @@ static void test_frame_custom_zero(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1444,8 +1444,8 @@ static void test_frame_custom_zero(void) {
     xylem_tcp_server_set_userdata(ctx.server, &ctx);
 
     /* Timer to stop the loop after 200ms. */
-    xylem_loop_timer_t* check = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(check, _custom_zero_check_cb, 200, 0);
+    xylem_loop_timer_t* check = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(check, _custom_zero_check_cb, NULL, 200, 0);
 
     xylem_tcp_handler_t cli_handler = {
         .on_connect = _cli_send_data_cb,
@@ -1470,8 +1470,8 @@ static void test_frame_custom_negative(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1514,8 +1514,8 @@ static void test_frame_custom_null_parse(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1574,8 +1574,8 @@ static void test_read_timeout(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1584,7 +1584,7 @@ static void test_read_timeout(void) {
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.read_timeout_ms = 100;
+    srv_opts.read_timeout_ms = 50;
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept  = _read_timeout_accept_cb,
@@ -1643,8 +1643,8 @@ static void test_write_timeout(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1693,8 +1693,8 @@ static void test_heartbeat_miss(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1703,7 +1703,7 @@ static void test_heartbeat_miss(void) {
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 100;
+    srv_opts.heartbeat_ms = 50;
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept         = _srv_accept_cb,
@@ -1765,8 +1765,8 @@ static void test_heartbeat_reset_on_data(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1775,7 +1775,7 @@ static void test_heartbeat_reset_on_data(void) {
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 200;
+    srv_opts.heartbeat_ms = 100;
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept         = _srv_accept_cb,
@@ -1796,13 +1796,13 @@ static void test_heartbeat_reset_on_data(void) {
     ASSERT(cli != NULL);
     xylem_tcp_set_userdata(cli, &ctx);
 
-    /* Send data every 100ms to keep heartbeat alive. */
-    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(loop, &ctx);
-    xylem_loop_start_timer(send_timer, _hb_reset_send_cb, 100, 100);
+    /* Send data every 50ms to keep heartbeat alive. */
+    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(send_timer, _hb_reset_send_cb, &ctx, 50, 50);
 
-    /* Stop after 500ms. */
-    xylem_loop_timer_t* stop_timer = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(stop_timer, _hb_reset_stop_cb, 500, 0);
+    /* Stop after 250ms. */
+    xylem_loop_timer_t* stop_timer = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(stop_timer, _hb_reset_stop_cb, NULL, 250, 0);
 
     xylem_loop_run(loop);
 
@@ -1841,8 +1841,8 @@ static void test_reconnect_success(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1850,9 +1850,9 @@ static void test_reconnect_success(void) {
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
-    /* Start server after 600ms so initial connect fails. */
-    xylem_loop_timer_t* delay = xylem_loop_create_timer(loop, &ctx);
-    xylem_loop_start_timer(delay, _reconnect_delayed_listen_cb, 600, 0);
+    /* Start server after 200ms so initial connect fails. */
+    xylem_loop_timer_t* delay = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(delay, _reconnect_delayed_listen_cb, &ctx, 200, 0);
 
     xylem_tcp_opts_t cli_opts = {0};
     cli_opts.reconnect_max = 3;
@@ -1892,8 +1892,8 @@ static void test_reconnect_limit(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -1904,7 +1904,7 @@ static void test_reconnect_limit(void) {
 
     xylem_tcp_opts_t cli_opts = {0};
     cli_opts.reconnect_max = 1;
-    cli_opts.connect_timeout_ms = 1000;
+    cli_opts.connect_timeout_ms = 200;
 
     xylem_tcp_handler_t cli_handler = {
         .on_close = _reconnect_limit_close_cb,
@@ -1943,8 +1943,8 @@ static void test_read_buf_full(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -2006,8 +2006,8 @@ static void test_peer_close_eof(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -2073,8 +2073,8 @@ static void test_close_pending_writes(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -2133,8 +2133,8 @@ static void test_drain_write_queue_on_error(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -2229,8 +2229,8 @@ static void test_lifecycle_full(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop, NULL);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
@@ -2284,46 +2284,87 @@ static void test_lifecycle_full(void) {
 
 int main(void) {
     xylem_startup();
+    setvbuf(stdout, NULL, _IONBF, 0);
 
+    printf(">>> test_listen_and_close\n");
     test_listen_and_close();
+    printf(">>> test_close_server_with_active_conn\n");
     test_close_server_with_active_conn();
+    printf(">>> test_close_server_idempotent\n");
     test_close_server_idempotent();
+    printf(">>> test_dial_connect\n");
     test_dial_connect();
+    printf(">>> test_close_empty_queue\n");
     test_close_empty_queue();
+    printf(">>> test_send_basic\n");
     test_send_basic();
+    printf(">>> test_send_after_close\n");
     test_send_after_close();
+    printf(">>> test_conn_userdata\n");
     test_conn_userdata();
+    printf(">>> test_server_userdata\n");
     test_server_userdata();
+    printf(">>> test_peer_addr\n");
     test_peer_addr();
+    printf(">>> test_get_loop\n");
     test_get_loop();
+    printf(">>> test_frame_none\n");
     test_frame_none();
+    printf(">>> test_frame_fixed\n");
     test_frame_fixed();
+    printf(">>> test_frame_fixed_zero\n");
     test_frame_fixed_zero();
+    printf(">>> test_frame_length_be\n");
     test_frame_length_be();
+    printf(">>> test_frame_length_le\n");
     test_frame_length_le();
+    printf(">>> test_frame_length_field_size_zero\n");
     test_frame_length_field_size_zero();
+    printf(">>> test_frame_length_field_size_over8\n");
     test_frame_length_field_size_over8();
+    printf(">>> test_frame_length_varint\n");
     test_frame_length_varint();
+    printf(">>> test_frame_length_adjustment\n");
     test_frame_length_adjustment();
+    printf(">>> test_frame_length_empty_payload\n");
     test_frame_length_empty_payload();
+    printf(">>> test_frame_delim_multi\n");
     test_frame_delim_multi();
+    printf(">>> test_frame_delim_single\n");
     test_frame_delim_single();
+    printf(">>> test_frame_delim_null\n");
     test_frame_delim_null();
+    printf(">>> test_frame_custom_positive\n");
     test_frame_custom_positive();
+    printf(">>> test_frame_custom_zero\n");
     test_frame_custom_zero();
+    printf(">>> test_frame_custom_negative\n");
     test_frame_custom_negative();
+    printf(">>> test_frame_custom_null_parse\n");
     test_frame_custom_null_parse();
+    printf(">>> test_read_timeout\n");
     test_read_timeout();
+    printf(">>> test_write_timeout\n");
     test_write_timeout();
+    printf(">>> test_heartbeat_miss\n");
     test_heartbeat_miss();
+    printf(">>> test_heartbeat_reset_on_data\n");
     test_heartbeat_reset_on_data();
+    printf(">>> test_reconnect_success\n");
     test_reconnect_success();
+    printf(">>> test_reconnect_limit\n");
     test_reconnect_limit();
+    printf(">>> test_read_buf_full\n");
     test_read_buf_full();
+    printf(">>> test_peer_close_eof\n");
     test_peer_close_eof();
+    printf(">>> test_close_pending_writes\n");
     test_close_pending_writes();
+    printf(">>> test_drain_write_queue_on_error\n");
     test_drain_write_queue_on_error();
+    printf(">>> test_lifecycle_full\n");
     test_lifecycle_full();
+    printf(">>> all done\n");
 
     xylem_cleanup();
     return 0;

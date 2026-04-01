@@ -133,8 +133,8 @@ static void _start_resolve_cb(xylem_loop_t* loop,
     xylem_loop_destroy_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
-    _ctx->keepalive = xylem_loop_create_timer(_ctx->loop, NULL);
-    xylem_loop_start_timer(_ctx->keepalive, _keepalive_cb, 30000, 0);
+    _ctx->keepalive = xylem_loop_create_timer(_ctx->loop);
+    xylem_loop_start_timer(_ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
 
     xylem_addr_resolve(_ctx->loop, _ctx->pool, _ctx->host, 80,
                        _ctx->resolve_cb, _ctx);
@@ -153,9 +153,9 @@ static void test_resolve_localhost(void) {
     ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -179,9 +179,9 @@ static void test_resolve_fail(void) {
     ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -205,9 +205,9 @@ static void test_resolve_remote(void) {
     ASSERT(ctx.loop != NULL);
     ctx.pool = xylem_thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop, NULL);
+    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
 
     xylem_loop_run(ctx.loop);
 

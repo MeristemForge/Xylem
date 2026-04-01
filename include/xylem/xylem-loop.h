@@ -83,12 +83,10 @@ extern void xylem_loop_stop(xylem_loop_t* loop);
  * Does not start the timer. Call xylem_loop_start_timer() to begin.
  *
  * @param loop  Loop handle.
- * @param ud    User data pointer passed to callbacks.
  *
  * @return Timer handle, or NULL on failure.
  */
-extern xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop,
-                                                   void* ud);
+extern xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop);
 
 /**
  * @brief Destroy a timer handle.
@@ -110,6 +108,7 @@ extern void xylem_loop_destroy_timer(xylem_loop_timer_t* timer);
  *
  * @param timer       Timer handle.
  * @param cb          Callback invoked on expiry.
+ * @param ud          User data pointer passed to the callback.
  * @param timeout_ms  Initial delay in milliseconds.
  * @param repeat_ms   Repeat interval in milliseconds (0 for one-shot).
  *
@@ -117,6 +116,7 @@ extern void xylem_loop_destroy_timer(xylem_loop_timer_t* timer);
  */
 extern int xylem_loop_start_timer(xylem_loop_timer_t* timer,
                                   xylem_loop_timer_fn_t cb,
+                                  void* ud,
                                   uint64_t timeout_ms,
                                   uint64_t repeat_ms);
 

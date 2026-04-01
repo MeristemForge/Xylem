@@ -397,7 +397,7 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
     /* Start handshake timeout */
     xylem_loop_start_timer(conn->handshake_timer,
                            _ws_handshake_timeout_cb,
-                           handshake_timeout, 0);
+                           conn, handshake_timeout, 0);
 
     return conn;
 }
@@ -491,7 +491,7 @@ int xylem_ws_close(xylem_ws_conn_t* conn,
     /* Start close timeout */
     xylem_loop_start_timer(conn->close_timer,
                            ws_conn_close_timeout_cb,
-                           conn->close_timeout_ms, 0);
+                           conn, conn->close_timeout_ms, 0);
 
     return 0;
 }

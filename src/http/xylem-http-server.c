@@ -389,7 +389,7 @@ static void _http_srv_conn_finish_response(xylem_http_conn_t* conn) {
             xylem_loop_stop_timer(conn->idle_timer);
             xylem_loop_start_timer(conn->idle_timer,
                                    _http_srv_idle_timeout_cb,
-                                   conn->srv->cfg.idle_timeout_ms, 0);
+                                   conn, conn->srv->cfg.idle_timeout_ms, 0);
         }
     } else if (!conn->closed) {
         conn->closed = true;
@@ -414,11 +414,11 @@ static void _http_srv_conn_accept_cb(void* handle, void* ctx) {
     _http_srv_conn_init_parser(conn);
 
     /* Start idle timer. */
-    conn->idle_timer = xylem_loop_create_timer(srv->loop, conn);
+    conn->idle_timer = xylem_loop_create_timer(srv->loop);
     if (srv->cfg.idle_timeout_ms > 0) {
         xylem_loop_start_timer(conn->idle_timer,
                                _http_srv_idle_timeout_cb,
-                               srv->cfg.idle_timeout_ms, 0);
+                               conn, srv->cfg.idle_timeout_ms, 0);
     }
 
     /* Store conn pointer as userdata on the transport handle. */

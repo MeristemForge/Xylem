@@ -1,13 +1,13 @@
 {
   "enabled": true,
   "name": "Build, Test & Coverage",
-  "description": "当用户说编译时，自动配置并编译项目（开启TLS、测试、覆盖率），拷贝 compile_commands.json 到根目录，运行测试并生成覆盖率报告，最后自动在浏览器中打开报告。",
+  "description": "手动触发：运行 build.bat 完成配置、编译、测试和覆盖率报告生成。",
   "version": "1",
   "when": {
-    "type": "promptSubmit"
+    "type": "userTriggered"
   },
   "then": {
-    "type": "askAgent",
-    "prompt": "检查用户的消息是否包含编译、构建、build、compile 等意图。如果是，请依次执行以下命令：1) rm -rf out  2) cmake -B out -DXYLEM_ENABLE_TLS=ON -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug  3) cmake --build out -j 8  4) cp out/compile_commands.json compile_commands.json  5) ctest --test-dir out --output-on-failure（允许失败）  6) cmake --build out --target coverage（允许失败）  7) open out/coverage/html/index.html。如果用户的消息与编译无关，则忽略此指令，不做任何操作。"
+    "type": "runCommand",
+    "command": "cmd /c build.bat"
   }
 }

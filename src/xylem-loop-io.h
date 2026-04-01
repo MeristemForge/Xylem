@@ -32,7 +32,7 @@ typedef struct xylem_loop_io_s xylem_loop_io_t;
  * @param loop     Loop handle.
  * @param io       I/O handle that triggered.
  * @param revents  Event mask (PLATFORM_POLLER_RD_OP, WR_OP, or both).
- * @param ud       User data pointer from xylem_loop_create_io().
+ * @param ud       User data pointer from xylem_loop_start_io().
  */
 typedef void (*xylem_loop_io_fn_t)(xylem_loop_t* loop,
                                    xylem_loop_io_t* io,
@@ -46,13 +46,11 @@ typedef void (*xylem_loop_io_fn_t)(xylem_loop_t* loop,
  *
  * @param loop  Loop handle.
  * @param fd    File descriptor (socket) to monitor.
- * @param ud    User data pointer passed to callbacks.
  *
  * @return I/O handle, or NULL on failure.
  */
 extern xylem_loop_io_t* xylem_loop_create_io(xylem_loop_t* loop,
-                                             platform_poller_fd_t fd,
-                                             void* ud);
+                                             platform_poller_fd_t fd);
 
 /**
  * @brief Destroy an I/O handle.
@@ -72,12 +70,14 @@ extern void xylem_loop_destroy_io(xylem_loop_io_t* io);
  * @param io  I/O handle.
  * @param op  Event interest (PLATFORM_POLLER_RD_OP, WR_OP, or both).
  * @param cb  Callback invoked when the event fires.
+ * @param ud  User data pointer passed to the callback.
  *
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_loop_start_io(xylem_loop_io_t* io,
                                platform_poller_op_t op,
-                               xylem_loop_io_fn_t cb);
+                               xylem_loop_io_fn_t cb,
+                               void* ud);
 
 /**
  * @brief Stop polling on an I/O handle.

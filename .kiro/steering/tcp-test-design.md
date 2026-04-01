@@ -8,7 +8,7 @@
 
 - 统一上下文结构 `_test_ctx_t`，所有测试共用，按需使用字段
 - 共享回调：`_srv_accept_cb`（设置 userdata）、`_srv_close_cb`（计数+停循环）、`_srv_read_one_cb`（存单帧）、`_srv_read_two_cb`（存两帧）
-- 每个测试独立创建 Loop + 2 秒 Safety Timer，测试间无共享状态
+- 每个测试独立创建 Loop + 3 秒 Safety Timer，测试间无共享状态
 - 单一端口 `TCP_PORT 18080`，测试顺序执行不冲突
 
 ## 测试列表

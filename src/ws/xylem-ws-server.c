@@ -315,7 +315,7 @@ static void _ws_srv_transport_accept_cb(void* handle, void* ctx) {
     }
     xylem_loop_start_timer(conn->handshake_timer,
                            _ws_srv_handshake_timeout_cb,
-                           hs_timeout, 0);
+                           conn, hs_timeout, 0);
 }
 
 xylem_ws_server_t* xylem_ws_listen(xylem_loop_t* loop,
