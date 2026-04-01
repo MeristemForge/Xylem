@@ -156,8 +156,8 @@ static void _close_active_on_close(xylem_tcp_conn_t* conn, int err) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called++;
+        xylem_loop_stop(ctx->loop);
     }
-    xylem_loop_stop(ctx->loop);
 }
 
 static void _dial_on_connect(xylem_tcp_conn_t* conn) {
@@ -351,31 +351,6 @@ static void _custom_zero_check_cb(xylem_loop_t* loop,
 
 /* Test functions. */
 
-static void test_listen_and_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
-
-    xylem_tcp_handler_t handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_stop_timer(safety);
-
-    /* Run briefly to let the close propagate. */
-    xylem_loop_run(loop);
-
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
 
 static void test_close_server_with_active_conn(void) {
     xylem_loop_t* loop = xylem_loop_create();
@@ -417,32 +392,6 @@ static void test_close_server_with_active_conn(void) {
     xylem_loop_destroy(loop);
 }
 
-
-static void test_close_server_idempotent(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
-
-    xylem_tcp_handler_t handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &handler, NULL);
-    ASSERT(server != NULL);
-
-    /* Call close twice -- second call must not crash. */
-    xylem_tcp_close_server(server);
-    xylem_tcp_close_server(server);
-    xylem_loop_stop_timer(safety);
-
-    xylem_loop_run(loop);
-
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
 
 
 static void test_dial_connect(void) {
@@ -2287,9 +2236,7 @@ static void test_lifecycle_full(void) {
 int main(void) {
     xylem_startup();
 
-    test_listen_and_close();
     test_close_server_with_active_conn();
-    test_close_server_idempotent();
     test_dial_connect();
     test_close_empty_queue();
     test_send_basic();

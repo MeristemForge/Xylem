@@ -2,24 +2,23 @@
 
 ## 概述
 
-`tests/test-tcp.c` 包含 33 个活跃测试函数，覆盖 `src/xylem-tcp.c` 的公共 API 和核心内部分支。
+`tests/test-tcp.c` 包含 35 个活跃测试函数，覆盖 `src/xylem-tcp.c` 的公共 API 和核心内部分支。
 
 ## 测试基础设施
 
 - 统一上下文结构 `_test_ctx_t`，所有测试共用，按需使用字段
 - 共享回调：`_srv_accept_cb`（设置 userdata）、`_srv_close_cb`（计数+停循环）、`_srv_read_one_cb`（存单帧）、`_srv_read_two_cb`（存两帧）
-- 每个测试独立创建 Loop + 3 秒 Safety Timer，测试间无共享状态
+- 每个测试独立创建 Loop，需要运行事件循环的测试额外创建 Safety Timer（10 秒）防止挂起
+- 测试间无共享状态
 - 单一端口 `TCP_PORT 18080`，测试顺序执行不冲突
 
 ## 测试列表
 
-### 公共 API（11 个）
+### 公共 API（9 个）
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
-| `test_listen_and_close` | listen + close_server | server 非 NULL，关闭不崩溃 |
 | `test_close_server_with_active_conn` | close_server 带活跃连接 | 活跃连接的 on_close 被触发 |
-| `test_close_server_idempotent` | close_server 重复调用 | 第二次调用不崩溃 |
 | `test_dial_connect` | dial 异步连接 | on_connect 回调触发 |
 | `test_close_empty_queue` | close 空写队列 | 立即触发 on_close |
 | `test_send_basic` | send + on_write_done | status=0, len=4 |
@@ -60,33 +59,40 @@
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
-| `test_read_timeout` | read_timeout_ms=100 | on_timeout(READ) 触发 |
+| `test_read_timeout` | read_timeout_ms=50 | on_timeout(READ) 触发 |
 | `test_write_timeout` | write_timeout_ms=1 | 填满发送缓冲区后 on_timeout(WRITE) 触发 |
-| `test_heartbeat_miss` | heartbeat_ms=100 | 无数据时 on_heartbeat_miss 触发 |
-| `test_heartbeat_reset_on_data` | heartbeat_ms=200 | 持续发数据，heartbeat_miss 不触发 |
+| `test_heartbeat_miss` | heartbeat_ms=50 | 无数据时 on_heartbeat_miss 触发 |
+| `test_heartbeat_reset_on_data` | heartbeat_ms=100 | 持续发数据，heartbeat_miss 不触发 |
 
 > `test_connect_timeout` 已移除。该测试依赖 RFC 5737 TEST-NET 地址（192.0.2.1）不可达来触发连接超时，但在 VPN/全局代理环境下这些地址可达（`connect` 返回 `SO_ERROR=0`），导致超时永远不会触发。由于无法找到一个在所有网络环境下都保证不可达的 IPv4 地址，该测试不具备可移植性，因此移除。
 
-> `test_reconnect_limit` 已禁用。该测试依赖无 server 时连接超时触发重连耗尽，但在某些环境下行为不稳定。`_tcp_connect_timeout_cb` 和 `_tcp_start_reconnect_timer` 达到上限的分支目前缺少直接测试覆盖。
+### 重连（2 个）
 
-### 重连（0 个）
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_reconnect_success` | 重连成功 | 初始连接失败后延迟启动服务器，reconnect_max=3，on_connect 最终触发 |
+| `test_reconnect_limit` | 重连次数耗尽 | 无服务器监听，reconnect_max=1，connect_timeout_ms=200，on_close 触发 |
 
-> `test_reconnect_success` 已禁用。该测试依赖延迟启动 server 触发重连成功，但在某些环境下行为不稳定。`_tcp_start_reconnect_timer` 指数退避和 `_tcp_reconnect_timeout_cb` 的分支目前缺少直接测试覆盖。
+### 读写边界与生命周期（3 个）
 
-### 读写边界与生命周期（0 个）
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_read_buf_full` | 读缓冲区满 | read_buf_size=8, frame_size=16，缓冲区填满后 on_close 触发 |
+| `test_peer_close_eof` | 对端关闭 EOF | 客户端连接后立即 close，服务端 on_close 触发 |
+| `test_drain_write_queue_on_error` | 对端关闭时写队列 drain | 服务端 accept 后立即 close，客户端有待发数据，on_close 触发 |
 
-> `test_read_buf_full`、`test_peer_close_eof`、`test_close_pending_writes`、`test_drain_write_queue_on_error`、`test_lifecycle_full` 已禁用。这些测试在某些环境下行为不稳定。`_tcp_conn_readable_cb` 的缓冲区满和 peer EOF 分支、`_tcp_close_conn` 的写队列 drain 分支、以及完整生命周期覆盖目前缺少直接测试覆盖。
+> `test_close_pending_writes`、`test_lifecycle_full` 仍然禁用。完整生命周期覆盖目前缺少直接测试覆盖。
 
 ## 覆盖的内部分支
 
 | 内部函数 | 覆盖的分支 |
 |---------|-----------|
 | `_tcp_extract_frame` | NONE/FIXED/LENGTH(BE/LE/varint/adj)/DELIM(1/2字节)/CUSTOM(>0/0/<0/NULL) + 错误路径 |
-| `_tcp_conn_readable_cb` | 正常读取、心跳/读超时 reset；缓冲区满(space==0)和 peer EOF(nread==0) 目前无直接覆盖 |
+| `_tcp_conn_readable_cb` | 正常读取、心跳/读超时 reset、缓冲区满(space==0)、peer EOF(nread==0) |
 | `_tcp_flush_writes` | 正常完成、写超时 |
-| `_tcp_close_conn` | 写队列 drain 目前无直接覆盖 |
-| `_tcp_start_reconnect_timer` | 指数退避、达到上限分支目前均无直接覆盖 |
-| `_tcp_read/write/connect_timeout_cb` | 读超时、写超时回调；连接超时回调目前无直接覆盖 |
+| `_tcp_close_conn` | peer EOF 触发关闭；写队列 drain（`test_drain_write_queue_on_error`） |
+| `_tcp_start_reconnect_timer` | 指数退避重连成功、达到上限关闭连接 |
+| `_tcp_read/write/connect_timeout_cb` | 读超时、写超时、连接超时（重连限制测试触发） |
 | `_tcp_heartbeat_timeout_cb` | 心跳超时 |
 | `xylem_tcp_close` | 空队列立即 shutdown、非空队列等 flush |
-| `xylem_tcp_close_server` | 带活跃连接关闭、幂等 |
+| `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
