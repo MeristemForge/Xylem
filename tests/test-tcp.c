@@ -367,6 +367,7 @@ static void test_listen_and_close(void) {
     ASSERT(server != NULL);
 
     xylem_tcp_close_server(server);
+    xylem_loop_stop_timer(safety);
 
     /* Run briefly to let the close propagate. */
     xylem_loop_run(loop);
@@ -435,6 +436,7 @@ static void test_close_server_idempotent(void) {
     /* Call close twice -- second call must not crash. */
     xylem_tcp_close_server(server);
     xylem_tcp_close_server(server);
+    xylem_loop_stop_timer(safety);
 
     xylem_loop_run(loop);
 
@@ -2284,87 +2286,46 @@ static void test_lifecycle_full(void) {
 
 int main(void) {
     xylem_startup();
-    setvbuf(stdout, NULL, _IONBF, 0);
 
-    printf(">>> test_listen_and_close\n");
     test_listen_and_close();
-    printf(">>> test_close_server_with_active_conn\n");
     test_close_server_with_active_conn();
-    printf(">>> test_close_server_idempotent\n");
     test_close_server_idempotent();
-    printf(">>> test_dial_connect\n");
     test_dial_connect();
-    printf(">>> test_close_empty_queue\n");
     test_close_empty_queue();
-    printf(">>> test_send_basic\n");
     test_send_basic();
-    printf(">>> test_send_after_close\n");
     test_send_after_close();
-    printf(">>> test_conn_userdata\n");
     test_conn_userdata();
-    printf(">>> test_server_userdata\n");
     test_server_userdata();
-    printf(">>> test_peer_addr\n");
     test_peer_addr();
-    printf(">>> test_get_loop\n");
     test_get_loop();
-    printf(">>> test_frame_none\n");
     test_frame_none();
-    printf(">>> test_frame_fixed\n");
     test_frame_fixed();
-    printf(">>> test_frame_fixed_zero\n");
     test_frame_fixed_zero();
-    printf(">>> test_frame_length_be\n");
     test_frame_length_be();
-    printf(">>> test_frame_length_le\n");
     test_frame_length_le();
-    printf(">>> test_frame_length_field_size_zero\n");
     test_frame_length_field_size_zero();
-    printf(">>> test_frame_length_field_size_over8\n");
     test_frame_length_field_size_over8();
-    printf(">>> test_frame_length_varint\n");
     test_frame_length_varint();
-    printf(">>> test_frame_length_adjustment\n");
     test_frame_length_adjustment();
-    printf(">>> test_frame_length_empty_payload\n");
     test_frame_length_empty_payload();
-    printf(">>> test_frame_delim_multi\n");
     test_frame_delim_multi();
-    printf(">>> test_frame_delim_single\n");
     test_frame_delim_single();
-    printf(">>> test_frame_delim_null\n");
     test_frame_delim_null();
-    printf(">>> test_frame_custom_positive\n");
     test_frame_custom_positive();
-    printf(">>> test_frame_custom_zero\n");
     test_frame_custom_zero();
-    printf(">>> test_frame_custom_negative\n");
     test_frame_custom_negative();
-    printf(">>> test_frame_custom_null_parse\n");
     test_frame_custom_null_parse();
-    printf(">>> test_read_timeout\n");
     test_read_timeout();
-    printf(">>> test_write_timeout\n");
     test_write_timeout();
-    printf(">>> test_heartbeat_miss\n");
     test_heartbeat_miss();
-    printf(">>> test_heartbeat_reset_on_data\n");
     test_heartbeat_reset_on_data();
-    printf(">>> test_reconnect_success\n");
     test_reconnect_success();
-    printf(">>> test_reconnect_limit\n");
     test_reconnect_limit();
-    printf(">>> test_read_buf_full\n");
     test_read_buf_full();
-    printf(">>> test_peer_close_eof\n");
     test_peer_close_eof();
-    printf(">>> test_close_pending_writes\n");
     test_close_pending_writes();
-    printf(">>> test_drain_write_queue_on_error\n");
     test_drain_write_queue_on_error();
-    printf(">>> test_lifecycle_full\n");
     test_lifecycle_full();
-    printf(">>> all done\n");
 
     xylem_cleanup();
     return 0;
