@@ -97,6 +97,23 @@ typedef struct xylem_tcp_opts_s {
 } xylem_tcp_opts_t;
 ```
 
+### 错误码
+
+```c
+#define XYLEM_TCP_ERR_OK       0      /* 正常关闭，无错误 */
+#define XYLEM_TCP_ERR_INTERNAL (-1001) /* 内部错误（缓冲区满、帧解析失败等） */
+```
+
+`on_close` 和 `on_write_done` 回调的 `err`/`status` 参数语义：
+
+| 值 | 含义 |
+|----|------|
+| `0` (`XYLEM_TCP_ERR_OK`) | 正常关闭（对端或本地 shutdown） |
+| `< -1000` | 内部错误（`XYLEM_TCP_ERR_INTERNAL`：缓冲区满、帧解析失败等） |
+| `> 0` | 平台 socket 错误码（Unix errno / Windows WSA 错误码） |
+
+值低于 -1000 避免与平台 errno / WSA 错误码冲突。
+
 ### 不透明类型
 
 ```c
@@ -362,3 +379,12 @@ xylem_loop_t*       xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
 void*               xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
 void                xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
 ```
+
+### 工具函数
+
+```c
+/* 将错误码转为可读字符串（跨平台：Unix errno / Windows WSA 错误码） */
+const char* xylem_tcp_strerror(int err);
+```
+
+将 `on_close` 和 `on_write_done` 回调中的错误码转为可读字符串。错误码语义参见上方"错误码"一节。返回的指针是线程局部的，在同一线程上下次调用前有效。内部委托给 `platform_socket_tostring`。
