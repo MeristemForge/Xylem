@@ -67,10 +67,9 @@ typedef struct xylem_tcp_handler_s {
     void (*on_connect)(xylem_tcp_conn_t* conn);
     void (*on_accept)(xylem_tcp_server_t* server, xylem_tcp_conn_t* conn);
     void (*on_read)(xylem_tcp_conn_t* conn, void* data, size_t len);
-    void (*on_write_done)(xylem_tcp_conn_t* conn,
-                          void* data, size_t len, int status);
-    void (*on_timeout)(xylem_tcp_conn_t* conn,
-                       xylem_tcp_timeout_type_t type);
+    void (*on_write_done)(
+        xylem_tcp_conn_t* conn, void* data, size_t len, int status);
+    void (*on_timeout)(xylem_tcp_conn_t* conn, xylem_tcp_timeout_type_t type);
     void (*on_close)(xylem_tcp_conn_t* conn, int err);
     void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);
 } xylem_tcp_handler_t;
