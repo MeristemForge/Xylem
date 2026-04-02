@@ -24,8 +24,6 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-udp.h"
 
-#include "platform/platform-socket.h"
-
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -35,6 +33,11 @@
 
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
+
+/* Server-side sessions that don't complete the handshake within this
+ * window are automatically closed to prevent resource exhaustion from
+ * abandoned or malicious ClientHellos. */
+#define DTLS_HANDSHAKE_TIMEOUT_MS 30000
 
 static int _dtls_ex_data_idx = -1;
 
@@ -59,6 +62,7 @@ struct xylem_dtls_s {
     bool                   closing;
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;
+    xylem_loop_timer_t*    handshake_timer;  /* server-side only */
     xylem_rbtree_node_t    server_node;
 };
 
@@ -285,6 +289,17 @@ static void _dtls_stop_retransmit(xylem_dtls_t* dtls) {
     xylem_loop_stop_timer(dtls->retransmit_timer);
 }
 
+static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
+                                       xylem_loop_timer_t* timer,
+                                       void* ud) {
+    (void)loop;
+    (void)timer;
+    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+
+    xylem_logw("dtls session %p handshake timed out", (void*)dtls);
+    xylem_dtls_close(dtls);
+}
+
 static int _dtls_init_ssl(xylem_dtls_t* dtls) {
     dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
     if (!dtls->ssl) {
@@ -316,6 +331,10 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
         dtls->handshake_done = true;
         _dtls_flush_write_bio(dtls);
         _dtls_stop_retransmit(dtls);
+
+        if (dtls->handshake_timer) {
+            xylem_loop_stop_timer(dtls->handshake_timer);
+        }
 
         if (dtls->server) {
             if (dtls->handler && dtls->handler->on_accept) {
@@ -449,6 +468,9 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
     (void)req;
     xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
     xylem_loop_destroy_timer(dtls->retransmit_timer);
+    if (dtls->handshake_timer) {
+        xylem_loop_destroy_timer(dtls->handshake_timer);
+    }
     free(dtls);
 }
 
@@ -530,9 +552,11 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     dtls->loop      = server->loop;
 
     dtls->retransmit_timer = xylem_loop_create_timer(server->loop);
+    dtls->handshake_timer  = xylem_loop_create_timer(server->loop);
 
     if (_dtls_init_ssl(dtls) != 0) {
         xylem_loop_destroy_timer(dtls->retransmit_timer);
+        xylem_loop_destroy_timer(dtls->handshake_timer);
         free(dtls);
         return;
     }
@@ -540,6 +564,10 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     SSL_set_accept_state(dtls->ssl);
 
     xylem_rbtree_insert(&server->sessions, &dtls->server_node);
+
+    xylem_loop_start_timer(dtls->handshake_timer,
+                           _dtls_handshake_timeout_cb, dtls,
+                           DTLS_HANDSHAKE_TIMEOUT_MS, 0);
 
     /* Feed the first packet so the handshake can begin. */
     _dtls_feed_read_bio(dtls, data, len);
@@ -636,6 +664,10 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
     dtls->closing = true;
 
     _dtls_stop_retransmit(dtls);
+
+    if (dtls->handshake_timer) {
+        xylem_loop_stop_timer(dtls->handshake_timer);
+    }
 
     if (dtls->ssl && dtls->handshake_done) {
         SSL_shutdown(dtls->ssl);

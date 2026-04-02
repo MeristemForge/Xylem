@@ -88,8 +88,9 @@ struct xylem_dtls_s {
     bool                   handshake_done;
     bool                   closing;
     xylem_loop_t*          loop;
-    xylem_loop_timer_t*    retransmit_timer; /* DTLS 重传定时器 */
-    xylem_rbtree_node_t    server_node;      /* 服务器会话红黑树节点 */
+    xylem_loop_timer_t*    retransmit_timer;  /* DTLS 重传定时器 */
+    xylem_loop_timer_t*    handshake_timer;   /* 服务端握手超时定时器 */
+    xylem_rbtree_node_t    server_node;       /* 服务器会话红黑树节点 */
 };
 ```
 
@@ -172,12 +173,14 @@ sequenceDiagram
     DTLS->>DTLS: calloc + 初始化 SSL + BIO
     DTLS->>DTLS: SSL_set_accept_state
     DTLS->>DTLS: 插入 sessions 红黑树
+    DTLS->>DTLS: 启动握手超时定时器（30s）
     DTLS->>DTLS: feed read_bio + SSL_do_handshake
     Note over DTLS: cookie 交换 + 握手
     DTLS->>UDP: flush write_bio
     DTLS->>DTLS: 启动重传定时器
     Note over DTLS: 重复直到握手完成
     DTLS->>DTLS: 停止重传定时器
+    DTLS->>DTLS: 停止握手超时定时器
     DTLS->>User: handler->on_accept
 ```
 
@@ -218,6 +221,14 @@ flowchart TD
 - `_dtls_stop_retransmit`：握手完成或关闭时停止定时器
 
 超时值最小为 1ms（防止 0ms 导致的忙循环）。
+
+## 握手超时
+
+服务端为每个新建会话启动一个 30 秒（`DTLS_HANDSHAKE_TIMEOUT_MS`）的一次性定时器。若会话在此窗口内未完成握手，`_dtls_handshake_timeout_cb` 自动调用 `xylem_dtls_close` 关闭会话，防止废弃或恶意 ClientHello 导致的资源耗尽。
+
+握手成功后（`_dtls_do_handshake` 中 `rc == 1`），定时器被停止。关闭路径（`xylem_dtls_close`）和延迟释放（`_dtls_free_cb`）中也会停止并销毁该定时器。
+
+客户端不使用握手超时定时器（`handshake_timer` 为 NULL）。
 
 ## 数据路径
 
@@ -281,7 +292,7 @@ sequenceDiagram
 ### 服务端会话关闭
 
 服务端会话共享同一个 UDP socket，关闭时：
-1. 停止重传定时器
+1. 停止重传定时器和握手超时定时器
 2. `SSL_shutdown` + flush
 3. 从 server 的 sessions 红黑树移除
 4. `SSL_free`
@@ -311,7 +322,7 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 | Cookie 验证 | 无 | `cookie_generate_cb` + `cookie_verify_cb` |
 | 会话管理 | 侵入式链表 | 红黑树（按对端地址排序，O(log n) 查找） |
 | 服务端多路复用 | 每连接独立 TCP socket | 单 UDP socket 按对端地址分发 |
-| 连接超时/心跳 | TCP 层定时器透传 | 无（仅重传定时器） |
+| 连接超时/心跳 | TCP 层定时器透传 | 握手超时定时器（30s）+ 重传定时器 |
 | SNI | 支持 | 不支持 |
 
 ## 公开 API
