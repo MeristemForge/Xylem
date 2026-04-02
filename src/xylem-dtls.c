@@ -20,7 +20,7 @@
  */
 
 #include "xylem/xylem-dtls.h"
-#include "xylem/xylem-list.h"
+#include "xylem/xylem-rbtree.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-udp.h"
 
@@ -32,6 +32,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Maximum TLS record payload (RFC 8446 section 5.1). */
+#define TLS_RECORD_MAX_PLAINTEXT 16384
 
 static int _dtls_ex_data_idx = -1;
 
@@ -56,7 +59,7 @@ struct xylem_dtls_s {
     bool                   closing;
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;
-    xylem_list_node_t      server_node;
+    xylem_rbtree_node_t    server_node;
 };
 
 struct xylem_dtls_server_s {
@@ -64,7 +67,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_ctx_t*      ctx;
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
-    xylem_list_t           sessions;
+    xylem_rbtree_t         sessions;
     bool                   closing;
 };
 
@@ -240,7 +243,7 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
 
 
 static void _dtls_flush_write_bio(xylem_dtls_t* dtls) {
-    char buf[16384];
+    char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
     while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
@@ -337,42 +340,59 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
     xylem_dtls_close(dtls);
 }
 
-static bool _dtls_addr_equal(xylem_addr_t* a, xylem_addr_t* b) {
+/**
+ * Compare two sockaddr by family, then port, then address.
+ * Returns negative/zero/positive like memcmp.
+ */
+static int _dtls_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
-        return false;
+        return (int)a->storage.ss_family - (int)b->storage.ss_family;
     }
     if (a->storage.ss_family == AF_INET) {
-        struct sockaddr_in* sa = (struct sockaddr_in*)&a->storage;
-        struct sockaddr_in* sb = (struct sockaddr_in*)&b->storage;
-        return sa->sin_port == sb->sin_port &&
-               sa->sin_addr.s_addr == sb->sin_addr.s_addr;
+        const struct sockaddr_in* sa = (const struct sockaddr_in*)&a->storage;
+        const struct sockaddr_in* sb = (const struct sockaddr_in*)&b->storage;
+        if (sa->sin_port != sb->sin_port) {
+            return (int)ntohs(sa->sin_port) - (int)ntohs(sb->sin_port);
+        }
+        return memcmp(&sa->sin_addr, &sb->sin_addr, 4);
     }
     if (a->storage.ss_family == AF_INET6) {
-        struct sockaddr_in6* sa = (struct sockaddr_in6*)&a->storage;
-        struct sockaddr_in6* sb = (struct sockaddr_in6*)&b->storage;
-        return sa->sin6_port == sb->sin6_port &&
-               memcmp(&sa->sin6_addr, &sb->sin6_addr, 16) == 0;
+        const struct sockaddr_in6* sa = (const struct sockaddr_in6*)&a->storage;
+        const struct sockaddr_in6* sb = (const struct sockaddr_in6*)&b->storage;
+        if (sa->sin6_port != sb->sin6_port) {
+            return (int)ntohs(sa->sin6_port) - (int)ntohs(sb->sin6_port);
+        }
+        return memcmp(&sa->sin6_addr, &sb->sin6_addr, 16);
     }
-    return false;
+    return 0;
+}
+
+/* node-node comparator for rbtree insert */
+static int _dtls_session_cmp_nn(const xylem_rbtree_node_t* a,
+                                const xylem_rbtree_node_t* b) {
+    const xylem_dtls_t* da =
+        xylem_rbtree_entry(a, xylem_dtls_t, server_node);
+    const xylem_dtls_t* db =
+        xylem_rbtree_entry(b, xylem_dtls_t, server_node);
+    return _dtls_addr_cmp(&da->peer_addr, &db->peer_addr);
+}
+
+/* key(xylem_addr_t*)-node comparator for rbtree find */
+static int _dtls_session_cmp_kn(const void* key,
+                                const xylem_rbtree_node_t* node) {
+    const xylem_addr_t* addr = (const xylem_addr_t*)key;
+    const xylem_dtls_t* dtls =
+        xylem_rbtree_entry(node, xylem_dtls_t, server_node);
+    return _dtls_addr_cmp(addr, &dtls->peer_addr);
 }
 
 static xylem_dtls_t* _dtls_find_session(xylem_dtls_server_t* server,
                                         xylem_addr_t* addr) {
-    if (xylem_list_empty(&server->sessions)) {
+    xylem_rbtree_node_t* node = xylem_rbtree_find(&server->sessions, addr);
+    if (!node) {
         return NULL;
     }
-
-    xylem_list_node_t* node = xylem_list_head(&server->sessions);
-    xylem_list_node_t* sentinel = xylem_list_sentinel(&server->sessions);
-    while (node != sentinel) {
-        xylem_dtls_t* dtls =
-            xylem_list_entry(node, xylem_dtls_t, server_node);
-        if (_dtls_addr_equal(&dtls->peer_addr, addr)) {
-            return dtls;
-        }
-        node = xylem_list_next(node);
-    }
-    return NULL;
+    return xylem_rbtree_entry(node, xylem_dtls_t, server_node);
 }
 
 
@@ -390,7 +410,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
         }
     }
 
-    char buf[16384];
+    char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
     while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
@@ -463,7 +483,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
             }
         }
 
-        char buf[16384];
+        char buf[TLS_RECORD_MAX_PLAINTEXT];
         int  n;
 
         while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
@@ -506,7 +526,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
 
     SSL_set_accept_state(dtls->ssl);
 
-    xylem_list_insert_tail(&server->sessions, &dtls->server_node);
+    xylem_rbtree_insert(&server->sessions, &dtls->server_node);
 
     /* Feed the first packet so the handshake can begin. */
     _dtls_feed_read_bio(dtls, data, len);
@@ -607,7 +627,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
          * Server-side session: detach from server list, clean up
          * SSL state, notify user. The shared UDP socket stays open.
          */
-        xylem_list_remove(&dtls->server->sessions, &dtls->server_node);
+        xylem_rbtree_erase(&dtls->server->sessions, &dtls->server_node);
 
         if (dtls->ssl) {
             SSL_free(dtls->ssl);
@@ -677,7 +697,8 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop,
     server->ctx     = ctx;
     server->handler = handler;
     server->loop    = loop;
-    xylem_list_init(&server->sessions);
+    xylem_rbtree_init(&server->sessions, _dtls_session_cmp_nn,
+                      _dtls_session_cmp_kn);
 
     xylem_udp_t* udp = xylem_udp_listen(loop, addr,
                                        &_dtls_server_udp_handler);
@@ -698,10 +719,10 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
     }
     server->closing = true;
 
-    while (!xylem_list_empty(&server->sessions)) {
-        xylem_list_node_t* node = xylem_list_head(&server->sessions);
+    while (!xylem_rbtree_empty(&server->sessions)) {
+        xylem_rbtree_node_t* node = xylem_rbtree_first(&server->sessions);
         xylem_dtls_t* dtls =
-            xylem_list_entry(node, xylem_dtls_t, server_node);
+            xylem_rbtree_entry(node, xylem_dtls_t, server_node);
         xylem_dtls_close(dtls);
     }
 

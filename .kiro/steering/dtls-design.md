@@ -89,7 +89,7 @@ struct xylem_dtls_s {
     bool                   closing;
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer; /* DTLS 重传定时器 */
-    xylem_list_node_t      server_node;      /* 服务器会话链表节点 */
+    xylem_rbtree_node_t    server_node;      /* 服务器会话红黑树节点 */
 };
 ```
 
@@ -101,7 +101,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_ctx_t*      ctx;
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
-    xylem_list_t           sessions;  /* 活跃会话链表 */
+    xylem_rbtree_t         sessions;  /* 活跃会话红黑树，按对端地址排序 */
     bool                   closing;
 };
 ```
@@ -171,7 +171,7 @@ sequenceDiagram
     Note over DTLS: 未找到会话 → 新建
     DTLS->>DTLS: calloc + 初始化 SSL + BIO
     DTLS->>DTLS: SSL_set_accept_state
-    DTLS->>DTLS: 加入 sessions 链表
+    DTLS->>DTLS: 插入 sessions 红黑树
     DTLS->>DTLS: feed read_bio + SSL_do_handshake
     Note over DTLS: cookie 交换 + 握手
     DTLS->>UDP: flush write_bio
@@ -185,13 +185,17 @@ sequenceDiagram
 
 ## 对端地址匹配
 
-`_dtls_addr_equal` 比较两个 `xylem_addr_t`：
+`_dtls_addr_cmp` 比较两个 `xylem_addr_t`，返回负/零/正（类似 `memcmp`）：
 
 1. 比较地址族（`ss_family`）
-2. IPv4：比较 `sin_port` + `sin_addr.s_addr`
-3. IPv6：比较 `sin6_port` + 16 字节 `sin6_addr`
+2. IPv4：比较 `sin_port`（网络序转主机序），再比较 4 字节 `sin_addr`
+3. IPv6：比较 `sin6_port`（网络序转主机序），再比较 16 字节 `sin6_addr`
 
-`_dtls_find_session` 遍历服务器的 sessions 链表，逐个调用 `_dtls_addr_equal` 匹配。
+会话存储在红黑树中，使用两个比较器：
+- `_dtls_session_cmp_nn`：节点-节点比较器，用于插入
+- `_dtls_session_cmp_kn`：键（`xylem_addr_t*`）-节点比较器，用于查找
+
+`_dtls_find_session` 调用 `xylem_rbtree_find` 按对端地址在红黑树中 O(log n) 查找。
 
 ## 重传定时器
 
@@ -279,7 +283,7 @@ sequenceDiagram
 服务端会话共享同一个 UDP socket，关闭时：
 1. 停止重传定时器
 2. `SSL_shutdown` + flush
-3. 从 server 的 sessions 链表移除
+3. 从 server 的 sessions 红黑树移除
 4. `SSL_free`
 5. 回调 `on_close`
 6. `xylem_loop_post` 延迟释放内存
@@ -293,7 +297,7 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 ```
 
 1. 设置 `closing = true`（幂等）
-2. 遍历 sessions 链表，逐个调用 `xylem_dtls_close`
+2. 循环取红黑树首节点（`xylem_rbtree_first`），逐个调用 `xylem_dtls_close`（每次 close 会从树中移除节点）
 3. 关闭共享的 UDP socket（`_dtls_server_close_cb` 释放 server 内存）
 
 ## 与 TLS 模块的关键差异
@@ -305,6 +309,7 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 | 帧处理 | TCP 层帧解析 | 不需要（数据报保留边界） |
 | 重传 | TCP 保证可靠传输 | DTLS 自行管理重传定时器 |
 | Cookie 验证 | 无 | `cookie_generate_cb` + `cookie_verify_cb` |
+| 会话管理 | 侵入式链表 | 红黑树（按对端地址排序，O(log n) 查找） |
 | 服务端多路复用 | 每连接独立 TCP socket | 单 UDP socket 按对端地址分发 |
 | 连接超时/心跳 | TCP 层定时器透传 | 无（仅重传定时器） |
 | SNI | 支持 | 不支持 |
