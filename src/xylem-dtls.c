@@ -594,6 +594,13 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
 
     if (_dtls_init_ssl(dtls) != 0) {
         xylem_loop_destroy_timer(dtls->retransmit_timer);
+        /**
+         * Detach before close: xylem_udp_close fires on_close
+         * synchronously (UDP has no write queue), and dtls is about
+         * to be freed. TLS does not need this because xylem_tcp_close
+         * is asynchronous -- the tls pointer stays valid until the
+         * deferred free in _tls_tcp_close_cb.
+         */
         xylem_udp_set_userdata(udp, NULL);
         xylem_udp_close(udp);
         free(dtls);
