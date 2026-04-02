@@ -36,12 +36,12 @@ typedef struct xylem_tls_handler_s {
                           const void* data, size_t len, int status);
     void (*on_timeout)(xylem_tls_conn_t* tls,
                        xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_conn_t* tls, int err);
+    void (*on_close)(xylem_tls_conn_t* tls, int err, const char* errmsg);
     void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
 } xylem_tls_handler_t;
 ```
 
-回调签名与 TCP handler 对称，额外增加 `on_heartbeat_miss`。超时类型复用 TCP 的 `xylem_tcp_timeout_type_t`。
+回调签名与 TCP handler 对称，额外增加 `on_heartbeat_miss`。超时类型复用 TCP 的 `xylem_tcp_timeout_type_t`。`on_close` 的 `errmsg` 参数直接透传自 TCP 层的 `on_close` 回调，提供可读的错误描述字符串。
 
 ### 不透明类型
 

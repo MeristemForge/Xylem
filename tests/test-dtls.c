@@ -143,7 +143,6 @@ static xylem_loop_t*         _loop;
 static bool                  _server_accepted;
 static bool                  _client_connected;
 static bool                  _client_received;
-static bool                  _write_done;
 static bool                  _client_closed;
 static bool                  _server_sess_closed;
 static char                  _recv_buf[256];
@@ -175,27 +174,16 @@ static void _on_client_read(xylem_dtls_t* dtls, void* data, size_t len) {
     xylem_dtls_close(dtls);
 }
 
-static void _on_client_write_done(xylem_dtls_t* dtls,
-                                  void* data, size_t len, int status) {
+static void _on_client_close(xylem_dtls_t* dtls) {
     (void)dtls;
-    (void)data;
-    (void)len;
-    (void)status;
-    _write_done = true;
-}
-
-static void _on_client_close(xylem_dtls_t* dtls, int err) {
-    (void)dtls;
-    (void)err;
     _client_closed = true;
     if (_server_sess) {
         xylem_dtls_close(_server_sess);
     }
 }
 
-static void _on_server_sess_close(xylem_dtls_t* dtls, int err) {
+static void _on_server_sess_close(xylem_dtls_t* dtls) {
     (void)dtls;
-    (void)err;
     _server_sess_closed = true;
     xylem_dtls_close_server(_dtls_server);
 }
@@ -208,7 +196,6 @@ static void test_handshake_and_echo(void) {
     _server_accepted    = false;
     _client_connected   = false;
     _client_received    = false;
-    _write_done         = false;
     _client_closed      = false;
     _server_sess_closed = false;
     _server_sess        = NULL;
@@ -244,7 +231,6 @@ static void test_handshake_and_echo(void) {
     xylem_dtls_handler_t cli_handler = {
         .on_connect    = _on_client_connect,
         .on_read       = _on_client_read,
-        .on_write_done = _on_client_write_done,
         .on_close      = _on_client_close,
     };
 
@@ -256,7 +242,6 @@ static void test_handshake_and_echo(void) {
 
     ASSERT(_server_accepted == true);
     ASSERT(_client_connected == true);
-    ASSERT(_write_done == true);
     ASSERT(_client_received == true);
     ASSERT(_recv_len == 5);
     ASSERT(memcmp(_recv_buf, "hello", 5) == 0);
@@ -272,9 +257,8 @@ static void test_handshake_and_echo(void) {
 
 static bool _handshake_failed;
 
-static void _on_fail_close(xylem_dtls_t* dtls, int err) {
+static void _on_fail_close(xylem_dtls_t* dtls) {
     (void)dtls;
-    (void)err;
     _handshake_failed = true;
     xylem_dtls_close_server(_dtls_server);
 }

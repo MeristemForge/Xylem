@@ -397,7 +397,15 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
     }
 
     if (conn->handler && conn->handler->on_close) {
-        conn->handler->on_close(conn, err);
+        const char* errmsg;
+        if (err == 0) {
+            errmsg = "closed normally";
+        } else if (err < 0) {
+            errmsg = "internal error";
+        } else {
+            errmsg = platform_socket_tostring(err);
+        }
+        conn->handler->on_close(conn, err, errmsg);
     }
 
     xylem_loop_post(conn->loop, _tcp_conn_free_cb, conn);
@@ -436,7 +444,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
         if (space == 0) {
             xylem_logw("tcp conn fd=%d read buffer full, closing",
                        (int)conn->fd);
-            _tcp_close_conn(conn, XYLEM_TCP_ERR_INTERNAL);
+            _tcp_close_conn(conn, -1);
             return;
         }
 
@@ -445,7 +453,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
 
         if (nread == 0) {
             xylem_logi("tcp conn fd=%d peer closed", (int)conn->fd);
-            _tcp_close_conn(conn, XYLEM_TCP_ERR_OK);
+            _tcp_close_conn(conn, 0);
             return;
         }
 
@@ -491,7 +499,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
             } else if (rc == 0) {
                 break;
             } else {
-                _tcp_close_conn(conn, XYLEM_TCP_ERR_INTERNAL);
+                _tcp_close_conn(conn, -1);
                 return;
             }
         }
@@ -598,7 +606,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
         shutdown(conn->fd, PLATFORM_SHUT_WR);
-        _tcp_destroy_conn(conn, XYLEM_TCP_ERR_OK);
+        _tcp_destroy_conn(conn, 0);
     }
 }
 
@@ -690,7 +698,7 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
 static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
     if (_tcp_setup_conn(conn) != 0) {
         xylem_logw("tcp conn fd=%d setup failed", (int)conn->fd);
-        _tcp_close_conn(conn, XYLEM_TCP_ERR_INTERNAL);
+        _tcp_close_conn(conn, -1);
         return;
     }
     xylem_logi("tcp conn fd=%d connected", (int)conn->fd);
@@ -927,7 +935,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
-        _tcp_destroy_conn(conn, XYLEM_TCP_ERR_OK);
+        _tcp_destroy_conn(conn, 0);
     }
 }
 
@@ -1130,14 +1138,4 @@ void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server) {
 
 void xylem_tcp_server_set_userdata(xylem_tcp_server_t* server, void* ud) {
     server->userdata = ud;
-}
-
-const char* xylem_tcp_strerror(int err) {
-    if (err == XYLEM_TCP_ERR_OK) {
-        return "closed normally";
-    }
-    if (err == XYLEM_TCP_ERR_INTERNAL) {
-        return "internal error";
-    }
-    return platform_socket_tostring(err);
 }

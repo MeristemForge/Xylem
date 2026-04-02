@@ -51,9 +51,10 @@ static void _tls_read_cb(xylem_tls_conn_t* tls, void* data, size_t len) {
     br->cb->on_read(tls, br->ctx, data, len);
 }
 
-static void _tls_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _tls_close_cb(xylem_tls_conn_t* tls, int err,
+                          const char* errmsg) {
     _tls_bridge_t* br = xylem_tls_get_userdata(tls);
-    br->cb->on_close(tls, br->ctx, err);
+    br->cb->on_close(tls, br->ctx, err, errmsg);
     free(br);
 }
 

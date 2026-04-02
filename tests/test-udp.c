@@ -457,17 +457,16 @@ static void test_close_idempotent(void) {
 }
 
 /* test_close_callback: on_close receives the udp handle as userdata */
-static void _cc_on_close(xylem_udp_t* udp, int err) {
-    int* results = (int*)xylem_udp_get_userdata(udp);
-    results[0] = 1;
-    results[1] = err;
+static void _cc_on_close(xylem_udp_t* udp) {
+    int* called = (int*)xylem_udp_get_userdata(udp);
+    *called = 1;
 }
 
 static void test_close_callback(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
-    int results[2] = {0, -1};
+    int called = 0;
 
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", PORT_A, &addr);
@@ -475,7 +474,7 @@ static void test_close_callback(void) {
     xylem_udp_handler_t handler = {.on_close = _cc_on_close};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
     ASSERT(udp != NULL);
-    xylem_udp_set_userdata(udp, results);
+    xylem_udp_set_userdata(udp, &called);
 
     xylem_udp_close(udp);
 
@@ -483,8 +482,7 @@ static void test_close_callback(void) {
     xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
     xylem_loop_run(loop);
 
-    ASSERT(results[0] == 1);
-    ASSERT(results[1] == 0);
+    ASSERT(called == 1);
 
     xylem_loop_destroy_timer(drain);
     xylem_loop_destroy(loop);

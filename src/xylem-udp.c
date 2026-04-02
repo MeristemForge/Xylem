@@ -92,7 +92,8 @@ static void _udp_io_cb(xylem_loop_t* loop,
                        (int)udp->fd, err,
                        platform_socket_tostring(err));
             if (udp->handler && udp->handler->on_error) {
-                udp->handler->on_error(udp, err);
+                udp->handler->on_error(udp, err,
+                                       platform_socket_tostring(err));
             }
             return;
         }
@@ -229,7 +230,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     platform_socket_close(udp->fd);
 
     if (udp->handler && udp->handler->on_close) {
-        udp->handler->on_close(udp, 0);
+        udp->handler->on_close(udp);
     }
 
     /* Defer free to next loop iteration so close_node stays valid */

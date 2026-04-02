@@ -717,9 +717,11 @@ static void _http_cli_conn_connect_cb(void* handle, void* user) {
     free(req_buf);
 }
 
-static void _http_cli_conn_close_cb(void* handle, void* user, int err) {
+static void _http_cli_conn_close_cb(void* handle, void* user, int err,
+                                    const char* errmsg) {
     (void)handle;
     (void)err;
+    (void)errmsg;
     _http_cli_ctx_t* ctx = user;
     ctx->conn = NULL;
     if (ctx->is_session) {

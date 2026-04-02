@@ -37,7 +37,7 @@ typedef struct xylem_tls_handler_s {
                           const void* data, size_t len, int status);
     void (*on_timeout)(xylem_tls_conn_t* tls,
                        xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_conn_t* tls, int err);
+    void (*on_close)(xylem_tls_conn_t* tls, int err, const char* errmsg);
     void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
 } xylem_tls_handler_t;
 

@@ -426,7 +426,7 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
     free(dtls);
 }
 
-static void _dtls_client_close_cb(xylem_udp_t* udp, int err) {
+static void _dtls_client_close_cb(xylem_udp_t* udp) {
     xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
     if (!dtls) {
         return;
@@ -436,7 +436,7 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err) {
         dtls->ssl = NULL;
     }
     if (dtls->handler && dtls->handler->on_close) {
-        dtls->handler->on_close(dtls, err);
+        dtls->handler->on_close(dtls);
     }
     /* Defer free to next loop iteration so close_node stays valid. */
     xylem_loop_post(dtls->loop, _dtls_free_cb, dtls);
@@ -513,15 +513,23 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     _dtls_do_handshake(dtls);
 }
 
-static void _dtls_server_close_cb(xylem_udp_t* udp, int err) {
-    (void)err;
+static void _dtls_server_close_cb(xylem_udp_t* udp) {
     xylem_dtls_server_t* server =
         (xylem_dtls_server_t*)xylem_udp_get_userdata(udp);
     free(server);
 }
 
+static void _dtls_client_error_cb(xylem_udp_t* udp, int err,
+                                  const char* errmsg) {
+    xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
+    if (dtls && dtls->handler && dtls->handler->on_error) {
+        dtls->handler->on_error(dtls, err, errmsg);
+    }
+}
+
 static xylem_udp_handler_t _dtls_client_udp_handler = {
     .on_read  = _dtls_client_read_cb,
+    .on_error = _dtls_client_error_cb,
     .on_close = _dtls_client_close_cb,
 };
 
@@ -578,10 +586,6 @@ int xylem_dtls_send(xylem_dtls_t* dtls,
 
     _dtls_flush_write_bio(dtls);
 
-    if (dtls->handler && dtls->handler->on_write_done) {
-        dtls->handler->on_write_done(dtls, (void*)data, len, 0);
-    }
-
     return 0;
 }
 
@@ -611,7 +615,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
         }
 
         if (dtls->handler && dtls->handler->on_close) {
-            dtls->handler->on_close(dtls, 0);
+            dtls->handler->on_close(dtls);
         }
 
         /* Defer free to next loop iteration so close_node stays valid. */
@@ -649,8 +653,15 @@ void xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud) {
     dtls->userdata = ud;
 }
 
+static void _dtls_server_error_cb(xylem_udp_t* udp, int err,
+                                  const char* errmsg) {
+    (void)udp;
+    xylem_logw("dtls server udp error=%d (%s)", err, errmsg);
+}
+
 static xylem_udp_handler_t _dtls_server_udp_handler = {
     .on_read  = _dtls_server_read_cb,
+    .on_error = _dtls_server_error_cb,
     .on_close = _dtls_server_close_cb,
 };
 

@@ -55,9 +55,9 @@ static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
     }
 }
 
-static void _on_close(xylem_tcp_conn_t* conn, int err) {
+static void _on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)conn;
-    xylem_logi("client disconnected (err=%d)", err);
+    xylem_logi("client disconnected (%s)", errmsg);
 }
 
 int main(void) {

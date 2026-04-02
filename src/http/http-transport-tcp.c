@@ -58,9 +58,10 @@ static void _tcp_write_done_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-static void _tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _tcp_close_cb(xylem_tcp_conn_t* conn, int err,
+                          const char* errmsg) {
     _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
-    br->cb->on_close(conn, br->ctx, err);
+    br->cb->on_close(conn, br->ctx, err, errmsg);
     free(br);
 }
 

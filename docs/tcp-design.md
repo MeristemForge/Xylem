@@ -99,20 +99,13 @@ typedef struct xylem_tcp_opts_s {
 
 ### 错误码
 
-```c
-#define XYLEM_TCP_ERR_OK       0      /* 正常关闭，无错误 */
-#define XYLEM_TCP_ERR_INTERNAL (-1001) /* 内部错误（缓冲区满、帧解析失败等） */
-```
-
 `on_close` 和 `on_write_done` 回调的 `err`/`status` 参数语义：
 
 | 值 | 含义 |
 |----|------|
-| `0` (`XYLEM_TCP_ERR_OK`) | 正常关闭（对端或本地 shutdown） |
-| `< -1000` | 内部错误（`XYLEM_TCP_ERR_INTERNAL`：缓冲区满、帧解析失败等） |
+| `0` | 正常关闭（对端或本地 shutdown） |
+| `-1` | 内部错误（缓冲区满、帧解析失败、连接初始化失败等） |
 | `> 0` | 平台 socket 错误码（Unix errno / Windows WSA 错误码） |
-
-值低于 -1000 避免与平台 errno / WSA 错误码冲突。
 
 ### 不透明类型
 

@@ -32,9 +32,8 @@ typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
     void (*on_accept)(xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
-    void (*on_write_done)(xylem_dtls_t* dtls,
-                          void* data, size_t len, int status);
-    void (*on_close)(xylem_dtls_t* dtls, int err);
+    void (*on_error)(xylem_dtls_t* dtls, int err, const char* errmsg);
+    void (*on_close)(xylem_dtls_t* dtls);
 } xylem_dtls_handler_t;
 
 /**
@@ -145,7 +144,7 @@ extern xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
  * @brief Send a datagram over a DTLS session.
  *
  * Encrypts plaintext via SSL_write and sends the resulting
- * ciphertext over UDP. handler->on_write_done fires on completion.
+ * ciphertext over UDP.
  *
  * @param dtls  DTLS session handle.
  * @param data  Plaintext data to send.

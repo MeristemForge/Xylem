@@ -86,9 +86,9 @@ static void _on_read(xylem_tls_conn_t* tls, void* data, size_t len) {
     xylem_tls_send(tls, data, len);
 }
 
-static void _on_close(xylem_tls_conn_t* tls, int err) {
+static void _on_close(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)tls;
-    xylem_logi("tls client disconnected (err=%d)", err);
+    xylem_logi("tls client disconnected (%s)", errmsg);
 }
 
 int main(void) {

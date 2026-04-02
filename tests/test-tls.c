@@ -202,8 +202,9 @@ static void test_set_alpn(void) {
 
 /* ── Handshake and data transfer callbacks ── */
 
-static void _echo_srv_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _echo_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
@@ -239,8 +240,9 @@ static void _echo_cli_read_cb(xylem_tls_conn_t* tls,
     xylem_tls_close(tls);
 }
 
-static void _echo_cli_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _echo_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx && ctx->srv_conn) {
         xylem_tls_close(ctx->srv_conn);
@@ -315,8 +317,9 @@ static void test_handshake_and_echo(void) {
 
 /* ── Handshake failure callbacks ── */
 
-static void _fail_cli_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _fail_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
@@ -329,8 +332,9 @@ static void _fail_cli_close_cb(xylem_tls_conn_t* tls, int err) {
     }
 }
 
-static void _fail_srv_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _fail_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
@@ -433,16 +437,18 @@ static void _alpn_cli_connect_cb(xylem_tls_conn_t* tls) {
     xylem_tls_close(tls);
 }
 
-static void _alpn_cli_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _alpn_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx && ctx->srv_conn) {
         xylem_tls_close(ctx->srv_conn);
     }
 }
 
-static void _alpn_srv_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _alpn_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -552,8 +558,9 @@ static void _ud_cli_connect_cb(xylem_tls_conn_t* tls) {
     xylem_tls_close(tls);
 }
 
-static void _ud_cli_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _ud_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -630,8 +637,9 @@ static void _srv_ud_accept_cb(xylem_tls_server_t* server,
     xylem_tls_close(tls);
 }
 
-static void _srv_ud_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _srv_ud_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -717,8 +725,9 @@ static void _peer_addr_accept_cb(xylem_tls_server_t* server,
     xylem_tls_close(tls);
 }
 
-static void _peer_addr_srv_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _peer_addr_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -791,8 +800,9 @@ static void _get_loop_connect_cb(xylem_tls_conn_t* tls) {
     xylem_tls_close(tls);
 }
 
-static void _get_loop_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _get_loop_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -874,8 +884,9 @@ static void _close_active_accept_cb(xylem_tls_server_t* server,
     xylem_tls_set_userdata(tls, ctx);
 }
 
-static void _close_active_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _close_active_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
@@ -951,8 +962,9 @@ static void _sac_connect_cb(xylem_tls_conn_t* tls) {
     ctx->verified = 1;
 }
 
-static void _sac_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _sac_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -1023,16 +1035,18 @@ static void _keylog_cli_connect_cb(xylem_tls_conn_t* tls) {
     xylem_tls_close(tls);
 }
 
-static void _keylog_cli_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _keylog_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx && ctx->srv_conn) {
         xylem_tls_close(ctx->srv_conn);
     }
 }
 
-static void _keylog_srv_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _keylog_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -1128,8 +1142,9 @@ static void _timeout_cb(xylem_tls_conn_t* tls,
     }
 }
 
-static void _timeout_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _timeout_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
@@ -1207,8 +1222,9 @@ static void _heartbeat_miss_cb(xylem_tls_conn_t* tls) {
     }
 }
 
-static void _heartbeat_close_cb(xylem_tls_conn_t* tls, int err) {
+static void _heartbeat_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);

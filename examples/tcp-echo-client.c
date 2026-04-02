@@ -47,9 +47,9 @@ static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
     xylem_tcp_close(conn);
 }
 
-static void _on_close(xylem_tcp_conn_t* conn, int err) {
+static void _on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)conn;
-    xylem_logi("disconnected (err=%d)", err);
+    xylem_logi("disconnected (%s)", errmsg);
     xylem_loop_stop(_loop);
 }
 

@@ -47,9 +47,9 @@ static void _on_read(xylem_dtls_t* dtls, void* data, size_t len) {
     xylem_dtls_close(dtls);
 }
 
-static void _on_close(xylem_dtls_t* dtls, int err) {
+static void _on_close(xylem_dtls_t* dtls) {
     (void)dtls;
-    xylem_logi("disconnected (err=%d)", err);
+    xylem_logi("disconnected");
     xylem_loop_stop(_loop);
 }
 

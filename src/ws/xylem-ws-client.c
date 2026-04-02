@@ -204,9 +204,11 @@ static void _ws_transport_read_cb(void* handle, void* ctx,
     ws_conn_process_recv(conn);
 }
 
-static void _ws_transport_close_cb(void* handle, void* ctx, int err) {
+static void _ws_transport_close_cb(void* handle, void* ctx, int err,
+                                   const char* errmsg) {
     (void)handle;
     (void)err;
+    (void)errmsg;
     xylem_ws_conn_t* conn = ctx;
 
     if (conn->state == XYLEM_WS_STATE_CLOSED) {

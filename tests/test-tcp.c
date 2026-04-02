@@ -84,8 +84,9 @@ static void _srv_accept_cb(xylem_tcp_server_t* server,
     xylem_tcp_set_userdata(conn, ctx);
 }
 
-static void _srv_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -151,8 +152,9 @@ static void _close_active_on_accept(xylem_tcp_server_t* server,
     xylem_tcp_set_userdata(conn, ctx);
 }
 
-static void _close_active_on_close(xylem_tcp_conn_t* conn, int err) {
+static void _close_active_on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called++;
@@ -170,8 +172,9 @@ static void _close_empty_on_connect(xylem_tcp_conn_t* conn) {
     xylem_tcp_close(conn);
 }
 
-static void _close_empty_on_close(xylem_tcp_conn_t* conn, int err) {
+static void _close_empty_on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -1830,8 +1833,9 @@ static void test_reconnect_success(void) {
 }
 
 
-static void _reconnect_limit_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _reconnect_limit_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -1875,8 +1879,9 @@ static void test_reconnect_limit(void) {
 }
 
 
-static void _read_buf_full_srv_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _read_buf_full_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -1940,8 +1945,9 @@ static void test_read_buf_full(void) {
 }
 
 
-static void _peer_eof_srv_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _peer_eof_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -2004,8 +2010,9 @@ static void _pending_writes_wd_cb(xylem_tcp_conn_t* conn,
     ctx->wd_called++;
 }
 
-static void _pending_writes_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _pending_writes_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -2071,8 +2078,9 @@ static void _drain_err_cli_connect_cb(xylem_tcp_conn_t* conn) {
     xylem_tcp_send(conn, "data", 4);
 }
 
-static void _drain_err_cli_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _drain_err_cli_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->close_called = 1;
@@ -2140,8 +2148,9 @@ static void _life_srv_read_cb(xylem_tcp_conn_t* conn,
     xylem_tcp_send(conn, "pong\r\n", 6);
 }
 
-static void _life_srv_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _life_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->verified |= 4; /* bit 2: server close fired */
@@ -2167,8 +2176,9 @@ static void _life_cli_read_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-static void _life_cli_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _life_cli_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     if (ctx) {
         ctx->verified |= 32; /* bit 5: client close fired */

@@ -407,15 +407,15 @@ static void _tls_free_cb(xylem_loop_t* loop,
     free(ud);
 }
 
-static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
+static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
+                              const char* errmsg) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
     if (!tls) {
         return;
     }
 
     xylem_logd("tls conn %p close err=%d (%s)",
-               (void*)tls, err,
-               err ? platform_socket_tostring(err) : "ok");
+               (void*)tls, err, errmsg);
 
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);
@@ -423,7 +423,7 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err) {
     }
 
     if (tls->handler && tls->handler->on_close) {
-        tls->handler->on_close(tls, err);
+        tls->handler->on_close(tls, err, errmsg);
     }
 
     if (tls->ssl) {

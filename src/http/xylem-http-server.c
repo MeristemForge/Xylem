@@ -571,8 +571,10 @@ static void _http_srv_conn_read_cb(void* handle, void* ctx,
     }
 }
 
-static void _http_srv_conn_close_cb(void* handle, void* ctx, int err) {
+static void _http_srv_conn_close_cb(void* handle, void* ctx, int err,
+                                    const char* errmsg) {
     (void)err;
+    (void)errmsg;
     xylem_http_srv_t* srv = ctx;
     xylem_http_conn_t* conn = srv->vt->get_userdata(handle);
     if (conn) {

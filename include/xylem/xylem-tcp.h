@@ -38,14 +38,6 @@ typedef enum xylem_tcp_timeout_type_e {
     XYLEM_TCP_TIMEOUT_CONNECT,
 } xylem_tcp_timeout_type_t;
 
-/**
- * Predefined error codes used by on_close and on_write_done callbacks.
- * Values below -1000 avoid collision with platform errno / WSA codes.
- * Positive values are platform-specific socket error codes.
- */
-#define XYLEM_TCP_ERR_OK       0      /**< Normal close, no error. */
-#define XYLEM_TCP_ERR_INTERNAL (-1001) /**< Internal error (buffer full, frame parse, etc.). */
-
 typedef enum xylem_tcp_length_coding_e {
     XYLEM_TCP_LENGTH_FIXEDINT,
     XYLEM_TCP_LENGTH_VARINT,
@@ -78,7 +70,7 @@ typedef struct xylem_tcp_handler_s {
     void (*on_write_done)(
         xylem_tcp_conn_t* conn, void* data, size_t len, int status);
     void (*on_timeout)(xylem_tcp_conn_t* conn, xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tcp_conn_t* conn, int err);
+    void (*on_close)(xylem_tcp_conn_t* conn, int err, const char* errmsg);
     void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);
 } xylem_tcp_handler_t;
 
@@ -227,24 +219,3 @@ extern void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server);
  */
 extern void xylem_tcp_server_set_userdata(xylem_tcp_server_t* server,
                                           void* ud);
-
-/**
- * @brief Convert a socket error code to a human-readable string.
- *
- * Translates the error code passed to on_close and on_write_done
- * callbacks into a descriptive message. Works across platforms
- * (errno on Unix, WSAGetLastError codes on Windows).
- *
- * Error code semantics:
- *   - 0: normal close (peer or local shutdown)
- *   - < 0: internal error (buffer full, frame parse failure, etc.)
- *   - > 0: platform socket error code
- *
- * The returned pointer is thread-local and valid until the next
- * call to this function on the same thread.
- *
- * @param err  Error code from a handler callback.
- *
- * @return Descriptive string for the error.
- */
-extern const char* xylem_tcp_strerror(int err);

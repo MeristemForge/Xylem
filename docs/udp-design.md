@@ -23,13 +23,13 @@ graph TB
 typedef struct xylem_udp_handler_s {
     void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
                     xylem_addr_t* addr);
-    void (*on_error)(xylem_udp_t* udp, int err);
-    void (*on_close)(xylem_udp_t* udp, int err);
+    void (*on_error)(xylem_udp_t* udp, int err, const char* errmsg);
+    void (*on_close)(xylem_udp_t* udp);
 } xylem_udp_handler_t;
 ```
 
 - `on_read`：收到数据报时触发，`addr` 为发送方地址
-- `on_error`：`recv`/`recvfrom` 返回非 EAGAIN/EWOULDBLOCK 错误时触发，`err` 为平台错误码。回调触发后 IO 回调立即返回，不关闭句柄——用户可选择忽略、记录或调用 `xylem_udp_close`
+- `on_error`：`recv`/`recvfrom` 返回非 EAGAIN/EWOULDBLOCK 错误时触发，`err` 为平台错误码，`errmsg` 为可读错误描述字符串。回调触发后 IO 回调立即返回，不关闭句柄——用户可选择忽略、记录或调用 `xylem_udp_close`
 - `on_close`：句柄关闭时触发
 
 ### 不透明类型
@@ -125,7 +125,7 @@ sequenceDiagram
     Note over UDP: closing = true（幂等）
     UDP->>UDP: xylem_loop_destroy_io()
     UDP->>UDP: platform_socket_close(fd)
-    UDP->>User: handler->on_close(udp, 0)
+    UDP->>User: handler->on_close(udp)
     UDP->>Loop: xylem_loop_post(_udp_free_cb)
     Loop->>UDP: 下一轮迭代释放内存
 ```
