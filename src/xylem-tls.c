@@ -32,6 +32,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Maximum TLS record payload (RFC 8446 section 5.1). */
+#define TLS_RECORD_MAX_PLAINTEXT 16384
+
 static int _tls_ex_data_idx = -1;
 
 struct xylem_tls_ctx_s {
@@ -220,7 +223,7 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
 }
 
 static void _tls_flush_write_bio(xylem_tls_conn_t* tls) {
-    char buf[16384];
+    char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
     while ((n = BIO_read(tls->write_bio, buf, sizeof(buf))) > 0) {
@@ -360,7 +363,7 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
         }
     }
 
-    char buf[16384];
+    char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
     while ((n = SSL_read(tls->ssl, buf, sizeof(buf))) > 0) {
