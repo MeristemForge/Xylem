@@ -424,11 +424,17 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
 
     int err = SSL_get_error(dtls->ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN) {
+        xylem_logi("dtls session %p peer sent close_notify", (void*)dtls);
         xylem_dtls_close(dtls);
         return;
     }
 
     if (err != SSL_ERROR_WANT_READ) {
+        unsigned long ssl_err_code = ERR_peek_error();
+        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+        xylem_logw("dtls session %p SSL_read error=%d (%s)",
+                   (void*)dtls, err,
+                   ssl_err_str ? ssl_err_str : "unknown");
         xylem_dtls_close(dtls);
     }
 }
@@ -497,8 +503,15 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
 
         int err = SSL_get_error(dtls->ssl, n);
         if (err == SSL_ERROR_ZERO_RETURN) {
+            xylem_logi("dtls session %p peer sent close_notify",
+                       (void*)dtls);
             xylem_dtls_close(dtls);
         } else if (err != SSL_ERROR_WANT_READ) {
+            unsigned long ssl_err_code = ERR_peek_error();
+            const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+            xylem_logw("dtls session %p SSL_read error=%d (%s)",
+                       (void*)dtls, err,
+                       ssl_err_str ? ssl_err_str : "unknown");
             xylem_dtls_close(dtls);
         }
         return;
