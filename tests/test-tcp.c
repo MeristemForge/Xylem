@@ -47,6 +47,7 @@ typedef struct {
     size_t              received_len;
     char                frames[2][16];
     size_t              frame_lens[2];
+    xylem_tcp_handler_t reconnect_srv_handler;
 } _test_ctx_t;
 
 /* Custom frame parsers. */
@@ -1781,8 +1782,9 @@ static void _reconnect_delayed_listen_cb(xylem_loop_t* loop,
     xylem_addr_t addr;
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
-    xylem_tcp_handler_t srv_handler = {0};
-    ctx->server = xylem_tcp_listen(ctx->loop, &addr, &srv_handler, NULL);
+    memset(&ctx->reconnect_srv_handler, 0, sizeof(ctx->reconnect_srv_handler));
+    ctx->server = xylem_tcp_listen(ctx->loop, &addr,
+                                   &ctx->reconnect_srv_handler, NULL);
 }
 
 static void _reconnect_on_connect_cb(xylem_tcp_conn_t* conn) {
