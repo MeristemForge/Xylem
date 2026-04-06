@@ -12,7 +12,7 @@ DTLS 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 - 无 `on_write_done` 测试（DTLS send 是同步的）
 - 无 SNI 测试（DTLS 不支持 SNI）
 - 无超时/心跳透传测试（DTLS 自行管理重传定时器，无 TCP 层定时器）
-- 无 `server_userdata` / `peer_addr` / `get_loop` 测试（DTLS 公共 API 不包含这些访问器）
+- 无 `server_userdata` 测试（DTLS 公共 API 不包含 server userdata 访问器）
 
 ## 架构
 
@@ -72,6 +72,8 @@ sequenceDiagram
 | `xylem_dtls_send` | 会话 |
 | `xylem_dtls_close` | 会话 |
 | `xylem_dtls_get_alpn` | 会话 |
+| `xylem_dtls_get_peer_addr` | 会话 |
+| `xylem_dtls_get_loop` | 会话 |
 | `xylem_dtls_get_userdata` | 会话 |
 | `xylem_dtls_set_userdata` | 会话 |
 | `xylem_dtls_listen` | 服务器 |
@@ -178,6 +180,7 @@ typedef struct {
 | `xylem_dtls_set_userdata` | test_session_userdata + 所有异步测试的 setup |
 | `xylem_dtls_listen` | 所有异步测试（5 个） |
 | `xylem_dtls_close_server` | test_close_server_with_active_session + 所有异步测试的清理路径 |
+
 
 ### 覆盖的内部分支
 
@@ -303,8 +306,6 @@ typedef struct {
 |-------------------------|------|
 | `test_sni_hostname` | DTLS 不支持 SNI |
 | `test_server_userdata` | DTLS 公共 API 无 server userdata 访问器 |
-| `test_peer_addr` | DTLS 公共 API 无 get_peer_addr |
-| `test_get_loop` | DTLS 公共 API 无 get_loop |
 | `test_read_timeout` | DTLS 无 TCP 层超时透传 |
 | `test_heartbeat_miss` | DTLS 无 TCP 层心跳透传 |
 | `on_write_done` 验证 | DTLS send 是同步的，无 on_write_done 回调 |

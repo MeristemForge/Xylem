@@ -343,15 +343,17 @@ int               xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
 ### 会话
 
 ```c
-xylem_dtls_t*   xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
-                                 xylem_dtls_ctx_t* ctx,
-                                 xylem_dtls_handler_t* handler);
-int             xylem_dtls_send(xylem_dtls_t* dtls,
-                                 const void* data, size_t len);
-void            xylem_dtls_close(xylem_dtls_t* dtls);
-const char*     xylem_dtls_get_alpn(xylem_dtls_t* dtls);
-void*           xylem_dtls_get_userdata(xylem_dtls_t* dtls);
-void            xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
+xylem_dtls_t*       xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+                                     xylem_dtls_ctx_t* ctx,
+                                     xylem_dtls_handler_t* handler);
+int                 xylem_dtls_send(xylem_dtls_t* dtls,
+                                     const void* data, size_t len);
+void                xylem_dtls_close(xylem_dtls_t* dtls);
+const char*         xylem_dtls_get_alpn(xylem_dtls_t* dtls);
+const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
+xylem_loop_t*       xylem_dtls_get_loop(xylem_dtls_t* dtls);
+void*               xylem_dtls_get_userdata(xylem_dtls_t* dtls);
+void                xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
 ```
 
 ### 服务器
