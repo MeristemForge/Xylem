@@ -25,6 +25,7 @@
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-utils.h"
 
+#include "platform/platform-socket.h"
 #include "rudp/kcp/ikcp.h"
 
 #include <stdlib.h>

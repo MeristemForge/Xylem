@@ -11,19 +11,17 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 - Pure C11, no external dependencies (OpenSSL optional for TLS/DTLS)
 - Cross-platform: Windows (MSVC), Linux/macOS (GCC, Clang)
-- Single-threaded event loop with I/O polling (epoll / kqueue / iocp), timers
-
-| Module | Description |
-|--------|-------------|
-| tcp | Non-blocking client/server — framing, write queue, reconnect with exponential backoff, heartbeat, timeouts |
-| udp | Listen (unconnected) and dial (connected) modes, datagram boundary preservation |
-| tls | TLS over TCP via OpenSSL memory BIO — ALPN, SNI, keylog, certificate verification |
-| dtls | DTLS over UDP via OpenSSL memory BIO — cookie exchange, per-peer session multiplexing, handshake retransmission |
-| rudp | Reliable UDP over KCP — ARQ, congestion control, per-peer session multiplexing, lightweight handshake |
-| http | HTTP/1.1 client and server |
-| ws | WebSocket client/server (RFC 6455 — fragmentation, ping/pong, close handshake) |
-
-Also includes: intrusive/non-intrusive data structures, base64, SHA-1/256, gzip, JSON, thread pool, async logger, and more.
+- Single-threaded event loop with I/O polling, timers
+- TCP client/server with framing, write queue, reconnect, heartbeat, timeouts
+- UDP listen/dial modes with datagram boundary preservation
+- TLS over TCP via OpenSSL memory BIO (ALPN, SNI, keylog)
+- DTLS over UDP via OpenSSL memory BIO (cookie exchange, session multiplexing)
+- Reliable UDP over KCP (ARQ, congestion control, session multiplexing)
+- HTTP/1.1 client and server
+- WebSocket client/server (RFC 6455)
+- Intrusive and non-intrusive data structures (list, queue, stack, heap, rbtree, ring buffer)
+- Base64, SHA-1, SHA-256, gzip, JSON, varint
+- Thread pool, async logger, waitgroup
 
 
 # Build
