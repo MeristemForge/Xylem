@@ -52,6 +52,10 @@
 /* Timeout for client waiting for handshake ACK. */
 #define RUDP_HANDSHAKE_TIMEOUT_MS 5000
 
+struct xylem_rudp_ctx_s {
+    uint32_t next_conv;
+};
+
 struct xylem_rudp_s {
     ikcpcb*                kcp;
     xylem_udp_t*           udp;
@@ -72,6 +76,7 @@ struct xylem_rudp_s {
 
 struct xylem_rudp_server_s {
     xylem_udp_t*           udp;
+    xylem_rudp_ctx_t*      ctx;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_opts_t      opts;
     xylem_loop_t*          loop;
@@ -84,6 +89,21 @@ typedef struct {
     xylem_addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;
+
+xylem_rudp_ctx_t* xylem_rudp_ctx_create(void) {
+    xylem_rudp_ctx_t* ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        return NULL;
+    }
+    /* Seed with a random value so conv IDs don't collide across
+     * process restarts or multiple ctx instances. */
+    ctx->next_conv = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
+    return ctx;
+}
+
+void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx) {
+    free(ctx);
+}
 
 static int _rudp_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
@@ -482,13 +502,15 @@ static xylem_udp_handler_t _rudp_server_udp_handler = {
 
 xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
-                              uint32_t conv,
+                              xylem_rudp_ctx_t* ctx,
                               xylem_rudp_handler_t* handler,
                               xylem_rudp_opts_t* opts) {
     xylem_rudp_t* rudp = calloc(1, sizeof(*rudp));
     if (!rudp) {
         return NULL;
     }
+
+    uint32_t conv = ctx->next_conv++;
 
     rudp->handler   = handler;
     rudp->peer_addr = *addr;
@@ -599,6 +621,7 @@ void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud) {
 
 xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
                                        xylem_addr_t* addr,
+                                       xylem_rudp_ctx_t* ctx,
                                        xylem_rudp_handler_t* handler,
                                        xylem_rudp_opts_t* opts) {
     xylem_rudp_server_t* server = calloc(1, sizeof(*server));
@@ -606,6 +629,7 @@ xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
         return NULL;
     }
 
+    server->ctx     = ctx;
     server->handler = handler;
     server->loop    = loop;
     if (opts) {
