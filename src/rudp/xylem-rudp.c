@@ -320,9 +320,7 @@ static void _rudp_schedule_update(xylem_rudp_t* rudp) {
     uint32_t now  = _rudp_clock_ms();
     uint32_t next = ikcp_check(rudp->kcp, now);
     uint64_t delay = (next <= now) ? 1 : (uint64_t)(next - now);
-    xylem_loop_stop_timer(rudp->update_timer);
-    xylem_loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
-                           rudp, delay, 0);
+    xylem_loop_reset_timer(rudp->update_timer, delay);
 }
 
 static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
@@ -444,6 +442,11 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
 
             rudp->handshake_done = true;
             xylem_rbtree_insert(&server->sessions, &rudp->server_node);
+
+            /* Initial start so _rudp_schedule_update can use reset. */
+            xylem_loop_start_timer(rudp->update_timer,
+                                   _rudp_update_timeout_cb, rudp,
+                                   RUDP_DEFAULT_INTERVAL, 0);
             _rudp_schedule_update(rudp);
 
             if (rudp->handler && rudp->handler->on_accept) {
@@ -543,6 +546,10 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         free(rudp);
         return NULL;
     }
+
+    /* Initial start so _rudp_schedule_update can use reset. */
+    xylem_loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
+                           rudp, RUDP_DEFAULT_INTERVAL, 0);
 
     uint8_t syn[RUDP_HANDSHAKE_SIZE];
     _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, conv);
