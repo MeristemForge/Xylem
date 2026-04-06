@@ -1730,7 +1730,7 @@ static void test_heartbeat_reset_on_data(void) {
     xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 100;
+    srv_opts.heartbeat_ms = 200;
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept         = _srv_accept_cb,
