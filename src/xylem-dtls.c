@@ -60,6 +60,8 @@ struct xylem_dtls_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
+    int                    close_err;
+    const char*            close_errmsg;
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;
     xylem_loop_timer_t*    handshake_timer;  /* server-side only */
@@ -454,6 +456,8 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
         xylem_logw("dtls session %p SSL_read error=%d (%s)",
                    (void*)dtls, err,
                    ssl_err_str ? ssl_err_str : "unknown");
+        dtls->close_err    = err;
+        dtls->close_errmsg = ssl_err_str ? ssl_err_str : "unknown";
         xylem_dtls_close(dtls);
     }
 }
@@ -474,7 +478,10 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
     free(dtls);
 }
 
-static void _dtls_client_close_cb(xylem_udp_t* udp) {
+static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
+                                  const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
     if (!dtls) {
         return;
@@ -484,7 +491,7 @@ static void _dtls_client_close_cb(xylem_udp_t* udp) {
         dtls->ssl = NULL;
     }
     if (dtls->handler && dtls->handler->on_close) {
-        dtls->handler->on_close(dtls);
+        dtls->handler->on_close(dtls, dtls->close_err, dtls->close_errmsg);
     }
     /* Defer free to next loop iteration so close_node stays valid. */
     xylem_loop_post(dtls->loop, _dtls_free_cb, dtls);
@@ -534,6 +541,8 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
             xylem_logw("dtls session %p SSL_read error=%d (%s)",
                        (void*)dtls, err,
                        ssl_err_str ? ssl_err_str : "unknown");
+            dtls->close_err    = err;
+            dtls->close_errmsg = ssl_err_str ? ssl_err_str : "unknown";
             xylem_dtls_close(dtls);
         }
         return;
@@ -574,23 +583,17 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     _dtls_do_handshake(dtls);
 }
 
-static void _dtls_server_close_cb(xylem_udp_t* udp) {
+static void _dtls_server_close_cb(xylem_udp_t* udp, int err,
+                                  const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     xylem_dtls_server_t* server =
         (xylem_dtls_server_t*)xylem_udp_get_userdata(udp);
     free(server);
 }
 
-static void _dtls_client_error_cb(xylem_udp_t* udp, int err,
-                                  const char* errmsg) {
-    xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
-    if (dtls && dtls->handler && dtls->handler->on_error) {
-        dtls->handler->on_error(dtls, err, errmsg);
-    }
-}
-
 static xylem_udp_handler_t _dtls_client_udp_handler = {
     .on_read  = _dtls_client_read_cb,
-    .on_error = _dtls_client_error_cb,
     .on_close = _dtls_client_close_cb,
 };
 
@@ -687,7 +690,8 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
         }
 
         if (dtls->handler && dtls->handler->on_close) {
-            dtls->handler->on_close(dtls);
+            dtls->handler->on_close(dtls, dtls->close_err,
+                                    dtls->close_errmsg);
         }
 
         /* Defer free to next loop iteration so close_node stays valid. */
@@ -717,6 +721,14 @@ const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls) {
     return (const char*)proto;
 }
 
+const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls) {
+    return &dtls->peer_addr;
+}
+
+xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_t* dtls) {
+    return dtls->loop;
+}
+
 void* xylem_dtls_get_userdata(xylem_dtls_t* dtls) {
     return dtls->userdata;
 }
@@ -725,15 +737,8 @@ void xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud) {
     dtls->userdata = ud;
 }
 
-static void _dtls_server_error_cb(xylem_udp_t* udp, int err,
-                                  const char* errmsg) {
-    (void)udp;
-    xylem_logw("dtls server udp error=%d (%s)", err, errmsg);
-}
-
 static xylem_udp_handler_t _dtls_server_udp_handler = {
     .on_read  = _dtls_server_read_cb,
-    .on_error = _dtls_server_error_cb,
     .on_close = _dtls_server_close_cb,
 };
 

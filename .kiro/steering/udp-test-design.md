@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-udp.c` 包含 10 个测试函数，覆盖 `src/xylem-udp.c` 的所有公共 API 和两种工作模式（listen 未连接模式、dial 已连接模式）。不包含 `on_error` 回调的测试。
+`tests/test-udp.c` 包含 10 个测试函数，覆盖 `src/xylem-udp.c` 的所有公共 API 和两种工作模式（listen 未连接模式、dial 已连接模式）。
 
 ## 测试基础设施
 
@@ -84,6 +84,6 @@ Dial 模式测试只需 PORT_A（client 由系统分配临时端口）。
 
 | 路径 | 原因 |
 |------|------|
-| `on_error` 回调 | 需求排除：难以可靠触发非 EAGAIN 的 recv 错误 |
+| `on_close` 携带非零错误码路径 | 难以可靠触发非 EAGAIN 的 recv 错误 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |
 | 大数据报（接近 64KB） | 回环接口可靠，不需要专门测试截断 |

@@ -457,7 +457,9 @@ static void test_close_idempotent(void) {
 }
 
 /* test_close_callback: on_close receives the udp handle as userdata */
-static void _cc_on_close(xylem_udp_t* udp) {
+static void _cc_on_close(xylem_udp_t* udp, int err, const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     int* called = (int*)xylem_udp_get_userdata(udp);
     *called = 1;
 }

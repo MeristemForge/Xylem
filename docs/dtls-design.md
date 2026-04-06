@@ -32,19 +32,16 @@ typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
     void (*on_accept)(xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
-    void (*on_error)(xylem_dtls_t* dtls, int err, const char* errmsg);
-    void (*on_close)(xylem_dtls_t* dtls);
+    void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
 ```
 
-- `on_error`：SSL 操作错误时触发，`err` 为 OpenSSL 错误码，`errmsg` 为可读错误描述字符串。回调触发后不自动关闭会话——用户可选择忽略、记录或调用 `xylem_dtls_close`
+- `on_close`：会话关闭时触发。正常关闭（用户调用 `xylem_dtls_close` 或对端 close_notify）时 `err=0`、`errmsg=NULL`。当关闭由 SSL 错误触发时，`err` 为 OpenSSL 错误码，`errmsg` 为可读错误描述字符串
 
 与 TLS handler 的区别：
-- `on_close` 无 `err` 参数（DTLS 无 TCP 层的 socket 错误码传递）
 - `on_accept` 参数不含 server 指针（DTLS 会话通过 `xylem_dtls_t` 自身关联 server）
 - 无 `on_timeout` 和 `on_heartbeat_miss`（DTLS 自行管理重传定时器）
 - 无 `on_write_done`（`xylem_dtls_send` 是同步的，`SSL_write` + flush 在调用中完成，无需异步通知）
-- 新增 `on_error` 回调，与 UDP handler 的 `on_error` 语义对称
 
 ### 不透明类型
 
@@ -346,15 +343,17 @@ int               xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
 ### 会话
 
 ```c
-xylem_dtls_t*   xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
-                                 xylem_dtls_ctx_t* ctx,
-                                 xylem_dtls_handler_t* handler);
-int             xylem_dtls_send(xylem_dtls_t* dtls,
-                                 const void* data, size_t len);
-void            xylem_dtls_close(xylem_dtls_t* dtls);
-const char*     xylem_dtls_get_alpn(xylem_dtls_t* dtls);
-void*           xylem_dtls_get_userdata(xylem_dtls_t* dtls);
-void            xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
+xylem_dtls_t*       xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+                                     xylem_dtls_ctx_t* ctx,
+                                     xylem_dtls_handler_t* handler);
+int                 xylem_dtls_send(xylem_dtls_t* dtls,
+                                     const void* data, size_t len);
+void                xylem_dtls_close(xylem_dtls_t* dtls);
+const char*         xylem_dtls_get_alpn(xylem_dtls_t* dtls);
+const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
+xylem_loop_t*       xylem_dtls_get_loop(xylem_dtls_t* dtls);
+void*               xylem_dtls_get_userdata(xylem_dtls_t* dtls);
+void                xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
 ```
 
 ### 服务器

@@ -32,8 +32,7 @@ typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
     void (*on_accept)(xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
-    void (*on_error)(xylem_dtls_t* dtls, int err, const char* errmsg);
-    void (*on_close)(xylem_dtls_t* dtls);
+    void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
 
 /**
@@ -159,7 +158,9 @@ extern int xylem_dtls_send(xylem_dtls_t* dtls,
  * @brief Close a DTLS session.
  *
  * Sends close_notify and closes the underlying UDP socket.
- * handler->on_close fires when complete.
+ * handler->on_close fires with err=0 and errmsg=NULL for a normal
+ * close, or with an SSL error code and description when the close
+ * is triggered by an SSL error.
  *
  * @param dtls  DTLS session handle.
  */
@@ -173,6 +174,24 @@ extern void xylem_dtls_close(xylem_dtls_t* dtls);
  * @return Null-terminated protocol string, or NULL.
  */
 extern const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls);
+
+/**
+ * @brief Get the peer address of a DTLS session.
+ *
+ * @param dtls  DTLS session handle.
+ *
+ * @return Peer address, or NULL if not available.
+ */
+extern const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
+
+/**
+ * @brief Get the event loop associated with a DTLS session.
+ *
+ * @param dtls  DTLS session handle.
+ *
+ * @return Loop handle.
+ */
+extern xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_t* dtls);
 
 /**
  * @brief Get user data attached to a DTLS session.

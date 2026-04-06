@@ -29,8 +29,7 @@ typedef struct xylem_udp_s xylem_udp_t;
 typedef struct xylem_udp_handler_s {
     void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
                     xylem_addr_t* addr);
-    void (*on_error)(xylem_udp_t* udp, int err, const char* errmsg);
-    void (*on_close)(xylem_udp_t* udp);
+    void (*on_close)(xylem_udp_t* udp, int err, const char* errmsg);
 } xylem_udp_handler_t;
 
 /**
@@ -90,8 +89,11 @@ extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
 /**
  * @brief Close a UDP handle.
  *
- * Closes the socket, unregisters from the event loop, stops all
- * timers, and calls handler->on_close.
+ * Closes the socket, unregisters from the event loop, and calls
+ * handler->on_close with err=0 and errmsg=NULL.
+ *
+ * When the close is triggered internally by a recv error, on_close
+ * receives the platform error code and a human-readable description.
  *
  * @param udp  UDP handle.
  *

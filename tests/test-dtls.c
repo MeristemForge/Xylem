@@ -211,7 +211,10 @@ static void _echo_cli_read_cb(xylem_dtls_t* dtls,
     xylem_dtls_close(dtls);
 }
 
-static void _echo_cli_close_cb(xylem_dtls_t* dtls) {
+static void _echo_cli_close_cb(xylem_dtls_t* dtls, int err,
+                               const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->close_called++;
@@ -288,7 +291,10 @@ static void test_handshake_and_echo(void) {
 
 /* ── Handshake failure callbacks ── */
 
-static void _fail_cli_close_cb(xylem_dtls_t* dtls) {
+static void _fail_cli_close_cb(xylem_dtls_t* dtls, int err,
+                               const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->close_called++;
@@ -372,7 +378,10 @@ static void _alpn_cli_connect_cb(xylem_dtls_t* dtls) {
     xylem_dtls_close(dtls);
 }
 
-static void _alpn_cli_close_cb(xylem_dtls_t* dtls) {
+static void _alpn_cli_close_cb(xylem_dtls_t* dtls, int err,
+                               const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->close_called++;
@@ -455,7 +464,10 @@ static void _ud_cli_connect_cb(xylem_dtls_t* dtls) {
     xylem_dtls_close(dtls);
 }
 
-static void _ud_cli_close_cb(xylem_dtls_t* dtls) {
+static void _ud_cli_close_cb(xylem_dtls_t* dtls, int err,
+                             const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         xylem_dtls_close_server(ctx->dtls_server);
@@ -527,7 +539,10 @@ static void _sac_connect_cb(xylem_dtls_t* dtls) {
     ctx->verified = 1;
 }
 
-static void _sac_close_cb(xylem_dtls_t* dtls) {
+static void _sac_close_cb(xylem_dtls_t* dtls, int err,
+                          const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         xylem_dtls_close_server(ctx->dtls_server);
@@ -607,7 +622,10 @@ static void _csas_cli_connect_cb(xylem_dtls_t* dtls) {
     ctx->connect_called = 1;
 }
 
-static void _csas_cli_close_cb(xylem_dtls_t* dtls) {
+static void _csas_cli_close_cb(xylem_dtls_t* dtls, int err,
+                               const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->close_called++;
@@ -684,7 +702,10 @@ static void _keylog_cli_connect_cb(xylem_dtls_t* dtls) {
     xylem_dtls_close(dtls);
 }
 
-static void _keylog_cli_close_cb(xylem_dtls_t* dtls) {
+static void _keylog_cli_close_cb(xylem_dtls_t* dtls, int err,
+                                 const char* errmsg) {
+    (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->close_called++;

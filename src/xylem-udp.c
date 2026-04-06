@@ -39,6 +39,8 @@ struct xylem_udp_s {
     char                  recv_buf[65536];
     bool                  connected;
     bool                  closing;
+    int                   close_err;
+    const char*           close_errmsg;
 };
 
 /**
@@ -91,10 +93,9 @@ static void _udp_io_cb(xylem_loop_t* loop,
             xylem_logw("udp fd=%d recv error=%d (%s)",
                        (int)udp->fd, err,
                        platform_socket_tostring(err));
-            if (udp->handler && udp->handler->on_error) {
-                udp->handler->on_error(udp, err,
-                                       platform_socket_tostring(err));
-            }
+            udp->close_err    = err;
+            udp->close_errmsg = platform_socket_tostring(err);
+            xylem_udp_close(udp);
             return;
         }
 
@@ -230,7 +231,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
     platform_socket_close(udp->fd);
 
     if (udp->handler && udp->handler->on_close) {
-        udp->handler->on_close(udp);
+        udp->handler->on_close(udp, udp->close_err, udp->close_errmsg);
     }
 
     /* Defer free to next loop iteration so close_node stays valid */

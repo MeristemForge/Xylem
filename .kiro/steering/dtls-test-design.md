@@ -7,7 +7,6 @@
 DTLS 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖，不在本测试中重复：
 - UDP listen/dial 基本收发
 - UDP 数据报边界保持
-- UDP on_error 回调
 
 设计风格与 `test-tls.c` 对称：统一 `_test_ctx_t` 上下文结构体、`_gen_self_signed` 辅助函数、Safety Timer 防挂起。与 TLS 测试的关键差异：
 - 无 `on_write_done` 测试（DTLS send 是同步的）
@@ -223,12 +222,11 @@ typedef struct {
 
 | 路径 | 原因 |
 |------|------|
-| `on_error` 回调 | 需要触发 SSL 操作错误，在回环测试中难以可靠复现 |
+| `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误，在回环测试中难以可靠复现 |
 | `_dtls_retransmit_timeout_cb` 实际触发 | 回环网络无丢包，重传定时器在握手完成前不会触发 |
 | `_dtls_init_ssl` 失败路径（BIO/SSL 分配失败）| 需要 mock OpenSSL 内存分配，不实际 |
 | `xylem_dtls_dial` 失败路径（udp_dial 失败）| 需要端口耗尽等极端条件 |
 | `xylem_dtls_listen` 失败路径（udp_listen 失败）| 需要端口占用等极端条件 |
-| `_dtls_client_error_cb` | UDP 层 on_error 透传，难以在回环中触发 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |
 
 

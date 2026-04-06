@@ -84,8 +84,10 @@ static void _on_read(xylem_dtls_t* dtls, void* data, size_t len) {
     xylem_dtls_send(dtls, data, len);
 }
 
-static void _on_close(xylem_dtls_t* dtls) {
+static void _on_close(xylem_dtls_t* dtls, int err, const char* errmsg) {
     (void)dtls;
+    (void)err;
+    (void)errmsg;
     xylem_logi("dtls client disconnected");
 }
 
