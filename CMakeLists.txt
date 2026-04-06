@@ -43,6 +43,7 @@ set(SRCS
 	src/xylem-ringbuf.c
 	src/xylem-sha1.c
 	src/xylem-sha256.c
+	src/xylem-hmac256.c
 	src/xylem-stack.c
 	src/xylem-thrdpool.c
 	src/xylem-loop.c
@@ -66,6 +67,8 @@ set(SRCS
 	src/http/llhttp/api.c
 	src/gzip/xylem-gzip.c
 	src/gzip/miniz/miniz.c
+	src/aes256/tiny-AES-c/aes.c
+	src/aes256/xylem-aes256.c
 	src/ws/ws-common.c
 	src/ws/xylem-ws-client.c
 	src/ws/xylem-ws-server.c
@@ -128,6 +131,7 @@ target_include_directories(xylem
         ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
         ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/aes256/tiny-AES-c
         ${CMAKE_CURRENT_SOURCE_DIR}/src/rudp/kcp
 )
 

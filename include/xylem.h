@@ -32,6 +32,8 @@ _Pragma("once")
 #include "xylem/xylem-ringbuf.h"
 #include "xylem/xylem-sha1.h"
 #include "xylem/xylem-sha256.h"
+#include "xylem/xylem-hmac256.h"
+#include "xylem/xylem-aes256.h"
 #include "xylem/xylem-stack.h"
 #include "xylem/xylem-thrdpool.h"
 #include "xylem/xylem-varint.h"

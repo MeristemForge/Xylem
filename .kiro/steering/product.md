@@ -34,6 +34,8 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **varint** | Variable-length integer encoding |
 | **sha1** | SHA-1 hash |
 | **sha256** | SHA-256 hash |
+| **hmac256** | HMAC-SHA256 message authentication |
+| **aes256** | AES-256 encryption (CTR and CBC modes, bundled tiny-AES-c) |
 
 ### Concurrency
 
