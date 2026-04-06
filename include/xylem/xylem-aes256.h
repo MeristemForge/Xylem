@@ -27,6 +27,46 @@ _Pragma("once")
 typedef struct xylem_aes256_s xylem_aes256_t;
 
 /**
+ * @brief Compute the output size for CTR encryption.
+ *
+ * @param len  Plaintext length in bytes.
+ *
+ * @return Required output buffer size.
+ */
+extern size_t xylem_aes256_ctr_encrypt_size(size_t len);
+
+/**
+ * @brief Compute the maximum output size for CTR decryption.
+ *
+ * @param len  Ciphertext length in bytes (including IV prefix).
+ *
+ * @return Maximum plaintext output size, or 0 if len is too small.
+ */
+extern size_t xylem_aes256_ctr_decrypt_size(size_t len);
+
+/**
+ * @brief Compute the output size for CBC encryption.
+ *
+ * Accounts for the prepended IV and PKCS7 padding.
+ *
+ * @param len  Plaintext length in bytes.
+ *
+ * @return Required output buffer size.
+ */
+extern size_t xylem_aes256_cbc_encrypt_size(size_t len);
+
+/**
+ * @brief Compute the maximum output size for CBC decryption.
+ *
+ * The actual output may be smaller after PKCS7 unpadding.
+ *
+ * @param len  Ciphertext length in bytes (including IV prefix).
+ *
+ * @return Maximum plaintext output size, or 0 if len is too small.
+ */
+extern size_t xylem_aes256_cbc_decrypt_size(size_t len);
+
+/**
  * @brief Create an AES-256 context.
  *
  * Performs key expansion once. The context can be reused for
