@@ -30,16 +30,16 @@ graph LR
 ```c
 typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
-    void (*on_accept)(xylem_dtls_t* dtls);
+    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
     void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
 ```
 
+- `on_accept`：服务端握手完成时触发，`server` 为接受该会话的 DTLS 服务器句柄，`dtls` 为新建的会话句柄。签名与 TLS handler 的 `on_accept` 对称
 - `on_close`：会话关闭时触发。正常关闭（用户调用 `xylem_dtls_close` 或对端 close_notify）时 `err=0`、`errmsg=NULL`。当关闭由 SSL 错误触发时，`err` 为 OpenSSL 错误码，`errmsg` 为可读错误描述字符串
 
 与 TLS handler 的区别：
-- `on_accept` 参数不含 server 指针（DTLS 会话通过 `xylem_dtls_t` 自身关联 server）
 - 无 `on_timeout` 和 `on_heartbeat_miss`（DTLS 自行管理重传定时器）
 - 无 `on_write_done`（`xylem_dtls_send` 是同步的，`SSL_write` + flush 在调用中完成，无需异步通知）
 
@@ -100,6 +100,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;  /* 活跃会话红黑树，按对端地址排序 */
+    void*                  userdata;
     bool                   closing;
 };
 ```
@@ -321,6 +322,7 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 | 服务端多路复用 | 每连接独立 TCP socket | 单 UDP socket 按对端地址分发 |
 | 连接超时/心跳 | TCP 层定时器透传 | 握手超时定时器（30s）+ 重传定时器 |
 | SNI | 支持 | 不支持 |
+| server userdata | `xylem_tls_server_get/set_userdata` | `xylem_dtls_server_get/set_userdata` |
 
 ## 公开 API
 
@@ -363,4 +365,7 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
                                         xylem_dtls_ctx_t* ctx,
                                         xylem_dtls_handler_t* handler);
 void                 xylem_dtls_close_server(xylem_dtls_server_t* server);
+void*                xylem_dtls_server_get_userdata(xylem_dtls_server_t* server);
+void                 xylem_dtls_server_set_userdata(xylem_dtls_server_t* server,
+                                                     void* ud);
 ```

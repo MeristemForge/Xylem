@@ -8,18 +8,37 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 
 # Features
-- **Cross-platform compatibility**
+
+- Pure C11, no external dependencies (OpenSSL optional for TLS/DTLS)
+- Cross-platform: Windows (MSVC), Linux/macOS (GCC, Clang)
+- Single-threaded event loop with I/O polling (epoll / kqueue / iocp), timers
+
+| Module | Description |
+|--------|-------------|
+| tcp | Non-blocking client/server — framing, write queue, reconnect with exponential backoff, heartbeat, timeouts |
+| udp | Listen (unconnected) and dial (connected) modes, datagram boundary preservation |
+| tls | TLS over TCP via OpenSSL memory BIO — ALPN, SNI, keylog, certificate verification |
+| dtls | DTLS over UDP via OpenSSL memory BIO — cookie exchange, per-peer session multiplexing, handshake retransmission |
+| rudp | Reliable UDP over KCP — ARQ, congestion control, per-peer session multiplexing, lightweight handshake |
+| http | HTTP/1.1 client and server |
+| ws | WebSocket client/server (RFC 6455 — fragmentation, ping/pong, close handshake) |
+
+Also includes: intrusive/non-intrusive data structures, base64, SHA-1/256, gzip, JSON, thread pool, async logger, and more.
 
 
-# Compile
+# Build
+
 ```bash
 cmake -B out
 cmake --build out
 ```
 
+See [docs/build.md](docs/build.md) for detailed instructions on generators, sanitizers, and coverage.
+
 
 # Documentation
-Reference docs
+
+See the [docs/](docs/) directory for design documents and build instructions.
 
 
 # License

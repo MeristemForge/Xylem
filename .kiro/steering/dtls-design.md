@@ -100,6 +100,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;  /* 活跃会话红黑树，按对端地址排序 */
+    void*                  userdata;
     bool                   closing;
 };
 ```

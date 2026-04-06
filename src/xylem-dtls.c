@@ -74,6 +74,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;
+    void*                  userdata;
     bool                   closing;
 };
 
@@ -340,7 +341,7 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
 
         if (dtls->server) {
             if (dtls->handler && dtls->handler->on_accept) {
-                dtls->handler->on_accept(dtls);
+                dtls->handler->on_accept(dtls->server, dtls);
             }
         } else {
             if (dtls->handler && dtls->handler->on_connect) {
@@ -785,4 +786,12 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
 
     /* _dtls_server_close_cb frees server. */
     xylem_udp_close(server->udp);
+}
+
+void* xylem_dtls_server_get_userdata(xylem_dtls_server_t* server) {
+    return server->userdata;
+}
+
+void xylem_dtls_server_set_userdata(xylem_dtls_server_t* server, void* ud) {
+    server->userdata = ud;
 }

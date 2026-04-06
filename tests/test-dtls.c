@@ -114,12 +114,12 @@ static void _safety_timeout_cb(xylem_loop_t* loop,
 }
 
 /**
- * Shared server accept callback. DTLS on_accept only receives the
- * session handle (no server pointer), so the test must arrange for
- * userdata to be set before this fires, or use a test-specific
- * wrapper that locates _test_ctx_t and calls this helper.
+ * Shared server accept callback. Saves the session handle and
+ * marks accept_called in the test context.
  */
-static void _dtls_srv_accept_cb(xylem_dtls_t* dtls) {
+static void _dtls_srv_accept_cb(xylem_dtls_server_t* server,
+                                xylem_dtls_t* dtls) {
+    (void)server;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     if (ctx) {
         ctx->srv_session = dtls;
@@ -246,9 +246,7 @@ static void test_handshake_and_echo(void) {
     xylem_dtls_ctx_set_verify(ctx.cli_ctx, false);
 
     /**
-     * DTLS on_accept only receives the new session handle (no server
-     * pointer), so the new session has NULL userdata when on_accept
-     * fires. The server handler uses on_read = echo only; accept_called
+     * Server handler uses on_read = echo only; accept_called
      * is verified indirectly through the successful echo round trip.
      */
     xylem_dtls_handler_t srv_handler = {

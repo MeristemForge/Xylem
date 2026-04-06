@@ -53,6 +53,7 @@ Xylem is a pure C utility library that supplements (not replaces) the C11 standa
 | **udp** | UDP datagram send/receive, connected sockets | ✅ |
 | **tls** | TLS client/server over TCP (OpenSSL, ALPN, SNI) | ✅ |
 | **dtls** | DTLS client/server over UDP (OpenSSL, cookie verification) | ✅ |
+| **rudp** | Reliable UDP client/server over KCP (ARQ, congestion control, per-peer multiplexing) | ✅ |
 | **http** | HTTP/1.1 sync client and async server (built on tcp/tls, llhttp parser) | 🚧 |
 | **ws** | WebSocket client/server (RFC 6455, built on tcp/tls, fragmentation, ping/pong, close handshake) | 🚧 |
 

@@ -12,7 +12,7 @@ DTLS 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 - 无 `on_write_done` 测试（DTLS send 是同步的）
 - 无 SNI 测试（DTLS 不支持 SNI）
 - 无超时/心跳透传测试（DTLS 自行管理重传定时器，无 TCP 层定时器）
-- 无 `server_userdata` 测试（DTLS 公共 API 不包含 server userdata 访问器）
+- 无 `server_userdata` 测试（DTLS server userdata 访问器已存在，但当前测试未覆盖）
 
 ## 架构
 
@@ -304,7 +304,7 @@ typedef struct {
 | TLS 测试有但 DTLS 测试无 | 原因 |
 |-------------------------|------|
 | `test_sni_hostname` | DTLS 不支持 SNI |
-| `test_server_userdata` | DTLS 公共 API 无 server userdata 访问器 |
+| `test_server_userdata` | DTLS server userdata 访问器已存在，但当前测试未覆盖 |
 | `test_read_timeout` | DTLS 无 TCP 层超时透传 |
 | `test_heartbeat_miss` | DTLS 无 TCP 层心跳透传 |
 | `on_write_done` 验证 | DTLS send 是同步的，无 on_write_done 回调 |

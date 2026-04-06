@@ -74,7 +74,8 @@ static int _ensure_cert(void) {
     return (rc == 0) ? 0 : -1;
 }
 
-static void _on_accept(xylem_dtls_t* dtls) {
+static void _on_accept(xylem_dtls_server_t* server, xylem_dtls_t* dtls) {
+    (void)server;
     (void)dtls;
     xylem_logi("dtls client connected");
 }

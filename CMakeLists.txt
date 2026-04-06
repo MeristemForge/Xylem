@@ -73,6 +73,8 @@ set(SRCS
 	src/ws/ws-frame.c
 	src/ws/ws-handshake.c
 	src/ws/ws-transport-tcp.c
+	src/rudp/kcp/ikcp.c
+	src/rudp/xylem-rudp.c
 )
 
 if(WIN32)
@@ -126,6 +128,7 @@ target_include_directories(xylem
         ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
         ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/rudp/kcp
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})

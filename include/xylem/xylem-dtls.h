@@ -30,7 +30,7 @@ typedef struct xylem_dtls_server_s xylem_dtls_server_t;
 
 typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
-    void (*on_accept)(xylem_dtls_t* dtls);
+    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
     void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
@@ -237,3 +237,21 @@ extern xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop,
  * @param server  Server handle.
  */
 extern void xylem_dtls_close_server(xylem_dtls_server_t* server);
+
+/**
+ * @brief Get user data attached to a DTLS server.
+ *
+ * @param server  Server handle.
+ *
+ * @return User data pointer.
+ */
+extern void* xylem_dtls_server_get_userdata(xylem_dtls_server_t* server);
+
+/**
+ * @brief Set user data on a DTLS server.
+ *
+ * @param server  Server handle.
+ * @param ud      User data pointer.
+ */
+extern void xylem_dtls_server_set_userdata(xylem_dtls_server_t* server,
+                                           void* ud);
