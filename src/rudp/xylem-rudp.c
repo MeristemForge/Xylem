@@ -211,6 +211,8 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
     return 0;
 }
 
+/* Truncate to 32-bit; unsigned subtraction wraps mod 2^32, so
+   elapsed-time differences remain correct across overflow. */
 static uint32_t _rudp_clock_ms(void) {
     return (uint32_t)(xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) &
                       0xFFFFFFFF);
