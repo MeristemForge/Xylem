@@ -21,6 +21,8 @@
 
 #include "platform/platform-info.h"
 
+#include <fcntl.h>
+
 int platform_info_getcpus(void) {
     return (int)sysconf(_SC_NPROCESSORS_ONLN);
 }
@@ -56,3 +58,13 @@ platform_tid_t platform_info_gettid(void) {
     return syscall(SYS_gettid);
 }
 #endif
+
+bool platform_info_getrandom(void* buf, size_t len) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) {
+        return false;
+    }
+    ssize_t n = read(fd, buf, len);
+    close(fd);
+    return n == (ssize_t)len;
+}

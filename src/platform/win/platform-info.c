@@ -21,6 +21,9 @@
 
 #include "platform/platform-info.h"
 
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+
 int platform_info_getcpus(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -47,4 +50,9 @@ void platform_info_gmtime(const time_t* t, struct tm* tm) {
 
 time_t platform_info_mkgmtime(struct tm* tm) {
     return _mkgmtime(tm);
+}
+
+bool platform_info_getrandom(void* buf, size_t len) {
+    return BCryptGenRandom(NULL, (PUCHAR)buf, (ULONG)len,
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
 }

@@ -21,8 +21,9 @@
 
 #include "xylem/xylem-utils.h"
 
+#include "platform/platform-info.h"
+
 #include <stdatomic.h>
-#include <stdlib.h>
 #include <time.h>
 
 uint64_t xylem_utils_getnow(xylem_time_precision_t precision) {
@@ -48,14 +49,35 @@ xylem_endian_t xylem_utils_getendian(void) {
                                                           : XYLEM_ENDIAN_BE;
 }
 
+/**
+ * splitmix64 — bijective hash used to diffuse a monotonic counter
+ * into a full-period, non-repeating sequence over 2^64.
+ */
+static uint64_t _utils_splitmix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
 int xylem_utils_getprng(int min, int max) {
-    static _Atomic unsigned int seed = 0;
-    unsigned int s = atomic_load(&seed);
-    if (s == 0) {
-        s = (unsigned int)time(NULL);
-        atomic_store(&seed, s);
-        srand(s);
+    static _Atomic uint64_t seed    = 0;
+    static _Atomic uint64_t counter = 0;
+
+    /* One-time seed from OS entropy. */
+    if (atomic_load(&seed) == 0) {
+        uint64_t s;
+        if (!platform_info_getrandom(&s, sizeof(s)) || s == 0) {
+            s = (uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)&seed;
+            s |= 1;
+        }
+        uint64_t expected = 0;
+        atomic_compare_exchange_strong(&seed, &expected, s);
     }
-    return min +
-           (int)((double)(max - min + 1) * (rand() / (RAND_MAX + 1.0)));
+
+    /* Each call gets a unique counter value. */
+    uint64_t seq = atomic_fetch_add(&counter, 1);
+    uint64_t r   = _utils_splitmix64(seq + atomic_load(&seed));
+
+    return min + (int)(r % (uint64_t)(max - min + 1));
 }

@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <time.h>
 
 #if defined(__linux__)
@@ -93,3 +95,15 @@ extern void platform_info_gmtime(const time_t* t, struct tm* tm);
  * @return Corresponding time_t value, or (time_t)-1 on failure.
  */
 extern time_t platform_info_mkgmtime(struct tm* tm);
+
+/**
+ * @brief Fill a buffer with cryptographically secure random bytes.
+ *
+ * Uses BCryptGenRandom on Windows, /dev/urandom on Unix.
+ *
+ * @param buf  Buffer to fill.
+ * @param len  Number of bytes to generate.
+ *
+ * @return true on success, false on failure.
+ */
+extern bool platform_info_getrandom(void* buf, size_t len);
