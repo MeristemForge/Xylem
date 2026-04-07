@@ -25,7 +25,7 @@
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-utils.h"
 
-#include "platform/platform-socket.h"
+#include "platform/platform-socket.h" /* sockaddr_in, ntohs, AF_INET on Unix */
 #include "rudp/kcp/ikcp.h"
 
 #include <stdlib.h>
@@ -223,8 +223,14 @@ static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts) {
         return;
     }
 
-    int interval = opts->interval > 0 ? opts->interval : RUDP_DEFAULT_INTERVAL;
-    ikcp_nodelay(kcp, opts->nodelay, interval, opts->resend, opts->nc);
+    int interval;
+    if (opts->mode == XYLEM_RUDP_MODE_FAST) {
+        interval = 10;
+        ikcp_nodelay(kcp, 1, interval, 2, 1);
+    } else {
+        interval = RUDP_DEFAULT_INTERVAL;
+        ikcp_nodelay(kcp, 0, interval, 0, 0);
+    }
 
     int snd_wnd = opts->snd_wnd > 0 ? opts->snd_wnd : 32;
     int rcv_wnd = opts->rcv_wnd > 0 ? opts->rcv_wnd : 128;

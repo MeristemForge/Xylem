@@ -37,16 +37,18 @@ typedef struct xylem_rudp_handler_s {
     void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg);
 } xylem_rudp_handler_t;
 
+typedef enum xylem_rudp_mode_e {
+    XYLEM_RUDP_MODE_DEFAULT, /**< Normal ARQ, 100ms interval. */
+    XYLEM_RUDP_MODE_FAST,    /**< Nodelay + fast resend + no congestion. */
+} xylem_rudp_mode_t;
+
 typedef struct xylem_rudp_opts_s {
-    int      nodelay;    /**< 0: normal (default), 1: nodelay mode. */
-    int      interval;   /**< KCP update interval in ms, default 100. */
-    int      resend;     /**< Fast resend threshold, 0 to disable. */
-    int      nc;         /**< 0: normal congestion control, 1: disable. */
-    int      snd_wnd;    /**< Send window size, default 32. */
-    int      rcv_wnd;    /**< Receive window size, default 128. */
-    int      mtu;        /**< MTU size, default 1400. */
-    bool     stream;     /**< true: byte-stream mode, false: message mode. */
-    uint64_t timeout_ms; /**< Dead-link timeout in ms, 0 to disable. */
+    xylem_rudp_mode_t mode; /**< Transport mode preset. */
+    int      snd_wnd;       /**< Send window size, 0 for default (32). */
+    int      rcv_wnd;       /**< Receive window size, 0 for default (128). */
+    int      mtu;           /**< MTU size, 0 for default (1400). */
+    bool     stream;        /**< true: byte-stream mode, false: message mode. */
+    uint64_t timeout_ms;    /**< Dead-link timeout in ms, 0 to disable. */
 } xylem_rudp_opts_t;
 
 /**
