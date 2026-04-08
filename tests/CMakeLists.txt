@@ -34,6 +34,7 @@ xylem_add_test(gzip)
 xylem_add_test(hmac256)
 xylem_add_test(aes256)
 xylem_add_test(ws)
+xylem_add_test(rudp)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)
