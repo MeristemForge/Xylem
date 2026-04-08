@@ -58,8 +58,8 @@
 #define RUDP_OFF_TYPE         RUDP_MAGIC_SIZE
 #define RUDP_OFF_CONV         (RUDP_MAGIC_SIZE + RUDP_TYPE_SIZE)
 
-/* Timeout for client waiting for handshake ACK. */
-#define RUDP_HANDSHAKE_TIMEOUT_MS 5000
+/* Default timeout for client waiting for handshake ACK. */
+#define RUDP_DEFAULT_HANDSHAKE_MS 5000
 
 struct xylem_rudp_ctx_s {
     uint32_t next_conv;
@@ -581,9 +581,12 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
     _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, conv);
     xylem_udp_send(udp, NULL, syn, RUDP_HANDSHAKE_SIZE);
 
+    uint64_t hs_ms = (opts && opts->handshake_ms > 0)
+                         ? opts->handshake_ms
+                         : RUDP_DEFAULT_HANDSHAKE_MS;
     xylem_loop_start_timer(rudp->handshake_timer,
                            _rudp_handshake_timeout_cb, rudp,
-                           RUDP_HANDSHAKE_TIMEOUT_MS, 0);
+                           hs_ms, 0);
 
     return rudp;
 }

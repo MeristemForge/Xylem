@@ -27,6 +27,13 @@
 
 static atomic_int _counter;
 
+typedef struct {
+    int*               arr;
+    int                idx;
+    int                val;
+    xylem_waitgroup_t* wg;
+} write_arg_t;
+
 static void _increment(void* arg) {
     (void)arg;
     atomic_fetch_add(&_counter, 1);
@@ -70,13 +77,6 @@ static void test_single_thread(void) {
     xylem_thrdpool_destroy(pool);
     ASSERT(atomic_load(&_counter) == N);
 }
-
-typedef struct {
-    int*               arr;
-    int                idx;
-    int                val;
-    xylem_waitgroup_t* wg;
-} write_arg_t;
 
 static void _write_value(void* arg) {
     write_arg_t* wa = (write_arg_t*)arg;

@@ -50,7 +50,7 @@ xylem_endian_t xylem_utils_getendian(void) {
 }
 
 /**
- * splitmix64 — bijective hash used to diffuse a monotonic counter
+ * splitmix64 -- bijective hash used to diffuse a monotonic counter
  * into a full-period, non-repeating sequence over 2^64.
  */
 static uint64_t _utils_splitmix64(uint64_t x) {

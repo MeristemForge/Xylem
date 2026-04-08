@@ -336,6 +336,8 @@ clang-format with LLVM base style (see `.clang-format` for full config). Additio
 
 ## Comments
 
+All `.c` and `.h` files (including tests) must contain only ASCII characters (bytes 0x00-0x7F). Non-ASCII characters such as `—` (em dash), `→`, `≥`, or CJK text are forbidden in source code, comments, and string literals. Use ASCII equivalents (`--`, `->`, `>=`). This prevents MSVC C4819 warnings on non-Unicode code pages.
+
 ### Function Declarations (Header Files)
 
 All `extern` function declarations in `.h` files — both public API headers (`include/`) and internal headers (`src/`) — must have a Doxygen `/** ... */` block:

@@ -49,6 +49,7 @@ typedef struct xylem_rudp_opts_s {
     int      mtu;           /**< MTU size, 0 for default (1400). */
     bool     stream;        /**< true: byte-stream mode, false: message mode. */
     uint64_t timeout_ms;    /**< Dead-link timeout in ms, 0 to disable. */
+    uint64_t handshake_ms;  /**< Handshake timeout in ms, 0 for default (5000). */
 } xylem_rudp_opts_t;
 
 /**

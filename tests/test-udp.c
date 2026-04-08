@@ -32,6 +32,59 @@
 #define SEND_DELAY_MS       10
 #define DRAIN_DELAY_MS      50
 
+/* test_listen_recv context: passed via sender userdata */
+typedef struct {
+    xylem_loop_t* loop;
+    xylem_udp_t*  receiver;
+    xylem_udp_t*  sender;
+    int           read_called;
+    char          data[64];
+    size_t        data_len;
+    uint16_t      sender_port;
+    char          sender_ip[46];
+} _lr_ctx_t;
+
+/* test_listen_send context */
+typedef struct {
+    xylem_loop_t* loop;
+    xylem_udp_t*  sender;
+    xylem_udp_t*  receiver;
+    int           read_called;
+    char          data[64];
+    size_t        data_len;
+} _ls_ctx_t;
+
+/* test_dial_echo context */
+typedef struct {
+    xylem_loop_t* loop;
+    xylem_udp_t*  server;
+    xylem_udp_t*  client;
+    char          srv_data[64];
+    size_t        srv_data_len;
+    char          cli_data[64];
+    size_t        cli_data_len;
+} _de_ctx_t;
+
+/* test_dial_addr context */
+typedef struct {
+    xylem_loop_t* loop;
+    xylem_udp_t*  server;
+    xylem_udp_t*  client;
+    int           read_called;
+    uint16_t      addr_port;
+    char          addr_ip[46];
+} _da_ctx_t;
+
+/* test_datagram_boundary context */
+typedef struct {
+    xylem_loop_t* loop;
+    xylem_udp_t*  receiver;
+    xylem_udp_t*  sender;
+    int           read_count;
+    size_t        sizes[3];
+    char          bufs[3][4];
+} _db_ctx_t;
+
 static void _safety_timeout_cb(xylem_loop_t* loop,
                                 xylem_loop_timer_t* timer, void* ud) {
     (void)timer;
@@ -45,18 +98,6 @@ static void _stop_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer,
     (void)ud;
     xylem_loop_stop(loop);
 }
-
-/* test_listen_recv context: passed via sender userdata */
-typedef struct {
-    xylem_loop_t* loop;
-    xylem_udp_t*  receiver;
-    xylem_udp_t*  sender;
-    int           read_called;
-    char          data[64];
-    size_t        data_len;
-    uint16_t      sender_port;
-    char          sender_ip[46];
-} _lr_ctx_t;
 
 static void _lr_on_read(xylem_udp_t* udp, void* data, size_t len,
                          xylem_addr_t* addr) {
@@ -123,16 +164,6 @@ static void test_listen_recv(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* test_listen_send context */
-typedef struct {
-    xylem_loop_t* loop;
-    xylem_udp_t*  sender;
-    xylem_udp_t*  receiver;
-    int           read_called;
-    char          data[64];
-    size_t        data_len;
-} _ls_ctx_t;
-
 static void _ls_on_read(xylem_udp_t* udp, void* data, size_t len,
                          xylem_addr_t* addr) {
     (void)addr;
@@ -194,17 +225,6 @@ static void test_listen_send(void) {
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
-
-/* test_dial_echo context */
-typedef struct {
-    xylem_loop_t* loop;
-    xylem_udp_t*  server;
-    xylem_udp_t*  client;
-    char          srv_data[64];
-    size_t        srv_data_len;
-    char          cli_data[64];
-    size_t        cli_data_len;
-} _de_ctx_t;
 
 static void _de_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
                               xylem_addr_t* addr) {
@@ -277,16 +297,6 @@ static void test_dial_echo(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* test_dial_addr context */
-typedef struct {
-    xylem_loop_t* loop;
-    xylem_udp_t*  server;
-    xylem_udp_t*  client;
-    int           read_called;
-    uint16_t      addr_port;
-    char          addr_ip[46];
-} _da_ctx_t;
-
 static void _da_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
                               xylem_addr_t* addr) {
     (void)data;
@@ -352,16 +362,6 @@ static void test_dial_addr(void) {
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
-
-/* test_datagram_boundary context */
-typedef struct {
-    xylem_loop_t* loop;
-    xylem_udp_t*  receiver;
-    xylem_udp_t*  sender;
-    int           read_count;
-    size_t        sizes[3];
-    char          bufs[3][4];
-} _db_ctx_t;
 
 static void _db_on_read(xylem_udp_t* udp, void* data, size_t len,
                           xylem_addr_t* addr) {

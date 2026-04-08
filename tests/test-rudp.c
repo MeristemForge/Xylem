@@ -46,6 +46,15 @@ typedef struct {
     size_t                 received_len;
 } _test_ctx_t;
 
+typedef struct {
+    _test_ctx_t*  tctx;
+    xylem_rudp_t* rudp;
+    char          send_data[4];
+    char          recv_data[4];
+    size_t        recv_len;
+    bool          done;
+} _multi_cli_t;
+
 /* Shared callbacks. */
 
 static void _safety_timeout_cb(xylem_loop_t* loop,
@@ -702,14 +711,6 @@ static void test_send_before_handshake(void) {
 }
 
 
-typedef struct {
-    _test_ctx_t* tctx;
-    xylem_rudp_t* rudp;
-    char         send_data[4];
-    char         recv_data[4];
-    size_t       recv_len;
-    int          done;
-} _multi_cli_t;
 
 static void _multi_send_timer_cb(xylem_loop_t* loop,
                                   xylem_loop_timer_t* timer,
@@ -732,7 +733,7 @@ static void _multi_cli_read_cb(xylem_rudp_t* rudp,
         memcpy(mc->recv_data, data, len);
         mc->recv_len = len;
     }
-    mc->done = 1;
+    mc->done = true;
     xylem_rudp_close(rudp);
 }
 
@@ -807,10 +808,10 @@ static void test_multi_session(void) {
     xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.accept_called == 2);
-    ASSERT(mc1.done == 1);
+    ASSERT(mc1.done == true);
     ASSERT(mc1.recv_len == 3);
     ASSERT(memcmp(mc1.recv_data, "AAA", 3) == 0);
-    ASSERT(mc2.done == 1);
+    ASSERT(mc2.done == true);
     ASSERT(mc2.recv_len == 3);
     ASSERT(memcmp(mc2.recv_data, "BBB", 3) == 0);
 
@@ -850,12 +851,15 @@ static void test_handshake_timeout(void) {
     xylem_addr_t addr;
     xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
+    xylem_rudp_opts_t opts = {0};
+    opts.handshake_ms = 200;
+
     xylem_rudp_handler_t cli_handler = {
         .on_close = _ht_close_cb,
     };
 
     ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr, ctx.ctx,
-                                       &cli_handler, NULL);
+                                       &cli_handler, &opts);
     ASSERT(ctx.cli_session != NULL);
     xylem_rudp_set_userdata(ctx.cli_session, &ctx);
 
