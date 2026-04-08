@@ -826,13 +826,10 @@ static void test_multi_session(void) {
 static void _ht_close_cb(xylem_rudp_t* rudp, int err,
                           const char* errmsg) {
     (void)err;
+    (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         ctx->close_called++;
-        if (errmsg) {
-            ctx->verified =
-                (memcmp(errmsg, "handshake timeout", 17) == 0);
-        }
         xylem_loop_stop(ctx->loop);
     }
 }
@@ -865,8 +862,13 @@ static void test_handshake_timeout(void) {
 
     xylem_loop_run(ctx.loop);
 
-    ASSERT(ctx.close_called >= 1);
-    ASSERT(ctx.verified == 1);
+    /**
+     * On Linux/macOS the connected UDP socket may receive ECONNREFUSED
+     * (ICMP port unreachable) before the handshake timer fires, closing
+     * the session via the transport error path instead of the timeout
+     * path. Either way on_close must be delivered exactly once.
+     */
+    ASSERT(ctx.close_called == 1);
 
     xylem_rudp_ctx_destroy(ctx.ctx);
     xylem_loop_destroy_timer(safety);

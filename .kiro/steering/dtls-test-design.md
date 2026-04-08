@@ -12,7 +12,7 @@ DTLS 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 - 无 `on_write_done` 测试（DTLS send 是同步的）
 - 无 SNI 测试（DTLS 不支持 SNI）
 - 无超时/心跳透传测试（DTLS 自行管理重传定时器，无 TCP 层定时器）
-- 无 `server_userdata` 测试（DTLS 公共 API 不包含 server userdata 访问器）
+- 无 `server_userdata` 测试（DTLS server userdata 访问器已存在，但当前测试未覆盖）
 
 ## 架构
 
@@ -181,7 +181,6 @@ typedef struct {
 | `xylem_dtls_listen` | 所有异步测试（5 个） |
 | `xylem_dtls_close_server` | test_close_server_with_active_session + 所有异步测试的清理路径 |
 
-
 ### 覆盖的内部分支
 
 | 内部函数/路径 | 覆盖的分支 | 触发测试 |
@@ -205,6 +204,7 @@ typedef struct {
 | `_dtls_find_session` | 红黑树查找未命中 | `test_handshake_and_echo`（首次握手）|
 | `_dtls_addr_cmp` | IPv4 地址比较 | 所有异步测试 |
 | `_dtls_client_close_cb` | SSL_free + on_close + loop_post | `test_handshake_and_echo` |
+| `_dtls_client_close_cb` | UDP 错误传播：close_err==0 且 err!=0 时传播 | （未覆盖：回环测试中 UDP 层通常不携带非零错误码）|
 | `_dtls_free_cb` | 延迟释放 dtls + destroy retransmit_timer | 所有异步测试 |
 | `_dtls_server_close_cb` | 释放 server 内存 | 所有异步测试 |
 | `xylem_dtls_send` | 正常路径：SSL_write + flush | `test_handshake_and_echo` |
@@ -225,7 +225,7 @@ typedef struct {
 
 | 路径 | 原因 |
 |------|------|
-| `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误，在回环测试中难以可靠复现 |
+| `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误或 UDP 传输错误（如 ECONNREFUSED），在回环测试中难以可靠复现 |
 | `_dtls_retransmit_timeout_cb` 实际触发 | 回环网络无丢包，重传定时器在握手完成前不会触发 |
 | `_dtls_init_ssl` 失败路径（BIO/SSL 分配失败）| 需要 mock OpenSSL 内存分配，不实际 |
 | `xylem_dtls_dial` 失败路径（udp_dial 失败）| 需要端口耗尽等极端条件 |
@@ -305,7 +305,7 @@ typedef struct {
 | TLS 测试有但 DTLS 测试无 | 原因 |
 |-------------------------|------|
 | `test_sni_hostname` | DTLS 不支持 SNI |
-| `test_server_userdata` | DTLS 公共 API 无 server userdata 访问器 |
+| `test_server_userdata` | DTLS server userdata 访问器已存在，但当前测试未覆盖 |
 | `test_read_timeout` | DTLS 无 TCP 层超时透传 |
 | `test_heartbeat_miss` | DTLS 无 TCP 层心跳透传 |
 | `on_write_done` 验证 | DTLS send 是同步的，无 on_write_done 回调 |

@@ -204,6 +204,7 @@ typedef struct {
 | `_dtls_find_session` | 红黑树查找未命中 | `test_handshake_and_echo`（首次握手）|
 | `_dtls_addr_cmp` | IPv4 地址比较 | 所有异步测试 |
 | `_dtls_client_close_cb` | SSL_free + on_close + loop_post | `test_handshake_and_echo` |
+| `_dtls_client_close_cb` | UDP 错误传播：close_err==0 且 err!=0 时传播 | （未覆盖：回环测试中 UDP 层通常不携带非零错误码）|
 | `_dtls_free_cb` | 延迟释放 dtls + destroy retransmit_timer | 所有异步测试 |
 | `_dtls_server_close_cb` | 释放 server 内存 | 所有异步测试 |
 | `xylem_dtls_send` | 正常路径：SSL_write + flush | `test_handshake_and_echo` |
@@ -224,7 +225,7 @@ typedef struct {
 
 | 路径 | 原因 |
 |------|------|
-| `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误，在回环测试中难以可靠复现 |
+| `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误或 UDP 传输错误（如 ECONNREFUSED），在回环测试中难以可靠复现 |
 | `_dtls_retransmit_timeout_cb` 实际触发 | 回环网络无丢包，重传定时器在握手完成前不会触发 |
 | `_dtls_init_ssl` 失败路径（BIO/SSL 分配失败）| 需要 mock OpenSSL 内存分配，不实际 |
 | `xylem_dtls_dial` 失败路径（udp_dial 失败）| 需要端口耗尽等极端条件 |

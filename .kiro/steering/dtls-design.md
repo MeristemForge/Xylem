@@ -30,16 +30,16 @@ graph LR
 ```c
 typedef struct xylem_dtls_handler_s {
     void (*on_connect)(xylem_dtls_t* dtls);
-    void (*on_accept)(xylem_dtls_t* dtls);
+    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_t* dtls);
     void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
     void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
 ```
 
-- `on_close`：会话关闭时触发。正常关闭（用户调用 `xylem_dtls_close` 或对端 close_notify）时 `err=0`、`errmsg=NULL`。当关闭由 SSL 错误触发时，`err` 为 OpenSSL 错误码，`errmsg` 为可读错误描述字符串
+- `on_accept`：服务端握手完成时触发，`server` 为接受该会话的 DTLS 服务器句柄，`dtls` 为新建的会话句柄。签名与 TLS handler 的 `on_accept` 对称
+- `on_close`：会话关闭时触发。正常关闭（用户调用 `xylem_dtls_close` 或对端 close_notify）时 `err=0`、`errmsg=NULL`。当关闭由 SSL 错误触发时，`err` 为 OpenSSL 错误码，`errmsg` 为可读错误描述字符串。当客户端会话因 UDP 层传输错误关闭（如 `ECONNREFUSED`）且 DTLS 层未设置自身错误时，`err` 和 `errmsg` 从 UDP 层传播
 
 与 TLS handler 的区别：
-- `on_accept` 参数不含 server 指针（DTLS 会话通过 `xylem_dtls_t` 自身关联 server）
 - 无 `on_timeout` 和 `on_heartbeat_miss`（DTLS 自行管理重传定时器）
 - 无 `on_write_done`（`xylem_dtls_send` 是同步的，`SSL_write` + flush 在调用中完成，无需异步通知）
 
@@ -84,6 +84,8 @@ struct xylem_dtls_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
+    int                    close_err;
+    const char*            close_errmsg;
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;  /* DTLS 重传定时器 */
     xylem_loop_timer_t*    handshake_timer;   /* 服务端握手超时定时器 */
@@ -279,13 +281,15 @@ sequenceDiagram
     DTLS->>DTLS: SSL_shutdown + flush write_bio
     DTLS->>UDP: xylem_udp_close()
     UDP->>DTLS: _dtls_client_close_cb
+    DTLS->>DTLS: closing = true + 停止定时器（防御性）
+    DTLS->>DTLS: 传播 UDP 层错误（若 DTLS 未设置自身错误）
     DTLS->>DTLS: SSL_free
-    DTLS->>User: handler->on_close
+    DTLS->>User: handler->on_close(close_err, close_errmsg)
     DTLS->>Loop: xylem_loop_post(_dtls_free_cb)
     Loop->>DTLS: 下一轮迭代释放内存
 ```
 
-客户端拥有独立的 UDP socket，关闭时一并关闭。
+客户端拥有独立的 UDP socket，关闭时一并关闭。`_dtls_client_close_cb` 在 UDP `on_close` 中触发，首先设置 `closing = true` 并停止 `retransmit_timer` 和 `handshake_timer`（防止定时器在 SSL 已释放后触发）。接着检查 UDP 层是否携带了非零错误码：若 DTLS 层尚未设置自身的 `close_err`（即 `close_err == 0`），则将 UDP 层的 `err` 和 `errmsg` 传播到 DTLS 会话的 `close_err`/`close_errmsg`，确保用户在 `on_close` 回调中能看到底层传输错误（如 `ECONNREFUSED`）。然后释放 SSL 会话并通知用户。在 Linux/macOS 上，已连接 UDP socket 可能因 ICMP port unreachable 收到 `ECONNREFUSED`，导致 `_dtls_client_close_cb` 在任何定时器触发之前被调用，因此需要在此处主动停止定时器。
 
 ### 服务端会话关闭
 
@@ -322,6 +326,7 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 | 服务端多路复用 | 每连接独立 TCP socket | 单 UDP socket 按对端地址分发 |
 | 连接超时/心跳 | TCP 层定时器透传 | 握手超时定时器（30s）+ 重传定时器 |
 | SNI | 支持 | 不支持 |
+| server userdata | `xylem_tls_server_get/set_userdata` | `xylem_dtls_server_get/set_userdata` |
 
 ## 公开 API
 
@@ -364,4 +369,7 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
                                         xylem_dtls_ctx_t* ctx,
                                         xylem_dtls_handler_t* handler);
 void                 xylem_dtls_close_server(xylem_dtls_server_t* server);
+void*                xylem_dtls_server_get_userdata(xylem_dtls_server_t* server);
+void                 xylem_dtls_server_set_userdata(xylem_dtls_server_t* server,
+                                                     void* ud);
 ```

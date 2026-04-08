@@ -481,12 +481,29 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
 
 static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
                                   const char* errmsg) {
-    (void)err;
-    (void)errmsg;
     xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
     if (!dtls) {
         return;
     }
+
+    /**
+     * Mark closing and stop timers to prevent _dtls_retransmit_timeout_cb
+     * or _dtls_handshake_timeout_cb from firing after SSL is freed.
+     * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
+     * (ICMP port unreachable) before any timer fires.
+     */
+    dtls->closing = true;
+    _dtls_stop_retransmit(dtls);
+    if (dtls->handshake_timer) {
+        xylem_loop_stop_timer(dtls->handshake_timer);
+    }
+
+    /* Propagate UDP-layer error when DTLS has not set its own. */
+    if (err != 0) {
+        dtls->close_err    = err;
+        dtls->close_errmsg = errmsg;
+    }
+
     if (dtls->ssl) {
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;

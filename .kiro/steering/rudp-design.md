@@ -331,13 +331,14 @@ sequenceDiagram
     RUDP->>RUDP: 停止 handshake_timer
     RUDP->>UDP: xylem_udp_close()
     UDP->>RUDP: _rudp_client_close_cb
+    RUDP->>RUDP: closing = true + 停止定时器（防御性）
     RUDP->>RUDP: ikcp_release
     RUDP->>User: handler->on_close
     RUDP->>Loop: xylem_loop_post(_rudp_free_cb)
     Loop->>RUDP: 下一轮迭代释放内存
 ```
 
-客户端拥有独立的 UDP socket（dial 模式），关闭时一并关闭。`_rudp_client_close_cb` 在 UDP `on_close` 中触发，负责释放 KCP 会话和通知用户。
+客户端拥有独立的 UDP socket（dial 模式），关闭时一并关闭。`_rudp_client_close_cb` 在 UDP `on_close` 中触发，首先设置 `closing = true` 并停止 `update_timer` 和 `handshake_timer`（防止定时器在 UDP socket 已关闭后触发），然后释放 KCP 会话并通知用户。在 Linux/macOS 上，已连接 UDP socket 可能因 ICMP port unreachable 收到 `ECONNREFUSED`，导致 `_rudp_client_close_cb` 在握手超时定时器触发之前被调用，因此需要在此处主动停止定时器。
 
 ### 服务端会话关闭
 

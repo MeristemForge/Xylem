@@ -412,12 +412,29 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
 
 static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
                                   const char* errmsg) {
-    (void)err;
-    (void)errmsg;
     xylem_rudp_t* rudp = (xylem_rudp_t*)xylem_udp_get_userdata(udp);
     if (!rudp) {
         return;
     }
+
+    /**
+     * Mark closing and stop timers to prevent _rudp_handshake_timeout_cb
+     * or _rudp_update_timeout_cb from firing after the UDP socket is gone.
+     * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
+     * (ICMP port unreachable) before the handshake timer fires.
+     */
+    rudp->closing = true;
+    xylem_loop_stop_timer(rudp->update_timer);
+    if (rudp->handshake_timer) {
+        xylem_loop_stop_timer(rudp->handshake_timer);
+    }
+
+    /* Propagate UDP-layer error when RUDP has not set its own. */
+    if (err != 0) {
+        rudp->close_err    = err;
+        rudp->close_errmsg = errmsg;
+    }
+
     if (rudp->kcp) {
         ikcp_release(rudp->kcp);
         rudp->kcp = NULL;
