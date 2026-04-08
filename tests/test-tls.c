@@ -30,6 +30,7 @@
 #include <string.h>
 
 #define TLS_PORT          14433
+#define TLS_HOST          "127.0.0.1"
 #define SAFETY_TIMEOUT_MS 10000
 
 typedef struct {
@@ -140,7 +141,6 @@ static void _tls_srv_read_echo_cb(xylem_tls_conn_t* tls,
     xylem_tls_send(tls, data, len);
 }
 
-/* ── Context management API tests ── */
 
 static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -200,7 +200,6 @@ static void test_set_alpn(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-/* ── Handshake and data transfer callbacks ── */
 
 static void _echo_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
@@ -277,7 +276,7 @@ static void test_handshake_and_echo(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -315,7 +314,6 @@ static void test_handshake_and_echo(void) {
     remove(key);
 }
 
-/* ── Handshake failure callbacks ── */
 
 static void _fail_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)err;
@@ -377,7 +375,7 @@ static void test_handshake_failure_wrong_ca(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -414,7 +412,6 @@ static void test_handshake_failure_wrong_ca(void) {
     remove(key2);
 }
 
-/* ── ALPN negotiation callbacks ── */
 
 static void _alpn_srv_accept_cb(xylem_tls_server_t* server,
                                  xylem_tls_conn_t* tls) {
@@ -487,7 +484,7 @@ static void test_alpn_negotiation(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -517,7 +514,6 @@ static void test_alpn_negotiation(void) {
     remove(key);
 }
 
-/* ── Auxiliary API tests ── */
 
 static void test_sni_hostname(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -525,7 +521,7 @@ static void test_sni_hostname(void) {
 
     xylem_tls_handler_t handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
@@ -542,7 +538,6 @@ static void test_sni_hostname(void) {
     xylem_loop_destroy(loop);
 }
 
-/* ── conn userdata callbacks ── */
 
 static void _ud_cli_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
@@ -593,7 +588,7 @@ static void test_conn_userdata(void) {
     xylem_tls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -623,7 +618,6 @@ static void test_conn_userdata(void) {
     remove(key);
 }
 
-/* ── server userdata ── */
 
 static void _srv_ud_accept_cb(xylem_tls_server_t* server,
                                 xylem_tls_conn_t* tls) {
@@ -675,7 +669,7 @@ static void test_server_userdata(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -706,7 +700,6 @@ static void test_server_userdata(void) {
     remove(key);
 }
 
-/* ── peer_addr ── */
 
 static void _peer_addr_accept_cb(xylem_tls_server_t* server,
                                   xylem_tls_conn_t* tls) {
@@ -762,7 +755,7 @@ static void test_peer_addr(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -788,7 +781,6 @@ static void test_peer_addr(void) {
     remove(key);
 }
 
-/* ── get_loop ── */
 
 static void _get_loop_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
@@ -834,7 +826,7 @@ static void test_get_loop(void) {
     xylem_tls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -864,7 +856,6 @@ static void test_get_loop(void) {
     remove(key);
 }
 
-/* ── Close behavior tests ── */
 
 static void _close_active_timer_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer,
@@ -921,7 +912,7 @@ static void test_close_server_with_active_conn(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -953,7 +944,6 @@ static void test_close_server_with_active_conn(void) {
     remove(key);
 }
 
-/* ── send_after_close ── */
 
 static void _sac_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
@@ -996,7 +986,7 @@ static void test_send_after_close(void) {
     xylem_tls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -1027,7 +1017,6 @@ static void test_send_after_close(void) {
     remove(key);
 }
 
-/* ── Keylog tests ── */
 
 static void _keylog_cli_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
@@ -1083,7 +1072,7 @@ static void test_keylog_write(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, NULL);
@@ -1122,7 +1111,6 @@ static void test_keylog_write(void) {
     remove(keylog);
 }
 
-/* ── Timeout and heartbeat passthrough tests ── */
 
 static void _timeout_srv_accept_cb(xylem_tls_server_t* server,
                                     xylem_tls_conn_t* tls) {
@@ -1184,7 +1172,7 @@ static void test_read_timeout(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, &srv_opts);
@@ -1212,7 +1200,6 @@ static void test_read_timeout(void) {
     remove(key);
 }
 
-/* ── heartbeat miss ── */
 
 static void _heartbeat_miss_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
@@ -1264,7 +1251,7 @@ static void test_heartbeat_miss(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TLS_PORT, &addr);
+    xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
 
     ctx.tls_server = xylem_tls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                       &srv_handler, &srv_opts);
@@ -1291,7 +1278,6 @@ static void test_heartbeat_miss(void) {
     remove(key);
 }
 
-/* ── main ── */
 
 int main(void) {
     xylem_startup();

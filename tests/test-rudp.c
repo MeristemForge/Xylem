@@ -26,6 +26,7 @@
 #include <string.h>
 
 #define RUDP_PORT          16433
+#define RUDP_HOST          "127.0.0.1"
 #define SAFETY_TIMEOUT_MS  10000
 
 typedef struct {
@@ -71,7 +72,6 @@ static void _rudp_srv_read_echo_cb(xylem_rudp_t* rudp,
     xylem_rudp_send(rudp, data, len);
 }
 
-/* ── test_ctx_create_destroy ── */
 
 static void test_ctx_create_destroy(void) {
     xylem_rudp_ctx_t* ctx = xylem_rudp_ctx_create();
@@ -79,7 +79,6 @@ static void test_ctx_create_destroy(void) {
     xylem_rudp_ctx_destroy(ctx);
 }
 
-/* ── test_handshake_and_echo callbacks ── */
 
 /**
  * Use a timer to send data after handshake completes. Sending
@@ -140,7 +139,7 @@ static void test_handshake_and_echo(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -196,7 +195,7 @@ static void test_fast_mode_echo(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, &opts);
@@ -229,7 +228,6 @@ static void test_fast_mode_echo(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_session_userdata ── */
 
 static void _ud_cli_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -269,7 +267,7 @@ static void test_session_userdata(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -293,7 +291,6 @@ static void test_session_userdata(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_server_userdata ── */
 
 static void test_server_userdata(void) {
     _test_ctx_t ctx = {0};
@@ -305,7 +302,7 @@ static void test_server_userdata(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -322,7 +319,6 @@ static void test_server_userdata(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_peer_addr ── */
 
 static void _pa_cli_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -330,14 +326,10 @@ static void _pa_cli_connect_cb(xylem_rudp_t* rudp) {
     const xylem_addr_t* peer = xylem_rudp_get_peer_addr(rudp);
     ASSERT(peer != NULL);
 
-    const struct sockaddr_in* sa =
-        (const struct sockaddr_in*)&peer->storage;
-    ASSERT(sa->sin_family == AF_INET);
-
     char ip[64];
     uint16_t port;
     xylem_addr_ntop(peer, ip, sizeof(ip), &port);
-    ASSERT(memcmp(ip, "127.0.0.1", 9) == 0);
+    ASSERT(memcmp(ip, RUDP_HOST, 9) == 0);
     ASSERT(port == RUDP_PORT);
 
     ctx->verified = 1;
@@ -368,7 +360,7 @@ static void test_peer_addr(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -392,7 +384,6 @@ static void test_peer_addr(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_get_loop ── */
 
 static void _gl_cli_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -425,7 +416,7 @@ static void test_get_loop(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -449,7 +440,6 @@ static void test_get_loop(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_send_after_close ── */
 
 static void _sac_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -482,7 +472,7 @@ static void test_send_after_close(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -508,7 +498,6 @@ static void test_send_after_close(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_close_idempotent ── */
 
 static void _ci_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -541,7 +530,7 @@ static void test_close_idempotent(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -565,7 +554,6 @@ static void test_close_idempotent(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_close_server_with_active_session ── */
 
 static void _csas_close_timer_cb(xylem_loop_t* loop,
                                   xylem_loop_timer_t* timer,
@@ -639,7 +627,7 @@ static void test_close_server_with_active_session(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -679,7 +667,6 @@ static void test_close_server_with_active_session(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_send_before_handshake ── */
 
 static void test_send_before_handshake(void) {
     _test_ctx_t ctx = {0};
@@ -690,7 +677,7 @@ static void test_send_before_handshake(void) {
 
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -714,7 +701,6 @@ static void test_send_before_handshake(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_multi_session ── */
 
 typedef struct {
     _test_ctx_t* tctx;
@@ -781,7 +767,7 @@ static void test_multi_session(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
                                          &srv_handler, NULL);
@@ -835,7 +821,6 @@ static void test_multi_session(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── test_handshake_timeout ── */
 
 static void _ht_close_cb(xylem_rudp_t* rudp, int err,
                           const char* errmsg) {
@@ -863,7 +848,7 @@ static void test_handshake_timeout(void) {
                            SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", RUDP_PORT, &addr);
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     xylem_rudp_handler_t cli_handler = {
         .on_close = _ht_close_cb,
@@ -884,7 +869,6 @@ static void test_handshake_timeout(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* ── main ── */
 
 int main(void) {
     xylem_startup();

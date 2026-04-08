@@ -26,6 +26,7 @@
 
 #define PORT_A              19001
 #define PORT_B              19002
+#define UDP_HOST            "127.0.0.1"
 
 #define SAFETY_TIMEOUT_MS   2000
 #define SEND_DELAY_MS       10
@@ -76,7 +77,7 @@ static void _lr_send_timer_cb(xylem_loop_t* loop,
     (void)timer;
     _lr_ctx_t* ctx = (_lr_ctx_t*)ud;
     xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", PORT_A, &dest);
+    xylem_addr_pton(UDP_HOST, PORT_A, &dest);
     xylem_udp_send(ctx->sender, &dest, "hello", 5);
 }
 
@@ -89,7 +90,7 @@ static void test_listen_recv(void) {
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t recv_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &recv_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &recv_addr);
 
     xylem_udp_handler_t recv_handler = {.on_read = _lr_on_read};
     ctx.receiver = xylem_udp_listen(ctx.loop, &recv_addr, &recv_handler);
@@ -97,7 +98,7 @@ static void test_listen_recv(void) {
     xylem_udp_set_userdata(ctx.receiver, &ctx);
 
     xylem_addr_t send_addr;
-    xylem_addr_pton("127.0.0.1", PORT_B, &send_addr);
+    xylem_addr_pton(UDP_HOST, PORT_B, &send_addr);
 
     xylem_udp_handler_t send_handler = {0};
     ctx.sender = xylem_udp_listen(ctx.loop, &send_addr, &send_handler);
@@ -113,7 +114,7 @@ static void test_listen_recv(void) {
     ASSERT(ctx.data_len == 5);
     ASSERT(memcmp(ctx.data, "hello", 5) == 0);
     ASSERT(ctx.sender_port == PORT_B);
-    ASSERT(strcmp(ctx.sender_ip, "127.0.0.1") == 0);
+    ASSERT(strcmp(ctx.sender_ip, UDP_HOST) == 0);
 
     xylem_udp_close(ctx.receiver);
     xylem_udp_close(ctx.sender);
@@ -150,7 +151,7 @@ static void _ls_send_timer_cb(xylem_loop_t* loop,
     (void)timer;
     _ls_ctx_t* ctx = (_ls_ctx_t*)ud;
     xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", PORT_B, &dest);
+    xylem_addr_pton(UDP_HOST, PORT_B, &dest);
     xylem_udp_send(ctx->sender, &dest, "reply", 5);
 }
 
@@ -163,14 +164,14 @@ static void test_listen_send(void) {
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t a_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &a_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &a_addr);
 
     xylem_udp_handler_t a_handler = {0};
     ctx.sender = xylem_udp_listen(ctx.loop, &a_addr, &a_handler);
     ASSERT(ctx.sender != NULL);
 
     xylem_addr_t b_addr;
-    xylem_addr_pton("127.0.0.1", PORT_B, &b_addr);
+    xylem_addr_pton(UDP_HOST, PORT_B, &b_addr);
 
     xylem_udp_handler_t b_handler = {.on_read = _ls_on_read};
     ctx.receiver = xylem_udp_listen(ctx.loop, &b_addr, &b_handler);
@@ -243,7 +244,7 @@ static void test_dial_echo(void) {
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t srv_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &srv_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &srv_addr);
 
     xylem_udp_handler_t srv_handler = {.on_read = _de_srv_on_read};
     ctx.server = xylem_udp_listen(ctx.loop, &srv_addr, &srv_handler);
@@ -251,7 +252,7 @@ static void test_dial_echo(void) {
     xylem_udp_set_userdata(ctx.server, &ctx);
 
     xylem_addr_t dial_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &dial_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
 
     xylem_udp_handler_t cli_handler = {.on_read = _de_cli_on_read};
     ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
@@ -321,14 +322,14 @@ static void test_dial_addr(void) {
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t srv_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &srv_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &srv_addr);
 
     xylem_udp_handler_t srv_handler = {.on_read = _da_srv_on_read};
     ctx.server = xylem_udp_listen(ctx.loop, &srv_addr, &srv_handler);
     ASSERT(ctx.server != NULL);
 
     xylem_addr_t dial_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &dial_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
 
     xylem_udp_handler_t cli_handler = {.on_read = _da_cli_on_read};
     ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
@@ -342,7 +343,7 @@ static void test_dial_addr(void) {
     xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.read_called == 1);
-    ASSERT(strcmp(ctx.addr_ip, "127.0.0.1") == 0);
+    ASSERT(strcmp(ctx.addr_ip, UDP_HOST) == 0);
     ASSERT(ctx.addr_port == PORT_A);
 
     xylem_udp_close(ctx.client);
@@ -384,7 +385,7 @@ static void _db_send_timer_cb(xylem_loop_t* loop,
     (void)timer;
     _db_ctx_t* ctx = (_db_ctx_t*)ud;
     xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", PORT_A, &dest);
+    xylem_addr_pton(UDP_HOST, PORT_A, &dest);
     xylem_udp_send(ctx->sender, &dest, "A", 1);
     xylem_udp_send(ctx->sender, &dest, "BB", 2);
     xylem_udp_send(ctx->sender, &dest, "CCC", 3);
@@ -399,7 +400,7 @@ static void test_datagram_boundary(void) {
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_addr_t recv_addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &recv_addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &recv_addr);
 
     xylem_udp_handler_t recv_handler = {.on_read = _db_on_read};
     ctx.receiver = xylem_udp_listen(ctx.loop, &recv_addr, &recv_handler);
@@ -407,7 +408,7 @@ static void test_datagram_boundary(void) {
     xylem_udp_set_userdata(ctx.receiver, &ctx);
 
     xylem_addr_t send_addr;
-    xylem_addr_pton("127.0.0.1", PORT_B, &send_addr);
+    xylem_addr_pton(UDP_HOST, PORT_B, &send_addr);
 
     xylem_udp_handler_t send_handler = {0};
     ctx.sender = xylem_udp_listen(ctx.loop, &send_addr, &send_handler);
@@ -439,7 +440,7 @@ static void test_close_idempotent(void) {
     ASSERT(loop != NULL);
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
 
     xylem_udp_handler_t handler = {0};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
@@ -471,7 +472,7 @@ static void test_close_callback(void) {
     int called = 0;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
 
     xylem_udp_handler_t handler = {.on_close = _cc_on_close};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
@@ -495,7 +496,7 @@ static void test_send_after_close(void) {
     ASSERT(loop != NULL);
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
 
     xylem_udp_handler_t handler = {0};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
@@ -504,7 +505,7 @@ static void test_send_after_close(void) {
     xylem_udp_close(udp);
 
     xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", PORT_B, &dest);
+    xylem_addr_pton(UDP_HOST, PORT_B, &dest);
     int rc = xylem_udp_send(udp, &dest, "data", 4);
 
     xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
@@ -522,7 +523,7 @@ static void test_userdata(void) {
     ASSERT(loop != NULL);
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
 
     xylem_udp_handler_t handler = {0};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
@@ -543,7 +544,7 @@ static void test_get_loop(void) {
     ASSERT(loop != NULL);
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", PORT_A, &addr);
+    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
 
     xylem_udp_handler_t handler = {0};
     xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);

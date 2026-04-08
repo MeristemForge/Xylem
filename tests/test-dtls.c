@@ -30,6 +30,7 @@
 #include <string.h>
 
 #define DTLS_PORT          15433
+#define DTLS_HOST          "127.0.0.1"
 #define SAFETY_TIMEOUT_MS  10000
 
 typedef struct {
@@ -132,7 +133,6 @@ static void _dtls_srv_read_echo_cb(xylem_dtls_t* dtls,
     xylem_dtls_send(dtls, data, len);
 }
 
-/* ── Context management API tests ── */
 
 static void test_ctx_create_destroy(void) {
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
@@ -192,7 +192,6 @@ static void test_set_alpn(void) {
     xylem_dtls_ctx_destroy(ctx);
 }
 
-/* ── Handshake and data transfer callbacks ── */
 
 static void _echo_cli_connect_cb(xylem_dtls_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
@@ -254,7 +253,7 @@ static void test_handshake_and_echo(void) {
     };
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -287,7 +286,6 @@ static void test_handshake_and_echo(void) {
     remove(key);
 }
 
-/* ── Handshake failure callbacks ── */
 
 static void _fail_cli_close_cb(xylem_dtls_t* dtls, int err,
                                const char* errmsg) {
@@ -326,7 +324,7 @@ static void test_handshake_failure_wrong_ca(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -362,7 +360,6 @@ static void test_handshake_failure_wrong_ca(void) {
     remove(key2);
 }
 
-/* ── ALPN negotiation callbacks ── */
 
 static void _alpn_cli_connect_cb(xylem_dtls_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
@@ -417,7 +414,7 @@ static void test_alpn_negotiation(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -446,7 +443,6 @@ static void test_alpn_negotiation(void) {
     remove(key);
 }
 
-/* ── Session userdata callbacks ── */
 
 static void _ud_cli_connect_cb(xylem_dtls_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
@@ -499,7 +495,7 @@ static void test_session_userdata(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -528,7 +524,6 @@ static void test_session_userdata(void) {
     remove(key);
 }
 
-/* ── send_after_close callbacks ── */
 
 static void _sac_connect_cb(xylem_dtls_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
@@ -573,7 +568,7 @@ static void test_send_after_close(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -603,7 +598,6 @@ static void test_send_after_close(void) {
     remove(key);
 }
 
-/* ── close_server_with_active_session callbacks ── */
 
 static void _csas_close_timer_cb(xylem_loop_t* loop,
                                   xylem_loop_timer_t* timer,
@@ -656,7 +650,7 @@ static void test_close_server_with_active_session(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
@@ -692,7 +686,6 @@ static void test_close_server_with_active_session(void) {
     remove(key);
 }
 
-/* ── Keylog callbacks ── */
 
 static void _keylog_cli_connect_cb(xylem_dtls_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
@@ -739,7 +732,7 @@ static void test_keylog_write(void) {
     xylem_dtls_handler_t srv_handler = {0};
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", DTLS_PORT, &addr);
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
 
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);

@@ -25,6 +25,7 @@
 #include <string.h>
 
 #define TCP_PORT          18080
+#define TCP_HOST          "127.0.0.1"
 #define SAFETY_TIMEOUT_MS 10000
 
 typedef struct {
@@ -367,7 +368,7 @@ static void test_close_server_with_active_conn(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t handler = {
         .on_accept = _close_active_on_accept,
@@ -409,7 +410,7 @@ static void test_dial_connect(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -446,7 +447,7 @@ static void test_close_empty_queue(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -484,7 +485,7 @@ static void test_send_basic(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -524,7 +525,7 @@ static void test_send_after_close(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -563,7 +564,7 @@ static void test_conn_userdata(void) {
     ctx.value = 42;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept = _conn_ud_on_accept,
@@ -601,7 +602,7 @@ static void test_server_userdata(void) {
     ctx.magic = 99;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept = _srv_ud_on_accept,
@@ -643,7 +644,7 @@ static void test_peer_addr(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept = _peer_addr_on_accept,
@@ -680,7 +681,7 @@ static void test_get_loop(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -717,7 +718,7 @@ static void test_frame_none(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_read = _frame_none_srv_on_read,
@@ -759,7 +760,7 @@ static void test_frame_fixed(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_FIXED;
@@ -805,7 +806,7 @@ static void test_frame_fixed_zero(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_FIXED;
@@ -849,7 +850,7 @@ static void test_frame_length_be(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -899,7 +900,7 @@ static void test_frame_length_le(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -949,7 +950,7 @@ static void test_frame_length_field_size_zero(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -997,7 +998,7 @@ static void test_frame_length_field_size_over8(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -1045,7 +1046,7 @@ static void test_frame_length_varint(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -1094,7 +1095,7 @@ static void test_frame_length_adjustment(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -1145,7 +1146,7 @@ static void test_frame_length_empty_payload(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
@@ -1194,7 +1195,7 @@ static void test_frame_delim_multi(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
@@ -1243,7 +1244,7 @@ static void test_frame_delim_single(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
@@ -1292,7 +1293,7 @@ static void test_frame_delim_null(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
@@ -1337,7 +1338,7 @@ static void test_frame_custom_positive(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
@@ -1383,7 +1384,7 @@ static void test_frame_custom_zero(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
@@ -1432,7 +1433,7 @@ static void test_frame_custom_negative(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
@@ -1476,7 +1477,7 @@ static void test_frame_custom_null_parse(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
@@ -1536,7 +1537,7 @@ static void test_read_timeout(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.read_timeout_ms = 50;
@@ -1605,7 +1606,7 @@ static void test_write_timeout(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     /* Server accepts but never reads -- no on_read handler. */
     xylem_tcp_handler_t srv_handler = {0};
@@ -1655,7 +1656,7 @@ static void test_heartbeat_miss(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.heartbeat_ms = 50;
@@ -1727,7 +1728,7 @@ static void test_heartbeat_reset_on_data(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.heartbeat_ms = 200;
@@ -1780,7 +1781,7 @@ static void _reconnect_delayed_listen_cb(xylem_loop_t* loop,
     _test_ctx_t* ctx = (_test_ctx_t*)ud;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     memset(&ctx->reconnect_srv_handler, 0, sizeof(ctx->reconnect_srv_handler));
     ctx->server = xylem_tcp_listen(ctx->loop, &addr,
@@ -1804,7 +1805,7 @@ static void test_reconnect_success(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     /* Start server after 200ms so initial connect fails. */
     xylem_loop_timer_t* delay = xylem_loop_create_timer(loop);
@@ -1857,7 +1858,7 @@ static void test_reconnect_limit(void) {
 
     /* Port 18081 -- no server listening. */
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t cli_opts = {0};
     cli_opts.reconnect_max = 1;
@@ -1908,7 +1909,7 @@ static void test_read_buf_full(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     /**
      * Use FRAME_FIXED with frame_size > read_buf_size so the buffer
@@ -1972,7 +1973,7 @@ static void test_peer_close_eof(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept = _srv_accept_cb,
@@ -2040,7 +2041,7 @@ static void test_close_pending_writes(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {0};
     xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
@@ -2101,7 +2102,7 @@ static void test_drain_write_queue_on_error(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_handler_t srv_handler = {
         .on_accept = _drain_err_srv_accept_cb,
@@ -2199,7 +2200,7 @@ static void test_lifecycle_full(void) {
     ctx.loop = loop;
 
     xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", TCP_PORT, &addr);
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
     xylem_tcp_opts_t srv_opts = {0};
     srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
