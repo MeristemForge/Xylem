@@ -25,7 +25,7 @@
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-utils.h"
 
-#include "platform/platform-socket.h" /* sockaddr_in, ntohs, AF_INET on Unix */
+#include "platform/platform-socket.h"
 #include "rudp/kcp/ikcp.h"
 
 #include <stdlib.h>
@@ -46,8 +46,17 @@
 #define RUDP_HANDSHAKE_ACK    0x02
 #define RUDP_HANDSHAKE_MAGIC  0x58594C4D  /* "XYLM" */
 
+/* Field sizes in handshake and KCP headers. */
+#define RUDP_MAGIC_SIZE       4  /* sizeof(uint32_t) handshake magic */
+#define RUDP_CONV_SIZE        4  /* sizeof(uint32_t) KCP conv field */
+#define RUDP_TYPE_SIZE        1  /* handshake type byte */
+
 /* Handshake packet layout: [magic:4][type:1][conv:4] = 9 bytes. */
-#define RUDP_HANDSHAKE_SIZE   9
+#define RUDP_HANDSHAKE_SIZE   (RUDP_MAGIC_SIZE + RUDP_TYPE_SIZE + RUDP_CONV_SIZE)
+
+/* Offsets within the handshake packet. */
+#define RUDP_OFF_TYPE         RUDP_MAGIC_SIZE
+#define RUDP_OFF_CONV         (RUDP_MAGIC_SIZE + RUDP_TYPE_SIZE)
 
 /* Timeout for client waiting for handshake ACK. */
 #define RUDP_HANDSHAKE_TIMEOUT_MS 5000
@@ -115,7 +124,7 @@ static int _rudp_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
         if (sa->sin_port != sb->sin_port) {
             return (int)ntohs(sa->sin_port) - (int)ntohs(sb->sin_port);
         }
-        return memcmp(&sa->sin_addr, &sb->sin_addr, 4);
+        return memcmp(&sa->sin_addr, &sb->sin_addr, sizeof(sa->sin_addr));
     }
     if (a->storage.ss_family == AF_INET6) {
         const struct sockaddr_in6* sa =
@@ -125,7 +134,7 @@ static int _rudp_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
         if (sa->sin6_port != sb->sin6_port) {
             return (int)ntohs(sa->sin6_port) - (int)ntohs(sb->sin6_port);
         }
-        return memcmp(&sa->sin6_addr, &sb->sin6_addr, 16);
+        return memcmp(&sa->sin6_addr, &sb->sin6_addr, sizeof(sa->sin6_addr));
     }
     return 0;
 }
@@ -178,9 +187,9 @@ static xylem_rudp_t* _rudp_find_session(xylem_rudp_server_t* server,
 static void _rudp_encode_handshake(uint8_t* buf, uint8_t type,
                                    uint32_t conv) {
     uint32_t magic = RUDP_HANDSHAKE_MAGIC;
-    memcpy(buf, &magic, 4);
-    buf[4] = type;
-    memcpy(buf + 5, &conv, 4);
+    memcpy(buf, &magic, RUDP_MAGIC_SIZE);
+    buf[RUDP_OFF_TYPE] = type;
+    memcpy(buf + RUDP_OFF_CONV, &conv, RUDP_CONV_SIZE);
 }
 
 static bool _rudp_decode_handshake(const void* data, size_t len,
@@ -190,12 +199,12 @@ static bool _rudp_decode_handshake(const void* data, size_t len,
     }
     const uint8_t* buf = (const uint8_t*)data;
     uint32_t magic;
-    memcpy(&magic, buf, 4);
+    memcpy(&magic, buf, RUDP_MAGIC_SIZE);
     if (magic != RUDP_HANDSHAKE_MAGIC) {
         return false;
     }
-    *type = buf[4];
-    memcpy(conv, buf + 5, 4);
+    *type = buf[RUDP_OFF_TYPE];
+    memcpy(conv, buf + RUDP_OFF_CONV, RUDP_CONV_SIZE);
     return true;
 }
 
@@ -279,7 +288,44 @@ static void _rudp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
     free(rudp);
 }
 
+/**
+ * Drain the KCP recv queue and deliver complete messages via on_read.
+ * Returns true if the session is still alive, false if closing was
+ * triggered inside a callback.
+ */
+static bool _rudp_drain_recv(xylem_rudp_t* rudp) {
+    char buf[RUDP_RECV_BUF_SIZE];
+    int  n;
+    while ((n = ikcp_recv(rudp->kcp, buf, sizeof(buf))) > 0) {
+        if (rudp->handler && rudp->handler->on_read) {
+            rudp->handler->on_read(rudp, buf, (size_t)n);
+        }
+        if (rudp->closing) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Common path after ikcp_input: flush ACKs, deliver any complete
+ * messages, and reschedule the update timer.
+ */
 static void _rudp_schedule_update(xylem_rudp_t* rudp);
+
+static void _rudp_input_complete(xylem_rudp_t* rudp) {
+    /* Flush pending ACKs immediately rather than waiting for the next
+     * update tick, so the peer gets timely RTT and window feedback. */
+    ikcp_flush(rudp->kcp);
+
+    /* Fast path: deliver messages that fit in a single KCP segment
+     * (len <= mss) immediately without waiting for the next update. */
+    if (!_rudp_drain_recv(rudp)) {
+        return;
+    }
+
+    _rudp_schedule_update(rudp);
+}
 
 static void _rudp_update_timeout_cb(xylem_loop_t* loop,
                                     xylem_loop_timer_t* timer, void* ud) {
@@ -302,16 +348,8 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
         return;
     }
 
-    /* Drain KCP recv queue. */
-    char buf[RUDP_RECV_BUF_SIZE];
-    int  n;
-    while ((n = ikcp_recv(rudp->kcp, buf, sizeof(buf))) > 0) {
-        if (rudp->handler && rudp->handler->on_read) {
-            rudp->handler->on_read(rudp, buf, (size_t)n);
-        }
-        if (rudp->closing) {
-            return;
-        }
+    if (!_rudp_drain_recv(rudp)) {
+        return;
     }
 
     _rudp_schedule_update(rudp);
@@ -369,19 +407,7 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
     }
 
     ikcp_input(rudp->kcp, (const char*)data, (long)len);
-
-    char buf[RUDP_RECV_BUF_SIZE];
-    int  n;
-    while ((n = ikcp_recv(rudp->kcp, buf, sizeof(buf))) > 0) {
-        if (rudp->handler && rudp->handler->on_read) {
-            rudp->handler->on_read(rudp, buf, (size_t)n);
-        }
-        if (rudp->closing) {
-            return;
-        }
-    }
-
-    _rudp_schedule_update(rudp);
+    _rudp_input_complete(rudp);
 }
 
 static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
@@ -464,12 +490,16 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    /* Regular KCP data: extract conv from the first 4 bytes. */
-    if (len < 4) {
+    /**
+     * Regular KCP data -- extract conv from the packet header.
+     * KCP header (24 bytes, little-endian):
+     *   [conv:4][cmd:1][frg:1][wnd:2][ts:4][sn:4][una:4][len:4]
+     */
+    if (len < RUDP_CONV_SIZE) {
         return;
     }
     uint32_t conv;
-    memcpy(&conv, data, 4);
+    memcpy(&conv, data, RUDP_CONV_SIZE);
 
     xylem_rudp_t* rudp = _rudp_find_session(server, addr, conv);
     if (!rudp) {
@@ -477,19 +507,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
     }
 
     ikcp_input(rudp->kcp, (const char*)data, (long)len);
-
-    char buf[RUDP_RECV_BUF_SIZE];
-    int  n;
-    while ((n = ikcp_recv(rudp->kcp, buf, sizeof(buf))) > 0) {
-        if (rudp->handler && rudp->handler->on_read) {
-            rudp->handler->on_read(rudp, buf, (size_t)n);
-        }
-        if (rudp->closing) {
-            return;
-        }
-    }
-
-    _rudp_schedule_update(rudp);
+    _rudp_input_complete(rudp);
 }
 
 static void _rudp_server_close_cb(xylem_udp_t* udp, int err,
@@ -579,7 +597,8 @@ int xylem_rudp_send(xylem_rudp_t* rudp, const void* data, size_t len) {
         return -1;
     }
     /* Flush immediately so data goes out without waiting for the
-     * next update timer tick. */
+     * next update timer tick. ikcp_update would skip the flush if
+     * less than one interval has elapsed since the last update. */
     ikcp_flush(rudp->kcp);
     _rudp_schedule_update(rudp);
     return 0;
