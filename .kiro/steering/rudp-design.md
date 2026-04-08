@@ -332,13 +332,14 @@ sequenceDiagram
     RUDP->>UDP: xylem_udp_close()
     UDP->>RUDP: _rudp_client_close_cb
     RUDP->>RUDP: closing = true + 停止定时器（防御性）
+    RUDP->>RUDP: 传播 UDP 层错误（若 RUDP 未设置自身错误）
     RUDP->>RUDP: ikcp_release
-    RUDP->>User: handler->on_close
+    RUDP->>User: handler->on_close(close_err, close_errmsg)
     RUDP->>Loop: xylem_loop_post(_rudp_free_cb)
     Loop->>RUDP: 下一轮迭代释放内存
 ```
 
-客户端拥有独立的 UDP socket（dial 模式），关闭时一并关闭。`_rudp_client_close_cb` 在 UDP `on_close` 中触发，首先设置 `closing = true` 并停止 `update_timer` 和 `handshake_timer`（防止定时器在 UDP socket 已关闭后触发），然后释放 KCP 会话并通知用户。在 Linux/macOS 上，已连接 UDP socket 可能因 ICMP port unreachable 收到 `ECONNREFUSED`，导致 `_rudp_client_close_cb` 在握手超时定时器触发之前被调用，因此需要在此处主动停止定时器。
+客户端拥有独立的 UDP socket（dial 模式），关闭时一并关闭。`_rudp_client_close_cb` 在 UDP `on_close` 中触发，首先设置 `closing = true` 并停止 `update_timer` 和 `handshake_timer`（防止定时器在 UDP socket 已关闭后触发）。接着检查 UDP 层是否携带了非零错误码：若 RUDP 层尚未设置自身的 `close_err`（即 `close_err == 0`），则将 UDP 层的 `err` 和 `errmsg` 传播到 RUDP 会话的 `close_err`/`close_errmsg`，确保用户在 `on_close` 回调中能看到底层传输错误（如 `ECONNREFUSED`）。然后释放 KCP 会话并通知用户。在 Linux/macOS 上，已连接 UDP socket 可能因 ICMP port unreachable 收到 `ECONNREFUSED`，导致 `_rudp_client_close_cb` 在握手超时定时器触发之前被调用，因此需要在此处主动停止定时器。
 
 ### 服务端会话关闭
 

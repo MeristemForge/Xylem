@@ -31,11 +31,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "deprecated/c11-threads.h"
 
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
 
 static int _tls_ex_data_idx = -1;
+static once_flag _tls_ex_data_once = ONCE_FLAG_INIT;
+
+static void _tls_init_ex_data(void) {
+    _tls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+}
 
 struct xylem_tls_ctx_s {
     SSL_CTX* ssl_ctx;
@@ -121,10 +127,7 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
 
     /* Register ex_data index once for keylog callback to recover ctx. */
-    if (_tls_ex_data_idx == -1) {
-        _tls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL,
-                                                     NULL, NULL, NULL);
-    }
+    call_once(&_tls_ex_data_once, _tls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _tls_ex_data_idx, ctx);
 
     return ctx;

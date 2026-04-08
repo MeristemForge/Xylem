@@ -372,12 +372,3 @@ xylem_loop_t*       xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
 void*               xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
 void                xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
 ```
-
-### 工具函数
-
-```c
-/* 将错误码转为可读字符串（跨平台：Unix errno / Windows WSA 错误码） */
-const char* xylem_tcp_strerror(int err);
-```
-
-将 `on_close` 和 `on_write_done` 回调中的错误码转为可读字符串。错误码语义参见上方"错误码"一节。返回的指针是线程局部的，在同一线程上下次调用前有效。内部委托给 `platform_socket_tostring`。

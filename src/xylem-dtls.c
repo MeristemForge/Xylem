@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "deprecated/c11-threads.h"
 
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
@@ -40,6 +41,11 @@
 #define DTLS_HANDSHAKE_TIMEOUT_MS 30000
 
 static int _dtls_ex_data_idx = -1;
+static once_flag _dtls_ex_data_once = ONCE_FLAG_INIT;
+
+static void _dtls_init_ex_data(void) {
+    _dtls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+}
 
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
@@ -148,10 +154,7 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _dtls_cookie_verify_cb);
 
     /* Register ex_data index once for keylog callback to recover ctx. */
-    if (_dtls_ex_data_idx == -1) {
-        _dtls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL,
-                                                      NULL, NULL, NULL);
-    }
+    call_once(&_dtls_ex_data_once, _dtls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _dtls_ex_data_idx, ctx);
 
     return ctx;
@@ -498,8 +501,8 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
         xylem_loop_stop_timer(dtls->handshake_timer);
     }
 
-    /* Propagate UDP-layer error when DTLS has not set its own. */
-    if (err != 0) {
+    /* Propagate UDP-layer error only when DTLS has not set its own. */
+    if (dtls->close_err == 0 && err != 0) {
         dtls->close_err    = err;
         dtls->close_errmsg = errmsg;
     }

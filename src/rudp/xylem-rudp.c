@@ -429,8 +429,8 @@ static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
         xylem_loop_stop_timer(rudp->handshake_timer);
     }
 
-    /* Propagate UDP-layer error when RUDP has not set its own. */
-    if (err != 0) {
+    /* Propagate UDP-layer error only when RUDP has not set its own. */
+    if (rudp->close_err == 0 && err != 0) {
         rudp->close_err    = err;
         rudp->close_errmsg = errmsg;
     }
