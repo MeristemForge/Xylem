@@ -21,7 +21,7 @@
 
 #include "http-common.h"
 #include "http-transport.h"
-#include "llhttp.h"
+#include "http/llhttp/llhttp.h"
 
 #include "xylem/http/xylem-http-server.h"
 #include "xylem/xylem-addr.h"
@@ -29,7 +29,7 @@
 
 #include "xylem/xylem-gzip.h"
 
-#include "miniz.h"
+#include "gzip/miniz/miniz.h"
 
 #include <limits.h>
 #include <stdio.h>

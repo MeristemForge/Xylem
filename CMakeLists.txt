@@ -78,6 +78,8 @@ set(SRCS
 	src/ws/ws-transport-tcp.c
 	src/rudp/kcp/ikcp.c
 	src/rudp/xylem-rudp.c
+	src/fec/reedsolomon-c/rs.c
+	src/fec/xylem-fec.c
 )
 
 if(WIN32)
@@ -126,13 +128,7 @@ endif()
 
 target_include_directories(xylem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/json/yyjson
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/http/llhttp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/gzip/miniz
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/aes256/tiny-AES-c
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/rudp/kcp
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})

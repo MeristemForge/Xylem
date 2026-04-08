@@ -23,7 +23,7 @@
 
 #include <limits.h>
 #include <string.h>
-#include "miniz.h"
+#include "gzip/miniz/miniz.h"
 
 #define GZIP_HEADER_SIZE 10
 #define GZIP_TRAILER_SIZE 8

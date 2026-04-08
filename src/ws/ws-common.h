@@ -26,7 +26,7 @@ _Pragma("once")
 
 #include "ws-transport.h"
 
-#include "llhttp.h"
+#include "http/llhttp/llhttp.h"
 
 #include <stdbool.h>
 #include <stddef.h>

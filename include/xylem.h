@@ -54,6 +54,7 @@ _Pragma("once")
 #include "xylem/xylem-tcp.h"
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-rudp.h"
+#include "xylem/xylem-fec.h"
 #include "xylem/xylem-tls.h"
 #include "xylem/xylem-dtls.h"
 #include "xylem/xylem-utils.h"

@@ -21,7 +21,7 @@
 
 #include "http-common.h"
 #include "http-transport.h"
-#include "llhttp.h"
+#include "http/llhttp/llhttp.h"
 
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/xylem-addr.h"
