@@ -99,21 +99,19 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 }
 
 void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
-    if (!on) {
-        return;
-    }
     int af = platform_socket_get_addressfamily(sock);
     /**
      * Windows doesn't support setting TCP_MAXSEG but IP_PMTUDISC_DONT forces
      * the MSS to the protocol minimum which is what we want here.
+     * IP_PMTUDISC_DO re-enables PMTUD and restores the default MSS.
      */
     if (af == AF_INET) {
-        int val = IP_PMTUDISC_DONT;
+        int val = on ? IP_PMTUDISC_DONT : IP_PMTUDISC_DO;
         setsockopt(
             sock, IPPROTO_IP, IP_MTU_DISCOVER, (const char*)&val, sizeof(int));
     }
     if (af == AF_INET6) {
-        int val = IP_PMTUDISC_DONT;
+        int val = on ? IP_PMTUDISC_DONT : IP_PMTUDISC_DO;
         setsockopt(
             sock,
             IPPROTO_IPV6,

@@ -801,6 +801,10 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     conn->state = TCP_STATE_CONNECTING;
     dial->reconnect_count++;
 
+    if (conn->opts.disable_mss_clamp) {
+        platform_socket_enable_maxseg(fd, false);
+    }
+
     if (connected) {
         _tcp_conn_connected_cb(conn);
     } else {
@@ -1048,6 +1052,10 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     xylem_logi("tcp dial fd=%d to %s:%s", (int)fd,
                dial->host, dial->port_str);
 
+    if (conn->opts.disable_mss_clamp) {
+        platform_socket_enable_maxseg(fd, false);
+    }
+
     conn->io = xylem_loop_create_io(loop, conn->fd);
     if (!conn->io) {
         platform_socket_close(fd);
@@ -1117,6 +1125,10 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
     }
 
     server->fd = fd;
+
+    if (server->opts.disable_mss_clamp) {
+        platform_socket_enable_maxseg(fd, false);
+    }
 
     server->io = xylem_loop_create_io(loop, server->fd);
     if (!server->io) {

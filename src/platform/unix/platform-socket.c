@@ -388,13 +388,17 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 }
 
 void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
-    if (!on) {
-        return;
-    }
     int af = platform_socket_get_addressfamily(sock);
-    int mss = af == AF_INET ? TCPv4_MSS : TCPv6_MSS;
-
-    setsockopt(sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
+    if (on) {
+        int mss = af == AF_INET ? TCPv4_MSS : TCPv6_MSS;
+        setsockopt(
+            sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
+    } else {
+        /* Reset to 0 lets the kernel use its default MSS. */
+        int mss = 0;
+        setsockopt(
+            sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
+    }
 }
 #endif
 
@@ -430,15 +434,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 }
 
 void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
-    if (!on) {
-        return;
-    }
-    /**
-     * On macOS, TCP_NOOPT seems to be the only way to restrict MSS to the
-     * minimum. It strips all options out of the SYN packet which forces the
-     * remote party to fall back to the minimum MSS.
-     */
-    int val = 1;
+    int val = on ? 1 : 0;
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
 }
 #endif

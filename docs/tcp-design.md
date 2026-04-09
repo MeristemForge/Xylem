@@ -94,6 +94,7 @@ typedef struct xylem_tcp_opts_s {
     uint64_t heartbeat_ms;
     uint32_t reconnect_max;
     size_t   read_buf_size;       /* 默认 65536 */
+    bool     disable_mss_clamp;  /* 禁用 MSS 钳制，依赖 PMTUD */
 } xylem_tcp_opts_t;
 ```
 
