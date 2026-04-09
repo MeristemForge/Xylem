@@ -20,72 +20,97 @@
  */
 
 #include "xylem/xylem-fec.h"
+#include "xylem/xylem-logger.h"
 
 #include <stdlib.h>
+#include <string.h>
+#include "deprecated/c11-threads.h"
 #include "fec/reedsolomon-c/rs.h"
 
 struct xylem_fec_s {
-    reed_solomon *rs;
+    reed_solomon* rs;
     int           data_shards;
     int           parity_shards;
+    uint8_t**     enc_shards;
 };
 
-void xylem_fec_init(void) {
+static once_flag _fec_init_flag = ONCE_FLAG_INIT;
+
+static void _fec_init_tables(void) {
     reed_solomon_init();
 }
 
-xylem_fec_t *xylem_fec_create(int data_shards, int parity_shards) {
+xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards) {
+    call_once(&_fec_init_flag, _fec_init_tables);
+
     if (data_shards <= 0 || parity_shards <= 0) {
+        xylem_loge("fec create: invalid shards (data=%d parity=%d)",
+                   data_shards, parity_shards);
         return NULL;
     }
     if (data_shards + parity_shards > 255) {
+        xylem_loge("fec create: total shards %d exceeds 255",
+                   data_shards + parity_shards);
         return NULL;
     }
 
-    reed_solomon *rs = reed_solomon_new(data_shards, parity_shards);
+    reed_solomon* rs = reed_solomon_new(data_shards, parity_shards);
     if (!rs) {
         return NULL;
     }
 
-    xylem_fec_t *fec = calloc(1, sizeof(*fec));
+    xylem_fec_t* fec = calloc(1, sizeof(*fec));
     if (!fec) {
         reed_solomon_release(rs);
+        return NULL;
+    }
+
+    int total = data_shards + parity_shards;
+    fec->enc_shards = malloc((size_t)total * sizeof(uint8_t*));
+    if (!fec->enc_shards) {
+        reed_solomon_release(rs);
+        free(fec);
         return NULL;
     }
 
     fec->rs            = rs;
     fec->data_shards   = data_shards;
     fec->parity_shards = parity_shards;
+
+    xylem_logi("fec created data=%d parity=%d", data_shards, parity_shards);
     return fec;
 }
 
-void xylem_fec_destroy(xylem_fec_t *fec) {
+void xylem_fec_destroy(xylem_fec_t* fec) {
     if (!fec) {
         return;
     }
     reed_solomon_release(fec->rs);
+    free(fec->enc_shards);
     free(fec);
 }
 
-int xylem_fec_data_shards(const xylem_fec_t *fec) {
-    return fec->data_shards;
-}
-
-int xylem_fec_parity_shards(const xylem_fec_t *fec) {
-    return fec->parity_shards;
-}
-
-int xylem_fec_encode(xylem_fec_t *fec, uint8_t **shards, size_t shard_size) {
-    if (!fec || !shards || shard_size == 0) {
+int xylem_fec_encode(xylem_fec_t* fec, uint8_t** data, uint8_t** parity,
+                     size_t shard_size) {
+    if (!fec || !data || !parity || shard_size == 0) {
         return -1;
     }
 
     int total = fec->data_shards + fec->parity_shards;
+    uint8_t** shards = fec->enc_shards;
+
+    memcpy(shards, data, (size_t)fec->data_shards * sizeof(uint8_t*));
+    memcpy(shards + fec->data_shards, parity,
+           (size_t)fec->parity_shards * sizeof(uint8_t*));
+
     int rc = reed_solomon_encode(fec->rs, shards, total, (int)shard_size);
+    if (rc != 0) {
+        xylem_logw("fec encode failed");
+    }
     return rc == 0 ? 0 : -1;
 }
 
-int xylem_fec_reconstruct(xylem_fec_t *fec, uint8_t **shards, uint8_t *marks,
+int xylem_fec_reconstruct(xylem_fec_t* fec, uint8_t** shards, uint8_t* marks,
                           size_t shard_size) {
     if (!fec || !shards || !marks || shard_size == 0) {
         return -1;
@@ -94,5 +119,8 @@ int xylem_fec_reconstruct(xylem_fec_t *fec, uint8_t **shards, uint8_t *marks,
     int total = fec->data_shards + fec->parity_shards;
     int rc = reed_solomon_reconstruct(fec->rs, shards, marks, total,
                                       (int)shard_size);
+    if (rc != 0) {
+        xylem_logw("fec reconstruct failed");
+    }
     return rc == 0 ? 0 : -1;
 }

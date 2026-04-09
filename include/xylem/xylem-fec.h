@@ -28,14 +28,6 @@ _Pragma("once")
 typedef struct xylem_fec_s xylem_fec_t;
 
 /**
- * @brief Initialize the FEC subsystem.
- *
- * Must be called once before any other xylem_fec_* function. Initializes
- * the internal Galois field tables used by the Reed-Solomon codec.
- */
-extern void xylem_fec_init(void);
-
-/**
  * @brief Create a Reed-Solomon FEC codec.
  *
  * @param data_shards    Number of data shards (1..254).
@@ -53,47 +45,29 @@ extern xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards);
 extern void xylem_fec_destroy(xylem_fec_t* fec);
 
 /**
- * @brief Get the number of data shards.
- *
- * @param fec  Codec handle.
- *
- * @return Number of data shards.
- */
-extern int xylem_fec_data_shards(const xylem_fec_t* fec);
-
-/**
- * @brief Get the number of parity shards.
- *
- * @param fec  Codec handle.
- *
- * @return Number of parity shards.
- */
-extern int xylem_fec_parity_shards(const xylem_fec_t* fec);
-
-/**
  * @brief Encode parity shards from data shards.
  *
- * Computes parity shards from data shards in-place. The shards array
- * must contain (data_shards + parity_shards) pointers laid out as
- * [data_0 .. data_N-1, parity_0 .. parity_M-1]. Each pointer must
- * reference shard_size bytes. On success the parity slots are filled.
+ * Computes parity_shards parity blocks from data_shards data blocks.
+ * Each block must be exactly shard_size bytes.
  *
  * @param fec         Codec handle.
- * @param shards      Array of (data_shards + parity_shards) pointers.
+ * @param data        Array of data_shards pointers, each pointing to
+ *                    shard_size bytes of input data.
+ * @param parity      Array of parity_shards pointers, each pointing to
+ *                    shard_size bytes of output buffer. Filled on success.
  * @param shard_size  Size of each shard in bytes.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_fec_encode(xylem_fec_t* fec, uint8_t** shards,
-                            size_t shard_size);
+extern int xylem_fec_encode(xylem_fec_t* fec, uint8_t** data,
+                            uint8_t** parity, size_t shard_size);
 
 /**
- * @brief Reconstruct missing shards from available data and parity.
+ * @brief Reconstruct lost data shards in-place.
  *
- * All shards (data followed by parity) are passed in a single array of
- * (data_shards + parity_shards) pointers. The marks array indicates which
- * shards are missing (1 = lost, 0 = present). Lost shards are
- * reconstructed in-place. At most parity_shards shards may be marked lost.
+ * shards is [data_0 .. data_N-1, parity_0 .. parity_M-1]. marks indicates
+ * which are lost (non-zero = lost). Only data shards are recovered; lost
+ * parity shards are ignored (re-encode to regenerate them).
  *
  * @param fec         Codec handle.
  * @param shards      Array of (data_shards + parity_shards) pointers,
