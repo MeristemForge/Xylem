@@ -30,7 +30,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include "deprecated/c11-threads.h"
+#include "platform/platform-socket.h"
 
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
