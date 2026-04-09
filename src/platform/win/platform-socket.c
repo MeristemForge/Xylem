@@ -98,7 +98,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, (const char*)&c, sizeof(c));
 }
 
-void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
+void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int af = platform_socket_get_addressfamily(sock);
     /**
      * Windows doesn't support setting TCP_MAXSEG but IP_PMTUDISC_DONT forces
@@ -351,7 +351,7 @@ platform_sock_t platform_socket_listen(
                 platform_socket_close(sock);
                 continue;
             }
-            platform_socket_enable_maxseg(sock, true);
+            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
@@ -397,7 +397,7 @@ platform_sock_t platform_socket_dial(
         platform_socket_enable_nonblocking(sock, nonblocking);
 
         if (protocol == SOCK_STREAM) {
-            platform_socket_enable_maxseg(sock, true);
+            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }

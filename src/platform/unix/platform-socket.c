@@ -151,8 +151,8 @@ platform_sock_t platform_socket_listen(
                 platform_socket_close(sock);
                 continue;
             }
-            platform_socket_enable_maxseg(sock, true);
-            /* must be after enable maxseg due to TCP_NOOPT on macOS */
+            platform_socket_enable_mss_clamp(sock, true);
+            /* must be after mss_clamp due to TCP_NOOPT on macOS */
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
@@ -207,7 +207,7 @@ platform_sock_t platform_socket_dial(
         platform_socket_enable_nonblocking(sock, nonblocking);
 
         if (protocol == SOCK_STREAM) {
-            platform_socket_enable_maxseg(sock, true);
+            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
@@ -387,7 +387,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, (const void*)&c, sizeof(c));
 }
 
-void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
+void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int af = platform_socket_get_addressfamily(sock);
     if (on) {
         int mss = af == AF_INET ? TCPv4_MSS : TCPv6_MSS;
@@ -433,7 +433,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, (const void*)&c, sizeof(c));
 }
 
-void platform_socket_enable_maxseg(platform_sock_t sock, bool on) {
+void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int val = on ? 1 : 0;
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
 }

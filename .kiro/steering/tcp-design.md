@@ -78,7 +78,7 @@ typedef struct xylem_tcp_handler_s {
                           void* data, size_t len, int status);
     void (*on_timeout)(xylem_tcp_conn_t* conn,
                        xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tcp_conn_t* conn, int err);
+    void (*on_close)(xylem_tcp_conn_t* conn, int err, const char* errmsg);
     void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);
 } xylem_tcp_handler_t;
 ```
@@ -94,18 +94,21 @@ typedef struct xylem_tcp_opts_s {
     uint64_t heartbeat_ms;
     uint32_t reconnect_max;
     size_t   read_buf_size;       /* 默认 65536 */
+    bool     disable_mss_clamp;  /* 禁用 MSS 钳制，依赖 PMTUD */
 } xylem_tcp_opts_t;
 ```
+
+默认情况下，平台层在 `listen` 和 `dial` 时启用 MSS 钳制（Linux 上设置 `TCP_MAXSEG` 为协议最小值，macOS 上启用 `TCP_NOOPT`，Windows 上设置 `IP_PMTUDISC_DONT`），将 MSS 限制在协议最小值（IPv4 536、IPv6 1220），避免 PMTUD 黑洞。设置 `disable_mss_clamp = true` 后，TCP 模块在 socket 创建后调用 `platform_socket_enable_mss_clamp(fd, false)` 撤销钳制，恢复内核默认 MSS，依赖 PMTUD 自动发现路径 MTU。该选项同时影响 `xylem_tcp_listen`（监听 socket 及其继承的连接 socket）、`xylem_tcp_dial`（出站连接）和重连路径。
 
 ### 错误码
 
 `on_close` 和 `on_write_done` 回调的 `err`/`status` 参数语义：
 
-| 值 | 含义 |
-|----|------|
-| `0` | 正常关闭（对端或本地 shutdown） |
-| `-1` | 内部错误（缓冲区满、帧解析失败、连接初始化失败等） |
-| `> 0` | 平台 socket 错误码（Unix errno / Windows WSA 错误码） |
+| 值 | 含义 | `errmsg`（仅 `on_close`） |
+|----|------|--------------------------|
+| `0` | 正常关闭（对端或本地 shutdown） | `"closed normally"` |
+| `-1` | 内部错误（缓冲区满、帧解析失败、连接初始化失败等） | `"internal error"` |
+| `> 0` | 平台 socket 错误码（Unix errno / Windows WSA 错误码） | `platform_socket_tostring(err)` |
 
 ### 不透明类型
 

@@ -322,12 +322,12 @@ extern void platform_socket_enable_v6only(platform_sock_t sock, bool on);
 extern void platform_socket_enable_keepalive(platform_sock_t sock, bool on);
 
 /**
- * @brief Enable or disable TCP_MAXSEG clamping.
+ * @brief Enable or disable MSS clamping to protocol minimum.
  *
  * @param sock  Socket to configure.
- * @param on    true to enable, false to disable.
+ * @param on    true to clamp MSS to minimum, false to use default.
  */
-extern void platform_socket_enable_maxseg(platform_sock_t sock, bool on);
+extern void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on);
 
 /**
  * @brief Enable or disable non-blocking mode on a socket.
