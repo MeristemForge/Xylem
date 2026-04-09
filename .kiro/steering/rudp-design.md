@@ -19,9 +19,11 @@ graph LR
 分层数据流：
 
 ```
-发送: 用户 -> xylem_rudp_send -> ikcp_send + ikcp_flush -> _rudp_kcp_output_cb -> xylem_udp_send -> 网络
-接收: 网络 -> UDP on_read -> ikcp_input -> ikcp_flush(ACK) -> ikcp_recv -> on_read -> 用户
+发送: 用户 -> xylem_rudp_send -> ikcp_send + ikcp_flush -> _rudp_kcp_output_cb -> [FEC 编码] -> xylem_udp_send -> 网络
+接收: 网络 -> UDP on_read -> [FEC 解码] -> ikcp_input -> ikcp_flush(ACK) -> ikcp_recv -> on_read -> 用户
 ```
+
+FEC 编码/解码为可选步骤，通过 `opts->fec_data` 和 `opts->fec_parity` 启用。
 
 ## 公开类型
 
@@ -64,6 +66,8 @@ typedef struct xylem_rudp_opts_s {
     bool     stream;        /* true: 字节流模式，false: 消息模式 */
     uint64_t timeout_ms;    /* dead link 超时，0 禁用 */
     uint64_t handshake_ms;  /* 握手超时，0 使用默认值（5000ms） */
+    int      fec_data;      /* FEC 数据分片数，0 禁用 FEC */
+    int      fec_parity;    /* FEC 奇偶校验分片数，0 禁用 FEC */
 } xylem_rudp_opts_t;
 ```
 
@@ -106,6 +110,8 @@ struct xylem_rudp_s {
     xylem_loop_timer_t*    update_timer;     /* KCP 更新定时器 */
     xylem_loop_timer_t*    handshake_timer;  /* 仅客户端 */
     xylem_rbtree_node_t    server_node;      /* 服务器会话红黑树节点 */
+    rudp_fec_enc_t*        fec_enc;          /* FEC 编码器，NULL 表示禁用 */
+    rudp_fec_dec_t*        fec_dec;          /* FEC 解码器，NULL 表示禁用 */
 };
 ```
 
@@ -222,16 +228,29 @@ flowchart TD
     B -->|是| C{type == SYN?}
     C -->|是| D{会话已存在?}
     D -->|是| E[回复 ACK，返回]
-    D -->|否| F[回复 ACK + 创建会话 + on_accept]
+    D -->|否| F[回复 ACK + 创建会话 + 初始化 FEC + on_accept]
     C -->|否| G[忽略]
-    B -->|否| H{len >= 4?}
-    H -->|否| I[丢弃]
-    H -->|是| J[提取前 4 字节 conv]
-    J --> K[_rudp_find_session addr+conv]
-    K --> L{找到?}
-    L -->|否| M[丢弃]
-    L -->|是| N[ikcp_input + _rudp_input_complete]
+    B -->|否| H{FEC 启用?}
+    H -->|否| I{len >= 4?}
+    I -->|否| J[丢弃]
+    I -->|是| K[提取前 4 字节 conv]
+    K --> L[_rudp_find_session addr+conv]
+    L --> M{找到?}
+    M -->|否| N[丢弃]
+    M -->|是| O[ikcp_input + _rudp_input_complete]
+    H -->|是| P{len >= 12?}
+    P -->|否| Q[丢弃]
+    P -->|是| R{FEC type?}
+    R -->|DATA| S[从 FEC 头后提取 KCP conv]
+    S --> T[_rudp_find_session addr+conv]
+    T --> U{找到?}
+    U -->|否| V[丢弃]
+    U -->|是| W[_rudp_fec_input]
+    R -->|PARITY| X[遍历同地址会话]
+    X --> Y[逐个喂入 _rudp_fec_input]
 ```
+
+FEC 启用时，数据分片的 KCP conv 位于 FEC 头之后（偏移 8 字节），可直接定位会话。奇偶校验分片不含 KCP conv，需遍历同一对端地址的所有会话，由各自的 FEC 解码器判断是否属于自己的分组。
 
 ## KCP 集成
 
@@ -242,7 +261,7 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user);
 ```
 
-KCP 需要发送数据时调用此回调，内部通过 `xylem_udp_send` 将 KCP 包发送到对端。客户端使用已连接 socket（`dest=NULL`），服务端使用 `peer_addr` 作为目标地址。
+KCP 需要发送数据时调用此回调。若 FEC 已启用（`fec_enc` 非 NULL），KCP 包通过 `rudp_fec_enc_feed` 进入 FEC 编码器，编码器添加 FEC 头后通过 `xylem_udp_send` 发送数据分片和奇偶校验分片。若 FEC 未启用，直接通过 `xylem_udp_send` 发送原始 KCP 包。目标地址始终使用 `peer_addr`。
 
 ### KCP 更新定时器
 
@@ -276,7 +295,152 @@ flowchart TD
 | DEFAULT | 0 | 100ms | 0 | 0 | 标准 ARQ，适合一般场景 |
 | FAST | 1 | 10ms | 2 | 1 | 无延迟 ACK + 快速重传（2 次跳过即重传）+ 关闭拥塞控制 |
 
+当 FEC 启用时，`_rudp_apply_opts` 会从配置的 MTU 中减去 `RUDP_FEC_HEADER_SIZE`（8 字节），确保 FEC 头 + KCP 包的总 UDP 载荷不超过配置的 MTU。
+
 Dead link 检测：`timeout_ms / interval` 计算 dead_link 阈值（最小为 1）。当 KCP 内部检测到连续重传次数超过阈值时，`kcp->state` 置为 `-1`，下次 `_rudp_update_timeout_cb` 触发时关闭会话。
+
+## FEC 前向纠错
+
+RUDP 内置可选的 FEC（Forward Error Correction）层，基于 Reed-Solomon 编码在 KCP 与 UDP 之间插入纠删码，允许接收端在丢失部分数据包时无需等待 KCP 重传即可恢复原始数据。FEC 层实现在 `src/rudp/rudp-fec.c` 和 `src/rudp/rudp-fec.h`，使用 `xylem-fec`（Reed-Solomon 编解码器）。
+
+### 分片头格式
+
+每个 KCP 包在发送前由 FEC 编码器添加 8 字节头：
+
+```
+[seqid:4B LE][type:2B LE][size:2B LE] = 8 字节
+```
+
+| 字段 | 大小 | 说明 |
+|------|------|------|
+| seqid | 4 | 单调递增序列号，在 paws 边界处回绕 |
+| type | 2 | `0xF1` = 数据分片，`0xF2` = 奇偶校验分片 |
+| size | 2 | 实际载荷长度（奇偶校验分片填充到 max_size） |
+
+### 分组机制
+
+FEC 将连续的 KCP 包按 `data_shards` 个一组进行编码：
+
+- 每收集 `data_shards` 个数据分片后，生成 `parity_shards` 个奇偶校验分片
+- 数据分片立即发送（不等待凑齐一组），奇偶校验分片在组满时一起发送
+- 较短的数据分片用零填充到组内最大长度后参与 RS 编码
+- `seqid` 在 `paws`（`0xFFFFFFFF / total * total`）边界处回绕，确保 `seqid / total` 能正确计算 `group_id`
+
+### 编码器
+
+```c
+typedef struct rudp_fec_enc_s {
+    xylem_fec_t* codec;
+    int          data_shards;
+    int          parity_shards;
+    int          shard_size;     /* data_shards + parity_shards */
+    int          mtu;            /* 最大分片大小（线上） */
+    uint32_t     next_seqid;
+    uint32_t     paws;           /* seqid 回绕边界 */
+    int          shard_count;    /* 当前组已收集的数据分片数 */
+    int          max_payload;    /* 当前组最大载荷长度 */
+    uint8_t*     buf;            /* shard_size * mtu 连续缓冲区 */
+    uint8_t**    shard_ptrs;     /* RS 编码用指针数组 */
+    uint16_t*    payload_sizes;  /* 每个数据分片的实际载荷大小 */
+} rudp_fec_enc_t;
+```
+
+编码流程（`rudp_fec_enc_feed`）：
+
+1. 为 KCP 包添加 FEC 头，写入当前分片缓冲区
+2. 立即通过 `xylem_udp_send` 发送该数据分片
+3. 递增 `shard_count`，当达到 `data_shards` 时：
+   - 将所有数据分片载荷填充到等长
+   - 调用 `xylem_fec_encode` 生成奇偶校验分片
+   - 为每个奇偶校验分片写入 FEC 头并通过 `xylem_udp_send` 发送
+   - 重置 `shard_count` 和 `max_payload`
+
+### 解码器
+
+```c
+typedef struct rudp_fec_dec_s {
+    xylem_fec_t* codec;
+    int          data_shards;
+    int          parity_shards;
+    int          shard_size;     /* data_shards + parity_shards */
+    int          mtu;            /* 最大分片大小（线上） */
+    uint32_t     newest_group;   /* 已见最大 group_id */
+    bool         has_newest;
+    uint8_t*     buf;            /* MAX_GROUPS * shard_size * mtu */
+    uint8_t**    shard_ptrs;     /* RS 重建用指针数组 */
+    uint8_t*     marks;          /* RS 重建用标记数组 */
+    _rudp_fec_group_t groups[RUDP_FEC_MAX_GROUPS];
+} rudp_fec_dec_t;
+```
+
+解码流程（`rudp_fec_dec_feed`）：
+
+```mermaid
+flowchart TD
+    A[收到 UDP 包] --> B{FEC 头有效?}
+    B -->|否| C[返回 -1]
+    B -->|是| D[计算 group_id 和 slot_idx]
+    D --> E[查找或分配 group slot]
+    E --> F{重复分片?}
+    F -->|是| G[数据分片: 输出 KCP 载荷]
+    F -->|否| H[存储分片到 group 缓冲区]
+    H --> I{数据分片?}
+    I -->|是| J[输出 KCP 载荷供 ikcp_input]
+    I -->|否| K[继续]
+    J --> L{group.count >= data_shards?}
+    K --> L
+    L -->|否| M[返回 0]
+    L -->|是| N{有缺失的数据分片?}
+    N -->|否| O[清除 group，返回 0]
+    N -->|是| P[RS 重建缺失分片]
+    P --> Q[输出恢复的 KCP 包]
+    Q --> R[清除 group，返回恢复数量]
+```
+
+### 分组管理
+
+解码器维护最多 `RUDP_FEC_MAX_GROUPS`（3）个并发分组：
+
+- 按 `group_id`（`seqid / shard_size`）标识分组
+- 新分组优先使用空闲 slot；无空闲时驱逐最旧的分组（基于 `group_id` 的有符号差值比较，支持回绕）
+- 基于年龄的清理：与 `newest_group` 差值超过 `RUDP_FEC_MAX_GROUPS` 的分组被丢弃
+- 分组在收集到足够分片并完成恢复（或无需恢复）后立即清除
+
+### 常量
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `RUDP_FEC_HEADER_SIZE` | 8 | FEC 分片头大小 |
+| `RUDP_FEC_TYPE_DATA` | 0xF1 | 数据分片类型 |
+| `RUDP_FEC_TYPE_PARITY` | 0xF2 | 奇偶校验分片类型 |
+| `RUDP_FEC_MAX_GROUPS` | 3 | 解码器最大并发分组数 |
+| `RUDP_FEC_MAX_SHARDS` | 255 | 每组最大分片数（data + parity） |
+| `RUDP_FEC_MTU_LIMIT` | 1500 | 单个分片最大载荷 |
+
+### 内部 API
+
+| 函数 | 说明 |
+|------|------|
+| `rudp_fec_enc_create(data_shards, parity_shards, mtu)` | 创建编码器，mtu 为最大 UDP 载荷大小 |
+| `rudp_fec_enc_destroy(enc)` | 销毁编码器 |
+| `rudp_fec_enc_feed(enc, src, slen, dst)` | 喂入一个 KCP 包，输出 FEC 分片到 dst 数组 |
+| `rudp_fec_dec_create(data_shards, parity_shards, mtu)` | 创建解码器，mtu 为最大 UDP 载荷大小 |
+| `rudp_fec_dec_destroy(dec)` | 销毁解码器 |
+| `rudp_fec_dec_feed(dec, src, slen, dst)` | 喂入一个 FEC 分片，输出 KCP 载荷到 dst 数组 |
+
+### FEC 集成
+
+FEC 已集成到 `xylem-rudp.c` 的主数据路径中。通过 `opts->fec_data > 0 && opts->fec_parity > 0` 启用。
+
+发送路径：`ikcp_send -> ikcp_flush -> _rudp_kcp_output_cb -> rudp_fec_enc_feed -> xylem_udp_send`
+
+接收路径：`UDP on_read -> _rudp_fec_input -> rudp_fec_dec_feed -> ikcp_input`
+
+`_rudp_init_fec` 辅助函数在 `xylem_rudp_dial` 和服务端会话创建时调用，根据 opts 创建 FEC 编码器/解码器对。若创建失败则回滚已分配的资源。
+
+`_rudp_fec_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL 则直接调用 `ikcp_input`；否则通过 `rudp_fec_dec_feed` 解码，将数据分片的 KCP 载荷和恢复的分片分别喂入 `ikcp_input`。
+
+`_rudp_free_cb` 在延迟释放时销毁 FEC 编码器和解码器。
 
 ## 数据路径
 
@@ -288,8 +452,14 @@ flowchart TD
     B -->|否 客户端| C{是 ACK 且 conv 匹配?}
     C -->|是| D[handshake_done = true + on_connect]
     C -->|否| E[忽略]
-    B -->|是| F[ikcp_input 喂入 KCP]
-    F --> G[ikcp_flush 立即发送 ACK]
+    B -->|是| F[_rudp_fec_input]
+    F --> FA{fec_dec 存在?}
+    FA -->|否| FB[ikcp_input 直接喂入 KCP]
+    FA -->|是| FC[rudp_fec_dec_feed 解码]
+    FC --> FD[喂入数据分片 KCP 载荷]
+    FD --> FE[喂入恢复的分片]
+    FB --> G[ikcp_flush 立即发送 ACK]
+    FE --> G
     G --> H[循环 ikcp_recv]
     H --> I{n > 0?}
     I -->|是| J[回调 on_read]
@@ -332,9 +502,8 @@ sequenceDiagram
     RUDP->>UDP: xylem_udp_close()
     UDP->>RUDP: _rudp_client_close_cb
     RUDP->>RUDP: closing = true + 停止定时器（防御性）
-    RUDP->>RUDP: 传播 UDP 层错误（若 RUDP 未设置自身错误）
     RUDP->>RUDP: ikcp_release
-    RUDP->>User: handler->on_close(close_err, close_errmsg)
+    RUDP->>User: handler->on_close
     RUDP->>Loop: xylem_loop_post(_rudp_free_cb)
     Loop->>RUDP: 下一轮迭代释放内存
 ```
@@ -366,7 +535,7 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 
 ## 延迟释放
 
-所有会话内存通过 `xylem_loop_post(_rudp_free_cb)` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。`_rudp_free_cb` 负责销毁 `update_timer`、`handshake_timer`（若存在）并释放会话结构体。
+所有会话内存通过 `xylem_loop_post(_rudp_free_cb)` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。`_rudp_free_cb` 负责销毁 `update_timer`、`handshake_timer`（若存在）、FEC 编码器/解码器（若存在）并释放会话结构体。
 
 ## 与 DTLS 模块的关键差异
 

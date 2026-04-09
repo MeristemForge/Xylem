@@ -50,6 +50,8 @@ typedef struct xylem_rudp_opts_s {
     bool     stream;        /**< true: byte-stream mode, false: message mode. */
     uint64_t timeout_ms;    /**< Dead-link timeout in ms, 0 to disable. */
     uint64_t handshake_ms;  /**< Handshake timeout in ms, 0 for default (5000). */
+    int      fec_data;      /**< FEC data shards, 0 to disable FEC. */
+    int      fec_parity;    /**< FEC parity shards, 0 to disable FEC. */
 } xylem_rudp_opts_t;
 
 /**

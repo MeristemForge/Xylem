@@ -78,6 +78,7 @@ set(SRCS
 	src/ws/ws-transport-tcp.c
 	src/rudp/kcp/ikcp.c
 	src/rudp/xylem-rudp.c
+	src/rudp/rudp-fec.c
 	src/fec/reedsolomon-c/rs.c
 	src/fec/xylem-fec.c
 )
