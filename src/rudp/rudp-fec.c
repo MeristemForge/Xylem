@@ -67,10 +67,6 @@ struct rudp_fec_dec_s {
     _fec_group_t groups[RUDP_FEC_MAX_GROUPS];
 };
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
 static uint32_t _fec_read_u32_le(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -91,10 +87,6 @@ static void _fec_write_u16_le(uint8_t* p, uint16_t v) {
     p[0] = (uint8_t)(v);
     p[1] = (uint8_t)(v >> 8);
 }
-
-/* ------------------------------------------------------------------ */
-/* Encoder                                                             */
-/* ------------------------------------------------------------------ */
 
 rudp_fec_enc_t* rudp_fec_enc_create(int data_shards, int parity_shards,
                                     int mtu) {
@@ -238,10 +230,6 @@ int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
 
     return dst_count;
 }
-
-/* ------------------------------------------------------------------ */
-/* Decoder                                                             */
-/* ------------------------------------------------------------------ */
 
 rudp_fec_dec_t* rudp_fec_dec_create(int data_shards, int parity_shards,
                                     int mtu) {
