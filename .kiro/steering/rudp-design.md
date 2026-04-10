@@ -423,10 +423,12 @@ flowchart TD
 |------|------|
 | `rudp_fec_enc_create(data_shards, parity_shards, mtu)` | 创建编码器，mtu 为最大 UDP 载荷大小 |
 | `rudp_fec_enc_destroy(enc)` | 销毁编码器 |
-| `rudp_fec_enc_feed(enc, src, slen, dst)` | 喂入一个 KCP 包，输出 FEC 分片到 dst 数组 |
+| `rudp_fec_enc_feed_size(enc)` | 返回 `enc_feed` 单次调用最大输出条目数（`1 + parity_shards`），用于预分配 dst 数组 |
+| `rudp_fec_enc_feed(enc, src, slen, dst, dlen)` | 喂入一个 KCP 包，输出 FEC 分片到 dst 数组；dlen 为 dst 可用条目数，不足时返回 -1 |
 | `rudp_fec_dec_create(data_shards, parity_shards, mtu)` | 创建解码器，mtu 为最大 UDP 载荷大小 |
 | `rudp_fec_dec_destroy(dec)` | 销毁解码器 |
-| `rudp_fec_dec_feed(dec, src, slen, dst)` | 喂入一个 FEC 分片，输出 KCP 载荷到 dst 数组 |
+| `rudp_fec_dec_feed_size(dec)` | 返回 `dec_feed` 单次调用最大输出条目数（`data_shards`），用于预分配 dst 数组 |
+| `rudp_fec_dec_feed(dec, src, slen, dst, dlen)` | 喂入一个 FEC 分片，输出 KCP 载荷到 dst 数组；dlen 为 dst 可用条目数，不足时返回 -1 |
 
 ### FEC 集成
 
