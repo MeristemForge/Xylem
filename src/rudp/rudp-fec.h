@@ -66,6 +66,19 @@ extern rudp_fec_enc_t* rudp_fec_enc_create(int data_shards,
 extern void rudp_fec_enc_destroy(rudp_fec_enc_t* enc);
 
 /**
+ * @brief Compute the maximum number of output entries from enc_feed.
+ *
+ * Returns the worst-case number of rudp_fec_buf_t entries that a
+ * single call to rudp_fec_enc_feed() may produce. Use this to size
+ * the dst array.
+ *
+ * @param enc  Encoder handle.
+ *
+ * @return Maximum output entry count (1 + parity_shards).
+ */
+extern int rudp_fec_enc_feed_size(rudp_fec_enc_t* enc);
+
+/**
  * @brief Feed one KCP output packet into the encoder.
  *
  * The encoder prepends a FEC header and caches the shard. On every
@@ -75,14 +88,15 @@ extern void rudp_fec_enc_destroy(rudp_fec_enc_t* enc);
  * @param enc   Encoder handle.
  * @param src   KCP packet data.
  * @param slen  KCP packet length in bytes.
- * @param dst   Output array, caller provides space for
- *              (1 + parity_shards) entries.
+ * @param dst   Output array sized by rudp_fec_enc_feed_size().
+ * @param dlen  Number of entries available in dst[].
  *
- * @return Number of shards written to dst[].
+ * @return Number of shards written to dst[], or -1 if dlen is
+ *         insufficient.
  */
 extern int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
                              const void* src, size_t slen,
-                             rudp_fec_buf_t* dst);
+                             rudp_fec_buf_t* dst, int dlen);
 
 /**
  * @brief Create a FEC decoder.
@@ -105,6 +119,19 @@ extern rudp_fec_dec_t* rudp_fec_dec_create(int data_shards,
 extern void rudp_fec_dec_destroy(rudp_fec_dec_t* dec);
 
 /**
+ * @brief Compute the maximum number of output entries from dec_feed.
+ *
+ * Returns the worst-case number of rudp_fec_buf_t entries that a
+ * single call to rudp_fec_dec_feed() may produce. Use this to size
+ * the dst array.
+ *
+ * @param dec  Decoder handle.
+ *
+ * @return Maximum output entry count (data_shards).
+ */
+extern int rudp_fec_dec_feed_size(rudp_fec_dec_t* dec);
+
+/**
  * @brief Feed one received FEC shard into the decoder.
  *
  * Strips the FEC header, collects shards by group, and attempts
@@ -114,12 +141,12 @@ extern void rudp_fec_dec_destroy(rudp_fec_dec_t* dec);
  * @param dec   Decoder handle.
  * @param src   FEC shard (8-byte FEC header + KCP payload).
  * @param slen  Length of the FEC shard in bytes.
- * @param dst   Output array, caller provides space for
- *              data_shards entries.
+ * @param dst   Output array sized by rudp_fec_dec_feed_size().
+ * @param dlen  Number of entries available in dst[].
  *
  * @return Number of KCP packets written to dst[] (>= 0), or -1 if
- *         the shard is invalid.
+ *         the shard is invalid or dlen is insufficient.
  */
 extern int rudp_fec_dec_feed(rudp_fec_dec_t* dec,
                              const void* src, size_t slen,
-                             rudp_fec_buf_t* dst);
+                             rudp_fec_buf_t* dst, int dlen);

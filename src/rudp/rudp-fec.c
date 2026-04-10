@@ -146,9 +146,17 @@ void rudp_fec_enc_destroy(rudp_fec_enc_t* enc) {
     free(enc);
 }
 
+int rudp_fec_enc_feed_size(rudp_fec_enc_t* enc) {
+    return 1 + enc->parity_shards;
+}
+
 int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
                       const void* src, size_t slen,
-                      rudp_fec_buf_t* dst) {
+                      rudp_fec_buf_t* dst, int dlen) {
+    if (dlen < 1 + enc->parity_shards) {
+        return -1;
+    }
+
     int dst_count = 0;
     int idx = enc->shard_count;
     uint8_t* shard = enc->shard_ptrs[idx];
@@ -344,9 +352,17 @@ static void _fec_dec_discard_old(rudp_fec_dec_t* dec) {
     }
 }
 
+int rudp_fec_dec_feed_size(rudp_fec_dec_t* dec) {
+    return dec->data_shards;
+}
+
 int rudp_fec_dec_feed(rudp_fec_dec_t* dec,
                       const void* src, size_t slen,
-                      rudp_fec_buf_t* dst) {
+                      rudp_fec_buf_t* dst, int dlen) {
+    if (dlen < dec->data_shards) {
+        return -1;
+    }
+
     int dst_count = 0;
 
     if (slen < RUDP_FEC_HEADER_SIZE) {

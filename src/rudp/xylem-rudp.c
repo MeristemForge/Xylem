@@ -224,8 +224,10 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
         return -1;
     }
     if (rudp->fec_enc) {
+        int max_out = rudp_fec_enc_feed_size(rudp->fec_enc);
         rudp_fec_buf_t shards[RUDP_FEC_MAX_SHARDS];
-        int n = rudp_fec_enc_feed(rudp->fec_enc, buf, (size_t)len, shards);
+        int n = rudp_fec_enc_feed(rudp->fec_enc, buf, (size_t)len,
+                                  shards, max_out);
         for (int i = 0; i < n; i++) {
             xylem_udp_send(rudp->udp, &rudp->peer_addr,
                            shards[i].data, shards[i].len);
@@ -415,8 +417,9 @@ static void _rudp_fec_input(xylem_rudp_t* rudp, void* data, size_t len) {
         return;
     }
 
+    int max_out = rudp_fec_dec_feed_size(rudp->fec_dec);
     rudp_fec_buf_t out[RUDP_FEC_MAX_SHARDS];
-    int n = rudp_fec_dec_feed(rudp->fec_dec, data, len, out);
+    int n = rudp_fec_dec_feed(rudp->fec_dec, data, len, out, max_out);
 
     for (int i = 0; i < n; i++) {
         ikcp_input(rudp->kcp, (const char*)out[i].data, (long)out[i].len);
