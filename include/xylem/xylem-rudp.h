@@ -155,6 +155,22 @@ extern void* xylem_rudp_get_userdata(xylem_rudp_t* rudp);
 extern void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
 
 /**
+ * @brief Override FEC parameters for a server-side session.
+ *
+ * Must be called inside the on_accept callback before it returns.
+ * Pass 0/0 to disable FEC for this session. Has no effect on
+ * client-side connections created by xylem_rudp_dial.
+ *
+ * @param rudp        RUDP session handle.
+ * @param fec_data    Number of data shards, 0 to disable.
+ * @param fec_parity  Number of parity shards, 0 to disable.
+ *
+ * @return 0 on success, -1 if called outside on_accept.
+ */
+extern int xylem_rudp_set_fec(xylem_rudp_t* rudp,
+                              int fec_data, int fec_parity);
+
+/**
  * @brief Create a reliable UDP server and start listening.
  *
  * Binds a UDP socket and demuxes incoming KCP sessions by

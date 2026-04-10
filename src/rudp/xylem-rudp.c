@@ -76,9 +76,12 @@ struct xylem_rudp_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
+    bool                   fec_pending;  /* true while on_accept may override */
     int                    close_err;
     const char*            close_errmsg;
     uint32_t               conv;
+    int                    fec_data;     /* per-session FEC data shards */
+    int                    fec_parity;   /* per-session FEC parity shards */
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    update_timer;
     xylem_loop_timer_t*    handshake_timer; /* client-side only */
@@ -245,7 +248,8 @@ static uint32_t _rudp_clock_ms(void) {
                       0xFFFFFFFF);
 }
 
-static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts) {
+static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts,
+                            bool fec_enabled) {
     if (!opts) {
         ikcp_nodelay(kcp, 0, RUDP_DEFAULT_INTERVAL, 0, 0);
         ikcp_wndsize(kcp, 32, 128);
@@ -268,7 +272,6 @@ static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts) {
     int mtu = opts->mtu > 0 ? opts->mtu : 1400;
     /* Reserve space for FEC header so the total UDP payload stays
      * within the configured MTU. */
-    bool fec_enabled = (opts->fec_data > 0 && opts->fec_parity > 0);
     if (fec_enabled) {
         mtu -= RUDP_FEC_HEADER_SIZE;
     }
@@ -291,7 +294,8 @@ static ikcpcb* _rudp_create_kcp(xylem_rudp_t* rudp, uint32_t conv,
         return NULL;
     }
     ikcp_setoutput(kcp, _rudp_kcp_output_cb);
-    _rudp_apply_opts(kcp, opts);
+    bool fec = (rudp->fec_data > 0 && rudp->fec_parity > 0);
+    _rudp_apply_opts(kcp, opts, fec);
     return kcp;
 }
 
@@ -493,20 +497,19 @@ static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
     xylem_loop_post(rudp->loop, _rudp_free_cb, rudp);
 }
 
-/* Helper to create FEC encoder/decoder pair from opts. */
-static bool _rudp_init_fec(xylem_rudp_t* rudp,
-                           const xylem_rudp_opts_t* opts) {
-    if (!opts || opts->fec_data <= 0 || opts->fec_parity <= 0) {
+/* Helper to create FEC encoder/decoder pair from per-session params. */
+static bool _rudp_init_fec(xylem_rudp_t* rudp, int mtu) {
+    if (rudp->fec_data <= 0 || rudp->fec_parity <= 0) {
         return true;
     }
-    int mtu = opts->mtu > 0 ? opts->mtu : 1400;
-    rudp->fec_enc = rudp_fec_enc_create(opts->fec_data, opts->fec_parity,
-                                        mtu);
+    int effective_mtu = mtu > 0 ? mtu : 1400;
+    rudp->fec_enc = rudp_fec_enc_create(rudp->fec_data, rudp->fec_parity,
+                                        effective_mtu);
     if (!rudp->fec_enc) {
         return false;
     }
-    rudp->fec_dec = rudp_fec_dec_create(opts->fec_data, opts->fec_parity,
-                                        mtu);
+    rudp->fec_dec = rudp_fec_dec_create(rudp->fec_data, rudp->fec_parity,
+                                        effective_mtu);
     if (!rudp->fec_dec) {
         rudp_fec_enc_destroy(rudp->fec_enc);
         rudp->fec_enc = NULL;
@@ -551,18 +554,13 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
             rudp->peer_addr = *addr;
             rudp->conv      = hs_conv;
             rudp->loop      = server->loop;
+            rudp->fec_data  = server->opts.fec_data;
+            rudp->fec_parity = server->opts.fec_parity;
 
             rudp->update_timer = xylem_loop_create_timer(server->loop);
 
             rudp->kcp = _rudp_create_kcp(rudp, hs_conv, &server->opts);
             if (!rudp->kcp) {
-                xylem_loop_destroy_timer(rudp->update_timer);
-                free(rudp);
-                return;
-            }
-
-            if (!_rudp_init_fec(rudp, &server->opts)) {
-                ikcp_release(rudp->kcp);
                 xylem_loop_destroy_timer(rudp->update_timer);
                 free(rudp);
                 return;
@@ -577,71 +575,79 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
                                    RUDP_DEFAULT_INTERVAL, 0);
             _rudp_schedule_update(rudp);
 
+            /* Allow on_accept to override FEC params via set_fec. */
+            rudp->fec_pending = true;
             if (rudp->handler && rudp->handler->on_accept) {
                 rudp->handler->on_accept(server, rudp);
+            }
+            rudp->fec_pending = false;
+
+            /* Re-adjust KCP MTU to match final FEC setting. */
+            bool fec = (rudp->fec_data > 0 && rudp->fec_parity > 0);
+            int mtu = server->opts.mtu > 0 ? server->opts.mtu : 1400;
+            ikcp_setmtu(rudp->kcp,
+                        fec ? mtu - RUDP_FEC_HEADER_SIZE : mtu);
+
+            if (!_rudp_init_fec(rudp, server->opts.mtu)) {
+                xylem_rbtree_erase(&server->sessions, &rudp->server_node);
+                ikcp_release(rudp->kcp);
+                xylem_loop_destroy_timer(rudp->update_timer);
+                free(rudp);
+                return;
             }
         }
         return;
     }
 
     /**
-     * Regular data packet. When FEC is enabled, the first 4 bytes are
-     * the FEC seqid (not the KCP conv). We need to try FEC decoding
-     * for each known session. When FEC is disabled, the first 4 bytes
-     * are the KCP conv as before.
-     *
-     * Strategy: if the server has FEC enabled, extract the KCP conv
-     * from the payload after the FEC header. Otherwise use the raw
-     * first 4 bytes.
+     * Regular data packet. With per-session FEC, some sessions may
+     * have FEC enabled while others do not. Distinguish by checking
+     * the FEC type marker at offset 4-5: valid FEC packets carry
+     * RUDP_FEC_TYPE_DATA (0xF1) or RUDP_FEC_TYPE_PARITY (0xF2),
+     * which cannot collide with KCP header bytes at that position.
      */
-    bool fec_enabled = (server->opts.fec_data > 0 &&
-                        server->opts.fec_parity > 0);
+    if (len < RUDP_CONV_SIZE) {
+        return;
+    }
 
-    if (fec_enabled) {
-        /* FEC packet: [fec_hdr:8][kcp_payload...] */
+    const uint8_t* p = (const uint8_t*)data;
+    uint16_t maybe_fec_type = 0;
+    if (len >= RUDP_FEC_HEADER_SIZE) {
+        maybe_fec_type = (uint16_t)((uint16_t)p[4] |
+                                    ((uint16_t)p[5] << 8));
+    }
+
+    if (maybe_fec_type == RUDP_FEC_TYPE_DATA) {
+        /* FEC data shard: KCP conv is at offset 8 (after FEC header). */
         if (len < RUDP_FEC_HEADER_SIZE + RUDP_CONV_SIZE) {
             return;
         }
-        const uint8_t* p = (const uint8_t*)data;
-        uint16_t fec_type = (uint16_t)((uint16_t)p[4] |
-                                       ((uint16_t)p[5] << 8));
-
-        if (fec_type == RUDP_FEC_TYPE_DATA) {
-            /* Data shard: KCP conv is at offset 8 (after FEC header). */
-            uint32_t conv;
-            memcpy(&conv, p + RUDP_FEC_HEADER_SIZE, RUDP_CONV_SIZE);
-            xylem_rudp_t* rudp = _rudp_find_session(server, addr, conv);
-            if (!rudp) {
-                return;
-            }
-            _rudp_fec_input(rudp, data, len);
-        } else if (fec_type == RUDP_FEC_TYPE_PARITY) {
-            /**
-             * Parity shard: no KCP conv available. Compute the group_id
-             * from the FEC seqid and find which session owns this group
-             * by checking all sessions from this peer address.
-             *
-             * For simplicity, iterate sessions from this address and
-             * feed the parity shard to each one's decoder. Only the
-             * decoder with a matching group will accept it.
-             */
-            xylem_rbtree_node_t* node =
-                xylem_rbtree_first(&server->sessions);
-            while (node) {
-                xylem_rudp_t* rudp =
-                    xylem_rbtree_entry(node, xylem_rudp_t, server_node);
-                node = xylem_rbtree_next(node);
-                if (_rudp_addr_cmp(&rudp->peer_addr, addr) == 0 &&
-                    rudp->fec_dec) {
-                    _rudp_fec_input(rudp, data, len);
-                }
+        uint32_t conv;
+        memcpy(&conv, p + RUDP_FEC_HEADER_SIZE, RUDP_CONV_SIZE);
+        xylem_rudp_t* rudp = _rudp_find_session(server, addr, conv);
+        if (!rudp) {
+            return;
+        }
+        _rudp_fec_input(rudp, data, len);
+    } else if (maybe_fec_type == RUDP_FEC_TYPE_PARITY) {
+        /**
+         * Parity shard: no KCP conv available. Feed to all sessions
+         * from this peer address that have FEC enabled; only the
+         * decoder with a matching group will accept it.
+         */
+        xylem_rbtree_node_t* node =
+            xylem_rbtree_first(&server->sessions);
+        while (node) {
+            xylem_rudp_t* rudp =
+                xylem_rbtree_entry(node, xylem_rudp_t, server_node);
+            node = xylem_rbtree_next(node);
+            if (_rudp_addr_cmp(&rudp->peer_addr, addr) == 0 &&
+                rudp->fec_dec) {
+                _rudp_fec_input(rudp, data, len);
             }
         }
     } else {
-        /* No FEC: first 4 bytes are KCP conv. */
-        if (len < RUDP_CONV_SIZE) {
-            return;
-        }
+        /* Raw KCP packet: first 4 bytes are conv. */
         uint32_t conv;
         memcpy(&conv, data, RUDP_CONV_SIZE);
 
@@ -690,6 +696,8 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
     rudp->peer_addr = *addr;
     rudp->conv      = conv;
     rudp->loop      = loop;
+    rudp->fec_data  = opts ? opts->fec_data : 0;
+    rudp->fec_parity = opts ? opts->fec_parity : 0;
 
     xylem_udp_t* udp = xylem_udp_dial(loop, addr,
                                       &_rudp_client_udp_handler);
@@ -718,7 +726,7 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         return NULL;
     }
 
-    if (!_rudp_init_fec(rudp, opts)) {
+    if (!_rudp_init_fec(rudp, opts ? opts->mtu : 0)) {
         ikcp_release(rudp->kcp);
         xylem_loop_destroy_timer(rudp->update_timer);
         xylem_loop_destroy_timer(rudp->handshake_timer);
@@ -809,6 +817,15 @@ void* xylem_rudp_get_userdata(xylem_rudp_t* rudp) {
 
 void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud) {
     rudp->userdata = ud;
+}
+
+int xylem_rudp_set_fec(xylem_rudp_t* rudp, int fec_data, int fec_parity) {
+    if (!rudp->fec_pending) {
+        return -1;
+    }
+    rudp->fec_data   = fec_data;
+    rudp->fec_parity = fec_parity;
+    return 0;
 }
 
 xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,

@@ -103,9 +103,12 @@ struct xylem_rudp_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
+    bool                   fec_pending;     /* true: on_accept 可能覆盖 FEC 参数 */
     int                    close_err;
     const char*            close_errmsg;
     uint32_t               conv;            /* KCP 会话 ID */
+    int                    fec_data;        /* 每会话 FEC 数据分片数 */
+    int                    fec_parity;      /* 每会话 FEC 奇偶校验分片数 */
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    update_timer;     /* KCP 更新定时器 */
     xylem_loop_timer_t*    handshake_timer;  /* 仅客户端 */
@@ -114,6 +117,8 @@ struct xylem_rudp_s {
     rudp_fec_dec_t*        fec_dec;          /* FEC 解码器，NULL 表示禁用 */
 };
 ```
+
+`fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
 
 ### RUDP 服务器
 
