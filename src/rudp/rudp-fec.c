@@ -30,6 +30,19 @@
 /* Maximum concurrent shard groups kept before discarding old ones. */
 #define RUDP_FEC_MAX_GROUPS  3
 
+/**
+ * FEC shard header layout (8 bytes, little-endian):
+ *
+ *   [seqid:4B][type:2B][size:2B]
+ *
+ * seqid  -- monotonic sequence number, wraps at paws boundary
+ * type   -- RUDP_FEC_TYPE_DATA (0xF1) or RUDP_FEC_TYPE_PARITY (0xF2)
+ * size   -- actual payload length (parity shards are zero-padded to max)
+ */
+#define FEC_OFF_SEQID 0
+#define FEC_OFF_TYPE  4
+#define FEC_OFF_SIZE  6
+
 struct rudp_fec_enc_s {
     xylem_fec_t* codec;
     int          data_shards;
@@ -161,9 +174,9 @@ int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
     int idx = enc->shard_count;
     uint8_t* shard = enc->shard_ptrs[idx];
 
-    _fec_write_u32_le(shard, enc->next_seqid);
-    _fec_write_u16_le(shard + 4, RUDP_FEC_TYPE_DATA);
-    _fec_write_u16_le(shard + 6, (uint16_t)slen);
+    _fec_write_u32_le(shard + FEC_OFF_SEQID, enc->next_seqid);
+    _fec_write_u16_le(shard + FEC_OFF_TYPE, RUDP_FEC_TYPE_DATA);
+    _fec_write_u16_le(shard + FEC_OFF_SIZE, (uint16_t)slen);
 
     memcpy(shard + RUDP_FEC_HEADER_SIZE, src, slen);
 
@@ -217,9 +230,11 @@ int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
             /* Write FEC headers for parity shards and output them. */
             for (int i = 0; i < enc->parity_shards; i++) {
                 uint8_t* ps = enc->shard_ptrs[enc->data_shards + i];
-                _fec_write_u32_le(ps, enc->next_seqid);
-                _fec_write_u16_le(ps + 4, RUDP_FEC_TYPE_PARITY);
-                _fec_write_u16_le(ps + 6, (uint16_t)encode_len);
+
+                _fec_write_u32_le(ps + FEC_OFF_SEQID, enc->next_seqid);
+                _fec_write_u16_le(ps + FEC_OFF_TYPE, RUDP_FEC_TYPE_PARITY);
+                _fec_write_u16_le(ps + FEC_OFF_SIZE, (uint16_t)encode_len);
+                
                 enc->next_seqid = (enc->next_seqid + 1) % enc->paws;
                 dst[dst_count].data = ps;
                 dst[dst_count].len  =
@@ -370,9 +385,9 @@ int rudp_fec_dec_feed(rudp_fec_dec_t* dec,
     }
 
     const uint8_t* p = (const uint8_t*)src;
-    uint32_t seqid = _fec_read_u32_le(p);
-    uint16_t type  = _fec_read_u16_le(p + 4);
-    uint16_t size  = _fec_read_u16_le(p + 6);
+    uint32_t seqid = _fec_read_u32_le(p + FEC_OFF_SEQID);
+    uint16_t type  = _fec_read_u16_le(p + FEC_OFF_TYPE);
+    uint16_t size  = _fec_read_u16_le(p + FEC_OFF_SIZE);
 
     if (type != RUDP_FEC_TYPE_DATA && type != RUDP_FEC_TYPE_PARITY) {
         return -1;
