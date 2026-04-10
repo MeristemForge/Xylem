@@ -48,6 +48,24 @@ cmake -B out -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
 Common values for `CMAKE_BUILD_TYPE`: Debug, Release, RelWithDebInfo, MinSizeRel
 
+### Feature Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `XYLEM_ENABLE_TESTING` | OFF | Enable unit tests |
+| `XYLEM_ENABLE_TLS` | OFF | Enable TLS/DTLS support (requires OpenSSL >= 3.5) |
+| `XYLEM_ENABLE_DYNAMIC_LIBRARY` | OFF | Build shared library instead of static |
+| `XYLEM_ENABLE_ASAN` | OFF | Address sanitizer |
+| `XYLEM_ENABLE_TSAN` | OFF | Thread sanitizer |
+| `XYLEM_ENABLE_UBSAN` | OFF | Undefined behavior sanitizer |
+| `XYLEM_ENABLE_COVERAGE` | OFF | Code coverage reporting |
+
+Example — enable testing and TLS:
+
+```bash
+cmake -B out -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_TLS=ON
+```
+
 ## Build
 
 ### Multi-Config
@@ -61,6 +79,8 @@ cmake --build out -j 8
 ```
 
 ## Run Tests
+
+Tests require `XYLEM_ENABLE_TESTING=ON` at configure time.
 
 ### Multi-Config
 ```bash
@@ -85,43 +105,42 @@ Example: `ctest --test-dir out -R list --output-on-failure` runs only `test-list
 Run the full test suite with each sanitizer to catch different classes of bugs.
 
 ```bash
-cmake -B out -D<PROJECT>_ENABLE_ASAN=ON
+cmake -B out -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_ASAN=ON
 cmake --build out
+ctest --test-dir out --output-on-failure
 ```
 
 | Sanitizer | What it catches | Option |
 |-----------|----------------|--------|
-| ASAN | Buffer overflow, use-after-free, memory leaks | `-D<PROJECT>_ENABLE_ASAN=ON` |
-| TSAN | Data races, deadlocks | `-D<PROJECT>_ENABLE_TSAN=ON` |
-| UBSAN | Undefined behavior (signed overflow, null deref, etc.) | `-D<PROJECT>_ENABLE_UBSAN=ON` |
+| ASAN | Buffer overflow, use-after-free, memory leaks | `-DXYLEM_ENABLE_ASAN=ON` |
+| TSAN | Data races, deadlocks | `-DXYLEM_ENABLE_TSAN=ON` |
+| UBSAN | Undefined behavior (signed overflow, null deref, etc.) | `-DXYLEM_ENABLE_UBSAN=ON` |
 
 ASAN and TSAN cannot be enabled simultaneously. Run them in separate builds.
 
 ## Code Coverage
 
-Coverage requires `<PROJECT>_ENABLE_TESTING=ON` and `<PROJECT>_ENABLE_COVERAGE=ON`.
+Coverage requires `XYLEM_ENABLE_TESTING=ON` and `XYLEM_ENABLE_COVERAGE=ON`.
 
 ### Linux/macOS
 
 ```bash
-cmake -B out -D<PROJECT>_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
+cmake -B out -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build out -j 8
 cmake --build out --target coverage
 ```
 
-Requires `lcov` and `genhtml`.
+Requires `lcov` and `genhtml`. HTML report is generated at `out/coverage/html/`.
 
 ### Windows
 
 ```bash
-cmake -B out -D<PROJECT>_ENABLE_COVERAGE=ON
+cmake -B out -DXYLEM_ENABLE_TESTING=ON -DXYLEM_ENABLE_COVERAGE=ON
 cmake --build out --config Debug
 cmake --build out --target coverage
 ```
 
-Requires OpenCppCoverage.
-
-HTML report is generated at `out/coverage/`.
+Requires OpenCppCoverage. HTML report is generated at `out/coverage/`.
 
 ## Install
 
