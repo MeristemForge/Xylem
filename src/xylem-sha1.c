@@ -175,6 +175,9 @@ void xylem_sha1_final(xylem_sha1_t* ctx, uint8_t digest[20]) {
 }
 
 void xylem_sha1_destroy(xylem_sha1_t* ctx) {
+    if (!ctx) {
+        return;
+    }
     memset(ctx, 0, sizeof(xylem_sha1_t));
     free(ctx);
 }

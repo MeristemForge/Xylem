@@ -23,33 +23,45 @@
 #include "assert.h"
 
 typedef struct test_entry_s {
-    int                  key;
+    int32_t              key;
     xylem_rbtree_node_t  node;
 } test_entry_t;
 
 static int _cmp_nn(const xylem_rbtree_node_t* a, const xylem_rbtree_node_t* b) {
     const test_entry_t* ea = xylem_rbtree_entry(a, test_entry_t, node);
     const test_entry_t* eb = xylem_rbtree_entry(b, test_entry_t, node);
-    if (ea->key < eb->key) return -1;
-    if (ea->key > eb->key) return 1;
+    if (ea->key < eb->key) {
+        return -1;
+    }
+    if (ea->key > eb->key) {
+        return 1;
+    }
     return 0;
 }
 
 static int _cmp_kn(const void* key, const xylem_rbtree_node_t* n) {
     int                 k = *(const int*)key;
     const test_entry_t* e = xylem_rbtree_entry(n, test_entry_t, node);
-    if (k < e->key) return -1;
-    if (k > e->key) return 1;
+    if (k < e->key) {
+        return -1;
+    }
+    if (k > e->key) {
+        return 1;
+    }
     return 0;
 }
 
 /* Validate red-black tree properties recursively.
  * Returns black-height on success, -1 on violation. */
 static int _validate_rbtree(xylem_rbtree_node_t* node, xylem_rbtree_node_t* parent) {
-    if (!node) return 1;
+    if (!node) {
+        return 1;
+    }
 
     /* Parent pointer check */
-    if (node->parent != parent) return -1;
+    if (node->parent != parent) {
+        return -1;
+    }
 
     /* Red node must not have red children */
     if (node->color == 0) { /* RED */
@@ -61,17 +73,25 @@ static int _validate_rbtree(xylem_rbtree_node_t* node, xylem_rbtree_node_t* pare
     int lh = _validate_rbtree(node->left, node);
     int rh = _validate_rbtree(node->right, node);
 
-    if (lh == -1 || rh == -1) return -1;
+    if (lh == -1 || rh == -1) {
+        return -1;
+    }
     /* Black-height must be equal on both sides */
-    if (lh != rh) return -1;
+    if (lh != rh) {
+        return -1;
+    }
 
     return lh + (node->color == 1 ? 1 : 0); /* BLACK = 1 */
 }
 
 static bool _validate_tree(xylem_rbtree_t* tree) {
-    if (!tree->root) return true;
+    if (!tree->root) {
+        return true;
+    }
     /* Root must be black */
-    if (tree->root->color != 1) return false;
+    if (tree->root->color != 1) {
+        return false;
+    }
     return _validate_rbtree(tree->root, NULL) != -1;
 }
 

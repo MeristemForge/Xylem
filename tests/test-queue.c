@@ -23,7 +23,7 @@
 #include "assert.h"
 
 typedef struct test_item_s {
-    int                 value;
+    int32_t             value;
     xylem_queue_node_t  node;
 } test_item_t;
 

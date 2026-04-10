@@ -60,7 +60,9 @@ int xylem_xrbtree_insert(xylem_xrbtree_t* tree, void* data) {
         return -1;
     }
     _xrbtree_node_t* n = malloc(sizeof(_xrbtree_node_t));
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     n->data   = data;
     n->cmp_dd = tree->cmp_dd;
     n->cmp_kd = tree->cmp_kd;
@@ -75,7 +77,9 @@ void* xylem_xrbtree_find(xylem_xrbtree_t* tree, const void* key) {
 
 int xylem_xrbtree_erase(xylem_xrbtree_t* tree, const void* key) {
     xylem_rbtree_node_t* n = xylem_rbtree_find(&tree->tree, key);
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     xylem_rbtree_erase(&tree->tree, n);
     free(xylem_rbtree_entry(n, _xrbtree_node_t, node));
     return 0;

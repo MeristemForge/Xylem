@@ -25,16 +25,24 @@
 static int _int_cmp_dd(const void* a, const void* b) {
     int va = *(const int*)a;
     int vb = *(const int*)b;
-    if (va < vb) return -1;
-    if (va > vb) return 1;
+    if (va < vb) {
+        return -1;
+    }
+    if (va > vb) {
+        return 1;
+    }
     return 0;
 }
 
 static int _int_cmp_kd(const void* key, const void* data) {
     int vk = *(const int*)key;
     int vd = *(const int*)data;
-    if (vk < vd) return -1;
-    if (vk > vd) return 1;
+    if (vk < vd) {
+        return -1;
+    }
+    if (vk > vd) {
+        return 1;
+    }
     return 0;
 }
 

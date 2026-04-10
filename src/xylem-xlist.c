@@ -51,14 +51,18 @@ size_t xylem_xlist_len(xylem_xlist_t* list) {
 
 int xylem_xlist_insert_head(xylem_xlist_t* list, void* data) {
     _xlist_node_t* n = _xlist_alloc_node(data);
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     xylem_list_insert_head(&list->list, &n->node);
     return 0;
 }
 
 int xylem_xlist_insert_tail(xylem_xlist_t* list, void* data) {
     _xlist_node_t* n = _xlist_alloc_node(data);
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     xylem_list_insert_tail(&list->list, &n->node);
     return 0;
 }

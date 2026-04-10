@@ -115,6 +115,9 @@ xylem_rudp_ctx_t* xylem_rudp_ctx_create(void) {
 }
 
 void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
     free(ctx);
 }
 

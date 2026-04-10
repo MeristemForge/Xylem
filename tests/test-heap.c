@@ -23,7 +23,7 @@
 #include "assert.h"
 
 typedef struct test_item_s {
-    int               value;
+    int32_t           value;
     xylem_heap_node_t node;
 } test_item_t;
 
@@ -32,14 +32,20 @@ static int _test_cmp_min(
     const xylem_heap_node_t* parent) {
     const test_item_t* c = xylem_heap_entry(child, test_item_t, node);
     const test_item_t* p = xylem_heap_entry(parent, test_item_t, node);
-    if (c->value < p->value) return -1;
-    if (c->value > p->value) return 1;
+    if (c->value < p->value) {
+        return -1;
+    }
+    if (c->value > p->value) {
+        return 1;
+    }
     return 0;
 }
 
 /* BFS validation: completeness + heap-order property. */
 static bool _validate_heap(const xylem_heap_t* heap) {
-    if (heap->root == NULL) return true;
+    if (heap->root == NULL) {
+        return true;
+    }
 
     xylem_heap_node_t* queue[1024];
     size_t             front = 0, back = 0;
@@ -54,17 +60,23 @@ static bool _validate_heap(const xylem_heap_t* heap) {
             seen_null = true;
             continue;
         }
-        if (seen_null) return false; /* non-null after null -> not complete */
+        if (seen_null) {
+            return false; /* non-null after null -> not complete */
+        }
         count++;
 
         if (n->left) {
-            if (heap->cmp(n->left, n) < 0) return false;
+            if (heap->cmp(n->left, n) < 0) {
+                return false;
+            }
             queue[back++] = n->left;
         } else {
             queue[back++] = NULL;
         }
         if (n->right) {
-            if (heap->cmp(n->right, n) < 0) return false;
+            if (heap->cmp(n->right, n) < 0) {
+                return false;
+            }
             queue[back++] = n->right;
         } else {
             queue[back++] = NULL;

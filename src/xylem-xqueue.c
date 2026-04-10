@@ -51,7 +51,9 @@ size_t xylem_xqueue_len(xylem_xqueue_t* queue) {
 
 int xylem_xqueue_enqueue(xylem_xqueue_t* queue, void* data) {
     _xqueue_node_t* n = _xqueue_alloc_node(data);
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     xylem_queue_enqueue(&queue->queue, &n->node);
     return 0;
 }
@@ -63,7 +65,9 @@ void* xylem_xqueue_front(xylem_xqueue_t* queue) {
 
 void xylem_xqueue_dequeue(xylem_xqueue_t* queue) {
     xylem_queue_node_t* n = xylem_queue_dequeue(&queue->queue);
-    if (!n) return;
+    if (!n) {
+        return;
+    }
     free(xylem_queue_entry(n, _xqueue_node_t, node));
 }
 

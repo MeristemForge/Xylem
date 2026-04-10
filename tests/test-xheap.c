@@ -25,8 +25,12 @@
 static int _int_cmp(const void* a, const void* b) {
     int va = *(const int*)a;
     int vb = *(const int*)b;
-    if (va < vb) return -1;
-    if (va > vb) return 1;
+    if (va < vb) {
+        return -1;
+    }
+    if (va > vb) {
+        return 1;
+    }
     return 0;
 }
 

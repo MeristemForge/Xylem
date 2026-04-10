@@ -184,6 +184,9 @@ void xylem_sha256_final(xylem_sha256_t* ctx, uint8_t digest[32]) {
 }
 
 void xylem_sha256_destroy(xylem_sha256_t* ctx) {
+    if (!ctx) {
+        return;
+    }
     memset(ctx, 0, sizeof(xylem_sha256_t));
     free(ctx);
 }

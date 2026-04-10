@@ -21,10 +21,10 @@
 
 _Pragma("once")
 
+#include "xylem/xylem-list.h"
+
 #include <stdbool.h>
 #include <stddef.h>
-
-#include "xylem/xylem-list.h"
 
 /**
  * Queue is built on top of the doubly-linked list (xylem_list_node_t).

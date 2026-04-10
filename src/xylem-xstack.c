@@ -51,7 +51,9 @@ size_t xylem_xstack_len(xylem_xstack_t* stack) {
 
 int xylem_xstack_push(xylem_xstack_t* stack, void* data) {
     _xstack_node_t* n = _xstack_alloc_node(data);
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     xylem_stack_push(&stack->stack, &n->node);
     return 0;
 }
@@ -63,7 +65,9 @@ void* xylem_xstack_peek(xylem_xstack_t* stack) {
 
 void xylem_xstack_pop(xylem_xstack_t* stack) {
     xylem_stack_node_t* n = xylem_stack_pop(&stack->stack);
-    if (!n) return;
+    if (!n) {
+        return;
+    }
     free(xylem_stack_entry(n, _xstack_node_t, node));
 }
 

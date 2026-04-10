@@ -22,10 +22,10 @@
 #include "xylem/xylem-thrdpool.h"
 #include "xylem/xylem-queue.h"
 
+#include "deprecated/c11-threads.h"
+
 #include <stdbool.h>
 #include <stdlib.h>
-
-#include "deprecated/c11-threads.h"
 
 typedef struct _thrdpool_job_s _thrdpool_job_t;
 
@@ -121,6 +121,9 @@ void xylem_thrdpool_post(
 }
 
 void xylem_thrdpool_destroy(xylem_thrdpool_t* restrict pool) {
+    if (!pool) {
+        return;
+    }
     mtx_lock(&pool->mtx);
     pool->running = false;
     cnd_broadcast(&pool->cnd);

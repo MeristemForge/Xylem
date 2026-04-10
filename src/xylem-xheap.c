@@ -51,7 +51,9 @@ size_t xylem_xheap_len(xylem_xheap_t* heap) {
 
 int xylem_xheap_insert(xylem_xheap_t* heap, void* data) {
     _xheap_node_t* n = malloc(sizeof(_xheap_node_t));
-    if (!n) return -1;
+    if (!n) {
+        return -1;
+    }
     n->data = data;
     n->cmp  = heap->cmp;
     xylem_heap_insert(&heap->heap, &n->node);
@@ -65,7 +67,9 @@ void* xylem_xheap_root(xylem_xheap_t* heap) {
 
 void xylem_xheap_dequeue(xylem_xheap_t* heap) {
     xylem_heap_node_t* n = xylem_heap_root(&heap->heap);
-    if (!n) return;
+    if (!n) {
+        return;
+    }
     xylem_heap_dequeue(&heap->heap);
     free(xylem_heap_entry(n, _xheap_node_t, node));
 }

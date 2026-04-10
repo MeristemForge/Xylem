@@ -19,10 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-common.h"
-#include "http-transport.h"
-#include "http/llhttp/llhttp.h"
-
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-gzip.h"
@@ -31,6 +27,11 @@
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-xlist.h"
 #include "xylem/xylem-xrbtree.h"
+
+#include "http-common.h"
+#include "http-transport.h"
+
+#include "http/llhttp/llhttp.h"
 
 #include <limits.h>
 #include <stddef.h>

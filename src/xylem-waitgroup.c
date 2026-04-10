@@ -21,9 +21,9 @@
 
 #include "xylem/xylem-waitgroup.h"
 
-#include <stdlib.h>
-
 #include "deprecated/c11-threads.h"
+
+#include <stdlib.h>
 
 struct xylem_waitgroup_s {
     size_t cnt;
@@ -50,6 +50,9 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
 }
 
 void xylem_waitgroup_destroy(xylem_waitgroup_t* waitgroup) {
+    if (!waitgroup) {
+        return;
+    }
     mtx_destroy(&waitgroup->mtx);
     cnd_destroy(&waitgroup->cnd);
     waitgroup->cnt = 0;

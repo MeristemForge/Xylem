@@ -19,17 +19,16 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-common.h"
-#include "http-transport.h"
-#include "http/llhttp/llhttp.h"
-
 #include "xylem/http/xylem-http-server.h"
 #include "xylem/xylem-addr.h"
+#include "xylem/xylem-gzip.h"
 #include "xylem/xylem-loop.h"
 
-#include "xylem/xylem-gzip.h"
+#include "http-common.h"
+#include "http-transport.h"
 
 #include "gzip/miniz/miniz.h"
+#include "http/llhttp/llhttp.h"
 
 #include <limits.h>
 #include <stdio.h>

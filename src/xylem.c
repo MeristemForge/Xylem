@@ -20,6 +20,7 @@
  */
 
 #include "xylem.h"
+
 #include "platform/platform.h"
 
 int xylem_startup(void) {
