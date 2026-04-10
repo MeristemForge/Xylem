@@ -76,18 +76,18 @@ struct xylem_rudp_s {
     void*                  userdata;
     bool                   handshake_done;
     bool                   closing;
-    bool                   fec_pending;  /* true while on_accept may override */
     int                    close_err;
     const char*            close_errmsg;
     uint32_t               conv;
+    int                    mtu;          /* effective MTU for FEC create */
     int                    fec_data;     /* per-session FEC data shards */
     int                    fec_parity;   /* per-session FEC parity shards */
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    update_timer;
     xylem_loop_timer_t*    handshake_timer; /* client-side only */
     xylem_rbtree_node_t    server_node;
-    rudp_fec_enc_t*       fec_enc;      /* NULL when FEC disabled */
-    rudp_fec_dec_t*       fec_dec;      /* NULL when FEC disabled */
+    rudp_fec_enc_t*        fec_enc;      /* NULL when FEC disabled */
+    rudp_fec_dec_t*        fec_dec;      /* NULL when FEC disabled */
 };
 
 struct xylem_rudp_server_s {
@@ -548,19 +548,27 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
                 return;
             }
 
-            rudp->udp       = server->udp;
-            rudp->handler   = server->handler;
-            rudp->server    = server;
-            rudp->peer_addr = *addr;
-            rudp->conv      = hs_conv;
-            rudp->loop      = server->loop;
-            rudp->fec_data  = server->opts.fec_data;
+            rudp->udp        = server->udp;
+            rudp->handler    = server->handler;
+            rudp->server     = server;
+            rudp->peer_addr  = *addr;
+            rudp->conv       = hs_conv;
+            rudp->loop       = server->loop;
+            rudp->mtu        = server->opts.mtu > 0 ? server->opts.mtu : 1400;
+            rudp->fec_data   = server->opts.fec_data;
             rudp->fec_parity = server->opts.fec_parity;
 
             rudp->update_timer = xylem_loop_create_timer(server->loop);
 
             rudp->kcp = _rudp_create_kcp(rudp, hs_conv, &server->opts);
             if (!rudp->kcp) {
+                xylem_loop_destroy_timer(rudp->update_timer);
+                free(rudp);
+                return;
+            }
+
+            if (!_rudp_init_fec(rudp, rudp->mtu)) {
+                ikcp_release(rudp->kcp);
                 xylem_loop_destroy_timer(rudp->update_timer);
                 free(rudp);
                 return;
@@ -575,25 +583,8 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
                                    RUDP_DEFAULT_INTERVAL, 0);
             _rudp_schedule_update(rudp);
 
-            /* Allow on_accept to override FEC params via set_fec. */
-            rudp->fec_pending = true;
             if (rudp->handler && rudp->handler->on_accept) {
                 rudp->handler->on_accept(server, rudp);
-            }
-            rudp->fec_pending = false;
-
-            /* Re-adjust KCP MTU to match final FEC setting. */
-            bool fec = (rudp->fec_data > 0 && rudp->fec_parity > 0);
-            int mtu = server->opts.mtu > 0 ? server->opts.mtu : 1400;
-            ikcp_setmtu(rudp->kcp,
-                        fec ? mtu - RUDP_FEC_HEADER_SIZE : mtu);
-
-            if (!_rudp_init_fec(rudp, server->opts.mtu)) {
-                xylem_rbtree_erase(&server->sessions, &rudp->server_node);
-                ikcp_release(rudp->kcp);
-                xylem_loop_destroy_timer(rudp->update_timer);
-                free(rudp);
-                return;
             }
         }
         return;
@@ -692,11 +683,12 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
 
     uint32_t conv = ctx->next_conv++;
 
-    rudp->handler   = handler;
-    rudp->peer_addr = *addr;
-    rudp->conv      = conv;
-    rudp->loop      = loop;
-    rudp->fec_data  = opts ? opts->fec_data : 0;
+    rudp->handler    = handler;
+    rudp->peer_addr  = *addr;
+    rudp->conv       = conv;
+    rudp->loop       = loop;
+    rudp->mtu        = (opts && opts->mtu > 0) ? opts->mtu : 1400;
+    rudp->fec_data   = opts ? opts->fec_data : 0;
     rudp->fec_parity = opts ? opts->fec_parity : 0;
 
     xylem_udp_t* udp = xylem_udp_dial(loop, addr,
@@ -726,7 +718,7 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         return NULL;
     }
 
-    if (!_rudp_init_fec(rudp, opts ? opts->mtu : 0)) {
+    if (!_rudp_init_fec(rudp, rudp->mtu)) {
         ikcp_release(rudp->kcp);
         xylem_loop_destroy_timer(rudp->update_timer);
         xylem_loop_destroy_timer(rudp->handshake_timer);
@@ -820,11 +812,27 @@ void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud) {
 }
 
 int xylem_rudp_set_fec(xylem_rudp_t* rudp, int fec_data, int fec_parity) {
-    if (!rudp->fec_pending) {
+    if (rudp->closing) {
         return -1;
     }
+
+    /* Tear down existing FEC state. */
+    rudp_fec_enc_destroy(rudp->fec_enc);
+    rudp_fec_dec_destroy(rudp->fec_dec);
+    rudp->fec_enc = NULL;
+    rudp->fec_dec = NULL;
+
     rudp->fec_data   = fec_data;
     rudp->fec_parity = fec_parity;
+
+    /* Re-adjust KCP MTU for the new FEC setting. */
+    bool fec = (fec_data > 0 && fec_parity > 0);
+    ikcp_setmtu(rudp->kcp,
+                fec ? rudp->mtu - RUDP_FEC_HEADER_SIZE : rudp->mtu);
+
+    if (!_rudp_init_fec(rudp, rudp->mtu)) {
+        return -1;
+    }
     return 0;
 }
 
