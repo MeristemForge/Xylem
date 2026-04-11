@@ -101,14 +101,16 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
 }
 
 static void _loop_process_posts(xylem_loop_t* loop) {
-    if (xylem_queue_empty(&loop->posts)) {
-        return;
-    }
     xylem_queue_t local;
     xylem_queue_init(&local);
+
     mtx_lock(&loop->post_mtx);
     xylem_queue_swap(&loop->posts, &local);
     mtx_unlock(&loop->post_mtx);
+    
+    if (xylem_queue_empty(&local)) {
+        return;
+    }
     while (!xylem_queue_empty(&local)) {
         xylem_queue_node_t* node = xylem_queue_dequeue(&local);
         xylem_loop_post_t*  req =
