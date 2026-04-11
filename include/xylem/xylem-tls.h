@@ -29,6 +29,10 @@ typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
 typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
+typedef struct xylem_tls_opts_s {
+    xylem_tcp_opts_t tcp; /**< Underlying TCP options. */
+} xylem_tls_opts_t;
+
 typedef struct xylem_tls_handler_s {
     void (*on_connect)(xylem_tls_conn_t* tls);
     void (*on_accept)(xylem_tls_server_t* server, xylem_tls_conn_t* tls);
@@ -146,7 +150,7 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
  * @param addr     Target address.
  * @param ctx      TLS context.
  * @param handler  Event callback set.
- * @param opts     TCP options, NULL for defaults.
+ * @param opts     TLS options, NULL for defaults.
  *
  * @return TLS connection handle, or NULL on failure.
  */
@@ -154,7 +158,7 @@ extern xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                                    xylem_addr_t* addr,
                                    xylem_tls_ctx_t* ctx,
                                    xylem_tls_handler_t* handler,
-                                   xylem_tcp_opts_t* opts);
+                                   xylem_tls_opts_t* opts);
 
 /**
  * @brief Send data over a TLS connection.
@@ -257,7 +261,7 @@ extern void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud);
  * @param addr     Bind address.
  * @param ctx      TLS context with cert+key loaded.
  * @param handler  Event callback set.
- * @param opts     TCP options, NULL for defaults.
+ * @param opts     TLS options, NULL for defaults.
  *
  * @return Server handle, or NULL on failure.
  */
@@ -265,7 +269,7 @@ extern xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
                                             xylem_addr_t* addr,
                                             xylem_tls_ctx_t* ctx,
                                             xylem_tls_handler_t* handler,
-                                            xylem_tcp_opts_t* opts);
+                                            xylem_tls_opts_t* opts);
 
 /**
  * @brief Close a TLS server.

@@ -49,6 +49,8 @@ struct xylem_udp_s {
     char                  recv_buf[65536]; /* 接收缓冲区 */
     bool                  connected;     /* true = dial 模式 */
     bool                  closing;       /* 幂等关闭标志 */
+    int                   close_err;     /* recv 错误码，正常关闭为 0 */
+    const char*           close_errmsg;  /* recv 错误描述，正常关闭为 NULL */
 };
 ```
 

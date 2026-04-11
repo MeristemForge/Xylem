@@ -1162,8 +1162,8 @@ static void test_read_timeout(void) {
     xylem_tls_ctx_set_verify(ctx.cli_ctx, false);
 
     /* Server with read timeout on accepted connections. */
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.read_timeout_ms = 100;
+    xylem_tls_opts_t srv_opts = {0};
+    srv_opts.tcp.read_timeout_ms = 100;
 
     xylem_tls_handler_t srv_handler = {
         .on_accept  = _timeout_srv_accept_cb,
@@ -1241,8 +1241,8 @@ static void test_heartbeat_miss(void) {
     xylem_tls_ctx_set_verify(ctx.cli_ctx, false);
 
     /* Server with heartbeat on accepted connections. */
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 100;
+    xylem_tls_opts_t srv_opts = {0};
+    srv_opts.tcp.heartbeat_ms = 100;
 
     xylem_tls_handler_t srv_handler = {
         .on_accept         = _timeout_srv_accept_cb,

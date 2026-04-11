@@ -46,7 +46,6 @@ typedef struct xylem_rudp_handler_s {
 与 DTLS handler 的区别：
 - 无 `on_write_done`（`xylem_rudp_send` 将数据入队 KCP 发送缓冲区后立即返回）
 
-
 ### 传输模式
 
 ```c
@@ -120,7 +119,6 @@ struct xylem_rudp_s {
 ```
 
 `fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
-
 
 ### RUDP 服务器
 
@@ -204,7 +202,6 @@ sequenceDiagram
 
 服务端收到 SYN 时无论会话是否已存在都会回复 ACK（客户端可能丢失了第一个 ACK）。若会话已存在则仅回复 ACK，不重复创建。
 
-
 ## 会话多路复用
 
 服务端在单个 UDP socket 上管理多个 KCP 会话。会话存储在红黑树中，使用复合键 `(peer_addr, conv)` 排序。
@@ -271,7 +268,6 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
 
 KCP 需要发送数据时调用此回调。若 FEC 已启用（`fec_enc` 非 NULL），KCP 包通过 `rudp_fec_enc_feed` 进入 FEC 编码器，编码器添加 FEC 头后通过 `xylem_udp_send` 发送数据分片和奇偶校验分片。若 FEC 未启用，直接通过 `xylem_udp_send` 发送原始 KCP 包。目标地址始终使用 `peer_addr`。
 
-
 ### KCP 更新定时器
 
 KCP 需要定期调用 `ikcp_update` 处理重传、窗口探测等内部逻辑。RUDP 使用事件循环的一次性定时器驱动：
@@ -325,7 +321,6 @@ RUDP 内置可选的 FEC（Forward Error Correction）层，基于 Reed-Solomon 
 | seqid | 4 | 单调递增序列号，在 paws 边界处回绕 |
 | type | 2 | `0xF1` = 数据分片，`0xF2` = 奇偶校验分片 |
 | size | 2 | 实际载荷长度（奇偶校验分片填充到 max_size） |
-
 
 ### 分组机制
 
@@ -382,7 +377,6 @@ typedef struct rudp_fec_dec_s {
     _rudp_fec_group_t groups[RUDP_FEC_MAX_GROUPS];
 } rudp_fec_dec_t;
 ```
-
 
 解码流程（`rudp_fec_dec_feed`）：
 
@@ -441,7 +435,6 @@ flowchart TD
 | `rudp_fec_dec_feed_size(dec)` | 返回 `dec_feed` 单次调用最大输出条目数（`data_shards`），用于预分配 dst 数组 |
 | `rudp_fec_dec_feed(dec, src, slen, dst, dlen)` | 喂入一个 FEC 分片，输出 KCP 载荷到 dst 数组；dlen 为 dst 可用条目数，不足时返回 -1 |
 
-
 ### FEC 集成
 
 FEC 已集成到 `xylem-rudp.c` 的主数据路径中。通过 `opts->fec_data > 0 && opts->fec_parity > 0` 启用。
@@ -498,7 +491,6 @@ int xylem_rudp_send(xylem_rudp_t* rudp, const void* data, size_t len);
 
 返回 0 成功，-1 失败（未握手、已关闭、KCP 入队失败）。
 
-
 ## 关闭流程
 
 ### 客户端关闭
@@ -547,7 +539,6 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 1. 设置 `closing = true`（幂等）
 2. 循环取红黑树首节点（`xylem_rbtree_first`），逐个调用 `xylem_rudp_close`（每次 close 会从树中移除节点）
 3. 关闭共享的 UDP socket（`_rudp_server_close_cb` 释放 server 内存）
-
 
 ## 延迟释放
 

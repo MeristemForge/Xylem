@@ -69,7 +69,7 @@ struct xylem_tls_server_s {
     xylem_tcp_server_t*   tcp_server;
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
-    xylem_tcp_opts_t      opts;
+    xylem_tls_opts_t      opts;
     xylem_loop_t*         loop;
     xylem_list_t          connections;
     void*                 userdata;
@@ -365,7 +365,9 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
             return;
         }
     }
-
+    if (tls->closing) {
+        return;
+    }
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
@@ -510,7 +512,7 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                             xylem_addr_t* addr,
                             xylem_tls_ctx_t* ctx,
                             xylem_tls_handler_t* handler,
-                            xylem_tcp_opts_t* opts) {
+                            xylem_tls_opts_t* opts) {
     xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
         return NULL;
@@ -519,8 +521,10 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
     tls->ctx     = ctx;
     tls->handler = handler;
 
+    xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
     xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
-                                           &_tls_tcp_client_handler, opts);
+                                           &_tls_tcp_client_handler,
+                                           tcp_opts);
     if (!tcp) {
         free(tls);
         return NULL;
@@ -591,7 +595,7 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_tls_ctx_t* ctx,
                                      xylem_tls_handler_t* handler,
-                                     xylem_tcp_opts_t* opts) {
+                                     xylem_tls_opts_t* opts) {
     xylem_tls_server_t* server = calloc(1, sizeof(*server));
     if (!server) {
         return NULL;
@@ -606,8 +610,9 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
         server->opts = *opts;
     }
 
+    xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
     xylem_tcp_server_t* tcp_server =
-        xylem_tcp_listen(loop, addr, &_tls_tcp_server_handler, opts);
+        xylem_tcp_listen(loop, addr, &_tls_tcp_server_handler, tcp_opts);
     if (!tcp_server) {
         free(server);
         return NULL;

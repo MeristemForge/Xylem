@@ -80,8 +80,14 @@ static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
         .on_close   = _tls_close_cb,
     };
 
+    xylem_tls_opts_t tls_opts = {0};
+    if (opts) {
+        tls_opts.tcp = *opts;
+    }
+
     xylem_tls_conn_t* tls = xylem_tls_dial(loop, addr, br->tls_ctx,
-                                       &handler, opts);
+                                       &handler,
+                                       opts ? &tls_opts : NULL);
     if (!tls) {
         xylem_tls_ctx_destroy(br->tls_ctx);
         free(br);
@@ -118,8 +124,14 @@ static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
         .on_close  = _tls_close_cb,
     };
 
+    xylem_tls_opts_t tls_opts = {0};
+    if (opts) {
+        tls_opts.tcp = *opts;
+    }
+
     xylem_tls_server_t* srv = xylem_tls_listen(loop, addr, br->tls_ctx,
-                                                &handler, opts);
+                                                &handler,
+                                                opts ? &tls_opts : NULL);
     if (!srv) {
         xylem_tls_ctx_destroy(br->tls_ctx);
         free(br);

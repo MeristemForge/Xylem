@@ -275,6 +275,12 @@ static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
     (void)timer;
     xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
 
+    /* Guard against a timer callback already queued in the current
+     * loop iteration when xylem_dtls_close stopped the timer. */
+    if (dtls->closing) {
+        return;
+    }
+
     DTLSv1_handle_timeout(dtls->ssl);
     _dtls_flush_write_bio(dtls);
 }
@@ -303,6 +309,11 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
     (void)loop;
     (void)timer;
     xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+
+    /* Session may already be closing from another path. */
+    if (dtls->closing) {
+        return;
+    }
 
     xylem_logw("dtls session %p handshake timed out", (void*)dtls);
     xylem_dtls_close(dtls);
@@ -363,6 +374,13 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
     }
 
     /* Flush any pending alert before tearing down. */
+    unsigned long ssl_err_code = ERR_peek_error();
+    const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+    xylem_logw("dtls session %p handshake failed ssl_err=%d (%s)",
+               (void*)dtls, err,
+               ssl_err_str ? ssl_err_str : "unknown");
+    dtls->close_err    = err;
+    dtls->close_errmsg = ssl_err_str ? ssl_err_str : "handshake failed";
     _dtls_flush_write_bio(dtls);
     xylem_dtls_close(dtls);
 }
@@ -436,7 +454,15 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
             return;
         }
     }
-
+    /**
+     * User may have called xylem_dtls_close in on_connect.
+     * Client-side close calls xylem_udp_close which fires
+     * _dtls_client_close_cb synchronously (UDP has no write
+     * queue), freeing dtls->ssl. Must bail out before SSL_read.
+     */
+    if (dtls->closing) {
+        return;
+    }
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
@@ -539,6 +565,16 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
             if (!dtls->handshake_done) {
                 return;
             }
+        }
+
+        /**
+         * User may have called xylem_dtls_close in on_accept.
+         * Server-side close path calls SSL_free synchronously
+         * (no async UDP close), so dtls->ssl is already NULL.
+         * Must bail out before SSL_read.
+         */
+        if (dtls->closing) {
+            return;
         }
 
         char buf[TLS_RECORD_MAX_PLAINTEXT];

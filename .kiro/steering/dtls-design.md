@@ -234,13 +234,18 @@ flowchart TD
 
 ### 读取路径
 
-客户端和服务端共享相同的读取逻辑：
+客户端（`_dtls_client_read_cb`）在握手完成后、进入 SSL_read 循环前检查 `closing` 标志。服务端（`_dtls_server_read_cb`）在已有会话的握手刚完成后同样检查 `closing`，防止 `on_accept` 回调中触发关闭后继续读取已释放的 SSL 状态。两条路径的 SSL_read 循环逻辑相同：
 
 ```mermaid
 flowchart TD
     A[UDP on_read 密文] --> B[BIO_write 到 read_bio]
     B --> C{握手完成?}
     C -->|否| D[_dtls_do_handshake]
+    D --> DA{握手刚完成?}
+    DA -->|否| DB[返回]
+    DA -->|是| DC{closing?}
+    DC -->|是| DB
+    DC -->|否| E
     C -->|是| E[循环 SSL_read]
     E --> F{n > 0?}
     F -->|是| G[回调 on_read 明文]
@@ -251,6 +256,10 @@ flowchart TD
     F -->|SSL_ERROR_WANT_READ| K[等待更多数据]
     F -->|其他错误| L[xylem_dtls_close]
 ```
+
+### 握手失败错误传播
+
+`_dtls_do_handshake` 在握手失败时（既非成功也非 WANT_READ/WANT_WRITE）将 SSL 错误码和错误描述保存到 `close_err` 和 `close_errmsg`，然后 flush 待发送的 alert 并调用 `xylem_dtls_close`。这确保用户在 `on_close` 回调中能看到具体的握手失败原因（如证书验证失败、协议不匹配等），而非默认的零值。SSL_read 路径中的错误同样遵循此模式，将错误码和描述保存后再关闭会话。
 
 ### 写入路径
 

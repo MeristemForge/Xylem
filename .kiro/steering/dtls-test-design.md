@@ -191,6 +191,7 @@ typedef struct {
 | `_dtls_client_read_cb` | closing 检查：on_read 中触发 close 后退出循环 | `test_handshake_and_echo` |
 | `_dtls_server_read_cb` | 新会话：calloc + init SSL + set_accept_state + 插入红黑树 | `test_handshake_and_echo` |
 | `_dtls_server_read_cb` | 已有会话：find_session + feed + SSL_read | `test_handshake_and_echo`（数据阶段）|
+| `_dtls_server_read_cb` | 已有会话握手刚完成后 closing 检查：跳过 SSL_read | （未覆盖：需要 on_accept 中触发 close 后同一数据报仍有后续数据）|
 | `_dtls_server_read_cb` | closing 检查：server.closing 提前返回 | `test_close_server_with_active_session` |
 | `_dtls_do_handshake` | 成功路径：rc==1，触发 on_accept/on_connect | `test_handshake_and_echo` |
 | `_dtls_do_handshake` | WANT_READ/WANT_WRITE：flush + arm retransmit | `test_handshake_and_echo`（多轮握手）|
@@ -225,6 +226,7 @@ typedef struct {
 
 | 路径 | 原因 |
 |------|------|
+| `_dtls_server_read_cb` 已有会话握手刚完成后 closing 检查 | 需要 on_accept 回调中触发 close，且同一数据报触发握手完成后仍有后续读取，在回环测试中难以可靠构造 |
 | `on_close` 携带非零错误码路径 | 需要触发 SSL 操作错误或 UDP 传输错误（如 ECONNREFUSED），在回环测试中难以可靠复现 |
 | `_dtls_retransmit_timeout_cb` 实际触发 | 回环网络无丢包，重传定时器在握手完成前不会触发 |
 | `_dtls_init_ssl` 失败路径（BIO/SSL 分配失败）| 需要 mock OpenSSL 内存分配，不实际 |
