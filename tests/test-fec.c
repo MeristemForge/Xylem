@@ -127,7 +127,7 @@ static void test_encode_reconstruct_parity(void) {
     }
     uint8_t marks[TOTAL_SHARDS] = {0, 0, 0, 0, 0, 1, 0};
 
-    /* Succeeds — no data shards lost, nothing to recover. */
+    /* Succeeds -- no data shards lost, nothing to recover. */
     ASSERT(xylem_fec_reconstruct(fec, shards, marks, SHARD_SIZE) == 0);
 
     /* Data shards remain intact. */
@@ -201,7 +201,7 @@ static void test_too_many_losses(void) {
 
     ASSERT(xylem_fec_encode(fec, data, parity, SHARD_SIZE) == 0);
 
-    /* Lose 3 shards — exceeds parity_shards (2). */
+    /* Lose 3 shards -- exceeds parity_shards (2). */
     uint8_t* shards[TOTAL_SHARDS];
     for (int i = 0; i < TOTAL_SHARDS; i++) {
         shards[i] = buf[i];
@@ -213,7 +213,7 @@ static void test_too_many_losses(void) {
     xylem_fec_destroy(fec);
 }
 
-/* No losses — reconstruct is a no-op success. */
+/* No losses -- reconstruct is a no-op success. */
 static void test_no_loss(void) {
     xylem_fec_t* fec = xylem_fec_create(DATA_SHARDS, PARITY_SHARDS);
     ASSERT(fec != NULL);

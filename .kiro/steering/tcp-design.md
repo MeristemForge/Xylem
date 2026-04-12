@@ -75,7 +75,7 @@ typedef struct xylem_tcp_handler_s {
     void (*on_accept)(xylem_tcp_server_t* server, xylem_tcp_conn_t* conn);
     void (*on_read)(xylem_tcp_conn_t* conn, void* data, size_t len);
     void (*on_write_done)(xylem_tcp_conn_t* conn,
-                          void* data, size_t len, int status);
+                          const void* data, size_t len, int status);
     void (*on_timeout)(xylem_tcp_conn_t* conn,
                        xylem_tcp_timeout_type_t type);
     void (*on_close)(xylem_tcp_conn_t* conn, int err, const char* errmsg);
@@ -124,7 +124,7 @@ typedef struct xylem_tcp_server_s xylem_tcp_server_t;  /* 服务器句柄 */
 ```c
 typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;    /* 队列节点，嵌入写队列 */
-    void*              data;    /* 数据指针（紧跟结构体分配） */
+    void*              data;    /* 数据指针 */
     size_t             len;     /* 总长度 */
     size_t             offset;  /* 已发送偏移量（支持部分写入） */
 } _tcp_write_req_t;
@@ -274,9 +274,13 @@ flowchart TD
 
 外层循环持续 `recv` 直到 `EAGAIN`，内层循环对每次 `recv` 的数据反复调用 `_tcp_extract_frame` 提取所有完整帧。每提取一帧后 `memmove` 压缩缓冲区，保证下次提取看到正确数据。
 
-### 写入路径 — `_tcp_flush_writes`
+### 写入路径 — `xylem_tcp_send` + `_tcp_flush_writes`
 
-从写队列头部取出请求，调用 `platform_socket_send`：
+`xylem_tcp_send` 分配 `sizeof(req) + len` 的内存块，将用户数据 `memcpy` 到结构体之后的空间。调用后用户可立即释放或复用原始缓冲区。
+
+若写队列之前为空，切换 IO 为读写模式并启动写超时定时器。
+
+`_tcp_flush_writes` 从写队列头部取出请求，调用 `platform_socket_send`：
 
 - 完整发送：出队，回调 `on_write_done`，检查连接状态——若用户在回调中关闭了连接（`CLOSED` 或 `CLOSING`）则立即返回；否则处理下一个请求
 - 部分发送：更新 `offset`，等待下次可写事件
@@ -364,7 +368,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_tcp_handler_t* handler,
                                  xylem_tcp_opts_t* opts);
 
-/* 发送数据（复制到内部写队列，立即返回） */
+/* 发送数据（复制入队），立即返回 */
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len);
 
 /* 优雅关闭连接 */

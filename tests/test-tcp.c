@@ -189,7 +189,7 @@ static void _send_basic_on_connect(xylem_tcp_conn_t* conn) {
 }
 
 static void _send_basic_on_write_done(xylem_tcp_conn_t* conn,
-                                       void* data, size_t len,
+                                       const void* data, size_t len,
                                        int status) {
     (void)data;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
@@ -2004,7 +2004,7 @@ static void test_peer_close_eof(void) {
 
 
 static void _pending_writes_wd_cb(xylem_tcp_conn_t* conn,
-                                   void* data, size_t len,
+                                   const void* data, size_t len,
                                    int status) {
     (void)data;
     (void)len;

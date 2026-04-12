@@ -37,7 +37,7 @@ typedef struct {
     void (*on_accept)(void* handle, void* ctx);
     void (*on_read)(void* handle, void* ctx, void* data, size_t len);
     void (*on_write_done)(void* handle, void* ctx,
-                          void* data, size_t len, int status);
+                          const void* data, size_t len, int status);
     void (*on_close)(void* handle, void* ctx, int err, const char* errmsg);
 } http_transport_cb_t;
 

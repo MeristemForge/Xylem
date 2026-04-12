@@ -51,7 +51,7 @@ static void _tcp_read_cb(xylem_tcp_conn_t* conn,
 }
 
 static void _tcp_write_done_cb(xylem_tcp_conn_t* conn,
-                               void* data, size_t len, int status) {
+                               const void* data, size_t len, int status) {
     _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
     if (br->cb->on_write_done) {
         br->cb->on_write_done(conn, br->ctx, data, len, status);
