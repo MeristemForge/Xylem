@@ -90,6 +90,8 @@ struct xylem_tls_conn_s {
     void*                 userdata;
     bool                  handshake_done;
     bool                  closing;
+    int                   close_err;      /* 关闭错误码，正常关闭为 0 */
+    const char*           close_errmsg;   /* 关闭错误描述，正常关闭为 NULL */
     char*                 hostname;       /* SNI 主机名 */
     xylem_list_node_t     server_node;    /* 服务器连接链表节点 */
 };
@@ -194,8 +196,10 @@ flowchart TD
     F -->|SSL_ERROR_ZERO_RETURN| J[对端关闭 TLS]
     F -->|SSL_ERROR_WANT_WRITE| M[flush write_bio 重协商需发送数据]
     F -->|SSL_ERROR_WANT_READ| K[等待更多数据]
-    F -->|其他错误| L[关闭 TCP]
+    F -->|其他错误| L[xylem_tls_close]
 ```
+
+SSL_read 错误（非 WANT_READ/WANT_WRITE/ZERO_RETURN）调用 `xylem_tls_close(tls)`，与其他关闭路径保持一致。`xylem_tls_close` 会尝试 `SSL_shutdown` 发送 close_notify（尽管 SSL 状态可能已损坏，`SSL_shutdown` 会安全地处理这种情况），然后关闭底层 TCP 连接。`_tls_tcp_close_cb` 随后触发，完成链表移除、`on_close` 回调和延迟释放。
 
 ### 写入路径
 

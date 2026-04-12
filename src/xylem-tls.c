@@ -61,6 +61,8 @@ struct xylem_tls_conn_s {
     void*                 userdata;
     bool                  handshake_done;
     bool                  closing;
+    int                   close_err;
+    const char*           close_errmsg;
     char*                 hostname;
     xylem_list_node_t     server_node;
 };
@@ -271,8 +273,10 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     xylem_logw("tls conn %p handshake failed ssl_err=%d (%s)",
                (void*)tls, err,
                ssl_err_str ? ssl_err_str : "unknown");
+    tls->close_err    = err;
+    tls->close_errmsg = ssl_err_str ? ssl_err_str : "handshake failed";
     _tls_flush_write_bio(tls);
-    xylem_tcp_close(tls->tcp);
+    xylem_tls_close(tls);
 }
 
 static int _tls_init_ssl(xylem_tls_conn_t* tls) {
@@ -399,7 +403,9 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
         xylem_logw("tls conn %p SSL_read error=%d (%s)",
                    (void*)tls, err,
                    ssl_err_str ? ssl_err_str : "unknown");
-        xylem_tcp_close(tls->tcp);
+        tls->close_err    = err;
+        tls->close_errmsg = ssl_err_str ? ssl_err_str : "unknown";
+        xylem_tls_close(tls);
     }
 }
 
@@ -428,7 +434,9 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
     }
 
     if (tls->handler && tls->handler->on_close) {
-        tls->handler->on_close(tls, err, errmsg);
+        int         ce = tls->close_err    ? tls->close_err    : err;
+        const char* cm = tls->close_errmsg ? tls->close_errmsg : errmsg;
+        tls->handler->on_close(tls, ce, cm);
     }
 
     if (tls->ssl) {
