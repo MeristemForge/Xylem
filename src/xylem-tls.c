@@ -645,12 +645,14 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
      * Detach all TLS sessions from the server before closing them.
      * xylem_tls_close is async -- _tls_tcp_close_cb may fire after
      * server is freed, so tls->server must be NULL by then.
+     *
+     * We must remove the node from the list ourselves because setting
+     * tls->server = NULL prevents _tls_tcp_close_cb from doing it.
      */
-    xylem_list_node_t* node = xylem_list_head(&server->connections);
-    xylem_list_node_t* sentinel = xylem_list_sentinel(&server->connections);
-    while (node && node != sentinel) {
+    while (!xylem_list_empty(&server->connections)) {
+        xylem_list_node_t* node = xylem_list_head(&server->connections);
         xylem_tls_conn_t* tls = xylem_list_entry(node, xylem_tls_conn_t, server_node);
-        node = xylem_list_next(node);
+        xylem_list_remove(&server->connections, node);
         tls->server = NULL;
         xylem_tls_close(tls);
     }

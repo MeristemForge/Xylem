@@ -235,7 +235,7 @@ sequenceDiagram
 
 ### 服务器关闭
 
-`xylem_tls_close_server` 先遍历连接链表，将每个 TLS 连接的 `server` 指针置 NULL（因为 `xylem_tls_close` 是异步的，`_tls_tcp_close_cb` 可能在 server 释放后才触发），然后逐个关闭 TLS 连接，最后关闭底层 TCP 服务器，通过 `xylem_loop_post` 延迟释放 server 内存。
+`xylem_tls_close_server` 循环取链表头节点直到链表为空，对每个节点：先从链表中移除（因为将 `tls->server` 置 NULL 后，`_tls_tcp_close_cb` 无法再执行移除），再将 `server` 指针置 NULL（因为 `xylem_tls_close` 是异步的，`_tls_tcp_close_cb` 可能在 server 释放后才触发），最后调用 `xylem_tls_close`。所有连接处理完毕后关闭底层 TCP 服务器，通过 `xylem_loop_post` 延迟释放 server 内存。
 
 ## SNI 与 ALPN
 
