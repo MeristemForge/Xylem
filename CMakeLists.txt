@@ -24,7 +24,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_STANDARD 11)
 
-if(WIN32)
+if(WIN32 AND MSVC)
 	add_compile_options("/experimental:c11atomics")
 endif()
 
