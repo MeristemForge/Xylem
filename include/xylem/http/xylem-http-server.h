@@ -26,12 +26,17 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
+/** Opaque event loop handle (forward declaration). */
 typedef struct xylem_loop_s xylem_loop_t;
 
 /* Opaque types */
+/** Opaque HTTP request handle. */
 typedef struct xylem_http_req_s     xylem_http_req_t;
+/** Opaque HTTP connection handle. */
 typedef struct xylem_http_conn_s    xylem_http_conn_t;
+/** Opaque HTTP server handle. */
 typedef struct xylem_http_srv_s     xylem_http_srv_t;
+/** Opaque HTTP router handle. */
 typedef struct xylem_http_router_s  xylem_http_router_t;
 
 /**

@@ -24,14 +24,19 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
+/** Opaque event loop handle. */
 typedef struct xylem_loop_s       xylem_loop_t;
+/** Opaque timer handle. */
 typedef struct xylem_loop_timer_s xylem_loop_timer_t;
+/** Opaque deferred-callback handle. */
 typedef struct xylem_loop_post_s  xylem_loop_post_t;
 
+/** Timer expiry callback. */
 typedef void (*xylem_loop_timer_fn_t)(xylem_loop_t* loop,
                                       xylem_loop_timer_t* timer,
                                       void* ud);
 
+/** Deferred (posted) callback. */
 typedef void (*xylem_loop_post_fn_t)(xylem_loop_t* loop,
                                      xylem_loop_post_t* req,
                                      void* ud);

@@ -24,15 +24,22 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
+/** Opaque DTLS session handle. */
 typedef struct xylem_dtls_s        xylem_dtls_t;
+/** Opaque DTLS context handle. */
 typedef struct xylem_dtls_ctx_s    xylem_dtls_ctx_t;
+/** Opaque DTLS server handle. */
 typedef struct xylem_dtls_server_s xylem_dtls_server_t;
 
+/** DTLS event callback set. */
 typedef struct xylem_dtls_handler_s {
-    void (*on_connect)(xylem_dtls_t* dtls);
-    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_t* dtls);
-    void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
-    void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
+    void (*on_connect)(xylem_dtls_t* dtls);                /**< DTLS handshake completed (client). */
+    void (*on_accept)(xylem_dtls_server_t* server,
+                      xylem_dtls_t* dtls);                  /**< DTLS handshake completed (server). */
+    void (*on_read)(xylem_dtls_t* dtls,
+                    void* data, size_t len);                 /**< Decrypted datagram received. */
+    void (*on_close)(xylem_dtls_t* dtls,
+                     int err, const char* errmsg);           /**< Session closed. */
 } xylem_dtls_handler_t;
 
 /**

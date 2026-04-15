@@ -25,8 +25,11 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-tcp.h"
 
+/** Opaque TLS connection handle. */
 typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
+/** Opaque TLS context handle. */
 typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
+/** Opaque TLS server handle. */
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
 typedef struct xylem_tls_opts_s {
@@ -37,16 +40,21 @@ typedef struct xylem_tls_opts_s {
                                       verification against the certificate. */
 } xylem_tls_opts_t;
 
+/** TLS event callback set. */
 typedef struct xylem_tls_handler_s {
-    void (*on_connect)(xylem_tls_conn_t* tls);
-    void (*on_accept)(xylem_tls_server_t* server, xylem_tls_conn_t* tls);
-    void (*on_read)(xylem_tls_conn_t* tls, void* data, size_t len);
+    void (*on_connect)(xylem_tls_conn_t* tls);             /**< TLS handshake completed (client). */
+    void (*on_accept)(xylem_tls_server_t* server,
+                      xylem_tls_conn_t* tls);               /**< TLS handshake completed (server). */
+    void (*on_read)(xylem_tls_conn_t* tls,
+                    void* data, size_t len);                 /**< Decrypted data received. */
     void (*on_write_done)(xylem_tls_conn_t* tls,
-                          const void* data, size_t len, int status);
+                          const void* data, size_t len,
+                          int status);                       /**< Write request completed. */
     void (*on_timeout)(xylem_tls_conn_t* tls,
-                       xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_conn_t* tls, int err, const char* errmsg);
-    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
+                       xylem_tcp_timeout_type_t type);       /**< Timeout from underlying TCP layer. */
+    void (*on_close)(xylem_tls_conn_t* tls,
+                     int err, const char* errmsg);           /**< Connection closed. */
+    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);       /**< Heartbeat miss from underlying TCP layer. */
 } xylem_tls_handler_t;
 
 /**

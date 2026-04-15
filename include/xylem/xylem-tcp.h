@@ -24,23 +24,26 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
+/** Framing strategy for TCP stream reassembly. */
 typedef enum xylem_tcp_framing_type_e {
-    XYLEM_TCP_FRAME_NONE,
-    XYLEM_TCP_FRAME_FIXED,
-    XYLEM_TCP_FRAME_LENGTH,
-    XYLEM_TCP_FRAME_DELIM,
-    XYLEM_TCP_FRAME_CUSTOM,
+    XYLEM_TCP_FRAME_NONE,   /**< No framing, raw byte stream. */
+    XYLEM_TCP_FRAME_FIXED,  /**< Fixed-length frames. */
+    XYLEM_TCP_FRAME_LENGTH, /**< Length-prefixed frames. */
+    XYLEM_TCP_FRAME_DELIM,  /**< Delimiter-separated frames. */
+    XYLEM_TCP_FRAME_CUSTOM, /**< User-supplied parse function. */
 } xylem_tcp_framing_type_t;
 
+/** Timeout category reported via on_timeout. */
 typedef enum xylem_tcp_timeout_type_e {
-    XYLEM_TCP_TIMEOUT_READ,
-    XYLEM_TCP_TIMEOUT_WRITE,
-    XYLEM_TCP_TIMEOUT_CONNECT,
+    XYLEM_TCP_TIMEOUT_READ,    /**< Read idle timeout. */
+    XYLEM_TCP_TIMEOUT_WRITE,   /**< Write completion timeout. */
+    XYLEM_TCP_TIMEOUT_CONNECT, /**< Connection establishment timeout. */
 } xylem_tcp_timeout_type_t;
 
+/** Encoding used for the length field in LENGTH framing. */
 typedef enum xylem_tcp_length_coding_e {
-    XYLEM_TCP_LENGTH_FIXEDINT,
-    XYLEM_TCP_LENGTH_VARINT,
+    XYLEM_TCP_LENGTH_FIXEDINT, /**< Fixed-width integer (1-8 bytes). */
+    XYLEM_TCP_LENGTH_VARINT,   /**< Variable-length integer. */
 } xylem_tcp_length_coding_t;
 
 typedef struct xylem_tcp_framing_s {
@@ -60,29 +63,38 @@ typedef struct xylem_tcp_framing_s {
     };
 } xylem_tcp_framing_t;
 
+/** Opaque TCP connection handle. */
 typedef struct xylem_tcp_conn_s   xylem_tcp_conn_t;
+/** Opaque TCP server handle. */
 typedef struct xylem_tcp_server_s xylem_tcp_server_t;
 
+/** TCP event callback set. */
 typedef struct xylem_tcp_handler_s {
-    void (*on_connect)(xylem_tcp_conn_t* conn);
-    void (*on_accept)(xylem_tcp_server_t* server, xylem_tcp_conn_t* conn);
-    void (*on_read)(xylem_tcp_conn_t* conn, void* data, size_t len);
-    void (*on_write_done)(
-        xylem_tcp_conn_t* conn, const void* data, size_t len, int status);
-    void (*on_timeout)(xylem_tcp_conn_t* conn, xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tcp_conn_t* conn, int err, const char* errmsg);
-    void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);
+    void (*on_connect)(xylem_tcp_conn_t* conn);           /**< Client connection established. */
+    void (*on_accept)(xylem_tcp_server_t* server,
+                      xylem_tcp_conn_t* conn);             /**< Server accepted a new connection. */
+    void (*on_read)(xylem_tcp_conn_t* conn,
+                    void* data, size_t len);                /**< Complete frame received. */
+    void (*on_write_done)(xylem_tcp_conn_t* conn,
+                          const void* data, size_t len,
+                          int status);                      /**< Write request completed. */
+    void (*on_timeout)(xylem_tcp_conn_t* conn,
+                       xylem_tcp_timeout_type_t type);      /**< Timeout fired (read/write/connect). */
+    void (*on_close)(xylem_tcp_conn_t* conn,
+                     int err, const char* errmsg);          /**< Connection closed. */
+    void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);     /**< No data received within heartbeat interval. */
 } xylem_tcp_handler_t;
 
+/** TCP connection options. */
 typedef struct xylem_tcp_opts_s {
-    xylem_tcp_framing_t framing;
-    uint64_t            connect_timeout_ms;
-    uint64_t            read_timeout_ms;
-    uint64_t            write_timeout_ms;
-    uint64_t            heartbeat_ms;
-    uint32_t            reconnect_max;
-    size_t              read_buf_size;
-    bool                disable_mss_clamp; /**< Disable MSS clamping (PMTUD). */
+    xylem_tcp_framing_t framing;            /**< Framing configuration. */
+    uint64_t            connect_timeout_ms; /**< Connect timeout in ms, 0 = none. */
+    uint64_t            read_timeout_ms;    /**< Read idle timeout in ms, 0 = none. */
+    uint64_t            write_timeout_ms;   /**< Write timeout in ms, 0 = none. */
+    uint64_t            heartbeat_ms;       /**< Heartbeat interval in ms, 0 = none. */
+    uint32_t            reconnect_max;      /**< Max reconnect attempts, 0 = none. */
+    size_t              read_buf_size;      /**< Read buffer size, 0 = default 65536. */
+    bool                disable_mss_clamp;  /**< Disable MSS clamping (PMTUD). */
 } xylem_tcp_opts_t;
 
 /**
