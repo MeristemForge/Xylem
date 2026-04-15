@@ -47,11 +47,12 @@ typedef struct xylem_tls_handler_s {
 
 ```c
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp; /**< Underlying TCP options. */
+    xylem_tcp_opts_t tcp;        /**< Underlying TCP options. */
+    const char*      hostname;   /**< SNI hostname for client connections. */
 } xylem_tls_opts_t;
 ```
 
-封装底层 TCP 选项，为将来扩展 TLS 层专属选项预留空间。传 NULL 使用默认值。
+封装底层 TCP 选项和 TLS 层专属选项。`hostname` 用于客户端连接的 SNI 和主机名验证，`xylem_tls_dial` 内部会 `strdup` 保存。传 NULL 使用默认值。
 
 ### 不透明类型
 
@@ -93,6 +94,7 @@ struct xylem_tls_conn_s {
     int                   close_err;      /* 关闭错误码，正常关闭为 0 */
     const char*           close_errmsg;   /* 关闭错误描述，正常关闭为 NULL */
     char*                 hostname;       /* SNI 主机名 */
+    char                  alpn[256];      /* 协商后的 ALPN 协议（null-terminated） */
     xylem_list_node_t     server_node;    /* 服务器连接链表节点 */
 };
 ```
@@ -245,11 +247,7 @@ sequenceDiagram
 
 ### SNI（服务器名称指示）
 
-```c
-int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname);
-```
-
-必须在 `xylem_tls_dial` 之前调用。在 TCP 连接建立后的 `_tls_tcp_connect_cb` 中：
+SNI hostname 通过 `xylem_tls_opts_t.hostname` 在 `xylem_tls_dial` 时传入。`xylem_tls_dial` 内部 `strdup` 保存到 `tls->hostname`。在 TCP 连接建立后的 `_tls_tcp_connect_cb` 中，若 `hostname` 非 NULL：
 - `SSL_set_tlsext_host_name` 设置 SNI 扩展
 - `SSL_set1_host` 启用主机名验证
 
@@ -257,7 +255,8 @@ int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname);
 
 - 客户端：通过 `SSL_CTX_set_alpn_protos` 提议协议列表
 - 服务端：通过 `SSL_CTX_set_alpn_select_cb` 注册选择回调（`_tls_alpn_select_cb`），使用 `SSL_select_next_proto` 匹配
-- 查询结果：`xylem_tls_get_alpn` 调用 `SSL_get0_alpn_selected`
+- 握手完成后：`_tls_do_handshake` 中调用 `SSL_get0_alpn_selected` 获取协商结果，`memcpy` + null terminate 到 `tls->alpn[256]` 缓冲区（`SSL_get0_alpn_selected` 返回的指针非 null-terminated，不能直接当 C 字符串使用）
+- 查询结果：`xylem_tls_get_alpn` 返回 `tls->alpn`（若非空）或 NULL
 
 ## 超时与心跳
 
@@ -305,8 +304,6 @@ xylem_tls_conn_t*   xylem_tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
 int                 xylem_tls_send(xylem_tls_conn_t* tls,
                                     const void* data, size_t len);
 void                xylem_tls_close(xylem_tls_conn_t* tls);
-int                 xylem_tls_set_hostname(xylem_tls_conn_t* tls,
-                                            const char* hostname);
 const char*         xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_conn_t* tls);
 xylem_loop_t*       xylem_tls_get_loop(xylem_tls_conn_t* tls);

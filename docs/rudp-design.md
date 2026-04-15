@@ -60,9 +60,9 @@ typedef enum xylem_rudp_mode_e {
 ```c
 typedef struct xylem_rudp_opts_s {
     xylem_rudp_mode_t mode;
-    int      snd_wnd;       /* 发送窗口，默认 32 */
-    int      rcv_wnd;       /* 接收窗口，默认 128 */
-    int      mtu;           /* MTU，默认 1400 */
+    int32_t  snd_wnd;       /* 发送窗口，默认 32 */
+    int32_t  rcv_wnd;       /* 接收窗口，默认 128 */
+    int32_t  mtu;           /* MTU，默认 1400 */
     bool     stream;        /* true: 字节流模式，false: 消息模式 */
     uint64_t timeout_ms;    /* dead link 超时，0 禁用 */
     uint64_t handshake_ms;  /* 握手超时，0 使用默认值（5000ms） */
