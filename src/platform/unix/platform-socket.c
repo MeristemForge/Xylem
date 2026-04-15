@@ -20,9 +20,11 @@
  */
 
 #include "platform/platform-socket.h"
+
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/un.h>
 
 #define PLATFORM_TCPV4_MSS 536
 #define PLATFORM_TCPV6_MSS 1220
@@ -438,3 +440,78 @@ void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
 }
 #endif
+
+platform_sock_t platform_socket_listen_unix(const char* path,
+                                            bool nonblocking) {
+    if (!path || strlen(path) == 0) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+    /* Remove stale socket file if it exists. */
+    unlink(path);
+
+    platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) ==
+        PLATFORM_SO_ERROR_SOCKET_ERROR) {
+        platform_socket_close(sock);
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
+        platform_socket_close(sock);
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    platform_socket_enable_nonblocking(sock, nonblocking);
+    return sock;
+}
+
+platform_sock_t platform_socket_dial_unix(const char* path,
+                                          bool* connected,
+                                          bool nonblocking) {
+    if (!path || strlen(path) == 0) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+    platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    platform_socket_enable_nonblocking(sock, nonblocking);
+
+    *connected = false;
+    int ret;
+    do {
+        ret = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+    } while (ret == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
+
+    if (ret == PLATFORM_SO_ERROR_SOCKET_ERROR) {
+        if (errno != EINPROGRESS) {
+            platform_socket_close(sock);
+            return PLATFORM_SO_ERROR_INVALID_SOCKET;
+        }
+    } else {
+        *connected = true;
+    }
+
+    return sock;
+}

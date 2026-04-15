@@ -352,3 +352,32 @@ extern void platform_socket_enable_reuseaddr(platform_sock_t sock, bool on);
  * @param on    true to enable, false to disable.
  */
 extern void platform_socket_enable_reuseport(platform_sock_t sock, bool on);
+
+/**
+ * @brief Create a listening Unix domain socket.
+ *
+ * Unlinks the path first if it already exists, then creates an
+ * AF_UNIX SOCK_STREAM socket, binds, and listens.
+ *
+ * @param path         Socket file path.
+ * @param nonblocking  If true, set non-blocking mode.
+ *
+ * @return Listening socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
+extern platform_sock_t platform_socket_listen_unix(const char* path,
+                                                   bool nonblocking);
+
+/**
+ * @brief Connect to a Unix domain socket.
+ *
+ * Creates an AF_UNIX SOCK_STREAM socket and connects to the path.
+ *
+ * @param path         Socket file path.
+ * @param connected    Pointer to receive connection status.
+ * @param nonblocking  If true, set non-blocking mode.
+ *
+ * @return Socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
+extern platform_sock_t platform_socket_dial_unix(const char* path,
+                                                 bool* connected,
+                                                 bool nonblocking);

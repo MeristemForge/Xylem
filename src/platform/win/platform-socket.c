@@ -20,6 +20,8 @@
  */
 
 #include "platform/platform-socket.h"
+
+#include <afunix.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -419,5 +421,77 @@ platform_sock_t platform_socket_dial(
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
     freeaddrinfo(res);
+    return sock;
+}
+
+platform_sock_t platform_socket_listen_unix(const char* path,
+                                            bool nonblocking) {
+    if (!path || strlen(path) == 0) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+    strncpy_s(addr.sun_path, sizeof(addr.sun_path), path,
+              sizeof(addr.sun_path) - 1);
+
+    /* Remove stale socket file if it exists. */
+    DeleteFileA(path);
+
+    platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    if (bind(sock, (struct sockaddr*)&addr, (int)sizeof(addr)) ==
+        PLATFORM_SO_ERROR_SOCKET_ERROR) {
+        platform_socket_close(sock);
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
+        platform_socket_close(sock);
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    platform_socket_enable_nonblocking(sock, nonblocking);
+    return sock;
+}
+
+platform_sock_t platform_socket_dial_unix(const char* path,
+                                          bool* connected,
+                                          bool nonblocking) {
+    if (!path || strlen(path) == 0) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+
+    if (strlen(path) >= sizeof(addr.sun_path)) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+    strncpy_s(addr.sun_path, sizeof(addr.sun_path), path,
+              sizeof(addr.sun_path) - 1);
+
+    platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    platform_socket_enable_nonblocking(sock, nonblocking);
+
+    *connected = false;
+    if (connect(sock, (struct sockaddr*)&addr, (int)sizeof(addr))) {
+        if (WSAGetLastError() != WSAEWOULDBLOCK) {
+            platform_socket_close(sock);
+            return PLATFORM_SO_ERROR_INVALID_SOCKET;
+        }
+    } else {
+        *connected = true;
+    }
+
     return sock;
 }

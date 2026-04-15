@@ -79,6 +79,7 @@ set(SRCS
 	src/rudp/kcp/ikcp.c
 	src/rudp/xylem-rudp.c
 	src/rudp/rudp-fec.c
+	src/xylem-uds.c
 	src/fec/reedsolomon-c/rs.c
 	src/fec/xylem-fec.c
 )
