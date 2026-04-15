@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "assert.h"
 #include "xylem.h"
 #include "xylem/xylem-rudp.h"
+#include "assert.h"
 
 #include <string.h>
 

@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-common.h"
-
 #include "xylem/http/xylem-http-common.h"
+
+#include "http-common.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -21,9 +21,10 @@
 
 #include "xylem/xylem-gzip.h"
 
+#include "gzip/miniz/miniz.h"
+
 #include <limits.h>
 #include <string.h>
-#include "gzip/miniz/miniz.h"
 
 #define GZIP_HEADER_SIZE 10
 #define GZIP_TRAILER_SIZE 8

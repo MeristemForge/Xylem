@@ -22,10 +22,11 @@
 #include "xylem/xylem-fec.h"
 #include "xylem/xylem-logger.h"
 
-#include <stdlib.h>
-#include <string.h>
 #include "deprecated/c11-threads.h"
 #include "fec/reedsolomon-c/rs.h"
+
+#include <stdlib.h>
+#include <string.h>
 
 struct xylem_fec_s {
     reed_solomon* rs;

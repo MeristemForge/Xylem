@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include <share.h>
 #include "platform/platform-io.h"
 
+#include <share.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 

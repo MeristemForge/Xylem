@@ -19,11 +19,11 @@
  *  IN THE SOFTWARE.
  */
 
-#include "assert.h"
 #include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
 #include "xylem/http/xylem-http-server.h"
 #include "xylem/xylem-loop.h"
+#include "assert.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -390,15 +390,15 @@ static void test_multipart_destroy_null(void) {
     ASSERT(xylem_http_multipart_data_len(NULL, 0) == 0);
 }
 
-static int _test_mw_called;
-
 static int _test_middleware_pass(xylem_http_writer_t* w,
                                 xylem_http_req_t* req,
                                 void* userdata) {
     (void)w;
     (void)req;
-    (void)userdata;
-    _test_mw_called++;
+    int* called = (int*)userdata;
+    if (called) {
+        (*called)++;
+    }
     return 0;
 }
 
@@ -407,8 +407,10 @@ static int _test_middleware_abort(xylem_http_writer_t* w,
                                  void* userdata) {
     (void)w;
     (void)req;
-    (void)userdata;
-    _test_mw_called++;
+    int* called = (int*)userdata;
+    if (called) {
+        (*called)++;
+    }
     return -1;
 }
 
@@ -438,16 +440,12 @@ static void test_router_destroy_null(void) {
     xylem_http_router_destroy(NULL);
 }
 
-static int _test_router_called;
-static void* _test_router_ud;
-
 static void _test_router_handler(xylem_http_writer_t* w,
                                  xylem_http_req_t* req,
                                  void* userdata) {
     (void)w;
     (void)req;
-    _test_router_called = 1;
-    _test_router_ud = userdata;
+    (void)userdata;
 }
 
 static void _test_router_handler2(xylem_http_writer_t* w,
@@ -455,8 +453,7 @@ static void _test_router_handler2(xylem_http_writer_t* w,
                                   void* userdata) {
     (void)w;
     (void)req;
-    _test_router_called = 2;
-    _test_router_ud = userdata;
+    (void)userdata;
 }
 
 static void test_router_exact_match(void) {

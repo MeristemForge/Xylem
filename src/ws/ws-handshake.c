@@ -19,16 +19,16 @@
  *  IN THE SOFTWARE.
  */
 
+#include "xylem/xylem-base64.h"
+#include "xylem/xylem-sha1.h"
+#include "xylem/xylem-utils.h"
+
 #include "ws-handshake.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "xylem/xylem-base64.h"
-#include "xylem/xylem-sha1.h"
-#include "xylem/xylem-utils.h"
 
 static const char _ws_handshake_guid[] = "258EAFA5-E914-47DA-95CA-5AB9DC63B5E0";
 

@@ -21,10 +21,10 @@
 
 #include "xylem/xylem-json.h"
 
+#include "yyjson/yyjson.h"
+
 #include <stdlib.h>
 #include <string.h>
-
-#include "yyjson/yyjson.h"
 
 #define JSON_MAX_CHILDREN 64
 

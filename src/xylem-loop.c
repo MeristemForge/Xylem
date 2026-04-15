@@ -27,12 +27,11 @@
 
 #include "platform/platform.h"
 #include "xylem-loop-io.h"
+#include "deprecated/c11-threads.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "deprecated/c11-threads.h"
 
 struct xylem_loop_s {
     platform_poller_sq_t  poller;

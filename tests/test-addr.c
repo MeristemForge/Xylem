@@ -81,7 +81,7 @@ static void test_ipv4_wildcard(void) {
 
 /**
  * Context for async resolve tests. Passed via userdata to the resolve
- * callback, and via file-scope pointer to timer callbacks.
+ * callback and to timer callbacks.
  */
 typedef struct {
     xylem_loop_t*           loop;
@@ -92,8 +92,6 @@ typedef struct {
     xylem_addr_resolve_fn_t resolve_cb;
     xylem_loop_timer_t*     keepalive;
 } _resolve_ctx_t;
-
-static _resolve_ctx_t* _ctx;
 
 static void _on_resolved(xylem_addr_t* addrs, size_t count,
                          int status, void* userdata) {
@@ -130,14 +128,15 @@ static void _keepalive_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer,
 static void _start_resolve_cb(xylem_loop_t* loop,
                                xylem_loop_timer_t* timer,
                                void* ud) {
+    _resolve_ctx_t* ctx = (_resolve_ctx_t*)ud;
     xylem_loop_destroy_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
-    _ctx->keepalive = xylem_loop_create_timer(_ctx->loop);
-    xylem_loop_start_timer(_ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
+    ctx->keepalive = xylem_loop_create_timer(ctx->loop);
+    xylem_loop_start_timer(ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
 
-    xylem_addr_resolve(_ctx->loop, _ctx->pool, _ctx->host, 80,
-                       _ctx->resolve_cb, _ctx);
+    xylem_addr_resolve(ctx->loop, ctx->pool, ctx->host, 80,
+                       ctx->resolve_cb, ctx);
 }
 
 /* Resolve localhost asynchronously - success path. */
@@ -147,7 +146,6 @@ static void test_resolve_localhost(void) {
     ctx.count      = 0;
     ctx.host       = "localhost";
     ctx.resolve_cb = _on_resolved;
-    _ctx = &ctx;
 
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
@@ -155,7 +153,7 @@ static void test_resolve_localhost(void) {
 
     xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -173,7 +171,6 @@ static void test_resolve_fail(void) {
     ctx.count      = 99;
     ctx.host       = "this.host.does.not.exist.invalid";
     ctx.resolve_cb = _on_resolve_fail;
-    _ctx = &ctx;
 
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
@@ -181,7 +178,7 @@ static void test_resolve_fail(void) {
 
     xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
     xylem_loop_run(ctx.loop);
 
@@ -199,7 +196,6 @@ static void test_resolve_remote(void) {
     ctx.count      = 0;
     ctx.host       = "www.baidu.com";
     ctx.resolve_cb = _on_resolved;
-    _ctx = &ctx;
 
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
@@ -207,7 +203,7 @@ static void test_resolve_remote(void) {
 
     xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, NULL, 0, 0);
+    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
     xylem_loop_run(ctx.loop);
 

@@ -19,8 +19,8 @@
  *  IN THE SOFTWARE.
  */
 
-#include "assert.h"
 #include "xylem/xylem-fec.h"
+#include "assert.h"
 
 #include <stdlib.h>
 #include <string.h>
