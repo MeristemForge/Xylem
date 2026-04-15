@@ -61,13 +61,15 @@ struct xylem_dtls_ctx_s {
     uint8_t* alpn_wire;      /* ALPN 协议列表（wire 格式） */
     size_t   alpn_wire_len;
     FILE*    keylog_file;
+    uint8_t  cookie_secret[32]; /* HMAC-SHA256 密钥，CSPRNG 生成 */
 };
 ```
 
 创建时自动配置：
 - `SSL_VERIFY_PEER` 默认启用
-- Cookie 生成回调（`_dtls_cookie_generate_cb`）：生成 16 字节随机 cookie
-- Cookie 验证回调（`_dtls_cookie_verify_cb`）：接受所有 cookie（cookie 交换本身已提供地址验证的 DoS 防护）
+- 使用 `RAND_bytes` 生成 32 字节 HMAC 密钥（`cookie_secret`），若 CSPRNG 失败则 `ctx_create` 返回 NULL
+- Cookie 生成回调（`_dtls_cookie_generate_cb`）：以 `cookie_secret` 为密钥，对端地址（`sockaddr_in` 或 `sockaddr_in6`）为消息，计算 HMAC-SHA256，生成 32 字节 cookie
+- Cookie 验证回调（`_dtls_cookie_verify_cb`）：重新计算 HMAC-SHA256 并与收到的 cookie 进行常量时间比较（`CRYPTO_memcmp`），验证 cookie 确实由本服务端为该对端地址签发
 
 ### DTLS 会话
 
@@ -113,7 +115,7 @@ struct xylem_dtls_server_s {
 
 | API | 功能 |
 |-----|------|
-| `xylem_dtls_ctx_create()` | 创建上下文，使用 `DTLS_method()`，配置 cookie 回调 |
+| `xylem_dtls_ctx_create()` | 创建上下文，使用 `DTLS_method()`，生成 HMAC 密钥（CSPRNG），配置 cookie 回调 |
 | `xylem_dtls_ctx_destroy()` | 释放 SSL_CTX、关闭 keylog 文件、释放 ALPN 数据 |
 | `xylem_dtls_ctx_load_cert()` | 加载 PEM 证书链和私钥 |
 | `xylem_dtls_ctx_set_ca()` | 设置 CA 证书 |
@@ -123,12 +125,13 @@ struct xylem_dtls_server_s {
 
 ## Cookie 机制
 
-DTLS 使用 cookie 交换防止地址伪造的 DoS 攻击：
+DTLS 使用 cookie 交换防止地址伪造的 DoS 攻击。cookie 基于 HMAC-SHA256 绑定到对端地址，确保只有能在声称地址上接收数据的客户端才能完成握手：
 
-- `_dtls_cookie_generate_cb`：使用 `RAND_bytes` 生成 16 字节随机 cookie
-- `_dtls_cookie_verify_cb`：接受所有 cookie（始终返回 1）
+- `cookie_secret`：32 字节密钥，在 `xylem_dtls_ctx_create` 中通过 `RAND_bytes`（CSPRNG）生成，若生成失败则 `ctx_create` 返回 NULL
+- `_dtls_cookie_generate_cb`：以 `cookie_secret` 为密钥，对端 `sockaddr`（通过 `SSL_get_ex_data` 恢复的 `xylem_addr_t`）为消息，调用 `xylem_hmac256_compute` 生成 32 字节 HMAC-SHA256 cookie
+- `_dtls_cookie_verify_cb`：重新计算 HMAC-SHA256，使用 `CRYPTO_memcmp` 常量时间比较，验证 cookie 长度为 32 且内容匹配
 
-cookie 交换本身已验证客户端能在声称的地址上接收数据，因此验证回调无需额外检查。
+对端地址通过 `SSL_set_ex_data` / `SSL_get_ex_data`（`_dtls_peer_addr_idx`）在 SSL 对象上传递给回调。
 
 ## 握手流程
 

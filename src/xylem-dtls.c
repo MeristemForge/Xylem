@@ -20,6 +20,7 @@
  */
 
 #include "xylem/xylem-dtls.h"
+#include "xylem/xylem-hmac256.h"
 #include "xylem/xylem-rbtree.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-udp.h"
@@ -42,11 +43,16 @@
  * abandoned or malicious ClientHellos. */
 #define DTLS_HANDSHAKE_TIMEOUT_MS 30000
 
+/* HMAC-SHA256 output size in bytes. */
+#define DTLS_COOKIE_SIZE 32
+
 static int _dtls_ex_data_idx = -1;
+static int _dtls_peer_addr_idx = -1;
 static once_flag _dtls_ex_data_once = ONCE_FLAG_INIT;
 
 static void _dtls_init_ex_data(void) {
     _dtls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+    _dtls_peer_addr_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
 
 struct xylem_dtls_ctx_s {
@@ -54,6 +60,7 @@ struct xylem_dtls_ctx_s {
     uint8_t* alpn_wire;
     size_t   alpn_wire_len;
     FILE*    keylog_file;
+    uint8_t  cookie_secret[DTLS_COOKIE_SIZE];
 };
 
 struct xylem_dtls_s {
@@ -86,10 +93,33 @@ struct xylem_dtls_server_s {
     bool                   closing;
 };
 
-static void _dtls_keylog_cb(const SSL* ssl, const char* line) {
+static xylem_dtls_ctx_t* _dtls_get_ctx(SSL* ssl) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
-    xylem_dtls_ctx_t* ctx =
-        (xylem_dtls_ctx_t*)SSL_CTX_get_ex_data(ssl_ctx, _dtls_ex_data_idx);
+    return (xylem_dtls_ctx_t*)SSL_CTX_get_ex_data(ssl_ctx, _dtls_ex_data_idx);
+}
+
+static int _dtls_get_peer_addr(SSL* ssl, const uint8_t** out,
+                               size_t* out_len) {
+    xylem_addr_t* addr =
+        (xylem_addr_t*)SSL_get_ex_data(ssl, _dtls_peer_addr_idx);
+    if (!addr) {
+        return -1;
+    }
+
+    if (addr->storage.ss_family == AF_INET) {
+        *out     = (const uint8_t*)&addr->storage;
+        *out_len = sizeof(struct sockaddr_in);
+    } else if (addr->storage.ss_family == AF_INET6) {
+        *out     = (const uint8_t*)&addr->storage;
+        *out_len = sizeof(struct sockaddr_in6);
+    } else {
+        return -1;
+    }
+    return 0;
+}
+
+static void _dtls_keylog_cb(const SSL* ssl, const char* line) {
+    xylem_dtls_ctx_t* ctx = _dtls_get_ctx((SSL*)ssl);
     if (ctx && ctx->keylog_file) {
         fprintf(ctx->keylog_file, "%s\n", line);
         fflush(ctx->keylog_file);
@@ -98,20 +128,44 @@ static void _dtls_keylog_cb(const SSL* ssl, const char* line) {
 
 static int _dtls_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
                                     unsigned int* cookie_len) {
-    (void)ssl;
-    RAND_bytes(cookie, 16);
-    *cookie_len = 16;
+    xylem_dtls_ctx_t* ctx = _dtls_get_ctx(ssl);
+    if (!ctx) {
+        return 0;
+    }
+
+    const uint8_t* msg;
+    size_t         msg_len;
+    if (_dtls_get_peer_addr(ssl, &msg, &msg_len) < 0) {
+        return 0;
+    }
+
+    xylem_hmac256_compute(ctx->cookie_secret, sizeof(ctx->cookie_secret),
+                          msg, msg_len, cookie);
+    *cookie_len = DTLS_COOKIE_SIZE;
     return 1;
 }
 
 static int _dtls_cookie_verify_cb(SSL* ssl, const unsigned char* cookie,
                                   unsigned int cookie_len) {
-    (void)ssl;
-    (void)cookie;
-    (void)cookie_len;
-    /** Accept all cookies -- the cookie exchange itself provides
-     * sufficient DoS protection by verifying the client's address. */
-    return 1;
+    xylem_dtls_ctx_t* ctx = _dtls_get_ctx(ssl);
+    if (!ctx) {
+        return 0;
+    }
+
+    const uint8_t* msg;
+    size_t         msg_len;
+    if (_dtls_get_peer_addr(ssl, &msg, &msg_len) < 0) {
+        return 0;
+    }
+
+    uint8_t expected[DTLS_COOKIE_SIZE];
+    xylem_hmac256_compute(ctx->cookie_secret, sizeof(ctx->cookie_secret),
+                          msg, msg_len, expected);
+
+    if (cookie_len != DTLS_COOKIE_SIZE) {
+        return 0;
+    }
+    return CRYPTO_memcmp(cookie, expected, DTLS_COOKIE_SIZE) == 0 ? 1 : 0;
 }
 
 static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
@@ -138,6 +192,13 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
 
     ctx->ssl_ctx = SSL_CTX_new(DTLS_method());
     if (!ctx->ssl_ctx) {
+        free(ctx);
+        return NULL;
+    }
+
+    /* Generate cookie HMAC key with CSPRNG. */
+    if (RAND_bytes(ctx->cookie_secret, sizeof(ctx->cookie_secret)) != 1) {
+        SSL_CTX_free(ctx->ssl_ctx);
         free(ctx);
         return NULL;
     }
@@ -630,6 +691,9 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     }
 
     SSL_set_accept_state(dtls->ssl);
+
+    /* Store peer addr in SSL ex_data so cookie callbacks can access it. */
+    SSL_set_ex_data(dtls->ssl, _dtls_peer_addr_idx, &dtls->peer_addr);
 
     xylem_rbtree_insert(&server->sessions, &dtls->server_node);
 
