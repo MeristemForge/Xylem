@@ -32,6 +32,7 @@
 
 #include "xylem.h"
 #include "xylem/xylem-tls.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -88,6 +89,7 @@ static void _on_read(xylem_tls_conn_t* tls, void* data, size_t len) {
 
 static void _on_close(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     (void)tls;
+    (void)err;
     xylem_logi("tls client disconnected (%s)", errmsg);
 }
 

@@ -31,6 +31,7 @@
 
 #include "xylem.h"
 #include "xylem/xylem-tcp.h"
+
 #include <string.h>
 
 #define SERVER_PORT 9000
@@ -49,6 +50,7 @@ static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
 
 static void _on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)conn;
+    (void)err;
     xylem_logi("disconnected (%s)", errmsg);
     xylem_loop_stop(_loop);
 }

@@ -31,6 +31,7 @@
 
 #include "xylem.h"
 #include "xylem/xylem-tcp.h"
+
 #include <string.h>
 
 #define LISTEN_PORT 9000
@@ -57,6 +58,7 @@ static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
 
 static void _on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
     (void)conn;
+    (void)err;
     xylem_logi("client disconnected (%s)", errmsg);
 }
 

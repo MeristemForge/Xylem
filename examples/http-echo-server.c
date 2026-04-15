@@ -36,7 +36,9 @@
  */
 
 #include "xylem.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define LISTEN_PORT 8080
