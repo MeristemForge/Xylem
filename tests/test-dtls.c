@@ -367,7 +367,7 @@ static void _alpn_cli_connect_cb(xylem_dtls_t* dtls) {
 
     const char* alpn = xylem_dtls_get_alpn(dtls);
     ASSERT(alpn != NULL);
-    ASSERT(memcmp(alpn, "h2", 2) == 0);
+    ASSERT(strcmp(alpn, "h2") == 0);
     ctx->verified = 1;
 
     xylem_dtls_close(dtls);

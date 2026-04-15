@@ -77,6 +77,7 @@ struct xylem_dtls_s {
     bool                   closing;
     int                    close_err;
     const char*            close_errmsg;
+    char                   alpn[256];
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;
     xylem_loop_timer_t*    handshake_timer;  /* server-side only */
@@ -414,6 +415,15 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
 
         if (dtls->handshake_timer) {
             xylem_loop_stop_timer(dtls->handshake_timer);
+        }
+
+        /* Cache negotiated ALPN as a null-terminated string. */
+        const unsigned char* alpn_proto = NULL;
+        unsigned int         alpn_len   = 0;
+        SSL_get0_alpn_selected(dtls->ssl, &alpn_proto, &alpn_len);
+        if (alpn_proto && alpn_len > 0 && alpn_len < sizeof(dtls->alpn)) {
+            memcpy(dtls->alpn, alpn_proto, alpn_len);
+            dtls->alpn[alpn_len] = '\0';
         }
 
         if (dtls->server) {
@@ -830,18 +840,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
 }
 
 const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls) {
-    if (!dtls->ssl) {
-        return NULL;
-    }
-
-    const unsigned char* proto = NULL;
-    unsigned int         len   = 0;
-    SSL_get0_alpn_selected(dtls->ssl, &proto, &len);
-
-    if (!proto || len == 0) {
-        return NULL;
-    }
-    return (const char*)proto;
+    return dtls->alpn[0] ? dtls->alpn : NULL;
 }
 
 const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls) {

@@ -428,7 +428,7 @@ static void _alpn_cli_connect_cb(xylem_tls_conn_t* tls) {
 
     const char* alpn = xylem_tls_get_alpn(tls);
     ASSERT(alpn != NULL);
-    ASSERT(memcmp(alpn, "h2", 2) == 0);
+    ASSERT(strcmp(alpn, "h2") == 0);
     ctx->verified = 1;
 
     xylem_tls_close(tls);

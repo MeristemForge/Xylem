@@ -64,6 +64,7 @@ struct xylem_tls_conn_s {
     int                   close_err;
     const char*           close_errmsg;
     char*                 hostname;
+    char                  alpn[256];
     xylem_list_node_t     server_node;
 };
 
@@ -247,6 +248,15 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     if (rc == 1) {
         tls->handshake_done = true;
         _tls_flush_write_bio(tls);
+
+        /* Cache negotiated ALPN as a null-terminated string. */
+        const unsigned char* alpn_proto = NULL;
+        unsigned int         alpn_len   = 0;
+        SSL_get0_alpn_selected(tls->ssl, &alpn_proto, &alpn_len);
+        if (alpn_proto && alpn_len > 0 && alpn_len < sizeof(tls->alpn)) {
+            memcpy(tls->alpn, alpn_proto, alpn_len);
+            tls->alpn[alpn_len] = '\0';
+        }
 
         if (tls->server) {
             xylem_logi("tls conn %p handshake complete (server)", (void*)tls);
@@ -568,18 +578,7 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
 }
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
-    if (!tls->ssl) {
-        return NULL;
-    }
-
-    const unsigned char* proto = NULL;
-    unsigned int         len   = 0;
-    SSL_get0_alpn_selected(tls->ssl, &proto, &len);
-
-    if (!proto || len == 0) {
-        return NULL;
-    }
-    return (const char*)proto;
+    return tls->alpn[0] ? tls->alpn : NULL;
 }
 
 void* xylem_tls_get_userdata(xylem_tls_conn_t* tls) {
