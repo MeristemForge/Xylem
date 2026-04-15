@@ -52,7 +52,9 @@ struct _logger_s {
     xylem_thrdpool_t*    thrdpool;
     atomic_bool          initialized;
     once_flag            once;
-    void (*callback)(xylem_logger_level_t level, const char* restrict msg);
+    void (*callback)(xylem_logger_level_t level, const char* restrict msg,
+                     void* ud);
+    void*                callback_ud;
 };
 
 static _logger_t   _logger = { .once = ONCE_FLAG_INIT };
@@ -83,7 +85,7 @@ static void _logger_print_message(void* param) {
 
     mtx_lock(&_logger.mtx);
     if (_logger.callback) {
-        _logger.callback(ctx->level, ctx->message);
+        _logger.callback(ctx->level, ctx->message, _logger.callback_ud);
     } else {
         _logger_check_rollover();
         fprintf(_logger.file, "%s", ctx->message);
@@ -161,7 +163,7 @@ static void _logger_sync_log(
     _logger_build_message(buf, sizeof(buf), level, has_callback, file, line, fmt, v);
 
     if (_logger.callback) {
-        _logger.callback(level, buf);
+        _logger.callback(level, buf, _logger.callback_ud);
     } else {
         _logger_check_rollover();
         fprintf(_logger.file, "%s", buf);
@@ -244,6 +246,7 @@ void xylem_logger_deinit(void) {
         _logger.filename      = NULL;
         _logger.max_file_size = 0;
         _logger.callback      = NULL;
+        _logger.callback_ud   = NULL;
         _logger.async         = false;
         mtx_destroy(&_logger.mtx);
 
@@ -278,8 +281,12 @@ void xylem_logger_log(
 }
 
 void xylem_logger_set_callback(
-    void (*callback)(xylem_logger_level_t level, const char* restrict msg)) {
+    void (*callback)(xylem_logger_level_t level,
+                     const char* restrict msg,
+                     void* ud),
+    void* ud) {
     mtx_lock(&_logger.mtx);
-    _logger.callback = callback;
+    _logger.callback    = callback;
+    _logger.callback_ud = ud;
     mtx_unlock(&_logger.mtx);
 }

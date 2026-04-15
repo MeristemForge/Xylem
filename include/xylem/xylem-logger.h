@@ -63,8 +63,13 @@ extern void xylem_logger_deinit(void);
  * @brief Set a custom callback for log output.
  *
  * @param callback  Function to receive log messages. If set, file output is bypassed.
+ * @param ud        Opaque pointer passed to the callback on each invocation.
  */
-extern void xylem_logger_set_callback(void (*callback)(xylem_logger_level_t level, const char* restrict msg));
+extern void xylem_logger_set_callback(
+    void (*callback)(xylem_logger_level_t level,
+                     const char* restrict msg,
+                     void* ud),
+    void* ud);
 
 /**
  * @brief Log a message (internal, use xylem_logd/i/w/e macros instead).

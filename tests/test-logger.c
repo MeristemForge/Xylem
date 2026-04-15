@@ -32,10 +32,10 @@ typedef struct {
     int                  count;
 } _logger_ctx_t;
 
-static _logger_ctx_t* _g_logger_ctx;
-
-static void _test_callback(xylem_logger_level_t level, const char* restrict msg) {
-    _logger_ctx_t* ctx = _g_logger_ctx;
+static void _test_callback(xylem_logger_level_t level,
+                            const char* restrict msg,
+                            void* ud) {
+    _logger_ctx_t* ctx = (_logger_ctx_t*)ud;
     ctx->level = level;
     strncpy(ctx->msg, msg, sizeof(ctx->msg) - 1);
     ctx->msg[sizeof(ctx->msg) - 1] = '\0';
@@ -46,7 +46,6 @@ static void _reset_ctx(_logger_ctx_t* ctx) {
     ctx->level = XYLEM_LOGGER_LEVEL_DEBUG;
     ctx->msg[0] = '\0';
     ctx->count = 0;
-    _g_logger_ctx = ctx;
 }
 
 /* init/deinit without logging. */
@@ -65,7 +64,7 @@ static void test_callback_receives_message(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
-    xylem_logger_set_callback(_test_callback);
+    xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 42, "hello %d", 123);
 
@@ -74,7 +73,7 @@ static void test_callback_receives_message(void) {
     ASSERT(strstr(ctx.msg, "hello 123") != NULL);
     ASSERT(strstr(ctx.msg, "test.c:42") != NULL);
 
-    xylem_logger_set_callback(NULL);
+    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
 }
 
@@ -83,7 +82,7 @@ static void test_level_filtering(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_WARN, false, 0);
-    xylem_logger_set_callback(_test_callback);
+    xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, "test.c", 1, "debug");
     ASSERT(ctx.count == 0);
@@ -99,7 +98,7 @@ static void test_level_filtering(void) {
     ASSERT(ctx.count == 2);
     ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_ERROR);
 
-    xylem_logger_set_callback(NULL);
+    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
 }
 
@@ -108,7 +107,7 @@ static void test_log_macros(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
-    xylem_logger_set_callback(_test_callback);
+    xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logd("debug msg");
     ASSERT(ctx.count == 1);
@@ -126,7 +125,7 @@ static void test_log_macros(void) {
     ASSERT(ctx.count == 4);
     ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_ERROR);
 
-    xylem_logger_set_callback(NULL);
+    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
 }
 
@@ -156,7 +155,7 @@ static void test_async_mode(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, true, 0);
-    xylem_logger_set_callback(_test_callback);
+    xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 1, "async %d", 456);
 
