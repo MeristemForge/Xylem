@@ -82,6 +82,7 @@ set(SRCS
 	src/xylem-uds.c
 	src/fec/reedsolomon-c/rs.c
 	src/fec/xylem-fec.c
+	src/xylem-serial.c
 )
 
 if(WIN32)
@@ -90,6 +91,7 @@ if(WIN32)
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
 		src/platform/win/platform-socket.c
+		src/platform/win/platform-serial.c
 		src/platform/win/wepoll/wepoll.c
 	)
 endif()
@@ -100,6 +102,7 @@ if(UNIX)
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-poller.c
 		src/platform/unix/platform-socket.c
+		src/platform/unix/platform-serial.c
 	)
 endif()
 

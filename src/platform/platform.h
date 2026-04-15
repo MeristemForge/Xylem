@@ -24,4 +24,5 @@ _Pragma("once")
 #include "platform-info.h"
 #include "platform-io.h"
 #include "platform-poller.h"
+#include "platform-serial.h"
 #include "platform-socket.h"

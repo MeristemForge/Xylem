@@ -58,6 +58,7 @@ _Pragma("once")
 #include "xylem/xylem-tls.h"
 #include "xylem/xylem-dtls.h"
 #include "xylem/xylem-uds.h"
+#include "xylem/xylem-serial.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/http/xylem-http-common.h"
 #include "xylem/http/xylem-http-client.h"
