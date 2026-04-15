@@ -25,18 +25,9 @@
 #include <stdatomic.h>
 #include <string.h>
 
-static atomic_int _counter;
-
-typedef struct {
-    int*               arr;
-    int                idx;
-    int                val;
-    xylem_waitgroup_t* wg;
-} write_arg_t;
-
 static void _increment(void* arg) {
-    (void)arg;
-    atomic_fetch_add(&_counter, 1);
+    atomic_int* counter = (atomic_int*)arg;
+    atomic_fetch_add(counter, 1);
 }
 
 /* Test: create and immediately destroy an empty pool. */
@@ -49,34 +40,41 @@ static void test_create_destroy(void) {
 /* Test: post jobs and verify all are executed. */
 static void test_post_jobs(void) {
     enum { N = 100 };
-    atomic_store(&_counter, 0);
+    atomic_int counter = 0;
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(4);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, NULL);
+        xylem_thrdpool_post(pool, _increment, &counter);
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&_counter) == N);
+    ASSERT(atomic_load(&counter) == N);
 }
 
 /* Test: single thread pool works correctly. */
 static void test_single_thread(void) {
     enum { N = 50 };
-    atomic_store(&_counter, 0);
+    atomic_int counter = 0;
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, NULL);
+        xylem_thrdpool_post(pool, _increment, &counter);
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&_counter) == N);
+    ASSERT(atomic_load(&counter) == N);
 }
+
+typedef struct {
+    int*               arr;
+    int                idx;
+    int                val;
+    xylem_waitgroup_t* wg;
+} write_arg_t;
 
 static void _write_value(void* arg) {
     write_arg_t* wa = (write_arg_t*)arg;
@@ -119,17 +117,17 @@ static void test_job_args(void) {
 /* Test: many threads with many jobs. */
 static void test_many_threads(void) {
     enum { N = 200 };
-    atomic_store(&_counter, 0);
+    atomic_int counter = 0;
 
     xylem_thrdpool_t* pool = xylem_thrdpool_create(16);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, NULL);
+        xylem_thrdpool_post(pool, _increment, &counter);
     }
 
     xylem_thrdpool_destroy(pool);
-    ASSERT(atomic_load(&_counter) == N);
+    ASSERT(atomic_load(&counter) == N);
 }
 
 int main(void) {

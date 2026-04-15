@@ -66,8 +66,9 @@ static int _validate_rbtree(xylem_rbtree_node_t* node, xylem_rbtree_node_t* pare
     /* Red node must not have red children */
     if (node->color == 0) { /* RED */
         if ((node->left && node->left->color == 0) ||
-            (node->right && node->right->color == 0))
+            (node->right && node->right->color == 0)) {
             return -1;
+        }
     }
 
     int lh = _validate_rbtree(node->left, node);

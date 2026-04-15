@@ -27,24 +27,25 @@
 #define THREAD_COUNT    10
 #define STRESS_THREADS  20
 
-static atomic_int _worker_completed = 0;
-static atomic_int _worker_started = 0;
+typedef struct {
+    xylem_waitgroup_t* wg;
+    atomic_int*        completed;
+    atomic_int*        started;
+} _worker_ctx_t;
 
 static int _worker_thread(void* arg) {
-    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
-    atomic_fetch_add(&_worker_started, 1);
-    struct timespec ts = {.tv_nsec = 1000000};
-    thrd_sleep(&ts, NULL);
-    atomic_fetch_add(&_worker_completed, 1);
-    xylem_waitgroup_done(wg);
+    _worker_ctx_t* ctx = (_worker_ctx_t*)arg;
+    atomic_fetch_add(ctx->started, 1);
+    /* Yield to let other threads start — no sleep needed. */
+    thrd_yield();
+    atomic_fetch_add(ctx->completed, 1);
+    xylem_waitgroup_done(ctx->wg);
     return 0;
 }
 
 static int _early_done_thread(void* arg) {
     xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
     xylem_waitgroup_done(wg);
-    struct timespec ts = {.tv_nsec = 5000000};
-    thrd_sleep(&ts, NULL);
     return 0;
 }
 
@@ -86,23 +87,27 @@ static void test_basic_operations(void) {
 /* Multiple threads: wait blocks until all done. */
 static void test_multiple_threads(void) {
     thrd_t threads[THREAD_COUNT];
-    _worker_completed = 0;
-    _worker_started = 0;
+    _worker_ctx_t ctxs[THREAD_COUNT];
+    atomic_int completed = 0;
+    atomic_int started = 0;
 
     xylem_waitgroup_t* wg = xylem_waitgroup_create();
     ASSERT(wg != NULL);
     xylem_waitgroup_add(wg, THREAD_COUNT);
 
     for (int i = 0; i < THREAD_COUNT; i++) {
-        ASSERT(thrd_create(&threads[i], _worker_thread, wg) == thrd_success);
+        ctxs[i].wg        = wg;
+        ctxs[i].completed = &completed;
+        ctxs[i].started   = &started;
+        ASSERT(thrd_create(&threads[i], _worker_thread, &ctxs[i]) == thrd_success);
     }
 
-    while (atomic_load(&_worker_started) < THREAD_COUNT) {
+    while (atomic_load(&started) < THREAD_COUNT) {
         thrd_yield();
     }
 
     xylem_waitgroup_wait(wg);
-    ASSERT(atomic_load(&_worker_completed) == THREAD_COUNT);
+    ASSERT(atomic_load(&completed) == THREAD_COUNT);
 
     /* Second wait should return immediately. */
     xylem_waitgroup_wait(wg);
