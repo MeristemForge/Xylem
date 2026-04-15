@@ -798,6 +798,16 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     conn->fd = fd;
     xylem_loop_destroy_io(conn->io);
     conn->io = xylem_loop_create_io(conn->loop, fd);
+
+    if (!conn->io) {
+        xylem_logw("tcp reconnect: io creation failed, retrying");
+        platform_socket_close(fd);
+        conn->fd = PLATFORM_SO_ERROR_INVALID_SOCKET;
+        dial->reconnect_count++;
+        _tcp_start_reconnect_timer(conn, _tcp_reconnect_timeout_cb);
+        return;
+    }
+
     conn->state = TCP_STATE_CONNECTING;
     dial->reconnect_count++;
 
