@@ -108,7 +108,7 @@ void platform_socket_enable_reuseport(platform_sock_t sock, bool on) {
 platform_sock_t platform_socket_listen(
     const char* restrict host,
     const char* restrict port,
-    int                  protocol,
+    int                  socktype,
     bool                 nonblocking) {
     platform_sock_t  sock;
     struct addrinfo  hints;
@@ -117,7 +117,7 @@ platform_sock_t platform_socket_listen(
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = protocol;
+    hints.ai_socktype = socktype;
     hints.ai_flags = AI_PASSIVE;
     hints.ai_protocol = 0;
     hints.ai_canonname = NULL;
@@ -137,7 +137,7 @@ platform_sock_t platform_socket_listen(
         }
         platform_socket_enable_reuseaddr(sock, true);
         platform_socket_enable_reuseport(sock, true);
-        if (protocol == SOCK_DGRAM) {
+        if (socktype == SOCK_DGRAM) {
             platform_socket_set_rcvbuf(sock, INT32_MAX);
         }
         if (bind(sock, rp->ai_addr, rp->ai_addrlen) ==
@@ -146,7 +146,7 @@ platform_sock_t platform_socket_listen(
             continue;
         }
         /* these options inherited by connection-socket */
-        if (protocol == SOCK_STREAM) {
+        if (socktype == SOCK_STREAM) {
             if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
                 platform_socket_close(sock);
                 continue;
@@ -178,7 +178,7 @@ void platform_socket_cleanup(void) {
 platform_sock_t platform_socket_dial(
     const char* restrict host,
     const char* restrict port,
-    int                  protocol,
+    int                  socktype,
     bool*                connected,
     bool                 nonblocking) {
     int              ret;
@@ -189,7 +189,7 @@ platform_sock_t platform_socket_dial(
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = protocol;
+    hints.ai_socktype = socktype;
     hints.ai_flags = 0;
     hints.ai_protocol = 0;
     hints.ai_canonname = NULL;
@@ -206,7 +206,7 @@ platform_sock_t platform_socket_dial(
         }
         platform_socket_enable_nonblocking(sock, nonblocking);
 
-        if (protocol == SOCK_STREAM) {
+        if (socktype == SOCK_STREAM) {
             platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);

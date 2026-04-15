@@ -208,26 +208,26 @@ extern platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonbloc
  *
  * @param host         Bind address (e.g. "0.0.0.0", "::").
  * @param port         Bind port (e.g. "8080").
- * @param protocol     IPPROTO_TCP or IPPROTO_UDP.
+ * @param socktype     SOCK_STREAM or SOCK_DGRAM.
  * @param nonblocking  If true, set the socket to non-blocking mode.
  *
  * @return Listening socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
-extern platform_sock_t platform_socket_listen(const char* restrict host, const char* restrict port, int protocol, bool nonblocking);
+extern platform_sock_t platform_socket_listen(const char* restrict host, const char* restrict port, int socktype, bool nonblocking);
 
 /**
  * @brief Create a client socket and connect to a remote host.
  *
  * @param host         Remote host address.
  * @param port         Remote port.
- * @param protocol     IPPROTO_TCP or IPPROTO_UDP.
+ * @param socktype     SOCK_STREAM or SOCK_DGRAM.
  * @param connected    Pointer to receive connection status (true if connected
  *                     immediately, false if in progress for non-blocking).
  * @param nonblocking  If true, set the socket to non-blocking mode.
  *
  * @return Connected socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
-extern platform_sock_t platform_socket_dial(const char* restrict host, const char* restrict port, int protocol, bool* connected, bool nonblocking);
+extern platform_sock_t platform_socket_dial(const char* restrict host, const char* restrict port, int socktype, bool* connected, bool nonblocking);
 
 /**
  * @brief Set the receive timeout on a socket.
