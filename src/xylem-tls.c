@@ -529,6 +529,14 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
     tls->ctx     = ctx;
     tls->handler = handler;
 
+    if (opts && opts->hostname) {
+        tls->hostname = strdup(opts->hostname);
+        if (!tls->hostname) {
+            free(tls);
+            return NULL;
+        }
+    }
+
     xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
     xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
                                            &_tls_tcp_client_handler,
@@ -557,15 +565,6 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     }
 
     xylem_tcp_close(tls->tcp);
-}
-
-int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname) {
-    free(tls->hostname);
-    tls->hostname = strdup(hostname);
-    if (!tls->hostname) {
-        return -1;
-    }
-    return 0;
 }
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {

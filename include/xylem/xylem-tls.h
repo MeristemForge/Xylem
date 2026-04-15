@@ -30,7 +30,11 @@ typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp; /**< Underlying TCP options. */
+    xylem_tcp_opts_t tcp;        /**< Underlying TCP options. */
+    const char*      hostname;   /**< SNI hostname: tells the server which
+                                      certificate to use when multiple domains
+                                      share one IP, and enables hostname
+                                      verification against the certificate. */
 } xylem_tls_opts_t;
 
 typedef struct xylem_tls_handler_s {
@@ -185,19 +189,6 @@ extern int xylem_tls_send(xylem_tls_conn_t* tls,
  * @param tls  TLS connection handle.
  */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
-
-/**
- * @brief Set SNI hostname for the connection.
- *
- * Must be called before xylem_tls_dial. Sets the Server Name
- * Indication extension and enables hostname verification.
- *
- * @param tls       TLS connection handle.
- * @param hostname  Server hostname string.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_tls_set_hostname(xylem_tls_conn_t* tls, const char* hostname);
 
 /**
  * @brief Get the negotiated ALPN protocol.

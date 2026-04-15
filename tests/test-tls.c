@@ -526,10 +526,12 @@ static void test_sni_hostname(void) {
     xylem_loop_t* loop = xylem_loop_create();
     ASSERT(loop != NULL);
 
+    xylem_tls_opts_t opts = {0};
+    opts.hostname = "example.com";
+
     xylem_tls_conn_t* tls = xylem_tls_dial(loop, &addr, ctx,
-                                            &handler, NULL);
+                                            &handler, &opts);
     ASSERT(tls != NULL);
-    ASSERT(xylem_tls_set_hostname(tls, "example.com") == 0);
 
     xylem_tls_close(tls);
     xylem_loop_run(loop);
