@@ -24,8 +24,8 @@
 #include <signal.h>
 #include <string.h>
 
-#define TCPv4_MSS 536
-#define TCPv6_MSS 1220
+#define PLATFORM_TCPV4_MSS 536
+#define PLATFORM_TCPV6_MSS 1220
 
 void platform_socket_enable_nonblocking(platform_sock_t sock, bool on) {
     int flag = fcntl(sock, F_GETFL, 0);
@@ -390,7 +390,7 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int af = platform_socket_get_addressfamily(sock);
     if (on) {
-        int mss = af == AF_INET ? TCPv4_MSS : TCPv6_MSS;
+        int mss = af == AF_INET ? PLATFORM_TCPV4_MSS : PLATFORM_TCPV6_MSS;
         setsockopt(
             sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
     } else {

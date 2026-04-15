@@ -23,6 +23,7 @@ _Pragma("once")
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define xylem_rbtree_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
 
@@ -36,7 +37,7 @@ struct xylem_rbtree_node_s {
     struct xylem_rbtree_node_s* parent;
     struct xylem_rbtree_node_s* right;
     struct xylem_rbtree_node_s* left;
-    char                        color;
+    uint8_t                     color;
 };
 
 struct xylem_rbtree_s {

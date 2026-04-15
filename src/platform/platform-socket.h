@@ -55,8 +55,8 @@ typedef int platform_sock_t;
 #undef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 
-#include <WS2tcpip.h>
 #include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <mstcpip.h>
 #include <ws2ipdef.h>

@@ -30,7 +30,7 @@
 #include "xylem/xylem-sha1.h"
 #include "xylem/xylem-utils.h"
 
-static const char _handshake_guid[] = "258EAFA5-E914-47DA-95CA-5AB9DC63B5E0";
+static const char _ws_handshake_guid[] = "258EAFA5-E914-47DA-95CA-5AB9DC63B5E0";
 
 int ws_handshake_gen_key(char* out, size_t out_size) {
     /* Base64 of 16 bytes = 24 chars + null terminator = 25 */
@@ -62,7 +62,7 @@ int ws_handshake_compute_accept(const char* key,
     }
 
     size_t key_len = strlen(key);
-    size_t guid_len = sizeof(_handshake_guid) - 1;
+    size_t guid_len = sizeof(_ws_handshake_guid) - 1;
 
     xylem_sha1_t* ctx = xylem_sha1_create();
     if (ctx == NULL) {
@@ -70,7 +70,7 @@ int ws_handshake_compute_accept(const char* key,
     }
 
     xylem_sha1_update(ctx, (const uint8_t*)key, key_len);
-    xylem_sha1_update(ctx, (const uint8_t*)_handshake_guid, guid_len);
+    xylem_sha1_update(ctx, (const uint8_t*)_ws_handshake_guid, guid_len);
 
     uint8_t digest[20];
     xylem_sha1_final(ctx, digest);
