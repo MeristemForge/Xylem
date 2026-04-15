@@ -85,6 +85,7 @@ typedef struct xylem_uds_handler_s {
                        xylem_uds_timeout_type_t type);      /**< Timeout fired. */
     void (*on_close)(xylem_uds_conn_t* conn,
                      int err, const char* errmsg);          /**< Connection closed. */
+    void (*on_heartbeat_miss)(xylem_uds_conn_t* conn);     /**< No data received within heartbeat interval. */
 } xylem_uds_handler_t;
 
 /** UDS connection options. */

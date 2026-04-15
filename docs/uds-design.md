@@ -94,10 +94,11 @@ typedef struct xylem_uds_handler_s {
     void (*on_timeout)(xylem_uds_conn_t* conn,
                        xylem_uds_timeout_type_t type);
     void (*on_close)(xylem_uds_conn_t* conn, int err, const char* errmsg);
+    void (*on_heartbeat_miss)(xylem_uds_conn_t* conn);
 } xylem_uds_handler_t;
 ```
 
-与 TCP handler 相比，UDS handler 没有 `on_heartbeat_miss`——心跳超时通过独立的内部回调处理，直接调用 `conn->handler->on_heartbeat_miss`（若存在）。
+与 TCP handler 完全对称，包含 `on_heartbeat_miss` 回调。心跳超时通过独立的内部回调 `_uds_heartbeat_timeout_cb` 处理，在 `heartbeat_ms` 内无数据到达时触发。
 
 ### 连接选项
 
