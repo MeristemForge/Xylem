@@ -23,6 +23,7 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/un.h>
 
@@ -455,7 +456,7 @@ platform_sock_t platform_socket_listen_unix(const char* path,
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
     /* Remove stale socket file if it exists. */
-    unlink(path);
+    remove(path);
 
     platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {

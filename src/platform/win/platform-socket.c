@@ -23,6 +23,7 @@
 
 #include <afunix.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
@@ -439,7 +440,7 @@ platform_sock_t platform_socket_listen_unix(const char* path,
               sizeof(addr.sun_path) - 1);
 
     /* Remove stale socket file if it exists. */
-    DeleteFileA(path);
+    remove(path);
 
     platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
