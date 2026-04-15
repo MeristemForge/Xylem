@@ -30,6 +30,7 @@
 
 #include "platform/platform-socket.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,7 +65,7 @@
 #define RUDP_DEFAULT_HANDSHAKE_MS 5000
 
 struct xylem_rudp_ctx_s {
-    uint32_t next_conv;
+    _Atomic uint32_t next_conv;
 };
 
 struct xylem_rudp_s {
@@ -681,7 +682,8 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         return NULL;
     }
 
-    uint32_t conv = ctx->next_conv++;
+    uint32_t conv = atomic_fetch_add_explicit(&ctx->next_conv, 1,
+                                              memory_order_relaxed);
 
     rudp->handler    = handler;
     rudp->peer_addr  = *addr;

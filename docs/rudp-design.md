@@ -85,11 +85,11 @@ typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 
 ```c
 struct xylem_rudp_ctx_s {
-    uint32_t next_conv;   /* 下一个 KCP 会话 ID，PRNG 种子初始化 */
+    _Atomic uint32_t next_conv;   /* 下一个 KCP 会话 ID，PRNG 种子初始化，原子递增 */
 };
 ```
 
-`next_conv` 在 `xylem_rudp_ctx_create` 时通过 `xylem_utils_getprng` 随机初始化，每次 `xylem_rudp_dial` 递增分配。随机种子确保跨进程重启不会产生 conv 冲突。
+`next_conv` 在 `xylem_rudp_ctx_create` 时通过 `xylem_utils_getprng` 随机初始化，每次 `xylem_rudp_dial` 通过 `atomic_fetch_add_explicit`（`memory_order_relaxed`）原子递增分配，确保多线程环境下 conv ID 不会重复。随机种子确保跨进程重启不会产生 conv 冲突。
 
 ### RUDP 会话
 
@@ -163,7 +163,7 @@ sequenceDiagram
     participant Net as 网络
 
     User->>RUDP: xylem_rudp_dial()
-    RUDP->>RUDP: 分配 conv（ctx->next_conv++）
+    RUDP->>RUDP: 分配 conv（atomic_fetch_add next_conv）
     RUDP->>UDP: xylem_udp_dial（已连接 socket）
     RUDP->>RUDP: 创建 KCP 会话
     RUDP->>UDP: 发送 SYN [magic, 0x01, conv]
