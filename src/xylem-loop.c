@@ -221,6 +221,15 @@ void xylem_loop_destroy(xylem_loop_t* loop) {
     }
 
     xylem_logi("loop destroy");
+
+    /* Drain pending posts to avoid leaking queued nodes. */
+    xylem_queue_node_t* node;
+    mtx_lock(&loop->post_mtx);
+    while ((node = xylem_queue_dequeue(&loop->posts)) != NULL) {
+        free(xylem_queue_entry(node, xylem_loop_post_t, node));
+    }
+    mtx_unlock(&loop->post_mtx);
+
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);
@@ -396,5 +405,8 @@ int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
     mtx_unlock(&loop->post_mtx);
     char    c = 1;
     ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
-    return (n > 0) ? 0 : -1;
+    if (n <= 0) {
+        xylem_logw("loop post: wakeup send failed, task queued anyway");
+    }
+    return 0;
 }
