@@ -147,6 +147,12 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
     udp->closing   = false;
 
     udp->io = xylem_loop_create_io(loop, fd);
+    if (!udp->io) {
+        platform_socket_close(fd);
+        free(udp);
+        xylem_loge("udp bind: io creation failed");
+        return NULL;
+    }
     xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d bound on %s:%s", (int)fd, host, port_str);
@@ -185,6 +191,12 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     udp->closing   = false;
 
     udp->io = xylem_loop_create_io(loop, fd);
+    if (!udp->io) {
+        platform_socket_close(fd);
+        free(udp);
+        xylem_loge("udp dial: io creation failed");
+        return NULL;
+    }
     xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d connected to %s:%s", (int)fd, host, port_str);
