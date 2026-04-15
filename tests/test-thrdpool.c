@@ -46,7 +46,7 @@ static void test_post_jobs(void) {
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, &counter);
+        xylem_thrdpool_post(pool, _increment, (void*)&counter);
     }
 
     xylem_thrdpool_destroy(pool);
@@ -62,7 +62,7 @@ static void test_single_thread(void) {
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, &counter);
+        xylem_thrdpool_post(pool, _increment, (void*)&counter);
     }
 
     xylem_thrdpool_destroy(pool);
@@ -123,7 +123,7 @@ static void test_many_threads(void) {
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, &counter);
+        xylem_thrdpool_post(pool, _increment, (void*)&counter);
     }
 
     xylem_thrdpool_destroy(pool);

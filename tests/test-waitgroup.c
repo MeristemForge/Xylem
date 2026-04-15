@@ -36,7 +36,7 @@ typedef struct {
 static int _worker_thread(void* arg) {
     _worker_ctx_t* ctx = (_worker_ctx_t*)arg;
     atomic_fetch_add(ctx->started, 1);
-    /* Yield to let other threads start — no sleep needed. */
+    /* Yield to let other threads start -- no sleep needed. */
     thrd_yield();
     atomic_fetch_add(ctx->completed, 1);
     xylem_waitgroup_done(ctx->wg);
