@@ -44,8 +44,12 @@ extern xylem_thrdpool_t* xylem_thrdpool_create(int nthrds);
  * @param pool     Pointer to the thread pool.
  * @param routine  Function to execute. Called with @p arg as its parameter.
  * @param arg      Opaque argument passed to @p routine.
+ *
+ * @return 0 on success, -1 on allocation failure.
  */
-extern void xylem_thrdpool_post(xylem_thrdpool_t* restrict pool, void (*routine)(void*), void* arg);
+extern int xylem_thrdpool_post(xylem_thrdpool_t* restrict pool,
+                               void (*routine)(void*),
+                               void* arg);
 
 /**
  * @brief Destroy the thread pool and release all resources.

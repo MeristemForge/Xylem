@@ -106,18 +106,20 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
     return pool;
 }
 
-void xylem_thrdpool_post(
+int xylem_thrdpool_post(
     xylem_thrdpool_t* restrict pool, void (*routine)(void*), void* arg) {
     _thrdpool_job_t* job = malloc(sizeof(_thrdpool_job_t));
-    if (job) {
-        job->routine = routine;
-        job->arg = arg;
-
-        mtx_lock(&pool->mtx);
-        xylem_queue_enqueue(&pool->queue, &job->n);
-        cnd_signal(&pool->cnd);
-        mtx_unlock(&pool->mtx);
+    if (!job) {
+        return -1;
     }
+    job->routine = routine;
+    job->arg = arg;
+
+    mtx_lock(&pool->mtx);
+    xylem_queue_enqueue(&pool->queue, &job->n);
+    cnd_signal(&pool->cnd);
+    mtx_unlock(&pool->mtx);
+    return 0;
 }
 
 void xylem_thrdpool_destroy(xylem_thrdpool_t* restrict pool) {
