@@ -50,7 +50,7 @@ size_t xylem_xheap_len(xylem_xheap_t* heap) {
 }
 
 int xylem_xheap_insert(xylem_xheap_t* heap, void* data) {
-    _xheap_node_t* n = malloc(sizeof(_xheap_node_t));
+    _xheap_node_t* n = (_xheap_node_t*)calloc(1, sizeof(_xheap_node_t));
     if (!n) {
         return -1;
     }

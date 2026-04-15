@@ -394,7 +394,7 @@ int xylem_loop_reset_timer(xylem_loop_timer_t* timer, uint64_t timeout_ms) {
 }
 
 int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
-    xylem_loop_post_t* req = malloc(sizeof(*req));
+    xylem_loop_post_t* req = (xylem_loop_post_t*)calloc(1, sizeof(xylem_loop_post_t));
     if (!req) {
         return -1;
     }

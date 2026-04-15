@@ -68,7 +68,7 @@ static void _tcp_close_cb(xylem_tcp_conn_t* conn, int err,
 static void* _tcp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
                        http_transport_cb_t* cb, void* ctx,
                        xylem_tcp_opts_t* opts) {
-    _tcp_bridge_t* br = malloc(sizeof(*br));
+    _tcp_bridge_t* br = (_tcp_bridge_t*)calloc(1, sizeof(_tcp_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -98,7 +98,7 @@ static void* _tcp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
     (void)tls_cert;
     (void)tls_key;
 
-    _tcp_bridge_t* br = malloc(sizeof(*br));
+    _tcp_bridge_t* br = (_tcp_bridge_t*)calloc(1, sizeof(_tcp_bridge_t));
     if (!br) {
         return NULL;
     }

@@ -120,11 +120,11 @@ xylem_ringbuf_t* xylem_ringbuf_create(size_t esize, size_t bufsize) {
     }
     size_t actual_buf_size = (size_t)cap * esize;
 
-    xylem_ringbuf_t* ring = (xylem_ringbuf_t*)malloc(sizeof(xylem_ringbuf_t));
+    xylem_ringbuf_t* ring = (xylem_ringbuf_t*)calloc(1, sizeof(xylem_ringbuf_t));
     if (!ring) {
         return NULL;
     }
-    ring->buf = (char*)malloc(actual_buf_size);
+    ring->buf = (char*)calloc(1, actual_buf_size);
     if (!ring->buf) {
         free(ring);
         return NULL;

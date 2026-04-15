@@ -62,7 +62,7 @@ static void _tls_close_cb(xylem_tls_conn_t* tls, int err,
 static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
                        ws_transport_cb_t* cb, void* ctx,
                        xylem_tcp_opts_t* opts) {
-    _tls_bridge_t* br = malloc(sizeof(*br));
+    _tls_bridge_t* br = (_tls_bridge_t*)calloc(1, sizeof(_tls_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -101,7 +101,7 @@ static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
                          ws_transport_cb_t* cb, void* ctx,
                          xylem_tcp_opts_t* opts,
                          const char* tls_cert, const char* tls_key) {
-    _tls_bridge_t* br = malloc(sizeof(*br));
+    _tls_bridge_t* br = (_tls_bridge_t*)calloc(1, sizeof(_tls_bridge_t));
     if (!br) {
         return NULL;
     }

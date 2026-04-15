@@ -32,7 +32,7 @@ struct xylem_waitgroup_s {
 };
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
-    xylem_waitgroup_t* waitgroup = malloc(sizeof(xylem_waitgroup_t));
+    xylem_waitgroup_t* waitgroup = (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
     if (!waitgroup) {
         return NULL;
     }

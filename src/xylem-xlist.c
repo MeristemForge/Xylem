@@ -29,7 +29,7 @@ typedef struct {
 } _xlist_node_t;
 
 static inline _xlist_node_t* _xlist_alloc_node(void* data) {
-    _xlist_node_t* n = malloc(sizeof(_xlist_node_t));
+    _xlist_node_t* n = (_xlist_node_t*)calloc(1, sizeof(_xlist_node_t));
     if (!n) {
         return NULL;
     }

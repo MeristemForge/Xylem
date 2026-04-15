@@ -59,7 +59,7 @@ int xylem_xrbtree_insert(xylem_xrbtree_t* tree, void* data) {
     if (xylem_rbtree_find(&tree->tree, data)) {
         return -1;
     }
-    _xrbtree_node_t* n = malloc(sizeof(_xrbtree_node_t));
+    _xrbtree_node_t* n = (_xrbtree_node_t*)calloc(1, sizeof(_xrbtree_node_t));
     if (!n) {
         return -1;
     }

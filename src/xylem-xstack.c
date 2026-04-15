@@ -29,7 +29,7 @@ typedef struct {
 } _xstack_node_t;
 
 static inline _xstack_node_t* _xstack_alloc_node(void* data) {
-    _xstack_node_t* n = malloc(sizeof(_xstack_node_t));
+    _xstack_node_t* n = (_xstack_node_t*)calloc(1, sizeof(_xstack_node_t));
     if (!n) {
         return NULL;
     }

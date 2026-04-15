@@ -108,7 +108,7 @@ _sha1_transform(uint32_t state[5], const uint8_t buffer[64]) {
 }
 
 xylem_sha1_t* xylem_sha1_create(void) {
-    xylem_sha1_t* ctx = (xylem_sha1_t*)malloc(sizeof(xylem_sha1_t));
+    xylem_sha1_t* ctx = (xylem_sha1_t*)calloc(1, sizeof(xylem_sha1_t));
     if (!ctx) {
         return NULL;
     }

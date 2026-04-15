@@ -646,7 +646,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
  */
 static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     conn->state    = TCP_STATE_CONNECTED;
-    conn->read_buf = malloc(conn->opts.read_buf_size);
+    conn->read_buf = (uint8_t*)malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
     }
@@ -961,7 +961,7 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
         return -1;
     }
 
-    _tcp_write_req_t* req = malloc(sizeof(*req) + len);
+    _tcp_write_req_t* req = (_tcp_write_req_t*)malloc(sizeof(_tcp_write_req_t) + len);
     if (!req) {
         return -1;
     }

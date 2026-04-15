@@ -112,7 +112,7 @@ _sha256_transform(xylem_sha256_t* ctx, const uint8_t data[]) {
 }
 
 xylem_sha256_t* xylem_sha256_create(void) {
-    xylem_sha256_t* ctx = malloc(sizeof(xylem_sha256_t));
+    xylem_sha256_t* ctx = (xylem_sha256_t*)calloc(1, sizeof(xylem_sha256_t));
     if (!ctx) {
         return NULL;
     }

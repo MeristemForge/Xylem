@@ -74,7 +74,7 @@ static int _thrdpool_thrdfunc(void* arg) {
 }
 
 xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
-    xylem_thrdpool_t* pool = malloc(sizeof(xylem_thrdpool_t));
+    xylem_thrdpool_t* pool = (xylem_thrdpool_t*)calloc(1, sizeof(xylem_thrdpool_t));
     if (!pool) {
         return NULL;
     }
@@ -91,7 +91,7 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
 
     pool->thrdcnt = 0;
     pool->running = true;
-    pool->thrds = malloc((size_t)nthrds * sizeof(thrd_t));
+    pool->thrds = (thrd_t*)calloc((size_t)nthrds, sizeof(thrd_t));
     if (!pool->thrds) {
         mtx_destroy(&pool->mtx);
         cnd_destroy(&pool->cnd);
@@ -108,7 +108,7 @@ xylem_thrdpool_t* xylem_thrdpool_create(int nthrds) {
 
 int xylem_thrdpool_post(
     xylem_thrdpool_t* restrict pool, void (*routine)(void*), void* arg) {
-    _thrdpool_job_t* job = malloc(sizeof(_thrdpool_job_t));
+    _thrdpool_job_t* job = (_thrdpool_job_t*)calloc(1, sizeof(_thrdpool_job_t));
     if (!job) {
         return -1;
     }

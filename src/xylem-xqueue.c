@@ -29,7 +29,7 @@ typedef struct {
 } _xqueue_node_t;
 
 static inline _xqueue_node_t* _xqueue_alloc_node(void* data) {
-    _xqueue_node_t* n = malloc(sizeof(_xqueue_node_t));
+    _xqueue_node_t* n = (_xqueue_node_t*)calloc(1, sizeof(_xqueue_node_t));
     if (!n) {
         return NULL;
     }
