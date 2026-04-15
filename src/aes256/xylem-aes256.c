@@ -20,7 +20,8 @@
  */
 
 #include "xylem/xylem-aes256.h"
-#include "xylem/xylem-utils.h"
+
+#include "platform/platform-info.h"
 
 #include "aes256/tiny-AES-c/aes.h"
 
@@ -37,10 +38,7 @@ struct xylem_aes256_s {
 };
 
 static void _aes256_generate_iv(uint8_t iv[AES256_IV_SIZE]) {
-    for (int i = 0; i < AES256_IV_SIZE; i += 4) {
-        int r = xylem_utils_getprng(0, 0x7FFFFFFF);
-        memcpy(iv + i, &r, 4);
-    }
+    platform_info_getrandom(iv, AES256_IV_SIZE);
 }
 
 size_t xylem_aes256_ctr_encrypt_size(size_t len) {
