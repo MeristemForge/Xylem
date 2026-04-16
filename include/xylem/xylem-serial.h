@@ -29,11 +29,11 @@ typedef struct xylem_serial_s xylem_serial_t;
 
 /** Serial port baud rate. */
 typedef enum xylem_serial_baudrate_e {
-    XYLEM_SERIAL_BAUDRATE_9600,
-    XYLEM_SERIAL_BAUDRATE_19200,
-    XYLEM_SERIAL_BAUDRATE_38400,
-    XYLEM_SERIAL_BAUDRATE_57600,
-    XYLEM_SERIAL_BAUDRATE_115200,
+    XYLEM_SERIAL_BAUDRATE_9600,   /**< 9600 baud. */
+    XYLEM_SERIAL_BAUDRATE_19200,  /**< 19200 baud. */
+    XYLEM_SERIAL_BAUDRATE_38400,  /**< 38400 baud. */
+    XYLEM_SERIAL_BAUDRATE_57600,  /**< 57600 baud. */
+    XYLEM_SERIAL_BAUDRATE_115200, /**< 115200 baud. */
 } xylem_serial_baudrate_t;
 
 /** Serial port parity mode. */
@@ -63,13 +63,13 @@ typedef enum xylem_serial_flowcontrol_e {
 
 /** Serial port configuration. */
 typedef struct xylem_serial_opts_s {
-    const char*              device;      /**< Device path ("COM3", "/dev/ttyUSB0"). */
-    xylem_serial_baudrate_t  baudrate;    /**< Baud rate. */
-    xylem_serial_parity_t    parity;      /**< Parity mode. */
-    xylem_serial_databits_t      databits;      /**< Data bits. */
-    xylem_serial_stopbits_t      stopbits;      /**< Stop bits. */
-    xylem_serial_flowcontrol_t   flowcontrol;   /**< Flow control, default NONE. */
-    uint32_t                     timeout_ms;    /**< Read timeout in ms, 0 = blocking. */
+    const char*                  device;       /**< Device path ("COM3", "/dev/ttyUSB0"). */
+    xylem_serial_baudrate_t      baudrate;     /**< Baud rate. */
+    xylem_serial_parity_t        parity;       /**< Parity mode. */
+    xylem_serial_databits_t      databits;     /**< Data bits. */
+    xylem_serial_stopbits_t      stopbits;     /**< Stop bits. */
+    xylem_serial_flowcontrol_t   flowcontrol;  /**< Flow control, default NONE. */
+    uint32_t                     timeout_ms;   /**< Read timeout in ms, 0 = blocking. */
 } xylem_serial_opts_t;
 
 /**

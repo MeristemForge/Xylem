@@ -62,7 +62,7 @@ typedef struct platform_serial_config_s {
     uint8_t     databits;     /**< Data bits (7 or 8). */
     uint8_t     stopbits;     /**< Stop bits (1 or 2). */
     uint8_t     parity;       /**< PLATFORM_SERIAL_PARITY_NONE/ODD/EVEN. */
-    uint8_t     flowcontrol;  /**< PLATFORM_SERIAL_FLOW_NONE/HARDWARE/SOFTWARE. */
+    uint8_t     flowcontrol;  /**< PLATFORM_SERIAL_FLOW_NONE/HARDWARE. */
     uint32_t    timeout_ms;   /**< Read timeout in ms, 0 = blocking. */
 } platform_serial_config_t;
 
