@@ -92,6 +92,16 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
         return PLATFORM_SERIAL_INVALID;
     }
 
+    switch (config->flowcontrol) {
+    case PLATFORM_SERIAL_FLOW_HARDWARE:
+        dcb.fOutxCtsFlow = TRUE;
+        dcb.fRtsControl  = RTS_CONTROL_HANDSHAKE;
+        break;
+    case PLATFORM_SERIAL_FLOW_NONE:
+    default:
+        break;
+    }
+
     if (!SetCommState(h, &dcb)) {
         CloseHandle(h);
         return PLATFORM_SERIAL_INVALID;

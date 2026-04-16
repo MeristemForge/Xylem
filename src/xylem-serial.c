@@ -61,18 +61,24 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
         xylem_loge("serial: invalid stopbits %d", (int)opts->stopbits);
         return NULL;
     }
+    if (opts->flowcontrol > XYLEM_SERIAL_FLOW_HARDWARE) {
+        xylem_loge("serial: invalid flowcontrol %d",
+                   (int)opts->flowcontrol);
+        return NULL;
+    }
 
     platform_serial_config_t config = {
-        .device     = opts->device,
-        .baudrate   = _serial_baudrate_map[opts->baudrate],
-        .databits   = (uint8_t)(opts->databits == XYLEM_SERIAL_DATABITS_7
-                               ? PLATFORM_SERIAL_DATABITS_7
-                               : PLATFORM_SERIAL_DATABITS_8),
-        .stopbits   = (uint8_t)(opts->stopbits == XYLEM_SERIAL_STOPBITS_1
-                               ? PLATFORM_SERIAL_STOPBITS_1
-                               : PLATFORM_SERIAL_STOPBITS_2),
-        .parity     = (uint8_t)opts->parity,
-        .timeout_ms = opts->timeout_ms,
+        .device      = opts->device,
+        .baudrate    = _serial_baudrate_map[opts->baudrate],
+        .databits    = (uint8_t)(opts->databits == XYLEM_SERIAL_DATABITS_7
+                                ? PLATFORM_SERIAL_DATABITS_7
+                                : PLATFORM_SERIAL_DATABITS_8),
+        .stopbits    = (uint8_t)(opts->stopbits == XYLEM_SERIAL_STOPBITS_1
+                                ? PLATFORM_SERIAL_STOPBITS_1
+                                : PLATFORM_SERIAL_STOPBITS_2),
+        .parity      = (uint8_t)opts->parity,
+        .flowcontrol = (uint8_t)opts->flowcontrol,
+        .timeout_ms  = opts->timeout_ms,
     };
 
     platform_serial_t fd = platform_serial_open(&config);

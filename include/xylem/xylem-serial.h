@@ -55,14 +55,21 @@ typedef enum xylem_serial_stopbits_e {
     XYLEM_SERIAL_STOPBITS_2,    /**< 2 stop bits. */
 } xylem_serial_stopbits_t;
 
+/** Serial port flow control. */
+typedef enum xylem_serial_flowcontrol_e {
+    XYLEM_SERIAL_FLOW_NONE,     /**< No flow control. */
+    XYLEM_SERIAL_FLOW_HARDWARE, /**< Hardware (RTS/CTS). */
+} xylem_serial_flowcontrol_t;
+
 /** Serial port configuration. */
 typedef struct xylem_serial_opts_s {
     const char*              device;      /**< Device path ("COM3", "/dev/ttyUSB0"). */
     xylem_serial_baudrate_t  baudrate;    /**< Baud rate. */
     xylem_serial_parity_t    parity;      /**< Parity mode. */
-    xylem_serial_databits_t  databits;    /**< Data bits. */
-    xylem_serial_stopbits_t  stopbits;    /**< Stop bits. */
-    uint32_t                 timeout_ms;  /**< Read timeout in ms, 0 = blocking. */
+    xylem_serial_databits_t      databits;      /**< Data bits. */
+    xylem_serial_stopbits_t      stopbits;      /**< Stop bits. */
+    xylem_serial_flowcontrol_t   flowcontrol;   /**< Flow control, default NONE. */
+    uint32_t                     timeout_ms;    /**< Read timeout in ms, 0 = blocking. */
 } xylem_serial_opts_t;
 
 /**

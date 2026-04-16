@@ -86,6 +86,15 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
 
     tio.c_cflag |= CLOCAL | CREAD;
 
+    switch (config->flowcontrol) {
+    case PLATFORM_SERIAL_FLOW_HARDWARE:
+        tio.c_cflag |= CRTSCTS;
+        break;
+    case PLATFORM_SERIAL_FLOW_NONE:
+    default:
+        break;
+    }
+
     if (config->timeout_ms > 0) {
         /* VTIME unit is 1/10 second. Minimum 1 (100ms) to avoid busy-wait. */
         uint32_t vtime = config->timeout_ms / 100;
