@@ -37,8 +37,8 @@ add_executable(ws-echo-client ws-echo-client.c)
 target_link_libraries(ws-echo-client PRIVATE xylem)
 
 # Serial example (always available)
-add_executable(serial-echo serial-echo.c)
-target_link_libraries(serial-echo PRIVATE xylem)
+add_executable(serial-terminal serial-terminal.c)
+target_link_libraries(serial-terminal PRIVATE xylem)
 
 # TLS/DTLS examples (only when TLS is enabled)
 if(XYLEM_ENABLE_TLS)

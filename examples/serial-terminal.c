@@ -29,10 +29,10 @@
  *
  * Connect TX to RX (loopback) or pair with a real serial device.
  *
- * Usage: serial-echo <device> [baudrate]
- *   Windows:  serial-echo COM3 115200
- *   Linux:    serial-echo /dev/ttyUSB0 9600
- *   macOS:    serial-echo /dev/cu.usbserial-0001
+ * Usage: serial-terminal <device> [baudrate]
+ *   Windows:  serial-terminal COM3 115200
+ *   Linux:    serial-terminal /dev/ttyUSB0 9600
+ *   macOS:    serial-terminal /dev/cu.usbserial-0001
  *
  * Supported baud rates: 9600, 19200, 38400, 57600, 115200 (default)
  */
