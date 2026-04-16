@@ -27,39 +27,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-void platform_serial_close(platform_serial_t fd) {
-    close(fd);
-}
-
-int platform_serial_read(platform_serial_t fd, void* buf, size_t len) {
-    ssize_t n;
-    do {
-        n = read(fd, buf, len);
-    } while (n == -1 && errno == EINTR);
-
-    if (n < 0) {
-        return -1;
-    }
-    return (int)n;
-}
-
-int platform_serial_write(platform_serial_t fd,
-                          const void* buf, size_t len) {
-    size_t off = 0;
-    while (off < len) {
-        ssize_t n;
-        do {
-            n = write(fd, (const char*)buf + off, len - off);
-        } while (n == -1 && errno == EINTR);
-
-        if (n < 0) {
-            return -1;
-        }
-        off += (size_t)n;
-    }
-    return (int)off;
-}
-
 platform_serial_t platform_serial_open(platform_serial_config_t* config) {
     int fd = open(config->device, O_RDWR | O_NOCTTY);
     if (fd == -1) {
@@ -71,21 +38,11 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
 
     speed_t speed;
     switch (config->baudrate) {
-    case PLATFORM_SERIAL_BAUDRATE_9600:
-        speed = B9600;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_19200:
-        speed = B19200;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_38400:
-        speed = B38400;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_57600:
-        speed = B57600;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_115200:
-        speed = B115200;
-        break;
+    case 9600:   speed = B9600;   break;
+    case 19200:  speed = B19200;  break;
+    case 38400:  speed = B38400;  break;
+    case 57600:  speed = B57600;  break;
+    case 115200: speed = B115200; break;
     default:
         close(fd);
         return PLATFORM_SERIAL_INVALID;
@@ -95,24 +52,16 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
 
     tio.c_cflag &= ~CSIZE;
     switch (config->databits) {
-    case PLATFORM_SERIAL_DATABITS_7:
-        tio.c_cflag |= CS7;
-        break;
-    case PLATFORM_SERIAL_DATABITS_8:
-        tio.c_cflag |= CS8;
-        break;
+    case PLATFORM_SERIAL_DATABITS_7: tio.c_cflag |= CS7; break;
+    case PLATFORM_SERIAL_DATABITS_8: tio.c_cflag |= CS8; break;
     default:
         close(fd);
         return PLATFORM_SERIAL_INVALID;
     }
 
     switch (config->stopbits) {
-    case PLATFORM_SERIAL_STOPBITS_1:
-        tio.c_cflag &= ~CSTOPB;
-        break;
-    case PLATFORM_SERIAL_STOPBITS_2:
-        tio.c_cflag |= CSTOPB;
-        break;
+    case PLATFORM_SERIAL_STOPBITS_1: tio.c_cflag &= ~CSTOPB; break;
+    case PLATFORM_SERIAL_STOPBITS_2: tio.c_cflag |=  CSTOPB; break;
     default:
         close(fd);
         return PLATFORM_SERIAL_INVALID;
@@ -160,4 +109,37 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
         return PLATFORM_SERIAL_INVALID;
     }
     return fd;
+}
+
+void platform_serial_close(platform_serial_t fd) {
+    close(fd);
+}
+
+int platform_serial_read(platform_serial_t fd, void* buf, size_t len) {
+    ssize_t n;
+    do {
+        n = read(fd, buf, len);
+    } while (n == -1 && errno == EINTR);
+
+    if (n < 0) {
+        return -1;
+    }
+    return (int)n;
+}
+
+int platform_serial_write(platform_serial_t fd,
+                          const void* buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n;
+        do {
+            n = write(fd, (const char*)buf + off, len - off);
+        } while (n == -1 && errno == EINTR);
+
+        if (n < 0) {
+            return -1;
+        }
+        off += (size_t)n;
+    }
+    return (int)off;
 }

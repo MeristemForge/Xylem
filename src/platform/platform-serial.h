@@ -35,43 +35,36 @@ typedef int    platform_serial_t;
 #define PLATFORM_SERIAL_INVALID  -1
 #endif
 
-typedef enum platform_serial_baudrate_e {
-    PLATFORM_SERIAL_BAUDRATE_9600,
-    PLATFORM_SERIAL_BAUDRATE_19200,
-    PLATFORM_SERIAL_BAUDRATE_38400,
-    PLATFORM_SERIAL_BAUDRATE_57600,
-    PLATFORM_SERIAL_BAUDRATE_115200,
-} platform_serial_baudrate_t;
+/** Parity mode constants for platform_serial_config_t.parity. */
+#define PLATFORM_SERIAL_PARITY_NONE  0
+#define PLATFORM_SERIAL_PARITY_ODD   1
+#define PLATFORM_SERIAL_PARITY_EVEN  2
 
-typedef enum platform_serial_parity_e {
-    PLATFORM_SERIAL_PARITY_NONE,
-    PLATFORM_SERIAL_PARITY_ODD,
-    PLATFORM_SERIAL_PARITY_EVEN,
-} platform_serial_parity_t;
+/** Data bits constants for platform_serial_config_t.databits. */
+#define PLATFORM_SERIAL_DATABITS_7   7
+#define PLATFORM_SERIAL_DATABITS_8   8
 
-typedef enum platform_serial_databits_e {
-    PLATFORM_SERIAL_DATABITS_7,
-    PLATFORM_SERIAL_DATABITS_8,
-} platform_serial_databits_t;
+/** Stop bits constants for platform_serial_config_t.stopbits. */
+#define PLATFORM_SERIAL_STOPBITS_1   1
+#define PLATFORM_SERIAL_STOPBITS_2   2
 
-typedef enum platform_serial_stopbits_e {
-    PLATFORM_SERIAL_STOPBITS_1,
-    PLATFORM_SERIAL_STOPBITS_2,
-} platform_serial_stopbits_t;
-
+/**
+ * Platform-level serial configuration using raw integer values.
+ * The upper layer translates public enums into these values.
+ */
 typedef struct platform_serial_config_s {
-    const char*                device;
-    platform_serial_baudrate_t baudrate;
-    platform_serial_parity_t   parity;
-    platform_serial_databits_t databits;
-    platform_serial_stopbits_t stopbits;
-    uint32_t                   timeout_ms;
+    const char* device;       /**< Device path. */
+    uint32_t    baudrate;     /**< Baud rate (e.g. 9600, 115200). */
+    uint8_t     databits;     /**< Data bits (7 or 8). */
+    uint8_t     stopbits;     /**< Stop bits (1 or 2). */
+    uint8_t     parity;       /**< PLATFORM_SERIAL_PARITY_NONE/ODD/EVEN. */
+    uint32_t    timeout_ms;   /**< Read timeout in ms, 0 = blocking. */
 } platform_serial_config_t;
 
 /**
  * @brief Open and configure a serial port.
  *
- * @param config  Serial port configuration.
+ * @param config  Serial port configuration (raw integer values).
  *
  * @return Platform serial handle, or PLATFORM_SERIAL_INVALID on failure.
  */

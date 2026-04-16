@@ -27,6 +27,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
+static const uint32_t _serial_baudrate_map[] = {
+    [XYLEM_SERIAL_BAUDRATE_9600]   = 9600,
+    [XYLEM_SERIAL_BAUDRATE_19200]  = 19200,
+    [XYLEM_SERIAL_BAUDRATE_38400]  = 38400,
+    [XYLEM_SERIAL_BAUDRATE_57600]  = 57600,
+    [XYLEM_SERIAL_BAUDRATE_115200] = 115200,
+};
+
 struct xylem_serial_s {
     platform_serial_t fd;
     bool              closed;
@@ -37,76 +45,33 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
         xylem_loge("serial: opts or device is NULL");
         return NULL;
     }
-    platform_serial_baudrate_t baudrate;
-    switch (opts->baudrate) {
-    case XYLEM_SERIAL_BAUDRATE_9600:
-        baudrate = PLATFORM_SERIAL_BAUDRATE_9600;
-        break;
-    case XYLEM_SERIAL_BAUDRATE_19200:
-        baudrate = PLATFORM_SERIAL_BAUDRATE_19200;
-        break;
-    case XYLEM_SERIAL_BAUDRATE_38400:
-        baudrate = PLATFORM_SERIAL_BAUDRATE_38400;
-        break;
-    case XYLEM_SERIAL_BAUDRATE_57600:
-        baudrate = PLATFORM_SERIAL_BAUDRATE_57600;
-        break;
-    case XYLEM_SERIAL_BAUDRATE_115200:
-        baudrate = PLATFORM_SERIAL_BAUDRATE_115200;
-        break;
-    default:
+    if (opts->baudrate > XYLEM_SERIAL_BAUDRATE_115200) {
         xylem_loge("serial: invalid baudrate %d", (int)opts->baudrate);
         return NULL;
     }
-
-    platform_serial_parity_t parity;
-    switch (opts->parity) {
-    case XYLEM_SERIAL_PARITY_NONE:
-        parity = PLATFORM_SERIAL_PARITY_NONE;
-        break;
-    case XYLEM_SERIAL_PARITY_ODD:
-        parity = PLATFORM_SERIAL_PARITY_ODD;
-        break;
-    case XYLEM_SERIAL_PARITY_EVEN:
-        parity = PLATFORM_SERIAL_PARITY_EVEN;
-        break;
-    default:
+    if (opts->parity > XYLEM_SERIAL_PARITY_EVEN) {
         xylem_loge("serial: invalid parity %d", (int)opts->parity);
         return NULL;
     }
-
-    platform_serial_databits_t databits;
-    switch (opts->databits) {
-    case XYLEM_SERIAL_DATABITS_7:
-        databits = PLATFORM_SERIAL_DATABITS_7;
-        break;
-    case XYLEM_SERIAL_DATABITS_8:
-        databits = PLATFORM_SERIAL_DATABITS_8;
-        break;
-    default:
+    if (opts->databits > XYLEM_SERIAL_DATABITS_8) {
         xylem_loge("serial: invalid databits %d", (int)opts->databits);
         return NULL;
     }
-
-    platform_serial_stopbits_t stopbits;
-    switch (opts->stopbits) {
-    case XYLEM_SERIAL_STOPBITS_1:
-        stopbits = PLATFORM_SERIAL_STOPBITS_1;
-        break;
-    case XYLEM_SERIAL_STOPBITS_2:
-        stopbits = PLATFORM_SERIAL_STOPBITS_2;
-        break;
-    default:
+    if (opts->stopbits > XYLEM_SERIAL_STOPBITS_2) {
         xylem_loge("serial: invalid stopbits %d", (int)opts->stopbits);
         return NULL;
     }
 
     platform_serial_config_t config = {
         .device     = opts->device,
-        .baudrate   = baudrate,
-        .parity     = parity,
-        .databits   = databits,
-        .stopbits   = stopbits,
+        .baudrate   = _serial_baudrate_map[opts->baudrate],
+        .databits   = (uint8_t)(opts->databits == XYLEM_SERIAL_DATABITS_7
+                               ? PLATFORM_SERIAL_DATABITS_7
+                               : PLATFORM_SERIAL_DATABITS_8),
+        .stopbits   = (uint8_t)(opts->stopbits == XYLEM_SERIAL_STOPBITS_1
+                               ? PLATFORM_SERIAL_STOPBITS_1
+                               : PLATFORM_SERIAL_STOPBITS_2),
+        .parity     = (uint8_t)opts->parity,
         .timeout_ms = opts->timeout_ms,
     };
 

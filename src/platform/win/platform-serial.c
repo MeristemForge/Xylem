@@ -64,47 +64,12 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
     SecureZeroMemory(&dcb, sizeof(DCB));
     dcb.DCBlength = sizeof(DCB);
     dcb.fBinary   = TRUE;
-
-    switch (config->baudrate) {
-    case PLATFORM_SERIAL_BAUDRATE_9600:
-        dcb.BaudRate = CBR_9600;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_19200:
-        dcb.BaudRate = CBR_19200;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_38400:
-        dcb.BaudRate = CBR_38400;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_57600:
-        dcb.BaudRate = CBR_57600;
-        break;
-    case PLATFORM_SERIAL_BAUDRATE_115200:
-        dcb.BaudRate = CBR_115200;
-        break;
-    default:
-        CloseHandle(h);
-        return PLATFORM_SERIAL_INVALID;
-    }
-
-    switch (config->databits) {
-    case PLATFORM_SERIAL_DATABITS_7:
-        dcb.ByteSize = 7;
-        break;
-    case PLATFORM_SERIAL_DATABITS_8:
-        dcb.ByteSize = 8;
-        break;
-    default:
-        CloseHandle(h);
-        return PLATFORM_SERIAL_INVALID;
-    }
+    dcb.BaudRate  = (DWORD)config->baudrate;
+    dcb.ByteSize = config->databits;
 
     switch (config->stopbits) {
-    case PLATFORM_SERIAL_STOPBITS_1:
-        dcb.StopBits = ONESTOPBIT;
-        break;
-    case PLATFORM_SERIAL_STOPBITS_2:
-        dcb.StopBits = TWOSTOPBITS;
-        break;
+    case PLATFORM_SERIAL_STOPBITS_1: dcb.StopBits = ONESTOPBIT;  break;
+    case PLATFORM_SERIAL_STOPBITS_2: dcb.StopBits = TWOSTOPBITS; break;
     default:
         CloseHandle(h);
         return PLATFORM_SERIAL_INVALID;
@@ -136,12 +101,19 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
     SecureZeroMemory(&timeouts, sizeof(COMMTIMEOUTS));
 
     if (config->timeout_ms > 0) {
-        /* Return after timeout_ms even if no data arrived. */
-        timeouts.ReadIntervalTimeout        = 0;
+        /**
+         * Multiplier=0 makes the total timeout independent of how many
+         * bytes are requested -- always exactly timeout_ms.
+         *
+         * ReadIntervalTimeout = 1ms: once the first byte arrives, return
+         * quickly if no more bytes follow within 1ms (matches Unix VMIN=0
+         * behavior where any available data is returned immediately).
+         */
+        timeouts.ReadIntervalTimeout        = 1;
         timeouts.ReadTotalTimeoutMultiplier  = 0;
         timeouts.ReadTotalTimeoutConstant    = (DWORD)config->timeout_ms;
     } else {
-        /*
+        /**
          * Block until at least 1 byte arrives (matches Unix VMIN=1).
          * MAXDWORD interval + MAXDWORD multiplier + constant in [1, MAXDWORD-1]
          * tells Windows to wait indefinitely for the first byte, then return
