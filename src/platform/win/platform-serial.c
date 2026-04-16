@@ -112,14 +112,17 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
 
     if (config->timeout_ms > 0) {
         /**
-         * Multiplier=0 makes the total timeout independent of how many
-         * bytes are requested -- always exactly timeout_ms.
+         * ReadIntervalTimeout = 100ms: once the first byte arrives,
+         * return if no more bytes follow within 100ms.  This matches
+         * Unix VTIME granularity (1/10 second).
          *
-         * ReadIntervalTimeout = 1ms: once the first byte arrives, return
-         * quickly if no more bytes follow within 1ms (matches Unix VMIN=0
-         * behavior where any available data is returned immediately).
+         * ReadTotalTimeoutConstant = timeout_ms: overall upper bound
+         * on how long to wait for the first byte.
+         *
+         * Multiplier = 0: total timeout is independent of requested
+         * byte count.
          */
-        timeouts.ReadIntervalTimeout        = 1;
+        timeouts.ReadIntervalTimeout        = 100;
         timeouts.ReadTotalTimeoutMultiplier  = 0;
         timeouts.ReadTotalTimeoutConstant    = (DWORD)config->timeout_ms;
     } else {
