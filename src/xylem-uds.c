@@ -886,8 +886,7 @@ xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
     xylem_list_init(&server->connections);
 
     if (path && strlen(path) < UDS_MAX_PATH) {
-        strncpy(server->path, path, UDS_MAX_PATH - 1);
-        server->path[UDS_MAX_PATH - 1] = '\0';
+        snprintf(server->path, UDS_MAX_PATH, "%s", path);
     }
 
     platform_sock_t fd = platform_socket_listen_unix(path, true);
