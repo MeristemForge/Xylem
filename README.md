@@ -14,6 +14,7 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 - Single-threaded event loop with I/O polling, timers
 - TCP client/server with framing, write queue, reconnect, heartbeat, timeouts
 - UDP listen/dial modes with datagram boundary preservation
+- Unix domain socket (UDS) client/server with framing, heartbeat
 - TLS over TCP via OpenSSL memory BIO (ALPN, SNI, keylog)
 - DTLS over UDP via OpenSSL memory BIO (cookie exchange, session multiplexing)
 - Reliable UDP over KCP (ARQ, congestion control, session multiplexing)
