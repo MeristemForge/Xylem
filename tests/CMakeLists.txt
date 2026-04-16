@@ -37,6 +37,7 @@ xylem_add_test(ws)
 xylem_add_test(rudp)
 xylem_add_test(uds)
 xylem_add_test(fec)
+xylem_add_test(serial)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)
