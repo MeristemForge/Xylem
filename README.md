@@ -20,6 +20,7 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 - Reliable UDP over KCP (ARQ, congestion control, session multiplexing)
 - HTTP/1.1 client and server
 - WebSocket client/server (RFC 6455)
+- Cross-platform synchronous serial port I/O
 - Intrusive and non-intrusive data structures (list, queue, stack, heap, rbtree, ring buffer)
 - Base64, SHA-1, SHA-256, HMAC-SHA256, AES-256 (CTR/CBC), gzip, JSON, varint
 - Thread pool, async logger, waitgroup
