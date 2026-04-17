@@ -412,6 +412,7 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
 }
 
 static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
+    /* Idempotent: multiple close paths may converge here. */
     if (conn->state == TCP_STATE_CLOSED ||
         conn->state == TCP_STATE_CLOSING) {
         return;
@@ -492,6 +493,12 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                             conn->read_len);
                 }
 
+                /**
+                 * Revalidate after on_read: user may have called
+                 * xylem_tcp_close inside the callback, which frees
+                 * read_buf. Continuing the recv/extract loop would
+                 * touch freed memory.
+                 */
                 if (conn->state == TCP_STATE_CLOSED ||
                     conn->state == TCP_STATE_CLOSING) {
                     return;
@@ -548,6 +555,11 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
                        (int)conn->fd, err,
                        platform_socket_tostring(err));
 
+            /**
+             * Already shutting down: drain remaining write requests
+             * with error status, then destroy. Normal _tcp_close_conn
+             * path is skipped because we are already CLOSING.
+             */
             if (conn->state == TCP_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
@@ -581,6 +593,11 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
 
             free(req);
 
+            /**
+             * Revalidate after on_write_done: user may have called
+             * xylem_tcp_close inside the callback. Continuing to
+             * dequeue or reset timers would operate on torn-down state.
+             */
             if (conn->state == TCP_STATE_CLOSED ||
                 conn->state == TCP_STATE_CLOSING) {
                 return;
@@ -602,6 +619,10 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         xylem_loop_stop_timer(conn->write_timer);
     }
 
+    /**
+     * Write queue fully drained while CLOSING: the graceful shutdown
+     * sequence can now complete with shutdown(SHUT_WR) + destroy.
+     */
     if (conn->state == TCP_STATE_CLOSING) {
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
@@ -709,6 +730,10 @@ static void _tcp_deferred_connect_cb(xylem_loop_t* loop,
     (void)loop;
     (void)req;
     xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
+    /**
+     * Deferred callback may fire after the user already closed the
+     * connection between dial return and the next loop iteration.
+     */
     if (conn->state == TCP_STATE_CLOSED || conn->state == TCP_STATE_CLOSING) {
         return;
     }
@@ -960,6 +985,7 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
+    /* Idempotent: user may call close multiple times or from callbacks. */
     if (conn->state == TCP_STATE_CLOSING ||
         conn->state == TCP_STATE_CLOSED) {
         return;
@@ -980,6 +1006,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
+    /* Reject writes on a connection that is shutting down or destroyed. */
     if (conn->state == TCP_STATE_CLOSING ||
         conn->state == TCP_STATE_CLOSED) {
         xylem_logd("tcp conn fd=%d send rejected (state=%d)",
