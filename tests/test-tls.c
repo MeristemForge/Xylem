@@ -576,6 +576,7 @@ static void _ud_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg)
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -656,6 +657,7 @@ static void _srv_ud_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg)
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -745,6 +747,7 @@ static void _peer_addr_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* 
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -821,6 +824,7 @@ static void _get_loop_close_cb(xylem_tls_conn_t* tls, int err, const char* errms
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -985,6 +989,7 @@ static void _sac_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -1165,6 +1170,7 @@ static void _timeout_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
@@ -1256,6 +1262,7 @@ static void _heartbeat_close_cb(xylem_tls_conn_t* tls, int err, const char* errm
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 
