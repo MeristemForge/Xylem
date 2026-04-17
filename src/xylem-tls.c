@@ -176,10 +176,12 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
 int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
                             const char* cert, const char* key) {
     if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
+        xylem_loge("tls ctx: failed to load cert %s", cert);
         return -1;
     }
     if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
                                     SSL_FILETYPE_PEM) != 1) {
+        xylem_loge("tls ctx: failed to load key %s", key);
         return -1;
     }
     return 0;
@@ -187,6 +189,7 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
 
 int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
+        xylem_loge("tls ctx: failed to load CA %s", ca_file);
         return -1;
     }
     return 0;
@@ -292,13 +295,14 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
 static int _tls_init_ssl(xylem_tls_conn_t* tls) {
     tls->ssl = SSL_new(tls->ctx->ssl_ctx);
     if (!tls->ssl) {
-        xylem_logw("tls conn %p SSL_new failed", (void*)tls);
+        xylem_loge("tls conn %p SSL_new failed", (void*)tls);
         return -1;
     }
 
     tls->read_bio  = BIO_new(BIO_s_mem());
     tls->write_bio = BIO_new(BIO_s_mem());
     if (!tls->read_bio || !tls->write_bio) {
+        xylem_loge("tls conn %p BIO_new failed", (void*)tls);
         /* BIO_free accepts NULL safely. */
         BIO_free(tls->read_bio);
         BIO_free(tls->write_bio);
@@ -340,7 +344,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
 
     xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
     if (!tls) {
-        xylem_logw("tls server accept: conn alloc failed");
+        xylem_loge("tls server accept: conn alloc failed");
         xylem_tcp_set_userdata(conn, NULL);
         xylem_tcp_close(conn);
         return;
@@ -513,7 +517,10 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
 
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
-        xylem_logw("tls conn %p SSL_write failed", (void*)tls);
+        unsigned long ssl_err_code = ERR_peek_error();
+        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+        xylem_logw("tls conn %p SSL_write failed (%s)",
+                   (void*)tls, ssl_err_str ? ssl_err_str : "unknown");
         return -1;
     }
 

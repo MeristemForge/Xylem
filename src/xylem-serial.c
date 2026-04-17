@@ -90,11 +90,14 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
     xylem_serial_t* serial =
         (xylem_serial_t*)calloc(1, sizeof(xylem_serial_t));
     if (!serial) {
+        xylem_loge("serial: alloc failed for %s", opts->device);
         platform_serial_close(fd);
         return NULL;
     }
     serial->fd     = fd;
     serial->closed = false;
+    xylem_logi("serial: opened %s at %u baud",
+               opts->device, _serial_baudrate_map[opts->baudrate]);
     return serial;
 }
 

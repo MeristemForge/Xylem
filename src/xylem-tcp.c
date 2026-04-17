@@ -125,7 +125,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
     case XYLEM_TCP_FRAME_FIXED: {
         size_t fsz = conn->opts.framing.fixed.frame_size;
         if (fsz == 0) {
-            xylem_logw("tcp conn fd=%d frame_fixed: frame_size=0",
+            xylem_loge("tcp conn fd=%d frame_fixed: frame_size=0",
                        (int)conn->fd);
             return -1;
         }
@@ -153,7 +153,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
 
         if (conn->opts.framing.length.coding == XYLEM_TCP_LENGTH_FIXEDINT) {
             if (len_sz == 0 || len_sz > 8) {
-                xylem_logw("tcp conn fd=%d frame_length: invalid field_size=%u",
+                xylem_loge("tcp conn fd=%d frame_length: invalid field_size=%u",
                            (int)conn->fd, len_sz);
                 return -1;
             }
@@ -185,7 +185,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
         int64_t frame_size = (int64_t)effective_hdr + (int64_t)payload_len +
                              (int64_t)adj;
         if (frame_size <= 0) {
-            xylem_logw("tcp conn fd=%d frame_length: frame_size=%" PRId64
+            xylem_loge("tcp conn fd=%d frame_length: frame_size=%" PRId64
                        " <= 0", (int)conn->fd, frame_size);
             return -1;
         }
@@ -209,7 +209,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
         const char* delim     = conn->opts.framing.delim.delim;
         size_t      delim_len = conn->opts.framing.delim.delim_len;
         if (!delim || delim_len == 0) {
-            xylem_logw("tcp conn fd=%d frame_delim: delim is NULL or empty",
+            xylem_loge("tcp conn fd=%d frame_delim: delim is NULL or empty",
                        (int)conn->fd);
             return -1;
         }
@@ -243,7 +243,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
 
     case XYLEM_TCP_FRAME_CUSTOM: {
         if (!conn->opts.framing.custom.parse) {
-            xylem_logw("tcp conn fd=%d frame_custom: parse is NULL",
+            xylem_loge("tcp conn fd=%d frame_custom: parse is NULL",
                        (int)conn->fd);
             return -1;
         }
@@ -252,7 +252,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
 
         if (rc > 0) {
             if ((size_t)rc > avail) {
-                xylem_logw("tcp conn fd=%d frame_custom: parse returned %d"
+                xylem_loge("tcp conn fd=%d frame_custom: parse returned %d"
                            " > avail %zu", (int)conn->fd, rc, avail);
                 return -1;
             }
@@ -464,7 +464,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 break;
             }
-            xylem_logw("tcp conn fd=%d recv error=%d (%s)",
+            xylem_loge("tcp conn fd=%d recv error=%d (%s)",
                        (int)conn->fd, err,
                        platform_socket_tostring(err));
             _tcp_close_conn(conn, err);
@@ -551,7 +551,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
                 return;
             }
 
-            xylem_logw("tcp conn fd=%d send error=%d (%s)",
+            xylem_loge("tcp conn fd=%d send error=%d (%s)",
                        (int)conn->fd, err,
                        platform_socket_tostring(err));
 
@@ -744,7 +744,7 @@ static void _tcp_deferred_connect_cb(xylem_loop_t* loop,
 
 static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
     if (_tcp_setup_conn(conn) != 0) {
-        xylem_logw("tcp conn fd=%d setup failed", (int)conn->fd);
+        xylem_loge("tcp conn fd=%d setup failed", (int)conn->fd);
         _tcp_close_conn(conn, -1);
         return;
     }
@@ -836,7 +836,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
                                               &connected, true);
 
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_logw("tcp reconnect: socket creation failed, retrying");
+        xylem_logw("tcp reconnect fd=%d: socket creation failed for %s:%s", (int)conn->fd, dial->host, dial->port_str);
         dial->reconnect_count++;
         _tcp_start_reconnect_timer(conn, _tcp_reconnect_timeout_cb);
         return;
@@ -847,7 +847,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     conn->io = xylem_loop_create_io(conn->loop, fd);
 
     if (!conn->io) {
-        xylem_logw("tcp reconnect: io creation failed, retrying");
+        xylem_logw("tcp reconnect fd=%d: io creation failed for %s:%s", (int)conn->fd, dial->host, dial->port_str);
         platform_socket_close(fd);
         conn->fd = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dial->reconnect_count++;
@@ -917,12 +917,16 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
 
         conn->io = xylem_loop_create_io(loop, client_fd);
         if (!conn->io) {
+            xylem_logw("tcp server fd=%d accept: io creation failed for fd=%d",
+                       (int)server->fd, (int)client_fd);
             platform_socket_close(client_fd);
             free(conn);
             continue;
         }
 
         if (_tcp_setup_conn(conn) != 0) {
+            xylem_logw("tcp server fd=%d accept: setup failed for fd=%d",
+                       (int)server->fd, (int)client_fd);
             xylem_loop_destroy_io(conn->io);
             platform_socket_close(client_fd);
             free(conn);
@@ -1136,7 +1140,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     if (connected) {
         if (_tcp_setup_conn(conn) != 0) {
-            xylem_logw("tcp conn fd=%d setup failed", (int)conn->fd);
+            xylem_loge("tcp conn fd=%d setup failed", (int)conn->fd);
             xylem_loop_destroy_io(conn->io);
             platform_socket_close(fd);
             free(dial);

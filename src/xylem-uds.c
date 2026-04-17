@@ -111,7 +111,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
     case XYLEM_UDS_FRAME_FIXED: {
         size_t fsz = conn->opts.framing.fixed.frame_size;
         if (fsz == 0) {
-            xylem_logw("uds conn fd=%d frame_fixed: frame_size=0",
+            xylem_loge("uds conn fd=%d frame_fixed: frame_size=0",
                        (int)conn->fd);
             return -1;
         }
@@ -138,7 +138,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
 
         if (conn->opts.framing.length.coding == XYLEM_UDS_LENGTH_FIXEDINT) {
             if (len_sz == 0 || len_sz > 8) {
-                xylem_logw("uds conn fd=%d frame_length: invalid "
+                xylem_loge("uds conn fd=%d frame_length: invalid "
                            "field_size=%u", (int)conn->fd, len_sz);
                 return -1;
             }
@@ -170,7 +170,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
         int64_t frame_size = (int64_t)effective_hdr +
                              (int64_t)payload_len + (int64_t)adj;
         if (frame_size <= 0) {
-            xylem_logw("uds conn fd=%d frame_length: frame_size=%"
+            xylem_loge("uds conn fd=%d frame_length: frame_size=%"
                        PRId64 " <= 0", (int)conn->fd, frame_size);
             return -1;
         }
@@ -194,7 +194,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
         const char* delim     = conn->opts.framing.delim.delim;
         size_t      delim_len = conn->opts.framing.delim.delim_len;
         if (!delim || delim_len == 0) {
-            xylem_logw("uds conn fd=%d frame_delim: delim is NULL or "
+            xylem_loge("uds conn fd=%d frame_delim: delim is NULL or "
                        "empty", (int)conn->fd);
             return -1;
         }
@@ -228,7 +228,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
 
     case XYLEM_UDS_FRAME_CUSTOM: {
         if (!conn->opts.framing.custom.parse) {
-            xylem_logw("uds conn fd=%d frame_custom: parse is NULL",
+            xylem_loge("uds conn fd=%d frame_custom: parse is NULL",
                        (int)conn->fd);
             return -1;
         }
@@ -237,7 +237,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
 
         if (rc > 0) {
             if ((size_t)rc > avail) {
-                xylem_logw("uds conn fd=%d frame_custom: parse returned "
+                xylem_loge("uds conn fd=%d frame_custom: parse returned "
                            "%d > avail %zu", (int)conn->fd, rc, avail);
                 return -1;
             }
@@ -304,7 +304,8 @@ static void _uds_conn_free_cb(xylem_loop_t* loop,
 
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
     conn->state = UDS_STATE_CLOSED;
-    xylem_logd("uds conn fd=%d destroy err=%d", (int)conn->fd, err);
+    xylem_logd("uds conn fd=%d destroy err=%d (%s)", (int)conn->fd, err,
+               err ? platform_socket_tostring(err) : "ok");
 
     if (conn->server) {
         xylem_list_remove(&conn->server->connections, &conn->server_node);
@@ -346,7 +347,8 @@ static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
         return;
     }
 
-    xylem_logd("uds conn fd=%d start_close err=%d", (int)conn->fd, err);
+    xylem_logd("uds conn fd=%d start_close err=%d (%s)", (int)conn->fd, err,
+               err ? platform_socket_tostring(err) : "ok");
     conn->state = UDS_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {
@@ -625,7 +627,7 @@ static void _uds_try_connect(xylem_loop_t* loop,
     getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
 
     if (err != 0) {
-        xylem_logw("uds conn fd=%d connect failed err=%d (%s)",
+        xylem_loge("uds conn fd=%d connect failed err=%d (%s)",
                    (int)conn->fd, err,
                    platform_socket_tostring(err));
         _uds_destroy_conn(conn, err);
@@ -670,6 +672,8 @@ static void _uds_server_io_cb(xylem_loop_t* loop,
         xylem_uds_conn_t* conn =
             (xylem_uds_conn_t*)calloc(1, sizeof(*conn));
         if (!conn) {
+            xylem_logw("uds server fd=%d accept: conn alloc failed",
+                       (int)server->fd);
             platform_socket_close(client_fd);
             continue;
         }
@@ -683,12 +687,16 @@ static void _uds_server_io_cb(xylem_loop_t* loop,
 
         conn->io = xylem_loop_create_io(loop, client_fd);
         if (!conn->io) {
+            xylem_logw("uds server fd=%d accept: io creation failed for fd=%d",
+                       (int)server->fd, (int)client_fd);
             platform_socket_close(client_fd);
             free(conn);
             continue;
         }
 
         if (_uds_setup_conn(conn) != 0) {
+            xylem_logw("uds server fd=%d accept: setup failed for fd=%d",
+                       (int)server->fd, (int)client_fd);
             xylem_loop_destroy_io(conn->io);
             platform_socket_close(client_fd);
             free(conn);
@@ -860,6 +868,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
 
     conn->io = xylem_loop_create_io(loop, conn->fd);
     if (!conn->io) {
+        xylem_loge("uds dial fd=%d: io creation failed", (int)fd);
         platform_socket_close(fd);
         free(conn);
         return NULL;
@@ -921,6 +930,7 @@ xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
 
     server->io = xylem_loop_create_io(loop, server->fd);
     if (!server->io) {
+        xylem_loge("uds listen fd=%d: io creation failed", (int)fd);
         platform_socket_close(fd);
         free(server);
         return NULL;

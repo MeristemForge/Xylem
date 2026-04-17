@@ -381,7 +381,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
 
     /* Check for dead link. */
     if (rudp->kcp->state == (IUINT32)-1) {
-        xylem_logw("rudp session %p dead link detected", (void*)rudp);
+        xylem_logw("rudp conv=%u dead link detected", rudp->conv);
         rudp->close_err    = -1;
         rudp->close_errmsg = "dead link";
         xylem_rudp_close(rudp);
@@ -415,7 +415,7 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
     (void)loop;
     (void)timer;
     xylem_rudp_t* rudp = (xylem_rudp_t*)ud;
-    xylem_logw("rudp session %p handshake timed out", (void*)rudp);
+    xylem_logw("rudp conv=%u handshake timed out", rudp->conv);
     rudp->close_err    = -1;
     rudp->close_errmsg = "handshake timeout";
     xylem_rudp_close(rudp);
@@ -462,6 +462,7 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
             if (rudp->handshake_timer) {
                 xylem_loop_stop_timer(rudp->handshake_timer);
             }
+            xylem_logi("rudp conv=%u handshake complete", rudp->conv);
             _rudp_schedule_update(rudp);
             if (rudp->handler && rudp->handler->on_connect) {
                 rudp->handler->on_connect(rudp);
@@ -556,6 +557,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
 
             xylem_rudp_t* rudp = calloc(1, sizeof(*rudp));
             if (!rudp) {
+                xylem_loge("rudp server: session alloc failed");
                 return;
             }
 
@@ -573,12 +575,14 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
 
             rudp->kcp = _rudp_create_kcp(rudp, hs_conv, &server->opts);
             if (!rudp->kcp) {
+                xylem_loge("rudp conv=%u kcp creation failed", hs_conv);
                 xylem_loop_destroy_timer(rudp->update_timer);
                 free(rudp);
                 return;
             }
 
             if (!_rudp_init_fec(rudp, rudp->mtu)) {
+                xylem_loge("rudp conv=%u fec init failed", hs_conv);
                 ikcp_release(rudp->kcp);
                 xylem_loop_destroy_timer(rudp->update_timer);
                 free(rudp);
@@ -587,6 +591,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
 
             rudp->handshake_done = true;
             xylem_rbtree_insert(&server->sessions, &rudp->server_node);
+            xylem_logi("rudp conv=%u session accepted", hs_conv);
 
             /* Initial start so _rudp_schedule_update can use reset. */
             xylem_loop_start_timer(rudp->update_timer,
@@ -718,6 +723,7 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
 
     rudp->kcp = _rudp_create_kcp(rudp, conv, opts);
     if (!rudp->kcp) {
+        xylem_loge("rudp conv=%u kcp creation failed", conv);
         xylem_loop_destroy_timer(rudp->update_timer);
         xylem_loop_destroy_timer(rudp->handshake_timer);
         /**
@@ -731,6 +737,7 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
     }
 
     if (!_rudp_init_fec(rudp, rudp->mtu)) {
+        xylem_loge("rudp conv=%u fec init failed", conv);
         ikcp_release(rudp->kcp);
         xylem_loop_destroy_timer(rudp->update_timer);
         xylem_loop_destroy_timer(rudp->handshake_timer);
@@ -739,6 +746,8 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         free(rudp);
         return NULL;
     }
+
+    xylem_logi("rudp conv=%u dial started", conv);
 
     /* Initial start so _rudp_schedule_update can use reset. */
     xylem_loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
@@ -760,6 +769,8 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
 
 int xylem_rudp_send(xylem_rudp_t* rudp, const void* data, size_t len) {
     if (!rudp->handshake_done || rudp->closing) {
+        xylem_logd("rudp conv=%u send rejected (handshake=%d closing=%d)",
+                   rudp->conv, rudp->handshake_done, rudp->closing);
         return -1;
     }
     int rc = ikcp_send(rudp->kcp, (const char*)data, (int)len);
@@ -781,6 +792,8 @@ void xylem_rudp_close(xylem_rudp_t* rudp) {
         return;
     }
     rudp->closing = true;
+
+    xylem_logi("rudp conv=%u closing", rudp->conv);
 
     xylem_loop_stop_timer(rudp->update_timer);
 
@@ -889,6 +902,8 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server) {
         return;
     }
     server->closing = true;
+
+    xylem_logi("rudp server closing");
 
     while (!xylem_rbtree_empty(&server->sessions)) {
         xylem_rbtree_node_t* node = xylem_rbtree_first(&server->sessions);

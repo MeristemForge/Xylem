@@ -266,10 +266,12 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
 int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
                              const char* cert, const char* key) {
     if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
+        xylem_loge("dtls ctx: failed to load cert %s", cert);
         return -1;
     }
     if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
                                     SSL_FILETYPE_PEM) != 1) {
+        xylem_loge("dtls ctx: failed to load key %s", key);
         return -1;
     }
     return 0;
@@ -277,6 +279,7 @@ int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
 
 int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
+        xylem_loge("dtls ctx: failed to load CA %s", ca_file);
         return -1;
     }
     return 0;
@@ -388,12 +391,14 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
 static int _dtls_init_ssl(xylem_dtls_t* dtls) {
     dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
     if (!dtls->ssl) {
+        xylem_loge("dtls session %p SSL_new failed", (void*)dtls);
         return -1;
     }
 
     dtls->read_bio  = BIO_new(BIO_s_mem());
     dtls->write_bio = BIO_new(BIO_s_mem());
     if (!dtls->read_bio || !dtls->write_bio) {
+        xylem_loge("dtls session %p BIO_new failed", (void*)dtls);
         /* BIO_free accepts NULL safely. */
         BIO_free(dtls->read_bio);
         BIO_free(dtls->write_bio);
@@ -429,6 +434,9 @@ static void _dtls_do_handshake(xylem_dtls_t* dtls) {
             memcpy(dtls->alpn, alpn_proto, alpn_len);
             dtls->alpn[alpn_len] = '\0';
         }
+
+        xylem_logi("dtls session %p handshake complete (%s)",
+                   (void*)dtls, dtls->server ? "server" : "client");
 
         if (dtls->server) {
             if (dtls->handler && dtls->handler->on_accept) {
@@ -604,6 +612,10 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
         xylem_loop_stop_timer(dtls->handshake_timer);
     }
 
+    xylem_logd("dtls session %p close err=%d (%s)",
+               (void*)dtls, dtls->close_err,
+               dtls->close_errmsg ? dtls->close_errmsg : "ok");
+
     /* Propagate UDP-layer error only when DTLS has not set its own. */
     if (dtls->close_err == 0 && err != 0) {
         dtls->close_err    = err;
@@ -684,6 +696,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
 
     dtls = calloc(1, sizeof(*dtls));
     if (!dtls) {
+        xylem_loge("dtls server: session alloc failed");
         return;
     }
 
@@ -784,11 +797,17 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
 int xylem_dtls_send(xylem_dtls_t* dtls,
                     const void* data, size_t len) {
     if (!dtls->handshake_done || dtls->closing) {
+        xylem_logd("dtls session %p send rejected (handshake=%d closing=%d)",
+                   (void*)dtls, dtls->handshake_done, dtls->closing);
         return -1;
     }
 
     int n = SSL_write(dtls->ssl, data, (int)len);
     if (n <= 0) {
+        unsigned long ssl_err_code = ERR_peek_error();
+        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
+        xylem_logw("dtls session %p SSL_write failed (%s)",
+                   (void*)dtls, ssl_err_str ? ssl_err_str : "unknown");
         return -1;
     }
 
@@ -802,6 +821,8 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
         return;
     }
     dtls->closing = true;
+
+    xylem_logi("dtls session %p close requested", (void*)dtls);
 
     _dtls_stop_retransmit(dtls);
 
@@ -893,6 +914,7 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop,
     server->udp = udp;
     xylem_udp_set_userdata(udp, server);
 
+    xylem_logi("dtls server %p listening", (void*)server);
     return server;
 }
 
@@ -901,6 +923,8 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
         return;
     }
     server->closing = true;
+
+    xylem_logi("dtls server %p closing", (void*)server);
 
     while (!xylem_rbtree_empty(&server->sessions)) {
         xylem_rbtree_node_t* node = xylem_rbtree_first(&server->sessions);

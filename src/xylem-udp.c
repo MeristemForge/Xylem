@@ -136,7 +136,7 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
                                                 SOCK_DGRAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         free(udp);
-        xylem_loge("udp bind: socket creation failed");
+        xylem_loge("udp bind: socket creation failed for %s:%s", host, port_str);
         return NULL;
     }
 
@@ -150,7 +150,7 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
     if (!udp->io) {
         platform_socket_close(fd);
         free(udp);
-        xylem_loge("udp bind: io creation failed");
+        xylem_loge("udp fd=%d bind: io creation failed", (int)fd);
         return NULL;
     }
     xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
@@ -179,7 +179,7 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
                                               &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         free(udp);
-        xylem_loge("udp dial: socket creation failed");
+        xylem_loge("udp dial: socket creation failed for %s:%s", host, port_str);
         return NULL;
     }
 
@@ -194,7 +194,7 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     if (!udp->io) {
         platform_socket_close(fd);
         free(udp);
-        xylem_loge("udp dial: io creation failed");
+        xylem_loge("udp fd=%d dial: io creation failed", (int)fd);
         return NULL;
     }
     xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
@@ -217,7 +217,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     if (!dest || udp->connected) {
         ssize_t n = platform_socket_send(udp->fd, data, (int)len);
         if (n < 0) {
-            xylem_logw("udp fd=%d send error", (int)udp->fd);
+            xylem_logw("udp fd=%d send error=%d (%s)", (int)udp->fd,
+                       platform_socket_get_lasterror(),
+                       platform_socket_tostring(platform_socket_get_lasterror()));
         }
         return (n < 0) ? -1 : (int)n;
     }
@@ -229,7 +231,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     ssize_t n = platform_socket_sendto(udp->fd, data, (int)len,
                                        &dest->storage, addrlen);
     if (n < 0) {
-        xylem_logw("udp fd=%d sendto error", (int)udp->fd);
+        xylem_logw("udp fd=%d sendto error=%d (%s)", (int)udp->fd,
+                   platform_socket_get_lasterror(),
+                   platform_socket_tostring(platform_socket_get_lasterror()));
     }
     return (n < 0) ? -1 : (int)n;
 }
