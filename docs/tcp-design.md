@@ -195,9 +195,8 @@ stateDiagram-v2
     CONNECTING --> CONNECTED : SO_ERROR == 0
     CONNECTING --> CONNECTING : 重连定时器触发（指数退避）
     CONNECTING --> CLOSED : 重连次数耗尽 / 连接超时 / 错误
-    CONNECTED --> CLOSING : xylem_tcp_close()
-    CONNECTED --> CLOSED : 对端关闭 / 错误
-    CLOSING --> CLOSED : 写队列排空 → shutdown(SHUT_WR) → destroy
+    CONNECTED --> CLOSED : xylem_tcp_close()（同步 drain + shutdown + destroy）
+    CONNECTED --> CLOSED : 对端关闭 / 错误（同步 drain + destroy）
     CLOSED --> [*]
 ```
 
@@ -207,7 +206,7 @@ stateDiagram-v2
 |------|------|
 | `TCP_STATE_CONNECTING` | 正在建立连接（非阻塞 connect 进行中） |
 | `TCP_STATE_CONNECTED` | 连接已建立，可读写 |
-| `TCP_STATE_CLOSING` | 优雅关闭中，等待写队列排空 |
+| `TCP_STATE_CLOSING` | 瞬态：关闭过程中（同步 drain 写队列 → shutdown → destroy，不跨事件循环迭代） |
 | `TCP_STATE_CLOSED` | 连接已销毁 |
 
 ## 帧解析策略
@@ -285,11 +284,9 @@ flowchart TD
 - 完整发送：出队，回调 `on_write_done`，检查连接状态——若用户在回调中关闭了连接（`CLOSED` 或 `CLOSING`）则立即返回；否则处理下一个请求
 - 部分发送：更新 `offset`，等待下次可写事件
 - `EAGAIN`：直接返回，等待下次可写事件
-- 错误：若处于 `CLOSING` 状态则排空队列并销毁；否则 `close_conn`
+- 错误：调用 `_tcp_close_conn`（同步 drain 写队列 + destroy）
 
 写队列为空时，将 IO 监听切回仅读模式，停止写超时定时器。
-
-若处于 `CLOSING` 状态且写队列排空，执行 `shutdown(SHUT_WR)` 后销毁连接。
 
 ### 超时处理
 
@@ -327,17 +324,17 @@ sequenceDiagram
 
     User->>TCP: xylem_tcp_close()
     TCP->>TCP: state = CLOSING
-    alt 写队列为空
-        TCP->>OS: shutdown(SHUT_WR)
-        TCP->>TCP: _tcp_destroy_conn()
-        TCP->>User: on_close(0)
-    else 写队列非空
-        TCP->>TCP: 等待 _tcp_flush_writes 排空
-        TCP->>OS: shutdown(SHUT_WR)
-        TCP->>TCP: _tcp_destroy_conn()
-        TCP->>User: on_close(0)
+    loop 写队列非空
+        TCP->>User: on_write_done(data, len, -1)
     end
+    TCP->>OS: shutdown(SHUT_WR)
+    TCP->>TCP: _tcp_destroy_conn()
+    TCP->>User: on_close(0)
 ```
+
+`xylem_tcp_close` 同步排空写队列：对每个未完成的写请求回调 `on_write_done`（status=-1 表示未发送），然后立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。不再等待异步 flush。
+
+`_tcp_close_conn`（由错误路径触发）行为相同：同步排空写队列（`on_write_done` 携带触发关闭的错误码），然后立即 `_tcp_destroy_conn`。
 
 `_tcp_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、释放 dial 私有状态、回调 `on_close`、通过 `xylem_loop_post` 延迟释放连接内存。
 
