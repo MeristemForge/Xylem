@@ -384,11 +384,15 @@ sequenceDiagram
     participant User as 用户
     participant UDS as xylem-uds
     participant OS as 操作系统
+    participant Loop as 事件循环
 
     User->>UDS: xylem_uds_dial(path)
     UDS->>OS: platform_socket_dial_unix(path, nonblocking)
     alt 立即连接成功
         UDS->>UDS: _uds_setup_conn
+        UDS->>Loop: xylem_loop_post(_uds_deferred_connect_cb)
+        UDS-->>User: 返回 conn（调用者可设置 userdata）
+        Loop->>UDS: _uds_deferred_connect_cb（下一轮迭代）
         UDS->>User: handler->on_connect
     else EINPROGRESS
         UDS->>UDS: 注册 POLLER_WR_OP
@@ -404,6 +408,8 @@ sequenceDiagram
 ```
 
 UDS 本地连接通常立即成功，但非阻塞模式下仍可能返回 `EINPROGRESS`（如 macOS），因此保留异步连接路径。
+
+立即连接成功时，`on_connect` 回调通过 `xylem_loop_post` 延迟到下一轮事件循环迭代触发，确保调用者在 `xylem_uds_dial` 返回后有机会设置 userdata。延迟回调 `_uds_deferred_connect_cb` 在触发前检查连接状态，若连接已进入 `CLOSING` 或 `CLOSED` 则跳过回调。
 
 ## 平台抽象层
 

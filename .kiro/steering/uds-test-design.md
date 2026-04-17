@@ -17,7 +17,7 @@
 - 共享回调：`_srv_accept_cb`（保存 srv_conn + 设置 userdata）、`_srv_read_echo_cb`（回显）
 - 每个测试独立创建 Loop，需要运行事件循环的测试额外创建 Safety Timer（10 秒）防止挂起
 - 测试间无共享状态
-- 单一路径 `UDS_PATH "xylem-test-uds.sock"`，测试顺序执行不冲突
+- 单一路径 `UDS_PATH "/tmp/xylem-test-uds.sock"`，测试顺序执行不冲突
 - 每个测试结束后 `remove(UDS_PATH)` 清理 socket 文件
 - 无文件作用域可变变量，所有状态通过 `_test_ctx_t` 和 userdata 传递
 - `main` 函数首尾调用 `xylem_startup` 和 `xylem_cleanup`

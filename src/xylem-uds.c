@@ -800,6 +800,26 @@ int xylem_uds_send(xylem_uds_conn_t* conn,
     return 0;
 }
 
+/**
+ * When non-blocking connect succeeds immediately inside xylem_uds_dial,
+ * on_connect would fire before dial returns -- the caller has no chance to
+ * call set_userdata yet, so the callback sees NULL userdata.  Deferring to
+ * the next loop iteration guarantees dial returns first.
+ */
+static void _uds_deferred_connect_cb(xylem_loop_t* loop,
+                                      xylem_loop_post_t* req,
+                                      void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
+    if (conn->state == UDS_STATE_CLOSED || conn->state == UDS_STATE_CLOSING) {
+        return;
+    }
+    if (conn->handler && conn->handler->on_connect) {
+        conn->handler->on_connect(conn);
+    }
+}
+
 xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                   const char* path,
                                   xylem_uds_handler_t* handler,
@@ -851,9 +871,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
             return NULL;
         }
         xylem_logi("uds conn fd=%d connected immediately", (int)fd);
-        if (conn->handler && conn->handler->on_connect) {
-            conn->handler->on_connect(conn);
-        }
+        xylem_loop_post(loop, _uds_deferred_connect_cb, conn);
     } else {
         xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
                             _uds_try_connect, conn);

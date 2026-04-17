@@ -25,7 +25,11 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef _WIN32
 #define UDS_PATH "xylem-test-uds.sock"
+#else
+#define UDS_PATH "/tmp/xylem-test-uds.sock"
+#endif
 
 typedef struct {
     xylem_loop_t*        loop;
@@ -305,6 +309,10 @@ static void _csac_close_cb(xylem_uds_conn_t* conn,
     (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     ctx->close_called++;
+    /* Stop the loop once the client connection is closed (EOF from server). */
+    if (conn == ctx->cli_conn) {
+        xylem_loop_stop(ctx->loop);
+    }
 }
 
 static void _csac_timer_cb(xylem_loop_t* loop,
@@ -314,7 +322,6 @@ static void _csac_timer_cb(xylem_loop_t* loop,
     (void)timer;
     _test_ctx_t* ctx = (_test_ctx_t*)ud;
     xylem_uds_close_server(ctx->server);
-    xylem_loop_stop(ctx->loop);
 }
 
 static void _csac_connect_cb(xylem_uds_conn_t* conn) {

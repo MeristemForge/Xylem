@@ -695,6 +695,26 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     return 0;
 }
 
+/**
+ * When non-blocking connect succeeds immediately inside xylem_tcp_dial,
+ * on_connect would fire before dial returns -- the caller has no chance to
+ * call set_userdata yet, so the callback sees NULL userdata.  Deferring to
+ * the next loop iteration guarantees dial returns first.
+ */
+static void _tcp_deferred_connect_cb(xylem_loop_t* loop,
+                                      xylem_loop_post_t* req,
+                                      void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
+    if (conn->state == TCP_STATE_CLOSED || conn->state == TCP_STATE_CLOSING) {
+        return;
+    }
+    if (conn->handler && conn->handler->on_connect) {
+        conn->handler->on_connect(conn);
+    }
+}
+
 static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
     if (_tcp_setup_conn(conn) != 0) {
         xylem_logw("tcp conn fd=%d setup failed", (int)conn->fd);
@@ -1094,7 +1114,16 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     }
 
     if (connected) {
-        _tcp_conn_connected_cb(conn);
+        if (_tcp_setup_conn(conn) != 0) {
+            xylem_logw("tcp conn fd=%d setup failed", (int)conn->fd);
+            xylem_loop_destroy_io(conn->io);
+            platform_socket_close(fd);
+            free(dial);
+            free(conn);
+            return NULL;
+        }
+        xylem_logi("tcp conn fd=%d connected immediately", (int)fd);
+        xylem_loop_post(loop, _tcp_deferred_connect_cb, conn);
     } else {
         xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
                             _tcp_try_connect, conn);
