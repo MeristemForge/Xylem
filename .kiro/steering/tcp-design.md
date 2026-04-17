@@ -1,3 +1,7 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "src/xylem-tcp.c,include/xylem/xylem-tcp.h,tests/test-tcp.c"
+---
 # TCP 模块设计文档
 
 ## 概述
@@ -195,8 +199,11 @@ stateDiagram-v2
     CONNECTING --> CONNECTED : SO_ERROR == 0
     CONNECTING --> CONNECTING : 重连定时器触发（指数退避）
     CONNECTING --> CLOSED : 重连次数耗尽 / 连接超时 / 错误
-    CONNECTED --> CLOSED : xylem_tcp_close()（同步 drain + shutdown + destroy）
+    CONNECTED --> CLOSING : xylem_tcp_close()（写队列非空）
+    CONNECTED --> CLOSED : xylem_tcp_close()（写队列为空 → shutdown + destroy）
     CONNECTED --> CLOSED : 对端关闭 / 错误（同步 drain + destroy）
+    CLOSING --> CLOSED : 写队列排空 → shutdown + destroy
+    CLOSING --> CLOSED : 发送错误 → drain 剩余 + destroy
     CLOSED --> [*]
 ```
 
@@ -206,7 +213,7 @@ stateDiagram-v2
 |------|------|
 | `TCP_STATE_CONNECTING` | 正在建立连接（非阻塞 connect 进行中） |
 | `TCP_STATE_CONNECTED` | 连接已建立，可读写 |
-| `TCP_STATE_CLOSING` | 瞬态：关闭过程中（同步 drain 写队列 → shutdown → destroy，不跨事件循环迭代） |
+| `TCP_STATE_CLOSING` | 优雅关闭中，等待写队列中的数据发送完毕。可跨事件循环迭代持续，直到写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn` |
 | `TCP_STATE_CLOSED` | 连接已销毁 |
 
 ## 帧解析策略
@@ -284,9 +291,9 @@ flowchart TD
 - 完整发送：出队，回调 `on_write_done`，检查连接状态——若用户在回调中关闭了连接（`CLOSED` 或 `CLOSING`）则立即返回；否则处理下一个请求
 - 部分发送：更新 `offset`，等待下次可写事件
 - `EAGAIN`：直接返回，等待下次可写事件
-- 错误：调用 `_tcp_close_conn`（同步 drain 写队列 + destroy）
+- 错误：若处于 `CLOSING` 状态则排空剩余写队列（`on_write_done` status=-1）并 `_tcp_destroy_conn`；否则调用 `_tcp_close_conn`（同步 drain 写队列 + destroy）
 
-写队列为空时，将 IO 监听切回仅读模式，停止写超时定时器。
+写队列为空时：若处于 `CLOSING` 状态，执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn(0)` 完成优雅关闭；否则将 IO 监听切回仅读模式，停止写超时定时器。
 
 ### 超时处理
 
@@ -324,17 +331,24 @@ sequenceDiagram
 
     User->>TCP: xylem_tcp_close()
     TCP->>TCP: state = CLOSING
-    loop 写队列非空
-        TCP->>User: on_write_done(data, len, -1)
+    alt 写队列为空
+        TCP->>OS: shutdown(SHUT_WR)
+        TCP->>TCP: _tcp_destroy_conn()
+        TCP->>User: on_close(0)
+    else 写队列非空
+        TCP->>TCP: 等待 _tcp_flush_writes 异步发送
+        Note over TCP: IO 可写事件驱动，可跨多轮迭代
+        TCP->>OS: 逐个发送写请求
+        TCP->>User: on_write_done(data, len, 0) 每个成功发送
+        TCP->>OS: 写队列排空后 shutdown(SHUT_WR)
+        TCP->>TCP: _tcp_destroy_conn()
+        TCP->>User: on_close(0)
     end
-    TCP->>OS: shutdown(SHUT_WR)
-    TCP->>TCP: _tcp_destroy_conn()
-    TCP->>User: on_close(0)
 ```
 
-`xylem_tcp_close` 同步排空写队列：对每个未完成的写请求回调 `on_write_done`（status=-1 表示未发送），然后立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。不再等待异步 flush。
+`xylem_tcp_close` 将状态设为 `CLOSING`。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
 
-`_tcp_close_conn`（由错误路径触发）行为相同：同步排空写队列（`on_write_done` status=-1 表示未发送，与 `xylem_tcp_close` 一致），然后立即 `_tcp_destroy_conn`。
+`_tcp_close_conn`（由错误路径触发）行为不同：同步排空写队列（`on_write_done` status=-1 表示未发送），然后立即 `_tcp_destroy_conn`。
 
 `_tcp_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、释放 dial 私有状态、回调 `on_close`、通过 `xylem_loop_post` 延迟释放连接内存。
 

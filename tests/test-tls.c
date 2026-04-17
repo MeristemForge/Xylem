@@ -440,6 +440,9 @@ static void _alpn_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errms
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx && ctx->srv_conn) {
         xylem_tls_close(ctx->srv_conn);
+    } else if (ctx) {
+        xylem_tls_close_server(ctx->tls_server);
+        xylem_loop_post(ctx->loop, _post_stop_cb, NULL);
     }
 }
 

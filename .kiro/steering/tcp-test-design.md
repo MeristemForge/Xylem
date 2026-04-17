@@ -89,10 +89,10 @@
 |---------|-----------|
 | `_tcp_extract_frame` | NONE/FIXED/LENGTH(BE/LE/varint/adj)/DELIM(1/2字节)/CUSTOM(>0/0/<0/NULL) + 错误路径 |
 | `_tcp_conn_readable_cb` | 正常读取、心跳/读超时 reset、缓冲区满(space==0)、peer EOF(nread==0) |
-| `_tcp_flush_writes` | 正常完成、写超时 |
+| `_tcp_flush_writes` | 正常完成、写超时、CLOSING 状态下写队列排空 → shutdown + destroy |
 | `_tcp_close_conn` | peer EOF 触发关闭；同步 drain 写队列 + on_write_done(-1) + destroy（`test_drain_write_queue_on_error`） |
 | `_tcp_start_reconnect_timer` | 指数退避重连成功、达到上限关闭连接 |
 | `_tcp_read/write/connect_timeout_cb` | 读超时、写超时、连接超时（重连限制测试触发） |
 | `_tcp_heartbeat_timeout_cb` | 心跳超时 |
-| `xylem_tcp_close` | 同步 drain 写队列 + on_write_done(-1) + shutdown + destroy |
+| `xylem_tcp_close` | 写队列为空时立即 shutdown + destroy；写队列非空时设 CLOSING 等待 flush |
 | `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |

@@ -967,22 +967,12 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
                (int)conn->fd);
     conn->state = TCP_STATE_CLOSING;
 
-    /* Drain any pending writes before shutting down. */
-    while (!xylem_queue_empty(&conn->write_queue)) {
-        xylem_queue_node_t* node =
-            xylem_queue_dequeue(&conn->write_queue);
-        _tcp_write_req_t* req =
-            xylem_queue_entry(node, _tcp_write_req_t, node);
-
-        if (conn->handler && conn->handler->on_write_done) {
-            conn->handler->on_write_done(conn, req->data, req->len, -1);
-        }
-
-        free(req);
+    if (xylem_queue_empty(&conn->write_queue)) {
+        shutdown(conn->fd, PLATFORM_SHUT_WR);
+        _tcp_destroy_conn(conn, 0);
     }
-
-    shutdown(conn->fd, PLATFORM_SHUT_WR);
-    _tcp_destroy_conn(conn, 0);
+    /* Non-empty: _tcp_flush_writes drains the queue, then calls
+       shutdown + _tcp_destroy_conn when it sees CLOSING state. */
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {

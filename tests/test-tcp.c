@@ -205,6 +205,13 @@ static void _sac_on_connect(xylem_tcp_conn_t* conn) {
     xylem_tcp_close(conn);
     ctx->send_result = xylem_tcp_send(conn, "x", 1);
     ctx->tested = 1;
+}
+
+static void _sac_on_close(xylem_tcp_conn_t* conn, int err,
+                           const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     xylem_loop_stop(ctx->loop);
 }
 
@@ -537,6 +544,7 @@ static void test_send_after_close(void) {
 
     xylem_tcp_handler_t cli_handler = {
         .on_connect = _sac_on_connect,
+        .on_close   = _sac_on_close,
     };
 
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
@@ -1617,6 +1625,13 @@ static void _write_timeout_cb(xylem_tcp_conn_t* conn,
         ctx->verified = 1;
     }
     xylem_tcp_close(conn);
+}
+
+static void _write_timeout_close_cb(xylem_tcp_conn_t* conn, int err,
+                                     const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     xylem_loop_stop(ctx->loop);
 }
 
@@ -1645,6 +1660,7 @@ static void test_write_timeout(void) {
     xylem_tcp_handler_t cli_handler = {
         .on_connect = _write_timeout_cli_connect_cb,
         .on_timeout = _write_timeout_cb,
+        .on_close   = _write_timeout_close_cb,
     };
 
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
@@ -1724,12 +1740,23 @@ static void _hb_reset_send_cb(xylem_loop_t* loop,
     }
 }
 
+static void _hb_reset_close_cb(xylem_tcp_conn_t* conn, int err,
+                                const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
+    xylem_loop_stop(ctx->loop);
+}
+
 static void _hb_reset_stop_cb(xylem_loop_t* loop,
                                 xylem_loop_timer_t* timer,
                                 void* ud) {
+    (void)loop;
     (void)timer;
-    (void)ud;
-    xylem_loop_stop(loop);
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    if (ctx->cli_conn) {
+        xylem_tcp_close(ctx->cli_conn);
+    }
 }
 
 static void _hb_reset_miss_cb(xylem_tcp_conn_t* conn) {
@@ -1771,6 +1798,7 @@ static void test_heartbeat_reset_on_data(void) {
 
     xylem_tcp_handler_t cli_handler = {
         .on_connect = _hb_reset_cli_connect_cb,
+        .on_close   = _hb_reset_close_cb,
     };
 
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
@@ -1784,14 +1812,13 @@ static void test_heartbeat_reset_on_data(void) {
 
     /* Stop after 250ms. */
     xylem_loop_timer_t* stop_timer = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(stop_timer, _hb_reset_stop_cb, NULL, 250, 0);
+    xylem_loop_start_timer(stop_timer, _hb_reset_stop_cb, &ctx, 250, 0);
 
     xylem_loop_run(loop);
 
     /* verified==0 means heartbeat_miss was NOT called. */
     ASSERT(ctx.verified == 0);
 
-    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(send_timer);
     xylem_loop_destroy_timer(stop_timer);
