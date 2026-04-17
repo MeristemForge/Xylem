@@ -256,6 +256,13 @@ int xylem_loop_run(xylem_loop_t* loop) {
                 continue;
             }
             xylem_loop_io_t* io = cqes[i].ud;
+            /**
+             * IO may have been destroyed by a prior callback in this
+             * batch -- cb is set to NULL by xylem_loop_destroy_io().
+             */
+            if (io->cb == NULL) {
+                continue;
+            }
             io->cb(io->loop, io, cqes[i].op, io->ud);
         }
 
@@ -291,6 +298,14 @@ xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd) {
     return io;
 }
 
+static void _loop_io_free_cb(xylem_loop_t* loop,
+                             xylem_loop_post_t* req,
+                             void* ud) {
+    (void)loop;
+    (void)req;
+    free(ud);
+}
+
 void xylem_loop_destroy_io(xylem_loop_io_t* io) {
     if (!io) {
         return;
@@ -299,7 +314,15 @@ void xylem_loop_destroy_io(xylem_loop_io_t* io) {
         xylem_loop_stop_io(io);
     }
     io->loop->active_count--;
-    free(io);
+
+    /**
+     * Mark the IO as dead so the dispatch loop in xylem_loop_run()
+     * skips it if this IO was returned by the current poll batch.
+     * Defer the actual free to the next post-processing pass so the
+     * pointer remains valid for the remainder of the current iteration.
+     */
+    io->cb = NULL;
+    xylem_loop_post(io->loop, _loop_io_free_cb, io);
 }
 
 int xylem_loop_start_io(
