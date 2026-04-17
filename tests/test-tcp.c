@@ -392,6 +392,7 @@ static void test_close_server_with_active_conn(void) {
 
     ASSERT(ctx.close_called >= 1);
 
+    xylem_tcp_close(cli);
     xylem_loop_destroy_timer(close_timer);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -430,6 +431,7 @@ static void test_dial_connect(void) {
 
     ASSERT(ctx.connect_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -508,6 +510,7 @@ static void test_send_basic(void) {
     ASSERT(ctx.wd_status == 0);
     ASSERT(ctx.wd_len == 4);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -584,6 +587,7 @@ static void test_conn_userdata(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -627,6 +631,7 @@ static void test_server_userdata(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -664,6 +669,7 @@ static void test_peer_addr(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -701,6 +707,7 @@ static void test_get_loop(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -743,6 +750,7 @@ static void test_frame_none(void) {
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "hello", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -789,6 +797,7 @@ static void test_frame_fixed(void) {
     ASSERT(memcmp(ctx.frames[0], "ABCD", 4) == 0);
     ASSERT(memcmp(ctx.frames[1], "EFGH", 4) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -833,6 +842,7 @@ static void test_frame_fixed_zero(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -883,6 +893,7 @@ static void test_frame_length_be(void) {
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -933,6 +944,7 @@ static void test_frame_length_le(void) {
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -981,6 +993,7 @@ static void test_frame_length_field_size_zero(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1029,6 +1042,7 @@ static void test_frame_length_field_size_over8(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1078,6 +1092,7 @@ static void test_frame_length_varint(void) {
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "WORLD", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1129,6 +1144,7 @@ static void test_frame_length_adjustment(void) {
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1178,6 +1194,7 @@ static void test_frame_length_empty_payload(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1227,6 +1244,7 @@ static void test_frame_delim_multi(void) {
     ASSERT(ctx.frame_lens[1] == 5);
     ASSERT(memcmp(ctx.frames[1], "world", 5) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1276,6 +1294,7 @@ static void test_frame_delim_single(void) {
     ASSERT(ctx.frame_lens[1] == 3);
     ASSERT(memcmp(ctx.frames[1], "def", 3) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1321,6 +1340,7 @@ static void test_frame_delim_null(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1367,6 +1387,7 @@ static void test_frame_custom_positive(void) {
     ASSERT(memcmp(ctx.frames[0], "ABCD", 4) == 0);
     ASSERT(memcmp(ctx.frames[1], "EFGH", 4) == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1415,6 +1436,7 @@ static void test_frame_custom_zero(void) {
 
     ASSERT(ctx.read_count == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(check);
     xylem_loop_destroy_timer(safety);
@@ -1460,6 +1482,7 @@ static void test_frame_custom_negative(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1504,6 +1527,7 @@ static void test_frame_custom_null_parse(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(ctx.server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1562,6 +1586,7 @@ static void test_read_timeout(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1681,6 +1706,7 @@ static void test_heartbeat_miss(void) {
 
     ASSERT(ctx.verified == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
@@ -1765,6 +1791,7 @@ static void test_heartbeat_reset_on_data(void) {
     /* verified==0 means heartbeat_miss was NOT called. */
     ASSERT(ctx.verified == 0);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(send_timer);
     xylem_loop_destroy_timer(stop_timer);
@@ -1827,6 +1854,7 @@ static void test_reconnect_success(void) {
 
     ASSERT(ctx.connect_called == 1);
 
+    xylem_tcp_close(cli);
     if (ctx.server) {
         xylem_tcp_close_server(ctx.server);
     }
@@ -1942,6 +1970,7 @@ static void test_read_buf_full(void) {
 
     ASSERT(ctx.close_called == 1);
 
+    xylem_tcp_close(cli);
     xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
