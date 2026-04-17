@@ -14,6 +14,17 @@ The exact commands depend on whether your CMake generator is single-config (e.g.
   - Linux: `lcov` and `genhtml` (`sudo apt install lcov`)
   - Windows: OpenCppCoverage (`winget install OpenCppCoverage.OpenCppCoverage`)
 
+## Windows: Developer Command Prompt
+
+On Windows, all commands (cmake, ctest, etc.) must be run from a Visual Studio Developer Command Prompt, or from a terminal where `vcvarsall.bat` has been executed. This ensures the MSVC compiler (`cl.exe`) and related tools are on `PATH`.
+
+Common ways to open one:
+- Start Menu → "Developer Command Prompt for VS 2022"
+- Start Menu → "Developer PowerShell for VS 2022"
+- Manually run: `"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64`
+
+If using Clang-cl, the same environment is required — Clang-cl depends on MSVC headers and libraries.
+
 ## Configure the Build
 
 ### Generator Types
