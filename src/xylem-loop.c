@@ -221,13 +221,26 @@ void xylem_loop_destroy(xylem_loop_t* loop) {
 
     xylem_logi("loop destroy");
 
-    /* Drain pending posts to avoid leaking queued nodes. */
-    xylem_queue_node_t* node;
-    mtx_lock(&loop->post_mtx);
-    while ((node = xylem_queue_dequeue(&loop->posts)) != NULL) {
-        free(xylem_queue_entry(node, xylem_loop_post_t, node));
+    /* Drain pending posts — invoke callbacks so deferred frees
+     * (IO objects, conn structs, etc.) are released.  Loop until
+     * stable because a callback may enqueue new posts. */
+    for (;;) {
+        xylem_queue_t drain;
+        xylem_queue_init(&drain);
+        mtx_lock(&loop->post_mtx);
+        xylem_queue_swap(&loop->posts, &drain);
+        mtx_unlock(&loop->post_mtx);
+        if (xylem_queue_empty(&drain)) {
+            break;
+        }
+        xylem_queue_node_t* node;
+        while ((node = xylem_queue_dequeue(&drain)) != NULL) {
+            xylem_loop_post_t* req =
+                xylem_queue_entry(node, xylem_loop_post_t, node);
+            req->cb(loop, req, req->ud);
+            free(req);
+        }
     }
-    mtx_unlock(&loop->post_mtx);
 
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
