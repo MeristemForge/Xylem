@@ -121,13 +121,29 @@ cmake --build out
 ctest --test-dir out --output-on-failure
 ```
 
-| Sanitizer | What it catches | Option |
-|-----------|----------------|--------|
-| ASAN | Buffer overflow, use-after-free, memory leaks | `-DXYLEM_ENABLE_ASAN=ON` |
-| TSAN | Data races, deadlocks | `-DXYLEM_ENABLE_TSAN=ON` |
-| UBSAN | Undefined behavior (signed overflow, null deref, etc.) | `-DXYLEM_ENABLE_UBSAN=ON` |
+| Sanitizer | What it catches | Option | Windows |
+|-----------|----------------|--------|---------|
+| ASAN | Buffer overflow, use-after-free, memory leaks | `-DXYLEM_ENABLE_ASAN=ON` | Yes |
+| TSAN | Data races, deadlocks | `-DXYLEM_ENABLE_TSAN=ON` | No |
+| UBSAN | Undefined behavior (signed overflow, null deref, etc.) | `-DXYLEM_ENABLE_UBSAN=ON` | No |
 
 ASAN and TSAN cannot be enabled simultaneously. Run them in separate builds.
+
+### Windows ASAN Note
+
+When running ASAN-instrumented binaries on Windows, always use a Developer Command Prompt (e.g., x64 Native Tools Command Prompt for VS 2022). This environment sets up the runtime paths for `clang_rt.asan_dynamic-x86_64.dll`. Running from a plain terminal will fail with a missing DLL error.
+
+### TSAN on Linux
+
+TSAN requires GCC 13+ / glibc 2.36+ to correctly intercept C11 `thrd_create`. On older toolchains, glibc's `thrd_create` calls `pthread_create` via an internal direct call that bypasses TSAN's interception. This project works around the issue by using a pthread-based polyfill instead of glibc's `<threads.h>`.
+
+When running under WSL, TSAN may report `FATAL: ThreadSanitizer: unexpected memory mapping` due to WSL's non-standard ASLR behavior. Use `setarch -R` to disable ASLR:
+
+```bash
+setarch -R ctest --test-dir out --output-on-failure
+```
+
+This is not needed on native Linux or macOS.
 
 ## Code Coverage
 
