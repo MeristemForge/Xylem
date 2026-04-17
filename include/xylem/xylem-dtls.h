@@ -39,7 +39,7 @@ typedef struct xylem_dtls_handler_s {
     void (*on_read)(xylem_dtls_t* dtls,
                     void* data, size_t len);                 /**< Decrypted datagram received. */
     void (*on_close)(xylem_dtls_t* dtls,
-                     int err, const char* errmsg);           /**< Session closed. */
+                     int err, const char* errmsg);           /**< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_dtls_handler_t;
 
 /**

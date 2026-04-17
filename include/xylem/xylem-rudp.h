@@ -35,7 +35,7 @@ typedef struct xylem_rudp_handler_s {
     void (*on_connect)(xylem_rudp_t* rudp);
     void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_t* rudp);
     void (*on_read)(xylem_rudp_t* rudp, void* data, size_t len);
-    void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg);
+    void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg); /**< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_rudp_handler_t;
 
 typedef enum xylem_rudp_mode_e {

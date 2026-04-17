@@ -49,11 +49,11 @@ typedef struct xylem_tls_handler_s {
                     void* data, size_t len);                 /**< Decrypted data received. */
     void (*on_write_done)(xylem_tls_conn_t* tls,
                           const void* data, size_t len,
-                          int status);                       /**< Write request completed. */
+                          int status);                       /**< Write finished: 0 = sent, -1 = not sent. */
     void (*on_timeout)(xylem_tls_conn_t* tls,
                        xylem_tcp_timeout_type_t type);       /**< Timeout from underlying TCP layer. */
     void (*on_close)(xylem_tls_conn_t* tls,
-                     int err, const char* errmsg);           /**< Connection closed. */
+                     int err, const char* errmsg);           /**< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
     void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);       /**< Heartbeat miss from underlying TCP layer. */
 } xylem_tls_handler_t;
 

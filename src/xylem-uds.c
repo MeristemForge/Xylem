@@ -354,7 +354,7 @@ static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
             xylem_queue_entry(node, _uds_write_req_t, node);
 
         if (conn->handler && conn->handler->on_write_done) {
-            conn->handler->on_write_done(conn, req->data, req->len, err);
+            conn->handler->on_write_done(conn, req->data, req->len, -1);
         }
 
         free(req);
@@ -478,7 +478,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
                         xylem_queue_entry(qn, _uds_write_req_t, node);
                     if (conn->handler && conn->handler->on_write_done) {
                         conn->handler->on_write_done(
-                            conn, wr->data, wr->len, err);
+                            conn, wr->data, wr->len, -1);
                     }
                     free(wr);
                 }

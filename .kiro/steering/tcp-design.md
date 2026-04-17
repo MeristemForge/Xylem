@@ -334,7 +334,7 @@ sequenceDiagram
 
 `xylem_tcp_close` 同步排空写队列：对每个未完成的写请求回调 `on_write_done`（status=-1 表示未发送），然后立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。不再等待异步 flush。
 
-`_tcp_close_conn`（由错误路径触发）行为相同：同步排空写队列（`on_write_done` 携带触发关闭的错误码），然后立即 `_tcp_destroy_conn`。
+`_tcp_close_conn`（由错误路径触发）行为相同：同步排空写队列（`on_write_done` status=-1 表示未发送，与 `xylem_tcp_close` 一致），然后立即 `_tcp_destroy_conn`。
 
 `_tcp_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、释放 dial 私有状态、回调 `on_close`、通过 `xylem_loop_post` 延迟释放连接内存。
 
