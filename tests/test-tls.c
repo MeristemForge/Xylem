@@ -141,6 +141,18 @@ static void _tls_srv_read_echo_cb(xylem_tls_conn_t* tls,
     xylem_tls_send(tls, data, len);
 }
 
+/* Generic on_close that stops the loop. Used by tests where the client
+   connection is the last resource to be cleaned up. */
+static void _tls_stop_on_close_cb(xylem_tls_conn_t* tls, int err,
+                                   const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
+    if (ctx) {
+        xylem_loop_stop(ctx->loop);
+    }
+}
+
 
 static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -564,7 +576,6 @@ static void _ud_cli_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg)
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -590,7 +601,10 @@ static void test_conn_userdata(void) {
     ASSERT(ctx.cli_ctx != NULL);
     xylem_tls_ctx_set_verify(ctx.cli_ctx, false);
 
-    xylem_tls_handler_t srv_handler = {0};
+    xylem_tls_handler_t srv_handler = {
+        .on_accept = _tls_srv_accept_cb,
+        .on_close  = _tls_stop_on_close_cb,
+    };
 
     xylem_addr_t addr;
     xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
@@ -642,7 +656,6 @@ static void _srv_ud_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg)
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -686,11 +699,14 @@ static void test_server_userdata(void) {
     ASSERT(got == &ctx);
     ASSERT(((_test_ctx_t*)got)->value == 99);
 
-    xylem_tls_handler_t cli_handler = {0};
+    xylem_tls_handler_t cli_handler = {
+        .on_close = _tls_stop_on_close_cb,
+    };
 
     ctx.cli_conn = xylem_tls_dial(ctx.loop, &addr, ctx.cli_ctx,
                                   &cli_handler, NULL);
     ASSERT(ctx.cli_conn != NULL);
+    xylem_tls_set_userdata(ctx.cli_conn, &ctx);
 
     xylem_loop_run(ctx.loop);
 
@@ -729,7 +745,6 @@ static void _peer_addr_srv_close_cb(xylem_tls_conn_t* tls, int err, const char* 
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -767,11 +782,14 @@ static void test_peer_addr(void) {
     ASSERT(ctx.tls_server != NULL);
     xylem_tls_server_set_userdata(ctx.tls_server, &ctx);
 
-    xylem_tls_handler_t cli_handler = {0};
+    xylem_tls_handler_t cli_handler = {
+        .on_close = _tls_stop_on_close_cb,
+    };
 
     ctx.cli_conn = xylem_tls_dial(ctx.loop, &addr, ctx.cli_ctx,
                                   &cli_handler, NULL);
     ASSERT(ctx.cli_conn != NULL);
+    xylem_tls_set_userdata(ctx.cli_conn, &ctx);
 
     xylem_loop_run(ctx.loop);
 
@@ -803,7 +821,6 @@ static void _get_loop_close_cb(xylem_tls_conn_t* tls, int err, const char* errms
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -828,7 +845,10 @@ static void test_get_loop(void) {
     ASSERT(ctx.cli_ctx != NULL);
     xylem_tls_ctx_set_verify(ctx.cli_ctx, false);
 
-    xylem_tls_handler_t srv_handler = {0};
+    xylem_tls_handler_t srv_handler = {
+        .on_accept = _tls_srv_accept_cb,
+        .on_close  = _tls_stop_on_close_cb,
+    };
 
     xylem_addr_t addr;
     xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
@@ -886,7 +906,6 @@ static void _close_active_close_cb(xylem_tls_conn_t* tls, int err, const char* e
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         ctx->close_called++;
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -929,11 +948,14 @@ static void test_close_server_with_active_conn(void) {
         xylem_loop_create_timer(ctx.loop);
     xylem_loop_start_timer(close_timer, _close_active_timer_cb, &ctx, 200, 0);
 
-    xylem_tls_handler_t cli_handler = {0};
+    xylem_tls_handler_t cli_handler = {
+        .on_close = _tls_stop_on_close_cb,
+    };
 
     ctx.cli_conn = xylem_tls_dial(ctx.loop, &addr, ctx.cli_ctx,
                                   &cli_handler, NULL);
     ASSERT(ctx.cli_conn != NULL);
+    xylem_tls_set_userdata(ctx.cli_conn, &ctx);
 
     xylem_loop_run(ctx.loop);
 
@@ -963,7 +985,6 @@ static void _sac_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
-        xylem_loop_stop(ctx->loop);
     }
 }
 
@@ -988,7 +1009,10 @@ static void test_send_after_close(void) {
     ASSERT(ctx.cli_ctx != NULL);
     xylem_tls_ctx_set_verify(ctx.cli_ctx, false);
 
-    xylem_tls_handler_t srv_handler = {0};
+    xylem_tls_handler_t srv_handler = {
+        .on_accept = _tls_srv_accept_cb,
+        .on_close  = _tls_stop_on_close_cb,
+    };
 
     xylem_addr_t addr;
     xylem_addr_pton(TLS_HOST, TLS_PORT, &addr);
@@ -1141,6 +1165,15 @@ static void _timeout_close_cb(xylem_tls_conn_t* tls, int err, const char* errmsg
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+    }
+}
+
+static void _timeout_cli_close_cb(xylem_tls_conn_t* tls, int err,
+                                   const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
+    if (ctx) {
         xylem_loop_stop(ctx->loop);
     }
 }
@@ -1185,11 +1218,14 @@ static void test_read_timeout(void) {
     xylem_tls_server_set_userdata(ctx.tls_server, &ctx);
 
     /* Client connects but sends nothing. */
-    xylem_tls_handler_t cli_handler = {0};
+    xylem_tls_handler_t cli_handler = {
+        .on_close = _timeout_cli_close_cb,
+    };
 
     ctx.cli_conn = xylem_tls_dial(ctx.loop, &addr, ctx.cli_ctx,
                                   &cli_handler, NULL);
     ASSERT(ctx.cli_conn != NULL);
+    xylem_tls_set_userdata(ctx.cli_conn, &ctx);
 
     xylem_loop_run(ctx.loop);
 
@@ -1220,6 +1256,15 @@ static void _heartbeat_close_cb(xylem_tls_conn_t* tls, int err, const char* errm
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     if (ctx) {
         xylem_tls_close_server(ctx->tls_server);
+    }
+}
+
+static void _heartbeat_cli_close_cb(xylem_tls_conn_t* tls, int err,
+                                     const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
+    if (ctx) {
         xylem_loop_stop(ctx->loop);
     }
 }
@@ -1264,11 +1309,14 @@ static void test_heartbeat_miss(void) {
     xylem_tls_server_set_userdata(ctx.tls_server, &ctx);
 
     /* Client connects but sends nothing. */
-    xylem_tls_handler_t cli_handler = {0};
+    xylem_tls_handler_t cli_handler = {
+        .on_close = _heartbeat_cli_close_cb,
+    };
 
     ctx.cli_conn = xylem_tls_dial(ctx.loop, &addr, ctx.cli_ctx,
                                   &cli_handler, NULL);
     ASSERT(ctx.cli_conn != NULL);
+    xylem_tls_set_userdata(ctx.cli_conn, &ctx);
 
     xylem_loop_run(ctx.loop);
 
