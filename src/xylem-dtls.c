@@ -38,9 +38,11 @@
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
 
-/* Server-side sessions that don't complete the handshake within this
+/**
+ * Server-side sessions that don't complete the handshake within this
  * window are automatically closed to prevent resource exhaustion from
- * abandoned or malicious ClientHellos. */
+ * abandoned or malicious ClientHellos.
+ */
 #define DTLS_HANDSHAKE_TIMEOUT_MS 30000
 
 /* HMAC-SHA256 output size in bytes. */
@@ -337,8 +339,10 @@ static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
     (void)timer;
     xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
 
-    /* Guard against a timer callback already queued in the current
-     * loop iteration when xylem_dtls_close stopped the timer. */
+    /**
+     * Guard against a timer callback already queued in the current
+     * loop iteration when xylem_dtls_close stopped the timer.
+     */
     if (dtls->closing) {
         return;
     }
@@ -483,7 +487,7 @@ static int _dtls_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
     return 0;
 }
 
-/* node-node comparator for rbtree insert */
+/* node-node comparator for rbtree insert. */
 static int _dtls_session_cmp_nn(const xylem_rbtree_node_t* a,
                                 const xylem_rbtree_node_t* b) {
     const xylem_dtls_t* da =
@@ -493,7 +497,7 @@ static int _dtls_session_cmp_nn(const xylem_rbtree_node_t* a,
     return _dtls_addr_cmp(&da->peer_addr, &db->peer_addr);
 }
 
-/* key(xylem_addr_t*)-node comparator for rbtree find */
+/* key(xylem_addr_t*)-node comparator for rbtree find. */
 static int _dtls_session_cmp_kn(const void* key,
                                 const xylem_rbtree_node_t* node) {
     const xylem_addr_t* addr = (const xylem_addr_t*)key;

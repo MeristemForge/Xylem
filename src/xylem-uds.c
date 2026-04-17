@@ -34,8 +34,10 @@
 #include <string.h>
 
 #define UDS_DEFAULT_READ_BUF_SIZE 65536
-/* sun_path is 104 bytes on macOS, 108 on Linux/Windows.
- * Use the smallest limit for cross-platform safety. */
+/**
+ * sun_path is 104 bytes on macOS, 108 on Linux/Windows.
+ * Use the smallest limit for cross-platform safety.
+ */
 #define UDS_MAX_PATH              104
 
 typedef enum {

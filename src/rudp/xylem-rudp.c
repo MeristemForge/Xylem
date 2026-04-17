@@ -112,8 +112,10 @@ xylem_rudp_ctx_t* xylem_rudp_ctx_create(void) {
     if (!ctx) {
         return NULL;
     }
-    /* Seed with a random value so conv IDs don't collide across
-     * process restarts or multiple ctx instances. */
+    /**
+     * Seed with a random value so conv IDs don't collide across
+     * process restarts or multiple ctx instances.
+     */
     ctx->next_conv = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
     return ctx;
 }
@@ -242,8 +244,10 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
     return 0;
 }
 
-/* Truncate to 32-bit; unsigned subtraction wraps mod 2^32, so
-   elapsed-time differences remain correct across overflow. */
+/**
+ * Truncate to 32-bit; unsigned subtraction wraps mod 2^32, so
+ * elapsed-time differences remain correct across overflow.
+ */
 static uint32_t _rudp_clock_ms(void) {
     return (uint32_t)(xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) &
                       0xFFFFFFFF);
@@ -271,8 +275,10 @@ static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts,
     ikcp_wndsize(kcp, snd_wnd, rcv_wnd);
 
     int mtu = opts->mtu > 0 ? opts->mtu : 1400;
-    /* Reserve space for FEC header so the total UDP payload stays
-     * within the configured MTU. */
+    /**
+     * Reserve space for FEC header so the total UDP payload stays
+     * within the configured MTU.
+     */
     if (fec_enabled) {
         mtu -= RUDP_FEC_HEADER_SIZE;
     }
@@ -344,12 +350,16 @@ static bool _rudp_drain_recv(xylem_rudp_t* rudp) {
 static void _rudp_schedule_update(xylem_rudp_t* rudp);
 
 static void _rudp_input_complete(xylem_rudp_t* rudp) {
-    /* Flush pending ACKs immediately rather than waiting for the next
-     * update tick, so the peer gets timely RTT and window feedback. */
+    /**
+     * Flush pending ACKs immediately rather than waiting for the next
+     * update tick, so the peer gets timely RTT and window feedback.
+     */
     ikcp_flush(rudp->kcp);
 
-    /* Fast path: deliver messages that fit in a single KCP segment
-     * (len <= mss) immediately without waiting for the next update. */
+    /**
+     * Fast path: deliver messages that fit in a single KCP segment
+     * (len <= mss) immediately without waiting for the next update.
+     */
     if (!_rudp_drain_recv(rudp)) {
         return;
     }
@@ -756,9 +766,11 @@ int xylem_rudp_send(xylem_rudp_t* rudp, const void* data, size_t len) {
     if (rc < 0) {
         return -1;
     }
-    /* Flush immediately so data goes out without waiting for the
+    /**
+     * Flush immediately so data goes out without waiting for the
      * next update timer tick. ikcp_update would skip the flush if
-     * less than one interval has elapsed since the last update. */
+     * less than one interval has elapsed since the last update.
+     */
     ikcp_flush(rudp->kcp);
     _rudp_schedule_update(rudp);
     return 0;
@@ -791,8 +803,10 @@ void xylem_rudp_close(xylem_rudp_t* rudp) {
 
         xylem_loop_post(rudp->loop, _rudp_free_cb, rudp);
     } else {
-        /* Client-side: close the dedicated UDP socket.
-         * _rudp_client_close_cb releases KCP and notifies user. */
+        /**
+         * Client-side: close the dedicated UDP socket.
+         * _rudp_client_close_cb releases KCP and notifies user.
+         */
         xylem_udp_close(rudp->udp);
     }
 }

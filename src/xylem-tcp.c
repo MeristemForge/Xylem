@@ -622,8 +622,10 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         _tcp_conn_readable_cb(conn);
     }
 
-    /* CLOSING is intentionally allowed through -- flush_writes needs to
-     * drain the write queue before the connection is fully torn down. */
+    /**
+     * CLOSING is intentionally allowed through -- flush_writes needs to
+     * drain the write queue before the connection is fully torn down.
+     */
     if (conn->state == TCP_STATE_CLOSED) {
         return;
     }
@@ -971,8 +973,10 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
         _tcp_destroy_conn(conn, 0);
     }
-    /* Non-empty: _tcp_flush_writes drains the queue, then calls
-       shutdown + _tcp_destroy_conn when it sees CLOSING state. */
+    /**
+     * Non-empty: _tcp_flush_writes drains the queue, then calls
+     * shutdown + _tcp_destroy_conn when it sees CLOSING state.
+     */
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
