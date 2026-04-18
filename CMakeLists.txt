@@ -47,6 +47,7 @@ set(SRCS
 	src/xylem-stack.c
 	src/xylem-thrdpool.c
 	src/xylem-loop.c
+	src/mpsc.c
 	src/xylem-utils.c
 	src/xylem-varint.c
 	src/xylem-waitgroup.c

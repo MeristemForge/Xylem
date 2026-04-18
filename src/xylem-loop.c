@@ -22,12 +22,11 @@
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-heap.h"
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-queue.h"
 #include "xylem/xylem-utils.h"
 
 #include "platform/platform.h"
 #include "xylem-loop-io.h"
-#include "deprecated/c11-threads.h"
+#include "mpsc.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -36,11 +35,10 @@
 struct xylem_loop_s {
     platform_poller_sq_t  poller;
     xylem_heap_t          timers;
-    xylem_queue_t         posts;
+    mpsc_t                posts;
     platform_sock_t       wakeup_rd;
     platform_sock_t       wakeup_wr;
     platform_poller_sqe_t wakeup_sqe;
-    mtx_t                 post_mtx;
     size_t                active_count;
     uint64_t              time;
     _Atomic bool          stopped;
@@ -65,7 +63,7 @@ struct xylem_loop_timer_s {
 };
 
 struct xylem_loop_post_s {
-    xylem_queue_node_t   node;
+    mpsc_node_t          node;
     xylem_loop_post_fn_t cb;
     void*                ud;
 };
@@ -100,20 +98,9 @@ static void _loop_drain_wakeup(xylem_loop_t* loop) {
 }
 
 static void _loop_process_posts(xylem_loop_t* loop) {
-    xylem_queue_t local;
-    xylem_queue_init(&local);
-
-    mtx_lock(&loop->post_mtx);
-    xylem_queue_swap(&loop->posts, &local);
-    mtx_unlock(&loop->post_mtx);
-    
-    if (xylem_queue_empty(&local)) {
-        return;
-    }
-    while (!xylem_queue_empty(&local)) {
-        xylem_queue_node_t* node = xylem_queue_dequeue(&local);
-        xylem_loop_post_t*  req =
-            xylem_queue_entry(node, xylem_loop_post_t, node);
+    mpsc_node_t* node;
+    while ((node = mpsc_pop(&loop->posts)) != NULL) {
+        xylem_loop_post_t* req = mpsc_entry(node, xylem_loop_post_t, node);
         req->cb(loop, req, req->ud);
         free(req);
     }
@@ -170,17 +157,10 @@ xylem_loop_t* xylem_loop_create(void) {
     }
 
     xylem_heap_init(&loop->timers, _loop_cmp_timer);
-    xylem_queue_init(&loop->posts);
-
-    if (mtx_init(&loop->post_mtx, mtx_plain) != thrd_success) {
-        platform_poller_destroy(&loop->poller);
-        free(loop);
-        return NULL;
-    }
+    mpsc_init(&loop->posts);
 
     platform_sock_t pair[2];
     if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) != 0) {
-        mtx_destroy(&loop->post_mtx);
         platform_poller_destroy(&loop->poller);
         free(loop);
         return NULL;
@@ -200,7 +180,6 @@ xylem_loop_t* xylem_loop_create(void) {
     if (platform_poller_add(&loop->poller, &loop->wakeup_sqe) != 0) {
         platform_socket_close(loop->wakeup_rd);
         platform_socket_close(loop->wakeup_wr);
-        mtx_destroy(&loop->post_mtx);
         platform_poller_destroy(&loop->poller);
         free(loop);
         return NULL;
@@ -221,31 +200,27 @@ void xylem_loop_destroy(xylem_loop_t* loop) {
 
     xylem_logi("loop destroy");
 
-    /* Drain pending posts — invoke callbacks so deferred frees
+    /* Drain pending posts -- invoke callbacks so deferred frees
      * (IO objects, conn structs, etc.) are released.  Loop until
      * stable because a callback may enqueue new posts. */
     for (;;) {
-        xylem_queue_t drain;
-        xylem_queue_init(&drain);
-        mtx_lock(&loop->post_mtx);
-        xylem_queue_swap(&loop->posts, &drain);
-        mtx_unlock(&loop->post_mtx);
-        if (xylem_queue_empty(&drain)) {
-            break;
-        }
-        xylem_queue_node_t* node;
-        while ((node = xylem_queue_dequeue(&drain)) != NULL) {
+        bool drained = false;
+        mpsc_node_t* node;
+        while ((node = mpsc_pop(&loop->posts)) != NULL) {
+            drained = true;
             xylem_loop_post_t* req =
-                xylem_queue_entry(node, xylem_loop_post_t, node);
+                mpsc_entry(node, xylem_loop_post_t, node);
             req->cb(loop, req, req->ud);
             free(req);
+        }
+        if (!drained) {
+            break;
         }
     }
 
     platform_poller_del(&loop->poller, &loop->wakeup_sqe);
     platform_socket_close(loop->wakeup_rd);
     platform_socket_close(loop->wakeup_wr);
-    mtx_destroy(&loop->post_mtx);
     platform_poller_destroy(&loop->poller);
     free(loop);
 }
@@ -435,9 +410,7 @@ int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
     }
     req->cb = cb;
     req->ud = ud;
-    mtx_lock(&loop->post_mtx);
-    xylem_queue_enqueue(&loop->posts, &req->node);
-    mtx_unlock(&loop->post_mtx);
+    mpsc_push(&loop->posts, &req->node);
     char    c = 1;
     ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
     if (n <= 0) {
