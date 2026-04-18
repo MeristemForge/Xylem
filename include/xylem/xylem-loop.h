@@ -28,8 +28,21 @@ _Pragma("once")
 typedef struct xylem_loop_s       xylem_loop_t;
 /* Opaque timer handle. */
 typedef struct xylem_loop_timer_s xylem_loop_timer_t;
+/* Opaque I/O handle. */
+typedef struct xylem_loop_io_s    xylem_loop_io_t;
 /* Opaque deferred-callback handle. */
 typedef struct xylem_loop_post_s  xylem_loop_post_t;
+
+/* Platform-neutral file descriptor (int on Unix, SOCKET on Windows). */
+typedef intptr_t xylem_poller_fd_t;
+
+/* I/O event interest / readiness mask. */
+typedef enum xylem_poller_op_e {
+    XYLEM_POLLER_NO_OP = 0,
+    XYLEM_POLLER_RD_OP = 1,
+    XYLEM_POLLER_WR_OP = 2,
+    XYLEM_POLLER_RW_OP = 3,
+} xylem_poller_op_t;
 
 /* Timer expiry callback. */
 typedef void (*xylem_loop_timer_fn_t)(xylem_loop_t* loop,
@@ -167,3 +180,69 @@ extern int xylem_loop_reset_timer(xylem_loop_timer_t* timer,
 extern int xylem_loop_post(xylem_loop_t* loop,
                            xylem_loop_post_fn_t cb,
                            void* ud);
+
+
+/**
+ * @brief Callback invoked when an I/O event fires.
+ *
+ * @param loop     Loop handle.
+ * @param io       I/O handle that triggered.
+ * @param revents  Event mask (XYLEM_POLLER_RD_OP, WR_OP, or both).
+ * @param ud       User data pointer from xylem_loop_start_io().
+ */
+typedef void (*xylem_loop_io_fn_t)(xylem_loop_t* loop,
+                                   xylem_loop_io_t* io,
+                                   xylem_poller_op_t revents,
+                                   void* ud);
+
+/**
+ * @brief Create an I/O handle and bind it to a file descriptor.
+ *
+ * Does not start polling. Call xylem_loop_start_io() to begin.
+ *
+ * @param loop  Loop handle.
+ * @param fd    File descriptor (socket) to monitor.
+ *
+ * @return I/O handle, or NULL on failure.
+ */
+extern xylem_loop_io_t* xylem_loop_create_io(xylem_loop_t* loop,
+                                             xylem_poller_fd_t fd);
+
+/**
+ * @brief Destroy an I/O handle.
+ *
+ * Stops polling if active and frees the handle. Decrements the
+ * loop active handle count.
+ *
+ * @param io  I/O handle.
+ */
+extern void xylem_loop_destroy_io(xylem_loop_io_t* io);
+
+/**
+ * @brief Start or update polling on an I/O handle.
+ *
+ * Registers the fd in the poller with the given operation mask.
+ *
+ * @param io  I/O handle.
+ * @param op  Event interest (XYLEM_POLLER_RD_OP, WR_OP, or both).
+ * @param cb  Callback invoked when the event fires.
+ * @param ud  User data pointer passed to the callback.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_loop_start_io(xylem_loop_io_t* io,
+                               xylem_poller_op_t op,
+                               xylem_loop_io_fn_t cb,
+                               void* ud);
+
+/**
+ * @brief Stop polling on an I/O handle.
+ *
+ * Removes the fd from the poller. The handle remains valid and can
+ * be re-started with xylem_loop_start_io().
+ *
+ * @param io  I/O handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_loop_stop_io(xylem_loop_io_t* io);

@@ -25,7 +25,6 @@
 #include "xylem/xylem-utils.h"
 
 #include "platform/platform.h"
-#include "xylem-loop-io.h"
 #include "mpsc.h"
 
 #include <stdatomic.h>
@@ -251,7 +250,7 @@ int xylem_loop_run(xylem_loop_t* loop) {
             if (io->cb == NULL) {
                 continue;
             }
-            io->cb(io->loop, io, cqes[i].op, io->ud);
+            io->cb(io->loop, io, (xylem_poller_op_t)cqes[i].op, io->ud);
         }
 
         _loop_process_posts(loop);
@@ -271,13 +270,13 @@ void xylem_loop_stop(xylem_loop_t* loop) {
 }
 
 xylem_loop_io_t*
-xylem_loop_create_io(xylem_loop_t* loop, platform_poller_fd_t fd) {
+xylem_loop_create_io(xylem_loop_t* loop, xylem_poller_fd_t fd) {
     xylem_loop_io_t* io = calloc(1, sizeof(*io));
     if (!io) {
         return NULL;
     }
     io->loop = loop;
-    io->sqe.fd = fd;
+    io->sqe.fd = (platform_poller_fd_t)fd;
     io->sqe.ud = io;
     io->ud = NULL;
     io->registered = false;
@@ -314,9 +313,9 @@ void xylem_loop_destroy_io(xylem_loop_io_t* io) {
 }
 
 int xylem_loop_start_io(
-    xylem_loop_io_t* io, platform_poller_op_t op, xylem_loop_io_fn_t cb,
+    xylem_loop_io_t* io, xylem_poller_op_t op, xylem_loop_io_fn_t cb,
     void* ud) {
-    io->sqe.op = op;
+    io->sqe.op = (platform_poller_op_t)op;
     io->cb = cb;
     io->ud = ud;
     int rc;

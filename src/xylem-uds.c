@@ -26,7 +26,6 @@
 #include "xylem/xylem-list.h"
 
 #include "platform/platform-socket.h"
-#include "xylem-loop-io.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -369,7 +368,7 @@ static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
 
 static void _uds_conn_io_cb(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
-                             platform_poller_op_t revents,
+                             xylem_poller_op_t revents,
                              void* ud);
 
 static void _uds_conn_readable_cb(xylem_uds_conn_t* conn) {
@@ -532,13 +531,13 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
 
 static void _uds_conn_io_cb(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
-                             platform_poller_op_t revents,
+                             xylem_poller_op_t revents,
                              void* ud) {
     (void)loop;
     (void)io;
     xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
 
-    if (revents & PLATFORM_POLLER_RD_OP) {
+    if (revents & XYLEM_POLLER_RD_OP) {
         _uds_conn_readable_cb(conn);
     }
 
@@ -546,12 +545,12 @@ static void _uds_conn_io_cb(xylem_loop_t* loop,
         return;
     }
 
-    if (revents & PLATFORM_POLLER_WR_OP) {
+    if (revents & XYLEM_POLLER_WR_OP) {
         _uds_flush_writes(conn);
 
         if (conn->state == UDS_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
-            xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
+            xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                                 _uds_conn_io_cb, conn);
         }
     }
@@ -570,7 +569,7 @@ static int _uds_setup_conn(xylem_uds_conn_t* conn) {
     conn->read_len = 0;
     conn->read_cap = conn->opts.read_buf_size;
 
-    if (xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
+    if (xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                             _uds_conn_io_cb, conn) != 0) {
         free(conn->read_buf);
         conn->read_buf = NULL;
@@ -615,7 +614,7 @@ static int _uds_setup_conn(xylem_uds_conn_t* conn) {
 /* Dial IO callback: check SO_ERROR after non-blocking connect. */
 static void _uds_try_connect(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
-                              platform_poller_op_t revents,
+                              xylem_poller_op_t revents,
                               void* ud) {
     (void)loop;
     (void)io;
@@ -647,7 +646,7 @@ static void _uds_try_connect(xylem_loop_t* loop,
 
 static void _uds_server_io_cb(xylem_loop_t* loop,
                                xylem_loop_io_t* io,
-                               platform_poller_op_t revents,
+                               xylem_poller_op_t revents,
                                void* ud) {
     (void)io;
     (void)revents;
@@ -797,7 +796,7 @@ int xylem_uds_send(xylem_uds_conn_t* conn,
 
     if (was_empty) {
         xylem_loop_start_io(conn->io,
-                            PLATFORM_POLLER_RD_OP | PLATFORM_POLLER_WR_OP,
+                            XYLEM_POLLER_RD_OP | XYLEM_POLLER_WR_OP,
                             _uds_conn_io_cb, conn);
 
         if (conn->opts.write_timeout_ms > 0 && conn->write_timer) {
@@ -884,7 +883,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
         xylem_logi("uds conn fd=%d connected immediately", (int)fd);
         xylem_loop_post(loop, _uds_deferred_connect_cb, conn);
     } else {
-        xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
+        xylem_loop_start_io(conn->io, XYLEM_POLLER_WR_OP,
                             _uds_try_connect, conn);
     }
 
@@ -935,7 +934,7 @@ xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
         free(server);
         return NULL;
     }
-    xylem_loop_start_io(server->io, PLATFORM_POLLER_RD_OP,
+    xylem_loop_start_io(server->io, XYLEM_POLLER_RD_OP,
                         _uds_server_io_cb, server);
 
     xylem_logi("uds server fd=%d listening on %s",

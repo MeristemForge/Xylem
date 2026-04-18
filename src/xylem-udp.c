@@ -23,7 +23,6 @@
 #include "xylem/xylem-logger.h"
 
 #include "platform/platform-socket.h"
-#include "xylem-loop-io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +48,7 @@ struct xylem_udp_s {
  */
 static void _udp_io_cb(xylem_loop_t* loop,
                         xylem_loop_io_t* io,
-                        platform_poller_op_t revents,
+                        xylem_poller_op_t revents,
                         void* ud) {
     (void)loop;
     (void)io;
@@ -153,7 +152,7 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
         xylem_loge("udp fd=%d bind: io creation failed", (int)fd);
         return NULL;
     }
-    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
+    xylem_loop_start_io(udp->io, XYLEM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d bound on %s:%s", (int)fd, host, port_str);
     return udp;
@@ -197,7 +196,7 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
         xylem_loge("udp fd=%d dial: io creation failed", (int)fd);
         return NULL;
     }
-    xylem_loop_start_io(udp->io, PLATFORM_POLLER_RD_OP, _udp_io_cb, udp);
+    xylem_loop_start_io(udp->io, XYLEM_POLLER_RD_OP, _udp_io_cb, udp);
 
     xylem_logi("udp fd=%d connected to %s:%s", (int)fd, host, port_str);
     return udp;

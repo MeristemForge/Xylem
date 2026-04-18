@@ -26,7 +26,6 @@
 #include "xylem/xylem-list.h"
 
 #include "platform/platform-socket.h"
-#include "xylem-loop-io.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -529,7 +528,7 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
 
 static void _tcp_conn_io_cb(xylem_loop_t* loop,
                             xylem_loop_io_t* io,
-                            platform_poller_op_t revents,
+                            xylem_poller_op_t revents,
                             void* ud);
 
 static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
@@ -633,13 +632,13 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
 
 static void _tcp_conn_io_cb(xylem_loop_t* loop,
                             xylem_loop_io_t* io,
-                            platform_poller_op_t revents,
+                            xylem_poller_op_t revents,
                             void* ud) {
     (void)loop;
     (void)io;
     xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
 
-    if (revents & PLATFORM_POLLER_RD_OP) {
+    if (revents & XYLEM_POLLER_RD_OP) {
         _tcp_conn_readable_cb(conn);
     }
 
@@ -651,12 +650,12 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
         return;
     }
 
-    if (revents & PLATFORM_POLLER_WR_OP) {
+    if (revents & XYLEM_POLLER_WR_OP) {
         _tcp_flush_writes(conn);
 
         if (conn->state == TCP_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
-            xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
+            xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                                 _tcp_conn_io_cb, conn);
         }
     }
@@ -676,7 +675,7 @@ static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
     conn->read_len = 0;
     conn->read_cap = conn->opts.read_buf_size;
 
-    if (xylem_loop_start_io(conn->io, PLATFORM_POLLER_RD_OP,
+    if (xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                             _tcp_conn_io_cb, conn) != 0) {
         free(conn->read_buf);
         conn->read_buf = NULL;
@@ -757,7 +756,7 @@ static void _tcp_conn_connected_cb(xylem_tcp_conn_t* conn) {
 
 static void _tcp_try_connect(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
-                             platform_poller_op_t revents,
+                             xylem_poller_op_t revents,
                              void* ud);
 
 /* Shared reconnect logic: check limit, compute backoff, start timer. */
@@ -786,7 +785,7 @@ static void _tcp_start_reconnect_timer(xylem_tcp_conn_t* conn,
 
 static void _tcp_try_connect(xylem_loop_t* loop,
                              xylem_loop_io_t* io,
-                             platform_poller_op_t revents,
+                             xylem_poller_op_t revents,
                              void* ud) {
     (void)loop;
     (void)io;
@@ -865,7 +864,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     if (connected) {
         _tcp_conn_connected_cb(conn);
     } else {
-        xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
+        xylem_loop_start_io(conn->io, XYLEM_POLLER_WR_OP,
                             _tcp_try_connect, conn);
 
         if (conn->opts.connect_timeout_ms > 0 && dial->connect_timer) {
@@ -878,7 +877,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
 
 static void _tcp_server_io_cb(xylem_loop_t* loop,
                               xylem_loop_io_t* io,
-                              platform_poller_op_t revents,
+                              xylem_poller_op_t revents,
                               void* ud) {
     (void)io;
     (void)revents;
@@ -1034,7 +1033,7 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
 
     if (was_empty) {
         xylem_loop_start_io(conn->io,
-                            PLATFORM_POLLER_RD_OP | PLATFORM_POLLER_WR_OP,
+                            XYLEM_POLLER_RD_OP | XYLEM_POLLER_WR_OP,
                             _tcp_conn_io_cb, conn);
 
         if (conn->opts.write_timeout_ms > 0 && conn->write_timer) {
@@ -1150,7 +1149,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
         xylem_logi("tcp conn fd=%d connected immediately", (int)fd);
         xylem_loop_post(loop, _tcp_deferred_connect_cb, conn);
     } else {
-        xylem_loop_start_io(conn->io, PLATFORM_POLLER_WR_OP,
+        xylem_loop_start_io(conn->io, XYLEM_POLLER_WR_OP,
                             _tcp_try_connect, conn);
 
         if (conn->opts.connect_timeout_ms > 0 && dial->connect_timer) {
@@ -1212,7 +1211,7 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
         free(server);
         return NULL;
     }
-    xylem_loop_start_io(server->io, PLATFORM_POLLER_RD_OP,
+    xylem_loop_start_io(server->io, XYLEM_POLLER_RD_OP,
                         _tcp_server_io_cb, server);
 
     xylem_logi("tcp server fd=%d listening on %s:%s",
