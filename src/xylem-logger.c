@@ -43,6 +43,12 @@ struct _printer_ctx_s {
     char                 message[];
 };
 
+enum {
+    LOGGER_UNINIT = 0,
+    LOGGER_INIT   = 1,
+    LOGGER_INITED = 2,
+};
+
 struct _logger_s {
     bool                 async;
     xylem_logger_level_t level;
@@ -51,21 +57,14 @@ struct _logger_s {
     size_t               max_file_size;
     mtx_t                mtx;
     xylem_thrdpool_t*    thrdpool;
-    atomic_bool          initialized;
-    once_flag            once;
+    atomic_int           state;
     void (*callback)(xylem_logger_level_t level, const char* restrict msg,
                      void* ud);
     void*                callback_ud;
 };
 
-static _logger_t   _logger = { .once = ONCE_FLAG_INIT };
+static _logger_t   _logger;
 static const char* _levels[] = {"DEBUG", "INFO", "WARN", "ERROR"};
-
-/* Init params passed through file-scope vars for call_once. */
-static const char*           _init_filename;
-static xylem_logger_level_t  _init_level;
-static bool                  _init_async;
-static size_t                _init_max_file_size;
 
 /* Check file size and rollover (truncate) if over threshold. Caller holds mtx. */
 static void _logger_check_rollover(void) {
@@ -210,22 +209,26 @@ static void _logger_async_log(
     }
 }
 
-/* call_once callback for initialization. */
-static void _logger_do_init(void) {
-    if (_init_level > XYLEM_LOGGER_LEVEL_ERROR) {
+/* Initialize logger state. Called by the single thread that wins the CAS. */
+static void _logger_do_init(
+    const char*          filename,
+    xylem_logger_level_t level,
+    bool                 async,
+    size_t               max_file_size) {
+    if (level > XYLEM_LOGGER_LEVEL_ERROR) {
         _logger.level = XYLEM_LOGGER_LEVEL_INFO;
     } else {
-        _logger.level = _init_level;
+        _logger.level = level;
     }
-    if (_init_filename) {
-        _logger.file     = platform_io_fopen(_init_filename, "a+");
-        _logger.filename = _init_filename;
+    if (filename) {
+        _logger.file     = platform_io_fopen(filename, "a+");
+        _logger.filename = filename;
     } else {
         _logger.file     = stdout;
         _logger.filename = NULL;
     }
-    _logger.max_file_size = _init_max_file_size;
-    if (_init_async) {
+    _logger.max_file_size = max_file_size;
+    if (async) {
         _logger.thrdpool = xylem_thrdpool_create(1);
         _logger.async    = true;
     } else {
@@ -233,7 +236,7 @@ static void _logger_do_init(void) {
     }
     _logger.callback = NULL;
     mtx_init(&_logger.mtx, mtx_plain);
-    atomic_store(&_logger.initialized, true);
+    atomic_store(&_logger.state, LOGGER_INITED);
 }
 
 void xylem_logger_init(
@@ -241,16 +244,15 @@ void xylem_logger_init(
     xylem_logger_level_t level,
     bool                 async,
     size_t               max_file_size) {
-    _init_filename      = filename;
-    _init_level         = level;
-    _init_async         = async;
-    _init_max_file_size = max_file_size;
-    call_once(&_logger.once, _logger_do_init);
+    int expected = LOGGER_UNINIT;
+    if (atomic_compare_exchange_strong(&_logger.state, &expected, LOGGER_INIT)) {
+        _logger_do_init(filename, level, async, max_file_size);
+    }
 }
 
 void xylem_logger_deinit(void) {
-    bool expected = true;
-    if (atomic_compare_exchange_strong(&_logger.initialized, &expected, false)) {
+    int expected = LOGGER_INITED;
+    if (atomic_compare_exchange_strong(&_logger.state, &expected, LOGGER_UNINIT)) {
         if (_logger.async) {
             xylem_thrdpool_destroy(_logger.thrdpool);
             _logger.thrdpool = NULL;
@@ -265,9 +267,6 @@ void xylem_logger_deinit(void) {
         _logger.callback_ud   = NULL;
         _logger.async         = false;
         mtx_destroy(&_logger.mtx);
-
-        /* reset once_flag so init can be called again */
-        _logger.once = (once_flag)ONCE_FLAG_INIT;
     }
 }
 
@@ -277,7 +276,7 @@ void xylem_logger_log(
     int                  line,
     const char* restrict fmt,
     ...) {
-    if (!atomic_load(&_logger.initialized)) {
+    if (atomic_load(&_logger.state) != LOGGER_INITED) {
         return;
     }
     if (_logger.level > level) {
