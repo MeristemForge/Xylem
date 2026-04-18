@@ -21,7 +21,8 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 - 统一上下文结构 `_test_ctx_t`，所有测试共用，按需使用字段
 - 多会话测试使用额外的 `_multi_cli_t` 结构体，每个客户端独立持有发送/接收缓冲区
 - 共享回调：`_rudp_srv_accept_cb`（保存 srv_session + 设置 userdata）、`_rudp_srv_read_echo_cb`（回显）
-- 每个测试独立创建 Loop + 10 秒 Safety Timer，测试间无共享状态
+- 每个测试独立创建 Loop，需要运行事件循环的测试额外创建 Safety Timer（10 秒）防止挂起
+- 同步测试（test_ctx_create_destroy、test_server_userdata）不运行事件循环，无需 Safety Timer
 - 单一端口 `RUDP_PORT 16433`，测试顺序执行不冲突
 - 异步测试使用 100ms 延迟定时器触发发送，确保握手完成后数据不与事件循环竞争
 - 无文件作用域可变变量，所有状态通过 `_test_ctx_t`、`_multi_cli_t` 和 userdata 传递
