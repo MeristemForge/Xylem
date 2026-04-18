@@ -39,6 +39,7 @@ typedef struct _printer_ctx_s _printer_ctx_t;
 
 struct _printer_ctx_s {
     xylem_logger_level_t level;
+    int                  cb_offset; /* offset to callback-format substring */
     char                 message[];
 };
 
@@ -85,7 +86,8 @@ static void _logger_print_message(void* param) {
 
     mtx_lock(&_logger.mtx);
     if (_logger.callback) {
-        _logger.callback(ctx->level, ctx->message, _logger.callback_ud);
+        _logger.callback(ctx->level, ctx->message + ctx->cb_offset,
+                         _logger.callback_ud);
     } else {
         _logger_check_rollover();
         fprintf(_logger.file, "%s", ctx->message);
@@ -95,12 +97,16 @@ static void _logger_print_message(void* param) {
     free(ctx);
 }
 
-/* Build a formatted log line into buf. Returns length excluding NUL. */
+/* Build a formatted log line into buf. Returns length excluding NUL.
+ * Always produces the full format (timestamp + tid + level + file:line + msg).
+ * *out_cb_offset receives the offset where the callback-format substring
+ * (tid + file:line + msg) begins, so the caller can choose which view to use
+ * without reformatting. */
 static int _logger_build_message(
     char*                buf,
     size_t               buflen,
     xylem_logger_level_t level,
-    bool                 has_callback,
+    int*                 out_cb_offset,
     const char* restrict file,
     int                  line,
     const char* restrict fmt,
@@ -109,34 +115,44 @@ static int _logger_build_message(
 
     platform_tid_t tid = platform_info_gettid();
 
-    if (has_callback) {
-        /* callback mode: just tid file:line prefix */
-        off = snprintf(buf, buflen, "%" PRIu64 " %s:%d ", (uint64_t)tid, file, line);
-    } else {
-        struct timespec tsc;
-        struct tm       tm;
-        (void)timespec_get(&tsc, TIME_UTC);
-        platform_info_getlocaltime(&tsc.tv_sec, &tm);
+    struct timespec tsc;
+    struct tm       tm;
+    (void)timespec_get(&tsc, TIME_UTC);
+    platform_info_getlocaltime(&tsc.tv_sec, &tm);
 
-        off = snprintf(
-            buf,
-            buflen,
-            "%04d-%02d-%02d %02d:%02d:%02d.%03d %" PRIu64 " %5s %s:%d ",
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-            tm.tm_sec,
-            (int)(tsc.tv_nsec / 1000000UL),
-            (uint64_t)tid,
-            _levels[level],
-            file,
-            line);
-    }
+    /* full format: "YYYY-MM-DD HH:MM:SS.mmm TID LEVEL file:line " */
+    off = snprintf(
+        buf,
+        buflen,
+        "%04d-%02d-%02d %02d:%02d:%02d.%03d %" PRIu64 " %5s ",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        (int)(tsc.tv_nsec / 1000000UL),
+        (uint64_t)tid,
+        _levels[level]);
     if (off < 0 || (size_t)off >= buflen) {
         off = (int)buflen - 1;
     }
+
+    /* callback-format substring starts here: "file:line msg\n" */
+    int cb_off = off;
+
+    int n = snprintf(
+        buf + off,
+        buflen - off,
+        "%s:%d ",
+        file,
+        line);
+    if (n < 0 || (size_t)(off + n) >= buflen) {
+        off = (int)buflen - 1;
+    } else {
+        off += n;
+    }
+
     int written = platform_io_vsprintf(buf + off, buflen - off, fmt, v);
     if (written < 0) {
         written = 0;
@@ -147,6 +163,8 @@ static int _logger_build_message(
     }
     buf[off++] = '\n';
     buf[off]   = '\0';
+
+    *out_cb_offset = cb_off;
     return off;
 }
 
@@ -157,13 +175,13 @@ static void _logger_sync_log(
     const char* restrict fmt,
     va_list              v) {
     char buf[BUFSIZE];
+    int  cb_offset;
+
+    _logger_build_message(buf, sizeof(buf), level, &cb_offset, file, line, fmt, v);
 
     mtx_lock(&_logger.mtx);
-    bool has_callback = _logger.callback != NULL;
-    _logger_build_message(buf, sizeof(buf), level, has_callback, file, line, fmt, v);
-
     if (_logger.callback) {
-        _logger.callback(level, buf, _logger.callback_ud);
+        _logger.callback(level, buf + cb_offset, _logger.callback_ud);
     } else {
         _logger_check_rollover();
         fprintf(_logger.file, "%s", buf);
@@ -179,17 +197,15 @@ static void _logger_async_log(
     const char* restrict fmt,
     va_list              v) {
     char buf[BUFSIZE];
+    int  cb_offset;
 
-    mtx_lock(&_logger.mtx);
-    bool has_callback = _logger.callback != NULL;
-    mtx_unlock(&_logger.mtx);
-
-    int len = _logger_build_message(buf, sizeof(buf), level, has_callback, file, line, fmt, v);
+    int len = _logger_build_message(buf, sizeof(buf), level, &cb_offset, file, line, fmt, v);
 
     _printer_ctx_t* ctx = malloc(sizeof(_printer_ctx_t) + len + 1);
     if (ctx) {
         memcpy(ctx->message, buf, len + 1);
-        ctx->level = level;
+        ctx->level     = level;
+        ctx->cb_offset = cb_offset;
         xylem_thrdpool_post(_logger.thrdpool, _logger_print_message, ctx);
     }
 }
