@@ -1911,7 +1911,7 @@ static void test_reconnect_limit(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
 
-    /* Port 18081 -- no server listening. */
+    /* Port 18080 -- no server listening. */
     xylem_addr_t addr;
     xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 

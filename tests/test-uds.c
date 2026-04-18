@@ -68,8 +68,6 @@ static void _srv_read_echo_cb(xylem_uds_conn_t* conn,
     xylem_uds_send(conn, data, len);
 }
 
-/* --- test_dial_connect --- */
-
 static void _dc_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     ctx->connect_called++;
@@ -104,8 +102,6 @@ static void test_dial_connect(void) {
     xylem_loop_destroy(ctx.loop);
     remove(UDS_PATH);
 }
-
-/* --- test_echo --- */
 
 static void _echo_cli_read_cb(xylem_uds_conn_t* conn,
                                 void* data, size_t len) {
@@ -163,8 +159,6 @@ static void test_echo(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_send_after_close --- */
-
 static void _sac_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_close(conn);
@@ -199,8 +193,6 @@ static void test_send_after_close(void) {
     xylem_loop_destroy(ctx.loop);
     remove(UDS_PATH);
 }
-
-/* --- test_userdata --- */
 
 static void _ud_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
@@ -242,8 +234,6 @@ static void test_userdata(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_server_userdata --- */
-
 static void test_server_userdata(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = xylem_loop_create();
@@ -265,8 +255,6 @@ static void test_server_userdata(void) {
     xylem_loop_destroy(ctx.loop);
     remove(UDS_PATH);
 }
-
-/* --- test_get_loop --- */
 
 static void _gl_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
@@ -300,8 +288,6 @@ static void test_get_loop(void) {
     xylem_loop_destroy(ctx.loop);
     remove(UDS_PATH);
 }
-
-/* --- test_close_server_with_active_conn --- */
 
 static void _csac_close_cb(xylem_uds_conn_t* conn,
                             int err, const char* errmsg) {
@@ -365,8 +351,6 @@ static void test_close_server_with_active_conn(void) {
     xylem_loop_destroy(ctx.loop);
     remove(UDS_PATH);
 }
-
-/* --- test_frame_fixed --- */
 
 static void _ff_srv_read_cb(xylem_uds_conn_t* conn,
                              void* data, size_t len) {

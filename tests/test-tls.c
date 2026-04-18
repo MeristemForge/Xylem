@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "assert.h"
 #include "xylem.h"
 #include "xylem/xylem-tls.h"
+#include "assert.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -1362,5 +1362,6 @@ int main(void) {
     test_read_timeout();
     test_heartbeat_miss();
 
+    xylem_cleanup();
     return 0;
 }

@@ -22,8 +22,6 @@
 #include "xylem.h"
 #include "assert.h"
 
-/* --- open: parameter validation --- */
-
 static void test_open_null_opts(void) {
     xylem_serial_t* s = xylem_serial_open(NULL);
     ASSERT(s == NULL);
@@ -80,13 +78,9 @@ static void test_open_invalid_flowcontrol(void) {
     ASSERT(s == NULL);
 }
 
-/* --- close: NULL safety --- */
-
 static void test_close_null(void) {
     xylem_serial_close(NULL);
 }
-
-/* --- read/write: NULL handle --- */
 
 static void test_read_null(void) {
     char buf[16];

@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "assert.h"
 #include "xylem.h"
 #include "xylem/xylem-dtls.h"
+#include "assert.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -120,11 +120,12 @@ static void _safety_timeout_cb(xylem_loop_t* loop,
  */
 static void _dtls_srv_accept_cb(xylem_dtls_server_t* server,
                                 xylem_dtls_t* dtls) {
-    (void)server;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    _test_ctx_t* ctx =
+        (_test_ctx_t*)xylem_dtls_server_get_userdata(server);
     if (ctx) {
         ctx->srv_session = dtls;
-        ctx->accept_called = 1;
+        ctx->accept_called++;
+        xylem_dtls_set_userdata(dtls, ctx);
     }
 }
 
@@ -249,7 +250,8 @@ static void test_handshake_and_echo(void) {
      * is verified indirectly through the successful echo round trip.
      */
     xylem_dtls_handler_t srv_handler = {
-        .on_read = _dtls_srv_read_echo_cb,
+        .on_accept = _dtls_srv_accept_cb,
+        .on_read   = _dtls_srv_read_echo_cb,
     };
 
     xylem_addr_t addr;
@@ -258,6 +260,7 @@ static void test_handshake_and_echo(void) {
     ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
                                         &srv_handler);
     ASSERT(ctx.dtls_server != NULL);
+    xylem_dtls_server_set_userdata(ctx.dtls_server, &ctx);
 
     xylem_dtls_handler_t cli_handler = {
         .on_connect = _echo_cli_connect_cb,
@@ -273,6 +276,7 @@ static void test_handshake_and_echo(void) {
     xylem_loop_run(ctx.loop);
 
     ASSERT(ctx.connect_called == 1);
+    ASSERT(ctx.accept_called == 1);
     ASSERT(ctx.read_count >= 1);
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "hello", 5) == 0);

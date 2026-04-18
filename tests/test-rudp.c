@@ -309,6 +309,10 @@ static void test_server_userdata(void) {
     ASSERT(ctx.loop != NULL);
     ASSERT(ctx.ctx != NULL);
 
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
     xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
@@ -325,6 +329,7 @@ static void test_server_userdata(void) {
     xylem_rudp_close_server(ctx.rudp_server);
     xylem_rudp_ctx_destroy(ctx.ctx);
     xylem_loop_run(ctx.loop);
+    xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
 
@@ -338,7 +343,7 @@ static void _pa_cli_connect_cb(xylem_rudp_t* rudp) {
     char ip[64];
     uint16_t port;
     xylem_addr_ntop(peer, ip, sizeof(ip), &port);
-    ASSERT(memcmp(ip, RUDP_HOST, 9) == 0);
+    ASSERT(strcmp(ip, RUDP_HOST) == 0);
     ASSERT(port == RUDP_PORT);
 
     ctx->verified = 1;
@@ -684,6 +689,10 @@ static void test_send_before_handshake(void) {
     ASSERT(ctx.loop != NULL);
     ASSERT(ctx.ctx != NULL);
 
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
     xylem_rudp_handler_t srv_handler = {0};
     xylem_addr_t addr;
     xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
@@ -707,6 +716,7 @@ static void test_send_before_handshake(void) {
     xylem_loop_run(ctx.loop);
 
     xylem_rudp_ctx_destroy(ctx.ctx);
+    xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
 
