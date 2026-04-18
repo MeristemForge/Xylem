@@ -41,49 +41,18 @@ mpsc_node_t* mpsc_pop(mpsc_t* q) {
     mpsc_node_t* next =
         atomic_load_explicit(&head->next, memory_order_acquire);
 
-    /* Skip the sentinel node. */
-    if (head == &q->sentinel) {
-        if (next == NULL) {
-            return NULL;
-        }
-        q->head = next;
-        head     = next;
-        next = atomic_load_explicit(&head->next, memory_order_acquire);
-    }
-
-    if (next != NULL) {
-        q->head = next;
-        return head;
-    }
-
-    /* Only one node left; check if it is the tail. */
-    if (head != atomic_load_explicit(&q->tail, memory_order_acquire)) {
-        /* A push is in progress but next is not yet visible. */
+    if (next == NULL) {
+        /* Either truly empty, or a push is in progress. */
         return NULL;
     }
 
-    /* Re-insert the sentinel so the queue is never truly empty. */
-    mpsc_push(q, &q->sentinel);
-
-    next = atomic_load_explicit(&head->next, memory_order_acquire);
-    if (next != NULL) {
-        q->head = next;
-        return head;
-    }
-
-    return NULL;
+    q->head = next;
+    return next;
 }
 
 bool mpsc_empty(mpsc_t* q) {
     mpsc_node_t* head = q->head;
     mpsc_node_t* next =
         atomic_load_explicit(&head->next, memory_order_acquire);
-
-    if (head == &q->sentinel && next == NULL) {
-        return true;
-    }
-    if (head == &q->sentinel && next != NULL) {
-        return false;
-    }
-    return false;
+    return next == NULL;
 }
