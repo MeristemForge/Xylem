@@ -1,7 +1,10 @@
-![logo](https://github.com/wujin1989/Xylem/blob/main/docs/images/Xylem-logo.png)
-[![CMake on multiple platforms](https://github.com/wujin1989/Xylem/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/wujin1989/Xylem/actions/workflows/cmake-multi-platform.yml)
-[![CodeQL Advanced](https://github.com/wujin1989/Xylem/actions/workflows/codeql.yml/badge.svg)](https://github.com/wujin1989/Xylem/actions/workflows/codeql.yml)
-[![CodeFactor](https://www.codefactor.io/repository/github/wujin1989/xylem/badge)](https://www.codefactor.io/repository/github/wujin1989/xylem)
+![logo](https://github.com/MeristemForge/Xylem/blob/main/docs/images/xylem-banner-animated.png)
+[![CMake on multiple platforms](https://github.com/MeristemForge/Xylem/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/MeristemForge/Xylem/actions/workflows/cmake-multi-platform.yml)
+[![CodeQL Advanced](https://github.com/MeristemForge/Xylem/actions/workflows/codeql.yml/badge.svg)](https://github.com/MeristemForge/Xylem/actions/workflows/codeql.yml)
+[![CodeFactor](https://www.codefactor.io/repository/github/meristemforge/xylem/badge)](https://www.codefactor.io/repository/github/meristemforge/xylem)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![C11](https://img.shields.io/badge/Standard-C11-green.svg)](https://en.wikipedia.org/wiki/C11_(C_standard_revision))
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/MeristemForge/Xylem)
 
 # Overview
 Xylem is a pure C library, **supplementing** — not replacing — the C11 standard.
@@ -9,20 +12,12 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 # Features
 
-- Pure C11, no external dependencies (OpenSSL optional for TLS/DTLS)
-- Cross-platform: Windows (MSVC), Linux/macOS (GCC, Clang)
-- Single-threaded event loop with I/O polling, timers
-- TCP client/server with framing, write queue, reconnect, heartbeat, timeouts
-- UDP listen/dial modes with datagram boundary preservation
-- Unix domain socket (UDS) client/server with framing, heartbeat
-- TLS over TCP via OpenSSL memory BIO (ALPN, SNI, keylog)
-- DTLS over UDP via OpenSSL memory BIO (cookie exchange, session multiplexing)
-- Reliable UDP over KCP (ARQ, congestion control, session multiplexing)
-- HTTP/1.1 client and server
-- WebSocket client/server (RFC 6455)
-- Cross-platform synchronous serial port I/O
-- Intrusive and non-intrusive data structures (list, queue, stack, heap, rbtree, ring buffer)
-- Base64, SHA-1, SHA-256, HMAC-SHA256, AES-256 (CTR/CBC), gzip, JSON, varint
+- Pure C11, cross-platform (Windows, Linux, macOS), no required dependencies
+- Event loop with I/O polling and timers
+- TCP, UDP, UDS, TLS, DTLS, Reliable UDP (with FEC), Serial
+- HTTP/1.1 client/server, WebSocket client/server
+- Intrusive data structures, ring buffer, JSON, gzip
+- SHA-256, HMAC-SHA256, AES-256, Base64
 - Thread pool, async logger, waitgroup
 
 
