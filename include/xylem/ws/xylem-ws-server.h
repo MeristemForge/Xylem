@@ -26,14 +26,14 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/** WebSocket server configuration. */
+/* WebSocket server configuration. */
 typedef struct xylem_ws_srv_cfg_s {
-    const char*         host;       /**< Bind address (e.g. "0.0.0.0"). */
-    uint16_t            port;       /**< Bind port. */
-    xylem_ws_handler_t* handler;    /**< Event callback set. */
-    xylem_ws_opts_t*    opts;       /**< Connection options, NULL for defaults. */
-    const char*         tls_cert;   /**< PEM cert path, NULL for plain ws://. */
-    const char*         tls_key;    /**< PEM key path, NULL for plain ws://. */
+    const char*         host;       /*< Bind address (e.g. "0.0.0.0"). */
+    uint16_t            port;       /*< Bind port. */
+    xylem_ws_handler_t* handler;    /*< Event callback set. */
+    xylem_ws_opts_t*    opts;       /*< Connection options, NULL for defaults. */
+    const char*         tls_cert;   /*< PEM cert path, NULL for plain ws://. */
+    const char*         tls_key;    /*< PEM key path, NULL for plain ws://. */
 } xylem_ws_srv_cfg_t;
 
 /**

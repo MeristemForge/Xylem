@@ -25,36 +25,34 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-tcp.h"
 
-/** Opaque TLS connection handle. */
+/* Opaque TLS connection handle. */
 typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
-/** Opaque TLS context handle. */
+/* Opaque TLS context handle. */
 typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
-/** Opaque TLS server handle. */
+/* Opaque TLS server handle. */
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
+/* TLS connection options. */
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp;        /**< Underlying TCP options. */
-    const char*      hostname;   /**< SNI hostname: tells the server which
-                                      certificate to use when multiple domains
-                                      share one IP, and enables hostname
-                                      verification against the certificate. */
+    xylem_tcp_opts_t tcp;        /*< Underlying TCP options. */
+    const char*      hostname;   /*< SNI hostname for server certificate selection and hostname verification. */
 } xylem_tls_opts_t;
 
-/** TLS event callback set. */
+/* TLS event callback set. */
 typedef struct xylem_tls_handler_s {
-    void (*on_connect)(xylem_tls_conn_t* tls);             /**< TLS handshake completed (client). */
+    void (*on_connect)(xylem_tls_conn_t* tls);             /*< TLS handshake completed (client). */
     void (*on_accept)(xylem_tls_server_t* server,
-                      xylem_tls_conn_t* tls);               /**< TLS handshake completed (server). */
+                      xylem_tls_conn_t* tls);               /*< TLS handshake completed (server). */
     void (*on_read)(xylem_tls_conn_t* tls,
-                    void* data, size_t len);                 /**< Decrypted data received. */
+                    void* data, size_t len);                 /*< Decrypted data received. */
     void (*on_write_done)(xylem_tls_conn_t* tls,
                           const void* data, size_t len,
-                          int status);                       /**< Write finished: 0 = sent, -1 = not sent. */
+                          int status);                       /*< Write finished: 0 = sent, -1 = not sent. */
     void (*on_timeout)(xylem_tls_conn_t* tls,
-                       xylem_tcp_timeout_type_t type);       /**< Timeout from underlying TCP layer. */
+                       xylem_tcp_timeout_type_t type);       /*< Timeout from underlying TCP layer. */
     void (*on_close)(xylem_tls_conn_t* tls,
-                     int err, const char* errmsg);           /**< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
-    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);       /**< Heartbeat miss from underlying TCP layer. */
+                     int err, const char* errmsg);           /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
+    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);       /*< Heartbeat miss from underlying TCP layer. */
 } xylem_tls_handler_t;
 
 /**

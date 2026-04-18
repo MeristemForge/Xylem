@@ -24,13 +24,13 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** WebSocket opcode values (RFC 6455 section 5.2). */
+/* WebSocket opcode values (RFC 6455 section 5.2). */
 typedef enum xylem_ws_opcode_e {
     XYLEM_WS_OPCODE_TEXT   = 0x1,
     XYLEM_WS_OPCODE_BINARY = 0x2,
 } xylem_ws_opcode_t;
 
-/** WebSocket connection state. */
+/* WebSocket connection state. */
 typedef enum xylem_ws_state_e {
     XYLEM_WS_STATE_CONNECTING,
     XYLEM_WS_STATE_OPEN,
@@ -42,7 +42,7 @@ typedef enum xylem_ws_state_e {
 typedef struct xylem_ws_conn_s   xylem_ws_conn_t;
 typedef struct xylem_ws_server_s xylem_ws_server_t;
 
-/** WebSocket event handler callbacks. */
+/* WebSocket event handler callbacks. */
 typedef struct xylem_ws_handler_s {
     void (*on_open)(xylem_ws_conn_t* conn);
     void (*on_accept)(xylem_ws_conn_t* conn);
@@ -57,10 +57,10 @@ typedef struct xylem_ws_handler_s {
                      uint16_t code, const char* reason, size_t reason_len);
 } xylem_ws_handler_t;
 
-/** WebSocket connection options. */
+/* WebSocket connection options. */
 typedef struct xylem_ws_opts_s {
-    size_t   max_message_size;      /**< Max incoming message size, 0 = no limit, default 16 MiB. */
-    size_t   fragment_threshold;    /**< Send fragmentation threshold, 0 = default 16 KiB. */
-    uint64_t handshake_timeout_ms;  /**< Handshake timeout, 0 = default 10000 ms. */
-    uint64_t close_timeout_ms;      /**< Close handshake timeout, 0 = default 5000 ms. */
+    size_t   max_message_size;      /*< Max incoming message size, 0 = no limit, default 16 MiB. */
+    size_t   fragment_threshold;    /*< Send fragmentation threshold, 0 = default 16 KiB. */
+    uint64_t handshake_timeout_ms;  /*< Handshake timeout, 0 = default 10000 ms. */
+    uint64_t close_timeout_ms;      /*< Close handshake timeout, 0 = default 5000 ms. */
 } xylem_ws_opts_t;

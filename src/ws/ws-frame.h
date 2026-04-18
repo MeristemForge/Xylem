@@ -25,14 +25,14 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** Parsed WebSocket frame header (RFC 6455 section 5.2). */
+/* Parsed WebSocket frame header (RFC 6455 section 5.2). */
 typedef struct {
     bool     fin;
     uint8_t  opcode;
     bool     masked;
     uint64_t payload_len;
     uint8_t  mask_key[4];
-    size_t   header_size; /**< Total header bytes (2-14). */
+    size_t   header_size; /*< Total header bytes (2-14). */
 } ws_frame_header_t;
 
 /**

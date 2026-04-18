@@ -27,74 +27,74 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** Framing strategy for UDS stream reassembly. */
+/* Framing strategy for UDS stream reassembly. */
 typedef enum xylem_uds_framing_type_e {
-    XYLEM_UDS_FRAME_NONE,   /**< No framing, raw byte stream. */
-    XYLEM_UDS_FRAME_FIXED,  /**< Fixed-length frames. */
-    XYLEM_UDS_FRAME_LENGTH, /**< Length-prefixed frames. */
-    XYLEM_UDS_FRAME_DELIM,  /**< Delimiter-separated frames. */
-    XYLEM_UDS_FRAME_CUSTOM, /**< User-supplied parse function. */
+    XYLEM_UDS_FRAME_NONE,   /*< No framing, raw byte stream. */
+    XYLEM_UDS_FRAME_FIXED,  /*< Fixed-length frames. */
+    XYLEM_UDS_FRAME_LENGTH, /*< Length-prefixed frames. */
+    XYLEM_UDS_FRAME_DELIM,  /*< Delimiter-separated frames. */
+    XYLEM_UDS_FRAME_CUSTOM, /*< User-supplied parse function. */
 } xylem_uds_framing_type_t;
 
-/** Timeout category reported via on_timeout. */
+/* Timeout category reported via on_timeout. */
 typedef enum xylem_uds_timeout_type_e {
-    XYLEM_UDS_TIMEOUT_READ,  /**< Read idle timeout. */
-    XYLEM_UDS_TIMEOUT_WRITE, /**< Write completion timeout. */
+    XYLEM_UDS_TIMEOUT_READ,  /*< Read idle timeout. */
+    XYLEM_UDS_TIMEOUT_WRITE, /*< Write completion timeout. */
 } xylem_uds_timeout_type_t;
 
-/** Encoding used for the length field in LENGTH framing. */
+/* Encoding used for the length field in LENGTH framing. */
 typedef enum xylem_uds_length_coding_e {
-    XYLEM_UDS_LENGTH_FIXEDINT, /**< Fixed-width integer (1-8 bytes). */
-    XYLEM_UDS_LENGTH_VARINT,   /**< Variable-length integer. */
+    XYLEM_UDS_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
+    XYLEM_UDS_LENGTH_VARINT,   /*< Variable-length integer. */
 } xylem_uds_length_coding_t;
 
-/** Framing configuration for UDS connections. */
+/* Framing configuration for UDS connections. */
 typedef struct xylem_uds_framing_s {
     xylem_uds_framing_type_t type;
     union {
         struct { size_t frame_size; }                          fixed;
         struct {
-            uint32_t                  header_size;   /**< Fixed header size. */
-            uint32_t                  field_offset;  /**< Length field offset. */
-            uint32_t                  field_size;    /**< Length field size. */
-            int32_t                   adjustment;    /**< Length adjustment. */
-            xylem_uds_length_coding_t coding;        /**< FIXEDINT or VARINT. */
-            bool                      field_big_endian; /**< Byte order. */
+            uint32_t                  header_size;   /*< Fixed header size. */
+            uint32_t                  field_offset;  /*< Length field offset. */
+            uint32_t                  field_size;    /*< Length field size. */
+            int32_t                   adjustment;    /*< Length adjustment. */
+            xylem_uds_length_coding_t coding;        /*< FIXEDINT or VARINT. */
+            bool                      field_big_endian; /*< Byte order. */
         } length;
         struct { const char* delim; size_t delim_len; }        delim;
         struct { int (*parse)(const void* data, size_t len); } custom;
     };
 } xylem_uds_framing_t;
 
-/** Opaque UDS connection handle. */
+/* Opaque UDS connection handle. */
 typedef struct xylem_uds_conn_s   xylem_uds_conn_t;
-/** Opaque UDS server handle. */
+/* Opaque UDS server handle. */
 typedef struct xylem_uds_server_s xylem_uds_server_t;
 
-/** UDS event callback set. */
+/* UDS event callback set. */
 typedef struct xylem_uds_handler_s {
-    void (*on_connect)(xylem_uds_conn_t* conn);           /**< Client connected. */
+    void (*on_connect)(xylem_uds_conn_t* conn);           /*< Client connected. */
     void (*on_accept)(xylem_uds_server_t* server,
-                      xylem_uds_conn_t* conn);             /**< Server accepted. */
+                      xylem_uds_conn_t* conn);             /*< Server accepted. */
     void (*on_read)(xylem_uds_conn_t* conn,
-                    void* data, size_t len);                /**< Frame received. */
+                    void* data, size_t len);                /*< Frame received. */
     void (*on_write_done)(xylem_uds_conn_t* conn,
                           const void* data, size_t len,
-                          int status);                      /**< Write finished: 0 = sent, -1 = not sent. */
+                          int status);                      /*< Write finished: 0 = sent, -1 = not sent. */
     void (*on_timeout)(xylem_uds_conn_t* conn,
-                       xylem_uds_timeout_type_t type);      /**< Timeout fired. */
+                       xylem_uds_timeout_type_t type);      /*< Timeout fired. */
     void (*on_close)(xylem_uds_conn_t* conn,
-                     int err, const char* errmsg);          /**< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
-    void (*on_heartbeat_miss)(xylem_uds_conn_t* conn);     /**< No data received within heartbeat interval. */
+                     int err, const char* errmsg);          /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
+    void (*on_heartbeat_miss)(xylem_uds_conn_t* conn);     /*< No data received within heartbeat interval. */
 } xylem_uds_handler_t;
 
-/** UDS connection options. */
+/* UDS connection options. */
 typedef struct xylem_uds_opts_s {
-    xylem_uds_framing_t framing;            /**< Framing configuration. */
-    uint64_t            read_timeout_ms;    /**< Read idle timeout, 0 = none. */
-    uint64_t            write_timeout_ms;   /**< Write timeout, 0 = none. */
-    uint64_t            heartbeat_ms;       /**< Heartbeat interval, 0 = none. */
-    size_t              read_buf_size;      /**< Read buffer size, 0 = 65536. */
+    xylem_uds_framing_t framing;            /*< Framing configuration. */
+    uint64_t            read_timeout_ms;    /*< Read idle timeout, 0 = none. */
+    uint64_t            write_timeout_ms;   /*< Write timeout, 0 = none. */
+    uint64_t            heartbeat_ms;       /*< Heartbeat interval, 0 = none. */
+    size_t              read_buf_size;      /*< Read buffer size, 0 = 65536. */
 } xylem_uds_opts_t;
 
 /**

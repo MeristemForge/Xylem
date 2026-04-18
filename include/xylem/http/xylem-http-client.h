@@ -38,9 +38,9 @@ typedef struct xylem_http_session_s    xylem_http_session_t;
  * Zero-initialized fields use their default values.
  */
 typedef struct {
-    size_t                   max_idle_per_host; /**< Max idle conns per host:port:scheme, default 5. */
-    uint64_t                 idle_timeout_ms;   /**< Idle connection timeout in ms, default 90000. */
-    xylem_http_cookie_jar_t* cookie_jar;        /**< Shared cookie jar, NULL to disable. */
+    size_t                   max_idle_per_host; /*< Max idle conns per host:port:scheme, default 5. */
+    uint64_t                 idle_timeout_ms;   /*< Idle connection timeout in ms, default 90000. */
+    xylem_http_cookie_jar_t* cookie_jar;        /*< Shared cookie jar, NULL to disable. */
 } xylem_http_session_opts_t;
 
 /**
@@ -55,10 +55,10 @@ typedef struct {
     uint64_t                    timeout_ms;
     int                         max_redirects;
     size_t                      max_body_size;
-    const xylem_http_hdr_t*     headers;      /**< Custom request headers, NULL for none. */
-    size_t                      header_count;  /**< Number of custom request headers. */
-    xylem_http_cookie_jar_t*    cookie_jar;    /**< Cookie jar for automatic cookie management, NULL to disable. */
-    const char*                 range;         /**< Range header value (e.g. "bytes=0-499"), NULL to omit. */
+    const xylem_http_hdr_t*     headers;      /*< Custom request headers, NULL for none. */
+    size_t                      header_count;  /*< Number of custom request headers. */
+    xylem_http_cookie_jar_t*    cookie_jar;    /*< Cookie jar for automatic cookie management, NULL to disable. */
+    const char*                 range;         /*< Range header value (e.g. "bytes=0-499"), NULL to omit. */
 } xylem_http_cli_opts_t;
 
 /**

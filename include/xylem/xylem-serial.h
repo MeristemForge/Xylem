@@ -24,52 +24,52 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** Opaque serial port handle. */
+/* Opaque serial port handle. */
 typedef struct xylem_serial_s xylem_serial_t;
 
-/** Serial port baud rate. */
+/* Serial port baud rate. */
 typedef enum xylem_serial_baudrate_e {
-    XYLEM_SERIAL_BAUDRATE_9600,   /**< 9600 baud. */
-    XYLEM_SERIAL_BAUDRATE_19200,  /**< 19200 baud. */
-    XYLEM_SERIAL_BAUDRATE_38400,  /**< 38400 baud. */
-    XYLEM_SERIAL_BAUDRATE_57600,  /**< 57600 baud. */
-    XYLEM_SERIAL_BAUDRATE_115200, /**< 115200 baud. */
+    XYLEM_SERIAL_BAUDRATE_9600,   /*< 9600 baud. */
+    XYLEM_SERIAL_BAUDRATE_19200,  /*< 19200 baud. */
+    XYLEM_SERIAL_BAUDRATE_38400,  /*< 38400 baud. */
+    XYLEM_SERIAL_BAUDRATE_57600,  /*< 57600 baud. */
+    XYLEM_SERIAL_BAUDRATE_115200, /*< 115200 baud. */
 } xylem_serial_baudrate_t;
 
-/** Serial port parity mode. */
+/* Serial port parity mode. */
 typedef enum xylem_serial_parity_e {
-    XYLEM_SERIAL_PARITY_NONE,   /**< No parity. */
-    XYLEM_SERIAL_PARITY_ODD,    /**< Odd parity. */
-    XYLEM_SERIAL_PARITY_EVEN,   /**< Even parity. */
+    XYLEM_SERIAL_PARITY_NONE,   /*< No parity. */
+    XYLEM_SERIAL_PARITY_ODD,    /*< Odd parity. */
+    XYLEM_SERIAL_PARITY_EVEN,   /*< Even parity. */
 } xylem_serial_parity_t;
 
-/** Serial port data bits. */
+/* Serial port data bits. */
 typedef enum xylem_serial_databits_e {
-    XYLEM_SERIAL_DATABITS_7,    /**< 7 data bits. */
-    XYLEM_SERIAL_DATABITS_8,    /**< 8 data bits. */
+    XYLEM_SERIAL_DATABITS_7,    /*< 7 data bits. */
+    XYLEM_SERIAL_DATABITS_8,    /*< 8 data bits. */
 } xylem_serial_databits_t;
 
-/** Serial port stop bits. */
+/* Serial port stop bits. */
 typedef enum xylem_serial_stopbits_e {
-    XYLEM_SERIAL_STOPBITS_1,    /**< 1 stop bit. */
-    XYLEM_SERIAL_STOPBITS_2,    /**< 2 stop bits. */
+    XYLEM_SERIAL_STOPBITS_1,    /*< 1 stop bit. */
+    XYLEM_SERIAL_STOPBITS_2,    /*< 2 stop bits. */
 } xylem_serial_stopbits_t;
 
-/** Serial port flow control. */
+/* Serial port flow control. */
 typedef enum xylem_serial_flowcontrol_e {
-    XYLEM_SERIAL_FLOW_NONE,     /**< No flow control. */
-    XYLEM_SERIAL_FLOW_HARDWARE, /**< Hardware (RTS/CTS). */
+    XYLEM_SERIAL_FLOW_NONE,     /*< No flow control. */
+    XYLEM_SERIAL_FLOW_HARDWARE, /*< Hardware (RTS/CTS). */
 } xylem_serial_flowcontrol_t;
 
-/** Serial port configuration. */
+/* Serial port configuration. */
 typedef struct xylem_serial_opts_s {
-    const char*                  device;       /**< Device path ("COM3", "/dev/ttyUSB0"). */
-    xylem_serial_baudrate_t      baudrate;     /**< Baud rate. */
-    xylem_serial_parity_t        parity;       /**< Parity mode. */
-    xylem_serial_databits_t      databits;     /**< Data bits. */
-    xylem_serial_stopbits_t      stopbits;     /**< Stop bits. */
-    xylem_serial_flowcontrol_t   flowcontrol;  /**< Flow control, default NONE. */
-    uint32_t                     timeout_ms;   /**< Read timeout in ms, 0 = blocking. */
+    const char*                  device;       /*< Device path ("COM3", "/dev/ttyUSB0"). */
+    xylem_serial_baudrate_t      baudrate;     /*< Baud rate. */
+    xylem_serial_parity_t        parity;       /*< Parity mode. */
+    xylem_serial_databits_t      databits;     /*< Data bits. */
+    xylem_serial_stopbits_t      stopbits;     /*< Stop bits. */
+    xylem_serial_flowcontrol_t   flowcontrol;  /*< Flow control, default NONE. */
+    uint32_t                     timeout_ms;   /*< Read timeout in ms, 0 = blocking. */
 } xylem_serial_opts_t;
 
 /**

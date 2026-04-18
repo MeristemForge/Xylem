@@ -67,9 +67,9 @@ extern int platform_io_vsprintf(char* str, size_t size, const char* restrict for
  * file server: file size, modification time, and mode bits.
  */
 typedef struct {
-    int64_t size;    /**< File size in bytes. */
-    time_t  mtime;   /**< Last modification time. */
-    int     is_dir;  /**< Non-zero if the path is a directory. */
+    int64_t size;    /*< File size in bytes. */
+    time_t  mtime;   /*< Last modification time. */
+    int     is_dir;  /*< Non-zero if the path is a directory. */
 } platform_io_stat_t;
 
 /**

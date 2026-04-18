@@ -35,20 +35,20 @@ typedef int    platform_serial_t;
 #define PLATFORM_SERIAL_INVALID  -1
 #endif
 
-/** Parity mode constants for platform_serial_config_t.parity. */
+/* Parity mode constants for platform_serial_config_t.parity. */
 #define PLATFORM_SERIAL_PARITY_NONE  0
 #define PLATFORM_SERIAL_PARITY_ODD   1
 #define PLATFORM_SERIAL_PARITY_EVEN  2
 
-/** Data bits constants for platform_serial_config_t.databits. */
+/* Data bits constants for platform_serial_config_t.databits. */
 #define PLATFORM_SERIAL_DATABITS_7   7
 #define PLATFORM_SERIAL_DATABITS_8   8
 
-/** Stop bits constants for platform_serial_config_t.stopbits. */
+/* Stop bits constants for platform_serial_config_t.stopbits. */
 #define PLATFORM_SERIAL_STOPBITS_1   1
 #define PLATFORM_SERIAL_STOPBITS_2   2
 
-/** Flow control constants for platform_serial_config_t.flowcontrol. */
+/* Flow control constants for platform_serial_config_t.flowcontrol. */
 #define PLATFORM_SERIAL_FLOW_NONE      0
 #define PLATFORM_SERIAL_FLOW_HARDWARE  1
 
@@ -57,13 +57,13 @@ typedef int    platform_serial_t;
  * The upper layer translates public enums into these values.
  */
 typedef struct platform_serial_config_s {
-    const char* device;       /**< Device path. */
-    uint32_t    baudrate;     /**< Baud rate (e.g. 9600, 115200). */
-    uint8_t     databits;     /**< Data bits (7 or 8). */
-    uint8_t     stopbits;     /**< Stop bits (1 or 2). */
-    uint8_t     parity;       /**< PLATFORM_SERIAL_PARITY_NONE/ODD/EVEN. */
-    uint8_t     flowcontrol;  /**< PLATFORM_SERIAL_FLOW_NONE/HARDWARE. */
-    uint32_t    timeout_ms;   /**< Read timeout in ms, 0 = blocking. */
+    const char* device;       /*< Device path. */
+    uint32_t    baudrate;     /*< Baud rate (e.g. 9600, 115200). */
+    uint8_t     databits;     /*< Data bits (7 or 8). */
+    uint8_t     stopbits;     /*< Stop bits (1 or 2). */
+    uint8_t     parity;       /*< PLATFORM_SERIAL_PARITY_NONE/ODD/EVEN. */
+    uint8_t     flowcontrol;  /*< PLATFORM_SERIAL_FLOW_NONE/HARDWARE. */
+    uint32_t    timeout_ms;   /*< Read timeout in ms, 0 = blocking. */
 } platform_serial_config_t;
 
 /**

@@ -31,8 +31,8 @@ _Pragma("once")
  * valid for the duration of the API call that receives them.
  */
 typedef struct {
-    const char* name;  /**< Header name (e.g. "Authorization"). */
-    const char* value; /**< Header value (e.g. "Bearer token"). */
+    const char* name;  /*< Header name (e.g. "Authorization"). */
+    const char* value; /*< Header value (e.g. "Bearer token"). */
 } xylem_http_hdr_t;
 
 /**
@@ -74,12 +74,12 @@ extern char* xylem_http_url_decode(const char* src, size_t src_len,
  * response headers for a given request origin.
  */
 typedef struct {
-    const char* allowed_origins;   /**< Comma-separated origins or "*". */
-    const char* allowed_methods;   /**< Comma-separated methods (e.g. "GET,POST"). */
-    const char* allowed_headers;   /**< Comma-separated headers (e.g. "Content-Type,Authorization"). */
-    const char* expose_headers;    /**< Comma-separated headers to expose to the client. */
-    int         max_age;           /**< Preflight cache duration in seconds, 0 to omit. */
-    bool        allow_credentials; /**< If true, emit Access-Control-Allow-Credentials: true. */
+    const char* allowed_origins;   /*< Comma-separated origins or "*". */
+    const char* allowed_methods;   /*< Comma-separated methods (e.g. "GET,POST"). */
+    const char* allowed_headers;   /*< Comma-separated headers (e.g. "Content-Type,Authorization"). */
+    const char* expose_headers;    /*< Comma-separated headers to expose to the client. */
+    int         max_age;           /*< Preflight cache duration in seconds, 0 to omit. */
+    bool        allow_credentials; /*< If true, emit Access-Control-Allow-Credentials: true. */
 } xylem_http_cors_t;
 
 /**

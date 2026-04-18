@@ -26,17 +26,13 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** Opaque event loop handle (forward declaration). */
+/* Opaque event loop handle (forward declaration). */
 typedef struct xylem_loop_s xylem_loop_t;
 
-/* Opaque types */
-/** Opaque HTTP request handle. */
+/* Opaque types. */
 typedef struct xylem_http_req_s     xylem_http_req_t;
-/** Opaque HTTP connection handle. */
 typedef struct xylem_http_conn_s    xylem_http_conn_t;
-/** Opaque HTTP server handle. */
 typedef struct xylem_http_srv_s     xylem_http_srv_t;
-/** Opaque HTTP router handle. */
 typedef struct xylem_http_router_s  xylem_http_router_t;
 
 /**
@@ -107,10 +103,10 @@ typedef int (*xylem_http_middleware_fn_t)(xylem_http_writer_t* writer,
  * advertises Accept-Encoding: gzip.
  */
 typedef struct {
-    bool        enabled;     /**< Global on/off switch, default false. */
-    int         level;       /**< Compression level 1-9, 0 = default (6). */
-    size_t      min_size;    /**< Minimum body size to compress, default 1024. */
-    const char* mime_types;  /**< Comma-separated compressible MIME types,
+    bool        enabled;     /*< Global on/off switch, default false. */
+    int         level;       /*< Compression level 1-9, 0 = default (6). */
+    size_t      min_size;    /*< Minimum body size to compress, default 1024. */
+    const char* mime_types;  /*< Comma-separated compressible MIME types,
                                   NULL = built-in defaults. */
 } xylem_http_gzip_opts_t;
 
@@ -433,10 +429,10 @@ extern int xylem_http_router_dispatch(xylem_http_router_t* router,
  * handler on a router prefix.
  */
 typedef struct {
-    const char* root;          /**< File system root directory. */
-    const char* index_file;    /**< Default document, NULL = "index.html". */
-    int         max_age;       /**< Cache-Control max-age seconds, 0 = omit. */
-    bool        precompressed; /**< Look for .gz pre-compressed files. */
+    const char* root;          /*< File system root directory. */
+    const char* index_file;    /*< Default document, NULL = "index.html". */
+    int         max_age;       /*< Cache-Control max-age seconds, 0 = omit. */
+    bool        precompressed; /*< Look for .gz pre-compressed files. */
 } xylem_http_static_opts_t;
 
 /**

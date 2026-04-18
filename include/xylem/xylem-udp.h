@@ -24,15 +24,15 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-/** Opaque UDP handle. */
+/* Opaque UDP handle. */
 typedef struct xylem_udp_s xylem_udp_t;
 
-/** UDP event callback set. */
+/* UDP event callback set. */
 typedef struct xylem_udp_handler_s {
     void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
-                    xylem_addr_t* addr);                   /**< Datagram received. */
+                    xylem_addr_t* addr);                   /*< Datagram received. */
     void (*on_close)(xylem_udp_t* udp, int err,
-                     const char* errmsg);                  /**< Closed: 0 = normal, >0 = platform errno. */
+                     const char* errmsg);                  /*< Closed: 0 = normal, >0 = platform errno. */
 } xylem_udp_handler_t;
 
 /**

@@ -25,7 +25,7 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/** JSON value type. */
+/* JSON value type. */
 typedef enum xylem_json_type_e {
     XYLEM_JSON_TYPE_NONE = 0,
     XYLEM_JSON_TYPE_NULL,
@@ -36,7 +36,7 @@ typedef enum xylem_json_type_e {
     XYLEM_JSON_TYPE_OBJ
 } xylem_json_type_t;
 
-/** Opaque JSON handle for both parsed and constructed JSON. */
+/* Opaque JSON handle for both parsed and constructed JSON. */
 typedef struct xylem_json_s xylem_json_t;
 
 /**
