@@ -1,7 +1,3 @@
----
-inclusion: fileMatch
-fileMatchPattern: "src/xylem-uds.c,include/xylem/xylem-uds.h,tests/test-uds.c"
----
 # UDS 模块设计文档
 
 ## 概述
@@ -245,6 +241,8 @@ stateDiagram-v2
 - **VARINT**：变长整数编码（`xylem_varint_decode`）
 
 帧总长度计算：`effective_header + payload_len + adjustment`
+
+VARINT 路径中，若 `hdr_sz + varint_bytes < len_sz`，返回解析错误（-1），防止计算 `effective_hdr` 时发生无符号整数下溢。
 
 在计算 `frame_size` 之前，若 `payload_len` 超过 `INT64_MAX`，直接返回解析错误（-1），防止后续 `int64_t` 强转时发生有符号整数溢出。
 

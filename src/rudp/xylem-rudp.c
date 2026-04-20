@@ -20,6 +20,7 @@
  */
 
 #include "xylem/xylem-rudp.h"
+#include "xylem/xylem-bswap.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-rbtree.h"
 #include "xylem/xylem-udp.h"
@@ -197,18 +198,29 @@ static xylem_rudp_t* _rudp_find_session(xylem_rudp_server_t* server,
     return xylem_rbtree_entry(node, xylem_rudp_t, server_node);
 }
 
+/* Read a little-endian uint32 from a byte buffer (endian-safe). */
+static inline uint32_t _rudp_read_le32(const void* p) {
+    uint32_t v;
+    memcpy(&v, p, sizeof(v));
+    if (xylem_utils_getendian() == XYLEM_ENDIAN_BE) {
+        v = xylem_bswap(v);
+    }
+    return v;
+}
+
+/* Write a uint32 as little-endian into a byte buffer (endian-safe). */
+static inline void _rudp_write_le32(void* p, uint32_t v) {
+    if (xylem_utils_getendian() == XYLEM_ENDIAN_BE) {
+        v = xylem_bswap(v);
+    }
+    memcpy(p, &v, sizeof(v));
+}
+
 static void _rudp_encode_handshake(uint8_t* buf, uint8_t type,
                                    uint32_t conv) {
-    /* Little-endian encoding for cross-platform safety. */
-    buf[0] = (uint8_t)(RUDP_HANDSHAKE_MAGIC);
-    buf[1] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 8);
-    buf[2] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 16);
-    buf[3] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 24);
+    _rudp_write_le32(buf, RUDP_HANDSHAKE_MAGIC);
     buf[RUDP_OFF_TYPE] = type;
-    buf[RUDP_OFF_CONV]     = (uint8_t)(conv);
-    buf[RUDP_OFF_CONV + 1] = (uint8_t)(conv >> 8);
-    buf[RUDP_OFF_CONV + 2] = (uint8_t)(conv >> 16);
-    buf[RUDP_OFF_CONV + 3] = (uint8_t)(conv >> 24);
+    _rudp_write_le32(buf + RUDP_OFF_CONV, conv);
 }
 
 static bool _rudp_decode_handshake(const void* data, size_t len,
@@ -217,16 +229,12 @@ static bool _rudp_decode_handshake(const void* data, size_t len,
         return false;
     }
     const uint8_t* buf = (const uint8_t*)data;
-    uint32_t magic = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
-                     ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    uint32_t magic = _rudp_read_le32(buf);
     if (magic != RUDP_HANDSHAKE_MAGIC) {
         return false;
     }
     *type = buf[RUDP_OFF_TYPE];
-    *conv = (uint32_t)buf[RUDP_OFF_CONV] |
-            ((uint32_t)buf[RUDP_OFF_CONV + 1] << 8) |
-            ((uint32_t)buf[RUDP_OFF_CONV + 2] << 16) |
-            ((uint32_t)buf[RUDP_OFF_CONV + 3] << 24);
+    *conv = _rudp_read_le32(buf + RUDP_OFF_CONV);
     return true;
 }
 
@@ -638,8 +646,8 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
         if (len < RUDP_FEC_HEADER_SIZE + RUDP_CONV_SIZE) {
             return;
         }
-        uint32_t conv;
-        memcpy(&conv, p + RUDP_FEC_HEADER_SIZE, RUDP_CONV_SIZE);
+        const uint8_t* cp = p + RUDP_FEC_HEADER_SIZE;
+        uint32_t conv = _rudp_read_le32(cp);
         xylem_rudp_t* rudp = _rudp_find_session(server, addr, conv);
         if (!rudp) {
             return;
@@ -663,9 +671,8 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
             }
         }
     } else {
-        /* Raw KCP packet: first 4 bytes are conv. */
-        uint32_t conv;
-        memcpy(&conv, data, RUDP_CONV_SIZE);
+        /* Raw KCP packet: first 4 bytes are conv (little-endian). */
+        uint32_t conv = _rudp_read_le32(data);
 
         xylem_rudp_t* rudp = _rudp_find_session(server, addr, conv);
         if (!rudp) {
