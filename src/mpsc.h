@@ -57,6 +57,11 @@ extern void mpsc_push(mpsc_t* q, mpsc_node_t* node);
 /**
  * @brief Pop a node from the queue (single-consumer only).
  *
+ * NOTE: A NULL return does NOT guarantee the queue is empty. A concurrent
+ * push may be in progress (the producer has claimed a tail slot but has not
+ * yet linked the node). Callers must have a retry mechanism (e.g. an event
+ * loop) rather than treating NULL as "all items drained".
+ *
  * @param q  Pointer to the queue.
  *
  * @return Pointer to the popped node, or NULL if the queue is empty
