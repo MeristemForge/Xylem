@@ -242,6 +242,8 @@ stateDiagram-v2
 
 帧总长度计算：`effective_header + payload_len + adjustment`
 
+在计算 `frame_size` 之前，若 `payload_len` 超过 `INT64_MAX`，直接返回解析错误（-1），防止后续 `int64_t` 强转时发生有符号整数溢出。
+
 `adjustment` 允许负值，用于处理长度字段包含/不包含头部本身的协议差异。
 
 ### DELIM — 分隔符

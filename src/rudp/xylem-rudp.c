@@ -199,10 +199,16 @@ static xylem_rudp_t* _rudp_find_session(xylem_rudp_server_t* server,
 
 static void _rudp_encode_handshake(uint8_t* buf, uint8_t type,
                                    uint32_t conv) {
-    uint32_t magic = RUDP_HANDSHAKE_MAGIC;
-    memcpy(buf, &magic, RUDP_MAGIC_SIZE);
+    /* Little-endian encoding for cross-platform safety. */
+    buf[0] = (uint8_t)(RUDP_HANDSHAKE_MAGIC);
+    buf[1] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 8);
+    buf[2] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 16);
+    buf[3] = (uint8_t)(RUDP_HANDSHAKE_MAGIC >> 24);
     buf[RUDP_OFF_TYPE] = type;
-    memcpy(buf + RUDP_OFF_CONV, &conv, RUDP_CONV_SIZE);
+    buf[RUDP_OFF_CONV]     = (uint8_t)(conv);
+    buf[RUDP_OFF_CONV + 1] = (uint8_t)(conv >> 8);
+    buf[RUDP_OFF_CONV + 2] = (uint8_t)(conv >> 16);
+    buf[RUDP_OFF_CONV + 3] = (uint8_t)(conv >> 24);
 }
 
 static bool _rudp_decode_handshake(const void* data, size_t len,
@@ -211,13 +217,16 @@ static bool _rudp_decode_handshake(const void* data, size_t len,
         return false;
     }
     const uint8_t* buf = (const uint8_t*)data;
-    uint32_t magic;
-    memcpy(&magic, buf, RUDP_MAGIC_SIZE);
+    uint32_t magic = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                     ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
     if (magic != RUDP_HANDSHAKE_MAGIC) {
         return false;
     }
     *type = buf[RUDP_OFF_TYPE];
-    memcpy(conv, buf + RUDP_OFF_CONV, RUDP_CONV_SIZE);
+    *conv = (uint32_t)buf[RUDP_OFF_CONV] |
+            ((uint32_t)buf[RUDP_OFF_CONV + 1] << 8) |
+            ((uint32_t)buf[RUDP_OFF_CONV + 2] << 16) |
+            ((uint32_t)buf[RUDP_OFF_CONV + 3] << 24);
     return true;
 }
 

@@ -98,7 +98,7 @@ static void _udp_io_cb(xylem_loop_t* loop,
             return;
         }
 
-        if (n > 0 && udp->handler && udp->handler->on_read) {
+        if (n >= 0 && udp->handler && udp->handler->on_read) {
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, &addr);
         }
 
@@ -216,9 +216,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     if (!dest || udp->connected) {
         ssize_t n = platform_socket_send(udp->fd, data, (int)len);
         if (n < 0) {
+            int err = platform_socket_get_lasterror();
             xylem_logw("udp fd=%d send error=%d (%s)", (int)udp->fd,
-                       platform_socket_get_lasterror(),
-                       platform_socket_tostring(platform_socket_get_lasterror()));
+                       err, platform_socket_tostring(err));
         }
         return (n < 0) ? -1 : (int)n;
     }
@@ -230,9 +230,9 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     ssize_t n = platform_socket_sendto(udp->fd, data, (int)len,
                                        &dest->storage, addrlen);
     if (n < 0) {
+        int err = platform_socket_get_lasterror();
         xylem_logw("udp fd=%d sendto error=%d (%s)", (int)udp->fd,
-                   platform_socket_get_lasterror(),
-                   platform_socket_tostring(platform_socket_get_lasterror()));
+                   err, platform_socket_tostring(err));
     }
     return (n < 0) ? -1 : (int)n;
 }

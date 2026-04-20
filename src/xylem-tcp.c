@@ -181,6 +181,12 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
+        if (payload_len > (uint64_t)INT64_MAX) {
+            xylem_loge("tcp conn fd=%d frame_length: payload_len overflow",
+                       (int)conn->fd);
+            return -1;
+        }
+
         int64_t frame_size = (int64_t)effective_hdr + (int64_t)payload_len +
                              (int64_t)adj;
         if (frame_size <= 0) {
@@ -484,23 +490,23 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                     conn->handler->on_read(conn, frame_data, frame_len);
                 }
 
+                /**
+                 * Revalidate after on_read: user may have called
+                 * xylem_tcp_close inside the callback, which frees
+                 * read_buf. Compacting or continuing the recv/extract
+                 * loop would touch freed memory.
+                 */
+                if (conn->state == TCP_STATE_CLOSED ||
+                    conn->state == TCP_STATE_CLOSING) {
+                    return;
+                }
+
                 /* Compact so next extract sees correct data. */
                 conn->read_len -= (size_t)rc;
                 if (conn->read_len > 0) {
                     memmove(conn->read_buf,
                             conn->read_buf + (size_t)rc,
                             conn->read_len);
-                }
-
-                /**
-                 * Revalidate after on_read: user may have called
-                 * xylem_tcp_close inside the callback, which frees
-                 * read_buf. Continuing the recv/extract loop would
-                 * touch freed memory.
-                 */
-                if (conn->state == TCP_STATE_CLOSED ||
-                    conn->state == TCP_STATE_CLOSING) {
-                    return;
                 }
             } else if (rc == 0) {
                 break;
@@ -1009,12 +1015,15 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
-    /* Reject writes on a connection that is shutting down or destroyed. */
-    if (conn->state == TCP_STATE_CLOSING ||
-        conn->state == TCP_STATE_CLOSED) {
+    /* Only allow writes on a fully connected connection. */
+    if (conn->state != TCP_STATE_CONNECTED) {
         xylem_logd("tcp conn fd=%d send rejected (state=%d)",
                    (int)conn->fd, conn->state);
         return -1;
+    }
+
+    if (len == 0) {
+        return 0;
     }
 
     _tcp_write_req_t* req = (_tcp_write_req_t*)malloc(sizeof(_tcp_write_req_t) + len);

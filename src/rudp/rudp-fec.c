@@ -178,6 +178,11 @@ int rudp_fec_enc_feed(rudp_fec_enc_t* enc,
     _fec_write_u16_le(shard + FEC_OFF_TYPE, RUDP_FEC_TYPE_DATA);
     _fec_write_u16_le(shard + FEC_OFF_SIZE, (uint16_t)slen);
 
+    /* Reject packets that would overflow the shard buffer. */
+    if (RUDP_FEC_HEADER_SIZE + (int)slen > enc->mtu) {
+        return -1;
+    }
+
     memcpy(shard + RUDP_FEC_HEADER_SIZE, src, slen);
 
     enc->payload_sizes[idx] = (uint16_t)slen;
@@ -390,6 +395,16 @@ int rudp_fec_dec_feed(rudp_fec_dec_t* dec,
     uint16_t size  = _fec_read_u16_le(p + FEC_OFF_SIZE);
 
     if (type != RUDP_FEC_TYPE_DATA && type != RUDP_FEC_TYPE_PARITY) {
+        return -1;
+    }
+
+    /* Reject oversized shards that would overflow the group buffer. */
+    if (slen > (size_t)dec->mtu) {
+        return -1;
+    }
+
+    /* Reject size field that exceeds the actual payload. */
+    if (size > slen - RUDP_FEC_HEADER_SIZE) {
         return -1;
     }
 

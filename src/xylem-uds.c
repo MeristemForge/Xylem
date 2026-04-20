@@ -166,6 +166,12 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
+        if (payload_len > (uint64_t)INT64_MAX) {
+            xylem_loge("uds conn fd=%d frame_length: payload_len overflow",
+                       (int)conn->fd);
+            return -1;
+        }
+
         int64_t frame_size = (int64_t)effective_hdr +
                              (int64_t)payload_len + (int64_t)adj;
         if (frame_size <= 0) {
@@ -415,16 +421,22 @@ static void _uds_conn_readable_cb(xylem_uds_conn_t* conn) {
                     conn->handler->on_read(conn, frame_data, frame_len);
                 }
 
+                /**
+                 * Revalidate after on_read: user may have called
+                 * xylem_uds_close inside the callback, which frees
+                 * read_buf. Compacting or continuing the recv/extract
+                 * loop would touch freed memory.
+                 */
+                if (conn->state == UDS_STATE_CLOSED ||
+                    conn->state == UDS_STATE_CLOSING) {
+                    return;
+                }
+
                 conn->read_len -= (size_t)rc;
                 if (conn->read_len > 0) {
                     memmove(conn->read_buf,
                             conn->read_buf + (size_t)rc,
                             conn->read_len);
-                }
-
-                if (conn->state == UDS_STATE_CLOSED ||
-                    conn->state == UDS_STATE_CLOSING) {
-                    return;
                 }
             } else if (rc == 0) {
                 break;
@@ -775,9 +787,13 @@ void xylem_uds_close(xylem_uds_conn_t* conn) {
 
 int xylem_uds_send(xylem_uds_conn_t* conn,
                    const void* data, size_t len) {
-    if (conn->state == UDS_STATE_CLOSING ||
-        conn->state == UDS_STATE_CLOSED) {
+    /* Only allow writes on a fully connected connection. */
+    if (conn->state != UDS_STATE_CONNECTED) {
         return -1;
+    }
+
+    if (len == 0) {
+        return 0;
     }
 
     _uds_write_req_t* req =

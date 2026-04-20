@@ -559,6 +559,7 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                                            &_tls_tcp_client_handler,
                                            tcp_opts);
     if (!tcp) {
+        free(tls->hostname);
         free(tls);
         return NULL;
     }

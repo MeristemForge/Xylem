@@ -335,6 +335,8 @@ static void _dtls_feed_read_bio(xylem_dtls_t* dtls,
     BIO_write(dtls->read_bio, data, (int)len);
 }
 
+static void _dtls_arm_retransmit(xylem_dtls_t* dtls);
+
 static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
                                         xylem_loop_timer_t* timer,
                                         void* ud) {
@@ -352,6 +354,7 @@ static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
 
     DTLSv1_handle_timeout(dtls->ssl);
     _dtls_flush_write_bio(dtls);
+    _dtls_arm_retransmit(dtls);
 }
 
 static void _dtls_arm_retransmit(xylem_dtls_t* dtls) {
@@ -847,7 +850,7 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
             dtls->ssl = NULL;
         }
 
-        if (dtls->handler && dtls->handler->on_close) {
+        if (dtls->handshake_done && dtls->handler && dtls->handler->on_close) {
             dtls->handler->on_close(dtls, dtls->close_err,
                                     dtls->close_errmsg);
         }

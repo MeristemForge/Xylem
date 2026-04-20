@@ -243,6 +243,8 @@ stateDiagram-v2
 
 帧总长度计算：`effective_header + payload_len + adjustment`
 
+在计算 `frame_size` 之前，若 `payload_len` 超过 `INT64_MAX`，直接返回解析错误（-1），防止后续 `int64_t` 强转时发生有符号整数溢出。
+
 `adjustment` 允许负值，用于处理长度字段包含/不包含头部本身的协议差异。
 
 ### DELIM — 分隔符
@@ -271,14 +273,17 @@ flowchart TD
     E -->|否| H[read_len += nread]
     H --> I[帧提取循环]
     I --> J{extract_frame}
-    J -->|> 0| K[回调 on_read，memmove 压缩缓冲区]
-    K --> J
-    J -->|== 0| L[数据不足，继续 recv]
-    J -->|< 0| M[解析错误，close_conn]
-    F --> N[重置心跳/读超时定时器]
+    J -->|> 0| K[回调 on_read]
+    K --> L{state == CLOSED/CLOSING?}
+    L -->|是| M[返回]
+    L -->|否| N[memmove 压缩缓冲区]
+    N --> J
+    J -->|== 0| O[数据不足，继续 recv]
+    J -->|< 0| P[解析错误，close_conn]
+    F --> Q[重置心跳/读超时定时器]
 ```
 
-外层循环持续 `recv` 直到 `EAGAIN`，内层循环对每次 `recv` 的数据反复调用 `_tcp_extract_frame` 提取所有完整帧。每提取一帧后 `memmove` 压缩缓冲区，保证下次提取看到正确数据。
+外层循环持续 `recv` 直到 `EAGAIN`，内层循环对每次 `recv` 的数据反复调用 `_tcp_extract_frame` 提取所有完整帧。每提取一帧后先回调 `on_read`，然后检查连接状态——若用户在 `on_read` 中调用了 `xylem_tcp_close`（状态变为 `CLOSING` 或 `CLOSED`，`read_buf` 已释放），则立即返回，避免对已释放的缓冲区执行 `memmove`。状态检查通过后再 `memmove` 压缩缓冲区，保证下次提取看到正确数据。
 
 ### 写入路径 — `xylem_tcp_send` + `_tcp_flush_writes`
 
