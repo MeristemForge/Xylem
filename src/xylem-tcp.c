@@ -815,6 +815,7 @@ static void _tcp_try_connect(xylem_loop_t* loop,
     if (err == 0) {
         _tcp_conn_connected_cb(conn);
     } else {
+        xylem_loop_stop_io(conn->io);
         if (conn->opts.reconnect_max > 0 &&
             dial->reconnect_count < conn->opts.reconnect_max) {
             _tcp_start_reconnect_timer(conn, dial->reconnect_cb);
@@ -842,6 +843,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
 
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_logw("tcp reconnect fd=%d: socket creation failed for %s:%s", (int)conn->fd, dial->host, dial->port_str);
+        conn->fd = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dial->reconnect_count++;
         _tcp_start_reconnect_timer(conn, _tcp_reconnect_timeout_cb);
         return;

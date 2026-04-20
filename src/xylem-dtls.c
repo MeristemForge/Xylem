@@ -794,6 +794,17 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
     SSL_set_connect_state(dtls->ssl);
     _dtls_do_handshake(dtls);
 
+    /**
+     * If the initial handshake attempt triggered a fatal error,
+     * _dtls_do_handshake called xylem_dtls_close which (for client-side)
+     * synchronously fires _dtls_client_close_cb via xylem_udp_close.
+     * The session is now a zombie scheduled for deferred free -- do not
+     * return it to the caller.
+     */
+    if (dtls->closing) {
+        return NULL;
+    }
+
     return dtls;
 }
 

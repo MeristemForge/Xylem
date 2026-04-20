@@ -526,6 +526,12 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
 
     _tls_flush_write_bio(tls);
 
+    /**
+     * NOTE: on_write_done fires after ciphertext is enqueued into the
+     * TCP write queue, not after it has been written to the socket.
+     * This is intentional -- with memory BIOs, SSL_write always
+     * completes in one call, and the TCP layer handles actual delivery.
+     */
     if (tls->handler && tls->handler->on_write_done) {
         tls->handler->on_write_done(tls, data, len, 0);
     }

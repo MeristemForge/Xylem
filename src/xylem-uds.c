@@ -929,15 +929,18 @@ xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
 
     xylem_list_init(&server->connections);
 
-    if (path && strlen(path) < UDS_MAX_PATH) {
-        snprintf(server->path, UDS_MAX_PATH, "%s", path);
+    if (!path || strlen(path) >= UDS_MAX_PATH) {
+        free(server);
+        xylem_loge("uds listen: path is NULL or too long (max %d)",
+                   UDS_MAX_PATH - 1);
+        return NULL;
     }
+    snprintf(server->path, UDS_MAX_PATH, "%s", path);
 
     platform_sock_t fd = platform_socket_listen_unix(path, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         free(server);
-        xylem_loge("uds listen: socket creation failed for %s",
-                   path ? path : "(null)");
+        xylem_loge("uds listen: socket creation failed for %s", path);
         return NULL;
     }
 
