@@ -388,6 +388,8 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
     }
 
     xylem_logw("dtls session %p handshake timed out", (void*)dtls);
+    dtls->close_err    = -1;
+    dtls->close_errmsg = "handshake timeout";
     xylem_dtls_close(dtls);
 }
 
@@ -417,6 +419,7 @@ static int _dtls_init_ssl(xylem_dtls_t* dtls) {
 }
 
 static void _dtls_do_handshake(xylem_dtls_t* dtls) {
+    ERR_clear_error();
     int rc  = SSL_do_handshake(dtls->ssl);
     int err = SSL_get_error(dtls->ssl, rc);
 
@@ -552,6 +555,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
+    ERR_clear_error();
     while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
         if (dtls->handler && dtls->handler->on_read) {
             dtls->handler->on_read(dtls, buf, (size_t)n);
@@ -670,6 +674,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         char buf[TLS_RECORD_MAX_PLAINTEXT];
         int  n;
 
+        ERR_clear_error();
         while ((n = SSL_read(dtls->ssl, buf, sizeof(buf))) > 0) {
             if (dtls->handler && dtls->handler->on_read) {
                 dtls->handler->on_read(dtls, buf, (size_t)n);
@@ -816,6 +821,7 @@ int xylem_dtls_send(xylem_dtls_t* dtls,
         return -1;
     }
 
+    ERR_clear_error();
     int n = SSL_write(dtls->ssl, data, (int)len);
     if (n <= 0) {
         unsigned long ssl_err_code = ERR_peek_error();

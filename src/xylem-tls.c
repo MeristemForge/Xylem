@@ -245,6 +245,7 @@ static void _tls_feed_read_bio(xylem_tls_conn_t* tls, void* data, size_t len) {
 }
 
 static void _tls_do_handshake(xylem_tls_conn_t* tls) {
+    ERR_clear_error();
     int rc  = SSL_do_handshake(tls->ssl);
     int err = SSL_get_error(tls->ssl, rc);
 
@@ -389,6 +390,7 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
+    ERR_clear_error();
     while ((n = SSL_read(tls->ssl, buf, sizeof(buf))) > 0) {
         if (tls->handler && tls->handler->on_read) {
             tls->handler->on_read(tls, buf, (size_t)n);
@@ -515,6 +517,7 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
         return -1;
     }
 
+    ERR_clear_error();
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
         unsigned long ssl_err_code = ERR_peek_error();

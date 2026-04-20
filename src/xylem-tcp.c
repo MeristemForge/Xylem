@@ -156,7 +156,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
                            (int)conn->fd, len_sz);
                 return -1;
             }
-            if (avail < len_off + len_sz) {
+            if (len_off > avail || len_sz > avail - len_off) {
                 return 0;
             }
 
@@ -178,6 +178,11 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
                 return -1;
             }
             uint32_t varint_bytes = (uint32_t)(pos - len_off);
+            if (hdr_sz + varint_bytes < len_sz) {
+                xylem_loge("tcp conn fd=%d frame_length: varint underflow",
+                           (int)conn->fd);
+                return -1;
+            }
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
@@ -813,6 +818,7 @@ static void _tcp_try_connect(xylem_loop_t* loop,
     }
 
     if (err == 0) {
+        dial->reconnect_count = 0;
         _tcp_conn_connected_cb(conn);
     } else {
         xylem_loop_stop_io(conn->io);
@@ -870,6 +876,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
     }
 
     if (connected) {
+        dial->reconnect_count = 0;
         _tcp_conn_connected_cb(conn);
     } else {
         xylem_loop_start_io(conn->io, XYLEM_POLLER_WR_OP,

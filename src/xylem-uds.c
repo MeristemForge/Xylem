@@ -141,7 +141,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
                            "field_size=%u", (int)conn->fd, len_sz);
                 return -1;
             }
-            if (avail < len_off + len_sz) {
+            if (len_off > avail || len_sz > avail - len_off) {
                 return 0;
             }
             if (conn->opts.framing.length.field_big_endian) {
@@ -163,6 +163,11 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
                 return -1;
             }
             uint32_t varint_bytes = (uint32_t)(pos - len_off);
+            if (hdr_sz + varint_bytes < len_sz) {
+                xylem_loge("uds conn fd=%d frame_length: varint underflow",
+                           (int)conn->fd);
+                return -1;
+            }
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
