@@ -177,6 +177,11 @@ extern xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
  * ciphertext over the underlying TCP connection. Returns
  * immediately; handler->on_write_done fires on completion.
  *
+ * Thread-safe: may be called from any thread. When called from a
+ * non-loop thread, the data is copied and posted to the loop thread
+ * for asynchronous encryption and send. The caller must ensure the
+ * connection has not been destroyed (i.e. on_close has not yet fired).
+ *
  * @param tls   TLS connection handle.
  * @param data  Plaintext data to send.
  * @param len   Data length in bytes.
@@ -191,6 +196,11 @@ extern int xylem_tls_send(xylem_tls_conn_t* tls,
  *
  * Sends a TLS close_notify, then closes the underlying TCP
  * connection. handler->on_close fires when complete.
+ *
+ * Thread-safe: may be called from any thread. When called from a
+ * non-loop thread, the close is posted to the loop thread. The
+ * caller must ensure the connection has not been destroyed (i.e.
+ * on_close has not yet fired).
  *
  * @param tls  TLS connection handle.
  */

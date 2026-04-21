@@ -29,6 +29,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,8 +60,8 @@ struct xylem_tls_conn_s {
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;
     void*                 userdata;
-    bool                  handshake_done;
-    bool                  closing;
+    _Atomic bool          handshake_done;
+    _Atomic bool          closing;
     int                   close_err;
     const char*           close_errmsg;
     char*                 hostname;
@@ -78,6 +79,12 @@ struct xylem_tls_server_s {
     void*                 userdata;
     bool                  closing;
 };
+
+typedef struct _tls_deferred_send_s {
+    xylem_tls_conn_t* tls;
+    size_t            len;
+    char              data[];
+} _tls_deferred_send_t;
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -510,13 +517,10 @@ static xylem_tcp_handler_t _tls_tcp_client_handler = {
     .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
 };
 
-int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
-    if (!tls->handshake_done || tls->closing) {
-        xylem_logd("tls conn %p send rejected (handshake=%d closing=%d)",
-                   (void*)tls, tls->handshake_done, tls->closing);
-        return -1;
-    }
-
+/* Perform the actual TLS send (loop thread only). */
+static int _tls_do_send(xylem_tls_conn_t* tls,
+                        const void* data,
+                        size_t len) {
     ERR_clear_error();
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
@@ -540,6 +544,61 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     }
 
     return 0;
+}
+
+static void _tls_deferred_send_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    _tls_deferred_send_t* ds = (_tls_deferred_send_t*)ud;
+
+    if (atomic_load(&ds->tls->handshake_done) &&
+        !atomic_load(&ds->tls->closing)) {
+        _tls_do_send(ds->tls, ds->data, ds->len);
+    }
+
+    free(ds);
+}
+
+static void _tls_deferred_close_cb(xylem_loop_t* loop,
+                                    xylem_loop_post_t* req,
+                                    void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tls_close((xylem_tls_conn_t*)ud);
+}
+
+int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
+    if (!atomic_load(&tls->handshake_done) ||
+        atomic_load(&tls->closing)) {
+        xylem_logd("tls conn %p send rejected (handshake=%d closing=%d)",
+                   (void*)tls,
+                   (int)atomic_load(&tls->handshake_done),
+                   (int)atomic_load(&tls->closing));
+        return -1;
+    }
+
+    if (len == 0) {
+        return 0;
+    }
+
+    /* Cross-thread: copy data and post to loop thread. */
+    xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
+    if (!xylem_loop_is_loop_thread(loop)) {
+        _tls_deferred_send_t* ds = (_tls_deferred_send_t*)malloc(
+            sizeof(_tls_deferred_send_t) + len);
+        if (!ds) {
+            return -1;
+        }
+        ds->tls = tls;
+        ds->len = len;
+        memcpy(ds->data, data, len);
+        return xylem_loop_post(loop, _tls_deferred_send_cb, ds);
+    }
+
+    /* Same thread: send directly. */
+    return _tls_do_send(tls, data, len);
 }
 
 xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
@@ -579,14 +638,21 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
 }
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
-    if (tls->closing) {
+    /* Cross-thread: post to loop thread. */
+    xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
+    if (!xylem_loop_is_loop_thread(loop)) {
+        xylem_loop_post(loop, _tls_deferred_close_cb, tls);
         return;
     }
-    tls->closing = true;
+
+    if (atomic_load(&tls->closing)) {
+        return;
+    }
+    atomic_store(&tls->closing, true);
 
     xylem_logi("tls conn %p close requested", (void*)tls);
 
-    if (tls->ssl && tls->handshake_done) {
+    if (tls->ssl && atomic_load(&tls->handshake_done)) {
         SSL_shutdown(tls->ssl);
         _tls_flush_write_bio(tls);
     }
