@@ -152,14 +152,16 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
  * immediately. Each write request triggers handler->on_write_done
  * upon completion.
  *
+ * Thread-safe: may be called from any thread. When called from a
+ * non-loop thread, the data is copied and posted to the loop thread
+ * for asynchronous enqueue. The caller must ensure the connection
+ * has not been destroyed (i.e. on_close has not yet fired).
+ *
  * @param conn  Connection handle.
  * @param data  Data to send.
  * @param len   Data length in bytes.
  *
  * @return 0 on success (enqueued), -1 on failure (connection closed).
- *
- * @note Not thread-safe. Must be called from the loop thread.
- *       Use xylem_loop_post() to send from other threads.
  */
 extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
                           const void* data, size_t len);
@@ -170,9 +172,12 @@ extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
  * Performs a graceful shutdown: flushes the write queue, then
  * calls shutdown + close. Calls handler->on_close when done.
  *
- * @param conn  Connection handle.
+ * Thread-safe: may be called from any thread. When called from a
+ * non-loop thread, the close is posted to the loop thread. The
+ * caller must ensure the connection has not been destroyed (i.e.
+ * on_close has not yet fired).
  *
- * @note Not thread-safe. Must be called from the loop thread.
+ * @param conn  Connection handle.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
 

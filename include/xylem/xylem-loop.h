@@ -181,6 +181,18 @@ extern int xylem_loop_post(xylem_loop_t* loop,
                            xylem_loop_post_fn_t cb,
                            void* ud);
 
+/**
+ * @brief Check if the caller is on the loop thread.
+ *
+ * Compares the calling thread's ID against the thread that entered
+ * xylem_loop_run(). Only valid after xylem_loop_run() has been called.
+ *
+ * @param loop  Loop handle.
+ *
+ * @return true if called from the loop thread, false otherwise.
+ */
+extern bool xylem_loop_is_loop_thread(xylem_loop_t* loop);
+
 
 /**
  * @brief Callback invoked when an I/O event fires.

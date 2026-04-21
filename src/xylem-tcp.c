@@ -28,6 +28,7 @@
 #include "platform/platform-socket.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +48,12 @@ typedef struct _tcp_write_req_s {
     size_t             offset;
     char               data[];
 } _tcp_write_req_t;
+
+typedef struct _tcp_deferred_send_s {
+    xylem_tcp_conn_t* conn;
+    size_t            len;
+    char              data[];
+} _tcp_deferred_send_t;
 
 /**
  * Dial-private state: only allocated for outbound (dialed) connections.
@@ -70,7 +77,7 @@ struct xylem_tcp_conn_s {
     platform_sock_t       fd;
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    _tcp_state_t          state;
+    _Atomic _tcp_state_t  state;
     uint8_t*              read_buf;
     size_t                read_len;
     size_t                read_cap;
@@ -1002,16 +1009,30 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
     xylem_loop_post(server->loop, _tcp_server_free_cb, server);
 }
 
+static void _tcp_deferred_close_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tcp_close((xylem_tcp_conn_t*)ud);
+}
+
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
+    /* Cross-thread: post to loop thread. */
+    if (!xylem_loop_is_loop_thread(conn->loop)) {
+        xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn);
+        return;
+    }
+
     /* Idempotent: user may call close multiple times or from callbacks. */
-    if (conn->state == TCP_STATE_CLOSING ||
-        conn->state == TCP_STATE_CLOSED) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSING ||
+        atomic_load(&conn->state) == TCP_STATE_CLOSED) {
         return;
     }
 
     xylem_logi("tcp conn fd=%d graceful close requested",
                (int)conn->fd);
-    conn->state = TCP_STATE_CLOSING;
+    atomic_store(&conn->state, TCP_STATE_CLOSING);
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -1023,19 +1044,12 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
      */
 }
 
-int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
-    /* Only allow writes on a fully connected connection. */
-    if (conn->state != TCP_STATE_CONNECTED) {
-        xylem_logd("tcp conn fd=%d send rejected (state=%d)",
-                   (int)conn->fd, conn->state);
-        return -1;
-    }
-
-    if (len == 0) {
-        return 0;
-    }
-
-    _tcp_write_req_t* req = (_tcp_write_req_t*)malloc(sizeof(*req) + len);
+/* Enqueue a write request and arm IO/timer (loop thread only). */
+static int _tcp_enqueue_write(xylem_tcp_conn_t* conn,
+                              const void* data,
+                              size_t len) {
+    _tcp_write_req_t* req =
+        (_tcp_write_req_t*)malloc(sizeof(*req) + len);
     if (!req) {
         return -1;
     }
@@ -1046,7 +1060,8 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
 
     bool was_empty = xylem_queue_empty(&conn->write_queue);
     xylem_queue_enqueue(&conn->write_queue, &req->node);
-    xylem_logd("tcp conn fd=%d enqueue write %zu bytes", (int)conn->fd, len);
+    xylem_logd("tcp conn fd=%d enqueue write %zu bytes",
+               (int)conn->fd, len);
 
     if (was_empty) {
         xylem_loop_start_io(conn->io,
@@ -1061,6 +1076,49 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
     }
 
     return 0;
+}
+
+static void _tcp_deferred_send_cb(xylem_loop_t* loop,
+                                  xylem_loop_post_t* req,
+                                  void* ud) {
+    (void)loop;
+    (void)req;
+    _tcp_deferred_send_t* ds = (_tcp_deferred_send_t*)ud;
+
+    if (atomic_load(&ds->conn->state) == TCP_STATE_CONNECTED) {
+        _tcp_enqueue_write(ds->conn, ds->data, ds->len);
+    }
+
+    free(ds);
+}
+
+int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
+    if (atomic_load(&conn->state) != TCP_STATE_CONNECTED) {
+        xylem_logd("tcp conn fd=%d send rejected (state=%d)",
+                   (int)conn->fd,
+                   (int)atomic_load(&conn->state));
+        return -1;
+    }
+
+    if (len == 0) {
+        return 0;
+    }
+
+    /* Cross-thread: copy data and post to loop thread. */
+    if (!xylem_loop_is_loop_thread(conn->loop)) {
+        _tcp_deferred_send_t* ds = (_tcp_deferred_send_t*)malloc(
+            sizeof(_tcp_deferred_send_t) + len);
+        if (!ds) {
+            return -1;
+        }
+        ds->conn = conn;
+        ds->len  = len;
+        memcpy(ds->data, data, len);
+        return xylem_loop_post(conn->loop, _tcp_deferred_send_cb, ds);
+    }
+
+    /* Same thread: enqueue directly. */
+    return _tcp_enqueue_write(conn, data, len);
 }
 
 const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn) {

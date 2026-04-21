@@ -41,6 +41,7 @@ struct xylem_loop_s {
     size_t                active_count;
     uint64_t              time;
     _Atomic bool          stopped;
+    platform_tid_t        tid;
 };
 
 struct xylem_loop_io_s {
@@ -227,6 +228,7 @@ void xylem_loop_destroy(xylem_loop_t* loop) {
 int xylem_loop_run(xylem_loop_t* loop) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
+    loop->tid = platform_info_gettid();
     atomic_store(&loop->stopped, false);
     _loop_update_time(loop);
 
@@ -416,4 +418,8 @@ int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
         xylem_logw("loop post: wakeup send failed, task queued anyway");
     }
     return 0;
+}
+
+bool xylem_loop_is_loop_thread(xylem_loop_t* loop) {
+    return platform_info_gettid() == loop->tid;
 }
