@@ -89,8 +89,8 @@ struct xylem_tls_conn_s {
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;         /* 服务端连接非 NULL */
     void*                 userdata;
-    bool                  handshake_done;
-    bool                  closing;
+    _Atomic bool          handshake_done;
+    _Atomic bool          closing;
     int                   close_err;      /* 关闭错误码，正常关闭为 0 */
     const char*           close_errmsg;   /* 关闭错误描述，正常关闭为 NULL */
     char*                 hostname;       /* SNI 主机名 */
@@ -278,6 +278,21 @@ TLS 模块注册两组静态 TCP handler：
 
 TLS conn 通过 `xylem_tcp_set_userdata` 存储在 TCP conn 的 userdata 中，在 TCP 回调中通过 `xylem_tcp_get_userdata` 恢复。
 
+## 线程安全
+
+`xylem_tls_send` 和 `xylem_tls_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
+
+- **事件循环线程**：直接执行 SSL 操作
+- **其他线程**：通过 `xylem_loop_post` 将操作转发到事件循环线程
+
+`xylem_tls_send` 跨线程调用时，分配 `_tls_deferred_send_t`（包含 TLS conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。回调 `_tls_deferred_send_cb` 在执行前检查 `handshake_done` 和 `closing` 状态（连接可能在 post 期间关闭）。
+
+`xylem_tls_close` 跨线程调用时，通过 `xylem_loop_post` 将 `_tls_deferred_close_cb` 转发到事件循环线程执行。
+
+`tls->handshake_done` 和 `tls->closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。所有状态变更仅在事件循环线程上执行。
+
+其他 API（`xylem_tls_dial`、`xylem_tls_listen`、访问器等）仍需在事件循环线程上调用。
+
 ## 公开 API
 
 ### 上下文
@@ -304,6 +319,11 @@ xylem_tls_conn_t*   xylem_tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
 int                 xylem_tls_send(xylem_tls_conn_t* tls,
                                     const void* data, size_t len);
 void                xylem_tls_close(xylem_tls_conn_t* tls);
+```
+
+`xylem_tls_send` 和 `xylem_tls_close` 线程安全，可从任意线程调用。
+
+```c
 const char*         xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_conn_t* tls);
 xylem_loop_t*       xylem_tls_get_loop(xylem_tls_conn_t* tls);
