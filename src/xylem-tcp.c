@@ -43,9 +43,9 @@ typedef enum {
 
 typedef struct _tcp_write_req_s {
     xylem_queue_node_t node;
-    void*              data;
     size_t             len;
     size_t             offset;
+    char               data[];
 } _tcp_write_req_t;
 
 /**
@@ -549,7 +549,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
         _tcp_write_req_t* req =
             xylem_queue_entry(front, _tcp_write_req_t, node);
 
-        char*  ptr = (char*)req->data + req->offset;
+        char*  ptr = req->data + req->offset;
         size_t rem = req->len - req->offset;
 
         ssize_t n = platform_socket_send(conn->fd, ptr, (int)rem);
@@ -1035,12 +1035,11 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
         return 0;
     }
 
-    _tcp_write_req_t* req = (_tcp_write_req_t*)malloc(sizeof(_tcp_write_req_t) + len);
+    _tcp_write_req_t* req = (_tcp_write_req_t*)malloc(sizeof(*req) + len);
     if (!req) {
         return -1;
     }
 
-    req->data   = (char*)req + sizeof(*req);
     req->len    = len;
     req->offset = 0;
     memcpy(req->data, data, len);
