@@ -1036,7 +1036,9 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     /* Cross-thread: post to loop thread. */
     if (!xylem_loop_is_loop_thread(conn->loop)) {
         atomic_fetch_add(&conn->refcount, 1);
-        xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn);
+        if (xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn) != 0) {
+            _tcp_conn_decref(conn);
+        }
         return;
     }
 

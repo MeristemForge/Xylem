@@ -662,7 +662,9 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
     if (!xylem_loop_is_loop_thread(loop)) {
         atomic_fetch_add(&tls->refcount, 1);
-        xylem_loop_post(loop, _tls_deferred_close_cb, tls);
+        if (xylem_loop_post(loop, _tls_deferred_close_cb, tls) != 0) {
+            _tls_conn_decref(tls);
+        }
         return;
     }
 
