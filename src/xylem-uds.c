@@ -171,7 +171,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
-        if (payload_len > (uint64_t)INT64_MAX) {
+        if (payload_len >= (uint64_t)INT64_MAX) {
             xylem_loge("uds conn fd=%d frame_length: payload_len overflow",
                        (int)conn->fd);
             return -1;

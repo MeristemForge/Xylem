@@ -186,7 +186,7 @@ static ssize_t _tcp_extract_frame(xylem_tcp_conn_t* conn,
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
-        if (payload_len > (uint64_t)INT64_MAX) {
+        if (payload_len >= (uint64_t)INT64_MAX) {
             xylem_loge("tcp conn fd=%d frame_length: payload_len overflow",
                        (int)conn->fd);
             return -1;
