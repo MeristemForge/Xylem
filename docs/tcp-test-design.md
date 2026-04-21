@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-tcp.c` 包含 35 个活跃测试函数，覆盖 `src/xylem-tcp.c` 的公共 API 和核心内部分支。
+`tests/test-tcp.c` 包含 40 个活跃测试函数，覆盖 `src/xylem-tcp.c` 的公共 API 和核心内部分支。
 
 ## 测试基础设施
 
@@ -73,15 +73,23 @@
 | `test_reconnect_success` | 重连成功 | 初始连接失败后延迟启动服务器，reconnect_max=3，on_connect 最终触发 |
 | `test_reconnect_limit` | 重连次数耗尽 | 无服务器监听，reconnect_max=1，connect_timeout_ms=200，on_close 触发 |
 
-### 读写边界与生命周期（3 个）
+### 读写边界与生命周期（5 个）
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
 | `test_read_buf_full` | 读缓冲区满 | read_buf_size=8, frame_size=16，缓冲区填满后 on_close 触发 |
 | `test_peer_close_eof` | 对端关闭 EOF | 客户端连接后立即 close，服务端 on_close 触发 |
+| `test_close_pending_writes` | close 时写队列非空 | 3 个 send + close，on_write_done 触发 3 次，on_close 触发 |
 | `test_drain_write_queue_on_error` | 对端关闭时写队列 drain | 服务端 accept 后立即 close，客户端有待发数据，on_close 触发 |
+| `test_lifecycle_full` | 完整生命周期 | accept/connect/read/close 全部 6 个事件触发（verified & 0x3F == 0x3F） |
 
-> `test_close_pending_writes`、`test_lifecycle_full` 仍然禁用。完整生命周期覆盖目前缺少直接测试覆盖。
+### 跨线程操作（3 个）
+
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_cross_thread_send` | 跨线程 xylem_tcp_send | 工作线程发送 "hello"，客户端收到回显数据一致，received_len==5 |
+| `test_cross_thread_close` | 跨线程 xylem_tcp_close | 工作线程调用 close，on_close 回调触发，close_called==1 |
+| `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 对端关闭 | 工作线程循环 send，服务端 50ms 后关闭连接，on_close 触发后 send 停止（atomic closed 标志），worker_done==true |
 
 ## 覆盖的内部分支
 
@@ -96,3 +104,6 @@
 | `_tcp_heartbeat_timeout_cb` | 心跳超时 |
 | `xylem_tcp_close` | 写队列为空时立即 shutdown + destroy；写队列非空时设 CLOSING 等待 flush |
 | `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
+| `xylem_tcp_send`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_send_cb` 转发到事件循环线程入队 |
+| `xylem_tcp_close`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_close_cb` 转发到事件循环线程执行 |
+| `xylem_tcp_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic state 检查拒绝发送 |

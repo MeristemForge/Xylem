@@ -20,6 +20,7 @@ graph TB
 - 数据通过写队列异步发送，支持部分写入（partial write）
 - 读取数据经帧解析器提取完整帧后才回调用户
 - 连接生命周期通过状态机管理
+- `xylem_tcp_send` 和 `xylem_tcp_close` 支持跨线程调用（通过 `xylem_loop_post` 自动转发到事件循环线程）
 
 ## 公开类型
 
@@ -130,6 +131,18 @@ typedef struct _tcp_write_req_s {
 } _tcp_write_req_t;
 ```
 
+### 延迟发送请求
+
+跨线程调用 `xylem_tcp_send` 时分配，通过 `xylem_loop_post` 转发到事件循环线程：
+
+```c
+typedef struct _tcp_deferred_send_s {
+    xylem_tcp_conn_t* conn;
+    size_t            len;
+    char              data[];  /* 柔性数组成员，用户数据副本 */
+} _tcp_deferred_send_t;
+```
+
 ### 拨号私有状态
 
 仅为出站连接（dial）分配，持有重连所需的全部状态：
@@ -156,7 +169,7 @@ struct xylem_tcp_conn_s {
     platform_sock_t       fd;
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
-    tcp_state_t           state;           /* 状态机 */
+    _Atomic _tcp_state_t  state;           /* 状态机（原子类型，支持跨线程安全读取） */
     uint8_t*              read_buf;        /* 读缓冲区 */
     size_t                read_len;        /* 已读字节数 */
     size_t                read_cap;        /* 缓冲区容量 */
@@ -285,7 +298,12 @@ flowchart TD
 
 ### 写入路径 — `xylem_tcp_send` + `_tcp_flush_writes`
 
-`xylem_tcp_send` 分配 `sizeof(req) + len` 的内存块，将用户数据 `memcpy` 到结构体之后的空间。调用后用户可立即释放或复用原始缓冲区。
+`xylem_tcp_send` 支持跨线程调用。调用时首先通过 `atomic_load` 检查连接状态，仅 `CONNECTED` 状态接受发送。然后检查是否在事件循环线程上：
+
+- **同线程**：直接调用 `_tcp_enqueue_write` 将数据入队写队列
+- **跨线程**：分配 `_tcp_deferred_send_t`（包含 conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。回调 `_tcp_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭）
+
+`_tcp_enqueue_write` 分配 `sizeof(req) + len` 的内存块，将用户数据 `memcpy` 到结构体之后的空间。调用后用户可立即释放或复用原始缓冲区。
 
 若写队列之前为空，切换 IO 为读写模式并启动写超时定时器。
 
@@ -333,7 +351,12 @@ sequenceDiagram
     participant OS as 操作系统
 
     User->>TCP: xylem_tcp_close()
-    TCP->>TCP: state = CLOSING
+    alt 跨线程调用
+        TCP->>TCP: xylem_loop_post(_tcp_deferred_close_cb)
+        Note over TCP: 下一轮事件循环迭代执行
+        TCP->>TCP: xylem_tcp_close()（事件循环线程）
+    end
+    TCP->>TCP: atomic_store(state, CLOSING)
     alt 写队列为空
         TCP->>OS: shutdown(SHUT_WR)
         TCP->>TCP: _tcp_destroy_conn()
@@ -349,7 +372,9 @@ sequenceDiagram
     end
 ```
 
-`xylem_tcp_close` 将状态设为 `CLOSING`。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
+`xylem_tcp_close` 支持跨线程调用。若不在事件循环线程上，通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，确保所有状态变更和资源释放都在事件循环线程上完成。
+
+在事件循环线程上，使用 `atomic_load` 检查状态实现幂等性，使用 `atomic_store` 设置 `CLOSING` 状态。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
 
 `_tcp_close_conn`（由错误路径触发）行为不同：同步排空写队列（`on_write_done` status=-1 表示未发送），然后立即 `_tcp_destroy_conn`。
 
@@ -382,10 +407,10 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_tcp_handler_t* handler,
                                  xylem_tcp_opts_t* opts);
 
-/* 发送数据（复制入队），立即返回 */
+/* 发送数据（复制入队），立即返回。线程安全。 */
 int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len);
 
-/* 优雅关闭连接 */
+/* 优雅关闭连接。线程安全。 */
 void xylem_tcp_close(xylem_tcp_conn_t* conn);
 
 const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn);
@@ -393,3 +418,14 @@ xylem_loop_t*       xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
 void*               xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
 void                xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
 ```
+
+## 线程安全
+
+`xylem_tcp_send` 和 `xylem_tcp_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
+
+- **事件循环线程**：直接执行操作
+- **其他线程**：通过 `xylem_loop_post` 将操作转发到事件循环线程
+
+`conn->state` 使用 `_Atomic` 类型，允许跨线程安全读取状态（如 `xylem_tcp_send` 中的 `CONNECTED` 检查）。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
+
+其他 API（`xylem_tcp_dial`、`xylem_tcp_listen`、访问器等）仍需在事件循环线程上调用。
