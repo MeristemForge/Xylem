@@ -62,6 +62,7 @@ struct xylem_tls_conn_s {
     void*                 userdata;
     _Atomic bool          handshake_done;
     _Atomic bool          closing;
+    _Atomic int32_t       refcount;
     int                   close_err;
     const char*           close_errmsg;
     char*                 hostname;
@@ -362,6 +363,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     tls->ctx     = server->ctx;
     tls->handler = server->handler;
     tls->server  = server;
+    atomic_store(&tls->refcount, 1);
 
     xylem_tcp_set_userdata(conn, tls);
 
@@ -432,13 +434,20 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     }
 }
 
-/* Post callback: free a TLS handle after the current iteration. */
+/* Decrement refcount; free the TLS handle when it reaches zero. */
+static void _tls_conn_decref(xylem_tls_conn_t* tls) {
+    if (atomic_fetch_sub(&tls->refcount, 1) == 1) {
+        free(tls);
+    }
+}
+
+/* Post callback: decrement refcount after the current iteration. */
 static void _tls_free_cb(xylem_loop_t* loop,
                          xylem_loop_post_t* req,
                          void* ud) {
     (void)loop;
     (void)req;
-    free(ud);
+    _tls_conn_decref((xylem_tls_conn_t*)ud);
 }
 
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
@@ -558,6 +567,7 @@ static void _tls_deferred_send_cb(xylem_loop_t* loop,
         _tls_do_send(ds->tls, ds->data, ds->len);
     }
 
+    _tls_conn_decref(ds->tls);
     free(ds);
 }
 
@@ -566,7 +576,9 @@ static void _tls_deferred_close_cb(xylem_loop_t* loop,
                                     void* ud) {
     (void)loop;
     (void)req;
-    xylem_tls_close((xylem_tls_conn_t*)ud);
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ud;
+    xylem_tls_close(tls);
+    _tls_conn_decref(tls);
 }
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
@@ -594,7 +606,14 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
         ds->tls = tls;
         ds->len = len;
         memcpy(ds->data, data, len);
-        return xylem_loop_post(loop, _tls_deferred_send_cb, ds);
+
+        atomic_fetch_add(&tls->refcount, 1);
+        if (xylem_loop_post(loop, _tls_deferred_send_cb, ds) != 0) {
+            _tls_conn_decref(tls);
+            free(ds);
+            return -1;
+        }
+        return 0;
     }
 
     /* Same thread: send directly. */
@@ -613,6 +632,7 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
 
     tls->ctx     = ctx;
     tls->handler = handler;
+    atomic_store(&tls->refcount, 1);
 
     if (opts && opts->hostname) {
         tls->hostname = strdup(opts->hostname);
@@ -641,6 +661,7 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     /* Cross-thread: post to loop thread. */
     xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
     if (!xylem_loop_is_loop_thread(loop)) {
+        atomic_fetch_add(&tls->refcount, 1);
         xylem_loop_post(loop, _tls_deferred_close_cb, tls);
         return;
     }
@@ -678,6 +699,14 @@ xylem_loop_t* xylem_tls_get_loop(xylem_tls_conn_t* tls) {
 
 void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud) {
     tls->userdata = ud;
+}
+
+void xylem_tls_conn_acquire(xylem_tls_conn_t* tls) {
+    atomic_fetch_add(&tls->refcount, 1);
+}
+
+void xylem_tls_conn_release(xylem_tls_conn_t* tls) {
+    _tls_conn_decref(tls);
 }
 
 xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,

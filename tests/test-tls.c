@@ -1349,11 +1349,13 @@ static void test_heartbeat_miss(void) {
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     xylem_tls_send(ctx->cli_conn, "hello", 5);
+    xylem_tls_conn_release(ctx->cli_conn);
 }
 
 static void _xt_send_cli_on_connect(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     ctx->cli_conn = tls;
+    xylem_tls_conn_acquire(tls);
     xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
 }
 
@@ -1440,11 +1442,13 @@ static void test_cross_thread_send(void) {
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     xylem_tls_close(ctx->cli_conn);
+    xylem_tls_conn_release(ctx->cli_conn);
 }
 
 static void _xt_close_cli_on_connect(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     ctx->cli_conn = tls;
+    xylem_tls_conn_acquire(tls);
     xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
 }
 
@@ -1543,12 +1547,14 @@ static void _xt_stop_worker(void* arg) {
     while (!atomic_load(&ctx->closed)) {
         xylem_tls_send(ctx->cli_conn, "ping", 4);
     }
+    xylem_tls_conn_release(ctx->cli_conn);
     atomic_store(&ctx->worker_done, true);
 }
 
 static void _xt_stop_cli_on_connect(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
     ctx->cli_conn = tls;
+    xylem_tls_conn_acquire(tls);
     xylem_thrdpool_post(ctx->pool, _xt_stop_worker, ctx);
 }
 
@@ -1558,6 +1564,11 @@ static void _xt_stop_check_timer_cb(xylem_loop_t* loop,
     (void)timer;
     _test_ctx_t* ctx = (_test_ctx_t*)ud;
     if (atomic_load(&ctx->worker_done)) {
+        /*
+         * Worker has exited the send loop and released its ref.
+         * Destroy the pool (joins the thread) so no further
+         * access to conn is possible, then stop the loop.
+         */
         xylem_thrdpool_destroy(ctx->pool);
         ctx->pool = NULL;
         xylem_loop_stop(loop);

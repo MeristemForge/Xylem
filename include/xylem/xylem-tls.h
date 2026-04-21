@@ -200,11 +200,34 @@ extern int xylem_tls_send(xylem_tls_conn_t* tls,
  * Thread-safe: may be called from any thread. When called from a
  * non-loop thread, the close is posted to the loop thread. The
  * caller must ensure the connection has not been destroyed (i.e.
- * on_close has not yet fired).
+ * on_close has not yet fired, or the caller holds an acquire ref).
  *
  * @param tls  TLS connection handle.
  */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Acquire a reference to a TLS connection.
+ *
+ * Increments the connection's reference count, preventing the
+ * underlying memory from being freed until a matching release
+ * call. Must be called on the loop thread (typically in
+ * on_connect or on_accept) before passing the connection handle
+ * to another thread.
+ *
+ * @param tls  TLS connection handle.
+ */
+extern void xylem_tls_conn_acquire(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Release a reference to a TLS connection.
+ *
+ * Decrements the reference count. When the count reaches zero,
+ * the connection memory is freed. May be called from any thread.
+ *
+ * @param tls  TLS connection handle.
+ */
+extern void xylem_tls_conn_release(xylem_tls_conn_t* tls);
 
 /**
  * @brief Get the negotiated ALPN protocol.
