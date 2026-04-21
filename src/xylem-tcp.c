@@ -78,6 +78,7 @@ struct xylem_tcp_conn_s {
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
     _Atomic _tcp_state_t  state;
+    _Atomic int32_t       refcount;
     uint8_t*              read_buf;
     size_t                read_len;
     size_t                read_cap;
@@ -367,13 +368,24 @@ static void _tcp_heartbeat_timeout_cb(xylem_loop_t* loop,
     }
 }
 
-/* Post callback: free a connection after the current iteration. */
-static void _tcp_conn_free_cb(xylem_loop_t* loop,
-                              xylem_loop_post_t* req,
-                              void* ud) {
+/* Decrement refcount; free the connection when it reaches zero. */
+static void _tcp_conn_decref(xylem_tcp_conn_t* conn) {
+    if (atomic_fetch_sub(&conn->refcount, 1) == 1) {
+        free(conn);
+    }
+}
+
+/**
+ * Post callback: decrement refcount after the current iteration.
+ * This ensures the conn pointer remains valid for the remainder
+ * of the current callback chain (e.g. IO batch, timer batch).
+ */
+static void _tcp_conn_free_post_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
     (void)loop;
     (void)req;
-    free(ud);
+    _tcp_conn_decref((xylem_tcp_conn_t*)ud);
 }
 
 static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
@@ -425,7 +437,7 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
         conn->handler->on_close(conn, err, errmsg);
     }
 
-    xylem_loop_post(conn->loop, _tcp_conn_free_cb, conn);
+    xylem_loop_post(conn->loop, _tcp_conn_free_post_cb, conn);
 }
 
 static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
@@ -933,6 +945,7 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
         conn->fd      = client_fd;
         conn->handler = server->handler;
         conn->opts    = server->opts;
+        atomic_store(&conn->refcount, 1);
 
         xylem_queue_init(&conn->write_queue);
 
@@ -1014,12 +1027,15 @@ static void _tcp_deferred_close_cb(xylem_loop_t* loop,
                                    void* ud) {
     (void)loop;
     (void)req;
-    xylem_tcp_close((xylem_tcp_conn_t*)ud);
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
+    xylem_tcp_close(conn);
+    _tcp_conn_decref(conn);
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     /* Cross-thread: post to loop thread. */
     if (!xylem_loop_is_loop_thread(conn->loop)) {
+        atomic_fetch_add(&conn->refcount, 1);
         xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn);
         return;
     }
@@ -1089,6 +1105,7 @@ static void _tcp_deferred_send_cb(xylem_loop_t* loop,
         _tcp_enqueue_write(ds->conn, ds->data, ds->len);
     }
 
+    _tcp_conn_decref(ds->conn);
     free(ds);
 }
 
@@ -1114,7 +1131,31 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len) {
         ds->conn = conn;
         ds->len  = len;
         memcpy(ds->data, data, len);
-        return xylem_loop_post(conn->loop, _tcp_deferred_send_cb, ds);
+
+        /**
+         * The deferred callback must hold its own reference to conn.
+         * Without this, the following race is possible:
+         *
+         *   Worker thread              Loop thread
+         *   ────────────              ───────────
+         *   loop_post(send_cb)  [A]
+         *                             _tcp_destroy_conn:
+         *                               loop_post(free_cb)  [B]
+         *                             _loop_process_posts:
+         *                               free_cb: decref 2->1
+         *   release(conn): 1->0
+         *     free(conn)
+         *                               send_cb: ds->conn->state  UAF
+         *
+         * The incref here ensures conn survives until send_cb runs.
+         */
+        atomic_fetch_add(&conn->refcount, 1);
+        if (xylem_loop_post(conn->loop, _tcp_deferred_send_cb, ds) != 0) {
+            _tcp_conn_decref(conn);
+            free(ds);
+            return -1;
+        }
+        return 0;
     }
 
     /* Same thread: enqueue directly. */
@@ -1170,6 +1211,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     conn->loop    = loop;
     conn->handler = handler;
     conn->state   = TCP_STATE_CONNECTING;
+    atomic_store(&conn->refcount, 1);
 
     xylem_queue_init(&conn->write_queue);
 
@@ -1292,6 +1334,14 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
     xylem_logi("tcp server fd=%d listening on %s:%s",
                (int)fd, host, port_str);
     return server;
+}
+
+void xylem_tcp_conn_acquire(xylem_tcp_conn_t* conn) {
+    atomic_fetch_add(&conn->refcount, 1);
+}
+
+void xylem_tcp_conn_release(xylem_tcp_conn_t* conn) {
+    _tcp_conn_decref(conn);
 }
 
 void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server) {

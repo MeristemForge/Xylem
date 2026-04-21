@@ -87,7 +87,7 @@
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
-| `test_cross_thread_send` | 跨线程 xylem_tcp_send | 工作线程发送 "hello"，客户端收到回显数据一致，received_len==5 |
+| `test_cross_thread_send` | 跨线程 xylem_tcp_send + acquire/release | on_connect 中 acquire，工作线程发送 "hello" 后 release，客户端收到回显数据一致，received_len==5 |
 | `test_cross_thread_close` | 跨线程 xylem_tcp_close | 工作线程调用 close，on_close 回调触发，close_called==1 |
 | `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 对端关闭 | 工作线程循环 send，服务端 50ms 后关闭连接，on_close 触发后 send 停止（atomic closed 标志），worker_done==true |
 
@@ -105,5 +105,6 @@
 | `xylem_tcp_close` | 写队列为空时立即 shutdown + destroy；写队列非空时设 CLOSING 等待 flush |
 | `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
 | `xylem_tcp_send`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_send_cb` 转发到事件循环线程入队 |
+| `xylem_tcp_conn_acquire` / `xylem_tcp_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 |
 | `xylem_tcp_close`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_close_cb` 转发到事件循环线程执行 |
 | `xylem_tcp_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic state 检查拒绝发送 |

@@ -2317,11 +2317,13 @@ static void _xt_send_srv_on_read(xylem_tcp_conn_t* conn,
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     xylem_tcp_send(ctx->cli_conn, "hello", 5);
+    xylem_tcp_conn_release(ctx->cli_conn);
 }
 
 static void _xt_send_cli_on_connect(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     ctx->cli_conn = conn;
+    xylem_tcp_conn_acquire(conn);
     xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
 }
 
@@ -2387,11 +2389,13 @@ static void test_cross_thread_send(void) {
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     xylem_tcp_close(ctx->cli_conn);
+    xylem_tcp_conn_release(ctx->cli_conn);
 }
 
 static void _xt_close_cli_on_connect(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     ctx->cli_conn = conn;
+    xylem_tcp_conn_acquire(conn);
     xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
 }
 
@@ -2479,6 +2483,7 @@ static void _xt_stop_worker(void* arg) {
     while (!atomic_load(&ctx->closed)) {
         xylem_tcp_send(ctx->cli_conn, "ping", 4);
     }
+    xylem_tcp_conn_release(ctx->cli_conn);
     /*
      * Signal that the worker has stopped touching conn.
      * The loop thread waits for this before stopping.
@@ -2489,6 +2494,7 @@ static void _xt_stop_worker(void* arg) {
 static void _xt_stop_cli_on_connect(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     ctx->cli_conn = conn;
+    xylem_tcp_conn_acquire(conn);
     xylem_thrdpool_post(ctx->pool, _xt_stop_worker, ctx);
 }
 
@@ -2499,11 +2505,9 @@ static void _xt_stop_check_timer_cb(xylem_loop_t* loop,
     _test_ctx_t* ctx = (_test_ctx_t*)ud;
     if (atomic_load(&ctx->worker_done)) {
         /*
-         * Worker has exited the send loop. Destroy the pool (joins
-         * the thread) so no further access to conn is possible,
-         * then stop the loop. The deferred free of conn will run
-         * during loop_destroy's post drain, safely after the
-         * worker thread is gone.
+         * Worker has exited the send loop and released its ref.
+         * Destroy the pool (joins the thread) so no further
+         * access to conn is possible, then stop the loop.
          */
         xylem_thrdpool_destroy(ctx->pool);
         ctx->pool = NULL;

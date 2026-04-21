@@ -170,6 +170,7 @@ struct xylem_tcp_conn_s {
     xylem_tcp_handler_t*  handler;
     xylem_tcp_opts_t      opts;
     _Atomic _tcp_state_t  state;           /* 状态机（原子类型，支持跨线程安全读取） */
+    _Atomic int32_t       refcount;        /* 引用计数，初始值 1 */
     uint8_t*              read_buf;        /* 读缓冲区 */
     size_t                read_len;        /* 已读字节数 */
     size_t                read_cap;        /* 缓冲区容量 */
@@ -301,7 +302,7 @@ flowchart TD
 `xylem_tcp_send` 支持跨线程调用。调用时首先通过 `atomic_load` 检查连接状态，仅 `CONNECTED` 状态接受发送。然后检查是否在事件循环线程上：
 
 - **同线程**：直接调用 `_tcp_enqueue_write` 将数据入队写队列
-- **跨线程**：分配 `_tcp_deferred_send_t`（包含 conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。回调 `_tcp_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭）
+- **跨线程**：递增引用计数（`atomic_fetch_add`），分配 `_tcp_deferred_send_t`（包含 conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。若 `xylem_loop_post` 失败则递减引用计数并释放内存。回调 `_tcp_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭），处理完毕后递减引用计数（`_tcp_conn_decref`）
 
 `_tcp_enqueue_write` 分配 `sizeof(req) + len` 的内存块，将用户数据 `memcpy` 到结构体之后的空间。调用后用户可立即释放或复用原始缓冲区。
 
@@ -372,13 +373,19 @@ sequenceDiagram
     end
 ```
 
-`xylem_tcp_close` 支持跨线程调用。若不在事件循环线程上，通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，确保所有状态变更和资源释放都在事件循环线程上完成。
+`xylem_tcp_close` 支持跨线程调用。若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_tcp_conn_decref`），确保连接内存在回调执行前不会被释放。
 
 在事件循环线程上，使用 `atomic_load` 检查状态实现幂等性，使用 `atomic_store` 设置 `CLOSING` 状态。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
 
 `_tcp_close_conn`（由错误路径触发）行为不同：同步排空写队列（`on_write_done` status=-1 表示未发送），然后立即 `_tcp_destroy_conn`。
 
-`_tcp_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、释放 dial 私有状态、回调 `on_close`、通过 `xylem_loop_post` 延迟释放连接内存。
+`_tcp_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、释放 dial 私有状态、回调 `on_close`、通过 `xylem_loop_post` 延迟递减引用计数（`_tcp_conn_decref`），当引用计数归零时释放连接内存。
+
+### 引用计数
+
+连接使用 `_Atomic int32_t refcount` 管理生命周期。`refcount` 在 `xylem_tcp_dial` 和服务端 accept 路径中初始化为 1。用户可通过 `xylem_tcp_conn_acquire` 递增引用计数（通常在 `on_connect` 或 `on_accept` 中，将连接句柄传递给其他线程前调用），通过 `xylem_tcp_conn_release` 递减引用计数（可从任意线程调用）。当引用计数归零时，连接内存被释放。
+
+`_tcp_destroy_conn` 通过 `xylem_loop_post` 将 `_tcp_conn_decref` 延迟到下一轮事件循环迭代执行，确保当前回调链中的连接指针仍然有效。
 
 ## 公开 API
 
@@ -413,6 +420,12 @@ int xylem_tcp_send(xylem_tcp_conn_t* conn, const void* data, size_t len);
 /* 优雅关闭连接。线程安全。 */
 void xylem_tcp_close(xylem_tcp_conn_t* conn);
 
+/* 递增引用计数，防止连接内存被释放。需在事件循环线程上调用。 */
+void xylem_tcp_conn_acquire(xylem_tcp_conn_t* conn);
+
+/* 递减引用计数，归零时释放内存。可从任意线程调用。 */
+void xylem_tcp_conn_release(xylem_tcp_conn_t* conn);
+
 const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn);
 xylem_loop_t*       xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
 void*               xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
@@ -424,7 +437,7 @@ void                xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
 `xylem_tcp_send` 和 `xylem_tcp_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
 
 - **事件循环线程**：直接执行操作
-- **其他线程**：通过 `xylem_loop_post` 将操作转发到事件循环线程
+- **其他线程**：递增引用计数后通过 `xylem_loop_post` 将操作转发到事件循环线程，回调完成后递减引用计数。引用计数保证连接内存在 `xylem_loop_post` 和回调执行之间不会被释放
 
 `conn->state` 使用 `_Atomic` 类型，允许跨线程安全读取状态（如 `xylem_tcp_send` 中的 `CONNECTED` 检查）。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
 

@@ -175,11 +175,34 @@ extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
  * Thread-safe: may be called from any thread. When called from a
  * non-loop thread, the close is posted to the loop thread. The
  * caller must ensure the connection has not been destroyed (i.e.
- * on_close has not yet fired).
+ * on_close has not yet fired, or the caller holds an acquire ref).
  *
  * @param conn  Connection handle.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
+
+/**
+ * @brief Acquire a reference to a TCP connection.
+ *
+ * Increments the connection's reference count, preventing the
+ * underlying memory from being freed until a matching release
+ * call. Must be called on the loop thread (typically in
+ * on_connect or on_accept) before passing the connection handle
+ * to another thread.
+ *
+ * @param conn  Connection handle.
+ */
+extern void xylem_tcp_conn_acquire(xylem_tcp_conn_t* conn);
+
+/**
+ * @brief Release a reference to a TCP connection.
+ *
+ * Decrements the reference count. When the count reaches zero,
+ * the connection memory is freed. May be called from any thread.
+ *
+ * @param conn  Connection handle.
+ */
+extern void xylem_tcp_conn_release(xylem_tcp_conn_t* conn);
 
 /**
  * @brief Get the peer address of a connection.
