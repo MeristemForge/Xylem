@@ -244,7 +244,7 @@ stateDiagram-v2
 
 VARINT 路径中，若 `hdr_sz + varint_bytes < len_sz`，返回解析错误（-1），防止计算 `effective_hdr` 时发生无符号整数下溢。
 
-在计算 `frame_size` 之前，若 `payload_len` 超过 `INT64_MAX`，直接返回解析错误（-1），防止后续 `int64_t` 强转时发生有符号整数溢出。
+在计算 `frame_size` 之前，若 `payload_len` 大于或等于 `INT64_MAX`，直接返回解析错误（-1），防止后续 `int64_t` 强转时发生有符号整数溢出。
 
 `adjustment` 允许负值，用于处理长度字段包含/不包含头部本身的协议差异。
 
