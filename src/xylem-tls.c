@@ -753,6 +753,15 @@ void xylem_tls_server_set_userdata(xylem_tls_server_t* server, void* ud) {
     server->userdata = ud;
 }
 
+/* Post callback: free a server after the current iteration. */
+static void _tls_server_free_cb(xylem_loop_t* loop,
+                                xylem_loop_post_t* req,
+                                void* ud) {
+    (void)loop;
+    (void)req;
+    free(ud);
+}
+
 void xylem_tls_close_server(xylem_tls_server_t* server) {
     if (!server || server->closing) {
         return;
@@ -778,5 +787,5 @@ void xylem_tls_close_server(xylem_tls_server_t* server) {
     }
 
     xylem_tcp_close_server(server->tcp_server);
-    xylem_loop_post(server->loop, _tls_free_cb, server);
+    xylem_loop_post(server->loop, _tls_server_free_cb, server);
 }
