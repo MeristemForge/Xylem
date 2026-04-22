@@ -1546,7 +1546,7 @@ static void _xt_stop_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     while (!atomic_load(&ctx->closed)) {
         xylem_tls_send(ctx->cli_conn, "ping", 4);
-        thrd_sleep(&(struct timespec){.tv_nsec = 1000000}, NULL); /* 1 ms */
+        thrd_sleep(&(struct timespec){0, 1000000}, NULL); /* 1 ms */
     }
     xylem_tls_conn_release(ctx->cli_conn);
     atomic_store(&ctx->worker_done, true);

@@ -26,6 +26,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -49,6 +50,11 @@ typedef struct {
     int                    send_result;
     char                   received[256];
     size_t                 received_len;
+    xylem_thrdpool_t*      pool;
+    xylem_loop_timer_t*    close_timer;
+    xylem_loop_timer_t*    check_timer;
+    _Atomic bool           closed;
+    _Atomic bool           worker_done;
 } _test_ctx_t;
 
 static int _gen_self_signed(const char* cert_path, const char* key_path) {
@@ -774,6 +780,314 @@ static void test_keylog_write(void) {
     remove(keylog);
 }
 
+/* cross-thread send */
+
+static void _xt_send_worker(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    xylem_dtls_send(ctx->cli_session, "hello", 5);
+    xylem_dtls_conn_release(ctx->cli_session);
+}
+
+static void _xt_send_cli_on_connect(xylem_dtls_t* dtls) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    ctx->cli_session = dtls;
+    xylem_dtls_conn_acquire(dtls);
+    xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
+}
+
+static void _xt_send_cli_on_read(xylem_dtls_t* dtls,
+                                  void* data, size_t len) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    if (ctx->received_len + len <= sizeof(ctx->received)) {
+        memcpy(ctx->received + ctx->received_len, data, len);
+        ctx->received_len += len;
+    }
+    if (ctx->received_len >= 5) {
+        ctx->verified = 1;
+        xylem_loop_stop(ctx->loop);
+    }
+}
+
+static void test_cross_thread_send(void) {
+    const char* cert = "test_dtls_xts_cert.pem";
+    const char* key  = "test_dtls_xts_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    _test_ctx_t ctx = {0};
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
+    ctx.pool = xylem_thrdpool_create(1);
+    ASSERT(ctx.pool != NULL);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
+    ctx.srv_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.srv_ctx != NULL);
+    ASSERT(xylem_dtls_ctx_load_cert(ctx.srv_ctx, cert, key) == 0);
+    xylem_dtls_ctx_set_verify(ctx.srv_ctx, false);
+
+    ctx.cli_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.cli_ctx != NULL);
+    xylem_dtls_ctx_set_verify(ctx.cli_ctx, false);
+
+    xylem_dtls_handler_t srv_handler = {
+        .on_accept = _dtls_srv_accept_cb,
+        .on_read   = _dtls_srv_read_echo_cb,
+    };
+
+    xylem_addr_t addr;
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
+
+    ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
+                                        &srv_handler);
+    ASSERT(ctx.dtls_server != NULL);
+    xylem_dtls_server_set_userdata(ctx.dtls_server, &ctx);
+
+    xylem_dtls_handler_t cli_handler = {
+        .on_connect = _xt_send_cli_on_connect,
+        .on_read    = _xt_send_cli_on_read,
+    };
+
+    ctx.cli_session = xylem_dtls_dial(ctx.loop, &addr, ctx.cli_ctx,
+                                      &cli_handler);
+    ASSERT(ctx.cli_session != NULL);
+    xylem_dtls_set_userdata(ctx.cli_session, &ctx);
+
+    xylem_loop_run(ctx.loop);
+
+    ASSERT(ctx.verified == 1);
+    ASSERT(ctx.received_len == 5);
+    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_dtls_close_server(ctx.dtls_server);
+    xylem_dtls_ctx_destroy(ctx.srv_ctx);
+    xylem_dtls_ctx_destroy(ctx.cli_ctx);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(ctx.loop);
+
+    remove(cert);
+    remove(key);
+}
+
+/* cross-thread close */
+
+static void _xt_close_worker(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    xylem_dtls_close(ctx->cli_session);
+    xylem_dtls_conn_release(ctx->cli_session);
+}
+
+static void _xt_close_cli_on_connect(xylem_dtls_t* dtls) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    ctx->cli_session = dtls;
+    xylem_dtls_conn_acquire(dtls);
+    xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
+}
+
+static void _xt_close_cli_on_close(xylem_dtls_t* dtls,
+                                    int err, const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    ctx->close_called = 1;
+    xylem_loop_stop(ctx->loop);
+}
+
+static void test_cross_thread_close(void) {
+    const char* cert = "test_dtls_xtc_cert.pem";
+    const char* key  = "test_dtls_xtc_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    _test_ctx_t ctx = {0};
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
+    ctx.pool = xylem_thrdpool_create(1);
+    ASSERT(ctx.pool != NULL);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
+    ctx.srv_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.srv_ctx != NULL);
+    ASSERT(xylem_dtls_ctx_load_cert(ctx.srv_ctx, cert, key) == 0);
+    xylem_dtls_ctx_set_verify(ctx.srv_ctx, false);
+
+    ctx.cli_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.cli_ctx != NULL);
+    xylem_dtls_ctx_set_verify(ctx.cli_ctx, false);
+
+    xylem_dtls_handler_t srv_handler = {0};
+
+    xylem_addr_t addr;
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
+
+    ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
+                                        &srv_handler);
+    ASSERT(ctx.dtls_server != NULL);
+    xylem_dtls_server_set_userdata(ctx.dtls_server, &ctx);
+
+    xylem_dtls_handler_t cli_handler = {
+        .on_connect = _xt_close_cli_on_connect,
+        .on_close   = _xt_close_cli_on_close,
+    };
+
+    ctx.cli_session = xylem_dtls_dial(ctx.loop, &addr, ctx.cli_ctx,
+                                      &cli_handler);
+    ASSERT(ctx.cli_session != NULL);
+    xylem_dtls_set_userdata(ctx.cli_session, &ctx);
+
+    xylem_loop_run(ctx.loop);
+
+    ASSERT(ctx.close_called == 1);
+
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_dtls_close_server(ctx.dtls_server);
+    xylem_dtls_ctx_destroy(ctx.srv_ctx);
+    xylem_dtls_ctx_destroy(ctx.cli_ctx);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(ctx.loop);
+
+    remove(cert);
+    remove(key);
+}
+
+/* cross-thread send stops on close */
+
+static void _xt_stop_srv_close_timer_cb(xylem_loop_t* loop,
+                                         xylem_loop_timer_t* timer,
+                                         void* ud) {
+    (void)loop;
+    (void)timer;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    xylem_dtls_close(ctx->srv_session);
+}
+
+static void _xt_stop_srv_accept_cb(xylem_dtls_server_t* server,
+                                    xylem_dtls_t* dtls) {
+    _test_ctx_t* ctx =
+        (_test_ctx_t*)xylem_dtls_server_get_userdata(server);
+    ctx->srv_session = dtls;
+    xylem_dtls_set_userdata(dtls, ctx);
+
+    xylem_loop_start_timer(ctx->close_timer, _xt_stop_srv_close_timer_cb,
+                           ctx, 50, 0);
+}
+
+static void _xt_stop_worker(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    while (!atomic_load(&ctx->closed)) {
+        xylem_dtls_send(ctx->cli_session, "ping", 4);
+        thrd_sleep(&(struct timespec){0, 1000000}, NULL); /* 1 ms */
+    }
+    xylem_dtls_conn_release(ctx->cli_session);
+    atomic_store(&ctx->worker_done, true);
+}
+
+static void _xt_stop_cli_on_connect(xylem_dtls_t* dtls) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    ctx->cli_session = dtls;
+    xylem_dtls_conn_acquire(dtls);
+    xylem_thrdpool_post(ctx->pool, _xt_stop_worker, ctx);
+}
+
+static void _xt_stop_check_timer_cb(xylem_loop_t* loop,
+                                     xylem_loop_timer_t* timer,
+                                     void* ud) {
+    (void)timer;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    if (atomic_load(&ctx->worker_done)) {
+        xylem_thrdpool_destroy(ctx->pool);
+        ctx->pool = NULL;
+        xylem_loop_stop(loop);
+    }
+}
+
+static void _xt_stop_cli_on_close(xylem_dtls_t* dtls,
+                                   int err, const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
+    ctx->close_called = 1;
+    atomic_store(&ctx->closed, true);
+
+    xylem_loop_start_timer(ctx->check_timer, _xt_stop_check_timer_cb,
+                           ctx, 10, 10);
+}
+
+static void test_cross_thread_send_stop_on_close(void) {
+    const char* cert = "test_dtls_xtstop_cert.pem";
+    const char* key  = "test_dtls_xtstop_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    _test_ctx_t ctx = {0};
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
+    ctx.pool = xylem_thrdpool_create(1);
+    ASSERT(ctx.pool != NULL);
+    ctx.close_timer = xylem_loop_create_timer(ctx.loop);
+    ctx.check_timer = xylem_loop_create_timer(ctx.loop);
+    atomic_store(&ctx.closed, false);
+    atomic_store(&ctx.worker_done, false);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
+    ctx.srv_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.srv_ctx != NULL);
+    ASSERT(xylem_dtls_ctx_load_cert(ctx.srv_ctx, cert, key) == 0);
+    xylem_dtls_ctx_set_verify(ctx.srv_ctx, false);
+
+    ctx.cli_ctx = xylem_dtls_ctx_create();
+    ASSERT(ctx.cli_ctx != NULL);
+    xylem_dtls_ctx_set_verify(ctx.cli_ctx, false);
+
+    xylem_dtls_handler_t srv_handler = {
+        .on_accept = _xt_stop_srv_accept_cb,
+    };
+
+    xylem_addr_t addr;
+    xylem_addr_pton(DTLS_HOST, DTLS_PORT, &addr);
+
+    ctx.dtls_server = xylem_dtls_listen(ctx.loop, &addr, ctx.srv_ctx,
+                                        &srv_handler);
+    ASSERT(ctx.dtls_server != NULL);
+    xylem_dtls_server_set_userdata(ctx.dtls_server, &ctx);
+
+    xylem_dtls_handler_t cli_handler = {
+        .on_connect = _xt_stop_cli_on_connect,
+        .on_close   = _xt_stop_cli_on_close,
+    };
+
+    ctx.cli_session = xylem_dtls_dial(ctx.loop, &addr, ctx.cli_ctx,
+                                      &cli_handler);
+    ASSERT(ctx.cli_session != NULL);
+    xylem_dtls_set_userdata(ctx.cli_session, &ctx);
+
+    xylem_loop_run(ctx.loop);
+
+    ASSERT(ctx.close_called == 1);
+    ASSERT(atomic_load(&ctx.worker_done) == true);
+
+    if (ctx.pool) {
+        xylem_thrdpool_destroy(ctx.pool);
+    }
+    xylem_dtls_close_server(ctx.dtls_server);
+    xylem_dtls_ctx_destroy(ctx.srv_ctx);
+    xylem_dtls_ctx_destroy(ctx.cli_ctx);
+    xylem_loop_destroy_timer(ctx.close_timer);
+    xylem_loop_destroy_timer(ctx.check_timer);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(ctx.loop);
+
+    remove(cert);
+    remove(key);
+}
+
 int main(void) {
     xylem_startup();
 
@@ -790,6 +1104,9 @@ int main(void) {
     test_send_after_close();
     test_close_server_with_active_session();
     test_keylog_write();
+    test_cross_thread_send();
+    test_cross_thread_close();
+    test_cross_thread_send_stop_on_close();
 
     xylem_cleanup();
     return 0;
