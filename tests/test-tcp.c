@@ -2482,6 +2482,7 @@ static void _xt_stop_worker(void* arg) {
     /* Send in a loop until the closed flag is set. */
     while (!atomic_load(&ctx->closed)) {
         xylem_tcp_send(ctx->cli_conn, "ping", 4);
+        thrd_sleep(&(struct timespec){.tv_nsec = 1000000}, NULL); /* 1 ms */
     }
     xylem_tcp_conn_release(ctx->cli_conn);
     /*
