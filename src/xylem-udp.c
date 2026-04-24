@@ -253,7 +253,6 @@ static void _udp_deferred_send_cb(xylem_loop_t* loop,
     _udp_decref(ds->udp);
     free(ds);
 }
-}
 
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
