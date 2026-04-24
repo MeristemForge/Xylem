@@ -84,16 +84,20 @@ struct xylem_dtls_s {
     xylem_dtls_server_t*   server;         /* 服务端会话非 NULL */
     xylem_addr_t           peer_addr;      /* 对端地址 */
     void*                  userdata;
-    bool                   handshake_done;
-    bool                   closing;
+    _Atomic bool           handshake_done; /* 原子类型，支持跨线程安全读取 */
+    _Atomic bool           closing;        /* 幂等关闭标志，原子类型 */
+    _Atomic int32_t        refcount;       /* 引用计数，用于延迟释放的生命周期管理 */
     int                    close_err;
     const char*            close_errmsg;
+    char                   alpn[256];      /* 协商后的 ALPN 协议（null-terminated） */
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    retransmit_timer;  /* DTLS 重传定时器 */
     xylem_loop_timer_t*    handshake_timer;   /* 服务端握手超时定时器 */
     xylem_rbtree_node_t    server_node;       /* 服务器会话红黑树节点 */
 };
 ```
+
+`handshake_done` 和 `closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。`refcount` 使用 `_Atomic int32_t` 管理会话生命周期——在创建时初始化为 1，`_dtls_free_cb` 延迟释放时递减，归零时释放内存。
 
 ### DTLS 服务器
 
@@ -288,8 +292,16 @@ sequenceDiagram
     participant Loop as 事件循环
 
     User->>DTLS: xylem_dtls_close()
-    Note over DTLS: closing = true（幂等）
+    DTLS->>DTLS: atomic_load(closing) → 幂等检查
+    alt 跨线程调用
+        DTLS->>DTLS: xylem_loop_post(_dtls_deferred_close_cb)
+        Note over DTLS: 下一轮事件循环迭代执行
+        DTLS->>DTLS: _dtls_do_close()（事件循环线程）
+    end
+    DTLS->>DTLS: _dtls_do_close()
+    Note over DTLS: closing = true
     DTLS->>DTLS: 停止重传定时器
+    DTLS->>DTLS: 停止握手超时定时器（若存在）
     DTLS->>DTLS: SSL_shutdown + flush write_bio
     DTLS->>UDP: xylem_udp_close()
     UDP->>DTLS: _dtls_client_close_cb
@@ -301,16 +313,23 @@ sequenceDiagram
     Loop->>DTLS: 下一轮迭代释放内存
 ```
 
+`xylem_dtls_close` 入口处通过 `atomic_load` 检查 `closing` 标志实现幂等性——若已为 `true` 则立即返回。此检查在线程判断之前执行，确保重复调用和 `xylem_loop_destroy` 排空延迟回调时不会无限递归 `xylem_loop_post`。
+
+通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_dtls_deferred_close_cb` 转发到事件循环线程执行。若 `xylem_loop_post` 失败则立即递减引用计数，避免引用计数泄漏。
+
+实际关闭逻辑封装在 `_dtls_do_close` 中，`_dtls_deferred_close_cb` 直接调用此函数而非重新进入 `xylem_dtls_close`。这避免了 `xylem_loop_destroy` 排空延迟回调时（`loop->tid` 未设置）重复 `xylem_loop_post` 导致的无限递归。`_dtls_do_close` 内部再次检查 `closing` 状态（防止竞态），然后使用 `atomic_store` 设置 `closing` 标志。
+
 客户端拥有独立的 UDP socket，关闭时一并关闭。`_dtls_client_close_cb` 在 UDP `on_close` 中触发，首先设置 `closing = true` 并停止 `retransmit_timer` 和 `handshake_timer`（防止定时器在 SSL 已释放后触发）。接着检查 UDP 层是否携带了非零错误码：若 DTLS 层尚未设置自身的 `close_err`（即 `close_err == 0`），则将 UDP 层的 `err` 和 `errmsg` 传播到 DTLS 会话的 `close_err`/`close_errmsg`，确保用户在 `on_close` 回调中能看到底层传输错误（如 `ECONNREFUSED`）。然后释放 SSL 会话并通知用户。在 Linux/macOS 上，已连接 UDP socket 可能因 ICMP port unreachable 收到 `ECONNREFUSED`，导致 `_dtls_client_close_cb` 在任何定时器触发之前被调用，因此需要在此处主动停止定时器。
 
 ### 服务端会话关闭
 
-服务端会话共享同一个 UDP socket，关闭时：
+服务端会话共享同一个 UDP socket，`_dtls_do_close` 中的服务端路径：
+
 1. 停止重传定时器和握手超时定时器
-2. `SSL_shutdown` + flush
+2. 若握手已完成：`SSL_shutdown` + flush
 3. 从 server 的 sessions 红黑树移除
 4. `SSL_free`
-5. 回调 `on_close`
+5. 仅当握手已完成时回调 `on_close`（握手未完成的会话静默关闭）
 6. `xylem_loop_post` 延迟释放内存
 
 UDP socket 不关闭（由 server 管理）。
@@ -324,6 +343,21 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server);
 1. 设置 `closing = true`（幂等）
 2. 循环取红黑树首节点（`xylem_rbtree_first`），逐个调用 `xylem_dtls_close`（每次 close 会从树中移除节点）
 3. 关闭共享的 UDP socket（`_dtls_server_close_cb` 释放 server 内存）
+
+## 线程安全
+
+`xylem_dtls_send` 和 `xylem_dtls_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
+
+- **事件循环线程**：直接执行 SSL 操作
+- **其他线程**：通过 `xylem_loop_post` 将操作转发到事件循环线程
+
+`xylem_dtls_send` 跨线程调用时，先通过 `atomic_load` 检查 `handshake_done` 和 `closing` 状态，未握手或已关闭则返回 -1。否则递增引用计数（`atomic_fetch_add`），分配 `_dtls_deferred_send_t`（包含 DTLS 会话指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。回调 `_dtls_deferred_send_cb` 在执行前再次检查 `handshake_done` 和 `closing` 状态（会话可能在 post 期间关闭），处理完毕后递减引用计数（`_dtls_conn_decref`）。若 `xylem_loop_post` 失败则立即递减引用计数并释放内存。
+
+`xylem_dtls_close` 跨线程调用时，入口处先通过 `atomic_load` 检查 `closing` 标志实现幂等性。通过检查后递增引用计数，通过 `xylem_loop_post` 将 `_dtls_deferred_close_cb` 转发到事件循环线程执行。`_dtls_deferred_close_cb` 直接调用 `_dtls_do_close`（而非重新进入 `xylem_dtls_close`），避免 `xylem_loop_destroy` 排空延迟回调时因 `loop->tid` 未设置而重复 `xylem_loop_post` 导致的无限递归。回调完成后递减引用计数。若 `xylem_loop_post` 失败则立即递减引用计数。
+
+`dtls->handshake_done` 和 `dtls->closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
+
+其他 API（`xylem_dtls_dial`、`xylem_dtls_listen`、访问器等）仍需在事件循环线程上调用。
 
 ## 与 TLS 模块的关键差异
 
@@ -367,6 +401,18 @@ xylem_dtls_t*       xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
 int                 xylem_dtls_send(xylem_dtls_t* dtls,
                                      const void* data, size_t len);
 void                xylem_dtls_close(xylem_dtls_t* dtls);
+```
+
+`xylem_dtls_send` 和 `xylem_dtls_close` 线程安全，可从任意线程调用。
+
+```c
+void                xylem_dtls_conn_acquire(xylem_dtls_t* dtls);
+void                xylem_dtls_conn_release(xylem_dtls_t* dtls);
+```
+
+`xylem_dtls_conn_acquire` 递增引用计数，需在事件循环线程上调用（通常在 `on_connect` 或 `on_accept` 中，将会话句柄传递给其他线程前调用）。`xylem_dtls_conn_release` 递减引用计数，归零时释放内存，可从任意线程调用。
+
+```c
 const char*         xylem_dtls_get_alpn(xylem_dtls_t* dtls);
 const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
 xylem_loop_t*       xylem_dtls_get_loop(xylem_dtls_t* dtls);
