@@ -279,26 +279,12 @@ static uint32_t _rudp_clock_ms(void) {
 
 static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts,
                             bool fec_enabled) {
-    if (!opts) {
-        ikcp_nodelay(kcp, 0, RUDP_DEFAULT_INTERVAL, 0, 0);
-        ikcp_wndsize(kcp, 32, 128);
-        return;
-    }
+    /* Always use fast mode: nodelay, 10ms interval, fast resend, no CC. */
+    int interval = 10;
+    ikcp_nodelay(kcp, 1, interval, 2, 1);
+    ikcp_wndsize(kcp, 32, 128);
 
-    int interval;
-    if (opts->mode == XYLEM_RUDP_MODE_FAST) {
-        interval = 10;
-        ikcp_nodelay(kcp, 1, interval, 2, 1);
-    } else {
-        interval = RUDP_DEFAULT_INTERVAL;
-        ikcp_nodelay(kcp, 0, interval, 0, 0);
-    }
-
-    int snd_wnd = opts->snd_wnd > 0 ? opts->snd_wnd : 32;
-    int rcv_wnd = opts->rcv_wnd > 0 ? opts->rcv_wnd : 128;
-    ikcp_wndsize(kcp, snd_wnd, rcv_wnd);
-
-    int mtu = opts->mtu > 0 ? opts->mtu : 1400;
+    int mtu = (opts && opts->mtu > 0) ? opts->mtu : 1400;
     /**
      * Reserve space for FEC header so the total UDP payload stays
      * within the configured MTU.
@@ -308,9 +294,7 @@ static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts,
     }
     ikcp_setmtu(kcp, mtu);
 
-    kcp->stream = opts->stream ? 1 : 0;
-
-    if (opts->timeout_ms > 0) {
+    if (opts && opts->timeout_ms > 0) {
         kcp->dead_link = (IUINT32)(opts->timeout_ms / interval);
         if (kcp->dead_link == 0) {
             kcp->dead_link = 1;

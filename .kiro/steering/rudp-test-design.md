@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-rudp.c` 包含 13 个测试函数，覆盖 `src/rudp/xylem-rudp.c` 的所有公共 API 和 RUDP 特有的内部分支。
+`tests/test-rudp.c` 包含 12 个测试函数，覆盖 `src/rudp/xylem-rudp.c` 的所有公共 API 和 RUDP 特有的内部分支。
 
 RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖，不在本测试中重复：
 - UDP listen/dial 基本收发
@@ -11,7 +11,6 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 设计风格与 `test-dtls.c` 对称：统一 `_test_ctx_t` 上下文结构体、Safety Timer 防挂起。与 DTLS 测试的关键差异：
 - 无证书/TLS 上下文测试（RUDP 无加密层）
 - 无 ALPN/SNI/keylog 测试（RUDP 无 TLS 特性）
-- 增加 `test_fast_mode_echo`（覆盖 `XYLEM_RUDP_MODE_FAST` 配置路径）
 - 增加 `test_multi_session`（覆盖服务端多会话多路复用和红黑树查找）
 - 增加 `test_send_before_handshake`（覆盖握手未完成时 send 拒绝路径）
 - 增加 `test_handshake_timeout`（覆盖握手超时定时器路径）
@@ -44,12 +43,11 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 |---------|-----------|--------|
 | `test_ctx_create_destroy` | ctx_create + ctx_destroy | 返回非 NULL，销毁不崩溃 |
 
-### 握手与数据传输（3 个）
+### 握手与数据传输（2 个）
 
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
 | `test_handshake_and_echo` | 完整 SYN/ACK 握手 + echo | accept/connect/read/close 全触发，数据 "hello" 往返一致 |
-| `test_fast_mode_echo` | XYLEM_RUDP_MODE_FAST 模式 echo | connect 触发，数据 "hello" 往返一致（nodelay + 快速重传 + 无拥塞控制） |
 | `test_handshake_timeout` | 握手超时（无服务端） | handshake_ms=200，on_close 触发（可能由握手超时或 ECONNREFUSED 触发） |
 
 ### 多会话多路复用（1 个）
@@ -80,16 +78,16 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 
 | API 函数 | 覆盖的测试 |
 |---------|-----------|
-| `xylem_rudp_ctx_create` | 全部 13 个 |
-| `xylem_rudp_ctx_destroy` | 全部 13 个 |
-| `xylem_rudp_dial` | 除 test_ctx_create_destroy 和 test_server_userdata 外的 11 个 |
-| `xylem_rudp_send` | test_handshake_and_echo, test_fast_mode_echo, test_send_after_close, test_send_before_handshake, test_multi_session |
-| `xylem_rudp_close` | test_handshake_and_echo, test_fast_mode_echo, test_session_userdata, test_peer_addr, test_get_loop, test_send_after_close, test_close_idempotent, test_send_before_handshake, test_multi_session, test_handshake_timeout |
+| `xylem_rudp_ctx_create` | 全部 12 个 |
+| `xylem_rudp_ctx_destroy` | 全部 12 个 |
+| `xylem_rudp_dial` | 除 test_ctx_create_destroy 和 test_server_userdata 外的 10 个 |
+| `xylem_rudp_send` | test_handshake_and_echo, test_send_after_close, test_send_before_handshake, test_multi_session |
+| `xylem_rudp_close` | test_handshake_and_echo, test_session_userdata, test_peer_addr, test_get_loop, test_send_after_close, test_close_idempotent, test_send_before_handshake, test_multi_session, test_handshake_timeout |
 | `xylem_rudp_get_peer_addr` | test_peer_addr |
 | `xylem_rudp_get_loop` | test_get_loop |
 | `xylem_rudp_get_userdata` | test_session_userdata + 所有回调中通过 userdata 获取 ctx |
 | `xylem_rudp_set_userdata` | test_session_userdata + 所有异步测试的 setup |
-| `xylem_rudp_listen` | 除 test_ctx_create_destroy 和 test_handshake_timeout 外的 11 个 |
+| `xylem_rudp_listen` | 除 test_ctx_create_destroy 和 test_handshake_timeout 外的 10 个 |
 | `xylem_rudp_close_server` | test_close_server_with_active_session + 所有异步测试的清理路径 |
 | `xylem_rudp_server_get_userdata` | test_server_userdata + _rudp_srv_accept_cb（共享回调） |
 | `xylem_rudp_server_set_userdata` | test_server_userdata + 所有使用 _rudp_srv_accept_cb 的测试 |
@@ -124,13 +122,12 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_client_close_cb` | UDP 错误传播：close_err==0 且 err!=0 时传播 | `test_handshake_timeout`（ECONNREFUSED 路径） |
 | `_rudp_free_cb` | 延迟释放 rudp + destroy timers | 所有异步测试 |
 | `_rudp_server_close_cb` | 释放 server 内存 | 所有异步测试 |
-| `_rudp_apply_opts` | DEFAULT 模式 | `test_handshake_and_echo`（opts=NULL 使用默认） |
-| `_rudp_apply_opts` | FAST 模式 | `test_fast_mode_echo` |
+| `_rudp_apply_opts` | 快速模式（唯一模式）：nodelay=1, interval=10ms, resend=2, nc=1 | `test_handshake_and_echo`（opts=NULL 使用默认）|
 | `_rudp_find_session` | 红黑树查找命中 | `test_handshake_and_echo`（数据阶段）、`test_multi_session` |
 | `_rudp_find_session` | 红黑树查找未命中 | `test_handshake_and_echo`（首次 SYN） |
 | `_rudp_session_cmp` | 地址 + conv 复合键比较 | `test_multi_session`（两个不同 conv 的会话） |
 | `_rudp_addr_cmp` | IPv4 地址比较 | 所有异步测试 |
-| `xylem_rudp_send` | 正常路径：ikcp_send + ikcp_flush + schedule | `test_handshake_and_echo`, `test_fast_mode_echo`, `test_multi_session` |
+| `xylem_rudp_send` | 正常路径：ikcp_send + ikcp_flush + schedule | `test_handshake_and_echo`, `test_multi_session` |
 | `xylem_rudp_send` | 失败路径：closing==true 返回 -1 | `test_send_after_close` |
 | `xylem_rudp_send` | 失败路径：handshake_done==false 返回 -1 | `test_send_before_handshake` |
 | `xylem_rudp_close` | 客户端路径：stop timers + udp_close → _rudp_client_close_cb | `test_handshake_and_echo` |
@@ -151,5 +148,3 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_server_read_cb` SYN 重复（已有会话仅回复 ACK） | 回环网络不丢包，客户端不会重发 SYN |
 | `_rudp_server_read_cb` 短包丢弃（len < 4） | 正常测试不产生短包 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |
-| stream 模式（opts.stream=true） | 所有测试使用默认消息模式 |
-| 自定义窗口/MTU 配置 | 所有测试使用默认值或 FAST 模式预设 |

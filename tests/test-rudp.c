@@ -184,59 +184,6 @@ static void test_handshake_and_echo(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-static void test_fast_mode_echo(void) {
-    _test_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ctx.ctx  = xylem_rudp_ctx_create();
-    ASSERT(ctx.loop != NULL);
-    ASSERT(ctx.ctx != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
-                           SAFETY_TIMEOUT_MS, 0);
-
-    xylem_rudp_opts_t opts = {0};
-    opts.mode = XYLEM_RUDP_MODE_FAST;
-
-    xylem_rudp_handler_t srv_handler = {
-        .on_accept = _rudp_srv_accept_cb,
-        .on_read   = _rudp_srv_read_echo_cb,
-    };
-
-    xylem_addr_t addr;
-    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
-
-    ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr, ctx.ctx,
-                                         &srv_handler, &opts);
-    ASSERT(ctx.rudp_server != NULL);
-    xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
-
-    xylem_rudp_handler_t cli_handler = {
-        .on_connect = _echo_cli_connect_cb,
-        .on_read    = _echo_cli_read_cb,
-        .on_close   = _echo_cli_close_cb,
-    };
-
-    ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr, ctx.ctx,
-                                       &cli_handler, &opts);
-    ASSERT(ctx.cli_session != NULL);
-    xylem_rudp_set_userdata(ctx.cli_session, &ctx);
-
-    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _echo_send_timer_cb, &ctx, 100, 0);
-
-    xylem_loop_run(ctx.loop);
-
-    ASSERT(ctx.connect_called == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
-
-    xylem_rudp_ctx_destroy(ctx.ctx);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
-}
-
 
 static void _ud_cli_connect_cb(xylem_rudp_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
@@ -878,7 +825,6 @@ int main(void) {
 
     test_ctx_create_destroy();
     test_handshake_and_echo();
-    test_fast_mode_echo();
     test_session_userdata();
     test_server_userdata();
     test_peer_addr();

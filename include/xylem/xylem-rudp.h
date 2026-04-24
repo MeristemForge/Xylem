@@ -24,7 +24,6 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-#include <stdbool.h>
 #include <stdint.h>
 
 typedef struct xylem_rudp_s        xylem_rudp_t;
@@ -38,17 +37,8 @@ typedef struct xylem_rudp_handler_s {
     void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg); /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_rudp_handler_t;
 
-typedef enum xylem_rudp_mode_e {
-    XYLEM_RUDP_MODE_DEFAULT, /*< Normal ARQ, 100ms interval. */
-    XYLEM_RUDP_MODE_FAST,    /*< Nodelay + fast resend + no congestion. */
-} xylem_rudp_mode_t;
-
 typedef struct xylem_rudp_opts_s {
-    xylem_rudp_mode_t mode; /*< Transport mode preset. */
-    int32_t  snd_wnd;       /*< Send window size, 0 for default (32). */
-    int32_t  rcv_wnd;       /*< Receive window size, 0 for default (128). */
     int32_t  mtu;           /*< MTU size, 0 for default (1400). */
-    bool     stream;        /*< true: byte-stream mode, false: message mode. */
     uint64_t timeout_ms;    /*< Dead-link timeout in ms, 0 to disable. */
     uint64_t handshake_ms;  /*< Handshake timeout in ms, 0 for default (5000). */
     int      fec_data;      /*< FEC data shards, 0 to disable FEC. */

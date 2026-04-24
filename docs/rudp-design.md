@@ -46,24 +46,11 @@ typedef struct xylem_rudp_handler_s {
 与 DTLS handler 的区别：
 - 无 `on_write_done`（`xylem_rudp_send` 将数据入队 KCP 发送缓冲区后立即返回）
 
-### 传输模式
-
-```c
-typedef enum xylem_rudp_mode_e {
-    XYLEM_RUDP_MODE_DEFAULT,  /* 标准 ARQ，100ms 更新间隔 */
-    XYLEM_RUDP_MODE_FAST,     /* nodelay + 快速重传 + 无拥塞控制 */
-} xylem_rudp_mode_t;
-```
-
 ### 连接选项
 
 ```c
 typedef struct xylem_rudp_opts_s {
-    xylem_rudp_mode_t mode;
-    int32_t  snd_wnd;       /* 发送窗口，默认 32 */
-    int32_t  rcv_wnd;       /* 接收窗口，默认 128 */
     int32_t  mtu;           /* MTU，默认 1400 */
-    bool     stream;        /* true: 字节流模式，false: 消息模式 */
     uint64_t timeout_ms;    /* dead link 超时，0 禁用 */
     uint64_t handshake_ms;  /* 握手超时，0 使用默认值（5000ms） */
     int      fec_data;      /* FEC 数据分片数，0 禁用 FEC */
@@ -298,16 +285,17 @@ flowchart TD
 
 ### 模式配置
 
-`_rudp_apply_opts` 根据 `xylem_rudp_opts_t` 配置 KCP 参数：
+`_rudp_apply_opts` 始终使用快速模式配置 KCP 参数：
 
-| 模式 | nodelay | interval | resend | nc | 说明 |
-|------|---------|----------|--------|----|------|
-| DEFAULT | 0 | 100ms | 0 | 0 | 标准 ARQ，适合一般场景 |
-| FAST | 1 | 10ms | 2 | 1 | 无延迟 ACK + 快速重传（2 次跳过即重传）+ 关闭拥塞控制 |
+| nodelay | interval | resend | nc | 说明 |
+|---------|----------|--------|----|------|
+| 1 | 10ms | 2 | 1 | 无延迟 ACK + 快速重传（2 次跳过即重传）+ 关闭拥塞控制 |
+
+窗口大小固定为发送窗口 32、接收窗口 128。
 
 当 FEC 启用时，`_rudp_apply_opts` 会从配置的 MTU 中减去 `RUDP_FEC_HEADER_SIZE`（8 字节），确保 FEC 头 + KCP 包的总 UDP 载荷不超过配置的 MTU。
 
-Dead link 检测：`timeout_ms / interval` 计算 dead_link 阈值（最小为 1）。当 KCP 内部检测到连续重传次数超过阈值时，`kcp->state` 置为 `-1`，下次 `_rudp_update_timeout_cb` 触发时关闭会话。
+Dead link 检测：`timeout_ms / 10`（10ms 为固定更新间隔）计算 dead_link 阈值（最小为 1）。当 KCP 内部检测到连续重传次数超过阈值时，`kcp->state` 置为 `-1`，下次 `_rudp_update_timeout_cb` 触发时关闭会话。
 
 ## FEC 前向纠错
 
@@ -558,8 +546,8 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 | 会话标识 | 对端地址 | (对端地址, conv) 复合键 |
 | 握手 | DTLS 握手（cookie 交换） | 轻量级 SYN/ACK（9 字节） |
 | 重传 | OpenSSL DTLSv1_handle_timeout | KCP 内部 ARQ |
-| 拥塞控制 | 无 | KCP 内置（可通过 FAST 模式关闭） |
-| 流模式 | 数据报模式 | 可选消息模式或字节流模式 |
+| 拥塞控制 | 无 | KCP 内置（已关闭，始终使用快速模式） |
+| 流模式 | 数据报模式 | 消息模式（固定） |
 | 服务端 UDP | listen 模式（未连接） | listen 模式（未连接） |
 | 客户端 UDP | dial 模式（已连接） | dial 模式（已连接） |
 
