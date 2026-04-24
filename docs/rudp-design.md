@@ -31,10 +31,10 @@ FEC 编码/解码为可选步骤，通过 `opts->fec_data` 和 `opts->fec_parity
 
 ```c
 typedef struct xylem_rudp_handler_s {
-    void (*on_connect)(xylem_rudp_t* rudp);
-    void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_t* rudp);
-    void (*on_read)(xylem_rudp_t* rudp, void* data, size_t len);
-    void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg);
+    void (*on_connect)(xylem_rudp_conn_t* rudp);
+    void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_conn_t* rudp);
+    void (*on_read)(xylem_rudp_conn_t* rudp, void* data, size_t len);
+    void (*on_close)(xylem_rudp_conn_t* rudp, int err, const char* errmsg);
 } xylem_rudp_handler_t;
 ```
 
@@ -61,7 +61,7 @@ typedef struct xylem_rudp_opts_s {
 ### 不透明类型
 
 ```c
-typedef struct xylem_rudp_s        xylem_rudp_t;
+typedef struct xylem_rudp_conn_s        xylem_rudp_conn_t;
 typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 ```
 
@@ -80,7 +80,7 @@ static _Atomic uint32_t _rudp_next_conv = 0;
 ### RUDP 会话
 
 ```c
-struct xylem_rudp_s {
+struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
     xylem_udp_t*           udp;
     xylem_rudp_handler_t*  handler;
@@ -472,7 +472,7 @@ flowchart TD
 ### 写入路径
 
 ```c
-int xylem_rudp_send(xylem_rudp_t* rudp, const void* data, size_t len);
+int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len);
 ```
 
 1. 检查握手已完成且未关闭
@@ -554,18 +554,18 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 ### 会话
 
 ```c
-xylem_rudp_t*       xylem_rudp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+xylem_rudp_conn_t*       xylem_rudp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
                                      xylem_rudp_handler_t* handler,
                                      xylem_rudp_opts_t* opts);
-int                 xylem_rudp_send(xylem_rudp_t* rudp,
+int                 xylem_rudp_send(xylem_rudp_conn_t* rudp,
                                      const void* data, size_t len);
-void                xylem_rudp_close(xylem_rudp_t* rudp);
-int                 xylem_rudp_set_fec(xylem_rudp_t* rudp,
+void                xylem_rudp_close(xylem_rudp_conn_t* rudp);
+int                 xylem_rudp_set_fec(xylem_rudp_conn_t* rudp,
                                        int fec_data, int fec_parity);
-const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_t* rudp);
-xylem_loop_t*       xylem_rudp_get_loop(xylem_rudp_t* rudp);
-void*               xylem_rudp_get_userdata(xylem_rudp_t* rudp);
-void                xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
+const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_conn_t* rudp);
+xylem_loop_t*       xylem_rudp_get_loop(xylem_rudp_conn_t* rudp);
+void*               xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp);
+void                xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
 ```
 
 `xylem_rudp_set_fec` 在运行时修改会话的 FEC 参数。销毁现有 FEC 编码器/解码器，更新分片参数，重新调整 KCP MTU（FEC 启用时减去 `RUDP_FEC_HEADER_SIZE`），然后创建新的 FEC 状态。传入 0/0 可完全禁用 FEC。会话创建后（客户端 `xylem_rudp_dial` 返回后、服务端 `on_accept` 回调中）均可安全调用。

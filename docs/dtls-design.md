@@ -29,10 +29,10 @@ graph LR
 
 ```c
 typedef struct xylem_dtls_handler_s {
-    void (*on_connect)(xylem_dtls_t* dtls);
-    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_t* dtls);
-    void (*on_read)(xylem_dtls_t* dtls, void* data, size_t len);
-    void (*on_close)(xylem_dtls_t* dtls, int err, const char* errmsg);
+    void (*on_connect)(xylem_dtls_conn_t* dtls);
+    void (*on_accept)(xylem_dtls_server_t* server, xylem_dtls_conn_t* dtls);
+    void (*on_read)(xylem_dtls_conn_t* dtls, void* data, size_t len);
+    void (*on_close)(xylem_dtls_conn_t* dtls, int err, const char* errmsg);
 } xylem_dtls_handler_t;
 ```
 
@@ -46,7 +46,7 @@ typedef struct xylem_dtls_handler_s {
 ### 不透明类型
 
 ```c
-typedef struct xylem_dtls_s        xylem_dtls_t;
+typedef struct xylem_dtls_conn_s        xylem_dtls_conn_t;
 typedef struct xylem_dtls_ctx_s    xylem_dtls_ctx_t;
 typedef struct xylem_dtls_server_s xylem_dtls_server_t;
 ```
@@ -74,7 +74,7 @@ struct xylem_dtls_ctx_s {
 ### DTLS 会话
 
 ```c
-struct xylem_dtls_s {
+struct xylem_dtls_conn_s {
     SSL*                   ssl;
     BIO*                   read_bio;
     BIO*                   write_bio;
@@ -271,7 +271,7 @@ flowchart TD
 ### 写入路径
 
 ```c
-int xylem_dtls_send(xylem_dtls_t* dtls, const void* data, size_t len);
+int xylem_dtls_send(xylem_dtls_conn_t* dtls, const void* data, size_t len);
 ```
 
 1. 检查握手已完成且未关闭
@@ -395,29 +395,29 @@ int               xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
 ### 会话
 
 ```c
-xylem_dtls_t*       xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+xylem_dtls_conn_t*       xylem_dtls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
                                      xylem_dtls_ctx_t* ctx,
                                      xylem_dtls_handler_t* handler);
-int                 xylem_dtls_send(xylem_dtls_t* dtls,
+int                 xylem_dtls_send(xylem_dtls_conn_t* dtls,
                                      const void* data, size_t len);
-void                xylem_dtls_close(xylem_dtls_t* dtls);
+void                xylem_dtls_close(xylem_dtls_conn_t* dtls);
 ```
 
 `xylem_dtls_send` 和 `xylem_dtls_close` 线程安全，可从任意线程调用。
 
 ```c
-void                xylem_dtls_conn_acquire(xylem_dtls_t* dtls);
-void                xylem_dtls_conn_release(xylem_dtls_t* dtls);
+void                xylem_dtls_conn_acquire(xylem_dtls_conn_t* dtls);
+void                xylem_dtls_conn_release(xylem_dtls_conn_t* dtls);
 ```
 
 `xylem_dtls_conn_acquire` 递增引用计数，需在事件循环线程上调用（通常在 `on_connect` 或 `on_accept` 中，将会话句柄传递给其他线程前调用）。`xylem_dtls_conn_release` 递减引用计数，归零时释放内存，可从任意线程调用。
 
 ```c
-const char*         xylem_dtls_get_alpn(xylem_dtls_t* dtls);
-const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
-xylem_loop_t*       xylem_dtls_get_loop(xylem_dtls_t* dtls);
-void*               xylem_dtls_get_userdata(xylem_dtls_t* dtls);
-void                xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
+const char*         xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls);
+const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_conn_t* dtls);
+xylem_loop_t*       xylem_dtls_get_loop(xylem_dtls_conn_t* dtls);
+void*               xylem_dtls_get_userdata(xylem_dtls_conn_t* dtls);
+void                xylem_dtls_set_userdata(xylem_dtls_conn_t* dtls, void* ud);
 ```
 
 ### 服务器

@@ -75,18 +75,18 @@ static int _ensure_cert(void) {
     return (rc == 0) ? 0 : -1;
 }
 
-static void _on_accept(xylem_dtls_server_t* server, xylem_dtls_t* dtls) {
+static void _on_accept(xylem_dtls_server_t* server, xylem_dtls_conn_t* dtls) {
     (void)server;
     (void)dtls;
     xylem_logi("dtls client connected");
 }
 
-static void _on_read(xylem_dtls_t* dtls, void* data, size_t len) {
+static void _on_read(xylem_dtls_conn_t* dtls, void* data, size_t len) {
     xylem_logi("recv %zu bytes: %.*s", len, (int)len, (char*)data);
     xylem_dtls_send(dtls, data, len);
 }
 
-static void _on_close(xylem_dtls_t* dtls, int err, const char* errmsg) {
+static void _on_close(xylem_dtls_conn_t* dtls, int err, const char* errmsg) {
     (void)dtls;
     (void)err;
     (void)errmsg;

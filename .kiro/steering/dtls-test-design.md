@@ -88,8 +88,8 @@ sequenceDiagram
 typedef struct {
     xylem_loop_t*          loop;
     xylem_dtls_server_t*   dtls_server;
-    xylem_dtls_t*          srv_session;    /* 服务端接受的会话 */
-    xylem_dtls_t*          cli_session;    /* 客户端会话 */
+    xylem_dtls_conn_t*          srv_session;    /* 服务端接受的会话 */
+    xylem_dtls_conn_t*          cli_session;    /* 客户端会话 */
     xylem_dtls_ctx_t*      srv_ctx;
     xylem_dtls_ctx_t*      cli_ctx;
     int                    accept_called;

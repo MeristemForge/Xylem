@@ -37,17 +37,17 @@
 
 static xylem_loop_t* _loop;
 
-static void _on_connect(xylem_dtls_t* dtls) {
+static void _on_connect(xylem_dtls_conn_t* dtls) {
     xylem_logi("dtls handshake complete");
     xylem_dtls_send(dtls, "hello", 5);
 }
 
-static void _on_read(xylem_dtls_t* dtls, void* data, size_t len) {
+static void _on_read(xylem_dtls_conn_t* dtls, void* data, size_t len) {
     xylem_logi("echo: %.*s", (int)len, (char*)data);
     xylem_dtls_close(dtls);
 }
 
-static void _on_close(xylem_dtls_t* dtls, int err, const char* errmsg) {
+static void _on_close(xylem_dtls_conn_t* dtls, int err, const char* errmsg) {
     (void)dtls;
     (void)err;
     (void)errmsg;
@@ -79,7 +79,7 @@ int main(void) {
         .on_close   = _on_close,
     };
 
-    xylem_dtls_t* dtls = xylem_dtls_dial(_loop, &addr, ctx, &handler);
+    xylem_dtls_conn_t* dtls = xylem_dtls_dial(_loop, &addr, ctx, &handler);
     if (!dtls) {
         xylem_loge("failed to connect");
         xylem_dtls_ctx_destroy(ctx);

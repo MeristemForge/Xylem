@@ -25,7 +25,7 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 
 /* Opaque DTLS session handle. */
-typedef struct xylem_dtls_s        xylem_dtls_t;
+typedef struct xylem_dtls_conn_s        xylem_dtls_conn_t;
 /* Opaque DTLS context handle. */
 typedef struct xylem_dtls_ctx_s    xylem_dtls_ctx_t;
 /* Opaque DTLS server handle. */
@@ -33,12 +33,12 @@ typedef struct xylem_dtls_server_s xylem_dtls_server_t;
 
 /* DTLS event callback set. */
 typedef struct xylem_dtls_handler_s {
-    void (*on_connect)(xylem_dtls_t* dtls);                /*< DTLS handshake completed (client). */
+    void (*on_connect)(xylem_dtls_conn_t* dtls);                /*< DTLS handshake completed (client). */
     void (*on_accept)(xylem_dtls_server_t* server,
-                      xylem_dtls_t* dtls);                  /*< DTLS handshake completed (server). */
-    void (*on_read)(xylem_dtls_t* dtls,
+                      xylem_dtls_conn_t* dtls);                  /*< DTLS handshake completed (server). */
+    void (*on_read)(xylem_dtls_conn_t* dtls,
                     void* data, size_t len);                 /*< Decrypted datagram received. */
-    void (*on_close)(xylem_dtls_t* dtls,
+    void (*on_close)(xylem_dtls_conn_t* dtls,
                      int err, const char* errmsg);           /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_dtls_handler_t;
 
@@ -141,7 +141,7 @@ extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
  *
  * @return DTLS session handle, or NULL on failure.
  */
-extern xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
+extern xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_dtls_ctx_t* ctx,
                                      xylem_dtls_handler_t* handler);
@@ -158,7 +158,7 @@ extern xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_dtls_send(xylem_dtls_t* dtls,
+extern int xylem_dtls_send(xylem_dtls_conn_t* dtls,
                            const void* data, size_t len);
 
 /**
@@ -171,7 +171,7 @@ extern int xylem_dtls_send(xylem_dtls_t* dtls,
  *
  * @param dtls  DTLS session handle.
  */
-extern void xylem_dtls_close(xylem_dtls_t* dtls);
+extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Increment the reference count of a DTLS session.
@@ -181,7 +181,7 @@ extern void xylem_dtls_close(xylem_dtls_t* dtls);
  *
  * @param dtls  DTLS session handle.
  */
-extern void xylem_dtls_conn_acquire(xylem_dtls_t* dtls);
+extern void xylem_dtls_conn_acquire(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Decrement the reference count of a DTLS session.
@@ -191,7 +191,7 @@ extern void xylem_dtls_conn_acquire(xylem_dtls_t* dtls);
  *
  * @param dtls  DTLS session handle.
  */
-extern void xylem_dtls_conn_release(xylem_dtls_t* dtls);
+extern void xylem_dtls_conn_release(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get the negotiated ALPN protocol.
@@ -200,7 +200,7 @@ extern void xylem_dtls_conn_release(xylem_dtls_t* dtls);
  *
  * @return Null-terminated protocol string, or NULL.
  */
-extern const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls);
+extern const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get the peer address of a DTLS session.
@@ -209,7 +209,7 @@ extern const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls);
  *
  * @return Peer address, or NULL if not available.
  */
-extern const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
+extern const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get the event loop associated with a DTLS session.
@@ -218,7 +218,7 @@ extern const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls);
  *
  * @return Loop handle.
  */
-extern xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_t* dtls);
+extern xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get user data attached to a DTLS session.
@@ -227,7 +227,7 @@ extern xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_t* dtls);
  *
  * @return User data pointer.
  */
-extern void* xylem_dtls_get_userdata(xylem_dtls_t* dtls);
+extern void* xylem_dtls_get_userdata(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Set user data on a DTLS session.
@@ -235,7 +235,7 @@ extern void* xylem_dtls_get_userdata(xylem_dtls_t* dtls);
  * @param dtls  DTLS session handle.
  * @param ud    User data pointer.
  */
-extern void xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud);
+extern void xylem_dtls_set_userdata(xylem_dtls_conn_t* dtls, void* ud);
 
 /**
  * @brief Create a DTLS server and start listening.

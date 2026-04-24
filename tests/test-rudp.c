@@ -32,8 +32,8 @@
 typedef struct {
     xylem_loop_t*          loop;
     xylem_rudp_server_t*   rudp_server;
-    xylem_rudp_t*          srv_session;
-    xylem_rudp_t*          cli_session;
+    xylem_rudp_conn_t*          srv_session;
+    xylem_rudp_conn_t*          cli_session;
     int                    accept_called;
     int                    connect_called;
     int                    close_called;
@@ -47,7 +47,7 @@ typedef struct {
 
 typedef struct {
     _test_ctx_t*  tctx;
-    xylem_rudp_t* rudp;
+    xylem_rudp_conn_t* rudp;
     char          send_data[4];
     char          recv_data[4];
     size_t        recv_len;
@@ -65,7 +65,7 @@ static void _safety_timeout_cb(xylem_loop_t* loop,
 }
 
 static void _rudp_srv_accept_cb(xylem_rudp_server_t* server,
-                                xylem_rudp_t* rudp) {
+                                xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx =
         (_test_ctx_t*)xylem_rudp_server_get_userdata(server);
     if (ctx) {
@@ -75,7 +75,7 @@ static void _rudp_srv_accept_cb(xylem_rudp_server_t* server,
     }
 }
 
-static void _rudp_srv_read_echo_cb(xylem_rudp_t* rudp,
+static void _rudp_srv_read_echo_cb(xylem_rudp_conn_t* rudp,
                                     void* data, size_t len) {
     xylem_rudp_send(rudp, data, len);
 }
@@ -96,12 +96,12 @@ static void _echo_send_timer_cb(xylem_loop_t* loop,
     xylem_rudp_send(ctx->cli_session, "hello", 5);
 }
 
-static void _echo_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _echo_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ctx->connect_called = 1;
 }
 
-static void _echo_cli_read_cb(xylem_rudp_t* rudp,
+static void _echo_cli_read_cb(xylem_rudp_conn_t* rudp,
                                void* data, size_t len) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (len <= sizeof(ctx->received)) {
@@ -112,7 +112,7 @@ static void _echo_cli_read_cb(xylem_rudp_t* rudp,
     xylem_rudp_close(rudp);
 }
 
-static void _echo_cli_close_cb(xylem_rudp_t* rudp, int err,
+static void _echo_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                                 const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -175,7 +175,7 @@ static void test_handshake_and_echo(void) {
 }
 
 
-static void _ud_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _ud_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
 
     xylem_rudp_set_userdata(rudp, &ctx->value);
@@ -188,7 +188,7 @@ static void _ud_cli_connect_cb(xylem_rudp_t* rudp) {
     xylem_rudp_close(rudp);
 }
 
-static void _ud_cli_close_cb(xylem_rudp_t* rudp, int err,
+static void _ud_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                               const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -259,7 +259,7 @@ static void test_server_userdata(void) {
 }
 
 
-static void _pa_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _pa_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
 
     const xylem_addr_t* peer = xylem_rudp_get_peer_addr(rudp);
@@ -275,7 +275,7 @@ static void _pa_cli_connect_cb(xylem_rudp_t* rudp) {
     xylem_rudp_close(rudp);
 }
 
-static void _pa_cli_close_cb(xylem_rudp_t* rudp, int err,
+static void _pa_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                               const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -321,14 +321,14 @@ static void test_peer_addr(void) {
 }
 
 
-static void _gl_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _gl_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ASSERT(xylem_rudp_get_loop(rudp) == ctx->loop);
     ctx->verified = 1;
     xylem_rudp_close(rudp);
 }
 
-static void _gl_cli_close_cb(xylem_rudp_t* rudp, int err,
+static void _gl_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                               const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -374,14 +374,14 @@ static void test_get_loop(void) {
 }
 
 
-static void _sac_connect_cb(xylem_rudp_t* rudp) {
+static void _sac_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     xylem_rudp_close(rudp);
     ctx->send_result = xylem_rudp_send(rudp, "x", 1);
     ctx->verified = 1;
 }
 
-static void _sac_close_cb(xylem_rudp_t* rudp, int err,
+static void _sac_close_cb(xylem_rudp_conn_t* rudp, int err,
                            const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -429,14 +429,14 @@ static void test_send_after_close(void) {
 }
 
 
-static void _ci_connect_cb(xylem_rudp_t* rudp) {
+static void _ci_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     xylem_rudp_close(rudp);
     xylem_rudp_close(rudp);
     ctx->verified = 1;
 }
 
-static void _ci_close_cb(xylem_rudp_t* rudp, int err,
+static void _ci_close_cb(xylem_rudp_conn_t* rudp, int err,
                           const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -492,7 +492,7 @@ static void _csas_close_timer_cb(xylem_loop_t* loop,
     ctx->rudp_server = NULL;
 }
 
-static void _csas_srv_close_cb(xylem_rudp_t* rudp, int err,
+static void _csas_srv_close_cb(xylem_rudp_conn_t* rudp, int err,
                                 const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -503,7 +503,7 @@ static void _csas_srv_close_cb(xylem_rudp_t* rudp, int err,
 }
 
 static void _csas_srv_accept_cb(xylem_rudp_server_t* server,
-                                xylem_rudp_t* rudp) {
+                                xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx =
         (_test_ctx_t*)xylem_rudp_server_get_userdata(server);
     if (ctx) {
@@ -513,7 +513,7 @@ static void _csas_srv_accept_cb(xylem_rudp_server_t* server,
     }
 }
 
-static void _csas_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _csas_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ctx->connect_called = 1;
 }
@@ -631,12 +631,12 @@ static void _multi_send_timer_cb(xylem_loop_t* loop,
     xylem_rudp_send(mc->rudp, mc->send_data, 3);
 }
 
-static void _multi_cli_connect_cb(xylem_rudp_t* rudp) {
+static void _multi_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _multi_cli_t* mc = (_multi_cli_t*)xylem_rudp_get_userdata(rudp);
     mc->rudp = rudp;
 }
 
-static void _multi_cli_read_cb(xylem_rudp_t* rudp,
+static void _multi_cli_read_cb(xylem_rudp_conn_t* rudp,
                                 void* data, size_t len) {
     _multi_cli_t* mc = (_multi_cli_t*)xylem_rudp_get_userdata(rudp);
     if (len <= sizeof(mc->recv_data)) {
@@ -647,7 +647,7 @@ static void _multi_cli_read_cb(xylem_rudp_t* rudp,
     xylem_rudp_close(rudp);
 }
 
-static void _multi_cli_close_cb(xylem_rudp_t* rudp, int err,
+static void _multi_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                                  const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -697,12 +697,12 @@ static void test_multi_session(void) {
         .on_close   = _multi_cli_close_cb,
     };
 
-    xylem_rudp_t* c1 = xylem_rudp_dial(ctx.loop, &addr,
+    xylem_rudp_conn_t* c1 = xylem_rudp_dial(ctx.loop, &addr,
                                          &cli_handler, NULL);
     ASSERT(c1 != NULL);
     xylem_rudp_set_userdata(c1, &mc1);
 
-    xylem_rudp_t* c2 = xylem_rudp_dial(ctx.loop, &addr,
+    xylem_rudp_conn_t* c2 = xylem_rudp_dial(ctx.loop, &addr,
                                          &cli_handler, NULL);
     ASSERT(c2 != NULL);
     xylem_rudp_set_userdata(c2, &mc2);
@@ -730,7 +730,7 @@ static void test_multi_session(void) {
 }
 
 
-static void _ht_close_cb(xylem_rudp_t* rudp, int err,
+static void _ht_close_cb(xylem_rudp_conn_t* rudp, int err,
                           const char* errmsg) {
     (void)err;
     (void)errmsg;

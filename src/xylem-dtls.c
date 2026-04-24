@@ -66,7 +66,7 @@ struct xylem_dtls_ctx_s {
     uint8_t  cookie_secret[DTLS_COOKIE_SIZE];
 };
 
-struct xylem_dtls_s {
+struct xylem_dtls_conn_s {
     SSL*                   ssl;
     BIO*                   read_bio;
     BIO*                   write_bio;
@@ -99,7 +99,7 @@ struct xylem_dtls_server_s {
 };
 
 typedef struct _dtls_deferred_send_s {
-    xylem_dtls_t* dtls;
+    xylem_dtls_conn_t* dtls;
     size_t        len;
     char          data[];
 } _dtls_deferred_send_t;
@@ -329,7 +329,7 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
 }
 
 
-static void _dtls_flush_write_bio(xylem_dtls_t* dtls) {
+static void _dtls_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
 
@@ -338,19 +338,19 @@ static void _dtls_flush_write_bio(xylem_dtls_t* dtls) {
     }
 }
 
-static void _dtls_feed_read_bio(xylem_dtls_t* dtls,
+static void _dtls_feed_read_bio(xylem_dtls_conn_t* dtls,
                                 void* data, size_t len) {
     BIO_write(dtls->read_bio, data, (int)len);
 }
 
-static void _dtls_arm_retransmit(xylem_dtls_t* dtls);
+static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls);
 
 static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
                                         xylem_loop_timer_t* timer,
                                         void* ud) {
     (void)loop;
     (void)timer;
-    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
 
     /**
      * Guard against a timer callback already queued in the current
@@ -365,7 +365,7 @@ static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
     _dtls_arm_retransmit(dtls);
 }
 
-static void _dtls_arm_retransmit(xylem_dtls_t* dtls) {
+static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls) {
     struct timeval tv;
     if (DTLSv1_get_timeout(dtls->ssl, &tv)) {
         uint64_t ms = (uint64_t)tv.tv_sec * 1000 +
@@ -379,7 +379,7 @@ static void _dtls_arm_retransmit(xylem_dtls_t* dtls) {
     }
 }
 
-static void _dtls_stop_retransmit(xylem_dtls_t* dtls) {
+static void _dtls_stop_retransmit(xylem_dtls_conn_t* dtls) {
     xylem_loop_stop_timer(dtls->retransmit_timer);
 }
 
@@ -388,7 +388,7 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
                                        void* ud) {
     (void)loop;
     (void)timer;
-    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
 
     /* Session may already be closing from another path. */
     if (atomic_load(&dtls->closing)) {
@@ -401,7 +401,7 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
     xylem_dtls_close(dtls);
 }
 
-static int _dtls_init_ssl(xylem_dtls_t* dtls) {
+static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
     dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
     if (!dtls->ssl) {
         xylem_loge("dtls session %p SSL_new failed", (void*)dtls);
@@ -426,7 +426,7 @@ static int _dtls_init_ssl(xylem_dtls_t* dtls) {
     return 0;
 }
 
-static void _dtls_do_handshake(xylem_dtls_t* dtls) {
+static void _dtls_do_handshake(xylem_dtls_conn_t* dtls) {
     ERR_clear_error();
     int rc  = SSL_do_handshake(dtls->ssl);
     int err = SSL_get_error(dtls->ssl, rc);
@@ -512,10 +512,10 @@ static int _dtls_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
 /* node-node comparator for rbtree insert. */
 static int _dtls_session_cmp_nn(const xylem_rbtree_node_t* a,
                                 const xylem_rbtree_node_t* b) {
-    const xylem_dtls_t* da =
-        xylem_rbtree_entry(a, xylem_dtls_t, server_node);
-    const xylem_dtls_t* db =
-        xylem_rbtree_entry(b, xylem_dtls_t, server_node);
+    const xylem_dtls_conn_t* da =
+        xylem_rbtree_entry(a, xylem_dtls_conn_t, server_node);
+    const xylem_dtls_conn_t* db =
+        xylem_rbtree_entry(b, xylem_dtls_conn_t, server_node);
     return _dtls_addr_cmp(&da->peer_addr, &db->peer_addr);
 }
 
@@ -523,25 +523,25 @@ static int _dtls_session_cmp_nn(const xylem_rbtree_node_t* a,
 static int _dtls_session_cmp_kn(const void* key,
                                 const xylem_rbtree_node_t* node) {
     const xylem_addr_t* addr = (const xylem_addr_t*)key;
-    const xylem_dtls_t* dtls =
-        xylem_rbtree_entry(node, xylem_dtls_t, server_node);
+    const xylem_dtls_conn_t* dtls =
+        xylem_rbtree_entry(node, xylem_dtls_conn_t, server_node);
     return _dtls_addr_cmp(addr, &dtls->peer_addr);
 }
 
-static xylem_dtls_t* _dtls_find_session(xylem_dtls_server_t* server,
+static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_server_t* server,
                                         xylem_addr_t* addr) {
     xylem_rbtree_node_t* node = xylem_rbtree_find(&server->sessions, addr);
     if (!node) {
         return NULL;
     }
-    return xylem_rbtree_entry(node, xylem_dtls_t, server_node);
+    return xylem_rbtree_entry(node, xylem_dtls_conn_t, server_node);
 }
 
 
 static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     (void)addr;
-    xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)xylem_udp_get_userdata(udp);
 
     _dtls_feed_read_bio(dtls, data, len);
 
@@ -593,7 +593,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
 }
 
 /* Decrement refcount; free the session when it reaches zero. */
-static void _dtls_conn_decref(xylem_dtls_t* dtls) {
+static void _dtls_conn_decref(xylem_dtls_conn_t* dtls) {
     if (atomic_fetch_sub(&dtls->refcount, 1) == 1) {
         free(dtls);
     }
@@ -607,7 +607,7 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
                           void* ud) {
     (void)loop;
     (void)req;
-    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
     xylem_loop_destroy_timer(dtls->retransmit_timer);
     if (dtls->handshake_timer) {
         xylem_loop_destroy_timer(dtls->handshake_timer);
@@ -617,7 +617,7 @@ static void _dtls_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
 
 static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
                                   const char* errmsg) {
-    xylem_dtls_t* dtls = (xylem_dtls_t*)xylem_udp_get_userdata(udp);
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)xylem_udp_get_userdata(udp);
     if (!dtls) {
         return;
     }
@@ -664,7 +664,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    xylem_dtls_t* dtls = _dtls_find_session(server, addr);
+    xylem_dtls_conn_t* dtls = _dtls_find_session(server, addr);
 
     if (dtls) {
         _dtls_feed_read_bio(dtls, data, len);
@@ -771,11 +771,11 @@ static xylem_udp_handler_t _dtls_client_udp_handler = {
     .on_close = _dtls_client_close_cb,
 };
 
-xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
+xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
                               xylem_dtls_ctx_t* ctx,
                               xylem_dtls_handler_t* handler) {
-    xylem_dtls_t* dtls = calloc(1, sizeof(*dtls));
+    xylem_dtls_conn_t* dtls = calloc(1, sizeof(*dtls));
     if (!dtls) {
         return NULL;
     }
@@ -831,7 +831,7 @@ xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
 }
 
 /* Perform the actual DTLS send (loop thread only). */
-static int _dtls_do_send(xylem_dtls_t* dtls,
+static int _dtls_do_send(xylem_dtls_conn_t* dtls,
                          const void* data, size_t len) {
     ERR_clear_error();
     int n = SSL_write(dtls->ssl, data, (int)len);
@@ -863,7 +863,7 @@ static void _dtls_deferred_send_cb(xylem_loop_t* loop,
     free(ds);
 }
 
-int xylem_dtls_send(xylem_dtls_t* dtls,
+int xylem_dtls_send(xylem_dtls_conn_t* dtls,
                     const void* data, size_t len) {
     if (!atomic_load(&dtls->handshake_done) ||
         atomic_load(&dtls->closing)) {
@@ -907,7 +907,7 @@ int xylem_dtls_send(xylem_dtls_t* dtls,
  * _dtls_deferred_close_cb can call it directly instead of re-entering
  * xylem_dtls_close (which would re-post when loop->tid is unset).
  */
-static void _dtls_do_close(xylem_dtls_t* dtls) {
+static void _dtls_do_close(xylem_dtls_conn_t* dtls) {
     if (atomic_load(&dtls->closing)) {
         return;
     }
@@ -960,12 +960,12 @@ static void _dtls_deferred_close_cb(xylem_loop_t* loop,
                                      void* ud) {
     (void)loop;
     (void)req;
-    xylem_dtls_t* dtls = (xylem_dtls_t*)ud;
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
     _dtls_do_close(dtls);
     _dtls_conn_decref(dtls);
 }
 
-void xylem_dtls_close(xylem_dtls_t* dtls) {
+void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
     if (atomic_load(&dtls->closing)) {
         return;
     }
@@ -982,31 +982,31 @@ void xylem_dtls_close(xylem_dtls_t* dtls) {
     _dtls_do_close(dtls);
 }
 
-const char* xylem_dtls_get_alpn(xylem_dtls_t* dtls) {
+const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {
     return dtls->alpn[0] ? dtls->alpn : NULL;
 }
 
-const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_t* dtls) {
+const xylem_addr_t* xylem_dtls_get_peer_addr(xylem_dtls_conn_t* dtls) {
     return &dtls->peer_addr;
 }
 
-xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_t* dtls) {
+xylem_loop_t* xylem_dtls_get_loop(xylem_dtls_conn_t* dtls) {
     return dtls->loop;
 }
 
-void* xylem_dtls_get_userdata(xylem_dtls_t* dtls) {
+void* xylem_dtls_get_userdata(xylem_dtls_conn_t* dtls) {
     return dtls->userdata;
 }
 
-void xylem_dtls_set_userdata(xylem_dtls_t* dtls, void* ud) {
+void xylem_dtls_set_userdata(xylem_dtls_conn_t* dtls, void* ud) {
     dtls->userdata = ud;
 }
 
-void xylem_dtls_conn_acquire(xylem_dtls_t* dtls) {
+void xylem_dtls_conn_acquire(xylem_dtls_conn_t* dtls) {
     atomic_fetch_add(&dtls->refcount, 1);
 }
 
-void xylem_dtls_conn_release(xylem_dtls_t* dtls) {
+void xylem_dtls_conn_release(xylem_dtls_conn_t* dtls) {
     _dtls_conn_decref(dtls);
 }
 
@@ -1054,8 +1054,8 @@ void xylem_dtls_close_server(xylem_dtls_server_t* server) {
 
     while (!xylem_rbtree_empty(&server->sessions)) {
         xylem_rbtree_node_t* node = xylem_rbtree_first(&server->sessions);
-        xylem_dtls_t* dtls =
-            xylem_rbtree_entry(node, xylem_dtls_t, server_node);
+        xylem_dtls_conn_t* dtls =
+            xylem_rbtree_entry(node, xylem_dtls_conn_t, server_node);
         xylem_dtls_close(dtls);
     }
 

@@ -26,14 +26,14 @@ _Pragma("once")
 
 #include <stdint.h>
 
-typedef struct xylem_rudp_s        xylem_rudp_t;
+typedef struct xylem_rudp_conn_s        xylem_rudp_conn_t;
 typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 
 typedef struct xylem_rudp_handler_s {
-    void (*on_connect)(xylem_rudp_t* rudp);                            /*< Handshake completed (client). */
-    void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_t* rudp);/*< New session accepted (server). */
-    void (*on_read)(xylem_rudp_t* rudp, void* data, size_t len);      /*< Reliable message received. */
-    void (*on_close)(xylem_rudp_t* rudp, int err, const char* errmsg); /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
+    void (*on_connect)(xylem_rudp_conn_t* rudp);                            /*< Handshake completed (client). */
+    void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_conn_t* rudp);/*< New session accepted (server). */
+    void (*on_read)(xylem_rudp_conn_t* rudp, void* data, size_t len);      /*< Reliable message received. */
+    void (*on_close)(xylem_rudp_conn_t* rudp, int err, const char* errmsg); /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_rudp_handler_t;
 
 typedef struct xylem_rudp_opts_s {
@@ -58,7 +58,7 @@ typedef struct xylem_rudp_opts_s {
  *
  * @return RUDP handle, or NULL on failure.
  */
-extern xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
+extern xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_rudp_handler_t* handler,
                                      xylem_rudp_opts_t* opts);
@@ -75,7 +75,7 @@ extern xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_rudp_send(xylem_rudp_t* rudp,
+extern int xylem_rudp_send(xylem_rudp_conn_t* rudp,
                            const void* data, size_t len);
 
 /**
@@ -86,7 +86,7 @@ extern int xylem_rudp_send(xylem_rudp_t* rudp,
  *
  * @param rudp  RUDP handle.
  */
-extern void xylem_rudp_close(xylem_rudp_t* rudp);
+extern void xylem_rudp_close(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Increment the reference count of a RUDP session.
@@ -96,7 +96,7 @@ extern void xylem_rudp_close(xylem_rudp_t* rudp);
  *
  * @param rudp  RUDP handle.
  */
-extern void xylem_rudp_conn_acquire(xylem_rudp_t* rudp);
+extern void xylem_rudp_conn_acquire(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Decrement the reference count of a RUDP session.
@@ -106,7 +106,7 @@ extern void xylem_rudp_conn_acquire(xylem_rudp_t* rudp);
  *
  * @param rudp  RUDP handle.
  */
-extern void xylem_rudp_conn_release(xylem_rudp_t* rudp);
+extern void xylem_rudp_conn_release(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Get the peer address of a connection.
@@ -115,7 +115,7 @@ extern void xylem_rudp_conn_release(xylem_rudp_t* rudp);
  *
  * @return Peer address.
  */
-extern const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_t* rudp);
+extern const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Get the event loop associated with a connection.
@@ -124,7 +124,7 @@ extern const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_t* rudp);
  *
  * @return Loop handle.
  */
-extern xylem_loop_t* xylem_rudp_get_loop(xylem_rudp_t* rudp);
+extern xylem_loop_t* xylem_rudp_get_loop(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Get user data attached to a connection.
@@ -133,7 +133,7 @@ extern xylem_loop_t* xylem_rudp_get_loop(xylem_rudp_t* rudp);
  *
  * @return User data pointer.
  */
-extern void* xylem_rudp_get_userdata(xylem_rudp_t* rudp);
+extern void* xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Set user data on a connection.
@@ -141,7 +141,7 @@ extern void* xylem_rudp_get_userdata(xylem_rudp_t* rudp);
  * @param rudp  RUDP handle.
  * @param ud    User data pointer.
  */
-extern void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
+extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
 
 /**
  * @brief Change FEC parameters for a session at runtime.
@@ -159,7 +159,7 @@ extern void xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_rudp_set_fec(xylem_rudp_t* rudp,
+extern int xylem_rudp_set_fec(xylem_rudp_conn_t* rudp,
                               int fec_data, int fec_parity);
 
 /**
