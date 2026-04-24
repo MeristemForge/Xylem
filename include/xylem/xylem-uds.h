@@ -66,9 +66,7 @@ typedef struct xylem_uds_framing_s {
     };
 } xylem_uds_framing_t;
 
-/* Opaque UDS connection handle. */
 typedef struct xylem_uds_conn_s   xylem_uds_conn_t;
-/* Opaque UDS server handle. */
 typedef struct xylem_uds_server_s xylem_uds_server_t;
 
 /* UDS event callback set. */

@@ -36,7 +36,6 @@ typedef enum xylem_json_type_e {
     XYLEM_JSON_TYPE_OBJ
 } xylem_json_type_t;
 
-/* Opaque JSON handle for both parsed and constructed JSON. */
 typedef struct xylem_json_s xylem_json_t;
 
 /**

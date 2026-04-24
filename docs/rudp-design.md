@@ -67,16 +67,6 @@ typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 
 ## 内部结构
 
-### Conv ID 分配
-
-Conv ID 通过模块级静态原子变量 `_rudp_next_conv` 分配，无需显式上下文对象：
-
-```c
-static _Atomic uint32_t _rudp_next_conv = 0;
-```
-
-首次调用 `_rudp_alloc_conv` 时通过 `xylem_utils_getprng` 随机初始化种子（`atomic_compare_exchange_strong` 保证仅初始化一次），此后每次 `xylem_rudp_dial` 通过 `atomic_fetch_add_explicit`（`memory_order_relaxed`）原子递增分配，确保多线程环境下 conv ID 不会重复。随机种子确保跨进程重启不会产生 conv 冲突。
-
 ### RUDP 会话
 
 ```c
@@ -153,7 +143,7 @@ sequenceDiagram
     participant Net as 网络
 
     User->>RUDP: xylem_rudp_dial()
-    RUDP->>RUDP: 分配 conv（_rudp_alloc_conv，模块级原子递增）
+    RUDP->>RUDP: 分配 conv
     RUDP->>UDP: xylem_udp_dial（已连接 socket）
     RUDP->>RUDP: 创建 KCP 会话
     RUDP->>UDP: 发送 SYN [magic, 0x01, conv]

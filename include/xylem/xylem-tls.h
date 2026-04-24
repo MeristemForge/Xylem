@@ -25,11 +25,8 @@ _Pragma("once")
 #include "xylem/xylem-loop.h"
 #include "xylem/xylem-tcp.h"
 
-/* Opaque TLS connection handle. */
 typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
-/* Opaque TLS context handle. */
 typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
-/* Opaque TLS server handle. */
 typedef struct xylem_tls_server_s xylem_tls_server_t;
 
 /* TLS connection options. */

@@ -26,7 +26,6 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/* Opaque types */
 typedef struct xylem_http_res_s        xylem_http_res_t;
 typedef struct xylem_http_cookie_jar_s xylem_http_cookie_jar_t;
 typedef struct xylem_http_session_s    xylem_http_session_t;

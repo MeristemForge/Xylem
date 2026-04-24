@@ -117,7 +117,6 @@ extern size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
                                       xylem_http_hdr_t* out,
                                       size_t out_cap);
 
-/* Opaque multipart type */
 typedef struct xylem_http_multipart_s xylem_http_multipart_t;
 
 /**

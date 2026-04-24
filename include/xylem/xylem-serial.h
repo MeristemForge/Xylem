@@ -24,7 +24,6 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/* Opaque serial port handle. */
 typedef struct xylem_serial_s xylem_serial_t;
 
 /* Serial port baud rate. */

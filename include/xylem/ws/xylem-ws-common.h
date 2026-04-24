@@ -38,7 +38,6 @@ typedef enum xylem_ws_state_e {
     XYLEM_WS_STATE_CLOSED,
 } xylem_ws_state_t;
 
-/* Opaque handle forward declarations. */
 typedef struct xylem_ws_conn_s   xylem_ws_conn_t;
 typedef struct xylem_ws_server_s xylem_ws_server_t;
 

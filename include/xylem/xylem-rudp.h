@@ -26,14 +26,17 @@ _Pragma("once")
 
 #include <stdint.h>
 
-typedef struct xylem_rudp_conn_s        xylem_rudp_conn_t;
+typedef struct xylem_rudp_conn_s   xylem_rudp_conn_t;
 typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 
 typedef struct xylem_rudp_handler_s {
-    void (*on_connect)(xylem_rudp_conn_t* rudp);                            /*< Handshake completed (client). */
-    void (*on_accept)(xylem_rudp_server_t* server, xylem_rudp_conn_t* rudp);/*< New session accepted (server). */
-    void (*on_read)(xylem_rudp_conn_t* rudp, void* data, size_t len);      /*< Reliable message received. */
-    void (*on_close)(xylem_rudp_conn_t* rudp, int err, const char* errmsg); /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
+    void (*on_connect)(xylem_rudp_conn_t* rudp);           /*< Handshake completed (client). */
+    void (*on_accept)(xylem_rudp_server_t* server,
+                      xylem_rudp_conn_t* rudp);             /*< New session accepted (server). */
+    void (*on_read)(xylem_rudp_conn_t* rudp,
+                    void* data, size_t len);                /*< Reliable message received. */
+    void (*on_close)(xylem_rudp_conn_t* rudp,
+                     int err, const char* errmsg);          /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
 } xylem_rudp_handler_t;
 
 typedef struct xylem_rudp_opts_s {

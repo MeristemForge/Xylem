@@ -24,13 +24,9 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Opaque event loop handle. */
 typedef struct xylem_loop_s       xylem_loop_t;
-/* Opaque timer handle. */
 typedef struct xylem_loop_timer_s xylem_loop_timer_t;
-/* Opaque I/O handle. */
 typedef struct xylem_loop_io_s    xylem_loop_io_t;
-/* Opaque deferred-callback handle. */
 typedef struct xylem_loop_post_s  xylem_loop_post_t;
 
 /* Platform-neutral file descriptor (int on Unix, SOCKET on Windows). */

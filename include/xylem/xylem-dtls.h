@@ -24,11 +24,8 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-/* Opaque DTLS session handle. */
 typedef struct xylem_dtls_conn_s        xylem_dtls_conn_t;
-/* Opaque DTLS context handle. */
 typedef struct xylem_dtls_ctx_s    xylem_dtls_ctx_t;
-/* Opaque DTLS server handle. */
 typedef struct xylem_dtls_server_s xylem_dtls_server_t;
 
 /* DTLS event callback set. */

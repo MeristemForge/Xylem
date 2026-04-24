@@ -66,19 +66,6 @@
 /* Default timeout for client waiting for handshake ACK. */
 #define RUDP_DEFAULT_HANDSHAKE_MS 5000
 
-/* Module-level conv allocator, lazily seeded on first use. */
-static _Atomic uint32_t _rudp_next_conv = 0;
-
-static uint32_t _rudp_alloc_conv(void) {
-    uint32_t v = atomic_load(&_rudp_next_conv);
-    if (v == 0) {
-        uint32_t seed = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
-        atomic_compare_exchange_strong(&_rudp_next_conv, &v, seed);
-    }
-    return atomic_fetch_add_explicit(&_rudp_next_conv, 1,
-                                     memory_order_relaxed);
-}
-
 struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
     xylem_udp_t*           udp;
@@ -123,6 +110,19 @@ typedef struct {
     xylem_addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;
+
+/* Module-level conv allocator, lazily seeded on first use. */
+static _Atomic uint32_t _rudp_next_conv = 0;
+
+static uint32_t _rudp_alloc_conv(void) {
+    uint32_t v = atomic_load(&_rudp_next_conv);
+    if (v == 0) {
+        uint32_t seed = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
+        atomic_compare_exchange_strong(&_rudp_next_conv, &v, seed);
+    }
+    return atomic_fetch_add_explicit(&_rudp_next_conv, 1,
+                                     memory_order_relaxed);
+}
 
 static int _rudp_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {

@@ -63,9 +63,7 @@ typedef struct xylem_tcp_framing_s {
     };
 } xylem_tcp_framing_t;
 
-/* Opaque TCP connection handle. */
 typedef struct xylem_tcp_conn_s   xylem_tcp_conn_t;
-/* Opaque TCP server handle. */
 typedef struct xylem_tcp_server_s xylem_tcp_server_t;
 
 /* TCP event callback set. */

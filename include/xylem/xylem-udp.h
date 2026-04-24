@@ -24,7 +24,6 @@ _Pragma("once")
 #include "xylem/xylem-addr.h"
 #include "xylem/xylem-loop.h"
 
-/* Opaque UDP handle. */
 typedef struct xylem_udp_s xylem_udp_t;
 
 /* UDP event callback set. */
