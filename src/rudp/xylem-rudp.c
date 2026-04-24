@@ -38,8 +38,9 @@
 /* KCP recv buffer, large enough for one full KCP message. */
 #define RUDP_RECV_BUF_SIZE 65536
 
-/* Default KCP update interval in milliseconds. */
-#define RUDP_DEFAULT_INTERVAL 100
+/* Placeholder timeout for xylem_loop_start_timer before _rudp_schedule_update
+ * overwrites it with the real value from ikcp_check. */
+#define RUDP_TIMER_INIT_MS 100
 
 /**
  * Handshake magic bytes to distinguish control packets from KCP data.
@@ -599,7 +600,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
             /* Initial start so _rudp_schedule_update can use reset. */
             xylem_loop_start_timer(rudp->update_timer,
                                    _rudp_update_timeout_cb, rudp,
-                                   RUDP_DEFAULT_INTERVAL, 0);
+                                   RUDP_TIMER_INIT_MS, 0);
             _rudp_schedule_update(rudp);
 
             if (rudp->handler && rudp->handler->on_accept) {
@@ -752,7 +753,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
 
     /* Initial start so _rudp_schedule_update can use reset. */
     xylem_loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
-                           rudp, RUDP_DEFAULT_INTERVAL, 0);
+                           rudp, RUDP_TIMER_INIT_MS, 0);
 
     uint8_t syn[RUDP_HANDSHAKE_SIZE];
     _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, conv);
