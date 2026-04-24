@@ -11,13 +11,21 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 # Features
 
-- Pure C11, cross-platform (Windows, Linux, macOS), no required dependencies
-- Event loop with I/O polling and timers
-- TCP, UDP, UDS, TLS, DTLS, Reliable UDP (with FEC), Serial
-- HTTP/1.1 client/server, WebSocket client/server
-- Intrusive data structures, ring buffer, JSON, gzip
-- SHA-256, HMAC-SHA256, AES-256, Base64
-- Thread pool, async logger, waitgroup
+- **Pure C11, zero required dependencies** — cross-platform (Windows, Linux, macOS), optional OpenSSL for TLS/DTLS
+- **Unified event loop** — TCP, UDP, UDS, TLS, DTLS, Reliable UDP, HTTP, WebSocket all driven by a single loop
+- **Built-in Reliable UDP with FEC** — KCP ARQ + Reed-Solomon erasure coding at the transport layer
+- **Thread-safe send/close** — automatic cross-thread forwarding via loop post + reference counting, no user-side locking
+- **Built-in frame parsing** — fixed-length, length-prefix, delimiter, and custom framing for TCP/UDS streams
+
+### Modules
+
+| Category | Modules |
+|----------|---------|
+| Transport | TCP, UDP, UDS, TLS, DTLS, Reliable UDP (KCP + FEC), Serial |
+| Application | HTTP/1.1 client/server, WebSocket client/server |
+| Crypto | SHA-256, HMAC-SHA256, AES-256, Base64 |
+| Data structures | Intrusive list/queue/stack/red-black tree, heap, ring buffer |
+| Utilities | JSON, gzip, varint, thread pool, async logger, waitgroup |
 
 
 # Build
