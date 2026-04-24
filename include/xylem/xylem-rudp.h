@@ -27,7 +27,6 @@ _Pragma("once")
 #include <stdint.h>
 
 typedef struct xylem_rudp_s        xylem_rudp_t;
-typedef struct xylem_rudp_ctx_s    xylem_rudp_ctx_t;
 typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 
 typedef struct xylem_rudp_handler_s {
@@ -46,25 +45,6 @@ typedef struct xylem_rudp_opts_s {
 } xylem_rudp_opts_t;
 
 /**
- * @brief Create a RUDP context.
- *
- * Allocates a reusable context that manages KCP conversation ID
- * generation. The initial conv is seeded from a PRNG so IDs are
- * unique across restarts. A single context can be shared by
- * multiple connections and servers.
- *
- * @return Context handle, or NULL on failure.
- */
-extern xylem_rudp_ctx_t* xylem_rudp_ctx_create(void);
-
-/**
- * @brief Destroy a RUDP context.
- *
- * @param ctx  Context handle.
- */
-extern void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx);
-
-/**
  * @brief Initiate a reliable UDP connection.
  *
  * Creates a connected UDP socket to the target address and starts
@@ -73,7 +53,6 @@ extern void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx);
  *
  * @param loop     Event loop.
  * @param addr     Target address.
- * @param ctx      RUDP context for conv ID generation.
  * @param handler  Event callback set.
  * @param opts     RUDP options, NULL for defaults.
  *
@@ -81,7 +60,6 @@ extern void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx);
  */
 extern xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
-                                     xylem_rudp_ctx_t* ctx,
                                      xylem_rudp_handler_t* handler,
                                      xylem_rudp_opts_t* opts);
 
@@ -192,7 +170,6 @@ extern int xylem_rudp_set_fec(xylem_rudp_t* rudp,
  *
  * @param loop     Event loop.
  * @param addr     Bind address.
- * @param ctx      RUDP context.
  * @param handler  Event callback set.
  * @param opts     RUDP options, NULL for defaults.
  *
@@ -200,7 +177,6 @@ extern int xylem_rudp_set_fec(xylem_rudp_t* rudp,
  */
 extern xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
                                               xylem_addr_t* addr,
-                                              xylem_rudp_ctx_t* ctx,
                                               xylem_rudp_handler_t* handler,
                                               xylem_rudp_opts_t* opts);
 

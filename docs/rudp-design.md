@@ -62,21 +62,20 @@ typedef struct xylem_rudp_opts_s {
 
 ```c
 typedef struct xylem_rudp_s        xylem_rudp_t;
-typedef struct xylem_rudp_ctx_s    xylem_rudp_ctx_t;
 typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 ```
 
 ## 内部结构
 
-### RUDP 上下文
+### Conv ID 分配
+
+Conv ID 通过模块级静态原子变量 `_rudp_next_conv` 分配，无需显式上下文对象：
 
 ```c
-struct xylem_rudp_ctx_s {
-    _Atomic uint32_t next_conv;   /* 下一个 KCP 会话 ID，PRNG 种子初始化，原子递增 */
-};
+static _Atomic uint32_t _rudp_next_conv = 0;
 ```
 
-`next_conv` 在 `xylem_rudp_ctx_create` 时通过 `xylem_utils_getprng` 随机初始化，每次 `xylem_rudp_dial` 通过 `atomic_fetch_add_explicit`（`memory_order_relaxed`）原子递增分配，确保多线程环境下 conv ID 不会重复。随机种子确保跨进程重启不会产生 conv 冲突。
+首次调用 `_rudp_alloc_conv` 时通过 `xylem_utils_getprng` 随机初始化种子（`atomic_compare_exchange_strong` 保证仅初始化一次），此后每次 `xylem_rudp_dial` 通过 `atomic_fetch_add_explicit`（`memory_order_relaxed`）原子递增分配，确保多线程环境下 conv ID 不会重复。随机种子确保跨进程重启不会产生 conv 冲突。
 
 ### RUDP 会话
 
@@ -117,7 +116,6 @@ struct xylem_rudp_s {
 ```c
 struct xylem_rudp_server_s {
     xylem_udp_t*           udp;       /* 共享的 UDP socket（listen 模式） */
-    xylem_rudp_ctx_t*      ctx;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_opts_t      opts;
     xylem_loop_t*          loop;
@@ -155,7 +153,7 @@ sequenceDiagram
     participant Net as 网络
 
     User->>RUDP: xylem_rudp_dial()
-    RUDP->>RUDP: 分配 conv（atomic_fetch_add next_conv）
+    RUDP->>RUDP: 分配 conv（_rudp_alloc_conv，模块级原子递增）
     RUDP->>UDP: xylem_udp_dial（已连接 socket）
     RUDP->>RUDP: 创建 KCP 会话
     RUDP->>UDP: 发送 SYN [magic, 0x01, conv]
@@ -553,18 +551,10 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 
 ## 公开 API
 
-### 上下文
-
-```c
-xylem_rudp_ctx_t* xylem_rudp_ctx_create(void);
-void              xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx);
-```
-
 ### 会话
 
 ```c
 xylem_rudp_t*       xylem_rudp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
-                                     xylem_rudp_ctx_t* ctx,
                                      xylem_rudp_handler_t* handler,
                                      xylem_rudp_opts_t* opts);
 int                 xylem_rudp_send(xylem_rudp_t* rudp,
@@ -584,7 +574,6 @@ void                xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
 
 ```c
 xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
-                                        xylem_rudp_ctx_t* ctx,
                                         xylem_rudp_handler_t* handler,
                                         xylem_rudp_opts_t* opts);
 void                 xylem_rudp_close_server(xylem_rudp_server_t* server);

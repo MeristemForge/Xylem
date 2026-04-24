@@ -65,9 +65,18 @@
 /* Default timeout for client waiting for handshake ACK. */
 #define RUDP_DEFAULT_HANDSHAKE_MS 5000
 
-struct xylem_rudp_ctx_s {
-    _Atomic uint32_t next_conv;
-};
+/* Module-level conv allocator, lazily seeded on first use. */
+static _Atomic uint32_t _rudp_next_conv = 0;
+
+static uint32_t _rudp_alloc_conv(void) {
+    uint32_t v = atomic_load(&_rudp_next_conv);
+    if (v == 0) {
+        uint32_t seed = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
+        atomic_compare_exchange_strong(&_rudp_next_conv, &v, seed);
+    }
+    return atomic_fetch_add_explicit(&_rudp_next_conv, 1,
+                                     memory_order_relaxed);
+}
 
 struct xylem_rudp_s {
     ikcpcb*                kcp;
@@ -95,7 +104,6 @@ struct xylem_rudp_s {
 
 struct xylem_rudp_server_s {
     xylem_udp_t*           udp;
-    xylem_rudp_ctx_t*      ctx;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_opts_t      opts;
     xylem_loop_t*          loop;
@@ -114,26 +122,6 @@ typedef struct {
     xylem_addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;
-
-xylem_rudp_ctx_t* xylem_rudp_ctx_create(void) {
-    xylem_rudp_ctx_t* ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) {
-        return NULL;
-    }
-    /**
-     * Seed with a random value so conv IDs don't collide across
-     * process restarts or multiple ctx instances.
-     */
-    ctx->next_conv = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
-    return ctx;
-}
-
-void xylem_rudp_ctx_destroy(xylem_rudp_ctx_t* ctx) {
-    if (!ctx) {
-        return;
-    }
-    free(ctx);
-}
 
 static int _rudp_addr_cmp(const xylem_addr_t* a, const xylem_addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
@@ -703,7 +691,6 @@ static xylem_udp_handler_t _rudp_server_udp_handler = {
 
 xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
-                              xylem_rudp_ctx_t* ctx,
                               xylem_rudp_handler_t* handler,
                               xylem_rudp_opts_t* opts) {
     xylem_rudp_t* rudp = calloc(1, sizeof(*rudp));
@@ -711,8 +698,7 @@ xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
         return NULL;
     }
 
-    uint32_t conv = atomic_fetch_add_explicit(&ctx->next_conv, 1,
-                                              memory_order_relaxed);
+    uint32_t conv = _rudp_alloc_conv();
 
     rudp->handler    = handler;
     rudp->peer_addr  = *addr;
@@ -962,7 +948,6 @@ int xylem_rudp_set_fec(xylem_rudp_t* rudp, int fec_data, int fec_parity) {
 
 xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
                                        xylem_addr_t* addr,
-                                       xylem_rudp_ctx_t* ctx,
                                        xylem_rudp_handler_t* handler,
                                        xylem_rudp_opts_t* opts) {
     xylem_rudp_server_t* server = calloc(1, sizeof(*server));
@@ -970,7 +955,6 @@ xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
         return NULL;
     }
 
-    server->ctx     = ctx;
     server->handler = handler;
     server->loop    = loop;
     if (opts) {
