@@ -23,7 +23,7 @@
 #include "xylem/xylem-logger.h"
 
 #include "platform/platform-socket.h"
-
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,10 +37,19 @@ struct xylem_udp_s {
     xylem_addr_t          peer;
     char                  recv_buf[65536];
     bool                  connected;
-    bool                  closing;
+    _Atomic bool          closing;
+    _Atomic int32_t       refcount;
     int                   close_err;
     const char*           close_errmsg;
 };
+
+typedef struct _udp_deferred_send_s {
+    xylem_udp_t*  udp;
+    xylem_addr_t  dest;
+    bool          has_dest;
+    size_t        len;
+    char          data[];
+} _udp_deferred_send_t;
 
 /**
  * Handle readable event: recvfrom into recv_buf, wrap sender in
@@ -55,17 +64,10 @@ static void _udp_io_cb(xylem_loop_t* loop,
     (void)revents;
     xylem_udp_t* udp = (xylem_udp_t*)ud;
 
-    if (udp->closing) {
+    if (atomic_load(&udp->closing)) {
         return;
     }
 
-    /**
-     * Loop until EAGAIN to drain the kernel buffer in one IO callback,
-     * avoiding repeated poller wakeups under LT.
-     *
-     * Connected sockets use recv because macOS recvfrom on a connected UDP
-     * socket may not fill the sender address reliably.
-     */
     for (;;) {
         ssize_t n;
         xylem_addr_t addr;
@@ -102,9 +104,15 @@ static void _udp_io_cb(xylem_loop_t* loop,
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, &addr);
         }
 
-        if (udp->closing) {
+        if (atomic_load(&udp->closing)) {
             return;
         }
+    }
+}
+
+static void _udp_decref(xylem_udp_t* udp) {
+    if (atomic_fetch_sub(&udp->refcount, 1) == 1) {
+        free(udp);
     }
 }
 
@@ -113,8 +121,7 @@ static void _udp_free_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
                          void* ud) {
     (void)loop;
     (void)req;
-    xylem_udp_t* udp = (xylem_udp_t*)ud;
-    free(udp);
+    _udp_decref((xylem_udp_t*)ud);
 }
 
 xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
@@ -144,6 +151,7 @@ xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
     udp->handler   = handler;
     udp->connected = false;
     udp->closing   = false;
+    atomic_store(&udp->refcount, 1);
 
     udp->io = xylem_loop_create_io(loop, fd);
     if (!udp->io) {
@@ -188,6 +196,7 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     udp->peer      = *addr;
     udp->connected = true;
     udp->closing   = false;
+    atomic_store(&udp->refcount, 1);
 
     udp->io = xylem_loop_create_io(loop, fd);
     if (!udp->io) {
@@ -202,17 +211,54 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
     return udp;
 }
 
+static void _udp_deferred_send_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    _udp_deferred_send_t* ds = (_udp_deferred_send_t*)ud;
+
+    if (!atomic_load(&ds->udp->closing)) {
+        xylem_udp_send(ds->udp, ds->has_dest ? &ds->dest : NULL,
+                       ds->data, ds->len);
+    }
+
+    _udp_decref(ds->udp);
+    free(ds);
+}
+
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
-    if (udp->closing) {
+    if (atomic_load(&udp->closing)) {
         xylem_logd("udp fd=%d send rejected (closing)", (int)udp->fd);
         return -1;
     }
 
-    /**
-     * Connected sockets must use send(); sendto() with a dest address
-     * returns EISCONN on macOS/BSD (POSIX-permitted behavior).
-     */
+    /* Cross-thread: copy data and post to loop thread. */
+    if (!xylem_loop_is_loop_thread(udp->loop)) {
+        _udp_deferred_send_t* ds = (_udp_deferred_send_t*)malloc(
+            sizeof(_udp_deferred_send_t) + len);
+        if (!ds) {
+            return -1;
+        }
+        ds->udp      = udp;
+        ds->has_dest = (dest != NULL);
+        if (dest) {
+            ds->dest = *dest;
+        }
+        ds->len = len;
+        memcpy(ds->data, data, len);
+
+        atomic_fetch_add(&udp->refcount, 1);
+        if (xylem_loop_post(udp->loop, _udp_deferred_send_cb, ds) != 0) {
+            _udp_decref(udp);
+            free(ds);
+            return -1;
+        }
+        return 0;
+    }
+
+    /* Same thread: send directly. */
     if (!dest || udp->connected) {
         ssize_t n = platform_socket_send(udp->fd, data, (int)len);
         if (n < 0) {
@@ -237,12 +283,8 @@ int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
     return (n < 0) ? -1 : (int)n;
 }
 
-void xylem_udp_close(xylem_udp_t* udp) {
-    if (udp->closing) {
-        return;
-    }
+static void _udp_do_close(xylem_udp_t* udp) {
     xylem_logi("udp fd=%d closing", (int)udp->fd);
-    udp->closing = true;
 
     xylem_loop_destroy_io(udp->io);
     platform_socket_close(udp->fd);
@@ -251,8 +293,36 @@ void xylem_udp_close(xylem_udp_t* udp) {
         udp->handler->on_close(udp, udp->close_err, udp->close_errmsg);
     }
 
-    /* Defer free to next loop iteration so close_node stays valid */
     xylem_loop_post(udp->loop, _udp_free_cb, udp);
+}
+
+static void _udp_deferred_close_cb(xylem_loop_t* loop,
+                                    xylem_loop_post_t* req,
+                                    void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_udp_t* udp = (xylem_udp_t*)ud;
+    _udp_do_close(udp);
+    _udp_decref(udp);
+}
+
+void xylem_udp_close(xylem_udp_t* udp) {
+    /* Idempotent: may be called multiple times or from callbacks. */
+    if (atomic_load(&udp->closing)) {
+        return;
+    }
+    atomic_store(&udp->closing, true);
+
+    /* Cross-thread: post to loop thread. */
+    if (!xylem_loop_is_loop_thread(udp->loop)) {
+        atomic_fetch_add(&udp->refcount, 1);
+        if (xylem_loop_post(udp->loop, _udp_deferred_close_cb, udp) != 0) {
+            _udp_decref(udp);
+        }
+        return;
+    }
+
+    _udp_do_close(udp);
 }
 
 xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp) {
@@ -265,4 +335,12 @@ void* xylem_udp_get_userdata(xylem_udp_t* udp) {
 
 void xylem_udp_set_userdata(xylem_udp_t* udp, void* ud) {
     udp->userdata = ud;
+}
+
+void xylem_udp_acquire(xylem_udp_t* udp) {
+    atomic_fetch_add(&udp->refcount, 1);
+}
+
+void xylem_udp_release(xylem_udp_t* udp) {
+    _udp_decref(udp);
 }

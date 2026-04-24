@@ -101,6 +101,11 @@ typedef struct {
     int                    send_result;
     char                   received[256];
     size_t                 received_len;
+    xylem_thrdpool_t*      pool;           /* 跨线程测试用线程池 */
+    xylem_loop_timer_t*    close_timer;    /* 跨线程测试用关闭定时器 */
+    xylem_loop_timer_t*    check_timer;    /* 跨线程测试用检查定时器 */
+    _Atomic bool           closed;         /* 跨线程测试用关闭标志 */
+    _Atomic bool           worker_done;    /* 跨线程测试用工作线程完成标志 */
 } _test_ctx_t;
 ```
 
@@ -115,6 +120,9 @@ typedef struct {
 - `value`：userdata 测试用整数值
 - `send_result`：send 返回值记录
 - `received` / `received_len`：接收数据缓冲区
+- `pool`：跨线程测试用线程池
+- `close_timer` / `check_timer`：跨线程测试用定时器
+- `closed` / `worker_done`：跨线程测试用原子标志（协调工作线程与事件循环线程）
 
 ### 测试列表
 

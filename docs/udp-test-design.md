@@ -2,16 +2,18 @@
 
 ## 概述
 
-`tests/test-udp.c` 包含 10 个测试函数，覆盖 `src/xylem-udp.c` 的所有公共 API 和两种工作模式（listen 未连接模式、dial 已连接模式）。
+`tests/test-udp.c` 包含 13 个测试函数，覆盖 `src/xylem-udp.c` 的所有公共 API 和两种工作模式（listen 未连接模式、dial 已连接模式）。
 
 ## 测试基础设施
 
-- 每个异步测试定义独立的 context 结构体（如 `_lr_ctx_t`、`_de_ctx_t`），通过 `xylem_udp_set_userdata` 传递给回调，无文件作用域可变状态
+- 每个异步测试定义独立的 context 结构体（如 `_lr_ctx_t`、`_de_ctx_t`、`_xt_send_ctx_t`），通过 `xylem_udp_set_userdata` 传递给回调，无文件作用域可变状态
 - 共享回调：`_safety_timeout_cb`（2000ms 安全超时停循环）、`_stop_cb`（同步测试排空延迟释放）
 - 每个测试独立创建 Loop，测试间无共享状态
 - 两个端口 `PORT_A 19001` / `PORT_B 19002`，所有测试复用（UDP 无 TIME_WAIT，close 后端口立即可重新 bind）
 - 异步测试使用 10ms 延迟定时器触发发送，确保接收端已注册到事件循环
 - 同步测试（close、userdata、get_loop）使用 50ms drain 定时器让 deferred free 完成
+- 跨线程测试使用 `xylem_thrdpool_t` 线程池在工作线程上执行 send/close 操作
+- `main` 函数首尾调用 `xylem_startup` 和 `xylem_cleanup`
 
 ## 端口分配
 
@@ -54,17 +56,27 @@ Dial 模式测试只需 PORT_A（client 由系统分配临时端口）。
 | `test_userdata` | set/get userdata | 指针往返一致，解引用值==42 |
 | `test_get_loop` | 获取关联 loop | 与创建时的 loop 相同 |
 
+### 跨线程操作（3 个）
+
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_cross_thread_send` | 跨线程 xylem_udp_send + acquire/release | 定时器中 acquire，工作线程发送 "hello" 后 release，服务端收到数据一致，data_len==5 |
+| `test_cross_thread_close` | 跨线程 xylem_udp_close + acquire/release | 定时器中 acquire，工作线程调用 close 后 release，on_close 回调触发，close_called==1 |
+| `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 事件循环线程关闭 + acquire/release | 定时器中 acquire，工作线程循环 send（每次间隔 1ms），50ms 后事件循环线程关闭 client，on_close 触发后 send 停止（atomic closed 标志），worker release，worker_done==true |
+
 ## 覆盖的公共 API
 
 | API 函数 | 覆盖的测试 |
 |---------|-----------|
-| `xylem_udp_listen` | 全部 10 个（listen 模式创建 + dial 模式服务端） |
-| `xylem_udp_dial` | test_dial_echo, test_dial_addr |
-| `xylem_udp_send` | test_listen_recv, test_listen_send, test_dial_echo, test_datagram_boundary, test_send_after_close |
-| `xylem_udp_close` | test_close_idempotent, test_close_callback, test_send_after_close + 所有异步测试的清理路径 |
+| `xylem_udp_listen` | 全部 13 个（listen 模式创建 + dial 模式服务端） |
+| `xylem_udp_dial` | test_dial_echo, test_dial_addr, test_cross_thread_send, test_cross_thread_send_stop_on_close |
+| `xylem_udp_send` | test_listen_recv, test_listen_send, test_dial_echo, test_datagram_boundary, test_send_after_close, test_cross_thread_send, test_cross_thread_send_stop_on_close |
+| `xylem_udp_close` | test_close_idempotent, test_close_callback, test_send_after_close, test_cross_thread_close, test_cross_thread_send_stop_on_close + 所有异步测试的清理路径 |
 | `xylem_udp_get_userdata` | test_userdata + 所有 context 回调（通过 userdata 传递 ctx） |
 | `xylem_udp_set_userdata` | test_userdata + 所有异步测试的 setup |
 | `xylem_udp_get_loop` | test_get_loop |
+| `xylem_udp_acquire` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
+| `xylem_udp_release` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 
 ## 覆盖的内部分支
 
@@ -73,12 +85,16 @@ Dial 模式测试只需 PORT_A（client 由系统分配临时端口）。
 | `_udp_io_cb` recv 循环（connected=false, recvfrom） | test_listen_recv, test_listen_send, test_datagram_boundary |
 | `_udp_io_cb` recv 循环（connected=true, recv） | test_dial_echo, test_dial_addr |
 | `_udp_io_cb` EAGAIN 退出 | 所有异步测试（drain 循环正常退出） |
-| `xylem_udp_send` connected 路径（send） | test_dial_echo, test_dial_addr |
+| `xylem_udp_send` connected 路径（send） | test_dial_echo, test_dial_addr, test_cross_thread_send, test_cross_thread_send_stop_on_close |
 | `xylem_udp_send` unconnected 路径（sendto） | test_listen_recv, test_listen_send, test_datagram_boundary |
 | `xylem_udp_send` closing 拒绝 | test_send_after_close |
+| `xylem_udp_send` 跨线程路径（_udp_deferred_send_cb） | test_cross_thread_send, test_cross_thread_send_stop_on_close |
+| `xylem_udp_send` 跨线程 + 连接关闭（closing 检查拒绝发送） | test_cross_thread_send_stop_on_close |
 | `xylem_udp_close` 幂等（closing 标志） | test_close_idempotent |
-| `xylem_udp_close` on_close 回调 | test_close_callback |
+| `xylem_udp_close` on_close 回调 | test_close_callback, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 | `xylem_udp_close` deferred free | 所有测试（loop_run 后资源释放） |
+| `xylem_udp_close` 跨线程路径（_udp_deferred_close_cb） | test_cross_thread_close |
+| `xylem_udp_acquire` / `xylem_udp_release` 引用计数 | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 
 ## 未覆盖的路径
 

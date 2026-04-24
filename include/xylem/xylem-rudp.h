@@ -96,7 +96,7 @@ extern xylem_rudp_t* xylem_rudp_dial(xylem_loop_t* loop,
                                      xylem_rudp_opts_t* opts);
 
 /**
- * @brief Send data over a reliable UDP connection.
+ * @brief Thread-safe. Send data over a reliable UDP connection.
  *
  * Data is enqueued into the KCP send buffer and transmitted
  * on the next update cycle.
@@ -111,7 +111,7 @@ extern int xylem_rudp_send(xylem_rudp_t* rudp,
                            const void* data, size_t len);
 
 /**
- * @brief Close a reliable UDP connection.
+ * @brief Thread-safe. Close a reliable UDP connection.
  *
  * Releases the KCP session and closes the underlying UDP socket.
  * handler->on_close fires with err=0 for a normal close.
@@ -119,6 +119,26 @@ extern int xylem_rudp_send(xylem_rudp_t* rudp,
  * @param rudp  RUDP handle.
  */
 extern void xylem_rudp_close(xylem_rudp_t* rudp);
+
+/**
+ * @brief Increment the reference count of a RUDP session.
+ *
+ * Call before passing the session handle to another thread.
+ * Must be called from the event loop thread.
+ *
+ * @param rudp  RUDP handle.
+ */
+extern void xylem_rudp_conn_acquire(xylem_rudp_t* rudp);
+
+/**
+ * @brief Decrement the reference count of a RUDP session.
+ *
+ * When the count reaches zero the session memory is freed.
+ * May be called from any thread.
+ *
+ * @param rudp  RUDP handle.
+ */
+extern void xylem_rudp_conn_release(xylem_rudp_t* rudp);
 
 /**
  * @brief Get the peer address of a connection.

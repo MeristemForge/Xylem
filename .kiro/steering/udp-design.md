@@ -48,13 +48,28 @@ struct xylem_udp_s {
     xylem_addr_t          peer;          /* 仅 dial 模式有效 */
     char                  recv_buf[65536]; /* 接收缓冲区 */
     bool                  connected;     /* true = dial 模式 */
-    bool                  closing;       /* 幂等关闭标志 */
+    _Atomic bool          closing;       /* 幂等关闭标志，原子类型支持跨线程安全读取 */
+    _Atomic int32_t       refcount;      /* 引用计数，用于跨线程操作的生命周期管理 */
     int                   close_err;     /* recv 错误码，正常关闭为 0 */
     const char*           close_errmsg;  /* recv 错误描述，正常关闭为 NULL */
 };
 ```
 
 接收缓冲区固定 65536 字节，覆盖 UDP 数据报最大理论长度（65535 字节）。
+
+### 延迟发送请求
+
+跨线程调用 `xylem_udp_send` 时分配，通过 `xylem_loop_post` 转发到事件循环线程：
+
+```c
+typedef struct _udp_deferred_send_s {
+    xylem_udp_t*  udp;
+    xylem_addr_t  dest;
+    bool          has_dest;
+    size_t        len;
+    char          data[];  /* 柔性数组成员，用户数据副本 */
+} _udp_deferred_send_t;
+```
 
 ## 两种工作模式
 
@@ -122,15 +137,50 @@ sequenceDiagram
     participant Loop as 事件循环
 
     User->>UDP: xylem_udp_close()
-    Note over UDP: closing = true（幂等）
+    UDP->>UDP: atomic_load(closing)
+    alt CLOSING
+        UDP-->>User: 立即返回（幂等）
+    end
+    UDP->>UDP: atomic_store(closing, true)
+    alt 跨线程调用
+        UDP->>UDP: xylem_loop_post(_udp_deferred_close_cb)
+        Note over UDP: 下一轮事件循环迭代执行
+        UDP->>UDP: _udp_do_close()（事件循环线程）
+    end
+    UDP->>UDP: _udp_do_close()
     UDP->>UDP: xylem_loop_destroy_io()
     UDP->>UDP: platform_socket_close(fd)
-    UDP->>User: handler->on_close(udp, 0, NULL)
+    UDP->>User: handler->on_close(udp, close_err, close_errmsg)
     UDP->>Loop: xylem_loop_post(_udp_free_cb)
     Loop->>UDP: 下一轮迭代释放内存
 ```
 
-关闭是幂等的（`closing` 标志防止重入）。内存通过 `xylem_loop_post` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。
+关闭是幂等的（`closing` 标志防止重入）。`xylem_udp_close` 入口处首先通过 `atomic_load` 检查 `closing` 标志——若已为 `true` 则立即返回。此检查在线程判断之前执行，确保重复调用和 `xylem_loop_destroy` 排空延迟回调时不会无限递归 `xylem_loop_post`。`xylem_loop_destroy` 在排空前会将 `loop->tid` 设置为当前线程，使延迟回调走同线程路径。
+
+通过幂等检查后，`closing` 标志在调用线程上立即设置为 `true`（`atomic_store`），确保并发的 `xylem_udp_send` 调用被立即拒绝。然后检查是否在事件循环线程上：若不在，递增引用计数后通过 `xylem_loop_post` 将 `_udp_deferred_close_cb` 转发到事件循环线程执行。若 `xylem_loop_post` 失败则立即递减引用计数，避免引用计数泄漏。
+
+实际关闭逻辑封装在 `_udp_do_close` 中，`_udp_deferred_close_cb` 直接调用此函数而非重新进入 `xylem_udp_close`。这避免了 `xylem_loop_destroy` 排空延迟回调时（`loop->tid` 未设置）重复 `xylem_loop_post` 导致的无限递归。`_udp_do_close` 内部再次检查 `closing` 状态（防止竞态），然后使用 `atomic_store` 设置 `closing` 标志。同线程路径直接调用 `_udp_do_close`，`closing` 标志已在入口处设置。
+
+`_udp_deferred_close_cb` 完成后递减引用计数（`_udp_decref`），确保句柄内存在回调执行前不会被释放。
+
+内存通过 `xylem_loop_post` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。当引用计数归零时释放句柄内存。
+
+## 线程安全
+
+`xylem_udp_send` 和 `xylem_udp_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
+
+- **事件循环线程**：直接执行操作
+- **其他线程**：递增引用计数后通过 `xylem_loop_post` 将操作转发到事件循环线程，回调完成后递减引用计数
+
+`xylem_udp_close` 跨线程调用时，`closing` 标志在调用线程上立即设置为 `true`（`atomic_store`），确保并发的 `xylem_udp_send` 调用被立即拒绝。然后递增引用计数并通过 `xylem_loop_post` 将 `_udp_deferred_close_cb` 转发到事件循环线程执行。`_udp_deferred_close_cb` 直接调用 `_udp_do_close`（而非重新进入 `xylem_udp_close`），避免 `xylem_loop_destroy` 排空延迟回调时因 `loop->tid` 未设置而重复 `xylem_loop_post` 导致的无限递归。回调完成后递减引用计数。若 `xylem_loop_post` 失败则立即递减引用计数（`_udp_decref`），避免引用计数泄漏。
+
+`xylem_udp_close` 同线程调用时，`closing` 标志在入口处立即设置后，直接调用 `_udp_do_close` 执行实际关闭操作。
+
+`xylem_udp_send` 跨线程调用时，先通过 `atomic_load` 检查 `closing` 标志，已关闭则返回 -1。否则分配 `_udp_deferred_send_t`（包含 UDP 句柄指针和数据副本），递增引用计数后通过 `xylem_loop_post` 转发到事件循环线程。回调 `_udp_deferred_send_cb` 在发送前再次检查 `closing` 状态（句柄可能在 post 期间关闭），处理完毕后递减引用计数（`_udp_decref`）。
+
+`udp->closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。`closing` 标志在 `xylem_udp_close` 入口处（通过幂等检查后）由调用线程立即设置为 `true`，无论调用来自哪个线程。所有实际关闭操作（destroy IO、close fd、on_close 回调）仅在事件循环线程上执行。
+
+其他 API（`xylem_udp_listen`、`xylem_udp_dial`、访问器等）仍需在事件循环线程上调用。
 
 ## 公开 API
 
@@ -145,12 +195,18 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
                             xylem_addr_t* addr,
                             xylem_udp_handler_t* handler);
 
-/* 发送数据报，dest 为 NULL 时使用已连接地址 */
+/* 发送数据报，dest 为 NULL 时使用已连接地址。线程安全。 */
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len);
 
-/* 关闭 UDP 句柄 */
+/* 关闭 UDP 句柄。线程安全。 */
 void xylem_udp_close(xylem_udp_t* udp);
+
+/* 递增引用计数，需在事件循环线程上调用。 */
+void xylem_udp_acquire(xylem_udp_t* udp);
+
+/* 递减引用计数，归零时释放内存。可从任意线程调用。 */
+void xylem_udp_release(xylem_udp_t* udp);
 
 /* 获取关联的事件循环 */
 xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp);

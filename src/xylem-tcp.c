@@ -1022,26 +1022,12 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
     xylem_loop_post(server->loop, _tcp_server_free_cb, server);
 }
 
-static void _tcp_deferred_close_cb(xylem_loop_t* loop,
-                                   xylem_loop_post_t* req,
-                                   void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
-    xylem_tcp_close(conn);
-    _tcp_conn_decref(conn);
-}
-
-void xylem_tcp_close(xylem_tcp_conn_t* conn) {
-    /* Cross-thread: post to loop thread. */
-    if (!xylem_loop_is_loop_thread(conn->loop)) {
-        atomic_fetch_add(&conn->refcount, 1);
-        if (xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn) != 0) {
-            _tcp_conn_decref(conn);
-        }
-        return;
-    }
-
+/**
+ * Close logic that runs on the loop thread.  Extracted so that
+ * _tcp_deferred_close_cb can call it directly instead of re-entering
+ * xylem_tcp_close (which would re-post when loop->tid is unset).
+ */
+static void _tcp_do_close(xylem_tcp_conn_t* conn) {
     /* Idempotent: user may call close multiple times or from callbacks. */
     if (atomic_load(&conn->state) == TCP_STATE_CLOSING ||
         atomic_load(&conn->state) == TCP_STATE_CLOSED) {
@@ -1060,6 +1046,35 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
      * Non-empty: _tcp_flush_writes drains the queue, then calls
      * shutdown + _tcp_destroy_conn when it sees CLOSING state.
      */
+}
+
+static void _tcp_deferred_close_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
+    _tcp_do_close(conn);
+    _tcp_conn_decref(conn);
+}
+
+void xylem_tcp_close(xylem_tcp_conn_t* conn) {
+    /* Idempotent: reject if already closing/closed. */
+    _tcp_state_t st = atomic_load(&conn->state);
+    if (st == TCP_STATE_CLOSING || st == TCP_STATE_CLOSED) {
+        return;
+    }
+
+    /* Cross-thread: post to loop thread. */
+    if (!xylem_loop_is_loop_thread(conn->loop)) {
+        atomic_fetch_add(&conn->refcount, 1);
+        if (xylem_loop_post(conn->loop, _tcp_deferred_close_cb, conn) != 0) {
+            _tcp_conn_decref(conn);
+        }
+        return;
+    }
+
+    _tcp_do_close(conn);
 }
 
 /* Enqueue a write request and arm IO/timer (loop thread only). */

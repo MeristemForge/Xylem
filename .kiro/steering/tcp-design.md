@@ -352,6 +352,10 @@ sequenceDiagram
     participant OS as 操作系统
 
     User->>TCP: xylem_tcp_close()
+    TCP->>TCP: atomic_load(state)
+    alt CLOSING 或 CLOSED
+        TCP-->>User: 立即返回（幂等）
+    end
     alt 跨线程调用
         TCP->>TCP: xylem_loop_post(_tcp_deferred_close_cb)
         Note over TCP: 下一轮事件循环迭代执行
@@ -373,9 +377,11 @@ sequenceDiagram
     end
 ```
 
-`xylem_tcp_close` 支持跨线程调用。若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_tcp_conn_decref`），确保连接内存在回调执行前不会被释放。
+`xylem_tcp_close` 支持跨线程调用。入口处首先通过 `atomic_load` 检查状态实现幂等性——若已处于 `CLOSING` 或 `CLOSED` 状态则立即返回。此检查在线程判断之前执行，确保重复调用和 `xylem_loop_destroy` 排空延迟回调时不会无限递归 `xylem_loop_post`。`xylem_loop_destroy` 在排空前会将 `loop->tid` 设置为当前线程，使延迟回调走同线程路径。
 
-在事件循环线程上，使用 `atomic_load` 检查状态实现幂等性，使用 `atomic_store` 设置 `CLOSING` 状态。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
+通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_tcp_conn_decref`），确保连接内存在回调执行前不会被释放。
+
+在事件循环线程上，使用 `atomic_store` 设置 `CLOSING` 状态。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
 
 `_tcp_close_conn`（由错误路径触发）行为不同：同步排空写队列（`on_write_done` status=-1 表示未发送），然后立即 `_tcp_destroy_conn`。
 

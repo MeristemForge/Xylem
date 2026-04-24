@@ -147,7 +147,7 @@ extern xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
 /**
  * @brief Send data over a UDS connection.
  *
- * Data is copied into an internal write queue and returns
+ * Thread-safe. Data is copied into an internal write queue and returns
  * immediately. Each write triggers handler->on_write_done.
  *
  * @param conn  Connection handle.
@@ -162,12 +162,32 @@ extern int xylem_uds_send(xylem_uds_conn_t* conn,
 /**
  * @brief Close a UDS connection.
  *
- * Flushes the write queue, then shuts down and closes the socket.
+ * Thread-safe. Flushes the write queue, then shuts down and closes the socket.
  * Calls handler->on_close when done.
  *
  * @param conn  Connection handle.
  */
 extern void xylem_uds_close(xylem_uds_conn_t* conn);
+
+/**
+ * @brief Increment the reference count of a UDS connection.
+ *
+ * Call before passing the connection handle to another thread.
+ * Must be called from the event loop thread.
+ *
+ * @param conn  Connection handle.
+ */
+extern void xylem_uds_conn_acquire(xylem_uds_conn_t* conn);
+
+/**
+ * @brief Decrement the reference count of a UDS connection.
+ *
+ * When the count reaches zero the connection memory is freed.
+ * May be called from any thread.
+ *
+ * @param conn  Connection handle.
+ */
+extern void xylem_uds_conn_release(xylem_uds_conn_t* conn);
 
 /**
  * @brief Get the event loop associated with a connection.

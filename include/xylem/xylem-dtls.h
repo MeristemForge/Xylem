@@ -147,7 +147,7 @@ extern xylem_dtls_t* xylem_dtls_dial(xylem_loop_t* loop,
                                      xylem_dtls_handler_t* handler);
 
 /**
- * @brief Send a datagram over a DTLS session.
+ * @brief Thread-safe. Send a datagram over a DTLS session.
  *
  * Encrypts plaintext via SSL_write and sends the resulting
  * ciphertext over UDP.
@@ -162,7 +162,7 @@ extern int xylem_dtls_send(xylem_dtls_t* dtls,
                            const void* data, size_t len);
 
 /**
- * @brief Close a DTLS session.
+ * @brief Thread-safe. Close a DTLS session.
  *
  * Sends close_notify and closes the underlying UDP socket.
  * handler->on_close fires with err=0 and errmsg=NULL for a normal
@@ -172,6 +172,26 @@ extern int xylem_dtls_send(xylem_dtls_t* dtls,
  * @param dtls  DTLS session handle.
  */
 extern void xylem_dtls_close(xylem_dtls_t* dtls);
+
+/**
+ * @brief Increment the reference count of a DTLS session.
+ *
+ * Call before passing the session handle to another thread.
+ * Must be called from the event loop thread.
+ *
+ * @param dtls  DTLS session handle.
+ */
+extern void xylem_dtls_conn_acquire(xylem_dtls_t* dtls);
+
+/**
+ * @brief Decrement the reference count of a DTLS session.
+ *
+ * When the count reaches zero the session memory is freed.
+ * May be called from any thread.
+ *
+ * @param dtls  DTLS session handle.
+ */
+extern void xylem_dtls_conn_release(xylem_dtls_t* dtls);
 
 /**
  * @brief Get the negotiated ALPN protocol.

@@ -101,12 +101,13 @@ struct xylem_rudp_s {
     xylem_rudp_server_t*   server;          /* 服务端会话非 NULL */
     xylem_addr_t           peer_addr;
     void*                  userdata;
-    bool                   handshake_done;
-    bool                   closing;
-    bool                   fec_pending;     /* true: on_accept 可能覆盖 FEC 参数 */
+    _Atomic bool           handshake_done;  /* 原子类型，支持跨线程安全读取 */
+    _Atomic bool           closing;         /* 幂等关闭标志，原子类型支持跨线程安全读取 */
+    _Atomic int32_t        refcount;        /* 引用计数，用于跨线程操作的生命周期管理 */
     int                    close_err;
     const char*            close_errmsg;
     uint32_t               conv;            /* KCP 会话 ID */
+    int                    mtu;             /* 有效 MTU，用于 FEC 创建 */
     int                    fec_data;        /* 每会话 FEC 数据分片数 */
     int                    fec_parity;      /* 每会话 FEC 奇偶校验分片数 */
     xylem_loop_t*          loop;
@@ -118,7 +119,11 @@ struct xylem_rudp_s {
 };
 ```
 
+`handshake_done` 和 `closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。`refcount` 使用 `_Atomic int32_t` 管理会话生命周期，为跨线程操作（如未来的跨线程 `xylem_rudp_send` 和 `xylem_rudp_close`）提供基础设施。
+
 `fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
+
+`mtu` 保存有效 MTU 值（客户端从 `opts->mtu` 获取，默认 1400；服务端从 `server->opts.mtu` 继承），供 `_rudp_init_fec` 和 `xylem_rudp_set_fec` 创建 FEC 编码器/解码器时使用。
 
 ### RUDP 服务器
 
@@ -577,11 +582,15 @@ xylem_rudp_t*       xylem_rudp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
 int                 xylem_rudp_send(xylem_rudp_t* rudp,
                                      const void* data, size_t len);
 void                xylem_rudp_close(xylem_rudp_t* rudp);
+int                 xylem_rudp_set_fec(xylem_rudp_t* rudp,
+                                       int fec_data, int fec_parity);
 const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_t* rudp);
 xylem_loop_t*       xylem_rudp_get_loop(xylem_rudp_t* rudp);
 void*               xylem_rudp_get_userdata(xylem_rudp_t* rudp);
 void                xylem_rudp_set_userdata(xylem_rudp_t* rudp, void* ud);
 ```
+
+`xylem_rudp_set_fec` 在运行时修改会话的 FEC 参数。销毁现有 FEC 编码器/解码器，更新分片参数，重新调整 KCP MTU（FEC 启用时减去 `RUDP_FEC_HEADER_SIZE`），然后创建新的 FEC 状态。传入 0/0 可完全禁用 FEC。会话创建后（客户端 `xylem_rudp_dial` 返回后、服务端 `on_accept` 回调中）均可安全调用。
 
 ### 服务器
 

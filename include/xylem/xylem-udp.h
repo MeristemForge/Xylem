@@ -83,8 +83,7 @@ extern xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
  *
  * @return Number of bytes sent, or -1 on failure.
  *
- * @note Not thread-safe. Must be called from the loop thread.
- *       Use xylem_loop_post() to send from other threads.
+ * @note Thread-safe. May be called from any thread.
  */
 extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                           const void* data, size_t len);
@@ -100,9 +99,29 @@ extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
  *
  * @param udp  UDP handle.
  *
- * @note Not thread-safe. Must be called from the loop thread.
+ * @note Thread-safe. May be called from any thread.
  */
 extern void xylem_udp_close(xylem_udp_t* udp);
+
+/**
+ * @brief Increment the reference count of a UDP handle.
+ *
+ * Call before passing the handle to another thread.
+ * Must be called from the event loop thread.
+ *
+ * @param udp  UDP handle.
+ */
+extern void xylem_udp_acquire(xylem_udp_t* udp);
+
+/**
+ * @brief Decrement the reference count of a UDP handle.
+ *
+ * When the count reaches zero the handle memory is freed.
+ * May be called from any thread.
+ *
+ * @param udp  UDP handle.
+ */
+extern void xylem_udp_release(xylem_udp_t* udp);
 
 /**
  * @brief Get the event loop associated with a UDP handle.

@@ -571,13 +571,34 @@ static void _tls_deferred_send_cb(xylem_loop_t* loop,
     free(ds);
 }
 
+/**
+ * Close logic that runs on the loop thread.  Extracted so that
+ * _tls_deferred_close_cb can call it directly instead of re-entering
+ * xylem_tls_close (which would re-post when loop->tid is unset).
+ */
+static void _tls_do_close(xylem_tls_conn_t* tls) {
+    if (atomic_load(&tls->closing)) {
+        return;
+    }
+    atomic_store(&tls->closing, true);
+
+    xylem_logi("tls conn %p close requested", (void*)tls);
+
+    if (tls->ssl && atomic_load(&tls->handshake_done)) {
+        SSL_shutdown(tls->ssl);
+        _tls_flush_write_bio(tls);
+    }
+
+    xylem_tcp_close(tls->tcp);
+}
+
 static void _tls_deferred_close_cb(xylem_loop_t* loop,
                                     xylem_loop_post_t* req,
                                     void* ud) {
     (void)loop;
     (void)req;
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ud;
-    xylem_tls_close(tls);
+    _tls_do_close(tls);
     _tls_conn_decref(tls);
 }
 
@@ -658,6 +679,10 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
 }
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
+    if (atomic_load(&tls->closing)) {
+        return;
+    }
+
     /* Cross-thread: post to loop thread. */
     xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
     if (!xylem_loop_is_loop_thread(loop)) {
@@ -668,19 +693,7 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
         return;
     }
 
-    if (atomic_load(&tls->closing)) {
-        return;
-    }
-    atomic_store(&tls->closing, true);
-
-    xylem_logi("tls conn %p close requested", (void*)tls);
-
-    if (tls->ssl && atomic_load(&tls->handshake_done)) {
-        SSL_shutdown(tls->ssl);
-        _tls_flush_write_bio(tls);
-    }
-
-    xylem_tcp_close(tls->tcp);
+    _tls_do_close(tls);
 }
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {

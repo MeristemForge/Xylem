@@ -28,6 +28,7 @@
 #include "platform/platform-socket.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,13 +54,20 @@ typedef struct _uds_write_req_s {
     size_t             offset;
 } _uds_write_req_t;
 
+typedef struct _uds_deferred_send_s {
+    xylem_uds_conn_t* conn;
+    size_t            len;
+    char              data[];
+} _uds_deferred_send_t;
+
 struct xylem_uds_conn_s {
     xylem_loop_t*         loop;
     xylem_loop_io_t*      io;
     platform_sock_t       fd;
     xylem_uds_handler_t*  handler;
     xylem_uds_opts_t      opts;
-    _uds_state_t          state;
+    _Atomic _uds_state_t  state;
+    _Atomic int32_t       refcount;
     uint8_t*              read_buf;
     size_t                read_len;
     size_t                read_cap;
@@ -303,13 +311,20 @@ static void _uds_heartbeat_timeout_cb(xylem_loop_t* loop,
     }
 }
 
+/* Decrement refcount; free the connection when it reaches zero. */
+static void _uds_conn_decref(xylem_uds_conn_t* conn) {
+    if (atomic_fetch_sub(&conn->refcount, 1) == 1) {
+        free(conn);
+    }
+}
+
 /* Post callback: free a connection after the current iteration. */
 static void _uds_conn_free_cb(xylem_loop_t* loop,
                                xylem_loop_post_t* req,
                                void* ud) {
     (void)loop;
     (void)req;
-    free(ud);
+    _uds_conn_decref((xylem_uds_conn_t*)ud);
 }
 
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
@@ -699,6 +714,8 @@ static void _uds_server_io_cb(xylem_loop_t* loop,
         conn->handler = server->handler;
         conn->opts    = server->opts;
 
+        atomic_store(&conn->refcount, 1);
+
         xylem_queue_init(&conn->write_queue);
 
         conn->io = xylem_loop_create_io(loop, client_fd);
@@ -774,15 +791,20 @@ void xylem_uds_close_server(xylem_uds_server_t* server) {
     xylem_loop_post(server->loop, _uds_server_free_cb, server);
 }
 
-void xylem_uds_close(xylem_uds_conn_t* conn) {
-    if (conn->state == UDS_STATE_CLOSING ||
-        conn->state == UDS_STATE_CLOSED) {
+/**
+ * Close logic that runs on the loop thread.  Extracted so that
+ * _uds_deferred_close_cb can call it directly instead of re-entering
+ * xylem_uds_close (which would re-post when loop->tid is unset).
+ */
+static void _uds_do_close(xylem_uds_conn_t* conn) {
+    if (atomic_load(&conn->state) == UDS_STATE_CLOSING ||
+        atomic_load(&conn->state) == UDS_STATE_CLOSED) {
         return;
     }
 
     xylem_logi("uds conn fd=%d graceful close requested",
                (int)conn->fd);
-    conn->state = UDS_STATE_CLOSING;
+    atomic_store(&conn->state, UDS_STATE_CLOSING);
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -790,17 +812,37 @@ void xylem_uds_close(xylem_uds_conn_t* conn) {
     }
 }
 
-int xylem_uds_send(xylem_uds_conn_t* conn,
-                   const void* data, size_t len) {
-    /* Only allow writes on a fully connected connection. */
-    if (conn->state != UDS_STATE_CONNECTED) {
-        return -1;
+static void _uds_deferred_close_cb(xylem_loop_t* loop,
+                                    xylem_loop_post_t* req,
+                                    void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
+    _uds_do_close(conn);
+    _uds_conn_decref(conn);
+}
+
+void xylem_uds_close(xylem_uds_conn_t* conn) {
+    /* Idempotent: reject if already closing/closed. */
+    _uds_state_t st = atomic_load(&conn->state);
+    if (st == UDS_STATE_CLOSING || st == UDS_STATE_CLOSED) {
+        return;
     }
 
-    if (len == 0) {
-        return 0;
+    /* Cross-thread: post to loop thread. */
+    if (!xylem_loop_is_loop_thread(conn->loop)) {
+        atomic_fetch_add(&conn->refcount, 1);
+        if (xylem_loop_post(conn->loop, _uds_deferred_close_cb, conn) != 0) {
+            _uds_conn_decref(conn);
+        }
+        return;
     }
 
+    _uds_do_close(conn);
+}
+
+static int _uds_enqueue_write(xylem_uds_conn_t* conn,
+                              const void* data, size_t len) {
     _uds_write_req_t* req =
         (_uds_write_req_t*)malloc(sizeof(_uds_write_req_t) + len);
     if (!req) {
@@ -828,6 +870,55 @@ int xylem_uds_send(xylem_uds_conn_t* conn,
     }
 
     return 0;
+}
+
+static void _uds_deferred_send_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    _uds_deferred_send_t* ds = (_uds_deferred_send_t*)ud;
+
+    if (atomic_load(&ds->conn->state) == UDS_STATE_CONNECTED) {
+        _uds_enqueue_write(ds->conn, ds->data, ds->len);
+    }
+
+    _uds_conn_decref(ds->conn);
+    free(ds);
+}
+
+int xylem_uds_send(xylem_uds_conn_t* conn,
+                   const void* data, size_t len) {
+    if (atomic_load(&conn->state) != UDS_STATE_CONNECTED) {
+        return -1;
+    }
+
+    if (len == 0) {
+        return 0;
+    }
+
+    /* Cross-thread: copy data and post to loop thread. */
+    if (!xylem_loop_is_loop_thread(conn->loop)) {
+        _uds_deferred_send_t* ds = (_uds_deferred_send_t*)malloc(
+            sizeof(_uds_deferred_send_t) + len);
+        if (!ds) {
+            return -1;
+        }
+        ds->conn = conn;
+        ds->len  = len;
+        memcpy(ds->data, data, len);
+
+        atomic_fetch_add(&conn->refcount, 1);
+        if (xylem_loop_post(conn->loop, _uds_deferred_send_cb, ds) != 0) {
+            _uds_conn_decref(conn);
+            free(ds);
+            return -1;
+        }
+        return 0;
+    }
+
+    /* Same thread: enqueue directly. */
+    return _uds_enqueue_write(conn, data, len);
 }
 
 /**
@@ -870,6 +961,8 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
     conn->loop    = loop;
     conn->handler = handler;
     conn->state   = UDS_STATE_CONNECTING;
+
+    atomic_store(&conn->refcount, 1);
 
     xylem_queue_init(&conn->write_queue);
 
@@ -976,6 +1069,14 @@ void* xylem_uds_get_userdata(xylem_uds_conn_t* conn) {
 
 void xylem_uds_set_userdata(xylem_uds_conn_t* conn, void* ud) {
     conn->userdata = ud;
+}
+
+void xylem_uds_conn_acquire(xylem_uds_conn_t* conn) {
+    atomic_fetch_add(&conn->refcount, 1);
+}
+
+void xylem_uds_conn_release(xylem_uds_conn_t* conn) {
+    _uds_conn_decref(conn);
 }
 
 void* xylem_uds_server_get_userdata(xylem_uds_server_t* server) {
