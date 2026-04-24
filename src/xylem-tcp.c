@@ -338,8 +338,8 @@ static void _tcp_connect_timeout_cb(xylem_loop_t* loop,
     }
 
     /* User may have closed the connection in on_timeout. */
-    if (conn->state == TCP_STATE_CLOSED ||
-        conn->state == TCP_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSED ||
+        atomic_load(&conn->state) == TCP_STATE_CLOSING) {
         return;
     }
 
@@ -389,7 +389,7 @@ static void _tcp_conn_free_post_cb(xylem_loop_t* loop,
 }
 
 static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
-    conn->state = TCP_STATE_CLOSED;
+    atomic_store(&conn->state, TCP_STATE_CLOSED);
     xylem_logd("tcp conn fd=%d destroy err=%d (%s)",
                (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
@@ -442,15 +442,15 @@ static void _tcp_destroy_conn(xylem_tcp_conn_t* conn, int err) {
 
 static void _tcp_close_conn(xylem_tcp_conn_t* conn, int err) {
     /* Idempotent: multiple close paths may converge here. */
-    if (conn->state == TCP_STATE_CLOSED ||
-        conn->state == TCP_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSED ||
+        atomic_load(&conn->state) == TCP_STATE_CLOSING) {
         return;
     }
 
     xylem_logd("tcp conn fd=%d start_close err=%d (%s)",
                (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
-    conn->state = TCP_STATE_CLOSING;
+    atomic_store(&conn->state, TCP_STATE_CLOSING);
 
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
@@ -520,8 +520,8 @@ static void _tcp_conn_readable_cb(xylem_tcp_conn_t* conn) {
                  * read_buf. Compacting or continuing the recv/extract
                  * loop would touch freed memory.
                  */
-                if (conn->state == TCP_STATE_CLOSED ||
-                    conn->state == TCP_STATE_CLOSING) {
+                if (atomic_load(&conn->state) == TCP_STATE_CLOSED ||
+                    atomic_load(&conn->state) == TCP_STATE_CLOSING) {
                     return;
                 }
 
@@ -589,7 +589,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
              * with error status, then destroy. Normal _tcp_close_conn
              * path is skipped because we are already CLOSING.
              */
-            if (conn->state == TCP_STATE_CLOSING) {
+            if (atomic_load(&conn->state) == TCP_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
@@ -627,8 +627,8 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
              * xylem_tcp_close inside the callback. Continuing to
              * dequeue or reset timers would operate on torn-down state.
              */
-            if (conn->state == TCP_STATE_CLOSED ||
-                conn->state == TCP_STATE_CLOSING) {
+            if (atomic_load(&conn->state) == TCP_STATE_CLOSED ||
+                atomic_load(&conn->state) == TCP_STATE_CLOSING) {
                 return;
             }
 
@@ -652,7 +652,7 @@ static void _tcp_flush_writes(xylem_tcp_conn_t* conn) {
      * Write queue fully drained while CLOSING: the graceful shutdown
      * sequence can now complete with shutdown(SHUT_WR) + destroy.
      */
-    if (conn->state == TCP_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSING) {
         xylem_logd("tcp conn fd=%d write queue drained, shutting down",
                    (int)conn->fd);
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -676,14 +676,14 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
      * CLOSING is intentionally allowed through -- flush_writes needs to
      * drain the write queue before the connection is fully torn down.
      */
-    if (conn->state == TCP_STATE_CLOSED) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSED) {
         return;
     }
 
     if (revents & XYLEM_POLLER_WR_OP) {
         _tcp_flush_writes(conn);
 
-        if (conn->state == TCP_STATE_CONNECTED &&
+        if (atomic_load(&conn->state) == TCP_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                                 _tcp_conn_io_cb, conn);
@@ -697,7 +697,7 @@ static void _tcp_conn_io_cb(xylem_loop_t* loop,
  * callback.
  */
 static int _tcp_setup_conn(xylem_tcp_conn_t* conn) {
-    conn->state    = TCP_STATE_CONNECTED;
+    atomic_store(&conn->state, TCP_STATE_CONNECTED);
     conn->read_buf = (uint8_t*)malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
@@ -763,7 +763,8 @@ static void _tcp_deferred_connect_cb(xylem_loop_t* loop,
      * Deferred callback may fire after the user already closed the
      * connection between dial return and the next loop iteration.
      */
-    if (conn->state == TCP_STATE_CLOSED || conn->state == TCP_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == TCP_STATE_CLOSED ||
+        atomic_load(&conn->state) == TCP_STATE_CLOSING) {
         return;
     }
     if (conn->handler && conn->handler->on_connect) {
@@ -887,7 +888,7 @@ static void _tcp_reconnect_timeout_cb(xylem_loop_t* loop,
         return;
     }
 
-    conn->state = TCP_STATE_CONNECTING;
+    atomic_store(&conn->state, TCP_STATE_CONNECTING);
     dial->reconnect_count++;
 
     if (conn->opts.disable_mss_clamp) {
@@ -1227,7 +1228,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     conn->loop    = loop;
     conn->handler = handler;
-    conn->state   = TCP_STATE_CONNECTING;
+    atomic_store(&conn->state, TCP_STATE_CONNECTING);
     atomic_store(&conn->refcount, 1);
 
     xylem_queue_init(&conn->write_queue);

@@ -258,7 +258,7 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     int err = SSL_get_error(tls->ssl, rc);
 
     if (rc == 1) {
-        tls->handshake_done = true;
+        atomic_store(&tls->handshake_done, true);
         _tls_flush_write_bio(tls);
 
         /* Cache negotiated ALPN as a null-terminated string. */
@@ -383,17 +383,18 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
 
     xylem_logd("tls conn %p tcp_read_cb len=%zu handshake_done=%d",
-               (void*)tls, len, tls->handshake_done);
+               (void*)tls, len,
+               (int)atomic_load(&tls->handshake_done));
 
     _tls_feed_read_bio(tls, data, len);
 
-    if (!tls->handshake_done) {
+    if (!atomic_load(&tls->handshake_done)) {
         _tls_do_handshake(tls);
-        if (!tls->handshake_done) {
+        if (!atomic_load(&tls->handshake_done)) {
             return;
         }
     }
-    if (tls->closing) {
+    if (atomic_load(&tls->closing)) {
         return;
     }
     char buf[TLS_RECORD_MAX_PLAINTEXT];
@@ -404,7 +405,7 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
         if (tls->handler && tls->handler->on_read) {
             tls->handler->on_read(tls, buf, (size_t)n);
         }
-        if (tls->closing) {
+        if (atomic_load(&tls->closing)) {
             return;
         }
     }

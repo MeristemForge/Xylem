@@ -328,7 +328,7 @@ static void _uds_conn_free_cb(xylem_loop_t* loop,
 }
 
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
-    conn->state = UDS_STATE_CLOSED;
+    atomic_store(&conn->state, UDS_STATE_CLOSED);
     xylem_logd("uds conn fd=%d destroy err=%d (%s)", (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
 
@@ -367,14 +367,14 @@ static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
 }
 
 static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
-    if (conn->state == UDS_STATE_CLOSED ||
-        conn->state == UDS_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
+        atomic_load(&conn->state) == UDS_STATE_CLOSING) {
         return;
     }
 
     xylem_logd("uds conn fd=%d start_close err=%d (%s)", (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
-    conn->state = UDS_STATE_CLOSING;
+    atomic_store(&conn->state, UDS_STATE_CLOSING);
 
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
@@ -447,8 +447,8 @@ static void _uds_conn_readable_cb(xylem_uds_conn_t* conn) {
                  * read_buf. Compacting or continuing the recv/extract
                  * loop would touch freed memory.
                  */
-                if (conn->state == UDS_STATE_CLOSED ||
-                    conn->state == UDS_STATE_CLOSING) {
+                if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
+                    atomic_load(&conn->state) == UDS_STATE_CLOSING) {
                     return;
                 }
 
@@ -505,7 +505,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
                        (int)conn->fd, err,
                        platform_socket_tostring(err));
 
-            if (conn->state == UDS_STATE_CLOSING) {
+            if (atomic_load(&conn->state) == UDS_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
@@ -536,8 +536,8 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
 
             free(req);
 
-            if (conn->state == UDS_STATE_CLOSED ||
-                conn->state == UDS_STATE_CLOSING) {
+            if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
+                atomic_load(&conn->state) == UDS_STATE_CLOSING) {
                 return;
             }
 
@@ -555,7 +555,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
         xylem_loop_stop_timer(conn->write_timer);
     }
 
-    if (conn->state == UDS_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == UDS_STATE_CLOSING) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
         _uds_destroy_conn(conn, 0);
     }
@@ -573,14 +573,14 @@ static void _uds_conn_io_cb(xylem_loop_t* loop,
         _uds_conn_readable_cb(conn);
     }
 
-    if (conn->state == UDS_STATE_CLOSED) {
+    if (atomic_load(&conn->state) == UDS_STATE_CLOSED) {
         return;
     }
 
     if (revents & XYLEM_POLLER_WR_OP) {
         _uds_flush_writes(conn);
 
-        if (conn->state == UDS_STATE_CONNECTED &&
+        if (atomic_load(&conn->state) == UDS_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                                 _uds_conn_io_cb, conn);
@@ -593,7 +593,7 @@ static void _uds_conn_io_cb(xylem_loop_t* loop,
  * start IO, start heartbeat/read timers.
  */
 static int _uds_setup_conn(xylem_uds_conn_t* conn) {
-    conn->state    = UDS_STATE_CONNECTED;
+    atomic_store(&conn->state, UDS_STATE_CONNECTED);
     conn->read_buf = (uint8_t*)malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
@@ -933,7 +933,8 @@ static void _uds_deferred_connect_cb(xylem_loop_t* loop,
     (void)loop;
     (void)req;
     xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-    if (conn->state == UDS_STATE_CLOSED || conn->state == UDS_STATE_CLOSING) {
+    if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
+        atomic_load(&conn->state) == UDS_STATE_CLOSING) {
         return;
     }
     if (conn->handler && conn->handler->on_connect) {
@@ -960,7 +961,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
 
     conn->loop    = loop;
     conn->handler = handler;
-    conn->state   = UDS_STATE_CONNECTING;
+    atomic_store(&conn->state, UDS_STATE_CONNECTING);
 
     atomic_store(&conn->refcount, 1);
 
