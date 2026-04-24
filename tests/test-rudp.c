@@ -26,7 +26,6 @@
 
 #include <stdatomic.h>
 #include <string.h>
-#include <threads.h>
 
 #define RUDP_PORT          16433
 #define RUDP_HOST          "127.0.0.1"
