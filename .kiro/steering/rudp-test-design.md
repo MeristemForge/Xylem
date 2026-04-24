@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-rudp.c` 包含 11 个测试函数，覆盖 `src/rudp/xylem-rudp.c` 的所有公共 API 和 RUDP 特有的内部分支。
+`tests/test-rudp.c` 包含 14 个测试函数，覆盖 `src/rudp/xylem-rudp.c` 的所有公共 API 和 RUDP 特有的内部分支。
 
 RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖，不在本测试中重复：
 - UDP listen/dial 基本收发
@@ -24,6 +24,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 - 同步测试（test_server_userdata）不运行事件循环，无需 Safety Timer
 - 单一端口 `RUDP_PORT 16433`，测试顺序执行不冲突
 - 异步测试使用 100ms 延迟定时器触发发送，确保握手完成后数据不与事件循环竞争
+- 跨线程测试使用 `xylem_thrdpool_t` 线程池在工作线程上执行 send/close 操作
 - 无文件作用域可变变量，所有状态通过 `_test_ctx_t`、`_multi_cli_t` 和 userdata 传递
 - `main` 函数首尾调用 `xylem_startup` 和 `xylem_cleanup`
 
@@ -68,21 +69,31 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `test_close_server_with_active_session` | close_server 带活跃会话 | 定时器触发关闭，活跃会话的 on_close 被触发 |
 | `test_send_before_handshake` | 握手前 send | `xylem_rudp_send` 返回 -1（handshake_done==false） |
 
+### 跨线程操作（3 个）
+
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_cross_thread_send` | 跨线程 xylem_rudp_send + acquire/release | on_connect 中 acquire，工作线程发送 "hello" 后 release，客户端收到回显数据一致，received_len==5 |
+| `test_cross_thread_close` | 跨线程 xylem_rudp_close + acquire/release | on_connect 中 acquire，工作线程调用 close 后 release，on_close 回调触发，close_called==1 |
+| `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 服务端关闭会话 + acquire/release | on_connect 中 acquire，工作线程循环 send（每次间隔 1ms），50ms 后服务端关闭会话，on_close 触发后 send 停止（atomic closed 标志），worker release，worker_done==true |
+
 ## 覆盖的公共 API
 
 | API 函数 | 覆盖的测试 |
 |---------|-----------|
-| `xylem_rudp_dial` | 除 test_server_userdata 外的 10 个 |
-| `xylem_rudp_send` | test_handshake_and_echo, test_send_after_close, test_send_before_handshake, test_multi_session |
-| `xylem_rudp_close` | test_handshake_and_echo, test_session_userdata, test_peer_addr, test_get_loop, test_send_after_close, test_close_idempotent, test_send_before_handshake, test_multi_session, test_handshake_timeout |
+| `xylem_rudp_dial` | 除 test_server_userdata 外的 13 个 |
+| `xylem_rudp_send` | test_handshake_and_echo, test_send_after_close, test_send_before_handshake, test_multi_session, test_cross_thread_send, test_cross_thread_send_stop_on_close |
+| `xylem_rudp_close` | test_handshake_and_echo, test_session_userdata, test_peer_addr, test_get_loop, test_send_after_close, test_close_idempotent, test_send_before_handshake, test_multi_session, test_handshake_timeout, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 | `xylem_rudp_get_peer_addr` | test_peer_addr |
 | `xylem_rudp_get_loop` | test_get_loop |
 | `xylem_rudp_get_userdata` | test_session_userdata + 所有回调中通过 userdata 获取 ctx |
 | `xylem_rudp_set_userdata` | test_session_userdata + 所有异步测试的 setup |
-| `xylem_rudp_listen` | 除 test_handshake_timeout 外的 10 个 |
-| `xylem_rudp_close_server` | test_close_server_with_active_session + 所有异步测试的清理路径 |
+| `xylem_rudp_listen` | 除 test_handshake_timeout 外的 13 个 |
+| `xylem_rudp_close_server` | test_close_server_with_active_session, test_cross_thread_send_stop_on_close + 所有异步测试的清理路径 |
 | `xylem_rudp_server_get_userdata` | test_server_userdata + _rudp_srv_accept_cb（共享回调） |
 | `xylem_rudp_server_set_userdata` | test_server_userdata + 所有使用 _rudp_srv_accept_cb 的测试 |
+| `xylem_rudp_conn_acquire` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
+| `xylem_rudp_conn_release` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 
 ## 覆盖的内部分支
 
@@ -127,6 +138,10 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `xylem_rudp_close` | 幂等：closing==true 提前返回 | `test_close_idempotent` |
 | `xylem_rudp_close_server` | 遍历红黑树 + 逐个 close + udp_close | `test_close_server_with_active_session` |
 | `xylem_rudp_close_server` | 幂等：closing==true 提前返回 | （隐式：close_server 在清理路径中可能被重复调用） |
+| `xylem_rudp_send`（跨线程） | 非事件循环线程调用 → `_rudp_deferred_send_cb` 转发到事件循环线程入队 KCP | `test_cross_thread_send`, `test_cross_thread_send_stop_on_close` |
+| `xylem_rudp_conn_acquire` / `xylem_rudp_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
+| `xylem_rudp_close`（跨线程） | 非事件循环线程调用 → `_rudp_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_rudp_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic closing 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ## 未覆盖的路径
 
