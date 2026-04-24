@@ -250,7 +250,7 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user) {
     (void)kcp;
     xylem_rudp_t* rudp = (xylem_rudp_t*)user;
-    if (rudp->closing) {
+    if (atomic_load(&rudp->closing)) {
         return -1;
     }
     if (rudp->fec_enc) {
@@ -366,7 +366,7 @@ static bool _rudp_drain_recv(xylem_rudp_t* rudp) {
         if (rudp->handler && rudp->handler->on_read) {
             rudp->handler->on_read(rudp, buf, (size_t)n);
         }
-        if (rudp->closing) {
+        if (atomic_load(&rudp->closing)) {
             return false;
         }
     }
@@ -402,7 +402,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
     (void)loop;
     (void)timer;
     xylem_rudp_t* rudp = (xylem_rudp_t*)ud;
-    if (rudp->closing || !rudp->kcp) {
+    if (atomic_load(&rudp->closing) || !rudp->kcp) {
         return;
     }
 
@@ -430,7 +430,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
  * Forward-declared above because _rudp_update_timeout_cb also calls it.
  */
 static void _rudp_schedule_update(xylem_rudp_t* rudp) {
-    if (rudp->closing || !rudp->kcp) {
+    if (atomic_load(&rudp->closing) || !rudp->kcp) {
         return;
     }
     uint32_t now  = _rudp_clock_ms();
@@ -479,16 +479,16 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     (void)addr;
     xylem_rudp_t* rudp = (xylem_rudp_t*)xylem_udp_get_userdata(udp);
-    if (!rudp || rudp->closing) {
+    if (!rudp || atomic_load(&rudp->closing)) {
         return;
     }
 
-    if (!rudp->handshake_done) {
+    if (!atomic_load(&rudp->handshake_done)) {
         uint8_t  type;
         uint32_t conv;
         if (_rudp_decode_handshake(data, len, &type, &conv) &&
             type == RUDP_HANDSHAKE_ACK && conv == rudp->conv) {
-            rudp->handshake_done = true;
+            atomic_store(&rudp->handshake_done, true);
             if (rudp->handshake_timer) {
                 xylem_loop_stop_timer(rudp->handshake_timer);
             }
@@ -517,7 +517,7 @@ static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
      * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
      * (ICMP port unreachable) before the handshake timer fires.
      */
-    rudp->closing = true;
+    atomic_store(&rudp->closing, true);
     xylem_loop_stop_timer(rudp->update_timer);
     if (rudp->handshake_timer) {
         xylem_loop_stop_timer(rudp->handshake_timer);
@@ -619,7 +619,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
                 return;
             }
 
-            rudp->handshake_done = true;
+            atomic_store(&rudp->handshake_done, true);
             atomic_store(&rudp->refcount, 1);
             xylem_rbtree_insert(&server->sessions, &rudp->server_node);
             xylem_logi("rudp conv=%u session accepted", hs_conv);
@@ -952,7 +952,7 @@ void xylem_rudp_conn_release(xylem_rudp_t* rudp) {
 }
 
 int xylem_rudp_set_fec(xylem_rudp_t* rudp, int fec_data, int fec_parity) {
-    if (rudp->closing) {
+    if (atomic_load(&rudp->closing)) {
         return -1;
     }
 
