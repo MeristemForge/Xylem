@@ -49,9 +49,9 @@ typedef enum {
 
 typedef struct _uds_write_req_s {
     xylem_queue_node_t node;
-    void*              data;
     size_t             len;
     size_t             offset;
+    char               data[];
 } _uds_write_req_t;
 
 typedef struct _uds_deferred_send_s {
@@ -489,7 +489,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
         _uds_write_req_t* req =
             xylem_queue_entry(front, _uds_write_req_t, node);
 
-        char*  ptr = (char*)req->data + req->offset;
+        char*  ptr = req->data + req->offset;
         size_t rem = req->len - req->offset;
 
         ssize_t n = platform_socket_send(conn->fd, ptr, (int)rem);
@@ -844,12 +844,11 @@ void xylem_uds_close(xylem_uds_conn_t* conn) {
 static int _uds_enqueue_write(xylem_uds_conn_t* conn,
                               const void* data, size_t len) {
     _uds_write_req_t* req =
-        (_uds_write_req_t*)malloc(sizeof(_uds_write_req_t) + len);
+        (_uds_write_req_t*)malloc(sizeof(*req) + len);
     if (!req) {
         return -1;
     }
 
-    req->data   = (char*)req + sizeof(*req);
     req->len    = len;
     req->offset = 0;
     memcpy(req->data, data, len);

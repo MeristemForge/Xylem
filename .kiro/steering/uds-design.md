@@ -141,9 +141,9 @@ typedef struct xylem_uds_server_s xylem_uds_server_t;  /* 服务器句柄 */
 ```c
 typedef struct _uds_write_req_s {
     xylem_queue_node_t node;    /* 队列节点，嵌入写队列 */
-    void*              data;    /* 数据指针（紧跟结构体之后） */
     size_t             len;     /* 总长度 */
     size_t             offset;  /* 已发送偏移量（支持部分写入） */
+    char               data[];  /* 柔性数组成员，紧跟结构体之后 */
 } _uds_write_req_t;
 ```
 
