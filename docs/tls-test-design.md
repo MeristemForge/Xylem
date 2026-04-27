@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-tls.c` 包含 23 个测试函数，覆盖 `src/xylem-tls.c` 的所有公共 API 和 TLS 特有的内部分支。
+`tests/test-tls.c` 包含 22 个测试函数，覆盖 `src/xylem-tls.c` 的所有公共 API 和 TLS 特有的内部分支。
 
 TLS 模块构建在 TCP 之上，以下 TCP 层功能已由 `test-tcp.c` 覆盖，不在本测试中重复：
 - 所有分帧策略（NONE/FIXED/LENGTH/DELIM/CUSTOM）

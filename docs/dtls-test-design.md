@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-dtls.c` 包含 11 个测试函数，覆盖 `src/xylem-dtls.c` 的所有公共 API 和 DTLS 特有的内部分支。
+`tests/test-dtls.c` 包含 16 个测试函数，覆盖 `src/xylem-dtls.c` 的所有公共 API 和 DTLS 特有的内部分支。
 
 DTLS 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖，不在本测试中重复：
 - UDP listen/dial 基本收发
@@ -169,25 +169,35 @@ typedef struct {
 |---------|-----------|--------|
 | `test_keylog_write` | ctx_set_keylog + 握手 | keylog 文件非空（fseek/ftell 验证 sz > 0）|
 
+#### 跨线程操作（3 个）
+
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_cross_thread_send` | 跨线程 xylem_dtls_send + acquire/release | on_connect 中 acquire，工作线程发送 "hello" 后 release，客户端收到回显数据一致，received_len==5 |
+| `test_cross_thread_close` | 跨线程 xylem_dtls_close + acquire/release | on_connect 中 acquire，工作线程调用 close 后 release，on_close 回调触发，close_called==1 |
+| `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 服务端关闭会话 + acquire/release | on_connect 中 acquire，工作线程循环 send（每次间隔 1ms），50ms 后服务端关闭会话，on_close 触发后 send 停止（atomic closed 标志），worker release，worker_done==true |
+
 ### 覆盖的公共 API 映射
 
 | API 函数 | 覆盖的测试 |
 |---------|-----------|
-| `xylem_dtls_ctx_create` | 全部 11 个 |
-| `xylem_dtls_ctx_destroy` | 全部 11 个 |
+| `xylem_dtls_ctx_create` | 全部 16 个 |
+| `xylem_dtls_ctx_destroy` | 全部 16 个 |
 | `xylem_dtls_ctx_load_cert` | test_load_cert_valid, test_load_cert_invalid + 所有异步测试 |
 | `xylem_dtls_ctx_set_ca` | test_set_ca, test_handshake_failure_wrong_ca |
 | `xylem_dtls_ctx_set_verify` | test_set_verify + 所有异步测试 |
 | `xylem_dtls_ctx_set_alpn` | test_set_alpn, test_alpn_negotiation |
 | `xylem_dtls_ctx_set_keylog` | test_keylog_write |
-| `xylem_dtls_dial` | 所有异步测试（5 个） |
-| `xylem_dtls_send` | test_handshake_and_echo, test_send_after_close |
+| `xylem_dtls_dial` | 所有异步测试（10 个） |
+| `xylem_dtls_send` | test_handshake_and_echo, test_send_after_close, test_cross_thread_send, test_cross_thread_send_stop_on_close |
 | `xylem_dtls_close` | 所有异步测试 |
 | `xylem_dtls_get_alpn` | test_alpn_negotiation |
 | `xylem_dtls_get_userdata` | test_session_userdata + 所有回调中通过 userdata 获取 ctx |
 | `xylem_dtls_set_userdata` | test_session_userdata + 所有异步测试的 setup |
-| `xylem_dtls_listen` | 所有异步测试（5 个） |
+| `xylem_dtls_listen` | 所有异步测试（10 个） |
 | `xylem_dtls_close_server` | test_close_server_with_active_session + 所有异步测试的清理路径 |
+| `xylem_dtls_conn_acquire` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
+| `xylem_dtls_conn_release` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 
 ### 覆盖的内部分支
 
@@ -229,6 +239,10 @@ typedef struct {
 | `xylem_dtls_ctx_set_keylog` | 启用 | `test_keylog_write` |
 | `_dtls_cookie_generate_cb` | 生成 16 字节随机 cookie | 所有异步测试（服务端握手）|
 | `_dtls_cookie_verify_cb` | 接受所有 cookie | 所有异步测试（服务端握手）|
+| `xylem_dtls_send`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_send_cb` 转发到事件循环线程加密并发送 | `test_cross_thread_send` |
+| `xylem_dtls_conn_acquire` / `xylem_dtls_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
+| `xylem_dtls_close`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_dtls_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic closing 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ### 未覆盖的路径
 
@@ -309,6 +323,7 @@ typedef struct {
 | 会话 Userdata | 1 | set/get 往返一致 |
 | 关闭行为 | 2 | close 后 send、close_server 带活跃会话 |
 | Keylog | 1 | keylog 文件写入验证 |
+| 跨线程操作 | 3 | 跨线程 send、跨线程 close、跨线程持续 send + 对端关闭 |
 
 ### 与 TLS 测试的差异
 
