@@ -97,10 +97,25 @@ struct xylem_tls_conn_s {
     char*                 hostname;       /* SNI 主机名 */
     char                  alpn[256];      /* 协商后的 ALPN 协议（null-terminated） */
     xylem_list_node_t     server_node;    /* 服务器连接链表节点 */
+    xylem_queue_t         write_queue;    /* 待完成的 TLS 写请求队列 */
 };
 ```
 
 `refcount` 在 `xylem_tls_dial` 和 `_tls_tcp_accept_cb`（服务端 accept）中初始化为 1。跨线程 `xylem_tls_send` 和 `xylem_tls_close` 在 `xylem_loop_post` 前递增引用计数，回调完成后递减。`_tls_tcp_close_cb` 通过 `xylem_loop_post` 将 `_tls_conn_decref` 延迟到下一轮事件循环迭代执行，当引用计数归零时释放连接内存。
+
+### TLS 写请求
+
+```c
+typedef struct _tls_write_req_s {
+    xylem_queue_node_t node;
+    size_t             len;     /* 明文长度 */
+    int                pending; /* 未完成的 TCP send 计数 */
+    int                status;  /* 0 = 正常, -1 = 任一 TCP send 失败 */
+    char               data[];  /* 明文副本 */
+} _tls_write_req_t;
+```
+
+跟踪单次 `xylem_tls_send` 调用在 TCP 写管道中的状态。每次 TLS send 经 `SSL_write` 加密后可能产生一个或多个 `xylem_tcp_send` 调用（密文记录）。`pending` 计数器跟踪剩余的 TCP 写操作数量；`on_write_done` 仅在所有 TCP 写操作完成后才触发。
 
 ### TLS 服务器
 

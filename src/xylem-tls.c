@@ -23,6 +23,7 @@
 
 #include "xylem/xylem-list.h"
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-queue.h"
 
 #include "platform/platform-socket.h"
 #include "deprecated/c11-threads.h"
@@ -68,7 +69,22 @@ struct xylem_tls_conn_s {
     char*                 hostname;
     char                  alpn[256];
     xylem_list_node_t     server_node;
+    xylem_queue_t         write_queue; /* pending TLS write requests */
 };
+
+/**
+ * Tracks one xylem_tls_send call through the TCP write pipeline.
+ * Each TLS send produces one or more xylem_tcp_send calls (ciphertext
+ * records). The pending counter tracks how many TCP writes remain;
+ * on_write_done fires only when all of them complete.
+ */
+typedef struct _tls_write_req_s {
+    xylem_queue_node_t node;
+    size_t             len;     /* plaintext length */
+    int                pending; /* outstanding TCP send count */
+    int                status;  /* 0 = ok so far, -1 = any TCP send failed */
+    char               data[];  /* plaintext copy */
+} _tls_write_req_t;
 
 struct xylem_tls_server_s {
     xylem_tcp_server_t*   tcp_server;
@@ -239,13 +255,17 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-static void _tls_flush_write_bio(xylem_tls_conn_t* tls) {
+/* Flush ciphertext from write BIO to TCP. Returns the number of TCP sends. */
+static int _tls_flush_write_bio(xylem_tls_conn_t* tls) {
     char buf[TLS_RECORD_MAX_PLAINTEXT];
     int  n;
+    int  count = 0;
 
     while ((n = BIO_read(tls->write_bio, buf, sizeof(buf))) > 0) {
         xylem_tcp_send(tls->tcp, buf, (size_t)n);
+        count++;
     }
+    return count;
 }
 
 static void _tls_feed_read_bio(xylem_tls_conn_t* tls, void* data, size_t len) {
@@ -364,6 +384,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     tls->handler = server->handler;
     tls->server  = server;
     atomic_store(&tls->refcount, 1);
+    xylem_queue_init(&tls->write_queue);
 
     xylem_tcp_set_userdata(conn, tls);
 
@@ -461,6 +482,17 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
     xylem_logd("tls conn %p close err=%d (%s)",
                (void*)tls, err, errmsg);
 
+    /* Drain pending TLS write requests that will never complete. */
+    xylem_queue_node_t* qn;
+    while ((qn = xylem_queue_dequeue(&tls->write_queue)) != NULL) {
+        _tls_write_req_t* req =
+            xylem_queue_entry(qn, _tls_write_req_t, node);
+        if (tls->handler && tls->handler->on_write_done) {
+            tls->handler->on_write_done(tls, req->data, req->len, -1);
+        }
+        free(req);
+    }
+
     if (tls->server) {
         xylem_list_remove(&tls->server->connections, &tls->server_node);
         tls->server = NULL;
@@ -507,6 +539,50 @@ static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
 }
 
 /**
+ * TCP on_write_done callback. Each TLS send produces one or more TCP
+ * sends (ciphertext records). We count down the pending field on the
+ * front write request; when it reaches zero all ciphertext has been
+ * written to the socket and we fire the TLS on_write_done.
+ *
+ * Handshake flushes also produce TCP writes, but the write_queue is
+ * empty during handshake so those are silently ignored.
+ */
+static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* conn,
+                                   const void* data, size_t len,
+                                   int status) {
+    (void)data;
+    (void)len;
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
+    if (!tls) {
+        return;
+    }
+
+    xylem_queue_node_t* front = xylem_queue_front(&tls->write_queue);
+    if (!front) {
+        /* Handshake flush or close_notify -- no user write pending. */
+        return;
+    }
+
+    _tls_write_req_t* req =
+        xylem_queue_entry(front, _tls_write_req_t, node);
+
+    if (status != 0) {
+        req->status = -1;
+    }
+
+    req->pending--;
+    if (req->pending <= 0) {
+        xylem_queue_dequeue(&tls->write_queue);
+
+        if (tls->handler && tls->handler->on_write_done) {
+            tls->handler->on_write_done(
+                tls, req->data, req->len, req->status);
+        }
+        free(req);
+    }
+}
+
+/**
  * Per-server TCP handler used for accepted connections.
  * The TLS server pointer is stored via xylem_tcp_server_set_userdata
  * and recovered in the accept callback.
@@ -514,6 +590,7 @@ static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
 static xylem_tcp_handler_t _tls_tcp_server_handler = {
     .on_accept         = _tls_tcp_accept_cb,
     .on_read           = _tls_tcp_read_cb,
+    .on_write_done     = _tls_tcp_write_done_cb,
     .on_close          = _tls_tcp_close_cb,
     .on_timeout        = _tls_tcp_timeout_cb,
     .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
@@ -522,6 +599,7 @@ static xylem_tcp_handler_t _tls_tcp_server_handler = {
 static xylem_tcp_handler_t _tls_tcp_client_handler = {
     .on_connect        = _tls_tcp_connect_cb,
     .on_read           = _tls_tcp_read_cb,
+    .on_write_done     = _tls_tcp_write_done_cb,
     .on_close          = _tls_tcp_close_cb,
     .on_timeout        = _tls_tcp_timeout_cb,
     .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
@@ -531,6 +609,16 @@ static xylem_tcp_handler_t _tls_tcp_client_handler = {
 static int _tls_do_send(xylem_tls_conn_t* tls,
                         const void* data,
                         size_t len) {
+    _tls_write_req_t* req =
+        (_tls_write_req_t*)malloc(sizeof(_tls_write_req_t) + len);
+    if (!req) {
+        return -1;
+    }
+    req->len     = len;
+    req->pending = 0;
+    req->status  = 0;
+    memcpy(req->data, data, len);
+
     ERR_clear_error();
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
@@ -538,21 +626,28 @@ static int _tls_do_send(xylem_tls_conn_t* tls,
         const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
         xylem_logw("tls conn %p SSL_write failed (%s)",
                    (void*)tls, ssl_err_str ? ssl_err_str : "unknown");
+        free(req);
         return -1;
     }
 
-    _tls_flush_write_bio(tls);
+    int tcp_sends = _tls_flush_write_bio(tls);
+    req->pending = tcp_sends;
 
-    /**
-     * NOTE: on_write_done fires after ciphertext is enqueued into the
-     * TCP write queue, not after it has been written to the socket.
-     * This is intentional -- with memory BIOs, SSL_write always
-     * completes in one call, and the TCP layer handles actual delivery.
-     */
-    if (tls->handler && tls->handler->on_write_done) {
-        tls->handler->on_write_done(tls, data, len, 0);
+    if (tcp_sends == 0) {
+        /**
+         * SSL_write succeeded but BIO produced no output -- should not
+         * happen with memory BIOs. Fire on_write_done immediately as a
+         * defensive fallback.
+         */
+        if (tls->handler && tls->handler->on_write_done) {
+            tls->handler->on_write_done(tls, req->data, req->len, 0);
+        }
+        free(req);
+        return 0;
     }
 
+    /* Enqueue; _tls_tcp_write_done_cb will count down and fire. */
+    xylem_queue_enqueue(&tls->write_queue, &req->node);
     return 0;
 }
 
@@ -655,6 +750,7 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
     tls->ctx     = ctx;
     tls->handler = handler;
     atomic_store(&tls->refcount, 1);
+    xylem_queue_init(&tls->write_queue);
 
     if (opts && opts->hostname) {
         tls->hostname = strdup(opts->hostname);
