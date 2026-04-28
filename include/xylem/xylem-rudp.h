@@ -40,11 +40,12 @@ typedef struct xylem_rudp_handler_s {
 } xylem_rudp_handler_t;
 
 typedef struct xylem_rudp_opts_s {
-    int32_t  mtu;           /*< MTU size, 0 for default (1400). */
-    uint64_t timeout_ms;    /*< Dead-link timeout in ms, 0 to disable. */
-    uint64_t handshake_ms;  /*< Handshake timeout in ms, 0 for default (5000). */
-    int      fec_data;      /*< FEC data shards, 0 to disable FEC. */
-    int      fec_parity;    /*< FEC parity shards, 0 to disable FEC. */
+    int32_t        mtu;           /**< MTU size, 0 for default (1400). */
+    uint64_t       timeout_ms;    /**< Dead-link timeout in ms, 0 to disable. */
+    uint64_t       handshake_ms;  /**< Handshake timeout in ms, 0 for default (5000). */
+    int            fec_data;      /**< FEC data shards, 0 to disable FEC. */
+    int            fec_parity;    /**< FEC parity shards, 0 to disable FEC. */
+    const uint8_t* aes_key;       /**< 32-byte AES-256 key, NULL to disable encryption. */
 } xylem_rudp_opts_t;
 
 /**

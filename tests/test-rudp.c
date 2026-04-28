@@ -786,6 +786,133 @@ static void test_handshake_timeout(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
+/* AES-256-CTR encrypted echo */
+
+static void test_aes_echo(void) {
+    _test_ctx_t ctx = {0};
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
+    /* Both sides share the same 32-byte pre-shared key. */
+    uint8_t key[32] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+    };
+
+    xylem_rudp_opts_t opts = {0};
+    opts.aes_key = key;
+
+    xylem_rudp_handler_t srv_handler = {
+        .on_accept = _rudp_srv_accept_cb,
+        .on_read   = _rudp_srv_read_echo_cb,
+    };
+
+    xylem_addr_t addr;
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
+
+    ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr,
+                                         &srv_handler, &opts);
+    ASSERT(ctx.rudp_server != NULL);
+    xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
+
+    xylem_rudp_handler_t cli_handler = {
+        .on_connect = _echo_cli_connect_cb,
+        .on_read    = _echo_cli_read_cb,
+        .on_close   = _echo_cli_close_cb,
+    };
+
+    ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr,
+                                       &cli_handler, &opts);
+    ASSERT(ctx.cli_session != NULL);
+    xylem_rudp_set_userdata(ctx.cli_session, &ctx);
+
+    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _echo_send_timer_cb, &ctx, 100, 0);
+
+    xylem_loop_run(ctx.loop);
+
+    ASSERT(ctx.accept_called == 1);
+    ASSERT(ctx.connect_called == 1);
+    ASSERT(ctx.read_count >= 1);
+    ASSERT(ctx.received_len == 5);
+    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+    ASSERT(ctx.close_called >= 1);
+
+    xylem_loop_destroy_timer(send_timer);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(ctx.loop);
+}
+
+/* AES-256-CTR + FEC combined echo */
+
+static void test_aes_with_fec(void) {
+    _test_ctx_t ctx = {0};
+    ctx.loop = xylem_loop_create();
+    ASSERT(ctx.loop != NULL);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
+
+    uint8_t key[32] = {
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+        0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+    };
+
+    xylem_rudp_opts_t opts = {0};
+    opts.aes_key    = key;
+    opts.fec_data   = 3;
+    opts.fec_parity = 1;
+
+    xylem_rudp_handler_t srv_handler = {
+        .on_accept = _rudp_srv_accept_cb,
+        .on_read   = _rudp_srv_read_echo_cb,
+    };
+
+    xylem_addr_t addr;
+    xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
+
+    ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr,
+                                         &srv_handler, &opts);
+    ASSERT(ctx.rudp_server != NULL);
+    xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
+
+    xylem_rudp_handler_t cli_handler = {
+        .on_connect = _echo_cli_connect_cb,
+        .on_read    = _echo_cli_read_cb,
+        .on_close   = _echo_cli_close_cb,
+    };
+
+    ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr,
+                                       &cli_handler, &opts);
+    ASSERT(ctx.cli_session != NULL);
+    xylem_rudp_set_userdata(ctx.cli_session, &ctx);
+
+    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(send_timer, _echo_send_timer_cb, &ctx, 100, 0);
+
+    xylem_loop_run(ctx.loop);
+
+    ASSERT(ctx.accept_called == 1);
+    ASSERT(ctx.connect_called == 1);
+    ASSERT(ctx.read_count >= 1);
+    ASSERT(ctx.received_len == 5);
+    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+    ASSERT(ctx.close_called >= 1);
+
+    xylem_loop_destroy_timer(send_timer);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(ctx.loop);
+}
+
 /* cross-thread send */
 
 static void _xt_send_worker(void* arg) {
@@ -1060,6 +1187,8 @@ int main(void) {
     test_send_before_handshake();
     test_multi_session();
     test_handshake_timeout();
+    test_aes_echo();
+    test_aes_with_fec();
     test_cross_thread_send();
     test_cross_thread_close();
     test_cross_thread_send_stop_on_close();

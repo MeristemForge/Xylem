@@ -19,11 +19,11 @@ graph LR
 分层数据流：
 
 ```
-发送: 用户 -> xylem_rudp_send -> ikcp_send + ikcp_flush -> _rudp_kcp_output_cb -> [FEC 编码] -> xylem_udp_send -> 网络
-接收: 网络 -> UDP on_read -> [FEC 解码] -> ikcp_input -> ikcp_flush(ACK) -> ikcp_recv -> on_read -> 用户
+发送: 用户 -> xylem_rudp_send -> ikcp_send + ikcp_flush -> _rudp_kcp_output_cb -> [FEC 编码] -> [AES 加密] -> xylem_udp_send -> 网络
+接收: 网络 -> UDP on_read -> [AES 解密] -> [FEC 解码] -> ikcp_input -> ikcp_flush(ACK) -> ikcp_recv -> on_read -> 用户
 ```
 
-FEC 编码/解码为可选步骤，通过 `opts->fec_data` 和 `opts->fec_parity` 启用。
+AES 加密/解密为可选步骤，通过 `opts->aes_key` 启用。FEC 编码/解码为可选步骤，通过 `opts->fec_data` 和 `opts->fec_parity` 启用。发送路径中，AES 加密在 FEC 编码之后执行（加密 FEC 分片或原始 KCP 包），通过 `_rudp_encrypted_send` 统一处理。接收路径中，AES 解密在最外层执行（解密 UDP 载荷），然后进入 FEC 解码或直接喂入 KCP。
 
 ## 公开类型
 
@@ -50,11 +50,12 @@ typedef struct xylem_rudp_handler_s {
 
 ```c
 typedef struct xylem_rudp_opts_s {
-    int32_t  mtu;           /* MTU，默认 1400 */
-    uint64_t timeout_ms;    /* dead link 超时，0 禁用 */
-    uint64_t handshake_ms;  /* 握手超时，0 使用默认值（5000ms） */
-    int      fec_data;      /* FEC 数据分片数，0 禁用 FEC */
-    int      fec_parity;    /* FEC 奇偶校验分片数，0 禁用 FEC */
+    int32_t        mtu;           /* MTU，默认 1400 */
+    uint64_t       timeout_ms;    /* dead link 超时，0 禁用 */
+    uint64_t       handshake_ms;  /* 握手超时，0 使用默认值（5000ms） */
+    int            fec_data;      /* FEC 数据分片数，0 禁用 FEC */
+    int            fec_parity;    /* FEC 奇偶校验分片数，0 禁用 FEC */
+    const uint8_t* aes_key;       /* 32 字节 AES-256 密钥，NULL 禁用加密 */
 } xylem_rudp_opts_t;
 ```
 
@@ -92,6 +93,7 @@ struct xylem_rudp_conn_s {
     xylem_rbtree_node_t    server_node;      /* 服务器会话红黑树节点 */
     rudp_fec_enc_t*        fec_enc;          /* FEC 编码器，NULL 表示禁用 */
     rudp_fec_dec_t*        fec_dec;          /* FEC 解码器，NULL 表示禁用 */
+    xylem_aes256_t*        aes;              /* 仅客户端；服务端会话使用 server->aes */
 };
 ```
 
@@ -100,6 +102,8 @@ struct xylem_rudp_conn_s {
 `fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
 
 `mtu` 保存有效 MTU 值（客户端从 `opts->mtu` 获取，默认 1400；服务端从 `server->opts.mtu` 继承），供 `_rudp_init_fec` 创建 FEC 编码器/解码器时使用。
+
+`aes` 仅客户端会话使用，在 `xylem_rudp_dial` 中根据 `opts->aes_key` 创建（`opts` 为 NULL 或 `aes_key` 为 NULL 时禁用加密）。服务端会话不拥有独立的 AES 上下文，而是通过 `server->aes` 共享服务器级别的 AES 上下文。若创建失败则回滚已分配的资源。
 
 ### RUDP 服务器
 
@@ -111,9 +115,13 @@ struct xylem_rudp_server_s {
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;  /* 活跃会话红黑树，按 (addr, conv) 排序 */
     void*                  userdata;
+    xylem_aes256_t*        aes;            /* 所有会话共享的 AES 上下文 */
+    uint8_t                aes_key_buf[32]; /* AES 密钥的自有副本 */
     bool                   closing;
 };
 ```
+
+服务器在 `xylem_rudp_listen` 中若 `opts->aes_key` 非 NULL，将密钥复制到 `aes_key_buf` 并创建共享的 AES 上下文（`server->aes`）。所有服务端会话通过 `server->aes` 共享同一个 AES 上下文，避免为每个会话重复创建。`_rudp_server_close_cb` 在释放 server 内存前清零 `aes_key_buf`（`memset`），防止密钥材料残留。
 
 ## 握手协议
 
@@ -213,29 +221,28 @@ flowchart TD
     B -->|是| C{type == SYN?}
     C -->|是| D{会话已存在?}
     D -->|是| E[回复 ACK，返回]
-    D -->|否| F[回复 ACK + 创建会话 + 初始化 FEC + on_accept]
+    D -->|否| F[回复 ACK + 创建会话 + 初始化 FEC + 初始化 AES + on_accept]
     C -->|否| G[忽略]
-    B -->|否| H{FEC 启用?}
-    H -->|否| I{len >= 4?}
-    I -->|否| J[丢弃]
-    I -->|是| K[提取前 4 字节 conv]
-    K --> L[_rudp_find_session addr+conv]
-    L --> M{找到?}
-    M -->|否| N[丢弃]
-    M -->|是| O[ikcp_input + _rudp_input_complete]
-    H -->|是| P{len >= 12?}
-    P -->|否| Q[丢弃]
-    P -->|是| R{FEC type?}
-    R -->|DATA| S[从 FEC 头后提取 KCP conv]
-    S --> T[_rudp_find_session addr+conv]
-    T --> U{找到?}
-    U -->|否| V[丢弃]
-    U -->|是| W[_rudp_recv_input]
-    R -->|PARITY| X[遍历同地址会话]
-    X --> Y[逐个喂入 _rudp_recv_input]
+    B -->|否| H{len >= 4?}
+    H -->|否| I[丢弃]
+    H -->|是| J{FEC type marker?}
+    J -->|DATA 0xF1| K{len >= 12?}
+    K -->|否| L[丢弃]
+    K -->|是| M[从 FEC 头后提取 KCP conv]
+    M --> N[_rudp_find_session addr+conv]
+    N --> O{找到?}
+    O -->|否| P[丢弃]
+    O -->|是| Q[_rudp_recv_input]
+    J -->|PARITY 0xF2| R[遍历同地址会话]
+    R --> S[逐个喂入 _rudp_recv_input]
+    J -->|其他| T[提取前 4 字节 conv]
+    T --> U[_rudp_find_session addr+conv]
+    U --> V{找到?}
+    V -->|否| W[丢弃]
+    V -->|是| X[ikcp_input + _rudp_input_complete]
 ```
 
-FEC 启用时，数据分片的 KCP conv 位于 FEC 头之后（偏移 8 字节），可直接定位会话。奇偶校验分片不含 KCP conv，需遍历同一对端地址的所有会话，由各自的 FEC 解码器判断是否属于自己的分组。
+数据包通过偏移 4-5 字节处的 FEC 类型标记区分三种情况：FEC 数据分片（`0xF1`）的 KCP conv 位于 FEC 头之后（偏移 8 字节），直接通过 `_rudp_find_session` 定位会话；FEC 奇偶校验分片（`0xF2`）不含 KCP conv，需遍历同一对端地址的所有 FEC 会话，由各自的 FEC 解码器判断是否属于自己的分组；原始 KCP 包（无 FEC 标记）的前 4 字节即为 conv，直接查找会话。所有路径均使用 `(addr, conv)` 复合键的 O(log n) 红黑树查找，无需遍历。
 
 ## KCP 集成
 
@@ -246,7 +253,7 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user);
 ```
 
-KCP 需要发送数据时调用此回调。若 FEC 已启用（`fec_enc` 非 NULL），KCP 包通过 `rudp_fec_enc_feed` 进入 FEC 编码器，编码器添加 FEC 头后通过 `xylem_udp_send` 发送数据分片和奇偶校验分片。若 FEC 未启用，直接通过 `xylem_udp_send` 发送原始 KCP 包。目标地址始终使用 `peer_addr`。
+KCP 需要发送数据时调用此回调。回调首先解析 AES 上下文：客户端会话使用自身的 `rudp->aes`，服务端会话从 `rudp->server->aes` 借用共享上下文。若 FEC 已启用（`fec_enc` 非 NULL），通过 `rudp_fec_enc_feed` 进入 FEC 编码器，编码器添加 FEC 头后通过 `_rudp_encrypted_send` 发送数据分片和奇偶校验分片（AES 启用时加密，否则直接发送）；若 FEC 未启用，直接通过 `_rudp_encrypted_send` 发送。目标地址始终使用 `peer_addr`。
 
 ### KCP 更新定时器
 
@@ -281,7 +288,7 @@ flowchart TD
 
 窗口大小固定为发送窗口 32、接收窗口 128。
 
-当 FEC 启用时，`_rudp_apply_opts` 会从配置的 MTU 中减去 `RUDP_FEC_HEADER_SIZE`（8 字节），确保 FEC 头 + KCP 包的总 UDP 载荷不超过配置的 MTU。
+当 FEC 启用时，`_rudp_apply_opts` 会从配置的 MTU 中减去 `RUDP_FEC_HEADER_SIZE`（8 字节），确保 FEC 头 + KCP 包的总 UDP 载荷不超过配置的 MTU。当 AES 启用时，额外减去 `RUDP_AES_IV_SIZE`（16 字节），为 AES-256-CTR 的随机 IV 前缀预留空间。
 
 Dead link 检测：`timeout_ms / 10`（10ms 为固定更新间隔）计算 dead_link 阈值（最小为 1）。当 KCP 内部检测到连续重传次数超过阈值时，`kcp->state` 置为 `-1`，下次 `_rudp_update_timeout_cb` 触发时关闭会话。
 
@@ -420,15 +427,54 @@ flowchart TD
 
 FEC 已集成到 `xylem-rudp.c` 的主数据路径中。通过 `opts->fec_data > 0 && opts->fec_parity > 0` 启用。
 
-发送路径：`ikcp_send -> ikcp_flush -> _rudp_kcp_output_cb -> rudp_fec_enc_feed -> xylem_udp_send`
+发送路径：`ikcp_send -> ikcp_flush -> _rudp_kcp_output_cb -> [FEC 编码] -> _rudp_encrypted_send([AES 加密] + xylem_udp_send)`
 
-接收路径：`UDP on_read -> _rudp_recv_input -> rudp_fec_dec_feed -> ikcp_input`
+接收路径：`UDP on_read -> _rudp_decrypt_packet([AES 解密]) -> [FEC 解码] -> ikcp_input`
 
 `_rudp_init_fec` 辅助函数在 `xylem_rudp_dial` 和服务端会话创建时调用，根据 opts 创建 FEC 编码器/解码器对。若创建失败则回滚已分配的资源。
 
-`_rudp_recv_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL 则直接调用 `ikcp_input`；否则通过 `rudp_fec_dec_feed` 解码，将数据分片的 KCP 载荷和恢复的分片分别喂入 `ikcp_input`。
+`_rudp_recv_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL，直接调用 `ikcp_input`；若 `fec_dec` 非 NULL，通过 `rudp_fec_dec_feed` 解码，对每个恢复的 KCP 载荷喂入 `ikcp_input`。AES 解密在调用 `_rudp_recv_input` 之前已由 `_rudp_client_read_cb` 或 `_rudp_server_read_cb` 通过 `_rudp_decrypt_packet` 完成，因此 `_rudp_recv_input` 始终处理明文数据。
 
-`_rudp_free_cb` 在延迟释放时销毁 FEC 编码器和解码器。
+`_rudp_free_cb` 在延迟释放时销毁 FEC 编码器、解码器和 AES 上下文。
+
+## AES-256-CTR 加密
+
+RUDP 内置可选的 AES-256-CTR 加密层，在 KCP 与 FEC/UDP 之间对每个 KCP 包进行加密。通过 `opts->aes_key`（32 字节密钥）启用，传 NULL 禁用。加密层使用 `xylem-aes256` 模块。
+
+### 加密格式
+
+每个加密后的 KCP 包格式：
+
+```
+[IV:16B][ciphertext:N] = 16 + N 字节
+```
+
+IV 为 16 字节随机初始化向量，由 `xylem_aes256_ctr_encrypt` 内部通过 CSPRNG 生成并前缀到密文。解密时从前 16 字节提取 IV。
+
+### 加密位置
+
+发送路径中，AES 加密在 FEC 编码之后执行。`_rudp_kcp_output_cb` 先将 KCP 包喂入 FEC 编码器（若启用），然后对每个 FEC 分片（或原始 KCP 包）通过 `_rudp_encrypted_send` 加密并发送：
+
+```
+发送: KCP 包 -> [FEC 编码] -> AES 加密 -> UDP 发送
+接收: UDP 接收 -> AES 解密 -> [FEC 解码] -> KCP 输入
+```
+
+接收路径中，AES 解密在最外层执行（`_rudp_client_read_cb` 和 `_rudp_server_read_cb` 入口处），解密后的明文再进入 FEC 解码或直接喂入 KCP。这意味着 FEC 编码器处理的是未加密的 KCP 包，加密在 FEC 分片级别执行。
+
+### MTU 调整
+
+`_rudp_apply_opts` 在计算 KCP MTU 时，若 AES 启用则额外减去 `RUDP_AES_IV_SIZE`（16 字节），确保加密后的 KCP 包（含 IV 前缀）加上可选的 FEC 头不超过配置的 MTU。
+
+### 初始化
+
+- 客户端：`xylem_rudp_dial` 中若 `opts->aes_key` 非 NULL，调用 `xylem_aes256_create` 创建 AES 上下文并存储在 `rudp->aes`。若创建失败则回滚已分配的资源（FEC、KCP、定时器、UDP）
+- 服务端：`xylem_rudp_listen` 中若 `opts->aes_key` 非 NULL，将密钥复制到 `server->aes_key_buf` 并创建共享的 AES 上下文（`server->aes`）。服务端会话不拥有独立的 AES 上下文，`_rudp_kcp_output_cb` 和 `_rudp_server_read_cb` 通过 `server->aes` 访问共享上下文
+
+### 销毁
+
+- 客户端：`_rudp_free_cb` 在延迟释放时调用 `xylem_aes256_destroy` 销毁客户端会话的 AES 上下文（`xylem_aes256_destroy` 会清零敏感数据后释放内存）
+- 服务端：`_rudp_server_close_cb` 在释放 server 内存前清零 `aes_key_buf`（`memset`），共享的 `server->aes` 随 server 内存一起释放。服务端会话的 `_rudp_free_cb` 不销毁 AES 上下文（`rudp->aes` 为 NULL）
 
 ## 数据路径
 
@@ -523,13 +569,13 @@ void xylem_rudp_close_server(xylem_rudp_server_t* server);
 
 ## 延迟释放
 
-所有会话内存通过 `xylem_loop_post(_rudp_free_cb)` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。`_rudp_free_cb` 负责销毁 `update_timer`、`handshake_timer`（若存在）、FEC 编码器/解码器（若存在）并释放会话结构体。
+所有会话内存通过 `xylem_loop_post(_rudp_free_cb)` 延迟到下一轮事件循环迭代释放，确保当前回调链中的指针仍然有效。`_rudp_free_cb` 负责销毁 `update_timer`、`handshake_timer`（若存在）、FEC 编码器/解码器（若存在）、AES 上下文（若存在）并释放会话结构体。
 
 ## 与 DTLS 模块的关键差异
 
 | 特性 | DTLS | RUDP |
 |------|------|------|
-| 加密 | OpenSSL DTLS | 无（纯可靠传输） |
+| 加密 | OpenSSL DTLS | 可选 AES-256-CTR（`opts->aes_key`） |
 | 可靠性 | 无（UDP 语义） | KCP ARQ 自动重传 + 有序交付 |
 | 会话标识 | 对端地址 | (对端地址, conv) 复合键 |
 | 握手 | DTLS 握手（cookie 交换） | 轻量级 SYN/ACK（9 字节） |
