@@ -425,10 +425,9 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
 }
 
 /**
- * Process a received UDP packet through FEC decoding (if enabled)
- * and feed resulting KCP packets to ikcp_input.
+ * Unified receive path: decode FEC if enabled, then feed KCP.
  */
-static void _rudp_fec_input(xylem_rudp_conn_t* rudp, void* data, size_t len) {
+static void _rudp_recv_input(xylem_rudp_conn_t* rudp, void* data, size_t len) {
     if (!rudp->fec_dec) {
         ikcp_input(rudp->kcp, (const char*)data, (long)len);
         _rudp_input_complete(rudp);
@@ -474,7 +473,7 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    _rudp_fec_input(rudp, data, len);
+    _rudp_recv_input(rudp, data, len);
 }
 
 static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
@@ -639,7 +638,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
         if (!rudp) {
             return;
         }
-        _rudp_fec_input(rudp, data, len);
+        _rudp_recv_input(rudp, data, len);
     } else if (maybe_fec_type == RUDP_FEC_TYPE_PARITY) {
         /**
          * Parity shard: no KCP conv available. Feed to all sessions
@@ -654,7 +653,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
             node = xylem_rbtree_next(node);
             if (_rudp_addr_cmp(&rudp->peer_addr, addr) == 0 &&
                 rudp->fec_dec) {
-                _rudp_fec_input(rudp, data, len);
+                _rudp_recv_input(rudp, data, len);
             }
         }
     } else {
