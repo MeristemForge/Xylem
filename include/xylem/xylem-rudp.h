@@ -51,7 +51,7 @@ typedef struct xylem_rudp_opts_s {
  * @brief Initiate a reliable UDP connection.
  *
  * Creates a connected UDP socket to the target address and starts
- * a KCP session with an auto-assigned conversation ID. A lightweight
+ * a reliable session with an auto-assigned conversation ID. A lightweight
  * handshake confirms the peer before handler->on_connect fires.
  *
  * @param loop     Event loop.
@@ -69,7 +69,7 @@ extern xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
 /**
  * @brief Thread-safe. Send data over a reliable UDP connection.
  *
- * Data is enqueued into the KCP send buffer and transmitted
+ * Data is enqueued into the internal send buffer and transmitted
  * on the next update cycle.
  *
  * @param rudp  RUDP handle.
@@ -84,7 +84,7 @@ extern int xylem_rudp_send(xylem_rudp_conn_t* rudp,
 /**
  * @brief Thread-safe. Close a reliable UDP connection.
  *
- * Releases the KCP session and closes the underlying UDP socket.
+ * Releases the underlying session and closes the UDP socket.
  * handler->on_close fires with err=0 for a normal close.
  *
  * @param rudp  RUDP handle.
@@ -150,7 +150,7 @@ extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
  * @brief Change FEC parameters for a session at runtime.
  *
  * Destroys the current FEC encoder/decoder (if any), updates the
- * data/parity shard counts, re-adjusts the KCP MTU, and creates
+ * data/parity shard counts, re-adjusts the internal MTU, and creates
  * new FEC state. Pass 0/0 to disable FEC entirely.
  *
  * Safe to call at any time after the session is created (both
@@ -168,8 +168,8 @@ extern int xylem_rudp_set_fec(xylem_rudp_conn_t* rudp,
 /**
  * @brief Create a reliable UDP server and start listening.
  *
- * Binds a UDP socket and demuxes incoming KCP sessions by
- * (peer address, conv). handler->on_accept fires per new session.
+ * Binds a UDP socket and demuxes incoming sessions by
+ * (peer address, conversation ID). handler->on_accept fires per new session.
  *
  * @param loop     Event loop.
  * @param addr     Bind address.
