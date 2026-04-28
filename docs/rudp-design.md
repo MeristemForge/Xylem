@@ -230,9 +230,9 @@ flowchart TD
     S --> T[_rudp_find_session addr+conv]
     T --> U{找到?}
     U -->|否| V[丢弃]
-    U -->|是| W[_rudp_fec_input]
+    U -->|是| W[_rudp_recv_input]
     R -->|PARITY| X[遍历同地址会话]
-    X --> Y[逐个喂入 _rudp_fec_input]
+    X --> Y[逐个喂入 _rudp_recv_input]
 ```
 
 FEC 启用时，数据分片的 KCP conv 位于 FEC 头之后（偏移 8 字节），可直接定位会话。奇偶校验分片不含 KCP conv，需遍历同一对端地址的所有会话，由各自的 FEC 解码器判断是否属于自己的分组。
@@ -422,11 +422,11 @@ FEC 已集成到 `xylem-rudp.c` 的主数据路径中。通过 `opts->fec_data >
 
 发送路径：`ikcp_send -> ikcp_flush -> _rudp_kcp_output_cb -> rudp_fec_enc_feed -> xylem_udp_send`
 
-接收路径：`UDP on_read -> _rudp_fec_input -> rudp_fec_dec_feed -> ikcp_input`
+接收路径：`UDP on_read -> _rudp_recv_input -> rudp_fec_dec_feed -> ikcp_input`
 
 `_rudp_init_fec` 辅助函数在 `xylem_rudp_dial` 和服务端会话创建时调用，根据 opts 创建 FEC 编码器/解码器对。若创建失败则回滚已分配的资源。
 
-`_rudp_fec_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL 则直接调用 `ikcp_input`；否则通过 `rudp_fec_dec_feed` 解码，将数据分片的 KCP 载荷和恢复的分片分别喂入 `ikcp_input`。
+`_rudp_recv_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL 则直接调用 `ikcp_input`；否则通过 `rudp_fec_dec_feed` 解码，将数据分片的 KCP 载荷和恢复的分片分别喂入 `ikcp_input`。
 
 `_rudp_free_cb` 在延迟释放时销毁 FEC 编码器和解码器。
 
@@ -440,7 +440,7 @@ flowchart TD
     B -->|否 客户端| C{是 ACK 且 conv 匹配?}
     C -->|是| D[handshake_done = true + on_connect]
     C -->|否| E[忽略]
-    B -->|是| F[_rudp_fec_input]
+    B -->|是| F[_rudp_recv_input]
     F --> FA{fec_dec 存在?}
     FA -->|否| FB[ikcp_input 直接喂入 KCP]
     FA -->|是| FC[rudp_fec_dec_feed 解码]
