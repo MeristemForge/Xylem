@@ -99,7 +99,7 @@ struct xylem_rudp_conn_s {
 
 `fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
 
-`mtu` 保存有效 MTU 值（客户端从 `opts->mtu` 获取，默认 1400；服务端从 `server->opts.mtu` 继承），供 `_rudp_init_fec` 和 `xylem_rudp_set_fec` 创建 FEC 编码器/解码器时使用。
+`mtu` 保存有效 MTU 值（客户端从 `opts->mtu` 获取，默认 1400；服务端从 `server->opts.mtu` 继承），供 `_rudp_init_fec` 创建 FEC 编码器/解码器时使用。
 
 ### RUDP 服务器
 
@@ -550,15 +550,13 @@ xylem_rudp_conn_t*       xylem_rudp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
 int                 xylem_rudp_send(xylem_rudp_conn_t* rudp,
                                      const void* data, size_t len);
 void                xylem_rudp_close(xylem_rudp_conn_t* rudp);
-int                 xylem_rudp_set_fec(xylem_rudp_conn_t* rudp,
-                                       int fec_data, int fec_parity);
 const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_conn_t* rudp);
 xylem_loop_t*       xylem_rudp_get_loop(xylem_rudp_conn_t* rudp);
 void*               xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp);
 void                xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
 ```
 
-`xylem_rudp_set_fec` 在运行时修改会话的 FEC 参数。销毁现有 FEC 编码器/解码器，更新分片参数，重新调整 KCP MTU（FEC 启用时减去 `RUDP_FEC_HEADER_SIZE`），然后创建新的 FEC 状态。传入 0/0 可完全禁用 FEC。会话创建后（客户端 `xylem_rudp_dial` 返回后、服务端 `on_accept` 回调中）均可安全调用。
+FEC 参数在会话创建时通过 `opts` 配置，双方必须使用相同的 `fec_data` 和 `fec_parity` 值。当前不支持运行时动态调整（无带内协商机制）。
 
 ### 服务器
 

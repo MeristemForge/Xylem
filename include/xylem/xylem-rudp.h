@@ -147,25 +147,6 @@ extern void* xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp);
 extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
 
 /**
- * @brief Change FEC parameters for a session at runtime.
- *
- * Destroys the current FEC encoder/decoder (if any), updates the
- * data/parity shard counts, re-adjusts the internal MTU, and creates
- * new FEC state. Pass 0/0 to disable FEC entirely.
- *
- * Safe to call at any time after the session is created (both
- * client-side from xylem_rudp_dial and server-side from on_accept).
- *
- * @param rudp        RUDP session handle.
- * @param fec_data    Number of data shards, 0 to disable.
- * @param fec_parity  Number of parity shards, 0 to disable.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_rudp_set_fec(xylem_rudp_conn_t* rudp,
-                              int fec_data, int fec_parity);
-
-/**
  * @brief Create a reliable UDP server and start listening.
  *
  * Binds a UDP socket and demuxes incoming sessions by

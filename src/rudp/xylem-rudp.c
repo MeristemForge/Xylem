@@ -921,31 +921,6 @@ void xylem_rudp_conn_release(xylem_rudp_conn_t* rudp) {
     _rudp_conn_decref(rudp);
 }
 
-int xylem_rudp_set_fec(xylem_rudp_conn_t* rudp, int fec_data, int fec_parity) {
-    if (atomic_load(&rudp->closing)) {
-        return -1;
-    }
-
-    /* Tear down existing FEC state. */
-    rudp_fec_enc_destroy(rudp->fec_enc);
-    rudp_fec_dec_destroy(rudp->fec_dec);
-    rudp->fec_enc = NULL;
-    rudp->fec_dec = NULL;
-
-    rudp->fec_data   = fec_data;
-    rudp->fec_parity = fec_parity;
-
-    /* Re-adjust KCP MTU for the new FEC setting. */
-    bool fec = (fec_data > 0 && fec_parity > 0);
-    ikcp_setmtu(rudp->kcp,
-                fec ? rudp->mtu - RUDP_FEC_HEADER_SIZE : rudp->mtu);
-
-    if (!_rudp_init_fec(rudp, rudp->mtu)) {
-        return -1;
-    }
-    return 0;
-}
-
 xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
                                        xylem_addr_t* addr,
                                        xylem_rudp_handler_t* handler,
