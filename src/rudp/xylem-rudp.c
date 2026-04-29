@@ -497,6 +497,13 @@ static void _rudp_schedule_update(xylem_rudp_conn_t* rudp) {
     xylem_loop_reset_timer(rudp->update_timer, delay);
 }
 
+static void _rudp_send_syn(xylem_rudp_conn_t* rudp) {
+    uint8_t syn[RUDP_HANDSHAKE_SIZE];
+    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, rudp->conv);
+    _rudp_encrypted_send(rudp->udp, NULL, rudp->aes,
+                         syn, RUDP_HANDSHAKE_SIZE);
+}
+
 static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
                                        xylem_loop_timer_t* timer,
                                        void* ud) {
@@ -519,10 +526,7 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
     }
 
     /* Retransmit SYN. */
-    uint8_t syn[RUDP_HANDSHAKE_SIZE];
-    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, rudp->conv);
-    _rudp_encrypted_send(rudp->udp, NULL, rudp->aes,
-                         syn, RUDP_HANDSHAKE_SIZE);
+    _rudp_send_syn(rudp);
     xylem_logd("rudp conv=%u SYN retransmit", rudp->conv);
 }
 
@@ -906,9 +910,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
     xylem_loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
                            rudp, RUDP_TIMER_INIT_MS, 0);
 
-    uint8_t syn[RUDP_HANDSHAKE_SIZE];
-    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, conv);
-    _rudp_encrypted_send(udp, NULL, rudp->aes, syn, RUDP_HANDSHAKE_SIZE);
+    _rudp_send_syn(rudp);
 
     uint64_t hs_ms = (opts && opts->handshake_ms > 0)
                          ? opts->handshake_ms
