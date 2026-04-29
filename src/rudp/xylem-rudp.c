@@ -1088,6 +1088,8 @@ xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
     xylem_udp_t* udp = xylem_udp_listen(loop, addr,
                                         &_rudp_server_udp_handler);
     if (!udp) {
+        xylem_aes256_destroy(server->aes);
+        memset(server->aes_key_buf, 0, sizeof(server->aes_key_buf));
         free(server);
         return NULL;
     }

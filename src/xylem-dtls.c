@@ -771,6 +771,26 @@ static xylem_udp_handler_t _dtls_client_udp_handler = {
     .on_close = _dtls_client_close_cb,
 };
 
+/**
+ * Roll back a partially initialised dial session.
+ * Each field is NULL-safe: calloc zeroes everything, so only
+ * resources that were actually created get released.
+ *
+ * Detach before close: xylem_udp_close fires on_close synchronously
+ * (UDP has no write queue), and dtls is about to be freed.
+ */
+static void _dtls_dial_cleanup(xylem_dtls_conn_t* dtls,
+                               xylem_udp_t* udp) {
+    if (dtls->retransmit_timer) {
+        xylem_loop_destroy_timer(dtls->retransmit_timer);
+    }
+    if (udp) {
+        xylem_udp_set_userdata(udp, NULL);
+        xylem_udp_close(udp);
+    }
+    free(dtls);
+}
+
 xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
                               xylem_dtls_ctx_t* ctx,
@@ -799,17 +819,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
     dtls->retransmit_timer = xylem_loop_create_timer(loop);
 
     if (_dtls_init_ssl(dtls) != 0) {
-        xylem_loop_destroy_timer(dtls->retransmit_timer);
-        /**
-         * Detach before close: xylem_udp_close fires on_close
-         * synchronously (UDP has no write queue), and dtls is about
-         * to be freed. TLS does not need this because xylem_tcp_close
-         * is asynchronous -- the tls pointer stays valid until the
-         * deferred free in _tls_tcp_close_cb.
-         */
-        xylem_udp_set_userdata(udp, NULL);
-        xylem_udp_close(udp);
-        free(dtls);
+        _dtls_dial_cleanup(dtls, udp);
         return NULL;
     }
 

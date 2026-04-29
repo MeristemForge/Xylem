@@ -941,6 +941,21 @@ static void _uds_deferred_connect_cb(xylem_loop_t* loop,
     }
 }
 
+/**
+ * Roll back a partially initialised dial connection.
+ * Each field is NULL-safe: calloc zeroes everything, so only
+ * resources that were actually created get released.
+ */
+static void _uds_dial_cleanup(xylem_uds_conn_t* conn) {
+    if (conn->io) {
+        xylem_loop_destroy_io(conn->io);
+    }
+    if (conn->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(conn->fd);
+    }
+    free(conn);
+}
+
 xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                   const char* path,
                                   xylem_uds_handler_t* handler,
@@ -982,16 +997,13 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
     conn->io = xylem_loop_create_io(loop, conn->fd);
     if (!conn->io) {
         xylem_loge("uds dial fd=%d: io creation failed", (int)fd);
-        platform_socket_close(fd);
-        free(conn);
+        _uds_dial_cleanup(conn);
         return NULL;
     }
 
     if (connected) {
         if (_uds_setup_conn(conn) != 0) {
-            xylem_loop_destroy_io(conn->io);
-            platform_socket_close(fd);
-            free(conn);
+            _uds_dial_cleanup(conn);
             return NULL;
         }
         xylem_logi("uds conn fd=%d connected immediately", (int)fd);
@@ -1002,6 +1014,21 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
     }
 
     return conn;
+}
+
+/**
+ * Roll back a partially initialised listen server.
+ * Each field is NULL-safe: calloc zeroes everything, so only
+ * resources that were actually created get released.
+ */
+static void _uds_listen_cleanup(xylem_uds_server_t* server) {
+    if (server->io) {
+        xylem_loop_destroy_io(server->io);
+    }
+    if (server->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(server->fd);
+    }
+    free(server);
 }
 
 xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
@@ -1047,8 +1074,7 @@ xylem_uds_server_t* xylem_uds_listen(xylem_loop_t* loop,
     server->io = xylem_loop_create_io(loop, server->fd);
     if (!server->io) {
         xylem_loge("uds listen fd=%d: io creation failed", (int)fd);
-        platform_socket_close(fd);
-        free(server);
+        _uds_listen_cleanup(server);
         return NULL;
     }
     xylem_loop_start_io(server->io, XYLEM_POLLER_RD_OP,

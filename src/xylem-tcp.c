@@ -1196,6 +1196,29 @@ void xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud) {
     conn->userdata = ud;
 }
 
+/**
+ * Roll back a partially initialised dial connection.
+ * Each field is NULL-safe: calloc zeroes everything, so only
+ * resources that were actually created get released.
+ */
+static void _tcp_dial_cleanup(xylem_tcp_conn_t* conn,
+                              _tcp_dial_priv_t* dial) {
+    if (dial->connect_timer) {
+        xylem_loop_destroy_timer(dial->connect_timer);
+    }
+    if (dial->reconnect_timer) {
+        xylem_loop_destroy_timer(dial->reconnect_timer);
+    }
+    if (conn->io) {
+        xylem_loop_destroy_io(conn->io);
+    }
+    if (conn->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(conn->fd);
+    }
+    free(dial);
+    free(conn);
+}
+
 xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_addr_t* addr,
                                  xylem_tcp_handler_t* handler,
@@ -1259,9 +1282,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
 
     conn->io = xylem_loop_create_io(loop, conn->fd);
     if (!conn->io) {
-        platform_socket_close(fd);
-        free(dial);
-        free(conn);
+        _tcp_dial_cleanup(conn, dial);
         return NULL;
     }
 
@@ -1275,10 +1296,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
     if (connected) {
         if (_tcp_setup_conn(conn) != 0) {
             xylem_loge("tcp conn fd=%d setup failed", (int)conn->fd);
-            xylem_loop_destroy_io(conn->io);
-            platform_socket_close(fd);
-            free(dial);
-            free(conn);
+            _tcp_dial_cleanup(conn, dial);
             return NULL;
         }
         xylem_logi("tcp conn fd=%d connected immediately", (int)fd);
