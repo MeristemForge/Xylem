@@ -89,7 +89,8 @@ struct xylem_rudp_conn_s {
     int                    fec_parity;      /* 每会话 FEC 奇偶校验分片数 */
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    update_timer;     /* KCP 更新定时器 */
-    xylem_loop_timer_t*    handshake_timer;  /* 仅客户端 */
+    xylem_loop_timer_t*    handshake_timer;  /* 仅客户端，周期性 SYN 重传 + 超时检测 */
+    uint64_t               handshake_deadline; /* 握手截止时间戳（ms），超过则关闭 */
     xylem_rbtree_node_t    server_node;      /* 服务器会话红黑树节点 */
     rudp_fec_enc_t*        fec_enc;          /* FEC 编码器，NULL 表示禁用 */
     rudp_fec_dec_t*        fec_dec;          /* FEC 解码器，NULL 表示禁用 */
@@ -155,17 +156,20 @@ sequenceDiagram
     RUDP->>UDP: xylem_udp_dial（已连接 socket）
     RUDP->>RUDP: 创建 KCP 会话
     RUDP->>UDP: 发送 SYN [magic, 0x01, conv]
-    RUDP->>RUDP: 启动握手超时定时器（5s）
+    RUDP->>RUDP: 启动握手定时器（周期 1s）
+    RUDP->>RUDP: 记录 handshake_deadline
     Net-->>UDP: ACK [magic, 0x02, conv]
     UDP->>RUDP: _rudp_client_read_cb
     RUDP->>RUDP: 验证 ACK type + conv 匹配
     RUDP->>RUDP: handshake_done = true
-    RUDP->>RUDP: 停止握手超时定时器
+    RUDP->>RUDP: 停止握手定时器
     RUDP->>RUDP: 调度 KCP 更新定时器
     RUDP->>User: handler->on_connect
 ```
 
-握手超时（默认 `RUDP_DEFAULT_HANDSHAKE_MS = 5000ms`，可通过 `opts->handshake_ms` 自定义）后自动关闭会话，`on_close` 携带 `err=-1, errmsg="handshake timeout"`。
+客户端在 `handshake_ms`（默认 `RUDP_DEFAULT_HANDSHAKE_MS = 5000ms`，可通过 `opts->handshake_ms` 自定义）窗口内以固定间隔（`RUDP_SYN_RETRANSMIT_MS = 1000ms`）重传 SYN，直到收到 ACK 或超时。`xylem_rudp_dial` 发送首个 SYN 后启动周期性握手定时器，同时记录 `handshake_deadline`（当前时间 + `handshake_ms`）。定时器间隔取 `min(RUDP_SYN_RETRANSMIT_MS, handshake_ms)`，确保短超时配置下定时器能及时触发。每次定时器触发时，`_rudp_handshake_timeout_cb` 检查是否已超过 deadline：若超过则关闭会话（`on_close` 携带 `err=-1, errmsg="handshake timeout"`）；否则重发 SYN 并等待下次触发。收到 ACK 后停止定时器。
+
+服务端已处理重复 SYN（回复 ACK 但不重复创建会话），因此客户端重传 SYN 不会导致服务端状态异常。
 
 ### 服务端握手
 
@@ -429,11 +433,11 @@ FEC 已集成到 `xylem-rudp.c` 的主数据路径中。通过 `opts->fec_data >
 
 发送路径：`ikcp_send -> ikcp_flush -> _rudp_kcp_output_cb -> [FEC 编码] -> _rudp_encrypted_send([AES 加密] + xylem_udp_send)`
 
-接收路径：`UDP on_read -> _rudp_recv_input -> rudp_fec_dec_feed -> [AES 解密] -> ikcp_input`
+接收路径：`UDP on_read -> _rudp_decrypt_packet([AES 解密]) -> [FEC 解码] -> ikcp_input`
 
 `_rudp_init_fec` 辅助函数在 `xylem_rudp_dial` 和服务端会话创建时调用，根据 opts 创建 FEC 编码器/解码器对。若创建失败则回滚已分配的资源。
 
-`_rudp_recv_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL，直接调用 `ikcp_input`；若 `fec_dec` 非 NULL，通过 `rudp_fec_dec_feed` 解码，对每个恢复的 KCP 载荷喂入 `ikcp_input`。AES 解密在调用 `_rudp_recv_input` 之前已由 `_rudp_client_read_cb` 或 `_rudp_server_read_cb` 通过 `_rudp_decrypt_packet` 完成。
+`_rudp_recv_input` 辅助函数处理接收路径的 FEC 解码：若 `fec_dec` 为 NULL，直接调用 `ikcp_input`；若 `fec_dec` 非 NULL，通过 `rudp_fec_dec_feed` 解码，对每个恢复的 KCP 载荷喂入 `ikcp_input`。AES 解密在调用 `_rudp_recv_input` 之前已由 `_rudp_client_read_cb` 或 `_rudp_server_read_cb` 通过 `_rudp_decrypt_packet` 完成，因此 `_rudp_recv_input` 始终处理明文数据。
 
 `_rudp_free_cb` 在延迟释放时销毁 FEC 编码器、解码器和 AES 上下文。
 

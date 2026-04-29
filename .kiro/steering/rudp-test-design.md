@@ -45,7 +45,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
 | `test_handshake_and_echo` | 完整 SYN/ACK 握手 + echo | accept/connect/read/close 全触发，数据 "hello" 往返一致 |
-| `test_handshake_timeout` | 握手超时（无服务端） | handshake_ms=200，on_close 触发（可能由握手超时或 ECONNREFUSED 触发） |
+| `test_handshake_timeout` | 握手超时（无服务端） | handshake_ms=200，SYN 重传后仍无 ACK，on_close 触发（可能由握手超时或 ECONNREFUSED 触发） |
 
 ### 多会话多路复用（1 个）
 
@@ -111,8 +111,8 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_client_read_cb` | 握手阶段：decode ACK + conv 匹配 → handshake_done + on_connect | `test_handshake_and_echo` |
 | `_rudp_client_read_cb` | 数据阶段：ikcp_input + _rudp_input_complete | `test_handshake_and_echo`（数据阶段） |
 | `_rudp_client_read_cb` | closing 检查：提前返回 | `test_handshake_and_echo`（on_read 中 close） |
-| `_rudp_server_read_cb` | SYN 新会话：decode → 回复 ACK → 创建 KCP + 初始化 FEC + 初始化 AES + 插入红黑树 + on_accept | `test_handshake_and_echo`, `test_aes_echo`, `test_aes_with_fec` |
-| `_rudp_server_read_cb` | SYN 已有会话：回复 ACK，不重复创建 | （隐式：客户端可能重发 SYN） |
+| `_rudp_server_read_cb` | SYN 新会话：decode → 回复加密 ACK → 创建 KCP + 初始化 FEC + 插入红黑树 + on_accept | `test_handshake_and_echo`, `test_aes_echo`, `test_aes_with_fec` |
+| `_rudp_server_read_cb` | SYN 已有会话：回复 ACK，不重复创建 | `test_handshake_and_echo`（客户端 SYN 重传可能在服务端已创建会话后到达） |
 | `_rudp_server_read_cb` | FEC DATA 分发：FEC 头后提取 conv → find_session → _rudp_recv_input | `test_aes_with_fec` |
 | `_rudp_server_read_cb` | FEC PARITY 分发：遍历同地址 FEC 会话 → _rudp_recv_input | `test_aes_with_fec` |
 | `_rudp_server_read_cb` | 原始 KCP 分发：提取 conv → find_session → ikcp_input | `test_handshake_and_echo`（数据阶段） |
@@ -121,10 +121,9 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_server_read_cb` | find_session 未命中：丢弃 | （隐式：正常测试不产生未知 conv） |
 | `_rudp_do_handshake` → `_rudp_encode/decode_handshake` | SYN 编码/解码 | 所有异步测试（客户端发送 SYN） |
 | `_rudp_do_handshake` → `_rudp_encode/decode_handshake` | ACK 编码/解码 | 所有异步测试（服务端回复 ACK） |
-| `_rudp_kcp_output_cb` | 客户端路径：dest=NULL（已连接 socket） | `test_handshake_and_echo` |
-| `_rudp_kcp_output_cb` | 服务端路径：dest=peer_addr | `test_handshake_and_echo`（服务端回显） |
-| `_rudp_kcp_output_cb` | AES 加密路径：xylem_aes256_ctr_encrypt + 发送密文 | `test_aes_echo`, `test_aes_with_fec` |
-| `_rudp_kcp_output_cb` | AES + FEC 路径：加密后喂入 FEC 编码器 | `test_aes_with_fec` |
+| `_rudp_kcp_output_cb` | 客户端路径：AES 上下文从 rudp->aes 获取 | `test_handshake_and_echo`, `test_aes_echo` |
+| `_rudp_kcp_output_cb` | 服务端路径：AES 上下文从 server->aes 借用 | `test_handshake_and_echo`（服务端回显）, `test_aes_echo`（服务端回显） |
+| `_rudp_kcp_output_cb` | FEC + AES 路径：FEC 编码后逐个加密发送 | `test_aes_with_fec` |
 | `_rudp_update_timeout_cb` | 正常路径：ikcp_update + drain_recv + schedule | 所有异步测试 |
 | `_rudp_update_timeout_cb` | dead link 检测：kcp->state == -1 → close | （未覆盖：回环网络无丢包，不触发 dead link） |
 | `_rudp_update_timeout_cb` | closing 检查：提前返回 | 所有异步测试（close 后定时器可能仍在队列中） |
@@ -134,16 +133,20 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_drain_recv` | closing 检查：on_read 中 close 后返回 false | `test_handshake_and_echo` |
 | `_rudp_input_complete` | flush ACK + drain_recv + schedule_update | 所有异步测试（数据阶段） |
 | `_rudp_handshake_timeout_cb` | 握手超时 → close | `test_handshake_timeout`（无服务端时） |
+| `_rudp_handshake_timeout_cb` | SYN 重传（未超过 deadline） | `test_handshake_timeout`（handshake_ms=200 > SYN 重传间隔，至少触发 1 次重传后超时）；所有正常异步测试（首次 SYN 成功前定时器可能触发但 handshake_done 已为 true） |
 | `_rudp_client_close_cb` | 正常路径：stop timers + ikcp_release + on_close + loop_post | `test_handshake_and_echo` |
 | `_rudp_client_close_cb` | UDP 错误传播：close_err==0 且 err!=0 时传播 | `test_handshake_timeout`（ECONNREFUSED 路径） |
-| `_rudp_free_cb` | 延迟释放 rudp + destroy timers + destroy FEC + destroy AES | 所有异步测试 |
-| `_rudp_server_close_cb` | 释放 server 内存 | 所有异步测试 |
+| `_rudp_free_cb` | 延迟释放 rudp + destroy timers + destroy FEC + destroy AES（仅客户端） | 所有异步测试 |
+| `_rudp_server_close_cb` | 释放 server 内存 + destroy server->aes + 清零密钥 | 所有异步测试 |
 | `_rudp_apply_opts` | 快速模式（唯一模式）：nodelay=1, interval=10ms, resend=2, nc=1 | `test_handshake_and_echo`（opts=NULL 使用默认）|
 | `_rudp_apply_opts` | AES MTU 调整：减去 RUDP_AES_IV_SIZE | `test_aes_echo`, `test_aes_with_fec` |
 | `_rudp_apply_opts` | FEC + AES MTU 调整：减去 FEC 头 + AES IV | `test_aes_with_fec` |
-| `_rudp_recv_input` | 无 FEC 无 AES：直接 ikcp_input | `test_handshake_and_echo` |
-| `_rudp_recv_input` | 无 FEC 有 AES：AES 解密后 ikcp_input | `test_aes_echo` |
-| `_rudp_recv_input` | 有 FEC 有 AES：FEC 解码后逐个 AES 解密再 ikcp_input | `test_aes_with_fec` |
+| `_rudp_recv_input` | 无 FEC：直接 ikcp_input | `test_handshake_and_echo`, `test_aes_echo` |
+| `_rudp_recv_input` | 有 FEC：FEC 解码后逐个 ikcp_input | `test_aes_with_fec` |
+| `_rudp_encrypted_send` | AES 加密路径：xylem_aes256_ctr_encrypt + xylem_udp_send | `test_aes_echo`, `test_aes_with_fec` |
+| `_rudp_encrypted_send` | 无 AES 路径：直接 xylem_udp_send | `test_handshake_and_echo` |
+| `_rudp_decrypt_packet` | AES 解密路径：xylem_aes256_ctr_decrypt | `test_aes_echo`, `test_aes_with_fec` |
+| `_rudp_decrypt_packet` | 无 AES 路径：透传原始数据 | `test_handshake_and_echo` |
 | `_rudp_init_fec` | FEC 编码器/解码器创建 | `test_aes_with_fec` |
 | `_rudp_find_session` | 红黑树查找命中 | `test_handshake_and_echo`（数据阶段）、`test_multi_session` |
 | `_rudp_find_session` | 红黑树查找未命中 | `test_handshake_and_echo`（首次 SYN） |
@@ -171,6 +174,5 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_create_kcp` 失败路径（ikcp_create 返回 NULL） | 需要 mock 内存分配失败，不实际 |
 | `xylem_rudp_dial` 失败路径（udp_dial 失败） | 需要端口耗尽等极端条件 |
 | `xylem_rudp_listen` 失败路径（udp_listen 失败） | 需要端口占用等极端条件 |
-| `_rudp_server_read_cb` SYN 重复（已有会话仅回复 ACK） | 回环网络不丢包，客户端不会重发 SYN |
 | `_rudp_server_read_cb` 短包丢弃（len < 4） | 正常测试不产生短包 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |
