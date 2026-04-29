@@ -45,7 +45,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | 测试函数 | 覆盖的功能 | 验证点 |
 |---------|-----------|--------|
 | `test_handshake_and_echo` | 完整 SYN/ACK 握手 + echo | accept/connect/read/close 全触发，数据 "hello" 往返一致 |
-| `test_handshake_timeout` | 握手超时（无服务端） | handshake_ms=200，on_close 触发（可能由握手超时或 ECONNREFUSED 触发） |
+| `test_handshake_timeout` | 握手超时（无服务端） | handshake_ms=200，SYN 重传后仍无 ACK，on_close 触发（可能由握手超时或 ECONNREFUSED 触发） |
 
 ### 多会话多路复用（1 个）
 
@@ -112,7 +112,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_client_read_cb` | 数据阶段：ikcp_input + _rudp_input_complete | `test_handshake_and_echo`（数据阶段） |
 | `_rudp_client_read_cb` | closing 检查：提前返回 | `test_handshake_and_echo`（on_read 中 close） |
 | `_rudp_server_read_cb` | SYN 新会话：decode → 回复加密 ACK → 创建 KCP + 初始化 FEC + 插入红黑树 + on_accept | `test_handshake_and_echo`, `test_aes_echo`, `test_aes_with_fec` |
-| `_rudp_server_read_cb` | SYN 已有会话：回复 ACK，不重复创建 | （隐式：客户端可能重发 SYN） |
+| `_rudp_server_read_cb` | SYN 已有会话：回复 ACK，不重复创建 | `test_handshake_and_echo`（客户端 SYN 重传可能在服务端已创建会话后到达） |
 | `_rudp_server_read_cb` | FEC DATA 分发：FEC 头后提取 conv → find_session → _rudp_recv_input | `test_aes_with_fec` |
 | `_rudp_server_read_cb` | FEC PARITY 分发：遍历同地址 FEC 会话 → _rudp_recv_input | `test_aes_with_fec` |
 | `_rudp_server_read_cb` | 原始 KCP 分发：提取 conv → find_session → ikcp_input | `test_handshake_and_echo`（数据阶段） |
@@ -133,6 +133,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_drain_recv` | closing 检查：on_read 中 close 后返回 false | `test_handshake_and_echo` |
 | `_rudp_input_complete` | flush ACK + drain_recv + schedule_update | 所有异步测试（数据阶段） |
 | `_rudp_handshake_timeout_cb` | 握手超时 → close | `test_handshake_timeout`（无服务端时） |
+| `_rudp_handshake_timeout_cb` | SYN 重传（未超过 deadline） | `test_handshake_timeout`（handshake_ms=200 > SYN 重传间隔，至少触发 1 次重传后超时）；所有正常异步测试（首次 SYN 成功前定时器可能触发但 handshake_done 已为 true） |
 | `_rudp_client_close_cb` | 正常路径：stop timers + ikcp_release + on_close + loop_post | `test_handshake_and_echo` |
 | `_rudp_client_close_cb` | UDP 错误传播：close_err==0 且 err!=0 时传播 | `test_handshake_timeout`（ECONNREFUSED 路径） |
 | `_rudp_free_cb` | 延迟释放 rudp + destroy timers + destroy FEC + destroy AES（仅客户端） | 所有异步测试 |
@@ -173,6 +174,5 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_create_kcp` 失败路径（ikcp_create 返回 NULL） | 需要 mock 内存分配失败，不实际 |
 | `xylem_rudp_dial` 失败路径（udp_dial 失败） | 需要端口耗尽等极端条件 |
 | `xylem_rudp_listen` 失败路径（udp_listen 失败） | 需要端口占用等极端条件 |
-| `_rudp_server_read_cb` SYN 重复（已有会话仅回复 ACK） | 回环网络不丢包，客户端不会重发 SYN |
 | `_rudp_server_read_cb` 短包丢弃（len < 4） | 正常测试不产生短包 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |

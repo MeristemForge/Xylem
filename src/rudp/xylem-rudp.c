@@ -67,6 +67,9 @@
 /* Default timeout for client waiting for handshake ACK. */
 #define RUDP_DEFAULT_HANDSHAKE_MS 5000
 
+/* Interval between SYN retransmissions during handshake. */
+#define RUDP_SYN_RETRANSMIT_MS 1000
+
 /* AES-256-CTR prepends a 16-byte IV to each encrypted packet. */
 #define RUDP_AES_IV_SIZE 16
 
@@ -89,6 +92,7 @@ struct xylem_rudp_conn_s {
     xylem_loop_t*          loop;
     xylem_loop_timer_t*    update_timer;
     xylem_loop_timer_t*    handshake_timer; /* client-side only */
+    uint64_t               handshake_deadline; /* absolute ms timestamp */
     xylem_rbtree_node_t    server_node;
     rudp_fec_enc_t*        fec_enc;      /* NULL when FEC disabled */
     rudp_fec_dec_t*        fec_dec;      /* NULL when FEC disabled */
@@ -499,10 +503,27 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
     (void)loop;
     (void)timer;
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-    xylem_logw("rudp conv=%u handshake timed out", rudp->conv);
-    rudp->close_err    = -1;
-    rudp->close_errmsg = "handshake timeout";
-    xylem_rudp_close(rudp);
+
+    if (atomic_load(&rudp->handshake_done) ||
+        atomic_load(&rudp->closing)) {
+        return;
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (now >= rudp->handshake_deadline) {
+        xylem_logw("rudp conv=%u handshake timed out", rudp->conv);
+        rudp->close_err    = -1;
+        rudp->close_errmsg = "handshake timeout";
+        xylem_rudp_close(rudp);
+        return;
+    }
+
+    /* Retransmit SYN. */
+    uint8_t syn[RUDP_HANDSHAKE_SIZE];
+    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, rudp->conv);
+    _rudp_encrypted_send(rudp->udp, NULL, rudp->aes,
+                         syn, RUDP_HANDSHAKE_SIZE);
+    xylem_logd("rudp conv=%u SYN retransmit", rudp->conv);
 }
 
 /**
@@ -892,9 +913,14 @@ xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
     uint64_t hs_ms = (opts && opts->handshake_ms > 0)
                          ? opts->handshake_ms
                          : RUDP_DEFAULT_HANDSHAKE_MS;
+    rudp->handshake_deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_ms;
+    uint64_t interval = RUDP_SYN_RETRANSMIT_MS;
+    if (interval > hs_ms) {
+        interval = hs_ms;
+    }
     xylem_loop_start_timer(rudp->handshake_timer,
                            _rudp_handshake_timeout_cb, rudp,
-                           hs_ms, 0);
+                           interval, interval);
 
     return rudp;
 }
