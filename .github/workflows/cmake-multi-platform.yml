@@ -172,6 +172,7 @@ jobs:
           -DANDROID_ABI=arm64-v8a \
           -DANDROID_PLATFORM=android-29 \
           -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_FIND_ROOT_PATH="${{ github.workspace }}/openssl-android" \
           -DXYLEM_ENABLE_TESTING=ON \
           -DXYLEM_ENABLE_TLS=ON \
           -DOPENSSL_ROOT_DIR="${{ github.workspace }}/openssl-android" \
