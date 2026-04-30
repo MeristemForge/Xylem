@@ -961,6 +961,12 @@ int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len) {
         return 0;
     }
 
+    if (len > RUDP_RECV_BUF_SIZE) {
+        xylem_logd("rudp conv=%u send rejected: message too large (%zu > %d)",
+                   rudp->conv, len, RUDP_RECV_BUF_SIZE);
+        return -1;
+    }
+
     /* Cross-thread: copy data and post to loop thread. */
     if (!xylem_loop_is_loop_thread(rudp->loop)) {
         _rudp_deferred_send_t* ds = (_rudp_deferred_send_t*)malloc(

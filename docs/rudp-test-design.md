@@ -155,6 +155,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `xylem_rudp_send` | 正常路径：ikcp_send + ikcp_flush + schedule | `test_handshake_and_echo`, `test_multi_session`, `test_aes_echo`, `test_aes_with_fec` |
 | `xylem_rudp_send` | 失败路径：closing==true 返回 -1 | `test_send_after_close` |
 | `xylem_rudp_send` | 失败路径：handshake_done==false 返回 -1 | `test_send_before_handshake` |
+| `xylem_rudp_send` | 失败路径：len > RUDP_RECV_BUF_SIZE 返回 -1 | （未覆盖：需要发送超过 65536 字节的消息） |
 | `xylem_rudp_close` | 客户端路径：stop timers + udp_close → _rudp_client_close_cb | `test_handshake_and_echo` |
 | `xylem_rudp_close` | 服务端路径：erase from rbtree + ikcp_release + on_close + loop_post | `test_close_server_with_active_session` |
 | `xylem_rudp_close` | 幂等：closing==true 提前返回 | `test_close_idempotent` |
@@ -174,5 +175,6 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `_rudp_create_kcp` 失败路径（ikcp_create 返回 NULL） | 需要 mock 内存分配失败，不实际 |
 | `xylem_rudp_dial` 失败路径（udp_dial 失败） | 需要端口耗尽等极端条件 |
 | `xylem_rudp_listen` 失败路径（udp_listen 失败） | 需要端口占用等极端条件 |
+| `xylem_rudp_send` 消息过大拒绝（len > RUDP_RECV_BUF_SIZE） | 需要发送超过 65536 字节的消息 |
 | `_rudp_server_read_cb` 短包丢弃（len < 4） | 正常测试不产生短包 |
 | IPv6 地址 | 所有测试使用 127.0.0.1 回环地址 |

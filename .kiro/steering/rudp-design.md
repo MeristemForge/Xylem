@@ -516,11 +516,12 @@ int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len);
 ```
 
 1. 检查握手已完成且未关闭
-2. `ikcp_send` 将数据入队 KCP 发送缓冲区
-3. `ikcp_flush` 立即发送（不等待下次更新定时器）
-4. `_rudp_schedule_update` 重新调度更新定时器
+2. 检查消息大小不超过 `RUDP_RECV_BUF_SIZE`（65536 字节）——接收端使用固定大小的 `ikcp_recv` 缓冲区，超过此限制的消息无法被对端完整接收
+3. `ikcp_send` 将数据入队 KCP 发送缓冲区
+4. `ikcp_flush` 立即发送（不等待下次更新定时器）
+5. `_rudp_schedule_update` 重新调度更新定时器
 
-返回 0 成功，-1 失败（未握手、已关闭、KCP 入队失败）。
+返回 0 成功，-1 失败（未握手、已关闭、消息过大、KCP 入队失败）。
 
 ## 关闭流程
 
