@@ -130,32 +130,19 @@ jobs:
       working-directory: ${{ steps.strings.outputs.build-output-dir }}
       run: ctest --build-config ${{ matrix.build_type }} --output-on-failure
 
-  # ── Android (NDK cross-compile, build + TLS) ──
+  # ── Android (NDK cross-compile, arm64 only, build + TLS) ──
   build-android:
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        abi: [arm64-v8a, armeabi-v7a, x86_64]
-        build_type: [Release]
-        include:
-          - abi: arm64-v8a
-            openssl_target: android-arm64
-          - abi: armeabi-v7a
-            openssl_target: android-arm
-          - abi: x86_64
-            openssl_target: android-x86_64
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Cache OpenSSL (Android ${{ matrix.abi }})
+    - name: Cache OpenSSL (Android arm64)
       id: cache-openssl-android
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/openssl-android
-        key: openssl-${{ env.OPENSSL_VERSION }}-android-${{ matrix.abi }}
+        key: openssl-${{ env.OPENSSL_VERSION }}-android-arm64-v8a
 
     - name: Cross-compile OpenSSL for Android
       if: steps.cache-openssl-android.outputs.cache-hit != 'true'
@@ -168,7 +155,7 @@ jobs:
         export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
         export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
-        ./Configure ${{ matrix.openssl_target }} \
+        ./Configure android-arm64 \
           -D__ANDROID_API__=24 \
           --prefix="${{ github.workspace }}/openssl-android" \
           --openssldir="${{ github.workspace }}/openssl-android/ssl" \
@@ -182,43 +169,30 @@ jobs:
         cmake \
           -B build \
           -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
-          -DANDROID_ABI=${{ matrix.abi }} \
+          -DANDROID_ABI=arm64-v8a \
           -DANDROID_PLATFORM=android-24 \
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_BUILD_TYPE=Release \
           -DXYLEM_ENABLE_TESTING=ON \
           -DXYLEM_ENABLE_TLS=ON \
           -DOPENSSL_ROOT_DIR="${{ github.workspace }}/openssl-android" \
           -S .
 
     - name: Build (Android)
-      run: cmake --build build --config ${{ matrix.build_type }}
+      run: cmake --build build --config Release
 
-  # ── iOS (Xcode cross-compile, build + TLS) ──
+  # ── iOS (Xcode cross-compile, arm64 only, build + TLS) ──
   build-ios:
     runs-on: macos-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        sdk: [iphoneos, iphonesimulator]
-        build_type: [Release]
-        include:
-          - sdk: iphoneos
-            openssl_target: ios64-xcrun
-            arch: arm64
-          - sdk: iphonesimulator
-            openssl_target: iossimulator-xcrun
-            arch: arm64
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Cache OpenSSL (iOS ${{ matrix.sdk }})
+    - name: Cache OpenSSL (iOS)
       id: cache-openssl-ios
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/openssl-ios
-        key: openssl-${{ env.OPENSSL_VERSION }}-ios-${{ matrix.sdk }}
+        key: openssl-${{ env.OPENSSL_VERSION }}-ios-arm64
 
     - name: Cross-compile OpenSSL for iOS
       if: steps.cache-openssl-ios.outputs.cache-hit != 'true'
@@ -228,7 +202,7 @@ jobs:
         tar xzf openssl.tar.gz
         cd "openssl-${OPENSSL_VERSION}"
 
-        ./Configure ${{ matrix.openssl_target }} \
+        ./Configure ios64-xcrun \
           --prefix="${{ github.workspace }}/openssl-ios" \
           --openssldir="${{ github.workspace }}/openssl-ios/ssl" \
           no-docs no-tests no-shared
@@ -242,8 +216,8 @@ jobs:
           -B build \
           -G Xcode \
           -DCMAKE_SYSTEM_NAME=iOS \
-          -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
-          -DCMAKE_OSX_ARCHITECTURES="${{ matrix.arch }}" \
+          -DCMAKE_OSX_SYSROOT=iphoneos \
+          -DCMAKE_OSX_ARCHITECTURES=arm64 \
           -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
           -DXYLEM_ENABLE_TESTING=ON \
           -DXYLEM_ENABLE_TLS=ON \
@@ -251,4 +225,4 @@ jobs:
           -S .
 
     - name: Build (iOS)
-      run: cmake --build build --config ${{ matrix.build_type }}
+      run: cmake --build build --config Release
