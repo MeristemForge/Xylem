@@ -885,6 +885,11 @@ static void _uds_deferred_send_cb(xylem_loop_t* loop,
 
     if (atomic_load(&ds->conn->state) == UDS_STATE_CONNECTED) {
         _uds_enqueue_write(ds->conn, ds->data, ds->len);
+    } else {
+        if (ds->conn->handler && ds->conn->handler->on_write_done) {
+            ds->conn->handler->on_write_done(ds->conn,
+                                             ds->data, ds->len, -1);
+        }
     }
 
     _uds_conn_decref(ds->conn);

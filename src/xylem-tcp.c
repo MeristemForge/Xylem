@@ -1126,6 +1126,11 @@ static void _tcp_deferred_send_cb(xylem_loop_t* loop,
 
     if (atomic_load(&ds->conn->state) == TCP_STATE_CONNECTED) {
         _tcp_enqueue_write(ds->conn, ds->data, ds->len);
+    } else {
+        if (ds->conn->handler && ds->conn->handler->on_write_done) {
+            ds->conn->handler->on_write_done(ds->conn,
+                                             ds->data, ds->len, -1);
+        }
     }
 
     _tcp_conn_decref(ds->conn);
