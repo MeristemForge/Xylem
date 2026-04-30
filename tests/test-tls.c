@@ -62,6 +62,14 @@ typedef struct {
     _Atomic bool           worker_done;
 } _test_ctx_t;
 
+/*
+ * Write PEM data to a file via memory BIO instead of passing FILE* directly
+ * to OpenSSL (e.g. PEM_write_X509). On Windows, the OpenSSL DLL and the
+ * application may link against different C runtimes whose FILE structs are
+ * incompatible. Passing a FILE* across the DLL boundary triggers the
+ * OPENSSL_Applink error. Using a memory BIO keeps all FILE* operations
+ * inside the application's own CRT, avoiding the issue entirely.
+ */
 static int _write_pem_to_file(const char* path,
                               int (*write_fn)(BIO*, void*),
                               void* obj) {
