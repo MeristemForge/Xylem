@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/xylem-fec.h"
+#include "xylem.h"
 #include "assert.h"
 
 #include <stdlib.h>

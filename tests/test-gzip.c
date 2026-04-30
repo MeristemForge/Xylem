@@ -26,14 +26,14 @@
 
 /* Round-trip: gzip compress then decompress recovers original data. */
 static void test_compress_decompress(void) {
-    const char *input = "Hello, gzip world! This is a test string.";
+    const char* input = "Hello, gzip world! This is a test string.";
     size_t slen = strlen(input);
     size_t bound = xylem_gzip_compress_bound(slen);
 
-    uint8_t *compressed = (uint8_t *)malloc(bound);
+    uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
 
-    int clen = xylem_gzip_compress((const uint8_t *)input, slen, compressed,
+    int clen = xylem_gzip_compress((const uint8_t*)input, slen, compressed,
                                    bound, -1);
     ASSERT(clen > 0);
 
@@ -52,14 +52,14 @@ static void test_compress_decompress(void) {
 
 /* Round-trip: raw deflate then inflate recovers original data. */
 static void test_deflate_inflate(void) {
-    const char *input = "Raw deflate round-trip test data.";
+    const char* input = "Raw deflate round-trip test data.";
     size_t slen = strlen(input);
     size_t bound = xylem_gzip_deflate_bound(slen);
 
-    uint8_t *deflated = (uint8_t *)malloc(bound);
+    uint8_t* deflated = (uint8_t*)malloc(bound);
     ASSERT(deflated != NULL);
 
-    int clen = xylem_gzip_deflate((const uint8_t *)input, slen, deflated,
+    int clen = xylem_gzip_deflate((const uint8_t*)input, slen, deflated,
                                   bound, -1);
     ASSERT(clen > 0);
 
@@ -75,7 +75,7 @@ static void test_deflate_inflate(void) {
 /* Empty input produces a valid gzip stream that decompresses to nothing. */
 static void test_empty_input(void) {
     size_t bound = xylem_gzip_compress_bound(0);
-    uint8_t *compressed = (uint8_t *)malloc(bound);
+    uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
 
     uint8_t empty = 0;
@@ -89,7 +89,7 @@ static void test_empty_input(void) {
 
     /* Raw deflate/inflate with empty input. */
     size_t dbound = xylem_gzip_deflate_bound(0);
-    uint8_t *deflated = (uint8_t *)malloc(dbound);
+    uint8_t* deflated = (uint8_t*)malloc(dbound);
     ASSERT(deflated != NULL);
 
     int dclen = xylem_gzip_deflate(&empty, 0, deflated, dbound, -1);
@@ -119,20 +119,20 @@ static void test_invalid_data(void) {
 /* Large data round-trip through gzip compress/decompress. */
 static void test_large_data(void) {
     size_t len = 100000;
-    uint8_t *input = (uint8_t *)malloc(len);
+    uint8_t* input = (uint8_t*)malloc(len);
     ASSERT(input != NULL);
     for (size_t i = 0; i < len; i++) {
         input[i] = (uint8_t)(i % 251);
     }
 
     size_t bound = xylem_gzip_compress_bound(len);
-    uint8_t *compressed = (uint8_t *)malloc(bound);
+    uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
 
     int clen = xylem_gzip_compress(input, len, compressed, bound, -1);
     ASSERT(clen > 0);
 
-    uint8_t *decompressed = (uint8_t *)malloc(len);
+    uint8_t* decompressed = (uint8_t*)malloc(len);
     ASSERT(decompressed != NULL);
 
     int dlen = xylem_gzip_decompress(compressed, (size_t)clen, decompressed,
@@ -147,14 +147,14 @@ static void test_large_data(void) {
 
 /* Compression levels 0 through 9 all produce valid output. */
 static void test_compression_levels(void) {
-    const char *input = "Test all compression levels.";
+    const char* input = "Test all compression levels.";
     size_t slen = strlen(input);
     size_t bound = xylem_gzip_compress_bound(slen);
     uint8_t compressed[256];
     ASSERT(bound <= sizeof(compressed));
 
     for (int level = 0; level <= 9; level++) {
-        int clen = xylem_gzip_compress((const uint8_t *)input, slen,
+        int clen = xylem_gzip_compress((const uint8_t*)input, slen,
                                        compressed, sizeof(compressed), level);
         ASSERT(clen > 0);
 
@@ -168,13 +168,13 @@ static void test_compression_levels(void) {
 
 /* Insufficient output buffer returns -1. */
 static void test_insufficient_buffer(void) {
-    const char *input = "This string needs more than 2 bytes of output.";
+    const char* input = "This string needs more than 2 bytes of output.";
     size_t slen = strlen(input);
 
     uint8_t tiny[2];
-    ASSERT(xylem_gzip_compress((const uint8_t *)input, slen, tiny,
+    ASSERT(xylem_gzip_compress((const uint8_t*)input, slen, tiny,
                                sizeof(tiny), -1) == -1);
-    ASSERT(xylem_gzip_deflate((const uint8_t *)input, slen, tiny,
+    ASSERT(xylem_gzip_deflate((const uint8_t*)input, slen, tiny,
                               sizeof(tiny), -1) == -1);
 }
 

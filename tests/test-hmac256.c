@@ -19,8 +19,8 @@
  *  IN THE SOFTWARE.
  */
 
+#include "xylem.h"
 #include "assert.h"
-#include "xylem/xylem-hmac256.h"
 
 #include <string.h>
 

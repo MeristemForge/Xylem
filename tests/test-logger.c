@@ -205,6 +205,7 @@ static void test_file_rollover(void) {
 }
 
 int main(void) {
+    xylem_startup();
     test_log_before_init();
     test_init_destroy();
     test_callback_receives_message();
@@ -213,5 +214,6 @@ int main(void) {
     test_file_output();
     test_file_rollover();
     test_async_mode();
+    xylem_cleanup();
     return 0;
 }
