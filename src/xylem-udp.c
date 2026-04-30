@@ -313,11 +313,10 @@ static void _udp_deferred_close_cb(xylem_loop_t* loop,
 }
 
 void xylem_udp_close(xylem_udp_t* udp) {
-    /* Idempotent: may be called multiple times or from callbacks. */
-    if (atomic_load(&udp->closing)) {
+    /* Idempotent: atomic_exchange guarantees exactly one caller proceeds. */
+    if (atomic_exchange(&udp->closing, true)) {
         return;
     }
-    atomic_store(&udp->closing, true);
 
     /* Cross-thread: post to loop thread. */
     if (!xylem_loop_is_loop_thread(udp->loop)) {
