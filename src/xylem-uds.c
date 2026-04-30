@@ -965,6 +965,12 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                   const char* path,
                                   xylem_uds_handler_t* handler,
                                   xylem_uds_opts_t* opts) {
+    if (!path || strlen(path) >= UDS_MAX_PATH) {
+        xylem_loge("uds dial: path is NULL or too long (max %d)",
+                   UDS_MAX_PATH - 1);
+        return NULL;
+    }
+
     xylem_uds_conn_t* conn =
         (xylem_uds_conn_t*)calloc(1, sizeof(*conn));
     if (!conn) {
