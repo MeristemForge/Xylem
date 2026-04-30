@@ -157,7 +157,9 @@ typedef struct platform_serial_config_s {
   - `StopBits`：`ONESTOPBIT` / `TWOSTOPBITS`
   - `Parity`：`NOPARITY` / `ODDPARITY` / `EVENPARITY`（奇偶校验时 `fParity=TRUE`）
   - 硬件流控：`fOutxCtsFlow=TRUE` + `fRtsControl=RTS_CONTROL_HANDSHAKE`
+  - 无流控：`fRtsControl=RTS_CONTROL_ENABLE`（断言 RTS 信号，许多设备需要 RTS 才能通信）
   - `fBinary=TRUE` 始终启用
+  - `fDtrControl=DTR_CONTROL_ENABLE` 始终启用（断言 DTR 信号，许多设备需要 DTR 才能通信）
 - 超时配置（`COMMTIMEOUTS`）：
   - `timeout_ms > 0`：`ReadIntervalTimeout=100`（字节间间隔 100ms，匹配 Unix VTIME 粒度），`ReadTotalTimeoutMultiplier=0, ReadTotalTimeoutConstant=timeout_ms`（总超时上限）
   - `timeout_ms == 0`：`ReadIntervalTimeout=MAXDWORD, ReadTotalTimeoutMultiplier=MAXDWORD, ReadTotalTimeoutConstant=MAXDWORD-1`（阻塞直到至少 1 字节到达）
