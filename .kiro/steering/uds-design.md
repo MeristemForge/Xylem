@@ -485,6 +485,8 @@ UDS 模块在平台抽象层新增两个函数：
 - **事件循环线程**：直接执行操作
 - **其他线程**：递增引用计数后通过 `xylem_loop_post` 将操作转发到事件循环线程，回调完成后递减引用计数。引用计数保证连接内存在 `xylem_loop_post` 和回调执行之间不会被释放
 
+用户可通过 `xylem_uds_conn_acquire` 递增引用计数（通常在 `on_connect` 或 `on_accept` 中，将连接句柄传递给其他线程前调用），通过 `xylem_uds_conn_release` 递减引用计数（可从任意线程调用）。当引用计数归零时，连接内存被释放。
+
 `xylem_uds_send` 跨线程调用时，先通过 `atomic_load` 检查连接状态，仅 `CONNECTED` 状态接受发送。然后分配 `_uds_deferred_send_t`（包含 conn 指针和数据副本），递增引用计数后通过 `xylem_loop_post` 转发到事件循环线程。回调 `_uds_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭），处理完毕后递减引用计数（`_uds_conn_decref`）。
 
 `xylem_uds_close` 跨线程调用时，入口处先通过 `atomic_load` 检查状态实现幂等性。通过检查后递增引用计数，通过 `xylem_loop_post` 将 `_uds_deferred_close_cb` 转发到事件循环线程。`_uds_deferred_close_cb` 直接调用 `_uds_do_close`（而非重新进入 `xylem_uds_close`），避免 `xylem_loop_destroy` 排空延迟回调时因 `loop->tid` 未设置而重复 `xylem_loop_post` 导致的无限递归。回调完成后递减引用计数。
@@ -520,11 +522,17 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                  xylem_uds_handler_t* handler,
                                  xylem_uds_opts_t* opts);
 
-/* 发送数据（复制入队），立即返回 */
+/* 发送数据（复制入队），立即返回。线程安全。 */
 int xylem_uds_send(xylem_uds_conn_t* conn, const void* data, size_t len);
 
-/* 优雅关闭连接 */
+/* 优雅关闭连接。线程安全。 */
 void xylem_uds_close(xylem_uds_conn_t* conn);
+
+/* 递增引用计数，防止连接内存被释放。需在事件循环线程上调用。 */
+void xylem_uds_conn_acquire(xylem_uds_conn_t* conn);
+
+/* 递减引用计数，归零时释放内存。可从任意线程调用。 */
+void xylem_uds_conn_release(xylem_uds_conn_t* conn);
 
 xylem_loop_t* xylem_uds_get_loop(xylem_uds_conn_t* conn);
 void*         xylem_uds_get_userdata(xylem_uds_conn_t* conn);

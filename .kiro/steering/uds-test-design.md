@@ -2,7 +2,7 @@
 
 ## 概述
 
-`tests/test-uds.c` 包含 8 个测试函数，覆盖 `src/xylem-uds.c` 的所有公共 API 和核心内部分支。
+`tests/test-uds.c` 包含 11 个测试函数，覆盖 `src/xylem-uds.c` 的所有公共 API 和核心内部分支。
 
 设计风格与 `test-tcp.c` 对称：统一 `_test_ctx_t` 上下文结构体、Safety Timer 防挂起。与 TCP 测试的关键差异：
 - 无重连测试（UDS 不支持自动重连）
@@ -19,6 +19,7 @@
 - 测试间无共享状态
 - 单一路径 `UDS_PATH "/tmp/xylem-test-uds.sock"`，测试顺序执行不冲突
 - 每个测试结束后 `remove(UDS_PATH)` 清理 socket 文件
+- 跨线程测试使用 `xylem_thrdpool_t` 线程池在工作线程上执行 send/close 操作
 - 无文件作用域可变变量，所有状态通过 `_test_ctx_t` 和 userdata 传递
 - `main` 函数首尾调用 `xylem_startup` 和 `xylem_cleanup`
 
@@ -57,18 +58,28 @@
 |---------|---------|--------|
 | `test_frame_fixed` | FRAME_FIXED(4) | 8 字节拆成 2×4 帧 "ABCD"+"EFGH"，read_count==2 |
 
+### 跨线程操作（3 个）
+
+| 测试函数 | 覆盖的功能 | 验证点 |
+|---------|-----------|--------|
+| `test_cross_thread_send` | 跨线程 xylem_uds_send + acquire/release | on_connect 中 acquire，工作线程发送 "hello" 后 release，客户端收到回显数据一致，received_len==5 |
+| `test_cross_thread_close` | 跨线程 xylem_uds_close + acquire/release | on_connect 中 acquire，工作线程调用 close 后 release，on_close 回调触发，close_called==1 |
+| `test_cross_thread_send_stop_on_close` | 跨线程持续 send + 服务端关闭连接 + acquire/release | on_connect 中 acquire，工作线程循环 send，50ms 后服务端关闭连接，on_close 触发后 send 停止（atomic closed 标志），worker release，worker_done==true |
+
 ## 覆盖的公共 API
 
 | API 函数 | 覆盖的测试 |
 |---------|-----------|
-| `xylem_uds_listen` | 全部 8 个 |
-| `xylem_uds_dial` | 除 test_server_userdata 外的 7 个 |
-| `xylem_uds_send` | test_echo, test_send_after_close, test_frame_fixed |
-| `xylem_uds_close` | test_dial_connect, test_echo, test_send_after_close, test_userdata, test_get_loop, test_close_server_with_active_conn |
-| `xylem_uds_close_server` | 全部 8 个（异步测试的清理路径 + test_server_userdata 直接调用） |
+| `xylem_uds_listen` | 全部 11 个 |
+| `xylem_uds_dial` | 除 test_server_userdata 外的 10 个 |
+| `xylem_uds_send` | test_echo, test_send_after_close, test_frame_fixed, test_cross_thread_send, test_cross_thread_send_stop_on_close |
+| `xylem_uds_close` | test_dial_connect, test_echo, test_send_after_close, test_userdata, test_get_loop, test_close_server_with_active_conn, test_cross_thread_close, test_cross_thread_send_stop_on_close |
+| `xylem_uds_close_server` | 全部 11 个（异步测试的清理路径 + test_server_userdata 直接调用） |
 | `xylem_uds_get_userdata` | test_userdata + 所有回调中通过 userdata 获取 ctx |
 | `xylem_uds_set_userdata` | test_userdata + 所有异步测试的 setup |
 | `xylem_uds_get_loop` | test_get_loop |
+| `xylem_uds_conn_acquire` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
+| `xylem_uds_conn_release` | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 | `xylem_uds_server_get_userdata` | test_server_userdata + _srv_accept_cb（共享回调） |
 | `xylem_uds_server_set_userdata` | test_server_userdata + 所有使用 _srv_accept_cb 的测试 |
 
@@ -101,6 +112,10 @@
 | `xylem_uds_close_server` | 遍历连接链表 + 逐个 close + remove(path) | `test_close_server_with_active_conn` |
 | `_uds_conn_free_cb` | 延迟释放连接内存 | 所有异步测试 |
 | `_uds_server_free_cb` | 延迟释放 server 内存 | 所有测试 |
+| `xylem_uds_send`（跨线程） | 非事件循环线程调用 → `_uds_deferred_send_cb` 转发到事件循环线程入队 | `test_cross_thread_send`, `test_cross_thread_send_stop_on_close` |
+| `xylem_uds_conn_acquire` / `xylem_uds_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
+| `xylem_uds_close`（跨线程） | 非事件循环线程调用 → `_uds_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_uds_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic state 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ## 未覆盖的路径
 
