@@ -116,11 +116,7 @@ static int _logger_build_message(
 
     struct timespec tsc;
     struct tm       tm;
-#ifdef _WIN32
     (void)timespec_get(&tsc, TIME_UTC);
-#else
-    clock_gettime(CLOCK_REALTIME, &tsc);
-#endif
     platform_info_getlocaltime(&tsc.tv_sec, &tm);
 
     /* full format: "YYYY-MM-DD HH:MM:SS.mmm TID LEVEL file:line " */
