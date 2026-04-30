@@ -48,6 +48,39 @@
 
 static xylem_http_router_t* _router;
 
+static int _write_pem_to_file(const char* path,
+                              int (*write_fn)(BIO*, void*),
+                              void* obj) {
+    BIO* bio = BIO_new(BIO_s_mem());
+    if (!bio) {
+        return -1;
+    }
+    if (write_fn(bio, obj) != 1) {
+        BIO_free(bio);
+        return -1;
+    }
+    char* data = NULL;
+    long  len  = BIO_get_mem_data(bio, &data);
+    FILE* f    = fopen(path, "wb");
+    if (!f) {
+        BIO_free(bio);
+        return -1;
+    }
+    fwrite(data, 1, (size_t)len, f);
+    fclose(f);
+    BIO_free(bio);
+    return 0;
+}
+
+static int _write_cert(BIO* bio, void* obj) {
+    return PEM_write_bio_X509(bio, (X509*)obj);
+}
+
+static int _write_key(BIO* bio, void* obj) {
+    return PEM_write_bio_PrivateKey(bio, (EVP_PKEY*)obj,
+                                    NULL, NULL, 0, NULL, NULL);
+}
+
 static int _ensure_cert(void) {
     FILE* f = fopen(CERT_FILE, "r");
     if (f) {
@@ -86,27 +119,17 @@ static int _ensure_cert(void) {
     X509_set_issuer_name(x509, name);
     X509_sign(x509, pkey, EVP_sha256());
 
-    f = fopen(CERT_FILE, "wb");
-    if (!f) {
-        X509_free(x509);
-        EVP_PKEY_free(pkey);
-        return -1;
+    int rc = 0;
+    if (_write_pem_to_file(CERT_FILE, _write_cert, x509) != 0) {
+        rc = -1;
     }
-    PEM_write_X509(f, x509);
-    fclose(f);
-
-    f = fopen(KEY_FILE, "wb");
-    if (!f) {
-        X509_free(x509);
-        EVP_PKEY_free(pkey);
-        return -1;
+    if (rc == 0 && _write_pem_to_file(KEY_FILE, _write_key, pkey) != 0) {
+        rc = -1;
     }
-    PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL);
-    fclose(f);
 
     X509_free(x509);
     EVP_PKEY_free(pkey);
-    return 0;
+    return rc;
 }
 
 /* Dispatches requests through the router. */
