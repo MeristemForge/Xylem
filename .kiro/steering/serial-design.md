@@ -89,8 +89,7 @@ struct xylem_serial_s {
 
 | 检查项 | 失败行为 |
 |--------|---------|
-| `opts == NULL` | 返回 NULL |
-| `opts->device == NULL` | 返回 NULL |
+| `opts == NULL` 或 `opts->device == NULL` | 返回 NULL |
 | `baudrate > XYLEM_SERIAL_BAUDRATE_115200` | 返回 NULL |
 | `parity > XYLEM_SERIAL_PARITY_EVEN` | 返回 NULL |
 | `databits > XYLEM_SERIAL_DATABITS_8` | 返回 NULL |
@@ -142,7 +141,7 @@ typedef struct platform_serial_config_s {
   - `CRTSCTS` 标志设置硬件流控
   - `CLOCAL | CREAD` 始终启用
 - 超时配置：
-  - `timeout_ms > 0`：`VMIN=0, VTIME=ceil(timeout_ms/100)`（最小 1，最大 255，单位 1/10 秒）
+  - `timeout_ms > 0`：`VMIN=0, VTIME=timeout_ms/100`（向下取整，最小钳制为 1，最大 255，单位 1/10 秒）
   - `timeout_ms == 0`：`VMIN=1, VTIME=0`（阻塞直到至少 1 字节到达）
 - `tcflush(TCIOFLUSH)` 清空缓冲区后 `tcsetattr(TCSANOW)` 立即生效
 - 读取循环处理 `EINTR`
@@ -171,7 +170,7 @@ typedef struct platform_serial_config_s {
 
 | 场景 | Unix | Windows |
 |------|------|---------|
-| 有超时 | `VTIME = ceil(timeout_ms / 100)`，字节间间隔 100ms 粒度 | `ReadIntervalTimeout=100`（字节间间隔 100ms），`ReadTotalTimeoutConstant=timeout_ms`（总超时上限） |
+| 有超时 | `VTIME = timeout_ms / 100`（向下取整，最小 1），字节间间隔 100ms 粒度 | `ReadIntervalTimeout=100`（字节间间隔 100ms），`ReadTotalTimeoutConstant=timeout_ms`（总超时上限） |
 | 最大超时 | `VTIME=255` → 25500ms | `ReadTotalTimeoutConstant` 无上限限制 |
 | 无超时 | `VMIN=1` 阻塞等待 | `MAXDWORD` 组合阻塞等待 |
 | 超时无数据 | `read` 返回 0 | `ReadFile` 返回 TRUE，`bytes_read=0` |

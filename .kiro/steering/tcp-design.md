@@ -337,7 +337,7 @@ flowchart TD
 delay = min(500 * 2^n, 30000) ms
 ```
 
-其中 `n` 为当前重连次数（上限 16 防止溢出）。达到 `reconnect_max` 后以 `ETIMEDOUT` 关闭连接。
+其中 `n` 为当前重连次数（上限 16 防止溢出）。达到 `reconnect_max` 后调用 `_tcp_close_conn`（同步排空写队列 + `_tcp_destroy_conn`）以 `ETIMEDOUT` 关闭连接。
 
 重连流程：关闭旧 fd → 创建新 socket → 重新 dial → 若仍失败则递增计数器继续退避。
 
@@ -359,7 +359,7 @@ sequenceDiagram
     alt 跨线程调用
         TCP->>TCP: xylem_loop_post(_tcp_deferred_close_cb)
         Note over TCP: 下一轮事件循环迭代执行
-        TCP->>TCP: xylem_tcp_close()（事件循环线程）
+        TCP->>TCP: _tcp_do_close()（事件循环线程）
     end
     TCP->>TCP: atomic_store(state, CLOSING)
     alt 写队列为空
@@ -379,7 +379,9 @@ sequenceDiagram
 
 `xylem_tcp_close` 支持跨线程调用。入口处首先通过 `atomic_load` 检查状态实现幂等性——若已处于 `CLOSING` 或 `CLOSED` 状态则立即返回。此检查在线程判断之前执行，确保重复调用和 `xylem_loop_destroy` 排空延迟回调时不会无限递归 `xylem_loop_post`。`xylem_loop_destroy` 在排空前会将 `loop->tid` 设置为当前线程，使延迟回调走同线程路径。
 
-通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_tcp_conn_decref`），确保连接内存在回调执行前不会被释放。
+通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_tcp_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_tcp_conn_decref`），确保连接内存在回调执行前不会被释放。若 `xylem_loop_post` 失败则立即递减引用计数，避免引用计数泄漏。
+
+实际关闭逻辑封装在 `_tcp_do_close` 中，`_tcp_deferred_close_cb` 直接调用此函数而非重新进入 `xylem_tcp_close`。这避免了 `xylem_loop_destroy` 排空延迟回调时（`loop->tid` 未设置）重复 `xylem_loop_post` 导致的无限递归。
 
 在事件循环线程上，使用 `atomic_store` 设置 `CLOSING` 状态。若写队列为空，立即 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若写队列非空，不做额外操作——`_tcp_flush_writes` 在后续 IO 可写事件中继续发送待发数据，每个写请求成功发送后正常回调 `on_write_done(status=0)`，写队列排空后执行 `shutdown(SHUT_WR)` + `_tcp_destroy_conn`。若发送过程中遇到错误，`_tcp_flush_writes` 排空剩余写队列（`on_write_done` status=-1）并立即 `_tcp_destroy_conn`。
 

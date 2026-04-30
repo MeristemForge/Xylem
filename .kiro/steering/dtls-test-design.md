@@ -237,8 +237,8 @@ typedef struct {
 | `_dtls_alpn_select_cb` | 协商成功 | `test_alpn_negotiation` |
 | `_dtls_keylog_cb` | keylog 写入 | `test_keylog_write` |
 | `xylem_dtls_ctx_set_keylog` | 启用 | `test_keylog_write` |
-| `_dtls_cookie_generate_cb` | 生成 16 字节随机 cookie | 所有异步测试（服务端握手）|
-| `_dtls_cookie_verify_cb` | 接受所有 cookie | 所有异步测试（服务端握手）|
+| `_dtls_cookie_generate_cb` | 以 cookie_secret 为密钥对对端地址计算 HMAC-SHA256，生成 32 字节 cookie | 所有异步测试（服务端握手）|
+| `_dtls_cookie_verify_cb` | 重新计算 HMAC-SHA256 并以 CRYPTO_memcmp 常量时间比较验证 cookie | 所有异步测试（服务端握手）|
 | `xylem_dtls_send`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_send_cb` 转发到事件循环线程加密并发送 | `test_cross_thread_send` |
 | `xylem_dtls_conn_acquire` / `xylem_dtls_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
 | `xylem_dtls_close`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |

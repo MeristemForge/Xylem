@@ -366,7 +366,7 @@ typedef struct rudp_fec_dec_s {
     uint8_t*     buf;            /* MAX_GROUPS * shard_size * mtu */
     uint8_t**    shard_ptrs;     /* RS 重建用指针数组 */
     uint8_t*     marks;          /* RS 重建用标记数组 */
-    _rudp_fec_group_t groups[RUDP_FEC_MAX_GROUPS];
+    _fec_group_t groups[RUDP_FEC_MAX_GROUPS];
 } rudp_fec_dec_t;
 ```
 
@@ -412,7 +412,6 @@ flowchart TD
 | `RUDP_FEC_TYPE_PARITY` | 0xF2 | 奇偶校验分片类型 |
 | `RUDP_FEC_MAX_GROUPS` | 3 | 解码器最大并发分组数 |
 | `RUDP_FEC_MAX_SHARDS` | 255 | 每组最大分片数（data + parity） |
-| `RUDP_FEC_MTU_LIMIT` | 1500 | 单个分片最大载荷 |
 
 ### 内部 API
 

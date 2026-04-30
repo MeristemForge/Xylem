@@ -89,7 +89,8 @@ extern xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts);
  * @brief Close a serial port.
  *
  * Releases the underlying OS handle and frees the serial object.
- * Safe to call with NULL. Idempotent (second call is a no-op).
+ * Safe to call with NULL. NOT idempotent — do not call twice on
+ * the same non-NULL handle (double-free).
  *
  * @param serial  Serial handle, or NULL.
  */
