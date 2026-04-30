@@ -664,6 +664,8 @@ static void _tls_deferred_send_cb(xylem_loop_t* loop,
     if (atomic_load(&ds->tls->handshake_done) &&
         !atomic_load(&ds->tls->closing)) {
         _tls_do_send(ds->tls, ds->data, ds->len);
+    } else if (ds->tls->handler && ds->tls->handler->on_write_done) {
+        ds->tls->handler->on_write_done(ds->tls, ds->data, ds->len, -1);
     }
 
     _tls_conn_decref(ds->tls);
