@@ -17,7 +17,7 @@ graph TB
 核心设计原则：
 - 所有操作均为同步阻塞
 - 上层负责参数校验和枚举到原始值的映射，平台层只处理 OS 调用
-- 关闭是幂等的（`closed` 标志防止重入）
+- 关闭后立即释放内存，调用者负责不重复关闭（无幂等保护）
 - NULL 安全（`close(NULL)` 不崩溃，`read/write(NULL, ...)` 返回 -1）
 
 ## 公开类型
@@ -80,7 +80,6 @@ typedef struct xylem_serial_s xylem_serial_t;
 ```c
 struct xylem_serial_s {
     platform_serial_t fd;      /* 平台句柄（Unix: int, Windows: HANDLE） */
-    bool              closed;  /* 幂等关闭标志 */
 };
 ```
 
@@ -183,7 +182,7 @@ typedef struct platform_serial_config_s {
 /* 打开串口，返回句柄或 NULL */
 xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts);
 
-/* 关闭串口，NULL 安全，幂等 */
+/* 关闭串口，NULL 安全。关闭后句柄不可再使用。 */
 void xylem_serial_close(xylem_serial_t* serial);
 
 /* 阻塞读取，返回字节数、0（超时）或 -1（错误） */

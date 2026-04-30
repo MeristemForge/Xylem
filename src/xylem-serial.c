@@ -24,7 +24,6 @@
 
 #include "platform/platform-serial.h"
 
-#include <stdbool.h>
 #include <stdlib.h>
 
 static const uint32_t _serial_baudrate_map[] = {
@@ -37,7 +36,6 @@ static const uint32_t _serial_baudrate_map[] = {
 
 struct xylem_serial_s {
     platform_serial_t fd;
-    bool              closed;
 };
 
 xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
@@ -94,8 +92,7 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
         platform_serial_close(fd);
         return NULL;
     }
-    serial->fd     = fd;
-    serial->closed = false;
+    serial->fd = fd;
     xylem_logi("serial: opened %s at %u baud",
                opts->device, _serial_baudrate_map[opts->baudrate]);
     return serial;
@@ -105,16 +102,12 @@ void xylem_serial_close(xylem_serial_t* serial) {
     if (!serial) {
         return;
     }
-    if (serial->closed) {
-        return;
-    }
-    serial->closed = true;
     platform_serial_close(serial->fd);
     free(serial);
 }
 
 int xylem_serial_read(xylem_serial_t* serial, void* buf, size_t len) {
-    if (!serial || serial->closed) {
+    if (!serial) {
         return -1;
     }
     return platform_serial_read(serial->fd, buf, len);
@@ -122,7 +115,7 @@ int xylem_serial_read(xylem_serial_t* serial, void* buf, size_t len) {
 
 int xylem_serial_write(xylem_serial_t* serial,
                        const void* buf, size_t len) {
-    if (!serial || serial->closed) {
+    if (!serial) {
         return -1;
     }
     return platform_serial_write(serial->fd, buf, len);

@@ -145,7 +145,7 @@ int platform_serial_write(platform_serial_t fd,
             n = write(fd, (const char*)buf + off, len - off);
         } while (n == -1 && errno == EINTR);
 
-        if (n < 0) {
+        if (n <= 0) {
             return -1;
         }
         off += (size_t)n;

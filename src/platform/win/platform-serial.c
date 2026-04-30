@@ -42,6 +42,9 @@ int platform_serial_write(platform_serial_t fd,
         if (!WriteFile(fd, (const char*)buf + off, chunk, &written, NULL)) {
             return -1;
         }
+        if (written == 0) {
+            return -1;
+        }
         off += (size_t)written;
     }
     return (int)off;

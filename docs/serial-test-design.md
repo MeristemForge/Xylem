@@ -69,12 +69,9 @@
 | 路径 | 原因 |
 |------|------|
 | `xylem_serial_open` 成功路径（平台层打开设备） | 需要真实串口设备或虚拟串口对 |
-| `xylem_serial_close` 正常关闭路径（closed==false） | 需要先成功 open |
-| `xylem_serial_close` 幂等路径（closed==true） | 需要先成功 open |
+| `xylem_serial_close` 正常关闭路径 | 需要先成功 open |
 | `xylem_serial_read` 正常读取路径 | 需要已打开的串口 |
-| `xylem_serial_read` closed==true 返回 -1 | 需要先成功 open 再 close |
 | `xylem_serial_write` 正常写入路径 | 需要已打开的串口 |
-| `xylem_serial_write` closed==true 返回 -1 | 需要先成功 open 再 close |
 | `platform_serial_open` 失败路径（设备不存在） | 平台相关，`/dev/null` 在 Unix 上可能成功打开但配置失败 |
 | `calloc` 失败路径 | 需要 mock 内存分配失败 |
 | 超时精度对齐（100ms 向上取整） | 需要真实串口设备验证实际超时行为 |
