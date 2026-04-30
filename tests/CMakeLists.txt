@@ -47,14 +47,6 @@ if(XYLEM_ENABLE_TLS)
     if(WIN32)
         target_link_libraries(test-tls PRIVATE crypt32)
         target_link_libraries(test-dtls PRIVATE crypt32)
-
-        # OpenSSL DLLs on Windows need OPENSSL_Applink for stdio interop.
-        find_file(OPENSSL_APPLINK_SOURCE applink.c
-            PATHS "${OPENSSL_INCLUDE_DIR}/openssl")
-        if(OPENSSL_APPLINK_SOURCE)
-            target_sources(test-tls PRIVATE "${OPENSSL_APPLINK_SOURCE}")
-            target_sources(test-dtls PRIVATE "${OPENSSL_APPLINK_SOURCE}")
-        endif()
     endif()
 endif()
 
