@@ -24,7 +24,7 @@
  *
  * Listens on 127.0.0.1:9444 with DTLS and echoes back every datagram.
  * If cert.pem / key.pem are missing, generates a self-signed certificate
- * automatically via the openssl command-line tool.
+ * automatically using the OpenSSL C API.
  *
  * Usage: dtls-echo-server
  * Pair:  dtls-echo-client
@@ -166,7 +166,7 @@ int main(void) {
     }
 
     if (_ensure_cert() != 0) {
-        xylem_loge("failed to generate certificate (is openssl installed?)");
+        xylem_loge("failed to generate self-signed certificate");
         xylem_dtls_ctx_destroy(ctx);
         return 1;
     }

@@ -160,7 +160,7 @@ int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     if (_ensure_cert() != 0) {
-        xylem_loge("failed to generate certificate (is openssl in PATH?)");
+        xylem_loge("failed to generate self-signed certificate");
         return 1;
     }
 

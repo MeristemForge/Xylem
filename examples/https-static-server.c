@@ -24,7 +24,7 @@
  *
  * Same as http-static-server but served over TLS.
  * If cert.pem / key.pem are missing, generates a self-signed
- * certificate automatically via the openssl command-line tool.
+ * certificate automatically using the OpenSSL C API.
  *
  *   GET /static/(wildcard)  -> files from ./public/
  *
@@ -152,7 +152,7 @@ int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     if (_ensure_cert() != 0) {
-        xylem_loge("failed to generate certificate (is openssl installed?)");
+        xylem_loge("failed to generate self-signed certificate");
         return 1;
     }
 
