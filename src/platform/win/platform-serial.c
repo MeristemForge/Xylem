@@ -65,9 +65,10 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
 
     DCB dcb;
     SecureZeroMemory(&dcb, sizeof(DCB));
-    dcb.DCBlength = sizeof(DCB);
-    dcb.fBinary   = TRUE;
-    dcb.BaudRate  = (DWORD)config->baudrate;
+    dcb.DCBlength   = sizeof(DCB);
+    dcb.fBinary     = TRUE;
+    dcb.fDtrControl = DTR_CONTROL_ENABLE;
+    dcb.BaudRate    = (DWORD)config->baudrate;
     dcb.ByteSize = config->databits;
 
     switch (config->stopbits) {
