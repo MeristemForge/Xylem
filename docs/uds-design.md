@@ -395,6 +395,8 @@ sequenceDiagram
 
 ### 服务端 accept
 
+`xylem_uds_listen` 在调用平台层之前执行路径校验：`path` 为 NULL 或长度 ≥ `UDS_MAX_PATH`（104 字节）时释放已分配的 server 内存并返回 NULL。
+
 ```mermaid
 sequenceDiagram
     participant Client as 客户端
@@ -423,6 +425,10 @@ sequenceDiagram
     participant Loop as 事件循环
 
     User->>UDS: xylem_uds_dial(path)
+    UDS->>UDS: 校验 path（非 NULL 且长度 < UDS_MAX_PATH）
+    alt path 无效
+        UDS-->>User: 返回 NULL
+    end
     UDS->>OS: platform_socket_dial_unix(path, nonblocking)
     alt 立即连接成功
         UDS->>UDS: _uds_setup_conn
@@ -444,6 +450,8 @@ sequenceDiagram
 ```
 
 UDS 本地连接通常立即成功，但非阻塞模式下仍可能返回 `EINPROGRESS`（如 macOS），因此保留异步连接路径。
+
+`xylem_uds_dial` 在调用平台层之前执行路径校验：`path` 为 NULL 或长度 ≥ `UDS_MAX_PATH`（104 字节）时返回 NULL。此校验在 UDS 层执行，早于平台层的同类检查，避免不必要的内存分配。
 
 立即连接成功时，`on_connect` 回调通过 `xylem_loop_post` 延迟到下一轮事件循环迭代触发，确保调用者在 `xylem_uds_dial` 返回后有机会设置 userdata。延迟回调 `_uds_deferred_connect_cb` 在触发前检查连接状态，若连接已进入 `CLOSING` 或 `CLOSED` 则跳过回调。
 

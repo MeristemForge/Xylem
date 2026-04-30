@@ -124,7 +124,7 @@ struct xylem_tls_server_s {
     xylem_tcp_server_t*   tcp_server;     /* 底层 TCP 服务器 */
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
-    xylem_tcp_opts_t      opts;
+    xylem_tls_opts_t      opts;           /* 完整 TLS 选项（含底层 TCP 选项） */
     xylem_loop_t*         loop;
     xylem_list_t          connections;    /* TLS 连接链表 */
     void*                 userdata;
@@ -138,7 +138,7 @@ struct xylem_tls_server_s {
 
 | API | 功能 |
 |-----|------|
-| `xylem_tls_ctx_create()` | 创建上下文，使用 `TLS_method()`，默认启用对端验证 |
+| `xylem_tls_ctx_create()` | 创建上下文，使用 `TLS_method()`，默认启用对端验证，强制 TLS 1.2 最低版本 |
 | `xylem_tls_ctx_destroy()` | 释放 SSL_CTX、关闭 keylog 文件、释放 ALPN 数据 |
 | `xylem_tls_ctx_load_cert()` | 加载 PEM 证书链和私钥 |
 | `xylem_tls_ctx_set_ca()` | 设置 CA 证书用于对端验证 |
@@ -267,6 +267,8 @@ sequenceDiagram
 
 通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 转发到事件循环线程执行，**不设置 `closing` 标志**。`closing` 标志仅在事件循环线程上通过 `atomic_store` 设置，确保所有状态变更都在单一线程上执行。
 
+`_tls_tcp_close_cb` 在关闭前排空 TLS 写请求队列，对每个未完成的写请求回调 `on_write_done`（携带 status=-1），然后从服务器连接链表移除、回调 `on_close`、释放 SSL 和 hostname、通过 `xylem_loop_post` 延迟递减引用计数。
+
 ### 服务器关闭
 
 `xylem_tls_close_server` 循环取链表头节点直到链表为空，对每个节点：先从链表中移除（因为将 `tls->server` 置 NULL 后，`_tls_tcp_close_cb` 无法再执行移除），再将 `server` 指针置 NULL（因为 `xylem_tls_close` 是异步的，`_tls_tcp_close_cb` 可能在 server 释放后才触发），最后调用 `xylem_tls_close`。所有连接处理完毕后关闭底层 TCP 服务器，通过 `xylem_loop_post` 延迟释放 server 内存。
@@ -301,8 +303,8 @@ TLS 模块注册两组静态 TCP handler：
 
 | Handler | 用途 | 包含的回调 |
 |---------|------|-----------|
-| `_tls_tcp_client_handler` | 客户端连接 | on_connect, on_read, on_close, on_timeout, on_heartbeat_miss |
-| `_tls_tcp_server_handler` | 服务端接受的连接 | on_accept, on_read, on_close, on_timeout, on_heartbeat_miss |
+| `_tls_tcp_client_handler` | 客户端连接 | on_connect, on_read, on_write_done, on_close, on_timeout, on_heartbeat_miss |
+| `_tls_tcp_server_handler` | 服务端接受的连接 | on_accept, on_read, on_write_done, on_close, on_timeout, on_heartbeat_miss |
 
 TLS conn 通过 `xylem_tcp_set_userdata` 存储在 TCP conn 的 userdata 中，在 TCP 回调中通过 `xylem_tcp_get_userdata` 恢复。
 
@@ -372,7 +374,7 @@ void                xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud);
 xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
                                       xylem_tls_ctx_t* ctx,
                                       xylem_tls_handler_t* handler,
-                                      xylem_tcp_opts_t* opts);
+                                      xylem_tls_opts_t* opts);
 void                xylem_tls_close_server(xylem_tls_server_t* server);
 void*               xylem_tls_server_get_userdata(xylem_tls_server_t* server);
 void                xylem_tls_server_set_userdata(xylem_tls_server_t* server,
