@@ -11,7 +11,7 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 # Features
 
-- **Cross-platform** — Windows, Linux, and macOS
+- **Cross-platform** — Windows, Linux, macOS, Android, and iOS
 - **Easy to use** — small, consistent APIs; get started in minutes
 - **High-performance event loop** — epoll / kqueue / iocp
 - **Thread-safe networking** — send and close from any thread without locking
