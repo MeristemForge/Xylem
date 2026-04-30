@@ -753,6 +753,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     dtls->handshake_timer  = xylem_loop_create_timer(server->loop);
 
     if (_dtls_init_ssl(dtls) != 0) {
+        server->session_count--;
         xylem_loop_destroy_timer(dtls->retransmit_timer);
         xylem_loop_destroy_timer(dtls->handshake_timer);
         free(dtls);
