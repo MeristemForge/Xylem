@@ -302,7 +302,7 @@ flowchart TD
 `xylem_tcp_send` 支持跨线程调用。调用时首先通过 `atomic_load` 检查连接状态，仅 `CONNECTED` 状态接受发送。然后检查是否在事件循环线程上：
 
 - **同线程**：直接调用 `_tcp_enqueue_write` 将数据入队写队列
-- **跨线程**：递增引用计数（`atomic_fetch_add`），分配 `_tcp_deferred_send_t`（包含 conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。若 `xylem_loop_post` 失败则递减引用计数并释放内存。回调 `_tcp_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭），处理完毕后递减引用计数（`_tcp_conn_decref`）
+- **跨线程**：递增引用计数（`atomic_fetch_add`），分配 `_tcp_deferred_send_t`（包含 conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。若 `xylem_loop_post` 失败则递减引用计数并释放内存。回调 `_tcp_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭）：若连接仍处于 `CONNECTED` 状态则正常入队；否则回调 `on_write_done(status=-1)` 通知用户发送失败（而非静默丢弃）。处理完毕后递减引用计数（`_tcp_conn_decref`）
 
 `_tcp_enqueue_write` 分配 `sizeof(req) + len` 的内存块，将用户数据 `memcpy` 到结构体之后的空间。调用后用户可立即释放或复用原始缓冲区。
 

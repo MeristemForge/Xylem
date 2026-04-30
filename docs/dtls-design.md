@@ -108,13 +108,10 @@ struct xylem_dtls_server_s {
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;  /* 活跃会话红黑树，按对端地址排序 */
-    uint32_t               session_count; /* 活跃会话计数，用于限制最大会话数 */
     void*                  userdata;
     bool                   closing;
 };
 ```
-
-服务器通过 `session_count` 跟踪当前活跃会话数量，在创建新会话前检查是否达到 `DTLS_MAX_SESSIONS`（1024）上限。达到上限时静默丢弃新的 ClientHello，防止连接洪泛导致的资源耗尽。计数器在会话创建时递增，在会话关闭（`_dtls_do_close` 服务端路径）和 SSL 初始化失败回滚时递减。
 
 ## 上下文管理
 
@@ -179,7 +176,7 @@ sequenceDiagram
     Client->>UDP: 数据报到达
     UDP->>DTLS: _dtls_server_read_cb
     DTLS->>DTLS: _dtls_find_session(peer_addr)
-    Note over DTLS: 未找到会话 → 检查 session_count < DTLS_MAX_SESSIONS → 新建
+    Note over DTLS: 未找到会话 → 新建
     DTLS->>DTLS: calloc + 初始化 SSL + BIO
     DTLS->>DTLS: SSL_set_accept_state
     DTLS->>DTLS: 插入 sessions 红黑树
@@ -194,7 +191,7 @@ sequenceDiagram
     DTLS->>User: handler->on_accept
 ```
 
-服务端收到数据报时，先通过 `_dtls_find_session` 按对端地址查找已有会话。若找到则直接处理；若未找到且 `session_count < DTLS_MAX_SESSIONS`（1024）则创建新会话并开始握手；若已达上限则静默丢弃该数据报。
+服务端收到数据报时，先通过 `_dtls_find_session` 按对端地址查找已有会话。若找到则直接处理；若未找到则创建新会话并开始握手。
 
 ## 对端地址匹配
 
@@ -330,7 +327,7 @@ sequenceDiagram
 
 1. 停止重传定时器和握手超时定时器
 2. 若握手已完成：`SSL_shutdown` + flush
-3. 从 server 的 sessions 红黑树移除，递减 `session_count`
+3. 从 server 的 sessions 红黑树移除
 4. `SSL_free`
 5. 仅当握手已完成时回调 `on_close`（握手未完成的会话静默关闭）
 6. `xylem_loop_post` 延迟释放内存
