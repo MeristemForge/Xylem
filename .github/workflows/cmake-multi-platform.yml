@@ -129,3 +129,68 @@ jobs:
     - name: Test
       working-directory: ${{ steps.strings.outputs.build-output-dir }}
       run: ctest --build-config ${{ matrix.build_type }} --output-on-failure
+
+  # ── Android (NDK cross-compile, build only) ──
+  build-android:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+        build_type: [Release]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake (Android NDK)
+      shell: bash
+      run: |
+        cmake \
+          -B build \
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI=${{ matrix.abi }} \
+          -DANDROID_PLATFORM=android-24 \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DXYLEM_ENABLE_TESTING=OFF \
+          -DXYLEM_ENABLE_TLS=OFF \
+          -S .
+
+    - name: Build (Android)
+      run: cmake --build build --config ${{ matrix.build_type }}
+
+  # ── iOS (Xcode cross-compile, build only) ──
+  build-ios:
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphoneos, iphonesimulator]
+        build_type: [Release]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake (iOS)
+      shell: bash
+      run: |
+        if [ "${{ matrix.sdk }}" = "iphonesimulator" ]; then
+          arch="x86_64;arm64"
+        else
+          arch="arm64"
+        fi
+
+        cmake \
+          -B build \
+          -G Xcode \
+          -DCMAKE_SYSTEM_NAME=iOS \
+          -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} \
+          -DCMAKE_OSX_ARCHITECTURES="$arch" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+          -DXYLEM_ENABLE_TESTING=OFF \
+          -DXYLEM_ENABLE_TLS=OFF \
+          -S .
+
+    - name: Build (iOS)
+      run: cmake --build build --config ${{ matrix.build_type }}
