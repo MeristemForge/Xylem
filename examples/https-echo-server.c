@@ -40,6 +40,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
 
 #define LISTEN_PORT 8443
 #define CERT_FILE   "cert.pem"
@@ -56,26 +59,56 @@ static int _ensure_cert(void) {
 
     xylem_logi("generating self-signed certificate...");
 
-    const char* cnf = "_xylem_tmp.cnf";
-    f = fopen(cnf, "w");
-    if (!f) {
+    EVP_PKEY* pkey = EVP_PKEY_new();
+    if (!pkey) {
         return -1;
     }
-    fprintf(f,
-            "[req]\n"
-            "distinguished_name=dn\n"
-            "prompt=no\n"
-            "[dn]\n"
-            "CN=localhost\n");
+
+    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (!pctx) {
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
+
+    EVP_PKEY_keygen_init(pctx);
+    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
+    EVP_PKEY_keygen(pctx, &pkey);
+    EVP_PKEY_CTX_free(pctx);
+
+    X509* x509 = X509_new();
+    X509_set_version(x509, 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
+    X509_gmtime_adj(X509_get_notBefore(x509), 0);
+    X509_gmtime_adj(X509_get_notAfter(x509), 365 * 24 * 3600);
+    X509_set_pubkey(x509, pkey);
+
+    X509_NAME* name = X509_get_subject_name(x509);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               (const unsigned char*)"localhost", -1, -1, 0);
+    X509_set_issuer_name(x509, name);
+    X509_sign(x509, pkey, EVP_sha256());
+
+    f = fopen(CERT_FILE, "wb");
+    if (!f) {
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
+    PEM_write_X509(f, x509);
     fclose(f);
 
-    int rc = system(
-        "openssl req -x509 -newkey rsa:2048"
-        " -keyout " KEY_FILE " -out " CERT_FILE
-        " -days 365 -nodes"
-        " -config _xylem_tmp.cnf");
-    remove(cnf);
-    return (rc == 0) ? 0 : -1;
+    f = fopen(KEY_FILE, "wb");
+    if (!f) {
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
+    PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL);
+    fclose(f);
+
+    X509_free(x509);
+    EVP_PKEY_free(pkey);
+    return 0;
 }
 
 /* Log every request: method + url. */
