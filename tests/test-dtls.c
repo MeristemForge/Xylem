@@ -57,7 +57,7 @@ typedef struct {
     _Atomic bool           worker_done;
 } _test_ctx_t;
 
-/*
+/**
  * Write PEM data to a file via memory BIO instead of passing FILE* directly
  * to OpenSSL (e.g. PEM_write_X509). On Windows, the OpenSSL DLL and the
  * application may link against different C runtimes whose FILE structs are
