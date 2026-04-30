@@ -5,3 +5,7 @@ compile_commands.json
 out-ninja/
 out-linux/
 .DS_Store
+
+# MkDocs build output
+site/
+site-en/

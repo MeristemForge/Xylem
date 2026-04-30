@@ -1,0 +1,100 @@
+site_name: Xylem SDK
+site_description: Async networking SDK for C — TCP, UDP, TLS, DTLS, HTTP, WebSocket, RUDP, Serial
+site_url: https://xylem.dev/en/
+repo_url: https://github.com/user/xylem
+repo_name: xylem
+
+docs_dir: docs-en
+
+theme:
+  name: material
+  language: en
+  palette:
+    - scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Build & Install: guide/build.md
+    - Quick Start: guide/quickstart.md
+  - API Reference:
+    - Overview: api/index.md
+    - Core:
+      - Event Loop: api/loop.md
+      - Address: api/addr.md
+      - Platform: api/platform.md
+      - Thread Pool: api/thrdpool.md
+    - Transport:
+      - TCP: api/tcp.md
+      - UDP: api/udp.md
+      - UDS: api/uds.md
+      - TLS: api/tls.md
+      - DTLS: api/dtls.md
+      - RUDP: api/rudp.md
+    - Application:
+      - HTTP Common: api/http-common.md
+      - HTTP Client: api/http-client.md
+      - HTTP Server: api/http-server.md
+      - WebSocket Common: api/ws-common.md
+      - WebSocket Client: api/ws-client.md
+      - WebSocket Server: api/ws-server.md
+    - Device:
+      - Serial: api/serial.md
+    - Utilities:
+      - JSON: api/json.md
+      - Gzip: api/gzip.md
+      - Base64: api/base64.md
+      - AES-256: api/aes256.md
+      - SHA / HMAC: api/sha.md
+      - FEC: api/fec.md
+      - Varint: api/varint.md
+      - Logger: api/logger.md
+    - Data Structures:
+      - List: api/list.md
+      - Queue: api/queue.md
+      - Stack: api/stack.md
+      - Heap: api/heap.md
+      - Red-Black Tree: api/rbtree.md
+      - Ring Buffer: api/ringbuf.md
