@@ -193,7 +193,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/openssl-ios
-        key: openssl-${{ env.OPENSSL_VERSION }}-ios-arm64
+        key: openssl-${{ env.OPENSSL_VERSION }}-ios-arm64-dt15
 
     - name: Cross-compile OpenSSL for iOS
       if: steps.cache-openssl-ios.outputs.cache-hit != 'true'
@@ -202,6 +202,8 @@ jobs:
         curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" -o openssl.tar.gz
         tar xzf openssl.tar.gz
         cd "openssl-${OPENSSL_VERSION}"
+
+        export IPHONEOS_DEPLOYMENT_TARGET=15.0
 
         ./Configure ios64-xcrun \
           --prefix="${{ github.workspace }}/openssl-ios" \
