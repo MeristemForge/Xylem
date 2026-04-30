@@ -153,6 +153,9 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
     /* Enable peer verification by default. */
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
 
+    /* Enforce TLS 1.2 as minimum version. */
+    SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
+
     /* Register ex_data index once for keylog callback to recover ctx. */
     call_once(&_tls_ex_data_once, _tls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _tls_ex_data_idx, ctx);

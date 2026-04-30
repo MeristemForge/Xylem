@@ -49,6 +49,12 @@
 /* HMAC-SHA256 output size in bytes. */
 #define DTLS_COOKIE_SIZE 32
 
+/**
+ * Maximum number of concurrent DTLS sessions per server.
+ * Prevents resource exhaustion from connection floods.
+ */
+#define DTLS_MAX_SESSIONS 1024
+
 static int _dtls_ex_data_idx = -1;
 static int _dtls_peer_addr_idx = -1;
 static once_flag _dtls_ex_data_once = ONCE_FLAG_INIT;
@@ -94,6 +100,7 @@ struct xylem_dtls_server_s {
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;
     xylem_rbtree_t         sessions;
+    uint32_t               session_count;
     void*                  userdata;
     bool                   closing;
 };
@@ -226,6 +233,9 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
     SSL_CTX_set_cookie_generate_cb(ctx->ssl_ctx, _dtls_cookie_generate_cb);
     SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _dtls_cookie_verify_cb);
+
+    /* Enforce DTLS 1.2 as minimum version. */
+    SSL_CTX_set_min_proto_version(ctx->ssl_ctx, DTLS1_2_VERSION);
 
     /* Register ex_data index once for keylog callback to recover ctx. */
     call_once(&_dtls_ex_data_once, _dtls_init_ex_data);
@@ -717,11 +727,19 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
+    if (server->session_count >= DTLS_MAX_SESSIONS) {
+        xylem_logw("dtls server: session limit reached (%d)",
+                   DTLS_MAX_SESSIONS);
+        return;
+    }
+
     dtls = calloc(1, sizeof(*dtls));
     if (!dtls) {
         xylem_loge("dtls server: session alloc failed");
         return;
     }
+
+    server->session_count++;
 
     dtls->udp       = server->udp;
     dtls->ctx       = server->ctx;
@@ -942,6 +960,7 @@ static void _dtls_do_close(xylem_dtls_conn_t* dtls) {
          * SSL state, notify user. The shared UDP socket stays open.
          */
         xylem_rbtree_erase(&dtls->server->sessions, &dtls->server_node);
+        dtls->server->session_count--;
 
         if (dtls->ssl) {
             SSL_free(dtls->ssl);
