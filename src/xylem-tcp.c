@@ -827,7 +827,12 @@ static void _tcp_try_connect(xylem_loop_t* loop,
     int err    = 0;
     socklen_t errlen = sizeof(err);
 
-    getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
+    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen) != 0) {
+        err = platform_socket_get_lasterror();
+        if (err == 0) {
+            err = -1;
+        }
+    }
 
     xylem_logd("tcp conn fd=%d connect result SO_ERROR=%d (%s)",
                (int)conn->fd, err,

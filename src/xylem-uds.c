@@ -655,7 +655,12 @@ static void _uds_try_connect(xylem_loop_t* loop,
 
     int       err    = 0;
     socklen_t errlen = sizeof(err);
-    getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
+    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen) != 0) {
+        err = platform_socket_get_lasterror();
+        if (err == 0) {
+            err = -1;
+        }
+    }
 
     if (err != 0) {
         xylem_loge("uds conn fd=%d connect failed err=%d (%s)",
