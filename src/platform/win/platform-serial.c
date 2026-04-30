@@ -103,6 +103,7 @@ platform_serial_t platform_serial_open(platform_serial_config_t* config) {
         break;
     case PLATFORM_SERIAL_FLOW_NONE:
     default:
+        dcb.fRtsControl = RTS_CONTROL_ENABLE;
         break;
     }
 
