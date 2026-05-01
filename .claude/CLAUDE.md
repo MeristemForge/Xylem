@@ -1,13 +1,10 @@
----
-inclusion: auto
-description: "Xylem project overview and architecture"
----
+# CLAUDE.md
 
-# Xylem
-
-Xylem is a cross-platform C11 static library that supplements (not replaces) the C11 standard. It provides data structures, crypto primitives, concurrency utilities, and async networking.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Architecture
+
+Xylem is a cross-platform C11 static library providing data structures, crypto primitives, concurrency utilities, and async networking.
 
 ### Event Loop (`xylem_loop_t`)
 
@@ -36,14 +33,6 @@ TCP / UDP / UDS
 ### Data Structures
 
 Two flavors: **intrusive** (list, stack, queue, heap, rbtree) where user embeds a node and recovers container via `xylem_<mod>_entry()`, and **non-intrusive** (`x`-prefixed) allocating wrappers built on top of the intrusive variants.
-
-## Design Philosophy
-
-- Zero external dependencies beyond C11 stdlib
-- Intrusive data structures — embed `xylem_<module>_node_t`, recover container via `xylem_*_entry()`
-- One-time global init via `xylem_startup()` / `xylem_cleanup()` (required before using networking modules)
-- Error codes (typically `-1`) over exceptions or global state
-- Cross-platform: Windows (MSVC) + Unix (GCC/Clang)
 
 ## Design Docs
 
