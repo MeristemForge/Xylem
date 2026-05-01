@@ -52,7 +52,7 @@ typedef enum platform_poller_op_e {
     PLATFORM_POLLER_RW_OP = 3,
 } platform_poller_op_t;
 
-#define PLATFORM_POLLER_CQE_NUM 64
+#define PLATFORM_POLLER_CQE_NUM 1024
 
 /** @brief Completion queue entry returned by platform_poller_wait. */
 typedef struct platform_poller_cqe_s {

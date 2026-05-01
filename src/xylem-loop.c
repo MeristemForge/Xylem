@@ -412,10 +412,12 @@ int xylem_loop_post(xylem_loop_t* loop, xylem_loop_post_fn_t cb, void* ud) {
     req->cb = cb;
     req->ud = ud;
     mpsc_push(&loop->posts, &req->node);
-    char    c = 1;
-    ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
-    if (n <= 0) {
-        xylem_logw("loop post: wakeup send failed, task queued anyway");
+    if (!xylem_loop_is_loop_thread(loop)) {
+        char    c = 1;
+        ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
+        if (n <= 0) {
+            xylem_logw("loop post: wakeup send failed, task queued anyway");
+        }
     }
     return 0;
 }

@@ -179,7 +179,7 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
             effective_hdr = hdr_sz + varint_bytes - len_sz;
         }
 
-        if (payload_len >= (uint64_t)INT64_MAX) {
+        if (payload_len > (uint64_t)INT32_MAX) {
             xylem_loge("uds conn fd=%d frame_length: payload_len overflow",
                        (int)conn->fd);
             return -1;
@@ -187,9 +187,9 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
 
         int64_t frame_size = (int64_t)effective_hdr +
                              (int64_t)payload_len + (int64_t)adj;
-        if (frame_size <= 0) {
+        if (frame_size <= 0 || (uint64_t)frame_size <= effective_hdr) {
             xylem_loge("uds conn fd=%d frame_length: frame_size=%"
-                       PRId64 " <= 0", (int)conn->fd, frame_size);
+                       PRId64 " invalid", (int)conn->fd, frame_size);
             return -1;
         }
 
@@ -198,13 +198,8 @@ static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
             return 0;
         }
 
-        if (total <= effective_hdr) {
-            *frame_out     = NULL;
-            *frame_len_out = 0;
-        } else {
-            *frame_out     = data + effective_hdr;
-            *frame_len_out = total - effective_hdr;
-        }
+        *frame_out     = data + effective_hdr;
+        *frame_len_out = total - effective_hdr;
         return (ssize_t)total;
     }
 
