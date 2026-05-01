@@ -645,8 +645,16 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;
     }
-    if (dtls->handshake_done &&
-        dtls->handler && dtls->handler->on_close) {
+    /**
+     * Client always receives on_close regardless of handshake_done.
+     * Unlike server sessions (gated by handshake_done, since the user
+     * never received on_accept), the user explicitly called
+     * xylem_dtls_dial() and needs to know whether the connection
+     * attempt failed.  If gated by handshake_done here, a handshake
+     * failure (e.g. wrong CA) would silently leak the session with no
+     * notification to the caller.
+     */
+    if (dtls->handler && dtls->handler->on_close) {
         dtls->handler->on_close(dtls, dtls->close_err, dtls->close_errmsg);
     }
     /* Defer free to next loop iteration so close_node stays valid. */

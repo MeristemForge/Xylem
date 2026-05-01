@@ -1028,6 +1028,18 @@ void xylem_tcp_close_server(xylem_tcp_server_t* server) {
     xylem_loop_post(server->loop, _tcp_server_free_cb, server);
 }
 
+static void _tcp_graceful_close_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)ud;
+    if (conn->state == TCP_STATE_CLOSED) {
+        return;
+    }
+    _tcp_destroy_conn(conn, 0);
+}
+
 void xylem_tcp_close(xylem_tcp_conn_t* conn) {
     if (conn->state == TCP_STATE_CLOSING ||
         conn->state == TCP_STATE_CLOSED) {
@@ -1046,7 +1058,15 @@ void xylem_tcp_close(xylem_tcp_conn_t* conn) {
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
-        _tcp_destroy_conn(conn, 0);
+        /**
+         * Defer destroy via post instead of calling _tcp_destroy_conn
+         * directly.  _tcp_direct_write posts on_write_done to the same
+         * MPSC queue; if we destroy now, those posts see state==CLOSED
+         * and get silently dropped — the user never receives write_done
+         * for data that was already sent.  Posting destroy ensures FIFO
+         * ordering: pending write_done callbacks fire first, then destroy.
+         */
+        xylem_loop_post(conn->loop, _tcp_graceful_close_cb, conn);
     }
 }
 

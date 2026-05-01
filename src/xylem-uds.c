@@ -791,6 +791,18 @@ void xylem_uds_close_server(xylem_uds_server_t* server) {
     xylem_loop_post(server->loop, _uds_server_free_cb, server);
 }
 
+static void _uds_graceful_close_cb(xylem_loop_t* loop,
+                                   xylem_loop_post_t* req,
+                                   void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
+    if (conn->state == UDS_STATE_CLOSED) {
+        return;
+    }
+    _uds_destroy_conn(conn, 0);
+}
+
 void xylem_uds_close(xylem_uds_conn_t* conn) {
     if (conn->state == UDS_STATE_CLOSING ||
         conn->state == UDS_STATE_CLOSED) {
@@ -809,7 +821,15 @@ void xylem_uds_close(xylem_uds_conn_t* conn) {
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
-        _uds_destroy_conn(conn, 0);
+        /**
+         * Defer destroy via post instead of calling _uds_destroy_conn
+         * directly.  _uds_direct_write posts on_write_done to the same
+         * MPSC queue; if we destroy now, those posts see state==CLOSED
+         * and get silently dropped — the user never receives write_done
+         * for data that was already sent.  Posting destroy ensures FIFO
+         * ordering: pending write_done callbacks fire first, then destroy.
+         */
+        xylem_loop_post(conn->loop, _uds_graceful_close_cb, conn);
     }
 }
 
