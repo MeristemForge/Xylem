@@ -141,23 +141,17 @@ typedef struct xylem_uds_server_s xylem_uds_server_t;  /* 服务器句柄 */
 ```c
 typedef struct _uds_write_req_s {
     xylem_queue_node_t node;    /* 队列节点，嵌入写队列 */
+    const void*        data;    /* 用户缓冲区指针（零拷贝） */
     size_t             len;     /* 总长度 */
     size_t             offset;  /* 已发送偏移量（支持部分写入） */
-    char               data[];  /* 柔性数组成员，紧跟结构体之后 */
 } _uds_write_req_t;
 ```
 
-### 延迟发送请求
+### 发送路径
 
-跨线程调用 `xylem_uds_send` 时分配，通过 `xylem_loop_post` 转发到事件循环线程：
-
-```c
-typedef struct _uds_deferred_send_s {
-    xylem_uds_conn_t* conn;
-    size_t            len;
-    char              data[];  /* 柔性数组成员，用户数据副本 */
-} _uds_deferred_send_t;
-```
+`xylem_uds_send` 必须在事件循环线程上调用。零拷贝语义：
+仅保存用户缓冲区指针，发送完成后通过 `on_write_done` 回调
+通知调用者可以释放缓冲区。
 
 ### 连接结构
 
@@ -183,7 +177,7 @@ struct xylem_uds_conn_s {
 };
 ```
 
-与 TCP 连接结构相比，UDS 连接没有 `dial` 私有状态（无重连）和 `peer_addr`（UDS 无有意义的对端地址）。`state` 和 `refcount` 使用原子类型，为跨线程 `xylem_uds_send` 和 `xylem_uds_close` 提供支持。
+与 TCP 连接结构相比，UDS 连接没有 `dial` 私有状态（无重连）和 `peer_addr`（UDS 无有意义的对端地址）。`send` 和 `close` 仅可在事件循环线程上调用；`refcount` 使用 `_Atomic int32_t` 支持跨线程 acquire/release。
 
 ### 服务器结构
 
@@ -335,17 +329,11 @@ sequenceDiagram
     participant OS as 操作系统
 
     User->>UDS: xylem_uds_close()
-    UDS->>UDS: atomic_load(state)
+    UDS->>UDS: 检查 state
     alt CLOSING 或 CLOSED
         UDS-->>User: 立即返回（幂等）
     end
-    alt 跨线程调用
-        UDS->>UDS: xylem_loop_post(_uds_deferred_close_cb)
-        Note over UDS: 下一轮事件循环迭代执行
-        UDS->>UDS: _uds_do_close()（事件循环线程）
-    end
-    UDS->>UDS: _uds_do_close()
-    Note over UDS: state = CLOSING
+    UDS->>UDS: state = CLOSING
     alt 写队列为空
         UDS->>OS: shutdown(SHUT_WR)
         UDS->>UDS: _uds_destroy_conn()
@@ -361,11 +349,7 @@ sequenceDiagram
     end
 ```
 
-`xylem_uds_close` 支持跨线程调用。入口处首先通过 `atomic_load` 检查状态实现幂等性——若已处于 `CLOSING` 或 `CLOSED` 状态则立即返回。
-
-通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 将 `_uds_deferred_close_cb` 转发到事件循环线程执行，回调完成后递减引用计数（`_uds_conn_decref`），确保连接内存在回调执行前不会被释放。若 `xylem_loop_post` 失败则立即递减引用计数，避免引用计数泄漏。
-
-实际关闭逻辑封装在 `_uds_do_close` 中，`_uds_deferred_close_cb` 直接调用此函数而非重新进入 `xylem_uds_close`。这避免了 `xylem_loop_destroy` 排空延迟回调时（`loop->tid` 未设置）重复 `xylem_loop_post` 导致的无限递归。`_uds_do_close` 内部再次检查状态（防止竞态），然后使用 `atomic_store` 设置 `CLOSING` 状态。
+`xylem_uds_close` 仅可在事件循环线程上调用。入口处检查状态实现幂等性——若已处于 `CLOSING` 或 `CLOSED` 状态则立即返回。通过检查后设置 `CLOSING` 状态，关闭逻辑直接内联在 `xylem_uds_close` 中。
 
 `_uds_destroy_conn` 负责：销毁所有定时器、销毁 IO、关闭 fd、释放读缓冲区、从服务器连接链表移除、回调 `on_close`、通过 `xylem_loop_post` 延迟递减引用计数（`_uds_conn_decref`），当引用计数归零时释放连接内存。
 
@@ -432,9 +416,9 @@ sequenceDiagram
     UDS->>OS: platform_socket_dial_unix(path, nonblocking)
     alt 立即连接成功
         UDS->>UDS: _uds_setup_conn
-        UDS->>Loop: xylem_loop_post(_uds_deferred_connect_cb)
+        UDS->>Loop: xylem_loop_post(_uds_connect_cb)
         UDS-->>User: 返回 conn（调用者可设置 userdata）
-        Loop->>UDS: _uds_deferred_connect_cb（下一轮迭代）
+        Loop->>UDS: _uds_connect_cb（下一轮迭代）
         UDS->>User: handler->on_connect
     else EINPROGRESS
         UDS->>UDS: 注册 POLLER_WR_OP
@@ -453,7 +437,7 @@ UDS 本地连接通常立即成功，但非阻塞模式下仍可能返回 `EINPR
 
 `xylem_uds_dial` 在调用平台层之前执行路径校验：`path` 为 NULL 或长度 ≥ `UDS_MAX_PATH`（104 字节）时返回 NULL。此校验在 UDS 层执行，早于平台层的同类检查，避免不必要的内存分配。
 
-立即连接成功时，`on_connect` 回调通过 `xylem_loop_post` 延迟到下一轮事件循环迭代触发，确保调用者在 `xylem_uds_dial` 返回后有机会设置 userdata。延迟回调 `_uds_deferred_connect_cb` 在触发前检查连接状态，若连接已进入 `CLOSING` 或 `CLOSED` 则跳过回调。
+立即连接成功时，`on_connect` 回调通过 `xylem_loop_post` 延迟到下一轮事件循环迭代触发，确保调用者在 `xylem_uds_dial` 返回后有机会设置 userdata。延迟回调 `_uds_connect_cb` 在触发前检查连接状态，若连接已进入 `CLOSING` 或 `CLOSED` 则跳过回调。
 
 ## 平台抽象层
 
@@ -480,20 +464,15 @@ UDS 模块在平台抽象层新增两个函数：
 
 ## 线程安全
 
-`xylem_uds_send` 和 `xylem_uds_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
-
-- **事件循环线程**：直接执行操作
-- **其他线程**：递增引用计数后通过 `xylem_loop_post` 将操作转发到事件循环线程，回调完成后递减引用计数。引用计数保证连接内存在 `xylem_loop_post` 和回调执行之间不会被释放
+`xylem_uds_send` 和 `xylem_uds_close` 必须在事件循环线程上调用。跨线程使用需要调用者自行通过 `xylem_loop_post` 将操作转发到事件循环线程。
 
 用户可通过 `xylem_uds_conn_acquire` 递增引用计数（通常在 `on_connect` 或 `on_accept` 中，将连接句柄传递给其他线程前调用），通过 `xylem_uds_conn_release` 递减引用计数（可从任意线程调用）。当引用计数归零时，连接内存被释放。
 
-`xylem_uds_send` 跨线程调用时，先通过 `atomic_load` 检查连接状态，仅 `CONNECTED` 状态接受发送。然后分配 `_uds_deferred_send_t`（包含 conn 指针和数据副本），递增引用计数后通过 `xylem_loop_post` 转发到事件循环线程。回调 `_uds_deferred_send_cb` 在入队前再次检查连接状态（连接可能在 post 期间关闭），处理完毕后递减引用计数（`_uds_conn_decref`）。
+`xylem_uds_close` 入口处检查状态实现幂等性——若已处于 `CLOSING` 或 `CLOSED` 状态则立即返回。通过检查后直接执行关闭逻辑。
 
-`xylem_uds_close` 跨线程调用时，入口处先通过 `atomic_load` 检查状态实现幂等性。通过检查后递增引用计数，通过 `xylem_loop_post` 将 `_uds_deferred_close_cb` 转发到事件循环线程。`_uds_deferred_close_cb` 直接调用 `_uds_do_close`（而非重新进入 `xylem_uds_close`），避免 `xylem_loop_destroy` 排空延迟回调时因 `loop->tid` 未设置而重复 `xylem_loop_post` 导致的无限递归。回调完成后递减引用计数。
+`conn->state` 使用 `_Atomic` 类型，允许跨线程安全读取状态（如幂等检查）。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
 
-`conn->state` 使用 `_Atomic` 类型，允许跨线程安全读取状态（如 `xylem_uds_send` 中的 `CONNECTED` 检查和 `xylem_uds_close` 中的幂等检查）。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
-
-其他 API（`xylem_uds_dial`、`xylem_uds_listen`、访问器等）仍需在事件循环线程上调用。
+其他 API（`xylem_uds_dial`、`xylem_uds_listen`、访问器等）同样需在事件循环线程上调用。
 
 ## 公开 API
 
@@ -522,10 +501,10 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                  xylem_uds_handler_t* handler,
                                  xylem_uds_opts_t* opts);
 
-/* 发送数据（复制入队），立即返回。线程安全。 */
+/* 发送数据（零拷贝入队），on_write_done 回调后可释放缓冲区。必须在事件循环线程上调用。 */
 int xylem_uds_send(xylem_uds_conn_t* conn, const void* data, size_t len);
 
-/* 优雅关闭连接。线程安全。 */
+/* 优雅关闭连接。必须在事件循环线程上调用。 */
 void xylem_uds_close(xylem_uds_conn_t* conn);
 
 /* 递增引用计数，防止连接内存被释放。需在事件循环线程上调用。 */

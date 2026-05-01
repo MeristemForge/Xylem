@@ -76,8 +76,8 @@ struct xylem_dtls_conn_s {
     xylem_dtls_server_t*   server;
     xylem_addr_t           peer_addr;
     void*                  userdata;
-    _Atomic bool           handshake_done;
-    _Atomic bool           closing;
+    bool                   handshake_done;
+    bool                   closing;
     _Atomic int32_t        refcount;
     int                    close_err;
     const char*            close_errmsg;
@@ -97,12 +97,6 @@ struct xylem_dtls_server_s {
     void*                  userdata;
     bool                   closing;
 };
-
-typedef struct _dtls_deferred_send_s {
-    xylem_dtls_conn_t* dtls;
-    size_t        len;
-    char          data[];
-} _dtls_deferred_send_t;
 
 static xylem_dtls_ctx_t* _dtls_get_ctx(SSL* ssl) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -359,7 +353,7 @@ static void _dtls_retransmit_timeout_cb(xylem_loop_t* loop,
      * Guard against a timer callback already queued in the current
      * loop iteration when xylem_dtls_close stopped the timer.
      */
-    if (atomic_load(&dtls->closing)) {
+    if (dtls->closing) {
         return;
     }
 
@@ -394,7 +388,7 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
 
     /* Session may already be closing from another path. */
-    if (atomic_load(&dtls->closing)) {
+    if (dtls->closing) {
         return;
     }
 
@@ -435,7 +429,7 @@ static void _dtls_do_handshake(xylem_dtls_conn_t* dtls) {
     int err = SSL_get_error(dtls->ssl, rc);
 
     if (rc == 1) {
-        atomic_store(&dtls->handshake_done, true);
+        dtls->handshake_done = true;
         _dtls_flush_write_bio(dtls);
         _dtls_stop_retransmit(dtls);
 
@@ -548,9 +542,9 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
 
     _dtls_feed_read_bio(dtls, data, len);
 
-    if (!atomic_load(&dtls->handshake_done)) {
+    if (!dtls->handshake_done) {
         _dtls_do_handshake(dtls);
-        if (!atomic_load(&dtls->handshake_done)) {
+        if (!dtls->handshake_done) {
             return;
         }
     }
@@ -560,7 +554,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
      * _dtls_client_close_cb synchronously (UDP has no write
      * queue), freeing dtls->ssl. Must bail out before SSL_read.
      */
-    if (atomic_load(&dtls->closing)) {
+    if (dtls->closing) {
         return;
     }
     char buf[TLS_RECORD_MAX_PLAINTEXT];
@@ -571,7 +565,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
         if (dtls->handler && dtls->handler->on_read) {
             dtls->handler->on_read(dtls, buf, (size_t)n);
         }
-        if (atomic_load(&dtls->closing)) {
+        if (dtls->closing) {
             return;
         }
     }
@@ -631,7 +625,7 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
      * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
      * (ICMP port unreachable) before any timer fires.
      */
-    atomic_store(&dtls->closing, true);
+    dtls->closing = true;
     _dtls_stop_retransmit(dtls);
     if (dtls->handshake_timer) {
         xylem_loop_stop_timer(dtls->handshake_timer);
@@ -651,7 +645,8 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;
     }
-    if (dtls->handler && dtls->handler->on_close) {
+    if (dtls->handshake_done &&
+        dtls->handler && dtls->handler->on_close) {
         dtls->handler->on_close(dtls, dtls->close_err, dtls->close_errmsg);
     }
     /* Defer free to next loop iteration so close_node stays valid. */
@@ -672,9 +667,9 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
     if (dtls) {
         _dtls_feed_read_bio(dtls, data, len);
 
-        if (!atomic_load(&dtls->handshake_done)) {
+        if (!dtls->handshake_done) {
             _dtls_do_handshake(dtls);
-            if (!atomic_load(&dtls->handshake_done)) {
+            if (!dtls->handshake_done) {
                 return;
             }
         }
@@ -685,7 +680,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
          * (no async UDP close), so dtls->ssl is already NULL.
          * Must bail out before SSL_read.
          */
-        if (atomic_load(&dtls->closing)) {
+        if (dtls->closing) {
             return;
         }
 
@@ -697,7 +692,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
             if (dtls->handler && dtls->handler->on_read) {
                 dtls->handler->on_read(dtls, buf, (size_t)n);
             }
-            if (atomic_load(&dtls->closing)) {
+            if (dtls->closing) {
                 return;
             }
         }
@@ -836,17 +831,17 @@ xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
      * The session is now a zombie scheduled for deferred free -- do not
      * return it to the caller.
      */
-    if (atomic_load(&dtls->closing)) {
+    if (dtls->closing) {
         return NULL;
     }
 
     return dtls;
 }
 
-/* Perform the actual DTLS send (loop thread only). */
-static int _dtls_do_send(xylem_dtls_conn_t* dtls,
-                         const void* data, size_t len) {
+static int _dtls_process_write(xylem_dtls_conn_t* dtls,
+                               const void* data, size_t len) {
     ERR_clear_error();
+    /* Datagram-atomic: failure does not corrupt session state. */
     int n = SSL_write(dtls->ssl, data, (int)len);
     if (n <= 0) {
         unsigned long ssl_err_code = ERR_peek_error();
@@ -860,71 +855,29 @@ static int _dtls_do_send(xylem_dtls_conn_t* dtls,
     return 0;
 }
 
-static void _dtls_deferred_send_cb(xylem_loop_t* loop,
-                                    xylem_loop_post_t* req,
-                                    void* ud) {
-    (void)loop;
-    (void)req;
-    _dtls_deferred_send_t* ds = (_dtls_deferred_send_t*)ud;
-
-    if (atomic_load(&ds->dtls->handshake_done) &&
-        !atomic_load(&ds->dtls->closing)) {
-        _dtls_do_send(ds->dtls, ds->data, ds->len);
-    }
-
-    _dtls_conn_decref(ds->dtls);
-    free(ds);
-}
-
 int xylem_dtls_send(xylem_dtls_conn_t* dtls,
                     const void* data, size_t len) {
-    if (!atomic_load(&dtls->handshake_done) ||
-        atomic_load(&dtls->closing)) {
+    if (!dtls->handshake_done ||
+        dtls->closing) {
         xylem_logd("dtls session %p send rejected (handshake=%d closing=%d)",
                    (void*)dtls,
-                   (int)atomic_load(&dtls->handshake_done),
-                   (int)atomic_load(&dtls->closing));
+                   (int)dtls->handshake_done,
+                   (int)dtls->closing);
         return -1;
     }
 
-    if (len == 0) {
+    if (!data || len == 0) {
         return 0;
     }
 
-    /* Cross-thread: copy data and post to loop thread. */
-    if (!xylem_loop_is_loop_thread(dtls->loop)) {
-        _dtls_deferred_send_t* ds = (_dtls_deferred_send_t*)malloc(
-            sizeof(_dtls_deferred_send_t) + len);
-        if (!ds) {
-            return -1;
-        }
-        ds->dtls = dtls;
-        ds->len  = len;
-        memcpy(ds->data, data, len);
-
-        atomic_fetch_add(&dtls->refcount, 1);
-        if (xylem_loop_post(dtls->loop, _dtls_deferred_send_cb, ds) != 0) {
-            _dtls_conn_decref(dtls);
-            free(ds);
-            return -1;
-        }
-        return 0;
-    }
-
-    /* Same thread: send directly. */
-    return _dtls_do_send(dtls, data, len);
+    return _dtls_process_write(dtls, data, len);
 }
 
-/**
- * Close logic that runs on the loop thread. Extracted so that
- * _dtls_deferred_close_cb can call it directly instead of re-entering
- * xylem_dtls_close (which would re-post when loop->tid is unset).
- */
-static void _dtls_do_close(xylem_dtls_conn_t* dtls) {
-    if (atomic_load(&dtls->closing)) {
+void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
+    if (dtls->closing) {
         return;
     }
-    atomic_store(&dtls->closing, true);
+    dtls->closing = true;
 
     xylem_logi("dtls session %p close requested", (void*)dtls);
 
@@ -934,16 +887,12 @@ static void _dtls_do_close(xylem_dtls_conn_t* dtls) {
         xylem_loop_stop_timer(dtls->handshake_timer);
     }
 
-    if (dtls->ssl && atomic_load(&dtls->handshake_done)) {
+    if (dtls->ssl && dtls->handshake_done) {
         SSL_shutdown(dtls->ssl);
         _dtls_flush_write_bio(dtls);
     }
 
     if (dtls->server) {
-        /**
-         * Server-side session: detach from server list, clean up
-         * SSL state, notify user. The shared UDP socket stays open.
-         */
         xylem_rbtree_erase(&dtls->server->sessions, &dtls->server_node);
 
         if (dtls->ssl) {
@@ -951,48 +900,16 @@ static void _dtls_do_close(xylem_dtls_conn_t* dtls) {
             dtls->ssl = NULL;
         }
 
-        if (atomic_load(&dtls->handshake_done) &&
+        if (dtls->handshake_done &&
             dtls->handler && dtls->handler->on_close) {
             dtls->handler->on_close(dtls, dtls->close_err,
                                     dtls->close_errmsg);
         }
 
-        /* Defer free to next loop iteration so close_node stays valid. */
         xylem_loop_post(dtls->loop, _dtls_free_cb, dtls);
     } else {
-        /**
-         * Client-side: close the dedicated UDP socket. The
-         * _dtls_client_close_cb will free SSL and notify user.
-         */
         xylem_udp_close(dtls->udp);
     }
-}
-
-static void _dtls_deferred_close_cb(xylem_loop_t* loop,
-                                     xylem_loop_post_t* req,
-                                     void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)ud;
-    _dtls_do_close(dtls);
-    _dtls_conn_decref(dtls);
-}
-
-void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
-    if (atomic_load(&dtls->closing)) {
-        return;
-    }
-
-    /* Cross-thread: post to loop thread. */
-    if (!xylem_loop_is_loop_thread(dtls->loop)) {
-        atomic_fetch_add(&dtls->refcount, 1);
-        if (xylem_loop_post(dtls->loop, _dtls_deferred_close_cb, dtls) != 0) {
-            _dtls_conn_decref(dtls);
-        }
-        return;
-    }
-
-    _dtls_do_close(dtls);
 }
 
 const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {

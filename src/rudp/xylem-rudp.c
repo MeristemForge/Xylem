@@ -81,8 +81,8 @@ struct xylem_rudp_conn_s {
     xylem_rudp_server_t*   server;       /* non-NULL for server sessions */
     xylem_addr_t           peer_addr;
     void*                  userdata;
-    _Atomic bool           handshake_done;
-    _Atomic bool           closing;
+    bool                   handshake_done;
+    bool                   closing;
     _Atomic int32_t        refcount;
     int                    close_err;
     const char*            close_errmsg;
@@ -111,12 +111,6 @@ struct xylem_rudp_server_s {
     uint8_t                aes_key_buf[32]; /* owned copy of AES key */
     bool                   closing;
 };
-
-typedef struct _rudp_deferred_send_s {
-    xylem_rudp_conn_t* rudp;
-    size_t        len;
-    char          data[];
-} _rudp_deferred_send_t;
 
 typedef struct {
     xylem_addr_t* addr;
@@ -312,7 +306,7 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user) {
     (void)kcp;
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)user;
-    if (atomic_load(&rudp->closing)) {
+    if (rudp->closing) {
         return -1;
     }
 
@@ -425,7 +419,7 @@ static bool _rudp_drain_recv(xylem_rudp_conn_t* rudp) {
         if (rudp->handler && rudp->handler->on_read) {
             rudp->handler->on_read(rudp, buf, (size_t)n);
         }
-        if (atomic_load(&rudp->closing)) {
+        if (rudp->closing) {
             return false;
         }
     }
@@ -461,7 +455,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
     (void)loop;
     (void)timer;
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-    if (atomic_load(&rudp->closing) || !rudp->kcp) {
+    if (rudp->closing || !rudp->kcp) {
         return;
     }
 
@@ -489,7 +483,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
  * Forward-declared above because _rudp_update_timeout_cb also calls it.
  */
 static void _rudp_schedule_update(xylem_rudp_conn_t* rudp) {
-    if (atomic_load(&rudp->closing) || !rudp->kcp) {
+    if (rudp->closing || !rudp->kcp) {
         return;
     }
     uint32_t now  = _rudp_clock_ms();
@@ -512,8 +506,8 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
     (void)timer;
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
 
-    if (atomic_load(&rudp->handshake_done) ||
-        atomic_load(&rudp->closing)) {
+    if (rudp->handshake_done ||
+        rudp->closing) {
         return;
     }
 
@@ -558,7 +552,7 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
                                  size_t len, xylem_addr_t* addr) {
     (void)addr;
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)xylem_udp_get_userdata(udp);
-    if (!rudp || atomic_load(&rudp->closing)) {
+    if (!rudp || rudp->closing) {
         return;
     }
 
@@ -571,12 +565,12 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    if (!atomic_load(&rudp->handshake_done)) {
+    if (!rudp->handshake_done) {
         uint8_t  type;
         uint32_t conv;
         if (_rudp_decode_handshake(plain, plain_len, &type, &conv) &&
             type == RUDP_HANDSHAKE_ACK && conv == rudp->conv) {
-            atomic_store(&rudp->handshake_done, true);
+            rudp->handshake_done = true;
             if (rudp->handshake_timer) {
                 xylem_loop_stop_timer(rudp->handshake_timer);
             }
@@ -611,7 +605,7 @@ static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
      * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
      * (ICMP port unreachable) before the handshake timer fires.
      */
-    atomic_store(&rudp->closing, true);
+    rudp->closing = true;
     xylem_loop_stop_timer(rudp->update_timer);
     if (rudp->handshake_timer) {
         xylem_loop_stop_timer(rudp->handshake_timer);
@@ -692,7 +686,7 @@ static void _rudp_accept_session(
         return;
     }
 
-    atomic_store(&rudp->handshake_done, true);
+    rudp->handshake_done = true;
     atomic_store(&rudp->refcount, 1);
     xylem_rbtree_insert(&server->sessions, &rudp->server_node);
     xylem_logi("rudp conv=%u session accepted (aes=%s fec=%d+%d)",
@@ -930,67 +924,14 @@ xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
     return rudp;
 }
 
-static void _rudp_deferred_send_cb(xylem_loop_t* loop,
-                                    xylem_loop_post_t* req,
-                                    void* ud) {
-    (void)loop;
-    (void)req;
-    _rudp_deferred_send_t* ds = (_rudp_deferred_send_t*)ud;
-
-    if (atomic_load(&ds->rudp->handshake_done) &&
-        !atomic_load(&ds->rudp->closing)) {
-        int rc = ikcp_send(ds->rudp->kcp, ds->data, (int)ds->len);
-        if (rc >= 0) {
-            ikcp_flush(ds->rudp->kcp);
-            _rudp_schedule_update(ds->rudp);
-        }
-    }
-
-    _rudp_conn_decref(ds->rudp);
-    free(ds);
-}
-
-int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len) {
-    if (!atomic_load(&rudp->handshake_done) ||
-        atomic_load(&rudp->closing)) {
-        xylem_logd("rudp conv=%u send rejected (handshake=%d closing=%d)",
-                   rudp->conv,
-                   (int)atomic_load(&rudp->handshake_done),
-                   (int)atomic_load(&rudp->closing));
-        return -1;
-    }
-
-    if (len == 0) {
-        return 0;
-    }
-
+static int _rudp_process_write(xylem_rudp_conn_t* rudp,
+                               const void* data, size_t len) {
     if (len > RUDP_RECV_BUF_SIZE) {
         xylem_logd("rudp conv=%u send rejected: message too large (%zu > %d)",
                    rudp->conv, len, RUDP_RECV_BUF_SIZE);
         return -1;
     }
 
-    /* Cross-thread: copy data and post to loop thread. */
-    if (!xylem_loop_is_loop_thread(rudp->loop)) {
-        _rudp_deferred_send_t* ds = (_rudp_deferred_send_t*)malloc(
-            sizeof(_rudp_deferred_send_t) + len);
-        if (!ds) {
-            return -1;
-        }
-        ds->rudp = rudp;
-        ds->len  = len;
-        memcpy(ds->data, data, len);
-
-        atomic_fetch_add(&rudp->refcount, 1);
-        if (xylem_loop_post(rudp->loop, _rudp_deferred_send_cb, ds) != 0) {
-            _rudp_conn_decref(rudp);
-            free(ds);
-            return -1;
-        }
-        return 0;
-    }
-
-    /* Same thread: send directly via KCP. */
     int rc = ikcp_send(rudp->kcp, (const char*)data, (int)len);
     if (rc < 0) {
         return -1;
@@ -1000,16 +941,28 @@ int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len) {
     return 0;
 }
 
-/**
- * Close logic that runs on the loop thread.  Extracted so that
- * _rudp_deferred_close_cb can call it directly instead of re-entering
- * xylem_rudp_close (which would re-post when loop->tid is unset).
- */
-static void _rudp_do_close(xylem_rudp_conn_t* rudp) {
-    if (atomic_load(&rudp->closing)) {
+int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len) {
+    if (!rudp->handshake_done ||
+        rudp->closing) {
+        xylem_logd("rudp conv=%u send rejected (handshake=%d closing=%d)",
+                   rudp->conv,
+                   (int)rudp->handshake_done,
+                   (int)rudp->closing);
+        return -1;
+    }
+
+    if (!data || len == 0) {
+        return 0;
+    }
+
+    return _rudp_process_write(rudp, data, len);
+}
+
+void xylem_rudp_close(xylem_rudp_conn_t* rudp) {
+    if (rudp->closing) {
         return;
     }
-    atomic_store(&rudp->closing, true);
+    rudp->closing = true;
 
     xylem_logi("rudp conv=%u closing", rudp->conv);
 
@@ -1036,34 +989,6 @@ static void _rudp_do_close(xylem_rudp_conn_t* rudp) {
     } else {
         xylem_udp_close(rudp->udp);
     }
-}
-
-static void _rudp_deferred_close_cb(xylem_loop_t* loop,
-                                     xylem_loop_post_t* req,
-                                     void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-    _rudp_do_close(rudp);
-    _rudp_conn_decref(rudp);
-}
-
-void xylem_rudp_close(xylem_rudp_conn_t* rudp) {
-    if (atomic_load(&rudp->closing)) {
-        return;
-    }
-
-    /* Cross-thread: post to loop thread. */
-    if (!xylem_loop_is_loop_thread(rudp->loop)) {
-        xylem_logd("rudp conv=%u close from non-loop thread", rudp->conv);
-        atomic_fetch_add(&rudp->refcount, 1);
-        if (xylem_loop_post(rudp->loop, _rudp_deferred_close_cb, rudp) != 0) {
-            _rudp_conn_decref(rudp);
-        }
-        return;
-    }
-
-    _rudp_do_close(rudp);
 }
 
 const xylem_addr_t* xylem_rudp_get_peer_addr(xylem_rudp_conn_t* rudp) {

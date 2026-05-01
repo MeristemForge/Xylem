@@ -78,7 +78,7 @@ typedef struct xylem_uds_handler_s {
                     void* data, size_t len);                /*< Frame received. */
     void (*on_write_done)(xylem_uds_conn_t* conn,
                           const void* data, size_t len,
-                          int status);                      /*< Write finished: 0 = sent, -1 = not sent. */
+                          int status);                      /*< Write finished: data is the caller's original pointer. 0 = sent, -1 = not sent. */
     void (*on_timeout)(xylem_uds_conn_t* conn,
                        xylem_uds_timeout_type_t type);      /*< Timeout fired. */
     void (*on_close)(xylem_uds_conn_t* conn,
@@ -143,16 +143,19 @@ extern xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
                                          xylem_uds_opts_t* opts);
 
 /**
- * @brief Send data over a UDS connection.
+ * @brief Send data over a UDS connection (zero-copy).
  *
- * Thread-safe. Data is copied into an internal write queue and returns
- * immediately. Each write triggers handler->on_write_done.
+ * The caller retains ownership of the buffer until
+ * handler->on_write_done fires. The library does NOT copy the data;
+ * it stores the pointer and sends directly from the caller's buffer.
+ * The caller MUST keep the buffer alive and unmodified until the
+ * on_write_done callback is invoked with the same data pointer.
  *
  * @param conn  Connection handle.
- * @param data  Data to send.
+ * @param data  Data to send (caller-owned, must outlive the send).
  * @param len   Data length in bytes.
  *
- * @return 0 on success (enqueued), -1 on failure.
+ * @return 0 on success (accepted), -1 on failure (connection closed).
  */
 extern int xylem_uds_send(xylem_uds_conn_t* conn,
                           const void* data, size_t len);
@@ -160,7 +163,7 @@ extern int xylem_uds_send(xylem_uds_conn_t* conn,
 /**
  * @brief Close a UDS connection.
  *
- * Thread-safe. Flushes the write queue, then shuts down and closes the socket.
+ * Flushes the write queue, then shuts down and closes the socket.
  * Calls handler->on_close when done.
  *
  * @param conn  Connection handle.

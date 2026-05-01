@@ -82,7 +82,9 @@ extern xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
  *
  * @return Number of bytes sent, or -1 on failure.
  *
- * @note Thread-safe. May be called from any thread.
+ * @note The data is copied to the kernel synchronously. The caller
+ *       may free or reuse the buffer immediately after this function
+ *       returns.
  */
 extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                           const void* data, size_t len);
@@ -97,8 +99,6 @@ extern int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
  * receives the platform error code and a human-readable description.
  *
  * @param udp  UDP handle.
- *
- * @note Thread-safe. May be called from any thread.
  */
 extern void xylem_udp_close(xylem_udp_t* udp);
 

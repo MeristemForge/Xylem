@@ -44,7 +44,7 @@ typedef struct xylem_tls_handler_s {
                     void* data, size_t len);                 /*< Decrypted data received. */
     void (*on_write_done)(xylem_tls_conn_t* tls,
                           const void* data, size_t len,
-                          int status);                       /*< Write finished: 0 = sent, -1 = not sent. */
+                          int status);                       /*< Write finished: data is the caller's original pointer. 0 = sent, -1 = not sent. */
     void (*on_timeout)(xylem_tls_conn_t* tls,
                        xylem_tcp_timeout_type_t type);       /*< Timeout from underlying TCP layer. */
     void (*on_close)(xylem_tls_conn_t* tls,
@@ -168,19 +168,16 @@ extern xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                                    xylem_tls_opts_t* opts);
 
 /**
- * @brief Send data over a TLS connection.
+ * @brief Send data over a TLS connection (zero-copy).
  *
- * Encrypts plaintext via SSL_write and sends the resulting
- * ciphertext over the underlying TCP connection. Returns
- * immediately; handler->on_write_done fires on completion.
- *
- * Thread-safe: may be called from any thread. When called from a
- * non-loop thread, the data is copied and posted to the loop thread
- * for asynchronous encryption and send. The caller must ensure the
- * connection has not been destroyed (i.e. on_close has not yet fired).
+ * The caller retains ownership of the buffer until
+ * handler->on_write_done fires. The library does NOT copy the data;
+ * it passes the pointer directly to SSL_write for encryption.
+ * The caller MUST keep the buffer alive and unmodified until the
+ * on_write_done callback is invoked with the same data pointer.
  *
  * @param tls   TLS connection handle.
- * @param data  Plaintext data to send.
+ * @param data  Plaintext data to send (caller-owned, must outlive the send).
  * @param len   Data length in bytes.
  *
  * @return 0 on success (enqueued), -1 on failure.
@@ -193,11 +190,6 @@ extern int xylem_tls_send(xylem_tls_conn_t* tls,
  *
  * Sends a TLS close_notify, then closes the underlying TCP
  * connection. handler->on_close fires when complete.
- *
- * Thread-safe: may be called from any thread. When called from a
- * non-loop thread, the close is posted to the loop thread. The
- * caller must ensure the connection has not been destroyed (i.e.
- * on_close has not yet fired, or the caller holds an acquire ref).
  *
  * @param tls  TLS connection handle.
  */

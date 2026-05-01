@@ -144,7 +144,7 @@ extern xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
                                      xylem_dtls_handler_t* handler);
 
 /**
- * @brief Thread-safe. Send a datagram over a DTLS session.
+ * @brief Send a datagram over a DTLS session.
  *
  * Encrypts plaintext via SSL_write and sends the resulting
  * ciphertext over UDP.
@@ -154,12 +154,16 @@ extern xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
  * @param len   Data length in bytes.
  *
  * @return 0 on success, -1 on failure.
+ *
+ * @note The data is copied internally during encryption. The caller
+ *       may free or reuse the buffer immediately after this function
+ *       returns.
  */
 extern int xylem_dtls_send(xylem_dtls_conn_t* dtls,
                            const void* data, size_t len);
 
 /**
- * @brief Thread-safe. Close a DTLS session.
+ * @brief Close a DTLS session.
  *
  * Sends close_notify and closes the underlying UDP socket.
  * handler->on_close fires with err=0 and errmsg=NULL for a normal

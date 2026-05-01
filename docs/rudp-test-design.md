@@ -163,7 +163,7 @@ RUDP 模块构建在 UDP 之上，以下 UDP 层功能已由 `test-udp.c` 覆盖
 | `xylem_rudp_close_server` | 幂等：closing==true 提前返回 | （隐式：close_server 在清理路径中可能被重复调用） |
 | `xylem_rudp_send`（跨线程） | 非事件循环线程调用 → `_rudp_deferred_send_cb` 转发到事件循环线程入队 KCP | `test_cross_thread_send`, `test_cross_thread_send_stop_on_close` |
 | `xylem_rudp_conn_acquire` / `xylem_rudp_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
-| `xylem_rudp_close`（跨线程） | 非事件循环线程调用 → `_rudp_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_rudp_close`（跨线程） | 非事件循环线程调用 → 通过 `xylem_loop_post` 转发到事件循环线程执行 | `test_cross_thread_close` |
 | `xylem_rudp_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic closing 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ## 未覆盖的路径

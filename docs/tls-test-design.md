@@ -109,5 +109,5 @@ TLS 模块构建在 TCP 之上，以下 TCP 层功能已由 `test-tcp.c` 覆盖�
 | `xylem_tls_send`（跨线程） | 非事件循环线程调用 → `_tls_deferred_send_cb` 转发到事件循环线程加密并发送 | `test_cross_thread_send` |
 | `_tls_deferred_send_cb` | 连接已关闭或握手未完成时回调 `on_write_done(status=-1)` 通知发送失败 | `test_cross_thread_send_stop_on_close`（隐式：工作线程的 deferred send 可能在连接关闭后到达事件循环线程） |
 | `xylem_tls_conn_acquire` / `xylem_tls_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
-| `xylem_tls_close`（跨线程） | 非事件循环线程调用 → `_tls_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_tls_close`（跨线程） | 非事件循环线程调用 → 通过 `xylem_loop_post` 转发到事件循环线程执行 | `test_cross_thread_close` |
 | `xylem_tls_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic closing 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |

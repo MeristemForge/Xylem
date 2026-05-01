@@ -148,7 +148,7 @@ platform_sock_t platform_socket_listen(
             platform_socket_close(sock);
             continue;
         }
-        /* these options inherited by connection-socket */
+        /* TCP_NODELAY inheritance is platform-dependent; set on each accepted socket. */
         if (socktype == SOCK_STREAM) {
             if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
                 platform_socket_close(sock);

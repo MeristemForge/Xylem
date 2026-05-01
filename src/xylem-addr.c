@@ -45,7 +45,7 @@ struct xylem_addr_resolve_s {
 };
 
 /* Runs on the loop thread after the worker finishes. */
-static void _addr_resolve_post_cb(xylem_loop_t* loop,
+static void _addr_resolve_cb(xylem_loop_t* loop,
                                   xylem_loop_post_t* req,
                                   void* ud) {
     (void)loop;
@@ -67,7 +67,7 @@ static void _addr_resolve_work(void* arg) {
     if (atomic_load(&r->cancelled)) {
         r->status = -1;
         r->count  = 0;
-        xylem_loop_post(r->loop, _addr_resolve_post_cb, r);
+        xylem_loop_post(r->loop, _addr_resolve_cb, r);
         return;
     }
 
@@ -84,7 +84,7 @@ static void _addr_resolve_work(void* arg) {
     if (getaddrinfo(r->host, port_str, &hints, &res) != 0 || !res) {
         r->status = -1;
         r->count  = 0;
-        xylem_loop_post(r->loop, _addr_resolve_post_cb, r);
+        xylem_loop_post(r->loop, _addr_resolve_cb, r);
         return;
     }
 
@@ -104,7 +104,7 @@ static void _addr_resolve_work(void* arg) {
 
     r->count  = count;
     r->status = (count > 0) ? 0 : -1;
-    xylem_loop_post(r->loop, _addr_resolve_post_cb, r);
+    xylem_loop_post(r->loop, _addr_resolve_cb, r);
 }
 
 int xylem_addr_pton(const char* host, uint16_t port, xylem_addr_t* addr) {

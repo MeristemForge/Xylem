@@ -61,8 +61,8 @@ struct xylem_tls_conn_s {
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;
     void*                 userdata;
-    _Atomic bool          handshake_done;
-    _Atomic bool          closing;
+    bool                  handshake_done;
+    bool                  closing;
     _Atomic int32_t       refcount;
     int                   close_err;
     const char*           close_errmsg;
@@ -74,16 +74,13 @@ struct xylem_tls_conn_s {
 
 /**
  * Tracks one xylem_tls_send call through the TCP write pipeline.
- * Each TLS send produces one or more xylem_tcp_send calls (ciphertext
- * records). The pending counter tracks how many TCP writes remain;
- * on_write_done fires only when all of them complete.
+ * Zero-copy: stores the caller's pointer directly. The caller must
+ * keep the buffer alive until on_write_done fires.
  */
 typedef struct _tls_write_req_s {
     xylem_queue_node_t node;
-    size_t             len;     /* plaintext length */
-    int                pending; /* outstanding TCP send count */
-    int                status;  /* 0 = ok so far, -1 = any TCP send failed */
-    char               data[];  /* plaintext copy */
+    const void*        data; /* caller's original pointer */
+    size_t             len;
 } _tls_write_req_t;
 
 struct xylem_tls_server_s {
@@ -97,11 +94,6 @@ struct xylem_tls_server_s {
     bool                  closing;
 };
 
-typedef struct _tls_deferred_send_s {
-    xylem_tls_conn_t* tls;
-    size_t            len;
-    char              data[];
-} _tls_deferred_send_t;
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -258,17 +250,34 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-/* Flush ciphertext from write BIO to TCP. Returns the number of TCP sends. */
-static int _tls_flush_write_bio(xylem_tls_conn_t* tls) {
-    char buf[TLS_RECORD_MAX_PLAINTEXT];
-    int  n;
-    int  count = 0;
-
-    while ((n = BIO_read(tls->write_bio, buf, sizeof(buf))) > 0) {
-        xylem_tcp_send(tls->tcp, buf, (size_t)n);
-        count++;
+/**
+ * Flush ciphertext from write BIO to TCP. Returns the number of TCP sends.
+ *
+ * Each ciphertext chunk is heap-allocated because the underlying TCP layer
+ * uses zero-copy sends -- it holds a pointer to the data until its own
+ * on_write_done fires. The allocation is freed in _tls_tcp_write_done_cb.
+ */
+static bool _tls_flush_write_bio(xylem_tls_conn_t* tls) {
+    size_t pending = BIO_ctrl_pending(tls->write_bio);
+    if (pending == 0) {
+        return false;
     }
-    return count;
+
+    char* ct = (char*)malloc(pending);
+    if (!ct) {
+        xylem_loge("tls conn %p flush_write_bio: alloc failed",
+                   (void*)tls);
+        return false;
+    }
+
+    int n = BIO_read(tls->write_bio, ct, (int)pending);
+    if (n <= 0) {
+        free(ct);
+        return false;
+    }
+
+    xylem_tcp_send(tls->tcp, ct, (size_t)n);
+    return true;
 }
 
 static void _tls_feed_read_bio(xylem_tls_conn_t* tls, void* data, size_t len) {
@@ -281,7 +290,7 @@ static void _tls_do_handshake(xylem_tls_conn_t* tls) {
     int err = SSL_get_error(tls->ssl, rc);
 
     if (rc == 1) {
-        atomic_store(&tls->handshake_done, true);
+        tls->handshake_done = true;
         _tls_flush_write_bio(tls);
 
         /* Cache negotiated ALPN as a null-terminated string. */
@@ -408,17 +417,17 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
 
     xylem_logd("tls conn %p tcp_read_cb len=%zu handshake_done=%d",
                (void*)tls, len,
-               (int)atomic_load(&tls->handshake_done));
+               (int)tls->handshake_done);
 
     _tls_feed_read_bio(tls, data, len);
 
-    if (!atomic_load(&tls->handshake_done)) {
+    if (!tls->handshake_done) {
         _tls_do_handshake(tls);
-        if (!atomic_load(&tls->handshake_done)) {
+        if (!tls->handshake_done) {
             return;
         }
     }
-    if (atomic_load(&tls->closing)) {
+    if (tls->closing) {
         return;
     }
     char buf[TLS_RECORD_MAX_PLAINTEXT];
@@ -429,7 +438,7 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* conn,
         if (tls->handler && tls->handler->on_read) {
             tls->handler->on_read(tls, buf, (size_t)n);
         }
-        if (atomic_load(&tls->closing)) {
+        if (tls->closing) {
             return;
         }
     }
@@ -523,6 +532,9 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
                                 xylem_tcp_timeout_type_t type) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
+    if (!tls || tls->closing) {
+        return;
+    }
 
     xylem_logw("tls conn %p timeout type=%d", (void*)tls, (int)type);
 
@@ -533,6 +545,9 @@ static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* conn,
 
 static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
+    if (!tls || tls->closing) {
+        return;
+    }
 
     xylem_logw("tls conn %p heartbeat miss", (void*)tls);
 
@@ -542,47 +557,42 @@ static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* conn) {
 }
 
 /**
- * TCP on_write_done callback. Each TLS send produces one or more TCP
- * sends (ciphertext records). We count down the pending field on the
- * front write request; when it reaches zero all ciphertext has been
- * written to the socket and we fire the TLS on_write_done.
+ * TCP on_write_done callback. Each TLS send produces exactly one
+ * xylem_tcp_send (the full ciphertext from BIO_ctrl_pending). When
+ * the TCP write completes we dequeue the front write request and
+ * fire the TLS on_write_done.
  *
  * Handshake flushes also produce TCP writes, but the write_queue is
  * empty during handshake so those are silently ignored.
+ *
+ * The data pointer is a heap-allocated ciphertext buffer from
+ * _tls_flush_write_bio and must be freed here.
  */
 static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* conn,
                                    const void* data, size_t len,
                                    int status) {
-    (void)data;
     (void)len;
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(conn);
+
+    free((void*)data);
+
     if (!tls) {
         return;
     }
 
     xylem_queue_node_t* front = xylem_queue_front(&tls->write_queue);
     if (!front) {
-        /* Handshake flush or close_notify -- no user write pending. */
         return;
     }
 
     _tls_write_req_t* req =
         xylem_queue_entry(front, _tls_write_req_t, node);
+    xylem_queue_dequeue(&tls->write_queue);
 
-    if (status != 0) {
-        req->status = -1;
+    if (tls->handler && tls->handler->on_write_done) {
+        tls->handler->on_write_done(tls, req->data, req->len, status);
     }
-
-    req->pending--;
-    if (req->pending <= 0) {
-        xylem_queue_dequeue(&tls->write_queue);
-
-        if (tls->handler && tls->handler->on_write_done) {
-            tls->handler->on_write_done(
-                tls, req->data, req->len, req->status);
-        }
-        free(req);
-    }
+    free(req);
 }
 
 /**
@@ -608,138 +618,113 @@ static xylem_tcp_handler_t _tls_tcp_client_handler = {
     .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
 };
 
-/* Perform the actual TLS send (loop thread only). */
-static int _tls_do_send(xylem_tls_conn_t* tls,
-                        const void* data,
-                        size_t len) {
+/**
+ * Deferred on_write_done for the defensive tcp_sends==0 path.
+ * Firing synchronously would risk stack overflow if the user
+ * calls xylem_tls_send again from inside on_write_done.
+ */
+typedef struct _tls_write_done_s {
+    xylem_tls_conn_t* tls;
+    const void*       data;
+    size_t            len;
+} _tls_write_done_t;
+
+static void _tls_write_done_cb(xylem_loop_t* loop,
+                               xylem_loop_post_t* post,
+                               void* ud) {
+    (void)loop;
+    (void)post;
+    _tls_write_done_t* wd = (_tls_write_done_t*)ud;
+
+    /**
+     * Post callbacks that invoke user handlers must check liveness:
+     * the post queue is not cancellable, so the callback may fire
+     * after on_close has already been delivered to the user.
+     */
+    if (wd->tls->closing) {
+        free(wd);
+        return;
+    }
+
+    if (wd->tls->handler && wd->tls->handler->on_write_done) {
+        wd->tls->handler->on_write_done(wd->tls, wd->data, wd->len, 0);
+    }
+
+    free(wd);
+}
+
+static int _tls_enqueue_write(xylem_tls_conn_t* tls,
+                              const void* data,
+                              size_t len) {
     _tls_write_req_t* req =
-        (_tls_write_req_t*)malloc(sizeof(_tls_write_req_t) + len);
+        (_tls_write_req_t*)malloc(sizeof(_tls_write_req_t));
     if (!req) {
         return -1;
     }
-    req->len     = len;
-    req->pending = 0;
-    req->status  = 0;
-    memcpy(req->data, data, len);
+    req->data = data;
+    req->len  = len;
 
+    xylem_queue_enqueue(&tls->write_queue, &req->node);
+    return 0;
+}
+
+static int _tls_process_write(xylem_tls_conn_t* tls,
+                             const void* data,
+                             size_t len) {
     ERR_clear_error();
+    /* Stream protocol: fatal SSL_write failure corrupts session state. */
     int n = SSL_write(tls->ssl, data, (int)len);
     if (n <= 0) {
         unsigned long ssl_err_code = ERR_peek_error();
         const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
         xylem_logw("tls conn %p SSL_write failed (%s)",
                    (void*)tls, ssl_err_str ? ssl_err_str : "unknown");
-        free(req);
+        xylem_tls_close(tls);
         return -1;
     }
 
-    int tcp_sends = _tls_flush_write_bio(tls);
-    req->pending = tcp_sends;
-
-    if (tcp_sends == 0) {
+    if (!_tls_flush_write_bio(tls)) {
         /**
          * SSL_write succeeded but BIO produced no output -- should not
-         * happen with memory BIOs. Fire on_write_done immediately as a
-         * defensive fallback.
+         * happen with memory BIOs. Defer on_write_done to the next loop
+         * iteration to prevent stack overflow from recursive sends.
          */
         if (tls->handler && tls->handler->on_write_done) {
-            tls->handler->on_write_done(tls, req->data, req->len, 0);
+            _tls_write_done_t* wd =
+                (_tls_write_done_t*)malloc(sizeof(_tls_write_done_t));
+            if (!wd) {
+                return -1;
+            }
+            wd->tls  = tls;
+            wd->data = data;
+            wd->len  = len;
+            if (xylem_loop_post(xylem_tcp_get_loop(tls->tcp),
+                                _tls_write_done_cb, wd) != 0) {
+                free(wd);
+                return -1;
+            }
         }
-        free(req);
         return 0;
     }
 
-    /* Enqueue; _tls_tcp_write_done_cb will count down and fire. */
-    xylem_queue_enqueue(&tls->write_queue, &req->node);
-    return 0;
-}
-
-static void _tls_deferred_send_cb(xylem_loop_t* loop,
-                                   xylem_loop_post_t* req,
-                                   void* ud) {
-    (void)loop;
-    (void)req;
-    _tls_deferred_send_t* ds = (_tls_deferred_send_t*)ud;
-
-    if (atomic_load(&ds->tls->handshake_done) &&
-        !atomic_load(&ds->tls->closing)) {
-        _tls_do_send(ds->tls, ds->data, ds->len);
-    } else if (ds->tls->handler && ds->tls->handler->on_write_done) {
-        ds->tls->handler->on_write_done(ds->tls, ds->data, ds->len, -1);
-    }
-
-    _tls_conn_decref(ds->tls);
-    free(ds);
-}
-
-/**
- * Close logic that runs on the loop thread.  Extracted so that
- * _tls_deferred_close_cb can call it directly instead of re-entering
- * xylem_tls_close (which would re-post when loop->tid is unset).
- */
-static void _tls_do_close(xylem_tls_conn_t* tls) {
-    if (atomic_load(&tls->closing)) {
-        return;
-    }
-    atomic_store(&tls->closing, true);
-
-    xylem_logi("tls conn %p close requested", (void*)tls);
-
-    if (tls->ssl && atomic_load(&tls->handshake_done)) {
-        SSL_shutdown(tls->ssl);
-        _tls_flush_write_bio(tls);
-    }
-
-    xylem_tcp_close(tls->tcp);
-}
-
-static void _tls_deferred_close_cb(xylem_loop_t* loop,
-                                    xylem_loop_post_t* req,
-                                    void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ud;
-    _tls_do_close(tls);
-    _tls_conn_decref(tls);
+    return _tls_enqueue_write(tls, data, len);
 }
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
-    if (!atomic_load(&tls->handshake_done) ||
-        atomic_load(&tls->closing)) {
+    if (!tls->handshake_done ||
+        tls->closing) {
         xylem_logd("tls conn %p send rejected (handshake=%d closing=%d)",
                    (void*)tls,
-                   (int)atomic_load(&tls->handshake_done),
-                   (int)atomic_load(&tls->closing));
+                   (int)tls->handshake_done,
+                   (int)tls->closing);
         return -1;
     }
 
-    if (len == 0) {
+    if (!data || len == 0) {
         return 0;
     }
 
-    /* Cross-thread: copy data and post to loop thread. */
-    xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
-    if (!xylem_loop_is_loop_thread(loop)) {
-        _tls_deferred_send_t* ds = (_tls_deferred_send_t*)malloc(
-            sizeof(_tls_deferred_send_t) + len);
-        if (!ds) {
-            return -1;
-        }
-        ds->tls = tls;
-        ds->len = len;
-        memcpy(ds->data, data, len);
-
-        atomic_fetch_add(&tls->refcount, 1);
-        if (xylem_loop_post(loop, _tls_deferred_send_cb, ds) != 0) {
-            _tls_conn_decref(tls);
-            free(ds);
-            return -1;
-        }
-        return 0;
-    }
-
-    /* Same thread: send directly. */
-    return _tls_do_send(tls, data, len);
+    return _tls_process_write(tls, data, len);
 }
 
 xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
@@ -781,21 +766,19 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
 }
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
-    if (atomic_load(&tls->closing)) {
+    if (tls->closing) {
         return;
     }
+    tls->closing = true;
 
-    /* Cross-thread: post to loop thread. */
-    xylem_loop_t* loop = xylem_tcp_get_loop(tls->tcp);
-    if (!xylem_loop_is_loop_thread(loop)) {
-        atomic_fetch_add(&tls->refcount, 1);
-        if (xylem_loop_post(loop, _tls_deferred_close_cb, tls) != 0) {
-            _tls_conn_decref(tls);
-        }
-        return;
+    xylem_logi("tls conn %p close requested", (void*)tls);
+
+    if (tls->ssl && tls->handshake_done) {
+        SSL_shutdown(tls->ssl);
+        _tls_flush_write_bio(tls);
     }
 
-    _tls_do_close(tls);
+    xylem_tcp_close(tls->tcp);
 }
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {

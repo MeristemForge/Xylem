@@ -37,19 +37,11 @@ struct xylem_udp_s {
     xylem_addr_t          peer;
     char                  recv_buf[65536];
     bool                  connected;
-    _Atomic bool          closing;
+    bool                  closing;
     _Atomic int32_t       refcount;
     int                   close_err;
     const char*           close_errmsg;
 };
-
-typedef struct _udp_deferred_send_s {
-    xylem_udp_t*  udp;
-    xylem_addr_t  dest;
-    bool          has_dest;
-    size_t        len;
-    char          data[];
-} _udp_deferred_send_t;
 
 /**
  * Handle readable event: recvfrom into recv_buf, wrap sender in
@@ -64,7 +56,7 @@ static void _udp_io_cb(xylem_loop_t* loop,
     (void)revents;
     xylem_udp_t* udp = (xylem_udp_t*)ud;
 
-    if (atomic_load(&udp->closing)) {
+    if (udp->closing) {
         return;
     }
 
@@ -104,7 +96,7 @@ static void _udp_io_cb(xylem_loop_t* loop,
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, &addr);
         }
 
-        if (atomic_load(&udp->closing)) {
+        if (udp->closing) {
             return;
         }
     }
@@ -212,122 +204,69 @@ xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
 }
 
 /* Perform the actual send on the loop thread. */
-static int _udp_do_send(xylem_udp_t* udp, xylem_addr_t* dest,
+static int _udp_process_write(xylem_udp_t* udp, xylem_addr_t* dest,
                         const void* data, size_t len) {
+    ssize_t n;
+
     if (!dest || udp->connected) {
-        ssize_t n = platform_socket_send(udp->fd, data, (int)len);
-        if (n < 0) {
-            int err = platform_socket_get_lasterror();
-            xylem_logw("udp fd=%d send error=%d (%s)", (int)udp->fd,
-                       err, platform_socket_tostring(err));
-        }
-        return (n < 0) ? -1 : (int)n;
+        n = platform_socket_send(udp->fd, data, (int)len);
+    } else {
+        socklen_t addrlen = (dest->storage.ss_family == AF_INET6)
+                                ? (socklen_t)sizeof(struct sockaddr_in6)
+                                : (socklen_t)sizeof(struct sockaddr_in);
+        n = platform_socket_sendto(udp->fd, data, (int)len,
+                                   &dest->storage, addrlen);
     }
 
-    socklen_t addrlen = (dest->storage.ss_family == AF_INET6)
-                            ? (socklen_t)sizeof(struct sockaddr_in6)
-                            : (socklen_t)sizeof(struct sockaddr_in);
-
-    ssize_t n = platform_socket_sendto(udp->fd, data, (int)len,
-                                       &dest->storage, addrlen);
     if (n < 0) {
         int err = platform_socket_get_lasterror();
-        xylem_logw("udp fd=%d sendto error=%d (%s)", (int)udp->fd,
+        if (err == PLATFORM_SO_ERROR_EAGAIN ||
+            err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            return 0;
+        }
+        xylem_logw("udp fd=%d send error=%d (%s)", (int)udp->fd,
                    err, platform_socket_tostring(err));
+        return -1;
     }
-    return (n < 0) ? -1 : (int)n;
-}
-
-static void _udp_deferred_send_cb(xylem_loop_t* loop,
-                                   xylem_loop_post_t* req,
-                                   void* ud) {
-    (void)loop;
-    (void)req;
-    _udp_deferred_send_t* ds = (_udp_deferred_send_t*)ud;
-
-    if (!atomic_load(&ds->udp->closing)) {
-        _udp_do_send(ds->udp, ds->has_dest ? &ds->dest : NULL,
-                     ds->data, ds->len);
-    }
-
-    _udp_decref(ds->udp);
-    free(ds);
+    return (int)n;
 }
 
 int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len) {
-    if (atomic_load(&udp->closing)) {
+    if (udp->closing) {
         xylem_logd("udp fd=%d send rejected (closing)", (int)udp->fd);
         return -1;
     }
 
-    /* Cross-thread: copy data and post to loop thread. */
-    if (!xylem_loop_is_loop_thread(udp->loop)) {
-        _udp_deferred_send_t* ds = (_udp_deferred_send_t*)malloc(
-            sizeof(_udp_deferred_send_t) + len);
-        if (!ds) {
-            return -1;
-        }
-        ds->udp      = udp;
-        ds->has_dest = (dest != NULL);
-        if (dest) {
-            ds->dest = *dest;
-        }
-        ds->len = len;
-        memcpy(ds->data, data, len);
-
-        atomic_fetch_add(&udp->refcount, 1);
-        if (xylem_loop_post(udp->loop, _udp_deferred_send_cb, ds) != 0) {
-            _udp_decref(udp);
-            free(ds);
-            return -1;
-        }
+    if (!data || len == 0) {
         return 0;
     }
 
-    /* Same thread: send directly. */
-    return _udp_do_send(udp, dest, data, len);
+    return _udp_process_write(udp, dest, data, len);
 }
 
-static void _udp_do_close(xylem_udp_t* udp) {
+void xylem_udp_close(xylem_udp_t* udp) {
+    if (udp->closing) {
+        return;
+    }
+    udp->closing = true;
+
     xylem_logi("udp fd=%d closing", (int)udp->fd);
 
     xylem_loop_destroy_io(udp->io);
     platform_socket_close(udp->fd);
 
     if (udp->handler && udp->handler->on_close) {
-        udp->handler->on_close(udp, udp->close_err, udp->close_errmsg);
+        const char* errmsg = udp->close_errmsg;
+        if (!errmsg) {
+            errmsg = udp->close_err
+                         ? platform_socket_tostring(udp->close_err)
+                         : "closed normally";
+        }
+        udp->handler->on_close(udp, udp->close_err, errmsg);
     }
 
     xylem_loop_post(udp->loop, _udp_free_cb, udp);
-}
-
-static void _udp_deferred_close_cb(xylem_loop_t* loop,
-                                    xylem_loop_post_t* req,
-                                    void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_udp_t* udp = (xylem_udp_t*)ud;
-    _udp_do_close(udp);
-    _udp_decref(udp);
-}
-
-void xylem_udp_close(xylem_udp_t* udp) {
-    /* Idempotent: atomic_exchange guarantees exactly one caller proceeds. */
-    if (atomic_exchange(&udp->closing, true)) {
-        return;
-    }
-
-    /* Cross-thread: post to loop thread. */
-    if (!xylem_loop_is_loop_thread(udp->loop)) {
-        atomic_fetch_add(&udp->refcount, 1);
-        if (xylem_loop_post(udp->loop, _udp_deferred_close_cb, udp) != 0) {
-            _udp_decref(udp);
-        }
-        return;
-    }
-
-    _udp_do_close(udp);
 }
 
 xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp) {

@@ -21,9 +21,7 @@
 
 #include "xylem.h"
 #include "xylem/xylem-rudp.h"
-#include "xylem/xylem-thrdpool.h"
 #include "assert.h"
-
 #include <stdatomic.h>
 #include <string.h>
 
@@ -46,9 +44,6 @@ typedef struct {
     char                   received[256];
     size_t                 received_len;
     xylem_thrdpool_t*      pool;
-    xylem_loop_timer_t*    close_timer;
-    xylem_loop_timer_t*    check_timer;
-    _Atomic bool           closed;
     _Atomic bool           worker_done;
 } _test_ctx_t;
 
@@ -913,40 +908,50 @@ static void test_aes_with_fec(void) {
     xylem_loop_destroy(ctx.loop);
 }
 
-/* cross-thread send */
+/* ── Cross-thread tests ─────────────────────────────────────────────── */
+
+/** test_cross_thread_send: worker posts a send via loop_post. */
+
+static void _xt_send_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+                             void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    xylem_rudp_send(ctx->cli_session, "hello", 5);
+}
 
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_rudp_send(ctx->cli_session, "hello", 5);
-    xylem_rudp_conn_release(ctx->cli_session);
+    xylem_loop_post(ctx->loop, _xt_send_post_cb, ctx);
+    atomic_store(&ctx->worker_done, true);
 }
 
-static void _xt_send_cli_on_connect(xylem_rudp_conn_t* rudp) {
+static void _xt_send_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    ctx->cli_session = rudp;
+    ctx->connect_called = 1;
     xylem_rudp_conn_acquire(rudp);
     xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
 }
 
-static void _xt_send_cli_on_read(xylem_rudp_conn_t* rudp,
+static void _xt_send_cli_read_cb(xylem_rudp_conn_t* rudp,
                                   void* data, size_t len) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    if (ctx->received_len + len <= sizeof(ctx->received)) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
+    if (len <= sizeof(ctx->received)) {
+        memcpy(ctx->received, data, len);
+        ctx->received_len = len;
     }
-    if (ctx->received_len >= 5) {
-        ctx->verified = 1;
-        xylem_rudp_close(rudp);
-    }
+    ctx->read_count++;
+    xylem_rudp_close(rudp);
 }
 
-static void _xt_send_cli_on_close(xylem_rudp_conn_t* rudp, int err,
+static void _xt_send_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                                    const char* errmsg) {
     (void)err;
     (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
+        ctx->close_called++;
+        xylem_rudp_conn_release(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
         xylem_loop_stop(ctx->loop);
     }
@@ -956,6 +961,7 @@ static void test_cross_thread_send(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
+
     ctx.pool = xylem_thrdpool_create(1);
     ASSERT(ctx.pool != NULL);
 
@@ -977,9 +983,9 @@ static void test_cross_thread_send(void) {
     xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
 
     xylem_rudp_handler_t cli_handler = {
-        .on_connect = _xt_send_cli_on_connect,
-        .on_read    = _xt_send_cli_on_read,
-        .on_close   = _xt_send_cli_on_close,
+        .on_connect = _xt_send_cli_connect_cb,
+        .on_read    = _xt_send_cli_read_cb,
+        .on_close   = _xt_send_cli_close_cb,
     };
 
     ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr,
@@ -989,44 +995,58 @@ static void test_cross_thread_send(void) {
 
     xylem_loop_run(ctx.loop);
 
-    ASSERT(ctx.verified == 1);
+    ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+    ASSERT(ctx.close_called >= 1);
+    ASSERT(atomic_load(&ctx.worker_done) == true);
 
     xylem_thrdpool_destroy(ctx.pool);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
 
-/* cross-thread close */
+/** test_cross_thread_close: worker posts a close via loop_post. */
+
+static void _xt_close_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+                              void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    xylem_rudp_close(ctx->cli_session);
+}
 
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_rudp_close(ctx->cli_session);
-    xylem_rudp_conn_release(ctx->cli_session);
+    xylem_loop_post(ctx->loop, _xt_close_post_cb, ctx);
+    atomic_store(&ctx->worker_done, true);
 }
 
-static void _xt_close_cli_on_connect(xylem_rudp_conn_t* rudp) {
+static void _xt_close_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    ctx->cli_session = rudp;
+    ctx->connect_called = 1;
     xylem_rudp_conn_acquire(rudp);
     xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
 }
 
-static void _xt_close_cli_on_close(xylem_rudp_conn_t* rudp, int err,
+static void _xt_close_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
                                     const char* errmsg) {
     (void)err;
     (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    ctx->close_called = 1;
-    xylem_rudp_close_server(ctx->rudp_server);
-    xylem_loop_stop(ctx->loop);
+    if (ctx) {
+        ctx->close_called++;
+        xylem_rudp_conn_release(rudp);
+        xylem_rudp_close_server(ctx->rudp_server);
+        xylem_loop_stop(ctx->loop);
+    }
 }
 
 static void test_cross_thread_close(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
+
     ctx.pool = xylem_thrdpool_create(1);
     ASSERT(ctx.pool != NULL);
 
@@ -1035,18 +1055,16 @@ static void test_cross_thread_close(void) {
                            SAFETY_TIMEOUT_MS, 0);
 
     xylem_rudp_handler_t srv_handler = {0};
-
     xylem_addr_t addr;
     xylem_addr_pton(RUDP_HOST, RUDP_PORT, &addr);
 
     ctx.rudp_server = xylem_rudp_listen(ctx.loop, &addr,
                                          &srv_handler, NULL);
     ASSERT(ctx.rudp_server != NULL);
-    xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
 
     xylem_rudp_handler_t cli_handler = {
-        .on_connect = _xt_close_cli_on_connect,
-        .on_close   = _xt_close_cli_on_close,
+        .on_connect = _xt_close_cli_connect_cb,
+        .on_close   = _xt_close_cli_close_cb,
     };
 
     ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr,
@@ -1056,75 +1074,77 @@ static void test_cross_thread_close(void) {
 
     xylem_loop_run(ctx.loop);
 
+    ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.close_called == 1);
+    ASSERT(atomic_load(&ctx.worker_done) == true);
 
     xylem_thrdpool_destroy(ctx.pool);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
 
-/* cross-thread send stops on close */
+/** test_cross_thread_send_stop_on_close: worker sends many, server closes. */
 
-static void _xt_stop_close_timer_cb(xylem_loop_t* loop,
-                                     xylem_loop_timer_t* timer,
-                                     void* ud) {
+static void _xt_sc_send_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+                                void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    xylem_rudp_send(ctx->cli_session, "ping", 4);
+}
+
+static void _xt_sc_worker(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    for (int i = 0; i < 10; i++) {
+        xylem_loop_post(ctx->loop, _xt_sc_send_post_cb, ctx);
+    }
+    atomic_store(&ctx->worker_done, true);
+}
+
+static void _xt_sc_cli_connect_cb(xylem_rudp_conn_t* rudp) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
+    ctx->connect_called = 1;
+    xylem_rudp_conn_acquire(rudp);
+    xylem_thrdpool_post(ctx->pool, _xt_sc_worker, ctx);
+}
+
+static void _xt_sc_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
+                                 const char* errmsg) {
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
+    if (ctx) {
+        ctx->close_called++;
+        xylem_rudp_conn_release(rudp);
+        xylem_rudp_close_server(ctx->rudp_server);
+        xylem_loop_stop(ctx->loop);
+    }
+}
+
+static void _xt_sc_close_timer_cb(xylem_loop_t* loop,
+                                   xylem_loop_timer_t* timer,
+                                   void* ud) {
     (void)loop;
     (void)timer;
     _test_ctx_t* ctx = (_test_ctx_t*)ud;
     xylem_rudp_close(ctx->cli_session);
 }
 
-static void _xt_stop_worker(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    while (!atomic_load(&ctx->closed)) {
-        xylem_rudp_send(ctx->cli_session, "ping", 4);
-        thrd_sleep(&(struct timespec){0, 1000000}, NULL); /* 1 ms */
-    }
-    xylem_rudp_conn_release(ctx->cli_session);
-    atomic_store(&ctx->worker_done, true);
-}
-
-static void _xt_stop_cli_on_connect(xylem_rudp_conn_t* rudp) {
+static void _xt_sc_srv_read_cb(xylem_rudp_conn_t* rudp,
+                                void* data, size_t len) {
+    (void)data;
+    (void)len;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    ctx->cli_session = rudp;
-    xylem_rudp_conn_acquire(rudp);
-    xylem_thrdpool_post(ctx->pool, _xt_stop_worker, ctx);
-}
-
-static void _xt_stop_check_timer_cb(xylem_loop_t* loop,
-                                     xylem_loop_timer_t* timer,
-                                     void* ud) {
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    if (atomic_load(&ctx->worker_done)) {
-        xylem_thrdpool_destroy(ctx->pool);
-        ctx->pool = NULL;
-        xylem_loop_stop(loop);
-    }
-}
-
-static void _xt_stop_cli_on_close(xylem_rudp_conn_t* rudp, int err,
-                                   const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
-    ctx->close_called = 1;
-    atomic_store(&ctx->closed, true);
-
-    xylem_loop_start_timer(ctx->check_timer, _xt_stop_check_timer_cb,
-                           ctx, 10, 10);
+    ctx->read_count++;
 }
 
 static void test_cross_thread_send_stop_on_close(void) {
     _test_ctx_t ctx = {0};
     ctx.loop = xylem_loop_create();
     ASSERT(ctx.loop != NULL);
+
     ctx.pool = xylem_thrdpool_create(1);
     ASSERT(ctx.pool != NULL);
-    ctx.close_timer = xylem_loop_create_timer(ctx.loop);
-    ctx.check_timer = xylem_loop_create_timer(ctx.loop);
-    atomic_store(&ctx.closed, false);
-    atomic_store(&ctx.worker_done, false);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
     xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
@@ -1132,7 +1152,7 @@ static void test_cross_thread_send_stop_on_close(void) {
 
     xylem_rudp_handler_t srv_handler = {
         .on_accept = _rudp_srv_accept_cb,
-        .on_read   = _rudp_srv_read_echo_cb,
+        .on_read   = _xt_sc_srv_read_cb,
     };
 
     xylem_addr_t addr;
@@ -1144,8 +1164,8 @@ static void test_cross_thread_send_stop_on_close(void) {
     xylem_rudp_server_set_userdata(ctx.rudp_server, &ctx);
 
     xylem_rudp_handler_t cli_handler = {
-        .on_connect = _xt_stop_cli_on_connect,
-        .on_close   = _xt_stop_cli_on_close,
+        .on_connect = _xt_sc_cli_connect_cb,
+        .on_close   = _xt_sc_cli_close_cb,
     };
 
     ctx.cli_session = xylem_rudp_dial(ctx.loop, &addr,
@@ -1153,25 +1173,21 @@ static void test_cross_thread_send_stop_on_close(void) {
     ASSERT(ctx.cli_session != NULL);
     xylem_rudp_set_userdata(ctx.cli_session, &ctx);
 
-    /* Close client from event loop thread after 50ms. */
-    xylem_loop_start_timer(ctx.close_timer, _xt_stop_close_timer_cb,
-                           &ctx, 50, 0);
+    /* Timer fires after first read, closes the client conn. */
+    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(ctx.loop);
+    xylem_loop_start_timer(close_timer, _xt_sc_close_timer_cb, &ctx, 200, 0);
 
     xylem_loop_run(ctx.loop);
 
+    ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.close_called == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    if (ctx.pool) {
-        xylem_thrdpool_destroy(ctx.pool);
-    }
-    xylem_rudp_close_server(ctx.rudp_server);
-    xylem_loop_destroy_timer(ctx.close_timer);
-    xylem_loop_destroy_timer(ctx.check_timer);
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_loop_destroy_timer(close_timer);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(ctx.loop);
 }
-
 
 int main(void) {
     xylem_startup();

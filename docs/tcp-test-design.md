@@ -106,5 +106,5 @@
 | `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
 | `xylem_tcp_send`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_send_cb` 转发到事件循环线程入队 |
 | `xylem_tcp_conn_acquire` / `xylem_tcp_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 |
-| `xylem_tcp_close`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_close_cb` 转发到事件循环线程执行 |
+| `xylem_tcp_close`（跨线程） | 非事件循环线程调用 → 通过 `xylem_loop_post` 转发到事件循环线程执行 |
 | `xylem_tcp_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic state 检查拒绝发送 |

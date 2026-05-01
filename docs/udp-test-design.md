@@ -93,7 +93,7 @@ Dial 模式测试只需 PORT_A（client 由系统分配临时端口）。
 | `xylem_udp_close` 幂等（closing 标志） | test_close_idempotent |
 | `xylem_udp_close` on_close 回调 | test_close_callback, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 | `xylem_udp_close` deferred free | 所有测试（loop_run 后资源释放） |
-| `xylem_udp_close` 跨线程路径（_udp_deferred_close_cb） | test_cross_thread_close |
+| `xylem_udp_close` 跨线程路径（通过 `xylem_loop_post` 转发） | test_cross_thread_close |
 | `xylem_udp_acquire` / `xylem_udp_release` 引用计数 | test_cross_thread_send, test_cross_thread_close, test_cross_thread_send_stop_on_close |
 
 ## 未覆盖的路径

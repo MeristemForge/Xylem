@@ -78,8 +78,8 @@ struct xylem_rudp_conn_s {
     xylem_rudp_server_t*   server;          /* 服务端会话非 NULL */
     xylem_addr_t           peer_addr;
     void*                  userdata;
-    _Atomic bool           handshake_done;  /* 原子类型，支持跨线程安全读取 */
-    _Atomic bool           closing;         /* 幂等关闭标志，原子类型支持跨线程安全读取 */
+    bool                   handshake_done;
+    bool                   closing;         /* 幂等关闭标志 */
     _Atomic int32_t        refcount;        /* 引用计数，用于跨线程操作的生命周期管理 */
     int                    close_err;
     const char*            close_errmsg;
@@ -98,7 +98,7 @@ struct xylem_rudp_conn_s {
 };
 ```
 
-`handshake_done` 和 `closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。`refcount` 使用 `_Atomic int32_t` 管理会话生命周期，为跨线程操作（如未来的跨线程 `xylem_rudp_send` 和 `xylem_rudp_close`）提供基础设施。
+`handshake_done` 和 `closing` 是 plain `bool`，仅在事件循环线程上访问，无需原子操作。`refcount` 使用 `_Atomic int32_t` 管理会话生命周期，为跨线程 acquire/release 提供基础设施。
 
 `fec_data` 和 `fec_parity` 保存每会话的 FEC 分片参数。客户端在 `xylem_rudp_dial` 中从 `opts` 复制（`opts` 为 NULL 时默认 0，即禁用 FEC）。服务端会话从 `server->opts` 继承。这些值随后传递给 `_rudp_init_fec` 创建 FEC 编码器/解码器对。
 

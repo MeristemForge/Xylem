@@ -112,9 +112,9 @@
 | `xylem_uds_close_server` | 遍历连接链表 + 逐个 close + remove(path) | `test_close_server_with_active_conn` |
 | `_uds_conn_free_cb` | 延迟释放连接内存 | 所有异步测试 |
 | `_uds_server_free_cb` | 延迟释放 server 内存 | 所有测试 |
-| `xylem_uds_send`（跨线程） | 非事件循环线程调用 → `_uds_deferred_send_cb` 转发到事件循环线程入队 | `test_cross_thread_send`, `test_cross_thread_send_stop_on_close` |
+| `xylem_uds_send`（跨线程） | 工作线程通过 `xylem_loop_post` 将 send 操作转发到事件循环线程入队 | `test_cross_thread_send`, `test_cross_thread_send_stop_on_close` |
 | `xylem_uds_conn_acquire` / `xylem_uds_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
-| `xylem_uds_close`（跨线程） | 非事件循环线程调用 → `_uds_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_uds_close`（跨线程） | 工作线程通过 `xylem_loop_post` 将 close 操作转发到事件循环线程执行 | `test_cross_thread_close` |
 | `xylem_uds_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic state 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ## 未覆盖的路径

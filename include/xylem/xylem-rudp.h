@@ -68,22 +68,26 @@ extern xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
                                      xylem_rudp_opts_t* opts);
 
 /**
- * @brief Thread-safe. Send data over a reliable UDP connection.
+ * @brief Send data over a reliable UDP connection.
  *
- * Data is enqueued into the internal send buffer and transmitted
- * on the next update cycle.
+ * Data is copied into the internal send buffer and flushed
+ * immediately to reduce latency.
  *
  * @param rudp  RUDP handle.
  * @param data  Data to send.
  * @param len   Data length in bytes.
  *
  * @return 0 on success, -1 on failure.
+ *
+ * @note The data is copied into KCP internal buffers. The caller
+ *       may free or reuse the buffer immediately after this function
+ *       returns.
  */
 extern int xylem_rudp_send(xylem_rudp_conn_t* rudp,
                            const void* data, size_t len);
 
 /**
- * @brief Thread-safe. Close a reliable UDP connection.
+ * @brief Close a reliable UDP connection.
  *
  * Releases the underlying session and closes the UDP socket.
  * handler->on_close fires with err=0 for a normal close.

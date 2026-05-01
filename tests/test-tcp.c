@@ -22,8 +22,8 @@
 #include "xylem.h"
 #include "assert.h"
 
-#include <stdatomic.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define TCP_PORT          18080
 #define TCP_HOST          "127.0.0.1"
@@ -51,9 +51,6 @@ typedef struct {
     size_t              frame_lens[2];
     xylem_tcp_handler_t reconnect_srv_handler;
     xylem_thrdpool_t*   pool;
-    xylem_loop_timer_t* close_timer;
-    xylem_loop_timer_t* check_timer;
-    _Atomic bool        closed;
     _Atomic bool        worker_done;
 } _test_ctx_t;
 
@@ -2307,37 +2304,55 @@ static void test_lifecycle_full(void) {
     xylem_loop_destroy(loop);
 }
 
-/* cross-thread send */
+/* ===== Cross-thread tests ===== */
 
-static void _xt_send_srv_on_read(xylem_tcp_conn_t* conn,
-                                  void* data, size_t len) {
-    xylem_tcp_send(conn, data, len);
+/** test_cross_thread_send: worker posts a send callback via loop_post. */
+
+static void _xt_send_srv_accept_cb(xylem_tcp_server_t* server,
+                                   xylem_tcp_conn_t* conn) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
+    ctx->srv_conn = conn;
+    xylem_tcp_set_userdata(conn, ctx);
+}
+
+static void _xt_send_srv_read_cb(xylem_tcp_conn_t* conn,
+                                 void* data, size_t len) {
+    (void)data;
+    (void)len;
+    xylem_tcp_send(conn, "ping\r\n", 6);
+}
+
+static void _xt_send_post_cb(xylem_loop_t* loop,
+                             xylem_loop_post_t* req,
+                             void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    ctx->send_result = xylem_tcp_send(ctx->cli_conn, "ping\r\n", 6);
 }
 
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_tcp_send(ctx->cli_conn, "hello", 5);
-    xylem_tcp_conn_release(ctx->cli_conn);
+    xylem_loop_post(ctx->loop, _xt_send_post_cb, ctx);
+    atomic_store(&ctx->worker_done, true);
 }
 
-static void _xt_send_cli_on_connect(xylem_tcp_conn_t* conn) {
+static void _xt_send_cli_connect_cb(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     ctx->cli_conn = conn;
     xylem_tcp_conn_acquire(conn);
     xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
 }
 
-static void _xt_send_cli_on_read(xylem_tcp_conn_t* conn,
-                                  void* data, size_t len) {
+static void _xt_send_cli_read_cb(xylem_tcp_conn_t* conn,
+                                 void* data, size_t len) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx->received_len + len <= sizeof(ctx->received)) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
+    if (len <= sizeof(ctx->received)) {
+        memcpy(ctx->received, data, len);
+        ctx->received_len = len;
     }
-    if (ctx->received_len >= 5) {
-        ctx->verified = 1;
-        xylem_loop_stop(ctx->loop);
-    }
+    ctx->read_count++;
+    xylem_loop_stop(ctx->loop);
 }
 
 static void test_cross_thread_send(void) {
@@ -2345,62 +2360,82 @@ static void test_cross_thread_send(void) {
     ASSERT(loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
-                           SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
     ctx.pool = xylem_thrdpool_create(1);
     ASSERT(ctx.pool != NULL);
+    atomic_store(&ctx.worker_done, false);
 
     xylem_addr_t addr;
     xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
+    xylem_tcp_opts_t opts = {0};
+    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
+    opts.framing.delim.delim     = "\r\n";
+    opts.framing.delim.delim_len = 2;
+
     xylem_tcp_handler_t srv_handler = {
-        .on_read = _xt_send_srv_on_read,
+        .on_accept = _xt_send_srv_accept_cb,
+        .on_read   = _xt_send_srv_read_cb,
     };
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, NULL);
-    ASSERT(ctx.server != NULL);
+
+    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
+                                                   &srv_handler, &opts);
+    ASSERT(server != NULL);
+    xylem_tcp_server_set_userdata(server, &ctx);
 
     xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_send_cli_on_connect,
-        .on_read    = _xt_send_cli_on_read,
+        .on_connect = _xt_send_cli_connect_cb,
+        .on_read    = _xt_send_cli_read_cb,
     };
+
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
+                                            &cli_handler, &opts);
     ASSERT(cli != NULL);
     xylem_tcp_set_userdata(cli, &ctx);
 
     xylem_loop_run(loop);
 
-    ASSERT(ctx.verified == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+    ASSERT(ctx.read_count >= 1);
+    ASSERT(ctx.received_len == 4);
+    ASSERT(memcmp(ctx.received, "ping", 4) == 0);
+    ASSERT(atomic_load(&ctx.worker_done) == true);
 
+    xylem_tcp_conn_release(ctx.cli_conn);
     xylem_thrdpool_destroy(ctx.pool);
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
+    xylem_tcp_close_server(server);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
 }
 
-/* cross-thread close */
+/** test_cross_thread_close: worker posts a close callback via loop_post. */
+
+static void _xt_close_post_cb(xylem_loop_t* loop,
+                              xylem_loop_post_t* req,
+                              void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    xylem_tcp_close(ctx->cli_conn);
+}
 
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_tcp_close(ctx->cli_conn);
-    xylem_tcp_conn_release(ctx->cli_conn);
+    xylem_loop_post(ctx->loop, _xt_close_post_cb, ctx);
+    atomic_store(&ctx->worker_done, true);
 }
 
-static void _xt_close_cli_on_connect(xylem_tcp_conn_t* conn) {
+static void _xt_close_cli_connect_cb(xylem_tcp_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
     ctx->cli_conn = conn;
     xylem_tcp_conn_acquire(conn);
     xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
 }
 
-static void _xt_close_cli_on_close(xylem_tcp_conn_t* conn,
-                                    int err, const char* errmsg) {
+static void _xt_close_cli_close_cb(xylem_tcp_conn_t* conn,
+                                   int err, const char* errmsg) {
     (void)err;
     (void)errmsg;
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
@@ -2413,156 +2448,38 @@ static void test_cross_thread_close(void) {
     ASSERT(loop != NULL);
 
     xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
-                           SAFETY_TIMEOUT_MS, 0);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     _test_ctx_t ctx = {0};
     ctx.loop = loop;
     ctx.pool = xylem_thrdpool_create(1);
     ASSERT(ctx.pool != NULL);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, NULL);
-    ASSERT(ctx.server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_close_cli_on_connect,
-        .on_close   = _xt_close_cli_on_close,
-    };
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-/* cross-thread send stops on close */
-
-static void _xt_stop_srv_on_read(xylem_tcp_conn_t* conn,
-                                  void* data, size_t len) {
-    (void)data;
-    (void)len;
-    /* Ignore incoming data; server will close via timer. */
-}
-
-static void _xt_stop_srv_close_timer_cb(xylem_loop_t* loop,
-                                         xylem_loop_timer_t* timer,
-                                         void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_tcp_close(ctx->srv_conn);
-}
-
-static void _xt_stop_srv_accept_cb(xylem_tcp_server_t* server,
-                                    xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    xylem_tcp_set_userdata(conn, ctx);
-
-    /* Close server-side connection after 50ms. */
-    xylem_loop_start_timer(ctx->close_timer, _xt_stop_srv_close_timer_cb,
-                           ctx, 50, 0);
-}
-
-static void _xt_stop_worker(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    /* Send in a loop until the closed flag is set. */
-    while (!atomic_load(&ctx->closed)) {
-        xylem_tcp_send(ctx->cli_conn, "ping", 4);
-        thrd_sleep(&(struct timespec){0, 1000000}, NULL); /* 1 ms */
-    }
-    xylem_tcp_conn_release(ctx->cli_conn);
-    /*
-     * Signal that the worker has stopped touching conn.
-     * The loop thread waits for this before stopping.
-     */
-    atomic_store(&ctx->worker_done, true);
-}
-
-static void _xt_stop_cli_on_connect(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->cli_conn = conn;
-    xylem_tcp_conn_acquire(conn);
-    xylem_thrdpool_post(ctx->pool, _xt_stop_worker, ctx);
-}
-
-static void _xt_stop_check_timer_cb(xylem_loop_t* loop,
-                                     xylem_loop_timer_t* timer,
-                                     void* ud) {
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    if (atomic_load(&ctx->worker_done)) {
-        /*
-         * Worker has exited the send loop and released its ref.
-         * Destroy the pool (joins the thread) so no further
-         * access to conn is possible, then stop the loop.
-         */
-        xylem_thrdpool_destroy(ctx->pool);
-        ctx->pool = NULL;
-        xylem_loop_stop(loop);
-    }
-}
-
-static void _xt_stop_cli_on_close(xylem_tcp_conn_t* conn,
-                                   int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->close_called = 1;
-    atomic_store(&ctx->closed, true);
-
-    /* Poll for worker exit every 10ms. */
-    xylem_loop_start_timer(ctx->check_timer, _xt_stop_check_timer_cb,
-                           ctx, 10, 10);
-}
-
-static void test_cross_thread_send_stop_on_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL,
-                           SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    ctx.close_timer = xylem_loop_create_timer(loop);
-    ctx.check_timer = xylem_loop_create_timer(loop);
-    atomic_store(&ctx.closed, false);
     atomic_store(&ctx.worker_done, false);
 
     xylem_addr_t addr;
     xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
 
+    xylem_tcp_opts_t opts = {0};
+    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
+    opts.framing.delim.delim     = "\r\n";
+    opts.framing.delim.delim_len = 2;
+
     xylem_tcp_handler_t srv_handler = {
-        .on_accept = _xt_stop_srv_accept_cb,
-        .on_read   = _xt_stop_srv_on_read,
+        .on_accept = _srv_accept_cb,
     };
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, NULL);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
+
+    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
+                                                   &srv_handler, &opts);
+    ASSERT(server != NULL);
+    xylem_tcp_server_set_userdata(server, &ctx);
 
     xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_stop_cli_on_connect,
-        .on_close   = _xt_stop_cli_on_close,
+        .on_connect = _xt_close_cli_connect_cb,
+        .on_close   = _xt_close_cli_close_cb,
     };
+
     xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
+                                            &cli_handler, &opts);
     ASSERT(cli != NULL);
     xylem_tcp_set_userdata(cli, &ctx);
 
@@ -2571,12 +2488,134 @@ static void test_cross_thread_send_stop_on_close(void) {
     ASSERT(ctx.close_called == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    if (ctx.pool) {
-        xylem_thrdpool_destroy(ctx.pool);
+    xylem_tcp_conn_release(ctx.cli_conn);
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_tcp_close_server(server);
+    xylem_loop_destroy_timer(safety);
+    xylem_loop_destroy(loop);
+}
+
+/** test_cross_thread_send_stop_on_close: worker posts sends in a loop;
+ *  server-side timer closes the client conn after 50ms. */
+
+static void _xt_soc_srv_accept_cb(xylem_tcp_server_t* server,
+                                  xylem_tcp_conn_t* conn) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
+    ctx->srv_conn = conn;
+    xylem_tcp_set_userdata(conn, ctx);
+}
+
+static void _xt_soc_srv_read_cb(xylem_tcp_conn_t* conn,
+                                void* data, size_t len) {
+    (void)data;
+    (void)len;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
+    ctx->read_count++;
+}
+
+static void _xt_soc_timer_cb(xylem_loop_t* loop,
+                             xylem_loop_timer_t* timer,
+                             void* ud) {
+    (void)loop;
+    (void)timer;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    if (ctx->cli_conn) {
+        xylem_tcp_close(ctx->cli_conn);
     }
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(ctx.close_timer);
-    xylem_loop_destroy_timer(ctx.check_timer);
+}
+
+static void _xt_soc_send_post_cb(xylem_loop_t* loop,
+                                 xylem_loop_post_t* req,
+                                 void* ud) {
+    (void)loop;
+    (void)req;
+    _test_ctx_t* ctx = (_test_ctx_t*)ud;
+    int rc = xylem_tcp_send(ctx->cli_conn, "x\r\n", 3);
+    if (rc == 0)
+        ctx->send_result++;
+}
+
+static void _xt_soc_worker(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    for (int i = 0; i < 200; i++) {
+        if (atomic_load(&ctx->worker_done))
+            break;
+        xylem_loop_post(ctx->loop, _xt_soc_send_post_cb, ctx);
+    }
+}
+
+static void _xt_soc_cli_connect_cb(xylem_tcp_conn_t* conn) {
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
+    ctx->cli_conn = conn;
+    xylem_tcp_conn_acquire(conn);
+    xylem_thrdpool_post(ctx->pool, _xt_soc_worker, ctx);
+}
+
+static void _xt_soc_cli_close_cb(xylem_tcp_conn_t* conn,
+                                 int err, const char* errmsg) {
+    (void)conn;
+    (void)err;
+    (void)errmsg;
+    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
+    ctx->close_called = 1;
+    atomic_store(&ctx->worker_done, true);
+    xylem_loop_stop(ctx->loop);
+}
+
+static void test_cross_thread_send_stop_on_close(void) {
+    xylem_loop_t* loop = xylem_loop_create();
+    ASSERT(loop != NULL);
+
+    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    _test_ctx_t ctx = {0};
+    ctx.loop = loop;
+    ctx.pool = xylem_thrdpool_create(1);
+    ASSERT(ctx.pool != NULL);
+    atomic_store(&ctx.worker_done, false);
+    ctx.send_result = 0;
+
+    xylem_addr_t addr;
+    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
+
+    xylem_tcp_opts_t opts = {0};
+    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
+    opts.framing.delim.delim     = "\r\n";
+    opts.framing.delim.delim_len = 2;
+
+    xylem_tcp_handler_t srv_handler = {
+        .on_accept = _xt_soc_srv_accept_cb,
+        .on_read   = _xt_soc_srv_read_cb,
+    };
+
+    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
+                                                   &srv_handler, &opts);
+    ASSERT(server != NULL);
+    xylem_tcp_server_set_userdata(server, &ctx);
+
+    xylem_tcp_handler_t cli_handler = {
+        .on_connect = _xt_soc_cli_connect_cb,
+        .on_close   = _xt_soc_cli_close_cb,
+    };
+
+    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
+                                            &cli_handler, &opts);
+    ASSERT(cli != NULL);
+    xylem_tcp_set_userdata(cli, &ctx);
+
+    /* Timer to close client conn after 50ms. */
+    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(loop);
+    xylem_loop_start_timer(close_timer, _xt_soc_timer_cb, &ctx, 50, 0);
+
+    xylem_loop_run(loop);
+
+    ASSERT(ctx.close_called == 1);
+
+    xylem_tcp_conn_release(ctx.cli_conn);
+    xylem_thrdpool_destroy(ctx.pool);
+    xylem_tcp_close_server(server);
+    xylem_loop_destroy_timer(close_timer);
     xylem_loop_destroy_timer(safety);
     xylem_loop_destroy(loop);
 }

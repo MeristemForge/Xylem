@@ -241,7 +241,7 @@ typedef struct {
 | `_dtls_cookie_verify_cb` | 重新计算 HMAC-SHA256 并以 CRYPTO_memcmp 常量时间比较验证 cookie | 所有异步测试（服务端握手）|
 | `xylem_dtls_send`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_send_cb` 转发到事件循环线程加密并发送 | `test_cross_thread_send` |
 | `xylem_dtls_conn_acquire` / `xylem_dtls_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 | `test_cross_thread_send`, `test_cross_thread_close`, `test_cross_thread_send_stop_on_close` |
-| `xylem_dtls_close`（跨线程） | 非事件循环线程调用 → `_dtls_deferred_close_cb` 转发到事件循环线程执行 | `test_cross_thread_close` |
+| `xylem_dtls_close`（跨线程） | 非事件循环线程调用 → 通过 `xylem_loop_post` 转发到事件循环线程执行 | `test_cross_thread_close` |
 | `xylem_dtls_send`（跨线程 + 连接关闭） | 工作线程持续 send，连接关闭后 atomic closing 检查拒绝发送 | `test_cross_thread_send_stop_on_close` |
 
 ### 未覆盖的路径

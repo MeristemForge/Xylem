@@ -49,16 +49,16 @@ typedef enum {
 
 typedef struct _uds_write_req_s {
     xylem_queue_node_t node;
+    const void*        data;
     size_t             len;
     size_t             offset;
-    char               data[];
 } _uds_write_req_t;
 
-typedef struct _uds_deferred_send_s {
+typedef struct _uds_write_done_s {
     xylem_uds_conn_t* conn;
+    const void*       data;
     size_t            len;
-    char              data[];
-} _uds_deferred_send_t;
+} _uds_write_done_t;
 
 struct xylem_uds_conn_s {
     xylem_loop_t*         loop;
@@ -66,7 +66,7 @@ struct xylem_uds_conn_s {
     platform_sock_t       fd;
     xylem_uds_handler_t*  handler;
     xylem_uds_opts_t      opts;
-    _Atomic _uds_state_t  state;
+    _uds_state_t          state;
     _Atomic int32_t       refcount;
     uint8_t*              read_buf;
     size_t                read_len;
@@ -328,7 +328,7 @@ static void _uds_conn_free_cb(xylem_loop_t* loop,
 }
 
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
-    atomic_store(&conn->state, UDS_STATE_CLOSED);
+    conn->state = UDS_STATE_CLOSED;
     xylem_logd("uds conn fd=%d destroy err=%d (%s)", (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
 
@@ -367,14 +367,14 @@ static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
 }
 
 static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
-    if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
-        atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+    if (conn->state == UDS_STATE_CLOSED ||
+        conn->state == UDS_STATE_CLOSING) {
         return;
     }
 
     xylem_logd("uds conn fd=%d start_close err=%d (%s)", (int)conn->fd, err,
                err ? platform_socket_tostring(err) : "ok");
-    atomic_store(&conn->state, UDS_STATE_CLOSING);
+    conn->state = UDS_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {
         xylem_queue_node_t* node =
@@ -447,8 +447,8 @@ static void _uds_conn_readable_cb(xylem_uds_conn_t* conn) {
                  * read_buf. Compacting or continuing the recv/extract
                  * loop would touch freed memory.
                  */
-                if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
-                    atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+                if (conn->state == UDS_STATE_CLOSED ||
+                    conn->state == UDS_STATE_CLOSING) {
                     return;
                 }
 
@@ -489,8 +489,8 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
         _uds_write_req_t* req =
             xylem_queue_entry(front, _uds_write_req_t, node);
 
-        char*  ptr = req->data + req->offset;
-        size_t rem = req->len - req->offset;
+        const char* ptr = (const char*)req->data + req->offset;
+        size_t      rem = req->len - req->offset;
 
         ssize_t n = platform_socket_send(conn->fd, ptr, (int)rem);
 
@@ -505,7 +505,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
                        (int)conn->fd, err,
                        platform_socket_tostring(err));
 
-            if (atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+            if (conn->state == UDS_STATE_CLOSING) {
                 while (!xylem_queue_empty(&conn->write_queue)) {
                     xylem_queue_node_t* qn =
                         xylem_queue_dequeue(&conn->write_queue);
@@ -536,8 +536,8 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
 
             free(req);
 
-            if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
-                atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+            if (conn->state == UDS_STATE_CLOSED ||
+                conn->state == UDS_STATE_CLOSING) {
                 return;
             }
 
@@ -555,7 +555,7 @@ static void _uds_flush_writes(xylem_uds_conn_t* conn) {
         xylem_loop_stop_timer(conn->write_timer);
     }
 
-    if (atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+    if (conn->state == UDS_STATE_CLOSING) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
         _uds_destroy_conn(conn, 0);
     }
@@ -573,14 +573,14 @@ static void _uds_conn_io_cb(xylem_loop_t* loop,
         _uds_conn_readable_cb(conn);
     }
 
-    if (atomic_load(&conn->state) == UDS_STATE_CLOSED) {
+    if (conn->state == UDS_STATE_CLOSED) {
         return;
     }
 
     if (revents & XYLEM_POLLER_WR_OP) {
         _uds_flush_writes(conn);
 
-        if (atomic_load(&conn->state) == UDS_STATE_CONNECTED &&
+        if (conn->state == UDS_STATE_CONNECTED &&
             xylem_queue_empty(&conn->write_queue)) {
             xylem_loop_start_io(conn->io, XYLEM_POLLER_RD_OP,
                                 _uds_conn_io_cb, conn);
@@ -593,7 +593,7 @@ static void _uds_conn_io_cb(xylem_loop_t* loop,
  * start IO, start heartbeat/read timers.
  */
 static int _uds_setup_conn(xylem_uds_conn_t* conn) {
-    atomic_store(&conn->state, UDS_STATE_CONNECTED);
+    conn->state = UDS_STATE_CONNECTED;
     conn->read_buf = (uint8_t*)malloc(conn->opts.read_buf_size);
     if (!conn->read_buf) {
         return -1;
@@ -796,20 +796,21 @@ void xylem_uds_close_server(xylem_uds_server_t* server) {
     xylem_loop_post(server->loop, _uds_server_free_cb, server);
 }
 
-/**
- * Close logic that runs on the loop thread.  Extracted so that
- * _uds_deferred_close_cb can call it directly instead of re-entering
- * xylem_uds_close (which would re-post when loop->tid is unset).
- */
-static void _uds_do_close(xylem_uds_conn_t* conn) {
-    if (atomic_load(&conn->state) == UDS_STATE_CLOSING ||
-        atomic_load(&conn->state) == UDS_STATE_CLOSED) {
+void xylem_uds_close(xylem_uds_conn_t* conn) {
+    if (conn->state == UDS_STATE_CLOSING ||
+        conn->state == UDS_STATE_CLOSED) {
         return;
     }
 
     xylem_logi("uds conn fd=%d graceful close requested",
                (int)conn->fd);
-    atomic_store(&conn->state, UDS_STATE_CLOSING);
+
+    if (conn->state == UDS_STATE_CONNECTING) {
+        _uds_destroy_conn(conn, 0);
+        return;
+    }
+
+    conn->state = UDS_STATE_CLOSING;
 
     if (xylem_queue_empty(&conn->write_queue)) {
         shutdown(conn->fd, PLATFORM_SHUT_WR);
@@ -817,46 +818,20 @@ static void _uds_do_close(xylem_uds_conn_t* conn) {
     }
 }
 
-static void _uds_deferred_close_cb(xylem_loop_t* loop,
-                                    xylem_loop_post_t* req,
-                                    void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-    _uds_do_close(conn);
-    _uds_conn_decref(conn);
-}
-
-void xylem_uds_close(xylem_uds_conn_t* conn) {
-    /* Idempotent: reject if already closing/closed. */
-    _uds_state_t st = atomic_load(&conn->state);
-    if (st == UDS_STATE_CLOSING || st == UDS_STATE_CLOSED) {
-        return;
-    }
-
-    /* Cross-thread: post to loop thread. */
-    if (!xylem_loop_is_loop_thread(conn->loop)) {
-        atomic_fetch_add(&conn->refcount, 1);
-        if (xylem_loop_post(conn->loop, _uds_deferred_close_cb, conn) != 0) {
-            _uds_conn_decref(conn);
-        }
-        return;
-    }
-
-    _uds_do_close(conn);
-}
-
+/* Enqueue a write request and arm IO/timer. */
 static int _uds_enqueue_write(xylem_uds_conn_t* conn,
-                              const void* data, size_t len) {
+                              const void* data,
+                              size_t len,
+                              size_t offset) {
     _uds_write_req_t* req =
-        (_uds_write_req_t*)malloc(sizeof(*req) + len);
+        (_uds_write_req_t*)malloc(sizeof(*req));
     if (!req) {
         return -1;
     }
 
+    req->data   = data;
     req->len    = len;
-    req->offset = 0;
-    memcpy(req->data, data, len);
+    req->offset = offset;
 
     bool was_empty = xylem_queue_empty(&conn->write_queue);
     xylem_queue_enqueue(&conn->write_queue, &req->node);
@@ -876,58 +851,94 @@ static int _uds_enqueue_write(xylem_uds_conn_t* conn,
     return 0;
 }
 
-static void _uds_deferred_send_cb(xylem_loop_t* loop,
-                                   xylem_loop_post_t* req,
-                                   void* ud) {
+static void _uds_write_done_cb(xylem_loop_t* loop,
+                                xylem_loop_post_t* req,
+                                void* ud) {
     (void)loop;
     (void)req;
-    _uds_deferred_send_t* ds = (_uds_deferred_send_t*)ud;
+    _uds_write_done_t* wd = (_uds_write_done_t*)ud;
 
-    if (atomic_load(&ds->conn->state) == UDS_STATE_CONNECTED) {
-        _uds_enqueue_write(ds->conn, ds->data, ds->len);
-    } else {
-        if (ds->conn->handler && ds->conn->handler->on_write_done) {
-            ds->conn->handler->on_write_done(ds->conn,
-                                             ds->data, ds->len, -1);
+    /**
+     * Post callbacks that invoke user handlers must check liveness:
+     * the post queue is not cancellable, so the callback may fire
+     * after on_close has already been delivered to the user.
+     */
+    if (wd->conn->state == UDS_STATE_CLOSED) {
+        free(wd);
+        return;
+    }
+
+    if (wd->conn->handler && wd->conn->handler->on_write_done) {
+        wd->conn->handler->on_write_done(wd->conn, wd->data, wd->len, 0);
+    }
+
+    free(wd);
+}
+
+/* Try direct send, enqueue remainder if incomplete. */
+static int _uds_direct_write(xylem_uds_conn_t* conn,
+                              const void* data,
+                              size_t len) {
+    const char* ptr = (const char*)data;
+    size_t remaining = len;
+
+    while (remaining > 0) {
+        ssize_t n = platform_socket_send(conn->fd, ptr, (int)remaining);
+        if (n > 0) {
+            ptr += n;
+            remaining -= (size_t)n;
+        } else {
+            int err = platform_socket_get_lasterror();
+            if (err == PLATFORM_SO_ERROR_EAGAIN ||
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                break;
+            }
+            _uds_close_conn(conn, err);
+            return -1;
         }
     }
 
-    _uds_conn_decref(ds->conn);
-    free(ds);
+    if (remaining == 0) {
+        if (conn->handler && conn->handler->on_write_done) {
+            _uds_write_done_t* wd =
+                (_uds_write_done_t*)malloc(sizeof(*wd));
+            if (!wd) {
+                return -1;
+            }
+            wd->conn = conn;
+            wd->data = data;
+            wd->len  = len;
+            if (xylem_loop_post(conn->loop, _uds_write_done_cb, wd) != 0) {
+                free(wd);
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    return _uds_enqueue_write(conn, data, len, len - remaining);
+}
+
+static int _uds_process_write(xylem_uds_conn_t* conn,
+                              const void* data,
+                              size_t len) {
+    if (xylem_queue_empty(&conn->write_queue)) {
+        return _uds_direct_write(conn, data, len);
+    }
+    return _uds_enqueue_write(conn, data, len, 0);
 }
 
 int xylem_uds_send(xylem_uds_conn_t* conn,
                    const void* data, size_t len) {
-    if (atomic_load(&conn->state) != UDS_STATE_CONNECTED) {
+    if (conn->state != UDS_STATE_CONNECTED) {
         return -1;
     }
 
-    if (len == 0) {
+    if (!data || len == 0) {
         return 0;
     }
 
-    /* Cross-thread: copy data and post to loop thread. */
-    if (!xylem_loop_is_loop_thread(conn->loop)) {
-        _uds_deferred_send_t* ds = (_uds_deferred_send_t*)malloc(
-            sizeof(_uds_deferred_send_t) + len);
-        if (!ds) {
-            return -1;
-        }
-        ds->conn = conn;
-        ds->len  = len;
-        memcpy(ds->data, data, len);
-
-        atomic_fetch_add(&conn->refcount, 1);
-        if (xylem_loop_post(conn->loop, _uds_deferred_send_cb, ds) != 0) {
-            _uds_conn_decref(conn);
-            free(ds);
-            return -1;
-        }
-        return 0;
-    }
-
-    /* Same thread: enqueue directly. */
-    return _uds_enqueue_write(conn, data, len);
+    return _uds_process_write(conn, data, len);
 }
 
 /**
@@ -936,14 +947,19 @@ int xylem_uds_send(xylem_uds_conn_t* conn,
  * call set_userdata yet, so the callback sees NULL userdata.  Deferring to
  * the next loop iteration guarantees dial returns first.
  */
-static void _uds_deferred_connect_cb(xylem_loop_t* loop,
-                                      xylem_loop_post_t* req,
-                                      void* ud) {
+static void _uds_connect_cb(xylem_loop_t* loop,
+                            xylem_loop_post_t* req,
+                            void* ud) {
     (void)loop;
     (void)req;
     xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-    if (atomic_load(&conn->state) == UDS_STATE_CLOSED ||
-        atomic_load(&conn->state) == UDS_STATE_CLOSING) {
+    /**
+     * Post callbacks that invoke user handlers must check liveness:
+     * the post queue is not cancellable, so the callback may fire
+     * after on_close has already been delivered to the user.
+     */
+    if (conn->state == UDS_STATE_CLOSED ||
+        conn->state == UDS_STATE_CLOSING) {
         return;
     }
     if (conn->handler && conn->handler->on_connect) {
@@ -991,7 +1007,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
 
     conn->loop    = loop;
     conn->handler = handler;
-    atomic_store(&conn->state, UDS_STATE_CONNECTING);
+    conn->state = UDS_STATE_CONNECTING;
 
     atomic_store(&conn->refcount, 1);
 
@@ -1023,7 +1039,7 @@ xylem_uds_conn_t* xylem_uds_dial(xylem_loop_t* loop,
             return NULL;
         }
         xylem_logi("uds conn fd=%d connected immediately", (int)fd);
-        xylem_loop_post(loop, _uds_deferred_connect_cb, conn);
+        xylem_loop_post(loop, _uds_connect_cb, conn);
     } else {
         xylem_loop_start_io(conn->io, XYLEM_POLLER_WR_OP,
                             _uds_try_connect, conn);

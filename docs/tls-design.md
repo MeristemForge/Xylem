@@ -89,8 +89,8 @@ struct xylem_tls_conn_s {
     xylem_tls_handler_t*  handler;
     xylem_tls_server_t*   server;         /* 服务端连接非 NULL */
     void*                 userdata;
-    _Atomic bool          handshake_done;
-    _Atomic bool          closing;
+    bool                  handshake_done;
+    bool                  closing;
     _Atomic int32_t       refcount;       /* 引用计数，初始值 1 */
     int                   close_err;      /* 关闭错误码，正常关闭为 0 */
     const char*           close_errmsg;   /* 关闭错误描述，正常关闭为 NULL */
@@ -101,21 +101,19 @@ struct xylem_tls_conn_s {
 };
 ```
 
-`refcount` 在 `xylem_tls_dial` 和 `_tls_tcp_accept_cb`（服务端 accept）中初始化为 1。跨线程 `xylem_tls_send` 和 `xylem_tls_close` 在 `xylem_loop_post` 前递增引用计数，回调完成后递减。`_tls_tcp_close_cb` 通过 `xylem_loop_post` 将 `_tls_conn_decref` 延迟到下一轮事件循环迭代执行，当引用计数归零时释放连接内存。
+`refcount` 在 `xylem_tls_dial` 和 `_tls_tcp_accept_cb`（服务端 accept）中初始化为 1。用户通过 `xylem_tls_conn_acquire`/`xylem_tls_conn_release` 管理跨线程引用。`_tls_tcp_close_cb` 通过 `xylem_loop_post` 将 `_tls_conn_decref` 延迟到下一轮事件循环迭代执行，当引用计数归零时释放连接内存。
 
 ### TLS 写请求
 
 ```c
 typedef struct _tls_write_req_s {
     xylem_queue_node_t node;
-    size_t             len;     /* 明文长度 */
-    int                pending; /* 未完成的 TCP send 计数 */
-    int                status;  /* 0 = 正常, -1 = 任一 TCP send 失败 */
-    char               data[];  /* 明文副本 */
+    const void*        data; /* 用户原始指针（零拷贝） */
+    size_t             len;
 } _tls_write_req_t;
 ```
 
-跟踪单次 `xylem_tls_send` 调用在 TCP 写管道中的状态。每次 TLS send 经 `SSL_write` 加密后可能产生一个或多个 `xylem_tcp_send` 调用（密文记录）。`pending` 计数器跟踪剩余的 TCP 写操作数量；`on_write_done` 仅在所有 TCP 写操作完成后才触发。
+跟踪单次 `xylem_tls_send` 调用在 TCP 写管道中的状态。零拷贝语义：存储用户原始指针，不复制明文数据。每次 `SSL_write` 后通过 `BIO_ctrl_pending` 一次性取出全部密文，执行一次 `xylem_tcp_send`。当该 TCP 写操作完成时（`_tls_tcp_write_done_cb`），从写队列出队并触发 TLS `on_write_done` 回调。用户必须保证缓冲区在 `on_write_done` 回调触发前保持有效且不可修改。
 
 ### TLS 服务器
 
@@ -227,15 +225,29 @@ SSL_read 错误（非 WANT_READ/WANT_WRITE/ZERO_RETURN）调用 `xylem_tls_close
 flowchart TD
     A[xylem_tls_send 明文] --> B{握手完成且未关闭?}
     B -->|否| C[返回 -1]
-    B -->|是| D[SSL_write]
-    D --> E{n > 0?}
-    E -->|否| F[返回 -1]
-    E -->|是| G[flush write_bio]
-    G --> H[BIO_read → xylem_tcp_send 密文]
-    H --> I[回调 on_write_done]
+    B -->|是| F[_tls_process_write]
+    F --> G[SSL_write 用户缓冲区]
+    G --> H{n > 0?}
+    H -->|否| I[返回 -1]
+    H -->|是| J[_tls_flush_write_bio]
+    J --> K[BIO_ctrl_pending → malloc → BIO_read]
+    K --> L[xylem_tcp_send 密文堆缓冲区]
+    L --> M[入队 _tls_write_req_t]
+    M --> N[TCP on_write_done 触发时]
+    N --> O[free 密文 + 出队 + 回调 TLS on_write_done]
 ```
 
-由于使用内存 BIO，`SSL_write` 总是一次完成（写入内存缓冲区），不会返回 `SSL_ERROR_WANT_WRITE`，因此无需 `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER`。
+#### 零拷贝设计
+
+`xylem_tls_send` 采用零拷贝语义：库不复制用户明文，直接将用户指针传给 `SSL_write` 进行加密。用户必须保证缓冲区在 `on_write_done` 回调触发前保持有效且不可修改。回调的 `data` 参数即用户传入的原始指针，用户应在回调中释放缓冲区。
+
+#### 密文缓冲区管理
+
+`SSL_write` 将明文加密后写入 write_bio（内存 BIO）。`_tls_flush_write_bio` 通过 `BIO_ctrl_pending` 获取密文总大小，一次性 `malloc` 分配堆缓冲区，`BIO_read` 取出全部密文，然后调用 `xylem_tcp_send`（零拷贝传递指针）。当底层 TCP 写完成时（`_tls_tcp_write_done_cb`），释放密文堆缓冲区（`free((void*)data)`）。
+
+#### 内存 BIO 特性
+
+由于使用内存 BIO，`SSL_write` 总是一次完成（写入内存缓冲区），不会返回 `SSL_ERROR_WANT_WRITE`，因此无需 `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER`。同理，每次 `SSL_write` 后 `_tls_flush_write_bio` 恰好产生一次 `xylem_tcp_send`，与写请求队列形成一一对应关系。
 
 ## 关闭流程
 
@@ -247,12 +259,7 @@ sequenceDiagram
 
     User->>TLS: xylem_tls_close()
     TLS->>TLS: atomic_load(closing) → 幂等检查
-    alt 跨线程调用
-        TLS->>TLS: xylem_loop_post(_tls_deferred_close_cb)
-        Note over TLS: 下一轮事件循环迭代执行
-        TLS->>TLS: xylem_tls_close()（事件循环线程）
-    end
-    Note over TLS: closing = true（仅在事件循环线程上设置）
+    Note over TLS: closing = true
     TLS->>TLS: SSL_shutdown → close_notify
     TLS->>TCP: flush write_bio → xylem_tcp_send
     TLS->>TCP: xylem_tcp_close()
@@ -263,9 +270,7 @@ sequenceDiagram
     TLS->>TLS: xylem_loop_post 延迟释放
 ```
 
-`xylem_tls_close` 入口处通过 `atomic_load` 检查 `closing` 标志实现幂等性——若已为 `true` 则立即返回。此检查在线程判断之前执行，确保重复调用和 `xylem_loop_destroy` 排空延迟回调时不会无限递归 `xylem_loop_post`。`xylem_loop_destroy` 在排空前会将 `loop->tid` 设置为当前线程，使延迟回调走同线程路径。
-
-通过幂等检查后，若不在事件循环线程上，递增引用计数后通过 `xylem_loop_post` 转发到事件循环线程执行，**不设置 `closing` 标志**。`closing` 标志仅在事件循环线程上通过 `atomic_store` 设置，确保所有状态变更都在单一线程上执行。
+`xylem_tls_close` 仅可在事件循环线程上调用。入口处通过 `atomic_load` 检查 `closing` 标志实现幂等性——若已为 `true` 则立即返回。通过幂等检查后，使用 `atomic_store` 设置 `closing = true`。
 
 `_tls_tcp_close_cb` 在关闭前排空 TLS 写请求队列，对每个未完成的写请求回调 `on_write_done`（携带 status=-1），然后从服务器连接链表移除、回调 `on_close`、释放 SSL 和 hostname、通过 `xylem_loop_post` 延迟递减引用计数。
 
@@ -310,18 +315,11 @@ TLS conn 通过 `xylem_tcp_set_userdata` 存储在 TCP conn 的 userdata 中，�
 
 ## 线程安全
 
-`xylem_tls_send` 和 `xylem_tls_close` 可从任意线程调用。内部通过 `xylem_loop_is_loop_thread` 检测调用线程：
+`xylem_loop_post` 是唯一的跨线程原语。`xylem_tls_send`、`xylem_tls_close` 及所有其他 API 仅可在事件循环线程上调用。
 
-- **事件循环线程**：直接执行 SSL 操作
-- **其他线程**：通过 `xylem_loop_post` 将操作转发到事件循环线程
+用户如需从其他线程发起发送或关闭操作，应通过 `xylem_loop_post` 将回调转发到事件循环线程，在回调中调用同线程 API。跨线程使用连接句柄前需在事件循环线程上调用 `xylem_tls_conn_acquire` 递增引用计数，确保句柄在跨线程期间不被释放；待所有 posted 回调执行完毕后调用 `xylem_tls_conn_release` 递减引用计数。
 
-`xylem_tls_send` 跨线程调用时，递增引用计数（`atomic_fetch_add`），分配 `_tls_deferred_send_t`（包含 TLS conn 指针和数据副本），通过 `xylem_loop_post` 转发到事件循环线程。回调 `_tls_deferred_send_cb` 在执行前检查 `handshake_done` 和 `closing` 状态（连接可能在 post 期间关闭）：若检查通过则执行 `_tls_do_send`；若连接已关闭或握手未完成，则回调 `on_write_done(status=-1)` 通知用户发送失败（而非静默丢弃）。处理完毕后递减引用计数（`_tls_conn_decref`）。
-
-`xylem_tls_close` 跨线程调用时，不立即设置 `closing` 标志——递增引用计数后通过 `xylem_loop_post` 将 `_tls_deferred_close_cb` 转发到事件循环线程执行，`closing` 标志在事件循环线程上设置。回调完成后递减引用计数。若 `xylem_loop_post` 失败则立即递减引用计数（`_tls_conn_decref`），避免引用计数泄漏。这意味着在 `xylem_loop_post` 到回调执行之间的窗口期内，并发的 `xylem_tls_send` 调用不会被 `closing` 标志拒绝，而是会被正常转发到事件循环线程（在那里 `_tls_deferred_send_cb` 会再次检查 `closing` 状态）。
-
-`tls->handshake_done` 和 `tls->closing` 使用 `_Atomic bool` 类型，允许跨线程安全读取状态。所有状态变更（`atomic_store`）仅在事件循环线程上执行。
-
-其他 API（`xylem_tls_dial`、`xylem_tls_listen`、访问器等）仍需在事件循环线程上调用。
+`tls->handshake_done` 和 `tls->closing` 是 plain `bool`，仅在事件循环线程上访问，无需原子操作。
 
 ## 公开 API
 
@@ -351,7 +349,7 @@ int                 xylem_tls_send(xylem_tls_conn_t* tls,
 void                xylem_tls_close(xylem_tls_conn_t* tls);
 ```
 
-`xylem_tls_send` 和 `xylem_tls_close` 线程安全，可从任意线程调用。
+`xylem_tls_send` 和 `xylem_tls_close` 仅可在事件循环线程上调用。
 
 ```c
 void                xylem_tls_conn_acquire(xylem_tls_conn_t* tls);
