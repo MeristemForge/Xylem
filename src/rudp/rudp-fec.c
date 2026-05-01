@@ -116,15 +116,16 @@ rudp_fec_enc_t* rudp_fec_enc_create(int data_shards, int parity_shards,
         return NULL;
     }
 
-    rudp_fec_enc_t* enc = calloc(1, sizeof(*enc));
+    rudp_fec_enc_t* enc =
+        (rudp_fec_enc_t*)calloc(1, sizeof(rudp_fec_enc_t));
     if (!enc) {
         xylem_fec_destroy(codec);
         return NULL;
     }
 
-    enc->buf = calloc((size_t)total, (size_t)mtu);
-    enc->shard_ptrs = calloc((size_t)total, sizeof(uint8_t*));
-    enc->payload_sizes = calloc((size_t)data_shards, sizeof(uint16_t));
+    enc->buf = (uint8_t*)calloc((size_t)total, (size_t)mtu);
+    enc->shard_ptrs = (uint8_t**)calloc((size_t)total, sizeof(uint8_t*));
+    enc->payload_sizes = (uint16_t*)calloc((size_t)data_shards, sizeof(uint16_t));
 
     if (!enc->buf || !enc->shard_ptrs || !enc->payload_sizes) {
         free(enc->buf);
@@ -274,7 +275,8 @@ rudp_fec_dec_t* rudp_fec_dec_create(int data_shards, int parity_shards,
         return NULL;
     }
 
-    rudp_fec_dec_t* dec = calloc(1, sizeof(*dec));
+    rudp_fec_dec_t* dec =
+        (rudp_fec_dec_t*)calloc(1, sizeof(rudp_fec_dec_t));
     if (!dec) {
         xylem_fec_destroy(codec);
         return NULL;
@@ -282,9 +284,9 @@ rudp_fec_dec_t* rudp_fec_dec_create(int data_shards, int parity_shards,
 
     size_t buf_size = (size_t)RUDP_FEC_MAX_GROUPS * (size_t)total *
                       (size_t)mtu;
-    dec->buf = calloc(1, buf_size);
-    dec->shard_ptrs = calloc((size_t)total, sizeof(uint8_t*));
-    dec->marks = calloc((size_t)total, sizeof(uint8_t));
+    dec->buf = (uint8_t*)calloc(1, buf_size);
+    dec->shard_ptrs = (uint8_t**)calloc((size_t)total, sizeof(uint8_t*));
+    dec->marks = (uint8_t*)calloc((size_t)total, sizeof(uint8_t));
 
     if (!dec->buf || !dec->shard_ptrs || !dec->marks) {
         free(dec->buf);

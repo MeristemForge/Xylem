@@ -65,7 +65,7 @@ size_t xylem_aes256_cbc_decrypt_size(size_t len) {
 }
 
 xylem_aes256_t* xylem_aes256_create(const uint8_t key[32]) {
-    xylem_aes256_t* ctx = calloc(1, sizeof(*ctx));
+    xylem_aes256_t* ctx = (xylem_aes256_t*)calloc(1, sizeof(xylem_aes256_t));
     if (!ctx) {
         return NULL;
     }

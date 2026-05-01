@@ -91,16 +91,16 @@ struct xylem_http_srv_s {
     xylem_http_gzip_opts_t     gzip_opts;
 };
 
-static const char* _http_day_names[] = {
+static const char* _http_srv_day_names[] = {
     "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
 };
-static const char* _http_month_names[] = {
+static const char* _http_srv_month_names[] = {
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 };
 
 /* Default MIME types eligible for gzip compression. */
-static const char* _gzip_default_types[] = {
+static const char* _http_srv_gzip_default_types[] = {
     "text/html",
     "text/css",
     "text/plain",
@@ -116,7 +116,7 @@ static const char* _gzip_default_types[] = {
 static const struct {
     const char* ext;
     const char* mime;
-} _mime_map[] = {
+} _http_srv_mime_map[] = {
     {".html", "text/html"},
     {".htm",  "text/html"},
     {".css",  "text/css"},
@@ -179,7 +179,7 @@ static int _http_srv_parser_url_cb(llhttp_t* parser, const char* at,
     xylem_http_req_t* req = &conn->req;
 
     /* Accumulate URL fragments using tracked offset. */
-    char* tmp = realloc(req->url, req->url_len + len + 1);
+    char* tmp = (char*)realloc(req->url, req->url_len + len + 1);
     if (!tmp) {
         return HPE_USER;
     }
@@ -202,7 +202,7 @@ static int _http_srv_parser_header_field_cb(llhttp_t* parser,
     xylem_http_conn_t* conn = parser->data;
 
     free(conn->cur_header_name);
-    conn->cur_header_name = malloc(len + 1);
+    conn->cur_header_name = (char*)malloc(len + 1);
     if (!conn->cur_header_name) {
         return HPE_USER;
     }
@@ -260,7 +260,7 @@ static int _http_srv_parser_headers_complete_cb(llhttp_t* parser) {
     uint64_t content_length = parser->content_length;
     if (content_length > 0 && content_length != ULLONG_MAX &&
         content_length <= conn->srv->cfg.max_body_size) {
-        conn->req.body = malloc((size_t)content_length);
+        conn->req.body = (uint8_t*)malloc((size_t)content_length);
         /* Allocation failure is non-fatal; realloc path handles it. */
     }
 
@@ -286,7 +286,7 @@ static int _http_srv_parser_body_cb(llhttp_t* parser, const char* at,
         return 0;
     }
 
-    uint8_t* tmp = realloc(req->body, req->body_len + len);
+    uint8_t* tmp = (uint8_t*)realloc(req->body, req->body_len + len);
     if (!tmp) {
         return HPE_USER;
     }
@@ -399,7 +399,7 @@ static void _http_srv_conn_finish_response(xylem_http_conn_t* conn) {
 static void _http_srv_conn_accept_cb(void* handle, void* ctx) {
     xylem_http_srv_t* srv = ctx;
 
-    xylem_http_conn_t* conn = calloc(1, sizeof(*conn));
+    xylem_http_conn_t* conn = (xylem_http_conn_t*)calloc(1, sizeof(xylem_http_conn_t));
     if (!conn) {
         srv->vt->close_conn(handle);
         return;
@@ -623,7 +623,7 @@ xylem_http_srv_t* xylem_http_listen(xylem_loop_t* loop,
         return NULL;
     }
 
-    xylem_http_srv_t* srv = calloc(1, sizeof(*srv));
+    xylem_http_srv_t* srv = (xylem_http_srv_t*)calloc(1, sizeof(xylem_http_srv_t));
     if (!srv) {
         return NULL;
     }
@@ -726,8 +726,8 @@ static bool _http_gzip_type_ok(const xylem_http_gzip_opts_t* opts,
     }
     if (!opts->mime_types) {
         /* Use built-in defaults. */
-        for (size_t i = 0; _gzip_default_types[i]; i++) {
-            if (_http_gzip_mime_match(content_type, _gzip_default_types[i])) {
+        for (size_t i = 0; _http_srv_gzip_default_types[i]; i++) {
+            if (_http_gzip_mime_match(content_type, _http_srv_gzip_default_types[i])) {
                 return true;
             }
         }
@@ -835,7 +835,7 @@ static bool _http_srv_try_gzip(const xylem_http_srv_t* srv,
     }
 
     size_t bound = xylem_gzip_compress_bound(body_len);
-    uint8_t* cbuf = malloc(bound);
+    uint8_t* cbuf = (uint8_t*)malloc(bound);
     if (!cbuf) {
         return false;
     }
@@ -873,7 +873,7 @@ static int _http_srv_resp_header_set(xylem_http_conn_t* conn,
     /* Grow buffer if needed. */
     if (conn->resp_header_count == conn->resp_header_cap) {
         size_t new_cap = conn->resp_header_cap ? conn->resp_header_cap * 2 : 8;
-        xylem_http_hdr_t* tmp = realloc(conn->resp_headers,
+        xylem_http_hdr_t* tmp = (xylem_http_hdr_t*)realloc(conn->resp_headers,
                                         new_cap * sizeof(*tmp));
         if (!tmp) {
             return -1;
@@ -973,7 +973,7 @@ static void _http_srv_vary_ensure(xylem_http_conn_t* conn,
     /* Append: "existing, field" */
     size_t elen = strlen(existing);
     size_t flen = field_len;
-    char* merged = malloc(elen + 2 + flen + 1);
+    char* merged = (char*)malloc(elen + 2 + flen + 1);
     if (!merged) {
         return; /* Silent fail -- Vary missing won't break correctness. */
     }
@@ -1050,7 +1050,7 @@ static int _http_srv_flush_resp_headers_cl(xylem_http_conn_t* conn,
         }
     }
 
-    char* buf = malloc(est);
+    char* buf = (char*)malloc(est);
     if (!buf) {
         return -1;
     }
@@ -1137,7 +1137,7 @@ static int _http_srv_flush_resp_headers(xylem_http_conn_t* conn) {
         }
     }
 
-    char* buf = malloc(est);
+    char* buf = (char*)malloc(est);
     if (!buf) {
         return -1;
     }
@@ -1233,7 +1233,7 @@ int xylem_http_writer_write(xylem_http_writer_t* conn,
     if (!conn->resp_headers_sent) {
         if (_http_srv_should_gzip(conn)) {
             /* Init streaming gzip deflate. */
-            mz_stream* s = calloc(1, sizeof(mz_stream));
+            mz_stream* s = (mz_stream*)calloc(1, sizeof(mz_stream));
             if (!s) {
                 return -1;
             }
@@ -1264,7 +1264,7 @@ int xylem_http_writer_write(xylem_http_writer_t* conn,
     /* Gzip active: deflate through stream, then send as chunk. */
     if (conn->gzip_active) {
         size_t bound = mz_deflateBound(conn->gzip_stream, (mz_ulong)len);
-        uint8_t* cbuf = malloc(bound);
+        uint8_t* cbuf = (uint8_t*)malloc(bound);
         if (!cbuf) {
             return -1;
         }
@@ -1345,7 +1345,7 @@ static int _http_srv_send(xylem_http_conn_t* conn,
 
     /* Combine head + body into a single send. */
     size_t total = head_len + body_len;
-    char* buf = malloc(total);
+    char* buf = (char*)malloc(total);
     if (!buf) {
         free(head_buf);
         free(gzip_buf);
@@ -1427,7 +1427,7 @@ static int _http_srv_send_partial(xylem_http_conn_t* conn,
 
     /* Combine head + body into a single send. */
     size_t total = head_len + actual_body_len;
-    char* buf = malloc(total);
+    char* buf = (char*)malloc(total);
     if (!buf) {
         free(head_buf);
         return -1;
@@ -1503,7 +1503,7 @@ static int _http_srv_send_chunk(xylem_http_conn_t* conn,
     size_buf[size_len++] = '\n';
 
     size_t frame_len = size_len + len + 2;
-    char* frame = malloc(frame_len);
+    char* frame = (char*)malloc(frame_len);
     if (!frame) {
         return -1;
     }
@@ -1544,7 +1544,7 @@ static int _http_srv_begin_sse(xylem_http_conn_t* conn,
     /* Merge caller headers with SSE-required headers. */
     size_t extra = 2; /* Cache-Control + Connection */
     size_t total = header_count + extra;
-    xylem_http_hdr_t* merged = malloc(total * sizeof(xylem_http_hdr_t));
+    xylem_http_hdr_t* merged = (xylem_http_hdr_t*)malloc(total * sizeof(xylem_http_hdr_t));
     if (!merged) {
         return -1;
     }
@@ -1589,7 +1589,7 @@ char* xylem_http_sse_build(const char* event,
                + line_count      /* '\n' per line */
                + 1;              /* trailing '\n' for blank line */
 
-    char* buf = malloc(est);
+    char* buf = (char*)malloc(est);
     if (!buf) {
         return NULL;
     }
@@ -1770,7 +1770,7 @@ static int _http_route_parse(const char* pattern, _route_seg_t** out_segs,
     }
 
     size_t cap = 8;
-    _route_seg_t* segs = malloc(cap * sizeof(_route_seg_t));
+    _route_seg_t* segs = (_route_seg_t*)malloc(cap * sizeof(_route_seg_t));
     if (!segs) {
         return -1;
     }
@@ -1781,7 +1781,7 @@ static int _http_route_parse(const char* pattern, _route_seg_t** out_segs,
     while (*p) {
         if (count >= cap) {
             cap *= 2;
-            _route_seg_t* tmp = realloc(segs, cap * sizeof(_route_seg_t));
+            _route_seg_t* tmp = (_route_seg_t*)realloc(segs, cap * sizeof(_route_seg_t));
             if (!tmp) {
                 goto fail;
             }
@@ -1806,7 +1806,7 @@ static int _http_route_parse(const char* pattern, _route_seg_t** out_segs,
             /* Path parameter. */
             segs[count].type = _ROUTE_SEG_PARAM;
             segs[count].len  = seg_len - 1;
-            segs[count].text = malloc(seg_len);
+            segs[count].text = (char*)malloc(seg_len);
             if (!segs[count].text) {
                 goto fail;
             }
@@ -1815,7 +1815,7 @@ static int _http_route_parse(const char* pattern, _route_seg_t** out_segs,
         } else {
             segs[count].type = _ROUTE_SEG_LITERAL;
             segs[count].len  = seg_len;
-            segs[count].text = malloc(seg_len + 1);
+            segs[count].text = (char*)malloc(seg_len + 1);
             if (!segs[count].text) {
                 goto fail;
             }
@@ -1843,7 +1843,7 @@ fail:
 
 static char* _http_srv_strdup(const char* s) {
     size_t len = strlen(s);
-    char* d = malloc(len + 1);
+    char* d = (char*)malloc(len + 1);
     if (d) {
         memcpy(d, s, len + 1);
     }
@@ -1851,7 +1851,7 @@ static char* _http_srv_strdup(const char* s) {
 }
 
 xylem_http_router_t* xylem_http_router_create(void) {
-    xylem_http_router_t* r = calloc(1, sizeof(*r));
+    xylem_http_router_t* r = (xylem_http_router_t*)calloc(1, sizeof(xylem_http_router_t));
     return r;
 }
 
@@ -1876,7 +1876,7 @@ int xylem_http_router_use(xylem_http_router_t* router,
 
     if (router->mw_count >= router->mw_cap) {
         size_t new_cap = router->mw_cap ? router->mw_cap * 2 : 4;
-        _http_middleware_t* tmp = realloc(router->middlewares,
+        _http_middleware_t* tmp = (_http_middleware_t*)realloc(router->middlewares,
                                          new_cap * sizeof(_http_middleware_t));
         if (!tmp) {
             return -1;
@@ -1908,7 +1908,7 @@ int xylem_http_router_add(xylem_http_router_t* router,
 
     if (router->count >= router->cap) {
         size_t new_cap = router->cap ? router->cap * 2 : 8;
-        _http_route_t* tmp = realloc(router->routes,
+        _http_route_t* tmp = (_http_route_t*)realloc(router->routes,
                                      new_cap * sizeof(_http_route_t));
         if (!tmp) {
             for (size_t i = 0; i < seg_count; i++) {
@@ -2020,7 +2020,7 @@ static int _http_router_try_match(const _http_route_t* route,
             match->params = NULL;
             match->param_count = 0;
             if (param_count > 0) {
-                match->params = malloc(param_count * sizeof(http_header_t));
+                match->params = (http_header_t*)malloc(param_count * sizeof(http_header_t));
                 if (match->params) {
                     for (size_t k = 0; k < param_count; k++) {
                         match->params[k] = params[k];
@@ -2072,7 +2072,7 @@ static int _http_router_try_match(const _http_route_t* route,
     match->param_count = 0;
 
     if (param_count > 0) {
-        match->params = malloc(param_count * sizeof(http_header_t));
+        match->params = (http_header_t*)malloc(param_count * sizeof(http_header_t));
         if (match->params) {
             match->param_count = param_count;
             /* Copy with proper allocation: name from seg->text,
@@ -2087,7 +2087,7 @@ static int _http_router_try_match(const _http_route_t* route,
                 size_t vlen = (size_t)(val_end - val_start);
                 size_t nlen = strlen(params[k].name);
                 /* Single allocation for name + value. */
-                char* block = malloc(nlen + 1 + vlen + 1);
+                char* block = (char*)malloc(nlen + 1 + vlen + 1);
                 if (block) {
                     memcpy(block, params[k].name, nlen);
                     block[nlen] = '\0';
@@ -2232,9 +2232,9 @@ static const char* _http_static_mime(const char* path) {
     if (!dot) {
         return "application/octet-stream";
     }
-    for (size_t i = 0; _mime_map[i].ext; i++) {
-        if (http_header_eq(dot, _mime_map[i].ext)) {
-            return _mime_map[i].mime;
+    for (size_t i = 0; _http_srv_mime_map[i].ext; i++) {
+        if (http_header_eq(dot, _http_srv_mime_map[i].ext)) {
+            return _http_srv_mime_map[i].mime;
         }
     }
     return "application/octet-stream";
@@ -2261,7 +2261,7 @@ static char* _http_static_normalize(const char* rel) {
     }
 
     size_t len = strlen(rel);
-    char* buf = malloc(len + 1);
+    char* buf = (char*)malloc(len + 1);
     if (!buf) {
         return NULL;
     }
@@ -2310,7 +2310,7 @@ static char* _http_static_normalize(const char* rel) {
     if (depth == 0) {
         /* Empty path after normalization --root directory request. */
         free(buf);
-        char* empty = malloc(1);
+        char* empty = (char*)malloc(1);
         if (empty) {
             empty[0] = '\0';
         }
@@ -2322,7 +2322,7 @@ static char* _http_static_normalize(const char* rel) {
     for (size_t i = 0; i < depth; i++) {
         total += strlen(segs[i]) + 1; /* seg + '/' or '\0' */
     }
-    char* out = malloc(total);
+    char* out = (char*)malloc(total);
     if (!out) {
         free(buf);
         return NULL;
@@ -2350,7 +2350,7 @@ static char* _http_static_fullpath(const char* root, const char* rel) {
         rlen--;
     }
     size_t need = rlen + 1 + plen + 1;
-    char* path = malloc(need);
+    char* path = (char*)malloc(need);
     if (!path) {
         return NULL;
     }
@@ -2367,9 +2367,9 @@ static size_t _http_format_date(time_t t, char* buf, size_t cap) {
     platform_info_gmtime(&t, &gmt);
     return (size_t)snprintf(buf, cap,
         "%s, %02d %s %04d %02d:%02d:%02d GMT",
-        _http_day_names[gmt.tm_wday],
+        _http_srv_day_names[gmt.tm_wday],
         gmt.tm_mday,
-        _http_month_names[gmt.tm_mon],
+        _http_srv_month_names[gmt.tm_mon],
         gmt.tm_year + 1900,
         gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
 }
@@ -2404,9 +2404,9 @@ static time_t _http_parse_date(const char* str) {
     tm.tm_year -= 1900;
     tm.tm_mon = -1;
     for (int i = 0; i < 12; i++) {
-        if (mon[0] == _http_month_names[i][0] &&
-            mon[1] == _http_month_names[i][1] &&
-            mon[2] == _http_month_names[i][2]) {
+        if (mon[0] == _http_srv_month_names[i][0] &&
+            mon[1] == _http_srv_month_names[i][1] &&
+            mon[2] == _http_srv_month_names[i][2]) {
             tm.tm_mon = i;
             break;
         }
@@ -2469,7 +2469,7 @@ static char* _http_static_resolve(const void* userdata,
     if (st->is_dir) {
         size_t fplen = strlen(fpath);
         size_t ilen  = strlen(index_file);
-        char* ipath  = malloc(fplen + 1 + ilen + 1);
+        char* ipath  = (char*)malloc(fplen + 1 + ilen + 1);
         if (!ipath) {
             free(fpath);
             *status = 500;
@@ -2510,7 +2510,7 @@ static bool _http_static_try_gz(const xylem_http_req_t* req,
     }
 
     size_t fplen = strlen(*fpath);
-    char* gz_path = malloc(fplen + 4);
+    char* gz_path = (char*)malloc(fplen + 4);
     if (!gz_path) {
         return false;
     }
@@ -2541,7 +2541,7 @@ static const char* _http_static_content_type(const char* fpath, bool is_gz) {
     if (fplen <= 3) {
         return _http_static_mime(fpath);
     }
-    char* orig = malloc(fplen - 2);
+    char* orig = (char*)malloc(fplen - 2);
     if (!orig) {
         return _http_static_mime(fpath);
     }
@@ -2620,7 +2620,7 @@ static bool _http_static_parse_range(const char* hdr, size_t file_size,
  * Returns malloc'd buffer or NULL on error. Closes fp before returning.
  */
 static uint8_t* _http_static_read_file(FILE* fp, size_t offset, size_t len) {
-    uint8_t* data = malloc(len);
+    uint8_t* data = (uint8_t*)malloc(len);
     if (!data) {
         fclose(fp);
         return NULL;
@@ -2818,7 +2818,7 @@ int xylem_http_static_serve(xylem_http_router_t* router,
         return -1;
     }
 
-    char* pattern = malloc(plen + 3); /* "/prefix/" + "*\0" */
+    char* pattern = (char*)malloc(plen + 3); /* "/prefix/" + "*\0" */
     if (!pattern) {
         return -1;
     }
@@ -2829,7 +2829,7 @@ int xylem_http_static_serve(xylem_http_router_t* router,
 
     /* Allocate userdata block: opts copy + prefix_len. */
     size_t ud_size = sizeof(xylem_http_static_opts_t) + sizeof(size_t);
-    uint8_t* ud = malloc(ud_size);
+    uint8_t* ud = (uint8_t*)malloc(ud_size);
     if (!ud) {
         free(pattern);
         return -1;

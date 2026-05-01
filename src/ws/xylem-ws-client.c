@@ -34,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int _ws_http_header_field_cb(llhttp_t* parser,
+static int _ws_cli_http_header_field_cb(llhttp_t* parser,
                                     const char* at, size_t len) {
     xylem_ws_conn_t* conn = parser->data;
     conn->parsing_accept_header = false;
@@ -49,7 +49,7 @@ static int _ws_http_header_field_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _ws_http_header_value_cb(llhttp_t* parser,
+static int _ws_cli_http_header_value_cb(llhttp_t* parser,
                                     const char* at, size_t len) {
     xylem_ws_conn_t* conn = parser->data;
 
@@ -79,14 +79,14 @@ static int _ws_http_header_value_cb(llhttp_t* parser,
     return 0;
 }
 
-static int _ws_http_headers_complete_cb(llhttp_t* parser) {
+static int _ws_cli_http_headers_complete_cb(llhttp_t* parser) {
     xylem_ws_conn_t* conn = parser->data;
     conn->handshake_complete = true;
     /* Return 2 to tell llhttp to skip body and trigger upgrade */
     return 2;
 }
 
-static void _ws_handshake_timeout_cb(xylem_loop_t* loop,
+static void _ws_cli_handshake_timeout_cb(xylem_loop_t* loop,
                                      xylem_loop_timer_t* timer,
                                      void* ud) {
     (void)loop;
@@ -97,7 +97,7 @@ static void _ws_handshake_timeout_cb(xylem_loop_t* loop,
     conn->vt->close_conn(conn->transport);
 }
 
-static void _ws_process_handshake(xylem_ws_conn_t* conn,
+static void _ws_cli_process_handshake(xylem_ws_conn_t* conn,
                                   const void* data, size_t len) {
     llhttp_errno_t err = llhttp_execute(&conn->http_parser,
                                         (const char*)data, len);
@@ -161,7 +161,7 @@ static void _ws_process_handshake(xylem_ws_conn_t* conn,
     }
 }
 
-static void _ws_transport_connect_cb(void* handle, void* ctx) {
+static void _ws_cli_transport_connect_cb(void* handle, void* ctx) {
     (void)handle;
     xylem_ws_conn_t* conn = ctx;
 
@@ -179,13 +179,13 @@ static void _ws_transport_connect_cb(void* handle, void* ctx) {
     free(req);
 }
 
-static void _ws_transport_read_cb(void* handle, void* ctx,
+static void _ws_cli_transport_read_cb(void* handle, void* ctx,
                                   void* data, size_t len) {
     (void)handle;
     xylem_ws_conn_t* conn = ctx;
 
     if (conn->state == XYLEM_WS_STATE_CONNECTING) {
-        _ws_process_handshake(conn, data, len);
+        _ws_cli_process_handshake(conn, data, len);
         return;
     }
 
@@ -204,7 +204,7 @@ static void _ws_transport_read_cb(void* handle, void* ctx,
     ws_conn_process_recv(conn);
 }
 
-static void _ws_transport_close_cb(void* handle, void* ctx, int err,
+static void _ws_cli_transport_close_cb(void* handle, void* ctx, int err,
                                    const char* errmsg) {
     (void)handle;
     (void)err;
@@ -234,7 +234,7 @@ static void _ws_transport_close_cb(void* handle, void* ctx, int err,
  * Parse a ws:// or wss:// URL into host, port, path components.
  * Returns 0 on success, -1 on error. Sets *use_tls accordingly.
  */
-static int _ws_parse_url(const char* url, char** host, uint16_t* port,
+static int _ws_cli_parse_url(const char* url, char** host, uint16_t* port,
                          char** path, bool* use_tls) {
     if (!url) {
         return -1;
@@ -263,7 +263,7 @@ static int _ws_parse_url(const char* url, char** host, uint16_t* port,
         return -1;
     }
 
-    *host = malloc(host_len + 1);
+    *host = (char*)malloc(host_len + 1);
     if (!*host) {
         return -1;
     }
@@ -288,7 +288,7 @@ static int _ws_parse_url(const char* url, char** host, uint16_t* port,
     /* Parse path */
     if (*p == '/') {
         size_t path_len = strlen(p);
-        *path = malloc(path_len + 1);
+        *path = (char*)malloc(path_len + 1);
         if (!*path) {
             free(*host);
             *host = NULL;
@@ -296,7 +296,7 @@ static int _ws_parse_url(const char* url, char** host, uint16_t* port,
         }
         memcpy(*path, p, path_len + 1);
     } else {
-        *path = malloc(2);
+        *path = (char*)malloc(2);
         if (!*path) {
             free(*host);
             *host = NULL;
@@ -322,7 +322,7 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
     char*    path    = NULL;
     bool     use_tls = false;
 
-    if (_ws_parse_url(url, &host, &port, &path, &use_tls) != 0) {
+    if (_ws_cli_parse_url(url, &host, &port, &path, &use_tls) != 0) {
         return NULL;
     }
 
@@ -369,16 +369,16 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
 
     /* Initialize llhttp for response parsing */
     llhttp_settings_init(&conn->http_settings);
-    conn->http_settings.on_header_field    = _ws_http_header_field_cb;
-    conn->http_settings.on_header_value    = _ws_http_header_value_cb;
-    conn->http_settings.on_headers_complete = _ws_http_headers_complete_cb;
+    conn->http_settings.on_header_field    = _ws_cli_http_header_field_cb;
+    conn->http_settings.on_header_value    = _ws_cli_http_header_value_cb;
+    conn->http_settings.on_headers_complete = _ws_cli_http_headers_complete_cb;
     llhttp_init(&conn->http_parser, HTTP_RESPONSE, &conn->http_settings);
     conn->http_parser.data = conn;
 
     /* Set up transport callbacks */
-    conn->transport_cb.on_connect    = _ws_transport_connect_cb;
-    conn->transport_cb.on_read       = _ws_transport_read_cb;
-    conn->transport_cb.on_close      = _ws_transport_close_cb;
+    conn->transport_cb.on_connect    = _ws_cli_transport_connect_cb;
+    conn->transport_cb.on_read       = _ws_cli_transport_read_cb;
+    conn->transport_cb.on_close      = _ws_cli_transport_close_cb;
     conn->transport_cb.on_accept     = NULL;
     conn->transport_cb.on_write_done = NULL;
 
@@ -398,7 +398,7 @@ xylem_ws_conn_t* xylem_ws_dial(xylem_loop_t* loop,
 
     /* Start handshake timeout */
     xylem_loop_start_timer(conn->handshake_timer,
-                           _ws_handshake_timeout_cb,
+                           _ws_cli_handshake_timeout_cb,
                            conn, handshake_timeout, 0);
 
     return conn;

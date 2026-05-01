@@ -130,7 +130,7 @@ static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
 }
 
 xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
-    xylem_tls_ctx_t* ctx = calloc(1, sizeof(*ctx));
+    xylem_tls_ctx_t* ctx = (xylem_tls_ctx_t*)calloc(1, sizeof(xylem_tls_ctx_t));
     if (!ctx) {
         return NULL;
     }
@@ -235,7 +235,7 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
         total += 1 + strlen(protocols[i]);
     }
 
-    uint8_t* wire = malloc(total);
+    uint8_t* wire = (uint8_t*)malloc(total);
     if (!wire) {
         return -1;
     }
@@ -374,7 +374,7 @@ static void _tls_tcp_accept_cb(xylem_tcp_server_t* tcp_server,
     xylem_tls_server_t* server =
         (xylem_tls_server_t*)xylem_tcp_server_get_userdata(tcp_server);
 
-    xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
     if (!tls) {
         xylem_loge("tls server accept: conn alloc failed");
         xylem_tcp_set_userdata(conn, NULL);
@@ -747,7 +747,7 @@ xylem_tls_conn_t* xylem_tls_dial(xylem_loop_t* loop,
                             xylem_tls_ctx_t* ctx,
                             xylem_tls_handler_t* handler,
                             xylem_tls_opts_t* opts) {
-    xylem_tls_conn_t* tls = calloc(1, sizeof(*tls));
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
     if (!tls) {
         return NULL;
     }
@@ -831,7 +831,7 @@ xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop,
                                      xylem_tls_ctx_t* ctx,
                                      xylem_tls_handler_t* handler,
                                      xylem_tls_opts_t* opts) {
-    xylem_tls_server_t* server = calloc(1, sizeof(*server));
+    xylem_tls_server_t* server = (xylem_tls_server_t*)calloc(1, sizeof(xylem_tls_server_t));
     if (!server) {
         return NULL;
     }

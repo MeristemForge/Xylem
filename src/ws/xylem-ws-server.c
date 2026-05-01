@@ -337,7 +337,7 @@ xylem_ws_server_t* xylem_ws_listen(xylem_loop_t* loop,
         vt = ws_transport_tcp();
     }
 
-    xylem_ws_server_t* server = calloc(1, sizeof(*server));
+    xylem_ws_server_t* server = (xylem_ws_server_t*)calloc(1, sizeof(xylem_ws_server_t));
     if (!server) {
         return NULL;
     }

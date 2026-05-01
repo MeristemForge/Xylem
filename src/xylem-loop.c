@@ -146,7 +146,7 @@ static int _loop_next_timeout(xylem_loop_t* loop) {
 }
 
 xylem_loop_t* xylem_loop_create(void) {
-    xylem_loop_t* loop = calloc(1, sizeof(*loop));
+    xylem_loop_t* loop = (xylem_loop_t*)calloc(1, sizeof(xylem_loop_t));
     if (!loop) {
         return NULL;
     }
@@ -273,7 +273,7 @@ void xylem_loop_stop(xylem_loop_t* loop) {
 
 xylem_loop_io_t*
 xylem_loop_create_io(xylem_loop_t* loop, xylem_poller_fd_t fd) {
-    xylem_loop_io_t* io = calloc(1, sizeof(*io));
+    xylem_loop_io_t* io = (xylem_loop_io_t*)calloc(1, sizeof(xylem_loop_io_t));
     if (!io) {
         return NULL;
     }
@@ -344,7 +344,7 @@ int xylem_loop_stop_io(xylem_loop_io_t* io) {
 }
 
 xylem_loop_timer_t* xylem_loop_create_timer(xylem_loop_t* loop) {
-    xylem_loop_timer_t* timer = calloc(1, sizeof(*timer));
+    xylem_loop_timer_t* timer = (xylem_loop_timer_t*)calloc(1, sizeof(xylem_loop_timer_t));
     if (!timer) {
         return NULL;
     }

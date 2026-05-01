@@ -36,6 +36,9 @@ _Pragma("once")
  * @param msg_len  Message length in bytes.
  * @param out      Output buffer of at least 32 bytes.
  */
-extern void xylem_hmac256_compute(const uint8_t* key, size_t key_len,
-                              const uint8_t* msg, size_t msg_len,
-                              uint8_t out[32]);
+extern void xylem_hmac256_compute(
+    const uint8_t* key,
+    size_t key_len,
+    const uint8_t* msg,
+    size_t msg_len,
+    uint8_t out[32]);

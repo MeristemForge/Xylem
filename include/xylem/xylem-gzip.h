@@ -55,7 +55,7 @@ extern size_t xylem_gzip_compress_bound(size_t slen);
  *
  * @note Use xylem_gzip_compress_bound() to determine the required dlen.
  */
-extern int xylem_gzip_compress(const uint8_t *src, size_t slen, uint8_t *dst,
+extern int xylem_gzip_compress(const uint8_t* src, size_t slen, uint8_t* dst,
                                size_t dlen, int level);
 
 /**
@@ -72,7 +72,7 @@ extern int xylem_gzip_compress(const uint8_t *src, size_t slen, uint8_t *dst,
  * @return Number of decompressed bytes written to dst on success; -1 on
  *         error (invalid data, CRC mismatch, or insufficient dlen).
  */
-extern int xylem_gzip_decompress(const uint8_t *src, size_t slen, uint8_t *dst,
+extern int xylem_gzip_decompress(const uint8_t* src, size_t slen, uint8_t* dst,
                                  size_t dlen);
 
 /**
@@ -105,7 +105,7 @@ extern size_t xylem_gzip_deflate_bound(size_t slen);
  *
  * @note Use xylem_gzip_deflate_bound() to determine the required dlen.
  */
-extern int xylem_gzip_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
+extern int xylem_gzip_deflate(const uint8_t* src, size_t slen, uint8_t* dst,
                               size_t dlen, int level);
 
 /**
@@ -122,5 +122,5 @@ extern int xylem_gzip_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
  * @return Number of decompressed bytes written to dst on success; -1 on
  *         error (invalid data or insufficient dlen).
  */
-extern int xylem_gzip_inflate(const uint8_t *src, size_t slen, uint8_t *dst,
+extern int xylem_gzip_inflate(const uint8_t* src, size_t slen, uint8_t* dst,
                               size_t dlen);

@@ -29,17 +29,22 @@ _Pragma("once")
 #include <sys/event.h>
 #endif
 
+/** @brief Poller submission queue handle (epoll fd or HANDLE). */
 #if defined(__linux__) || defined(__APPLE__)
 typedef int platform_poller_sq_t;
+/** @brief Platform file descriptor type (int on Unix). */
 typedef int platform_poller_fd_t;
 #endif
 
 #if defined(_WIN32)
 #include "platform-socket.h"
+/** @brief Poller submission queue handle (HANDLE on Windows). */
 typedef HANDLE platform_poller_sq_t;
+/** @brief Platform file descriptor type (SOCKET on Windows). */
 typedef SOCKET platform_poller_fd_t;
 #endif
 
+/** @brief Poller operation mask (read, write, or both). */
 typedef enum platform_poller_op_e {
     PLATFORM_POLLER_NO_OP = 0,
     PLATFORM_POLLER_RD_OP = 1,
@@ -49,12 +54,13 @@ typedef enum platform_poller_op_e {
 
 #define PLATFORM_POLLER_CQE_NUM 64
 
+/** @brief Completion queue entry returned by platform_poller_wait. */
 typedef struct platform_poller_cqe_s {
     platform_poller_op_t op;
     void*                ud;
 } platform_poller_cqe_t;
 
-/*
+/**
  * platform_poller_sqe_t is a persistent per-fd structure. The caller
  * allocates it, sets op/fd/ud, and passes it to add/mod/del. The same
  * sqe pointer must be used for all operations on that fd. The caller

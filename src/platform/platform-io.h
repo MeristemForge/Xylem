@@ -21,8 +21,10 @@
 
 _Pragma("once")
 
-#include <stdio.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #define PLATFORM_PATH_SEPARATOR '\\'
@@ -57,9 +59,6 @@ extern FILE* platform_io_fopen(const char* restrict file, const char* restrict m
  */
 extern int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap);
 
-#include <stdint.h>
-#include <time.h>
-
 /**
  * @brief File stat result (portable).
  *
@@ -69,7 +68,7 @@ extern int platform_io_vsprintf(char* str, size_t size, const char* restrict for
 typedef struct {
     int64_t size;    /*< File size in bytes. */
     time_t  mtime;   /*< Last modification time. */
-    int     is_dir;  /*< Non-zero if the path is a directory. */
+    int32_t is_dir;  /*< Non-zero if the path is a directory. */
 } platform_io_stat_t;
 
 /**

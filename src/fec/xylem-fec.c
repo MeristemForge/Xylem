@@ -20,9 +20,11 @@
  */
 
 #include "xylem/xylem-fec.h"
+
 #include "xylem/xylem-logger.h"
 
 #include "deprecated/c11-threads.h"
+
 #include "fec/reedsolomon-c/rs.h"
 
 #include <stdlib.h>
@@ -60,14 +62,14 @@ xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards) {
         return NULL;
     }
 
-    xylem_fec_t* fec = calloc(1, sizeof(*fec));
+    xylem_fec_t* fec = (xylem_fec_t*)calloc(1, sizeof(xylem_fec_t));
     if (!fec) {
         reed_solomon_release(rs);
         return NULL;
     }
 
     int total = data_shards + parity_shards;
-    fec->enc_shards = malloc((size_t)total * sizeof(uint8_t*));
+    fec->enc_shards = (uint8_t**)malloc((size_t)total * sizeof(uint8_t*));
     if (!fec->enc_shards) {
         reed_solomon_release(rs);
         free(fec);

@@ -19,11 +19,11 @@
  *  IN THE SOFTWARE.
  */
 
+#include "ws-handshake.h"
+
 #include "xylem/xylem-base64.h"
 #include "xylem/xylem-sha1.h"
 #include "xylem/xylem-utils.h"
-
-#include "ws-handshake.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -95,7 +95,7 @@ char* ws_handshake_build_request(const char* host, uint16_t port,
         return NULL;
     }
 
-    /**
+    /*
      * Build: GET <path> HTTP/1.1\r\n
      *        Host: <host>:<port>\r\n
      *        Upgrade: websocket\r\n
@@ -173,7 +173,7 @@ char* ws_handshake_build_response(const char* accept_value,
         return NULL;
     }
 
-    /**
+    /*
      * Build: HTTP/1.1 101 Switching Protocols\r\n
      *        Upgrade: websocket\r\n
      *        Connection: Upgrade\r\n

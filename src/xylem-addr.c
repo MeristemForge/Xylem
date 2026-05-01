@@ -177,7 +177,7 @@ xylem_addr_resolve_t* xylem_addr_resolve(xylem_loop_t* loop,
         return NULL;
     }
 
-    xylem_addr_resolve_t* r = calloc(1, sizeof(*r));
+    xylem_addr_resolve_t* r = (xylem_addr_resolve_t*)calloc(1, sizeof(xylem_addr_resolve_t));
     if (!r) {
         return NULL;
     }

@@ -51,9 +51,9 @@ typedef struct {
  *   headers = NULL, header_count = 0.
  */
 typedef struct {
-    uint64_t                    timeout_ms;
-    int                         max_redirects;
-    size_t                      max_body_size;
+    uint64_t                    timeout_ms;     /*< Request timeout in ms, 0 to disable. */
+    int                         max_redirects;  /*< Maximum redirect count, 0 to disable. */
+    size_t                      max_body_size;  /*< Maximum response body size, 0 for default. */
     const xylem_http_hdr_t*     headers;      /*< Custom request headers, NULL for none. */
     size_t                      header_count;  /*< Number of custom request headers. */
     xylem_http_cookie_jar_t*    cookie_jar;    /*< Cookie jar for automatic cookie management, NULL to disable. */

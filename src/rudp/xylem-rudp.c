@@ -20,6 +20,7 @@
  */
 
 #include "xylem/xylem-rudp.h"
+
 #include "xylem/xylem-aes256.h"
 #include "xylem/xylem-bswap.h"
 #include "xylem/xylem-logger.h"
@@ -27,10 +28,10 @@
 #include "xylem/xylem-udp.h"
 #include "xylem/xylem-utils.h"
 
-#include "rudp/kcp/ikcp.h"
+#include "platform/platform-socket.h"
 #include "rudp/rudp-fec.h"
 
-#include "platform/platform-socket.h"
+#include "rudp/kcp/ikcp.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -656,7 +657,8 @@ static bool _rudp_init_fec(xylem_rudp_conn_t* rudp, int mtu) {
 /* Accept a new session from a SYN handshake. */
 static void _rudp_accept_session(
     xylem_rudp_server_t* server, xylem_addr_t* addr, uint32_t conv) {
-    xylem_rudp_conn_t* rudp = calloc(1, sizeof(*rudp));
+    xylem_rudp_conn_t* rudp =
+        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
     if (!rudp) {
         xylem_loge("rudp server: session alloc failed");
         return;
@@ -851,7 +853,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
                               xylem_rudp_handler_t* handler,
                               xylem_rudp_opts_t* opts) {
-    xylem_rudp_conn_t* rudp = calloc(1, sizeof(*rudp));
+    xylem_rudp_conn_t* rudp =
+        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
     if (!rudp) {
         return NULL;
     }
@@ -1091,7 +1094,8 @@ xylem_rudp_server_t* xylem_rudp_listen(xylem_loop_t* loop,
                                        xylem_addr_t* addr,
                                        xylem_rudp_handler_t* handler,
                                        xylem_rudp_opts_t* opts) {
-    xylem_rudp_server_t* server = calloc(1, sizeof(*server));
+    xylem_rudp_server_t* server =
+        (xylem_rudp_server_t*)calloc(1, sizeof(xylem_rudp_server_t));
     if (!server) {
         return NULL;
     }

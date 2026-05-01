@@ -24,13 +24,13 @@
 
 #include "deprecated/c11-threads.h"
 
+#include "platform/platform.h"
+
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "platform/platform.h"
-
-#include <inttypes.h>
 
 #define BUFSIZE 4096
 
@@ -200,7 +200,7 @@ static void _logger_async_log(
 
     int len = _logger_build_message(buf, sizeof(buf), level, &cb_offset, file, line, fmt, v);
 
-    _printer_ctx_t* ctx = malloc(sizeof(_printer_ctx_t) + len + 1);
+    _printer_ctx_t* ctx = (_printer_ctx_t*)malloc(sizeof(_printer_ctx_t) + len + 1);
     if (ctx) {
         memcpy(ctx->message, buf, len + 1);
         ctx->level     = level;

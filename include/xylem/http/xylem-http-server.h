@@ -116,15 +116,15 @@ typedef struct {
  * valid until xylem_http_close_server() is called.
  */
 typedef struct xylem_http_srv_cfg_s {
-    const char*                  host;            /* bind address, e.g. "0.0.0.0" */
-    uint16_t                     port;            /* bind port */
-    xylem_http_on_request_fn_t   on_request;      /* request callback */
-    void*                        userdata;        /* passed to on_request */
-    const char*                  tls_cert;        /* PEM cert path, NULL for plain HTTP */
-    const char*                  tls_key;         /* PEM key path, NULL for plain HTTP */
-    size_t                       max_body_size;   /* max request body, 0 = default 1 MiB */
-    uint64_t                     idle_timeout_ms; /* idle timeout, 0 = disabled, default 60000 */
-    xylem_http_on_upgrade_fn_t   on_upgrade;      /* upgrade callback, NULL = reject with 501 */
+    const char*                  host;            /*< bind address, e.g. "0.0.0.0" */
+    uint16_t                     port;            /*< bind port */
+    xylem_http_on_request_fn_t   on_request;      /*< request callback */
+    void*                        userdata;        /*< passed to on_request */
+    const char*                  tls_cert;        /*< PEM cert path, NULL for plain HTTP */
+    const char*                  tls_key;         /*< PEM key path, NULL for plain HTTP */
+    size_t                       max_body_size;   /*< max request body, 0 = default 1 MiB */
+    uint64_t                     idle_timeout_ms; /*< idle timeout, 0 = disabled, default 60000 */
+    xylem_http_on_upgrade_fn_t   on_upgrade;      /*< upgrade callback, NULL = reject with 501 */
 } xylem_http_srv_cfg_t;
 
 /**

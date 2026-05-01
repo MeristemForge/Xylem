@@ -140,7 +140,7 @@ struct xylem_http_cookie_jar_s {
 };
 
 static char* _http_cli_cookie_strdup(const char* s, size_t len) {
-    char* d = malloc(len + 1);
+    char* d = (char*)malloc(len + 1);
     if (!d) {
         return NULL;
     }
@@ -355,7 +355,7 @@ static void _http_cli_cookie_jar_store(xylem_http_cookie_jar_t* jar,
     /* Grow array if needed. */
     if (jar->count >= jar->cap) {
         size_t new_cap = jar->cap ? jar->cap * 2 : 8;
-        _cookie_t* tmp = realloc(jar->cookies, new_cap * sizeof(*tmp));
+        _cookie_t* tmp = (_cookie_t*)realloc(jar->cookies, new_cap * sizeof(*tmp));
         if (!tmp) {
             _http_cli_cookie_free(c);
             return;
@@ -397,7 +397,7 @@ static char* _http_cli_cookie_jar_build(const xylem_http_cookie_jar_t* jar,
                                         const char* scheme, const char* host,
                                         const char* path) {
     size_t cap = 128;
-    char* buf = malloc(cap);
+    char* buf = (char*)malloc(cap);
     if (!buf) {
         return NULL;
     }
@@ -418,7 +418,7 @@ static char* _http_cli_cookie_jar_build(const xylem_http_cookie_jar_t* jar,
             while (off + need + 1 > cap) {
                 cap *= 2;
             }
-            char* tmp = realloc(buf, cap);
+            char* tmp = (char*)realloc(buf, cap);
             if (!tmp) {
                 free(buf);
                 return NULL;
@@ -466,7 +466,7 @@ static int _http_cli_res_header_field_cb(llhttp_t* parser,
     _http_cli_ctx_t* ctx = parser->data;
 
     free(ctx->cur_header_name);
-    ctx->cur_header_name = malloc(len + 1);
+    ctx->cur_header_name = (char*)malloc(len + 1);
     if (!ctx->cur_header_name) {
         return HPE_USER;
     }
@@ -505,7 +505,7 @@ static int _http_cli_res_headers_complete_cb(llhttp_t* parser) {
         uint64_t content_length = parser->content_length;
         if (content_length > 0 && content_length != ULLONG_MAX &&
             content_length <= ctx->max_body_size) {
-            ctx->res->body = malloc((size_t)content_length);
+            ctx->res->body = (uint8_t*)malloc((size_t)content_length);
             /* Allocation failure is non-fatal; realloc path handles it. */
         }
     }
@@ -537,7 +537,7 @@ static int _http_cli_res_body_cb(llhttp_t* parser,
         return 0;
     }
 
-    uint8_t* tmp = realloc(ctx->res->body, ctx->res->body_len + len);
+    uint8_t* tmp = (uint8_t*)realloc(ctx->res->body, ctx->res->body_len + len);
     if (!tmp) {
         return HPE_USER;
     }
@@ -563,7 +563,7 @@ static int _http_cli_res_message_complete_cb(llhttp_t* parser) {
             uint8_t* dec = NULL;
             while (mult <= 16) {
                 size_t dec_cap = src_len * mult;
-                dec = malloc(dec_cap);
+                dec = (uint8_t*)malloc(dec_cap);
                 if (!dec) {
                     break;
                 }
@@ -676,8 +676,8 @@ static void _http_cli_conn_connect_cb(void* handle, void* user) {
 
     if (extra > 0) {
         ctx->merged_header_count = ctx->custom_header_count + extra;
-        ctx->merged_headers = malloc(ctx->merged_header_count
-                                     * sizeof(xylem_http_hdr_t));
+        ctx->merged_headers = (xylem_http_hdr_t*)malloc(
+            ctx->merged_header_count * sizeof(xylem_http_hdr_t));
         if (ctx->merged_headers) {
             for (size_t i = 0; i < ctx->custom_header_count; i++) {
                 ctx->merged_headers[i] = ctx->custom_headers[i];
@@ -875,7 +875,7 @@ static xylem_http_res_t* _http_cli_exec(const char* method,
         ctx.conn              = NULL;
         ctx.cur_header_name   = NULL;
 
-        ctx.res = calloc(1, sizeof(*ctx.res));
+        ctx.res = (xylem_http_res_t*)calloc(1, sizeof(xylem_http_res_t));
         if (!ctx.res) {
             break;
         }
@@ -1030,7 +1030,7 @@ static _http_session_pool_entry_t* _http_session_pool_entry_find_or_create(
     if (entry) {
         return entry;
     }
-    entry = calloc(1, sizeof(*entry));
+    entry = (_http_session_pool_entry_t*)calloc(1, sizeof(_http_session_pool_entry_t));
     if (!entry) {
         return NULL;
     }
@@ -1085,7 +1085,8 @@ static void _http_session_pool_put(xylem_http_session_t* session,
         oldest->vt->close_conn(oldest->transport);
         free(oldest);
     }
-    _http_session_idle_conn_t* ic = calloc(1, sizeof(*ic));
+    _http_session_idle_conn_t* ic =
+        (_http_session_idle_conn_t*)calloc(1, sizeof(_http_session_idle_conn_t));
     if (!ic) {
         vt->close_conn(transport);
         return;
@@ -1150,7 +1151,7 @@ static xylem_http_res_t* _http_session_exec(
         ctx.conn              = NULL;
         ctx.cur_header_name   = NULL;
 
-        ctx.res = calloc(1, sizeof(*ctx.res));
+        ctx.res = (xylem_http_res_t*)calloc(1, sizeof(xylem_http_res_t));
         if (!ctx.res) {
             break;
         }
@@ -1203,7 +1204,7 @@ static xylem_http_res_t* _http_session_exec(
                 xylem_http_res_destroy(ctx.res);
                 ctx.res = NULL;
                 /* Transparent retry with a fresh connection. */
-                ctx.res = calloc(1, sizeof(*ctx.res));
+                ctx.res = (xylem_http_res_t*)calloc(1, sizeof(xylem_http_res_t));
                 if (!ctx.res) {
                     break;
                 }
@@ -1300,7 +1301,8 @@ fresh_connect:;
 
 xylem_http_session_t* xylem_http_session_create(
     const xylem_http_session_opts_t* opts) {
-    xylem_http_session_t* s = calloc(1, sizeof(*s));
+    xylem_http_session_t* s =
+        (xylem_http_session_t*)calloc(1, sizeof(xylem_http_session_t));
     if (!s) {
         return NULL;
     }

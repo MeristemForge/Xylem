@@ -27,9 +27,12 @@
 #define HMAC_BLOCK_SIZE  64
 #define HMAC_DIGEST_SIZE 32
 
-void xylem_hmac256_compute(const uint8_t* key, size_t key_len,
-                       const uint8_t* msg, size_t msg_len,
-                       uint8_t out[32]) {
+void xylem_hmac256_compute(
+    const uint8_t* key,
+    size_t key_len,
+    const uint8_t* msg,
+    size_t msg_len,
+    uint8_t out[32]) {
     uint8_t k[HMAC_BLOCK_SIZE] = {0};
 
     /* Keys longer than the block size are hashed first. */

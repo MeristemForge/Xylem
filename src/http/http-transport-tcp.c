@@ -30,45 +30,46 @@
 typedef struct {
     http_transport_cb_t* cb;
     void*                ctx;
-} _tcp_bridge_t;
+} _http_tcp_bridge_t;
 
-static void _tcp_connect_cb(xylem_tcp_conn_t* conn) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _http_tcp_connect_cb(xylem_tcp_conn_t* conn) {
+    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
     br->cb->on_connect(conn, br->ctx);
 }
 
-static void _tcp_accept_cb(xylem_tcp_server_t* server,
-                           xylem_tcp_conn_t* conn) {
-    _tcp_bridge_t* br = xylem_tcp_server_get_userdata(server);
+static void _http_tcp_accept_cb(xylem_tcp_server_t* server,
+                                xylem_tcp_conn_t* conn) {
+    _http_tcp_bridge_t* br = xylem_tcp_server_get_userdata(server);
     xylem_tcp_set_userdata(conn, br);
     br->cb->on_accept(conn, br->ctx);
 }
 
-static void _tcp_read_cb(xylem_tcp_conn_t* conn,
-                         void* data, size_t len) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _http_tcp_read_cb(xylem_tcp_conn_t* conn,
+                              void* data, size_t len) {
+    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
     br->cb->on_read(conn, br->ctx, data, len);
 }
 
-static void _tcp_write_done_cb(xylem_tcp_conn_t* conn,
-                               const void* data, size_t len, int status) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _http_tcp_write_done_cb(xylem_tcp_conn_t* conn,
+                                    const void* data, size_t len, int status) {
+    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
     if (br->cb->on_write_done) {
         br->cb->on_write_done(conn, br->ctx, data, len, status);
     }
 }
 
-static void _tcp_close_cb(xylem_tcp_conn_t* conn, int err,
-                          const char* errmsg) {
-    _tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
+static void _http_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
+                               const char* errmsg) {
+    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
     br->cb->on_close(conn, br->ctx, err, errmsg);
     free(br);
 }
 
-static void* _tcp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
-                       http_transport_cb_t* cb, void* ctx,
-                       xylem_tcp_opts_t* opts) {
-    _tcp_bridge_t* br = (_tcp_bridge_t*)calloc(1, sizeof(_tcp_bridge_t));
+static void* _http_tcp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+                            http_transport_cb_t* cb, void* ctx,
+                            xylem_tcp_opts_t* opts) {
+    _http_tcp_bridge_t* br =
+        (_http_tcp_bridge_t*)calloc(1, sizeof(_http_tcp_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -76,10 +77,10 @@ static void* _tcp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
     br->ctx = ctx;
 
     xylem_tcp_handler_t handler = {
-        .on_connect    = _tcp_connect_cb,
-        .on_read       = _tcp_read_cb,
-        .on_write_done = _tcp_write_done_cb,
-        .on_close      = _tcp_close_cb,
+        .on_connect    = _http_tcp_connect_cb,
+        .on_read       = _http_tcp_read_cb,
+        .on_write_done = _http_tcp_write_done_cb,
+        .on_close      = _http_tcp_close_cb,
     };
 
     xylem_tcp_conn_t* conn = xylem_tcp_dial(loop, addr, &handler, opts);
@@ -91,14 +92,15 @@ static void* _tcp_dial(xylem_loop_t* loop, xylem_addr_t* addr,
     return conn;
 }
 
-static void* _tcp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
-                         http_transport_cb_t* cb, void* ctx,
-                         xylem_tcp_opts_t* opts,
-                         const char* tls_cert, const char* tls_key) {
+static void* _http_tcp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
+                              http_transport_cb_t* cb, void* ctx,
+                              xylem_tcp_opts_t* opts,
+                              const char* tls_cert, const char* tls_key) {
     (void)tls_cert;
     (void)tls_key;
 
-    _tcp_bridge_t* br = (_tcp_bridge_t*)calloc(1, sizeof(_tcp_bridge_t));
+    _http_tcp_bridge_t* br =
+        (_http_tcp_bridge_t*)calloc(1, sizeof(_http_tcp_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -106,10 +108,10 @@ static void* _tcp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
     br->ctx = ctx;
 
     xylem_tcp_handler_t handler = {
-        .on_accept     = _tcp_accept_cb,
-        .on_read       = _tcp_read_cb,
-        .on_write_done = _tcp_write_done_cb,
-        .on_close      = _tcp_close_cb,
+        .on_accept     = _http_tcp_accept_cb,
+        .on_read       = _http_tcp_read_cb,
+        .on_write_done = _http_tcp_write_done_cb,
+        .on_close      = _http_tcp_close_cb,
     };
 
     xylem_tcp_server_t* srv = xylem_tcp_listen(loop, addr, &handler, opts);
@@ -121,38 +123,38 @@ static void* _tcp_listen(xylem_loop_t* loop, xylem_addr_t* addr,
     return srv;
 }
 
-static int _tcp_send(void* handle, const void* data, size_t len) {
+static int _http_tcp_send(void* handle, const void* data, size_t len) {
     return xylem_tcp_send(handle, data, len);
 }
 
-static void _tcp_close_conn(void* handle) {
+static void _http_tcp_close_conn(void* handle) {
     xylem_tcp_close(handle);
 }
 
-static void _tcp_close_server(void* handle) {
-    _tcp_bridge_t* br = xylem_tcp_server_get_userdata(handle);
+static void _http_tcp_close_server(void* handle) {
+    _http_tcp_bridge_t* br = xylem_tcp_server_get_userdata(handle);
     xylem_tcp_close_server(handle);
     free(br);
 }
 
-static void _tcp_set_userdata(void* handle, void* ud) {
+static void _http_tcp_set_userdata(void* handle, void* ud) {
     xylem_tcp_set_userdata(handle, ud);
 }
 
-static void* _tcp_get_userdata(void* handle) {
+static void* _http_tcp_get_userdata(void* handle) {
     return xylem_tcp_get_userdata(handle);
 }
 
-static const http_transport_vt_t _tcp_vt = {
-    .dial         = _tcp_dial,
-    .listen       = _tcp_listen,
-    .send         = _tcp_send,
-    .close_conn   = _tcp_close_conn,
-    .close_server = _tcp_close_server,
-    .set_userdata = _tcp_set_userdata,
-    .get_userdata = _tcp_get_userdata,
+static const http_transport_vt_t _http_tcp_vt = {
+    .dial         = _http_tcp_dial,
+    .listen       = _http_tcp_listen,
+    .send         = _http_tcp_send,
+    .close_conn   = _http_tcp_close_conn,
+    .close_server = _http_tcp_close_server,
+    .set_userdata = _http_tcp_set_userdata,
+    .get_userdata = _http_tcp_get_userdata,
 };
 
 const http_transport_vt_t* http_transport_tcp(void) {
-    return &_tcp_vt;
+    return &_http_tcp_vt;
 }

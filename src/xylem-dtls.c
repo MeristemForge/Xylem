@@ -196,7 +196,7 @@ static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
 }
 
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
-    xylem_dtls_ctx_t* ctx = calloc(1, sizeof(*ctx));
+    xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)calloc(1, sizeof(xylem_dtls_ctx_t));
     if (!ctx) {
         return NULL;
     }
@@ -308,7 +308,7 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
         total += 1 + strlen(protocols[i]);
     }
 
-    uint8_t* wire = malloc(total);
+    uint8_t* wire = (uint8_t*)malloc(total);
     if (!wire) {
         return -1;
     }
@@ -720,7 +720,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
         return;
     }
 
-    dtls = calloc(1, sizeof(*dtls));
+    dtls = (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
     if (!dtls) {
         xylem_loge("dtls server: session alloc failed");
         return;
@@ -798,7 +798,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(xylem_loop_t* loop,
                               xylem_addr_t* addr,
                               xylem_dtls_ctx_t* ctx,
                               xylem_dtls_handler_t* handler) {
-    xylem_dtls_conn_t* dtls = calloc(1, sizeof(*dtls));
+    xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
     if (!dtls) {
         return NULL;
     }
@@ -1032,7 +1032,7 @@ xylem_dtls_server_t* xylem_dtls_listen(xylem_loop_t* loop,
                                        xylem_addr_t* addr,
                                        xylem_dtls_ctx_t* ctx,
                                        xylem_dtls_handler_t* handler) {
-    xylem_dtls_server_t* server = calloc(1, sizeof(*server));
+    xylem_dtls_server_t* server = (xylem_dtls_server_t*)calloc(1, sizeof(xylem_dtls_server_t));
     if (!server) {
         return NULL;
     }

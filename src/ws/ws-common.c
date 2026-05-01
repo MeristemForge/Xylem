@@ -66,7 +66,7 @@ int ws_conn_recv_buf_grow(xylem_ws_conn_t* conn, size_t needed) {
     while (new_cap < needed) {
         new_cap *= 2;
     }
-    uint8_t* tmp = realloc(conn->recv_buf, new_cap);
+    uint8_t* tmp = (uint8_t*)realloc(conn->recv_buf, new_cap);
     if (!tmp) {
         return -1;
     }
@@ -83,7 +83,7 @@ int ws_conn_frag_buf_append(xylem_ws_conn_t* conn,
         while (new_cap < needed) {
             new_cap *= 2;
         }
-        uint8_t* tmp = realloc(conn->frag_buf, new_cap);
+        uint8_t* tmp = (uint8_t*)realloc(conn->frag_buf, new_cap);
         if (!tmp) {
             return -1;
         }
@@ -118,7 +118,7 @@ int ws_conn_send_frame(xylem_ws_conn_t* conn, bool fin,
     bool heap = (total > sizeof(stack_buf));
 
     if (heap) {
-        frame = malloc(total);
+        frame = (uint8_t*)malloc(total);
         if (!frame) {
             return -1;
         }
@@ -188,7 +188,7 @@ void ws_conn_destroy(xylem_ws_conn_t* conn) {
 
 xylem_ws_conn_t* ws_conn_create(xylem_loop_t* loop,
                                 const xylem_ws_opts_t* opts) {
-    xylem_ws_conn_t* conn = calloc(1, sizeof(*conn));
+    xylem_ws_conn_t* conn = (xylem_ws_conn_t*)calloc(1, sizeof(xylem_ws_conn_t));
     if (!conn) {
         return NULL;
     }
@@ -213,7 +213,7 @@ xylem_ws_conn_t* ws_conn_create(xylem_loop_t* loop,
     }
 
     /* Allocate receive buffer */
-    conn->recv_buf = malloc(WS_INITIAL_RECV_CAP);
+    conn->recv_buf = (uint8_t*)malloc(WS_INITIAL_RECV_CAP);
     if (!conn->recv_buf) {
         free(conn);
         return NULL;

@@ -276,7 +276,7 @@ char* http_req_serialize(const char* method, const http_url_t* url,
         est += body_len;
     }
 
-    char* buf = malloc(est);
+    char* buf = (char*)malloc(est);
     if (!buf) {
         return NULL;
     }
@@ -414,8 +414,8 @@ int http_header_add(http_header_t** headers, size_t* count,
                     const char* value, size_t value_len) {
     if (*count >= *cap) {
         size_t new_cap = (*cap == 0) ? 16 : *cap * 2;
-        http_header_t* tmp = realloc(*headers,
-                                     new_cap * sizeof(http_header_t));
+        http_header_t* tmp = (http_header_t*)realloc(
+            *headers, new_cap * sizeof(http_header_t));
         if (!tmp) {
             return -1;
         }
@@ -424,7 +424,7 @@ int http_header_add(http_header_t** headers, size_t* count,
     }
 
     /* Single allocation for both name and value strings. */
-    char* block = malloc(name_len + 1 + value_len + 1);
+    char* block = (char*)malloc(name_len + 1 + value_len + 1);
     if (!block) {
         return -1;
     }

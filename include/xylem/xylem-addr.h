@@ -34,7 +34,7 @@ typedef struct xylem_addr_resolve_s xylem_addr_resolve_t;
  * between IPv4 and IPv6 at the API level.
  */
 typedef struct xylem_addr_s {
-    struct sockaddr_storage storage;
+    struct sockaddr_storage storage; /*< Platform-generic address storage. */
 } xylem_addr_t;
 
 /**

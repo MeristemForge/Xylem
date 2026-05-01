@@ -30,12 +30,12 @@
 #define GZIP_TRAILER_SIZE 8
 #define GZIP_OVERHEAD (GZIP_HEADER_SIZE + GZIP_TRAILER_SIZE)
 
-static uint32_t _gzip_read_le32(const uint8_t *p) {
+static uint32_t _gzip_read_le32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
            ((uint32_t)p[3] << 24);
 }
 
-static void _gzip_write_le32(uint8_t *p, uint32_t v) {
+static void _gzip_write_le32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)(v);
     p[1] = (uint8_t)(v >> 8);
     p[2] = (uint8_t)(v >> 16);
@@ -47,8 +47,8 @@ static void _gzip_write_le32(uint8_t *p, uint32_t v) {
  * start of the compressed payload. Returns NULL if the header is malformed.
  * Sets *hdr_len to the total number of header bytes consumed.
  */
-static const uint8_t *_gzip_skip_header(const uint8_t *src, size_t src_len,
-                                        size_t *hdr_len) {
+static const uint8_t* _gzip_skip_header(const uint8_t* src, size_t src_len,
+                                        size_t* hdr_len) {
     if (src_len < GZIP_OVERHEAD) {
         return NULL;
     }
@@ -106,7 +106,7 @@ static const uint8_t *_gzip_skip_header(const uint8_t *src, size_t src_len,
 }
 
 /* Raw deflate into caller-provided buffer. Returns bytes written or -1. */
-static int _gzip_raw_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
+static int _gzip_raw_deflate(const uint8_t* src, size_t slen, uint8_t* dst,
                              size_t dlen, int level) {
     if (slen > UINT_MAX || dlen > UINT_MAX) {
         return -1;
@@ -137,7 +137,7 @@ static int _gzip_raw_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
 }
 
 /* Raw inflate into caller-provided buffer. Returns bytes written or -1. */
-static int _gzip_raw_inflate(const uint8_t *src, size_t slen, uint8_t *dst,
+static int _gzip_raw_inflate(const uint8_t* src, size_t slen, uint8_t* dst,
                              size_t dlen) {
     if (slen > UINT_MAX || dlen > UINT_MAX) {
         return -1;
@@ -180,7 +180,7 @@ size_t xylem_gzip_compress_bound(size_t slen) {
     return xylem_gzip_deflate_bound(slen) + GZIP_OVERHEAD;
 }
 
-int xylem_gzip_compress(const uint8_t *src, size_t slen, uint8_t *dst,
+int xylem_gzip_compress(const uint8_t* src, size_t slen, uint8_t* dst,
                         size_t dlen, int level) {
     if (!dst || dlen < GZIP_OVERHEAD) {
         return -1;
@@ -209,21 +209,21 @@ int xylem_gzip_compress(const uint8_t *src, size_t slen, uint8_t *dst,
 
     /* 8-byte trailer: CRC-32 + original size (mod 2^32). */
     mz_ulong crc = mz_crc32(MZ_CRC32_INIT, (const unsigned char *)src, slen);
-    uint8_t *trailer = dst + GZIP_HEADER_SIZE + deflated;
+    uint8_t* trailer = dst + GZIP_HEADER_SIZE + deflated;
     _gzip_write_le32(trailer, (uint32_t)crc);
     _gzip_write_le32(trailer + 4, (uint32_t)(slen & 0xFFFFFFFF));
 
     return GZIP_HEADER_SIZE + deflated + GZIP_TRAILER_SIZE;
 }
 
-int xylem_gzip_decompress(const uint8_t *src, size_t slen, uint8_t *dst,
+int xylem_gzip_decompress(const uint8_t* src, size_t slen, uint8_t* dst,
                           size_t dlen) {
     if (!src || !dst) {
         return -1;
     }
 
     size_t hdr_len = 0;
-    const uint8_t *payload = _gzip_skip_header(src, slen, &hdr_len);
+    const uint8_t* payload = _gzip_skip_header(src, slen, &hdr_len);
     if (!payload) {
         return -1;
     }
@@ -232,7 +232,7 @@ int xylem_gzip_decompress(const uint8_t *src, size_t slen, uint8_t *dst,
         return -1;
     }
     size_t payload_len = slen - hdr_len - GZIP_TRAILER_SIZE;
-    const uint8_t *trailer = src + slen - GZIP_TRAILER_SIZE;
+    const uint8_t* trailer = src + slen - GZIP_TRAILER_SIZE;
     uint32_t expected_crc = _gzip_read_le32(trailer);
     uint32_t expected_size = _gzip_read_le32(trailer + 4);
 
@@ -252,7 +252,7 @@ int xylem_gzip_decompress(const uint8_t *src, size_t slen, uint8_t *dst,
     return written;
 }
 
-int xylem_gzip_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
+int xylem_gzip_deflate(const uint8_t* src, size_t slen, uint8_t* dst,
                        size_t dlen, int level) {
     if (!dst) {
         return -1;
@@ -263,7 +263,7 @@ int xylem_gzip_deflate(const uint8_t *src, size_t slen, uint8_t *dst,
     return _gzip_raw_deflate(src, slen, dst, dlen, level);
 }
 
-int xylem_gzip_inflate(const uint8_t *src, size_t slen, uint8_t *dst,
+int xylem_gzip_inflate(const uint8_t* src, size_t slen, uint8_t* dst,
                        size_t dlen) {
     if (!src || !dst) {
         return -1;

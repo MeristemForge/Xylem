@@ -32,37 +32,37 @@ typedef struct {
     ws_transport_cb_t* cb;
     void*              ctx;
     xylem_tls_ctx_t*   tls_ctx;
-} _tls_bridge_t;
+} _ws_tls_bridge_t;
 
-static void _tls_connect_cb(xylem_tls_conn_t* tls) {
-    _tls_bridge_t* br = xylem_tls_get_userdata(tls);
+static void _ws_tls_connect_cb(xylem_tls_conn_t* tls) {
+    _ws_tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_connect(tls, br->ctx);
 }
 
-static void _tls_accept_cb(xylem_tls_server_t* server,
+static void _ws_tls_accept_cb(xylem_tls_server_t* server,
                            xylem_tls_conn_t* tls) {
-    _tls_bridge_t* br = xylem_tls_server_get_userdata(server);
+    _ws_tls_bridge_t* br = xylem_tls_server_get_userdata(server);
     xylem_tls_set_userdata(tls, br);
     br->cb->on_accept(tls, br->ctx);
 }
 
-static void _tls_read_cb(xylem_tls_conn_t* tls, void* data, size_t len) {
-    _tls_bridge_t* br = xylem_tls_get_userdata(tls);
+static void _ws_tls_read_cb(xylem_tls_conn_t* tls, void* data, size_t len) {
+    _ws_tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_read(tls, br->ctx, data, len);
 }
 
-static void _tls_close_cb(xylem_tls_conn_t* tls, int err,
+static void _ws_tls_close_cb(xylem_tls_conn_t* tls, int err,
                           const char* errmsg) {
-    _tls_bridge_t* br = xylem_tls_get_userdata(tls);
+    _ws_tls_bridge_t* br = xylem_tls_get_userdata(tls);
     br->cb->on_close(tls, br->ctx, err, errmsg);
     xylem_tls_ctx_destroy(br->tls_ctx);
     free(br);
 }
 
-static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
+static void* _ws_tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
                        ws_transport_cb_t* cb, void* ctx,
                        xylem_tcp_opts_t* opts) {
-    _tls_bridge_t* br = (_tls_bridge_t*)calloc(1, sizeof(_tls_bridge_t));
+    _ws_tls_bridge_t* br = (_ws_tls_bridge_t*)calloc(1, sizeof(_ws_tls_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -75,9 +75,9 @@ static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
     }
 
     xylem_tls_handler_t handler = {
-        .on_connect = _tls_connect_cb,
-        .on_read    = _tls_read_cb,
-        .on_close   = _tls_close_cb,
+        .on_connect = _ws_tls_connect_cb,
+        .on_read    = _ws_tls_read_cb,
+        .on_close   = _ws_tls_close_cb,
     };
 
     xylem_tls_opts_t tls_opts = {0};
@@ -97,11 +97,11 @@ static void* _tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
     return tls;
 }
 
-static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
+static void* _ws_tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
                          ws_transport_cb_t* cb, void* ctx,
                          xylem_tcp_opts_t* opts,
                          const char* tls_cert, const char* tls_key) {
-    _tls_bridge_t* br = (_tls_bridge_t*)calloc(1, sizeof(_tls_bridge_t));
+    _ws_tls_bridge_t* br = (_ws_tls_bridge_t*)calloc(1, sizeof(_ws_tls_bridge_t));
     if (!br) {
         return NULL;
     }
@@ -119,9 +119,9 @@ static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
     }
 
     xylem_tls_handler_t handler = {
-        .on_accept = _tls_accept_cb,
-        .on_read   = _tls_read_cb,
-        .on_close  = _tls_close_cb,
+        .on_accept = _ws_tls_accept_cb,
+        .on_read   = _ws_tls_read_cb,
+        .on_close  = _ws_tls_close_cb,
     };
 
     xylem_tls_opts_t tls_opts = {0};
@@ -141,41 +141,41 @@ static void* _tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
     return srv;
 }
 
-static int _tls_send(void* handle, const void* data, size_t len) {
+static int _ws_tls_send(void* handle, const void* data, size_t len) {
     return xylem_tls_send(handle, data, len);
 }
 
-static void _tls_close_conn(void* handle) {
+static void _ws_tls_close_conn(void* handle) {
     xylem_tls_close(handle);
 }
 
-static void _tls_close_server(void* handle) {
+static void _ws_tls_close_server(void* handle) {
     xylem_tls_close_server(handle);
 }
 
-static void _tls_set_userdata(void* handle, void* ud) {
+static void _ws_tls_set_userdata(void* handle, void* ud) {
     xylem_tls_set_userdata(handle, ud);
 }
 
-static void* _tls_get_userdata(void* handle) {
+static void* _ws_tls_get_userdata(void* handle) {
     return xylem_tls_get_userdata(handle);
 }
 
-static const xylem_addr_t* _tls_get_peer_addr(void* handle) {
+static const xylem_addr_t* _ws_tls_get_peer_addr(void* handle) {
     return xylem_tls_get_peer_addr(handle);
 }
 
-static const ws_transport_vt_t _tls_vt = {
-    .dial          = _tls_dial,
-    .listen        = _tls_listen,
-    .send          = _tls_send,
-    .close_conn    = _tls_close_conn,
-    .close_server  = _tls_close_server,
-    .set_userdata  = _tls_set_userdata,
-    .get_userdata  = _tls_get_userdata,
-    .get_peer_addr = _tls_get_peer_addr,
+static const ws_transport_vt_t _ws_tls_vt = {
+    .dial          = _ws_tls_dial,
+    .listen        = _ws_tls_listen,
+    .send          = _ws_tls_send,
+    .close_conn    = _ws_tls_close_conn,
+    .close_server  = _ws_tls_close_server,
+    .set_userdata  = _ws_tls_set_userdata,
+    .get_userdata  = _ws_tls_get_userdata,
+    .get_peer_addr = _ws_tls_get_peer_addr,
 };
 
 const ws_transport_vt_t* ws_transport_tls(void) {
-    return &_tls_vt;
+    return &_ws_tls_vt;
 }

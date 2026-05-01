@@ -20,7 +20,9 @@
  */
 
 #include "platform/platform-poller.h"
+
 #include "wepoll/wepoll.h"
+
 #include <string.h>
 
 int platform_poller_init(platform_poller_sq_t* sq) {

@@ -34,7 +34,7 @@ char* xylem_http_url_encode(const char* src, size_t src_len,
     }
 
     size_t max_len = src_len * 3 + 1;
-    char* out = malloc(max_len);
+    char* out = (char*)malloc(max_len);
     if (!out) {
         return NULL;
     }
@@ -65,7 +65,7 @@ char* xylem_http_url_decode(const char* src, size_t src_len,
         return NULL;
     }
 
-    char* out = malloc(src_len + 1);
+    char* out = (char*)malloc(src_len + 1);
     if (!out) {
         return NULL;
     }
@@ -270,7 +270,7 @@ static char* _http_multipart_attr(const char* hdr, const char* attr) {
             p++;
         }
         size_t len = (size_t)(p - start);
-        char* val = malloc(len + 1);
+        char* val = (char*)malloc(len + 1);
         if (!val) {
             return NULL;
         }
@@ -317,7 +317,7 @@ static char* _http_multipart_ct(const char* headers, size_t hdr_len) {
                     v++;
                     remain--;
                 }
-                char* ct = malloc(remain + 1);
+                char* ct = (char*)malloc(remain + 1);
                 if (!ct) {
                     return NULL;
                 }
@@ -353,7 +353,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
 
     /* Build delimiter: "\r\n--" + boundary */
     size_t delim_len = 4 + bnd_len;
-    char* delim = malloc(delim_len + 1);
+    char* delim = (char*)malloc(delim_len + 1);
     if (!delim) {
         return NULL;
     }
@@ -361,7 +361,8 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
     memcpy(delim + 4, bnd, bnd_len);
     delim[delim_len] = '\0';
 
-    xylem_http_multipart_t* mp = calloc(1, sizeof(*mp));
+    xylem_http_multipart_t* mp =
+        (xylem_http_multipart_t*)calloc(1, sizeof(xylem_http_multipart_t));
     if (!mp) {
         free(delim);
         return NULL;
@@ -418,7 +419,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         /* Grow parts array. */
         if (mp->count >= mp->cap) {
             size_t new_cap = mp->cap ? mp->cap * 2 : 4;
-            _http_multipart_part_t* tmp = realloc(
+            _http_multipart_part_t* tmp = (_http_multipart_part_t*)realloc(
                 mp->parts, new_cap * sizeof(*tmp));
             if (!tmp) {
                 break;
@@ -432,7 +433,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
 
         /* Extract name and filename from Content-Disposition. */
         /* Build a temporary NUL-terminated header string. */
-        char* hdr_str = malloc(hdr_len + 1);
+        char* hdr_str = (char*)malloc(hdr_len + 1);
         if (hdr_str) {
             memcpy(hdr_str, p, hdr_len);
             hdr_str[hdr_len] = '\0';
@@ -443,7 +444,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         }
 
         /* Copy part body. */
-        part->data = malloc(part_body_len + 1);
+        part->data = (char*)malloc(part_body_len + 1);
         if (part->data) {
             memcpy(part->data, part_body, part_body_len);
             part->data[part_body_len] = '\0';

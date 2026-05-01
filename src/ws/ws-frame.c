@@ -24,13 +24,13 @@
 #include <string.h>
 
 /* Check whether an opcode falls in a reserved range. */
-static bool _frame_is_reserved_opcode(uint8_t opcode) {
+static bool _ws_frame_is_reserved_opcode(uint8_t opcode) {
     return (opcode >= 0x3 && opcode <= 0x7) ||
            (opcode >= 0xB && opcode <= 0xF);
 }
 
 /* Check whether an opcode is a control frame (>= 0x8). */
-static bool _frame_is_control(uint8_t opcode) {
+static bool _ws_frame_is_control(uint8_t opcode) {
     return opcode >= 0x8;
 }
 
@@ -48,7 +48,7 @@ int ws_frame_decode_header(const uint8_t* data, size_t len,
     out->masked = (b1 & 0x80) != 0;
 
     /* Reject reserved opcodes. */
-    if (_frame_is_reserved_opcode(out->opcode)) {
+    if (_ws_frame_is_reserved_opcode(out->opcode)) {
         return -2;
     }
 
@@ -92,7 +92,7 @@ int ws_frame_decode_header(const uint8_t* data, size_t len,
     out->header_size = hdr;
 
     /* Control frame validations (RFC 6455 section 5.5). */
-    if (_frame_is_control(out->opcode)) {
+    if (_ws_frame_is_control(out->opcode)) {
         if (out->payload_len > 125) {
             return -2;
         }

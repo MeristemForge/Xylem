@@ -939,7 +939,8 @@ static void _tcp_server_io_cb(xylem_loop_t* loop,
             continue;
         }
 
-        xylem_tcp_conn_t* conn = calloc(1, sizeof(*conn));
+        xylem_tcp_conn_t* conn =
+            (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
         if (!conn) {
             xylem_logw("tcp server fd=%d accept: conn alloc failed",
                        (int)server->fd);
@@ -1233,12 +1234,14 @@ xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
                                  xylem_addr_t* addr,
                                  xylem_tcp_handler_t* handler,
                                  xylem_tcp_opts_t* opts) {
-    xylem_tcp_conn_t* conn = calloc(1, sizeof(*conn));
+    xylem_tcp_conn_t* conn =
+        (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
     if (!conn) {
         return NULL;
     }
 
-    _tcp_dial_priv_t* dial = calloc(1, sizeof(*dial));
+    _tcp_dial_priv_t* dial =
+        (_tcp_dial_priv_t*)calloc(1, sizeof(_tcp_dial_priv_t));
     if (!dial) {
         free(conn);
         return NULL;
@@ -1329,7 +1332,8 @@ xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_tcp_handler_t* handler,
                                      xylem_tcp_opts_t* opts) {
-    xylem_tcp_server_t* server = calloc(1, sizeof(*server));
+    xylem_tcp_server_t* server =
+        (xylem_tcp_server_t*)calloc(1, sizeof(xylem_tcp_server_t));
     if (!server) {
         return NULL;
     }
