@@ -37,6 +37,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ERRMSG_DEAD_LINK  "dead link"
+#define ERRMSG_HS_TIMEOUT "handshake timeout"
+
 /* KCP recv buffer, large enough for one full KCP message. */
 #define RUDP_RECV_BUF_SIZE 65536
 
@@ -466,7 +469,7 @@ static void _rudp_update_timeout_cb(xylem_loop_t* loop,
     if (rudp->kcp->state == (IUINT32)-1) {
         xylem_logw("rudp conv=%u dead link detected", rudp->conv);
         rudp->close_err    = -1;
-        rudp->close_errmsg = "dead link";
+        rudp->close_errmsg = ERRMSG_DEAD_LINK;
         xylem_rudp_close(rudp);
         return;
     }
@@ -515,7 +518,7 @@ static void _rudp_handshake_timeout_cb(xylem_loop_t* loop,
     if (now >= rudp->handshake_deadline) {
         xylem_logw("rudp conv=%u handshake timed out", rudp->conv);
         rudp->close_err    = -1;
-        rudp->close_errmsg = "handshake timeout";
+        rudp->close_errmsg = ERRMSG_HS_TIMEOUT;
         xylem_rudp_close(rudp);
         return;
     }

@@ -34,6 +34,10 @@
 #include <string.h>
 
 #define UDS_DEFAULT_READ_BUF_SIZE 65536
+
+#define ERRMSG_NORMAL   "normal"
+#define ERRMSG_CLOSED   "closed normally"
+#define ERRMSG_INTERNAL "internal error"
 /**
  * sun_path is 104 bytes on macOS, 108 on Linux/Windows.
  * Use the smallest limit for cross-platform safety.
@@ -325,7 +329,7 @@ static void _uds_conn_free_cb(xylem_loop_t* loop,
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
     conn->state = UDS_STATE_CLOSED;
     xylem_logd("uds conn fd=%d destroy err=%d (%s)", (int)conn->fd, err,
-               err ? platform_socket_tostring(err) : "ok");
+               err ? platform_socket_tostring(err) : ERRMSG_NORMAL);
 
     if (conn->server) {
         xylem_list_remove(&conn->server->connections, &conn->server_node);
@@ -349,9 +353,9 @@ static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
     if (conn->handler && conn->handler->on_close) {
         const char* errmsg;
         if (err == 0) {
-            errmsg = "closed normally";
+            errmsg = ERRMSG_CLOSED;
         } else if (err < 0) {
-            errmsg = "internal error";
+            errmsg = ERRMSG_INTERNAL;
         } else {
             errmsg = platform_socket_tostring(err);
         }
@@ -368,7 +372,7 @@ static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
     }
 
     xylem_logd("uds conn fd=%d start_close err=%d (%s)", (int)conn->fd, err,
-               err ? platform_socket_tostring(err) : "ok");
+               err ? platform_socket_tostring(err) : ERRMSG_NORMAL);
     conn->state = UDS_STATE_CLOSING;
 
     while (!xylem_queue_empty(&conn->write_queue)) {

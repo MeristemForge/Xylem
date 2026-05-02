@@ -36,6 +36,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ERRMSG_NORMAL     "normal"
+#define ERRMSG_UNKNOWN    "unknown"
+#define ERRMSG_HS_FAILED  "handshake failed"
+#define ERRMSG_HS_TIMEOUT "handshake timeout"
+
 /* Maximum TLS record payload (RFC 8446 section 5.1). */
 #define TLS_RECORD_MAX_PLAINTEXT 16384
 
@@ -394,7 +399,7 @@ static void _dtls_handshake_timeout_cb(xylem_loop_t* loop,
 
     xylem_logw("dtls session %p handshake timed out", (void*)dtls);
     dtls->close_err    = -1;
-    dtls->close_errmsg = "handshake timeout";
+    dtls->close_errmsg = ERRMSG_HS_TIMEOUT;
     xylem_dtls_close(dtls);
 }
 
@@ -474,7 +479,7 @@ static void _dtls_do_handshake(xylem_dtls_conn_t* dtls) {
                (void*)dtls, err,
                ssl_err_str ? ssl_err_str : "unknown");
     dtls->close_err    = err;
-    dtls->close_errmsg = ssl_err_str ? ssl_err_str : "handshake failed";
+    dtls->close_errmsg = ssl_err_str ? ssl_err_str : ERRMSG_HS_FAILED;
     _dtls_flush_write_bio(dtls);
     xylem_dtls_close(dtls);
 }
@@ -584,7 +589,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
                    (void*)dtls, err,
                    ssl_err_str ? ssl_err_str : "unknown");
         dtls->close_err    = err;
-        dtls->close_errmsg = ssl_err_str ? ssl_err_str : "unknown";
+        dtls->close_errmsg = ssl_err_str ? ssl_err_str : ERRMSG_UNKNOWN;
         xylem_dtls_close(dtls);
     }
 }
@@ -633,7 +638,7 @@ static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
 
     xylem_logd("dtls session %p close err=%d (%s)",
                (void*)dtls, dtls->close_err,
-               dtls->close_errmsg ? dtls->close_errmsg : "ok");
+               dtls->close_errmsg ? dtls->close_errmsg : ERRMSG_NORMAL);
 
     /* Propagate UDP-layer error only when DTLS has not set its own. */
     if (dtls->close_err == 0 && err != 0) {
@@ -717,7 +722,7 @@ static void _dtls_server_read_cb(xylem_udp_t* udp, void* data,
                        (void*)dtls, err,
                        ssl_err_str ? ssl_err_str : "unknown");
             dtls->close_err    = err;
-            dtls->close_errmsg = ssl_err_str ? ssl_err_str : "unknown";
+            dtls->close_errmsg = ssl_err_str ? ssl_err_str : ERRMSG_UNKNOWN;
             xylem_dtls_close(dtls);
         }
         return;

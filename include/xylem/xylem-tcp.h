@@ -68,19 +68,19 @@ typedef struct xylem_tcp_server_s xylem_tcp_server_t;
 
 /* TCP event callback set. */
 typedef struct xylem_tcp_handler_s {
-    void (*on_connect)(xylem_tcp_conn_t* conn);           /*< Client connection established. */
+    void (*on_connect)(xylem_tcp_conn_t* tcp);           /*< Client connection established. */
     void (*on_accept)(xylem_tcp_server_t* server,
-                      xylem_tcp_conn_t* conn);             /*< Server accepted a new connection. */
-    void (*on_read)(xylem_tcp_conn_t* conn,
+                      xylem_tcp_conn_t* tcp);             /*< Server accepted a new connection. */
+    void (*on_read)(xylem_tcp_conn_t* tcp,
                     void* data, size_t len);                /*< Complete frame received. */
-    void (*on_write_done)(xylem_tcp_conn_t* conn,
+    void (*on_write_done)(xylem_tcp_conn_t* tcp,
                           const void* data, size_t len,
-                          int status);                      /*< Write finished: data is the caller's original pointer. 0 = sent, -1 = not sent. */
-    void (*on_timeout)(xylem_tcp_conn_t* conn,
+                          int status);                      /*< Write finished: 0 = sent, -1 = not sent. */
+    void (*on_timeout)(xylem_tcp_conn_t* tcp,
                        xylem_tcp_timeout_type_t type);      /*< Timeout fired (read/write/connect). */
-    void (*on_close)(xylem_tcp_conn_t* conn,
-                     int err, const char* errmsg);          /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
-    void (*on_heartbeat_miss)(xylem_tcp_conn_t* conn);     /*< No data received within heartbeat interval. */
+    void (*on_close)(xylem_tcp_conn_t* tcp,
+                     int err, const char* errmsg);          /*< Closed: 0 = normal, <0 = internal, >0 = platform errno. */
+    void (*on_heartbeat_miss)(xylem_tcp_conn_t* tcp);     /*< No data received within heartbeat interval. */
 } xylem_tcp_handler_t;
 
 /* TCP connection options. */
@@ -152,13 +152,13 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(xylem_loop_t* loop,
  * The caller MUST keep the buffer alive and unmodified until the
  * on_write_done callback is invoked with the same data pointer.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  * @param data  Data to send (caller-owned, must outlive the send).
  * @param len   Data length in bytes.
  *
  * @return 0 on success (accepted), -1 on failure (connection closed).
  */
-extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
+extern int xylem_tcp_send(xylem_tcp_conn_t* tcp,
                           const void* data, size_t len);
 
 /**
@@ -167,9 +167,9 @@ extern int xylem_tcp_send(xylem_tcp_conn_t* conn,
  * Performs a graceful shutdown: flushes the write queue, then
  * calls shutdown + close. Calls handler->on_close when done.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  */
-extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
+extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Acquire a reference to a TCP connection.
@@ -180,9 +180,9 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* conn);
  * on_connect or on_accept) before passing the connection handle
  * to another thread.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  */
-extern void xylem_tcp_conn_acquire(xylem_tcp_conn_t* conn);
+extern void xylem_tcp_conn_acquire(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Release a reference to a TCP connection.
@@ -190,9 +190,9 @@ extern void xylem_tcp_conn_acquire(xylem_tcp_conn_t* conn);
  * Decrements the reference count. When the count reaches zero,
  * the connection memory is freed. May be called from any thread.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  */
-extern void xylem_tcp_conn_release(xylem_tcp_conn_t* conn);
+extern void xylem_tcp_conn_release(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the peer address of a connection.
@@ -201,37 +201,37 @@ extern void xylem_tcp_conn_release(xylem_tcp_conn_t* conn);
  * connect time. The pointer is valid for the lifetime of the
  * connection.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  *
  * @return Peer address, or NULL if not available.
  */
-extern const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* conn);
+extern const xylem_addr_t* xylem_tcp_get_peer_addr(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the event loop associated with a connection.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  *
  * @return Loop handle.
  */
-extern xylem_loop_t* xylem_tcp_get_loop(xylem_tcp_conn_t* conn);
+extern xylem_loop_t* xylem_tcp_get_loop(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get user data attached to a connection.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  *
  * @return User data pointer.
  */
-extern void* xylem_tcp_get_userdata(xylem_tcp_conn_t* conn);
+extern void* xylem_tcp_get_userdata(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Set user data on a connection.
  *
- * @param conn  Connection handle.
+ * @param tcp  Connection handle.
  * @param ud    User data pointer.
  */
-extern void xylem_tcp_set_userdata(xylem_tcp_conn_t* conn, void* ud);
+extern void xylem_tcp_set_userdata(xylem_tcp_conn_t* tcp, void* ud);
 
 /**
  * @brief Get user data attached to a TCP server.

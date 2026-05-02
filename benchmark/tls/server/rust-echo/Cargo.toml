@@ -1,0 +1,16 @@
+[package]
+name = "bench-tls-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+tokio-rustls = "0.25"
+rustls = "0.22"
+rustls-pemfile = "2"
+rcgen = "0.13"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true

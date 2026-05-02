@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ERRMSG_CLOSED "closed normally"
+
 struct xylem_udp_s {
     xylem_loop_t*         loop;
     xylem_loop_io_t*      io;
@@ -261,7 +263,7 @@ void xylem_udp_close(xylem_udp_t* udp) {
         if (!errmsg) {
             errmsg = udp->close_err
                          ? platform_socket_tostring(udp->close_err)
-                         : "closed normally";
+                         : ERRMSG_CLOSED;
         }
         udp->handler->on_close(udp, udp->close_err, errmsg);
     }
