@@ -1,10 +1,17 @@
 function(xylem_apply_sanitizer TARGET NAME FLAG)
     if(${NAME})
-        if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-            target_compile_options(${TARGET} PRIVATE "/fsanitize=${FLAG}")
-            target_link_options(${TARGET} PRIVATE "/fsanitize=${FLAG}")
+        if(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
+            target_compile_options(${TARGET} PRIVATE
+                "-fsanitize=${FLAG}" -fno-omit-frame-pointer)
+            target_link_options(${TARGET} PUBLIC "-fsanitize=${FLAG}")
+        elseif(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+            target_compile_options(${TARGET} PRIVATE
+                "/fsanitize=${FLAG}" /Zi /Oy-)
+            target_link_options(${TARGET} PRIVATE
+                "/fsanitize=${FLAG}" /DEBUG)
         elseif(UNIX)
-            target_compile_options(${TARGET} PRIVATE "-fsanitize=${FLAG}" -fno-omit-frame-pointer)
+            target_compile_options(${TARGET} PRIVATE
+                "-fsanitize=${FLAG}" -fno-omit-frame-pointer)
             target_link_options(${TARGET} PUBLIC "-fsanitize=${FLAG}")
         endif()
     endif()
