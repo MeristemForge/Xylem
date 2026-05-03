@@ -25,7 +25,7 @@
 #include "xylem/xylem-utils.h"
 
 #include "platform/platform.h"
-#include "mpsc.h"
+#include "container/mpsc.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -421,7 +421,7 @@ int loop_post(loop_t* loop, loop_post_fn_t cb, void* ud) {
     req->cb = cb;
     req->ud = ud;
     mpsc_push(&loop->posts, &req->node);
-    if (!loop_is_loop_thread(loop)) {
+    if (!loop_is_owner(loop)) {
         char    c = 1;
         ssize_t n = platform_socket_send(loop->wakeup_wr, &c, 1);
         if (n <= 0) {
@@ -431,6 +431,6 @@ int loop_post(loop_t* loop, loop_post_fn_t cb, void* ud) {
     return 0;
 }
 
-bool loop_is_loop_thread(loop_t* loop) {
+bool loop_is_owner(loop_t* loop) {
     return platform_info_gettid() == loop->tid;
 }

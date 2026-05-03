@@ -96,7 +96,7 @@ static void _udp_io_cb(loop_t* loop,
         }
 
         if (n >= 0 && udp->handler && udp->handler->on_read) {
-            char host[ADDR_MAXHOST];
+            char host[INET6_ADDRSTRLEN];
             uint16_t port = 0;
             addr_ntop(&addr, host, sizeof(host), &port);
             udp->handler->on_read(udp, udp->recv_buf, (size_t)n, host, port);
@@ -125,7 +125,7 @@ static void _udp_free_cb(loop_t* loop, loop_post_t* req,
 xylem_udp_t* xylem_udp_listen(const char* host,
                               uint16_t port,
                               xylem_udp_handler_t* handler) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
     if (!udp) {
         return NULL;
@@ -165,7 +165,7 @@ xylem_udp_t* xylem_udp_listen(const char* host,
 xylem_udp_t* xylem_udp_dial(const char* host,
                              uint16_t port,
                              xylem_udp_handler_t* handler) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
     if (!udp) {
         return NULL;

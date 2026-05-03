@@ -20,112 +20,110 @@
  */
 
 #include "addr.h"
-#include "runtime/loop.h"
-#include "runtime/thrdpool.h"
 
-#include "platform/platform-socket.h"
+#include "runtime/runtime.h"
 
-#include <stdatomic.h>
-#include <stdio.h>
+#include "minicoro/minicoro.h"
+
 #include <stdlib.h>
 #include <string.h>
 
-#define _ADDR_RESOLVE_MAX 16
+typedef struct {
+    mco_coro* co;
+    char*     host;
+    addr_t**  addrs;
+    size_t*   count;
+    int       status;
+} _addr_resolve_ctx_t;
 
-struct addr_resolve_s {
-    loop_t*          loop;
-    addr_resolve_fn_t cb;
-    void*            userdata;
-    char*            host;
-    uint16_t         port;
-    addr_t           addrs[_ADDR_RESOLVE_MAX];
-    size_t           count;
-    int              status;
-    _Atomic bool     cancelled;
-};
-
-static void _addr_resolve_cb(loop_t* loop,
-                             loop_post_t* req,
-                             void* ud) {
+static void _addr_resolve_done_cb(
+    loop_t* loop,
+    loop_post_t* req,
+    void* ud) {
     (void)loop;
     (void)req;
-    addr_resolve_t* r = (addr_resolve_t*)ud;
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
+    mco_resume(ctx->co);
+}
 
-    if (!atomic_load(&r->cancelled)) {
-        r->cb(r->addrs, r->count, r->status, r->userdata);
-    }
-
-    free(r->host);
-    free(r);
+static void _addr_resolve_finish(
+    _addr_resolve_ctx_t* ctx,
+    addr_t* arr,
+    size_t count) {
+    *ctx->addrs = arr;
+    *ctx->count = count;
+    ctx->status = arr ? 0 : -1;
+    loop_post(runtime_get_loop(), _addr_resolve_done_cb, ctx);
 }
 
 static void _addr_resolve_work(void* arg) {
-    addr_resolve_t* r = arg;
-
-    if (atomic_load(&r->cancelled)) {
-        r->status = -1;
-        r->count  = 0;
-        loop_post(r->loop, _addr_resolve_cb, r);
-        return;
-    }
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
 
     struct addrinfo hints;
     struct addrinfo* res = NULL;
-    char port_str[8];
 
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;
 
-    snprintf(port_str, sizeof(port_str), "%u", (unsigned)r->port);
-
-    if (getaddrinfo(r->host, port_str, &hints, &res) != 0 || !res) {
-        r->status = -1;
-        r->count  = 0;
-        loop_post(r->loop, _addr_resolve_cb, r);
+    if (getaddrinfo(ctx->host, NULL, &hints, &res) != 0 || !res) {
+        _addr_resolve_finish(ctx, NULL, 0);
         return;
     }
 
-    size_t count = 0;
-    for (struct addrinfo* rp = res;
-         rp && count < _ADDR_RESOLVE_MAX;
-         rp = rp->ai_next) {
+    size_t n = 0;
+    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+        if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6) {
+            n++;
+        }
+    }
+
+    if (n == 0) {
+        freeaddrinfo(res);
+        _addr_resolve_finish(ctx, NULL, 0);
+        return;
+    }
+
+    addr_t* arr = (addr_t*)calloc(n, sizeof(addr_t));
+    if (!arr) {
+        freeaddrinfo(res);
+        _addr_resolve_finish(ctx, NULL, 0);
+        return;
+    }
+
+    size_t i = 0;
+    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
         if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
             continue;
         }
-        memset(&r->addrs[count], 0, sizeof(addr_t));
-        memcpy(&r->addrs[count].storage, rp->ai_addr, rp->ai_addrlen);
-        count++;
+        memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
+        i++;
     }
 
     freeaddrinfo(res);
-
-    r->count  = count;
-    r->status = (count > 0) ? 0 : -1;
-    loop_post(r->loop, _addr_resolve_cb, r);
+    _addr_resolve_finish(ctx, arr, i);
 }
 
-int addr_pton(const char* host, uint16_t port, addr_t* addr) {
-    if (!host || !addr) {
+int addr_pton(const char* src, uint16_t port, addr_t* dst) {
+    if (!src || !dst) {
         return -1;
     }
 
-    memset(&addr->storage, 0, sizeof(addr->storage));
+    memset(&dst->storage, 0, sizeof(dst->storage));
 
     {
-        struct sockaddr_in* sin = (struct sockaddr_in*)&addr->storage;
-        if (inet_pton(AF_INET, host, &sin->sin_addr) == 1) {
+        struct sockaddr_in* sin = (struct sockaddr_in*)&dst->storage;
+        if (inet_pton(AF_INET, src, &sin->sin_addr) == 1) {
             sin->sin_family = AF_INET;
-            sin->sin_port   = htons(port);
+            sin->sin_port = htons(port);
             return 0;
         }
     }
 
     {
-        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&addr->storage;
-        if (inet_pton(AF_INET6, host, &sin6->sin6_addr) == 1) {
+        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&dst->storage;
+        if (inet_pton(AF_INET6, src, &sin6->sin6_addr) == 1) {
             sin6->sin6_family = AF_INET6;
-            sin6->sin6_port   = htons(port);
+            sin6->sin6_port = htons(port);
             return 0;
         }
     }
@@ -133,9 +131,12 @@ int addr_pton(const char* host, uint16_t port, addr_t* addr) {
     return -1;
 }
 
-int addr_ntop(const addr_t* addr,
-              char* host, size_t hostlen, uint16_t* port) {
-    if (!addr || !host || !port) {
+int addr_ntop(
+    const addr_t* addr,
+    char* dst,
+    size_t size,
+    uint16_t* port) {
+    if (!addr || !dst || !port) {
         return -1;
     }
 
@@ -143,7 +144,7 @@ int addr_ntop(const addr_t* addr,
     case AF_INET: {
         const struct sockaddr_in* sin =
             (const struct sockaddr_in*)&addr->storage;
-        if (!inet_ntop(AF_INET, &sin->sin_addr, host, (socklen_t)hostlen)) {
+        if (!inet_ntop(AF_INET, &sin->sin_addr, dst, (socklen_t)size)) {
             return -1;
         }
         *port = ntohs(sin->sin_port);
@@ -152,7 +153,7 @@ int addr_ntop(const addr_t* addr,
     case AF_INET6: {
         const struct sockaddr_in6* sin6 =
             (const struct sockaddr_in6*)&addr->storage;
-        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, host, (socklen_t)hostlen)) {
+        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, dst, (socklen_t)size)) {
             return -1;
         }
         *port = ntohs(sin6->sin6_port);
@@ -163,39 +164,26 @@ int addr_ntop(const addr_t* addr,
     }
 }
 
-addr_resolve_t* addr_resolve(loop_t* loop,
-                             thrdpool_t* pool,
-                             const char* host,
-                             uint16_t port,
-                             addr_resolve_fn_t cb,
-                             void* userdata) {
-    if (!loop || !pool || !host || !cb) {
-        return NULL;
+int addr_resolve(
+    const char* domain,
+    addr_t** addrs,
+    size_t* count) {
+    if (!domain || !addrs || !count) {
+        return -1;
     }
 
-    addr_resolve_t* r = (addr_resolve_t*)calloc(1, sizeof(addr_resolve_t));
-    if (!r) {
-        return NULL;
-    }
+    _addr_resolve_ctx_t ctx;
+    ctx.co     = mco_running();
+    ctx.host   = (char*)domain;
+    ctx.addrs  = addrs;
+    ctx.count  = count;
+    ctx.status = 0;
 
-    r->host = strdup(host);
-    if (!r->host) {
-        free(r);
-        return NULL;
-    }
+    *addrs = NULL;
+    *count = 0;
 
-    r->loop     = loop;
-    r->cb       = cb;
-    r->userdata = userdata;
-    r->port     = port;
-    atomic_store(&r->cancelled, false);
+    thrdpool_submit(runtime_get_pool(), _addr_resolve_work, &ctx);
+    mco_yield(mco_running());
 
-    thrdpool_submit(pool, _addr_resolve_work, r);
-    return r;
-}
-
-void addr_resolve_cancel(addr_resolve_t* req) {
-    if (req) {
-        atomic_store(&req->cancelled, true);
-    }
+    return ctx.status;
 }

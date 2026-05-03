@@ -117,7 +117,7 @@ static void _lr_send_timer_cb(loop_t* loop,
 
 static void _test_listen_recv_main(void* arg) {
     _lr_ctx_t* ctx = (_lr_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -167,7 +167,7 @@ static void _ls_send_timer_cb(loop_t* loop,
 
 static void _test_listen_send_main(void* arg) {
     _ls_ctx_t* ctx = (_ls_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -224,7 +224,7 @@ static void _de_send_timer_cb(loop_t* loop,
 
 static void _test_dial_echo_main(void* arg) {
     _de_ctx_t* ctx = (_de_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -278,7 +278,7 @@ static void _da_send_timer_cb(loop_t* loop,
 
 static void _test_dial_addr_main(void* arg) {
     _da_ctx_t* ctx = (_da_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -332,7 +332,7 @@ static void _db_send_timer_cb(loop_t* loop,
 
 static void _test_datagram_boundary_main(void* arg) {
     _db_ctx_t* ctx = (_db_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -379,7 +379,7 @@ static void _test_close_idempotent_main(void* arg) {
     xylem_udp_close(ctx->udp);
     xylem_udp_close(ctx->udp);
 
-    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_timer_t* drain = loop_create_timer(runtime_get_loop());
     loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
@@ -410,7 +410,7 @@ static void _test_close_callback_main(void* arg) {
 
     xylem_udp_close(udp);
 
-    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_timer_t* drain = loop_create_timer(runtime_get_loop());
     loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
@@ -436,7 +436,7 @@ static void _test_send_after_close_main(void* arg) {
     xylem_udp_close(udp);
     ctx->result = xylem_udp_send(udp, UDP_HOST, PORT_B, "data", 4);
 
-    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_timer_t* drain = loop_create_timer(runtime_get_loop());
     loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
@@ -504,13 +504,13 @@ static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_send_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_send_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_send_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
 }
 
 static void _test_cross_thread_send_main(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -558,13 +558,13 @@ static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_close_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_close_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_close_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
 }
 
 static void _test_cross_thread_close_main(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -616,14 +616,14 @@ static void _xt_soc_post_cb(loop_t* loop, loop_post_t* req,
 static void _xt_soc_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
     for (int i = 0; i < 20; i++) {
-        loop_post(runtime_loop(), _xt_soc_post_cb, ctx);
+        loop_post(runtime_get_loop(), _xt_soc_post_cb, ctx);
     }
     atomic_store(&ctx->worker_done, true);
 }
 
 static void _test_cross_thread_soc_main(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);

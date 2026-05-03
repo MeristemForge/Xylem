@@ -84,7 +84,7 @@ static void _dc_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_dial_connect_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
@@ -128,7 +128,7 @@ static void _echo_cli_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_echo_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){
@@ -169,7 +169,7 @@ static void _sac_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_send_after_close_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
@@ -207,7 +207,7 @@ static void _ud_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_userdata_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
@@ -280,7 +280,7 @@ static void _csac_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_close_server_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){
@@ -299,7 +299,7 @@ static void _test_close_server_main(void* arg) {
     ASSERT(ctx->cli_conn != NULL);
     xylem_uds_set_userdata(ctx->cli_conn, ctx);
 
-    loop_timer_t* close_timer = loop_create_timer(runtime_loop());
+    loop_timer_t* close_timer = loop_create_timer(runtime_get_loop());
     loop_start_timer(close_timer, _csac_timer_cb, ctx, 100, 0);
 }
 
@@ -333,7 +333,7 @@ static void _ff_cli_connect_cb(xylem_uds_conn_t* conn) {
 static void _test_frame_fixed_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     xylem_uds_opts_t opts = {
@@ -376,13 +376,13 @@ static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_send_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_send_post_cb, ctx);
 }
 
 static void _xt_send_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_pool(), _xt_send_worker, ctx);
+    thrdpool_submit(runtime_get_pool(), _xt_send_worker, ctx);
 }
 
 static void _xt_send_cli_read_cb(xylem_uds_conn_t* conn,
@@ -401,7 +401,7 @@ static void _xt_send_cli_read_cb(xylem_uds_conn_t* conn,
 static void _test_cross_thread_send_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){
@@ -442,13 +442,13 @@ static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_close_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_close_post_cb, ctx);
 }
 
 static void _xt_close_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_pool(), _xt_close_worker, ctx);
+    thrdpool_submit(runtime_get_pool(), _xt_close_worker, ctx);
 }
 
 static void _xt_close_cli_close_cb(xylem_uds_conn_t* conn,
@@ -464,7 +464,7 @@ static void _xt_close_cli_close_cb(xylem_uds_conn_t* conn,
 static void _test_cross_thread_close_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
@@ -502,7 +502,7 @@ static void _xt_soc_send_post_cb(loop_t* loop, loop_post_t* req,
 static void _xt_soc_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     for (int i = 0; i < 20; i++) {
-        loop_post(runtime_loop(), _xt_soc_send_post_cb, ctx);
+        loop_post(runtime_get_loop(), _xt_soc_send_post_cb, ctx);
     }
     atomic_store(&ctx->worker_done, true);
 }
@@ -523,7 +523,7 @@ static void _xt_soc_srv_read_cb(xylem_uds_conn_t* conn,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     ctx->read_count++;
     if (ctx->read_count == 1) {
-        loop_timer_t* t = loop_create_timer(runtime_loop());
+        loop_timer_t* t = loop_create_timer(runtime_get_loop());
         loop_start_timer(t, _xt_soc_srv_close_timer_cb, ctx, 50, 0);
     }
 }
@@ -531,7 +531,7 @@ static void _xt_soc_srv_read_cb(xylem_uds_conn_t* conn,
 static void _xt_soc_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_pool(), _xt_soc_worker, ctx);
+    thrdpool_submit(runtime_get_pool(), _xt_soc_worker, ctx);
 }
 
 static void _xt_soc_cli_close_cb(xylem_uds_conn_t* conn,
@@ -548,7 +548,7 @@ static void _xt_soc_cli_close_cb(xylem_uds_conn_t* conn,
 static void _test_cross_thread_soc_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    loop_timer_t* safety = loop_create_timer(runtime_loop());
+    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
     loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
 
     ctx->srv_handler = (xylem_uds_handler_t){

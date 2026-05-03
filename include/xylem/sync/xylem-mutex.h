@@ -21,49 +21,37 @@
 
 _Pragma("once")
 
-#include <stddef.h>
-
-typedef struct xylem_waitgroup_s xylem_waitgroup_t;
+typedef struct xylem_mutex_s xylem_mutex_t;
 
 /**
- * @brief Create a new waitgroup.
+ * @brief Create a new coroutine mutex.
  *
- * @return Pointer to the new waitgroup, or NULL on allocation failure.
+ * @return Pointer to the new mutex, or NULL on allocation failure.
  */
-extern xylem_waitgroup_t* xylem_waitgroup_create(void);
+extern xylem_mutex_t* xylem_mutex_create(void);
 
 /**
- * @brief Increment the waitgroup counter.
+ * @brief Acquire the mutex.
  *
- * Thread-safe.
+ * If the mutex is already held, the calling coroutine is suspended
+ * until the holder calls xylem_mutex_unlock().
  *
- * @param waitgroup  Pointer to the waitgroup.
- * @param delta      Number of work items to add.
+ * @param mutex  Pointer to the mutex.
  */
-extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
+extern void xylem_mutex_lock(xylem_mutex_t* mutex);
 
 /**
- * @brief Decrement the waitgroup counter by one.
+ * @brief Release the mutex.
  *
- * Thread-safe. When the counter reaches zero, the coroutine
- * suspended in xylem_waitgroup_wait() is resumed.
+ * If other coroutines are waiting, the next one in FIFO order is resumed.
  *
- * @param waitgroup  Pointer to the waitgroup.
+ * @param mutex  Pointer to the mutex.
  */
-extern void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup);
+extern void xylem_mutex_unlock(xylem_mutex_t* mutex);
 
 /**
- * @brief Suspend the current coroutine until the counter reaches zero.
+ * @brief Destroy the mutex and free its resources.
  *
- * Returns immediately if the counter is already zero.
- *
- * @param waitgroup  Pointer to the waitgroup.
+ * @param mutex  Pointer to the mutex, NULL is safe.
  */
-extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
-
-/**
- * @brief Destroy the waitgroup and free its resources.
- *
- * @param waitgroup  Pointer to the waitgroup, NULL is safe.
- */
-extern void xylem_waitgroup_destroy(xylem_waitgroup_t* waitgroup);
+extern void xylem_mutex_destroy(xylem_mutex_t* mutex);

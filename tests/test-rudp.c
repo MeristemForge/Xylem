@@ -117,7 +117,7 @@ static void _echo_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_handshake_echo_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -186,7 +186,7 @@ static void _ud_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_session_userdata_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -267,7 +267,7 @@ static void _pa_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_peer_addr_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -315,7 +315,7 @@ static void _sac_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_send_after_close_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -364,7 +364,7 @@ static void _ci_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_close_idempotent_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -441,7 +441,7 @@ static void _csas_drain_timer_cb(loop_t* loop,
 
 static void _test_csas_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -550,7 +550,7 @@ static void _test_multi_session_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)args[0];
     _multi_cli_t* mc1 = (_multi_cli_t*)args[1];
     _multi_cli_t* mc2 = (_multi_cli_t*)args[2];
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -624,7 +624,7 @@ static void _ht_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_handshake_timeout_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -652,7 +652,7 @@ static void test_handshake_timeout(void) {
 
 static void _test_aes_echo_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -708,7 +708,7 @@ static void test_aes_echo(void) {
 
 static void _test_aes_fec_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     loop_timer_t* safety = loop_create_timer(loop);
     loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
@@ -773,7 +773,7 @@ static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_send_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_send_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_send_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
 }
 
@@ -809,7 +809,7 @@ static void _xt_send_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_cross_thread_send_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     ctx->pool = thrdpool_create(1);
     ASSERT(ctx->pool != NULL);
@@ -863,7 +863,7 @@ static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
 
 static void _xt_close_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_loop(), _xt_close_post_cb, ctx);
+    loop_post(runtime_get_loop(), _xt_close_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
 }
 
@@ -888,7 +888,7 @@ static void _xt_close_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
 static void _test_cross_thread_close_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     ctx->pool = thrdpool_create(1);
     ASSERT(ctx->pool != NULL);
@@ -935,7 +935,7 @@ static void _xt_sc_send_post_cb(loop_t* loop, loop_post_t* req,
 static void _xt_sc_worker(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     for (int i = 0; i < 10; i++) {
-        loop_post(runtime_loop(), _xt_sc_send_post_cb, ctx);
+        loop_post(runtime_get_loop(), _xt_sc_send_post_cb, ctx);
     }
     atomic_store(&ctx->worker_done, true);
 }
@@ -976,7 +976,7 @@ static void _xt_sc_srv_read_cb(xylem_rudp_conn_t* rudp,
 
 static void _test_cross_thread_soc_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
 
     ctx->pool = thrdpool_create(1);
     ASSERT(ctx->pool != NULL);

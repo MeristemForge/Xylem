@@ -499,14 +499,14 @@ int xylem_ws_close(xylem_ws_conn_t* conn,
 }
 
 int xylem_ws_remote_addr(xylem_ws_conn_t* conn,
-                         char host[ADDR_MAXHOST],
+                         char host[INET6_ADDRSTRLEN],
                          uint16_t* port) {
     if (!conn || !conn->vt || !conn->vt->get_peer_addr) {
         return -1;
     }
     const addr_t* addr = conn->vt->get_peer_addr(conn->transport);
     if (!addr) return -1;
-    return addr_ntop(addr, host, ADDR_MAXHOST, port);
+    return addr_ntop(addr, host, INET6_ADDRSTRLEN, port);
 }
 
 void* xylem_ws_get_userdata(xylem_ws_conn_t* conn) {

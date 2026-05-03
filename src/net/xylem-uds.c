@@ -1004,7 +1004,7 @@ static void _uds_dial_cleanup(xylem_uds_conn_t* conn) {
 xylem_uds_conn_t* xylem_uds_dial(const char* path,
                                   xylem_uds_handler_t* handler,
                                   xylem_uds_opts_t* opts) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("uds dial: path is NULL or too long (max %d)",
                    UDS_MAX_PATH - 1);
@@ -1085,7 +1085,7 @@ static void _uds_listen_cleanup(xylem_uds_server_t* server) {
 xylem_uds_server_t* xylem_uds_listen(const char* path,
                                       xylem_uds_handler_t* handler,
                                       xylem_uds_opts_t* opts) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_uds_server_t* server =
         (xylem_uds_server_t*)calloc(1, sizeof(*server));
     if (!server) {

@@ -36,7 +36,7 @@ static void _safety_timeout_cb(loop_t* loop,
 }
 
 static void _start_safety_timer(void) {
-    loop_timer_t* t = loop_create_timer(runtime_loop());
+    loop_timer_t* t = loop_create_timer(runtime_get_loop());
     loop_start_timer(t, _safety_timeout_cb, NULL,
                            SAFETY_TIMEOUT_MS, 0);
 }
@@ -56,7 +56,7 @@ static void _spawn_fn(void* arg) {
 static void _test_spawn_main(void* arg) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_spawn_fn, ctx);
+    xylem_runtime_spawn(_spawn_fn, ctx);
 }
 
 static void test_spawn(void) {
@@ -69,7 +69,7 @@ static void test_spawn(void) {
 
 static void _sleep_fn(void* arg) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)arg;
-    xylem_sleep(50);
+    xylem_runtime_sleep(50);
     ctx->value = 99;
     xylem_runtime_stop();
 }
@@ -77,7 +77,7 @@ static void _sleep_fn(void* arg) {
 static void _test_sleep_main(void* arg) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_sleep_fn, ctx);
+    xylem_runtime_spawn(_sleep_fn, ctx);
 }
 
 static void test_sleep(void) {
@@ -96,7 +96,7 @@ typedef struct {
 static void _order_fn(void* arg) {
     _order_ctx_t* ctx = (_order_ctx_t*)arg;
     int id = ctx->idx++;
-    xylem_sleep((uint64_t)(id * 20 + 10));
+    xylem_runtime_sleep((uint64_t)(id * 20 + 10));
     ctx->order[id] = id + 1;
     if (id == 2) xylem_runtime_stop();
 }
@@ -104,9 +104,9 @@ static void _order_fn(void* arg) {
 static void _test_multiple_coros_main(void* arg) {
     _order_ctx_t* ctx = (_order_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_order_fn, ctx);
-    xylem_spawn(_order_fn, ctx);
-    xylem_spawn(_order_fn, ctx);
+    xylem_runtime_spawn(_order_fn, ctx);
+    xylem_runtime_spawn(_order_fn, ctx);
+    xylem_runtime_spawn(_order_fn, ctx);
 }
 
 static void test_multiple_coros(void) {
@@ -128,7 +128,7 @@ typedef struct {
 static void _chan_sender(void* arg) {
     _chan_ctx_t* ctx = (_chan_ctx_t*)arg;
     static int msg_val = 123;
-    xylem_sleep(30);
+    xylem_runtime_sleep(30);
     xylem_channel_send(ctx->ch, &msg_val);
 }
 
@@ -148,8 +148,8 @@ static void _test_channel_main(void* arg) {
     ctx->ch = xylem_channel_create();
     ASSERT(ctx->ch != NULL);
 
-    xylem_spawn(_chan_receiver, ctx);
-    xylem_spawn(_chan_sender, ctx);
+    xylem_runtime_spawn(_chan_receiver, ctx);
+    xylem_runtime_spawn(_chan_sender, ctx);
 }
 
 static void test_channel(void) {
@@ -208,7 +208,7 @@ static void _test_channel_cross_main(void* arg) {
     ASSERT(a->cross->ch != NULL);
     a->thread->ch = a->cross->ch;
 
-    xylem_spawn(_cross_receiver, a->cross);
+    xylem_runtime_spawn(_cross_receiver, a->cross);
 
     thrd_t th;
     thrd_create(&th, _sender_thread, a->thread);

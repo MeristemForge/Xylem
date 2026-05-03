@@ -68,7 +68,7 @@ static void _server_main(void* arg) {
     for (;;) {
         xylem_tcp_conn_t* conn = xylem_tcp_accept(server);
         if (!conn) break;
-        xylem_spawn(_handle_conn, conn);
+        xylem_runtime_spawn(_handle_conn, conn);
     }
 }
 

@@ -812,7 +812,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(const char* host,
                               uint16_t port,
                               xylem_dtls_ctx_t* ctx,
                               xylem_dtls_handler_t* handler) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
     if (!dtls) {
         return NULL;
@@ -937,9 +937,9 @@ const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {
 }
 
 int xylem_dtls_remote_addr(xylem_dtls_conn_t* dtls,
-                           char host[ADDR_MAXHOST],
+                           char host[INET6_ADDRSTRLEN],
                            uint16_t* port) {
-    return addr_ntop(&dtls->peer_addr, host, ADDR_MAXHOST, port);
+    return addr_ntop(&dtls->peer_addr, host, INET6_ADDRSTRLEN, port);
 }
 
 
@@ -968,7 +968,7 @@ xylem_dtls_server_t* xylem_dtls_listen(const char* host,
                                        uint16_t port,
                                        xylem_dtls_ctx_t* ctx,
                                        xylem_dtls_handler_t* handler) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_dtls_server_t* server = (xylem_dtls_server_t*)calloc(1, sizeof(xylem_dtls_server_t));
     if (!server) {
         return NULL;

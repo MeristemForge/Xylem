@@ -45,7 +45,7 @@ static void _safety_timeout_cb(loop_t* loop,
 }
 
 static void _start_safety_timer(void) {
-    loop_timer_t* t = loop_create_timer(runtime_loop());
+    loop_timer_t* t = loop_create_timer(runtime_get_loop());
     loop_start_timer(t, _safety_timeout_cb, NULL,
                            SAFETY_TIMEOUT_MS, 0);
 }
@@ -72,7 +72,7 @@ static void _echo_server(void* arg) {
     for (;;) {
         xylem_tcp_conn_t* conn = xylem_tcp_accept(ctx->server);
         if (!conn) break;
-        xylem_spawn(_echo_handler, conn);
+        xylem_runtime_spawn(_echo_handler, conn);
     }
 }
 
@@ -81,7 +81,7 @@ static void _echo_server(void* arg) {
 static void _test_echo_client(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-    xylem_sleep(50);
+    xylem_runtime_sleep(50);
 
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT, NULL);
     ASSERT(conn != NULL);
@@ -103,8 +103,8 @@ static void _test_echo_client(void* arg) {
 static void _test_echo_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_echo_server, ctx);
-    xylem_spawn(_test_echo_client, ctx);
+    xylem_runtime_spawn(_echo_server, ctx);
+    xylem_runtime_spawn(_test_echo_client, ctx);
 }
 
 static void test_echo(void) {
@@ -124,17 +124,17 @@ static void _exact_server(void* arg) {
     ASSERT(conn != NULL);
 
     ASSERT(xylem_tcp_send(conn, "ABCD", 4) == 0);
-    xylem_sleep(30);
+    xylem_runtime_sleep(30);
     ASSERT(xylem_tcp_send(conn, "EFGH", 4) == 0);
 
-    xylem_sleep(100);
+    xylem_runtime_sleep(100);
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(ctx->server);
 }
 
 static void _exact_client(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_sleep(50);
+    xylem_runtime_sleep(50);
 
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 1, NULL);
     ASSERT(conn != NULL);
@@ -151,8 +151,8 @@ static void _exact_client(void* arg) {
 static void _test_recv_exact_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_exact_server, ctx);
-    xylem_spawn(_exact_client, ctx);
+    xylem_runtime_spawn(_exact_server, ctx);
+    xylem_runtime_spawn(_exact_client, ctx);
 }
 
 static void test_recv_exact(void) {
@@ -172,7 +172,7 @@ static void _line_server(void* arg) {
     ASSERT(conn != NULL);
 
     ASSERT(xylem_tcp_send(conn, "hello\r\nworld\n", 13) == 0);
-    xylem_sleep(100);
+    xylem_runtime_sleep(100);
 
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(ctx->server);
@@ -180,7 +180,7 @@ static void _line_server(void* arg) {
 
 static void _line_client(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_sleep(50);
+    xylem_runtime_sleep(50);
 
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 2, NULL);
     ASSERT(conn != NULL);
@@ -202,8 +202,8 @@ static void _line_client(void* arg) {
 static void _test_recv_line_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_line_server, ctx);
-    xylem_spawn(_line_client, ctx);
+    xylem_runtime_spawn(_line_server, ctx);
+    xylem_runtime_spawn(_line_client, ctx);
 }
 
 static void test_recv_line(void) {
@@ -233,14 +233,14 @@ static void _frame_server(void* arg) {
     const char* payload = "FRAME1";
     ASSERT(xylem_tcp_send_frame(conn, &opts, payload, 6) == 0);
 
-    xylem_sleep(100);
+    xylem_runtime_sleep(100);
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(ctx->server);
 }
 
 static void _frame_client(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_sleep(50);
+    xylem_runtime_sleep(50);
 
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 3, NULL);
     ASSERT(conn != NULL);
@@ -268,8 +268,8 @@ static void _frame_client(void* arg) {
 static void _test_frame_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_frame_server, ctx);
-    xylem_spawn(_frame_client, ctx);
+    xylem_runtime_spawn(_frame_server, ctx);
+    xylem_runtime_spawn(_frame_client, ctx);
 }
 
 static void test_frame(void) {
@@ -294,7 +294,7 @@ static void _timeout_client(void* arg) {
 static void _test_dial_timeout_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_timeout_client, ctx);
+    xylem_runtime_spawn(_timeout_client, ctx);
 }
 
 static void test_dial_timeout(void) {
@@ -322,7 +322,7 @@ static void _userdata_test(void* arg) {
 static void _test_userdata_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
     _start_safety_timer();
-    xylem_spawn(_userdata_test, ctx);
+    xylem_runtime_spawn(_userdata_test, ctx);
 }
 
 static void test_userdata(void) {

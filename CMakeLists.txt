@@ -36,10 +36,11 @@ set(SRCS
 	src/xylem-logger.c
 	src/xylem-utils.c
 	src/xylem-serial.c
-	src/sync/mpsc.c
+	src/container/mpsc.c
 	src/runtime/thrdpool.c
 	src/sync/xylem-waitgroup.c
 	src/sync/xylem-channel.c
+	src/sync/xylem-mutex.c
 	src/crypto/xylem-sha1.c
 	src/crypto/xylem-sha256.c
 	src/crypto/xylem-hmac256.c

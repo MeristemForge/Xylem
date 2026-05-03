@@ -251,7 +251,7 @@ static bool _rudp_decode_handshake(const void* data, size_t len,
 static void _rudp_encrypted_send(xylem_udp_t* udp, addr_t* dest,
                                  xylem_aes256_t* aes,
                                  const void* data, size_t len) {
-    char host[ADDR_MAXHOST] = {0};
+    char host[INET6_ADDRSTRLEN] = {0};
     uint16_t port = 0;
     if (dest) addr_ntop(dest, host, sizeof(host), &port);
 
@@ -860,7 +860,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(const char* host,
                                    uint16_t port,
                                    xylem_rudp_handler_t* handler,
                                    xylem_rudp_opts_t* opts) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_rudp_conn_t* rudp =
         (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
     if (!rudp) {
@@ -1006,9 +1006,9 @@ void xylem_rudp_close(xylem_rudp_conn_t* rudp) {
 }
 
 int xylem_rudp_remote_addr(xylem_rudp_conn_t* rudp,
-                           char host[ADDR_MAXHOST],
+                           char host[INET6_ADDRSTRLEN],
                            uint16_t* port) {
-    return addr_ntop(&rudp->peer_addr, host, ADDR_MAXHOST, port);
+    return addr_ntop(&rudp->peer_addr, host, INET6_ADDRSTRLEN, port);
 }
 
 
@@ -1032,7 +1032,7 @@ xylem_rudp_server_t* xylem_rudp_listen(const char* host,
                                        uint16_t port,
                                        xylem_rudp_handler_t* handler,
                                        xylem_rudp_opts_t* opts) {
-    loop_t* loop = runtime_loop();
+    loop_t* loop = runtime_get_loop();
     xylem_rudp_server_t* server =
         (xylem_rudp_server_t*)calloc(1, sizeof(xylem_rudp_server_t));
     if (!server) {

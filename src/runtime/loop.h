@@ -187,7 +187,7 @@ extern int loop_post(loop_t* loop,
  *
  * @return true if called from the loop thread, false otherwise.
  */
-extern bool loop_is_loop_thread(loop_t* loop);
+extern bool loop_is_owner(loop_t* loop);
 
 
 /**

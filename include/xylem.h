@@ -38,6 +38,7 @@ _Pragma("once")
 /* sync */
 #include "xylem/sync/xylem-waitgroup.h"
 #include "xylem/sync/xylem-channel.h"
+#include "xylem/sync/xylem-mutex.h"
 
 /* runtime */
 #include "xylem/runtime/xylem-runtime.h"

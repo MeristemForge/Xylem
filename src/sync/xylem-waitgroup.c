@@ -21,68 +21,64 @@
 
 #include "xylem/sync/xylem-waitgroup.h"
 
-#include "c11-threads.h"
+#include "runtime/runtime.h"
+#include "minicoro/minicoro.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 struct xylem_waitgroup_s {
-    size_t cnt;
-    mtx_t  mtx;
-    cnd_t  cnd;
+    atomic_size_t cnt;
+    mco_coro*     wait_coro;
 };
 
+static void _waitgroup_wakeup_cb(
+    loop_t* loop,
+    loop_post_t* req,
+    void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)ud;
+    if (wg->wait_coro) {
+        mco_coro* co = wg->wait_coro;
+        wg->wait_coro = NULL;
+        mco_resume(co);
+    }
+}
+
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
-    xylem_waitgroup_t* waitgroup = (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
-    if (!waitgroup) {
+    xylem_waitgroup_t* wg =
+        (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
+    if (!wg) {
         return NULL;
     }
-    waitgroup->cnt = 0;
-    if (mtx_init(&waitgroup->mtx, mtx_plain) != thrd_success) {
-        free(waitgroup);
-        return NULL;
-    }
-    if (cnd_init(&waitgroup->cnd) != thrd_success) {
-        mtx_destroy(&waitgroup->mtx);
-        free(waitgroup);
-        return NULL;
-    }
-    return waitgroup;
+    atomic_init(&wg->cnt, 0);
+    return wg;
 }
 
-void xylem_waitgroup_destroy(xylem_waitgroup_t* waitgroup) {
-    if (!waitgroup) {
+void xylem_waitgroup_destroy(xylem_waitgroup_t* wg) {
+    if (!wg) {
         return;
     }
-    mtx_destroy(&waitgroup->mtx);
-    cnd_destroy(&waitgroup->cnd);
-    waitgroup->cnt = 0;
-
-    free(waitgroup);
+    free(wg);
 }
 
-void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta) {
-    mtx_lock(&waitgroup->mtx);
-    waitgroup->cnt += delta;
-    mtx_unlock(&waitgroup->mtx);
+void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
+    atomic_fetch_add(&wg->cnt, delta);
 }
 
-void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup) {
-    mtx_lock(&waitgroup->mtx);
-    if (waitgroup->cnt == 0) {
-        mtx_unlock(&waitgroup->mtx);
+void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
+    size_t prev = atomic_fetch_sub(&wg->cnt, 1);
+    if (prev == 1) {
+        /* cnt reached zero -- wake the waiting coroutine via loop post. */
+        loop_post(runtime_get_loop(), _waitgroup_wakeup_cb, wg);
+    }
+}
+
+void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
+    if (atomic_load(&wg->cnt) == 0) {
         return;
     }
-    waitgroup->cnt--;
-    if (waitgroup->cnt == 0) {
-        cnd_broadcast(&waitgroup->cnd);
-    }
-    mtx_unlock(&waitgroup->mtx);
-}
-
-void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup) {
-    mtx_lock(&waitgroup->mtx);
-    while (waitgroup->cnt) {
-        cnd_wait(&waitgroup->cnd, &waitgroup->mtx);
-    }
-    mtx_unlock(&waitgroup->mtx);
+    wg->wait_coro = mco_running();
+    mco_yield(mco_running());
 }

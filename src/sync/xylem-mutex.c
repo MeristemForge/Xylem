@@ -19,10 +19,60 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "xylem/sync/xylem-mutex.h"
 
-#include "runtime/loop.h"
-#include "runtime/thrdpool.h"
+#include "container/queue.h"
 
-extern loop_t*     runtime_get_loop(void);
-extern thrdpool_t* runtime_get_pool(void);
+#include "minicoro/minicoro.h"
+
+#include <stdbool.h>
+#include <stdlib.h>
+
+typedef struct {
+    queue_node_t node;
+    mco_coro*    co;
+} _mutex_waiter_t;
+
+struct xylem_mutex_s {
+    bool    locked;
+    queue_t waiters;
+};
+
+xylem_mutex_t* xylem_mutex_create(void) {
+    xylem_mutex_t* mtx =
+        (xylem_mutex_t*)calloc(1, sizeof(xylem_mutex_t));
+    if (!mtx) {
+        return NULL;
+    }
+    queue_init(&mtx->waiters);
+    return mtx;
+}
+
+void xylem_mutex_destroy(xylem_mutex_t* mtx) {
+    if (!mtx) {
+        return;
+    }
+    free(mtx);
+}
+
+void xylem_mutex_lock(xylem_mutex_t* mtx) {
+    if (!mtx->locked) {
+        mtx->locked = true;
+        return;
+    }
+
+    _mutex_waiter_t waiter;
+    waiter.co = mco_running();
+    queue_enqueue(&mtx->waiters, &waiter.node);
+    mco_yield(mco_running());
+}
+
+void xylem_mutex_unlock(xylem_mutex_t* mtx) {
+    queue_node_t* node = queue_dequeue(&mtx->waiters);
+    if (node) {
+        _mutex_waiter_t* w = queue_entry(node, _mutex_waiter_t, node);
+        mco_resume(w->co);
+    } else {
+        mtx->locked = false;
+    }
+}

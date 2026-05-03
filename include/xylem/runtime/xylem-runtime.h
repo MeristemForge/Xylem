@@ -24,17 +24,16 @@ _Pragma("once")
 #include <stdint.h>
 
 typedef struct xylem_runtime_opts_s {
-    int32_t workers;  /*< Thread pool size, 0 for default (CPU count). */
+    int32_t workers;  /*< Thread pool size, 0 for default. */
 } xylem_runtime_opts_t;
 
 /**
- * @brief Start the global runtime.
+ * @brief Start the global runtime and block until it exits.
  *
- * Creates the event loop and thread pool. Must be called once
- * before any networking or coroutine API. Blocks until
- * xylem_runtime_stop() is called from a coroutine or signal.
+ * The runtime exits when all active handles are closed or
+ * xylem_runtime_stop() is called.
  *
- * @param main_fn  Entry coroutine, spawned automatically.
+ * @param main_fn  Initial coroutine entry point.
  * @param arg      Argument passed to main_fn.
  * @param opts     Runtime options, NULL for defaults.
  */
@@ -44,25 +43,23 @@ extern void xylem_runtime_start(void (*main_fn)(void*), void* arg,
 /**
  * @brief Stop the global runtime.
  *
- * Signals the event loop to exit. Can be called from any
- * coroutine or from a thread pool worker via post.
+ * Thread-safe.
  */
 extern void xylem_runtime_stop(void);
 
 /**
- * @brief Spawn a coroutine on the runtime.
+ * @brief Spawn a new coroutine.
  *
- * Must be called after xylem_runtime_start (typically from
- * within another coroutine or the main_fn).
+ * Thread-safe.
  *
  * @param fn   Coroutine entry function.
  * @param arg  Argument passed to fn.
  */
-extern void xylem_spawn(void (*fn)(void*), void* arg);
+extern void xylem_runtime_spawn(void (*fn)(void*), void* arg);
 
 /**
  * @brief Suspend the current coroutine for a duration.
  *
  * @param ms  Milliseconds to sleep.
  */
-extern void xylem_sleep(uint64_t ms);
+extern void xylem_runtime_sleep(uint64_t ms);

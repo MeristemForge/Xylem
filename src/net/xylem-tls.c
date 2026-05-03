@@ -534,7 +534,7 @@ static void _tls_tcp_close_cb(xylem_tcp_conn_t* tcp, int err,
     }
     free(tls->hostname);
 
-    loop_post(runtime_loop(), _tls_free_cb, tls);
+    loop_post(runtime_get_loop(), _tls_free_cb, tls);
 }
 
 static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* tcp,
@@ -711,7 +711,7 @@ static int _tls_process_write(xylem_tls_conn_t* tls,
             wd->tls  = tls;
             wd->data = data;
             wd->len  = len;
-            if (loop_post(runtime_loop(),
+            if (loop_post(runtime_get_loop(),
                                 _tls_write_done_cb, wd) != 0) {
                 free(wd);
                 return -1;
@@ -814,7 +814,7 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     tls->state = TLS_STATE_CLOSING;
 
     if (queue_empty(&tls->write_queue)) {
-        loop_post(runtime_loop(),
+        loop_post(runtime_get_loop(),
                         _tls_graceful_close_cb, tls);
     }
 }
@@ -828,13 +828,13 @@ void* xylem_tls_get_userdata(xylem_tls_conn_t* tls) {
 }
 
 int xylem_tls_remote_addr(xylem_tls_conn_t* tls,
-                          char host[ADDR_MAXHOST],
+                          char host[INET6_ADDRSTRLEN],
                           uint16_t* port) {
     return xylem_tcp_remote_addr(tls->tcp, host, port);
 }
 
 loop_t* xylem_tls_get_loop(xylem_tls_conn_t* tls) {
-    return runtime_loop();
+    return runtime_get_loop();
 }
 
 void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud) {
