@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.25)
 
 project(examples LANGUAGES C)
 
+include_directories(${CMAKE_SOURCE_DIR}/src)
+
 # TCP examples (always available)
 add_executable(tcp-echo-server tcp-echo-server.c)
 target_link_libraries(tcp-echo-server PRIVATE xylem)
@@ -16,25 +18,29 @@ target_link_libraries(udp-echo-server PRIVATE xylem)
 add_executable(udp-echo-client udp-echo-client.c)
 target_link_libraries(udp-echo-client PRIVATE xylem)
 
-# HTTP examples (always available)
-add_executable(http-echo-server http-echo-server.c)
-target_link_libraries(http-echo-server PRIVATE xylem)
+# HTTP examples
+if(XYLEM_ENABLE_HTTP)
+    add_executable(http-echo-server http-echo-server.c)
+    target_link_libraries(http-echo-server PRIVATE xylem)
 
-add_executable(http-echo-client http-echo-client.c)
-target_link_libraries(http-echo-client PRIVATE xylem)
+    add_executable(http-echo-client http-echo-client.c)
+    target_link_libraries(http-echo-client PRIVATE xylem)
 
-add_executable(http-static-server http-static-server.c)
-target_link_libraries(http-static-server PRIVATE xylem)
+    add_executable(http-static-server http-static-server.c)
+    target_link_libraries(http-static-server PRIVATE xylem)
 
-add_executable(http-session-client http-session-client.c)
-target_link_libraries(http-session-client PRIVATE xylem)
+    add_executable(http-session-client http-session-client.c)
+    target_link_libraries(http-session-client PRIVATE xylem)
+endif()
 
-# WebSocket examples (always available)
-add_executable(ws-echo-server ws-echo-server.c)
-target_link_libraries(ws-echo-server PRIVATE xylem)
+# WebSocket examples
+if(XYLEM_ENABLE_WS)
+    add_executable(ws-echo-server ws-echo-server.c)
+    target_link_libraries(ws-echo-server PRIVATE xylem)
 
-add_executable(ws-echo-client ws-echo-client.c)
-target_link_libraries(ws-echo-client PRIVATE xylem)
+    add_executable(ws-echo-client ws-echo-client.c)
+    target_link_libraries(ws-echo-client PRIVATE xylem)
+endif()
 
 # Serial example (always available)
 add_executable(serial-terminal serial-terminal.c)

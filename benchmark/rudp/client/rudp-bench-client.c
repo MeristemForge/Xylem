@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "xylem.h"
-#include "xylem/xylem-rudp.h"
+#include "runtime/loop.h"
+#include "xylem/net/xylem-rudp.h"
 
 #include <signal.h>
 #include <stdbool.h>
@@ -26,7 +27,7 @@ static int         g_target_conns  = 1000;
 static int         g_duration_sec  = 30;
 static const char* g_host          = "127.0.0.1";
 static int         g_port          = 9002;
-static xylem_loop_t* g_loop        = NULL;
+static loop_t* g_loop        = NULL;
 static conn_t      g_conns[MAX_CONNS];
 static int         g_connected     = 0;
 static uint64_t    g_msgs_sent     = 0;
@@ -145,7 +146,7 @@ static void _on_close(xylem_rudp_conn_t* rudp, int err, const char* errmsg) {
     }
 }
 
-static void _on_timeout(xylem_loop_t* loop, xylem_timer_t* timer, void* ud) {
+static void _on_timeout(loop_t* loop, xylem_timer_t* timer, void* ud) {
     (void)loop;
     (void)timer;
     (void)ud;
@@ -160,13 +161,13 @@ static void _on_timeout(xylem_loop_t* loop, xylem_timer_t* timer, void* ud) {
         }
     }
 
-    xylem_loop_stop(g_loop);
+    loop_stop(g_loop);
 }
 
 static void sig_handler(int sig) {
     (void)sig;
     g_running = false;
-    if (g_loop) xylem_loop_stop(g_loop);
+    if (g_loop) loop_stop(g_loop);
 }
 
 int main(int argc, char** argv) {
@@ -192,9 +193,8 @@ int main(int argc, char** argv) {
     g_latencies = malloc(LATENCY_SLOTS * sizeof(uint64_t));
     memset(g_conns, 0, sizeof(g_conns));
 
-    xylem_startup();
 
-    g_loop = xylem_loop_create();
+    g_loop = loop_create();
 
     xylem_addr_t addr;
     xylem_addr_pton(g_host, (uint16_t)g_port, &addr);
@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
     /* wait for connections to establish, then start benchmark */
     g_start_time = now_us();
 
-    xylem_timer_t* deadline = xylem_loop_create_timer(
+    xylem_timer_t* deadline = loop_create_timer(
         g_loop, (uint64_t)g_duration_sec * 1000, false, _on_timeout, NULL);
     (void)deadline;
 
@@ -235,15 +235,14 @@ int main(int argc, char** argv) {
         }
     }
 
-    xylem_loop_run(g_loop);
+    loop_run(g_loop);
 
     if (g_running) {
         uint64_t elapsed = now_us() - g_start_time;
         print_results(elapsed);
     }
 
-    xylem_loop_destroy(g_loop);
-    xylem_cleanup();
+    loop_destroy(g_loop);
     free(g_latencies);
     return 0;
 }

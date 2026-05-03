@@ -20,6 +20,8 @@
  */
 
 #include "xylem.h"
+#include "runtime/runtime.h"
+#include "runtime/thrdpool.h"
 #include "assert.h"
 
 #include <stdatomic.h>
@@ -33,9 +35,8 @@
 #define SEND_DELAY_MS       10
 #define DRAIN_DELAY_MS      50
 
-/* test_listen_recv context: passed via sender userdata */
+/* test_listen_recv context */
 typedef struct {
-    xylem_loop_t* loop;
     xylem_udp_t*  receiver;
     xylem_udp_t*  sender;
     int           read_called;
@@ -47,7 +48,6 @@ typedef struct {
 
 /* test_listen_send context */
 typedef struct {
-    xylem_loop_t* loop;
     xylem_udp_t*  sender;
     xylem_udp_t*  receiver;
     int           read_called;
@@ -57,7 +57,6 @@ typedef struct {
 
 /* test_dial_echo context */
 typedef struct {
-    xylem_loop_t* loop;
     xylem_udp_t*  server;
     xylem_udp_t*  client;
     char          srv_data[64];
@@ -68,7 +67,6 @@ typedef struct {
 
 /* test_dial_addr context */
 typedef struct {
-    xylem_loop_t* loop;
     xylem_udp_t*  server;
     xylem_udp_t*  client;
     int           read_called;
@@ -78,7 +76,6 @@ typedef struct {
 
 /* test_datagram_boundary context */
 typedef struct {
-    xylem_loop_t* loop;
     xylem_udp_t*  receiver;
     xylem_udp_t*  sender;
     int           read_count;
@@ -86,287 +83,231 @@ typedef struct {
     char          bufs[3][4];
 } _db_ctx_t;
 
-static void _safety_timeout_cb(xylem_loop_t* loop,
-                                xylem_loop_timer_t* timer, void* ud) {
-    (void)timer;
-    (void)ud;
-    xylem_loop_stop(loop);
+static void _safety_timeout_cb(loop_t* loop,
+                                loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer; (void)ud;
+    xylem_runtime_stop();
 }
 
-static void _stop_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer,
+static void _stop_cb(loop_t* loop, loop_timer_t* timer,
                       void* ud) {
-    (void)timer;
-    (void)ud;
-    xylem_loop_stop(loop);
+    (void)loop; (void)timer; (void)ud;
+    xylem_runtime_stop();
 }
 
 static void _lr_on_read(xylem_udp_t* udp, void* data, size_t len,
-                         xylem_addr_t* addr) {
+                         const char* host, uint16_t port) {
     _lr_ctx_t* ctx = (_lr_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->read_called = 1;
     if (len < sizeof(ctx->data)) {
         memcpy(ctx->data, data, len);
         ctx->data_len = len;
     }
-    xylem_addr_ntop(addr, ctx->sender_ip, sizeof(ctx->sender_ip),
-                    &ctx->sender_port);
-    xylem_loop_stop(ctx->loop);
+    strncpy(ctx->sender_ip, host, sizeof(ctx->sender_ip) - 1);
+    ctx->sender_port = port;
+    xylem_runtime_stop();
 }
 
-static void _lr_send_timer_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _lr_send_timer_cb(loop_t* loop,
+                               loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _lr_ctx_t* ctx = (_lr_ctx_t*)ud;
-    xylem_addr_t dest;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dest);
-    xylem_udp_send(ctx->sender, &dest, "hello", 5);
+    xylem_udp_send(ctx->sender, UDP_HOST, PORT_A, "hello", 5);
+}
+
+static void _test_listen_recv_main(void* arg) {
+    _lr_ctx_t* ctx = (_lr_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t recv_handler = {.on_read = _lr_on_read};
+    ctx->receiver = xylem_udp_listen(UDP_HOST, PORT_A, &recv_handler);
+    ASSERT(ctx->receiver != NULL);
+    xylem_udp_set_userdata(ctx->receiver, ctx);
+
+    xylem_udp_handler_t send_handler = {0};
+    ctx->sender = xylem_udp_listen(UDP_HOST, PORT_B, &send_handler);
+    ASSERT(ctx->sender != NULL);
+
+    loop_timer_t* send_timer = loop_create_timer(loop);
+    loop_start_timer(send_timer, _lr_send_timer_cb, ctx, SEND_DELAY_MS, 0);
 }
 
 static void test_listen_recv(void) {
     _lr_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t recv_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &recv_addr);
-
-    xylem_udp_handler_t recv_handler = {.on_read = _lr_on_read};
-    ctx.receiver = xylem_udp_listen(ctx.loop, &recv_addr, &recv_handler);
-    ASSERT(ctx.receiver != NULL);
-    xylem_udp_set_userdata(ctx.receiver, &ctx);
-
-    xylem_addr_t send_addr;
-    xylem_addr_pton(UDP_HOST, PORT_B, &send_addr);
-
-    xylem_udp_handler_t send_handler = {0};
-    ctx.sender = xylem_udp_listen(ctx.loop, &send_addr, &send_handler);
-    ASSERT(ctx.sender != NULL);
-
-    xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _lr_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_listen_recv_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(ctx.data_len == 5);
     ASSERT(memcmp(ctx.data, "hello", 5) == 0);
     ASSERT(ctx.sender_port == PORT_B);
     ASSERT(strcmp(ctx.sender_ip, UDP_HOST) == 0);
-
-    xylem_udp_close(ctx.receiver);
-    xylem_udp_close(ctx.sender);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
 }
 
 static void _ls_on_read(xylem_udp_t* udp, void* data, size_t len,
-                         xylem_addr_t* addr) {
-    (void)addr;
+                         const char* host, uint16_t port) {
+    (void)host; (void)port;
     _ls_ctx_t* ctx = (_ls_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->read_called = 1;
     if (len < sizeof(ctx->data)) {
         memcpy(ctx->data, data, len);
         ctx->data_len = len;
     }
-    xylem_loop_stop(ctx->loop);
+    xylem_runtime_stop();
 }
 
-static void _ls_send_timer_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _ls_send_timer_cb(loop_t* loop,
+                               loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _ls_ctx_t* ctx = (_ls_ctx_t*)ud;
-    xylem_addr_t dest;
-    xylem_addr_pton(UDP_HOST, PORT_B, &dest);
-    xylem_udp_send(ctx->sender, &dest, "reply", 5);
+    xylem_udp_send(ctx->sender, UDP_HOST, PORT_B, "reply", 5);
+}
+
+static void _test_listen_send_main(void* arg) {
+    _ls_ctx_t* ctx = (_ls_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t a_handler = {0};
+    ctx->sender = xylem_udp_listen(UDP_HOST, PORT_A, &a_handler);
+    ASSERT(ctx->sender != NULL);
+
+    xylem_udp_handler_t b_handler = {.on_read = _ls_on_read};
+    ctx->receiver = xylem_udp_listen(UDP_HOST, PORT_B, &b_handler);
+    ASSERT(ctx->receiver != NULL);
+    xylem_udp_set_userdata(ctx->receiver, ctx);
+
+    loop_timer_t* send_timer = loop_create_timer(loop);
+    loop_start_timer(send_timer, _ls_send_timer_cb, ctx, SEND_DELAY_MS, 0);
 }
 
 static void test_listen_send(void) {
     _ls_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t a_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &a_addr);
-
-    xylem_udp_handler_t a_handler = {0};
-    ctx.sender = xylem_udp_listen(ctx.loop, &a_addr, &a_handler);
-    ASSERT(ctx.sender != NULL);
-
-    xylem_addr_t b_addr;
-    xylem_addr_pton(UDP_HOST, PORT_B, &b_addr);
-
-    xylem_udp_handler_t b_handler = {.on_read = _ls_on_read};
-    ctx.receiver = xylem_udp_listen(ctx.loop, &b_addr, &b_handler);
-    ASSERT(ctx.receiver != NULL);
-    xylem_udp_set_userdata(ctx.receiver, &ctx);
-
-    xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _ls_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_listen_send_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(ctx.data_len == 5);
     ASSERT(memcmp(ctx.data, "reply", 5) == 0);
-
-    xylem_udp_close(ctx.sender);
-    xylem_udp_close(ctx.receiver);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
 }
 
 static void _de_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
-                              xylem_addr_t* addr) {
-    (void)addr;
+                              const char* host, uint16_t port) {
+    (void)host; (void)port;
     _de_ctx_t* ctx = (_de_ctx_t*)xylem_udp_get_userdata(udp);
     if (len < sizeof(ctx->cli_data)) {
         memcpy(ctx->cli_data, data, len);
         ctx->cli_data_len = len;
     }
-    xylem_loop_stop(ctx->loop);
+    xylem_runtime_stop();
 }
 
 static void _de_srv_on_read(xylem_udp_t* udp, void* data, size_t len,
-                              xylem_addr_t* addr) {
+                              const char* host, uint16_t port) {
     _de_ctx_t* ctx = (_de_ctx_t*)xylem_udp_get_userdata(udp);
     if (len < sizeof(ctx->srv_data)) {
         memcpy(ctx->srv_data, data, len);
         ctx->srv_data_len = len;
     }
-    xylem_udp_send(udp, addr, "pong", 4);
+    xylem_udp_send(udp, host, port, "pong", 4);
 }
 
-static void _de_send_timer_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _de_send_timer_cb(loop_t* loop,
+                               loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _de_ctx_t* ctx = (_de_ctx_t*)ud;
-    xylem_udp_send(ctx->client, NULL, "ping", 4);
+    xylem_udp_send(ctx->client, NULL, 0, "ping", 4);
+}
+
+static void _test_dial_echo_main(void* arg) {
+    _de_ctx_t* ctx = (_de_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t srv_handler = {.on_read = _de_srv_on_read};
+    ctx->server = xylem_udp_listen(UDP_HOST, PORT_A, &srv_handler);
+    ASSERT(ctx->server != NULL);
+    xylem_udp_set_userdata(ctx->server, ctx);
+
+    xylem_udp_handler_t cli_handler = {.on_read = _de_cli_on_read};
+    ctx->client = xylem_udp_dial(UDP_HOST, PORT_A, &cli_handler);
+    ASSERT(ctx->client != NULL);
+    xylem_udp_set_userdata(ctx->client, ctx);
+
+    loop_timer_t* send_timer = loop_create_timer(loop);
+    loop_start_timer(send_timer, _de_send_timer_cb, ctx, SEND_DELAY_MS, 0);
 }
 
 static void test_dial_echo(void) {
     _de_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t srv_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &srv_addr);
-
-    xylem_udp_handler_t srv_handler = {.on_read = _de_srv_on_read};
-    ctx.server = xylem_udp_listen(ctx.loop, &srv_addr, &srv_handler);
-    ASSERT(ctx.server != NULL);
-    xylem_udp_set_userdata(ctx.server, &ctx);
-
-    xylem_addr_t dial_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
-
-    xylem_udp_handler_t cli_handler = {.on_read = _de_cli_on_read};
-    ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
-    ASSERT(ctx.client != NULL);
-    xylem_udp_set_userdata(ctx.client, &ctx);
-
-    xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _de_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_dial_echo_main, &ctx, NULL);
 
     ASSERT(ctx.srv_data_len == 4);
     ASSERT(memcmp(ctx.srv_data, "ping", 4) == 0);
     ASSERT(ctx.cli_data_len == 4);
     ASSERT(memcmp(ctx.cli_data, "pong", 4) == 0);
-
-    xylem_udp_close(ctx.client);
-    xylem_udp_close(ctx.server);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
 }
 
 static void _da_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
-                              xylem_addr_t* addr) {
-    (void)data;
-    (void)len;
+                              const char* host, uint16_t port) {
+    (void)data; (void)len;
     _da_ctx_t* ctx = (_da_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->read_called = 1;
-    xylem_addr_ntop(addr, ctx->addr_ip, sizeof(ctx->addr_ip),
-                    &ctx->addr_port);
-    xylem_loop_stop(ctx->loop);
+    strncpy(ctx->addr_ip, host, sizeof(ctx->addr_ip) - 1);
+    ctx->addr_port = port;
+    xylem_runtime_stop();
 }
 
 static void _da_srv_on_read(xylem_udp_t* udp, void* data, size_t len,
-                              xylem_addr_t* addr) {
-    (void)data;
-    (void)len;
-    xylem_udp_send(udp, addr, "echo", 4);
+                              const char* host, uint16_t port) {
+    (void)data; (void)len;
+    xylem_udp_send(udp, host, port, "echo", 4);
 }
 
-static void _da_send_timer_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _da_send_timer_cb(loop_t* loop,
+                               loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _da_ctx_t* ctx = (_da_ctx_t*)ud;
-    xylem_udp_send(ctx->client, NULL, "hi", 2);
+    xylem_udp_send(ctx->client, NULL, 0, "hi", 2);
+}
+
+static void _test_dial_addr_main(void* arg) {
+    _da_ctx_t* ctx = (_da_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t srv_handler = {.on_read = _da_srv_on_read};
+    ctx->server = xylem_udp_listen(UDP_HOST, PORT_A, &srv_handler);
+    ASSERT(ctx->server != NULL);
+
+    xylem_udp_handler_t cli_handler = {.on_read = _da_cli_on_read};
+    ctx->client = xylem_udp_dial(UDP_HOST, PORT_A, &cli_handler);
+    ASSERT(ctx->client != NULL);
+    xylem_udp_set_userdata(ctx->client, ctx);
+
+    loop_timer_t* send_timer = loop_create_timer(loop);
+    loop_start_timer(send_timer, _da_send_timer_cb, ctx, SEND_DELAY_MS, 0);
 }
 
 static void test_dial_addr(void) {
     _da_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t srv_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &srv_addr);
-
-    xylem_udp_handler_t srv_handler = {.on_read = _da_srv_on_read};
-    ctx.server = xylem_udp_listen(ctx.loop, &srv_addr, &srv_handler);
-    ASSERT(ctx.server != NULL);
-
-    xylem_addr_t dial_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
-
-    xylem_udp_handler_t cli_handler = {.on_read = _da_cli_on_read};
-    ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
-    ASSERT(ctx.client != NULL);
-    xylem_udp_set_userdata(ctx.client, &ctx);
-
-    xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _da_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_dial_addr_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(strcmp(ctx.addr_ip, UDP_HOST) == 0);
     ASSERT(ctx.addr_port == PORT_A);
-
-    xylem_udp_close(ctx.client);
-    xylem_udp_close(ctx.server);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
 }
 
 static void _db_on_read(xylem_udp_t* udp, void* data, size_t len,
-                          xylem_addr_t* addr) {
-    (void)addr;
+                          const char* host, uint16_t port) {
+    (void)host; (void)port;
     _db_ctx_t* ctx = (_db_ctx_t*)xylem_udp_get_userdata(udp);
     if (ctx->read_count < 3) {
         ctx->sizes[ctx->read_count] = len;
@@ -376,50 +317,42 @@ static void _db_on_read(xylem_udp_t* udp, void* data, size_t len,
         ctx->read_count++;
     }
     if (ctx->read_count >= 3) {
-        xylem_loop_stop(ctx->loop);
+        xylem_runtime_stop();
     }
 }
 
-static void _db_send_timer_cb(xylem_loop_t* loop,
-                                xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _db_send_timer_cb(loop_t* loop,
+                                loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _db_ctx_t* ctx = (_db_ctx_t*)ud;
-    xylem_addr_t dest;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dest);
-    xylem_udp_send(ctx->sender, &dest, "A", 1);
-    xylem_udp_send(ctx->sender, &dest, "BB", 2);
-    xylem_udp_send(ctx->sender, &dest, "CCC", 3);
+    xylem_udp_send(ctx->sender, UDP_HOST, PORT_A, "A", 1);
+    xylem_udp_send(ctx->sender, UDP_HOST, PORT_A, "BB", 2);
+    xylem_udp_send(ctx->sender, UDP_HOST, PORT_A, "CCC", 3);
+}
+
+static void _test_datagram_boundary_main(void* arg) {
+    _db_ctx_t* ctx = (_db_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t recv_handler = {.on_read = _db_on_read};
+    ctx->receiver = xylem_udp_listen(UDP_HOST, PORT_A, &recv_handler);
+    ASSERT(ctx->receiver != NULL);
+    xylem_udp_set_userdata(ctx->receiver, ctx);
+
+    xylem_udp_handler_t send_handler = {0};
+    ctx->sender = xylem_udp_listen(UDP_HOST, PORT_B, &send_handler);
+    ASSERT(ctx->sender != NULL);
+
+    loop_timer_t* send_timer = loop_create_timer(loop);
+    loop_start_timer(send_timer, _db_send_timer_cb, ctx, SEND_DELAY_MS, 0);
 }
 
 static void test_datagram_boundary(void) {
     _db_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t recv_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &recv_addr);
-
-    xylem_udp_handler_t recv_handler = {.on_read = _db_on_read};
-    ctx.receiver = xylem_udp_listen(ctx.loop, &recv_addr, &recv_handler);
-    ASSERT(ctx.receiver != NULL);
-    xylem_udp_set_userdata(ctx.receiver, &ctx);
-
-    xylem_addr_t send_addr;
-    xylem_addr_pton(UDP_HOST, PORT_B, &send_addr);
-
-    xylem_udp_handler_t send_handler = {0};
-    ctx.sender = xylem_udp_listen(ctx.loop, &send_addr, &send_handler);
-    ASSERT(ctx.sender != NULL);
-
-    xylem_loop_timer_t* send_timer =
-        xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(send_timer, _db_send_timer_cb, &ctx, SEND_DELAY_MS, 0);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_datagram_boundary_main, &ctx, NULL);
 
     ASSERT(ctx.read_count == 3);
     ASSERT(ctx.sizes[0] == 1);
@@ -428,340 +361,297 @@ static void test_datagram_boundary(void) {
     ASSERT(memcmp(ctx.bufs[0], "A", 1) == 0);
     ASSERT(memcmp(ctx.bufs[1], "BB", 2) == 0);
     ASSERT(memcmp(ctx.bufs[2], "CCC", 3) == 0);
+}
 
-    xylem_udp_close(ctx.receiver);
-    xylem_udp_close(ctx.sender);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
+/* test_close_idempotent */
+
+typedef struct {
+    xylem_udp_t* udp;
+} _ci_ctx_t;
+
+static void _test_close_idempotent_main(void* arg) {
+    _ci_ctx_t* ctx = (_ci_ctx_t*)arg;
+
+    xylem_udp_handler_t handler = {0};
+    ctx->udp = xylem_udp_listen(UDP_HOST, PORT_A, &handler);
+    ASSERT(ctx->udp != NULL);
+
+    xylem_udp_close(ctx->udp);
+    xylem_udp_close(ctx->udp);
+
+    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
 static void test_close_idempotent(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
-
-    xylem_udp_handler_t handler = {0};
-    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
-    ASSERT(udp != NULL);
-
-    xylem_udp_close(udp);
-    xylem_udp_close(udp);
-
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
-    xylem_loop_run(loop);
-
-    xylem_loop_destroy_timer(drain);
-    xylem_loop_destroy(loop);
+    _ci_ctx_t ctx = {0};
+    xylem_runtime_start(_test_close_idempotent_main, &ctx, NULL);
 }
 
-/* test_close_callback: on_close receives the udp handle as userdata */
+/* test_close_callback */
+
+typedef struct {
+    int called;
+} _cc_ctx_t;
+
 static void _cc_on_close(xylem_udp_t* udp, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    int* called = (int*)xylem_udp_get_userdata(udp);
-    *called = 1;
+    (void)err; (void)errmsg;
+    _cc_ctx_t* ctx = (_cc_ctx_t*)xylem_udp_get_userdata(udp);
+    ctx->called = 1;
+}
+
+static void _test_close_callback_main(void* arg) {
+    _cc_ctx_t* ctx = (_cc_ctx_t*)arg;
+
+    xylem_udp_handler_t handler = {.on_close = _cc_on_close};
+    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, PORT_A, &handler);
+    ASSERT(udp != NULL);
+    xylem_udp_set_userdata(udp, ctx);
+
+    xylem_udp_close(udp);
+
+    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
 static void test_close_callback(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
+    _cc_ctx_t ctx = {0};
+    xylem_runtime_start(_test_close_callback_main, &ctx, NULL);
+    ASSERT(ctx.called == 1);
+}
 
-    int called = 0;
+/* test_send_after_close */
 
-    xylem_addr_t addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
+typedef struct {
+    int result;
+} _sac_ctx_t;
 
-    xylem_udp_handler_t handler = {.on_close = _cc_on_close};
-    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
+static void _test_send_after_close_main(void* arg) {
+    _sac_ctx_t* ctx = (_sac_ctx_t*)arg;
+
+    xylem_udp_handler_t handler = {0};
+    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, PORT_A, &handler);
     ASSERT(udp != NULL);
-    xylem_udp_set_userdata(udp, &called);
 
     xylem_udp_close(udp);
+    ctx->result = xylem_udp_send(udp, UDP_HOST, PORT_B, "data", 4);
 
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
-    xylem_loop_run(loop);
-
-    ASSERT(called == 1);
-
-    xylem_loop_destroy_timer(drain);
-    xylem_loop_destroy(loop);
+    loop_timer_t* drain = loop_create_timer(runtime_loop());
+    loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
 }
 
 static void test_send_after_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
+    _sac_ctx_t ctx = {0};
+    xylem_runtime_start(_test_send_after_close_main, &ctx, NULL);
+    ASSERT(ctx.result == -1);
+}
 
-    xylem_addr_t addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
+/* test_userdata */
+
+typedef struct {
+    int value;
+    void* got;
+} _ud_ctx_t;
+
+static void _test_userdata_main(void* arg) {
+    _ud_ctx_t* ctx = (_ud_ctx_t*)arg;
 
     xylem_udp_handler_t handler = {0};
-    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
+    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, PORT_A, &handler);
     ASSERT(udp != NULL);
 
+    xylem_udp_set_userdata(udp, &ctx->value);
+    ctx->got = xylem_udp_get_userdata(udp);
+
     xylem_udp_close(udp);
-
-    xylem_addr_t dest;
-    xylem_addr_pton(UDP_HOST, PORT_B, &dest);
-    int rc = xylem_udp_send(udp, &dest, "data", 4);
-
-    xylem_loop_timer_t* drain = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(drain, _stop_cb, NULL, DRAIN_DELAY_MS, 0);
-    xylem_loop_run(loop);
-
-    ASSERT(rc == -1);
-
-    xylem_loop_destroy_timer(drain);
-    xylem_loop_destroy(loop);
+    xylem_runtime_stop();
 }
 
 static void test_userdata(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
-
-    xylem_udp_handler_t handler = {0};
-    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
-    ASSERT(udp != NULL);
-
-    int value = 42;
-    xylem_udp_set_userdata(udp, &value);
-    void* got = xylem_udp_get_userdata(udp);
-    ASSERT(got == &value);
-    ASSERT(*(int*)got == 42);
-
-    xylem_udp_close(udp);
-    xylem_loop_destroy(loop);
+    _ud_ctx_t ctx = { .value = 42 };
+    xylem_runtime_start(_test_userdata_main, &ctx, NULL);
+    ASSERT(ctx.got == &ctx.value);
+    ASSERT(*(int*)ctx.got == 42);
 }
 
-static void test_get_loop(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &addr);
-
-    xylem_udp_handler_t handler = {0};
-    xylem_udp_t* udp = xylem_udp_listen(loop, &addr, &handler);
-    ASSERT(udp != NULL);
-
-    xylem_loop_t* got = xylem_udp_get_loop(udp);
-    ASSERT(got == loop);
-
-    xylem_udp_close(udp);
-    xylem_loop_destroy(loop);
-}
-
-/* ───────── cross-thread tests ───────── */
+/* cross-thread tests */
 
 typedef struct {
-    xylem_loop_t*      loop;
     xylem_udp_t*       server;
     xylem_udp_t*       client;
-    xylem_thrdpool_t*  pool;
+    thrdpool_t*        pool;
     _Atomic bool       worker_done;
     int                verified;
     int                close_called;
 } _xt_ctx_t;
 
-/* test_cross_thread_send helpers */
-
 static void _xt_send_on_read(xylem_udp_t* udp, void* data, size_t len,
-                             xylem_addr_t* addr) {
-    (void)addr;
+                             const char* host, uint16_t port) {
+    (void)host; (void)port;
     _xt_ctx_t* ctx = (_xt_ctx_t*)xylem_udp_get_userdata(udp);
     if (len == 6 && memcmp(data, "xt_msg", 6) == 0) {
         ctx->verified = 1;
     }
-    xylem_loop_stop(ctx->loop);
+    xylem_runtime_stop();
 }
 
-static void _xt_send_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
                              void* ud) {
-    (void)loop;
-    (void)req;
+    (void)loop; (void)req;
     _xt_ctx_t* ctx = (_xt_ctx_t*)ud;
-    xylem_udp_send(ctx->client, NULL, "xt_msg", 6);
+    xylem_udp_send(ctx->client, NULL, 0, "xt_msg", 6);
 }
 
 static void _xt_send_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    xylem_loop_post(ctx->loop, _xt_send_post_cb, ctx);
+    loop_post(runtime_loop(), _xt_send_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
+}
+
+static void _test_cross_thread_send_main(void* arg) {
+    _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t srv_handler = {.on_read = _xt_send_on_read};
+    ctx->server = xylem_udp_listen(UDP_HOST, PORT_A, &srv_handler);
+    ASSERT(ctx->server != NULL);
+    xylem_udp_set_userdata(ctx->server, ctx);
+
+    xylem_udp_handler_t cli_handler = {0};
+    ctx->client = xylem_udp_dial(UDP_HOST, PORT_A, &cli_handler);
+    ASSERT(ctx->client != NULL);
+
+    ctx->pool = thrdpool_create(1);
+    ASSERT(ctx->pool != NULL);
+    thrdpool_submit(ctx->pool, _xt_send_worker, ctx);
 }
 
 static void test_cross_thread_send(void) {
     _xt_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t srv_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &srv_addr);
-
-    xylem_udp_handler_t srv_handler = {.on_read = _xt_send_on_read};
-    ctx.server = xylem_udp_listen(ctx.loop, &srv_addr, &srv_handler);
-    ASSERT(ctx.server != NULL);
-    xylem_udp_set_userdata(ctx.server, &ctx);
-
-    xylem_addr_t dial_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
-
-    xylem_udp_handler_t cli_handler = {0};
-    ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
-    ASSERT(ctx.client != NULL);
-
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    xylem_thrdpool_post(ctx.pool, _xt_send_worker, &ctx);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_cross_thread_send_main, &ctx, NULL);
 
     ASSERT(ctx.verified == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_udp_close(ctx.client);
-    xylem_udp_close(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
 }
 
-/* test_cross_thread_close helpers */
+/* test_cross_thread_close */
 
 static void _xt_close_on_close(xylem_udp_t* udp, int err,
                                const char* errmsg) {
-    (void)err;
-    (void)errmsg;
+    (void)err; (void)errmsg;
     _xt_ctx_t* ctx = (_xt_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->verified = 1;
-    xylem_loop_stop(ctx->loop);
+    xylem_runtime_stop();
 }
 
-static void _xt_close_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
                               void* ud) {
-    (void)loop;
-    (void)req;
+    (void)loop; (void)req;
     _xt_ctx_t* ctx = (_xt_ctx_t*)ud;
     xylem_udp_close(ctx->client);
 }
 
 static void _xt_close_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
-    xylem_loop_post(ctx->loop, _xt_close_post_cb, ctx);
+    loop_post(runtime_loop(), _xt_close_post_cb, ctx);
     atomic_store(&ctx->worker_done, true);
+}
+
+static void _test_cross_thread_close_main(void* arg) {
+    _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
+
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+
+    xylem_udp_handler_t cli_handler = {.on_close = _xt_close_on_close};
+    ctx->client = xylem_udp_dial(UDP_HOST, PORT_A, &cli_handler);
+    ASSERT(ctx->client != NULL);
+    xylem_udp_set_userdata(ctx->client, ctx);
+
+    ctx->pool = thrdpool_create(1);
+    ASSERT(ctx->pool != NULL);
+    thrdpool_submit(ctx->pool, _xt_close_worker, ctx);
 }
 
 static void test_cross_thread_close(void) {
     _xt_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t dial_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
-
-    xylem_udp_handler_t cli_handler = {.on_close = _xt_close_on_close};
-    ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
-    ASSERT(ctx.client != NULL);
-    xylem_udp_set_userdata(ctx.client, &ctx);
-
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    xylem_thrdpool_post(ctx.pool, _xt_close_worker, &ctx);
-
-    xylem_loop_run(ctx.loop);
+    xylem_runtime_start(_test_cross_thread_close_main, &ctx, NULL);
 
     ASSERT(ctx.verified == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
 }
 
-/* test_cross_thread_send_stop_on_close helpers */
+/* test_cross_thread_send_stop_on_close */
 
 static void _xt_soc_on_close(xylem_udp_t* udp, int err,
                              const char* errmsg) {
-    (void)err;
-    (void)errmsg;
+    (void)err; (void)errmsg;
     _xt_ctx_t* ctx = (_xt_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->close_called = 1;
-    xylem_loop_stop(ctx->loop);
+    xylem_runtime_stop();
 }
 
-static void _xt_soc_close_timer_cb(xylem_loop_t* loop,
-                                   xylem_loop_timer_t* timer, void* ud) {
-    (void)loop;
-    (void)timer;
+static void _xt_soc_close_timer_cb(loop_t* loop,
+                                   loop_timer_t* timer, void* ud) {
+    (void)loop; (void)timer;
     _xt_ctx_t* ctx = (_xt_ctx_t*)ud;
     xylem_udp_close(ctx->client);
 }
 
-static void _xt_soc_post_cb(xylem_loop_t* loop, xylem_loop_post_t* req,
+static void _xt_soc_post_cb(loop_t* loop, loop_post_t* req,
                             void* ud) {
-    (void)loop;
-    (void)req;
+    (void)loop; (void)req;
     _xt_ctx_t* ctx = (_xt_ctx_t*)ud;
-    xylem_udp_send(ctx->client, NULL, "burst", 5);
+    xylem_udp_send(ctx->client, NULL, 0, "burst", 5);
 }
 
 static void _xt_soc_worker(void* arg) {
     _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
     for (int i = 0; i < 20; i++) {
-        xylem_loop_post(ctx->loop, _xt_soc_post_cb, ctx);
+        loop_post(runtime_loop(), _xt_soc_post_cb, ctx);
     }
     atomic_store(&ctx->worker_done, true);
 }
 
-static void test_cross_thread_send_stop_on_close(void) {
-    _xt_ctx_t ctx = {0};
-    ctx.loop = xylem_loop_create();
-    ASSERT(ctx.loop != NULL);
+static void _test_cross_thread_soc_main(void* arg) {
+    _xt_ctx_t* ctx = (_xt_ctx_t*)arg;
+    loop_t* loop = runtime_loop();
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    xylem_addr_t dial_addr;
-    xylem_addr_pton(UDP_HOST, PORT_A, &dial_addr);
+    loop_timer_t* safety = loop_create_timer(loop);
+    loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 
     xylem_udp_handler_t cli_handler = {.on_close = _xt_soc_on_close};
-    ctx.client = xylem_udp_dial(ctx.loop, &dial_addr, &cli_handler);
-    ASSERT(ctx.client != NULL);
-    xylem_udp_set_userdata(ctx.client, &ctx);
+    ctx->client = xylem_udp_dial(UDP_HOST, PORT_A, &cli_handler);
+    ASSERT(ctx->client != NULL);
+    xylem_udp_set_userdata(ctx->client, ctx);
 
-    /* Timer fires after a short delay to close the socket mid-burst. */
-    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(ctx.loop);
-    xylem_loop_start_timer(close_timer, _xt_soc_close_timer_cb, &ctx,
+    loop_timer_t* close_timer = loop_create_timer(loop);
+    loop_start_timer(close_timer, _xt_soc_close_timer_cb, ctx,
                            SEND_DELAY_MS, 0);
 
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    xylem_thrdpool_post(ctx.pool, _xt_soc_worker, &ctx);
+    ctx->pool = thrdpool_create(1);
+    ASSERT(ctx->pool != NULL);
+    thrdpool_submit(ctx->pool, _xt_soc_worker, ctx);
+}
 
-    xylem_loop_run(ctx.loop);
+static void test_cross_thread_send_stop_on_close(void) {
+    _xt_ctx_t ctx = {0};
+    xylem_runtime_start(_test_cross_thread_soc_main, &ctx, NULL);
 
     ASSERT(ctx.close_called == 1);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_destroy_timer(close_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
 }
 
 int main(void) {
-    xylem_startup();
 
     test_listen_recv();
     test_listen_send();
@@ -772,11 +662,9 @@ int main(void) {
     test_close_callback();
     test_send_after_close();
     test_userdata();
-    test_get_loop();
     test_cross_thread_send();
     test_cross_thread_close();
     test_cross_thread_send_stop_on_close();
 
-    xylem_cleanup();
     return 0;
 }

@@ -20,9 +20,9 @@
  */
 
 #include "assert.h"
-#include "xylem/ws/xylem-ws-common.h"
-#include "xylem/ws/xylem-ws-client.h"
-#include "xylem/ws/xylem-ws-server.h"
+#include "xylem/net/ws/xylem-ws-common.h"
+#include "xylem/net/ws/xylem-ws-client.h"
+#include "xylem/net/ws/xylem-ws-server.h"
 #include "xylem/xylem-loop.h"
 
 static void test_dial_null_loop(void) {
@@ -31,16 +31,16 @@ static void test_dial_null_loop(void) {
 }
 
 static void test_dial_null_url(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     xylem_ws_handler_t handler = {0};
     ASSERT(xylem_ws_dial(loop, NULL, &handler, NULL) == NULL);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_dial_null_handler(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(xylem_ws_dial(loop, "ws://localhost", NULL, NULL) == NULL);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_send_null(void) {
@@ -78,13 +78,13 @@ static void test_listen_null_loop(void) {
 }
 
 static void test_listen_null_cfg(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(xylem_ws_listen(loop, NULL) == NULL);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_listen_create_destroy(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(loop != NULL);
 
     xylem_ws_handler_t handler = {0};
@@ -97,7 +97,7 @@ static void test_listen_create_destroy(void) {
     ASSERT(srv != NULL);
     xylem_ws_close_server(srv);
 
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_close_server_null(void) {

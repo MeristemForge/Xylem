@@ -286,7 +286,7 @@ struct xylem_http_srv_s {
     xylem_loop_t*          loop;
     xylem_http_srv_cfg_t   cfg;
     union {
-        xylem_tcp_server_t* tcp;
+        xylem_tcp_listener_t* tcp;
         xylem_tls_server_t* tls;
     } listener;
     bool                   is_tls;

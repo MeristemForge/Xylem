@@ -119,7 +119,6 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, _signal_handler);
     signal(SIGTERM, _signal_handler);
 
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     xylem_serial_baudrate_t baudrate = XYLEM_SERIAL_BAUDRATE_115200;
@@ -140,7 +139,6 @@ int main(int argc, char* argv[]) {
     if (!serial) {
         xylem_loge("failed to open %s", argv[1]);
         xylem_logger_deinit();
-        xylem_cleanup();
         return 1;
     }
 
@@ -154,7 +152,6 @@ int main(int argc, char* argv[]) {
         xylem_loge("failed to create reader thread");
         xylem_serial_close(serial);
         xylem_logger_deinit();
-        xylem_cleanup();
         return 1;
     }
 
@@ -196,6 +193,5 @@ int main(int argc, char* argv[]) {
     xylem_serial_close(serial);
     xylem_logi("bye");
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

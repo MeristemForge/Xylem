@@ -29,46 +29,38 @@
  */
 
 #include "xylem.h"
-#include "xylem/xylem-udp.h"
+#include "xylem/net/xylem-udp.h"
 
 #define SERVER_PORT 9001
 
-static xylem_loop_t* _loop;
-
 static void _on_read(xylem_udp_t* udp, void* data, size_t len,
-                     xylem_addr_t* addr) {
-    (void)udp;
-    (void)addr;
+                     const char* host, uint16_t port) {
+    (void)udp; (void)host; (void)port;
     xylem_logi("echo: %.*s", (int)len, (char*)data);
-    xylem_loop_stop(_loop);
+    xylem_runtime_stop();
 }
 
-int main(void) {
-    xylem_startup();
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-
-    _loop = xylem_loop_create();
-
-    xylem_addr_t dest;
-    xylem_addr_pton("127.0.0.1", SERVER_PORT, &dest);
+static void _client_main(void* arg) {
+    (void)arg;
 
     xylem_udp_handler_t handler = {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_dial(_loop, &dest, &handler);
+    xylem_udp_t* udp = xylem_udp_dial("127.0.0.1", SERVER_PORT, &handler);
     if (!udp) {
         xylem_loge("failed to connect to 127.0.0.1:%d", SERVER_PORT);
-        return 1;
+        xylem_runtime_stop();
+        return;
     }
 
-    xylem_udp_send(udp, NULL, "hello", 5);
+    xylem_udp_send(udp, NULL, 0, "hello", 5);
     xylem_logi("sent: hello");
+}
 
-    xylem_loop_run(_loop);
-
-    xylem_loop_destroy(_loop);
+int main(void) {
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_runtime_start(_client_main, NULL, NULL);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

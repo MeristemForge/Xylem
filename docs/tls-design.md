@@ -119,7 +119,7 @@ typedef struct _tls_write_req_s {
 
 ```c
 struct xylem_tls_server_s {
-    xylem_tcp_server_t*   tcp_server;     /* 底层 TCP 服务器 */
+    xylem_tcp_listener_t*   tcp_server;     /* 底层 TCP 服务器 */
     xylem_tls_ctx_t*      ctx;
     xylem_tls_handler_t*  handler;
     xylem_tls_opts_t      opts;           /* 完整 TLS 选项（含底层 TCP 选项） */

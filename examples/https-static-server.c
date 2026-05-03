@@ -33,6 +33,7 @@
  */
 
 #include "xylem.h"
+#include "runtime/loop.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,7 +149,6 @@ static void _on_request(xylem_http_writer_t* w, xylem_http_req_t* req,
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     if (_ensure_cert() != 0) {
@@ -156,7 +156,7 @@ int main(void) {
         return 1;
     }
 
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
 
     _router = xylem_http_router_create();
 
@@ -185,12 +185,11 @@ int main(void) {
 
     xylem_logi("serving %s/ at https://127.0.0.1:%d/static/",
                STATIC_ROOT, LISTEN_PORT);
-    xylem_loop_run(loop);
+    loop_run(loop);
 
     xylem_http_close_server(srv);
     xylem_http_router_destroy(_router);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

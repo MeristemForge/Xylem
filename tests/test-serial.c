@@ -94,7 +94,6 @@ static void test_write_null(void) {
 }
 
 int main(void) {
-    xylem_startup();
 
     test_open_null_opts();
     test_open_null_device();
@@ -107,6 +106,5 @@ int main(void) {
     test_read_null();
     test_write_null();
 
-    xylem_cleanup();
     return 0;
 }

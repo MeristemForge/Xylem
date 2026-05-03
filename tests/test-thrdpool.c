@@ -20,6 +20,7 @@
  */
 
 #include "xylem.h"
+#include "runtime/thrdpool.h"
 #include "assert.h"
 
 #include <stdatomic.h>
@@ -32,9 +33,9 @@ static void _increment(void* arg) {
 
 /* Test: create and immediately destroy an empty pool. */
 static void test_create_destroy(void) {
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(4);
+    thrdpool_t* pool = thrdpool_create(4);
     ASSERT(pool != NULL);
-    xylem_thrdpool_destroy(pool);
+    thrdpool_destroy(pool);
 }
 
 /* Test: post jobs and verify all are executed. */
@@ -42,14 +43,14 @@ static void test_post_jobs(void) {
     enum { N = 100 };
     atomic_int counter = 0;
 
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(4);
+    thrdpool_t* pool = thrdpool_create(4);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, (void*)&counter);
+        thrdpool_submit(pool, _increment, (void*)&counter);
     }
 
-    xylem_thrdpool_destroy(pool);
+    thrdpool_destroy(pool);
     ASSERT(atomic_load(&counter) == N);
 }
 
@@ -58,14 +59,14 @@ static void test_single_thread(void) {
     enum { N = 50 };
     atomic_int counter = 0;
 
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
+    thrdpool_t* pool = thrdpool_create(1);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, (void*)&counter);
+        thrdpool_submit(pool, _increment, (void*)&counter);
     }
 
-    xylem_thrdpool_destroy(pool);
+    thrdpool_destroy(pool);
     ASSERT(atomic_load(&counter) == N);
 }
 
@@ -92,7 +93,7 @@ static void test_job_args(void) {
 
     memset(arr, 0, sizeof(arr));
 
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(4);
+    thrdpool_t* pool = thrdpool_create(4);
     ASSERT(pool != NULL);
 
     xylem_waitgroup_add(wg, N);
@@ -101,7 +102,7 @@ static void test_job_args(void) {
         args[i].idx = i;
         args[i].val = i * 10;
         args[i].wg  = wg;
-        xylem_thrdpool_post(pool, _write_value, &args[i]);
+        thrdpool_submit(pool, _write_value, &args[i]);
     }
 
     xylem_waitgroup_wait(wg);
@@ -110,7 +111,7 @@ static void test_job_args(void) {
         ASSERT(arr[i] == i * 10);
     }
 
-    xylem_thrdpool_destroy(pool);
+    thrdpool_destroy(pool);
     xylem_waitgroup_destroy(wg);
 }
 
@@ -119,14 +120,14 @@ static void test_many_threads(void) {
     enum { N = 200 };
     atomic_int counter = 0;
 
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(16);
+    thrdpool_t* pool = thrdpool_create(16);
     ASSERT(pool != NULL);
 
     for (int i = 0; i < N; i++) {
-        xylem_thrdpool_post(pool, _increment, (void*)&counter);
+        thrdpool_submit(pool, _increment, (void*)&counter);
     }
 
-    xylem_thrdpool_destroy(pool);
+    thrdpool_destroy(pool);
     ASSERT(atomic_load(&counter) == N);
 }
 

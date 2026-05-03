@@ -43,6 +43,9 @@ int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
         ee.events |= EPOLLOUT;
     }
+    if (sqe->oneshot) {
+        ee.events |= EPOLLONESHOT;
+    }
     ee.data.ptr = sqe->ud;
     return epoll_ctl(*sq, EPOLL_CTL_ADD, sqe->fd, &ee);
 }
@@ -55,6 +58,9 @@ int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
         ee.events |= EPOLLOUT;
+    }
+    if (sqe->oneshot) {
+        ee.events |= EPOLLONESHOT;
     }
     ee.data.ptr = sqe->ud;
     return epoll_ctl(*sq, EPOLL_CTL_MOD, sqe->fd, &ee);

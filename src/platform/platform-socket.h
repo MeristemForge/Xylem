@@ -70,7 +70,10 @@ typedef int platform_sock_t;
 #define PLATFORM_SHUT_WR                  SD_SEND
 
 typedef SOCKET  platform_sock_t;
+#ifndef _XYLEM_SSIZE_T
+#define _XYLEM_SSIZE_T
 typedef SSIZE_T ssize_t;
+#endif
 
 #pragma comment(lib, "ws2_32.lib")
 #endif

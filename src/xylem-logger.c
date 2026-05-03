@@ -20,9 +20,9 @@
  */
 
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-thrdpool.h"
+#include "runtime/thrdpool.h"
 
-#include "deprecated/c11-threads.h"
+#include "c11-threads.h"
 
 #include "platform/platform.h"
 
@@ -56,7 +56,7 @@ struct _logger_s {
     const char*          filename;
     size_t               max_file_size;
     mtx_t                mtx;
-    xylem_thrdpool_t*    thrdpool;
+    thrdpool_t*    thrdpool;
     atomic_int           state;
     void (*callback)(xylem_logger_level_t level, const char* restrict msg,
                      void* ud);
@@ -205,7 +205,7 @@ static void _logger_async_log(
         memcpy(ctx->message, buf, len + 1);
         ctx->level     = level;
         ctx->cb_offset = cb_offset;
-        xylem_thrdpool_post(_logger.thrdpool, _logger_print_message, ctx);
+        thrdpool_submit(_logger.thrdpool, _logger_print_message, ctx);
     }
 }
 
@@ -229,7 +229,7 @@ static void _logger_do_init(
     }
     _logger.max_file_size = max_file_size;
     if (async) {
-        _logger.thrdpool = xylem_thrdpool_create(1);
+        _logger.thrdpool = thrdpool_create(1);
         _logger.async    = true;
     } else {
         _logger.async = false;
@@ -254,7 +254,7 @@ void xylem_logger_deinit(void) {
     int expected = LOGGER_INITED;
     if (atomic_compare_exchange_strong(&_logger.state, &expected, LOGGER_UNINIT)) {
         if (_logger.async) {
-            xylem_thrdpool_destroy(_logger.thrdpool);
+            thrdpool_destroy(_logger.thrdpool);
             _logger.thrdpool = NULL;
         }
         if (_logger.file != stdout && _logger.file != NULL) {

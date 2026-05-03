@@ -30,9 +30,10 @@
  */
 
 #include "xylem.h"
-#include "xylem/ws/xylem-ws-client.h"
+#include "runtime/loop.h"
+#include "xylem/net/ws/xylem-ws-client.h"
 
-static xylem_loop_t* _loop;
+static loop_t* _loop;
 
 static void _on_open(xylem_ws_conn_t* conn) {
     xylem_logi("tls handshake complete");
@@ -53,14 +54,13 @@ static void _on_close(xylem_ws_conn_t* conn,
     (void)reason;
     (void)reason_len;
     xylem_logi("disconnected (code=%u)", code);
-    xylem_loop_stop(_loop);
+    loop_stop(_loop);
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    _loop = xylem_loop_create();
+    _loop = loop_create();
 
     xylem_ws_handler_t handler = {
         .on_open    = _on_open,
@@ -76,10 +76,9 @@ int main(void) {
         return 1;
     }
 
-    xylem_loop_run(_loop);
+    loop_run(_loop);
 
-    xylem_loop_destroy(_loop);
+    loop_destroy(_loop);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }
