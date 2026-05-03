@@ -63,3 +63,16 @@ extern void xylem_runtime_spawn(void (*fn)(void*), void* arg);
  * @param ms  Milliseconds to sleep.
  */
 extern void xylem_runtime_sleep(uint64_t ms);
+
+/**
+ * @brief Execute a blocking function on the thread pool.
+ *
+ * Submits @p fn to the thread pool and suspends the calling coroutine
+ * until execution completes. The caller resumes on the event loop thread.
+ *
+ * @param fn   Function to execute on a worker thread.
+ * @param arg  Argument passed to @p fn.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_runtime_submit(void (*fn)(void*), void* arg);

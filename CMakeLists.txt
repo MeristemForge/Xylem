@@ -81,6 +81,7 @@ if(WIN32)
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
 		src/platform/win/platform-socket.c
+		src/platform/win/platform-sem.c
 		src/platform/win/platform-serial.c
 		src/platform/win/wepoll/wepoll.c
 	)
@@ -92,6 +93,7 @@ if(UNIX)
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-poller.c
 		src/platform/unix/platform-socket.c
+		src/platform/unix/platform-sem.c
 		src/platform/unix/platform-serial.c
 	)
 endif()

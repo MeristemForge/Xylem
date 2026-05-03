@@ -26,6 +26,8 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include <threads.h>
+
 static void _increment(void* arg) {
     atomic_int* counter = (atomic_int*)arg;
     atomic_fetch_add(counter, 1);
@@ -71,48 +73,47 @@ static void test_single_thread(void) {
 }
 
 typedef struct {
-    int*               arr;
-    int                idx;
-    int                val;
-    xylem_waitgroup_t* wg;
+    int*        arr;
+    int         idx;
+    int         val;
+    atomic_int* done;
 } write_arg_t;
 
 static void _write_value(void* arg) {
     write_arg_t* wa = (write_arg_t*)arg;
     wa->arr[wa->idx] = wa->val;
-    xylem_waitgroup_done(wa->wg);
+    atomic_fetch_add(wa->done, 1);
 }
 
 /* Test: verify job arguments are passed correctly. */
 static void test_job_args(void) {
     enum { N = 20 };
-    int               arr[N];
-    write_arg_t       args[N];
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
+    int        arr[N];
+    write_arg_t args[N];
+    atomic_int done = 0;
 
     memset(arr, 0, sizeof(arr));
 
     thrdpool_t* pool = thrdpool_create(4);
     ASSERT(pool != NULL);
 
-    xylem_waitgroup_add(wg, N);
     for (int i = 0; i < N; i++) {
-        args[i].arr = arr;
-        args[i].idx = i;
-        args[i].val = i * 10;
-        args[i].wg  = wg;
+        args[i].arr  = arr;
+        args[i].idx  = i;
+        args[i].val  = i * 10;
+        args[i].done = &done;
         thrdpool_submit(pool, _write_value, &args[i]);
     }
 
-    xylem_waitgroup_wait(wg);
+    while (atomic_load(&done) < N) {
+        thrd_yield();
+    }
 
     for (int i = 0; i < N; i++) {
         ASSERT(arr[i] == i * 10);
     }
 
     thrdpool_destroy(pool);
-    xylem_waitgroup_destroy(wg);
 }
 
 /* Test: many threads with many jobs. */

@@ -41,6 +41,13 @@ typedef struct {
     mco_coro* co;
 } _sleep_ctx_t;
 
+typedef struct {
+    void (*fn)(void*);
+    void* arg;
+    loop_t* loop;
+    mco_coro* co;
+} _submit_ctx_t;
+
 static loop_t*     g_loop;
 static thrdpool_t* g_pool;
 
@@ -77,6 +84,24 @@ static void _runtime_sleep_timeout_cb(
     free(ctx);
     loop_destroy_timer(timer);
     mco_resume(co);
+}
+
+static void _runtime_submit_done_cb(
+    loop_t* loop,
+    loop_post_t* req,
+    void* ud) {
+    (void)loop;
+    (void)req;
+    _submit_ctx_t* ctx = (_submit_ctx_t*)ud;
+    mco_coro* co = ctx->co;
+    free(ctx);
+    mco_resume(co);
+}
+
+static void _runtime_submit_worker(void* arg) {
+    _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
+    ctx->fn(ctx->arg);
+    loop_post(ctx->loop, _runtime_submit_done_cb, ctx);
 }
 
 loop_t* runtime_get_loop(void) {
@@ -126,6 +151,26 @@ void xylem_runtime_sleep(uint64_t ms) {
     loop_start_timer(timer, _runtime_sleep_timeout_cb, ctx, ms, 0);
 
     mco_yield(mco_running());
+}
+
+int xylem_runtime_submit(void (*fn)(void*), void* arg) {
+    _submit_ctx_t* ctx = (_submit_ctx_t*)malloc(sizeof(_submit_ctx_t));
+    if (!ctx) {
+        return -1;
+    }
+
+    ctx->fn   = fn;
+    ctx->arg  = arg;
+    ctx->loop = g_loop;
+    ctx->co   = mco_running();
+
+    if (thrdpool_submit(g_pool, _runtime_submit_worker, ctx) != 0) {
+        free(ctx);
+        return -1;
+    }
+
+    mco_yield(mco_running());
+    return 0;
 }
 
 void xylem_runtime_start(

@@ -131,10 +131,11 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     }
 
     platform_socket_enable_nodelay(fd, true);
+    platform_socket_enable_keepalive(fd, true);
     return tcp;
 }
 
-static void _tcp_server_io_cb(
+static void _tcp_listener_io_cb(
     loop_t* loop,
     loop_io_t* io,
     loop_poller_op_t revents,
@@ -142,10 +143,10 @@ static void _tcp_server_io_cb(
     (void)loop;
     (void)io;
     (void)revents;
-    xylem_tcp_listener_t* server = (xylem_tcp_listener_t*)ud;
-    if (server->wait_coro) {
-        mco_coro* co = server->wait_coro;
-        server->wait_coro = NULL;
+    xylem_tcp_listener_t* listener = (xylem_tcp_listener_t*)ud;
+    if (listener->wait_coro) {
+        mco_coro* co = listener->wait_coro;
+        listener->wait_coro = NULL;
         mco_resume(co);
     }
 }
@@ -547,84 +548,85 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         platform_socket_enable_mss_clamp(fd, false);
     }
 
-    xylem_tcp_listener_t* server =
+    xylem_tcp_listener_t* listener =
         (xylem_tcp_listener_t*)calloc(1, sizeof(xylem_tcp_listener_t));
-    if (!server) {
+    if (!listener) {
         platform_socket_close(fd);
         return NULL;
     }
 
-    server->loop = loop;
-    server->fd = fd;
-    server->io = loop_create_io(loop, (loop_poller_fd_t)fd);
-    if (!server->io) {
+    listener->loop = loop;
+    listener->fd = fd;
+    listener->io = loop_create_io(loop, (loop_poller_fd_t)fd);
+    if (!listener->io) {
         platform_socket_close(fd);
-        free(server);
+        free(listener);
         return NULL;
     }
 
-    xylem_logi("tcp server fd=%d listening on %s:%s",
+    xylem_logi("tcp listener fd=%d listening on %s:%s",
                (int)fd, host, port_str);
-    return server;
+    return listener;
 }
 
-xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* server) {
+xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
     for (;;) {
-        if (server->closing) {
+        if (listener->closing) {
             return NULL;
         }
 
-        platform_sock_t fd = platform_socket_accept(server->fd, true);
-        if (fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            xylem_tcp_conn_t* tcp = _tcp_conn_alloc(server->loop, fd);
-            if (!tcp) {
-                platform_socket_close(fd);
-                continue;
+        platform_sock_t fd = platform_socket_accept(listener->fd, true);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            int err = platform_socket_get_lasterror();
+            if (err != PLATFORM_SO_ERROR_EAGAIN &&
+                err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                xylem_logw("tcp listener fd=%d accept error=%d (%s)",
+                           (int)listener->fd, err,
+                           platform_socket_tostring(err));
             }
 
-            socklen_t peer_len = sizeof(tcp->peer_addr.storage);
-            getpeername(
-                fd, (struct sockaddr*)&tcp->peer_addr.storage, &peer_len);
-
-            xylem_logi("tcp server fd=%d accepted conn fd=%d",
-                       (int)server->fd, (int)fd);
-            return tcp;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN &&
-            err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_logw("tcp server fd=%d accept error=%d (%s)",
-                       (int)server->fd, err,
-                       platform_socket_tostring(err));
+            listener->wait_coro = mco_running();
+            loop_start_io(
+                listener->io, LOOP_POLLER_RD_OP, _tcp_listener_io_cb,
+                listener);
+            mco_yield(mco_running());
             continue;
         }
 
-        server->wait_coro = mco_running();
-        loop_start_io(
-            server->io, LOOP_POLLER_RD_OP, _tcp_server_io_cb, server);
-        mco_yield(mco_running());
+        xylem_tcp_conn_t* tcp = _tcp_conn_alloc(listener->loop, fd);
+        if (!tcp) {
+            platform_socket_close(fd);
+            continue;
+        }
+
+        socklen_t peer_len = sizeof(tcp->peer_addr.storage);
+        getpeername(
+            fd, (struct sockaddr*)&tcp->peer_addr.storage, &peer_len);
+
+        xylem_logi("tcp listener fd=%d accepted conn fd=%d",
+                   (int)listener->fd, (int)fd);
+        return tcp;
     }
 }
 
-void xylem_tcp_close_listener(xylem_tcp_listener_t* server) {
-    if (server->closing) {
+void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
+    if (listener->closing) {
         return;
     }
 
-    xylem_logi("tcp server fd=%d closing", (int)server->fd);
-    server->closing = true;
+    xylem_logi("tcp listener fd=%d closing", (int)listener->fd);
+    listener->closing = true;
 
-    if (server->wait_coro) {
-        mco_coro* co = server->wait_coro;
-        server->wait_coro = NULL;
+    if (listener->wait_coro) {
+        mco_coro* co = listener->wait_coro;
+        listener->wait_coro = NULL;
         mco_resume(co);
     }
 
-    loop_destroy_io(server->io);
-    server->io = NULL;
-    platform_socket_close(server->fd);
-    free(server);
+    loop_destroy_io(listener->io);
+    listener->io = NULL;
+    platform_socket_close(listener->fd);
+    free(listener);
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
@@ -665,12 +667,12 @@ void xylem_tcp_set_userdata(xylem_tcp_conn_t* tcp, void* ud) {
     tcp->userdata = ud;
 }
 
-void* xylem_tcp_listener_get_userdata(xylem_tcp_listener_t* server) {
-    return server->userdata;
+void* xylem_tcp_listener_get_userdata(xylem_tcp_listener_t* listener) {
+    return listener->userdata;
 }
 
 void xylem_tcp_listener_set_userdata(
-    xylem_tcp_listener_t* server,
+    xylem_tcp_listener_t* listener,
     void* ud) {
-    server->userdata = ud;
+    listener->userdata = ud;
 }
