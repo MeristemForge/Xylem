@@ -1,5 +1,6 @@
 #include "xylem.h"
-#include "xylem/xylem-tls.h"
+#include "runtime/loop.h"
+#include "xylem/net/xylem-tls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,9 +105,8 @@ int main(int argc, char** argv) {
     int port = DEFAULT_PORT;
     if (argc > 1) port = atoi(argv[1]);
 
-    xylem_startup();
 
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     if (!ctx) {
@@ -143,10 +143,9 @@ int main(int argc, char** argv) {
     }
 
     fprintf(stderr, "xylem tls echo server listening on 0.0.0.0:%d\n", port);
-    xylem_loop_run(loop);
+    loop_run(loop);
 
     xylem_tls_ctx_destroy(ctx);
-    xylem_loop_destroy(loop);
-    xylem_cleanup();
+    loop_destroy(loop);
     return 0;
 }

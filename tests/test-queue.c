@@ -22,120 +22,75 @@
 #include "xylem.h"
 #include "assert.h"
 
-typedef struct test_item_s {
-    int32_t             value;
-    xylem_queue_node_t  node;
-} test_item_t;
-
-static void test_queue_init(void) {
-    xylem_queue_t queue;
-    xylem_queue_init(&queue);
-    ASSERT(xylem_queue_empty(&queue) == true);
-    ASSERT(xylem_queue_len(&queue) == 0);
-    ASSERT(xylem_queue_front(&queue) == NULL);
-    ASSERT(xylem_queue_back(&queue) == NULL);
+static void test_init(void) {
+    xylem_queue_t* queue = xylem_queue_create();
+    ASSERT(queue != NULL);
+    ASSERT(xylem_queue_empty(queue));
+    ASSERT(xylem_queue_len(queue) == 0);
+    ASSERT(xylem_queue_front(queue) == NULL);
+    xylem_queue_destroy(queue);
 }
 
-static void test_queue_enqueue_dequeue(void) {
-    xylem_queue_t queue;
-    test_item_t   a = {.value = 1};
-    test_item_t   b = {.value = 2};
-    test_item_t   c = {.value = 3};
+static void test_enqueue_dequeue(void) {
+    xylem_queue_t* queue = xylem_queue_create();
 
-    xylem_queue_init(&queue);
-    xylem_queue_enqueue(&queue, &a.node);
-    xylem_queue_enqueue(&queue, &b.node);
-    xylem_queue_enqueue(&queue, &c.node);
-    ASSERT(xylem_queue_len(&queue) == 3);
+    int a = 10, b = 20, c = 30;
+    ASSERT(xylem_queue_enqueue(queue, &a) == 0);
+    ASSERT(xylem_queue_enqueue(queue, &b) == 0);
+    ASSERT(xylem_queue_enqueue(queue, &c) == 0);
 
-    /* FIFO order: a, b, c */
-    xylem_queue_node_t* n = xylem_queue_dequeue(&queue);
-    ASSERT(n == &a.node);
-    ASSERT(xylem_queue_len(&queue) == 2);
+    ASSERT(*(int*)xylem_queue_front(queue) == 10);
+    xylem_queue_dequeue(queue);
 
-    n = xylem_queue_dequeue(&queue);
-    ASSERT(n == &b.node);
+    ASSERT(*(int*)xylem_queue_front(queue) == 20);
+    xylem_queue_dequeue(queue);
 
-    n = xylem_queue_dequeue(&queue);
-    ASSERT(n == &c.node);
-    ASSERT(xylem_queue_empty(&queue) == true);
+    ASSERT(*(int*)xylem_queue_front(queue) == 30);
+    xylem_queue_dequeue(queue);
 
-    /* Dequeue from empty queue */
-    n = xylem_queue_dequeue(&queue);
-    ASSERT(n == NULL);
+    ASSERT(xylem_queue_empty(queue));
+    xylem_queue_destroy(queue);
 }
 
-static void test_queue_front_back(void) {
-    xylem_queue_t queue;
-    test_item_t   a = {.value = 10};
-    test_item_t   b = {.value = 20};
+static void test_clear(void) {
+    xylem_queue_t* queue = xylem_queue_create();
 
-    xylem_queue_init(&queue);
-    xylem_queue_enqueue(&queue, &a.node);
-    ASSERT(xylem_queue_front(&queue) == &a.node);
-    ASSERT(xylem_queue_back(&queue) == &a.node);
+    int vals[50];
+    for (int i = 0; i < 50; i++) {
+        vals[i] = i;
+        xylem_queue_enqueue(queue, &vals[i]);
+    }
+    ASSERT(xylem_queue_len(queue) == 50);
 
-    xylem_queue_enqueue(&queue, &b.node);
-    ASSERT(xylem_queue_front(&queue) == &a.node);
-    ASSERT(xylem_queue_back(&queue) == &b.node);
+    xylem_queue_clear(queue);
+    ASSERT(xylem_queue_empty(queue));
+    xylem_queue_destroy(queue);
 }
 
-static void test_queue_entry(void) {
-    xylem_queue_t queue;
-    test_item_t   item = {.value = 42};
+static void test_swap(void) {
+    xylem_queue_t* a = xylem_queue_create();
+    xylem_queue_t* b = xylem_queue_create();
 
-    xylem_queue_init(&queue);
-    xylem_queue_enqueue(&queue, &item.node);
+    int v1 = 10, v2 = 20, v3 = 30;
+    xylem_queue_enqueue(a, &v1);
+    xylem_queue_enqueue(a, &v2);
+    xylem_queue_enqueue(b, &v3);
 
-    xylem_queue_node_t* n = xylem_queue_front(&queue);
-    test_item_t*        recovered = xylem_queue_entry(n, test_item_t, node);
-    ASSERT(recovered->value == 42);
-}
+    xylem_queue_swap(a, b);
 
-static void test_queue_swap(void) {
-    xylem_queue_t q1, q2;
-    test_item_t   a = {.value = 1};
-    test_item_t   b = {.value = 2};
-    test_item_t   c = {.value = 3};
+    ASSERT(xylem_queue_len(a) == 1);
+    ASSERT(*(int*)xylem_queue_front(a) == 30);
+    ASSERT(xylem_queue_len(b) == 2);
+    ASSERT(*(int*)xylem_queue_front(b) == 10);
 
-    xylem_queue_init(&q1);
-    xylem_queue_init(&q2);
-
-    /* Swap two empty queues */
-    xylem_queue_swap(&q1, &q2);
-    ASSERT(xylem_queue_empty(&q1));
-    ASSERT(xylem_queue_empty(&q2));
-
-    /* Swap non-empty with empty */
-    xylem_queue_enqueue(&q1, &a.node);
-    xylem_queue_enqueue(&q1, &b.node);
-    xylem_queue_swap(&q1, &q2);
-    ASSERT(xylem_queue_empty(&q1));
-    ASSERT(xylem_queue_len(&q2) == 2);
-    ASSERT(xylem_queue_front(&q2) == &a.node);
-    ASSERT(xylem_queue_back(&q2) == &b.node);
-
-    /* Swap non-empty with non-empty */
-    xylem_queue_enqueue(&q1, &c.node);
-    xylem_queue_swap(&q1, &q2);
-    ASSERT(xylem_queue_len(&q1) == 2);
-    ASSERT(xylem_queue_len(&q2) == 1);
-    ASSERT(xylem_queue_front(&q1) == &a.node);
-    ASSERT(xylem_queue_front(&q2) == &c.node);
-
-    /* Drain q1 to verify FIFO order preserved after swap */
-    xylem_queue_node_t* n = xylem_queue_dequeue(&q1);
-    ASSERT(n == &a.node);
-    n = xylem_queue_dequeue(&q1);
-    ASSERT(n == &b.node);
-    ASSERT(xylem_queue_empty(&q1));
+    xylem_queue_destroy(a);
+    xylem_queue_destroy(b);
 }
 
 int main(void) {
-    test_queue_init();
-    test_queue_enqueue_dequeue();
-    test_queue_front_back();
-    test_queue_entry();
-    test_queue_swap();
+    test_init();
+    test_enqueue_dequeue();
+    test_clear();
+    test_swap();
     return 0;
 }

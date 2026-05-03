@@ -51,7 +51,6 @@ static void _print_res(const char* label, xylem_http_res_t* res) {
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     /* Create a session with default options. */
@@ -81,6 +80,5 @@ int main(void) {
     xylem_http_session_destroy(session);
 
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

@@ -73,7 +73,7 @@ typedef struct xylem_tcp_framing_s {
 ```c
 typedef struct xylem_tcp_handler_s {
     void (*on_connect)(xylem_tcp_conn_t* conn);
-    void (*on_accept)(xylem_tcp_server_t* server, xylem_tcp_conn_t* conn);
+    void (*on_accept)(xylem_tcp_listener_t* server, xylem_tcp_conn_t* conn);
     void (*on_read)(xylem_tcp_conn_t* conn, void* data, size_t len);
     void (*on_write_done)(xylem_tcp_conn_t* conn,
                           const void* data, size_t len, int status);
@@ -115,7 +115,7 @@ typedef struct xylem_tcp_opts_s {
 
 ```c
 typedef struct xylem_tcp_conn_s   xylem_tcp_conn_t;   /* 连接句柄 */
-typedef struct xylem_tcp_server_s xylem_tcp_server_t;  /* 服务器句柄 */
+typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;  /* 服务器句柄 */
 ```
 
 ## 内部结构
@@ -180,7 +180,7 @@ struct xylem_tcp_conn_s {
     xylem_loop_timer_t*   heartbeat_timer;
     _tcp_dial_priv_t*     dial;            /* 仅 dial 连接有值 */
     xylem_list_node_t     server_node;     /* 服务器连接链表节点 */
-    xylem_tcp_server_t*   server;          /* 所属服务器（accept 连接） */
+    xylem_tcp_listener_t*   server;          /* 所属服务器（accept 连接） */
     xylem_addr_t          peer_addr;
     void*                 userdata;
 };
@@ -189,7 +189,7 @@ struct xylem_tcp_conn_s {
 ### 服务器结构
 
 ```c
-struct xylem_tcp_server_s {
+struct xylem_tcp_listener_s {
     xylem_loop_t*        loop;
     xylem_loop_io_t*     io;
     platform_sock_t      fd;
@@ -401,16 +401,16 @@ sequenceDiagram
 
 ```c
 /* 绑定地址并开始监听，返回服务器句柄 */
-xylem_tcp_server_t* xylem_tcp_listen(xylem_loop_t* loop,
+xylem_tcp_listener_t* xylem_tcp_listen(xylem_loop_t* loop,
                                      xylem_addr_t* addr,
                                      xylem_tcp_handler_t* handler,
                                      xylem_tcp_opts_t* opts);
 
 /* 关闭服务器，关闭所有已接受的连接 */
-void xylem_tcp_close_server(xylem_tcp_server_t* server);
+void xylem_tcp_close_listener(xylem_tcp_listener_t* server);
 
-void* xylem_tcp_server_get_userdata(xylem_tcp_server_t* server);
-void  xylem_tcp_server_set_userdata(xylem_tcp_server_t* server, void* ud);
+void* xylem_tcp_listener_get_userdata(xylem_tcp_listener_t* server);
+void  xylem_tcp_listener_set_userdata(xylem_tcp_listener_t* server, void* ud);
 ```
 
 ### 客户端 / 连接

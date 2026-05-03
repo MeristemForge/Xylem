@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/http/xylem-http-common.h"
-#include "xylem/http/xylem-http-client.h"
-#include "xylem/http/xylem-http-server.h"
+#include "xylem/net/http/xylem-http-common.h"
+#include "xylem/net/http/xylem-http-client.h"
+#include "xylem/net/http/xylem-http-server.h"
 #include "xylem/xylem-loop.h"
 #include "assert.h"
 
@@ -118,13 +118,13 @@ static void test_srv_create_null_loop(void) {
 
 static void test_srv_create_null_cfg(void) {
     /* Pass a non-NULL loop pointer but NULL cfg */
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(xylem_http_listen(loop, NULL) == NULL);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_srv_create_destroy(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(loop != NULL);
 
     xylem_http_srv_cfg_t cfg = {0};
@@ -133,7 +133,7 @@ static void test_srv_create_destroy(void) {
     ASSERT(srv != NULL);
     xylem_http_close_server(srv);
 
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
 }
 
 static void test_srv_destroy_null(void) {

@@ -21,67 +21,56 @@
 
 _Pragma("once")
 
-#include "deprecated/c11-threads.h"
+/* crypto */
+#include "xylem/crypto/xylem-sha1.h"
+#include "xylem/crypto/xylem-sha256.h"
+#include "xylem/crypto/xylem-hmac256.h"
+#include "xylem/crypto/xylem-aes256.h"
 
-#include "xylem/xylem-base64.h"
-#include "xylem/xylem-bswap.h"
-#include "xylem/xylem-heap.h"
-#include "xylem/xylem-list.h"
-#include "xylem/xylem-queue.h"
-#include "xylem/xylem-rbtree.h"
-#include "xylem/xylem-ringbuf.h"
-#include "xylem/xylem-sha1.h"
-#include "xylem/xylem-sha256.h"
-#include "xylem/xylem-hmac256.h"
-#include "xylem/xylem-aes256.h"
-#include "xylem/xylem-stack.h"
-#include "xylem/xylem-thrdpool.h"
-#include "xylem/xylem-varint.h"
-#include "xylem/xylem-waitgroup.h"
+/* encoding */
+#include "xylem/encoding/xylem-base64.h"
+#include "xylem/encoding/xylem-bswap.h"
+#include "xylem/encoding/xylem-varint.h"
+#include "xylem/encoding/xylem-json.h"
+#include "xylem/encoding/xylem-gzip.h"
+#include "xylem/encoding/xylem-fec.h"
 
-#include "xylem/xylem-xheap.h"
-#include "xylem/xylem-xlist.h"
-#include "xylem/xylem-xqueue.h"
-#include "xylem/xylem-xrbtree.h"
-#include "xylem/xylem-xstack.h"
+/* sync */
+#include "xylem/sync/xylem-waitgroup.h"
+#include "xylem/sync/xylem-channel.h"
 
-#include "xylem/xylem-json.h"
-#include "xylem/xylem-gzip.h"
+/* runtime */
+#include "xylem/runtime/xylem-runtime.h"
+
+/* container */
+#include "xylem/container/xylem-ringbuf.h"
+#include "xylem/container/xylem-list.h"
+#include "xylem/container/xylem-stack.h"
+#include "xylem/container/xylem-queue.h"
+#include "xylem/container/xylem-heap.h"
+#include "xylem/container/xylem-rbtree.h"
+
+/* core */
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-loop.h"
-#include "xylem/xylem-platform.h"
-#include "xylem/xylem-addr.h"
-#include "xylem/xylem-tcp.h"
-#include "xylem/xylem-udp.h"
-#include "xylem/xylem-rudp.h"
-#include "xylem/xylem-fec.h"
-#include "xylem/xylem-tls.h"
-#include "xylem/xylem-dtls.h"
-#include "xylem/xylem-uds.h"
-#include "xylem/xylem-serial.h"
 #include "xylem/xylem-utils.h"
-#include "xylem/http/xylem-http-common.h"
-#include "xylem/http/xylem-http-client.h"
-#include "xylem/http/xylem-http-server.h"
-#include "xylem/ws/xylem-ws-common.h"
-#include "xylem/ws/xylem-ws-client.h"
-#include "xylem/ws/xylem-ws-server.h"
+#include "xylem/xylem-serial.h"
 
-/**
- * @brief Initialize the Xylem library.
- *
- * Must be called once before any other xylem_* function. On Windows this
- * calls WSAStartup; on Unix it is a no-op today but may initialize
- * future global state (e.g. OpenSSL).
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_startup(void);
-
-/**
- * @brief Clean up the Xylem library.
- *
- * Call once after all Xylem resources have been released. Reverses the
- * effect of xylem_startup().
- */
-extern void xylem_cleanup(void);
+/* net */
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/net/xylem-udp.h"
+#include "xylem/net/xylem-rudp.h"
+#include "xylem/net/xylem-uds.h"
+#ifdef XYLEM_ENABLE_TLS
+#include "xylem/net/xylem-tls.h"
+#include "xylem/net/xylem-dtls.h"
+#endif
+#ifdef XYLEM_ENABLE_HTTP
+#include "xylem/net/http/xylem-http-common.h"
+#include "xylem/net/http/xylem-http-client.h"
+#include "xylem/net/http/xylem-http-server.h"
+#endif
+#ifdef XYLEM_ENABLE_WS
+#include "xylem/net/ws/xylem-ws-common.h"
+#include "xylem/net/ws/xylem-ws-client.h"
+#include "xylem/net/ws/xylem-ws-server.h"
+#endif

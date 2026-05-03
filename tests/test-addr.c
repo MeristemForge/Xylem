@@ -20,61 +20,64 @@
  */
 
 #include "xylem.h"
+#include "runtime/loop.h"
+#include "runtime/thrdpool.h"
+#include "net/addr.h"
 #include "assert.h"
 
 #include <string.h>
 
 /* IPv4 pton + ntop round-trip */
 static void test_ipv4_roundtrip(void) {
-    xylem_addr_t addr;
+    addr_t addr;
     char host[64];
     uint16_t port;
 
-    ASSERT(xylem_addr_pton("127.0.0.1", 8080, &addr) == 0);
-    ASSERT(xylem_addr_ntop(&addr, host, sizeof(host), &port) == 0);
+    ASSERT(addr_pton("127.0.0.1", 8080, &addr) == 0);
+    ASSERT(addr_ntop(&addr, host, sizeof(host), &port) == 0);
     ASSERT(strcmp(host, "127.0.0.1") == 0);
     ASSERT(port == 8080);
 }
 
 /* IPv6 pton + ntop round-trip */
 static void test_ipv6_roundtrip(void) {
-    xylem_addr_t addr;
+    addr_t addr;
     char host[64];
     uint16_t port;
 
-    ASSERT(xylem_addr_pton("::1", 9090, &addr) == 0);
-    ASSERT(xylem_addr_ntop(&addr, host, sizeof(host), &port) == 0);
+    ASSERT(addr_pton("::1", 9090, &addr) == 0);
+    ASSERT(addr_ntop(&addr, host, sizeof(host), &port) == 0);
     ASSERT(strcmp(host, "::1") == 0);
     ASSERT(port == 9090);
 }
 
 /* Invalid address returns -1 */
 static void test_invalid_address(void) {
-    xylem_addr_t addr;
-    ASSERT(xylem_addr_pton("not_an_address", 80, &addr) == -1);
-    ASSERT(xylem_addr_pton("999.999.999.999", 80, &addr) == -1);
+    addr_t addr;
+    ASSERT(addr_pton("not_an_address", 80, &addr) == -1);
+    ASSERT(addr_pton("999.999.999.999", 80, &addr) == -1);
 }
 
 /* NULL parameter handling */
 static void test_null_params(void) {
-    xylem_addr_t addr;
+    addr_t addr;
     char host[64];
     uint16_t port;
 
-    ASSERT(xylem_addr_pton(NULL, 80, &addr) == -1);
-    ASSERT(xylem_addr_pton("127.0.0.1", 80, NULL) == -1);
-    ASSERT(xylem_addr_ntop(NULL, host, sizeof(host), &port) == -1);
-    ASSERT(xylem_addr_ntop(&addr, NULL, 0, &port) == -1);
+    ASSERT(addr_pton(NULL, 80, &addr) == -1);
+    ASSERT(addr_pton("127.0.0.1", 80, NULL) == -1);
+    ASSERT(addr_ntop(NULL, host, sizeof(host), &port) == -1);
+    ASSERT(addr_ntop(&addr, NULL, 0, &port) == -1);
 }
 
 /* IPv4 wildcard address */
 static void test_ipv4_wildcard(void) {
-    xylem_addr_t addr;
+    addr_t addr;
     char host[64];
     uint16_t port;
 
-    ASSERT(xylem_addr_pton("0.0.0.0", 0, &addr) == 0);
-    ASSERT(xylem_addr_ntop(&addr, host, sizeof(host), &port) == 0);
+    ASSERT(addr_pton("0.0.0.0", 0, &addr) == 0);
+    ASSERT(addr_ntop(&addr, host, sizeof(host), &port) == 0);
     ASSERT(strcmp(host, "0.0.0.0") == 0);
     ASSERT(port == 0);
 }
@@ -84,16 +87,16 @@ static void test_ipv4_wildcard(void) {
  * callback and to timer callbacks.
  */
 typedef struct {
-    xylem_loop_t*           loop;
-    xylem_thrdpool_t*       pool;
+    loop_t*           loop;
+    thrdpool_t*       pool;
     int                     status;
     size_t                  count;
     const char*             host;
-    xylem_addr_resolve_fn_t resolve_cb;
-    xylem_loop_timer_t*     keepalive;
+    addr_resolve_fn_t resolve_cb;
+    loop_timer_t*     keepalive;
 } _resolve_ctx_t;
 
-static void _on_resolved(xylem_addr_t* addrs, size_t count,
+static void _on_resolved(addr_t* addrs, size_t count,
                          int status, void* userdata) {
     _resolve_ctx_t* ctx = userdata;
     ctx->status = status;
@@ -104,38 +107,38 @@ static void _on_resolved(xylem_addr_t* addrs, size_t count,
                addrs[i].storage.ss_family == AF_INET6);
     }
 
-    xylem_loop_destroy_timer(ctx->keepalive);
-    xylem_loop_stop(ctx->loop);
+    loop_destroy_timer(ctx->keepalive);
+    loop_stop(ctx->loop);
 }
 
-static void _on_resolve_fail(xylem_addr_t* addrs, size_t count,
+static void _on_resolve_fail(addr_t* addrs, size_t count,
                              int status, void* userdata) {
     (void)addrs;
     _resolve_ctx_t* ctx = userdata;
     ctx->status = status;
     ctx->count  = count;
-    xylem_loop_destroy_timer(ctx->keepalive);
-    xylem_loop_stop(ctx->loop);
+    loop_destroy_timer(ctx->keepalive);
+    loop_stop(ctx->loop);
 }
 
-static void _keepalive_cb(xylem_loop_t* loop, xylem_loop_timer_t* timer,
+static void _keepalive_cb(loop_t* loop, loop_timer_t* timer,
                           void* ud) {
     (void)loop;
     (void)timer;
     (void)ud;
 }
 
-static void _start_resolve_cb(xylem_loop_t* loop,
-                               xylem_loop_timer_t* timer,
+static void _start_resolve_cb(loop_t* loop,
+                               loop_timer_t* timer,
                                void* ud) {
     _resolve_ctx_t* ctx = (_resolve_ctx_t*)ud;
-    xylem_loop_destroy_timer(timer);
+    loop_destroy_timer(timer);
 
     /* Keep the loop alive until the resolve callback fires. */
-    ctx->keepalive = xylem_loop_create_timer(ctx->loop);
-    xylem_loop_start_timer(ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
+    ctx->keepalive = loop_create_timer(ctx->loop);
+    loop_start_timer(ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
 
-    xylem_addr_resolve(ctx->loop, ctx->pool, ctx->host, 80,
+    addr_resolve(ctx->loop, ctx->pool, ctx->host, 80,
                        ctx->resolve_cb, ctx);
 }
 
@@ -147,21 +150,21 @@ static void test_resolve_localhost(void) {
     ctx.host       = "localhost";
     ctx.resolve_cb = _on_resolved;
 
-    ctx.loop = xylem_loop_create();
+    ctx.loop = loop_create();
     ASSERT(ctx.loop != NULL);
-    ctx.pool = xylem_thrdpool_create(1);
+    ctx.pool = thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
+    loop_timer_t* timer = loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
+    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
-    xylem_loop_run(ctx.loop);
+    loop_run(ctx.loop);
 
     ASSERT(ctx.status == 0);
     ASSERT(ctx.count > 0);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
+    loop_destroy(ctx.loop);
 }
 
 /* Resolve non-existent host - error path. */
@@ -172,21 +175,21 @@ static void test_resolve_fail(void) {
     ctx.host       = "this.host.does.not.exist.invalid";
     ctx.resolve_cb = _on_resolve_fail;
 
-    ctx.loop = xylem_loop_create();
+    ctx.loop = loop_create();
     ASSERT(ctx.loop != NULL);
-    ctx.pool = xylem_thrdpool_create(1);
+    ctx.pool = thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
+    loop_timer_t* timer = loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
+    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
-    xylem_loop_run(ctx.loop);
+    loop_run(ctx.loop);
 
     ASSERT(ctx.status == -1);
     ASSERT(ctx.count == 0);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
+    loop_destroy(ctx.loop);
 }
 
 /* Resolve a public hostname - verifies real DNS works. */
@@ -197,44 +200,43 @@ static void test_resolve_remote(void) {
     ctx.host       = "www.baidu.com";
     ctx.resolve_cb = _on_resolved;
 
-    ctx.loop = xylem_loop_create();
+    ctx.loop = loop_create();
     ASSERT(ctx.loop != NULL);
-    ctx.pool = xylem_thrdpool_create(1);
+    ctx.pool = thrdpool_create(1);
 
-    xylem_loop_timer_t* timer = xylem_loop_create_timer(ctx.loop);
+    loop_timer_t* timer = loop_create_timer(ctx.loop);
     ASSERT(timer != NULL);
-    xylem_loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
+    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
 
-    xylem_loop_run(ctx.loop);
+    loop_run(ctx.loop);
 
     ASSERT(ctx.status == 0);
     ASSERT(ctx.count > 0);
 
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_loop_destroy(ctx.loop);
+    thrdpool_destroy(ctx.pool);
+    loop_destroy(ctx.loop);
 }
 
 /* NULL parameters return NULL. */
 static void test_resolve_null_params(void) {
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
     ASSERT(loop != NULL);
-    xylem_thrdpool_t* pool = xylem_thrdpool_create(1);
+    thrdpool_t* pool = thrdpool_create(1);
 
-    ASSERT(xylem_addr_resolve(NULL, pool, "localhost", 80,
+    ASSERT(addr_resolve(NULL, pool, "localhost", 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(loop, NULL, "localhost", 80,
+    ASSERT(addr_resolve(loop, NULL, "localhost", 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(loop, pool, NULL, 80,
+    ASSERT(addr_resolve(loop, pool, NULL, 80,
                               _on_resolved, NULL) == NULL);
-    ASSERT(xylem_addr_resolve(loop, pool, "localhost", 80,
+    ASSERT(addr_resolve(loop, pool, "localhost", 80,
                               NULL, NULL) == NULL);
 
-    xylem_thrdpool_destroy(pool);
-    xylem_loop_destroy(loop);
+    thrdpool_destroy(pool);
+    loop_destroy(loop);
 }
 
 int main(void) {
-    xylem_startup();
 
     test_ipv4_roundtrip();
     test_ipv6_roundtrip();
@@ -246,6 +248,5 @@ int main(void) {
     test_resolve_fail();
     test_resolve_null_params();
 
-    xylem_cleanup();
     return 0;
 }

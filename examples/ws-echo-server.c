@@ -29,7 +29,8 @@
  */
 
 #include "xylem.h"
-#include "xylem/ws/xylem-ws-server.h"
+#include "runtime/loop.h"
+#include "xylem/net/ws/xylem-ws-server.h"
 
 #define LISTEN_PORT 9002
 
@@ -54,10 +55,9 @@ static void _on_close(xylem_ws_conn_t* conn,
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
 
     xylem_ws_handler_t handler = {
         .on_accept  = _on_accept,
@@ -78,10 +78,9 @@ int main(void) {
     }
 
     xylem_logi("ws echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(loop);
+    loop_run(loop);
 
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

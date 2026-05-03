@@ -20,2651 +20,325 @@
  */
 
 #include "xylem.h"
+#include "runtime/runtime.h"
 #include "assert.h"
 
 #include <string.h>
-#include <stdatomic.h>
 
 #define TCP_PORT          18080
 #define TCP_HOST          "127.0.0.1"
-#define SAFETY_TIMEOUT_MS 10000
+#define SAFETY_TIMEOUT_MS 5000
 
 typedef struct {
-    xylem_loop_t*       loop;
-    xylem_tcp_server_t* server;
-    xylem_tcp_conn_t*   srv_conn;
-    xylem_tcp_conn_t*   cli_conn;
-    int                 close_called;
-    int                 connect_called;
-    int                 read_count;
-    int                 verified;
-    int                 wd_called;
-    int                 wd_status;
-    size_t              wd_len;
-    int                 send_result;
-    int                 tested;
-    int                 value;
-    int                 magic;
-    char                received[128];
-    size_t              received_len;
-    char                frames[2][16];
-    size_t              frame_lens[2];
-    xylem_tcp_handler_t reconnect_srv_handler;
-    xylem_thrdpool_t*   pool;
-    _Atomic bool        worker_done;
+    xylem_tcp_listener_t* server;
+    int                   tested;
 } _test_ctx_t;
 
-/* Custom frame parsers. */
-
-static int _custom_parse_4(const void* data, size_t len) {
-    (void)data;
-    return (len >= 4) ? 4 : 0;
-}
-
-static int _custom_parse_zero(const void* data, size_t len) {
-    (void)data;
-    (void)len;
-    return 0;
-}
-
-static int _custom_parse_neg(const void* data, size_t len) {
-    (void)data;
-    (void)len;
-    return -1;
-}
-
-/* Shared callbacks. */
-
-static void _safety_timeout_cb(xylem_loop_t* loop,
-                                xylem_loop_timer_t* timer,
+static void _safety_timeout_cb(loop_t* loop,
+                                loop_timer_t* timer,
                                 void* ud) {
-    (void)timer;
-    (void)ud;
-    xylem_loop_stop(loop);
+    (void)loop; (void)ud;
+    loop_stop_timer(timer);
+    loop_destroy_timer(timer);
+    xylem_runtime_stop();
+    ASSERT(0 && "test timed out");
 }
 
-static void _srv_accept_cb(xylem_tcp_server_t* server,
-                            xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    xylem_tcp_set_userdata(conn, ctx);
+static void _start_safety_timer(void) {
+    loop_timer_t* t = loop_create_timer(runtime_loop());
+    loop_start_timer(t, _safety_timeout_cb, NULL,
+                           SAFETY_TIMEOUT_MS, 0);
 }
 
-static void _srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _srv_read_one_cb(xylem_tcp_conn_t* conn,
-                              void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->read_count = 1;
-    if (len <= sizeof(ctx->received)) {
-        memcpy(ctx->received, data, len);
-        ctx->received_len = len;
-    }
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _srv_read_two_cb(xylem_tcp_conn_t* conn,
-                              void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx->read_count < 2 && len <= sizeof(ctx->frames[0])) {
-        memcpy(ctx->frames[ctx->read_count], data, len);
-        ctx->frame_lens[ctx->read_count] = len;
-    }
-    ctx->read_count++;
-    if (ctx->read_count >= 2) {
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-/* Variant of _srv_read_two_cb that asserts len==4 (for frame_fixed, custom_pos). */
-static void _srv_read_two_fixed4_cb(xylem_tcp_conn_t* conn,
-                                     void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx->read_count < 2) {
-        ASSERT(len == 4);
-        memcpy(ctx->frames[ctx->read_count], data, 4);
-    }
-    ctx->read_count++;
-    if (ctx->read_count >= 2) {
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-/* Test-specific callbacks. */
-
-static void _close_active_timer_cb(xylem_loop_t* loop,
-                                    xylem_loop_timer_t* timer,
-                                    void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_tcp_close_server(ctx->server);
-    ctx->server = NULL;
-}
-
-static void _close_active_on_accept(xylem_tcp_server_t* server,
-                                     xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    xylem_tcp_set_userdata(conn, ctx);
-}
-
-static void _close_active_on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called++;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _dial_on_connect(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->connect_called = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _close_empty_on_connect(xylem_tcp_conn_t* conn) {
-    xylem_tcp_close(conn);
-}
-
-static void _close_empty_on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _send_basic_on_connect(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "data", 4);
-}
-
-static void _send_basic_on_write_done(xylem_tcp_conn_t* conn,
-                                       const void* data, size_t len,
-                                       int status) {
-    (void)data;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->wd_called = 1;
-    ctx->wd_status = status;
-    ctx->wd_len    = len;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _sac_on_connect(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    xylem_tcp_send(conn, "pending", 7);
-    xylem_tcp_close(conn);
-    ctx->send_result = xylem_tcp_send(conn, "x", 1);
-    ctx->tested = 1;
-}
-
-static void _sac_on_close(xylem_tcp_conn_t* conn, int err,
-                           const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _conn_ud_on_accept(xylem_tcp_server_t* server,
-                                xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    xylem_tcp_set_userdata(conn, &ctx->value);
-
-    void* got = xylem_tcp_get_userdata(conn);
-    ASSERT(got == &ctx->value);
-    ASSERT(*(int*)got == 42);
-    ctx->verified = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _srv_ud_on_accept(xylem_tcp_server_t* server,
-                               xylem_tcp_conn_t* conn) {
-    (void)conn;
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ASSERT(ctx != NULL);
-    ASSERT(ctx->magic == 99);
-    ctx->verified = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _peer_addr_on_accept(xylem_tcp_server_t* server,
-                                  xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-
-    const xylem_addr_t* peer = xylem_tcp_get_peer_addr(conn);
-    ASSERT(peer != NULL);
-
-    const struct sockaddr* sa = (const struct sockaddr*)&peer->storage;
-    ASSERT(sa->sa_family == AF_INET);
-
-    ctx->verified = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _get_loop_on_connect(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-
-    xylem_loop_t* got = xylem_tcp_get_loop(conn);
-    ASSERT(got == ctx->loop);
-
-    ctx->verified = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _frame_none_srv_on_read(xylem_tcp_conn_t* conn,
-                                     void* data, size_t len) {
-    xylem_tcp_send(conn, data, len);
-}
-
-static void _frame_none_cli_on_connect(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "hello", 5);
-}
-
-static void _frame_none_cli_on_read(xylem_tcp_conn_t* conn,
-                                     void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-
-    if (ctx->received_len + len <= sizeof(ctx->received)) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
-    }
-
-    if (ctx->received_len >= 5) {
-        ctx->verified = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _cli_send_8bytes_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "ABCDEFGH", 8);
-}
-
-static void _cli_send_data_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "data", 4);
-}
-
-static void _cli_send_len_be_cb(xylem_tcp_conn_t* conn) {
-    uint8_t frame[7] = {0x00, 0x05, 'H', 'E', 'L', 'L', 'O'};
-    xylem_tcp_send(conn, frame, sizeof(frame));
-}
-
-static void _cli_send_len_le_cb(xylem_tcp_conn_t* conn) {
-    uint8_t frame[7] = {0x05, 0x00, 'H', 'E', 'L', 'L', 'O'};
-    xylem_tcp_send(conn, frame, sizeof(frame));
-}
-
-static void _cli_send_varint_cb(xylem_tcp_conn_t* conn) {
-    uint8_t frame[16];
-    size_t pos = 0;
-    xylem_varint_encode(5, frame, sizeof(frame), &pos);
-    memcpy(frame + pos, "WORLD", 5);
-    pos += 5;
-    xylem_tcp_send(conn, frame, pos);
-}
-
-static void _cli_send_len_adj_cb(xylem_tcp_conn_t* conn) {
-    /**
-     * Length field value includes header size.
-     * [0x00, 0x07, "HELLO"] -- length=7 means total frame=7,
-     * so payload = 7 - 2 (header) = 5.
-     * With adjustment=-2: frame_size = 2 + 7 + (-2) = 7, payload = 7 - 2 = 5.
-     */
-    uint8_t frame[7] = {0x00, 0x07, 'H', 'E', 'L', 'L', 'O'};
-    xylem_tcp_send(conn, frame, sizeof(frame));
-}
-
-static void _cli_send_len_empty_cb(xylem_tcp_conn_t* conn) {
-    /**
-     * adjustment=-3, header_size=2, length field value=1, payload="X"
-     * frame_size = 2 + 1 + (-3) = 0 which is <= 0, extraction returns -1.
-     */
-    uint8_t frame[3] = {0x00, 0x01, 'X'};
-    xylem_tcp_send(conn, frame, sizeof(frame));
-}
-
-static void _cli_send_delim_multi_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "hello\r\nworld\r\n", 14);
-}
-
-static void _cli_send_delim_single_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "abc\ndef\n", 8);
-}
-
-/* Custom-zero on_read: counts reads but should never fire. */
-static void _custom_zero_srv_on_read(xylem_tcp_conn_t* conn,
-                                      void* data, size_t len) {
-    (void)data;
-    (void)len;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->read_count++;
-}
-
-/* Timer to stop the loop for custom_zero test. */
-static void _custom_zero_check_cb(xylem_loop_t* loop,
-                                   xylem_loop_timer_t* timer,
-                                   void* ud) {
-    (void)timer;
-    (void)ud;
-    xylem_loop_stop(loop);
-}
-
-/* Test functions. */
-
-
-static void test_close_server_with_active_conn(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t handler = {
-        .on_accept = _close_active_on_accept,
-        .on_close  = _close_active_on_close,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &handler, NULL);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    /* Timer fires after accept to close the server. */
-    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(close_timer, _close_active_timer_cb, &ctx, 100, 0);
-
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called >= 1);
-
-    xylem_tcp_close(cli);
-    xylem_loop_destroy_timer(close_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-
-static void test_dial_connect(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _dial_on_connect,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.connect_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_close_empty_queue(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _close_empty_on_connect,
-        .on_close   = _close_empty_on_close,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_send_basic(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect    = _send_basic_on_connect,
-        .on_write_done = _send_basic_on_write_done,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.wd_called == 1);
-    ASSERT(ctx.wd_status == 0);
-    ASSERT(ctx.wd_len == 4);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_send_after_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _sac_on_connect,
-        .on_close   = _sac_on_close,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.tested == 1);
-    ASSERT(ctx.send_result == -1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_conn_userdata(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop  = loop;
-    ctx.value = 42;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _conn_ud_on_accept,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_server_userdata(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop  = loop;
-    ctx.magic = 99;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_ud_on_accept,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    /* Verify round-trip before any callback. */
-    void* got = xylem_tcp_server_get_userdata(server);
-    ASSERT(got == &ctx);
-    ASSERT(((_test_ctx_t*)got)->magic == 99);
-
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_peer_addr(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _peer_addr_on_accept,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_get_loop(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _get_loop_on_connect,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_none(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_read = _frame_none_srv_on_read,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, NULL);
-    ASSERT(ctx.server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _frame_none_cli_on_connect,
-        .on_read    = _frame_none_cli_on_read,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_fixed(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_FIXED;
-    srv_opts.framing.fixed.frame_size = 4;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_two_fixed4_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_8bytes_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 2);
-    ASSERT(memcmp(ctx.frames[0], "ABCD", 4) == 0);
-    ASSERT(memcmp(ctx.frames[1], "EFGH", 4) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_fixed_zero(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_FIXED;
-    srv_opts.framing.fixed.frame_size = 0;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_data_cb,
-    };
+/* --- echo server coroutine --- */
 
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_be(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 2;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = true;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_one_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_be_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_le(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 2;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = false;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_one_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_le_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_field_size_zero(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 0;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = true;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_be_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_field_size_over8(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 9;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = true;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_be_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_varint(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size  = 1;
-    srv_opts.framing.length.field_offset = 0;
-    srv_opts.framing.length.field_size   = 1;
-    srv_opts.framing.length.coding       = XYLEM_TCP_LENGTH_VARINT;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_one_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_varint_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "WORLD", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_adjustment(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 2;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = true;
-    srv_opts.framing.length.adjustment       = -2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_one_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_adj_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "HELLO", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_length_empty_payload(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type = XYLEM_TCP_FRAME_LENGTH;
-    srv_opts.framing.length.header_size      = 2;
-    srv_opts.framing.length.field_offset     = 0;
-    srv_opts.framing.length.field_size       = 2;
-    srv_opts.framing.length.coding           = XYLEM_TCP_LENGTH_FIXEDINT;
-    srv_opts.framing.length.field_big_endian = true;
-    srv_opts.framing.length.adjustment       = -3;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_len_empty_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_delim_multi(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    srv_opts.framing.delim.delim     = "\r\n";
-    srv_opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_two_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_delim_multi_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 2);
-    ASSERT(ctx.frame_lens[0] == 5);
-    ASSERT(memcmp(ctx.frames[0], "hello", 5) == 0);
-    ASSERT(ctx.frame_lens[1] == 5);
-    ASSERT(memcmp(ctx.frames[1], "world", 5) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_delim_single(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    srv_opts.framing.delim.delim     = "\n";
-    srv_opts.framing.delim.delim_len = 1;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_two_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_delim_single_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 2);
-    ASSERT(ctx.frame_lens[0] == 3);
-    ASSERT(memcmp(ctx.frames[0], "abc", 3) == 0);
-    ASSERT(ctx.frame_lens[1] == 3);
-    ASSERT(memcmp(ctx.frames[1], "def", 3) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_delim_null(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    srv_opts.framing.delim.delim     = NULL;
-    srv_opts.framing.delim.delim_len = 0;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_data_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_custom_positive(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
-    srv_opts.framing.custom.parse = _custom_parse_4;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_two_fixed4_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_8bytes_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 2);
-    ASSERT(memcmp(ctx.frames[0], "ABCD", 4) == 0);
-    ASSERT(memcmp(ctx.frames[1], "EFGH", 4) == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_custom_zero(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
-    srv_opts.framing.custom.parse = _custom_parse_zero;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_read   = _custom_zero_srv_on_read,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    /* Timer to stop the loop after 200ms. */
-    xylem_loop_timer_t* check = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(check, _custom_zero_check_cb, NULL, 200, 0);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_data_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count == 0);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(check);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_custom_negative(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
-    srv_opts.framing.custom.parse = _custom_parse_neg;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_data_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void test_frame_custom_null_parse(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type         = XYLEM_TCP_FRAME_CUSTOM;
-    srv_opts.framing.custom.parse = NULL;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _srv_close_cb,
-    };
-
-    ctx.server = xylem_tcp_listen(loop, &addr, &srv_handler, &srv_opts);
-    ASSERT(ctx.server != NULL);
-    xylem_tcp_server_set_userdata(ctx.server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _cli_send_data_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(ctx.server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _read_timeout_cb(xylem_tcp_conn_t* conn,
-                              xylem_tcp_timeout_type_t type) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (type == XYLEM_TCP_TIMEOUT_READ) {
-        ctx->verified = 1;
-    }
-    xylem_tcp_close(conn);
-    xylem_loop_stop(ctx->loop);
-}
-
-static void _read_timeout_accept_cb(xylem_tcp_server_t* server,
-                                     xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    xylem_tcp_set_userdata(conn, ctx);
-}
-
-static void test_read_timeout(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.read_timeout_ms = 50;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept  = _read_timeout_accept_cb,
-        .on_timeout = _read_timeout_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &srv_opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    /* Client connects but sends nothing. */
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _write_timeout_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    /**
-     * Flood the write queue to saturate the kernel send buffer.
-     * The server never reads, so TCP flow control will eventually
-     * stall the sender and the write timeout should fire.
-     */
-    char buf[65536];
-    memset(buf, 'X', sizeof(buf));
-    for (int i = 0; i < 2048; i++) {
-        if (xylem_tcp_send(conn, buf, sizeof(buf)) != 0) {
-            break;
-        }
-    }
-    ctx->connect_called = 1;
-}
+static void _echo_handler(void* arg) {
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)arg;
+    char buf[256];
 
-static void _write_timeout_cb(xylem_tcp_conn_t* conn,
-                               xylem_tcp_timeout_type_t type) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (type == XYLEM_TCP_TIMEOUT_WRITE) {
-        ctx->verified = 1;
+    for (;;) {
+        ssize_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+        if (n <= 0) break;
+        if (xylem_tcp_send(conn, buf, (size_t)n) != 0) break;
     }
     xylem_tcp_close(conn);
 }
 
-static void _write_timeout_close_cb(xylem_tcp_conn_t* conn, int err,
-                                     const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    xylem_loop_stop(ctx->loop);
-}
+static void _echo_server(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    ctx->server = xylem_tcp_listen(TCP_HOST, TCP_PORT, NULL);
+    ASSERT(ctx->server != NULL);
 
-static void test_write_timeout(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    /* Server accepts but never reads -- no on_read handler. */
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_opts_t cli_opts = {0};
-    cli_opts.write_timeout_ms = 1;
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _write_timeout_cli_connect_cb,
-        .on_timeout = _write_timeout_cb,
-        .on_close   = _write_timeout_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &cli_opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-
-static void _heartbeat_miss_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->verified = 1;
-    xylem_tcp_close(conn);
-    xylem_loop_stop(ctx->loop);
-}
-
-static void test_heartbeat_miss(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 50;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept         = _srv_accept_cb,
-        .on_heartbeat_miss = _heartbeat_miss_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &srv_opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    /* Client connects but sends nothing. */
-    xylem_tcp_handler_t cli_handler = {0};
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.verified == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _hb_reset_send_cb(xylem_loop_t* loop,
-                                xylem_loop_timer_t* timer,
-                                void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    if (ctx->cli_conn) {
-        xylem_tcp_send(ctx->cli_conn, "x", 1);
+    for (;;) {
+        xylem_tcp_conn_t* conn = xylem_tcp_accept(ctx->server);
+        if (!conn) break;
+        xylem_spawn(_echo_handler, conn);
     }
 }
 
-static void _hb_reset_close_cb(xylem_tcp_conn_t* conn, int err,
-                                const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    xylem_loop_stop(ctx->loop);
-}
+/* --- test: basic send/recv --- */
 
-static void _hb_reset_stop_cb(xylem_loop_t* loop,
-                                xylem_loop_timer_t* timer,
-                                void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    if (ctx->cli_conn) {
-        xylem_tcp_close(ctx->cli_conn);
-    }
-}
+static void _test_echo_client(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
 
-static void _hb_reset_miss_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    /* Should NOT fire -- mark it so we can detect failure. */
-    ctx->verified = 1;
-}
+    xylem_sleep(50);
 
-static void _hb_reset_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->cli_conn = conn;
-}
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT, NULL);
+    ASSERT(conn != NULL);
 
-static void test_heartbeat_reset_on_data(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
+    const char* msg = "hello xylem";
+    ASSERT(xylem_tcp_send(conn, msg, strlen(msg)) == 0);
 
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.heartbeat_ms = 200;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept         = _srv_accept_cb,
-        .on_heartbeat_miss = _hb_reset_miss_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &srv_opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _hb_reset_cli_connect_cb,
-        .on_close   = _hb_reset_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    /* Send data every 50ms to keep heartbeat alive. */
-    xylem_loop_timer_t* send_timer = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(send_timer, _hb_reset_send_cb, &ctx, 50, 50);
-
-    /* Stop after 250ms. */
-    xylem_loop_timer_t* stop_timer = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(stop_timer, _hb_reset_stop_cb, &ctx, 250, 0);
-
-    xylem_loop_run(loop);
-
-    /* verified==0 means heartbeat_miss was NOT called. */
-    ASSERT(ctx.verified == 0);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(send_timer);
-    xylem_loop_destroy_timer(stop_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _reconnect_delayed_listen_cb(xylem_loop_t* loop,
-                                          xylem_loop_timer_t* timer,
-                                          void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    memset(&ctx->reconnect_srv_handler, 0, sizeof(ctx->reconnect_srv_handler));
-    ctx->server = xylem_tcp_listen(ctx->loop, &addr,
-                                   &ctx->reconnect_srv_handler, NULL);
-}
-
-static void _reconnect_on_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->connect_called = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void test_reconnect_success(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    /* Start server after 200ms so initial connect fails. */
-    xylem_loop_timer_t* delay = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(delay, _reconnect_delayed_listen_cb, &ctx, 200, 0);
-
-    xylem_tcp_opts_t cli_opts = {0};
-    cli_opts.reconnect_max = 3;
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _reconnect_on_connect_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &cli_opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.connect_called == 1);
-
-    xylem_tcp_close(cli);
-    if (ctx.server) {
-        xylem_tcp_close_server(ctx.server);
-    }
-    xylem_loop_destroy_timer(delay);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _reconnect_limit_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void test_reconnect_limit(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    /* Port 18080 -- no server listening. */
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t cli_opts = {0};
-    cli_opts.reconnect_max = 1;
-    cli_opts.connect_timeout_ms = 200;
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_close = _reconnect_limit_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &cli_opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _read_buf_full_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _read_buf_full_cli_connect_cb(xylem_tcp_conn_t* conn) {
     char buf[64];
-    memset(buf, 'A', sizeof(buf));
-    xylem_tcp_send(conn, buf, sizeof(buf));
-}
+    ssize_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+    ASSERT(n == (ssize_t)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-static void test_read_buf_full(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    /**
-     * Use FRAME_FIXED with frame_size > read_buf_size so the buffer
-     * fills before a complete frame can be extracted.
-     */
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.read_buf_size            = 8;
-    srv_opts.framing.type             = XYLEM_TCP_FRAME_FIXED;
-    srv_opts.framing.fixed.frame_size = 16;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _read_buf_full_srv_close_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &srv_opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _read_buf_full_cli_connect_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close(cli);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _peer_eof_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _peer_eof_cli_connect_cb(xylem_tcp_conn_t* conn) {
     xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ctx->server);
+    ctx->tested = 1;
+    xylem_runtime_stop();
 }
 
-static void test_peer_close_eof(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-        .on_close  = _peer_eof_srv_close_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _peer_eof_cli_connect_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _pending_writes_wd_cb(xylem_tcp_conn_t* conn,
-                                   const void* data, size_t len,
-                                   int status) {
-    (void)data;
-    (void)len;
-    (void)status;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->wd_called++;
-}
-
-static void _pending_writes_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void _pending_writes_connect_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "aaa", 3);
-    xylem_tcp_send(conn, "bbb", 3);
-    xylem_tcp_send(conn, "ccc", 3);
-    xylem_tcp_close(conn);
-}
-
-static void test_close_pending_writes(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {0};
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect    = _pending_writes_connect_cb,
-        .on_write_done = _pending_writes_wd_cb,
-        .on_close      = _pending_writes_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.wd_called == 3);
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _drain_err_srv_accept_cb(xylem_tcp_server_t* server,
-                                      xylem_tcp_conn_t* conn) {
-    /* Server immediately closes its conn to simulate error. */
-    (void)server;
-    xylem_tcp_close(conn);
-}
-
-static void _drain_err_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    xylem_tcp_send(conn, "data", 4);
-}
-
-static void _drain_err_cli_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->close_called = 1;
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void test_drain_write_queue_on_error(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _drain_err_srv_accept_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, NULL);
-    ASSERT(server != NULL);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _drain_err_cli_connect_cb,
-        .on_close   = _drain_err_cli_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, NULL);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-
-static void _life_srv_accept_cb(xylem_tcp_server_t* server,
-                                 xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    ctx->verified |= 1; /* bit 0: accept fired */
-    xylem_tcp_set_userdata(conn, ctx);
-}
-
-static void _life_srv_read_cb(xylem_tcp_conn_t* conn,
-                               void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->verified |= 2; /* bit 1: server read fired */
-
-    /* Echo back "pong\r\n". */
-    (void)data;
-    (void)len;
-    xylem_tcp_send(conn, "pong\r\n", 6);
-}
-
-static void _life_srv_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->verified |= 4; /* bit 2: server close fired */
-    }
-}
-
-static void _life_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->verified |= 8; /* bit 3: client connect fired */
-    xylem_tcp_send(conn, "ping\r\n", 6);
-}
-
-static void _life_cli_read_cb(xylem_tcp_conn_t* conn,
-                               void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (len >= 4 && memcmp(data, "pong", 4) == 0) {
-        ctx->verified |= 16; /* bit 4: client read fired */
-    }
-    /* Close both sides. */
-    xylem_tcp_close(conn);
-    if (ctx->srv_conn) {
-        xylem_tcp_close(ctx->srv_conn);
-    }
-}
-
-static void _life_cli_close_cb(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (ctx) {
-        ctx->verified |= 32; /* bit 5: client close fired */
-        xylem_loop_stop(ctx->loop);
-    }
-}
-
-static void test_lifecycle_full(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t srv_opts = {0};
-    srv_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    srv_opts.framing.delim.delim     = "\r\n";
-    srv_opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _life_srv_accept_cb,
-        .on_read   = _life_srv_read_cb,
-        .on_close  = _life_srv_close_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &srv_opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_opts_t cli_opts = {0};
-    cli_opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    cli_opts.framing.delim.delim     = "\r\n";
-    cli_opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _life_cli_connect_cb,
-        .on_read    = _life_cli_read_cb,
-        .on_close   = _life_cli_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &cli_opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    /* All 6 events must have fired: accept, srv_read, srv_close,
-       cli_connect, cli_read, cli_close => 0x3F = 63. */
-    ASSERT((ctx.verified & 0x3F) == 0x3F);
-
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-/* ===== Cross-thread tests ===== */
-
-/** test_cross_thread_send: worker posts a send callback via loop_post. */
-
-static void _xt_send_srv_accept_cb(xylem_tcp_server_t* server,
-                                   xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    xylem_tcp_set_userdata(conn, ctx);
-}
-
-static void _xt_send_srv_read_cb(xylem_tcp_conn_t* conn,
-                                 void* data, size_t len) {
-    (void)data;
-    (void)len;
-    xylem_tcp_send(conn, "ping\r\n", 6);
-}
-
-static void _xt_send_post_cb(xylem_loop_t* loop,
-                             xylem_loop_post_t* req,
-                             void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    ctx->send_result = xylem_tcp_send(ctx->cli_conn, "ping\r\n", 6);
-}
-
-static void _xt_send_worker(void* arg) {
+static void _test_echo_main(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_loop_post(ctx->loop, _xt_send_post_cb, ctx);
-    atomic_store(&ctx->worker_done, true);
+    _start_safety_timer();
+    xylem_spawn(_echo_server, ctx);
+    xylem_spawn(_test_echo_client, ctx);
 }
 
-static void _xt_send_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->cli_conn = conn;
-    xylem_tcp_conn_acquire(conn);
-    xylem_thrdpool_post(ctx->pool, _xt_send_worker, ctx);
-}
-
-static void _xt_send_cli_read_cb(xylem_tcp_conn_t* conn,
-                                 void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    if (len <= sizeof(ctx->received)) {
-        memcpy(ctx->received, data, len);
-        ctx->received_len = len;
-    }
-    ctx->read_count++;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void test_cross_thread_send(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
+static void test_echo(void) {
     _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    atomic_store(&ctx.worker_done, false);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t opts = {0};
-    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    opts.framing.delim.delim     = "\r\n";
-    opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _xt_send_srv_accept_cb,
-        .on_read   = _xt_send_srv_read_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_send_cli_connect_cb,
-        .on_read    = _xt_send_cli_read_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.read_count >= 1);
-    ASSERT(ctx.received_len == 4);
-    ASSERT(memcmp(ctx.received, "ping", 4) == 0);
-    ASSERT(atomic_load(&ctx.worker_done) == true);
-
-    xylem_tcp_conn_release(ctx.cli_conn);
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
+    xylem_runtime_start(_test_echo_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
 }
 
-/** test_cross_thread_close: worker posts a close callback via loop_post. */
+/* --- test: recv_exact --- */
 
-static void _xt_close_post_cb(xylem_loop_t* loop,
-                              xylem_loop_post_t* req,
-                              void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_tcp_close(ctx->cli_conn);
-}
-
-static void _xt_close_worker(void* arg) {
+static void _exact_server(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    xylem_loop_post(ctx->loop, _xt_close_post_cb, ctx);
-    atomic_store(&ctx->worker_done, true);
+    ctx->server = xylem_tcp_listen(TCP_HOST, TCP_PORT + 1, NULL);
+    ASSERT(ctx->server != NULL);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ctx->server);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_send(conn, "ABCD", 4) == 0);
+    xylem_sleep(30);
+    ASSERT(xylem_tcp_send(conn, "EFGH", 4) == 0);
+
+    xylem_sleep(100);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ctx->server);
 }
 
-static void _xt_close_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->cli_conn = conn;
-    xylem_tcp_conn_acquire(conn);
-    xylem_thrdpool_post(ctx->pool, _xt_close_worker, ctx);
-}
-
-static void _xt_close_cli_close_cb(xylem_tcp_conn_t* conn,
-                                   int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->close_called = 1;
-    xylem_loop_stop(ctx->loop);
-}
-
-static void test_cross_thread_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
-    _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    atomic_store(&ctx.worker_done, false);
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t opts = {0};
-    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    opts.framing.delim.delim     = "\r\n";
-    opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _srv_accept_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_close_cli_connect_cb,
-        .on_close   = _xt_close_cli_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-    ASSERT(atomic_load(&ctx.worker_done) == true);
-
-    xylem_tcp_conn_release(ctx.cli_conn);
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
-}
-
-/** test_cross_thread_send_stop_on_close: worker posts sends in a loop;
- *  server-side timer closes the client conn after 50ms. */
-
-static void _xt_soc_srv_accept_cb(xylem_tcp_server_t* server,
-                                  xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    xylem_tcp_set_userdata(conn, ctx);
-}
-
-static void _xt_soc_srv_read_cb(xylem_tcp_conn_t* conn,
-                                void* data, size_t len) {
-    (void)data;
-    (void)len;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->read_count++;
-}
-
-static void _xt_soc_timer_cb(xylem_loop_t* loop,
-                             xylem_loop_timer_t* timer,
-                             void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    if (ctx->cli_conn) {
-        xylem_tcp_close(ctx->cli_conn);
-    }
-}
-
-static void _xt_soc_send_post_cb(xylem_loop_t* loop,
-                                 xylem_loop_post_t* req,
-                                 void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    int rc = xylem_tcp_send(ctx->cli_conn, "x\r\n", 3);
-    if (rc == 0)
-        ctx->send_result++;
-}
-
-static void _xt_soc_worker(void* arg) {
+static void _exact_client(void* arg) {
     _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    for (int i = 0; i < 200; i++) {
-        if (atomic_load(&ctx->worker_done))
-            break;
-        xylem_loop_post(ctx->loop, _xt_soc_send_post_cb, ctx);
-    }
+    xylem_sleep(50);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 1, NULL);
+    ASSERT(conn != NULL);
+
+    char buf[8];
+    ASSERT(xylem_tcp_recv_exact(conn, buf, 8) == 0);
+    ASSERT(memcmp(buf, "ABCDEFGH", 8) == 0);
+
+    xylem_tcp_close(conn);
+    ctx->tested = 1;
+    xylem_runtime_stop();
 }
 
-static void _xt_soc_cli_connect_cb(xylem_tcp_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->cli_conn = conn;
-    xylem_tcp_conn_acquire(conn);
-    xylem_thrdpool_post(ctx->pool, _xt_soc_worker, ctx);
+static void _test_recv_exact_main(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_exact_server, ctx);
+    xylem_spawn(_exact_client, ctx);
 }
 
-static void _xt_soc_cli_close_cb(xylem_tcp_conn_t* conn,
-                                 int err, const char* errmsg) {
-    (void)conn;
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_tcp_get_userdata(conn);
-    ctx->close_called = 1;
-    atomic_store(&ctx->worker_done, true);
-    xylem_loop_stop(ctx->loop);
-}
-
-static void test_cross_thread_send_stop_on_close(void) {
-    xylem_loop_t* loop = xylem_loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_loop_timer_t* safety = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(safety, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-
+static void test_recv_exact(void) {
     _test_ctx_t ctx = {0};
-    ctx.loop = loop;
-    ctx.pool = xylem_thrdpool_create(1);
-    ASSERT(ctx.pool != NULL);
-    atomic_store(&ctx.worker_done, false);
-    ctx.send_result = 0;
-
-    xylem_addr_t addr;
-    xylem_addr_pton(TCP_HOST, TCP_PORT, &addr);
-
-    xylem_tcp_opts_t opts = {0};
-    opts.framing.type            = XYLEM_TCP_FRAME_DELIM;
-    opts.framing.delim.delim     = "\r\n";
-    opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_handler_t srv_handler = {
-        .on_accept = _xt_soc_srv_accept_cb,
-        .on_read   = _xt_soc_srv_read_cb,
-    };
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                   &srv_handler, &opts);
-    ASSERT(server != NULL);
-    xylem_tcp_server_set_userdata(server, &ctx);
-
-    xylem_tcp_handler_t cli_handler = {
-        .on_connect = _xt_soc_cli_connect_cb,
-        .on_close   = _xt_soc_cli_close_cb,
-    };
-
-    xylem_tcp_conn_t* cli = xylem_tcp_dial(loop, &addr,
-                                            &cli_handler, &opts);
-    ASSERT(cli != NULL);
-    xylem_tcp_set_userdata(cli, &ctx);
-
-    /* Timer to close client conn after 50ms. */
-    xylem_loop_timer_t* close_timer = xylem_loop_create_timer(loop);
-    xylem_loop_start_timer(close_timer, _xt_soc_timer_cb, &ctx, 50, 0);
-
-    xylem_loop_run(loop);
-
-    ASSERT(ctx.close_called == 1);
-
-    xylem_tcp_conn_release(ctx.cli_conn);
-    xylem_thrdpool_destroy(ctx.pool);
-    xylem_tcp_close_server(server);
-    xylem_loop_destroy_timer(close_timer);
-    xylem_loop_destroy_timer(safety);
-    xylem_loop_destroy(loop);
+    xylem_runtime_start(_test_recv_exact_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
 }
 
+/* --- test: recv_line --- */
+
+static void _line_server(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    ctx->server = xylem_tcp_listen(TCP_HOST, TCP_PORT + 2, NULL);
+    ASSERT(ctx->server != NULL);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ctx->server);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_send(conn, "hello\r\nworld\n", 13) == 0);
+    xylem_sleep(100);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ctx->server);
+}
+
+static void _line_client(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    xylem_sleep(50);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 2, NULL);
+    ASSERT(conn != NULL);
+
+    char line[64];
+    ssize_t len = xylem_tcp_recv_line(conn, line, sizeof(line));
+    ASSERT(len == 5);
+    ASSERT(strcmp(line, "hello") == 0);
+
+    len = xylem_tcp_recv_line(conn, line, sizeof(line));
+    ASSERT(len == 5);
+    ASSERT(strcmp(line, "world") == 0);
+
+    xylem_tcp_close(conn);
+    ctx->tested = 1;
+    xylem_runtime_stop();
+}
+
+static void _test_recv_line_main(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_line_server, ctx);
+    xylem_spawn(_line_client, ctx);
+}
+
+static void test_recv_line(void) {
+    _test_ctx_t ctx = {0};
+    xylem_runtime_start(_test_recv_line_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
+
+/* --- test: framing (length-prefixed) --- */
+
+static void _frame_server(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    ctx->server = xylem_tcp_listen(TCP_HOST, TCP_PORT + 3, NULL);
+    ASSERT(ctx->server != NULL);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ctx->server);
+    ASSERT(conn != NULL);
+
+    xylem_tcp_frame_opts_t opts = {
+        .header_size  = 2,
+        .field_offset = 0,
+        .field_size   = 2,
+        .adjustment   = 0,
+        .big_endian   = true,
+    };
+
+    const char* payload = "FRAME1";
+    ASSERT(xylem_tcp_send_frame(conn, &opts, payload, 6) == 0);
+
+    xylem_sleep(100);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ctx->server);
+}
+
+static void _frame_client(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    xylem_sleep(50);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, TCP_PORT + 3, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_tcp_frame_opts_t opts = {
+        .header_size  = 2,
+        .field_offset = 0,
+        .field_size   = 2,
+        .adjustment   = 0,
+        .big_endian   = true,
+    };
+
+    size_t out_len = 0;
+    void* body = xylem_tcp_recv_frame(conn, &opts, &out_len);
+    ASSERT(body != NULL);
+    ASSERT(out_len == 6);
+    ASSERT(memcmp(body, "FRAME1", 6) == 0);
+    free(body);
+
+    xylem_tcp_close(conn);
+    ctx->tested = 1;
+    xylem_runtime_stop();
+}
+
+static void _test_frame_main(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_frame_server, ctx);
+    xylem_spawn(_frame_client, ctx);
+}
+
+static void test_frame(void) {
+    _test_ctx_t ctx = {0};
+    xylem_runtime_start(_test_frame_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
+
+/* --- test: dial_timeout --- */
+
+static void _timeout_client(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial_timeout("192.0.2.1",
+                                                       9999, NULL, 200);
+    ASSERT(conn == NULL);
+
+    ctx->tested = 1;
+    xylem_runtime_stop();
+}
+
+static void _test_dial_timeout_main(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_timeout_client, ctx);
+}
+
+static void test_dial_timeout(void) {
+    _test_ctx_t ctx = {0};
+    xylem_runtime_start(_test_dial_timeout_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
+
+/* --- test: userdata --- */
+
+static void _userdata_test(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    ctx->server = xylem_tcp_listen(TCP_HOST, TCP_PORT + 4, NULL);
+    ASSERT(ctx->server != NULL);
+
+    int server_ud = 42;
+    xylem_tcp_listener_set_userdata(ctx->server, &server_ud);
+    ASSERT(xylem_tcp_listener_get_userdata(ctx->server) == &server_ud);
+
+    xylem_tcp_close_listener(ctx->server);
+    ctx->tested = 1;
+    xylem_runtime_stop();
+}
+
+static void _test_userdata_main(void* arg) {
+    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_userdata_test, ctx);
+}
+
+static void test_userdata(void) {
+    _test_ctx_t ctx = {0};
+    xylem_runtime_start(_test_userdata_main, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
 
 int main(void) {
-    xylem_startup();
 
-    test_close_server_with_active_conn();
-    test_dial_connect();
-    test_close_empty_queue();
-    test_send_basic();
-    test_send_after_close();
-    test_conn_userdata();
-    test_server_userdata();
-    test_peer_addr();
-    test_get_loop();
-    test_frame_none();
-    test_frame_fixed();
-    test_frame_fixed_zero();
-    test_frame_length_be();
-    test_frame_length_le();
-    test_frame_length_field_size_zero();
-    test_frame_length_field_size_over8();
-    test_frame_length_varint();
-    test_frame_length_adjustment();
-    test_frame_length_empty_payload();
-    test_frame_delim_multi();
-    test_frame_delim_single();
-    test_frame_delim_null();
-    test_frame_custom_positive();
-    test_frame_custom_zero();
-    test_frame_custom_negative();
-    test_frame_custom_null_parse();
-    test_read_timeout();
-    test_write_timeout();
-    test_heartbeat_miss();
-    test_heartbeat_reset_on_data();
-    test_reconnect_success();
-    test_reconnect_limit();
-    test_read_buf_full();
-    test_peer_close_eof();
-    test_close_pending_writes();
-    test_drain_write_queue_on_error();
-    test_lifecycle_full();
-    test_cross_thread_send();
-    test_cross_thread_close();
-    test_cross_thread_send_stop_on_close();
+    test_echo();
+    test_recv_exact();
+    test_recv_line();
+    test_frame();
+    test_dial_timeout();
+    test_userdata();
 
-    xylem_cleanup();
     return 0;
 }

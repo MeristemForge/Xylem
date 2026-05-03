@@ -50,7 +50,6 @@ static void _print_res(const char* label, xylem_http_res_t* res) {
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
     /* GET / */
@@ -64,6 +63,5 @@ int main(void) {
     _print_res("POST /echo", res);
 
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

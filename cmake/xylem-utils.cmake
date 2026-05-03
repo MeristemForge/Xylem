@@ -20,6 +20,7 @@ endfunction()
 function(xylem_add_test test_name)
     add_executable(test-${test_name} "test-${test_name}.c")
     target_link_libraries(test-${test_name} PRIVATE xylem)
+    target_include_directories(test-${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME ${test_name} COMMAND test-${test_name})
 
     xylem_apply_sanitizer(test-${test_name} XYLEM_ENABLE_ASAN address)

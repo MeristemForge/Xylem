@@ -20,80 +20,61 @@
  */
 
 /**
- * TCP Echo Server
+ * TCP Echo Server (coroutine)
  *
- * Listens on 127.0.0.1:9000 and echoes back every message it receives.
- * Uses delimiter-based framing with "\r\n" so each line is one message.
+ * Listens on 127.0.0.1:9000 and echoes back every line it receives.
  *
  * Usage: tcp-echo-server
  * Test:  tcp-echo-client  (or: echo "hello" | nc 127.0.0.1 9000)
  */
 
 #include "xylem.h"
-#include "xylem/xylem-tcp.h"
-
-#include <string.h>
 
 #define LISTEN_PORT 9000
 
-static void _on_accept(xylem_tcp_server_t* server,
-                       xylem_tcp_conn_t* conn) {
-    (void)server;
-    (void)conn;
+static void _handle_conn(void* arg) {
+    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)arg;
     xylem_logi("client connected");
-}
 
-static void _on_read(xylem_tcp_conn_t* conn, void* data, size_t len) {
-    xylem_logi("recv %zu bytes: %.*s", len, (int)len, (char*)data);
+    char line[1024];
+    for (;;) {
+        ssize_t n = xylem_tcp_recv_line(conn, line, sizeof(line));
+        if (n < 0) break;
 
-    /* Echo back with delimiter. */
-    char buf[1024];
-    if (len + 2 <= sizeof(buf)) {
-        memcpy(buf, data, len);
-        buf[len]     = '\r';
-        buf[len + 1] = '\n';
-        xylem_tcp_send(conn, buf, len + 2);
+        xylem_logi("recv: %.*s", (int)n, line);
+
+        line[n]     = '\r';
+        line[n + 1] = '\n';
+        if (xylem_tcp_send(conn, line, (size_t)n + 2) != 0)
+            break;
     }
+
+    xylem_logi("client disconnected");
+    xylem_tcp_close(conn);
 }
 
-static void _on_close(xylem_tcp_conn_t* conn, int err, const char* errmsg) {
-    (void)conn;
-    (void)err;
-    xylem_logi("client disconnected (%s)", errmsg);
-}
-
-int main(void) {
-    xylem_startup();
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-
-    xylem_loop_t* loop = xylem_loop_create();
-
-    xylem_addr_t addr;
-    xylem_addr_pton("127.0.0.1", LISTEN_PORT, &addr);
-
-    xylem_tcp_handler_t handler = {
-        .on_accept = _on_accept,
-        .on_read   = _on_read,
-        .on_close  = _on_close,
-    };
-
-    xylem_tcp_opts_t opts = {0};
-    opts.framing.type          = XYLEM_TCP_FRAME_DELIM;
-    opts.framing.delim.delim     = "\r\n";
-    opts.framing.delim.delim_len = 2;
-
-    xylem_tcp_server_t* server = xylem_tcp_listen(loop, &addr,
-                                                  &handler, &opts);
+static void _server_main(void* arg) {
+    (void)arg;
+    xylem_tcp_listener_t* server = xylem_tcp_listen("127.0.0.1",
+                                                   LISTEN_PORT, NULL);
     if (!server) {
         xylem_loge("failed to listen on port %d", LISTEN_PORT);
-        return 1;
+        xylem_runtime_stop();
+        return;
     }
 
     xylem_logi("tcp echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(loop);
 
-    xylem_loop_destroy(loop);
+    for (;;) {
+        xylem_tcp_conn_t* conn = xylem_tcp_accept(server);
+        if (!conn) break;
+        xylem_spawn(_handle_conn, conn);
+    }
+}
+
+int main(void) {
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_runtime_start(_server_main, NULL, NULL);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

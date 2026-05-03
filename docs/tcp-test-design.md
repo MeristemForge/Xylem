@@ -103,7 +103,7 @@
 | `_tcp_read/write/connect_timeout_cb` | 读超时、写超时、连接超时（重连限制测试触发） |
 | `_tcp_heartbeat_timeout_cb` | 心跳超时 |
 | `xylem_tcp_close` | 写队列为空时立即 shutdown + destroy；写队列非空时设 CLOSING 等待 flush |
-| `xylem_tcp_close_server` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
+| `xylem_tcp_close_listener` | 带活跃连接关闭；基础 listen+close 和幂等关闭目前无直接覆盖 |
 | `xylem_tcp_send`（跨线程） | 非事件循环线程调用 → `_tcp_deferred_send_cb` 转发到事件循环线程入队 |
 | `xylem_tcp_conn_acquire` / `xylem_tcp_conn_release` | on_connect 中 acquire 递增引用计数，工作线程完成后 release 递减引用计数 |
 | `xylem_tcp_close`（跨线程） | 非事件循环线程调用 → 通过 `xylem_loop_post` 转发到事件循环线程执行 |

@@ -66,13 +66,17 @@ typedef struct platform_poller_cqe_s {
  * sqe pointer must be used for all operations on that fd. The caller
  * is responsible for the sqe lifetime (must outlive the registration).
  *
- * All platforms use level-triggered semantics: the poller will keep
- * reporting readiness as long as the condition holds.
+ * When oneshot is false (default) the poller uses level-triggered
+ * semantics: it keeps reporting readiness as long as the condition
+ * holds.  When oneshot is true the poller automatically disables the
+ * fd after delivering one event; the caller must re-arm via
+ * platform_poller_mod() to receive subsequent events.
  */
 typedef struct platform_poller_sqe_s {
     platform_poller_op_t op;
     platform_poller_fd_t fd;
     void*                ud;
+    int                  oneshot;
 } platform_poller_sqe_t;
 
 /**

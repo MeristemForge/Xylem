@@ -31,11 +31,12 @@
  */
 
 #include "xylem.h"
-#include "xylem/xylem-dtls.h"
+#include "runtime/loop.h"
+#include "xylem/net/xylem-dtls.h"
 
 #define SERVER_PORT 9444
 
-static xylem_loop_t* _loop;
+static loop_t* _loop;
 
 static void _on_connect(xylem_dtls_conn_t* dtls) {
     xylem_logi("dtls handshake complete");
@@ -52,14 +53,13 @@ static void _on_close(xylem_dtls_conn_t* dtls, int err, const char* errmsg) {
     (void)err;
     (void)errmsg;
     xylem_logi("disconnected");
-    xylem_loop_stop(_loop);
+    loop_stop(_loop);
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    _loop = xylem_loop_create();
+    _loop = loop_create();
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     if (!ctx) {
@@ -86,11 +86,10 @@ int main(void) {
         return 1;
     }
 
-    xylem_loop_run(_loop);
+    loop_run(_loop);
 
     xylem_dtls_ctx_destroy(ctx);
-    xylem_loop_destroy(_loop);
+    loop_destroy(_loop);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

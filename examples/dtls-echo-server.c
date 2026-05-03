@@ -31,7 +31,8 @@
  */
 
 #include "xylem.h"
-#include "xylem/xylem-dtls.h"
+#include "runtime/loop.h"
+#include "xylem/net/xylem-dtls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,10 +155,9 @@ static void _on_close(xylem_dtls_conn_t* dtls, int err, const char* errmsg) {
 }
 
 int main(void) {
-    xylem_startup();
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
 
-    xylem_loop_t* loop = xylem_loop_create();
+    loop_t* loop = loop_create();
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     if (!ctx) {
@@ -197,11 +197,10 @@ int main(void) {
     }
 
     xylem_logi("dtls echo server listening on 127.0.0.1:%d", LISTEN_PORT);
-    xylem_loop_run(loop);
+    loop_run(loop);
 
     xylem_dtls_ctx_destroy(ctx);
-    xylem_loop_destroy(loop);
+    loop_destroy(loop);
     xylem_logger_deinit();
-    xylem_cleanup();
     return 0;
 }

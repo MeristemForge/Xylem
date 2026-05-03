@@ -12,6 +12,8 @@ option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
 option(XYLEM_ENABLE_TLS "enable TLS/DTLS support (requires OpenSSL)" OFF)
+option(XYLEM_ENABLE_HTTP "enable HTTP client/server" OFF)
+option(XYLEM_ENABLE_WS "enable WebSocket client/server" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -29,61 +31,47 @@ if(WIN32 AND MSVC)
 endif()
 
 set(SRCS
-	src/xylem.c
-	src/xylem-addr.c
-	src/xylem-tcp.c
-	src/xylem-udp.c
-	src/xylem-base64.c
-	src/xylem-bswap.c
-	src/xylem-heap.c
-	src/xylem-list.c
+	src/runtime/loop.c
+	src/runtime/xylem-runtime.c
 	src/xylem-logger.c
-	src/xylem-queue.c
-	src/xylem-rbtree.c
-	src/xylem-ringbuf.c
-	src/xylem-sha1.c
-	src/xylem-sha256.c
-	src/xylem-hmac256.c
-	src/xylem-stack.c
-	src/xylem-thrdpool.c
-	src/xylem-loop.c
-	src/mpsc.c
 	src/xylem-utils.c
-	src/xylem-varint.c
-	src/xylem-waitgroup.c
-	src/xylem-xheap.c
-	src/xylem-xlist.c
-	src/xylem-xqueue.c
-	src/xylem-xrbtree.c
-	src/xylem-xstack.c
-	src/json/xylem-json.c
-	src/json/yyjson/yyjson.c
-	src/http/http-common.c
-	src/http/xylem-http-client.c
-	src/http/xylem-http-server.c
-	src/http/xylem-http-common.c
-	src/http/http-transport-tcp.c
-	src/http/llhttp/llhttp.c
-	src/http/llhttp/http.c
-	src/http/llhttp/api.c
-	src/gzip/xylem-gzip.c
-	src/gzip/miniz/miniz.c
-	src/aes256/tiny-AES-c/aes.c
-	src/aes256/xylem-aes256.c
-	src/ws/ws-common.c
-	src/ws/xylem-ws-client.c
-	src/ws/xylem-ws-server.c
-	src/ws/ws-utf8.c
-	src/ws/ws-frame.c
-	src/ws/ws-handshake.c
-	src/ws/ws-transport-tcp.c
-	src/rudp/kcp/ikcp.c
-	src/rudp/xylem-rudp.c
-	src/rudp/rudp-fec.c
-	src/xylem-uds.c
-	src/fec/reedsolomon-c/rs.c
-	src/fec/xylem-fec.c
 	src/xylem-serial.c
+	src/sync/mpsc.c
+	src/runtime/thrdpool.c
+	src/sync/xylem-waitgroup.c
+	src/sync/xylem-channel.c
+	src/crypto/xylem-sha1.c
+	src/crypto/xylem-sha256.c
+	src/crypto/xylem-hmac256.c
+	src/crypto/aes256/tiny-AES-c/aes.c
+	src/crypto/aes256/xylem-aes256.c
+	src/encoding/xylem-base64.c
+	src/encoding/xylem-bswap.c
+	src/encoding/xylem-varint.c
+	src/container/heap.c
+	src/container/list.c
+	src/container/queue.c
+	src/container/rbtree.c
+	src/container/stack.c
+	src/container/xylem-ringbuf.c
+	src/container/xylem-heap.c
+	src/container/xylem-list.c
+	src/container/xylem-queue.c
+	src/container/xylem-rbtree.c
+	src/container/xylem-stack.c
+	src/net/addr.c
+	src/net/xylem-tcp.c
+	src/net/xylem-udp.c
+	src/net/xylem-uds.c
+	src/net/rudp/kcp/ikcp.c
+	src/net/rudp/xylem-rudp.c
+	src/net/rudp/rudp-fec.c
+	src/encoding/json/xylem-json.c
+	src/encoding/json/yyjson/yyjson.c
+	src/encoding/gzip/xylem-gzip.c
+	src/encoding/gzip/miniz/miniz.c
+	src/encoding/fec/reedsolomon-c/rs.c
+	src/encoding/fec/xylem-fec.c
 )
 
 if(WIN32)
@@ -114,16 +102,44 @@ if(XYLEM_ENABLE_TLS)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
-		src/xylem-tls.c
-		src/xylem-dtls.c
-		src/http/http-transport-tls.c
-		src/ws/ws-transport-tls.c
+		src/net/xylem-tls.c
+		src/net/xylem-dtls.c
 	)
-else()
+endif()
+
+if(XYLEM_ENABLE_HTTP)
 	list(APPEND SRCS
-		src/http/http-transport-tls-stub.c
-		src/ws/ws-transport-tls-stub.c
+		src/net/http/http-common.c
+		src/net/http/xylem-http-client.c
+		src/net/http/xylem-http-server.c
+		src/net/http/xylem-http-common.c
+		src/net/http/http-transport-tcp.c
+		src/net/http/llhttp/llhttp.c
+		src/net/http/llhttp/http.c
+		src/net/http/llhttp/api.c
 	)
+	if(XYLEM_ENABLE_TLS)
+		list(APPEND SRCS src/net/http/http-transport-tls.c)
+	else()
+		list(APPEND SRCS src/net/http/http-transport-tls-stub.c)
+	endif()
+endif()
+
+if(XYLEM_ENABLE_WS)
+	list(APPEND SRCS
+		src/net/ws/ws-common.c
+		src/net/ws/xylem-ws-client.c
+		src/net/ws/xylem-ws-server.c
+		src/net/ws/ws-utf8.c
+		src/net/ws/ws-frame.c
+		src/net/ws/ws-handshake.c
+		src/net/ws/ws-transport-tcp.c
+	)
+	if(XYLEM_ENABLE_TLS)
+		list(APPEND SRCS src/net/ws/ws-transport-tls.c)
+	else()
+		list(APPEND SRCS src/net/ws/ws-transport-tls-stub.c)
+	endif()
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
@@ -135,6 +151,10 @@ endif()
 target_include_directories(xylem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/net
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sync
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/encoding
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
