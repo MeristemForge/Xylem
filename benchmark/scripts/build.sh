@@ -28,7 +28,7 @@ build_xylem() {
         -DCMAKE_C_FLAGS="-O3 -DNDEBUG -flto" \
         -DXYLEM_ENABLE_TLS=OFF \
         -G Ninja >/dev/null 2>&1
-    ninja -C "$build_dir" -j"$(nproc)" >&2
+    ninja -C "$build_dir" xylem -j"$(nproc)" >&2
     echo "$build_dir"
 }
 

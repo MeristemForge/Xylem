@@ -23,292 +23,43 @@
 #include "xylem/xylem-logger.h"
 
 #include "runtime/runtime.h"
+#include "runtime/iowait.h"
 #include "addr.h"
 #include "platform/platform-socket.h"
 
-#include "minicoro/minicoro.h"
-
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define DEFAULT_READ_BUF_SIZE 65536
 
-enum {
-    TCP_IO_IDLE    = 0,
-    TCP_IO_WAITING = 1,
-    TCP_IO_READY   = 2,
-};
-
 struct xylem_tcp_conn_s {
-    loop_t*              loop;
-    loop_io_t*           io;
-    loop_timer_t*        rd_timer;
-    loop_timer_t*        wr_timer;
-    platform_sock_t      fd;
-    mco_coro*            read_coro;
-    mco_coro*            write_coro;
-    _Atomic int          rd_state;
-    _Atomic int          wr_state;
-    addr_t               peer_addr;
-    void*                userdata;
-    uint64_t             read_timeout_ms;
-    uint64_t             write_timeout_ms;
+    iowait_t*              waiter;
+    loop_t*                loop;
+    platform_sock_t        fd;
+    addr_t                 peer_addr;
+    void*                  userdata;
+    uint64_t               read_timeout_ms;
+    uint64_t               write_timeout_ms;
     xylem_tcp_frame_opts_t frame_opts;
-    char*                read_buf;
-    size_t               read_buf_cap;
-    size_t               read_buf_pos;
-    size_t               read_buf_len;
-    int                  last_error;
-    bool                 rd_timed_out;
-    bool                 wr_timed_out;
-    bool                 closed;
+    char*                  read_buf;
+    size_t                 read_buf_cap;
+    size_t                 read_buf_pos;
+    size_t                 read_buf_len;
+    int                    last_error;
+    bool                   closed;
 };
 
 struct xylem_tcp_listener_s {
+    iowait_t*       waiter;
     loop_t*         loop;
-    loop_io_t*      io;
     platform_sock_t fd;
-    mco_coro*       wait_coro;
     void*           userdata;
     uint64_t        read_timeout_ms;
     uint64_t        write_timeout_ms;
     size_t          max_read_buf;
     bool            closing;
 };
-
-/**
- * Try to transition a coro from WAITING to READY and schedule it.
- * If still IDLE (coro hasn't yielded yet), mark READY so the coro
- * skips the yield when it gets there.
- * Returns the coro pointer if it was scheduled, NULL otherwise.
- */
-static mco_coro* _tcp_io_wake(_Atomic int* state, mco_coro** coro_slot) {
-    int expected = TCP_IO_WAITING;
-    if (atomic_compare_exchange_strong(state, &expected, TCP_IO_READY)) {
-        mco_coro* co = *coro_slot;
-        *coro_slot = NULL;
-        return co;
-    }
-    /* Still IDLE -- coro hasn't yielded yet. Mark READY so it won't yield. */
-    expected = TCP_IO_IDLE;
-    atomic_compare_exchange_strong(state, &expected, TCP_IO_READY);
-    return NULL;
-}
-
-static void _tcp_conn_io_cb(
-    loop_t* loop,
-    loop_io_t* io,
-    loop_poller_op_t revents,
-    void* ud) {
-    (void)loop;
-    (void)io;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    scheduler_t* sched = runtime_get_scheduler();
-
-    if ((revents & LOOP_POLLER_RD_OP)) {
-        mco_coro* co = _tcp_io_wake(&tcp->rd_state, &tcp->read_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
-    }
-    if ((revents & LOOP_POLLER_WR_OP)) {
-        mco_coro* co = _tcp_io_wake(&tcp->wr_state, &tcp->write_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
-    }
-
-    loop_poller_op_t remaining = LOOP_POLLER_NO_OP;
-    if (tcp->read_coro) {
-        remaining |= LOOP_POLLER_RD_OP;
-    }
-    if (tcp->write_coro) {
-        remaining |= LOOP_POLLER_WR_OP;
-    }
-    if (remaining != LOOP_POLLER_NO_OP) {
-        loop_start_io(tcp->io, remaining, _tcp_conn_io_cb, tcp);
-    }
-}
-
-static void _tcp_rd_timeout_cb(
-    loop_t* loop,
-    loop_timer_t* timer,
-    void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    tcp->rd_timed_out = true;
-    mco_coro* co = _tcp_io_wake(&tcp->rd_state, &tcp->read_coro);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-}
-
-static void _tcp_wr_timeout_cb(
-    loop_t* loop,
-    loop_timer_t* timer,
-    void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    tcp->wr_timed_out = true;
-    mco_coro* co = _tcp_io_wake(&tcp->wr_state, &tcp->write_coro);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-}
-
-typedef struct {
-    xylem_tcp_conn_t* tcp;
-    uint64_t          timeout_ms;
-    bool              is_read;
-} _tcp_timeout_ctx_t;
-
-
-static void _tcp_timeout_start_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)req;
-    _tcp_timeout_ctx_t* ctx = (_tcp_timeout_ctx_t*)ud;
-    xylem_tcp_conn_t* tcp = ctx->tcp;
-
-    if (tcp->closed) {
-        free(ctx);
-        return;
-    }
-
-    if (ctx->is_read) {
-        if (atomic_load(&tcp->rd_state) == TCP_IO_IDLE) {
-            free(ctx);
-            return;
-        }
-        if (!tcp->rd_timer) {
-            tcp->rd_timer = loop_create_timer(loop);
-        }
-        loop_start_timer(
-            tcp->rd_timer, _tcp_rd_timeout_cb, tcp, ctx->timeout_ms, 0);
-    } else {
-        if (atomic_load(&tcp->wr_state) == TCP_IO_IDLE) {
-            free(ctx);
-            return;
-        }
-        if (!tcp->wr_timer) {
-            tcp->wr_timer = loop_create_timer(loop);
-        }
-        loop_start_timer(
-            tcp->wr_timer, _tcp_wr_timeout_cb, tcp, ctx->timeout_ms, 0);
-    }
-    free(ctx);
-}
-
-static void _tcp_rd_timeout_stop_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop; (void)req;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    if (tcp->rd_timer) {
-        loop_stop_timer(tcp->rd_timer);
-    }
-}
-
-static void _tcp_wr_timeout_stop_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop; (void)req;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    if (tcp->wr_timer) {
-        loop_stop_timer(tcp->wr_timer);
-    }
-}
-
-static void _tcp_arm_io_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop; (void)req;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    if (tcp->closed) {
-        return;
-    }
-
-    loop_poller_op_t interest = LOOP_POLLER_NO_OP;
-    if (tcp->read_coro) {
-        interest |= LOOP_POLLER_RD_OP;
-    }
-    if (tcp->write_coro) {
-        interest |= LOOP_POLLER_WR_OP;
-    }
-    if (interest != LOOP_POLLER_NO_OP) {
-        loop_start_io(tcp->io, interest, _tcp_conn_io_cb, tcp);
-    }
-}
-
-static bool _tcp_wait_read(xylem_tcp_conn_t* tcp, uint64_t timeout_ms) {
-    tcp->rd_timed_out = false;
-    tcp->read_coro = mco_running();
-    atomic_store(&tcp->rd_state, TCP_IO_IDLE);
-
-    loop_post(tcp->loop, _tcp_arm_io_cb, tcp);
-
-    if (timeout_ms > 0) {
-        _tcp_timeout_ctx_t* ctx =
-            (_tcp_timeout_ctx_t*)malloc(sizeof(_tcp_timeout_ctx_t));
-        if (ctx) {
-            ctx->tcp = tcp;
-            ctx->timeout_ms = timeout_ms;
-            ctx->is_read = true;
-            loop_post(tcp->loop, _tcp_timeout_start_cb, ctx);
-        }
-    }
-
-    /* CAS IDLE -> WAITING. If it fails, IO already set READY before
-     * we could yield -- skip the yield entirely. */
-    int expected = TCP_IO_IDLE;
-    if (atomic_compare_exchange_strong(&tcp->rd_state, &expected,
-                                       TCP_IO_WAITING)) {
-        mco_yield(mco_running());
-    }
-
-    atomic_store(&tcp->rd_state, TCP_IO_IDLE);
-    tcp->read_coro = NULL;
-
-    if (timeout_ms > 0) {
-        loop_post(tcp->loop, _tcp_rd_timeout_stop_cb, tcp);
-    }
-
-    return !tcp->rd_timed_out;
-}
-
-static bool _tcp_wait_write(xylem_tcp_conn_t* tcp, uint64_t timeout_ms) {
-    tcp->wr_timed_out = false;
-    tcp->write_coro = mco_running();
-    atomic_store(&tcp->wr_state, TCP_IO_IDLE);
-
-    loop_post(tcp->loop, _tcp_arm_io_cb, tcp);
-
-    if (timeout_ms > 0) {
-        _tcp_timeout_ctx_t* ctx =
-            (_tcp_timeout_ctx_t*)malloc(sizeof(_tcp_timeout_ctx_t));
-        if (ctx) {
-            ctx->tcp = tcp;
-            ctx->timeout_ms = timeout_ms;
-            ctx->is_read = false;
-            loop_post(tcp->loop, _tcp_timeout_start_cb, ctx);
-        }
-    }
-
-    int expected = TCP_IO_IDLE;
-    if (atomic_compare_exchange_strong(&tcp->wr_state, &expected,
-                                       TCP_IO_WAITING)) {
-        mco_yield(mco_running());
-    }
-
-    atomic_store(&tcp->wr_state, TCP_IO_IDLE);
-    tcp->write_coro = NULL;
-
-    if (timeout_ms > 0) {
-        loop_post(tcp->loop, _tcp_wr_timeout_stop_cb, tcp);
-    }
-
-    return !tcp->wr_timed_out;
-}
 
 static xylem_tcp_conn_t* _tcp_conn_alloc(
     loop_t* loop,
@@ -322,8 +73,8 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
 
     tcp->loop = loop;
     tcp->fd = fd;
-    tcp->io = loop_create_io(loop, (loop_poller_fd_t)fd);
-    if (!tcp->io) {
+    tcp->waiter = iowait_create(loop, fd);
+    if (!tcp->waiter) {
         free(tcp);
         return NULL;
     }
@@ -331,7 +82,7 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
     tcp->read_buf = (char*)malloc(buf_cap);
     if (!tcp->read_buf) {
-        loop_destroy_io(tcp->io);
+        iowait_destroy(tcp->waiter);
         free(tcp);
         return NULL;
     }
@@ -341,26 +92,6 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     platform_socket_enable_keepalive(fd, true);
     return tcp;
 }
-
-static void _tcp_listener_io_cb(
-    loop_t* loop,
-    loop_io_t* io,
-    loop_poller_op_t revents,
-    void* ud) {
-    (void)loop;
-    (void)io;
-    (void)revents;
-    xylem_tcp_listener_t* listener = (xylem_tcp_listener_t*)ud;
-    fprintf(stderr, "  [listener_io_cb] fd=%d wait_coro=%p\n",
-            (int)listener->fd, (void*)listener->wait_coro);
-    if (listener->wait_coro) {
-        mco_coro* co = listener->wait_coro;
-        listener->wait_coro = NULL;
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-}
-
-/* --- raw socket read (fills internal buffer) --- */
 
 static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     if (tcp->closed) {
@@ -385,7 +116,7 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             return -1;
         }
 
-        if (!_tcp_wait_read(tcp, ms) || tcp->closed) {
+        if (!iowait_read(tcp->waiter, ms) || tcp->closed) {
             tcp->last_error = ms > 0
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
@@ -399,7 +130,6 @@ static int _tcp_read_exact(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     size_t rem = len;
 
     while (rem > 0) {
-        /* Drain internal buffer first. */
         size_t avail = tcp->read_buf_len - tcp->read_buf_pos;
         if (avail > 0) {
             size_t copy = avail < rem ? avail : rem;
@@ -410,12 +140,10 @@ static int _tcp_read_exact(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             continue;
         }
 
-        /* Buffer empty — read from socket. */
         tcp->read_buf_pos = 0;
         tcp->read_buf_len = 0;
 
-        int64_t n = _tcp_raw_recv(
-            tcp, tcp->read_buf, tcp->read_buf_cap);
+        int64_t n = _tcp_raw_recv(tcp, tcp->read_buf, tcp->read_buf_cap);
         if (n <= 0) {
             return -1;
         }
@@ -426,7 +154,6 @@ static int _tcp_read_exact(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
 
 static int64_t _tcp_buffered_read(
     xylem_tcp_conn_t* tcp, void* buf, size_t len) {
-    /* Return buffered data if available. */
     size_t avail = tcp->read_buf_len - tcp->read_buf_pos;
     if (avail > 0) {
         size_t copy = avail < len ? avail : len;
@@ -435,12 +162,10 @@ static int64_t _tcp_buffered_read(
         return (int64_t)copy;
     }
 
-    /* Buffer empty — read directly to user buf if large enough. */
     if (len >= tcp->read_buf_cap) {
         return _tcp_raw_recv(tcp, buf, len);
     }
 
-    /* Fill internal buffer, then copy. */
     tcp->read_buf_pos = 0;
     tcp->read_buf_len = 0;
 
@@ -455,8 +180,6 @@ static int64_t _tcp_buffered_read(
     tcp->read_buf_pos = copy;
     return (int64_t)copy;
 }
-
-/* --- framed recv implementations --- */
 
 static int64_t _tcp_recv_fixed(
     xylem_tcp_conn_t* tcp, void* buf, size_t len) {
@@ -528,7 +251,6 @@ static int64_t _tcp_recv_delimiter(
     size_t pos = 0;
 
     while (pos < len) {
-        /* Ensure internal buffer has data. */
         size_t avail = tcp->read_buf_len - tcp->read_buf_pos;
         if (avail == 0) {
             tcp->read_buf_pos = 0;
@@ -542,7 +264,6 @@ static int64_t _tcp_recv_delimiter(
             avail = (size_t)n;
         }
 
-        /* Scan for delimiter byte-by-byte from internal buffer. */
         char* src = tcp->read_buf + tcp->read_buf_pos;
         for (size_t i = 0; i < avail && pos < len; i++) {
             dst[pos++] = src[i];
@@ -557,12 +278,9 @@ static int64_t _tcp_recv_delimiter(
         }
     }
 
-    /* Buffer full without finding delimiter. */
     tcp->last_error = -1;
     return -1;
 }
-
-/* --- raw send (full write) --- */
 
 static int _tcp_raw_send(
     xylem_tcp_conn_t* tcp,
@@ -591,7 +309,7 @@ static int _tcp_raw_send(
             return -1;
         }
 
-        if (!_tcp_wait_write(tcp, ms) || tcp->closed) {
+        if (!iowait_write(tcp->waiter, ms) || tcp->closed) {
             tcp->last_error = ms > 0
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
@@ -601,7 +319,19 @@ static int _tcp_raw_send(
     return 0;
 }
 
-/* --- public API --- */
+static void _tcp_conn_destroy_cb(
+    loop_t* loop, loop_post_t* req, void* ud) {
+    (void)loop;
+    (void)req;
+    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
+
+    iowait_close(tcp->waiter);
+    iowait_destroy(tcp->waiter);
+    free(tcp->read_buf);
+    shutdown(tcp->fd, PLATFORM_SHUT_WR);
+    platform_socket_close(tcp->fd);
+    free(tcp);
+}
 
 xylem_tcp_conn_t* xylem_tcp_dial(
     const char* host,
@@ -656,21 +386,18 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         tcp->write_timeout_ms = opts->write_timeout_ms;
     }
 
-    fprintf(stderr, "  [dial] fd=%d connected=%d\n", (int)fd, connected);
+    xylem_logd("tcp dial fd=%d connected=%d", (int)fd, connected);
     if (!connected) {
-        fprintf(stderr, "  [dial] wait_write...\n");
-        if (!_tcp_wait_write(tcp, connect_timeout_ms)) {
-            fprintf(stderr, "  [dial] wait_write timeout\n");
+        if (!iowait_write(tcp->waiter, connect_timeout_ms)) {
             tcp->last_error = PLATFORM_SO_ERROR_ETIMEDOUT;
+            xylem_logd("tcp dial fd=%d connect timed out", (int)fd);
             xylem_tcp_close(tcp);
             return NULL;
         }
-        fprintf(stderr, "  [dial] wait_write done\n");
 
         int err = 0;
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
-        fprintf(stderr, "  [dial] SO_ERROR=%d\n", err);
         if (err != 0) {
             tcp->last_error = err;
             xylem_loge("tcp dial fd=%d connect error=%d (%s)",
@@ -787,8 +514,8 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         listener->write_timeout_ms = opts->write_timeout_ms;
         listener->max_read_buf = opts->max_read_buf;
     }
-    listener->io = loop_create_io(loop, (loop_poller_fd_t)fd);
-    if (!listener->io) {
+    listener->waiter = iowait_create(loop, fd);
+    if (!listener->waiter) {
         platform_socket_close(fd);
         free(listener);
         return NULL;
@@ -797,17 +524,6 @@ xylem_tcp_listener_t* xylem_tcp_listen(
     xylem_logi("tcp listener fd=%d listening on %s:%s",
                (int)fd, host, port_str);
     return listener;
-}
-
-static void _tcp_listener_arm_io_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop; (void)req;
-    xylem_tcp_listener_t* listener = (xylem_tcp_listener_t*)ud;
-    if (listener->closing) {
-        return;
-    }
-    loop_start_io(
-        listener->io, LOOP_POLLER_RD_OP, _tcp_listener_io_cb, listener);
 }
 
 xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
@@ -826,9 +542,9 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
                            platform_socket_tostring(err));
             }
 
-            listener->wait_coro = mco_running();
-            loop_post(listener->loop, _tcp_listener_arm_io_cb, listener);
-            mco_yield(mco_running());
+            if (!iowait_read(listener->waiter, 0)) {
+                return NULL;
+            }
             continue;
         }
 
@@ -860,49 +576,10 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
     xylem_logi("tcp listener fd=%d closing", (int)listener->fd);
     listener->closing = true;
 
-    if (listener->wait_coro) {
-        mco_coro* co = listener->wait_coro;
-        listener->wait_coro = NULL;
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-
-    loop_destroy_io(listener->io);
-    listener->io = NULL;
+    iowait_close(listener->waiter);
+    iowait_destroy(listener->waiter);
     platform_socket_close(listener->fd);
     free(listener);
-}
-
-static void _tcp_conn_destroy_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop; (void)req;
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-    scheduler_t* sched = runtime_get_scheduler();
-
-    if (tcp->rd_timer) {
-        loop_destroy_timer(tcp->rd_timer);
-    }
-    if (tcp->wr_timer) {
-        loop_destroy_timer(tcp->wr_timer);
-    }
-    if (tcp->read_coro) {
-        mco_coro* co = _tcp_io_wake(&tcp->rd_state, &tcp->read_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
-    }
-    if (tcp->write_coro) {
-        mco_coro* co = _tcp_io_wake(&tcp->wr_state, &tcp->write_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
-    }
-    if (tcp->io) {
-        loop_destroy_io(tcp->io);
-    }
-    free(tcp->read_buf);
-    shutdown(tcp->fd, PLATFORM_SHUT_WR);
-    platform_socket_close(tcp->fd);
-    free(tcp);
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {

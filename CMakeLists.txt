@@ -42,6 +42,7 @@ set(SRCS
 	src/runtime/runq.c
 	src/runtime/dynpool.c
 	src/runtime/scheduler.c
+	src/runtime/iowait.c
 	src/sync/xylem-waitgroup.c
 	src/sync/xylem-channel.c
 	src/sync/xylem-mutex.c
