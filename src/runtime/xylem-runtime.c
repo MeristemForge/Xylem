@@ -22,6 +22,7 @@
 #include "xylem/runtime/xylem-runtime.h"
 
 #include "runtime.h"
+#include "runtime/scheduler.h"
 #include "iowait.h"
 #include "platform/platform-info.h"
 #include "platform/platform-poller.h"
@@ -100,17 +101,36 @@ void xylem_runtime_spawn(void (*fn)(void*), void* arg) {
     scheduler_spawn(g_sched, fn, arg);
 }
 
-void xylem_runtime_sleep(uint64_t ms) {
+static bool _sleep_park_cb(mco_coro* co, void* arg) {
+    uint64_t ms = *(uint64_t*)arg;
     _sleep_ctx_t* ctx = (_sleep_ctx_t*)malloc(sizeof(_sleep_ctx_t));
     if (!ctx) {
-        return;
+        return false;
     }
-
-    ctx->co = mco_running();
+    ctx->co = co;
     ctx->timeout_ms = ms;
-
     loop_post(g_loop, _runtime_sleep_post_cb, ctx);
-    mco_yield(mco_running());
+    return true;
+}
+
+void xylem_runtime_sleep(uint64_t ms) {
+    scheduler_park(g_sched, _sleep_park_cb, &ms);
+}
+
+typedef struct {
+    _submit_ctx_t* ctx;
+    bool           ok;
+} _submit_park_arg_t;
+
+static bool _submit_park_cb(mco_coro* co, void* arg) {
+    _submit_park_arg_t* pa = (_submit_park_arg_t*)arg;
+    pa->ctx->co = co;
+    if (dynpool_submit(g_dynpool, _runtime_submit_worker, pa->ctx) != 0) {
+        pa->ok = false;
+        return false;
+    }
+    pa->ok = true;
+    return true;
 }
 
 int xylem_runtime_submit(void (*fn)(void*), void* arg) {
@@ -118,18 +138,17 @@ int xylem_runtime_submit(void (*fn)(void*), void* arg) {
     if (!ctx) {
         return -1;
     }
-
     ctx->fn    = fn;
     ctx->arg   = arg;
     ctx->sched = g_sched;
-    ctx->co    = mco_running();
 
-    if (dynpool_submit(g_dynpool, _runtime_submit_worker, ctx) != 0) {
+    _submit_park_arg_t pa = { .ctx = ctx, .ok = false };
+    scheduler_park(g_sched, _submit_park_cb, &pa);
+
+    if (!pa.ok) {
         free(ctx);
         return -1;
     }
-
-    mco_yield(mco_running());
     return 0;
 }
 
