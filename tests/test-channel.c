@@ -50,50 +50,59 @@ static void _start_safety_timer(void) {
     loop_post(runtime_get_loop(), _safety_timer_post_cb, NULL);
 }
 
-#define WG_WORKERS 50
+#define CH_SENDERS  20
+#define CH_MESSAGES 10
 
 typedef struct {
-    xylem_waitgroup_t* wg;
-    atomic_int         done_count;
-    int                tested;
-} _wg_ctx_t;
+    xylem_channel_t* ch;
+    atomic_int       recv_count;
+    int              tested;
+} _ch_ctx_t;
 
-static void _wg_worker(void* arg) {
-    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    atomic_fetch_add(&ctx->done_count, 1);
-    xylem_waitgroup_done(ctx->wg);
+static void _ch_sender(void* arg) {
+    _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
+    for (int i = 0; i < CH_MESSAGES; i++) {
+        static int val = 1;
+        xylem_channel_send(ctx->ch, &val);
+    }
 }
 
-static void _wg_waiter(void* arg) {
-    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    xylem_waitgroup_wait(ctx->wg);
-    ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
+static void _ch_receiver(void* arg) {
+    _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
+    int total = CH_SENDERS * CH_MESSAGES;
+    for (int i = 0; i < total; i++) {
+        void* msg = xylem_channel_recv(ctx->ch);
+        if (!msg) {
+            break;
+        }
+        atomic_fetch_add(&ctx->recv_count, 1);
+    }
+    ASSERT(atomic_load(&ctx->recv_count) == total);
     ctx->tested = 1;
     xylem_runtime_stop();
 }
 
-static void _test_wg_main(void* arg) {
-    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
+static void _test_ch_main(void* arg) {
+    _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
     _start_safety_timer();
-    ctx->wg = xylem_waitgroup_create();
-    xylem_waitgroup_add(ctx->wg, WG_WORKERS);
-    xylem_runtime_spawn(_wg_waiter, ctx);
-    for (int i = 0; i < WG_WORKERS; i++) {
-        xylem_runtime_spawn(_wg_worker, ctx);
+    ctx->ch = xylem_channel_create();
+    xylem_runtime_spawn(_ch_receiver, ctx);
+    for (int i = 0; i < CH_SENDERS; i++) {
+        xylem_runtime_spawn(_ch_sender, ctx);
     }
 }
 
-static void test_waitgroup_concurrent(void) {
-    fprintf(stderr, "=== test_waitgroup_concurrent\n");
+static void test_channel_concurrent(void) {
+    fprintf(stderr, "=== test_channel_concurrent\n");
     for (int round = 0; round < 20; round++) {
-        _wg_ctx_t ctx = {0};
-        xylem_runtime_start(_test_wg_main, &ctx, &_rt_opts);
+        _ch_ctx_t ctx = {0};
+        xylem_runtime_start(_test_ch_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_waitgroup_destroy(ctx.wg);
+        xylem_channel_destroy(ctx.ch);
     }
 }
 
 int main(void) {
-    test_waitgroup_concurrent();
+    test_channel_concurrent();
     return 0;
 }

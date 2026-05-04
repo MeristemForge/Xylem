@@ -107,8 +107,8 @@ static void _sched_process_poll_events(
         if (cqes[i].ud == NULL) {
             /* Wakeup fd -- drain and ignore. */
             char buf[64];
-            while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0)
-                ;
+            while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
+            }
             /* Re-arm the wakeup fd (oneshot). */
             sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
             platform_poller_mod(sched->poller, &sched->wakeup_sqe);
