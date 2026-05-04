@@ -22,9 +22,8 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "runtime/runtime.h"
+#include "runtime/scheduler.h"
 #include "container/queue.h"
-
-#include "minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -42,7 +41,6 @@ struct xylem_mutex_s {
 
 static void _spin_lock(atomic_flag* flag) {
     while (atomic_flag_test_and_set_explicit(flag, memory_order_acquire)) {
-        /* spin */
     }
 }
 
@@ -69,20 +67,37 @@ void xylem_mutex_destroy(xylem_mutex_t* mtx) {
     free(mtx);
 }
 
+typedef struct {
+    xylem_mutex_t*  mtx;
+    _mutex_waiter_t waiter;
+} _mutex_park_ctx_t;
+
+static bool _mutex_park_cb(mco_coro* co, void* arg) {
+    _mutex_park_ctx_t* ctx = (_mutex_park_ctx_t*)arg;
+    ctx->waiter.co = co;
+
+    _spin_lock(&ctx->mtx->guard);
+
+    uint32_t expected = 0;
+    if (atomic_compare_exchange_strong(&ctx->mtx->state, &expected, 1)) {
+        _spin_unlock(&ctx->mtx->guard);
+        return false;
+    }
+
+    queue_enqueue(&ctx->mtx->waiters, &ctx->waiter.node);
+    _spin_unlock(&ctx->mtx->guard);
+    return true;
+}
+
 void xylem_mutex_lock(xylem_mutex_t* mtx) {
     uint32_t expected = 0;
     if (atomic_compare_exchange_strong(&mtx->state, &expected, 1)) {
         return;
     }
 
-    _mutex_waiter_t waiter;
-    waiter.co = mco_running();
-
-    _spin_lock(&mtx->guard);
-    queue_enqueue(&mtx->waiters, &waiter.node);
-    _spin_unlock(&mtx->guard);
-
-    mco_yield(mco_running());
+    _mutex_park_ctx_t ctx;
+    ctx.mtx = mtx;
+    scheduler_park(runtime_get_scheduler(), _mutex_park_cb, &ctx);
 }
 
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
