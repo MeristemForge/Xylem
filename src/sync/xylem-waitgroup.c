@@ -22,7 +22,7 @@
 #include "xylem/sync/xylem-waitgroup.h"
 
 #include "runtime/runtime.h"
-#include "minicoro/minicoro.h"
+#include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -64,14 +64,19 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     }
 }
 
+static bool _wg_park_cb(mco_coro* co, void* arg) {
+    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
+    atomic_store(&wg->wait_coro, co);
+    if (atomic_load(&wg->cnt) == 0) {
+        atomic_store(&wg->wait_coro, NULL);
+        return false;
+    }
+    return true;
+}
+
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
     if (atomic_load(&wg->cnt) == 0) {
         return;
     }
-    atomic_store(&wg->wait_coro, mco_running());
-    if (atomic_load(&wg->cnt) == 0) {
-        atomic_store(&wg->wait_coro, NULL);
-        return;
-    }
-    mco_yield(mco_running());
+    scheduler_park(runtime_get_scheduler(), _wg_park_cb, wg);
 }
