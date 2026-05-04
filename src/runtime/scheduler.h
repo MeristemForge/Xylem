@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include <stdbool.h>
+
 #include "platform/platform-poller.h"
 
 #include <stdint.h>
@@ -38,6 +40,11 @@ typedef struct scheduler_s scheduler_t;
  * @param ud       User data from the sqe registration.
  */
 typedef void (*scheduler_poll_fn_t)(int revents, void* ud);
+
+typedef bool (*scheduler_park_fn_t)(mco_coro* co, void* arg);
+
+extern void scheduler_park(
+    scheduler_t* sched, scheduler_park_fn_t fn, void* arg);
 
 typedef struct {
     int32_t  nworkers;  /*< 0 = use CPU count. */

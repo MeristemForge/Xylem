@@ -40,12 +40,14 @@
 #define SCHED_POLL_TIMEOUT_MS    5
 
 typedef struct _sched_worker_s {
-    thrd_t          thread;
-    wsdeque_t*      deque;
-    platform_sem_t* sem;
-    scheduler_t*    sched;
-    uint32_t        index;
-    _Atomic bool    is_polling;
+    thrd_t               thread;
+    wsdeque_t*           deque;
+    platform_sem_t*      sem;
+    scheduler_t*         sched;
+    uint32_t             index;
+    _Atomic bool         is_polling;
+    scheduler_park_fn_t  park_fn;
+    void*                park_arg;
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -136,6 +138,14 @@ static int _sched_worker_entry(void* arg) {
                 _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
                 free(ctx);
                 mco_destroy(co);
+            } else if (w->park_fn) {
+                scheduler_park_fn_t fn = w->park_fn;
+                void* arg = w->park_arg;
+                w->park_fn  = NULL;
+                w->park_arg = NULL;
+                if (!fn(co, arg)) {
+                    wsdeque_push(w->deque, co);
+                }
             }
             continue;
         }
@@ -169,6 +179,14 @@ static int _sched_worker_entry(void* arg) {
             _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
             free(ctx);
             mco_destroy(co);
+        } else if (w->park_fn) {
+            scheduler_park_fn_t fn = w->park_fn;
+            void* arg = w->park_arg;
+            w->park_fn  = NULL;
+            w->park_arg = NULL;
+            if (!fn(co, arg)) {
+                wsdeque_push(w->deque, co);
+            }
         }
     }
 
@@ -349,6 +367,14 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     }
 
     scheduler_schedule(sched, co);
+}
+
+void scheduler_park(
+    scheduler_t* sched, scheduler_park_fn_t fn, void* arg) {
+    (void)sched;
+    _tls_worker->park_fn  = fn;
+    _tls_worker->park_arg = arg;
+    mco_yield(mco_running());
 }
 
 static void _sched_wake_poller(scheduler_t* sched) {
