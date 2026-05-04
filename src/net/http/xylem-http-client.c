@@ -23,7 +23,7 @@
 #include "addr.h"
 #include "xylem/encoding/xylem-gzip.h"
 #include "runtime/loop.h"
-#include "runtime/thrdpool.h"
+#include "thrdpool.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/container/xylem-list.h"
 #include "xylem/container/xylem-rbtree.h"

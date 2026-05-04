@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "runtime/thrdpool.h"
+#include "thrdpool.h"
 
-#include "container/mpsc.h"
+#include "container/queue.h"
 #include "platform/platform-sem.h"
 #include "c11-threads.h"
 
@@ -29,46 +29,47 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-typedef struct _thrdpool_job_s _thrdpool_job_t;
-
-struct _thrdpool_job_s {
+typedef struct _thrdpool_job_s {
+    queue_node_t node;
     void (*routine)(void*);
-    void*       arg;
-    mpsc_node_t node;
-};
-
-typedef struct _thrdpool_worker_s {
-    thrd_t          thread;
-    mpsc_t          queue;
-    platform_sem_t* sem;
-    thrdpool_t*     pool;
-} _thrdpool_worker_t;
+    void* arg;
+} _thrdpool_job_t;
 
 struct thrdpool_s {
-    _thrdpool_worker_t* workers;
-    int32_t             nworkers;
-    _Atomic uint32_t    next;
-    _Atomic bool        running;
+    thrd_t*         threads;
+    int32_t         nthreads;
+    queue_t         jobs;
+    mtx_t           lock;
+    platform_sem_t* sem;
+    _Atomic bool    running;
 };
 
+static _thrdpool_job_t* _thrdpool_pop(thrdpool_t* pool) {
+    mtx_lock(&pool->lock);
+    queue_node_t* node = queue_dequeue(&pool->jobs);
+    mtx_unlock(&pool->lock);
+
+    if (!node) {
+        return NULL;
+    }
+    return queue_entry(node, _thrdpool_job_t, node);
+}
+
 static int _thrdpool_worker_entry(void* arg) {
-    _thrdpool_worker_t* w = (_thrdpool_worker_t*)arg;
+    thrdpool_t* pool = (thrdpool_t*)arg;
 
-    while (atomic_load(&w->pool->running)) {
-        platform_sem_wait(w->sem);
+    while (atomic_load(&pool->running)) {
+        platform_sem_wait(pool->sem);
 
-        mpsc_node_t* node = mpsc_pop(&w->queue);
-        if (node) {
-            _thrdpool_job_t* job = mpsc_entry(node, _thrdpool_job_t, node);
+        _thrdpool_job_t* job = _thrdpool_pop(pool);
+        if (job) {
             job->routine(job->arg);
             free(job);
         }
     }
 
-    /* Drain remaining jobs on shutdown. */
-    mpsc_node_t* node;
-    while ((node = mpsc_pop(&w->queue)) != NULL) {
-        _thrdpool_job_t* job = mpsc_entry(node, _thrdpool_job_t, node);
+    _thrdpool_job_t* job;
+    while ((job = _thrdpool_pop(pool)) != NULL) {
         job->routine(job->arg);
         free(job);
     }
@@ -81,27 +82,29 @@ thrdpool_t* thrdpool_create(int nthrds) {
         return NULL;
     }
 
-    atomic_store(&pool->running, true);
-    atomic_store(&pool->next, 0);
-    pool->nworkers = 0;
-    pool->workers = (_thrdpool_worker_t*)calloc(
-        (size_t)nthrds, sizeof(_thrdpool_worker_t));
-    if (!pool->workers) {
+    pool->threads = (thrd_t*)calloc((size_t)nthrds, sizeof(thrd_t));
+    if (!pool->threads) {
         free(pool);
         return NULL;
     }
 
+    pool->sem = platform_sem_create(0);
+    if (!pool->sem) {
+        free(pool->threads);
+        free(pool);
+        return NULL;
+    }
+
+    queue_init(&pool->jobs);
+    mtx_init(&pool->lock, mtx_plain);
+    atomic_store(&pool->running, true);
+    pool->nthreads = 0;
+
     for (int i = 0; i < nthrds; i++) {
-        _thrdpool_worker_t* w = &pool->workers[i];
-        mpsc_init(&w->queue);
-        w->sem = platform_sem_create(0);
-        if (!w->sem) {
-            continue;
-        }
-        w->pool = pool;
-        if (thrd_create(&w->thread, _thrdpool_worker_entry, w) ==
-            thrd_success) {
-            pool->nworkers++;
+        if (thrd_create(&pool->threads[i],
+                        _thrdpool_worker_entry,
+                        pool) == thrd_success) {
+            pool->nthreads++;
         }
     }
     return pool;
@@ -117,12 +120,11 @@ int thrdpool_submit(
     job->routine = routine;
     job->arg = arg;
 
-    uint32_t idx =
-        atomic_fetch_add(&pool->next, 1) % (uint32_t)pool->nworkers;
-    _thrdpool_worker_t* w = &pool->workers[idx];
+    mtx_lock(&pool->lock);
+    queue_enqueue(&pool->jobs, &job->node);
+    mtx_unlock(&pool->lock);
 
-    mpsc_push(&w->queue, &job->node);
-    platform_sem_post(w->sem);
+    platform_sem_post(pool->sem);
     return 0;
 }
 
@@ -133,18 +135,16 @@ void thrdpool_destroy(thrdpool_t* restrict pool) {
 
     atomic_store(&pool->running, false);
 
-    /* Wake all workers so they can exit. */
-    for (int i = 0; i < pool->nworkers; i++) {
-        platform_sem_post(pool->workers[i].sem);
+    for (int32_t i = 0; i < pool->nthreads; i++) {
+        platform_sem_post(pool->sem);
     }
 
-    for (int i = 0; i < pool->nworkers; i++) {
-        thrd_join(pool->workers[i].thread, NULL);
+    for (int32_t i = 0; i < pool->nthreads; i++) {
+        thrd_join(pool->threads[i], NULL);
     }
 
-    for (int i = 0; i < pool->nworkers; i++) {
-        platform_sem_destroy(pool->workers[i].sem);
-    }
-    free(pool->workers);
+    mtx_destroy(&pool->lock);
+    platform_sem_destroy(pool->sem);
+    free(pool->threads);
     free(pool);
 }

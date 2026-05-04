@@ -38,7 +38,6 @@ struct loop_s {
     platform_sock_t       wakeup_rd;
     platform_sock_t       wakeup_wr;
     platform_poller_sqe_t wakeup_sqe;
-    size_t                active_count;
     uint64_t              time;
     _Atomic bool          stopped;
     platform_tid_t        tid;
@@ -187,7 +186,6 @@ loop_t* loop_create(void) {
         return NULL;
     }
 
-    loop->active_count = 0;
     atomic_store(&loop->stopped, false);
     _loop_update_time(loop);
 
@@ -239,8 +237,7 @@ int loop_run(loop_t* loop) {
     /* Drain posts queued before loop_run (e.g. coro spawns). */
     _loop_process_posts(loop);
 
-    while ((loop->active_count > 0 || !mpsc_empty(&loop->posts)) &&
-           !atomic_load(&loop->stopped)) {
+    while (!atomic_load(&loop->stopped)) {
         int timeout = _loop_next_timeout(loop);
         int n = platform_poller_wait(&loop->poller, cqes, timeout);
 
@@ -292,7 +289,6 @@ loop_create_io(loop_t* loop, loop_poller_fd_t fd) {
     io->ud = NULL;
     io->registered = false;
     io->cb = NULL;
-    loop->active_count++;
     return io;
 }
 
@@ -311,8 +307,6 @@ void loop_destroy_io(loop_io_t* io) {
     if (io->registered) {
         loop_stop_io(io);
     }
-    io->loop->active_count--;
-
     /**
      * Mark the IO as dead so the dispatch loop in loop_run()
      * skips it if this IO was returned by the current poll batch.
@@ -361,7 +355,6 @@ loop_timer_t* loop_create_timer(loop_t* loop) {
     timer->ud = NULL;
     timer->active = false;
     timer->cb = NULL;
-    loop->active_count++;
     return timer;
 }
 
@@ -372,7 +365,6 @@ void loop_destroy_timer(loop_timer_t* timer) {
     if (timer->active) {
         loop_stop_timer(timer);
     }
-    timer->loop->active_count--;
     free(timer);
 }
 

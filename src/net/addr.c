@@ -36,16 +36,6 @@ typedef struct {
     int       status;
 } _addr_resolve_ctx_t;
 
-static void _addr_resolve_done_cb(
-    loop_t* loop,
-    loop_post_t* req,
-    void* ud) {
-    (void)loop;
-    (void)req;
-    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
-    mco_resume(ctx->co);
-}
-
 static void _addr_resolve_finish(
     _addr_resolve_ctx_t* ctx,
     addr_t* arr,
@@ -53,7 +43,7 @@ static void _addr_resolve_finish(
     *ctx->addrs = arr;
     *ctx->count = count;
     ctx->status = arr ? 0 : -1;
-    loop_post(runtime_get_loop(), _addr_resolve_done_cb, ctx);
+    scheduler_schedule(runtime_get_scheduler(), ctx->co);
 }
 
 static void _addr_resolve_work(void* arg) {
@@ -182,7 +172,7 @@ int addr_resolve(
     *addrs = NULL;
     *count = 0;
 
-    thrdpool_submit(runtime_get_pool(), _addr_resolve_work, &ctx);
+    dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, &ctx);
     mco_yield(mco_running());
 
     return ctx.status;

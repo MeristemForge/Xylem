@@ -37,7 +37,11 @@ set(SRCS
 	src/xylem-utils.c
 	src/xylem-serial.c
 	src/container/mpsc.c
-	src/runtime/thrdpool.c
+	src/thrdpool.c
+	src/runtime/wsdeque.c
+	src/runtime/runq.c
+	src/runtime/dynpool.c
+	src/runtime/scheduler.c
 	src/sync/xylem-waitgroup.c
 	src/sync/xylem-channel.c
 	src/sync/xylem-mutex.c

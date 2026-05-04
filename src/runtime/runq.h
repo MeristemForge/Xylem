@@ -21,10 +21,44 @@
 
 _Pragma("once")
 
-#include "runtime/loop.h"
-#include "runtime/scheduler.h"
-#include "runtime/dynpool.h"
+typedef struct mco_coro mco_coro;
+typedef struct runq_s runq_t;
 
-extern loop_t*      runtime_get_loop(void);
-extern scheduler_t* runtime_get_scheduler(void);
-extern dynpool_t*   runtime_get_dynpool(void);
+/**
+ * @brief Create a global run queue.
+ *
+ * Thread-safe MPMC queue protected by a mutex.
+ *
+ * @return Run queue handle, or NULL on failure.
+ */
+extern runq_t* runq_create(void);
+
+/**
+ * @brief Destroy a run queue and free its memory.
+ *
+ * The queue must be empty before destruction.
+ *
+ * @param rq  Run queue to destroy.
+ */
+extern void runq_destroy(runq_t* rq);
+
+/**
+ * @brief Push a coroutine onto the run queue.
+ *
+ * Thread-safe: can be called from any thread.
+ *
+ * @param rq  Run queue.
+ * @param co  Coroutine to enqueue.
+ */
+extern void runq_push(runq_t* rq, mco_coro* co);
+
+/**
+ * @brief Pop a coroutine from the run queue.
+ *
+ * Thread-safe: can be called from any thread.
+ *
+ * @param rq  Run queue.
+ *
+ * @return Coroutine pointer, or NULL if empty.
+ */
+extern mco_coro* runq_pop(runq_t* rq);

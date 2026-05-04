@@ -29,15 +29,37 @@ typedef struct xylem_tcp_conn_s     xylem_tcp_conn_t;
 typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;
 
 typedef struct xylem_tcp_opts_s {
-    bool disable_mss_clamp; /*< Disable MSS clamping on the socket. */
+    uint64_t read_timeout_ms;   /*< Default recv timeout, 0 = no timeout. */
+    uint64_t write_timeout_ms;  /*< Default send timeout, 0 = no timeout. */
+    size_t   max_read_buf;      /*< Internal read buffer size, 0 = default 64KB. */
+    bool     disable_mss_clamp; /*< Disable MSS clamping on the socket. */
 } xylem_tcp_opts_t;
 
+typedef enum xylem_tcp_frame_type_e {
+    XYLEM_TCP_FRAME_NONE,      /*< Raw mode, recv returns available bytes. */
+    XYLEM_TCP_FRAME_FIXED,     /*< Fixed-length frames. */
+    XYLEM_TCP_FRAME_LENGTH,    /*< Length-prefixed frames. */
+    XYLEM_TCP_FRAME_DELIMITER, /*< Delimiter-terminated frames. */
+} xylem_tcp_frame_type_t;
+
 typedef struct xylem_tcp_frame_opts_s {
-    uint32_t header_size;  /*< Total header size in bytes. */
-    uint32_t field_offset; /*< Byte offset of the length field within header. */
-    uint32_t field_size;   /*< Size of the length field in bytes (1-8). */
-    int32_t  adjustment;   /*< Added to decoded length to get payload size. */
-    bool     big_endian;   /*< true: big-endian length field. */
+    xylem_tcp_frame_type_t type;
+    union {
+        struct {
+            size_t len; /*< Fixed frame length in bytes. */
+        } fixed;
+        struct {
+            uint32_t header_size;  /*< Total header size in bytes. */
+            uint32_t field_offset; /*< Byte offset of the length field. */
+            uint32_t field_size;   /*< Size of the length field (1-8). */
+            int32_t  adjustment;   /*< Added to decoded length for payload size. */
+            bool     big_endian;   /*< true: big-endian length field. */
+        } length;
+        struct {
+            const char* delim;     /*< Delimiter bytes. */
+            size_t      delim_len; /*< Delimiter length, 0 = auto strlen. */
+        } delimiter;
+    };
 } xylem_tcp_frame_opts_t;
 
 /**
@@ -77,45 +99,46 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
 /**
  * @brief Connect to a remote TCP endpoint.
  *
- * Suspends the calling coroutine until the connection is established.
+ * Suspends the calling coroutine until the connection is established
+ * or the connect_timeout_ms expires.
  *
- * @param host  Remote hostname or IP address.
- * @param port  Remote port.
- * @param opts  Options, NULL for defaults.
+ * @param host               Remote hostname or IP address.
+ * @param port               Remote port.
+ * @param connect_timeout_ms Connect timeout in ms, 0 = no timeout.
+ * @param opts               Options, NULL for defaults.
  *
- * @return Connection handle, or NULL on failure.
+ * @return Connection handle, or NULL on failure or timeout.
  */
 extern xylem_tcp_conn_t* xylem_tcp_dial(
     const char* host,
     uint16_t port,
+    uint64_t connect_timeout_ms,
     xylem_tcp_opts_t* opts);
 
 /**
- * @brief Connect to a remote TCP endpoint with a timeout.
+ * @brief Set the framing mode for subsequent recv/send calls.
  *
- * @param host  Remote hostname or IP address.
- * @param port  Remote port.
- * @param opts  Options, NULL for defaults.
- * @param ms    Timeout in milliseconds.
- *
- * @return Connection handle, or NULL on failure or timeout.
+ * @param tcp   Connection handle.
+ * @param opts  Frame options, NULL to reset to raw mode.
  */
-extern xylem_tcp_conn_t* xylem_tcp_dial_timeout(
-    const char* host,
-    uint16_t port,
-    xylem_tcp_opts_t* opts,
-    uint64_t ms);
+extern void xylem_tcp_set_framing(
+    xylem_tcp_conn_t* tcp,
+    xylem_tcp_frame_opts_t* opts);
 
 /**
- * @brief Receive up to len bytes from the connection.
+ * @brief Receive data or a complete frame from the connection.
  *
- * Suspends the calling coroutine until data is available.
+ * Behavior depends on the configured framing mode:
+ *   - NONE:      returns 1~len available bytes (raw read).
+ *   - FIXED:     returns exactly frame_opts.fixed.len bytes.
+ *   - LENGTH:    reads header, decodes length, returns payload.
+ *   - DELIMITER: reads until delimiter, returns data without it.
  *
  * @param tcp  Connection handle.
  * @param buf  Destination buffer.
- * @param len  Maximum bytes to read.
+ * @param len  Buffer size.
  *
- * @return Bytes received (>0), 0 on peer close, -1 on error.
+ * @return Bytes/frame length (>0), 0 on peer close, -1 on error/timeout.
  */
 extern int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
@@ -123,104 +146,22 @@ extern int64_t xylem_tcp_recv(
     size_t len);
 
 /**
- * @brief Receive up to len bytes with a timeout.
+ * @brief Send data or a framed message to the connection.
  *
- * @param tcp  Connection handle.
- * @param buf  Destination buffer.
- * @param len  Maximum bytes to read.
- * @param ms   Timeout in milliseconds.
- *
- * @return Bytes received (>0), 0 on peer close, -1 on error or timeout.
- */
-extern int64_t xylem_tcp_recv_timeout(
-    xylem_tcp_conn_t* tcp,
-    void* buf,
-    size_t len,
-    uint64_t ms);
-
-/**
- * @brief Receive exactly len bytes from the connection.
- *
- * Blocks until all bytes are received or an error occurs.
- *
- * @param tcp  Connection handle.
- * @param buf  Destination buffer.
- * @param len  Exact number of bytes to read.
- *
- * @return 0 on success, -1 on error.
- */
-extern int xylem_tcp_recv_exact(
-    xylem_tcp_conn_t* tcp,
-    void* buf,
-    size_t len);
-
-/**
- * @brief Send all bytes to the connection.
- *
- * Blocks until all data is written or an error occurs.
+ * Behavior depends on the configured framing mode:
+ *   - NONE/FIXED/DELIMITER: sends data as-is.
+ *   - LENGTH: prepends the encoded length header before data.
  *
  * @param tcp   Connection handle.
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
  *
- * @return 0 on success, -1 on error.
+ * @return 0 on success, -1 on error or timeout.
  */
 extern int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
     const void* data,
     size_t len);
-
-/**
- * @brief Receive a length-prefixed frame.
- *
- * Reads the header, decodes the length field, then reads the payload.
- * Caller must free() the returned buffer.
- *
- * @param tcp      Connection handle.
- * @param opts     Frame format options.
- * @param out_len  Receives the payload length.
- *
- * @return Allocated payload buffer, or NULL on error.
- */
-extern void* xylem_tcp_recv_frame(
-    xylem_tcp_conn_t* tcp,
-    xylem_tcp_frame_opts_t* opts,
-    size_t* out_len);
-
-/**
- * @brief Send a length-prefixed frame.
- *
- * Encodes the length into a header and sends header + payload.
- *
- * @param tcp   Connection handle.
- * @param opts  Frame format options.
- * @param data  Payload buffer.
- * @param len   Payload length.
- *
- * @return 0 on success, -1 on error.
- */
-extern int xylem_tcp_send_frame(
-    xylem_tcp_conn_t* tcp,
-    xylem_tcp_frame_opts_t* opts,
-    const void* data,
-    size_t len);
-
-/**
- * @brief Receive a line terminated by LF or CRLF.
- *
- * The terminator is stripped from the result. The buffer is
- * null-terminated.
- *
- * @param tcp  Connection handle.
- * @param buf  Destination buffer.
- * @param max  Buffer size including null terminator.
- *
- * @return Length of the line (excluding terminator), or -1 on error.
- */
-extern int64_t xylem_tcp_recv_line(
-    xylem_tcp_conn_t* tcp,
-    char* buf,
-    size_t max);
 
 /**
  * @brief Close and destroy a connection.

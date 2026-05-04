@@ -23,6 +23,7 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <time.h>
 
 #if defined(__APPLE__)
 
@@ -50,6 +51,18 @@ void platform_sem_post(platform_sem_t* sem) {
 
 void platform_sem_wait(platform_sem_t* sem) {
     dispatch_semaphore_wait(*sem, DISPATCH_TIME_FOREVER);
+}
+
+int platform_sem_timedwait(platform_sem_t* sem, uint64_t timeout_ms) {
+    dispatch_time_t deadline = dispatch_time(
+        DISPATCH_TIME_NOW,
+        (int64_t)timeout_ms * 1000000
+    );
+    long r = dispatch_semaphore_wait(*sem, deadline);
+    if (r == 0) {
+        return 0;
+    }
+    return -1;
 }
 
 #endif
@@ -82,6 +95,25 @@ void platform_sem_wait(platform_sem_t* sem) {
     do {
         r = sem_wait(sem);
     } while (r == -1 && errno == EINTR);
+}
+
+int platform_sem_timedwait(platform_sem_t* sem, uint64_t timeout_ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += (time_t)(timeout_ms / 1000);
+    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000L;
+    }
+    int r;
+    do {
+        r = sem_timedwait(sem, &ts);
+    } while (r == -1 && errno == EINTR);
+    if (r == 0) {
+        return 0;
+    }
+    return -1;
 }
 
 #endif

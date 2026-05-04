@@ -20,7 +20,7 @@
  */
 
 #include "xylem.h"
-#include "runtime/thrdpool.h"
+#include "thrdpool.h"
 #include "assert.h"
 
 #include <stdatomic.h>

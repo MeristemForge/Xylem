@@ -382,7 +382,7 @@ static void _xt_send_worker(void* arg) {
 static void _xt_send_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_get_pool(), _xt_send_worker, ctx);
+    dynpool_submit(runtime_get_dynpool(), _xt_send_worker, ctx);
 }
 
 static void _xt_send_cli_read_cb(xylem_uds_conn_t* conn,
@@ -448,7 +448,7 @@ static void _xt_close_worker(void* arg) {
 static void _xt_close_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_get_pool(), _xt_close_worker, ctx);
+    dynpool_submit(runtime_get_dynpool(), _xt_close_worker, ctx);
 }
 
 static void _xt_close_cli_close_cb(xylem_uds_conn_t* conn,
@@ -531,7 +531,7 @@ static void _xt_soc_srv_read_cb(xylem_uds_conn_t* conn,
 static void _xt_soc_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     xylem_uds_conn_acquire(conn);
-    thrdpool_submit(runtime_get_pool(), _xt_soc_worker, ctx);
+    dynpool_submit(runtime_get_dynpool(), _xt_soc_worker, ctx);
 }
 
 static void _xt_soc_cli_close_cb(xylem_uds_conn_t* conn,

@@ -21,10 +21,46 @@
 
 _Pragma("once")
 
-#include "runtime/loop.h"
-#include "runtime/scheduler.h"
-#include "runtime/dynpool.h"
+#include <stdint.h>
 
-extern loop_t*      runtime_get_loop(void);
-extern scheduler_t* runtime_get_scheduler(void);
-extern dynpool_t*   runtime_get_dynpool(void);
+typedef struct dynpool_s dynpool_t;
+
+typedef struct {
+    int32_t  max_threads;   /* 0 = use default (256) */
+    uint64_t idle_timeout;  /* 0 = use default (10000 ms) */
+} dynpool_opts_t;
+
+/**
+ * @brief Create a dynamic blocking pool.
+ *
+ * Threads are spawned on demand and exit after idle timeout.
+ *
+ * @param opts  Configuration options, or NULL for defaults.
+ *
+ * @return Pool handle, or NULL on failure.
+ */
+extern dynpool_t* dynpool_create(dynpool_opts_t* opts);
+
+/**
+ * @brief Submit a blocking task to the pool.
+ *
+ * The caller's push is lock-free. A worker thread will execute the task.
+ *
+ * @param pool     Pool handle.
+ * @param routine  Function to execute.
+ * @param arg      Opaque argument passed to routine.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dynpool_submit(
+    dynpool_t* pool, void (*routine)(void*), void* arg);
+
+/**
+ * @brief Destroy the pool, draining pending tasks.
+ *
+ * Signals all workers to exit, waits for running tasks to complete,
+ * and frees resources.
+ *
+ * @param pool  Pool handle.
+ */
+extern void dynpool_destroy(dynpool_t* pool);

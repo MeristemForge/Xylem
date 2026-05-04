@@ -31,7 +31,8 @@ typedef struct xylem_tls_server_s xylem_tls_server_t;
 
 /* TLS connection options. */
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp;        /*< Underlying TCP options. */
+    xylem_tcp_opts_t tcp;           /*< Underlying TCP options. */
+    uint64_t         connect_timeout_ms; /*< Connect timeout, 0 = no timeout. */
     const char*      hostname;   /*< SNI hostname for server certificate selection and hostname verification. */
 } xylem_tls_opts_t;
 

@@ -761,10 +761,11 @@ xylem_tls_conn_t* xylem_tls_dial(loop_t* loop,
         }
     }
 
+    uint64_t connect_ms = opts ? opts->connect_timeout_ms : 0;
     xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
     xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
                                            &_tls_tcp_client_handler,
-                                           tcp_opts);
+                                           connect_ms, tcp_opts);
     if (!tcp) {
         free(tls->hostname);
         free(tls);

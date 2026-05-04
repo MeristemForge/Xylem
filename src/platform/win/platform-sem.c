@@ -48,3 +48,11 @@ void platform_sem_post(platform_sem_t* sem) {
 void platform_sem_wait(platform_sem_t* sem) {
     WaitForSingleObject(*sem, INFINITE);
 }
+
+int platform_sem_timedwait(platform_sem_t* sem, uint64_t timeout_ms) {
+    DWORD r = WaitForSingleObject(*sem, (DWORD)timeout_ms);
+    if (r == WAIT_OBJECT_0) {
+        return 0;
+    }
+    return -1;
+}

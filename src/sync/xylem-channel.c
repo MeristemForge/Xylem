@@ -26,6 +26,7 @@
 
 #include "minicoro/minicoro.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -35,24 +36,10 @@ typedef struct _channel_msg_s {
 } _channel_msg_t;
 
 struct xylem_channel_s {
-    mpsc_t    queue;
-    mco_coro* wait_coro;
-    bool      closed;
+    mpsc_t             queue;
+    _Atomic(mco_coro*) wait_coro;
+    _Atomic bool       closed;
 };
-
-static void _channel_recv_resume_cb(
-    loop_t* loop,
-    loop_post_t* req,
-    void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_channel_t* ch = (xylem_channel_t*)ud;
-    if (ch->wait_coro) {
-        mco_coro* co = ch->wait_coro;
-        ch->wait_coro = NULL;
-        mco_resume(co);
-    }
-}
 
 xylem_channel_t* xylem_channel_create(void) {
     xylem_channel_t* ch =
@@ -61,6 +48,8 @@ xylem_channel_t* xylem_channel_create(void) {
         return NULL;
     }
     mpsc_init(&ch->queue);
+    atomic_init(&ch->wait_coro, NULL);
+    atomic_init(&ch->closed, false);
     return ch;
 }
 
@@ -68,12 +57,12 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
     if (!ch) {
         return;
     }
-    ch->closed = true;
 
-    if (ch->wait_coro) {
-        mco_coro* co = ch->wait_coro;
-        ch->wait_coro = NULL;
-        mco_resume(co);
+    atomic_store(&ch->closed, true);
+
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
     }
 
     mpsc_node_t* node;
@@ -97,7 +86,10 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     m->payload = msg;
     mpsc_push(&ch->queue, &m->node);
 
-    loop_post(runtime_get_loop(), _channel_recv_resume_cb, ch);
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
     return 0;
 }
 
@@ -107,7 +99,7 @@ void* xylem_channel_recv(xylem_channel_t* ch) {
     }
 
     for (;;) {
-        if (ch->closed) {
+        if (atomic_load(&ch->closed)) {
             return NULL;
         }
 
@@ -119,7 +111,22 @@ void* xylem_channel_recv(xylem_channel_t* ch) {
             return payload;
         }
 
-        ch->wait_coro = mco_running();
+        atomic_store(&ch->wait_coro, mco_running());
+
+        if (atomic_load(&ch->closed)) {
+            atomic_store(&ch->wait_coro, NULL);
+            return NULL;
+        }
+
+        node = mpsc_pop(&ch->queue);
+        if (node) {
+            atomic_store(&ch->wait_coro, NULL);
+            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
+            void*           payload = m->payload;
+            free(m);
+            return payload;
+        }
+
         mco_yield(mco_running());
     }
 }

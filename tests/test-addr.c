@@ -20,14 +20,12 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
-#include "runtime/thrdpool.h"
 #include "net/addr.h"
 #include "assert.h"
 
 #include <string.h>
+#include <stdlib.h>
 
-/* IPv4 pton + ntop round-trip */
 static void test_ipv4_roundtrip(void) {
     addr_t addr;
     char host[64];
@@ -39,7 +37,6 @@ static void test_ipv4_roundtrip(void) {
     ASSERT(port == 8080);
 }
 
-/* IPv6 pton + ntop round-trip */
 static void test_ipv6_roundtrip(void) {
     addr_t addr;
     char host[64];
@@ -51,14 +48,12 @@ static void test_ipv6_roundtrip(void) {
     ASSERT(port == 9090);
 }
 
-/* Invalid address returns -1 */
 static void test_invalid_address(void) {
     addr_t addr;
     ASSERT(addr_pton("not_an_address", 80, &addr) == -1);
     ASSERT(addr_pton("999.999.999.999", 80, &addr) == -1);
 }
 
-/* NULL parameter handling */
 static void test_null_params(void) {
     addr_t addr;
     char host[64];
@@ -70,7 +65,6 @@ static void test_null_params(void) {
     ASSERT(addr_ntop(&addr, NULL, 0, &port) == -1);
 }
 
-/* IPv4 wildcard address */
 static void test_ipv4_wildcard(void) {
     addr_t addr;
     char host[64];
@@ -82,171 +76,52 @@ static void test_ipv4_wildcard(void) {
     ASSERT(port == 0);
 }
 
-/**
- * Context for async resolve tests. Passed via userdata to the resolve
- * callback and to timer callbacks.
- */
-typedef struct {
-    loop_t*           loop;
-    thrdpool_t*       pool;
-    int                     status;
-    size_t                  count;
-    const char*             host;
-    addr_resolve_fn_t resolve_cb;
-    loop_timer_t*     keepalive;
-} _resolve_ctx_t;
+static void _resolve_main(void* arg) {
+    (void)arg;
 
-static void _on_resolved(addr_t* addrs, size_t count,
-                         int status, void* userdata) {
-    _resolve_ctx_t* ctx = userdata;
-    ctx->status = status;
-    ctx->count  = count;
-
+    /* resolve localhost */
+    addr_t* addrs = NULL;
+    size_t count = 0;
+    int rc = addr_resolve("localhost", &addrs, &count);
+    ASSERT(rc == 0);
+    ASSERT(count > 0);
     for (size_t i = 0; i < count; i++) {
         ASSERT(addrs[i].storage.ss_family == AF_INET ||
                addrs[i].storage.ss_family == AF_INET6);
     }
+    free(addrs);
 
-    loop_destroy_timer(ctx->keepalive);
-    loop_stop(ctx->loop);
-}
+    /* resolve public hostname */
+    addrs = NULL;
+    count = 0;
+    rc = addr_resolve("www.baidu.com", &addrs, &count);
+    ASSERT(rc == 0);
+    ASSERT(count > 0);
+    free(addrs);
 
-static void _on_resolve_fail(addr_t* addrs, size_t count,
-                             int status, void* userdata) {
-    (void)addrs;
-    _resolve_ctx_t* ctx = userdata;
-    ctx->status = status;
-    ctx->count  = count;
-    loop_destroy_timer(ctx->keepalive);
-    loop_stop(ctx->loop);
-}
+    /* resolve non-existent host */
+    addrs = NULL;
+    count = 0;
+    rc = addr_resolve("this.host.does.not.exist.invalid", &addrs, &count);
+    ASSERT(rc == -1);
+    ASSERT(count == 0);
 
-static void _keepalive_cb(loop_t* loop, loop_timer_t* timer,
-                          void* ud) {
-    (void)loop;
-    (void)timer;
-    (void)ud;
-}
+    /* NULL params */
+    ASSERT(addr_resolve(NULL, &addrs, &count) == -1);
+    ASSERT(addr_resolve("localhost", NULL, &count) == -1);
+    ASSERT(addr_resolve("localhost", &addrs, NULL) == -1);
 
-static void _start_resolve_cb(loop_t* loop,
-                               loop_timer_t* timer,
-                               void* ud) {
-    _resolve_ctx_t* ctx = (_resolve_ctx_t*)ud;
-    loop_destroy_timer(timer);
-
-    /* Keep the loop alive until the resolve callback fires. */
-    ctx->keepalive = loop_create_timer(ctx->loop);
-    loop_start_timer(ctx->keepalive, _keepalive_cb, NULL, 30000, 0);
-
-    addr_resolve(ctx->loop, ctx->pool, ctx->host, 80,
-                       ctx->resolve_cb, ctx);
-}
-
-/* Resolve localhost asynchronously - success path. */
-static void test_resolve_localhost(void) {
-    _resolve_ctx_t ctx = {0};
-    ctx.status     = -1;
-    ctx.count      = 0;
-    ctx.host       = "localhost";
-    ctx.resolve_cb = _on_resolved;
-
-    ctx.loop = loop_create();
-    ASSERT(ctx.loop != NULL);
-    ctx.pool = thrdpool_create(1);
-
-    loop_timer_t* timer = loop_create_timer(ctx.loop);
-    ASSERT(timer != NULL);
-    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
-
-    loop_run(ctx.loop);
-
-    ASSERT(ctx.status == 0);
-    ASSERT(ctx.count > 0);
-
-    thrdpool_destroy(ctx.pool);
-    loop_destroy(ctx.loop);
-}
-
-/* Resolve non-existent host - error path. */
-static void test_resolve_fail(void) {
-    _resolve_ctx_t ctx = {0};
-    ctx.status     = 0;
-    ctx.count      = 99;
-    ctx.host       = "this.host.does.not.exist.invalid";
-    ctx.resolve_cb = _on_resolve_fail;
-
-    ctx.loop = loop_create();
-    ASSERT(ctx.loop != NULL);
-    ctx.pool = thrdpool_create(1);
-
-    loop_timer_t* timer = loop_create_timer(ctx.loop);
-    ASSERT(timer != NULL);
-    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
-
-    loop_run(ctx.loop);
-
-    ASSERT(ctx.status == -1);
-    ASSERT(ctx.count == 0);
-
-    thrdpool_destroy(ctx.pool);
-    loop_destroy(ctx.loop);
-}
-
-/* Resolve a public hostname - verifies real DNS works. */
-static void test_resolve_remote(void) {
-    _resolve_ctx_t ctx = {0};
-    ctx.status     = -1;
-    ctx.count      = 0;
-    ctx.host       = "www.baidu.com";
-    ctx.resolve_cb = _on_resolved;
-
-    ctx.loop = loop_create();
-    ASSERT(ctx.loop != NULL);
-    ctx.pool = thrdpool_create(1);
-
-    loop_timer_t* timer = loop_create_timer(ctx.loop);
-    ASSERT(timer != NULL);
-    loop_start_timer(timer, _start_resolve_cb, &ctx, 0, 0);
-
-    loop_run(ctx.loop);
-
-    ASSERT(ctx.status == 0);
-    ASSERT(ctx.count > 0);
-
-    thrdpool_destroy(ctx.pool);
-    loop_destroy(ctx.loop);
-}
-
-/* NULL parameters return NULL. */
-static void test_resolve_null_params(void) {
-    loop_t* loop = loop_create();
-    ASSERT(loop != NULL);
-    thrdpool_t* pool = thrdpool_create(1);
-
-    ASSERT(addr_resolve(NULL, pool, "localhost", 80,
-                              _on_resolved, NULL) == NULL);
-    ASSERT(addr_resolve(loop, NULL, "localhost", 80,
-                              _on_resolved, NULL) == NULL);
-    ASSERT(addr_resolve(loop, pool, NULL, 80,
-                              _on_resolved, NULL) == NULL);
-    ASSERT(addr_resolve(loop, pool, "localhost", 80,
-                              NULL, NULL) == NULL);
-
-    thrdpool_destroy(pool);
-    loop_destroy(loop);
+    xylem_runtime_stop();
 }
 
 int main(void) {
-
     test_ipv4_roundtrip();
     test_ipv6_roundtrip();
     test_invalid_address();
     test_null_params();
     test_ipv4_wildcard();
-    test_resolve_localhost();
-    test_resolve_remote();
-    test_resolve_fail();
-    test_resolve_null_params();
+
+    xylem_runtime_start(_resolve_main, NULL, NULL);
 
     return 0;
 }

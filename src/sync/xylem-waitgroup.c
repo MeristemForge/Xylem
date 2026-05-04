@@ -28,23 +28,9 @@
 #include <stdlib.h>
 
 struct xylem_waitgroup_s {
-    atomic_size_t cnt;
-    mco_coro*     wait_coro;
+    atomic_size_t      cnt;
+    _Atomic(mco_coro*) wait_coro;
 };
-
-static void _waitgroup_wakeup_cb(
-    loop_t* loop,
-    loop_post_t* req,
-    void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)ud;
-    if (wg->wait_coro) {
-        mco_coro* co = wg->wait_coro;
-        wg->wait_coro = NULL;
-        mco_resume(co);
-    }
-}
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
     xylem_waitgroup_t* wg =
@@ -53,6 +39,7 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
         return NULL;
     }
     atomic_init(&wg->cnt, 0);
+    atomic_init(&wg->wait_coro, NULL);
     return wg;
 }
 
@@ -70,8 +57,10 @@ void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
 void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     size_t prev = atomic_fetch_sub(&wg->cnt, 1);
     if (prev == 1) {
-        /* cnt reached zero -- wake the waiting coroutine via loop post. */
-        loop_post(runtime_get_loop(), _waitgroup_wakeup_cb, wg);
+        mco_coro* co = atomic_exchange(&wg->wait_coro, NULL);
+        if (co) {
+            scheduler_schedule(runtime_get_scheduler(), co);
+        }
     }
 }
 
@@ -79,6 +68,10 @@ void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
     if (atomic_load(&wg->cnt) == 0) {
         return;
     }
-    wg->wait_coro = mco_running();
+    atomic_store(&wg->wait_coro, mco_running());
+    if (atomic_load(&wg->cnt) == 0) {
+        atomic_store(&wg->wait_coro, NULL);
+        return;
+    }
     mco_yield(mco_running());
 }

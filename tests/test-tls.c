@@ -21,7 +21,7 @@
 
 #include "xylem.h"
 #include "runtime/loop.h"
-#include "runtime/thrdpool.h"
+#include "thrdpool.h"
 #include "xylem/net/xylem-tls.h"
 #include "xylem/xylem-thrdpool.h"
 #include "assert.h"

@@ -20,7 +20,7 @@
  */
 
 #include "xylem/xylem-logger.h"
-#include "runtime/thrdpool.h"
+#include "thrdpool.h"
 
 #include "c11-threads.h"
 

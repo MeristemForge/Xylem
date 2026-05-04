@@ -19,12 +19,64 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "runq.h"
 
-#include "runtime/loop.h"
-#include "runtime/scheduler.h"
-#include "runtime/dynpool.h"
+#include "container/queue.h"
+#include "c11-threads.h"
 
-extern loop_t*      runtime_get_loop(void);
-extern scheduler_t* runtime_get_scheduler(void);
-extern dynpool_t*   runtime_get_dynpool(void);
+#include <stdlib.h>
+
+typedef struct _runq_entry_s {
+    queue_node_t node;
+    mco_coro*    co;
+} _runq_entry_t;
+
+struct runq_s {
+    queue_t q;
+    mtx_t   lock;
+};
+
+runq_t* runq_create(void) {
+    runq_t* rq = (runq_t*)calloc(1, sizeof(runq_t));
+    if (!rq) {
+        return NULL;
+    }
+    queue_init(&rq->q);
+    mtx_init(&rq->lock, mtx_plain);
+    return rq;
+}
+
+void runq_destroy(runq_t* rq) {
+    if (!rq) {
+        return;
+    }
+    mtx_destroy(&rq->lock);
+    free(rq);
+}
+
+void runq_push(runq_t* rq, mco_coro* co) {
+    _runq_entry_t* entry =
+        (_runq_entry_t*)calloc(1, sizeof(_runq_entry_t));
+    if (!entry) {
+        return;
+    }
+    entry->co = co;
+
+    mtx_lock(&rq->lock);
+    queue_enqueue(&rq->q, &entry->node);
+    mtx_unlock(&rq->lock);
+}
+
+mco_coro* runq_pop(runq_t* rq) {
+    mtx_lock(&rq->lock);
+    queue_node_t* node = queue_dequeue(&rq->q);
+    mtx_unlock(&rq->lock);
+
+    if (!node) {
+        return NULL;
+    }
+    _runq_entry_t* entry = queue_entry(node, _runq_entry_t, node);
+    mco_coro* co = entry->co;
+    free(entry);
+    return co;
+}

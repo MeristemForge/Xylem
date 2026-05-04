@@ -29,49 +29,21 @@
 
 #include <stdlib.h>
 
-#define RUNTIME_CORO_STACK_SIZE 131072 /* 128 KB */
-
-typedef struct {
-    void (*fn)(void*);
-    void* arg;
-    mco_coro* co;
-} _coro_ctx_t;
-
 typedef struct {
     mco_coro* co;
+    uint64_t  timeout_ms;
 } _sleep_ctx_t;
 
 typedef struct {
     void (*fn)(void*);
-    void* arg;
-    loop_t* loop;
-    mco_coro* co;
+    void*        arg;
+    scheduler_t* sched;
+    mco_coro*    co;
 } _submit_ctx_t;
 
-static loop_t*     g_loop;
-static thrdpool_t* g_pool;
-
-static void _runtime_coro_entry(mco_coro* co) {
-    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-    ctx->fn(ctx->arg);
-}
-
-static void _runtime_coro_resume(_coro_ctx_t* ctx) {
-    mco_resume(ctx->co);
-    if (mco_status(ctx->co) == MCO_DEAD) {
-        mco_destroy(ctx->co);
-        free(ctx);
-    }
-}
-
-static void _runtime_coro_resume_cb(
-    loop_t* loop,
-    loop_post_t* req,
-    void* ud) {
-    (void)loop;
-    (void)req;
-    _runtime_coro_resume((_coro_ctx_t*)ud);
-}
+static loop_t*      g_loop;
+static scheduler_t* g_sched;
+static dynpool_t*   g_dynpool;
 
 static void _runtime_sleep_timeout_cb(
     loop_t* loop,
@@ -81,62 +53,44 @@ static void _runtime_sleep_timeout_cb(
     _sleep_ctx_t* ctx = (_sleep_ctx_t*)ud;
     mco_coro*     co  = ctx->co;
 
-    free(ctx);
     loop_destroy_timer(timer);
-    mco_resume(co);
+    free(ctx);
+    scheduler_schedule(g_sched, co);
 }
 
-static void _runtime_submit_done_cb(
+static void _runtime_sleep_post_cb(
     loop_t* loop,
     loop_post_t* req,
     void* ud) {
     (void)loop;
     (void)req;
-    _submit_ctx_t* ctx = (_submit_ctx_t*)ud;
-    mco_coro* co = ctx->co;
-    free(ctx);
-    mco_resume(co);
+    _sleep_ctx_t* ctx = (_sleep_ctx_t*)ud;
+    loop_timer_t* timer = loop_create_timer(g_loop);
+    loop_start_timer(
+        timer, _runtime_sleep_timeout_cb, ctx, ctx->timeout_ms, 0);
 }
 
 static void _runtime_submit_worker(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
     ctx->fn(ctx->arg);
-    loop_post(ctx->loop, _runtime_submit_done_cb, ctx);
+    scheduler_schedule(ctx->sched, ctx->co);
+    free(ctx);
 }
 
 loop_t* runtime_get_loop(void) {
     return g_loop;
 }
 
-thrdpool_t* runtime_get_pool(void) {
-    return g_pool;
+scheduler_t* runtime_get_scheduler(void) {
+    return g_sched;
 }
 
-void xylem_runtime_spawn(
-    void (*fn)(void*),
-    void* arg) {
-    _coro_ctx_t* ctx = (_coro_ctx_t*)calloc(1, sizeof(_coro_ctx_t));
-    if (!ctx) {
-        return;
-    }
+dynpool_t* runtime_get_dynpool(void) {
+    return g_dynpool;
+}
 
-    ctx->fn  = fn;
-    ctx->arg = arg;
-
-    mco_desc desc = mco_desc_init(_runtime_coro_entry, RUNTIME_CORO_STACK_SIZE);
-    desc.user_data = ctx;
-
-    mco_result r = mco_create(&ctx->co, &desc);
-    if (r != MCO_SUCCESS) {
-        free(ctx);
-        return;
-    }
-
-    if (loop_is_owner(g_loop)) {
-        _runtime_coro_resume(ctx);
-    } else {
-        loop_post(g_loop, _runtime_coro_resume_cb, ctx);
-    }
+void xylem_runtime_spawn(void (*fn)(void*), void* arg) {
+    scheduler_spawn(g_sched, fn, arg);
 }
 
 void xylem_runtime_sleep(uint64_t ms) {
@@ -146,10 +100,9 @@ void xylem_runtime_sleep(uint64_t ms) {
     }
 
     ctx->co = mco_running();
+    ctx->timeout_ms = ms;
 
-    loop_timer_t* timer = loop_create_timer(g_loop);
-    loop_start_timer(timer, _runtime_sleep_timeout_cb, ctx, ms, 0);
-
+    loop_post(g_loop, _runtime_sleep_post_cb, ctx);
     mco_yield(mco_running());
 }
 
@@ -159,12 +112,12 @@ int xylem_runtime_submit(void (*fn)(void*), void* arg) {
         return -1;
     }
 
-    ctx->fn   = fn;
-    ctx->arg  = arg;
-    ctx->loop = g_loop;
-    ctx->co   = mco_running();
+    ctx->fn    = fn;
+    ctx->arg   = arg;
+    ctx->sched = g_sched;
+    ctx->co    = mco_running();
 
-    if (thrdpool_submit(g_pool, _runtime_submit_worker, ctx) != 0) {
+    if (dynpool_submit(g_dynpool, _runtime_submit_worker, ctx) != 0) {
         free(ctx);
         return -1;
     }
@@ -186,16 +139,22 @@ void xylem_runtime_start(
     }
 
     g_loop = loop_create();
-    g_pool = thrdpool_create(workers);
 
-    xylem_runtime_spawn(main_fn, arg);
+    scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
+    g_sched = scheduler_create(&sched_opts);
+
+    g_dynpool = dynpool_create(NULL);
+
+    scheduler_spawn(g_sched, main_fn, arg);
 
     loop_run(g_loop);
 
-    thrdpool_destroy(g_pool);
+    scheduler_destroy(g_sched);
+    dynpool_destroy(g_dynpool);
     loop_destroy(g_loop);
 }
 
 void xylem_runtime_stop(void) {
+    scheduler_shutdown(g_sched);
     loop_stop(g_loop);
 }

@@ -23,60 +23,51 @@ _Pragma("once")
 
 #include <stdint.h>
 
-#if defined(__APPLE__)
-#include <dispatch/dispatch.h>
-
-typedef dispatch_semaphore_t platform_sem_t;
-#endif
-
-#if defined(__linux__)
-#include <semaphore.h>
-
-typedef sem_t platform_sem_t;
-#endif
-
-#if defined(_WIN32)
-#include <windows.h>
-
-typedef HANDLE platform_sem_t;
-#endif
+typedef struct mco_coro mco_coro;
+typedef struct wsdeque_s wsdeque_t;
 
 /**
- * @brief Create a semaphore with an initial count.
+ * @brief Create a work-stealing deque.
  *
- * @param value  Initial semaphore count.
+ * Allocates a bounded circular buffer with capacity 2^log2_cap.
  *
- * @return Semaphore handle, or NULL on failure.
+ * @param log2_cap  Log2 of the capacity (e.g. 10 → 1024 slots).
+ *
+ * @return Deque handle, or NULL on failure.
  */
-extern platform_sem_t* platform_sem_create(unsigned int value);
+extern wsdeque_t* wsdeque_create(uint32_t log2_cap);
 
 /**
- * @brief Destroy a semaphore and free its memory.
+ * @brief Destroy a work-stealing deque and free its memory.
  *
- * @param sem  Semaphore to destroy.
+ * @param dq  Deque to destroy.
  */
-extern void platform_sem_destroy(platform_sem_t* sem);
+extern void wsdeque_destroy(wsdeque_t* dq);
 
 /**
- * @brief Increment (signal) the semaphore.
+ * @brief Push a coroutine onto the deque (owner thread only).
  *
- * @param sem  Semaphore to signal.
+ * @param dq  Deque to push onto.
+ * @param co  Coroutine to push.
+ *
+ * @return 0 on success, -1 if full.
  */
-extern void platform_sem_post(platform_sem_t* sem);
+extern int wsdeque_push(wsdeque_t* dq, mco_coro* co);
 
 /**
- * @brief Wait on the semaphore indefinitely.
+ * @brief Pop a coroutine from the deque (owner thread only).
  *
- * @param sem  Semaphore to wait on.
+ * @param dq  Deque to pop from.
+ *
+ * @return Coroutine pointer, or NULL if empty.
  */
-extern void platform_sem_wait(platform_sem_t* sem);
+extern mco_coro* wsdeque_pop(wsdeque_t* dq);
 
 /**
- * @brief Wait on the semaphore with a timeout.
+ * @brief Steal a coroutine from the deque (any thread).
  *
- * @param sem        Semaphore to wait on.
- * @param timeout_ms Maximum time to wait in milliseconds.
+ * @param dq  Deque to steal from.
  *
- * @return 0 if the semaphore was acquired, -1 on timeout.
+ * @return Coroutine pointer, or NULL if empty or contended.
  */
-extern int platform_sem_timedwait(platform_sem_t* sem, uint64_t timeout_ms);
+extern mco_coro* wsdeque_steal(wsdeque_t* dq);

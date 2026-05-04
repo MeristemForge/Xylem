@@ -161,7 +161,7 @@ static void test_channel(void) {
 
 /* --- test: channel cross-thread --- */
 
-#include "runtime/c11-threads.h"
+#include "c11-threads.h"
 
 typedef struct {
     xylem_channel_t* ch;
