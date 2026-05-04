@@ -125,11 +125,11 @@ typedef struct {
 static bool _submit_park_cb(mco_coro* co, void* arg) {
     _submit_park_arg_t* pa = (_submit_park_arg_t*)arg;
     pa->ctx->co = co;
+    pa->ok = true;
     if (dynpool_submit(g_dynpool, _runtime_submit_worker, pa->ctx) != 0) {
         pa->ok = false;
         return false;
     }
-    pa->ok = true;
     return true;
 }
 

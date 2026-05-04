@@ -109,8 +109,11 @@ static int _ext_thread_fn(void* arg) {
 }
 
 static void _ext_main(void* arg) {
-    (void)arg;
+    _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
     _start_safety_timer();
+    thrd_t th;
+    thrd_create(&th, _ext_thread_fn, ctx);
+    thrd_detach(th);
 }
 
 static void test_spawn_from_external_thread(void) {
@@ -118,10 +121,7 @@ static void test_spawn_from_external_thread(void) {
     _ext_ctx_t ctx = { .target = 50 };
     atomic_init(&ctx.count, 0);
 
-    thrd_t th;
-    thrd_create(&th, _ext_thread_fn, &ctx);
-    xylem_runtime_start(_ext_main, NULL, &_rt_opts);
-    thrd_join(th, NULL);
+    xylem_runtime_start(_ext_main, &ctx, &_rt_opts);
 
     ASSERT(atomic_load(&ctx.count) == ctx.target);
 }
@@ -220,9 +220,10 @@ static void test_sleep_zero(void) {
     _sleep0_ctx_t ctx = {0};
     atomic_init(&ctx.idx, 0);
     xylem_runtime_start(_sleep0_main, &ctx, &_rt_opts);
-    /* sleep(0) yields, so second should record before first resumes */
-    ASSERT(ctx.order[0] == 2);
-    ASSERT(ctx.order[1] == 1);
+    /* both coroutines completed (order is non-deterministic with multi-worker) */
+    ASSERT(atomic_load(&ctx.idx) == 2);
+    ASSERT((ctx.order[0] == 1 && ctx.order[1] == 2) ||
+           (ctx.order[0] == 2 && ctx.order[1] == 1));
 }
 
 /* --- test: sleep ordering --- */
