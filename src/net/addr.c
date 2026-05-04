@@ -23,7 +23,7 @@
 
 #include "runtime/runtime.h"
 
-#include "minicoro/minicoro.h"
+#include "runtime/scheduler.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -154,6 +154,13 @@ int addr_ntop(
     }
 }
 
+static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
+    ctx->co = co;
+    dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, ctx);
+    return true;
+}
+
 int addr_resolve(
     const char* domain,
     addr_t** addrs,
@@ -163,7 +170,6 @@ int addr_resolve(
     }
 
     _addr_resolve_ctx_t ctx;
-    ctx.co     = mco_running();
     ctx.host   = (char*)domain;
     ctx.addrs  = addrs;
     ctx.count  = count;
@@ -172,8 +178,8 @@ int addr_resolve(
     *addrs = NULL;
     *count = 0;
 
-    dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, &ctx);
-    mco_yield(mco_running());
+    scheduler_park(
+        runtime_get_scheduler(), _addr_resolve_park_cb, &ctx);
 
     return ctx.status;
 }
