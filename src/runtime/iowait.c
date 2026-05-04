@@ -34,18 +34,20 @@ enum {
 };
 
 struct iowait_s {
-    loop_t*         loop;
-    loop_io_t*      io;
-    loop_timer_t*   rd_timer;
-    loop_timer_t*   wr_timer;
-    platform_sock_t fd;
-    mco_coro*       rd_coro;
-    mco_coro*       wr_coro;
-    _Atomic int     rd_state;
-    _Atomic int     wr_state;
-    bool            rd_timed_out;
-    bool            wr_timed_out;
-    bool            closed;
+    loop_t*               loop;
+    platform_poller_sq_t* poller;
+    platform_poller_sqe_t sqe;
+    loop_timer_t*         rd_timer;
+    loop_timer_t*         wr_timer;
+    platform_sock_t       fd;
+    mco_coro*             rd_coro;
+    mco_coro*             wr_coro;
+    _Atomic int           rd_state;
+    _Atomic int           wr_state;
+    bool                  rd_timed_out;
+    bool                  wr_timed_out;
+    bool                  registered;
+    bool                  closed;
 };
 
 typedef struct {
@@ -71,39 +73,30 @@ static mco_coro* _iowait_wake(_Atomic int* state, mco_coro** coro_slot) {
     return NULL;
 }
 
-static void _iowait_fd_io_cb(
-    loop_t* loop,
-    loop_io_t* io,
-    loop_poller_op_t revents,
-    void* ud) {
-    (void)loop;
-    (void)io;
-    iowait_t* w = (iowait_t*)ud;
-    scheduler_t* sched = runtime_get_scheduler();
-
-    if ((revents & LOOP_POLLER_RD_OP)) {
-        mco_coro* co = _iowait_wake(&w->rd_state, &w->rd_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
-    }
-    if ((revents & LOOP_POLLER_WR_OP)) {
-        mco_coro* co = _iowait_wake(&w->wr_state, &w->wr_coro);
-        if (co) {
-            scheduler_schedule(sched, co);
-        }
+/* Arm the fd on the netpoll. Called from the worker thread directly. */
+static void _iowait_arm(iowait_t* w) {
+    if (w->closed) {
+        return;
     }
 
-    /* Re-arm for any direction that still has a waiting coro. */
-    loop_poller_op_t remaining = LOOP_POLLER_NO_OP;
+    platform_poller_op_t interest = PLATFORM_POLLER_NO_OP;
     if (w->rd_coro) {
-        remaining |= LOOP_POLLER_RD_OP;
+        interest |= PLATFORM_POLLER_RD_OP;
     }
     if (w->wr_coro) {
-        remaining |= LOOP_POLLER_WR_OP;
+        interest |= PLATFORM_POLLER_WR_OP;
     }
-    if (remaining != LOOP_POLLER_NO_OP) {
-        loop_start_io(w->io, remaining, _iowait_fd_io_cb, w);
+    if (interest == PLATFORM_POLLER_NO_OP) {
+        return;
+    }
+
+    w->sqe.op = interest;
+    if (!w->registered) {
+        if (platform_poller_add(w->poller, &w->sqe) == 0) {
+            w->registered = true;
+        }
+    } else {
+        platform_poller_mod(w->poller, &w->sqe);
     }
 }
 
@@ -178,27 +171,6 @@ static void _iowait_wr_timeout_stop_cb(
     }
 }
 
-static void _iowait_arm_io_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop;
-    (void)req;
-    iowait_t* w = (iowait_t*)ud;
-    if (w->closed) {
-        return;
-    }
-
-    loop_poller_op_t interest = LOOP_POLLER_NO_OP;
-    if (w->rd_coro) {
-        interest |= LOOP_POLLER_RD_OP;
-    }
-    if (w->wr_coro) {
-        interest |= LOOP_POLLER_WR_OP;
-    }
-    if (interest != LOOP_POLLER_NO_OP) {
-        loop_start_io(w->io, interest, _iowait_fd_io_cb, w);
-    }
-}
-
 iowait_t* iowait_create(loop_t* loop, platform_sock_t fd) {
     iowait_t* w = (iowait_t*)calloc(1, sizeof(iowait_t));
     if (!w) {
@@ -206,12 +178,13 @@ iowait_t* iowait_create(loop_t* loop, platform_sock_t fd) {
     }
 
     w->loop = loop;
+    w->poller = runtime_get_poller();
     w->fd = fd;
-    w->io = loop_create_io(loop, (loop_poller_fd_t)fd);
-    if (!w->io) {
-        free(w);
-        return NULL;
-    }
+
+    w->sqe.fd = (platform_poller_fd_t)fd;
+    w->sqe.ud = w;
+    w->sqe.oneshot = 1;
+    w->sqe.op = PLATFORM_POLLER_NO_OP;
 
     return w;
 }
@@ -225,8 +198,10 @@ bool iowait_read(iowait_t* w, uint64_t timeout_ms) {
     w->rd_coro = mco_running();
     atomic_store(&w->rd_state, IOWAIT_IDLE);
 
-    loop_post(w->loop, _iowait_arm_io_cb, w);
+    /* Arm directly on the netpoll -- no cross-thread post needed. */
+    _iowait_arm(w);
 
+    /* Timeouts still go through the loop thread (timer heap). */
     if (timeout_ms > 0) {
         _iowait_timeout_ctx_t* ctx =
             (_iowait_timeout_ctx_t*)malloc(sizeof(_iowait_timeout_ctx_t));
@@ -263,7 +238,7 @@ bool iowait_write(iowait_t* w, uint64_t timeout_ms) {
     w->wr_coro = mco_running();
     atomic_store(&w->wr_state, IOWAIT_IDLE);
 
-    loop_post(w->loop, _iowait_arm_io_cb, w);
+    _iowait_arm(w);
 
     if (timeout_ms > 0) {
         _iowait_timeout_ctx_t* ctx =
@@ -313,15 +288,11 @@ void iowait_close(iowait_t* w) {
     }
 }
 
-static void _iowait_destroy_cb(
+static void _iowait_destroy_timer_cb(
     loop_t* loop, loop_post_t* req, void* ud) {
     (void)loop;
     (void)req;
     iowait_t* w = (iowait_t*)ud;
-
-    if (!w->closed) {
-        iowait_close(w);
-    }
 
     if (w->rd_timer) {
         loop_destroy_timer(w->rd_timer);
@@ -329,16 +300,48 @@ static void _iowait_destroy_cb(
     if (w->wr_timer) {
         loop_destroy_timer(w->wr_timer);
     }
-    if (w->io) {
-        loop_destroy_io(w->io);
-    }
     free(w);
 }
 
 void iowait_destroy(iowait_t* w) {
-    loop_post(w->loop, _iowait_destroy_cb, w);
+    if (!w->closed) {
+        iowait_close(w);
+    }
+
+    if (w->registered) {
+        platform_poller_del(w->poller, &w->sqe);
+        w->registered = false;
+    }
+
+    /* Timers belong to the loop thread -- post their destruction. */
+    if (w->rd_timer || w->wr_timer) {
+        loop_post(w->loop, _iowait_destroy_timer_cb, w);
+    } else {
+        free(w);
+    }
 }
 
 bool iowait_is_closed(iowait_t* w) {
     return w->closed;
+}
+
+void iowait_on_event(int revents, void* ud) {
+    iowait_t* w = (iowait_t*)ud;
+    scheduler_t* sched = runtime_get_scheduler();
+
+    if ((revents & PLATFORM_POLLER_RD_OP)) {
+        mco_coro* co = _iowait_wake(&w->rd_state, &w->rd_coro);
+        if (co) {
+            scheduler_schedule(sched, co);
+        }
+    }
+    if ((revents & PLATFORM_POLLER_WR_OP)) {
+        mco_coro* co = _iowait_wake(&w->wr_state, &w->wr_coro);
+        if (co) {
+            scheduler_schedule(sched, co);
+        }
+    }
+
+    /* Re-arm for any direction that still has a waiting coro (oneshot). */
+    _iowait_arm(w);
 }

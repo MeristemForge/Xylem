@@ -21,14 +21,27 @@
 
 _Pragma("once")
 
+#include "platform/platform-poller.h"
+
 #include <stdint.h>
 
-typedef struct mco_coro mco_coro;
+typedef struct mco_coro    mco_coro;
 typedef struct scheduler_s scheduler_t;
 
+/**
+ * @brief Callback invoked by the scheduler when a poller event fires.
+ *
+ * Called on a worker thread with the readiness mask and the user-data
+ * pointer from the platform_poller_sqe registration.
+ *
+ * @param revents  Readiness mask (PLATFORM_POLLER_RD_OP / WR_OP).
+ * @param ud       User data from the sqe registration.
+ */
+typedef void (*scheduler_poll_fn_t)(int revents, void* ud);
+
 typedef struct {
-    int32_t nworkers;   /* 0 = use CPU count */
-    uint32_t deque_cap; /* 0 = use default (log2=10, 1024 slots) */
+    int32_t  nworkers;  /*< 0 = use CPU count. */
+    uint32_t deque_cap; /*< 0 = use default (log2=10, 1024 slots). */
 } scheduler_opts_t;
 
 /**
@@ -79,3 +92,18 @@ extern void scheduler_spawn(
  * @param sched  Scheduler handle.
  */
 extern void scheduler_shutdown(scheduler_t* sched);
+
+/**
+ * @brief Attach a shared poller to the scheduler.
+ *
+ * Workers will poll for IO events when idle. The callback is invoked
+ * on the worker thread for each ready event.
+ *
+ * @param sched   Scheduler handle.
+ * @param poller  Platform poller handle.
+ * @param cb      Callback for ready events.
+ */
+extern void scheduler_set_poller(
+    scheduler_t* sched,
+    platform_poller_sq_t* poller,
+    scheduler_poll_fn_t cb);

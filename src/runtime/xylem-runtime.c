@@ -22,7 +22,9 @@
 #include "xylem/runtime/xylem-runtime.h"
 
 #include "runtime.h"
+#include "iowait.h"
 #include "platform/platform-info.h"
+#include "platform/platform-poller.h"
 
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
@@ -41,9 +43,10 @@ typedef struct {
     mco_coro*    co;
 } _submit_ctx_t;
 
-static loop_t*      g_loop;
-static scheduler_t* g_sched;
-static dynpool_t*   g_dynpool;
+static loop_t*             g_loop;
+static scheduler_t*        g_sched;
+static platform_poller_sq_t g_poller;
+static dynpool_t*          g_dynpool;
 
 static void _runtime_sleep_timeout_cb(
     loop_t* loop,
@@ -87,6 +90,10 @@ scheduler_t* runtime_get_scheduler(void) {
 
 dynpool_t* runtime_get_dynpool(void) {
     return g_dynpool;
+}
+
+platform_poller_sq_t* runtime_get_poller(void) {
+    return &g_poller;
 }
 
 void xylem_runtime_spawn(void (*fn)(void*), void* arg) {
@@ -140,8 +147,12 @@ void xylem_runtime_start(
 
     g_loop = loop_create();
 
+    platform_poller_init(&g_poller);
+
     scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
     g_sched = scheduler_create(&sched_opts);
+
+    scheduler_set_poller(g_sched, &g_poller, iowait_on_event);
 
     g_dynpool = dynpool_create(NULL);
 
@@ -151,6 +162,7 @@ void xylem_runtime_start(
 
     scheduler_destroy(g_sched);
     dynpool_destroy(g_dynpool);
+    platform_poller_destroy(&g_poller);
     loop_destroy(g_loop);
 }
 

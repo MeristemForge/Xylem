@@ -32,10 +32,10 @@ typedef struct iowait_s iowait_t;
 /**
  * @brief Create an IO wait handle bound to a file descriptor.
  *
- * Allocates internal loop_io and prepares per-fd coroutine wait state.
- * The fd must already be in non-blocking mode.
+ * Registers the fd with the shared network poller (netpoll) for
+ * coroutine-driven IO. The fd must already be in non-blocking mode.
  *
- * @param loop  Event loop handle.
+ * @param loop  Event loop handle (used for timers only).
  * @param fd    Non-blocking socket descriptor.
  *
  * @return IO wait handle, or NULL on failure.
@@ -45,9 +45,9 @@ extern iowait_t* iowait_create(loop_t* loop, platform_sock_t fd);
 /**
  * @brief Suspend the calling coroutine until the fd is readable.
  *
- * Arms the fd for read readiness on the event loop, then yields.
- * The coroutine is resumed when the fd becomes readable, the timeout
- * expires, or the handle is closed.
+ * Arms the fd on the shared netpoll, then yields. The coroutine is
+ * resumed by a scheduler worker when the fd becomes readable, the
+ * timeout expires, or the handle is closed.
  *
  * @param w          IO wait handle.
  * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
@@ -59,9 +59,9 @@ extern bool iowait_read(iowait_t* w, uint64_t timeout_ms);
 /**
  * @brief Suspend the calling coroutine until the fd is writable.
  *
- * Arms the fd for write readiness on the event loop, then yields.
- * The coroutine is resumed when the fd becomes writable, the timeout
- * expires, or the handle is closed.
+ * Arms the fd on the shared netpoll, then yields. The coroutine is
+ * resumed by a scheduler worker when the fd becomes writable, the
+ * timeout expires, or the handle is closed.
  *
  * @param w          IO wait handle.
  * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
@@ -83,9 +83,9 @@ extern void iowait_close(iowait_t* w);
 /**
  * @brief Destroy the IO wait handle and release all resources.
  *
- * Posts destruction to the loop thread. Wakes any waiting coroutines
- * so they see the closed state. Destroys internal timers and IO handle.
- * The caller must not use the handle after this call.
+ * Removes the fd from the netpoll, destroys internal timers via
+ * the loop thread, and frees the handle. The caller must not use
+ * the handle after this call.
  *
  * @param w  IO wait handle.
  */
@@ -99,3 +99,14 @@ extern void iowait_destroy(iowait_t* w);
  * @return true if iowait_close() has been called.
  */
 extern bool iowait_is_closed(iowait_t* w);
+
+/**
+ * @brief Netpoll event callback for iowait handles.
+ *
+ * Called by the scheduler when a netpoll event fires for an iowait fd.
+ * Wakes the appropriate coroutine(s) based on the readiness mask.
+ *
+ * @param revents  Readiness mask.
+ * @param ud       The iowait_t pointer registered as user data.
+ */
+extern void iowait_on_event(int revents, void* ud);

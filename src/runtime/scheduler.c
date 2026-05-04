@@ -24,6 +24,7 @@
 #include "wsdeque.h"
 #include "runq.h"
 #include "platform/platform-sem.h"
+#include "platform/platform-socket.h"
 #include "platform/platform-info.h"
 #include "c11-threads.h"
 
@@ -32,9 +33,11 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define SCHED_DEFAULT_DEQUE_LOG2 10
 #define SCHED_CORO_STACK_SIZE    131072
+#define SCHED_POLL_TIMEOUT_MS    5
 
 typedef struct _sched_worker_s {
     thrd_t          thread;
@@ -42,14 +45,21 @@ typedef struct _sched_worker_s {
     platform_sem_t* sem;
     scheduler_t*    sched;
     uint32_t        index;
+    _Atomic bool    is_polling;
 } _sched_worker_t;
 
 struct scheduler_s {
-    _sched_worker_t* workers;
-    int32_t          nworkers;
-    runq_t*          runq;
-    _Atomic uint32_t notify_idx;
-    _Atomic bool     running;
+    _sched_worker_t*     workers;
+    int32_t               nworkers;
+    runq_t*               runq;
+    platform_poller_sq_t* poller;
+    scheduler_poll_fn_t   poll_cb;
+    platform_poller_sqe_t wakeup_sqe;
+    platform_sock_t       wakeup_rd;
+    platform_sock_t       wakeup_wr;
+    _Atomic uint32_t      notify_idx;
+    _Atomic bool          polling;
+    _Atomic bool          running;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -65,19 +75,16 @@ static void _sched_coro_entry(mco_coro* co) {
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
-    /* 1. Local deque (LIFO). */
     mco_coro* co = wsdeque_pop(w->deque);
     if (co) {
         return co;
     }
 
-    /* 2. Global run queue. */
     co = runq_pop(sched->runq);
     if (co) {
         return co;
     }
 
-    /* 3. Steal from random peer. */
     if (sched->nworkers > 1) {
         uint32_t start = w->index + 1;
         for (int32_t i = 0; i < sched->nworkers - 1; i++) {
@@ -92,26 +99,64 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
+static void _sched_process_poll_events(
+    scheduler_t* sched,
+    platform_poller_cqe_t* cqes,
+    int n) {
+    for (int i = 0; i < n; i++) {
+        if (cqes[i].ud == NULL) {
+            /* Wakeup fd -- drain and ignore. */
+            char buf[64];
+            while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0)
+                ;
+            /* Re-arm the wakeup fd (oneshot). */
+            sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+            platform_poller_mod(sched->poller, &sched->wakeup_sqe);
+            continue;
+        }
+        if (sched->poll_cb) {
+            sched->poll_cb((int)cqes[i].op, cqes[i].ud);
+        }
+    }
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
     _tls_worker = w;
 
+    platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
+
     while (atomic_load(&sched->running)) {
         mco_coro* co = _sched_try_get_coro(sched, w);
 
-        if (!co) {
-            platform_sem_wait(w->sem);
+        if (co) {
+            mco_resume(co);
+            if (mco_status(co) == MCO_DEAD) {
+                _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+                free(ctx);
+                mco_destroy(co);
+            }
             continue;
         }
 
-        mco_resume(co);
-
-        if (mco_status(co) == MCO_DEAD) {
-            _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-            free(ctx);
-            mco_destroy(co);
+        if (sched->poller) {
+            bool expected = false;
+            if (atomic_compare_exchange_strong(
+                    &sched->polling, &expected, true)) {
+                atomic_store(&w->is_polling, true);
+                int n = platform_poller_wait(
+                    sched->poller, cqes, SCHED_POLL_TIMEOUT_MS);
+                atomic_store(&w->is_polling, false);
+                atomic_store(&sched->polling, false);
+                if (n > 0) {
+                    _sched_process_poll_events(sched, cqes, n);
+                }
+                continue;
+            }
         }
+
+        platform_sem_wait(w->sem);
     }
 
     for (;;) {
@@ -130,30 +175,18 @@ static int _sched_worker_entry(void* arg) {
     return 0;
 }
 
-/**
- * @brief Tear down a partially or fully initialised scheduler.
- *
- * Safe to call at any stage of construction: NULL pointers and
- * zero-initialised fields (from calloc) are silently skipped.
- *
- * @param sched       Scheduler to tear down (must not be NULL).
- * @param nstarted    Number of worker threads that were successfully started.
- */
 static void _sched_teardown(scheduler_t* sched, int32_t nstarted) {
     atomic_store(&sched->running, false);
 
     if (sched->workers) {
-        /* Wake threads that are alive so they can exit. */
         for (int32_t i = 0; i < nstarted; i++) {
             if (sched->workers[i].sem) {
                 platform_sem_post(sched->workers[i].sem);
             }
         }
-        /* Join only the threads we actually created. */
         for (int32_t i = 0; i < nstarted; i++) {
             thrd_join(sched->workers[i].thread, NULL);
         }
-        /* Release per-worker resources. */
         for (int32_t i = 0; i < sched->nworkers; i++) {
             if (sched->workers[i].deque) {
                 wsdeque_destroy(sched->workers[i].deque);
@@ -168,13 +201,31 @@ static void _sched_teardown(scheduler_t* sched, int32_t nstarted) {
     if (sched->runq) {
         runq_destroy(sched->runq);
     }
+
+    if (sched->wakeup_rd) {
+        platform_poller_del(sched->poller, &sched->wakeup_sqe);
+        platform_socket_close(sched->wakeup_rd);
+        platform_socket_close(sched->wakeup_wr);
+    }
+
     free(sched);
 }
 
 static void _sched_notify_worker(scheduler_t* sched) {
-    uint32_t idx =
-        atomic_fetch_add(&sched->notify_idx, 1) % (uint32_t)sched->nworkers;
-    platform_sem_post(sched->workers[idx].sem);
+    uint32_t n = (uint32_t)sched->nworkers;
+    uint32_t start =
+        atomic_fetch_add(&sched->notify_idx, 1) % n;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t idx = (start + i) % n;
+        if (!atomic_load(&sched->workers[idx].is_polling)) {
+            platform_sem_post(sched->workers[idx].sem);
+            return;
+        }
+    }
+
+    /* All workers are polling or busy -- post to the original target. */
+    platform_sem_post(sched->workers[start].sem);
 }
 
 static void _sched_notify_other(scheduler_t* sched, uint32_t self) {
@@ -217,6 +268,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         return NULL;
     }
     atomic_store(&sched->running, true);
+    atomic_store(&sched->polling, false);
 
     sched->nworkers = nworkers;
     sched->workers = (_sched_worker_t*)calloc(
@@ -256,7 +308,6 @@ void scheduler_destroy(scheduler_t* sched) {
         return;
     }
 
-    /* Drain pending coroutines before tearing down. */
     mco_coro* co;
     while ((co = runq_pop(sched->runq)) != NULL) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
@@ -297,13 +348,49 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
         }
     }
 
-    /* Otherwise (or if deque full), go through global run queue. */
     scheduler_schedule(sched, co);
+}
+
+static void _sched_wake_poller(scheduler_t* sched) {
+    if (sched->wakeup_wr) {
+        char c = 1;
+        platform_socket_send(sched->wakeup_wr, &c, 1);
+    }
 }
 
 void scheduler_shutdown(scheduler_t* sched) {
     atomic_store(&sched->running, false);
+
+    /* Wake the poller worker if blocked in epoll_wait. */
+    if (sched->poller) {
+        _sched_wake_poller(sched);
+    }
+
     for (int32_t i = 0; i < sched->nworkers; i++) {
         platform_sem_post(sched->workers[i].sem);
+    }
+}
+
+void scheduler_set_poller(
+    scheduler_t* sched,
+    platform_poller_sq_t* poller,
+    scheduler_poll_fn_t cb) {
+    sched->poller = poller;
+    sched->poll_cb = cb;
+
+    /* Create a wakeup socketpair to unblock epoll_wait on shutdown. */
+    platform_sock_t pair[2];
+    if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) == 0) {
+        sched->wakeup_rd = pair[0];
+        sched->wakeup_wr = pair[1];
+        platform_socket_enable_nonblocking(sched->wakeup_rd, true);
+        platform_socket_enable_nonblocking(sched->wakeup_wr, true);
+
+        memset(&sched->wakeup_sqe, 0, sizeof(sched->wakeup_sqe));
+        sched->wakeup_sqe.fd = (platform_poller_fd_t)sched->wakeup_rd;
+        sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+        sched->wakeup_sqe.ud = NULL;
+        sched->wakeup_sqe.oneshot = 1;
+        platform_poller_add(poller, &sched->wakeup_sqe);
     }
 }
