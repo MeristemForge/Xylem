@@ -80,24 +80,35 @@ static void _iowait_arm(iowait_t* w) {
         return;
     }
 
-    platform_poller_op_t interest = PLATFORM_POLLER_NO_OP;
-    if (w->rd_coro) {
-        interest |= PLATFORM_POLLER_RD_OP;
-    }
-    if (w->wr_coro) {
-        interest |= PLATFORM_POLLER_WR_OP;
-    }
-    if (interest == PLATFORM_POLLER_NO_OP) {
-        return;
-    }
-
-    w->sqe.op = interest;
-    if (!w->registered) {
-        if (platform_poller_add(w->poller, &w->sqe) == 0) {
-            w->registered = true;
+    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+        /* ET mode: register once with RD+WR, no re-arm needed. */
+        if (!w->registered) {
+            w->sqe.op = PLATFORM_POLLER_RW_OP;
+            if (platform_poller_add(w->poller, &w->sqe) == 0) {
+                w->registered = true;
+            }
         }
     } else {
-        platform_poller_mod(w->poller, &w->sqe);
+        /* LT+oneshot mode: re-arm with current interest after each event. */
+        platform_poller_op_t interest = PLATFORM_POLLER_NO_OP;
+        if (w->rd_coro) {
+            interest |= PLATFORM_POLLER_RD_OP;
+        }
+        if (w->wr_coro) {
+            interest |= PLATFORM_POLLER_WR_OP;
+        }
+        if (interest == PLATFORM_POLLER_NO_OP) {
+            return;
+        }
+
+        w->sqe.op = interest;
+        if (!w->registered) {
+            if (platform_poller_add(w->poller, &w->sqe) == 0) {
+                w->registered = true;
+            }
+        } else {
+            platform_poller_mod(w->poller, &w->sqe);
+        }
     }
 }
 
@@ -201,10 +212,9 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->poller = runtime_get_poller();
     w->fd     = fd;
 
-    w->sqe.fd      = (platform_poller_fd_t)fd;
-    w->sqe.ud      = w;
-    w->sqe.oneshot  = 1;
-    w->sqe.op      = PLATFORM_POLLER_NO_OP;
+    w->sqe.fd = (platform_poller_fd_t)fd;
+    w->sqe.ud = w;
+    w->sqe.op = PLATFORM_POLLER_NO_OP;
 
     return w;
 }
@@ -348,6 +358,7 @@ void iowait_on_event(int revents, void* ud) {
         }
     }
 
-    /* Re-arm for any direction that still has a waiting coro (oneshot). */
-    _iowait_arm(w);
+    if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+        _iowait_arm(w);
+    }
 }

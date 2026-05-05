@@ -227,8 +227,10 @@ static void _sched_process_events(
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
             }
-            sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
-            platform_poller_mod(&sched->poller, &sched->wakeup_sqe);
+            if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+                sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+                platform_poller_mod(&sched->poller, &sched->wakeup_sqe);
+            }
             continue;
         }
         iowait_on_event((int)cqes[i].op, cqes[i].ud);
@@ -391,7 +393,6 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
             sched->wakeup_sqe.fd = (platform_poller_fd_t)sched->wakeup_rd;
             sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
             sched->wakeup_sqe.ud = NULL;
-            sched->wakeup_sqe.oneshot = 1;
             platform_poller_add(&sched->poller, &sched->wakeup_sqe);
         }
     }

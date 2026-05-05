@@ -247,6 +247,10 @@ int loop_run(loop_t* loop) {
         for (int i = 0; i < n; i++) {
             if (cqes[i].ud == NULL) {
                 _loop_drain_wakeup(loop);
+                if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+                    loop->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+                    platform_poller_mod(&loop->poller, &loop->wakeup_sqe);
+                }
                 continue;
             }
             loop_io_t* io = cqes[i].ud;
@@ -257,7 +261,18 @@ int loop_run(loop_t* loop) {
             if (io->cb == NULL) {
                 continue;
             }
-            io->cb(io->loop, io, (loop_poller_op_t)cqes[i].op, io->ud);
+            if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+                /*
+                 * ET mode: the fd stays armed in the kernel after an
+                 * event. Clear the callback so we don't fire again until
+                 * the user explicitly re-arms via loop_start_io().
+                 */
+                loop_io_fn_t cb = io->cb;
+                io->cb = NULL;
+                cb(io->loop, io, (loop_poller_op_t)cqes[i].op, io->ud);
+            } else {
+                io->cb(io->loop, io, (loop_poller_op_t)cqes[i].op, io->ud);
+            }
         }
 
         _loop_process_posts(loop);
@@ -285,7 +300,6 @@ loop_create_io(loop_t* loop, loop_poller_fd_t fd) {
     io->loop = loop;
     io->sqe.fd = (platform_poller_fd_t)fd;
     io->sqe.ud = io;
-    io->sqe.oneshot = 1;
     io->ud = NULL;
     io->registered = false;
     io->cb = NULL;

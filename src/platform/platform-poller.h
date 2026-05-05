@@ -29,11 +29,15 @@ _Pragma("once")
 #include <sys/event.h>
 #endif
 
+/** @brief Poller trigger mode: edge-triggered (ET) or level-triggered (LT). */
+#define PLATFORM_POLLER_TRIGGER_ET 0
+#define PLATFORM_POLLER_TRIGGER_LT 1
 /** @brief Poller submission queue handle (epoll fd or HANDLE). */
 #if defined(__linux__) || defined(__APPLE__)
 typedef int platform_poller_sq_t;
 /** @brief Platform file descriptor type (int on Unix). */
 typedef int platform_poller_fd_t;
+#define PLATFORM_POLLER_TRIGGER_MODE PLATFORM_POLLER_TRIGGER_ET
 #endif
 
 #if defined(_WIN32)
@@ -42,6 +46,7 @@ typedef int platform_poller_fd_t;
 typedef HANDLE platform_poller_sq_t;
 /** @brief Platform file descriptor type (SOCKET on Windows). */
 typedef SOCKET platform_poller_fd_t;
+#define PLATFORM_POLLER_TRIGGER_MODE PLATFORM_POLLER_TRIGGER_LT
 #endif
 
 /** @brief Poller operation mask (read, write, or both). */
@@ -68,17 +73,18 @@ typedef struct platform_poller_cqe_s {
  * The same sqe pointer must be used for all operations on that fd. The
  * caller is responsible for the sqe lifetime (must outlive the registration).
  *
- * When oneshot is false (default) the poller uses level-triggered semantics:
- * it keeps reporting readiness as long as the condition holds. When oneshot
- * is true the poller automatically disables the fd after delivering one
- * event; the caller must re-arm via platform_poller_mod() to receive
- * subsequent events.
+ * On Linux and macOS the poller uses edge-triggered (ET) semantics: it
+ * reports readiness only when the state transitions from not-ready to ready.
+ * The caller must drain the fd (read/write until EAGAIN) before parking.
+ *
+ * On Windows (wepoll) the poller uses level-triggered + one-shot semantics:
+ * it reports readiness once and then disables the fd; the caller must re-arm
+ * via platform_poller_mod() to receive subsequent events.
  */
 typedef struct platform_poller_sqe_s {
-    platform_poller_op_t op;      /*< Interest mask (read/write/both). */
-    platform_poller_fd_t fd;      /*< File descriptor to monitor. */
-    void*                ud;      /*< User data returned in cqe. */
-    int                  oneshot; /*< Non-zero for one-shot mode. */
+    platform_poller_op_t op; /*< Interest mask (read/write/both). */
+    platform_poller_fd_t fd; /*< File descriptor to monitor. */
+    void*                ud; /*< User data returned in cqe. */
 } platform_poller_sqe_t;
 
 /**

@@ -38,14 +38,12 @@ int platform_poller_init(platform_poller_sq_t* sq) {
 
 int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct epoll_event ee = {0};
+    ee.events = EPOLLET;
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
         ee.events |= EPOLLIN;
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
         ee.events |= EPOLLOUT;
-    }
-    if (sqe->oneshot) {
-        ee.events |= EPOLLONESHOT;
     }
     ee.data.ptr = sqe->ud;
     return epoll_ctl(*sq, EPOLL_CTL_ADD, sqe->fd, &ee);
@@ -53,14 +51,12 @@ int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
 
 int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct epoll_event ee = {0};
+    ee.events = EPOLLET;
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
         ee.events |= EPOLLIN;
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
         ee.events |= EPOLLOUT;
-    }
-    if (sqe->oneshot) {
-        ee.events |= EPOLLONESHOT;
     }
     ee.data.ptr = sqe->ud;
     return epoll_ctl(*sq, EPOLL_CTL_MOD, sqe->fd, &ee);
@@ -106,20 +102,15 @@ int platform_poller_init(platform_poller_sq_t* sq) {
 int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
     int           ret = 0;
-    unsigned short flags = EV_ADD;
-
-    if (sqe->oneshot) {
-        flags |= EV_DISPATCH;
-    }
 
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_READ, flags, 0, 0, sqe->ud);
+        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
             ret = -1;
         }
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_WRITE, flags, 0, 0, sqe->ud);
+        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
             ret = -1;
         }
@@ -130,13 +121,8 @@ int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
 int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
     int           ret = 0;
-    unsigned short flags = EV_ADD;
 
-    if (sqe->oneshot) {
-        flags |= EV_DISPATCH;
-    }
-
-    /* delete filters no longer wanted */
+    /* Delete filters no longer wanted. */
     if (!(sqe->op & PLATFORM_POLLER_RD_OP)) {
         EV_SET(&ke, sqe->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         kevent(*sq, &ke, 1, NULL, 0, NULL);
@@ -145,15 +131,15 @@ int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
         EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
         kevent(*sq, &ke, 1, NULL, 0, NULL);
     }
-    /* add/re-enable wanted filters */
+    /* Add/re-enable wanted filters with edge-triggered semantics. */
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_READ, flags, 0, 0, sqe->ud);
+        EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
             ret = -1;
         }
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
-        EV_SET(&ke, sqe->fd, EVFILT_WRITE, flags, 0, 0, sqe->ud);
+        EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
             ret = -1;
         }
