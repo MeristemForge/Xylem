@@ -23,8 +23,8 @@
  * TCP Echo Example (coroutine)
  *
  * Demonstrates coroutine-based TCP networking: one coroutine runs the
- * echo server, another runs the client.  Both execute concurrently
- * within a single process / single runtime.
+ * echo server, another runs the client. Both execute concurrently within
+ * a single process / single runtime.
  *
  * Usage: tcp-echo
  */
@@ -32,34 +32,6 @@
 #include "xylem.h"
 
 #define PORT 9000
-
-static void _handle_conn(void* arg) {
-    xylem_tcp_conn_t* conn = (xylem_tcp_conn_t*)arg;
-
-    xylem_tcp_frame_opts_t frame = {
-        .type = XYLEM_TCP_FRAME_DELIMITER,
-        .delimiter = { .delim = "\r\n", .delim_len = 2 },
-    };
-    xylem_tcp_set_framing(conn, &frame);
-
-    char buf[1024];
-    for (;;) {
-        int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
-        if (n <= 0) {
-            break;
-        }
-
-        xylem_logi("[server] recv: %.*s", (int)n, buf);
-
-        buf[n]     = '\r';
-        buf[n + 1] = '\n';
-        if (xylem_tcp_send(conn, buf, (size_t)n + 2) != 0) {
-            break;
-        }
-    }
-
-    xylem_tcp_close(conn);
-}
 
 static void _server(void* arg) {
     (void)arg;
@@ -71,10 +43,15 @@ static void _server(void* arg) {
     }
     xylem_logi("[server] listening on 127.0.0.1:%d", PORT);
 
-    /* Accept one connection for the demo. */
     xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
     if (conn) {
-        _handle_conn(conn);
+        char    buf[1024];
+        int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+        if (n > 0) {
+            xylem_logi("[server] recv: %.*s", (int)n, buf);
+            xylem_tcp_send(conn, buf, (size_t)n);
+        }
+        xylem_tcp_close(conn);
     }
 
     xylem_tcp_close_listener(ln);
@@ -83,9 +60,6 @@ static void _server(void* arg) {
 static void _client(void* arg) {
     (void)arg;
 
-    /* Give the server coroutine a moment to start listening. */
-    xylem_runtime_sleep(100);
-
     xylem_tcp_conn_t* conn = xylem_tcp_dial("127.0.0.1", PORT, 5000, NULL);
     if (!conn) {
         xylem_loge("[client] failed to connect");
@@ -93,15 +67,9 @@ static void _client(void* arg) {
     }
     xylem_logi("[client] connected");
 
-    xylem_tcp_frame_opts_t frame = {
-        .type = XYLEM_TCP_FRAME_DELIMITER,
-        .delimiter = { .delim = "\r\n", .delim_len = 2 },
-    };
-    xylem_tcp_set_framing(conn, &frame);
+    xylem_tcp_send(conn, "hello", 5);
 
-    xylem_tcp_send(conn, "hello\r\n", 7);
-
-    char buf[256];
+    char    buf[256];
     int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
     if (n > 0) {
         xylem_logi("[client] echo: %.*s", (int)n, buf);
@@ -114,6 +82,7 @@ static void _client(void* arg) {
 static void _main(void* arg) {
     (void)arg;
     xylem_runtime_spawn(_server, NULL);
+    xylem_runtime_sleep(100);
     xylem_runtime_spawn(_client, NULL);
 }
 
