@@ -23,7 +23,6 @@
 
 #include "xylem/xylem-logger.h"
 
-#include "runtime/runtime.h"
 #include "runtime/iowait.h"
 #include "addr.h"
 #include "platform/platform-socket.h"
@@ -316,17 +315,6 @@ static int _tcp_raw_send(
     return 0;
 }
 
-static void _tcp_conn_destroy_post_cb(void* ud) {
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-
-    iowait_close(tcp->waiter);
-    iowait_destroy(tcp->waiter);
-    free(tcp->read_buf);
-    shutdown(tcp->fd, PLATFORM_SHUT_WR);
-    platform_socket_close(tcp->fd);
-    free(tcp);
-}
-
 xylem_tcp_conn_t* xylem_tcp_dial(
     const char* host,
     uint16_t port,
@@ -578,7 +566,13 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
         return;
     }
     tcp->closed = true;
-    scheduler_post(runtime_get_scheduler(), _tcp_conn_destroy_post_cb, tcp);
+
+    iowait_close(tcp->waiter);
+    iowait_destroy(tcp->waiter);
+    free(tcp->read_buf);
+    shutdown(tcp->fd, PLATFORM_SHUT_WR);
+    platform_socket_close(tcp->fd);
+    free(tcp);
 }
 
 int xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {
