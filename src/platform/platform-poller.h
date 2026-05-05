@@ -46,37 +46,39 @@ typedef SOCKET platform_poller_fd_t;
 
 /** @brief Poller operation mask (read, write, or both). */
 typedef enum platform_poller_op_e {
-    PLATFORM_POLLER_NO_OP = 0,
-    PLATFORM_POLLER_RD_OP = 1,
-    PLATFORM_POLLER_WR_OP = 2,
-    PLATFORM_POLLER_RW_OP = 3,
+    PLATFORM_POLLER_NO_OP = 0, /*< No interest. */
+    PLATFORM_POLLER_RD_OP = 1, /*< Read readiness. */
+    PLATFORM_POLLER_WR_OP = 2, /*< Write readiness. */
+    PLATFORM_POLLER_RW_OP = 3, /*< Read and write readiness. */
 } platform_poller_op_t;
 
+/** @brief Maximum completion events per poll call. */
 #define PLATFORM_POLLER_CQE_NUM 1024
 
 /** @brief Completion queue entry returned by platform_poller_wait. */
 typedef struct platform_poller_cqe_s {
-    platform_poller_op_t op;
-    void*                ud;
+    platform_poller_op_t op; /*< Readiness mask that fired. */
+    void*                ud; /*< User data from the sqe registration. */
 } platform_poller_cqe_t;
 
 /**
- * platform_poller_sqe_t is a persistent per-fd structure. The caller
- * allocates it, sets op/fd/ud, and passes it to add/mod/del. The same
- * sqe pointer must be used for all operations on that fd. The caller
- * is responsible for the sqe lifetime (must outlive the registration).
+ * @brief Submission queue entry for registering an fd with the poller.
  *
- * When oneshot is false (default) the poller uses level-triggered
- * semantics: it keeps reporting readiness as long as the condition
- * holds.  When oneshot is true the poller automatically disables the
- * fd after delivering one event; the caller must re-arm via
- * platform_poller_mod() to receive subsequent events.
+ * The caller allocates this, sets op/fd/ud, and passes it to add/mod/del.
+ * The same sqe pointer must be used for all operations on that fd. The
+ * caller is responsible for the sqe lifetime (must outlive the registration).
+ *
+ * When oneshot is false (default) the poller uses level-triggered semantics:
+ * it keeps reporting readiness as long as the condition holds. When oneshot
+ * is true the poller automatically disables the fd after delivering one
+ * event; the caller must re-arm via platform_poller_mod() to receive
+ * subsequent events.
  */
 typedef struct platform_poller_sqe_s {
-    platform_poller_op_t op;
-    platform_poller_fd_t fd;
-    void*                ud;
-    int                  oneshot;
+    platform_poller_op_t op;      /*< Interest mask (read/write/both). */
+    platform_poller_fd_t fd;      /*< File descriptor to monitor. */
+    void*                ud;      /*< User data returned in cqe. */
+    int                  oneshot; /*< Non-zero for one-shot mode. */
 } platform_poller_sqe_t;
 
 /**
@@ -134,6 +136,7 @@ extern int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* 
  *
  * @return Number of ready events (>= 0), or -1 on error.
  */
-extern int platform_poller_wait(platform_poller_sq_t* sq,
-                                platform_poller_cqe_t* cqe,
-                                int timeout);
+extern int platform_poller_wait(
+    platform_poller_sq_t* sq,
+    platform_poller_cqe_t* cqe,
+    int timeout);
