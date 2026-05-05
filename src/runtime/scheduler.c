@@ -55,6 +55,7 @@ typedef struct _sched_worker_s {
     scheduler_park_fn_t  park_fn;
     void*                park_arg;
     _Atomic bool         parked;
+    _Atomic(mco_coro*)   runnext;
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -135,7 +136,13 @@ static void _sched_wake_worker(scheduler_t* sched) {
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
-    mco_coro* co = wsdeque_pop(w->deque);
+    /* Highest priority: runnext slot (LIFO, cache-hot). */
+    mco_coro* co = atomic_exchange(&w->runnext, NULL);
+    if (co) {
+        return co;
+    }
+
+    co = wsdeque_pop(w->deque);
     if (co) {
         return co;
     }
@@ -540,9 +547,14 @@ void scheduler_destroy(scheduler_t* sched) {
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
-    /* Fast path: if called from a worker thread, push to local deque. */
+    /* Fast path: if called from a worker thread, use runnext slot. */
     if (_tls_worker && _tls_worker->sched == sched) {
-        if (wsdeque_push(_tls_worker->deque, co) == 0) {
+        mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
+        if (!old) {
+            return;
+        }
+        /* Slot was occupied -- push the old one to local deque. */
+        if (wsdeque_push(_tls_worker->deque, old) == 0) {
             return;
         }
         /* Local deque full: drain half to global runq, then retry. */
@@ -552,11 +564,15 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
             runq_push_batch(sched->runq, batch, n);
             _sched_wake_worker(sched);
         }
-        if (wsdeque_push(_tls_worker->deque, co) == 0) {
+        if (wsdeque_push(_tls_worker->deque, old) == 0) {
             return;
         }
+        /* Still full -- fallback to global runq. */
+        runq_push(sched->runq, old);
+        _sched_wake_worker(sched);
+        return;
     }
-    /* Slow path: external thread or still full -- use global runq. */
+    /* Slow path: external thread -- use global runq. */
     runq_push(sched->runq, co);
     _sched_wake_worker(sched);
 }
