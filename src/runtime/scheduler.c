@@ -170,6 +170,14 @@ static int _sched_worker_entry(void* arg) {
                 if (!fn(co, arg)) {
                     wsdeque_push(w->deque, co);
                 }
+            } else {
+                /* Coroutine yielded for I/O (iowait). Do a non-blocking
+                 * poll to immediately pick up any ready events — this
+                 * avoids a full sem round-trip when I/O completes fast. */
+                int n = platform_poller_wait(sched->poller, cqes, 0);
+                if (n > 0) {
+                    _sched_process_poll_events(sched, cqes, n);
+                }
             }
             continue;
         }
