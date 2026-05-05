@@ -27,6 +27,7 @@
 #include "addr.h"
 #include "platform/platform-socket.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +47,7 @@ struct xylem_tcp_conn_s {
     size_t                 read_buf_pos;
     size_t                 read_buf_len;
     int                    last_error;
-    bool                   closed;
+    _Atomic bool           closed;
 };
 
 struct xylem_tcp_listener_s {
@@ -562,10 +563,9 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
-    if (tcp->closed) {
+    if (atomic_exchange(&tcp->closed, true)) {
         return;
     }
-    tcp->closed = true;
 
     iowait_close(tcp->waiter);
     iowait_destroy(tcp->waiter);
