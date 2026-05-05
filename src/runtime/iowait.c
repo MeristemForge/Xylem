@@ -25,9 +25,7 @@
 
 #include "minicoro/minicoro.h"
 
-#include <assert.h>
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 
 enum {
@@ -35,9 +33,6 @@ enum {
     IOWAIT_WAITING = 1,
     IOWAIT_READY   = 2,
 };
-
-#define IOWAIT_MAGIC_ALIVE 0xA11CE042u
-#define IOWAIT_MAGIC_DEAD  0xDEAD0042u
 
 typedef struct {
     iowait_t* w;
@@ -47,7 +42,6 @@ typedef struct {
 } _iowait_park_t;
 
 struct iowait_s {
-    _Atomic uint32_t      magic;
     platform_poller_sq_t* poller;
     platform_poller_sqe_t sqe;
     sched_timer_t*        rd_timer;
@@ -208,7 +202,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_store(&w->magic, IOWAIT_MAGIC_ALIVE);
     w->poller = runtime_get_poller();
     w->fd     = fd;
 
@@ -272,12 +265,6 @@ bool iowait_write(iowait_t* w, uint64_t timeout_ms) {
 }
 
 void iowait_close(iowait_t* w) {
-    uint32_t m = atomic_load(&w->magic);
-    if (m != IOWAIT_MAGIC_ALIVE) {
-        fprintf(stderr, "IOWAIT BUG: iowait_close on %s iowait %p (magic=0x%08x)\n",
-                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
-        assert(0 && "iowait_close: use-after-free or corruption");
-    }
     if (w->closed) {
         return;
     }
@@ -305,14 +292,6 @@ void iowait_close(iowait_t* w) {
 }
 
 void iowait_destroy(iowait_t* w) {
-    uint32_t m = atomic_load(&w->magic);
-    if (m != IOWAIT_MAGIC_ALIVE) {
-        fprintf(stderr, "IOWAIT BUG: iowait_destroy on %s iowait %p (magic=0x%08x)\n",
-                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
-        assert(0 && "iowait_destroy: double-free or corruption");
-    }
-    atomic_store(&w->magic, IOWAIT_MAGIC_DEAD);
-
     if (!w->closed) {
         iowait_close(w);
     }
@@ -337,12 +316,6 @@ bool iowait_is_closed(iowait_t* w) {
 
 void iowait_on_event(int revents, void* ud) {
     iowait_t* w = (iowait_t*)ud;
-    uint32_t m = atomic_load(&w->magic);
-    if (m != IOWAIT_MAGIC_ALIVE) {
-        fprintf(stderr, "IOWAIT BUG: iowait_on_event on %s iowait %p (magic=0x%08x)\n",
-                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
-        assert(0 && "iowait_on_event: stale epoll event for freed iowait");
-    }
     scheduler_t* sched = runtime_get_scheduler();
 
     if ((revents & PLATFORM_POLLER_RD_OP)) {

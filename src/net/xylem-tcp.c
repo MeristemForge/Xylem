@@ -28,19 +28,13 @@
 #include "addr.h"
 #include "platform/platform-socket.h"
 
-#include <assert.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define TCP_MAGIC_ALIVE 0xC0DE0001u
-#define TCP_MAGIC_DEAD  0xC0DEAD01u
-
 #define DEFAULT_READ_BUF_SIZE 65536
 
 struct xylem_tcp_conn_s {
-    _Atomic uint32_t       tcp_magic;
     iowait_t*              waiter;
     platform_sock_t        fd;
     addr_t                 peer_addr;
@@ -91,7 +85,6 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     }
     tcp->read_buf_cap = buf_cap;
 
-    atomic_store(&tcp->tcp_magic, TCP_MAGIC_ALIVE);
     platform_socket_enable_nodelay(fd, true);
     platform_socket_enable_keepalive(fd, true);
     return tcp;
@@ -325,17 +318,6 @@ static int _tcp_raw_send(
 
 static void _tcp_conn_destroy_post_cb(void* ud) {
     xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
-
-    uint32_t m = atomic_load(&tcp->tcp_magic);
-    if (m != TCP_MAGIC_ALIVE) {
-        fprintf(stderr,
-            "TCP BUG: destroy_post_cb on %s tcp=%p (magic=0x%08x) waiter=%p fd=%d\n",
-            m == TCP_MAGIC_DEAD ? "DEAD" : "CORRUPT",
-            (void*)tcp, m, (void*)tcp->waiter, (int)tcp->fd);
-        assert(0 && "_tcp_conn_destroy_post_cb: double-free");
-    }
-
-    atomic_store(&tcp->tcp_magic, TCP_MAGIC_DEAD);
 
     iowait_close(tcp->waiter);
     iowait_destroy(tcp->waiter);
