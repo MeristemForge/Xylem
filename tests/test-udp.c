@@ -86,13 +86,13 @@ typedef struct {
 static void _safety_timeout_cb(loop_t* loop,
                                 loop_timer_t* timer, void* ud) {
     (void)loop; (void)timer; (void)ud;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _stop_cb(loop_t* loop, loop_timer_t* timer,
                       void* ud) {
     (void)loop; (void)timer; (void)ud;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _lr_on_read(xylem_udp_t* udp, void* data, size_t len,
@@ -105,7 +105,7 @@ static void _lr_on_read(xylem_udp_t* udp, void* data, size_t len,
     }
     strncpy(ctx->sender_ip, host, sizeof(ctx->sender_ip) - 1);
     ctx->sender_port = port;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _lr_send_timer_cb(loop_t* loop,
@@ -137,7 +137,7 @@ static void _test_listen_recv_main(void* arg) {
 
 static void test_listen_recv(void) {
     _lr_ctx_t ctx = {0};
-    xylem_runtime_start(_test_listen_recv_main, &ctx, NULL);
+    xylem_runtime_run(_test_listen_recv_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(ctx.data_len == 5);
@@ -155,7 +155,7 @@ static void _ls_on_read(xylem_udp_t* udp, void* data, size_t len,
         memcpy(ctx->data, data, len);
         ctx->data_len = len;
     }
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _ls_send_timer_cb(loop_t* loop,
@@ -187,7 +187,7 @@ static void _test_listen_send_main(void* arg) {
 
 static void test_listen_send(void) {
     _ls_ctx_t ctx = {0};
-    xylem_runtime_start(_test_listen_send_main, &ctx, NULL);
+    xylem_runtime_run(_test_listen_send_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(ctx.data_len == 5);
@@ -202,7 +202,7 @@ static void _de_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
         memcpy(ctx->cli_data, data, len);
         ctx->cli_data_len = len;
     }
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _de_srv_on_read(xylem_udp_t* udp, void* data, size_t len,
@@ -245,7 +245,7 @@ static void _test_dial_echo_main(void* arg) {
 
 static void test_dial_echo(void) {
     _de_ctx_t ctx = {0};
-    xylem_runtime_start(_test_dial_echo_main, &ctx, NULL);
+    xylem_runtime_run(_test_dial_echo_main, &ctx, NULL);
 
     ASSERT(ctx.srv_data_len == 4);
     ASSERT(memcmp(ctx.srv_data, "ping", 4) == 0);
@@ -260,7 +260,7 @@ static void _da_cli_on_read(xylem_udp_t* udp, void* data, size_t len,
     ctx->read_called = 1;
     strncpy(ctx->addr_ip, host, sizeof(ctx->addr_ip) - 1);
     ctx->addr_port = port;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _da_srv_on_read(xylem_udp_t* udp, void* data, size_t len,
@@ -298,7 +298,7 @@ static void _test_dial_addr_main(void* arg) {
 
 static void test_dial_addr(void) {
     _da_ctx_t ctx = {0};
-    xylem_runtime_start(_test_dial_addr_main, &ctx, NULL);
+    xylem_runtime_run(_test_dial_addr_main, &ctx, NULL);
 
     ASSERT(ctx.read_called == 1);
     ASSERT(strcmp(ctx.addr_ip, UDP_HOST) == 0);
@@ -317,7 +317,7 @@ static void _db_on_read(xylem_udp_t* udp, void* data, size_t len,
         ctx->read_count++;
     }
     if (ctx->read_count >= 3) {
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -352,7 +352,7 @@ static void _test_datagram_boundary_main(void* arg) {
 
 static void test_datagram_boundary(void) {
     _db_ctx_t ctx = {0};
-    xylem_runtime_start(_test_datagram_boundary_main, &ctx, NULL);
+    xylem_runtime_run(_test_datagram_boundary_main, &ctx, NULL);
 
     ASSERT(ctx.read_count == 3);
     ASSERT(ctx.sizes[0] == 1);
@@ -385,7 +385,7 @@ static void _test_close_idempotent_main(void* arg) {
 
 static void test_close_idempotent(void) {
     _ci_ctx_t ctx = {0};
-    xylem_runtime_start(_test_close_idempotent_main, &ctx, NULL);
+    xylem_runtime_run(_test_close_idempotent_main, &ctx, NULL);
 }
 
 /* test_close_callback */
@@ -416,7 +416,7 @@ static void _test_close_callback_main(void* arg) {
 
 static void test_close_callback(void) {
     _cc_ctx_t ctx = {0};
-    xylem_runtime_start(_test_close_callback_main, &ctx, NULL);
+    xylem_runtime_run(_test_close_callback_main, &ctx, NULL);
     ASSERT(ctx.called == 1);
 }
 
@@ -442,7 +442,7 @@ static void _test_send_after_close_main(void* arg) {
 
 static void test_send_after_close(void) {
     _sac_ctx_t ctx = {0};
-    xylem_runtime_start(_test_send_after_close_main, &ctx, NULL);
+    xylem_runtime_run(_test_send_after_close_main, &ctx, NULL);
     ASSERT(ctx.result == -1);
 }
 
@@ -464,12 +464,12 @@ static void _test_userdata_main(void* arg) {
     ctx->got = xylem_udp_get_userdata(udp);
 
     xylem_udp_close(udp);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void test_userdata(void) {
     _ud_ctx_t ctx = { .value = 42 };
-    xylem_runtime_start(_test_userdata_main, &ctx, NULL);
+    xylem_runtime_run(_test_userdata_main, &ctx, NULL);
     ASSERT(ctx.got == &ctx.value);
     ASSERT(*(int*)ctx.got == 42);
 }
@@ -492,7 +492,7 @@ static void _xt_send_on_read(xylem_udp_t* udp, void* data, size_t len,
     if (len == 6 && memcmp(data, "xt_msg", 6) == 0) {
         ctx->verified = 1;
     }
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
@@ -531,7 +531,7 @@ static void _test_cross_thread_send_main(void* arg) {
 
 static void test_cross_thread_send(void) {
     _xt_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_send_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_send_main, &ctx, NULL);
 
     ASSERT(ctx.verified == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
@@ -546,7 +546,7 @@ static void _xt_close_on_close(xylem_udp_t* udp, int err,
     (void)err; (void)errmsg;
     _xt_ctx_t* ctx = (_xt_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->verified = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
@@ -581,7 +581,7 @@ static void _test_cross_thread_close_main(void* arg) {
 
 static void test_cross_thread_close(void) {
     _xt_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_close_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_close_main, &ctx, NULL);
 
     ASSERT(ctx.verified == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
@@ -596,7 +596,7 @@ static void _xt_soc_on_close(xylem_udp_t* udp, int err,
     (void)err; (void)errmsg;
     _xt_ctx_t* ctx = (_xt_ctx_t*)xylem_udp_get_userdata(udp);
     ctx->close_called = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _xt_soc_close_timer_cb(loop_t* loop,
@@ -644,7 +644,7 @@ static void _test_cross_thread_soc_main(void* arg) {
 
 static void test_cross_thread_send_stop_on_close(void) {
     _xt_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_soc_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_soc_main, &ctx, NULL);
 
     ASSERT(ctx.close_called == 1);
 

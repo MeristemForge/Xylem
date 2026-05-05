@@ -71,10 +71,13 @@ struct scheduler_s {
     platform_poller_sqe_t wakeup_sqe;
     platform_sock_t       wakeup_rd;
     platform_sock_t       wakeup_wr;
+    scheduler_idle_fn_t   idle_cb;
+    void*                 idle_ud;
     _Atomic bool          processing;
     _Atomic bool          running;
     _Atomic int32_t       nspinning;
     _Atomic int32_t       nparked;
+    _Atomic int64_t       alive;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -278,6 +281,12 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
         free(ctx);
         mco_destroy(co);
+
+        scheduler_t* sched = w->sched;
+        int64_t prev = atomic_fetch_sub(&sched->alive, 1);
+        if (prev == 1 && sched->idle_cb) {
+            sched->idle_cb(sched->idle_ud);
+        }
         return;
     }
     if (w->park_fn) {
@@ -629,6 +638,7 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     }
 
     ctx->co = co;
+    atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);
 }
 
@@ -714,4 +724,10 @@ void sched_timer_stop(sched_timer_t* timer) {
         timer->active = false;
     }
     mtx_unlock(&sched->timer_lock);
+}
+
+void scheduler_set_idle_cb(
+    scheduler_t* sched, scheduler_idle_fn_t cb, void* ud) {
+    sched->idle_cb = cb;
+    sched->idle_ud = ud;
 }

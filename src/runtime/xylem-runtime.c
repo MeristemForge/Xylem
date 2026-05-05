@@ -42,6 +42,11 @@ static scheduler_t*         g_sched;
 static dynpool_t*           g_dynpool;
 static platform_sem_t*      g_stop_sem;
 
+static void _runtime_idle_cb(void* ud) {
+    (void)ud;
+    xylem_runtime_shutdown();
+}
+
 typedef struct {
     sched_timer_t* timer;
     uint64_t       ms;
@@ -126,7 +131,7 @@ int xylem_runtime_submit(void (*fn)(void*), void* arg) {
     return 0;
 }
 
-void xylem_runtime_start(
+void xylem_runtime_run(
     void (*main_fn)(void*),
     void* arg,
     xylem_runtime_opts_t* opts) {
@@ -144,9 +149,10 @@ void xylem_runtime_start(
     g_dynpool = dynpool_create(NULL);
     g_stop_sem = platform_sem_create(0);
 
+    scheduler_set_idle_cb(g_sched, _runtime_idle_cb, NULL);
     scheduler_spawn(g_sched, main_fn, arg);
 
-    /* Block main thread until xylem_runtime_stop() is called. */
+    /* Block until all coroutines exit or xylem_runtime_shutdown() is called. */
     platform_sem_wait(g_stop_sem);
 
     scheduler_destroy(g_sched);
@@ -155,7 +161,7 @@ void xylem_runtime_start(
     g_stop_sem = NULL;
 }
 
-void xylem_runtime_stop(void) {
+void xylem_runtime_shutdown(void) {
     if (g_stop_sem) {
         platform_sem_post(g_stop_sem);
     }

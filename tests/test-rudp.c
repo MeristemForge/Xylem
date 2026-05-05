@@ -61,7 +61,7 @@ static void _safety_timeout_cb(loop_t* loop,
                                 loop_timer_t* timer,
                                 void* ud) {
     (void)loop; (void)timer; (void)ud;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _rudp_srv_accept_cb(xylem_rudp_server_t* server,
@@ -111,7 +111,7 @@ static void _echo_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     if (ctx) {
         ctx->close_called++;
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -149,7 +149,7 @@ static void _test_handshake_echo_main(void* arg) {
 
 static void test_handshake_and_echo(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_handshake_echo_main, &ctx, NULL);
+    xylem_runtime_run(_test_handshake_echo_main, &ctx, NULL);
 
     ASSERT(ctx.accept_called == 1);
     ASSERT(ctx.connect_called == 1);
@@ -180,7 +180,7 @@ static void _ud_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -210,7 +210,7 @@ static void _test_session_userdata_main(void* arg) {
 static void test_session_userdata(void) {
     _test_ctx_t ctx = {0};
     ctx.value = 42;
-    xylem_runtime_start(_test_session_userdata_main, &ctx, NULL);
+    xylem_runtime_run(_test_session_userdata_main, &ctx, NULL);
     ASSERT(ctx.verified == 1);
 }
 
@@ -230,13 +230,13 @@ static void _test_server_userdata_main(void* arg) {
     ASSERT(*(int*)got == 99);
 
     xylem_rudp_close_server(ctx->rudp_server);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void test_server_userdata(void) {
     _test_ctx_t ctx = {0};
     ctx.value = 99;
-    xylem_runtime_start(_test_server_userdata_main, &ctx, NULL);
+    xylem_runtime_run(_test_server_userdata_main, &ctx, NULL);
 }
 
 /* test_peer_addr */
@@ -261,7 +261,7 @@ static void _pa_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -290,7 +290,7 @@ static void _test_peer_addr_main(void* arg) {
 
 static void test_peer_addr(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_peer_addr_main, &ctx, NULL);
+    xylem_runtime_run(_test_peer_addr_main, &ctx, NULL);
     ASSERT(ctx.verified == 1);
 }
 
@@ -309,7 +309,7 @@ static void _sac_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -338,7 +338,7 @@ static void _test_send_after_close_main(void* arg) {
 
 static void test_send_after_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_send_after_close_main, &ctx, NULL);
+    xylem_runtime_run(_test_send_after_close_main, &ctx, NULL);
     ASSERT(ctx.verified == 1);
     ASSERT(ctx.send_result == -1);
 }
@@ -358,7 +358,7 @@ static void _ci_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -387,7 +387,7 @@ static void _test_close_idempotent_main(void* arg) {
 
 static void test_close_idempotent(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_close_idempotent_main, &ctx, NULL);
+    xylem_runtime_run(_test_close_idempotent_main, &ctx, NULL);
     ASSERT(ctx.verified == 1);
 }
 
@@ -436,7 +436,7 @@ static void _csas_drain_timer_cb(loop_t* loop,
         xylem_rudp_close(ctx->cli_session);
         ctx->cli_session = NULL;
     }
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_csas_main(void* arg) {
@@ -474,7 +474,7 @@ static void _test_csas_main(void* arg) {
 
 static void test_close_server_with_active_session(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_csas_main, &ctx, NULL);
+    xylem_runtime_run(_test_csas_main, &ctx, NULL);
     ASSERT(ctx.close_called >= 1);
 }
 
@@ -497,12 +497,12 @@ static void _test_send_before_handshake_main(void* arg) {
 
     xylem_rudp_close(ctx->cli_session);
     xylem_rudp_close_server(ctx->rudp_server);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void test_send_before_handshake(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_send_before_handshake_main, &ctx, NULL);
+    xylem_runtime_run(_test_send_before_handshake_main, &ctx, NULL);
     ASSERT(ctx.send_result == -1);
 }
 
@@ -541,7 +541,7 @@ static void _multi_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
 
     if (ctx->close_called >= 2) {
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -599,7 +599,7 @@ static void test_multi_session(void) {
     memcpy(mc2.send_data, "BBB", 3);
 
     void* args[3] = { &ctx, &mc1, &mc2 };
-    xylem_runtime_start(_test_multi_session_main, args, NULL);
+    xylem_runtime_run(_test_multi_session_main, args, NULL);
 
     ASSERT(ctx.accept_called == 2);
     ASSERT(mc1.done == true);
@@ -618,7 +618,7 @@ static void _ht_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         ctx->close_called++;
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -644,7 +644,7 @@ static void _test_handshake_timeout_main(void* arg) {
 
 static void test_handshake_timeout(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_handshake_timeout_main, &ctx, NULL);
+    xylem_runtime_run(_test_handshake_timeout_main, &ctx, NULL);
     ASSERT(ctx.close_called == 1);
 }
 
@@ -694,7 +694,7 @@ static void _test_aes_echo_main(void* arg) {
 
 static void test_aes_echo(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_aes_echo_main, &ctx, NULL);
+    xylem_runtime_run(_test_aes_echo_main, &ctx, NULL);
 
     ASSERT(ctx.accept_called == 1);
     ASSERT(ctx.connect_called == 1);
@@ -752,7 +752,7 @@ static void _test_aes_fec_main(void* arg) {
 
 static void test_aes_with_fec(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_aes_fec_main, &ctx, NULL);
+    xylem_runtime_run(_test_aes_fec_main, &ctx, NULL);
 
     ASSERT(ctx.accept_called == 1);
     ASSERT(ctx.connect_called == 1);
@@ -803,7 +803,7 @@ static void _xt_send_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
         ctx->close_called++;
         xylem_rudp_conn_release(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -841,7 +841,7 @@ static void _test_cross_thread_send_main(void* arg) {
 
 static void test_cross_thread_send(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_send_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_send_main, &ctx, NULL);
 
     ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.received_len == 5);
@@ -882,7 +882,7 @@ static void _xt_close_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
         ctx->close_called++;
         xylem_rudp_conn_release(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -914,7 +914,7 @@ static void _test_cross_thread_close_main(void* arg) {
 
 static void test_cross_thread_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_close_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_close_main, &ctx, NULL);
 
     ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.close_called == 1);
@@ -955,7 +955,7 @@ static void _xt_sc_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
         ctx->close_called++;
         xylem_rudp_conn_release(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -1010,7 +1010,7 @@ static void _test_cross_thread_soc_main(void* arg) {
 
 static void test_cross_thread_send_stop_on_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_cross_thread_soc_main, &ctx, NULL);
+    xylem_runtime_run(_test_cross_thread_soc_main, &ctx, NULL);
 
     ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.close_called == 1);

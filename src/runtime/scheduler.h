@@ -185,3 +185,23 @@ extern void sched_timer_start(
  * @param timer  Timer handle.
  */
 extern void sched_timer_stop(sched_timer_t* timer);
+
+/**
+ * @brief Callback invoked when all coroutines have exited.
+ *
+ * @param ud  User data from scheduler_set_idle_cb().
+ */
+typedef void (*scheduler_idle_fn_t)(void* ud);
+
+/**
+ * @brief Register a callback for when all coroutines have exited.
+ *
+ * The callback fires once when the alive coroutine count drops to zero.
+ * Thread-safe. Only one callback may be registered at a time.
+ *
+ * @param sched  Scheduler handle.
+ * @param cb     Callback, or NULL to clear.
+ * @param ud     User data passed to cb.
+ */
+extern void scheduler_set_idle_cb(
+    scheduler_t* sched, scheduler_idle_fn_t cb, void* ud);

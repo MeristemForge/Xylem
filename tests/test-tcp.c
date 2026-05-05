@@ -42,7 +42,7 @@ typedef struct {
 static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)ud;
     sched_timer_destroy(timer);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
     ASSERT(0 && "test timed out");
 }
 
@@ -113,7 +113,7 @@ static void _test_echo_client(void* arg) {
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(ctx->server);
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_echo_main(void* arg) {
@@ -125,7 +125,7 @@ static void _test_echo_main(void* arg) {
 
 static void test_echo(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_echo_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_echo_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -168,7 +168,7 @@ static void _fixed_client(void* arg) {
 
     xylem_tcp_close(conn);
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_fixed_main(void* arg) {
@@ -180,7 +180,7 @@ static void _test_fixed_main(void* arg) {
 
 static void test_fixed(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_fixed_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_fixed_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -225,7 +225,7 @@ static void _delim_client(void* arg) {
 
     xylem_tcp_close(conn);
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_delim_main(void* arg) {
@@ -237,7 +237,7 @@ static void _test_delim_main(void* arg) {
 
 static void test_delimiter(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_delim_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_delim_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -296,7 +296,7 @@ static void _frame_client(void* arg) {
 
     xylem_tcp_close(conn);
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_frame_main(void* arg) {
@@ -308,7 +308,7 @@ static void _test_frame_main(void* arg) {
 
 static void test_frame(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_frame_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_frame_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -321,7 +321,7 @@ static void _timeout_client(void* arg) {
     ASSERT(conn == NULL);
 
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_dial_timeout_main(void* arg) {
@@ -332,7 +332,7 @@ static void _test_dial_timeout_main(void* arg) {
 
 static void test_dial_timeout(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_dial_timeout_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_dial_timeout_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -349,7 +349,7 @@ static void _userdata_test(void* arg) {
 
     xylem_tcp_close_listener(ctx->server);
     ctx->tested = 1;
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _test_userdata_main(void* arg) {
@@ -360,7 +360,7 @@ static void _test_userdata_main(void* arg) {
 
 static void test_userdata(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_start(_test_userdata_main, &ctx, &_rt_opts);
+    xylem_runtime_run(_test_userdata_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 

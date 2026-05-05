@@ -34,7 +34,7 @@ static xylem_runtime_opts_t _rt_opts = { .workers = 4 };
 static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)ud;
     sched_timer_destroy(timer);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
     ASSERT(0 && "test timed out");
 }
 
@@ -64,7 +64,7 @@ static void _mtx_worker(void* arg) {
     if (prev == MTX_WORKERS - 1) {
         ASSERT(ctx->counter == MTX_WORKERS * MTX_INCREMENTS);
         ctx->tested = 1;
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -81,7 +81,7 @@ static void test_mutex_concurrent(void) {
     fprintf(stderr, "=== test_mutex_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _mtx_ctx_t ctx = {0};
-        xylem_runtime_start(_test_mtx_main, &ctx, &_rt_opts);
+        xylem_runtime_run(_test_mtx_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         xylem_mutex_destroy(ctx.mtx);
     }
@@ -107,7 +107,7 @@ static void _mtx_ping(void* arg) {
     if (prev == 1) {
         ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
         ctx->tested = 1;
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -122,7 +122,7 @@ static void _mtx_pong(void* arg) {
     if (prev == 1) {
         ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
         ctx->tested = 1;
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
     }
 }
 
@@ -138,7 +138,7 @@ static void test_mutex_ping_pong(void) {
     fprintf(stderr, "=== test_mutex_ping_pong\n");
     for (int round = 0; round < 50; round++) {
         _mtx_pp_ctx_t ctx = {0};
-        xylem_runtime_start(_test_mtx_pp_main, &ctx, &_rt_opts);
+        xylem_runtime_run(_test_mtx_pp_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         xylem_mutex_destroy(ctx.mtx);
     }

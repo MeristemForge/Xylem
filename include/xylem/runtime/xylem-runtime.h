@@ -28,24 +28,25 @@ typedef struct xylem_runtime_opts_s {
 } xylem_runtime_opts_t;
 
 /**
- * @brief Start the global runtime and block until it exits.
+ * @brief Run the global runtime until all coroutines exit.
  *
- * The runtime exits when all active handles are closed or
- * xylem_runtime_stop() is called.
+ * Blocks the calling thread until every spawned coroutine has returned,
+ * or xylem_runtime_shutdown() is called to force an early exit.
  *
  * @param main_fn  Initial coroutine entry point.
  * @param arg      Argument passed to main_fn.
  * @param opts     Runtime options, NULL for defaults.
  */
-extern void xylem_runtime_start(void (*main_fn)(void*), void* arg,
-                                xylem_runtime_opts_t* opts);
+extern void xylem_runtime_run(void (*main_fn)(void*), void* arg,
+                              xylem_runtime_opts_t* opts);
 
 /**
- * @brief Stop the global runtime.
+ * @brief Force the runtime to shut down immediately.
  *
- * Thread-safe.
+ * Thread-safe. Unblocks xylem_runtime_run() without waiting for
+ * coroutines to finish naturally.
  */
-extern void xylem_runtime_stop(void);
+extern void xylem_runtime_shutdown(void);
 
 /**
  * @brief Spawn a new coroutine.

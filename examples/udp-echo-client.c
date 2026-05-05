@@ -37,7 +37,7 @@ static void _on_read(xylem_udp_t* udp, void* data, size_t len,
                      const char* host, uint16_t port) {
     (void)udp; (void)host; (void)port;
     xylem_logi("echo: %.*s", (int)len, (char*)data);
-    xylem_runtime_stop();
+    xylem_runtime_shutdown();
 }
 
 static void _client_main(void* arg) {
@@ -50,7 +50,7 @@ static void _client_main(void* arg) {
     xylem_udp_t* udp = xylem_udp_dial("127.0.0.1", SERVER_PORT, &handler);
     if (!udp) {
         xylem_loge("failed to connect to 127.0.0.1:%d", SERVER_PORT);
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
         return;
     }
 
@@ -60,7 +60,7 @@ static void _client_main(void* arg) {
 
 int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-    xylem_runtime_start(_client_main, NULL, NULL);
+    xylem_runtime_run(_client_main, NULL, NULL);
     xylem_logger_deinit();
     return 0;
 }

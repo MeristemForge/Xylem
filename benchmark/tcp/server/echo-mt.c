@@ -23,7 +23,7 @@ static void _acceptor(void* arg) {
         xylem_tcp_listen("0.0.0.0", (uint16_t)port, &opts);
     if (!server) {
         fprintf(stderr, "listen failed\n");
-        xylem_runtime_stop();
+        xylem_runtime_shutdown();
         return;
     }
     fprintf(stderr, "listening on 0.0.0.0:%d\n", port);
@@ -42,6 +42,6 @@ int main(int argc, char** argv) {
     xylem_runtime_opts_t rt_opts = {0};
     rt_opts.workers = workers;
     fprintf(stderr, "echo-mt: port=%d workers=%d\n", port, workers);
-    xylem_runtime_start(_acceptor, &port, &rt_opts);
+    xylem_runtime_run(_acceptor, &port, &rt_opts);
     return 0;
 }

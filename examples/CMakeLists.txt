@@ -4,12 +4,9 @@ project(examples LANGUAGES C)
 
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
-# TCP examples (always available)
-add_executable(tcp-echo-server tcp-echo-server.c)
-target_link_libraries(tcp-echo-server PRIVATE xylem)
-
-add_executable(tcp-echo-client tcp-echo-client.c)
-target_link_libraries(tcp-echo-client PRIVATE xylem)
+# TCP example (always available)
+add_executable(tcp-echo tcp-echo.c)
+target_link_libraries(tcp-echo PRIVATE xylem)
 
 # HTTP examples
 if(XYLEM_ENABLE_HTTP)
