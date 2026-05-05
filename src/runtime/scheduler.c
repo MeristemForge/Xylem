@@ -452,6 +452,13 @@ void scheduler_destroy(scheduler_t* sched) {
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+    /* Fast path: if called from a worker thread, push to local deque. */
+    if (_tls_worker && _tls_worker->sched == sched) {
+        if (wsdeque_push(_tls_worker->deque, co) == 0) {
+            return;
+        }
+    }
+    /* Slow path: external thread or deque full -- use global runq. */
     runq_push(sched->runq, co);
     _sched_wake_poller(sched);
 }
@@ -472,13 +479,6 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     if (mco_create(&co, &desc) != MCO_SUCCESS) {
         free(ctx);
         return;
-    }
-
-    if (_tls_worker && _tls_worker->sched == sched) {
-        if (wsdeque_push(_tls_worker->deque, co) == 0) {
-            _sched_wake_poller(sched);
-            return;
-        }
     }
 
     scheduler_schedule(sched, co);
