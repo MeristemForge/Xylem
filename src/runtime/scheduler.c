@@ -42,7 +42,7 @@
 
 #define SCHED_DEFAULT_DEQUE_LOG2 10
 #define SCHED_CORO_STACK_SIZE    131072
-#define SCHED_POLL_TIMEOUT_MS    5
+#define SCHED_MAX_POLL_MS        5
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -163,7 +163,7 @@ static int _sched_timer_next_timeout(scheduler_t* sched) {
     return timeout;
 }
 
-static int _sched_timer_process(scheduler_t* sched, uint64_t now_ms) {
+static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
     for (;;) {
         sched_timer_t* timer = NULL;
 
@@ -209,19 +209,16 @@ static int _sched_timer_process(scheduler_t* sched, uint64_t now_ms) {
     return timeout;
 }
 
-static void _sched_process_timers_and_posts(scheduler_t* sched) {
+static void _sched_process_posts(scheduler_t* sched) {
     mpsc_node_t* node;
     while ((node = mpsc_pop(&sched->posts)) != NULL) {
         _sched_post_t* req = mpsc_entry(node, _sched_post_t, node);
         req->cb(req->ud);
         free(req);
     }
-
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    _sched_timer_process(sched, now);
 }
 
-static void _sched_process_poll_events(
+static void _sched_process_events(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
     int n) {
@@ -273,22 +270,26 @@ static int _sched_worker_entry(void* arg) {
         }
 
         /* No runnable coroutines -- block in epoll_wait. Use the nearest
-         * timer deadline as timeout so timers fire precisely. */
+         * timer deadline as timeout so timers fire precisely. Cap at
+         * SCHED_MAX_POLL_MS to ensure shutdown is detected promptly. */
         int poll_ms = _sched_timer_next_timeout(sched);
-        if (poll_ms < 0 || poll_ms > SCHED_POLL_TIMEOUT_MS) {
-            poll_ms = SCHED_POLL_TIMEOUT_MS;
+        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
+            poll_ms = SCHED_MAX_POLL_MS;
         }
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
 
         if (n > 0) {
-            _sched_process_poll_events(sched, cqes, n);
+            _sched_process_events(sched, cqes, n);
         }
 
-        /* Process expired timers and posts. Only one worker does this at
-         * a time (mpsc queue is single-consumer). */
+        /* Process expired timers (mutex-protected, safe from any worker). */
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        _sched_process_timers(sched, now);
+
+        /* Drain posts (MPSC single-consumer, needs CAS). */
         bool expected = false;
         if (atomic_compare_exchange_strong(&sched->processing, &expected, true)) {
-            _sched_process_timers_and_posts(sched);
+            _sched_process_posts(sched);
             atomic_store(&sched->processing, false);
         }
     }
@@ -333,13 +334,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
 
     mtx_destroy(&sched->timer_lock);
 
-    /* Drain any remaining posts. */
-    mpsc_node_t* node;
-    while ((node = mpsc_pop(&sched->posts)) != NULL) {
-        _sched_post_t* req = mpsc_entry(node, _sched_post_t, node);
-        req->cb(req->ud);
-        free(req);
-    }
+    _sched_process_posts(sched);
 
     if (sched->wakeup_rd) {
         platform_poller_del(&sched->poller, &sched->wakeup_sqe);
