@@ -142,6 +142,27 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
+static int _sched_timer_next_timeout(scheduler_t* sched) {
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+
+    mtx_lock(&sched->timer_lock);
+    heap_node_t* root = heap_peek(&sched->timers);
+    if (!root) {
+        mtx_unlock(&sched->timer_lock);
+        return -1;
+    }
+    sched_timer_t* t = heap_entry(root, sched_timer_t, heap_node);
+    int timeout;
+    if (t->timeout <= now) {
+        timeout = 0;
+    } else {
+        uint64_t diff = t->timeout - now;
+        timeout = (diff > INT32_MAX) ? INT32_MAX : (int)diff;
+    }
+    mtx_unlock(&sched->timer_lock);
+    return timeout;
+}
+
 static int _sched_timer_process(scheduler_t* sched, uint64_t now_ms) {
     for (;;) {
         sched_timer_t* timer = NULL;
@@ -253,10 +274,13 @@ static int _sched_worker_entry(void* arg) {
             continue;
         }
 
-        /* No runnable coroutines -- block in epoll_wait. All workers can
-         * poll simultaneously; EPOLLONESHOT ensures each event goes to
-         * exactly one worker. */
-        int n = platform_poller_wait(&sched->poller, cqes, SCHED_POLL_TIMEOUT_MS);
+        /* No runnable coroutines -- block in epoll_wait. Use the nearest
+         * timer deadline as timeout so timers fire precisely. */
+        int poll_ms = _sched_timer_next_timeout(sched);
+        if (poll_ms < 0 || poll_ms > SCHED_POLL_TIMEOUT_MS) {
+            poll_ms = SCHED_POLL_TIMEOUT_MS;
+        }
+        int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
 
         if (n > 0) {
             _sched_process_poll_events(sched, cqes, n);
