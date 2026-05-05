@@ -103,12 +103,13 @@ void xylem_mutex_lock(xylem_mutex_t* mtx) {
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
     _spin_lock(&mtx->guard);
     queue_node_t* node = queue_dequeue(&mtx->waiters);
+    if (!node) {
+        atomic_store(&mtx->state, 0);
+    }
     _spin_unlock(&mtx->guard);
 
     if (node) {
         _mutex_waiter_t* w = queue_entry(node, _mutex_waiter_t, node);
         scheduler_schedule(runtime_get_scheduler(), w->co);
-    } else {
-        atomic_store(&mtx->state, 0);
     }
 }
