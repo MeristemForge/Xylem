@@ -34,7 +34,7 @@ typedef struct xylem_runtime_opts_s {
  * or xylem_runtime_shutdown() is called to force an early exit.
  *
  * @param main_fn  Initial coroutine entry point.
- * @param arg      Argument passed to main_fn.
+ * @param arg      Opaque argument passed to main_fn.
  * @param opts     Runtime options, NULL for defaults.
  */
 extern void xylem_runtime_run(void (*main_fn)(void*), void* arg,
