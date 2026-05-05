@@ -150,10 +150,23 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
         return co;
     }
 
-    queue_node_t* node = runq_pop(sched->runq);
-    if (node) {
-        _coro_ctx_t* ctx = queue_entry(node, _coro_ctx_t, runq_node);
-        return ctx->co;
+    {
+        /* Grab a fair share: at most globalq_len/nworkers+1, capped at 32. */
+        int32_t grab = 32;
+        if (grab > sched->nworkers) {
+            grab = grab / sched->nworkers + 1;
+        }
+        queue_node_t* nodes[32];
+        int32_t n = runq_pop_batch(sched->runq, nodes, grab);
+        if (n > 0) {
+            /* Push all but the first into the local deque. */
+            for (int32_t i = 1; i < n; i++) {
+                _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
+                wsdeque_push(w->deque, c->co);
+            }
+            _coro_ctx_t* ctx = queue_entry(nodes[0], _coro_ctx_t, runq_node);
+            return ctx->co;
+        }
     }
 
     if (sched->nworkers > 1) {

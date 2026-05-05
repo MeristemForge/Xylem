@@ -77,3 +77,17 @@ extern void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count);
  * @return Queue node pointer, or NULL if empty.
  */
 extern queue_node_t* runq_pop(runq_t* rq);
+
+/**
+ * @brief Pop up to @p max nodes from the run queue in one lock acquisition.
+ *
+ * Thread-safe: can be called from any thread. More efficient than calling
+ * runq_pop in a loop when a worker needs to refill its local deque.
+ *
+ * @param rq    Run queue.
+ * @param out   Output array of pointers to intrusive queue nodes.
+ * @param max   Maximum number of nodes to dequeue.
+ *
+ * @return Number of nodes actually dequeued (0 if the queue was empty).
+ */
+extern int32_t runq_pop_batch(runq_t* rq, queue_node_t** out, int32_t max);

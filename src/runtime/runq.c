@@ -71,3 +71,20 @@ queue_node_t* runq_pop(runq_t* rq) {
     mtx_unlock(&rq->lock);
     return node;
 }
+
+int32_t runq_pop_batch(runq_t* rq, queue_node_t** out, int32_t max) {
+    if (max <= 0) {
+        return 0;
+    }
+    mtx_lock(&rq->lock);
+    int32_t n = 0;
+    while (n < max) {
+        queue_node_t* node = queue_dequeue(&rq->q);
+        if (!node) {
+            break;
+        }
+        out[n++] = node;
+    }
+    mtx_unlock(&rq->lock);
+    return n;
+}
