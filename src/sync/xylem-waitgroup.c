@@ -68,8 +68,11 @@ static bool _wg_park_cb(mco_coro* co, void* arg) {
     xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
     atomic_store(&wg->wait_coro, co);
     if (atomic_load(&wg->cnt) == 0) {
-        atomic_store(&wg->wait_coro, NULL);
-        return false;
+        mco_coro* expected = co;
+        if (atomic_compare_exchange_strong(&wg->wait_coro, &expected, NULL)) {
+            return false;
+        }
+        return true;
     }
     return true;
 }

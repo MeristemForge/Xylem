@@ -105,11 +105,11 @@ static void _iowait_arm(iowait_t* w) {
 static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     iowait_t* w = (iowait_t*)ud;
-    if (w->rd_park) {
-        w->rd_park->timed_out = true;
-    }
     mco_coro* co = _iowait_wake(&w->rd_state, &w->rd_coro);
     if (co) {
+        if (w->rd_park) {
+            w->rd_park->timed_out = true;
+        }
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 }
@@ -117,11 +117,11 @@ static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
 static void _iowait_wr_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     iowait_t* w = (iowait_t*)ud;
-    if (w->wr_park) {
-        w->wr_park->timed_out = true;
-    }
     mco_coro* co = _iowait_wake(&w->wr_state, &w->wr_coro);
     if (co) {
+        if (w->wr_park) {
+            w->wr_park->timed_out = true;
+        }
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 }

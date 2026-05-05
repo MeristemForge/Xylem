@@ -98,15 +98,22 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     atomic_store(&ch->wait_coro, co);
 
     if (atomic_load(&ch->closed)) {
-        atomic_store(&ch->wait_coro, NULL);
-        return false;
+        mco_coro* expected = co;
+        if (atomic_compare_exchange_strong(&ch->wait_coro, &expected, NULL)) {
+            return false;
+        }
+        return true;
     }
 
     mpsc_node_t* node = mpsc_pop(&ch->queue);
     if (node) {
-        atomic_store(&ch->wait_coro, NULL);
+        mco_coro* expected = co;
+        if (atomic_compare_exchange_strong(&ch->wait_coro, &expected, NULL)) {
+            mpsc_push(&ch->queue, node);
+            return false;
+        }
         mpsc_push(&ch->queue, node);
-        return false;
+        return true;
     }
 
     return true;
