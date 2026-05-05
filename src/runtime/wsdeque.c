@@ -114,3 +114,33 @@ mco_coro* wsdeque_steal(wsdeque_t* dq) {
 
     return co;
 }
+
+int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
+    int64_t t = atomic_load_explicit(&dq->top, memory_order_seq_cst);
+    int64_t b = atomic_load_explicit(&dq->bottom, memory_order_acquire);
+
+    int64_t size = b - t;
+    if (size <= 0) {
+        return 0;
+    }
+
+    /* Steal half, but at least 1 and at most cap. */
+    int64_t half = (size + 1) / 2;
+    if (half > (int64_t)cap) {
+        half = (int64_t)cap;
+    }
+
+    /* Read items before CAS. */
+    for (int64_t i = 0; i < half; i++) {
+        out[i] = dq->buffer[(t + i) & dq->mask];
+    }
+
+    /* Atomically advance top by half. */
+    if (!atomic_compare_exchange_strong_explicit(
+            &dq->top, &t, t + half,
+            memory_order_seq_cst, memory_order_relaxed)) {
+        return 0;
+    }
+
+    return (int32_t)half;
+}

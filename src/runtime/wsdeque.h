@@ -71,3 +71,17 @@ extern mco_coro* wsdeque_pop(wsdeque_t* dq);
  * @return Coroutine pointer, or NULL if empty or contended.
  */
 extern mco_coro* wsdeque_steal(wsdeque_t* dq);
+
+/**
+ * @brief Steal half of the coroutines from the deque (any thread).
+ *
+ * Atomically takes up to half of the available items from the top of
+ * the deque and writes them into the output buffer.
+ *
+ * @param dq   Deque to steal from.
+ * @param out  Output buffer to receive stolen coroutines.
+ * @param cap  Capacity of the output buffer.
+ *
+ * @return Number of coroutines stolen (0 if empty or contended).
+ */
+extern int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap);

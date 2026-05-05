@@ -148,9 +148,15 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
         uint32_t start = w->index + 1;
         for (int32_t i = 0; i < sched->nworkers - 1; i++) {
             uint32_t idx = (start + (uint32_t)i) % (uint32_t)sched->nworkers;
-            co = wsdeque_steal(sched->workers[idx].deque);
-            if (co) {
-                return co;
+            mco_coro* batch[128];
+            int32_t n = wsdeque_steal_half(
+                sched->workers[idx].deque, batch, 128);
+            if (n > 0) {
+                /* Push all but the first into our local deque. */
+                for (int32_t j = 1; j < n; j++) {
+                    wsdeque_push(w->deque, batch[j]);
+                }
+                return batch[0];
             }
         }
     }
