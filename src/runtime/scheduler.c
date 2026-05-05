@@ -285,6 +285,11 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     }
 }
 
+static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
+    mco_resume(co);
+    _sched_handle_yield(w, co);
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
@@ -297,8 +302,7 @@ static int _sched_worker_entry(void* arg) {
         mco_coro* co = _sched_try_get_coro(sched, w);
 
         if (co) {
-            mco_resume(co);
-            _sched_handle_yield(w, co);
+            _sched_run_coro(w, co);
             continue;
         }
 
@@ -323,8 +327,7 @@ static int _sched_worker_entry(void* arg) {
 
         if (found_work) {
             atomic_fetch_sub(&sched->nspinning, 1);
-            mco_resume(co);
-            _sched_handle_yield(w, co);
+            _sched_run_coro(w, co);
             continue;
         }
 
@@ -373,8 +376,7 @@ static int _sched_worker_entry(void* arg) {
             }
 
             if (co) {
-                mco_resume(co);
-                _sched_handle_yield(w, co);
+                _sched_run_coro(w, co);
             }
             continue;
         }
@@ -393,8 +395,7 @@ static int _sched_worker_entry(void* arg) {
         if (!co) {
             break;
         }
-        mco_resume(co);
-        _sched_handle_yield(w, co);
+        _sched_run_coro(w, co);
     }
 
     return 0;
