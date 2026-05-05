@@ -38,7 +38,6 @@ struct xylem_tcp_conn_s {
     iowait_t*              waiter;
     platform_sock_t        fd;
     addr_t                 peer_addr;
-    void*                  userdata;
     uint64_t               read_timeout_ms;
     uint64_t               write_timeout_ms;
     xylem_tcp_frame_opts_t frame_opts;
@@ -53,7 +52,6 @@ struct xylem_tcp_conn_s {
 struct xylem_tcp_listener_s {
     iowait_t*       waiter;
     platform_sock_t fd;
-    void*           userdata;
     uint64_t        read_timeout_ms;
     uint64_t        write_timeout_ms;
     size_t          max_read_buf;
@@ -592,22 +590,4 @@ int xylem_tcp_remote_addr(
     size_t host_len,
     uint16_t* port) {
     return addr_ntop(&tcp->peer_addr, host, host_len, port);
-}
-
-void* xylem_tcp_get_userdata(xylem_tcp_conn_t* tcp) {
-    return tcp->userdata;
-}
-
-void xylem_tcp_set_userdata(xylem_tcp_conn_t* tcp, void* ud) {
-    tcp->userdata = ud;
-}
-
-void* xylem_tcp_listener_get_userdata(xylem_tcp_listener_t* listener) {
-    return listener->userdata;
-}
-
-void xylem_tcp_listener_set_userdata(
-    xylem_tcp_listener_t* listener,
-    void* ud) {
-    listener->userdata = ud;
 }

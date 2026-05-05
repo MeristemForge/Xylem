@@ -194,39 +194,3 @@ extern int xylem_tcp_remote_addr(
     char* host,
     size_t host_len,
     uint16_t* port);
-
-/**
- * @brief Get user-associated data from a connection.
- *
- * @param tcp  Connection handle.
- *
- * @return User data pointer, or NULL if not set.
- */
-extern void* xylem_tcp_get_userdata(xylem_tcp_conn_t* tcp);
-
-/**
- * @brief Set user-associated data on a connection.
- *
- * @param tcp  Connection handle.
- * @param ud   User data pointer.
- */
-extern void xylem_tcp_set_userdata(xylem_tcp_conn_t* tcp, void* ud);
-
-/**
- * @brief Get user-associated data from a listener.
- *
- * @param ln  Listener handle.
- *
- * @return User data pointer, or NULL if not set.
- */
-extern void* xylem_tcp_listener_get_userdata(xylem_tcp_listener_t* ln);
-
-/**
- * @brief Set user-associated data on a listener.
- *
- * @param ln  Listener handle.
- * @param ud  User data pointer.
- */
-extern void xylem_tcp_listener_set_userdata(
-    xylem_tcp_listener_t* ln,
-    void* ud);
