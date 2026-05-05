@@ -172,23 +172,25 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
+/* Compute ms until the earliest timer fires, with lock held. Returns -1 if empty. */
+static int _sched_timeout_locked(scheduler_t* sched, uint64_t now) {
+    heap_node_t* root = heap_peek(&sched->timers);
+    if (!root) {
+        return -1;
+    }
+    sched_timer_t* t = heap_entry(root, sched_timer_t, heap_node);
+    if (t->timeout <= now) {
+        return 0;
+    }
+    uint64_t diff = t->timeout - now;
+    return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
+}
+
 static int _sched_timer_next_timeout(scheduler_t* sched) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     mtx_lock(&sched->timer_lock);
-    heap_node_t* root = heap_peek(&sched->timers);
-    if (!root) {
-        mtx_unlock(&sched->timer_lock);
-        return -1;
-    }
-    sched_timer_t* t = heap_entry(root, sched_timer_t, heap_node);
-    int timeout;
-    if (t->timeout <= now) {
-        timeout = 0;
-    } else {
-        uint64_t diff = t->timeout - now;
-        timeout = (diff > INT32_MAX) ? INT32_MAX : (int)diff;
-    }
+    int timeout = _sched_timeout_locked(sched, now);
     mtx_unlock(&sched->timer_lock);
     return timeout;
 }
@@ -222,19 +224,7 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
 
     /* Return ms until next timer, or -1 if none. */
     mtx_lock(&sched->timer_lock);
-    heap_node_t* root = heap_peek(&sched->timers);
-    if (!root) {
-        mtx_unlock(&sched->timer_lock);
-        return -1;
-    }
-    sched_timer_t* t = heap_entry(root, sched_timer_t, heap_node);
-    int timeout;
-    if (t->timeout <= now_ms) {
-        timeout = 0;
-    } else {
-        uint64_t diff = t->timeout - now_ms;
-        timeout = (diff > INT32_MAX) ? INT32_MAX : (int)diff;
-    }
+    int timeout = _sched_timeout_locked(sched, now_ms);
     mtx_unlock(&sched->timer_lock);
     return timeout;
 }
@@ -254,6 +244,7 @@ static void _sched_process_events(
     int n) {
     for (int i = 0; i < n; i++) {
         if (cqes[i].ud == NULL) {
+            /* Drain the wakeup pipe so it can be re-triggered. */
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
             }
@@ -290,6 +281,83 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
     _sched_handle_yield(w, co);
 }
 
+/**
+ * Spin with non-blocking polls, trying to find a runnable coroutine.
+ * Returns the coroutine if found, NULL if all spin attempts exhausted.
+ */
+static mco_coro* _sched_try_spin(
+    scheduler_t* sched,
+    _sched_worker_t* w,
+    platform_poller_cqe_t* cqes) {
+    for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
+        int n = platform_poller_wait(&sched->poller, cqes, 0);
+        if (n > 0) {
+            _sched_process_events(sched, cqes, n);
+        }
+
+        mco_coro* co = _sched_try_get_coro(sched, w);
+        if (co) {
+            return co;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * Blocking poll loop for the last spinner. Services IO, timers, and posts
+ * until work is found or another worker starts spinning.
+ */
+static mco_coro* _sched_poll_blocking(
+    scheduler_t* sched,
+    _sched_worker_t* w,
+    platform_poller_cqe_t* cqes) {
+    for (;;) {
+        if (!atomic_load(&sched->running)) {
+            break;
+        }
+
+        int poll_ms = _sched_timer_next_timeout(sched);
+        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
+            poll_ms = SCHED_MAX_POLL_MS;
+        }
+        int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+        if (n > 0) {
+            _sched_process_events(sched, cqes, n);
+        }
+
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        _sched_process_timers(sched, now);
+
+        bool expected = false;
+        if (atomic_compare_exchange_strong(
+                &sched->processing, &expected, true)) {
+            _sched_process_posts(sched);
+            atomic_store(&sched->processing, false);
+        }
+
+        mco_coro* co = _sched_try_get_coro(sched, w);
+        if (co) {
+            return co;
+        }
+
+        /* Another worker started spinning -- we can stop. */
+        if (atomic_load(&sched->nspinning) > 0) {
+            break;
+        }
+    }
+    return NULL;
+}
+
+static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
+    for (;;) {
+        mco_coro* co = _sched_try_get_coro(sched, w);
+        if (!co) {
+            break;
+        }
+        _sched_run_coro(w, co);
+    }
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
@@ -309,72 +377,20 @@ static int _sched_worker_entry(void* arg) {
         /* No work found -- enter spinning state. */
         atomic_fetch_add(&sched->nspinning, 1);
 
-        bool found_work = false;
-        for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
-            /* Non-blocking poll: each spinner grabs its own IO events. */
-            int n = platform_poller_wait(&sched->poller, cqes, 0);
-            if (n > 0) {
-                _sched_process_events(sched, cqes, n);
-            }
-
-            /* Try to get a coroutine (may have been woken by the poll). */
-            co = _sched_try_get_coro(sched, w);
-            if (co) {
-                found_work = true;
-                break;
-            }
-        }
-
-        if (found_work) {
+        co = _sched_try_spin(sched, w, cqes);
+        if (co) {
             atomic_fetch_sub(&sched->nspinning, 1);
             _sched_run_coro(w, co);
             continue;
         }
 
-        /* Spin failed. If we are the last spinner, do a blocking poll
-         * before parking so IO events are not missed. */
+        /**
+         * Spin failed. If we are the last spinner, do a blocking poll
+         * before parking so IO events are not missed.
+         */
         int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
         if (prev == 1) {
-            /* Last spinner: do a blocking poll instead of parking.
-             * We must keep polling as long as no other worker is spinning
-             * to ensure IO events are always serviced. */
-            for (;;) {
-                if (!atomic_load(&sched->running)) {
-                    break;
-                }
-
-                int poll_ms = _sched_timer_next_timeout(sched);
-                if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
-                    poll_ms = SCHED_MAX_POLL_MS;
-                }
-                int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
-                if (n > 0) {
-                    _sched_process_events(sched, cqes, n);
-                }
-
-                /* Process timers and posts. */
-                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-                _sched_process_timers(sched, now);
-
-                bool expected = false;
-                if (atomic_compare_exchange_strong(
-                        &sched->processing, &expected, true)) {
-                    _sched_process_posts(sched);
-                    atomic_store(&sched->processing, false);
-                }
-
-                /* Check for work -- if found, break out to execute it. */
-                co = _sched_try_get_coro(sched, w);
-                if (co) {
-                    break;
-                }
-
-                /* If another worker started spinning, we can park. */
-                if (atomic_load(&sched->nspinning) > 0) {
-                    break;
-                }
-            }
-
+            co = _sched_poll_blocking(sched, w, cqes);
             if (co) {
                 _sched_run_coro(w, co);
             }
@@ -389,15 +405,7 @@ static int _sched_worker_entry(void* arg) {
         atomic_fetch_sub(&sched->nparked, 1);
     }
 
-    /* Drain remaining work after shutdown. */
-    for (;;) {
-        mco_coro* co = _sched_try_get_coro(sched, w);
-        if (!co) {
-            break;
-        }
-        _sched_run_coro(w, co);
-    }
-
+    _sched_drain(w, sched);
     return 0;
 }
 
