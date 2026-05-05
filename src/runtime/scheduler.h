@@ -166,3 +166,13 @@ extern int scheduler_post(
  * @return Timer manager handle.
  */
 extern sched_timer_mgr_t* scheduler_get_timer_mgr(scheduler_t* sched);
+
+/**
+ * @brief Wake a worker blocked in poll.
+ *
+ * Thread-safe. Used to interrupt epoll_wait when new timers are
+ * registered or other urgent work is available.
+ *
+ * @param sched  Scheduler handle.
+ */
+extern void scheduler_wake(scheduler_t* sched);

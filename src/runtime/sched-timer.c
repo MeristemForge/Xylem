@@ -20,6 +20,7 @@
  */
 
 #include "sched-timer.h"
+#include "runtime.h"
 
 #include "xylem/xylem-utils.h"
 
@@ -170,6 +171,9 @@ void sched_timer_start(
     timer->active  = true;
     heap_insert(&mgr->timers, &timer->heap_node);
     mtx_unlock(&mgr->lock);
+
+    /* Wake a polling worker so it recalculates its epoll_wait timeout. */
+    scheduler_wake(runtime_get_scheduler());
 }
 
 void sched_timer_stop(sched_timer_t* timer) {

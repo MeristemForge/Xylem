@@ -183,34 +183,12 @@ static int _sched_worker_entry(void* arg) {
         if (sched->poller) {
             atomic_store(&w->is_polling, true);
 
-            /* Only one worker processes timers and posts per cycle. */
-            bool do_timers = false;
-            bool expected = false;
-            if (atomic_compare_exchange_strong(
-                    &sched->polling, &expected, true)) {
-                do_timers = true;
-            }
-
             int poll_ms = SCHED_POLL_TIMEOUT_MS;
-            if (do_timers) {
-                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-                int timer_timeout = sched_timer_mgr_next_timeout(
-                    sched->timer_mgr, now);
-                if (timer_timeout >= 0 && timer_timeout < poll_ms) {
-                    poll_ms = timer_timeout;
-                }
-            }
-
             int n = platform_poller_wait(sched->poller, cqes, poll_ms);
             atomic_store(&w->is_polling, false);
 
             if (n > 0) {
                 _sched_process_poll_events(sched, cqes, n);
-            }
-
-            if (do_timers) {
-                _sched_process_timers_and_posts(sched);
-                atomic_store(&sched->polling, false);
             }
             continue;
         }
@@ -516,4 +494,8 @@ int scheduler_post(
 
 sched_timer_mgr_t* scheduler_get_timer_mgr(scheduler_t* sched) {
     return sched->timer_mgr;
+}
+
+void scheduler_wake(scheduler_t* sched) {
+    _sched_wake_poller(sched);
 }
