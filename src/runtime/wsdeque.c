@@ -71,6 +71,58 @@ int wsdeque_push(wsdeque_t* dq, mco_coro* co) {
     return 0;
 }
 
+int32_t wsdeque_pop_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
+    int64_t b = atomic_load_explicit(&dq->bottom, memory_order_relaxed);
+    int64_t t = atomic_load_explicit(&dq->top, memory_order_acquire);
+
+    int64_t size = b - t;
+    if (size <= 0) {
+        return 0;
+    }
+
+    int64_t half = size / 2;
+    if (half <= 0) {
+        half = 1;
+    }
+    if (half > (int64_t)cap) {
+        half = (int64_t)cap;
+    }
+
+    /* Read items from the top (oldest). */
+    for (int64_t i = 0; i < half; i++) {
+        out[i] = dq->buffer[(t + i) & dq->mask];
+    }
+
+    /* Advance top atomically (stealers may be racing). */
+    if (!atomic_compare_exchange_strong_explicit(
+            &dq->top, &t, t + half,
+            memory_order_seq_cst, memory_order_relaxed)) {
+        /* A stealer raced us. Retry with updated top. */
+        t = atomic_load_explicit(&dq->top, memory_order_acquire);
+        size = b - t;
+        if (size <= 0) {
+            return 0;
+        }
+        half = size / 2;
+        if (half <= 0) {
+            half = 1;
+        }
+        if (half > (int64_t)cap) {
+            half = (int64_t)cap;
+        }
+        for (int64_t i = 0; i < half; i++) {
+            out[i] = dq->buffer[(t + i) & dq->mask];
+        }
+        if (!atomic_compare_exchange_strong_explicit(
+                &dq->top, &t, t + half,
+                memory_order_seq_cst, memory_order_relaxed)) {
+            return 0;
+        }
+    }
+
+    return (int32_t)half;
+}
+
 mco_coro* wsdeque_pop(wsdeque_t* dq) {
     int64_t b = atomic_load_explicit(&dq->bottom, memory_order_relaxed) - 1;
     atomic_store_explicit(&dq->bottom, b, memory_order_seq_cst);

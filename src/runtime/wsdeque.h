@@ -64,6 +64,21 @@ extern int wsdeque_push(wsdeque_t* dq, mco_coro* co);
 extern mco_coro* wsdeque_pop(wsdeque_t* dq);
 
 /**
+ * @brief Pop half of the coroutines from the deque (owner thread only).
+ *
+ * Removes up to half of the items from the oldest end (top) of the deque
+ * and writes them into the output buffer. This is used to transfer work
+ * to the global run queue when the local deque is full.
+ *
+ * @param dq   Deque to pop from.
+ * @param out  Output buffer to receive coroutines.
+ * @param cap  Capacity of the output buffer.
+ *
+ * @return Number of coroutines removed.
+ */
+extern int32_t wsdeque_pop_half(wsdeque_t* dq, mco_coro** out, int32_t cap);
+
+/**
  * @brief Steal a coroutine from the deque (any thread).
  *
  * @param dq  Deque to steal from.

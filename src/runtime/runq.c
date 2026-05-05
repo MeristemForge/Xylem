@@ -67,6 +67,33 @@ void runq_push(runq_t* rq, mco_coro* co) {
     mtx_unlock(&rq->lock);
 }
 
+void runq_push_batch(runq_t* rq, mco_coro** batch, int32_t count) {
+    if (count <= 0) {
+        return;
+    }
+
+    /* Pre-allocate all entries before taking the lock. */
+    _runq_entry_t* entries =
+        (_runq_entry_t*)calloc((size_t)count, sizeof(_runq_entry_t));
+    if (!entries) {
+        /* Fallback: push one by one. */
+        for (int32_t i = 0; i < count; i++) {
+            runq_push(rq, batch[i]);
+        }
+        return;
+    }
+
+    for (int32_t i = 0; i < count; i++) {
+        entries[i].co = batch[i];
+    }
+
+    mtx_lock(&rq->lock);
+    for (int32_t i = 0; i < count; i++) {
+        queue_enqueue(&rq->q, &entries[i].node);
+    }
+    mtx_unlock(&rq->lock);
+}
+
 mco_coro* runq_pop(runq_t* rq) {
     mtx_lock(&rq->lock);
     queue_node_t* node = queue_dequeue(&rq->q);

@@ -41,6 +41,7 @@
 #include <string.h>
 
 #define SCHED_DEFAULT_DEQUE_LOG2 10
+#define SCHED_DEQUE_HALF         (1 << (SCHED_DEFAULT_DEQUE_LOG2 - 1))
 #define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_MAX_POLL_MS        5
 #define SCHED_SPIN_ATTEMPTS      4
@@ -148,9 +149,9 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
         uint32_t start = w->index + 1;
         for (int32_t i = 0; i < sched->nworkers - 1; i++) {
             uint32_t idx = (start + (uint32_t)i) % (uint32_t)sched->nworkers;
-            mco_coro* batch[128];
+            mco_coro* batch[SCHED_DEQUE_HALF];
             int32_t n = wsdeque_steal_half(
-                sched->workers[idx].deque, batch, 128);
+                sched->workers[idx].deque, batch, SCHED_DEQUE_HALF);
             if (n > 0) {
                 /* Push all but the first into our local deque. */
                 for (int32_t j = 1; j < n; j++) {
@@ -544,8 +545,18 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
         if (wsdeque_push(_tls_worker->deque, co) == 0) {
             return;
         }
+        /* Local deque full: drain half to global runq, then retry. */
+        mco_coro* batch[SCHED_DEQUE_HALF];
+        int32_t n = wsdeque_pop_half(_tls_worker->deque, batch, SCHED_DEQUE_HALF);
+        if (n > 0) {
+            runq_push_batch(sched->runq, batch, n);
+            _sched_wake_worker(sched);
+        }
+        if (wsdeque_push(_tls_worker->deque, co) == 0) {
+            return;
+        }
     }
-    /* Slow path: external thread or deque full -- use global runq. */
+    /* Slow path: external thread or still full -- use global runq. */
     runq_push(sched->runq, co);
     _sched_wake_worker(sched);
 }

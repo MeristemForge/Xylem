@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include <stdint.h>
+
 typedef struct mco_coro mco_coro;
 typedef struct runq_s runq_t;
 
@@ -51,6 +53,18 @@ extern void runq_destroy(runq_t* rq);
  * @param co  Coroutine to enqueue.
  */
 extern void runq_push(runq_t* rq, mco_coro* co);
+
+/**
+ * @brief Push multiple coroutines onto the run queue in one lock acquisition.
+ *
+ * Thread-safe: can be called from any thread. More efficient than calling
+ * runq_push in a loop when transferring a batch.
+ *
+ * @param rq     Run queue.
+ * @param batch  Array of coroutines to enqueue.
+ * @param count  Number of coroutines in the batch.
+ */
+extern void runq_push_batch(runq_t* rq, mco_coro** batch, int32_t count);
 
 /**
  * @brief Pop a coroutine from the run queue.
