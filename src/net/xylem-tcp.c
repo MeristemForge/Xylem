@@ -57,7 +57,7 @@ struct xylem_tcp_listener_s {
     uint64_t        read_timeout_ms;
     uint64_t        write_timeout_ms;
     size_t          max_read_buf;
-    bool            closing;
+    _Atomic bool    closing;
 };
 
 static xylem_tcp_conn_t* _tcp_conn_alloc(
@@ -557,12 +557,11 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
 }
 
 void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
-    if (listener->closing) {
+    if (atomic_exchange(&listener->closing, true)) {
         return;
     }
 
     xylem_logi("tcp listener fd=%d closing", (int)listener->fd);
-    listener->closing = true;
 
     iowait_close(listener->waiter);
     iowait_destroy(listener->waiter);
