@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/xylem-tcp.h"
+
 #include "xylem/xylem-logger.h"
 
 #include "runtime/runtime.h"
@@ -27,15 +28,20 @@
 #include "addr.h"
 #include "platform/platform-socket.h"
 
+#include <assert.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#define TCP_MAGIC_ALIVE 0xC0DE0001u
+#define TCP_MAGIC_DEAD  0xC0DEAD01u
+
 #define DEFAULT_READ_BUF_SIZE 65536
 
 struct xylem_tcp_conn_s {
+    _Atomic uint32_t       tcp_magic;
     iowait_t*              waiter;
-    loop_t*                loop;
     platform_sock_t        fd;
     addr_t                 peer_addr;
     void*                  userdata;
@@ -52,7 +58,6 @@ struct xylem_tcp_conn_s {
 
 struct xylem_tcp_listener_s {
     iowait_t*       waiter;
-    loop_t*         loop;
     platform_sock_t fd;
     void*           userdata;
     uint64_t        read_timeout_ms;
@@ -62,7 +67,6 @@ struct xylem_tcp_listener_s {
 };
 
 static xylem_tcp_conn_t* _tcp_conn_alloc(
-    loop_t* loop,
     platform_sock_t fd,
     size_t max_read_buf) {
     xylem_tcp_conn_t* tcp =
@@ -71,9 +75,8 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
         return NULL;
     }
 
-    tcp->loop = loop;
     tcp->fd = fd;
-    tcp->waiter = iowait_create(loop, fd);
+    tcp->waiter = iowait_create(fd);
     if (!tcp->waiter) {
         free(tcp);
         return NULL;
@@ -88,6 +91,7 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     }
     tcp->read_buf_cap = buf_cap;
 
+    atomic_store(&tcp->tcp_magic, TCP_MAGIC_ALIVE);
     platform_socket_enable_nodelay(fd, true);
     platform_socket_enable_keepalive(fd, true);
     return tcp;
@@ -319,11 +323,19 @@ static int _tcp_raw_send(
     return 0;
 }
 
-static void _tcp_conn_destroy_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop;
-    (void)req;
+static void _tcp_conn_destroy_post_cb(void* ud) {
     xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ud;
+
+    uint32_t m = atomic_load(&tcp->tcp_magic);
+    if (m != TCP_MAGIC_ALIVE) {
+        fprintf(stderr,
+            "TCP BUG: destroy_post_cb on %s tcp=%p (magic=0x%08x) waiter=%p fd=%d\n",
+            m == TCP_MAGIC_DEAD ? "DEAD" : "CORRUPT",
+            (void*)tcp, m, (void*)tcp->waiter, (int)tcp->fd);
+        assert(0 && "_tcp_conn_destroy_post_cb: double-free");
+    }
+
+    atomic_store(&tcp->tcp_magic, TCP_MAGIC_DEAD);
 
     iowait_close(tcp->waiter);
     iowait_destroy(tcp->waiter);
@@ -338,7 +350,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     uint16_t port,
     uint64_t connect_timeout_ms,
     xylem_tcp_opts_t* opts) {
-    loop_t* loop = runtime_get_loop();
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -374,7 +385,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     }
 
     size_t max_buf = opts ? opts->max_read_buf : 0;
-    xylem_tcp_conn_t* tcp = _tcp_conn_alloc(loop, fd, max_buf);
+    xylem_tcp_conn_t* tcp = _tcp_conn_alloc(fd, max_buf);
     if (!tcp) {
         platform_socket_close(fd);
         return NULL;
@@ -485,7 +496,6 @@ xylem_tcp_listener_t* xylem_tcp_listen(
     const char* host,
     uint16_t port,
     xylem_tcp_opts_t* opts) {
-    loop_t* loop = runtime_get_loop();
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -507,14 +517,13 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         return NULL;
     }
 
-    listener->loop = loop;
     listener->fd = fd;
     if (opts) {
         listener->read_timeout_ms = opts->read_timeout_ms;
         listener->write_timeout_ms = opts->write_timeout_ms;
         listener->max_read_buf = opts->max_read_buf;
     }
-    listener->waiter = iowait_create(loop, fd);
+    listener->waiter = iowait_create(fd);
     if (!listener->waiter) {
         platform_socket_close(fd);
         free(listener);
@@ -549,7 +558,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
         }
 
         xylem_tcp_conn_t* tcp =
-            _tcp_conn_alloc(listener->loop, fd, listener->max_read_buf);
+            _tcp_conn_alloc(fd, listener->max_read_buf);
         if (!tcp) {
             platform_socket_close(fd);
             continue;
@@ -587,7 +596,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
         return;
     }
     tcp->closed = true;
-    loop_post(tcp->loop, _tcp_conn_destroy_cb, tcp);
+    scheduler_post(runtime_get_scheduler(), _tcp_conn_destroy_post_cb, tcp);
 }
 
 int xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {

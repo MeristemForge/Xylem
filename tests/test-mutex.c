@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "runtime/runtime.h"
+#include "runtime/sched-timer.h"
 #include "assert.h"
 
 #include <stdatomic.h>
@@ -30,24 +31,18 @@
 
 static xylem_runtime_opts_t _rt_opts = { .workers = 4 };
 
-static void _safety_timeout_cb(
-    loop_t* loop, loop_timer_t* timer, void* ud) {
-    (void)loop; (void)ud;
-    loop_stop_timer(timer);
-    loop_destroy_timer(timer);
+static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
+    (void)ud;
+    sched_timer_destroy(timer);
     xylem_runtime_stop();
     ASSERT(0 && "test timed out");
 }
 
-static void _safety_timer_post_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)req; (void)ud;
-    loop_timer_t* t = loop_create_timer(loop);
-    loop_start_timer(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-}
-
 static void _start_safety_timer(void) {
-    loop_post(runtime_get_loop(), _safety_timer_post_cb, NULL);
+    sched_timer_mgr_t* mgr =
+        scheduler_get_timer_mgr(runtime_get_scheduler());
+    sched_timer_t* t = sched_timer_create(mgr);
+    sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 }
 
 #define MTX_WORKERS    20

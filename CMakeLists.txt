@@ -31,7 +31,7 @@ if(WIN32 AND MSVC)
 endif()
 
 set(SRCS
-	src/runtime/loop.c
+	src/runtime/sched-timer.c
 	src/runtime/xylem-runtime.c
 	src/xylem-logger.c
 	src/xylem-utils.c
@@ -67,11 +67,6 @@ set(SRCS
 	src/container/xylem-stack.c
 	src/net/addr.c
 	src/net/xylem-tcp.c
-	src/net/xylem-udp.c
-	src/net/xylem-uds.c
-	src/net/rudp/kcp/ikcp.c
-	src/net/rudp/xylem-rudp.c
-	src/net/rudp/rudp-fec.c
 	src/encoding/json/xylem-json.c
 	src/encoding/json/yyjson/yyjson.c
 	src/encoding/gzip/xylem-gzip.c

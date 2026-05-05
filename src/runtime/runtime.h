@@ -21,11 +21,9 @@
 
 _Pragma("once")
 
-#include "runtime/loop.h"
 #include "runtime/scheduler.h"
 #include "runtime/dynpool.h"
 
-extern loop_t*             runtime_get_loop(void);
-extern scheduler_t*        runtime_get_scheduler(void);
+extern scheduler_t*          runtime_get_scheduler(void);
 extern platform_poller_sq_t* runtime_get_poller(void);
-extern dynpool_t*          runtime_get_dynpool(void);
+extern dynpool_t*            runtime_get_dynpool(void);

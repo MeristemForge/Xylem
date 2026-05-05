@@ -22,20 +22,16 @@
 #include "xylem/runtime/xylem-runtime.h"
 
 #include "runtime.h"
-#include "runtime/scheduler.h"
 #include "iowait.h"
+#include "sched-timer.h"
 #include "platform/platform-info.h"
 #include "platform/platform-poller.h"
+#include "platform/platform-sem.h"
 
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
 
 #include <stdlib.h>
-
-typedef struct {
-    mco_coro* co;
-    uint64_t  timeout_ms;
-} _sleep_ctx_t;
 
 typedef struct {
     void (*fn)(void*);
@@ -44,34 +40,31 @@ typedef struct {
     mco_coro*    co;
 } _submit_ctx_t;
 
-static loop_t*             g_loop;
-static scheduler_t*        g_sched;
+static scheduler_t*         g_sched;
 static platform_poller_sq_t g_poller;
-static dynpool_t*          g_dynpool;
+static dynpool_t*           g_dynpool;
+static platform_sem_t*      g_stop_sem;
 
-static void _runtime_sleep_timeout_cb(
-    loop_t* loop,
-    loop_timer_t* timer,
-    void* ud) {
-    (void)loop;
-    _sleep_ctx_t* ctx = (_sleep_ctx_t*)ud;
-    mco_coro*     co  = ctx->co;
+typedef struct {
+    sched_timer_t* timer;
+    uint64_t       ms;
+} _sleep_park_t;
 
-    loop_destroy_timer(timer);
-    free(ctx);
+typedef struct {
+    _submit_ctx_t* ctx;
+    bool           ok;
+} _submit_park_t;
+
+static void _runtime_sleep_timeout_cb(sched_timer_t* timer, void* ud) {
+    mco_coro* co = (mco_coro*)ud;
+    sched_timer_destroy(timer);
     scheduler_schedule(g_sched, co);
 }
 
-static void _runtime_sleep_post_cb(
-    loop_t* loop,
-    loop_post_t* req,
-    void* ud) {
-    (void)loop;
-    (void)req;
-    _sleep_ctx_t* ctx = (_sleep_ctx_t*)ud;
-    loop_timer_t* timer = loop_create_timer(g_loop);
-    loop_start_timer(
-        timer, _runtime_sleep_timeout_cb, ctx, ctx->timeout_ms, 0);
+static bool _runtime_sleep_park_fn(mco_coro* co, void* arg) {
+    _sleep_park_t* p = (_sleep_park_t*)arg;
+    sched_timer_start(p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
+    return true;
 }
 
 static void _runtime_submit_worker(void* arg) {
@@ -81,8 +74,14 @@ static void _runtime_submit_worker(void* arg) {
     free(ctx);
 }
 
-loop_t* runtime_get_loop(void) {
-    return g_loop;
+static bool _runtime_submit_park_fn(mco_coro* co, void* arg) {
+    _submit_park_t* p = (_submit_park_t*)arg;
+    p->ctx->co = co;
+    if (dynpool_submit(g_dynpool, _runtime_submit_worker, p->ctx) != 0) {
+        p->ok = false;
+        return false;
+    }
+    return true;
 }
 
 scheduler_t* runtime_get_scheduler(void) {
@@ -101,36 +100,14 @@ void xylem_runtime_spawn(void (*fn)(void*), void* arg) {
     scheduler_spawn(g_sched, fn, arg);
 }
 
-static bool _sleep_park_cb(mco_coro* co, void* arg) {
-    uint64_t ms = *(uint64_t*)arg;
-    _sleep_ctx_t* ctx = (_sleep_ctx_t*)malloc(sizeof(_sleep_ctx_t));
-    if (!ctx) {
-        return false;
-    }
-    ctx->co = co;
-    ctx->timeout_ms = ms;
-    loop_post(g_loop, _runtime_sleep_post_cb, ctx);
-    return true;
-}
-
 void xylem_runtime_sleep(uint64_t ms) {
-    scheduler_park(g_sched, _sleep_park_cb, &ms);
-}
-
-typedef struct {
-    _submit_ctx_t* ctx;
-    bool           ok;
-} _submit_park_arg_t;
-
-static bool _submit_park_cb(mco_coro* co, void* arg) {
-    _submit_park_arg_t* pa = (_submit_park_arg_t*)arg;
-    pa->ctx->co = co;
-    pa->ok = true;
-    if (dynpool_submit(g_dynpool, _runtime_submit_worker, pa->ctx) != 0) {
-        pa->ok = false;
-        return false;
+    sched_timer_mgr_t* mgr = scheduler_get_timer_mgr(g_sched);
+    sched_timer_t* timer = sched_timer_create(mgr);
+    if (!timer) {
+        return;
     }
-    return true;
+    _sleep_park_t park = { .timer = timer, .ms = ms };
+    scheduler_park(g_sched, _runtime_sleep_park_fn, &park);
 }
 
 int xylem_runtime_submit(void (*fn)(void*), void* arg) {
@@ -138,14 +115,15 @@ int xylem_runtime_submit(void (*fn)(void*), void* arg) {
     if (!ctx) {
         return -1;
     }
+
     ctx->fn    = fn;
     ctx->arg   = arg;
     ctx->sched = g_sched;
 
-    _submit_park_arg_t pa = { .ctx = ctx, .ok = false };
-    scheduler_park(g_sched, _submit_park_cb, &pa);
+    _submit_park_t park = { .ctx = ctx, .ok = true };
+    scheduler_park(g_sched, _runtime_submit_park_fn, &park);
 
-    if (!pa.ok) {
+    if (!park.ok) {
         free(ctx);
         return -1;
     }
@@ -164,8 +142,6 @@ void xylem_runtime_start(
         workers = opts->workers;
     }
 
-    g_loop = loop_create();
-
     platform_poller_init(&g_poller);
 
     scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
@@ -174,18 +150,23 @@ void xylem_runtime_start(
     scheduler_set_poller(g_sched, &g_poller, iowait_on_event);
 
     g_dynpool = dynpool_create(NULL);
+    g_stop_sem = platform_sem_create(0);
 
     scheduler_spawn(g_sched, main_fn, arg);
 
-    loop_run(g_loop);
+    /* Block main thread until xylem_runtime_stop() is called. */
+    platform_sem_wait(g_stop_sem);
 
+    scheduler_shutdown(g_sched);
     scheduler_destroy(g_sched);
     dynpool_destroy(g_dynpool);
     platform_poller_destroy(&g_poller);
-    loop_destroy(g_loop);
+    platform_sem_destroy(g_stop_sem);
+    g_stop_sem = NULL;
 }
 
 void xylem_runtime_stop(void) {
-    scheduler_shutdown(g_sched);
-    loop_stop(g_loop);
+    if (g_stop_sem) {
+        platform_sem_post(g_stop_sem);
+    }
 }

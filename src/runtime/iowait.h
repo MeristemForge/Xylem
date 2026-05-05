@@ -21,7 +21,6 @@
 
 _Pragma("once")
 
-#include "runtime/loop.h"
 #include "platform/platform-socket.h"
 
 #include <stdbool.h>
@@ -35,12 +34,11 @@ typedef struct iowait_s iowait_t;
  * Registers the fd with the shared network poller (netpoll) for
  * coroutine-driven IO. The fd must already be in non-blocking mode.
  *
- * @param loop  Event loop handle (used for timers only).
  * @param fd    Non-blocking socket descriptor.
  *
  * @return IO wait handle, or NULL on failure.
  */
-extern iowait_t* iowait_create(loop_t* loop, platform_sock_t fd);
+extern iowait_t* iowait_create(platform_sock_t fd);
 
 /**
  * @brief Suspend the calling coroutine until the fd is readable.
@@ -83,9 +81,8 @@ extern void iowait_close(iowait_t* w);
 /**
  * @brief Destroy the IO wait handle and release all resources.
  *
- * Removes the fd from the netpoll, destroys internal timers via
- * the loop thread, and frees the handle. The caller must not use
- * the handle after this call.
+ * Removes the fd from the netpoll and frees the handle.
+ * The caller must not use the handle after this call.
  *
  * @param w  IO wait handle.
  */

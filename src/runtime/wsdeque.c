@@ -90,7 +90,7 @@ mco_coro* wsdeque_pop(wsdeque_t* dq) {
                 memory_order_seq_cst, memory_order_relaxed)) {
             co = NULL;
         }
-        atomic_store_explicit(&dq->bottom, t + 1, memory_order_relaxed);
+        atomic_store_explicit(&dq->bottom, b + 1, memory_order_relaxed);
     }
 
     return co;

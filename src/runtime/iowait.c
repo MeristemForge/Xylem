@@ -21,10 +21,14 @@
 
 #include "iowait.h"
 #include "runtime.h"
+#include "scheduler.h"
+#include "sched-timer.h"
 
 #include "minicoro/minicoro.h"
 
+#include <assert.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 enum {
@@ -33,34 +37,33 @@ enum {
     IOWAIT_READY   = 2,
 };
 
-struct iowait_s {
-    loop_t*               loop;
-    platform_poller_sq_t* poller;
-    platform_poller_sqe_t sqe;
-    loop_timer_t*         rd_timer;
-    loop_timer_t*         wr_timer;
-    platform_sock_t       fd;
-    mco_coro*             rd_coro;
-    mco_coro*             wr_coro;
-    _Atomic int           rd_state;
-    _Atomic int           wr_state;
-    bool                  rd_timed_out;
-    bool                  wr_timed_out;
-    bool                  registered;
-    bool                  closed;
-};
+#define IOWAIT_MAGIC_ALIVE 0xA11CE042u
+#define IOWAIT_MAGIC_DEAD  0xDEAD0042u
 
 typedef struct {
     iowait_t* w;
     uint64_t  timeout_ms;
-    bool      is_read;
-} _iowait_timeout_ctx_t;
+    bool      timed_out;
+    bool      closed;
+} _iowait_park_t;
 
-/**
- * Try to transition from WAITING to READY and return the coro to
- * schedule. If still IDLE (coro has not yielded yet), mark READY
- * so the coro skips the yield when it gets there.
- */
+struct iowait_s {
+    _Atomic uint32_t      magic;
+    platform_poller_sq_t* poller;
+    platform_poller_sqe_t sqe;
+    sched_timer_t*        rd_timer;
+    sched_timer_t*        wr_timer;
+    platform_sock_t       fd;
+    mco_coro*             rd_coro;
+    mco_coro*             wr_coro;
+    _iowait_park_t*       rd_park;
+    _iowait_park_t*       wr_park;
+    _Atomic int           rd_state;
+    _Atomic int           wr_state;
+    bool                  registered;
+    bool                  closed;
+};
+
 static mco_coro* _iowait_wake(_Atomic int* state, mco_coro** coro_slot) {
     int expected = IOWAIT_WAITING;
     if (atomic_compare_exchange_strong(state, &expected, IOWAIT_READY)) {
@@ -73,7 +76,6 @@ static mco_coro* _iowait_wake(_Atomic int* state, mco_coro** coro_slot) {
     return NULL;
 }
 
-/* Arm the fd on the netpoll. Called from the worker thread directly. */
 static void _iowait_arm(iowait_t* w) {
     if (w->closed) {
         return;
@@ -100,91 +102,110 @@ static void _iowait_arm(iowait_t* w) {
     }
 }
 
-static void _iowait_rd_timeout_cb(
-    loop_t* loop, loop_timer_t* timer, void* ud) {
-    (void)loop;
+static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     iowait_t* w = (iowait_t*)ud;
+    if (w->rd_park) {
+        w->rd_park->timed_out = true;
+    }
     mco_coro* co = _iowait_wake(&w->rd_state, &w->rd_coro);
     if (co) {
-        w->rd_timed_out = true;
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 }
 
-static void _iowait_wr_timeout_cb(
-    loop_t* loop, loop_timer_t* timer, void* ud) {
-    (void)loop;
+static void _iowait_wr_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     iowait_t* w = (iowait_t*)ud;
+    if (w->wr_park) {
+        w->wr_park->timed_out = true;
+    }
     mco_coro* co = _iowait_wake(&w->wr_state, &w->wr_coro);
     if (co) {
-        w->wr_timed_out = true;
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 }
 
-static void _iowait_timeout_start_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)req;
-    _iowait_timeout_ctx_t* ctx = (_iowait_timeout_ctx_t*)ud;
-    iowait_t* w = ctx->w;
+/* Park callback for iowait_read — runs after coroutine is fully suspended. */
+static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
+    _iowait_park_t* p = (_iowait_park_t*)arg;
+    iowait_t* w = p->w;
 
-    if (w->closed) {
-        free(ctx);
-        return;
-    }
+    w->rd_coro = co;
+    w->rd_park = p;
+    atomic_store(&w->rd_state, IOWAIT_IDLE);
 
-    if (ctx->is_read) {
+    _iowait_arm(w);
+
+    if (p->timeout_ms > 0) {
         if (!w->rd_timer) {
-            w->rd_timer = loop_create_timer(loop);
+            w->rd_timer = sched_timer_create(
+                scheduler_get_timer_mgr(runtime_get_scheduler()));
         }
-        loop_start_timer(
-            w->rd_timer, _iowait_rd_timeout_cb, w, ctx->timeout_ms, 0);
-    } else {
+        sched_timer_start(w->rd_timer, _iowait_rd_timeout_cb,
+                          w, p->timeout_ms, 0);
+    }
+
+    int expected = IOWAIT_IDLE;
+    if (!atomic_compare_exchange_strong(
+            &w->rd_state, &expected, IOWAIT_WAITING)) {
+        w->rd_coro = NULL;
+        w->rd_park = NULL;
+        if (p->timeout_ms > 0 && w->rd_timer) {
+            sched_timer_stop(w->rd_timer);
+        }
+        return false;
+    }
+    return true;
+}
+
+/* Park callback for iowait_write — runs after coroutine is fully suspended. */
+static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
+    _iowait_park_t* p = (_iowait_park_t*)arg;
+    iowait_t* w = p->w;
+
+    w->wr_coro = co;
+    w->wr_park = p;
+    atomic_store(&w->wr_state, IOWAIT_IDLE);
+
+    _iowait_arm(w);
+
+    if (p->timeout_ms > 0) {
         if (!w->wr_timer) {
-            w->wr_timer = loop_create_timer(loop);
+            w->wr_timer = sched_timer_create(
+                scheduler_get_timer_mgr(runtime_get_scheduler()));
         }
-        loop_start_timer(
-            w->wr_timer, _iowait_wr_timeout_cb, w, ctx->timeout_ms, 0);
+        sched_timer_start(w->wr_timer, _iowait_wr_timeout_cb,
+                          w, p->timeout_ms, 0);
     }
-    free(ctx);
+
+    int expected = IOWAIT_IDLE;
+    if (!atomic_compare_exchange_strong(
+            &w->wr_state, &expected, IOWAIT_WAITING)) {
+        w->wr_coro = NULL;
+        w->wr_park = NULL;
+        if (p->timeout_ms > 0 && w->wr_timer) {
+            sched_timer_stop(w->wr_timer);
+        }
+        return false;
+    }
+    return true;
 }
 
-static void _iowait_rd_timeout_stop_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop;
-    (void)req;
-    iowait_t* w = (iowait_t*)ud;
-    if (w->rd_timer) {
-        loop_stop_timer(w->rd_timer);
-    }
-}
-
-static void _iowait_wr_timeout_stop_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop;
-    (void)req;
-    iowait_t* w = (iowait_t*)ud;
-    if (w->wr_timer) {
-        loop_stop_timer(w->wr_timer);
-    }
-}
-
-iowait_t* iowait_create(loop_t* loop, platform_sock_t fd) {
+iowait_t* iowait_create(platform_sock_t fd) {
     iowait_t* w = (iowait_t*)calloc(1, sizeof(iowait_t));
     if (!w) {
         return NULL;
     }
 
-    w->loop = loop;
+    atomic_store(&w->magic, IOWAIT_MAGIC_ALIVE);
     w->poller = runtime_get_poller();
-    w->fd = fd;
+    w->fd     = fd;
 
-    w->sqe.fd = (platform_poller_fd_t)fd;
-    w->sqe.ud = w;
-    w->sqe.oneshot = 1;
-    w->sqe.op = PLATFORM_POLLER_NO_OP;
+    w->sqe.fd      = (platform_poller_fd_t)fd;
+    w->sqe.ud      = w;
+    w->sqe.oneshot  = 1;
+    w->sqe.op      = PLATFORM_POLLER_NO_OP;
 
     return w;
 }
@@ -194,39 +215,25 @@ bool iowait_read(iowait_t* w, uint64_t timeout_ms) {
         return false;
     }
 
-    w->rd_timed_out = false;
-    w->rd_coro = mco_running();
-    atomic_store(&w->rd_state, IOWAIT_IDLE);
+    _iowait_park_t park = {
+        .w = w, .timeout_ms = timeout_ms,
+        .timed_out = false, .closed = false
+    };
+    scheduler_park(runtime_get_scheduler(), _iowait_rd_park_fn, &park);
 
-    /* Arm directly on the netpoll -- no cross-thread post needed. */
-    _iowait_arm(w);
-
-    /* Timeouts still go through the loop thread (timer heap). */
-    if (timeout_ms > 0) {
-        _iowait_timeout_ctx_t* ctx =
-            (_iowait_timeout_ctx_t*)malloc(sizeof(_iowait_timeout_ctx_t));
-        if (ctx) {
-            ctx->w = w;
-            ctx->timeout_ms = timeout_ms;
-            ctx->is_read = true;
-            loop_post(w->loop, _iowait_timeout_start_cb, ctx);
-        }
-    }
-
-    int expected = IOWAIT_IDLE;
-    if (atomic_compare_exchange_strong(
-            &w->rd_state, &expected, IOWAIT_WAITING)) {
-        mco_yield(mco_running());
+    if (park.closed) {
+        return false;
     }
 
     atomic_store(&w->rd_state, IOWAIT_IDLE);
     w->rd_coro = NULL;
+    w->rd_park = NULL;
 
-    if (timeout_ms > 0) {
-        loop_post(w->loop, _iowait_rd_timeout_stop_cb, w);
+    if (timeout_ms > 0 && w->rd_timer && !park.timed_out) {
+        sched_timer_stop(w->rd_timer);
     }
 
-    return !w->rd_timed_out && !w->closed;
+    return !park.timed_out;
 }
 
 bool iowait_write(iowait_t* w, uint64_t timeout_ms) {
@@ -234,40 +241,34 @@ bool iowait_write(iowait_t* w, uint64_t timeout_ms) {
         return false;
     }
 
-    w->wr_timed_out = false;
-    w->wr_coro = mco_running();
-    atomic_store(&w->wr_state, IOWAIT_IDLE);
+    _iowait_park_t park = {
+        .w = w, .timeout_ms = timeout_ms,
+        .timed_out = false, .closed = false
+    };
+    scheduler_park(runtime_get_scheduler(), _iowait_wr_park_fn, &park);
 
-    _iowait_arm(w);
-
-    if (timeout_ms > 0) {
-        _iowait_timeout_ctx_t* ctx =
-            (_iowait_timeout_ctx_t*)malloc(sizeof(_iowait_timeout_ctx_t));
-        if (ctx) {
-            ctx->w = w;
-            ctx->timeout_ms = timeout_ms;
-            ctx->is_read = false;
-            loop_post(w->loop, _iowait_timeout_start_cb, ctx);
-        }
-    }
-
-    int expected = IOWAIT_IDLE;
-    if (atomic_compare_exchange_strong(
-            &w->wr_state, &expected, IOWAIT_WAITING)) {
-        mco_yield(mco_running());
+    if (park.closed) {
+        return false;
     }
 
     atomic_store(&w->wr_state, IOWAIT_IDLE);
     w->wr_coro = NULL;
+    w->wr_park = NULL;
 
-    if (timeout_ms > 0) {
-        loop_post(w->loop, _iowait_wr_timeout_stop_cb, w);
+    if (timeout_ms > 0 && w->wr_timer && !park.timed_out) {
+        sched_timer_stop(w->wr_timer);
     }
 
-    return !w->wr_timed_out && !w->closed;
+    return !park.timed_out;
 }
 
 void iowait_close(iowait_t* w) {
+    uint32_t m = atomic_load(&w->magic);
+    if (m != IOWAIT_MAGIC_ALIVE) {
+        fprintf(stderr, "IOWAIT BUG: iowait_close on %s iowait %p (magic=0x%08x)\n",
+                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
+        assert(0 && "iowait_close: use-after-free or corruption");
+    }
     if (w->closed) {
         return;
     }
@@ -275,12 +276,18 @@ void iowait_close(iowait_t* w) {
 
     scheduler_t* sched = runtime_get_scheduler();
     if (w->rd_coro) {
+        if (w->rd_park) {
+            w->rd_park->closed = true;
+        }
         mco_coro* co = _iowait_wake(&w->rd_state, &w->rd_coro);
         if (co) {
             scheduler_schedule(sched, co);
         }
     }
     if (w->wr_coro) {
+        if (w->wr_park) {
+            w->wr_park->closed = true;
+        }
         mco_coro* co = _iowait_wake(&w->wr_state, &w->wr_coro);
         if (co) {
             scheduler_schedule(sched, co);
@@ -288,22 +295,15 @@ void iowait_close(iowait_t* w) {
     }
 }
 
-static void _iowait_destroy_timer_cb(
-    loop_t* loop, loop_post_t* req, void* ud) {
-    (void)loop;
-    (void)req;
-    iowait_t* w = (iowait_t*)ud;
-
-    if (w->rd_timer) {
-        loop_destroy_timer(w->rd_timer);
-    }
-    if (w->wr_timer) {
-        loop_destroy_timer(w->wr_timer);
-    }
-    free(w);
-}
-
 void iowait_destroy(iowait_t* w) {
+    uint32_t m = atomic_load(&w->magic);
+    if (m != IOWAIT_MAGIC_ALIVE) {
+        fprintf(stderr, "IOWAIT BUG: iowait_destroy on %s iowait %p (magic=0x%08x)\n",
+                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
+        assert(0 && "iowait_destroy: double-free or corruption");
+    }
+    atomic_store(&w->magic, IOWAIT_MAGIC_DEAD);
+
     if (!w->closed) {
         iowait_close(w);
     }
@@ -313,12 +313,13 @@ void iowait_destroy(iowait_t* w) {
         w->registered = false;
     }
 
-    /* Timers belong to the loop thread -- post their destruction. */
-    if (w->rd_timer || w->wr_timer) {
-        loop_post(w->loop, _iowait_destroy_timer_cb, w);
-    } else {
-        free(w);
+    if (w->rd_timer) {
+        sched_timer_destroy(w->rd_timer);
     }
+    if (w->wr_timer) {
+        sched_timer_destroy(w->wr_timer);
+    }
+    free(w);
 }
 
 bool iowait_is_closed(iowait_t* w) {
@@ -327,6 +328,12 @@ bool iowait_is_closed(iowait_t* w) {
 
 void iowait_on_event(int revents, void* ud) {
     iowait_t* w = (iowait_t*)ud;
+    uint32_t m = atomic_load(&w->magic);
+    if (m != IOWAIT_MAGIC_ALIVE) {
+        fprintf(stderr, "IOWAIT BUG: iowait_on_event on %s iowait %p (magic=0x%08x)\n",
+                m == IOWAIT_MAGIC_DEAD ? "DESTROYED" : "CORRUPT", (void*)w, m);
+        assert(0 && "iowait_on_event: stale epoll event for freed iowait");
+    }
     scheduler_t* sched = runtime_get_scheduler();
 
     if ((revents & PLATFORM_POLLER_RD_OP)) {

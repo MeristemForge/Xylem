@@ -11,13 +11,6 @@ target_link_libraries(tcp-echo-server PRIVATE xylem)
 add_executable(tcp-echo-client tcp-echo-client.c)
 target_link_libraries(tcp-echo-client PRIVATE xylem)
 
-# UDP examples (always available)
-add_executable(udp-echo-server udp-echo-server.c)
-target_link_libraries(udp-echo-server PRIVATE xylem)
-
-add_executable(udp-echo-client udp-echo-client.c)
-target_link_libraries(udp-echo-client PRIVATE xylem)
-
 # HTTP examples
 if(XYLEM_ENABLE_HTTP)
     add_executable(http-echo-server http-echo-server.c)
@@ -42,9 +35,9 @@ if(XYLEM_ENABLE_WS)
     target_link_libraries(ws-echo-client PRIVATE xylem)
 endif()
 
-# Serial example (always available)
-add_executable(serial-terminal serial-terminal.c)
-target_link_libraries(serial-terminal PRIVATE xylem)
+# Serial example (disabled -- uses thrd_t directly, needs C11 threads header)
+# add_executable(serial-terminal serial-terminal.c)
+# target_link_libraries(serial-terminal PRIVATE xylem)
 
 # TLS/DTLS examples (only when TLS is enabled)
 if(XYLEM_ENABLE_TLS)

@@ -21,8 +21,12 @@
 
 #include "scheduler.h"
 
+#include "xylem/xylem-utils.h"
+
+#include "sched-timer.h"
 #include "wsdeque.h"
 #include "runq.h"
+#include "container/mpsc.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-info.h"
@@ -51,9 +55,11 @@ typedef struct _sched_worker_s {
 } _sched_worker_t;
 
 struct scheduler_s {
-    _sched_worker_t*     workers;
+    _sched_worker_t*      workers;
     int32_t               nworkers;
     runq_t*               runq;
+    sched_timer_mgr_t*    timer_mgr;
+    mpsc_t                posts;
     platform_poller_sq_t* poller;
     scheduler_poll_fn_t   poll_cb;
     platform_poller_sqe_t wakeup_sqe;
@@ -70,6 +76,12 @@ typedef struct {
     void (*fn)(void*);
     void* arg;
 } _coro_ctx_t;
+
+typedef struct {
+    mpsc_node_t          node;
+    scheduler_post_fn_t  cb;
+    void*                ud;
+} _sched_post_t;
 
 static void _sched_coro_entry(mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
@@ -122,6 +134,18 @@ static void _sched_process_poll_events(
     }
 }
 
+static void _sched_process_timers_and_posts(scheduler_t* sched) {
+    mpsc_node_t* node;
+    while ((node = mpsc_pop(&sched->posts)) != NULL) {
+        _sched_post_t* req = mpsc_entry(node, _sched_post_t, node);
+        req->cb(req->ud);
+        free(req);
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    sched_timer_mgr_process(sched->timer_mgr, now);
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
@@ -155,13 +179,21 @@ static int _sched_worker_entry(void* arg) {
             if (atomic_compare_exchange_strong(
                     &sched->polling, &expected, true)) {
                 atomic_store(&w->is_polling, true);
+                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                int timer_timeout = sched_timer_mgr_next_timeout(
+                    sched->timer_mgr, now);
+                int poll_ms = SCHED_POLL_TIMEOUT_MS;
+                if (timer_timeout >= 0 && timer_timeout < poll_ms) {
+                    poll_ms = timer_timeout;
+                }
                 int n = platform_poller_wait(
-                    sched->poller, cqes, SCHED_POLL_TIMEOUT_MS);
+                    sched->poller, cqes, poll_ms);
                 atomic_store(&w->is_polling, false);
-                atomic_store(&sched->polling, false);
                 if (n > 0) {
                     _sched_process_poll_events(sched, cqes, n);
                 }
+                _sched_process_timers_and_posts(sched);
+                atomic_store(&sched->polling, false);
                 continue;
             }
         }
@@ -218,6 +250,21 @@ static void _sched_teardown(scheduler_t* sched, int32_t nstarted) {
 
     if (sched->runq) {
         runq_destroy(sched->runq);
+    }
+
+    if (sched->timer_mgr) {
+        sched_timer_mgr_destroy(sched->timer_mgr);
+    }
+
+    /* Drain any remaining posts. */
+    {
+        mpsc_node_t* node;
+        while ((node = mpsc_pop(&sched->posts)) != NULL) {
+            _sched_post_t* req =
+                mpsc_entry(node, _sched_post_t, node);
+            req->cb(req->ud);
+            free(req);
+        }
     }
 
     if (sched->wakeup_rd) {
@@ -285,6 +332,15 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         _sched_teardown(sched, 0);
         return NULL;
     }
+
+    sched->timer_mgr = sched_timer_mgr_create();
+    if (!sched->timer_mgr) {
+        _sched_teardown(sched, 0);
+        return NULL;
+    }
+
+    mpsc_init(&sched->posts);
+
     atomic_store(&sched->running, true);
     atomic_store(&sched->polling, false);
 
@@ -419,4 +475,21 @@ void scheduler_set_poller(
         sched->wakeup_sqe.oneshot = 1;
         platform_poller_add(poller, &sched->wakeup_sqe);
     }
+}
+
+int scheduler_post(
+    scheduler_t* sched, scheduler_post_fn_t cb, void* ud) {
+    _sched_post_t* req = (_sched_post_t*)calloc(1, sizeof(*req));
+    if (!req) {
+        return -1;
+    }
+    req->cb = cb;
+    req->ud = ud;
+    mpsc_push(&sched->posts, &req->node);
+    _sched_notify_worker(sched);
+    return 0;
+}
+
+sched_timer_mgr_t* scheduler_get_timer_mgr(scheduler_t* sched) {
+    return sched->timer_mgr;
 }
