@@ -43,6 +43,7 @@
 #define SCHED_DEFAULT_DEQUE_LOG2 10
 #define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_MAX_POLL_MS        5
+#define SCHED_SPIN_ATTEMPTS      4
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -52,6 +53,7 @@ typedef struct _sched_worker_s {
     uint32_t             index;
     scheduler_park_fn_t  park_fn;
     void*                park_arg;
+    _Atomic bool         parked;
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -67,6 +69,8 @@ struct scheduler_s {
     platform_sock_t       wakeup_wr;
     _Atomic bool          processing;
     _Atomic bool          running;
+    _Atomic int32_t       nspinning;
+    _Atomic int32_t       nparked;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -115,6 +119,18 @@ static void _sched_wake_poller(scheduler_t* sched) {
         char c = 1;
         platform_socket_send(sched->wakeup_wr, &c, 1);
     }
+}
+
+/* Wake one parked worker via its semaphore. */
+static void _sched_wake_worker(scheduler_t* sched) {
+    for (int32_t i = 0; i < sched->nworkers; i++) {
+        if (atomic_load(&sched->workers[i].parked)) {
+            platform_sem_post(sched->workers[i].sem);
+            return;
+        }
+    }
+    /* No parked worker found -- wake the poller to unblock epoll_wait. */
+    _sched_wake_poller(sched);
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
@@ -263,6 +279,7 @@ static int _sched_worker_entry(void* arg) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
+        /* Fast path: try to get a coroutine to run. */
         mco_coro* co = _sched_try_get_coro(sched, w);
 
         if (co) {
@@ -271,29 +288,89 @@ static int _sched_worker_entry(void* arg) {
             continue;
         }
 
-        /* No runnable coroutines -- block in epoll_wait. Use the nearest
-         * timer deadline as timeout so timers fire precisely. Cap at
-         * SCHED_MAX_POLL_MS to ensure shutdown is detected promptly. */
-        int poll_ms = _sched_timer_next_timeout(sched);
-        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
-            poll_ms = SCHED_MAX_POLL_MS;
-        }
-        int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+        /* No work found -- enter spinning state. */
+        atomic_fetch_add(&sched->nspinning, 1);
 
-        if (n > 0) {
-            _sched_process_events(sched, cqes, n);
+        bool found_work = false;
+        for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
+            /* Non-blocking poll: each spinner grabs its own IO events. */
+            int n = platform_poller_wait(&sched->poller, cqes, 0);
+            if (n > 0) {
+                _sched_process_events(sched, cqes, n);
+            }
+
+            /* Try to get a coroutine (may have been woken by the poll). */
+            co = _sched_try_get_coro(sched, w);
+            if (co) {
+                found_work = true;
+                break;
+            }
         }
 
-        /* Process expired timers (mutex-protected, safe from any worker). */
-        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        _sched_process_timers(sched, now);
-
-        /* Drain posts (MPSC single-consumer, needs CAS). */
-        bool expected = false;
-        if (atomic_compare_exchange_strong(&sched->processing, &expected, true)) {
-            _sched_process_posts(sched);
-            atomic_store(&sched->processing, false);
+        if (found_work) {
+            atomic_fetch_sub(&sched->nspinning, 1);
+            mco_resume(co);
+            _sched_handle_yield(w, co);
+            continue;
         }
+
+        /* Spin failed. If we are the last spinner, do a blocking poll
+         * before parking so IO events are not missed. */
+        int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
+        if (prev == 1) {
+            /* Last spinner: do a blocking poll instead of parking.
+             * We must keep polling as long as no other worker is spinning
+             * to ensure IO events are always serviced. */
+            for (;;) {
+                if (!atomic_load(&sched->running)) {
+                    break;
+                }
+
+                int poll_ms = _sched_timer_next_timeout(sched);
+                if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
+                    poll_ms = SCHED_MAX_POLL_MS;
+                }
+                int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+                if (n > 0) {
+                    _sched_process_events(sched, cqes, n);
+                }
+
+                /* Process timers and posts. */
+                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                _sched_process_timers(sched, now);
+
+                bool expected = false;
+                if (atomic_compare_exchange_strong(
+                        &sched->processing, &expected, true)) {
+                    _sched_process_posts(sched);
+                    atomic_store(&sched->processing, false);
+                }
+
+                /* Check for work -- if found, break out to execute it. */
+                co = _sched_try_get_coro(sched, w);
+                if (co) {
+                    break;
+                }
+
+                /* If another worker started spinning, we can park. */
+                if (atomic_load(&sched->nspinning) > 0) {
+                    break;
+                }
+            }
+
+            if (co) {
+                mco_resume(co);
+                _sched_handle_yield(w, co);
+            }
+            continue;
+        }
+
+        /* Not the last spinner: park and wait for wakeup. */
+        atomic_store(&w->parked, true);
+        atomic_fetch_add(&sched->nparked, 1);
+        platform_sem_wait(w->sem);
+        atomic_store(&w->parked, false);
+        atomic_fetch_sub(&sched->nparked, 1);
     }
 
     /* Drain remaining work after shutdown. */
@@ -313,7 +390,9 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     atomic_store(&sched->running, false);
 
     if (sched->workers) {
+        /* Wake all workers: both parked (sem) and polling (wakeup pipe). */
         for (int32_t i = 0; i < nstarted; i++) {
+            platform_sem_post(sched->workers[i].sem);
             _sched_wake_poller(sched);
         }
         for (int32_t i = 0; i < nstarted; i++) {
@@ -439,6 +518,7 @@ void scheduler_destroy(scheduler_t* sched) {
 
     atomic_store(&sched->running, false);
     for (int32_t i = 0; i < sched->nworkers; i++) {
+        platform_sem_post(sched->workers[i].sem);
         _sched_wake_poller(sched);
     }
 
@@ -461,7 +541,7 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     }
     /* Slow path: external thread or deque full -- use global runq. */
     runq_push(sched->runq, co);
-    _sched_wake_poller(sched);
+    _sched_wake_worker(sched);
 }
 
 void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
@@ -506,7 +586,9 @@ int scheduler_post(
     req->cb = cb;
     req->ud = ud;
     mpsc_push(&sched->posts, &req->node);
-    _sched_wake_poller(sched);
+    if (atomic_load(&sched->nspinning) == 0) {
+        _sched_wake_worker(sched);
+    }
     return 0;
 }
 
