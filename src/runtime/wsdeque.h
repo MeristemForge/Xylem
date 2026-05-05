@@ -31,7 +31,7 @@ typedef struct wsdeque_s wsdeque_t;
  *
  * Allocates a bounded circular buffer with capacity 2^log2_cap.
  *
- * @param log2_cap  Log2 of the capacity (e.g. 10 → 1024 slots).
+ * @param log2_cap  Log2 of the capacity (e.g. 10 -> 1024 slots).
  *
  * @return Deque handle, or NULL on failure.
  */
