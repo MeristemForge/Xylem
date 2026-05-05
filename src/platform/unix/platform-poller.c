@@ -186,7 +186,10 @@ int platform_poller_wait(
         tsp = &ts;
     }
 
-    int n = kevent(*sq, NULL, 0, events, PLATFORM_POLLER_CQE_NUM, tsp);
+    int n = 0;
+    do {
+        n = kevent(*sq, NULL, 0, events, PLATFORM_POLLER_CQE_NUM, tsp);
+    } while (n == -1 && errno == EINTR);
     if (n < 0) {
         return -1;
     }
