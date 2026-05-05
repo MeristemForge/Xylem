@@ -21,7 +21,7 @@
 
 #include "xylem.h"
 #include "runtime/runtime.h"
-#include "runtime/sched-timer.h"
+#include "runtime/scheduler.h"
 #include "assert.h"
 
 #include <stdatomic.h>
@@ -39,9 +39,7 @@ static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
 }
 
 static void _start_safety_timer(void) {
-    sched_timer_mgr_t* mgr =
-        scheduler_get_timer_mgr(runtime_get_scheduler());
-    sched_timer_t* t = sched_timer_create(mgr);
+    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
     sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 }
 

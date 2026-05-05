@@ -26,19 +26,9 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct mco_coro    mco_coro;
-typedef struct scheduler_s scheduler_t;
-
-/**
- * @brief Callback invoked by the scheduler when a poller event fires.
- *
- * Called on a worker thread with the readiness mask and the user-data
- * pointer from the platform_poller_sqe registration.
- *
- * @param revents  Readiness mask (PLATFORM_POLLER_RD_OP / WR_OP).
- * @param ud       User data from the sqe registration.
- */
-typedef void (*scheduler_poll_fn_t)(int revents, void* ud);
+typedef struct mco_coro      mco_coro;
+typedef struct scheduler_s   scheduler_t;
+typedef struct sched_timer_s sched_timer_t;
 
 /**
  * @brief Park callback invoked after a coroutine yields.
@@ -55,26 +45,29 @@ typedef void (*scheduler_poll_fn_t)(int revents, void* ud);
 typedef bool (*scheduler_park_fn_t)(mco_coro* co, void* arg);
 
 /**
- * @brief Suspend the current coroutine and invoke a park callback.
+ * @brief Callback type for scheduler_post() deferred execution.
  *
- * Yields the running coroutine. After the yield, the worker calls fn(co, arg).
- * This ensures the coroutine is fully suspended before any wakeup source
- * can see its pointer, eliminating schedule-before-yield races.
- *
- * @param sched  Scheduler handle.
- * @param fn     Park callback invoked after yield.
- * @param arg    Opaque argument passed to fn.
+ * @param ud  User data passed to scheduler_post().
  */
-extern void scheduler_park(
-    scheduler_t* sched, scheduler_park_fn_t fn, void* arg);
+typedef void (*scheduler_post_fn_t)(void* ud);
 
-typedef struct {
+/**
+ * @brief Timer expiry callback.
+ *
+ * @param timer  The timer that fired.
+ * @param ud     User data from sched_timer_start().
+ */
+typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
+
+typedef struct scheduler_opts_s {
     int32_t  nworkers;  /*< 0 = use CPU count. */
     uint32_t deque_cap; /*< 0 = use default (log2=10, 1024 slots). */
 } scheduler_opts_t;
 
 /**
  * @brief Create a coroutine scheduler with N worker threads.
+ *
+ * Initializes the poller, timer heap, and worker pool internally.
  *
  * @param opts  Configuration, or NULL for defaults.
  *
@@ -85,7 +78,10 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
 /**
  * @brief Destroy the scheduler, joining all workers.
  *
- * @param sched  Scheduler to destroy.
+ * Signals shutdown, wakes all workers, waits for them to drain
+ * their queues, then frees all resources.
+ *
+ * @param sched  Scheduler to destroy, or NULL (no-op).
  */
 extern void scheduler_destroy(scheduler_t* sched);
 
@@ -114,34 +110,18 @@ extern void scheduler_spawn(
     scheduler_t* sched, void (*fn)(void*), void* arg);
 
 /**
- * @brief Signal the scheduler to shut down.
+ * @brief Suspend the current coroutine and invoke a park callback.
  *
- * Wakes all workers. They will drain local deques before exiting.
+ * Yields the running coroutine. After the yield, the worker calls fn(co, arg).
+ * This ensures the coroutine is fully suspended before any wakeup source
+ * can see its pointer, eliminating schedule-before-yield races.
  *
  * @param sched  Scheduler handle.
+ * @param fn     Park callback invoked after yield.
+ * @param arg    Opaque argument passed to fn.
  */
-extern void scheduler_shutdown(scheduler_t* sched);
-
-/**
- * @brief Attach a shared poller to the scheduler.
- *
- * Workers will poll for IO events when idle. The callback is invoked
- * on the worker thread for each ready event.
- *
- * @param sched   Scheduler handle.
- * @param poller  Platform poller handle.
- * @param cb      Callback for ready events.
- */
-extern void scheduler_set_poller(
-    scheduler_t* sched,
-    platform_poller_sq_t* poller,
-    scheduler_poll_fn_t cb);
-
-/** @brief Opaque timer manager owned by the scheduler. */
-typedef struct sched_timer_mgr_s sched_timer_mgr_t;
-
-/** @brief Callback type for scheduler_post() deferred execution. */
-typedef void (*scheduler_post_fn_t)(void* ud);
+extern void scheduler_park(
+    scheduler_t* sched, scheduler_park_fn_t fn, void* arg);
 
 /**
  * @brief Post a deferred callback to the scheduler.
@@ -159,20 +139,49 @@ extern int scheduler_post(
     scheduler_t* sched, scheduler_post_fn_t cb, void* ud);
 
 /**
- * @brief Get the scheduler's timer manager.
+ * @brief Get the scheduler's poller handle.
  *
  * @param sched  Scheduler handle.
  *
- * @return Timer manager handle.
+ * @return Platform poller handle.
  */
-extern sched_timer_mgr_t* scheduler_get_timer_mgr(scheduler_t* sched);
+extern platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched);
 
 /**
- * @brief Wake a worker blocked in poll.
- *
- * Thread-safe. Used to interrupt epoll_wait when new timers are
- * registered or other urgent work is available.
+ * @brief Create a timer attached to a scheduler.
  *
  * @param sched  Scheduler handle.
+ *
+ * @return Timer handle, or NULL on failure.
  */
-extern void scheduler_wake(scheduler_t* sched);
+extern sched_timer_t* sched_timer_create(scheduler_t* sched);
+
+/**
+ * @brief Destroy a timer. Stops it first if active.
+ *
+ * @param timer  Timer handle, or NULL (no-op).
+ */
+extern void sched_timer_destroy(sched_timer_t* timer);
+
+/**
+ * @brief Start or restart a timer. Thread-safe.
+ *
+ * @param timer       Timer handle.
+ * @param cb          Callback to invoke on expiry.
+ * @param ud          User data for callback.
+ * @param timeout_ms  Delay in milliseconds.
+ * @param repeat_ms   Repeat interval, 0 for one-shot.
+ */
+extern void sched_timer_start(
+    sched_timer_t*   timer,
+    sched_timer_fn_t cb,
+    void*            ud,
+    uint64_t         timeout_ms,
+    uint64_t         repeat_ms);
+
+/**
+ * @brief Stop a running timer. Thread-safe. No-op if already stopped.
+ *
+ * @param timer  Timer handle.
+ */
+extern void sched_timer_stop(sched_timer_t* timer);

@@ -22,7 +22,6 @@
 #include "iowait.h"
 #include "runtime.h"
 #include "scheduler.h"
-#include "sched-timer.h"
 
 #include "minicoro/minicoro.h"
 
@@ -140,7 +139,7 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
     if (p->timeout_ms > 0) {
         if (!w->rd_timer) {
             w->rd_timer = sched_timer_create(
-                scheduler_get_timer_mgr(runtime_get_scheduler()));
+                runtime_get_scheduler());
         }
         sched_timer_start(w->rd_timer, _iowait_rd_timeout_cb,
                           w, p->timeout_ms, 0);
@@ -173,7 +172,7 @@ static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
     if (p->timeout_ms > 0) {
         if (!w->wr_timer) {
             w->wr_timer = sched_timer_create(
-                scheduler_get_timer_mgr(runtime_get_scheduler()));
+                runtime_get_scheduler());
         }
         sched_timer_start(w->wr_timer, _iowait_wr_timeout_cb,
                           w, p->timeout_ms, 0);

@@ -31,7 +31,6 @@ if(WIN32 AND MSVC)
 endif()
 
 set(SRCS
-	src/runtime/sched-timer.c
 	src/runtime/xylem-runtime.c
 	src/xylem-logger.c
 	src/xylem-utils.c
