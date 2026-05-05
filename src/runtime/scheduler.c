@@ -227,11 +227,9 @@ static void _sched_process_poll_events(
     int n) {
     for (int i = 0; i < n; i++) {
         if (cqes[i].ud == NULL) {
-            /* Wakeup fd -- drain, process posts/timers, re-arm. */
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
             }
-            _sched_process_timers_and_posts(sched);
             sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
             platform_poller_mod(&sched->poller, &sched->wakeup_sqe);
             continue;
