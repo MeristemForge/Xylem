@@ -88,6 +88,8 @@ static void _sched_coro_entry(mco_coro* co) {
     ctx->fn(ctx->arg);
 }
 
+static void _sched_wake_poller(scheduler_t* sched);
+
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     mco_coro* co = wsdeque_pop(w->deque);
     if (co) {
@@ -170,42 +172,49 @@ static int _sched_worker_entry(void* arg) {
                 if (!fn(co, arg)) {
                     wsdeque_push(w->deque, co);
                 }
-            } else {
-                /* Coroutine yielded for I/O (iowait). Do a non-blocking
-                 * poll to immediately pick up any ready events — this
-                 * avoids a full sem round-trip when I/O completes fast. */
-                int n = platform_poller_wait(sched->poller, cqes, 0);
-                if (n > 0) {
-                    _sched_process_poll_events(sched, cqes, n);
-                }
             }
             continue;
         }
 
+        /* No runnable coroutines. All workers poll directly — epoll/kqueue/
+         * IOCP are thread-safe and EPOLLONESHOT ensures each event is
+         * delivered to exactly one worker. */
         if (sched->poller) {
+            atomic_store(&w->is_polling, true);
+
+            /* Only one worker processes timers and posts per cycle. */
+            bool do_timers = false;
             bool expected = false;
             if (atomic_compare_exchange_strong(
                     &sched->polling, &expected, true)) {
-                atomic_store(&w->is_polling, true);
+                do_timers = true;
+            }
+
+            int poll_ms = SCHED_POLL_TIMEOUT_MS;
+            if (do_timers) {
                 uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
                 int timer_timeout = sched_timer_mgr_next_timeout(
                     sched->timer_mgr, now);
-                int poll_ms = SCHED_POLL_TIMEOUT_MS;
                 if (timer_timeout >= 0 && timer_timeout < poll_ms) {
                     poll_ms = timer_timeout;
                 }
-                int n = platform_poller_wait(
-                    sched->poller, cqes, poll_ms);
-                atomic_store(&w->is_polling, false);
-                if (n > 0) {
-                    _sched_process_poll_events(sched, cqes, n);
-                }
+            }
+
+            int n = platform_poller_wait(sched->poller, cqes, poll_ms);
+            atomic_store(&w->is_polling, false);
+
+            if (n > 0) {
+                _sched_process_poll_events(sched, cqes, n);
+            }
+
+            if (do_timers) {
                 _sched_process_timers_and_posts(sched);
                 atomic_store(&sched->polling, false);
-                continue;
             }
+            continue;
         }
 
+        /* No poller configured — fall back to semaphore. */
         platform_sem_wait(w->sem);
     }
 
@@ -285,24 +294,28 @@ static void _sched_teardown(scheduler_t* sched, int32_t nstarted) {
 }
 
 static void _sched_notify_worker(scheduler_t* sched) {
+    /* Workers block in epoll_wait, so wake them via the wakeup fd.
+     * If a worker is not polling (actively running coros), it will
+     * naturally find the new work on its next loop iteration. */
+    if (sched->poller) {
+        _sched_wake_poller(sched);
+        return;
+    }
+
+    /* Fallback for no-poller mode: use semaphores. */
     uint32_t n = (uint32_t)sched->nworkers;
     uint32_t start =
         atomic_fetch_add(&sched->notify_idx, 1) % n;
-
-    for (uint32_t i = 0; i < n; i++) {
-        uint32_t idx = (start + i) % n;
-        if (!atomic_load(&sched->workers[idx].is_polling)) {
-            platform_sem_post(sched->workers[idx].sem);
-            return;
-        }
-    }
-
-    /* All workers are polling or busy -- post to the original target. */
     platform_sem_post(sched->workers[start].sem);
 }
 
 static void _sched_notify_other(scheduler_t* sched, uint32_t self) {
+    (void)self;
     if (sched->nworkers <= 1) {
+        return;
+    }
+    if (sched->poller) {
+        _sched_wake_poller(sched);
         return;
     }
     uint32_t n = (uint32_t)sched->nworkers;
@@ -451,9 +464,11 @@ static void _sched_wake_poller(scheduler_t* sched) {
 void scheduler_shutdown(scheduler_t* sched) {
     atomic_store(&sched->running, false);
 
-    /* Wake the poller worker if blocked in epoll_wait. */
+    /* Wake all workers — they may be blocked in epoll_wait or sem_wait. */
     if (sched->poller) {
-        _sched_wake_poller(sched);
+        for (int32_t i = 0; i < sched->nworkers; i++) {
+            _sched_wake_poller(sched);
+        }
     }
 
     for (int32_t i = 0; i < sched->nworkers; i++) {
