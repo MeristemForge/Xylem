@@ -21,9 +21,10 @@
 
 _Pragma("once")
 
+#include "container/queue.h"
+
 #include <stdint.h>
 
-typedef struct mco_coro mco_coro;
 typedef struct runq_s runq_t;
 
 /**
@@ -45,34 +46,34 @@ extern runq_t* runq_create(void);
 extern void runq_destroy(runq_t* rq);
 
 /**
- * @brief Push a coroutine onto the run queue.
+ * @brief Push a node onto the run queue.
  *
  * Thread-safe: can be called from any thread.
  *
- * @param rq  Run queue.
- * @param co  Coroutine to enqueue.
+ * @param rq    Run queue.
+ * @param node  Intrusive queue node embedded in the caller's struct.
  */
-extern void runq_push(runq_t* rq, mco_coro* co);
+extern void runq_push(runq_t* rq, queue_node_t* node);
 
 /**
- * @brief Push multiple coroutines onto the run queue in one lock acquisition.
+ * @brief Push multiple nodes onto the run queue in one lock acquisition.
  *
  * Thread-safe: can be called from any thread. More efficient than calling
  * runq_push in a loop when transferring a batch.
  *
  * @param rq     Run queue.
- * @param batch  Array of coroutines to enqueue.
- * @param count  Number of coroutines in the batch.
+ * @param nodes  Array of pointers to intrusive queue nodes.
+ * @param count  Number of nodes in the array.
  */
-extern void runq_push_batch(runq_t* rq, mco_coro** batch, int32_t count);
+extern void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count);
 
 /**
- * @brief Pop a coroutine from the run queue.
+ * @brief Pop a node from the run queue.
  *
  * Thread-safe: can be called from any thread.
  *
  * @param rq  Run queue.
  *
- * @return Coroutine pointer, or NULL if empty.
+ * @return Queue node pointer, or NULL if empty.
  */
-extern mco_coro* runq_pop(runq_t* rq);
+extern queue_node_t* runq_pop(runq_t* rq);

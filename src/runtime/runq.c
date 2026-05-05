@@ -21,15 +21,9 @@
 
 #include "runq.h"
 
-#include "container/queue.h"
 #include "c11-threads.h"
 
 #include <stdlib.h>
-
-typedef struct _runq_entry_s {
-    queue_node_t node;
-    mco_coro*    co;
-} _runq_entry_t;
 
 struct runq_s {
     queue_t q;
@@ -54,56 +48,26 @@ void runq_destroy(runq_t* rq) {
     free(rq);
 }
 
-void runq_push(runq_t* rq, mco_coro* co) {
-    _runq_entry_t* entry =
-        (_runq_entry_t*)calloc(1, sizeof(_runq_entry_t));
-    if (!entry) {
-        return;
-    }
-    entry->co = co;
-
+void runq_push(runq_t* rq, queue_node_t* node) {
     mtx_lock(&rq->lock);
-    queue_enqueue(&rq->q, &entry->node);
+    queue_enqueue(&rq->q, node);
     mtx_unlock(&rq->lock);
 }
 
-void runq_push_batch(runq_t* rq, mco_coro** batch, int32_t count) {
+void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count) {
     if (count <= 0) {
         return;
     }
-
-    /* Pre-allocate all entries before taking the lock. */
-    _runq_entry_t* entries =
-        (_runq_entry_t*)calloc((size_t)count, sizeof(_runq_entry_t));
-    if (!entries) {
-        /* Fallback: push one by one. */
-        for (int32_t i = 0; i < count; i++) {
-            runq_push(rq, batch[i]);
-        }
-        return;
-    }
-
-    for (int32_t i = 0; i < count; i++) {
-        entries[i].co = batch[i];
-    }
-
     mtx_lock(&rq->lock);
     for (int32_t i = 0; i < count; i++) {
-        queue_enqueue(&rq->q, &entries[i].node);
+        queue_enqueue(&rq->q, nodes[i]);
     }
     mtx_unlock(&rq->lock);
 }
 
-mco_coro* runq_pop(runq_t* rq) {
+queue_node_t* runq_pop(runq_t* rq) {
     mtx_lock(&rq->lock);
     queue_node_t* node = queue_dequeue(&rq->q);
     mtx_unlock(&rq->lock);
-
-    if (!node) {
-        return NULL;
-    }
-    _runq_entry_t* entry = queue_entry(node, _runq_entry_t, node);
-    mco_coro* co = entry->co;
-    free(entry);
-    return co;
+    return node;
 }

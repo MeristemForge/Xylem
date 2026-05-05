@@ -28,6 +28,7 @@
 #include "runq.h"
 #include "container/heap.h"
 #include "container/mpsc.h"
+#include "container/queue.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-info.h"
@@ -79,7 +80,9 @@ static thread_local _sched_worker_t* _tls_worker;
 
 typedef struct {
     void (*fn)(void*);
-    void* arg;
+    void*        arg;
+    queue_node_t runq_node;
+    mco_coro*    co;
 } _coro_ctx_t;
 
 typedef struct {
@@ -147,9 +150,10 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
         return co;
     }
 
-    co = runq_pop(sched->runq);
-    if (co) {
-        return co;
+    queue_node_t* node = runq_pop(sched->runq);
+    if (node) {
+        _coro_ctx_t* ctx = queue_entry(node, _coro_ctx_t, runq_node);
+        return ctx->co;
     }
 
     if (sched->nworkers > 1) {
@@ -545,17 +549,19 @@ void scheduler_destroy(scheduler_t* sched) {
         _sched_wake_poller(sched);
     }
 
-    mco_coro* co;
-    while ((co = runq_pop(sched->runq)) != NULL) {
-        _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    queue_node_t* node;
+    while ((node = runq_pop(sched->runq)) != NULL) {
+        _coro_ctx_t* ctx = queue_entry(node, _coro_ctx_t, runq_node);
+        mco_destroy(ctx->co);
         free(ctx);
-        mco_destroy(co);
     }
 
     _sched_cleanup(sched, sched->nworkers);
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+
     /* Fast path: if called from a worker thread, use runnext slot. */
     if (_tls_worker && _tls_worker->sched == sched) {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
@@ -570,19 +576,26 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
         mco_coro* batch[SCHED_DEQUE_HALF];
         int32_t n = wsdeque_pop_half(_tls_worker->deque, batch, SCHED_DEQUE_HALF);
         if (n > 0) {
-            runq_push_batch(sched->runq, batch, n);
+            queue_node_t* nodes[SCHED_DEQUE_HALF];
+            for (int32_t i = 0; i < n; i++) {
+                _coro_ctx_t* c =
+                    (_coro_ctx_t*)mco_get_user_data(batch[i]);
+                nodes[i] = &c->runq_node;
+            }
+            runq_push_batch(sched->runq, nodes, n);
             _sched_wake_worker(sched);
         }
         if (wsdeque_push(_tls_worker->deque, old) == 0) {
             return;
         }
         /* Still full -- fallback to global runq. */
-        runq_push(sched->runq, old);
+        _coro_ctx_t* old_ctx = (_coro_ctx_t*)mco_get_user_data(old);
+        runq_push(sched->runq, &old_ctx->runq_node);
         _sched_wake_worker(sched);
         return;
     }
     /* Slow path: external thread -- use global runq. */
-    runq_push(sched->runq, co);
+    runq_push(sched->runq, &ctx->runq_node);
     _sched_wake_worker(sched);
 }
 
@@ -604,6 +617,7 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
         return;
     }
 
+    ctx->co = co;
     scheduler_schedule(sched, co);
 }
 
