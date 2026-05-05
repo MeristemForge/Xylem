@@ -21,6 +21,7 @@
 
 #include "xylem/net/xylem-tcp.h"
 
+#include "xylem/runtime/xylem-runtime.h"
 #include "xylem/xylem-logger.h"
 
 #include "runtime/iowait.h"
@@ -46,8 +47,30 @@ struct xylem_tcp_conn_s {
     size_t                 read_buf_pos;
     size_t                 read_buf_len;
     int                    last_error;
+    _Atomic int            refcnt;
     _Atomic bool           closed;
 };
+
+static void _tcp_conn_retain(xylem_tcp_conn_t* tcp) {
+    atomic_fetch_add_explicit(&tcp->refcnt, 1, memory_order_relaxed);
+}
+
+static void _tcp_conn_release(xylem_tcp_conn_t* tcp) {
+    if (atomic_fetch_sub_explicit(
+            &tcp->refcnt, 1, memory_order_acq_rel) != 1) {
+        return;
+    }
+    /* Last reference: now it is safe to destroy. */
+    if (tcp->waiter) {
+        iowait_destroy(tcp->waiter);
+    }
+    if (tcp->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        shutdown(tcp->fd, PLATFORM_SHUT_WR);
+        platform_socket_close(tcp->fd);
+    }
+    free(tcp->read_buf);
+    free(tcp);
+}
 
 struct xylem_tcp_listener_s {
     iowait_t*       waiter;
@@ -55,8 +78,27 @@ struct xylem_tcp_listener_s {
     uint64_t        read_timeout_ms;
     uint64_t        write_timeout_ms;
     size_t          max_read_buf;
+    _Atomic int     refcnt;
     _Atomic bool    closing;
 };
+
+static void _tcp_listener_retain(xylem_tcp_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
+
+static void _tcp_listener_release(xylem_tcp_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(
+            &ln->refcnt, 1, memory_order_acq_rel) != 1) {
+        return;
+    }
+    if (ln->waiter) {
+        iowait_destroy(ln->waiter);
+    }
+    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(ln->fd);
+    }
+    free(ln);
+}
 
 static xylem_tcp_conn_t* _tcp_conn_alloc(
     platform_sock_t fd,
@@ -85,11 +127,12 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
 
     platform_socket_enable_nodelay(fd, true);
     platform_socket_enable_keepalive(fd, true);
+    atomic_store_explicit(&tcp->refcnt, 1, memory_order_relaxed);
     return tcp;
 }
 
 static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
-    if (tcp->closed) {
+    if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
         return -1;
     }
 
@@ -111,7 +154,8 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             return -1;
         }
 
-        if (!iowait_read(tcp->waiter, ms) || tcp->closed) {
+        if (!iowait_read(tcp->waiter, ms) ||
+            atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
             tcp->last_error = ms > 0
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
@@ -217,7 +261,7 @@ static int64_t _tcp_recv_length(
     }
 
     int64_t adjusted = (int64_t)body_len + tcp->frame_opts.length.adjustment;
-    if (adjusted <= 0) {
+    if (adjusted < 0) {
         tcp->last_error = -1;
         return -1;
     }
@@ -228,7 +272,7 @@ static int64_t _tcp_recv_length(
         return -1;
     }
 
-    if (_tcp_read_exact(tcp, buf, payload_len) != 0) {
+    if (payload_len > 0 && _tcp_read_exact(tcp, buf, payload_len) != 0) {
         return -1;
     }
     return (int64_t)payload_len;
@@ -281,7 +325,7 @@ static int _tcp_raw_send(
     xylem_tcp_conn_t* tcp,
     const void* data,
     size_t len) {
-    if (tcp->closed) {
+    if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
         return -1;
     }
 
@@ -304,7 +348,8 @@ static int _tcp_raw_send(
             return -1;
         }
 
-        if (!iowait_write(tcp->waiter, ms) || tcp->closed) {
+        if (!iowait_write(tcp->waiter, ms) ||
+            atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
             tcp->last_error = ms > 0
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
@@ -444,29 +489,45 @@ int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
     void* buf,
     size_t len) {
+    _tcp_conn_retain(tcp);
+    int64_t ret;
     switch (tcp->frame_opts.type) {
     case XYLEM_TCP_FRAME_NONE:
-        return _tcp_buffered_read(tcp, buf, len);
+        ret = _tcp_buffered_read(tcp, buf, len);
+        break;
     case XYLEM_TCP_FRAME_FIXED:
-        return _tcp_recv_fixed(tcp, buf, len);
+        ret = _tcp_recv_fixed(tcp, buf, len);
+        break;
     case XYLEM_TCP_FRAME_LENGTH:
-        return _tcp_recv_length(tcp, buf, len);
+        ret = _tcp_recv_length(tcp, buf, len);
+        break;
     case XYLEM_TCP_FRAME_DELIMITER:
-        return _tcp_recv_delimiter(tcp, buf, len);
+        ret = _tcp_recv_delimiter(tcp, buf, len);
+        break;
+    default:
+        ret = -1;
+        break;
     }
-    return -1;
+    _tcp_conn_release(tcp);
+    return ret;
 }
 
 int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
     const void* data,
     size_t len) {
+    _tcp_conn_retain(tcp);
+    int ret;
     switch (tcp->frame_opts.type) {
     case XYLEM_TCP_FRAME_LENGTH:
-        return _tcp_send_length(tcp, data, len);
+        ret = _tcp_send_length(tcp, data, len);
+        break;
     default:
-        return _tcp_raw_send(tcp, data, len);
+        ret = _tcp_raw_send(tcp, data, len);
+        break;
     }
+    _tcp_conn_release(tcp);
+    return ret;
 }
 
 xylem_tcp_listener_t* xylem_tcp_listen(
@@ -507,30 +568,47 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         return NULL;
     }
 
+    atomic_store_explicit(&listener->refcnt, 1, memory_order_relaxed);
+
     xylem_logi("tcp listener fd=%d listening on %s:%s",
                (int)fd, host, port_str);
     return listener;
 }
 
 xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
+    _tcp_listener_retain(listener);
+
+    xylem_tcp_conn_t* result = NULL;
     for (;;) {
-        if (listener->closing) {
-            return NULL;
+        if (atomic_load_explicit(&listener->closing, memory_order_acquire)) {
+            break;
         }
 
         platform_sock_t fd = platform_socket_accept(listener->fd, true);
         if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
             int err = platform_socket_get_lasterror();
-            if (err != PLATFORM_SO_ERROR_EAGAIN &&
-                err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_logw("tcp listener fd=%d accept error=%d (%s)",
-                           (int)listener->fd, err,
-                           platform_socket_tostring(err));
+            if (err == PLATFORM_SO_ERROR_EAGAIN ||
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                /* Expected: no pending connection. Park until readable. */
+                if (!iowait_read(listener->waiter, 0)) {
+                    break;
+                }
+                continue;
             }
 
-            if (!iowait_read(listener->waiter, 0)) {
-                return NULL;
-            }
+            /**
+             * Non-EAGAIN error: could be transient (ECONNABORTED, EINTR,
+             * per-connection SSL/TCP reset) or a resource exhaustion
+             * (EMFILE, ENFILE). In the latter case the listen fd stays
+             * readable and calling iowait_read returns immediately, so
+             * looping would burn 100% CPU. Sleep briefly as backoff before
+             * retrying; under fd exhaustion this lets other descriptors
+             * close, and under transient errors it is cheap.
+             */
+            xylem_logw("tcp listener fd=%d accept error=%d (%s)",
+                       (int)listener->fd, err,
+                       platform_socket_tostring(err));
+            xylem_runtime_sleep(10);
             continue;
         }
 
@@ -550,8 +628,12 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
 
         xylem_logi("tcp listener fd=%d accepted conn fd=%d",
                    (int)listener->fd, (int)fd);
-        return tcp;
+        result = tcp;
+        break;
     }
+
+    _tcp_listener_release(listener);
+    return result;
 }
 
 void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
@@ -561,10 +643,12 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
 
     xylem_logi("tcp listener fd=%d closing", (int)listener->fd);
 
+    /**
+     * Wake any accept coroutine; it will observe `closing`, drop its
+     * reference, and the last release triggers teardown.
+     */
     iowait_close(listener->waiter);
-    iowait_destroy(listener->waiter);
-    platform_socket_close(listener->fd);
-    free(listener);
+    _tcp_listener_release(listener);
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
@@ -572,12 +656,13 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
         return;
     }
 
+    /**
+     * Wake any in-flight recv/send so they observe `closed` and return.
+     * The actual teardown (fd close, iowait_destroy, free) happens in
+     * _tcp_conn_release() once the last in-flight call drops its reference.
+     */
     iowait_close(tcp->waiter);
-    iowait_destroy(tcp->waiter);
-    free(tcp->read_buf);
-    shutdown(tcp->fd, PLATFORM_SHUT_WR);
-    platform_socket_close(tcp->fd);
-    free(tcp);
+    _tcp_conn_release(tcp);
 }
 
 int xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {

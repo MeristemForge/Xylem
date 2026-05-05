@@ -24,6 +24,7 @@
 #include "scheduler.h"
 
 #include "minicoro/minicoro.h"
+#include "c11-threads.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -53,9 +54,42 @@ struct iowait_s {
     _iowait_park_t*       wr_park;
     _Atomic int           rd_state;
     _Atomic int           wr_state;
+    _Atomic int           refcnt;
+    /**
+     * Serializes _iowait_arm() across the rd and wr coroutines. Without
+     * this, two coroutines racing to arm the same waiter can corrupt
+     * w->sqe.op or issue a duplicate poller_add.
+     */
+    mtx_t                 arm_lock;
     bool                  registered;
-    bool                  closed;
+    _Atomic bool          closed;
 };
+
+static void _iowait_do_free(iowait_t* w) {
+    if (w->registered) {
+        platform_poller_del(w->poller, &w->sqe);
+        w->registered = false;
+    }
+    if (w->rd_timer) {
+        sched_timer_destroy(w->rd_timer);
+    }
+    if (w->wr_timer) {
+        sched_timer_destroy(w->wr_timer);
+    }
+    mtx_destroy(&w->arm_lock);
+    free(w);
+}
+
+static void _iowait_retain(iowait_t* w) {
+    atomic_fetch_add_explicit(&w->refcnt, 1, memory_order_relaxed);
+}
+
+static void _iowait_release(iowait_t* w) {
+    if (atomic_fetch_sub_explicit(
+            &w->refcnt, 1, memory_order_acq_rel) == 1) {
+        _iowait_do_free(w);
+    }
+}
 
 static mco_coro* _iowait_wake(_Atomic int* state, mco_coro** coro_slot) {
     int expected = IOWAIT_WAITING;
@@ -70,9 +104,11 @@ static mco_coro* _iowait_wake(_Atomic int* state, mco_coro** coro_slot) {
 }
 
 static void _iowait_arm(iowait_t* w) {
-    if (w->closed) {
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return;
     }
+
+    mtx_lock(&w->arm_lock);
 
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
         /* ET mode: register once with RD+WR, no re-arm needed. */
@@ -92,6 +128,7 @@ static void _iowait_arm(iowait_t* w) {
             interest |= PLATFORM_POLLER_WR_OP;
         }
         if (interest == PLATFORM_POLLER_NO_OP) {
+            mtx_unlock(&w->arm_lock);
             return;
         }
 
@@ -104,6 +141,8 @@ static void _iowait_arm(iowait_t* w) {
             platform_poller_mod(w->poller, &w->sqe);
         }
     }
+
+    mtx_unlock(&w->arm_lock);
 }
 
 static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
@@ -142,12 +181,12 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
     _iowait_arm(w);
 
     if (p->timeout_ms > 0) {
-        if (!w->rd_timer) {
-            w->rd_timer = sched_timer_create(
-                runtime_get_scheduler());
+        /* New timer per park — avoids reuse races across concurrent parks. */
+        p->timer = sched_timer_create(runtime_get_scheduler());
+        if (p->timer) {
+            sched_timer_start(p->timer, _iowait_rd_timeout_cb,
+                              p, p->timeout_ms, 0);
         }
-        sched_timer_start(w->rd_timer, _iowait_rd_timeout_cb,
-                          w, p->timeout_ms, 0);
     }
 
     int expected = IOWAIT_IDLE;
@@ -155,10 +194,26 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
             &w->rd_state, &expected, IOWAIT_WAITING)) {
         w->rd_coro = NULL;
         w->rd_park = NULL;
-        if (p->timeout_ms > 0 && w->rd_timer) {
-            sched_timer_stop(w->rd_timer);
+        if (p->timer) {
+            sched_timer_destroy(p->timer);
+            p->timer = NULL;
         }
         return false;
+    }
+
+    /**
+     * Close-race check. An iowait_close() that started before we wrote
+     * rd_coro saw NULL and skipped the wake; now that rd_coro is visible
+     * and we are in WAITING state, re-check `closed`. If set, we must
+     * wake ourselves since no one else will: _iowait_arm() already
+     * skipped poller registration because it observed closed=true.
+     */
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        mco_coro* me = _iowait_wake(&w->rd_state, &w->rd_coro);
+        if (me) {
+            p->closed = true;
+            scheduler_schedule(runtime_get_scheduler(), me);
+        }
     }
     return true;
 }
@@ -175,12 +230,11 @@ static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
     _iowait_arm(w);
 
     if (p->timeout_ms > 0) {
-        if (!w->wr_timer) {
-            w->wr_timer = sched_timer_create(
-                runtime_get_scheduler());
+        p->timer = sched_timer_create(runtime_get_scheduler());
+        if (p->timer) {
+            sched_timer_start(p->timer, _iowait_wr_timeout_cb,
+                              p, p->timeout_ms, 0);
         }
-        sched_timer_start(w->wr_timer, _iowait_wr_timeout_cb,
-                          w, p->timeout_ms, 0);
     }
 
     int expected = IOWAIT_IDLE;
@@ -188,10 +242,20 @@ static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
             &w->wr_state, &expected, IOWAIT_WAITING)) {
         w->wr_coro = NULL;
         w->wr_park = NULL;
-        if (p->timeout_ms > 0 && w->wr_timer) {
-            sched_timer_stop(w->wr_timer);
+        if (p->timer) {
+            sched_timer_destroy(p->timer);
+            p->timer = NULL;
         }
         return false;
+    }
+
+    /* See _iowait_rd_park_fn for rationale. */
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        mco_coro* me = _iowait_wake(&w->wr_state, &w->wr_coro);
+        if (me) {
+            p->closed = true;
+            scheduler_schedule(runtime_get_scheduler(), me);
+        }
     }
     return true;
 }
@@ -209,67 +273,94 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->sqe.ud = w;
     w->sqe.op = PLATFORM_POLLER_NO_OP;
 
+    mtx_init(&w->arm_lock, mtx_plain);
+
+    /* Refcount starts at 1 — owned by the creator (released in iowait_destroy). */
+    atomic_store_explicit(&w->refcnt, 1, memory_order_relaxed);
     return w;
 }
 
 bool iowait_read(iowait_t* w, uint64_t timeout_ms) {
-    if (w->closed) {
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return false;
     }
 
+    _iowait_retain(w);
+
     _iowait_park_t park = {
-        .w = w, .timeout_ms = timeout_ms,
+        .w = w, .timer = NULL, .timeout_ms = timeout_ms,
         .timed_out = false, .closed = false
     };
     scheduler_park(runtime_get_scheduler(), _iowait_rd_park_fn, &park);
 
-    if (park.closed) {
-        return false;
+    bool ok = !park.closed && !park.timed_out;
+
+    if (!park.closed) {
+        atomic_store(&w->rd_state, IOWAIT_IDLE);
+        w->rd_coro = NULL;
+        w->rd_park = NULL;
     }
 
-    atomic_store(&w->rd_state, IOWAIT_IDLE);
-    w->rd_coro = NULL;
-    w->rd_park = NULL;
-
-    if (timeout_ms > 0 && w->rd_timer && !park.timed_out) {
-        sched_timer_stop(w->rd_timer);
+    /**
+     * Destroy the per-park timer if one was created. sched_timer_destroy
+     * bumps seq under timer_lock so a concurrent _sched_process_timers
+     * pass that has already dequeued the timer will still invoke the cb
+     * once with park->timer==NULL-safe semantics, but the cb will observe
+     * rd_state != WAITING (we either already timed out, or the wake
+     * path raced us) and do nothing.
+     */
+    if (park.timer) {
+        sched_timer_destroy(park.timer);
     }
 
-    return !park.timed_out;
+    _iowait_release(w);
+    return ok;
 }
 
 bool iowait_write(iowait_t* w, uint64_t timeout_ms) {
-    if (w->closed) {
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return false;
     }
 
+    _iowait_retain(w);
+
     _iowait_park_t park = {
-        .w = w, .timeout_ms = timeout_ms,
+        .w = w, .timer = NULL, .timeout_ms = timeout_ms,
         .timed_out = false, .closed = false
     };
     scheduler_park(runtime_get_scheduler(), _iowait_wr_park_fn, &park);
 
-    if (park.closed) {
-        return false;
+    bool ok = !park.closed && !park.timed_out;
+
+    if (!park.closed) {
+        atomic_store(&w->wr_state, IOWAIT_IDLE);
+        w->wr_coro = NULL;
+        w->wr_park = NULL;
     }
 
-    atomic_store(&w->wr_state, IOWAIT_IDLE);
-    w->wr_coro = NULL;
-    w->wr_park = NULL;
-
-    if (timeout_ms > 0 && w->wr_timer && !park.timed_out) {
-        sched_timer_stop(w->wr_timer);
+    if (park.timer) {
+        sched_timer_destroy(park.timer);
     }
 
-    return !park.timed_out;
+    _iowait_release(w);
+    return ok;
 }
 
 void iowait_close(iowait_t* w) {
-    if (w->closed) {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong_explicit(
+            &w->closed, &expected, true,
+            memory_order_acq_rel, memory_order_acquire)) {
         return;
     }
-    w->closed = true;
 
+    /**
+     * Best-effort wake of any waiter that was already visible to us
+     * (i.e., finished its park_fn before we CAS'd `closed`). A waiter
+     * that is mid-park_fn may not yet have published rd_coro/wr_coro
+     * here; those waiters self-rescue by re-checking `closed` after
+     * transitioning to WAITING (see _iowait_rd_park_fn).
+     */
     scheduler_t* sched = runtime_get_scheduler();
     if (w->rd_coro) {
         if (w->rd_park) {
@@ -292,30 +383,21 @@ void iowait_close(iowait_t* w) {
 }
 
 void iowait_destroy(iowait_t* w) {
-    if (!w->closed) {
+    if (!atomic_load_explicit(&w->closed, memory_order_acquire)) {
         iowait_close(w);
     }
-
-    if (w->registered) {
-        platform_poller_del(w->poller, &w->sqe);
-        w->registered = false;
-    }
-
-    if (w->rd_timer) {
-        sched_timer_destroy(w->rd_timer);
-    }
-    if (w->wr_timer) {
-        sched_timer_destroy(w->wr_timer);
-    }
-    free(w);
+    /* Drop the creator's reference; the last holder frees. */
+    _iowait_release(w);
 }
 
 bool iowait_is_closed(iowait_t* w) {
-    return w->closed;
+    return atomic_load_explicit(&w->closed, memory_order_acquire);
 }
 
 void iowait_on_event(int revents, void* ud) {
     iowait_t* w = (iowait_t*)ud;
+    _iowait_retain(w);
+
     scheduler_t* sched = runtime_get_scheduler();
 
     if ((revents & PLATFORM_POLLER_RD_OP)) {
@@ -334,4 +416,6 @@ void iowait_on_event(int revents, void* ud) {
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         _iowait_arm(w);
     }
+
+    _iowait_release(w);
 }

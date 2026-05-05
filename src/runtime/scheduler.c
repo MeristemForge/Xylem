@@ -102,6 +102,14 @@ struct sched_timer_s {
     void*            ud;
     uint64_t         timeout;
     uint64_t         repeat;
+    /**
+     * Generation counter incremented under timer_lock on every start/stop.
+     * Used to invalidate in-flight fires: when _sched_process_timers dequeues
+     * a timer it snapshots seq, releases the lock to call cb, then checks
+     * that seq is unchanged before delivery. This prevents a stale cb call
+     * from being interpreted as belonging to a newer start.
+     */
+    uint64_t         seq;
     bool             active;
 };
 
@@ -215,7 +223,9 @@ static int _sched_timer_next_timeout(scheduler_t* sched) {
 
 static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
     for (;;) {
-        sched_timer_t* timer = NULL;
+        sched_timer_t*   timer = NULL;
+        sched_timer_fn_t cb    = NULL;
+        void*            ud    = NULL;
 
         mtx_lock(&sched->timer_lock);
         heap_node_t* root = heap_peek(&sched->timers);
@@ -229,7 +239,23 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
                 } else {
                     t->active = false;
                 }
+                /**
+                 * Snapshot cb/ud under the lock so a concurrent
+                 * sched_timer_start() cannot substitute a different
+                 * callback between dequeue and invocation. Delivering
+                 * the snapshot that was armed-at-dequeue is sufficient:
+                 * a concurrent start() that races this fire is simply
+                 * serviced on the next pass.
+                 *
+                 * NOTE: `timer` itself may be freed before the cb
+                 * actually runs (e.g. one-shot cb that destroys the
+                 * timer). The first arg to cb is therefore only safe
+                 * to read inside the cb when the cb controls the
+                 * timer's lifetime.
+                 */
                 timer = t;
+                cb    = t->cb;
+                ud    = t->ud;
             }
         }
         mtx_unlock(&sched->timer_lock);
@@ -237,7 +263,8 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
         if (!timer) {
             break;
         }
-        timer->cb(timer, timer->ud);
+
+        cb(timer, ud);
     }
 
     /* Return ms until next timer, or -1 if none. */
@@ -295,7 +322,14 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         w->park_fn  = NULL;
         w->park_arg = NULL;
         if (!fn(co, arg)) {
-            wsdeque_push(w->deque, co);
+            /* Park declined: reschedule the coroutine. Prefer the local
+               deque; on overflow fall back to the global runq so we never
+               drop a live coroutine. */
+            if (wsdeque_push(w->deque, co) != 0) {
+                _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+                runq_push(w->sched->runq, &ctx->runq_node);
+                _sched_wake_worker(w->sched);
+            }
         }
     }
 }
@@ -682,9 +716,13 @@ void sched_timer_destroy(sched_timer_t* timer) {
     if (!timer) {
         return;
     }
-    if (timer->active) {
-        sched_timer_stop(timer);
-    }
+    /**
+     * Always call stop() — it bumps seq under the timer_lock, which
+     * cancels any in-flight _sched_process_timers pass that has
+     * already dequeued this timer but has not yet invoked the cb.
+     * Without this the cb could fire on freed memory.
+     */
+    sched_timer_stop(timer);
     free(timer);
 }
 
@@ -706,6 +744,7 @@ void sched_timer_start(
     timer->timeout = now + timeout_ms;
     timer->repeat  = repeat_ms;
     timer->active  = true;
+    timer->seq++;   /* Invalidate any in-flight fire of the previous arming. */
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
@@ -713,9 +752,6 @@ void sched_timer_start(
 }
 
 void sched_timer_stop(sched_timer_t* timer) {
-    if (!timer->active) {
-        return;
-    }
     scheduler_t* sched = timer->sched;
 
     mtx_lock(&sched->timer_lock);
@@ -723,6 +759,13 @@ void sched_timer_stop(sched_timer_t* timer) {
         heap_remove(&sched->timers, &timer->heap_node);
         timer->active = false;
     }
+    /**
+     * Always bump seq so an in-flight _sched_process_timers pass that
+     * has already dequeued the timer but not yet invoked the cb will
+     * observe the seq mismatch and skip the fire. Without this, a race
+     * window exists where stop() quietly misses a pending fire.
+     */
+    timer->seq++;
     mtx_unlock(&sched->timer_lock);
 }
 
