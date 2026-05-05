@@ -420,47 +420,56 @@ int64_t xylem_tcp_recv(
     return -1;
 }
 
+static int _tcp_send_length(
+    xylem_tcp_conn_t* tcp,
+    const void* data,
+    size_t len) {
+    uint8_t hdr[16];
+    uint32_t hdr_sz = tcp->frame_opts.length.header_size;
+
+    if (hdr_sz > sizeof(hdr)) {
+        return -1;
+    }
+
+    int64_t wire_len = (int64_t)len - tcp->frame_opts.length.adjustment;
+    if (wire_len < 0) {
+        return -1;
+    }
+
+    memset(hdr, 0, hdr_sz);
+    uint8_t* field = hdr + tcp->frame_opts.length.field_offset;
+    uint64_t val = (uint64_t)wire_len;
+
+    if (tcp->frame_opts.length.big_endian) {
+        for (int i = (int)tcp->frame_opts.length.field_size - 1;
+             i >= 0; i--) {
+            field[i] = (uint8_t)(val & 0xFF);
+            val >>= 8;
+        }
+    } else {
+        for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
+            field[i] = (uint8_t)(val & 0xFF);
+            val >>= 8;
+        }
+    }
+
+    if (_tcp_raw_send(tcp, hdr, hdr_sz) != 0) {
+        return -1;
+    }
+    return _tcp_raw_send(tcp, data, len);
+}
+
 int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
     const void* data,
     size_t len) {
-    if (tcp->frame_opts.type == XYLEM_TCP_FRAME_LENGTH) {
-        uint8_t hdr[16];
-        uint32_t hdr_sz = tcp->frame_opts.length.header_size;
-
-        if (hdr_sz > sizeof(hdr)) {
-            return -1;
-        }
-
-        memset(hdr, 0, hdr_sz);
-
-        int64_t wire_len = (int64_t)len - tcp->frame_opts.length.adjustment;
-        if (wire_len < 0) {
-            return -1;
-        }
-
-        uint8_t* field = hdr + tcp->frame_opts.length.field_offset;
-        uint64_t val = (uint64_t)wire_len;
-
-        if (tcp->frame_opts.length.big_endian) {
-            for (int i = (int)tcp->frame_opts.length.field_size - 1;
-                 i >= 0; i--) {
-                field[i] = (uint8_t)(val & 0xFF);
-                val >>= 8;
-            }
-        } else {
-            for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
-                field[i] = (uint8_t)(val & 0xFF);
-                val >>= 8;
-            }
-        }
-
-        if (_tcp_raw_send(tcp, hdr, hdr_sz) != 0) {
-            return -1;
-        }
+    switch (tcp->frame_opts.type) {
+    case XYLEM_TCP_FRAME_LENGTH:
+        return _tcp_send_length(tcp, data, len);
+    default:
+        return _tcp_raw_send(tcp, data, len);
     }
-
-    return _tcp_raw_send(tcp, data, len);
+    return -1;
 }
 
 xylem_tcp_listener_t* xylem_tcp_listen(
