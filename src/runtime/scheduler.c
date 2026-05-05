@@ -46,6 +46,7 @@
 #define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_MAX_POLL_MS        5
 #define SCHED_SPIN_ATTEMPTS      4
+#define SCHED_RUNQ_GRAB_MAX      32
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -151,13 +152,10 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     }
 
     {
-        /* Grab a fair share: at most globalq_len/nworkers+1, capped at 32. */
-        int32_t grab = 32;
-        if (grab > sched->nworkers) {
-            grab = grab / sched->nworkers + 1;
-        }
-        queue_node_t* nodes[32];
-        int32_t n = runq_pop_batch(sched->runq, nodes, grab);
+        /* Grab a fair share: at most SCHED_RUNQ_GRAB_MAX/nworkers+1. */
+        queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
+        int32_t n = runq_pop_batch(
+            sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
         if (n > 0) {
             /* Push all but the first into the local deque. */
             for (int32_t i = 1; i < n; i++) {
