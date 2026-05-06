@@ -61,6 +61,45 @@ void platform_socket_set_sndbuf(platform_sock_t sock, int val) {
     setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&val, sizeof(int));
 }
 
+int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
+    /* Fallback ladder, tried in order after the caller's desired size fails.
+     * AFD on Windows enforces an internal NonPagedPool-based cap; if a
+     * too-large request is rejected, we step down until one is accepted. */
+    static const int ladder[] = {
+        64 * 1024 * 1024,
+        16 * 1024 * 1024,
+        8 * 1024 * 1024,
+        4 * 1024 * 1024,
+        1 * 1024 * 1024,
+    };
+    if (desired <= 0) {
+        desired = 16 * 1024 * 1024;
+    }
+    int sizes[1 + sizeof(ladder) / sizeof(int)];
+    sizes[0] = desired;
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(int); ++i) {
+        sizes[i + 1] = ladder[i];
+    }
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(int); ++i) {
+        int val = sizes[i];
+        if (i > 0 && val >= desired) {
+            continue;
+        }
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       (const char*)&val, sizeof(val)) != 0) {
+            continue;
+        }
+        int actual = 0;
+        int len    = sizeof(actual);
+        if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       (char*)&actual, &len) == 0) {
+            return actual;
+        }
+        return val;
+    }
+    return -1;
+}
+
 void platform_socket_enable_nodelay(platform_sock_t sock, bool on) {
     int val = on ? 1 : 0;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&val, sizeof(val));
@@ -342,7 +381,7 @@ platform_sock_t platform_socket_listen(
         platform_socket_enable_reuseport(sock, true);
         if (socktype == SOCK_DGRAM) {
             _socket_disable_udp_connreset(sock);
-            platform_socket_set_rcvbuf(sock, INT32_MAX);
+            platform_socket_set_rcvbuf_max(sock, 16 * 1024 * 1024);
         }
         if (bind(sock, rp->ai_addr, (int)rp->ai_addrlen) ==
             PLATFORM_SO_ERROR_SOCKET_ERROR) {

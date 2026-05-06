@@ -141,7 +141,7 @@ platform_sock_t platform_socket_listen(
         platform_socket_enable_reuseaddr(sock, true);
         platform_socket_enable_reuseport(sock, true);
         if (socktype == SOCK_DGRAM) {
-            platform_socket_set_rcvbuf(sock, INT32_MAX);
+            platform_socket_set_rcvbuf_max(sock, 16 * 1024 * 1024);
         }
         if (bind(sock, rp->ai_addr, rp->ai_addrlen) ==
             PLATFORM_SO_ERROR_SOCKET_ERROR) {
@@ -403,6 +403,48 @@ void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
             sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
     }
 }
+
+int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
+    /* Fallback ladder, tried in order after the caller's desired size fails. */
+    static const int ladder[] = {
+        64 * 1024 * 1024,
+        16 * 1024 * 1024,
+        8 * 1024 * 1024,
+        4 * 1024 * 1024,
+        1 * 1024 * 1024,
+    };
+    if (desired <= 0) {
+        desired = 16 * 1024 * 1024;
+    }
+    int sizes[1 + sizeof(ladder) / sizeof(int)];
+    sizes[0] = desired;
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(int); ++i) {
+        sizes[i + 1] = ladder[i];
+    }
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(int); ++i) {
+        int val = sizes[i];
+        if (i > 0 && val >= desired) {
+            continue; /* already tried as `desired` or too large */
+        }
+        /* Try FORCE first: bypasses net.core.rmem_max when the process has
+         * CAP_NET_ADMIN. Silently fails with EPERM otherwise, in which case
+         * we fall back to the regular SO_RCVBUF path. */
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUFFORCE,
+                       (const void*)&val, sizeof(val)) != 0
+            && setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                          (const void*)&val, sizeof(val)) != 0) {
+            continue;
+        }
+        int       actual = 0;
+        socklen_t len    = sizeof(actual);
+        if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       (void*)&actual, &len) == 0) {
+            return actual;
+        }
+        return val;
+    }
+    return -1;
+}
 #endif
 
 #if defined(__APPLE__)
@@ -439,6 +481,45 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int val = on ? 1 : 0;
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
+}
+
+int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
+    /* Fallback ladder, tried in order after the caller's desired size fails.
+     * macOS has no SO_RCVBUFFORCE; kernel clamps silently per
+     * kern.ipc.maxsockbuf. */
+    static const int ladder[] = {
+        64 * 1024 * 1024,
+        16 * 1024 * 1024,
+        8 * 1024 * 1024,
+        4 * 1024 * 1024,
+        1 * 1024 * 1024,
+    };
+    if (desired <= 0) {
+        desired = 16 * 1024 * 1024;
+    }
+    int sizes[1 + sizeof(ladder) / sizeof(int)];
+    sizes[0] = desired;
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(int); ++i) {
+        sizes[i + 1] = ladder[i];
+    }
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(int); ++i) {
+        int val = sizes[i];
+        if (i > 0 && val >= desired) {
+            continue;
+        }
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       (const void*)&val, sizeof(val)) != 0) {
+            continue;
+        }
+        int       actual = 0;
+        socklen_t len    = sizeof(actual);
+        if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                       (void*)&actual, &len) == 0) {
+            return actual;
+        }
+        return val;
+    }
+    return -1;
 }
 #endif
 

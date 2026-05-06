@@ -266,6 +266,33 @@ extern void platform_socket_set_rcvbuf(platform_sock_t sock, int val);
 extern void platform_socket_set_sndbuf(platform_sock_t sock, int val);
 
 /**
+ * @brief Best-effort raise of SO_RCVBUF with platform-aware fallbacks.
+ *
+ * Intended for protocols where larger receive buffers reduce packet drops
+ * under burst (UDP, RUDP). Behavior per platform:
+ *
+ *  - Linux: first tries SO_RCVBUFFORCE (bypasses net.core.rmem_max but
+ *    requires CAP_NET_ADMIN); falls back to SO_RCVBUF which the kernel
+ *    will clamp to rmem_max. Operators should raise net.core.rmem_max
+ *    for best effect on unprivileged processes.
+ *  - macOS: uses SO_RCVBUF; kernel clamps silently per sysctl
+ *    kern.ipc.maxsockbuf.
+ *  - Windows: uses SO_RCVBUF; AFD enforces its own NonPagedPool cap.
+ *
+ * If the desired size is not accepted, progressively smaller fallbacks
+ * are attempted (64/16/8/4/1 MB).
+ *
+ * @param sock     Socket to configure.
+ * @param desired  Preferred buffer size in bytes; the kernel may grant
+ *                 less. Pass <= 0 to use a sensible default (16 MB).
+ * @return         Actual SO_RCVBUF value reported by getsockopt after
+ *                 the call (may be larger than requested on Linux due
+ *                 to the documented `val * 2` accounting), or -1 if
+ *                 neither setsockopt path succeeded.
+ */
+extern int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired);
+
+/**
  * @brief Configure RSS (Receive Side Scaling) on a socket.
  *
  * @param sock   Socket to configure.
