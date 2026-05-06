@@ -9,8 +9,8 @@ set -euo pipefail
 #   bench    - run comparison benchmarks and write results/<ts>/
 #   all      - install + build + bench                             [default]
 #
-# Compared servers (7 families):
-#   xylem, libuv, libevent, libhv, boost, go, rust
+# Compared servers (5 families):
+#   xylem, libuv, boost, go, rust
 # Each family has a single-threaded (ST) and multi-threaded (MT) binary.
 #
 # Fairness rules for MT servers:
@@ -50,8 +50,6 @@ cmd_install() {
     fi
 
     local LIBUV_VERSION="1.49.2"
-    local LIBEVENT_VERSION="2.1.12-stable"
-    local LIBHV_VERSION="1.3.2"
     local BOOST_VERSION="1.87.0"
     local PREFIX="/usr/local"
     local JOBS; JOBS="$(nproc)"
@@ -115,24 +113,6 @@ cmd_install() {
         "$PREFIX/lib/libuv.a" \
         -DBUILD_TESTING=OFF -DLIBUV_BUILD_SHARED=OFF
 
-    install_from_source libevent \
-        "https://github.com/libevent/libevent/releases/download/release-${LIBEVENT_VERSION}/libevent-${LIBEVENT_VERSION}.tar.gz" \
-        "libevent-${LIBEVENT_VERSION}" \
-        "$PREFIX/lib/libevent.a" \
-        -DEVENT__DISABLE_BENCHMARK=ON \
-        -DEVENT__DISABLE_TESTS=ON \
-        -DEVENT__DISABLE_SAMPLES=ON \
-        -DEVENT__LIBRARY_TYPE=STATIC
-
-    install_from_source libhv \
-        "https://github.com/ithewei/libhv/archive/refs/tags/v${LIBHV_VERSION}.tar.gz" \
-        "libhv-${LIBHV_VERSION}" \
-        "$PREFIX/lib/libhv.a" \
-        -DWITH_OPENSSL=ON \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DBUILD_EXAMPLES=OFF \
-        -DBUILD_UNITTEST=OFF
-
     if [ ! -f "$PREFIX/lib/libboost_system.a" ]; then
         info "building boost v${BOOST_VERSION} from source..."
         local tmp; tmp="$(mktemp -d)"
@@ -188,10 +168,10 @@ cmd_build() {
         -o "$BIN_DIR/tcp-xylem-echo"
 
     local cand
-    for cand in libuv libevent libhv; do
+    for cand in libuv; do
         local src="$BENCH_DIR/tcp/server/${cand}-echo.c"
         [ -f "$src" ] || continue
-        # Library linker flags: libuv -> -luv, libevent -> -levent, libhv -> -lhv.
+        # Library linker flags: libuv -> -luv.
         local lflag="-l${cand#lib}"
         # shellcheck disable=SC2086
         gcc $CFLAGS_COMMON "$src" $lflag -lpthread $LDFLAGS_COMMON \
@@ -228,7 +208,7 @@ cmd_build() {
         "$XYLEM_LIB" -lpthread $LDFLAGS_COMMON \
         -o "$BIN_DIR/tcp-xylem-echo-mt"
 
-    for cand in libuv libevent libhv; do
+    for cand in libuv; do
         local src="$BENCH_DIR/tcp/server/${cand}-echo-mt.c"
         [ -f "$src" ] || continue
         local lflag="-l${cand#lib}"
@@ -274,7 +254,7 @@ cmd_build() {
 # bench
 # =============================================================================
 
-SERVERS=(xylem libuv libevent libhv boost go rust)
+SERVERS=(xylem libuv boost go rust)
 DURATION=10
 PORT_BASE=9000
 
@@ -463,7 +443,7 @@ usage() {
     cat <<EOF
 usage: $0 [install|build|bench|all]
 
-  install   apt packages, rust, libuv/libevent/libhv/boost (needs sudo)
+  install   apt packages, rust, libuv/boost (needs sudo)
   build     xylem static lib + tcp servers (ST + MT) + tcp-bench client
   bench     run ST + MT comparison benchmarks, write benchmark/results/<ts>/
   all       install + build + bench   (default)

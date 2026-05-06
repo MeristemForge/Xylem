@@ -4,13 +4,13 @@ Echo server benchmark comparing Xylem against popular networking libraries acros
 
 ## Competitors
 
-| Protocol | Xylem | libuv | libevent | libhv | Boost.Asio | Go | Rust (Tokio) |
-|----------|:-----:|:-----:|:--------:|:-----:|:----------:|:--:|:------------:|
-| TCP      | x     | x     | x        | x     | x          | x  | x            |
-| UDP      | x     | x     | x        | x     | x          | x  | x            |
-| TLS      | x     | x     | x        | x     | x          | x  | x            |
-| DTLS     | x     | -     | -        | -     | -          | x  | x            |
-| RUDP     | x     | -     | -        | -     | -          | -  | -            |
+| Protocol | Xylem | libuv | Boost.Asio | Go | Rust (Tokio) |
+|----------|:-----:|:-----:|:----------:|:--:|:------------:|
+| TCP      | x     | x     | x          | x  | x            |
+| UDP      | x     | x     | x          | x  | x            |
+| TLS      | x     | x     | x          | x  | x            |
+| DTLS     | x     | -     | -          | x  | x            |
+| RUDP     | x     | -     | -          | -  | -            |
 
 ## Quick Start (WSL / Linux)
 
