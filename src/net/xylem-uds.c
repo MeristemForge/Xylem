@@ -829,7 +829,7 @@ void xylem_uds_close(xylem_uds_conn_t* conn) {
          * Defer destroy via post instead of calling _uds_destroy_conn
          * directly.  _uds_direct_write posts on_write_done to the same
          * MPSC queue; if we destroy now, those posts see state==CLOSED
-         * and get silently dropped — the user never receives write_done
+         * and get silently dropped -- the user never receives write_done
          * for data that was already sent.  Posting destroy ensures FIFO
          * ordering: pending write_done callbacks fire first, then destroy.
          */

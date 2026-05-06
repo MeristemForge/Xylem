@@ -27,7 +27,7 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_STANDARD 11)
 
 if(WIN32 AND MSVC)
-	add_compile_options("/experimental:c11atomics")
+	add_compile_options("/experimental:c11atomics" "/utf-8")
 endif()
 
 set(SRCS
