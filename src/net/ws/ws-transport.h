@@ -22,7 +22,6 @@
 _Pragma("once")
 
 #include "addr.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-tcp.h"
 
 #include <stddef.h>

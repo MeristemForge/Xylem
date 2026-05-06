@@ -22,7 +22,6 @@
 #include "xylem/net/http/xylem-http-client.h"
 #include "addr.h"
 #include "xylem/encoding/xylem-gzip.h"
-#include "runtime/loop.h"
 #include "thrdpool.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/container/xylem-list.h"

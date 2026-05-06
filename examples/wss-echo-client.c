@@ -30,7 +30,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/ws/xylem-ws-client.h"
 
 static loop_t* _loop;

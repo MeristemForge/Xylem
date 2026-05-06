@@ -22,7 +22,6 @@
 _Pragma("once")
 
 #include "xylem/net/ws/xylem-ws-common.h"
-#include "runtime/loop.h"
 
 #include "ws-transport.h"
 

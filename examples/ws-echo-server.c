@@ -29,7 +29,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/ws/xylem-ws-server.h"
 
 #define LISTEN_PORT 9002

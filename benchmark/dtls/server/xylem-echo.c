@@ -1,5 +1,4 @@
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-dtls.h"
 
 #include <stdio.h>

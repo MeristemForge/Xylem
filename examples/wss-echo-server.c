@@ -31,7 +31,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/ws/xylem-ws-server.h"
 
 #include <stdio.h>

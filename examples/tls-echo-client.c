@@ -31,7 +31,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-tls.h"
 
 #define SERVER_PORT 9443

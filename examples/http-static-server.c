@@ -34,7 +34,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 
 #include <stdio.h>
 #include <string.h>

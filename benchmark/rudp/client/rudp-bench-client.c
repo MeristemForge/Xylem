@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-rudp.h"
 
 #include <signal.h>

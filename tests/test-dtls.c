@@ -20,7 +20,6 @@
  */
 
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "thrdpool.h"
 #include "xylem/net/xylem-dtls.h"
 #include "assert.h"
