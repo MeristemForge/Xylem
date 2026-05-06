@@ -29,10 +29,8 @@ typedef struct xylem_tcp_conn_s     xylem_tcp_conn_t;
 typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;
 
 typedef struct xylem_tcp_opts_s {
-    uint64_t read_timeout_ms;   /*< Default recv timeout, 0 = no timeout. */
-    uint64_t write_timeout_ms;  /*< Default send timeout, 0 = no timeout. */
-    size_t   max_read_buf;      /*< Internal read buffer size, 0 = default 64KB. */
-    bool     disable_mss_clamp; /*< Disable MSS clamping on the socket. */
+    size_t max_read_buf;      /*< Internal read buffer size, 0 = default 64KB. */
+    bool   disable_mss_clamp; /*< Disable MSS clamping on the socket. */
 } xylem_tcp_opts_t;
 
 typedef enum xylem_tcp_frame_type_e {
@@ -72,8 +70,8 @@ typedef struct xylem_tcp_frame_opts_s {
  * @return Listener handle, or NULL on failure.
  */
 extern xylem_tcp_listener_t* xylem_tcp_listen(
-    const char* host,
-    uint16_t port,
+    const char*       host,
+    uint16_t          port,
     xylem_tcp_opts_t* opts);
 
 /**
@@ -100,19 +98,19 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
  * @brief Connect to a remote TCP endpoint.
  *
  * Suspends the calling coroutine until the connection is established
- * or the connect_timeout_ms expires.
+ * or connect_timeout_ms elapses.
  *
- * @param host               Remote hostname or IP address.
- * @param port               Remote port.
- * @param connect_timeout_ms Connect timeout in ms, 0 = no timeout.
- * @param opts               Options, NULL for defaults.
+ * @param host                Remote hostname or IP address.
+ * @param port                Remote port.
+ * @param connect_timeout_ms  Connect timeout in ms, 0 = no timeout.
+ * @param opts                Options, NULL for defaults.
  *
  * @return Connection handle, or NULL on failure or timeout.
  */
 extern xylem_tcp_conn_t* xylem_tcp_dial(
-    const char* host,
-    uint16_t port,
-    uint64_t connect_timeout_ms,
+    const char*       host,
+    uint16_t          port,
+    uint64_t          connect_timeout_ms,
     xylem_tcp_opts_t* opts);
 
 /**
@@ -122,8 +120,36 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(
  * @param opts  Frame options, NULL to reset to raw mode.
  */
 extern void xylem_tcp_set_framing(
-    xylem_tcp_conn_t* tcp,
+    xylem_tcp_conn_t*       tcp,
     xylem_tcp_frame_opts_t* opts);
+
+/**
+ * @brief Set the read deadline for the connection.
+ *
+ * Subsequent xylem_tcp_recv() calls return -1 (errno ETIMEDOUT) once
+ * the clock passes the deadline, even if partial data has been read.
+ * A deadline already-parked xylem_tcp_recv() is also woken up.
+ *
+ * @param tcp          Connection handle.
+ * @param deadline_ms  Monotonic deadline in ms (from
+ *                     xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)),
+ *                     or 0 to clear the deadline.
+ */
+extern void xylem_tcp_set_read_deadline(
+    xylem_tcp_conn_t* tcp,
+    uint64_t          deadline_ms);
+
+/**
+ * @brief Set the write deadline for the connection.
+ *
+ * Mirror of xylem_tcp_set_read_deadline for the write direction.
+ *
+ * @param tcp          Connection handle.
+ * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ */
+extern void xylem_tcp_set_write_deadline(
+    xylem_tcp_conn_t* tcp,
+    uint64_t          deadline_ms);
 
 /**
  * @brief Receive data or a complete frame from the connection.
@@ -142,8 +168,8 @@ extern void xylem_tcp_set_framing(
  */
 extern int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
-    void* buf,
-    size_t len);
+    void*             buf,
+    size_t            len);
 
 /**
  * @brief Send data or a framed message to the connection.
@@ -160,8 +186,8 @@ extern int64_t xylem_tcp_recv(
  */
 extern int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
-    const void* data,
-    size_t len);
+    const void*       data,
+    size_t            len);
 
 /**
  * @brief Close and destroy a connection.
@@ -191,6 +217,6 @@ extern int xylem_tcp_get_error(xylem_tcp_conn_t* tcp);
  */
 extern int xylem_tcp_remote_addr(
     xylem_tcp_conn_t* tcp,
-    char* host,
-    size_t host_len,
-    uint16_t* port);
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);

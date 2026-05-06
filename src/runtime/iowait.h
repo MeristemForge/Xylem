@@ -29,65 +29,85 @@ _Pragma("once")
 typedef struct iowait_s iowait_t;
 
 /**
- * @brief Result of an iowait_read / iowait_write call.
+ * @brief Result of iowait_read / iowait_write.
  *
- * The three values let the caller distinguish the three ways a parked
- * coroutine can be woken up, each of which maps to a different error
- * semantic at the protocol layer.
+ * Distinguishes the three ways a parked coroutine can wake up, each
+ * mapping to a different error semantic at the protocol layer.
  */
 typedef enum {
     IOWAIT_READY   = 0, /*< fd became readable / writable. */
-    IOWAIT_TIMEOUT = 1, /*< timeout_ms elapsed before readiness. */
+    IOWAIT_TIMEOUT = 1, /*< deadline reached. */
     IOWAIT_CLOSED  = 2, /*< iowait_close() was invoked. */
 } iowait_result_t;
 
 /**
  * @brief Create an IO wait handle bound to a file descriptor.
  *
- * Registers the fd with the shared network poller (netpoll) lazily
- * on the first park call. The fd must already be in non-blocking mode.
+ * Registers the fd with the shared network poller lazily on the first
+ * park call. The fd must already be in non-blocking mode.
  *
- * @param fd    Non-blocking socket descriptor.
+ * @param fd  Non-blocking socket descriptor.
  *
  * @return IO wait handle, or NULL on failure.
  */
 extern iowait_t* iowait_create(platform_sock_t fd);
 
 /**
+ * @brief Set the read deadline, in absolute monotonic milliseconds.
+ *
+ * Once set, subsequent iowait_read() calls return IOWAIT_TIMEOUT as
+ * soon as the clock passes the deadline, even if the call has not
+ * yet parked. If iowait_read() is already parked when the deadline
+ * passes, it is woken up with IOWAIT_TIMEOUT.
+ *
+ * Thread-safe. Passing 0 clears the deadline.
+ *
+ * @param w            IO wait handle.
+ * @param deadline_ms  Monotonic deadline in ms (see xylem_utils_getnow
+ *                     with XYLEM_TIME_PRECISION_MSEC), or 0 to clear.
+ */
+extern void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms);
+
+/**
+ * @brief Set the write deadline, in absolute monotonic milliseconds.
+ *
+ * Mirror of iowait_set_rd_deadline for the write direction.
+ *
+ * @param w            IO wait handle.
+ * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ */
+extern void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms);
+
+/**
  * @brief Suspend the calling coroutine until the fd is readable.
  *
- * Arms the fd on the shared netpoll, then yields. The coroutine is
- * resumed by a scheduler worker when the fd becomes readable, the
- * timeout expires, or the handle is closed.
+ * Arms the fd on the shared netpoll and yields. The coroutine resumes
+ * when the fd becomes readable, the read deadline passes, or
+ * iowait_close() is called. Returns immediately with IOWAIT_TIMEOUT
+ * if the deadline was already past at entry.
  *
- * @param w          IO wait handle.
- * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
+ * @param w  IO wait handle.
  *
- * @return IOWAIT_READY on readability, IOWAIT_TIMEOUT on deadline,
- *         IOWAIT_CLOSED if iowait_close() was called.
+ * @return IOWAIT_READY, IOWAIT_TIMEOUT, or IOWAIT_CLOSED.
  */
-extern iowait_result_t iowait_read(iowait_t* w, uint64_t timeout_ms);
+extern iowait_result_t iowait_read(iowait_t* w);
 
 /**
  * @brief Suspend the calling coroutine until the fd is writable.
  *
- * Arms the fd on the shared netpoll, then yields. The coroutine is
- * resumed by a scheduler worker when the fd becomes writable, the
- * timeout expires, or the handle is closed.
+ * Mirror of iowait_read for the write direction.
  *
- * @param w          IO wait handle.
- * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
+ * @param w  IO wait handle.
  *
- * @return IOWAIT_READY on writability, IOWAIT_TIMEOUT on deadline,
- *         IOWAIT_CLOSED if iowait_close() was called.
+ * @return IOWAIT_READY, IOWAIT_TIMEOUT, or IOWAIT_CLOSED.
  */
-extern iowait_result_t iowait_write(iowait_t* w, uint64_t timeout_ms);
+extern iowait_result_t iowait_write(iowait_t* w);
 
 /**
- * @brief Mark the handle as closed and wake all waiting coroutines.
+ * @brief Mark the handle closed and wake all waiting coroutines.
  *
  * After this call, iowait_read/write return IOWAIT_CLOSED immediately.
- * Does NOT close the underlying fd -- the caller owns that.
+ * Does NOT close the underlying fd; the caller owns that.
  *
  * @param w  IO wait handle.
  */
@@ -97,14 +117,13 @@ extern void iowait_close(iowait_t* w);
  * @brief Destroy the IO wait handle and release all resources.
  *
  * Removes the fd from the netpoll and frees the handle.
- * The caller must not use the handle after this call.
  *
- * @param w  IO wait handle.
+ * @param w  IO wait handle (NULL is ignored).
  */
 extern void iowait_destroy(iowait_t* w);
 
 /**
- * @brief Check if the handle has been closed.
+ * @brief Check whether the handle has been closed.
  *
  * @param w  IO wait handle.
  *
@@ -113,9 +132,9 @@ extern void iowait_destroy(iowait_t* w);
 extern bool iowait_is_closed(iowait_t* w);
 
 /**
- * @brief Netpoll event callback for iowait handles.
+ * @brief Netpoll event callback.
  *
- * Called by the scheduler when a netpoll event fires for an iowait fd.
+ * Invoked by the scheduler when a poll event fires for an iowait fd.
  * Wakes the appropriate coroutine(s) based on the readiness mask.
  *
  * @param revents  Readiness mask.

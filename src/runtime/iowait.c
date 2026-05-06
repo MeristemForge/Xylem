@@ -21,6 +21,8 @@
 
 #include "iowait.h"
 
+#include "xylem/xylem-utils.h"
+
 #include "runtime.h"
 #include "scheduler.h"
 
@@ -34,37 +36,30 @@
  * pointer to this via an atomic slot (w->rd_park / w->wr_park). Wakers
  * race to atomically swap the slot back to NULL: whichever thread
  * succeeds sets `result` and reschedules park->co.
- *
- * The timer callback disambiguates "fire belongs to current park" from
- * "stale fire from a previous park" by CAS-ing the slot against its
- * own park pointer (passed via the timer's `ud` argument). A stale fire
- * sees a different pointer in the slot (NULL or a newer park) and no-ops.
  */
 typedef struct _iowait_park_s {
     mco_coro*       co;
-    iowait_t*       w;      /*< back-pointer for timer cb */
-    iowait_result_t result; /*< filled by the winning waker */
+    iowait_t*       w;
+    iowait_result_t result;
 } _iowait_park_t;
-
-typedef struct {
-    _iowait_park_t* park;
-    uint64_t        timeout_ms;
-} _iowait_park_arg_t;
 
 struct iowait_s {
     platform_poller_sq_t*    poller;
     platform_poller_sqe_t    sqe;
     platform_sock_t          fd;
+
     _Atomic(_iowait_park_t*) rd_park;
     _Atomic(_iowait_park_t*) wr_park;
 
     /**
-     * Per-direction timer. Lazily created on the first park that has
-     * a non-zero timeout. Reused across subsequent parks by calling
-     * sched_timer_start() again.
+     * Per-direction deadline timer. Allocated once at create time and
+     * reused across deadline changes. A deadline of 0 means "no
+     * deadline" and the timer is left stopped.
      */
     sched_timer_t*           rd_timer;
     sched_timer_t*           wr_timer;
+    _Atomic uint64_t         rd_deadline;
+    _Atomic uint64_t         wr_deadline;
 
     _Atomic int32_t          refcnt;
     bool                     registered;
@@ -135,9 +130,8 @@ static void _iowait_arm(iowait_t* w) {
 }
 
 /**
- * Unconditionally claim the park slot (close / poller paths).
- * Returns the claimed park with its result set, or NULL if the slot
- * was already empty.
+ * Unconditionally claim the park slot. Returns the claimed park with
+ * its result set, or NULL if the slot was already empty.
  */
 static _iowait_park_t* _iowait_claim(
     _Atomic(_iowait_park_t*)* slot, iowait_result_t result) {
@@ -148,51 +142,28 @@ static _iowait_park_t* _iowait_claim(
     return p;
 }
 
-/**
- * Claim the park slot only if it still points to `expected` (timer path).
- * If a different waker has already replaced the slot, the CAS fails and
- * we return NULL, indicating a stale / late fire.
- */
-static _iowait_park_t* _iowait_claim_if(
-    _Atomic(_iowait_park_t*)* slot,
-    _iowait_park_t*           expected,
-    iowait_result_t           result) {
-    _iowait_park_t* exp = expected;
-    if (atomic_compare_exchange_strong(slot, &exp, NULL)) {
-        expected->result = result;
-        return expected;
-    }
-    return NULL;
-}
-
 static void _iowait_wake_park(_iowait_park_t* p) {
     if (p) {
         scheduler_schedule(runtime_get_scheduler(), p->co);
     }
 }
 
-/**
- * Timer ud is the park pointer that was current when the timer was
- * started. A stale fire (dequeued under an old arming but replaced
- * before the cb runs) still uses the old ud thanks to the scheduler's
- * under-lock ud snapshot, so the CAS-by-park-pointer here correctly
- * rejects it.
- */
+/* Timer expiry: claim the current parked coroutine (if any) with TIMEOUT. */
 static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
-    _iowait_park_t* expected = (_iowait_park_t*)ud;
-    iowait_t*       w        = expected->w;
-    _iowait_wake_park(
-        _iowait_claim_if(&w->rd_park, expected, IOWAIT_TIMEOUT));
+    iowait_t* w = (iowait_t*)ud;
+    _iowait_wake_park(_iowait_claim(&w->rd_park, IOWAIT_TIMEOUT));
 }
 
 static void _iowait_wr_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
-    _iowait_park_t* expected = (_iowait_park_t*)ud;
-    iowait_t*       w        = expected->w;
-    _iowait_wake_park(
-        _iowait_claim_if(&w->wr_park, expected, IOWAIT_TIMEOUT));
+    iowait_t* w = (iowait_t*)ud;
+    _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_TIMEOUT));
 }
+
+typedef struct {
+    _iowait_park_t* park;
+} _iowait_park_arg_t;
 
 static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
     _iowait_park_arg_t* a = (_iowait_park_arg_t*)arg;
@@ -202,34 +173,34 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
     p->co     = co;
     p->result = IOWAIT_READY;
 
-    /**
-     * Start the timer BEFORE publishing the park. If the timer somehow
-     * fires before publication (it will not in practice, since timeout
-     * is in the future), its cb will see a NULL slot and no-op. After
-     * publication, poller / close / timer all race on the slot via CAS.
-     */
-    if (a->timeout_ms > 0) {
-        if (!w->rd_timer) {
-            w->rd_timer = sched_timer_create(runtime_get_scheduler());
-        }
-        if (w->rd_timer) {
-            sched_timer_start(
-                w->rd_timer, _iowait_rd_timeout_cb, p, a->timeout_ms, 0);
-        }
-    }
-
     atomic_store_explicit(&w->rd_park, p, memory_order_release);
 
     _iowait_arm(w);
 
     /**
-     * Close-race check. iowait_close() may have completed before we
-     * published the park. If closed is set and the slot still holds
-     * our park, claim it with IOWAIT_CLOSED and self-schedule.
+     * Close-race check: if iowait_close() ran before we published, it
+     * could not wake us. Self-rescue by observing `closed` after the
+     * store and claiming our own park.
      */
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        _iowait_park_t* self
-            = _iowait_claim_if(&w->rd_park, p, IOWAIT_CLOSED);
+        _iowait_park_t* self = _iowait_claim(&w->rd_park, IOWAIT_CLOSED);
+        if (self) {
+            scheduler_schedule(runtime_get_scheduler(), self->co);
+        }
+        return true;
+    }
+
+    /**
+     * Deadline-race check: the deadline timer may have fired before we
+     * published the park, in which case nothing wakes us. Re-check the
+     * deadline after publishing; if it has already passed, claim and
+     * schedule ourselves with TIMEOUT.
+     */
+    uint64_t deadline = atomic_load_explicit(
+        &w->rd_deadline, memory_order_acquire);
+    if (deadline != 0 &&
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
+        _iowait_park_t* self = _iowait_claim(&w->rd_park, IOWAIT_TIMEOUT);
         if (self) {
             scheduler_schedule(runtime_get_scheduler(), self->co);
         }
@@ -245,23 +216,23 @@ static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
     p->co     = co;
     p->result = IOWAIT_READY;
 
-    if (a->timeout_ms > 0) {
-        if (!w->wr_timer) {
-            w->wr_timer = sched_timer_create(runtime_get_scheduler());
-        }
-        if (w->wr_timer) {
-            sched_timer_start(
-                w->wr_timer, _iowait_wr_timeout_cb, p, a->timeout_ms, 0);
-        }
-    }
-
     atomic_store_explicit(&w->wr_park, p, memory_order_release);
 
     _iowait_arm(w);
 
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        _iowait_park_t* self
-            = _iowait_claim_if(&w->wr_park, p, IOWAIT_CLOSED);
+        _iowait_park_t* self = _iowait_claim(&w->wr_park, IOWAIT_CLOSED);
+        if (self) {
+            scheduler_schedule(runtime_get_scheduler(), self->co);
+        }
+        return true;
+    }
+
+    uint64_t deadline = atomic_load_explicit(
+        &w->wr_deadline, memory_order_acquire);
+    if (deadline != 0 &&
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
+        _iowait_park_t* self = _iowait_claim(&w->wr_park, IOWAIT_TIMEOUT);
         if (self) {
             scheduler_schedule(runtime_get_scheduler(), self->co);
         }
@@ -286,47 +257,90 @@ iowait_t* iowait_create(platform_sock_t fd) {
     return w;
 }
 
-iowait_result_t iowait_read(iowait_t* w, uint64_t timeout_ms) {
+void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms) {
+    atomic_store_explicit(&w->rd_deadline, deadline_ms, memory_order_release);
+
+    if (deadline_ms == 0) {
+        if (w->rd_timer) {
+            sched_timer_stop(w->rd_timer);
+        }
+        return;
+    }
+
+    if (!w->rd_timer) {
+        w->rd_timer = sched_timer_create(runtime_get_scheduler());
+        if (!w->rd_timer) {
+            return;
+        }
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
+    sched_timer_start(w->rd_timer, _iowait_rd_timeout_cb, w, in, 0);
+}
+
+void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms) {
+    atomic_store_explicit(&w->wr_deadline, deadline_ms, memory_order_release);
+
+    if (deadline_ms == 0) {
+        if (w->wr_timer) {
+            sched_timer_stop(w->wr_timer);
+        }
+        return;
+    }
+
+    if (!w->wr_timer) {
+        w->wr_timer = sched_timer_create(runtime_get_scheduler());
+        if (!w->wr_timer) {
+            return;
+        }
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
+    sched_timer_start(w->wr_timer, _iowait_wr_timeout_cb, w, in, 0);
+}
+
+iowait_result_t iowait_read(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
+    }
+
+    uint64_t deadline = atomic_load_explicit(
+        &w->rd_deadline, memory_order_acquire);
+    if (deadline != 0 &&
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
+        return IOWAIT_TIMEOUT;
     }
 
     _iowait_ref(w);
 
     _iowait_park_t     park = {.w = w};
-    _iowait_park_arg_t arg  = {.park = &park, .timeout_ms = timeout_ms};
+    _iowait_park_arg_t arg  = {.park = &park};
     scheduler_park(runtime_get_scheduler(), _iowait_rd_park_fn, &arg);
-
-    /**
-     * Stop the timer if we did not time out. Best-effort: the scheduler
-     * bumps the timer's seq in stop(), but a fire that was already
-     * dequeued before we stopped will still invoke the cb. Safe,
-     * because the cb's CAS-against-park-pointer rejects any stale fire
-     * (our park is no longer in the slot).
-     */
-    if (timeout_ms > 0 && w->rd_timer && park.result != IOWAIT_TIMEOUT) {
-        sched_timer_stop(w->rd_timer);
-    }
 
     iowait_result_t r = park.result;
     _iowait_unref(w);
     return r;
 }
 
-iowait_result_t iowait_write(iowait_t* w, uint64_t timeout_ms) {
+iowait_result_t iowait_write(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
+    }
+
+    uint64_t deadline = atomic_load_explicit(
+        &w->wr_deadline, memory_order_acquire);
+    if (deadline != 0 &&
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
+        return IOWAIT_TIMEOUT;
     }
 
     _iowait_ref(w);
 
     _iowait_park_t     park = {.w = w};
-    _iowait_park_arg_t arg  = {.park = &park, .timeout_ms = timeout_ms};
+    _iowait_park_arg_t arg  = {.park = &park};
     scheduler_park(runtime_get_scheduler(), _iowait_wr_park_fn, &arg);
-
-    if (timeout_ms > 0 && w->wr_timer && park.result != IOWAIT_TIMEOUT) {
-        sched_timer_stop(w->wr_timer);
-    }
 
     iowait_result_t r = park.result;
     _iowait_unref(w);
@@ -346,8 +360,8 @@ void iowait_close(iowait_t* w) {
 
     /**
      * Wake any waiter already visible in its park slot. A waiter still
-     * mid-park_fn may not have published yet; it self-wakes when it
-     * re-checks `closed` after publishing (see *_park_fn).
+     * mid-park_fn may not have published yet; it self-wakes via the
+     * close-race check in *_park_fn after publishing.
      */
     _iowait_wake_park(_iowait_claim(&w->rd_park, IOWAIT_CLOSED));
     _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_CLOSED));
@@ -378,7 +392,7 @@ void iowait_on_event(int revents, void* ud) {
         _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_READY));
     }
 
-    /* LT+oneshot: re-arm if any direction is still parked. ET stays armed. */
+    /* LT+oneshot: re-arm if anyone is still parked. ET stays armed. */
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         _iowait_arm(w);
     }
