@@ -46,8 +46,8 @@ extern int xylem_udp_send(xylem_udp_t* udp,
 
 extern void xylem_udp_close(xylem_udp_t* udp);
 
-extern void xylem_udp_acquire(xylem_udp_t* udp);
-extern void xylem_udp_release(xylem_udp_t* udp);
+extern void xylem_udp_ref(xylem_udp_t* udp);
+extern void xylem_udp_unref(xylem_udp_t* udp);
 
 extern void* xylem_udp_get_userdata(xylem_udp_t* udp);
 extern void  xylem_udp_set_userdata(xylem_udp_t* udp, void* ud);

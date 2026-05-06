@@ -480,7 +480,7 @@ static void _tls_tcp_read_cb(xylem_tcp_conn_t* tcp,
 }
 
 /* Decrement refcount; free the TLS handle when it reaches zero. */
-static void _tls_conn_decref(xylem_tls_conn_t* tls) {
+static void _tls_conn_unref(xylem_tls_conn_t* tls) {
     if (atomic_fetch_sub(&tls->refcount, 1) == 1) {
         free(tls);
     }
@@ -492,7 +492,7 @@ static void _tls_free_cb(loop_t* loop,
                          void* ud) {
     (void)loop;
     (void)req;
-    _tls_conn_decref((xylem_tls_conn_t*)ud);
+    _tls_conn_unref((xylem_tls_conn_t*)ud);
 }
 
 static void _tls_tcp_close_cb(xylem_tcp_conn_t* tcp, int err,
@@ -842,12 +842,12 @@ void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud) {
     tls->userdata = ud;
 }
 
-void xylem_tls_conn_acquire(xylem_tls_conn_t* tls) {
+void xylem_tls_conn_ref(xylem_tls_conn_t* tls) {
     atomic_fetch_add(&tls->refcount, 1);
 }
 
-void xylem_tls_conn_release(xylem_tls_conn_t* tls) {
-    _tls_conn_decref(tls);
+void xylem_tls_conn_unref(xylem_tls_conn_t* tls) {
+    _tls_conn_unref(tls);
 }
 
 xylem_tls_server_t* xylem_tls_listen(loop_t* loop,

@@ -381,7 +381,7 @@ static void _xt_send_worker(void* arg) {
 
 static void _xt_send_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_acquire(conn);
+    xylem_uds_conn_ref(conn);
     dynpool_submit(runtime_get_dynpool(), _xt_send_worker, ctx);
 }
 
@@ -426,7 +426,7 @@ static void test_cross_thread_send(void) {
     xylem_runtime_run(_test_cross_thread_send_main, &ctx, NULL);
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "hello", 5) == 0);
-    xylem_uds_conn_release(ctx.cli_conn);
+    xylem_uds_conn_unref(ctx.cli_conn);
     remove(UDS_PATH);
 }
 
@@ -447,7 +447,7 @@ static void _xt_close_worker(void* arg) {
 
 static void _xt_close_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_acquire(conn);
+    xylem_uds_conn_ref(conn);
     dynpool_submit(runtime_get_dynpool(), _xt_close_worker, ctx);
 }
 
@@ -485,7 +485,7 @@ static void test_cross_thread_close(void) {
     _test_ctx_t ctx = {0};
     xylem_runtime_run(_test_cross_thread_close_main, &ctx, NULL);
     ASSERT(ctx.close_called == 1);
-    xylem_uds_conn_release(ctx.cli_conn);
+    xylem_uds_conn_unref(ctx.cli_conn);
     remove(UDS_PATH);
 }
 
@@ -530,7 +530,7 @@ static void _xt_soc_srv_read_cb(xylem_uds_conn_t* conn,
 
 static void _xt_soc_cli_connect_cb(xylem_uds_conn_t* conn) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_acquire(conn);
+    xylem_uds_conn_ref(conn);
     dynpool_submit(runtime_get_dynpool(), _xt_soc_worker, ctx);
 }
 
@@ -572,7 +572,7 @@ static void test_cross_thread_send_stop_on_close(void) {
     _test_ctx_t ctx = {0};
     xylem_runtime_run(_test_cross_thread_soc_main, &ctx, NULL);
     ASSERT(ctx.close_called == 1);
-    xylem_uds_conn_release(ctx.cli_conn);
+    xylem_uds_conn_unref(ctx.cli_conn);
     remove(UDS_PATH);
 }
 

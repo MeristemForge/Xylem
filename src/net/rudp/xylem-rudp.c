@@ -390,7 +390,7 @@ static ikcpcb* _rudp_create_kcp(xylem_rudp_conn_t* rudp, uint32_t conv,
     return kcp;
 }
 
-static void _rudp_conn_decref(xylem_rudp_conn_t* rudp) {
+static void _rudp_conn_unref(xylem_rudp_conn_t* rudp) {
     if (atomic_fetch_sub(&rudp->refcount, 1) == 1) {
         free(rudp);
     }
@@ -412,7 +412,7 @@ static void _rudp_free_cb(loop_t* loop, loop_post_t* req,
     rudp_fec_enc_destroy(rudp->fec_enc);
     rudp_fec_dec_destroy(rudp->fec_dec);
     xylem_aes256_destroy(rudp->aes);
-    _rudp_conn_decref(rudp);
+    _rudp_conn_unref(rudp);
 }
 
 /**
@@ -1020,12 +1020,12 @@ void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud) {
     rudp->userdata = ud;
 }
 
-void xylem_rudp_conn_acquire(xylem_rudp_conn_t* rudp) {
+void xylem_rudp_conn_ref(xylem_rudp_conn_t* rudp) {
     atomic_fetch_add(&rudp->refcount, 1);
 }
 
-void xylem_rudp_conn_release(xylem_rudp_conn_t* rudp) {
-    _rudp_conn_decref(rudp);
+void xylem_rudp_conn_unref(xylem_rudp_conn_t* rudp) {
+    _rudp_conn_unref(rudp);
 }
 
 xylem_rudp_server_t* xylem_rudp_listen(const char* host,

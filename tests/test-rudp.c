@@ -780,7 +780,7 @@ static void _xt_send_worker(void* arg) {
 static void _xt_send_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ctx->connect_called = 1;
-    xylem_rudp_conn_acquire(rudp);
+    xylem_rudp_conn_ref(rudp);
     thrdpool_submit(ctx->pool, _xt_send_worker, ctx);
 }
 
@@ -801,7 +801,7 @@ static void _xt_send_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         ctx->close_called++;
-        xylem_rudp_conn_release(rudp);
+        xylem_rudp_conn_unref(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
         xylem_runtime_shutdown();
     }
@@ -870,7 +870,7 @@ static void _xt_close_worker(void* arg) {
 static void _xt_close_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ctx->connect_called = 1;
-    xylem_rudp_conn_acquire(rudp);
+    xylem_rudp_conn_ref(rudp);
     thrdpool_submit(ctx->pool, _xt_close_worker, ctx);
 }
 
@@ -880,7 +880,7 @@ static void _xt_close_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         ctx->close_called++;
-        xylem_rudp_conn_release(rudp);
+        xylem_rudp_conn_unref(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
         xylem_runtime_shutdown();
     }
@@ -943,7 +943,7 @@ static void _xt_sc_worker(void* arg) {
 static void _xt_sc_cli_connect_cb(xylem_rudp_conn_t* rudp) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     ctx->connect_called = 1;
-    xylem_rudp_conn_acquire(rudp);
+    xylem_rudp_conn_ref(rudp);
     thrdpool_submit(ctx->pool, _xt_sc_worker, ctx);
 }
 
@@ -953,7 +953,7 @@ static void _xt_sc_cli_close_cb(xylem_rudp_conn_t* rudp, int err,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_rudp_get_userdata(rudp);
     if (ctx) {
         ctx->close_called++;
-        xylem_rudp_conn_release(rudp);
+        xylem_rudp_conn_unref(rudp);
         xylem_rudp_close_server(ctx->rudp_server);
         xylem_runtime_shutdown();
     }

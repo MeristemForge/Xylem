@@ -84,8 +84,8 @@ extern xylem_tls_conn_t* xylem_tls_dial(const char* host,
 extern int xylem_tls_send(xylem_tls_conn_t* tls,
                           const void* data, size_t len);
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
-extern void xylem_tls_conn_acquire(xylem_tls_conn_t* tls);
-extern void xylem_tls_conn_release(xylem_tls_conn_t* tls);
+extern void xylem_tls_conn_ref(xylem_tls_conn_t* tls);
+extern void xylem_tls_conn_unref(xylem_tls_conn_t* tls);
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 
 /**

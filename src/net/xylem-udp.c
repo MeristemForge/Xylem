@@ -108,7 +108,7 @@ static void _udp_io_cb(loop_t* loop,
     }
 }
 
-static void _udp_decref(xylem_udp_t* udp) {
+static void _udp_unref(xylem_udp_t* udp) {
     if (atomic_fetch_sub(&udp->refcount, 1) == 1) {
         free(udp);
     }
@@ -119,7 +119,7 @@ static void _udp_free_cb(loop_t* loop, loop_post_t* req,
                          void* ud) {
     (void)loop;
     (void)req;
-    _udp_decref((xylem_udp_t*)ud);
+    _udp_unref((xylem_udp_t*)ud);
 }
 
 xylem_udp_t* xylem_udp_listen(const char* host,
@@ -286,10 +286,10 @@ void xylem_udp_set_userdata(xylem_udp_t* udp, void* ud) {
     udp->userdata = ud;
 }
 
-void xylem_udp_acquire(xylem_udp_t* udp) {
+void xylem_udp_ref(xylem_udp_t* udp) {
     atomic_fetch_add(&udp->refcount, 1);
 }
 
-void xylem_udp_release(xylem_udp_t* udp) {
-    _udp_decref(udp);
+void xylem_udp_unref(xylem_udp_t* udp) {
+    _udp_unref(udp);
 }

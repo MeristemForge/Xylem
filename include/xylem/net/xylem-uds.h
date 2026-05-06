@@ -174,7 +174,7 @@ extern void xylem_uds_close(xylem_uds_conn_t* conn);
  *
  * @param conn  Connection handle.
  */
-extern void xylem_uds_conn_acquire(xylem_uds_conn_t* conn);
+extern void xylem_uds_conn_ref(xylem_uds_conn_t* conn);
 
 /**
  * @brief Decrement the reference count of a UDS connection.
@@ -184,7 +184,7 @@ extern void xylem_uds_conn_acquire(xylem_uds_conn_t* conn);
  *
  * @param conn  Connection handle.
  */
-extern void xylem_uds_conn_release(xylem_uds_conn_t* conn);
+extern void xylem_uds_conn_unref(xylem_uds_conn_t* conn);
 
 
 /**

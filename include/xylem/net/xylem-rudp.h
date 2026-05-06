@@ -90,14 +90,14 @@ extern void xylem_rudp_close(xylem_rudp_conn_t* rudp);
  *
  * @param rudp  RUDP handle.
  */
-extern void xylem_rudp_conn_acquire(xylem_rudp_conn_t* rudp);
+extern void xylem_rudp_conn_ref(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Decrement the reference count of a RUDP session.
  *
  * @param rudp  RUDP handle.
  */
-extern void xylem_rudp_conn_release(xylem_rudp_conn_t* rudp);
+extern void xylem_rudp_conn_unref(xylem_rudp_conn_t* rudp);
 
 /**
  * @brief Get the peer address of a connection.

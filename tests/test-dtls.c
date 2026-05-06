@@ -828,7 +828,7 @@ static void _xt_send_worker(void* arg) {
 static void _xt_send_cli_connect_cb(xylem_dtls_conn_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     ctx->connect_called = 1;
-    xylem_dtls_conn_acquire(dtls);
+    xylem_dtls_conn_ref(dtls);
     thrdpool_submit(ctx->pool, _xt_send_worker, ctx);
 }
 
@@ -917,7 +917,7 @@ static void test_cross_thread_send(void) {
     ASSERT(ctx.read_count >= 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_dtls_conn_release(ctx.cli_session);
+    xylem_dtls_conn_unref(ctx.cli_session);
     thrdpool_destroy(ctx.pool);
     xylem_dtls_ctx_destroy(ctx.srv_ctx);
     xylem_dtls_ctx_destroy(ctx.cli_ctx);
@@ -948,7 +948,7 @@ static void _xt_close_worker(void* arg) {
 static void _xt_close_cli_connect_cb(xylem_dtls_conn_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     ctx->connect_called = 1;
-    xylem_dtls_conn_acquire(dtls);
+    xylem_dtls_conn_ref(dtls);
     thrdpool_submit(ctx->pool, _xt_close_worker, ctx);
 }
 
@@ -1013,7 +1013,7 @@ static void test_cross_thread_close(void) {
     ASSERT(ctx.close_called == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_dtls_conn_release(ctx.cli_session);
+    xylem_dtls_conn_unref(ctx.cli_session);
     thrdpool_destroy(ctx.pool);
     xylem_dtls_ctx_destroy(ctx.srv_ctx);
     xylem_dtls_ctx_destroy(ctx.cli_ctx);
@@ -1046,7 +1046,7 @@ static void _xt_soc_worker(void* arg) {
 static void _xt_soc_cli_connect_cb(xylem_dtls_conn_t* dtls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_dtls_get_userdata(dtls);
     ctx->connect_called = 1;
-    xylem_dtls_conn_acquire(dtls);
+    xylem_dtls_conn_ref(dtls);
     thrdpool_submit(ctx->pool, _xt_soc_worker, ctx);
 }
 
@@ -1137,7 +1137,7 @@ static void test_cross_thread_send_stop_on_close(void) {
 
     ASSERT(ctx.close_called == 1);
 
-    xylem_dtls_conn_release(ctx.cli_session);
+    xylem_dtls_conn_unref(ctx.cli_session);
     thrdpool_destroy(ctx.pool);
     xylem_dtls_ctx_destroy(ctx.srv_ctx);
     xylem_dtls_ctx_destroy(ctx.cli_ctx);

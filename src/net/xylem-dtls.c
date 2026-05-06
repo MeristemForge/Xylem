@@ -598,7 +598,7 @@ static void _dtls_client_read_cb(xylem_udp_t* udp, void* data,
 }
 
 /* Decrement refcount; free the session when it reaches zero. */
-static void _dtls_conn_decref(xylem_dtls_conn_t* dtls) {
+static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     if (atomic_fetch_sub(&dtls->refcount, 1) == 1) {
         free(dtls);
     }
@@ -617,7 +617,7 @@ static void _dtls_free_cb(loop_t* loop, loop_post_t* req,
     if (dtls->handshake_timer) {
         loop_destroy_timer(dtls->handshake_timer);
     }
-    _dtls_conn_decref(dtls);
+    _dtls_conn_unref(dtls);
 }
 
 static void _dtls_client_close_cb(xylem_udp_t* udp, int err,
@@ -951,12 +951,12 @@ void xylem_dtls_set_userdata(xylem_dtls_conn_t* dtls, void* ud) {
     dtls->userdata = ud;
 }
 
-void xylem_dtls_conn_acquire(xylem_dtls_conn_t* dtls) {
+void xylem_dtls_conn_ref(xylem_dtls_conn_t* dtls) {
     atomic_fetch_add(&dtls->refcount, 1);
 }
 
-void xylem_dtls_conn_release(xylem_dtls_conn_t* dtls) {
-    _dtls_conn_decref(dtls);
+void xylem_dtls_conn_unref(xylem_dtls_conn_t* dtls) {
+    _dtls_conn_unref(dtls);
 }
 
 static xylem_udp_handler_t _dtls_server_udp_handler = {

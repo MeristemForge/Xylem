@@ -311,7 +311,7 @@ static void _uds_heartbeat_timeout_cb(loop_t* loop,
 }
 
 /* Decrement refcount; free the connection when it reaches zero. */
-static void _uds_conn_decref(xylem_uds_conn_t* conn) {
+static void _uds_conn_unref(xylem_uds_conn_t* conn) {
     if (atomic_fetch_sub(&conn->refcount, 1) == 1) {
         free(conn);
     }
@@ -323,7 +323,7 @@ static void _uds_conn_free_cb(loop_t* loop,
                                void* ud) {
     (void)loop;
     (void)req;
-    _uds_conn_decref((xylem_uds_conn_t*)ud);
+    _uds_conn_unref((xylem_uds_conn_t*)ud);
 }
 
 static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
@@ -1145,12 +1145,12 @@ void xylem_uds_set_userdata(xylem_uds_conn_t* conn, void* ud) {
     conn->userdata = ud;
 }
 
-void xylem_uds_conn_acquire(xylem_uds_conn_t* conn) {
+void xylem_uds_conn_ref(xylem_uds_conn_t* conn) {
     atomic_fetch_add(&conn->refcount, 1);
 }
 
-void xylem_uds_conn_release(xylem_uds_conn_t* conn) {
-    _uds_conn_decref(conn);
+void xylem_uds_conn_unref(xylem_uds_conn_t* conn) {
+    _uds_conn_unref(conn);
 }
 
 void* xylem_uds_server_get_userdata(xylem_uds_server_t* server) {

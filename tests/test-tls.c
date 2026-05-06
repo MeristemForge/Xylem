@@ -1393,7 +1393,7 @@ static void _xt_send_worker(void* arg) {
 
 static void _xt_send_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
-    xylem_tls_conn_acquire(tls);
+    xylem_tls_conn_ref(tls);
     thrdpool_submit(ctx->pool, _xt_send_worker, ctx);
 }
 
@@ -1490,7 +1490,7 @@ static void test_cross_thread_send(void) {
     ASSERT(ctx.read_count >= 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_tls_conn_release(ctx.cli_conn);
+    xylem_tls_conn_unref(ctx.cli_conn);
     thrdpool_destroy(ctx.pool);
     xylem_tls_ctx_destroy(ctx.srv_ctx);
     xylem_tls_ctx_destroy(ctx.cli_ctx);
@@ -1520,7 +1520,7 @@ static void _xt_close_worker(void* arg) {
 
 static void _xt_close_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
-    xylem_tls_conn_acquire(tls);
+    xylem_tls_conn_ref(tls);
     thrdpool_submit(ctx->pool, _xt_close_worker, ctx);
 }
 
@@ -1587,7 +1587,7 @@ static void test_cross_thread_close(void) {
     ASSERT(ctx.close_called == 1);
     ASSERT(atomic_load(&ctx.worker_done) == true);
 
-    xylem_tls_conn_release(ctx.cli_conn);
+    xylem_tls_conn_unref(ctx.cli_conn);
     thrdpool_destroy(ctx.pool);
     xylem_tls_ctx_destroy(ctx.srv_ctx);
     xylem_tls_ctx_destroy(ctx.cli_ctx);
@@ -1619,7 +1619,7 @@ static void _xt_soc_worker(void* arg) {
 
 static void _xt_soc_connect_cb(xylem_tls_conn_t* tls) {
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_tls_get_userdata(tls);
-    xylem_tls_conn_acquire(tls);
+    xylem_tls_conn_ref(tls);
     thrdpool_submit(ctx->pool, _xt_soc_worker, ctx);
 }
 
@@ -1706,7 +1706,7 @@ static void test_cross_thread_send_stop_on_close(void) {
 
     ASSERT(ctx.close_called == 1);
 
-    xylem_tls_conn_release(ctx.cli_conn);
+    xylem_tls_conn_unref(ctx.cli_conn);
     thrdpool_destroy(ctx.pool);
     xylem_tls_ctx_destroy(ctx.srv_ctx);
     xylem_tls_ctx_destroy(ctx.cli_ctx);
