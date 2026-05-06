@@ -51,11 +51,11 @@ struct xylem_tcp_conn_s {
     _Atomic bool           closed;
 };
 
-static void _tcp_conn_retain(xylem_tcp_conn_t* tcp) {
+static void _tcp_conn_ref(xylem_tcp_conn_t* tcp) {
     atomic_fetch_add_explicit(&tcp->refcnt, 1, memory_order_relaxed);
 }
 
-static void _tcp_conn_release(xylem_tcp_conn_t* tcp) {
+static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
     if (atomic_fetch_sub_explicit(
             &tcp->refcnt, 1, memory_order_acq_rel) != 1) {
         return;
@@ -82,11 +82,11 @@ struct xylem_tcp_listener_s {
     _Atomic bool    closing;
 };
 
-static void _tcp_listener_retain(xylem_tcp_listener_t* ln) {
+static void _tcp_listener_ref(xylem_tcp_listener_t* ln) {
     atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
 }
 
-static void _tcp_listener_release(xylem_tcp_listener_t* ln) {
+static void _tcp_listener_unref(xylem_tcp_listener_t* ln) {
     if (atomic_fetch_sub_explicit(
             &ln->refcnt, 1, memory_order_acq_rel) != 1) {
         return;
@@ -154,9 +154,10 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             return -1;
         }
 
-        if (!iowait_read(tcp->waiter, ms) ||
+        iowait_result_t r = iowait_read(tcp->waiter, ms);
+        if (r != IOWAIT_READY ||
             atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            tcp->last_error = ms > 0
+            tcp->last_error = (r == IOWAIT_TIMEOUT)
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
             return -1;
@@ -348,9 +349,10 @@ static int _tcp_raw_send(
             return -1;
         }
 
-        if (!iowait_write(tcp->waiter, ms) ||
+        iowait_result_t r = iowait_write(tcp->waiter, ms);
+        if (r != IOWAIT_READY ||
             atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            tcp->last_error = ms > 0
+            tcp->last_error = (r == IOWAIT_TIMEOUT)
                 ? PLATFORM_SO_ERROR_ETIMEDOUT
                 : PLATFORM_SO_ERROR_ECONNRESET;
             return -1;
@@ -452,7 +454,8 @@ xylem_tcp_conn_t* xylem_tcp_dial(
 
     xylem_logd("tcp dial fd=%d connected=%d", (int)fd, connected);
     if (!connected) {
-        if (!iowait_write(tcp->waiter, connect_timeout_ms)) {
+        iowait_result_t r = iowait_write(tcp->waiter, connect_timeout_ms);
+        if (r != IOWAIT_READY) {
             tcp->last_error = PLATFORM_SO_ERROR_ETIMEDOUT;
             xylem_logd("tcp dial fd=%d connect timed out", (int)fd);
             xylem_tcp_close(tcp);
@@ -489,7 +492,7 @@ int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
     void* buf,
     size_t len) {
-    _tcp_conn_retain(tcp);
+    _tcp_conn_ref(tcp);
     int64_t ret;
     switch (tcp->frame_opts.type) {
     case XYLEM_TCP_FRAME_NONE:
@@ -508,7 +511,7 @@ int64_t xylem_tcp_recv(
         ret = -1;
         break;
     }
-    _tcp_conn_release(tcp);
+    _tcp_conn_unref(tcp);
     return ret;
 }
 
@@ -516,7 +519,7 @@ int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
     const void* data,
     size_t len) {
-    _tcp_conn_retain(tcp);
+    _tcp_conn_ref(tcp);
     int ret;
     switch (tcp->frame_opts.type) {
     case XYLEM_TCP_FRAME_LENGTH:
@@ -526,7 +529,7 @@ int xylem_tcp_send(
         ret = _tcp_raw_send(tcp, data, len);
         break;
     }
-    _tcp_conn_release(tcp);
+    _tcp_conn_unref(tcp);
     return ret;
 }
 
@@ -576,7 +579,7 @@ xylem_tcp_listener_t* xylem_tcp_listen(
 }
 
 xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
-    _tcp_listener_retain(listener);
+    _tcp_listener_ref(listener);
 
     xylem_tcp_conn_t* result = NULL;
     for (;;) {
@@ -590,7 +593,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
             if (err == PLATFORM_SO_ERROR_EAGAIN ||
                 err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 /* Expected: no pending connection. Park until readable. */
-                if (!iowait_read(listener->waiter, 0)) {
+                if (iowait_read(listener->waiter, 0) != IOWAIT_READY) {
                     break;
                 }
                 continue;
@@ -632,7 +635,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
         break;
     }
 
-    _tcp_listener_release(listener);
+    _tcp_listener_unref(listener);
     return result;
 }
 
@@ -645,10 +648,10 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
 
     /**
      * Wake any accept coroutine; it will observe `closing`, drop its
-     * reference, and the last release triggers teardown.
+     * reference, and the last unref triggers teardown.
      */
     iowait_close(listener->waiter);
-    _tcp_listener_release(listener);
+    _tcp_listener_unref(listener);
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
@@ -659,10 +662,10 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
     /**
      * Wake any in-flight recv/send so they observe `closed` and return.
      * The actual teardown (fd close, iowait_destroy, free) happens in
-     * _tcp_conn_release() once the last in-flight call drops its reference.
+     * _tcp_conn_unref() once the last in-flight call drops its reference.
      */
     iowait_close(tcp->waiter);
-    _tcp_conn_release(tcp);
+    _tcp_conn_unref(tcp);
 }
 
 int xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {

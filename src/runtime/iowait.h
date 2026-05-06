@@ -29,10 +29,23 @@ _Pragma("once")
 typedef struct iowait_s iowait_t;
 
 /**
+ * @brief Result of an iowait_read / iowait_write call.
+ *
+ * The three values let the caller distinguish the three ways a parked
+ * coroutine can be woken up, each of which maps to a different error
+ * semantic at the protocol layer.
+ */
+typedef enum {
+    IOWAIT_READY   = 0, /*< fd became readable / writable. */
+    IOWAIT_TIMEOUT = 1, /*< timeout_ms elapsed before readiness. */
+    IOWAIT_CLOSED  = 2, /*< iowait_close() was invoked. */
+} iowait_result_t;
+
+/**
  * @brief Create an IO wait handle bound to a file descriptor.
  *
- * Registers the fd with the shared network poller (netpoll) for
- * coroutine-driven IO. The fd must already be in non-blocking mode.
+ * Registers the fd with the shared network poller (netpoll) lazily
+ * on the first park call. The fd must already be in non-blocking mode.
  *
  * @param fd    Non-blocking socket descriptor.
  *
@@ -50,9 +63,10 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * @param w          IO wait handle.
  * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
  *
- * @return true if the fd is ready, false on timeout or close.
+ * @return IOWAIT_READY on readability, IOWAIT_TIMEOUT on deadline,
+ *         IOWAIT_CLOSED if iowait_close() was called.
  */
-extern bool iowait_read(iowait_t* w, uint64_t timeout_ms);
+extern iowait_result_t iowait_read(iowait_t* w, uint64_t timeout_ms);
 
 /**
  * @brief Suspend the calling coroutine until the fd is writable.
@@ -64,14 +78,15 @@ extern bool iowait_read(iowait_t* w, uint64_t timeout_ms);
  * @param w          IO wait handle.
  * @param timeout_ms Timeout in milliseconds, 0 = no timeout.
  *
- * @return true if the fd is ready, false on timeout or close.
+ * @return IOWAIT_READY on writability, IOWAIT_TIMEOUT on deadline,
+ *         IOWAIT_CLOSED if iowait_close() was called.
  */
-extern bool iowait_write(iowait_t* w, uint64_t timeout_ms);
+extern iowait_result_t iowait_write(iowait_t* w, uint64_t timeout_ms);
 
 /**
  * @brief Mark the handle as closed and wake all waiting coroutines.
  *
- * After this call, iowait_read/write return false immediately.
+ * After this call, iowait_read/write return IOWAIT_CLOSED immediately.
  * Does NOT close the underlying fd -- the caller owns that.
  *
  * @param w  IO wait handle.
