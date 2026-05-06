@@ -26,6 +26,7 @@
 #include "runtime.h"
 #include "scheduler.h"
 
+#include "c11-threads.h"
 #include "minicoro/minicoro.h"
 
 #include <stdatomic.h>
@@ -85,12 +86,29 @@ struct _iowait_park_s {
  *                 points back to this handle so iowait_on_event can
  *                 recover context.
  *   rd / wr     - per-direction state; see _iowait_dir_s above.
+ *   arm_lock    - serialises every entry into _iowait_arm. Two arm
+ *                 sources race on the same handle: a parking worker
+ *                 (via _iowait_park_fn) and the poller thread
+ *                 (via iowait_on_event). Without serialisation they
+ *                 would both compute an op from a stale view of
+ *                 rd.park/wr.park, write the shared sqe, and race
+ *                 into platform_poller_mod -- the last MOD wins and
+ *                 can drop a direction that the other thread just
+ *                 published. The lock covers the full "observe park
+ *                 slots -> publish sqe -> submit to poller" sequence
+ *                 on LT+oneshot pollers; on ET the fast path returns
+ *                 before taking the lock once the fd is registered.
  *   refcnt      - reference count keeping the handle alive while
  *                 waiters are parked or the poller still holds a
  *                 callback pointer. See _iowait_ref / _iowait_unref.
  *   registered  - whether the fd is currently in the poller. Under
  *                 ET we set this once on the first arm; under LT+
  *                 oneshot we keep flipping between add and mod.
+ *                 Protected by arm_lock on the LT+oneshot path; on
+ *                 ET, the fast-path read outside the lock is safe
+ *                 because `registered` only transitions false->true
+ *                 exactly once and a spurious "false" read just
+ *                 falls through to the locked slow path.
  *   closed      - set by iowait_close; observed on park/wait entry
  *                 and on event dispatch to short-circuit operations.
  */
@@ -101,6 +119,8 @@ struct iowait_s {
 
     _iowait_dir_t         rd;
     _iowait_dir_t         wr;
+
+    mtx_t                 arm_lock;
 
     _Atomic int32_t       refcnt;
     bool                  registered;
@@ -130,6 +150,7 @@ static void _iowait_do_free(iowait_t* w) {
     if (w->wr.timer) {
         sched_timer_destroy(w->wr.timer);
     }
+    mtx_destroy(&w->arm_lock);
     free(w);
 }
 
@@ -157,12 +178,23 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
  * registration after each event, so we re-arm with the union of
  * currently-waiting directions.
  *
- * Called from the park path (under the parking coroutine's context)
- * and from iowait_on_event (under the poller thread). Concurrency is
- * bounded by the fact that `registered` and `sqe.op` are only touched
- * while the fd is either being added/modified in the poller (which
- * serialises them internally) or while no one else can reach the fd
- * yet because `closed` was observed as false first.
+ * Called from the park path (parking worker) and from iowait_on_event
+ * (poller worker). These can be different threads, and on LT+oneshot
+ * both paths must read rd.park/wr.park, write the shared sqe, and
+ * submit it to the kernel. Doing that lock-free is not enough:
+ * plain stores to `sqe.op`/`registered` race as data races, and
+ * even if those were atomic the final EPOLL_CTL_MOD reflects the
+ * later syscall's op (computed from a stale park snapshot), so a
+ * direction published between snapshot and submit can silently be
+ * dropped from the kernel subscription.
+ *
+ * To avoid that, the entire "observe park slots -> publish sqe ->
+ * submit" sequence is serialised per iowait by `arm_lock`. Cross-fd
+ * arms remain fully parallel -- the lock is per-handle, not global.
+ *
+ * On ET the registered fast path returns before taking the lock:
+ * once registered transitions true, nothing ever flips it back, so
+ * the unlocked read is benign.
  */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
@@ -170,13 +202,28 @@ static void _iowait_arm(iowait_t* w) {
     }
 
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+        /* Fast path: already registered, no need to touch the lock. */
         if (w->registered) {
             return;
         }
-        w->sqe.op = PLATFORM_POLLER_RW_OP;
-        if (platform_poller_add(w->poller, &w->sqe) == 0) {
-            w->registered = true;
+    }
+
+    mtx_lock(&w->arm_lock);
+
+    /* Re-check under the lock: iowait_close may have raced in. */
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        mtx_unlock(&w->arm_lock);
+        return;
+    }
+
+    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+        if (!w->registered) {
+            w->sqe.op = PLATFORM_POLLER_RW_OP;
+            if (platform_poller_add(w->poller, &w->sqe) == 0) {
+                w->registered = true;
+            }
         }
+        mtx_unlock(&w->arm_lock);
         return;
     }
 
@@ -188,6 +235,7 @@ static void _iowait_arm(iowait_t* w) {
         op |= PLATFORM_POLLER_WR_OP;
     }
     if (op == PLATFORM_POLLER_NO_OP) {
+        mtx_unlock(&w->arm_lock);
         return;
     }
 
@@ -199,6 +247,8 @@ static void _iowait_arm(iowait_t* w) {
     } else {
         platform_poller_mod(w->poller, &w->sqe);
     }
+
+    mtx_unlock(&w->arm_lock);
 }
 
 /**
@@ -379,6 +429,11 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
 iowait_t* iowait_create(platform_sock_t fd) {
     iowait_t* w = (iowait_t*)calloc(1, sizeof(iowait_t));
     if (!w) {
+        return NULL;
+    }
+
+    if (mtx_init(&w->arm_lock, mtx_plain) != thrd_success) {
+        free(w);
         return NULL;
     }
 

@@ -311,7 +311,7 @@ static void _sched_process_posts(scheduler_t* sched) {
     }
 }
 
-static void _sched_process_events(
+static void _sched_process_io(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
     int n) {
@@ -378,7 +378,7 @@ static mco_coro* _sched_try_spin(
     for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
         int n = platform_poller_wait(&sched->poller, cqes, 0);
         if (n > 0) {
-            _sched_process_events(sched, cqes, n);
+            _sched_process_io(sched, cqes, n);
         }
 
         mco_coro* co = _sched_try_get_coro(sched, w);
@@ -408,7 +408,7 @@ static mco_coro* _sched_poll_blocking(
         }
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         if (n > 0) {
-            _sched_process_events(sched, cqes, n);
+            _sched_process_io(sched, cqes, n);
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
