@@ -95,6 +95,24 @@ typedef struct {
     void*                ud;
 } _sched_post_t;
 
+/**
+ * sched_timer_s
+ *
+ *   heap_node/sched/cb/ud/timeout/repeat/active:
+ *     Normal heap entry and scheduled-fire parameters, all mutated
+ *     under sched->timer_lock.
+ *
+ *   refcnt:
+ *     Pins the timer object across the "in-flight fire" window.
+ *     _sched_process_timers dequeues under the lock and *must* release
+ *     the lock before invoking cb, so there is a window where another
+ *     thread could race into sched_timer_destroy. To keep the object
+ *     alive across that window, the dequeue path bumps refcnt before
+ *     unlocking and drops it after the cb returns. The creator holds
+ *     the initial reference; sched_timer_destroy drops it. The object
+ *     is freed when the last reference is released, which is why
+ *     destroy is safe to call concurrently with an in-flight fire.
+ */
 struct sched_timer_s {
     heap_node_t      heap_node;
     scheduler_t*     sched;
@@ -103,11 +121,23 @@ struct sched_timer_s {
     uint64_t         timeout;
     uint64_t         repeat;
     bool             active;
+    _Atomic int32_t  refcnt;
 };
 
 static void _sched_coro_entry(mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
     ctx->fn(ctx->arg);
+}
+
+static void _sched_timer_ref(sched_timer_t* timer) {
+    atomic_fetch_add_explicit(&timer->refcnt, 1, memory_order_relaxed);
+}
+
+static void _sched_timer_unref(sched_timer_t* timer) {
+    if (atomic_fetch_sub_explicit(
+            &timer->refcnt, 1, memory_order_acq_rel) == 1) {
+        free(timer);
+    }
 }
 
 static int _sched_timer_cmp(
@@ -239,14 +269,16 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
                  * a concurrent start() that races this fire is simply
                  * serviced on the next pass.
                  *
-                 * KNOWN RACE: between the unlock below and cb(timer,
-                 * ud), another thread may sched_timer_destroy() this
-                 * timer -- or free the object that `ud` points into.
-                 * cb callbacks must not dereference `timer`, and the
-                 * owner of the object `ud` points into must keep it
-                 * alive past any in-flight fire. The scheduler does
-                 * not currently provide refcount-based protection.
+                 * Pin the timer object across the unlocked cb call.
+                 * sched_timer_destroy may race in after we unlock and
+                 * drop the creator's reference; the extra ref taken
+                 * here keeps the object alive until cb returns, so
+                 * touching `timer` inside cb is safe. Callbacks still
+                 * must not assume the timer is armed after they run,
+                 * and must keep `ud`'s backing object alive via their
+                 * own mechanism.
                  */
+                _sched_timer_ref(t);
                 timer = t;
                 cb    = t->cb;
                 ud    = t->ud;
@@ -259,6 +291,8 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
         }
 
         cb(timer, ud);
+
+        _sched_timer_unref(timer);
     }
 
     /* Return ms until next timer, or -1 if none. */
@@ -703,6 +737,7 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
         return NULL;
     }
     t->sched = sched;
+    atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
     return t;
 }
 
@@ -713,13 +748,16 @@ void sched_timer_destroy(sched_timer_t* timer) {
     /**
      * stop() removes the timer from the heap so no further fires will
      * be dequeued. A fire already in flight (dequeued but cb not yet
-     * invoked) is NOT cancelled; callers must arrange for `ud`'s
-     * backing object to outlive any in-flight fire, and cb must not
-     * dereference the timer argument. See _sched_process_timers for
-     * the full contract.
+     * invoked) still holds its own reference, so dropping the creator
+     * reference here will not free the object out from under it; the
+     * last ref drop (whichever path it happens on) runs free().
+     *
+     * Callbacks may still safely read `timer` while running, but must
+     * not assume the timer is armed after cb returns. `ud`'s backing
+     * object lifetime remains the caller's responsibility.
      */
     sched_timer_stop(timer);
-    free(timer);
+    _sched_timer_unref(timer);
 }
 
 void sched_timer_start(
@@ -746,15 +784,18 @@ void sched_timer_start(
     _sched_wake_poller(sched);
 }
 
-void sched_timer_stop(sched_timer_t* timer) {
+bool sched_timer_stop(sched_timer_t* timer) {
     scheduler_t* sched = timer->sched;
 
+    bool cancelled = false;
     mtx_lock(&sched->timer_lock);
     if (timer->active) {
         heap_remove(&sched->timers, &timer->heap_node);
         timer->active = false;
+        cancelled = true;
     }
     mtx_unlock(&sched->timer_lock);
+    return cancelled;
 }
 
 void scheduler_set_idle_cb(

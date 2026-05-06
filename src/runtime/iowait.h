@@ -60,7 +60,17 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * yet parked. If iowait_read() is already parked when the deadline
  * passes, it is woken up with IOWAIT_TIMEOUT.
  *
- * Thread-safe. Passing 0 clears the deadline.
+ * The new deadline value is published atomically and is observed by
+ * any concurrently parked iowait_read() on the same handle, so this
+ * setter may be called while a read is already parked on another
+ * thread. However it is NOT safe to invoke concurrently with itself
+ * on the same direction: the per-direction timer is allocated lazily
+ * on the first non-zero deadline. Intended usage is one logical
+ * owner (typically the coroutine that also calls iowait_read) driving
+ * the read deadline of a given handle.
+ *
+ * Passing 0 clears the deadline; any running timer is stopped but
+ * may still fire once if its callback was already dispatched.
  *
  * @param w            IO wait handle.
  * @param deadline_ms  Monotonic deadline in ms (see xylem_utils_getnow
@@ -71,7 +81,8 @@ extern void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms);
 /**
  * @brief Set the write deadline, in absolute monotonic milliseconds.
  *
- * Mirror of iowait_set_rd_deadline for the write direction.
+ * Mirror of iowait_set_rd_deadline for the write direction. Same
+ * threading constraints apply.
  *
  * @param w            IO wait handle.
  * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
@@ -84,7 +95,12 @@ extern void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms);
  * Arms the fd on the shared netpoll and yields. The coroutine resumes
  * when the fd becomes readable, the read deadline passes, or
  * iowait_close() is called. Returns immediately with IOWAIT_TIMEOUT
- * if the deadline was already past at entry.
+ * if the deadline was already past at entry, or with IOWAIT_CLOSED
+ * if the handle is already closed.
+ *
+ * Only one coroutine may be parked on the read direction of a given
+ * handle at a time; concurrent iowait_read() calls on the same handle
+ * are not supported.
  *
  * @param w  IO wait handle.
  *
@@ -95,7 +111,9 @@ extern iowait_result_t iowait_read(iowait_t* w);
 /**
  * @brief Suspend the calling coroutine until the fd is writable.
  *
- * Mirror of iowait_read for the write direction.
+ * Mirror of iowait_read for the write direction. Read and write are
+ * independent: a coroutine on read and a coroutine on write may
+ * simultaneously park on the same handle.
  *
  * @param w  IO wait handle.
  *
@@ -107,7 +125,9 @@ extern iowait_result_t iowait_write(iowait_t* w);
  * @brief Mark the handle closed and wake all waiting coroutines.
  *
  * After this call, iowait_read/write return IOWAIT_CLOSED immediately.
- * Does NOT close the underlying fd; the caller owns that.
+ * Idempotent, thread-safe: may be invoked concurrently with park or
+ * with a second close; only the first caller actually runs the wake
+ * logic. Does NOT close the underlying fd; the caller owns that.
  *
  * @param w  IO wait handle.
  */
@@ -116,7 +136,10 @@ extern void iowait_close(iowait_t* w);
 /**
  * @brief Destroy the IO wait handle and release all resources.
  *
- * Removes the fd from the netpoll and frees the handle.
+ * Implicitly closes the handle if not already closed, then drops the
+ * creator's reference. The handle is freed once all in-flight
+ * references (from active waits and poller callbacks) have been
+ * released, so it is safe to call while a waiter is still parked.
  *
  * @param w  IO wait handle (NULL is ignored).
  */
@@ -135,7 +158,10 @@ extern bool iowait_is_closed(iowait_t* w);
  * @brief Netpoll event callback.
  *
  * Invoked by the scheduler when a poll event fires for an iowait fd.
- * Wakes the appropriate coroutine(s) based on the readiness mask.
+ * Wakes the appropriate coroutine(s) based on the readiness mask, and
+ * under level-triggered+oneshot pollers re-arms the fd if anyone is
+ * still parked. Under edge-triggered pollers the fd stays armed after
+ * its initial registration.
  *
  * @param revents  Readiness mask.
  * @param ud       The iowait_t pointer registered as user data.

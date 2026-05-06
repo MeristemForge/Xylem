@@ -159,6 +159,12 @@ extern sched_timer_t* sched_timer_create(scheduler_t* sched);
 /**
  * @brief Destroy a timer. Stops it first if active.
  *
+ * Safe to call concurrently with an in-flight fire: the scheduler
+ * keeps the timer object alive internally while a callback is
+ * running, so this call only drops the creator's reference.
+ * `ud`'s backing object lifetime is still the caller's
+ * responsibility.
+ *
  * @param timer  Timer handle, or NULL (no-op).
  */
 extern void sched_timer_destroy(sched_timer_t* timer);
@@ -180,11 +186,20 @@ extern void sched_timer_start(
     uint64_t         repeat_ms);
 
 /**
- * @brief Stop a running timer. Thread-safe. No-op if already stopped.
+ * @brief Stop a running timer. Thread-safe.
+ *
+ * Returns true if a pending fire was cancelled (the timer was still
+ * in the heap), false if the timer was already inactive, its callback
+ * already dispatched, or the timer never started. Callers that pair
+ * an arm with work on `ud`'s side can use the return value to decide
+ * whether the callback will eventually run, for example to release a
+ * reference that would otherwise only be released in the callback.
  *
  * @param timer  Timer handle.
+ *
+ * @return true if a pending fire was cancelled.
  */
-extern void sched_timer_stop(sched_timer_t* timer);
+extern bool sched_timer_stop(sched_timer_t* timer);
 
 /**
  * @brief Callback invoked when all coroutines have exited.

@@ -38,8 +38,25 @@ typedef struct _iowait_dir_s  _iowait_dir_t;
  * Per-direction state. Read and write are fully symmetric; bundling
  * them into one struct eliminates the rd/wr code duplication and
  * makes the two iowait slots share a single set of helpers.
+ *
+ *   w         - back-pointer to the owning iowait. Needed because the
+ *               timer callback receives this struct as ud and must
+ *               drop a ref on the iowait itself.
+ *   park      - atomic slot holding the currently parked coroutine,
+ *               or NULL when no one is parked. All wakers race on
+ *               this slot via _iowait_claim (see below).
+ *   timer     - deadline timer, allocated lazily on the first
+ *               non-zero deadline and reused afterwards. NULL means
+ *               "no deadline has ever been set on this direction".
+ *               Accessed only from the deadline-setter path and from
+ *               _iowait_do_free; not safe against concurrent
+ *               deadline sets on the same direction.
+ *   deadline  - absolute ms deadline or 0. Atomically published so
+ *               a parking waiter can observe an updated value before
+ *               committing to sleep.
  */
 struct _iowait_dir_s {
+    iowait_t*                w;
     _Atomic(_iowait_park_t*) park;
     sched_timer_t*           timer;
     _Atomic uint64_t         deadline;
@@ -49,7 +66,9 @@ struct _iowait_dir_s {
  * Per-park state kept on the caller's stack. The iowait publishes a
  * pointer to this via an atomic slot (dir->park). Wakers race to
  * atomically swap the slot back to NULL: whichever thread succeeds
- * sets `result` and reschedules park->co.
+ * sets `result` and reschedules park->co. The park record is only
+ * valid for the duration of the scheduler_park call, which is why
+ * every waker must go through _iowait_claim before touching it.
  */
 struct _iowait_park_s {
     mco_coro*       co;
@@ -58,16 +77,28 @@ struct _iowait_park_s {
     iowait_result_t result;
 };
 
+/**
+ * Central iowait handle.
+ *
+ *   poller      - shared scheduler poller this fd is registered on.
+ *   sqe/fd      - poller submission entry and raw fd. `sqe.ud` always
+ *                 points back to this handle so iowait_on_event can
+ *                 recover context.
+ *   rd / wr     - per-direction state; see _iowait_dir_s above.
+ *   refcnt      - reference count keeping the handle alive while
+ *                 waiters are parked or the poller still holds a
+ *                 callback pointer. See _iowait_ref / _iowait_unref.
+ *   registered  - whether the fd is currently in the poller. Under
+ *                 ET we set this once on the first arm; under LT+
+ *                 oneshot we keep flipping between add and mod.
+ *   closed      - set by iowait_close; observed on park/wait entry
+ *                 and on event dispatch to short-circuit operations.
+ */
 struct iowait_s {
     platform_poller_sq_t* poller;
     platform_poller_sqe_t sqe;
     platform_sock_t       fd;
 
-    /**
-     * rd/wr state. Each direction owns its park slot, deadline timer
-     * (allocated once, reused across deadline changes; 0 deadline means
-     * "no deadline" and the timer stays stopped), and deadline value.
-     */
     _iowait_dir_t         rd;
     _iowait_dir_t         wr;
 
@@ -76,6 +107,18 @@ struct iowait_s {
     _Atomic bool          closed;
 };
 
+/**
+ * Drop the handle's creation-time reference and, if this was the last
+ * ref, actually release resources. The refcnt's acq_rel on the final
+ * decrement synchronises with every other release, so by the time we
+ * get here no other thread can still be touching the handle; simple
+ * non-atomic reads of `registered` and `timer` are safe.
+ *
+ * By the time refcnt reaches zero, no arm-reference can still be
+ * outstanding (the arm-ref itself would keep refcnt non-zero), so
+ * each timer is guaranteed to be either inactive or already-fired,
+ * and sched_timer_destroy here can just drop the creator ref.
+ */
 static void _iowait_do_free(iowait_t* w) {
     if (w->registered) {
         platform_poller_del(w->poller, &w->sqe);
@@ -113,6 +156,13 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
  * return on every park. Under LT+oneshot the kernel drops the
  * registration after each event, so we re-arm with the union of
  * currently-waiting directions.
+ *
+ * Called from the park path (under the parking coroutine's context)
+ * and from iowait_on_event (under the poller thread). Concurrency is
+ * bounded by the fact that `registered` and `sqe.op` are only touched
+ * while the fd is either being added/modified in the poller (which
+ * serialises them internally) or while no one else can reach the fd
+ * yet because `closed` was observed as false first.
  */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
@@ -182,8 +232,31 @@ static void _iowait_wake_park(_iowait_park_t* p) {
 static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
+    iowait_t*      w = d->w;
     _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
+    /**
+     * Drop the arm-reference taken in _iowait_set_deadline. Must be
+     * the last thing we do here: once this ref is released, the
+     * iowait (and therefore `d` itself) may be freed by a racing
+     * iowait_destroy, so `d` is not safe to touch below this point.
+     */
+    _iowait_unref(w);
 }
+
+/**
+ * Park body executed by scheduler_park after the coroutine has
+ * saved its context. Publishes the park record, (re-)arms the fd,
+ * and then guards against two races that can swallow the wakeup:
+ *
+ *   - iowait_close() running between our park-slot store and the
+ *     moment we yield. The closer's _iowait_claim would have seen
+ *     a NULL slot and skipped us, leaving us sleeping forever.
+ *   - The deadline timer firing before we published the park, which
+ *     similarly leaves _iowait_timeout_cb with nothing to claim.
+ *
+ * In both cases we re-observe the condition after the publish and
+ * self-wake by claiming our own park slot.
+ */
 
 static bool _iowait_park_fn(mco_coro* co, void* arg) {
     _iowait_park_t* p = (_iowait_park_t*)arg;
@@ -197,22 +270,13 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     _iowait_arm(w);
 
-    /**
-     * Close-race check: if iowait_close() ran before we published, it
-     * could not wake us. Self-rescue by observing `closed` after the
-     * store and claiming our own park.
-     */
+    /* Close-race check: see _iowait_park_fn docstring. */
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_CLOSED));
         return true;
     }
 
-    /**
-     * Deadline-race check: the deadline timer may have fired before we
-     * published the park, in which case nothing wakes us. Re-check the
-     * deadline after publishing; if it has already passed, claim and
-     * schedule ourselves with TIMEOUT.
-     */
+    /* Deadline-race check: see _iowait_park_fn docstring. */
     uint64_t deadline = atomic_load_explicit(
         &d->deadline, memory_order_acquire);
     if (_iowait_deadline_passed(deadline)) {
@@ -221,12 +285,45 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
     return true;
 }
 
+/**
+ * Apply a new deadline to a direction.
+ *
+ * The deadline word is published first so a waiter that is about to
+ * park (or has just published its park record) can observe it via the
+ * acquire load in _iowait_park_fn / _iowait_wait.
+ *
+ * The timer is allocated lazily on the first non-zero deadline: most
+ * iowaits (for example short-lived accept fds) never set a deadline
+ * and pay no timer cost. The flip side is that the timer pointer is
+ * a plain field and must not be mutated concurrently on the same
+ * direction; the public API documents this constraint. See the
+ * header for the exact threading rules.
+ *
+ * Refcount protocol vs the deadline timer: each successful (re-)arm
+ * owns one reference on the iowait; it is released either by the
+ * callback when the timer fires, or here, when a subsequent call
+ * cancels a still-pending fire via sched_timer_stop(). The scheduler
+ * already keeps the timer object itself alive across an in-flight
+ * fire, so combined with this ref the callback always sees a live
+ * iowait even if iowait_destroy races in.
+ *
+ * Starting a timer that is already armed (rearm) implicitly cancels
+ * the previous arm; sched_timer_start's return is not inspected,
+ * instead the same effect is achieved by stop-then-start here, so the
+ * cancelled arm's ref is returned before a new one is taken.
+ *
+ * Known semantic corner case: passing 0 may still result in one late
+ * IOWAIT_TIMEOUT delivery if the timer's callback was already
+ * dispatched before sched_timer_stop acquired the timer lock. The
+ * refcount protocol above guarantees this is memory-safe; it does
+ * not eliminate the possibility of an extra wake.
+ */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
 
     if (deadline_ms == 0) {
-        if (d->timer) {
-            sched_timer_stop(d->timer);
+        if (d->timer && sched_timer_stop(d->timer)) {
+            _iowait_unref(d->w);
         }
         return;
     }
@@ -236,13 +333,28 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
         if (!d->timer) {
             return;
         }
+    } else if (sched_timer_stop(d->timer)) {
+        /* Return the ref owned by the previous arm we just cancelled. */
+        _iowait_unref(d->w);
     }
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
+
+    _iowait_ref(d->w);
     sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
+/**
+ * Body of iowait_read/iowait_write.
+ *
+ * Fast paths: already-closed handle and already-past deadline both
+ * return immediately without touching the scheduler. On the slow
+ * path we take a ref to keep the handle alive across the park (a
+ * parallel iowait_destroy would otherwise free us out from under
+ * the waiter) and then yield via scheduler_park. `park.result` is
+ * stamped by whichever waker reaches _iowait_claim first.
+ */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
@@ -276,6 +388,9 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->sqe.fd = (platform_poller_fd_t)fd;
     w->sqe.ud = w;
     w->sqe.op = PLATFORM_POLLER_NO_OP;
+
+    w->rd.w = w;
+    w->wr.w = w;
 
     atomic_store_explicit(&w->refcnt, 1, memory_order_relaxed);
     return w;
@@ -311,7 +426,10 @@ void iowait_close(iowait_t* w) {
     /**
      * Wake any waiter already visible in its park slot. A waiter still
      * mid-park_fn may not have published yet; it self-wakes via the
-     * close-race check in _iowait_park_fn after publishing.
+     * close-race check in _iowait_park_fn after publishing. The CAS
+     * above orders our `closed=true` store before the park's acquire
+     * load of `closed`, so the waiter is guaranteed to see the new
+     * value on the self-rescue path.
      */
     _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_CLOSED));
     _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_CLOSED));
@@ -342,7 +460,12 @@ void iowait_on_event(int revents, void* ud) {
         _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_READY));
     }
 
-    /* LT+oneshot: re-arm if anyone is still parked. ET stays armed. */
+    /**
+     * LT+oneshot: re-arm with whichever directions are still parked.
+     * A park that only races into its slot after we read it will take
+     * care of its own arm inside _iowait_park_fn. ET pollers stay
+     * armed after the initial registration.
+     */
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         _iowait_arm(w);
     }
