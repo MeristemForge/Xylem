@@ -31,7 +31,8 @@ if(WIN32 AND MSVC)
 endif()
 
 set(SRCS
-	src/runtime/xylem-runtime.c
+	src/xylem.c
+	src/runtime/runtime.c
 	src/xylem-logger.c
 	src/xylem-utils.c
 	src/xylem-serial.c

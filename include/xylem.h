@@ -21,6 +21,61 @@
 
 _Pragma("once")
 
+#include <stdint.h>
+
+typedef struct xylem_opts_s {
+    int32_t workers;  /*< Scheduler worker count, 0 for default (CPU count). */
+} xylem_opts_t;
+
+/**
+ * @brief Run the xylem runtime until all coroutines exit.
+ *
+ * Blocks the calling thread until every spawned coroutine has
+ * returned or xylem_shutdown() is called. Boots the scheduler and
+ * blocking-task pool under the hood, spawns @p main_fn as the root
+ * coroutine, and tears the runtime down on return.
+ *
+ * @param main_fn  Initial coroutine entry point.
+ * @param arg      Opaque argument passed to main_fn.
+ * @param opts     Runtime options, NULL for defaults.
+ */
+extern void xylem_run(
+    void (*main_fn)(void*), void* arg, xylem_opts_t* opts);
+
+/**
+ * @brief Signal the runtime to shut down.
+ *
+ * Thread-safe. Unblocks xylem_run() without waiting for coroutines
+ * to finish naturally.
+ */
+extern void xylem_shutdown(void);
+
+/**
+ * @brief Spawn a new coroutine on the runtime. Thread-safe.
+ *
+ * @param fn   Coroutine entry function.
+ * @param arg  Opaque argument.
+ */
+extern void xylem_spawn(void (*fn)(void*), void* arg);
+
+/**
+ * @brief Suspend the current coroutine for @p ms milliseconds.
+ *
+ * Must be called from inside a coroutine running on the runtime.
+ */
+extern void xylem_sleep(uint64_t ms);
+
+/**
+ * @brief Run a blocking function on the runtime's thread pool.
+ *
+ * Submits @p fn to the blocking pool and suspends the calling
+ * coroutine until it returns. The coroutine resumes on a scheduler
+ * worker thread.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_submit(void (*fn)(void*), void* arg);
+
 /* crypto */
 #include "xylem/crypto/xylem-sha1.h"
 #include "xylem/crypto/xylem-sha256.h"
@@ -39,9 +94,6 @@ _Pragma("once")
 #include "xylem/sync/xylem-waitgroup.h"
 #include "xylem/sync/xylem-channel.h"
 #include "xylem/sync/xylem-mutex.h"
-
-/* runtime */
-#include "xylem/runtime/xylem-runtime.h"
 
 /* container */
 #include "xylem/container/xylem-ringbuf.h"

@@ -21,13 +21,13 @@
 
 #include "xylem/net/xylem-tcp.h"
 
-#include "xylem/runtime/xylem-runtime.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
 #include "addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -617,7 +617,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));
-            xylem_runtime_sleep(10);
+            runtime_sleep(10);
             continue;
         }
 
