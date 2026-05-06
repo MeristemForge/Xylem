@@ -120,18 +120,9 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     }
     tcp->read_buf_cap = buf_cap;
 
-    platform_socket_enable_nodelay(fd, true);
-    platform_socket_enable_keepalive(fd, true);
-
-    /**
-     * Bump socket buffers above the Linux default of ~16KB. With the
-     * default, a single 64KB send loops through EAGAIN multiple times,
-     * each forcing a coroutine park + poller mod + wakeup round-trip.
-     * Raising to 256KB lets a typical 64KB message settle in one
-     * syscall. Kernel autotuning can still grow it further at runtime.
-     */
-    platform_socket_set_sndbuf(fd, 256 * 1024);
-    platform_socket_set_rcvbuf(fd, 256 * 1024);
+    /* TCP_NODELAY and keepalive are set by the platform layer on accept /
+     * dial; SO_SNDBUF tuning is likewise applied there. See
+     * platform_socket_accept() for the rationale. */
 
     atomic_store_explicit(&tcp->refcnt, 1, memory_order_relaxed);
     return tcp;

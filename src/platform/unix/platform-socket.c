@@ -63,6 +63,27 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
     platform_socket_enable_nonblocking(cli, nonblocking);
+    /* TCP data-connection tuning: raise SO_SNDBUF so a 64KB send settles
+     * in one syscall (the Linux default ~16KB forces an EAGAIN loop on
+     * every large send, driving coroutine park + poller re-arm round
+     * trips). SO_RCVBUF is intentionally left untouched: on Linux the
+     * kernel autotunes rcvbuf from tcp_rmem[1] (~131KB) up to
+     * tcp_rmem[2] (~6MB); pinning it here would lock autotuning and
+     * hurt high-BDP paths. */
+    platform_socket_set_sndbuf(cli, 256 * 1024);
+    return cli;
+}
+
+platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
+                                            bool nonblocking) {
+    platform_sock_t cli;
+    do {
+        cli = accept(sock, NULL, NULL);
+    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET && errno == EINTR);
+    if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+    platform_socket_enable_nonblocking(cli, nonblocking);
     return cli;
 }
 
@@ -213,6 +234,9 @@ platform_sock_t platform_socket_dial(
             platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
+            /* See platform_socket_accept() for the sndbuf rationale.
+             * rcvbuf intentionally left to Linux autotuning. */
+            platform_socket_set_sndbuf(sock, 256 * 1024);
         }
         do {
             ret = connect(sock, rp->ai_addr, rp->ai_addrlen);

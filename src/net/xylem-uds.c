@@ -690,7 +690,7 @@ static void _uds_server_io_cb(loop_t* loop,
 
     for (;;) {
         platform_sock_t client_fd =
-            platform_socket_accept(server->fd, true);
+            platform_socket_accept_unix(server->fd, true);
 
         if (client_fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
             int err = platform_socket_get_lasterror();
