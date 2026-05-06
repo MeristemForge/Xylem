@@ -21,6 +21,59 @@
 
 _Pragma("once")
 
+/* crypto */
+#include "xylem/crypto/xylem-sha1.h"
+#include "xylem/crypto/xylem-sha256.h"
+#include "xylem/crypto/xylem-hmac256.h"
+#include "xylem/crypto/xylem-aes256.h"
+
+/* encoding */
+#include "xylem/encoding/xylem-base64.h"
+#include "xylem/encoding/xylem-bswap.h"
+#include "xylem/encoding/xylem-varint.h"
+#include "xylem/encoding/xylem-json.h"
+#include "xylem/encoding/xylem-gzip.h"
+#include "xylem/encoding/xylem-fec.h"
+
+/* sync */
+#include "xylem/sync/xylem-waitgroup.h"
+#include "xylem/sync/xylem-channel.h"
+#include "xylem/sync/xylem-mutex.h"
+
+/* container */
+#include "xylem/container/xylem-ringbuf.h"
+#include "xylem/container/xylem-list.h"
+#include "xylem/container/xylem-stack.h"
+#include "xylem/container/xylem-queue.h"
+#include "xylem/container/xylem-heap.h"
+#include "xylem/container/xylem-rbtree.h"
+
+/* core */
+#include "xylem/xylem-logger.h"
+#include "xylem/xylem-utils.h"
+#include "xylem/xylem-serial.h"
+
+/* net */
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/net/xylem-udp.h"
+#include "xylem/net/xylem-rudp.h"
+#include "xylem/net/xylem-uds.h"
+#ifdef XYLEM_ENABLE_TLS
+#include "xylem/net/xylem-tls.h"
+#include "xylem/net/xylem-dtls.h"
+#endif
+#ifdef XYLEM_ENABLE_HTTP
+#include "xylem/net/http/xylem-http-common.h"
+#include "xylem/net/http/xylem-http-client.h"
+#include "xylem/net/http/xylem-http-server.h"
+#endif
+#ifdef XYLEM_ENABLE_WS
+#include "xylem/net/ws/xylem-ws-common.h"
+#include "xylem/net/ws/xylem-ws-client.h"
+#include "xylem/net/ws/xylem-ws-server.h"
+#endif
+
+/* runtime */
 #include <stdint.h>
 
 typedef struct xylem_opts_s {
@@ -75,55 +128,3 @@ extern void xylem_sleep(uint64_t ms);
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_submit(void (*fn)(void*), void* arg);
-
-/* crypto */
-#include "xylem/crypto/xylem-sha1.h"
-#include "xylem/crypto/xylem-sha256.h"
-#include "xylem/crypto/xylem-hmac256.h"
-#include "xylem/crypto/xylem-aes256.h"
-
-/* encoding */
-#include "xylem/encoding/xylem-base64.h"
-#include "xylem/encoding/xylem-bswap.h"
-#include "xylem/encoding/xylem-varint.h"
-#include "xylem/encoding/xylem-json.h"
-#include "xylem/encoding/xylem-gzip.h"
-#include "xylem/encoding/xylem-fec.h"
-
-/* sync */
-#include "xylem/sync/xylem-waitgroup.h"
-#include "xylem/sync/xylem-channel.h"
-#include "xylem/sync/xylem-mutex.h"
-
-/* container */
-#include "xylem/container/xylem-ringbuf.h"
-#include "xylem/container/xylem-list.h"
-#include "xylem/container/xylem-stack.h"
-#include "xylem/container/xylem-queue.h"
-#include "xylem/container/xylem-heap.h"
-#include "xylem/container/xylem-rbtree.h"
-
-/* core */
-#include "xylem/xylem-logger.h"
-#include "xylem/xylem-utils.h"
-#include "xylem/xylem-serial.h"
-
-/* net */
-#include "xylem/net/xylem-tcp.h"
-#include "xylem/net/xylem-udp.h"
-#include "xylem/net/xylem-rudp.h"
-#include "xylem/net/xylem-uds.h"
-#ifdef XYLEM_ENABLE_TLS
-#include "xylem/net/xylem-tls.h"
-#include "xylem/net/xylem-dtls.h"
-#endif
-#ifdef XYLEM_ENABLE_HTTP
-#include "xylem/net/http/xylem-http-common.h"
-#include "xylem/net/http/xylem-http-client.h"
-#include "xylem/net/http/xylem-http-server.h"
-#endif
-#ifdef XYLEM_ENABLE_WS
-#include "xylem/net/ws/xylem-ws-common.h"
-#include "xylem/net/ws/xylem-ws-client.h"
-#include "xylem/net/ws/xylem-ws-server.h"
-#endif
