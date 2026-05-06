@@ -56,7 +56,7 @@ static void _safety_timeout_cb(loop_t* loop,
     (void)loop;
     (void)timer;
     (void)ud;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _srv_accept_cb(xylem_uds_server_t* server,
@@ -78,7 +78,7 @@ static void _dc_connect_cb(xylem_uds_conn_t* conn) {
     ctx->connect_called++;
     xylem_uds_close(conn);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_dial_connect_main(void* arg) {
@@ -100,7 +100,7 @@ static void _test_dial_connect_main(void* arg) {
 
 static void test_dial_connect(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_dial_connect_main, &ctx, NULL);
+    xylem_run(_test_dial_connect_main, &ctx, NULL);
     ASSERT(ctx.connect_called == 1);
     remove(UDS_PATH);
 }
@@ -116,7 +116,7 @@ static void _echo_cli_read_cb(xylem_uds_conn_t* conn,
     xylem_uds_close(conn);
     xylem_uds_close(ctx->srv_conn);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _echo_cli_connect_cb(xylem_uds_conn_t* conn) {
@@ -150,7 +150,7 @@ static void _test_echo_main(void* arg) {
 
 static void test_echo(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_echo_main, &ctx, NULL);
+    xylem_run(_test_echo_main, &ctx, NULL);
     ASSERT(ctx.connect_called == 1);
     ASSERT(ctx.accept_called == 1);
     ASSERT(ctx.received_len == 5);
@@ -163,7 +163,7 @@ static void _sac_connect_cb(xylem_uds_conn_t* conn) {
     xylem_uds_close(conn);
     ctx->send_result = xylem_uds_send(conn, "x", 1);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_send_after_close_main(void* arg) {
@@ -185,7 +185,7 @@ static void _test_send_after_close_main(void* arg) {
 
 static void test_send_after_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_send_after_close_main, &ctx, NULL);
+    xylem_run(_test_send_after_close_main, &ctx, NULL);
     ASSERT(ctx.send_result == -1);
     remove(UDS_PATH);
 }
@@ -201,7 +201,7 @@ static void _ud_connect_cb(xylem_uds_conn_t* conn) {
     xylem_uds_set_userdata(conn, ctx);
     xylem_uds_close(conn);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_userdata_main(void* arg) {
@@ -223,7 +223,7 @@ static void _test_userdata_main(void* arg) {
 
 static void test_userdata(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_userdata_main, &ctx, NULL);
+    xylem_run(_test_userdata_main, &ctx, NULL);
     remove(UDS_PATH);
 }
 
@@ -243,12 +243,12 @@ static void _test_server_userdata_main(void* arg) {
     ctx->value = *got;
 
     xylem_uds_close_server(server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void test_server_userdata(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_server_userdata_main, &ctx, NULL);
+    xylem_run(_test_server_userdata_main, &ctx, NULL);
     ASSERT(ctx.value == 99);
     remove(UDS_PATH);
 }
@@ -260,7 +260,7 @@ static void _csac_close_cb(xylem_uds_conn_t* conn,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     ctx->close_called++;
     if (conn == ctx->cli_conn) {
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -305,7 +305,7 @@ static void _test_close_server_main(void* arg) {
 
 static void test_close_server_with_active_conn(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_close_server_main, &ctx, NULL);
+    xylem_run(_test_close_server_main, &ctx, NULL);
     ASSERT(ctx.close_called >= 1);
     remove(UDS_PATH);
 }
@@ -322,7 +322,7 @@ static void _ff_srv_read_cb(xylem_uds_conn_t* conn,
         xylem_uds_close(conn);
         xylem_uds_close(ctx->cli_conn);
         xylem_uds_close_server(ctx->server);
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -356,7 +356,7 @@ static void _test_frame_fixed_main(void* arg) {
 
 static void test_frame_fixed(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_frame_fixed_main, &ctx, NULL);
+    xylem_run(_test_frame_fixed_main, &ctx, NULL);
     ASSERT(ctx.read_count == 2);
     ASSERT(ctx.received_len == 8);
     ASSERT(memcmp(ctx.received, "ABCD", 4) == 0);
@@ -395,7 +395,7 @@ static void _xt_send_cli_read_cb(xylem_uds_conn_t* conn,
     xylem_uds_close(conn);
     xylem_uds_close(ctx->srv_conn);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_cross_thread_send_main(void* arg) {
@@ -423,7 +423,7 @@ static void _test_cross_thread_send_main(void* arg) {
 
 static void test_cross_thread_send(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_cross_thread_send_main, &ctx, NULL);
+    xylem_run(_test_cross_thread_send_main, &ctx, NULL);
     ASSERT(ctx.received_len == 5);
     ASSERT(memcmp(ctx.received, "hello", 5) == 0);
     xylem_uds_conn_unref(ctx.cli_conn);
@@ -458,7 +458,7 @@ static void _xt_close_cli_close_cb(xylem_uds_conn_t* conn,
     _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
     ctx->close_called++;
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_cross_thread_close_main(void* arg) {
@@ -483,7 +483,7 @@ static void _test_cross_thread_close_main(void* arg) {
 
 static void test_cross_thread_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_cross_thread_close_main, &ctx, NULL);
+    xylem_run(_test_cross_thread_close_main, &ctx, NULL);
     ASSERT(ctx.close_called == 1);
     xylem_uds_conn_unref(ctx.cli_conn);
     remove(UDS_PATH);
@@ -542,7 +542,7 @@ static void _xt_soc_cli_close_cb(xylem_uds_conn_t* conn,
     ctx->close_called++;
     xylem_uds_close(ctx->srv_conn);
     xylem_uds_close_server(ctx->server);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_cross_thread_soc_main(void* arg) {
@@ -570,7 +570,7 @@ static void _test_cross_thread_soc_main(void* arg) {
 
 static void test_cross_thread_send_stop_on_close(void) {
     _test_ctx_t ctx = {0};
-    xylem_runtime_run(_test_cross_thread_soc_main, &ctx, NULL);
+    xylem_run(_test_cross_thread_soc_main, &ctx, NULL);
     ASSERT(ctx.close_called == 1);
     xylem_uds_conn_unref(ctx.cli_conn);
     remove(UDS_PATH);

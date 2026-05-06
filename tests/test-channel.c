@@ -29,12 +29,12 @@
 
 #define SAFETY_TIMEOUT_MS 5000
 
-static xylem_runtime_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 4 };
 
 static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)ud;
     sched_timer_destroy(timer);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
     ASSERT(0 && "test timed out");
 }
 
@@ -72,16 +72,16 @@ static void _ch_receiver(void* arg) {
     }
     ASSERT(atomic_load(&ctx->recv_count) == total);
     ctx->tested = 1;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_ch_main(void* arg) {
     _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
     _start_safety_timer();
     ctx->ch = xylem_channel_create();
-    xylem_runtime_spawn(_ch_receiver, ctx);
+    xylem_spawn(_ch_receiver, ctx);
     for (int i = 0; i < CH_SENDERS; i++) {
-        xylem_runtime_spawn(_ch_sender, ctx);
+        xylem_spawn(_ch_sender, ctx);
     }
 }
 
@@ -89,7 +89,7 @@ static void test_channel_concurrent(void) {
     fprintf(stderr, "=== test_channel_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _ch_ctx_t ctx = {0};
-        xylem_runtime_run(_test_ch_main, &ctx, &_rt_opts);
+        xylem_run(_test_ch_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         xylem_channel_destroy(ctx.ch);
     }

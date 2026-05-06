@@ -49,7 +49,7 @@ static void _server_main(void* arg) {
     xylem_udp_t* udp = xylem_udp_listen("127.0.0.1", LISTEN_PORT, &handler);
     if (!udp) {
         xylem_loge("failed to bind on port %d", LISTEN_PORT);
-        xylem_runtime_shutdown();
+        xylem_shutdown();
         return;
     }
 
@@ -58,7 +58,7 @@ static void _server_main(void* arg) {
 
 int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-    xylem_runtime_run(_server_main, NULL, NULL);
+    xylem_run(_server_main, NULL, NULL);
     xylem_logger_deinit();
     return 0;
 }

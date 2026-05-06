@@ -23,14 +23,14 @@ static void _acceptor(void* arg) {
         xylem_tcp_listen("0.0.0.0", (uint16_t)port, &opts);
     if (!server) {
         fprintf(stderr, "listen failed\n");
-        xylem_runtime_shutdown();
+        xylem_shutdown();
         return;
     }
     fprintf(stderr, "listening on 0.0.0.0:%d\n", port);
     for (;;) {
         xylem_tcp_conn_t* conn = xylem_tcp_accept(server);
         if (!conn) break;
-        xylem_runtime_spawn(_handle_conn, conn);
+        xylem_spawn(_handle_conn, conn);
     }
 }
 
@@ -39,9 +39,9 @@ int main(int argc, char** argv) {
     int workers = 4;
     if (argc > 1) port = atoi(argv[1]);
     if (argc > 2) workers = atoi(argv[2]);
-    xylem_runtime_opts_t rt_opts = {0};
+    xylem_opts_t rt_opts = {0};
     rt_opts.workers = workers;
     fprintf(stderr, "echo-mt: port=%d workers=%d\n", port, workers);
-    xylem_runtime_run(_acceptor, &port, &rt_opts);
+    xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }

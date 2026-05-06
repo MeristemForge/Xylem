@@ -30,17 +30,17 @@
 
 #define SAFETY_TIMEOUT_MS 5000
 
-static xylem_runtime_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 4 };
 
 static void _timeout_coro(void* arg) {
     (void)arg;
-    xylem_runtime_sleep(SAFETY_TIMEOUT_MS);
-    xylem_runtime_shutdown();
+    xylem_sleep(SAFETY_TIMEOUT_MS);
+    xylem_shutdown();
     ASSERT(0 && "test timed out");
 }
 
 static void _start_safety_timer(void) {
-    xylem_runtime_spawn(_timeout_coro, NULL);
+    xylem_spawn(_timeout_coro, NULL);
 }
 
 /* --- test: start/stop cycle --- */
@@ -49,14 +49,14 @@ static void _cycle_main(void* arg) {
     int* val = (int*)arg;
     _start_safety_timer();
     (*val)++;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void test_start_stop_cycle(void) {
     fprintf(stderr, "=== test_start_stop_cycle\n");
     int val = 0;
     for (int i = 0; i < 5; i++) {
-        xylem_runtime_run(_cycle_main, &val, &_rt_opts);
+        xylem_run(_cycle_main, &val, &_rt_opts);
     }
     ASSERT(val == 5);
 }
@@ -70,18 +70,18 @@ typedef struct {
 static void _stop_spawned(void* arg) {
     _stop_ctx_t* ctx = (_stop_ctx_t*)arg;
     ctx->tested = 1;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _stop_main(void* arg) {
     _start_safety_timer();
-    xylem_runtime_spawn(_stop_spawned, arg);
+    xylem_spawn(_stop_spawned, arg);
 }
 
 static void test_stop_from_spawned(void) {
     fprintf(stderr, "=== test_stop_from_spawned\n");
     _stop_ctx_t ctx = {0};
-    xylem_runtime_run(_stop_main, &ctx, &_rt_opts);
+    xylem_run(_stop_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -96,14 +96,14 @@ static void _ext_coro(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
     int prev = atomic_fetch_add(&ctx->count, 1);
     if (prev == ctx->target - 1) {
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
 static int _ext_thread_fn(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
     for (int i = 0; i < ctx->target; i++) {
-        xylem_runtime_spawn(_ext_coro, ctx);
+        xylem_spawn(_ext_coro, ctx);
     }
     return 0;
 }
@@ -121,7 +121,7 @@ static void test_spawn_from_external_thread(void) {
     _ext_ctx_t ctx = { .target = 50 };
     atomic_init(&ctx.count, 0);
 
-    xylem_runtime_run(_ext_main, &ctx, &_rt_opts);
+    xylem_run(_ext_main, &ctx, &_rt_opts);
 
     ASSERT(atomic_load(&ctx.count) == ctx.target);
 }
@@ -135,25 +135,25 @@ typedef struct {
 static void _nest_child(void* arg) {
     _nest_ctx_t* ctx = (_nest_ctx_t*)arg;
     atomic_store(&ctx->depth_reached, 2);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _nest_parent(void* arg) {
     _nest_ctx_t* ctx = (_nest_ctx_t*)arg;
     atomic_store(&ctx->depth_reached, 1);
-    xylem_runtime_spawn(_nest_child, ctx);
+    xylem_spawn(_nest_child, ctx);
 }
 
 static void _nest_main(void* arg) {
     _start_safety_timer();
-    xylem_runtime_spawn(_nest_parent, arg);
+    xylem_spawn(_nest_parent, arg);
 }
 
 static void test_spawn_nested(void) {
     fprintf(stderr, "=== test_spawn_nested\n");
     _nest_ctx_t ctx = {0};
     atomic_init(&ctx.depth_reached, 0);
-    xylem_runtime_run(_nest_main, &ctx, &_rt_opts);
+    xylem_run(_nest_main, &ctx, &_rt_opts);
     ASSERT(atomic_load(&ctx.depth_reached) == 2);
 }
 
@@ -169,7 +169,7 @@ static void _many_coro(void* arg) {
     _many_ctx_t* ctx = (_many_ctx_t*)arg;
     int prev = atomic_fetch_add(&ctx->done, 1);
     if (prev == SPAWN_MANY_COUNT - 1) {
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -177,7 +177,7 @@ static void _many_main(void* arg) {
     _many_ctx_t* ctx = (_many_ctx_t*)arg;
     _start_safety_timer();
     for (int i = 0; i < SPAWN_MANY_COUNT; i++) {
-        xylem_runtime_spawn(_many_coro, ctx);
+        xylem_spawn(_many_coro, ctx);
     }
 }
 
@@ -185,7 +185,7 @@ static void test_spawn_many(void) {
     fprintf(stderr, "=== test_spawn_many\n");
     _many_ctx_t ctx = {0};
     atomic_init(&ctx.done, 0);
-    xylem_runtime_run(_many_main, &ctx, &_rt_opts);
+    xylem_run(_many_main, &ctx, &_rt_opts);
     ASSERT(atomic_load(&ctx.done) == SPAWN_MANY_COUNT);
 }
 
@@ -198,28 +198,28 @@ typedef struct {
 
 static void _sleep0_first(void* arg) {
     _sleep0_ctx_t* ctx = (_sleep0_ctx_t*)arg;
-    xylem_runtime_sleep(0);
+    xylem_sleep(0);
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 1;
-    if (atomic_load(&ctx->idx) == 2) xylem_runtime_shutdown();
+    if (atomic_load(&ctx->idx) == 2) xylem_shutdown();
 }
 
 static void _sleep0_second(void* arg) {
     _sleep0_ctx_t* ctx = (_sleep0_ctx_t*)arg;
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 2;
-    if (atomic_load(&ctx->idx) == 2) xylem_runtime_shutdown();
+    if (atomic_load(&ctx->idx) == 2) xylem_shutdown();
 }
 
 static void _sleep0_main(void* arg) {
     _start_safety_timer();
-    xylem_runtime_spawn(_sleep0_first, arg);
-    xylem_runtime_spawn(_sleep0_second, arg);
+    xylem_spawn(_sleep0_first, arg);
+    xylem_spawn(_sleep0_second, arg);
 }
 
 static void test_sleep_zero(void) {
     fprintf(stderr, "=== test_sleep_zero\n");
     _sleep0_ctx_t ctx = {0};
     atomic_init(&ctx.idx, 0);
-    xylem_runtime_run(_sleep0_main, &ctx, &_rt_opts);
+    xylem_run(_sleep0_main, &ctx, &_rt_opts);
     /* both coroutines completed (order is non-deterministic with multi-worker) */
     ASSERT(atomic_load(&ctx.idx) == 2);
     ASSERT((ctx.order[0] == 1 && ctx.order[1] == 2) ||
@@ -239,10 +239,10 @@ static void _sleepord_coro(void* arg) {
     _sleepord_ctx_t* ctx = ((_sleepord_ctx_t**)arg)[0];
     int id = *(int*)((_sleepord_ctx_t**)arg + 1);
     uint64_t ms = (uint64_t)((id + 1) * 30);
-    xylem_runtime_sleep(ms);
+    xylem_sleep(ms);
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = id;
     if (atomic_load(&ctx->idx) == SLEEP_ORDER_COUNT) {
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -254,10 +254,10 @@ typedef struct {
 static void _sleepord_coro2(void* arg) {
     _sleepord_arg_t* a = (_sleepord_arg_t*)arg;
     uint64_t ms = (uint64_t)((a->id + 1) * 30);
-    xylem_runtime_sleep(ms);
+    xylem_sleep(ms);
     a->ctx->order[atomic_fetch_add(&a->ctx->idx, 1)] = a->id;
     if (atomic_load(&a->ctx->idx) == SLEEP_ORDER_COUNT) {
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -269,7 +269,7 @@ static void _sleepord_main(void* arg) {
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
         _sleepord_args[i].ctx = ctx;
         _sleepord_args[i].id = i;
-        xylem_runtime_spawn(_sleepord_coro2, &_sleepord_args[i]);
+        xylem_spawn(_sleepord_coro2, &_sleepord_args[i]);
     }
 }
 
@@ -277,7 +277,7 @@ static void test_sleep_ordering(void) {
     fprintf(stderr, "=== test_sleep_ordering\n");
     _sleepord_ctx_t ctx = {0};
     atomic_init(&ctx.idx, 0);
-    xylem_runtime_run(_sleepord_main, &ctx, &_rt_opts);
+    xylem_run(_sleepord_main, &ctx, &_rt_opts);
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
         ASSERT(ctx.order[i] == i);
     }
@@ -298,22 +298,22 @@ static void _submit_blocking(void* arg) {
 
 static void _submit_coro(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
-    int rc = xylem_runtime_submit(_submit_blocking, ctx);
+    int rc = xylem_submit(_submit_blocking, ctx);
     ASSERT(rc == 0);
     ASSERT(ctx->output == 84);
     ctx->tested = 1;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _submit_main(void* arg) {
     _start_safety_timer();
-    xylem_runtime_spawn(_submit_coro, arg);
+    xylem_spawn(_submit_coro, arg);
 }
 
 static void test_submit_basic(void) {
     fprintf(stderr, "=== test_submit_basic\n");
     _submit_ctx_t ctx = { .input = 42, .output = 0, .tested = 0 };
-    xylem_runtime_run(_submit_main, &ctx, &_rt_opts);
+    xylem_run(_submit_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -336,12 +336,12 @@ static void _submit_conc_blocking(void* arg) {
 
 static void _submit_conc_coro(void* arg) {
     _submit_conc_ctx_t* ctx = (_submit_conc_ctx_t*)arg;
-    int rc = xylem_runtime_submit(_submit_conc_blocking, NULL);
+    int rc = xylem_submit(_submit_conc_blocking, NULL);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&ctx->done, 1);
     if (prev == SUBMIT_CONC_COUNT - 1) {
         ctx->tested = 1;
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -349,7 +349,7 @@ static void _submit_conc_main(void* arg) {
     _submit_conc_ctx_t* ctx = (_submit_conc_ctx_t*)arg;
     _start_safety_timer();
     for (int i = 0; i < SUBMIT_CONC_COUNT; i++) {
-        xylem_runtime_spawn(_submit_conc_coro, ctx);
+        xylem_spawn(_submit_conc_coro, ctx);
     }
 }
 
@@ -357,7 +357,7 @@ static void test_submit_concurrent(void) {
     fprintf(stderr, "=== test_submit_concurrent\n");
     _submit_conc_ctx_t ctx = {0};
     atomic_init(&ctx.done, 0);
-    xylem_runtime_run(_submit_conc_main, &ctx, &_rt_opts);
+    xylem_run(_submit_conc_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
     ASSERT(atomic_load(&ctx.done) == SUBMIT_CONC_COUNT);
 }
@@ -382,12 +382,12 @@ static void _submit_res_blocking(void* arg) {
 
 static void _submit_res_coro(void* arg) {
     _submit_res_arg_t* a = (_submit_res_arg_t*)arg;
-    int rc = xylem_runtime_submit(_submit_res_blocking, a);
+    int rc = xylem_submit(_submit_res_blocking, a);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&a->ctx->done, 1);
     if (prev == 3) {
         a->ctx->tested = 1;
-        xylem_runtime_shutdown();
+        xylem_shutdown();
     }
 }
 
@@ -399,7 +399,7 @@ static void _submit_res_main(void* arg) {
     for (int i = 0; i < 4; i++) {
         _submit_res_args[i].ctx = ctx;
         _submit_res_args[i].idx = i;
-        xylem_runtime_spawn(_submit_res_coro, &_submit_res_args[i]);
+        xylem_spawn(_submit_res_coro, &_submit_res_args[i]);
     }
 }
 
@@ -407,7 +407,7 @@ static void test_submit_result(void) {
     fprintf(stderr, "=== test_submit_result\n");
     _submit_res_ctx_t ctx = {0};
     atomic_init(&ctx.done, 0);
-    xylem_runtime_run(_submit_res_main, &ctx, &_rt_opts);
+    xylem_run(_submit_res_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
     for (int i = 0; i < 4; i++) {
         ASSERT(ctx.values[i] == (i + 1) * 10);

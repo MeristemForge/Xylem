@@ -34,21 +34,21 @@ static void _acceptor(void* arg) {
     xylem_tcp_opts_t opts = {0};
     opts.disable_mss_clamp = true;
     xylem_tcp_listener_t* server = xylem_tcp_listen("0.0.0.0", (uint16_t)port, &opts);
-    if (!server) { xylem_runtime_stop(); return; }
+    if (!server) { xylem_shutdown(); return; }
     fprintf(stderr, "listening on 0.0.0.0:%d\n", port);
     for (;;) {
         xylem_tcp_conn_t* conn = xylem_tcp_accept(server);
         if (!conn) break;
-        xylem_runtime_spawn(_handle_conn, conn);
+        xylem_spawn(_handle_conn, conn);
     }
 }
 
 int main(int argc, char** argv) {
     int port = (argc > 1) ? atoi(argv[1]) : 9000;
     int workers = (argc > 2) ? atoi(argv[2]) : 4;
-    xylem_runtime_opts_t rt_opts = {0};
+    xylem_opts_t rt_opts = {0};
     rt_opts.workers = workers;
-    xylem_runtime_start(_acceptor, &port, &rt_opts);
+    xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }
 EOF

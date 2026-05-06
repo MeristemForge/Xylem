@@ -29,12 +29,12 @@
 
 #define SAFETY_TIMEOUT_MS 5000
 
-static xylem_runtime_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 4 };
 
 static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)ud;
     sched_timer_destroy(timer);
-    xylem_runtime_shutdown();
+    xylem_shutdown();
     ASSERT(0 && "test timed out");
 }
 
@@ -62,7 +62,7 @@ static void _wg_waiter(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
     ctx->tested = 1;
-    xylem_runtime_shutdown();
+    xylem_shutdown();
 }
 
 static void _test_wg_main(void* arg) {
@@ -70,9 +70,9 @@ static void _test_wg_main(void* arg) {
     _start_safety_timer();
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
-    xylem_runtime_spawn(_wg_waiter, ctx);
+    xylem_spawn(_wg_waiter, ctx);
     for (int i = 0; i < WG_WORKERS; i++) {
-        xylem_runtime_spawn(_wg_worker, ctx);
+        xylem_spawn(_wg_worker, ctx);
     }
 }
 
@@ -80,7 +80,7 @@ static void test_waitgroup_concurrent(void) {
     fprintf(stderr, "=== test_waitgroup_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _wg_ctx_t ctx = {0};
-        xylem_runtime_run(_test_wg_main, &ctx, &_rt_opts);
+        xylem_run(_test_wg_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         xylem_waitgroup_destroy(ctx.wg);
     }

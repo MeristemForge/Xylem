@@ -81,14 +81,14 @@ static void _client(void* arg) {
 
 static void _main(void* arg) {
     (void)arg;
-    xylem_runtime_spawn(_server, NULL);
-    xylem_runtime_sleep(100);
-    xylem_runtime_spawn(_client, NULL);
+    xylem_spawn(_server, NULL);
+    xylem_sleep(100);
+    xylem_spawn(_client, NULL);
 }
 
 int main(void) {
     xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
-    xylem_runtime_run(_main, NULL, NULL);
+    xylem_run(_main, NULL, NULL);
     xylem_logger_deinit();
     return 0;
 }

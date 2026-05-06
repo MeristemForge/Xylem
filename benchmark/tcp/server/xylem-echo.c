@@ -28,7 +28,7 @@ static void _acceptor(void* arg) {
         xylem_tcp_listen("0.0.0.0", (uint16_t)port, &opts);
     if (!server) {
         fprintf(stderr, "failed to listen on port %d\n", port);
-        xylem_runtime_shutdown();
+        xylem_shutdown();
         return;
     }
 
@@ -37,7 +37,7 @@ static void _acceptor(void* arg) {
     for (;;) {
         xylem_tcp_conn_t* conn = xylem_tcp_accept(server);
         if (!conn) break;
-        xylem_runtime_spawn(_handle_conn, conn);
+        xylem_spawn(_handle_conn, conn);
     }
 }
 
@@ -45,8 +45,8 @@ int main(int argc, char** argv) {
     int port = 9000;
     if (argc > 1) port = atoi(argv[1]);
 
-    xylem_runtime_opts_t rt_opts = {0};
+    xylem_opts_t rt_opts = {0};
     rt_opts.workers = 1;
-    xylem_runtime_run(_acceptor, &port, &rt_opts);
+    xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }
