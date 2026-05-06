@@ -31,39 +31,49 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+typedef struct _iowait_park_s _iowait_park_t;
+typedef struct _iowait_dir_s  _iowait_dir_t;
+
+/**
+ * Per-direction state. Read and write are fully symmetric; bundling
+ * them into one struct eliminates the rd/wr code duplication and
+ * makes the two iowait slots share a single set of helpers.
+ */
+struct _iowait_dir_s {
+    _Atomic(_iowait_park_t*) park;
+    sched_timer_t*           timer;
+    _Atomic uint64_t         deadline;
+};
+
 /**
  * Per-park state kept on the caller's stack. The iowait publishes a
- * pointer to this via an atomic slot (w->rd_park / w->wr_park). Wakers
- * race to atomically swap the slot back to NULL: whichever thread
- * succeeds sets `result` and reschedules park->co.
+ * pointer to this via an atomic slot (dir->park). Wakers race to
+ * atomically swap the slot back to NULL: whichever thread succeeds
+ * sets `result` and reschedules park->co.
  */
-typedef struct _iowait_park_s {
+struct _iowait_park_s {
     mco_coro*       co;
     iowait_t*       w;
+    _iowait_dir_t*  dir;
     iowait_result_t result;
-} _iowait_park_t;
+};
 
 struct iowait_s {
-    platform_poller_sq_t*    poller;
-    platform_poller_sqe_t    sqe;
-    platform_sock_t          fd;
-
-    _Atomic(_iowait_park_t*) rd_park;
-    _Atomic(_iowait_park_t*) wr_park;
+    platform_poller_sq_t* poller;
+    platform_poller_sqe_t sqe;
+    platform_sock_t       fd;
 
     /**
-     * Per-direction deadline timer. Allocated once at create time and
-     * reused across deadline changes. A deadline of 0 means "no
-     * deadline" and the timer is left stopped.
+     * rd/wr state. Each direction owns its park slot, deadline timer
+     * (allocated once, reused across deadline changes; 0 deadline means
+     * "no deadline" and the timer stays stopped), and deadline value.
      */
-    sched_timer_t*           rd_timer;
-    sched_timer_t*           wr_timer;
-    _Atomic uint64_t         rd_deadline;
-    _Atomic uint64_t         wr_deadline;
+    _iowait_dir_t         rd;
+    _iowait_dir_t         wr;
 
-    _Atomic int32_t          refcnt;
-    bool                     registered;
-    _Atomic bool             closed;
+    _Atomic int32_t       refcnt;
+    bool                  registered;
+    _Atomic bool          closed;
 };
 
 static void _iowait_do_free(iowait_t* w) {
@@ -71,11 +81,11 @@ static void _iowait_do_free(iowait_t* w) {
         platform_poller_del(w->poller, &w->sqe);
         w->registered = false;
     }
-    if (w->rd_timer) {
-        sched_timer_destroy(w->rd_timer);
+    if (w->rd.timer) {
+        sched_timer_destroy(w->rd.timer);
     }
-    if (w->wr_timer) {
-        sched_timer_destroy(w->wr_timer);
+    if (w->wr.timer) {
+        sched_timer_destroy(w->wr.timer);
     }
     free(w);
 }
@@ -90,12 +100,18 @@ static void _iowait_unref(iowait_t* w) {
     }
 }
 
+static bool _iowait_deadline_passed(uint64_t deadline_ms) {
+    return deadline_ms != 0 &&
+           xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms;
+}
+
 /**
  * Ensure the fd is registered with the poller.
  *
  * Under ET (edge-triggered) the fd is registered once with RD+WR and
- * the kernel notifies on every edge. Under LT+oneshot the kernel drops
- * the registration after each event, so we re-arm with the union of
+ * the kernel notifies on every edge; after that first add we fast-
+ * return on every park. Under LT+oneshot the kernel drops the
+ * registration after each event, so we re-arm with the union of
  * currently-waiting directions.
  */
 static void _iowait_arm(iowait_t* w) {
@@ -103,20 +119,26 @@ static void _iowait_arm(iowait_t* w) {
         return;
     }
 
-    platform_poller_op_t op;
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        op = PLATFORM_POLLER_RW_OP;
-    } else {
-        op = PLATFORM_POLLER_NO_OP;
-        if (atomic_load_explicit(&w->rd_park, memory_order_acquire)) {
-            op |= PLATFORM_POLLER_RD_OP;
-        }
-        if (atomic_load_explicit(&w->wr_park, memory_order_acquire)) {
-            op |= PLATFORM_POLLER_WR_OP;
-        }
-        if (op == PLATFORM_POLLER_NO_OP) {
+        if (w->registered) {
             return;
         }
+        w->sqe.op = PLATFORM_POLLER_RW_OP;
+        if (platform_poller_add(w->poller, &w->sqe) == 0) {
+            w->registered = true;
+        }
+        return;
+    }
+
+    platform_poller_op_t op = PLATFORM_POLLER_NO_OP;
+    if (atomic_load_explicit(&w->rd.park, memory_order_acquire)) {
+        op |= PLATFORM_POLLER_RD_OP;
+    }
+    if (atomic_load_explicit(&w->wr.park, memory_order_acquire)) {
+        op |= PLATFORM_POLLER_WR_OP;
+    }
+    if (op == PLATFORM_POLLER_NO_OP) {
+        return;
     }
 
     w->sqe.op = op;
@@ -130,8 +152,17 @@ static void _iowait_arm(iowait_t* w) {
 }
 
 /**
- * Unconditionally claim the park slot. Returns the claimed park with
- * its result set, or NULL if the slot was already empty.
+ * Single arbitration point for waking a parked coroutine.
+ *
+ * Up to three sources race to wake the same park: an IO event from the
+ * poller, a deadline timer firing, and iowait_close(). They all funnel
+ * through here; the atomic_exchange picks exactly one winner and hands
+ * it the park pointer with the cause stamped into `result`. Losers get
+ * NULL and must do nothing, which is how we guarantee a park is woken
+ * at most once and the coroutine is never double-scheduled.
+ *
+ * The caller is responsible for actually scheduling the returned park
+ * (see _iowait_wake_park); this function only transfers ownership.
  */
 static _iowait_park_t* _iowait_claim(
     _Atomic(_iowait_park_t*)* slot, iowait_result_t result) {
@@ -148,32 +179,21 @@ static void _iowait_wake_park(_iowait_park_t* p) {
     }
 }
 
-/* Timer expiry: claim the current parked coroutine (if any) with TIMEOUT. */
-static void _iowait_rd_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
-    iowait_t* w = (iowait_t*)ud;
-    _iowait_wake_park(_iowait_claim(&w->rd_park, IOWAIT_TIMEOUT));
+    _iowait_dir_t* d = (_iowait_dir_t*)ud;
+    _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
 }
 
-static void _iowait_wr_timeout_cb(sched_timer_t* timer, void* ud) {
-    (void)timer;
-    iowait_t* w = (iowait_t*)ud;
-    _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_TIMEOUT));
-}
-
-typedef struct {
-    _iowait_park_t* park;
-} _iowait_park_arg_t;
-
-static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
-    _iowait_park_arg_t* a = (_iowait_park_arg_t*)arg;
-    _iowait_park_t*     p = a->park;
-    iowait_t*           w = p->w;
+static bool _iowait_park_fn(mco_coro* co, void* arg) {
+    _iowait_park_t* p = (_iowait_park_t*)arg;
+    iowait_t*       w = p->w;
+    _iowait_dir_t*  d = p->dir;
 
     p->co     = co;
     p->result = IOWAIT_READY;
 
-    atomic_store_explicit(&w->rd_park, p, memory_order_release);
+    atomic_store_explicit(&d->park, p, memory_order_release);
 
     _iowait_arm(w);
 
@@ -183,10 +203,7 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
      * store and claiming our own park.
      */
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        _iowait_park_t* self = _iowait_claim(&w->rd_park, IOWAIT_CLOSED);
-        if (self) {
-            scheduler_schedule(runtime_get_scheduler(), self->co);
-        }
+        _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_CLOSED));
         return true;
     }
 
@@ -197,47 +214,54 @@ static bool _iowait_rd_park_fn(mco_coro* co, void* arg) {
      * schedule ourselves with TIMEOUT.
      */
     uint64_t deadline = atomic_load_explicit(
-        &w->rd_deadline, memory_order_acquire);
-    if (deadline != 0 &&
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
-        _iowait_park_t* self = _iowait_claim(&w->rd_park, IOWAIT_TIMEOUT);
-        if (self) {
-            scheduler_schedule(runtime_get_scheduler(), self->co);
-        }
+        &d->deadline, memory_order_acquire);
+    if (_iowait_deadline_passed(deadline)) {
+        _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
     }
     return true;
 }
 
-static bool _iowait_wr_park_fn(mco_coro* co, void* arg) {
-    _iowait_park_arg_t* a = (_iowait_park_arg_t*)arg;
-    _iowait_park_t*     p = a->park;
-    iowait_t*           w = p->w;
+static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
+    atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
 
-    p->co     = co;
-    p->result = IOWAIT_READY;
-
-    atomic_store_explicit(&w->wr_park, p, memory_order_release);
-
-    _iowait_arm(w);
-
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        _iowait_park_t* self = _iowait_claim(&w->wr_park, IOWAIT_CLOSED);
-        if (self) {
-            scheduler_schedule(runtime_get_scheduler(), self->co);
+    if (deadline_ms == 0) {
+        if (d->timer) {
+            sched_timer_stop(d->timer);
         }
-        return true;
+        return;
+    }
+
+    if (!d->timer) {
+        d->timer = sched_timer_create(runtime_get_scheduler());
+        if (!d->timer) {
+            return;
+        }
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
+    sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
+}
+
+static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        return IOWAIT_CLOSED;
     }
 
     uint64_t deadline = atomic_load_explicit(
-        &w->wr_deadline, memory_order_acquire);
-    if (deadline != 0 &&
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
-        _iowait_park_t* self = _iowait_claim(&w->wr_park, IOWAIT_TIMEOUT);
-        if (self) {
-            scheduler_schedule(runtime_get_scheduler(), self->co);
-        }
+        &d->deadline, memory_order_acquire);
+    if (_iowait_deadline_passed(deadline)) {
+        return IOWAIT_TIMEOUT;
     }
-    return true;
+
+    _iowait_ref(w);
+
+    _iowait_park_t park = {.w = w, .dir = d};
+    scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
+
+    iowait_result_t r = park.result;
+    _iowait_unref(w);
+    return r;
 }
 
 iowait_t* iowait_create(platform_sock_t fd) {
@@ -258,93 +282,19 @@ iowait_t* iowait_create(platform_sock_t fd) {
 }
 
 void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms) {
-    atomic_store_explicit(&w->rd_deadline, deadline_ms, memory_order_release);
-
-    if (deadline_ms == 0) {
-        if (w->rd_timer) {
-            sched_timer_stop(w->rd_timer);
-        }
-        return;
-    }
-
-    if (!w->rd_timer) {
-        w->rd_timer = sched_timer_create(runtime_get_scheduler());
-        if (!w->rd_timer) {
-            return;
-        }
-    }
-
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
-    sched_timer_start(w->rd_timer, _iowait_rd_timeout_cb, w, in, 0);
+    _iowait_set_deadline(&w->rd, deadline_ms);
 }
 
 void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms) {
-    atomic_store_explicit(&w->wr_deadline, deadline_ms, memory_order_release);
-
-    if (deadline_ms == 0) {
-        if (w->wr_timer) {
-            sched_timer_stop(w->wr_timer);
-        }
-        return;
-    }
-
-    if (!w->wr_timer) {
-        w->wr_timer = sched_timer_create(runtime_get_scheduler());
-        if (!w->wr_timer) {
-            return;
-        }
-    }
-
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
-    sched_timer_start(w->wr_timer, _iowait_wr_timeout_cb, w, in, 0);
+    _iowait_set_deadline(&w->wr, deadline_ms);
 }
 
 iowait_result_t iowait_read(iowait_t* w) {
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        return IOWAIT_CLOSED;
-    }
-
-    uint64_t deadline = atomic_load_explicit(
-        &w->rd_deadline, memory_order_acquire);
-    if (deadline != 0 &&
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
-        return IOWAIT_TIMEOUT;
-    }
-
-    _iowait_ref(w);
-
-    _iowait_park_t     park = {.w = w};
-    _iowait_park_arg_t arg  = {.park = &park};
-    scheduler_park(runtime_get_scheduler(), _iowait_rd_park_fn, &arg);
-
-    iowait_result_t r = park.result;
-    _iowait_unref(w);
-    return r;
+    return _iowait_wait(w, &w->rd);
 }
 
 iowait_result_t iowait_write(iowait_t* w) {
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        return IOWAIT_CLOSED;
-    }
-
-    uint64_t deadline = atomic_load_explicit(
-        &w->wr_deadline, memory_order_acquire);
-    if (deadline != 0 &&
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
-        return IOWAIT_TIMEOUT;
-    }
-
-    _iowait_ref(w);
-
-    _iowait_park_t     park = {.w = w};
-    _iowait_park_arg_t arg  = {.park = &park};
-    scheduler_park(runtime_get_scheduler(), _iowait_wr_park_fn, &arg);
-
-    iowait_result_t r = park.result;
-    _iowait_unref(w);
-    return r;
+    return _iowait_wait(w, &w->wr);
 }
 
 void iowait_close(iowait_t* w) {
@@ -361,10 +311,10 @@ void iowait_close(iowait_t* w) {
     /**
      * Wake any waiter already visible in its park slot. A waiter still
      * mid-park_fn may not have published yet; it self-wakes via the
-     * close-race check in *_park_fn after publishing.
+     * close-race check in _iowait_park_fn after publishing.
      */
-    _iowait_wake_park(_iowait_claim(&w->rd_park, IOWAIT_CLOSED));
-    _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_CLOSED));
+    _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_CLOSED));
+    _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_CLOSED));
 }
 
 void iowait_destroy(iowait_t* w) {
@@ -386,10 +336,10 @@ void iowait_on_event(int revents, void* ud) {
     _iowait_ref(w);
 
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_wake_park(_iowait_claim(&w->rd_park, IOWAIT_READY));
+        _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_READY));
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_wake_park(_iowait_claim(&w->wr_park, IOWAIT_READY));
+        _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_READY));
     }
 
     /* LT+oneshot: re-arm if anyone is still parked. ET stays armed. */
