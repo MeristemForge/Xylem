@@ -19,6 +19,33 @@
  *  IN THE SOFTWARE.
  */
 
+/**
+ * Scheduling model
+ * ----------------
+ *
+ * N worker threads cooperate through a three-tier runnable pool:
+ *
+ *   1. per-worker `runnext` slot   - single LIFO hand-off, cache-hot
+ *   2. per-worker work-stealing    - owner pushes/pops the tail, other
+ *      deque (wsdeque)               workers steal from the head
+ *   3. global runq (mpsc)          - overflow from full deques, and
+ *                                    injection point for cross-thread
+ *                                    scheduler_schedule() callers
+ *
+ * When a worker runs out of local work it spins a few times (non-
+ * blocking polls + steals). The last remaining spinner does a
+ * blocking poll that also processes timers and deferred posts, so
+ * IO/timers/posts never starve even when all other workers are idle.
+ * Workers without work eventually park on a per-worker semaphore;
+ * scheduler_schedule wakes one parked worker on each push.
+ *
+ * Coroutine parking flows through scheduler_park: the park callback
+ * is invoked *after* mco_yield returns, so a wakeup source can never
+ * observe the coroutine pointer before the yield has actually
+ * suspended it. iowait.c relies on this to avoid schedule-before-
+ * yield races.
+ */
+
 #include "scheduler.h"
 
 #include "xylem/xylem-utils.h"
@@ -71,6 +98,7 @@ struct scheduler_s {
     platform_poller_sqe_t wakeup_sqe;
     platform_sock_t       wakeup_rd;
     platform_sock_t       wakeup_wr;
+    iowait_pool_t*        iowait_pool;
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
     _Atomic bool          processing;
@@ -98,20 +126,15 @@ typedef struct {
 /**
  * sched_timer_s
  *
- *   heap_node/sched/cb/ud/timeout/repeat/active:
- *     Normal heap entry and scheduled-fire parameters, all mutated
- *     under sched->timer_lock.
+ * All non-atomic fields are mutated under sched->timer_lock.
  *
- *   refcnt:
- *     Pins the timer object across the "in-flight fire" window.
- *     _sched_process_timers dequeues under the lock and *must* release
- *     the lock before invoking cb, so there is a window where another
- *     thread could race into sched_timer_destroy. To keep the object
- *     alive across that window, the dequeue path bumps refcnt before
- *     unlocking and drops it after the cb returns. The creator holds
- *     the initial reference; sched_timer_destroy drops it. The object
- *     is freed when the last reference is released, which is why
- *     destroy is safe to call concurrently with an in-flight fire.
+ * refcnt pins the timer across the in-flight-fire window.
+ * _sched_process_timers dequeues under the lock, takes a ref, and
+ * releases the lock before invoking cb; a racing sched_timer_destroy
+ * can then drop the creator's ref without freeing the object out
+ * from under the still-running callback. The object is freed on the
+ * last unref, which is what makes destroy safe to call concurrently
+ * with an in-flight fire.
  */
 struct sched_timer_s {
     heap_node_t      heap_node;
@@ -316,6 +339,12 @@ static void _sched_process_io(
     platform_poller_cqe_t* cqes,
     int n) {
     for (int i = 0; i < n; i++) {
+        /**
+         * ud == NULL is the sentinel for our own wakeup pipe: the
+         * only registration that passes NULL ud is sched->wakeup_sqe
+         * in scheduler_create. Everything else goes through iowait
+         * and carries a generation-tagged ud.
+         */
         if (cqes[i].ud == NULL) {
             /* Drain the wakeup pipe so it can be re-triggered. */
             char buf[64];
@@ -533,6 +562,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     platform_poller_destroy(&sched->poller);
+    iowait_pool_destroy(sched->iowait_pool);
     free(sched);
 }
 
@@ -586,6 +616,12 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     }
 
     atomic_store(&sched->running, true);
+
+    sched->iowait_pool = iowait_pool_create();
+    if (!sched->iowait_pool) {
+        _sched_cleanup(sched, 0);
+        return NULL;
+    }
 
     sched->nworkers = nworkers;
     sched->workers = (_sched_worker_t*)calloc(
@@ -644,7 +680,12 @@ void scheduler_destroy(scheduler_t* sched) {
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
-    /* Fast path: if called from a worker thread, use runnext slot. */
+    /**
+     * Fast path: the caller is itself a worker of this scheduler.
+     * The `sched == _tls_worker->sched` check is what makes the fast
+     * path safe in a process running more than one scheduler: cross-
+     * scheduler schedule falls through to the slow path.
+     */
     if (_tls_worker && _tls_worker->sched == sched) {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
         if (!old) {
@@ -716,6 +757,10 @@ platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {
     return &sched->poller;
 }
 
+iowait_pool_t* scheduler_get_iowait_pool(scheduler_t* sched) {
+    return sched->iowait_pool;
+}
+
 int scheduler_post(
     scheduler_t* sched, scheduler_post_fn_t cb, void* ud) {
     _sched_post_t* req = (_sched_post_t*)calloc(1, sizeof(*req));
@@ -725,6 +770,12 @@ int scheduler_post(
     req->cb = cb;
     req->ud = ud;
     mpsc_push(&sched->posts, &req->node);
+    /**
+     * If a worker is already spinning it will drain posts on its
+     * next blocking-poll pass with no wakeup needed. Only poke the
+     * pool when every worker is idle/parked, in which case a
+     * wake_worker is required to make progress.
+     */
     if (atomic_load(&sched->nspinning) == 0) {
         _sched_wake_worker(sched);
     }
@@ -781,6 +832,12 @@ void sched_timer_start(
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
+    /**
+     * A worker in blocking poll picked a timeout from the old heap
+     * root; insertion of a new earlier root would otherwise wait
+     * out that stale timeout. Poking the wakeup pipe forces the
+     * blocking poll to return early and re-compute the timeout.
+     */
     _sched_wake_poller(sched);
 }
 

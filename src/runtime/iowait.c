@@ -25,36 +25,52 @@
 
 #include "runtime.h"
 #include "scheduler.h"
-
 #include "c11-threads.h"
+
 #include "minicoro/minicoro.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
+
+_Static_assert(sizeof(void*) == 8,
+    "iowait ud generation-tagging requires 64-bit pointers");
+
+/**
+ * Generation-tagged userdata encoding.
+ *
+ * Under a handle pool a bare `iowait_t*` is unsafe as poller ud: a
+ * CQE batch already returned by epoll_wait may still carry the old
+ * pointer after the iowait has been recycled and, possibly,
+ * reallocated as a fresh generation. Dispatching that stale CQE
+ * would corrupt the new generation's state.
+ *
+ * We pack a 16-bit per-handle generation into the top 16 bits of
+ * ud. On all 64-bit targets we care about (Linux x86-64/ARM64,
+ * macOS ARM64, Windows x64 wepoll) user virtual addresses fit in
+ * the bottom 48 bits, so these top bits are free. gen is bumped on
+ * every retire; iowait_on_event rejects stale CQEs by comparing
+ * the tag against the live gen after tryref.
+ *
+ * 16 bits give 65536 generations before aliasing. Aliasing would
+ * require the same pool slot to cycle through 65536 destroy/create
+ * pairs while a single CQE remains undispatched in a worker's
+ * batch -- orders of magnitude beyond anything realistic.
+ */
+#define IOWAIT_TAG_SHIFT 48
+#define IOWAIT_PTR_MASK  (((uintptr_t)1 << IOWAIT_TAG_SHIFT) - 1)
+#define IOWAIT_TAG_MASK  (0xFFFFu)
 
 typedef struct _iowait_park_s _iowait_park_t;
 typedef struct _iowait_dir_s  _iowait_dir_t;
 
 /**
  * Per-direction state. Read and write are fully symmetric; bundling
- * them into one struct eliminates the rd/wr code duplication and
- * makes the two iowait slots share a single set of helpers.
+ * them shares helpers between the two slots.
  *
- *   w         - back-pointer to the owning iowait. Needed because the
- *               timer callback receives this struct as ud and must
- *               drop a ref on the iowait itself.
- *   park      - atomic slot holding the currently parked coroutine,
- *               or NULL when no one is parked. All wakers race on
- *               this slot via _iowait_claim (see below).
- *   timer     - deadline timer, allocated lazily on the first
- *               non-zero deadline and reused afterwards. NULL means
- *               "no deadline has ever been set on this direction".
- *               Accessed only from the deadline-setter path and from
- *               _iowait_do_free; not safe against concurrent
- *               deadline sets on the same direction.
- *   deadline  - absolute ms deadline or 0. Atomically published so
- *               a parking waiter can observe an updated value before
- *               committing to sleep.
+ * `timer` is allocated lazily on the first non-zero deadline and is
+ * not safe against concurrent deadline sets on the same direction;
+ * the public API documents this constraint.
  */
 struct _iowait_dir_s {
     iowait_t*                w;
@@ -64,12 +80,12 @@ struct _iowait_dir_s {
 };
 
 /**
- * Per-park state kept on the caller's stack. The iowait publishes a
- * pointer to this via an atomic slot (dir->park). Wakers race to
- * atomically swap the slot back to NULL: whichever thread succeeds
- * sets `result` and reschedules park->co. The park record is only
- * valid for the duration of the scheduler_park call, which is why
- * every waker must go through _iowait_claim before touching it.
+ * Per-park state kept on the caller's stack. The iowait publishes
+ * a pointer to this via dir->park. Wakers race to atomically swap
+ * the slot back to NULL; whichever thread succeeds sets `result`
+ * and reschedules park->co. Every waker must go through
+ * _iowait_claim because the record is only valid for the duration
+ * of the scheduler_park call.
  */
 struct _iowait_park_s {
     mco_coro*       co;
@@ -79,38 +95,28 @@ struct _iowait_park_s {
 };
 
 /**
- * Central iowait handle.
+ * Central iowait handle. Most fields are self-explanatory; the
+ * non-trivial ones are:
  *
- *   poller      - shared scheduler poller this fd is registered on.
- *   sqe/fd      - poller submission entry and raw fd. `sqe.ud` always
- *                 points back to this handle so iowait_on_event can
- *                 recover context.
- *   rd / wr     - per-direction state; see _iowait_dir_s above.
- *   arm_lock    - serialises every entry into _iowait_arm. Two arm
- *                 sources race on the same handle: a parking worker
- *                 (via _iowait_park_fn) and the poller thread
- *                 (via iowait_on_event). Without serialisation they
- *                 would both compute an op from a stale view of
- *                 rd.park/wr.park, write the shared sqe, and race
- *                 into platform_poller_mod -- the last MOD wins and
- *                 can drop a direction that the other thread just
- *                 published. The lock covers the full "observe park
- *                 slots -> publish sqe -> submit to poller" sequence
- *                 on LT+oneshot pollers; on ET the fast path returns
- *                 before taking the lock once the fd is registered.
- *   refcnt      - reference count keeping the handle alive while
- *                 waiters are parked or the poller still holds a
- *                 callback pointer. See _iowait_ref / _iowait_unref.
- *   registered  - whether the fd is currently in the poller. Under
- *                 ET we set this once on the first arm; under LT+
- *                 oneshot we keep flipping between add and mod.
- *                 Protected by arm_lock on the LT+oneshot path; on
- *                 ET, the fast-path read outside the lock is safe
- *                 because `registered` only transitions false->true
- *                 exactly once and a spurious "false" read just
- *                 falls through to the locked slow path.
- *   closed      - set by iowait_close; observed on park/wait entry
- *                 and on event dispatch to short-circuit operations.
+ *   arm_lock   - serialises the full "observe park slots -> publish
+ *                sqe -> submit to poller" sequence in _iowait_arm.
+ *                Without it, a parking worker and the poller thread
+ *                can both compute an op from stale park snapshots
+ *                and race into platform_poller_mod, letting the
+ *                later MOD silently drop a direction the other
+ *                thread just published.
+ *   refcnt     - keeps the handle alive while waiters are parked
+ *                or the poller still holds a callback pointer. At
+ *                zero the handle returns to the pool (not freed),
+ *                so iowait_on_event can safely dereference a stale
+ *                ud and then reject it via the generation check.
+ *   gen        - bumped on every retire. Low 16 bits are mirrored
+ *                into the ud tag; iowait_on_event compares them.
+ *   registered - whether the fd is currently in the poller. Under
+ *                ET, set once and never cleared; the ET fast path
+ *                reads it without the lock (transition is one-way).
+ *                Under LT+oneshot, flipped by add/mod/del under
+ *                arm_lock.
  */
 struct iowait_s {
     platform_poller_sq_t* poller;
@@ -123,35 +129,111 @@ struct iowait_s {
     mtx_t                 arm_lock;
 
     _Atomic int32_t       refcnt;
+    _Atomic uint16_t      gen;
     bool                  registered;
     _Atomic bool          closed;
+
+    iowait_pool_t*        pool;
+    struct iowait_s*      freelist_link;
+    struct iowait_s*      registry_link;
 };
 
 /**
- * Drop the handle's creation-time reference and, if this was the last
- * ref, actually release resources. The refcnt's acq_rel on the final
- * decrement synchronises with every other release, so by the time we
- * get here no other thread can still be touching the handle; simple
- * non-atomic reads of `registered` and `timer` are safe.
+ * Per-scheduler iowait handle pool.
  *
- * By the time refcnt reaches zero, no arm-reference can still be
- * outstanding (the arm-ref itself would keep refcnt non-zero), so
- * each timer is guaranteed to be either inactive or already-fired,
- * and sched_timer_destroy here can just drop the creator ref.
+ * Keeps retired iowait handles alive in type-stable memory so that
+ * stale CQEs held by a worker's batch can still be safely dispatched
+ * through iowait_on_event: the memory is guaranteed to remain a
+ * valid iowait_t, and the per-handle generation counter lets the
+ * dispatcher reject stale references.
+ *
+ * The pool never shrinks during the scheduler's lifetime; retired
+ * handles return to the freelist and stay in memory until
+ * iowait_pool_destroy. Bounded by peak concurrent handle count.
  */
-static void _iowait_do_free(iowait_t* w) {
-    if (w->registered) {
-        platform_poller_del(w->poller, &w->sqe);
-        w->registered = false;
+struct iowait_pool_s {
+    mtx_t     lock;
+    iowait_t* freelist_head;    /* LIFO freelist. */
+    iowait_t* registry_head;    /* Every handle ever minted; walked by destroy. */
+};
+
+static inline void* _iowait_ud_encode(iowait_t* w, uint16_t gen) {
+    uintptr_t p   = (uintptr_t)w & IOWAIT_PTR_MASK;
+    uintptr_t tag = (uintptr_t)gen << IOWAIT_TAG_SHIFT;
+    return (void*)(p | tag);
+}
+
+static inline iowait_t* _iowait_ud_ptr(void* ud) {
+    return (iowait_t*)((uintptr_t)ud & IOWAIT_PTR_MASK);
+}
+
+static inline uint16_t _iowait_ud_tag(void* ud) {
+    return (uint16_t)(((uintptr_t)ud >> IOWAIT_TAG_SHIFT) & IOWAIT_TAG_MASK);
+}
+
+static iowait_t* _iowait_pool_pop(iowait_pool_t* pool) {
+    mtx_lock(&pool->lock);
+    iowait_t* w = pool->freelist_head;
+    if (w) {
+        pool->freelist_head = w->freelist_link;
+        w->freelist_link    = NULL;
     }
+    mtx_unlock(&pool->lock);
+    return w;
+}
+
+static void _iowait_pool_push(iowait_pool_t* pool, iowait_t* w) {
+    mtx_lock(&pool->lock);
+    w->freelist_link    = pool->freelist_head;
+    pool->freelist_head = w;
+    mtx_unlock(&pool->lock);
+}
+
+static void _iowait_pool_register(iowait_pool_t* pool, iowait_t* w) {
+    mtx_lock(&pool->lock);
+    w->registry_link    = pool->registry_head;
+    pool->registry_head = w;
+    mtx_unlock(&pool->lock);
+}
+
+/**
+ * Drop the handle's last reference and return it to the pool.
+ *
+ * At refcnt==0 no arm-reference or park-reference can still be
+ * outstanding, so per-request state can be torn down with plain
+ * accesses.
+ *
+ * Poller un-registration does NOT happen here; iowait_close does it
+ * synchronously. Deferring it to retire would race with fd reuse:
+ * the caller's close() could let the kernel recycle the fd number,
+ * a subsequent create() could hand that number to a fresh
+ * subscription, and a belated EPOLL_CTL_DEL would clobber it.
+ *
+ * After tear-down we bump gen and splice onto the freelist. Any
+ * stale CQE still in a worker's batch is rejected by
+ * iowait_on_event's gen check after it reacquires a reference via
+ * _iowait_tryref. arm_lock stays live across retire; it is torn
+ * down only in iowait_pool_destroy().
+ */
+static void _iowait_retire(iowait_t* w) {
     if (w->rd.timer) {
         sched_timer_destroy(w->rd.timer);
+        w->rd.timer = NULL;
     }
     if (w->wr.timer) {
         sched_timer_destroy(w->wr.timer);
+        w->wr.timer = NULL;
     }
-    mtx_destroy(&w->arm_lock);
-    free(w);
+
+    /**
+     * Bump the generation. Release ordering pairs with the acquire
+     * load in _iowait_on_event so a dispatcher that observes the new
+     * gen also observes the fact that refcnt just hit zero (and
+     * therefore the handle has been retired).
+     */
+    atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
+
+    _iowait_pool_push(w->pool, w);
 }
 
 static void _iowait_ref(iowait_t* w) {
@@ -160,8 +242,53 @@ static void _iowait_ref(iowait_t* w) {
 
 static void _iowait_unref(iowait_t* w) {
     if (atomic_fetch_sub_explicit(&w->refcnt, 1, memory_order_acq_rel) == 1) {
-        _iowait_do_free(w);
+        _iowait_retire(w);
     }
+}
+
+/**
+ * Speculatively acquire a reference on a possibly-retired handle.
+ *
+ * Used only by iowait_on_event, which decoded an untrusted ud into
+ * (ptr, tag) and must verify the handle still matches the tag
+ * before treating it as live. Two hazards:
+ *
+ *   1. refcnt may have already hit zero; don't resurrect a dead
+ *      handle.
+ *   2. The handle may have been recycled to a fresh caller at a
+ *      newer generation; don't dispatch the old CQE to the new
+ *      generation.
+ *
+ * The CAS loop handles (1): bump refcnt only if non-zero. After a
+ * successful bump, re-read gen and compare against the tag. A
+ * mismatch means the handle was retired *and* reused in the
+ * window; drop the ref and return NULL. acq_rel on the bump syncs
+ * with the retire path's gen++.
+ */
+static iowait_t* _iowait_tryref(iowait_t* w, uint16_t expected_tag) {
+    int32_t cur =
+        atomic_load_explicit(&w->refcnt, memory_order_acquire);
+    for (;;) {
+        if (cur <= 0) {
+            return NULL;
+        }
+        if (atomic_compare_exchange_weak_explicit(
+                &w->refcnt,
+                &cur,
+                cur + 1,
+                memory_order_acq_rel,
+                memory_order_acquire)) {
+            break;
+        }
+    }
+
+    uint16_t actual =
+        atomic_load_explicit(&w->gen, memory_order_acquire);
+    if (actual != expected_tag) {
+        _iowait_unref(w);
+        return NULL;
+    }
+    return w;
 }
 
 static bool _iowait_deadline_passed(uint64_t deadline_ms) {
@@ -172,29 +299,22 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
 /**
  * Ensure the fd is registered with the poller.
  *
- * Under ET (edge-triggered) the fd is registered once with RD+WR and
- * the kernel notifies on every edge; after that first add we fast-
- * return on every park. Under LT+oneshot the kernel drops the
- * registration after each event, so we re-arm with the union of
- * currently-waiting directions.
+ * ET: register once with RD+WR; after the first add every park
+ * fast-returns. LT+oneshot: re-arm each time with the union of
+ * currently-parked directions, since the kernel drops the
+ * registration after every event.
  *
- * Called from the park path (parking worker) and from iowait_on_event
- * (poller worker). These can be different threads, and on LT+oneshot
- * both paths must read rd.park/wr.park, write the shared sqe, and
- * submit it to the kernel. Doing that lock-free is not enough:
- * plain stores to `sqe.op`/`registered` race as data races, and
- * even if those were atomic the final EPOLL_CTL_MOD reflects the
- * later syscall's op (computed from a stale park snapshot), so a
- * direction published between snapshot and submit can silently be
- * dropped from the kernel subscription.
+ * Called from both the parking worker and the poller thread. On
+ * LT+oneshot they would otherwise both compute an op from a stale
+ * park snapshot, write the shared sqe, and race into
+ * platform_poller_mod -- the later MOD would silently drop a
+ * direction the other thread just published. arm_lock serialises
+ * the full "observe -> publish -> submit" sequence per handle;
+ * cross-fd arms remain fully parallel.
  *
- * To avoid that, the entire "observe park slots -> publish sqe ->
- * submit" sequence is serialised per iowait by `arm_lock`. Cross-fd
- * arms remain fully parallel -- the lock is per-handle, not global.
- *
- * On ET the registered fast path returns before taking the lock:
- * once registered transitions true, nothing ever flips it back, so
- * the unlocked read is benign.
+ * ET fast path reads `registered` without the lock because its
+ * transition is one-way (false->true), so a stale false just falls
+ * through to the locked slow path.
  */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
@@ -254,15 +374,11 @@ static void _iowait_arm(iowait_t* w) {
 /**
  * Single arbitration point for waking a parked coroutine.
  *
- * Up to three sources race to wake the same park: an IO event from the
- * poller, a deadline timer firing, and iowait_close(). They all funnel
- * through here; the atomic_exchange picks exactly one winner and hands
- * it the park pointer with the cause stamped into `result`. Losers get
- * NULL and must do nothing, which is how we guarantee a park is woken
- * at most once and the coroutine is never double-scheduled.
- *
- * The caller is responsible for actually scheduling the returned park
- * (see _iowait_wake_park); this function only transfers ownership.
+ * Up to three sources race to wake the same park: IO event, deadline
+ * timer, and iowait_close(). atomic_exchange picks exactly one winner
+ * and hands it the park pointer with the cause stamped into `result`.
+ * Losers get NULL and must do nothing, guaranteeing the coroutine is
+ * never double-scheduled.
  */
 static _iowait_park_t* _iowait_claim(
     _Atomic(_iowait_park_t*)* slot, iowait_result_t result) {
@@ -296,18 +412,16 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
 /**
  * Park body executed by scheduler_park after the coroutine has
  * saved its context. Publishes the park record, (re-)arms the fd,
- * and then guards against two races that can swallow the wakeup:
+ * then guards against two races that can swallow the wakeup:
  *
- *   - iowait_close() running between our park-slot store and the
- *     moment we yield. The closer's _iowait_claim would have seen
- *     a NULL slot and skipped us, leaving us sleeping forever.
- *   - The deadline timer firing before we published the park, which
- *     similarly leaves _iowait_timeout_cb with nothing to claim.
+ *   - iowait_close() running between our slot publish and the yield:
+ *     closer's _iowait_claim saw a NULL slot and skipped us.
+ *   - Deadline timer firing before we published: _iowait_timeout_cb
+ *     had nothing to claim.
  *
- * In both cases we re-observe the condition after the publish and
- * self-wake by claiming our own park slot.
+ * Both cases re-observe the condition after publishing and self-wake
+ * by claiming our own park slot.
  */
-
 static bool _iowait_park_fn(mco_coro* co, void* arg) {
     _iowait_park_t* p = (_iowait_park_t*)arg;
     iowait_t*       w = p->w;
@@ -338,35 +452,22 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 /**
  * Apply a new deadline to a direction.
  *
- * The deadline word is published first so a waiter that is about to
- * park (or has just published its park record) can observe it via the
- * acquire load in _iowait_park_fn / _iowait_wait.
+ * Publishes the deadline word first so a waiter can observe it via
+ * the acquire load in _iowait_park_fn / _iowait_wait. The timer is
+ * allocated lazily; the header documents the threading constraint
+ * on timer mutation.
  *
- * The timer is allocated lazily on the first non-zero deadline: most
- * iowaits (for example short-lived accept fds) never set a deadline
- * and pay no timer cost. The flip side is that the timer pointer is
- * a plain field and must not be mutated concurrently on the same
- * direction; the public API documents this constraint. See the
- * header for the exact threading rules.
+ * Refcount protocol: each successful (re-)arm owns one reference
+ * on the iowait, released either by the timeout callback or here
+ * when a rearm cancels a still-pending fire. Combined with the
+ * scheduler keeping timer objects alive across an in-flight fire,
+ * the callback always sees a live iowait even if iowait_destroy
+ * races in.
  *
- * Refcount protocol vs the deadline timer: each successful (re-)arm
- * owns one reference on the iowait; it is released either by the
- * callback when the timer fires, or here, when a subsequent call
- * cancels a still-pending fire via sched_timer_stop(). The scheduler
- * already keeps the timer object itself alive across an in-flight
- * fire, so combined with this ref the callback always sees a live
- * iowait even if iowait_destroy races in.
- *
- * Starting a timer that is already armed (rearm) implicitly cancels
- * the previous arm; sched_timer_start's return is not inspected,
- * instead the same effect is achieved by stop-then-start here, so the
- * cancelled arm's ref is returned before a new one is taken.
- *
- * Known semantic corner case: passing 0 may still result in one late
- * IOWAIT_TIMEOUT delivery if the timer's callback was already
- * dispatched before sched_timer_stop acquired the timer lock. The
- * refcount protocol above guarantees this is memory-safe; it does
- * not eliminate the possibility of an extra wake.
+ * Known corner case: a deadline of 0 may still result in one late
+ * IOWAIT_TIMEOUT delivery if the callback was already dispatched
+ * before sched_timer_stop acquired the timer lock. Memory-safe by
+ * the refcount protocol, but the extra wake is not eliminated.
  */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
@@ -398,12 +499,12 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 /**
  * Body of iowait_read/iowait_write.
  *
- * Fast paths: already-closed handle and already-past deadline both
- * return immediately without touching the scheduler. On the slow
- * path we take a ref to keep the handle alive across the park (a
- * parallel iowait_destroy would otherwise free us out from under
- * the waiter) and then yield via scheduler_park. `park.result` is
- * stamped by whichever waker reaches _iowait_claim first.
+ * Fast paths: closed handle and already-past deadline both return
+ * immediately without touching the scheduler. On the slow path we
+ * take a ref to keep the handle alive across the park (a parallel
+ * iowait_destroy would otherwise free us out from under the waiter)
+ * and yield. `park.result` is stamped by whichever waker reaches
+ * _iowait_claim first.
  */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
@@ -426,28 +527,84 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     return r;
 }
 
-iowait_t* iowait_create(platform_sock_t fd) {
-    iowait_t* w = (iowait_t*)calloc(1, sizeof(iowait_t));
-    if (!w) {
+iowait_pool_t* iowait_pool_create(void) {
+    iowait_pool_t* pool = (iowait_pool_t*)calloc(1, sizeof(iowait_pool_t));
+    if (!pool) {
         return NULL;
     }
-
-    if (mtx_init(&w->arm_lock, mtx_plain) != thrd_success) {
-        free(w);
+    if (mtx_init(&pool->lock, mtx_plain) != thrd_success) {
+        free(pool);
         return NULL;
+    }
+    return pool;
+}
+
+void iowait_pool_destroy(iowait_pool_t* pool) {
+    if (!pool) {
+        return;
+    }
+    /**
+     * Walk every handle the pool has ever minted and release per-
+     * handle resources + backing memory. Safe here: the scheduler is
+     * already destroyed, no workers alive, no CQEs in flight.
+     */
+    iowait_t* cur = pool->registry_head;
+    while (cur) {
+        iowait_t* next = cur->registry_link;
+        mtx_destroy(&cur->arm_lock);
+        free(cur);
+        cur = next;
+    }
+    mtx_destroy(&pool->lock);
+    free(pool);
+}
+
+iowait_t* iowait_create(platform_sock_t fd) {
+    iowait_pool_t* pool =
+        scheduler_get_iowait_pool(runtime_get_scheduler());
+    iowait_t* w = _iowait_pool_pop(pool);
+
+    if (w) {
+        /* Re-init per-request fields; keep gen (monotonic across life). */
+        w->rd.timer = NULL;
+        w->wr.timer = NULL;
+        atomic_store_explicit(&w->rd.park, NULL, memory_order_relaxed);
+        atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
+        atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
+        atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
+        atomic_store_explicit(&w->closed, false, memory_order_relaxed);
+        w->registered = false;
+    } else {
+        w = (iowait_t*)calloc(1, sizeof(iowait_t));
+        if (!w) {
+            return NULL;
+        }
+        if (mtx_init(&w->arm_lock, mtx_plain) != thrd_success) {
+            free(w);
+            return NULL;
+        }
+        w->pool = pool;
+        _iowait_pool_register(pool, w);
     }
 
     w->poller = runtime_get_poller();
     w->fd     = fd;
 
     w->sqe.fd = (platform_poller_fd_t)fd;
-    w->sqe.ud = w;
     w->sqe.op = PLATFORM_POLLER_NO_OP;
+    /* Stamp the current gen into ud so every CQE carries a tag. */
+    uint16_t gen = atomic_load_explicit(&w->gen, memory_order_relaxed);
+    w->sqe.ud = _iowait_ud_encode(w, gen);
 
     w->rd.w = w;
     w->wr.w = w;
 
-    atomic_store_explicit(&w->refcnt, 1, memory_order_relaxed);
+    /**
+     * Release on refcnt publishes the reinitialised per-request
+     * state to any thread that later takes a ref via _iowait_tryref
+     * (acquire load of refcnt).
+     */
+    atomic_store_explicit(&w->refcnt, 1, memory_order_release);
     return w;
 }
 
@@ -479,12 +636,28 @@ void iowait_close(iowait_t* w) {
     }
 
     /**
-     * Wake any waiter already visible in its park slot. A waiter still
-     * mid-park_fn may not have published yet; it self-wakes via the
-     * close-race check in _iowait_park_fn after publishing. The CAS
-     * above orders our `closed=true` store before the park's acquire
-     * load of `closed`, so the waiter is guaranteed to see the new
-     * value on the self-rescue path.
+     * Drop the poller subscription synchronously before returning.
+     * This is what lets the caller safely close() the fd next:
+     * the kernel has already dropped our subscription, so no
+     * deferred EPOLL_CTL_DEL can clobber a recycled fd number.
+     *
+     * arm_lock serialises against concurrent _iowait_arm. After the
+     * CAS above every new arm sees closed=true at its entry acquire
+     * load and bails before touching the poller, so once we hold
+     * the lock any in-flight arm has finished and none will start.
+     */
+    mtx_lock(&w->arm_lock);
+    if (w->registered) {
+        platform_poller_del(w->poller, &w->sqe);
+        w->registered = false;
+    }
+    mtx_unlock(&w->arm_lock);
+
+    /**
+     * Wake any waiter already visible in its park slot. A waiter
+     * still mid-park_fn self-wakes via the close-race check after
+     * publishing: the CAS above orders closed=true before the
+     * waiter's acquire load of closed.
      */
     _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_CLOSED));
     _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_CLOSED));
@@ -505,8 +678,21 @@ bool iowait_is_closed(iowait_t* w) {
 }
 
 void iowait_on_event(int revents, void* ud) {
-    iowait_t* w = (iowait_t*)ud;
-    _iowait_ref(w);
+    /**
+     * ud was handed to the poller at registration time carrying a
+     * generation tag (see _iowait_ud_encode). The handle may have
+     * since been retired into the pool and, possibly, reallocated
+     * to a fresh caller at a newer generation. Guard against that
+     * before dereferencing anything beyond the decoded pointer:
+     * _iowait_tryref both (a) refuses to resurrect a retired handle
+     * whose refcnt hit zero, and (b) refuses to dispatch against a
+     * handle whose generation no longer matches the tag we carried
+     * through the poller.
+     */
+    iowait_t* w = _iowait_tryref(_iowait_ud_ptr(ud), _iowait_ud_tag(ud));
+    if (!w) {
+        return;
+    }
 
     if (revents & PLATFORM_POLLER_RD_OP) {
         _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_READY));

@@ -29,6 +29,7 @@ _Pragma("once")
 typedef struct mco_coro      mco_coro;
 typedef struct scheduler_s   scheduler_t;
 typedef struct sched_timer_s sched_timer_t;
+typedef struct iowait_pool_s iowait_pool_t;
 
 /**
  * @brief Park callback invoked after a coroutine yields.
@@ -88,8 +89,12 @@ extern void scheduler_destroy(scheduler_t* sched);
 /**
  * @brief Schedule a coroutine for execution on a worker.
  *
- * Thread-safe: can be called from any thread (loop, dynpool, worker).
- * Pushes to the global run queue and wakes a worker.
+ * Thread-safe, may be called from any thread. When called from a
+ * scheduler worker thread, takes a fast path through the worker's
+ * runnext slot / local deque, with overflow spilling to the global
+ * runq. When called from any other thread (including workers of a
+ * different scheduler), pushes to the global runq and wakes a
+ * worker.
  *
  * @param sched  Scheduler handle.
  * @param co     Coroutine to schedule.
@@ -99,8 +104,10 @@ extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
 /**
  * @brief Spawn a new coroutine on the scheduler.
  *
- * Creates a coroutine and schedules it. If called from a worker thread,
- * pushes to local deque; otherwise pushes to inject queue.
+ * Allocates the coroutine and routes it through scheduler_schedule().
+ * When called from a worker thread it lands on that worker's local
+ * path (runnext/deque); when called from any other thread it goes
+ * to the global runq.
  *
  * @param sched  Scheduler handle.
  * @param fn     Coroutine entry function.
@@ -112,11 +119,14 @@ extern void scheduler_spawn(
 /**
  * @brief Suspend the current coroutine and invoke a park callback.
  *
- * Yields the running coroutine. After the yield, the worker calls fn(co, arg).
- * This ensures the coroutine is fully suspended before any wakeup source
- * can see its pointer, eliminating schedule-before-yield races.
+ * MUST be called from inside a coroutine running on a scheduler
+ * worker thread. The callback is invoked *after* mco_yield returns,
+ * so a wakeup source can never observe the coroutine pointer before
+ * the yield has actually suspended it -- this is what lets iowait
+ * and friends publish the park record and then arm the poller
+ * without racing against an early wakeup.
  *
- * @param sched  Scheduler handle.
+ * @param sched  Scheduler handle (currently unused; reserved).
  * @param fn     Park callback invoked after yield.
  * @param arg    Opaque argument passed to fn.
  */
@@ -126,8 +136,12 @@ extern void scheduler_park(
 /**
  * @brief Post a deferred callback to the scheduler.
  *
- * Thread-safe. The callback will be invoked on a worker thread
- * during the next poll/timer processing pass.
+ * Thread-safe. The callback runs on whichever worker next executes
+ * the blocking-poll pass (the last-spinner worker) -- so it is not
+ * guaranteed to run on the calling thread, and not guaranteed to
+ * run on any specific worker. Useful for hopping work from an
+ * arbitrary thread onto the scheduler for serialisation with other
+ * scheduler-owned state.
  *
  * @param sched  Scheduler handle.
  * @param cb     Callback function.
@@ -148,7 +162,19 @@ extern int scheduler_post(
 extern platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched);
 
 /**
+ * @brief Get the scheduler's iowait handle pool.
+ *
+ * @param sched  Scheduler handle.
+ *
+ * @return iowait handle pool owned by the scheduler.
+ */
+extern iowait_pool_t* scheduler_get_iowait_pool(scheduler_t* sched);
+
+/**
  * @brief Create a timer attached to a scheduler.
+ *
+ * Thread-safe. The returned timer is inert until sched_timer_start()
+ * arms it.
  *
  * @param sched  Scheduler handle.
  *
