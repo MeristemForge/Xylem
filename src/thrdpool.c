@@ -23,7 +23,7 @@
 
 #include "container/queue.h"
 #include "platform/platform-sem.h"
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>

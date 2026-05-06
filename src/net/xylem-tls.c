@@ -28,7 +28,7 @@
 #include "container/queue.h"
 
 #include "platform/platform-socket.h"
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>

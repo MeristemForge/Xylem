@@ -21,7 +21,7 @@
 
 #include "runq.h"
 
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include <stdlib.h>
 

@@ -22,7 +22,7 @@
 #include "xylem.h"
 #include "runtime/runtime.h"
 #include "assert.h"
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

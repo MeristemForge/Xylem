@@ -25,7 +25,7 @@
 
 #include "runtime.h"
 #include "scheduler.h"
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include "minicoro/minicoro.h"
 

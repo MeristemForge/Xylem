@@ -59,7 +59,7 @@
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-info.h"
-#include "c11-threads.h"
+#include "thrds.h"
 
 #include "minicoro/minicoro.h"
 

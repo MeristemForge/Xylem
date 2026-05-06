@@ -27,7 +27,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/net/xylem-udp.h"
 
-#include "c11-threads.h"
+#include "thrds.h"
 #include "platform/platform-socket.h"
 
 #include <openssl/err.h>
