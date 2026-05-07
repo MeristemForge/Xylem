@@ -87,6 +87,23 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
 extern void scheduler_destroy(scheduler_t* sched);
 
 /**
+ * @brief Stop the scheduler and join its workers, without freeing.
+ *
+ * Sets the running flag to false, wakes every worker, and joins
+ * each one. After this call returns, no coroutine scheduled on this
+ * scheduler can run, but the scheduler's runq, poller, and worker
+ * structures remain allocated so late cross-thread callers (for
+ * instance dynpool workers finishing a blocking task with
+ * scheduler_schedule) can still touch the scheduler without UAF.
+ * scheduler_destroy() must still be called afterwards to free the
+ * memory. Idempotent: calling it a second time (or calling
+ * scheduler_destroy without calling stop first) is safe.
+ *
+ * @param sched  Scheduler to stop, or NULL (no-op).
+ */
+extern void scheduler_stop(scheduler_t* sched);
+
+/**
  * @brief Schedule a coroutine for execution on a worker.
  *
  * Thread-safe, may be called from any thread. When called from a

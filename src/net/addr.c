@@ -157,7 +157,15 @@ int addr_ntop(
 static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
     ctx->co = co;
-    dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, ctx);
+    if (dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, ctx) != 0) {
+        /**
+         * Submit failed (e.g. OOM). Record the error, decline the park,
+         * and the coroutine resumes with status=-1. Not handling this
+         * would orphan the coroutine permanently with no wakeup source.
+         */
+        ctx->status = -1;
+        return false;
+    }
     return true;
 }
 

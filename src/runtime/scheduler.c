@@ -54,11 +54,13 @@
 #include "wsdeque.h"
 #include "runq.h"
 #include "container/heap.h"
+#include "container/list.h"
 #include "container/mpsc.h"
 #include "container/queue.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-info.h"
+#include "sync/spin.h"
 #include "thrds.h"
 
 #include "minicoro/minicoro.h"
@@ -74,6 +76,7 @@
 #define SCHED_MAX_POLL_MS        5
 #define SCHED_SPIN_ATTEMPTS      4
 #define SCHED_RUNQ_GRAB_MAX      32
+#define SCHED_TIMER_TICK_MS      1
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -103,9 +106,25 @@ struct scheduler_s {
     void*                 idle_ud;
     _Atomic bool          processing;
     _Atomic bool          running;
+    bool                  joined;
     _Atomic int32_t       nspinning;
     _Atomic int32_t       nparked;
     _Atomic int64_t       alive;
+    _Atomic uint64_t      timer_last_tick_ms;
+    /**
+     * Central registry of every coroutine shell spawned on this
+     * scheduler. scheduler_spawn links the coro in, the MCO_DEAD
+     * branch of _sched_handle_yield unlinks it. On scheduler_destroy
+     * the list is walked to reclaim shells of coroutines that were
+     * still parked (waiting on channel/mutex/iowait/timer) at
+     * shutdown; without it their mco_coro + _coro_ctx_t leak because
+     * parked coros are not reachable through runq / deque / runnext.
+     *
+     * Guarded by coros_lock rather than a mutex because the critical
+     * sections are pure list ops and never park.
+     */
+    list_t                all_coros;
+    spin_t                coros_lock;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -114,6 +133,7 @@ typedef struct {
     void (*fn)(void*);
     void*        arg;
     queue_node_t runq_node;
+    list_node_t  all_link;
     mco_coro*    co;
 } _coro_ctx_t;
 
@@ -363,6 +383,11 @@ static void _sched_process_io(
 static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (mco_status(co) == MCO_DEAD) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+
+        spin_lock(&w->sched->coros_lock);
+        list_remove(&w->sched->all_coros, &ctx->all_link);
+        spin_unlock(&w->sched->coros_lock);
+
         free(ctx);
         mco_destroy(co);
 
@@ -473,6 +498,38 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
     }
 }
 
+/**
+ * Cooperative timer tick on the fast path.
+ *
+ * _sched_process_timers is otherwise only reached by the last spinner
+ * inside _sched_poll_blocking. If every worker stays permanently busy
+ * on runnable coroutines (CPU-bound workload), no worker ever becomes
+ * the last spinner and timers (runtime_sleep, iowait deadlines) would
+ * be starved indefinitely.
+ *
+ * The tick runs at most once per SCHED_TIMER_TICK_MS across the whole
+ * scheduler: a single CAS on timer_last_tick_ms elects one worker per
+ * window to do the actual pass. All other workers pay only an atomic
+ * load, so the hot path cost is negligible.
+ */
+static void _sched_timer_tick(scheduler_t* sched) {
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t last = atomic_load_explicit(
+        &sched->timer_last_tick_ms, memory_order_relaxed);
+    if (now - last < SCHED_TIMER_TICK_MS) {
+        return;
+    }
+    if (!atomic_compare_exchange_strong_explicit(
+            &sched->timer_last_tick_ms,
+            &last,
+            now,
+            memory_order_acq_rel,
+            memory_order_relaxed)) {
+        return;
+    }
+    _sched_process_timers(sched, now);
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
@@ -481,6 +538,13 @@ static int _sched_worker_entry(void* arg) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
+        /**
+         * Cooperative timer tick: ensures timers (runtime_sleep, iowait
+         * deadlines) cannot be starved when every worker stays busy on
+         * CPU-bound coroutines and nobody becomes the last spinner.
+         */
+        _sched_timer_tick(sched);
+
         /* Fast path: try to get a coroutine to run. */
         mco_coro* co = _sched_try_get_coro(sched, w);
 
@@ -528,13 +592,16 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     atomic_store(&sched->running, false);
 
     if (sched->workers) {
-        /* Wake all workers: both parked (sem) and polling (wakeup pipe). */
-        for (int32_t i = 0; i < nstarted; i++) {
-            platform_sem_post(sched->workers[i].sem);
-            _sched_wake_poller(sched);
-        }
-        for (int32_t i = 0; i < nstarted; i++) {
-            thrd_join(sched->workers[i].thread, NULL);
+        if (!sched->joined) {
+            /* Wake all workers: both parked (sem) and polling (wakeup pipe). */
+            for (int32_t i = 0; i < nstarted; i++) {
+                platform_sem_post(sched->workers[i].sem);
+                _sched_wake_poller(sched);
+            }
+            for (int32_t i = 0; i < nstarted; i++) {
+                thrd_join(sched->workers[i].thread, NULL);
+            }
+            sched->joined = true;
         }
         for (int32_t i = 0; i < sched->nworkers; i++) {
             if (sched->workers[i].deque) {
@@ -549,6 +616,30 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
 
     if (sched->runq) {
         runq_destroy(sched->runq);
+    }
+
+    /**
+     * Force-drain the timer heap before releasing the lock and freeing
+     * the scheduler. Timers still armed at shutdown (for instance a
+     * runtime_sleep whose coroutine was abandoned by _sched_drain due
+     * to parking) would otherwise leak their sched_timer_t objects.
+     *
+     * We unref rather than free, because a timer callback already
+     * dequeued and in flight holds its own reference; the last unref
+     * is what actually frees the object.
+     */
+    {
+        mtx_lock(&sched->timer_lock);
+        heap_node_t* n;
+        while ((n = heap_peek(&sched->timers)) != NULL) {
+            sched_timer_t* t = heap_entry(n, sched_timer_t, heap_node);
+            heap_dequeue(&sched->timers);
+            t->active = false;
+            mtx_unlock(&sched->timer_lock);
+            _sched_timer_unref(t);
+            mtx_lock(&sched->timer_lock);
+        }
+        mtx_unlock(&sched->timer_lock);
     }
 
     mtx_destroy(&sched->timer_lock);
@@ -597,6 +688,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     heap_init(&sched->timers, _sched_timer_cmp);
     mtx_init(&sched->timer_lock, mtx_plain);
     mpsc_init(&sched->posts);
+    list_init(&sched->all_coros);
+    spin_init(&sched->coros_lock);
 
     platform_poller_init(&sched->poller);
     {
@@ -661,20 +754,52 @@ void scheduler_destroy(scheduler_t* sched) {
         return;
     }
 
+    scheduler_stop(sched);
+
+    /**
+     * Reclaim every coroutine shell that was still alive at shutdown.
+     * all_coros is the single authoritative registry: it covers
+     * coros sitting in runq / deque / runnext as well as coros that
+     * were parked on channels, mutexes, iowait, or timers (none of
+     * which would otherwise be reachable at this point).
+     *
+     * This frees the mco_coro + _coro_ctx_t shell only. Heap objects
+     * a parked coroutine's stack still references (channel messages,
+     * user mallocs, iowait registrations) are not walked: that would
+     * require a cancellation protocol in every parking primitive,
+     * not a task for the scheduler alone.
+     */
+    spin_lock(&sched->coros_lock);
+    while (!list_empty(&sched->all_coros)) {
+        list_node_t* n = list_head(&sched->all_coros);
+        list_remove(&sched->all_coros, n);
+        spin_unlock(&sched->coros_lock);
+
+        _coro_ctx_t* ctx = list_entry(n, _coro_ctx_t, all_link);
+        mco_destroy(ctx->co);
+        free(ctx);
+
+        spin_lock(&sched->coros_lock);
+    }
+    spin_unlock(&sched->coros_lock);
+
+    _sched_cleanup(sched, sched->nworkers);
+}
+
+void scheduler_stop(scheduler_t* sched) {
+    if (!sched || sched->joined) {
+        return;
+    }
+
     atomic_store(&sched->running, false);
     for (int32_t i = 0; i < sched->nworkers; i++) {
         platform_sem_post(sched->workers[i].sem);
         _sched_wake_poller(sched);
     }
-
-    queue_node_t* node;
-    while ((node = runq_pop(sched->runq)) != NULL) {
-        _coro_ctx_t* ctx = queue_entry(node, _coro_ctx_t, runq_node);
-        mco_destroy(ctx->co);
-        free(ctx);
+    for (int32_t i = 0; i < sched->nworkers; i++) {
+        thrd_join(sched->workers[i].thread, NULL);
     }
-
-    _sched_cleanup(sched, sched->nworkers);
+    sched->joined = true;
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
@@ -741,6 +866,11 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     }
 
     ctx->co = co;
+
+    spin_lock(&sched->coros_lock);
+    list_insert_tail(&sched->all_coros, &ctx->all_link);
+    spin_unlock(&sched->coros_lock);
+
     atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);
 }

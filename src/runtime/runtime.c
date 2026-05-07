@@ -153,8 +153,19 @@ void runtime_run(
     /* Block until all coroutines exit or runtime_shutdown() is called. */
     platform_sem_wait(g_stop_sem);
 
-    scheduler_destroy(g_sched);
+    /**
+     * Three-phase shutdown to avoid UAF in both directions:
+     *   1. scheduler_stop:     join scheduler workers so no coroutine can
+     *                          still initiate a dynpool_submit.
+     *   2. dynpool_destroy:    finish in-flight blocking tasks; their
+     *                          trailing scheduler_schedule() still needs
+     *                          sched memory to be valid.
+     *   3. scheduler_destroy:  safe to free scheduler state now that
+     *                          nobody will touch it.
+     */
+    scheduler_stop(g_sched);
     dynpool_destroy(g_dynpool);
+    scheduler_destroy(g_sched);
     platform_sem_destroy(g_stop_sem);
     g_stop_sem = NULL;
 }
