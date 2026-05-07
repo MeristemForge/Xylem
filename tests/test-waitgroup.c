@@ -86,7 +86,63 @@ static void test_waitgroup_concurrent(void) {
     }
 }
 
+/* Multi-waiter broadcast: every waiter must be released by the
+ * done() that drops the counter to zero. Exercises the new
+ * queue-based waiters list introduced to replace the single-slot
+ * design. */
+
+#define WG_MULTI_WAITERS 16
+
+typedef struct {
+    xylem_waitgroup_t* wg;
+    atomic_int         done_count;
+    atomic_int         waiters_released;
+    int                tested;
+} _wg_multi_ctx_t;
+
+static void _wg_multi_worker(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    atomic_fetch_add(&ctx->done_count, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _wg_multi_waiter(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
+    int released = atomic_fetch_add(&ctx->waiters_released, 1) + 1;
+    if (released == WG_MULTI_WAITERS) {
+        ctx->tested = 1;
+        xylem_shutdown();
+    }
+}
+
+static void _test_wg_multi_main(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    _start_safety_timer();
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, WG_WORKERS);
+    for (int i = 0; i < WG_MULTI_WAITERS; i++) {
+        xylem_spawn(_wg_multi_waiter, ctx);
+    }
+    for (int i = 0; i < WG_WORKERS; i++) {
+        xylem_spawn(_wg_multi_worker, ctx);
+    }
+}
+
+static void test_waitgroup_multi_waiter(void) {
+    fprintf(stderr, "=== test_waitgroup_multi_waiter\n");
+    for (int round = 0; round < 20; round++) {
+        _wg_multi_ctx_t ctx = {0};
+        xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.waiters_released) == WG_MULTI_WAITERS);
+        xylem_waitgroup_destroy(ctx.wg);
+    }
+}
+
 int main(void) {
     test_waitgroup_concurrent();
+    test_waitgroup_multi_waiter();
     return 0;
 }

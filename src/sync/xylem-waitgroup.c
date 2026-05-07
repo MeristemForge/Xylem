@@ -21,16 +21,57 @@
 
 #include "xylem/sync/xylem-waitgroup.h"
 
+#include "xylem/xylem-logger.h"
+
+#include "container/queue.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
 
+/**
+ * Waitgroup concurrency design
+ *
+ * Counter and waiters list are decoupled:
+ *
+ *   - `cnt` is a lock-free atomic, manipulated by add/done.
+ *   - `waiters` is a FIFO of parked coroutines, protected by a
+ *     tiny spin `guard`. One spin section serialises every waiters
+ *     mutation so there is no ABA / missed-wakeup window.
+ *
+ * wait() parks the caller under the guard. Inside the park callback
+ * we re-check `cnt == 0`: if done() already drained the list between
+ * the fast-path check and the park, we bail out without enqueueing
+ * and let the caller run inline.
+ *
+ * done() fetch-subs cnt. When the previous value was 1, the counter
+ * just went to zero and we own the broadcast: swap the waiters list
+ * out under the guard and schedule every coroutine in it. When the
+ * previous value was 0, the caller called done() more times than
+ * add() ever promised -- a hard bug. We log and abort, matching the
+ * "negative WaitGroup counter" panic in Go's sync.WaitGroup.
+ */
+
+typedef struct _wg_waiter_s {
+    queue_node_t node;
+    mco_coro*    co;
+} _wg_waiter_t;
+
 struct xylem_waitgroup_s {
-    atomic_size_t      cnt;
-    _Atomic(mco_coro*) wait_coro;
+    atomic_size_t cnt;
+    atomic_flag   guard;
+    queue_t       waiters;
 };
+
+static void _spin_lock(atomic_flag* flag) {
+    while (atomic_flag_test_and_set_explicit(flag, memory_order_acquire)) {
+    }
+}
+
+static void _spin_unlock(atomic_flag* flag) {
+    atomic_flag_clear_explicit(flag, memory_order_release);
+}
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
     xylem_waitgroup_t* wg =
@@ -39,7 +80,8 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
         return NULL;
     }
     atomic_init(&wg->cnt, 0);
-    atomic_init(&wg->wait_coro, NULL);
+    atomic_flag_clear(&wg->guard);
+    queue_init(&wg->waiters);
     return wg;
 }
 
@@ -56,30 +98,68 @@ void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
 
 void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     size_t prev = atomic_fetch_sub(&wg->cnt, 1);
-    if (prev == 1) {
-        mco_coro* co = atomic_exchange(&wg->wait_coro, NULL);
-        if (co) {
-            scheduler_schedule(runtime_get_scheduler(), co);
-        }
+    if (prev == 0) {
+        /* Counter underflowed: done() called more times than add()
+         * ever promised. Matches Go's "negative WaitGroup counter"
+         * panic. Log first so the diagnostic survives the abort. */
+        xylem_loge(
+            "xylem_waitgroup: done called with zero counter "
+            "(wg=%p); aborting",
+            (void*)wg);
+        abort();
+    }
+    if (prev != 1) {
+        return;
+    }
+
+    /* Counter just hit zero. Snapshot-and-drain the waiters list
+     * under the guard so a racing wait() either enqueues before we
+     * take the list (gets woken here) or sees cnt == 0 under the
+     * guard and bails without enqueueing. */
+    queue_t to_wake;
+    queue_init(&to_wake);
+
+    _spin_lock(&wg->guard);
+    queue_swap(&to_wake, &wg->waiters);
+    _spin_unlock(&wg->guard);
+
+    scheduler_t* sched = runtime_get_scheduler();
+    queue_node_t* n;
+    while ((n = queue_dequeue(&to_wake)) != NULL) {
+        _wg_waiter_t* w = queue_entry(n, _wg_waiter_t, node);
+        scheduler_schedule(sched, w->co);
     }
 }
 
+typedef struct {
+    xylem_waitgroup_t* wg;
+    _wg_waiter_t       waiter;
+} _wg_park_ctx_t;
+
 static bool _wg_park_cb(mco_coro* co, void* arg) {
-    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
-    atomic_store(&wg->wait_coro, co);
-    if (atomic_load(&wg->cnt) == 0) {
-        mco_coro* expected = co;
-        if (atomic_compare_exchange_strong(&wg->wait_coro, &expected, NULL)) {
-            return false;
-        }
-        return true;
+    _wg_park_ctx_t*    ctx = (_wg_park_ctx_t*)arg;
+    xylem_waitgroup_t* wg  = ctx->wg;
+
+    ctx->waiter.co = co;
+
+    _spin_lock(&wg->guard);
+    /* Re-check under the guard: a done() between the fast-path load
+     * and here may have already drained everyone. */
+    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
+        _spin_unlock(&wg->guard);
+        return false;
     }
+    queue_enqueue(&wg->waiters, &ctx->waiter.node);
+    _spin_unlock(&wg->guard);
     return true;
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
-    if (atomic_load(&wg->cnt) == 0) {
+    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
         return;
     }
-    scheduler_park(runtime_get_scheduler(), _wg_park_cb, wg);
+
+    _wg_park_ctx_t ctx;
+    ctx.wg = wg;
+    scheduler_park(runtime_get_scheduler(), _wg_park_cb, &ctx);
 }
