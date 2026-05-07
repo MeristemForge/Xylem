@@ -26,6 +26,7 @@
 #include "container/queue.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
+#include "sync/spin.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -60,18 +61,9 @@ typedef struct _wg_waiter_s {
 
 struct xylem_waitgroup_s {
     atomic_size_t cnt;
-    atomic_flag   guard;
+    spin_t        guard;
     queue_t       waiters;
 };
-
-static void _spin_lock(atomic_flag* flag) {
-    while (atomic_flag_test_and_set_explicit(flag, memory_order_acquire)) {
-    }
-}
-
-static void _spin_unlock(atomic_flag* flag) {
-    atomic_flag_clear_explicit(flag, memory_order_release);
-}
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
     xylem_waitgroup_t* wg =
@@ -80,7 +72,7 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
         return NULL;
     }
     atomic_init(&wg->cnt, 0);
-    atomic_flag_clear(&wg->guard);
+    spin_init(&wg->guard);
     queue_init(&wg->waiters);
     return wg;
 }
@@ -119,9 +111,9 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     queue_t to_wake;
     queue_init(&to_wake);
 
-    _spin_lock(&wg->guard);
+    spin_lock(&wg->guard);
     queue_swap(&to_wake, &wg->waiters);
-    _spin_unlock(&wg->guard);
+    spin_unlock(&wg->guard);
 
     scheduler_t* sched = runtime_get_scheduler();
     queue_node_t* n;
@@ -142,15 +134,15 @@ static bool _wg_park_cb(mco_coro* co, void* arg) {
 
     ctx->waiter.co = co;
 
-    _spin_lock(&wg->guard);
+    spin_lock(&wg->guard);
     /* Re-check under the guard: a done() between the fast-path load
      * and here may have already drained everyone. */
     if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
-        _spin_unlock(&wg->guard);
+        spin_unlock(&wg->guard);
         return false;
     }
     queue_enqueue(&wg->waiters, &ctx->waiter.node);
-    _spin_unlock(&wg->guard);
+    spin_unlock(&wg->guard);
     return true;
 }
 

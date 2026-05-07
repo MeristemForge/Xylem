@@ -24,6 +24,7 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/queue.h"
+#include "sync/spin.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -35,18 +36,9 @@ typedef struct {
 
 struct xylem_mutex_s {
     _Atomic uint32_t state;
-    atomic_flag      guard;
+    spin_t           guard;
     queue_t          waiters;
 };
-
-static void _spin_lock(atomic_flag* flag) {
-    while (atomic_flag_test_and_set_explicit(flag, memory_order_acquire)) {
-    }
-}
-
-static void _spin_unlock(atomic_flag* flag) {
-    atomic_flag_clear_explicit(flag, memory_order_release);
-}
 
 xylem_mutex_t* xylem_mutex_create(void) {
     xylem_mutex_t* mtx =
@@ -55,7 +47,7 @@ xylem_mutex_t* xylem_mutex_create(void) {
         return NULL;
     }
     atomic_init(&mtx->state, 0);
-    atomic_flag_clear(&mtx->guard);
+    spin_init(&mtx->guard);
     queue_init(&mtx->waiters);
     return mtx;
 }
@@ -76,16 +68,16 @@ static bool _mutex_park_cb(mco_coro* co, void* arg) {
     _mutex_park_ctx_t* ctx = (_mutex_park_ctx_t*)arg;
     ctx->waiter.co = co;
 
-    _spin_lock(&ctx->mtx->guard);
+    spin_lock(&ctx->mtx->guard);
 
     uint32_t expected = 0;
     if (atomic_compare_exchange_strong(&ctx->mtx->state, &expected, 1)) {
-        _spin_unlock(&ctx->mtx->guard);
+        spin_unlock(&ctx->mtx->guard);
         return false;
     }
 
     queue_enqueue(&ctx->mtx->waiters, &ctx->waiter.node);
-    _spin_unlock(&ctx->mtx->guard);
+    spin_unlock(&ctx->mtx->guard);
     return true;
 }
 
@@ -101,12 +93,12 @@ void xylem_mutex_lock(xylem_mutex_t* mtx) {
 }
 
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
-    _spin_lock(&mtx->guard);
+    spin_lock(&mtx->guard);
     queue_node_t* node = queue_dequeue(&mtx->waiters);
     if (!node) {
         atomic_store(&mtx->state, 0);
     }
-    _spin_unlock(&mtx->guard);
+    spin_unlock(&mtx->guard);
 
     if (node) {
         _mutex_waiter_t* w = queue_entry(node, _mutex_waiter_t, node);
