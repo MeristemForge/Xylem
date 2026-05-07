@@ -119,39 +119,6 @@ extern void scheduler_stop(scheduler_t* sched);
 extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
 
 /**
- * @brief Inject a batch of coroutines directly into the global runq.
- *
- * Intended for wakeup sources that deliver many coroutines at once
- * (the IO poller being the canonical case). Unlike scheduler_schedule,
- * this path deliberately bypasses the caller's local deque / runnext
- * so that a single worker draining an epoll batch cannot monopolise
- * those coroutines: every worker pulls from the global runq with
- * equal priority.
- *
- * Wakes one parked worker per call if any is available.
- *
- * Thread-safe, callable from any thread (scheduler worker, dedicated
- * IO thread, dynpool worker, external thread).
- *
- * @param sched  Scheduler handle.
- * @param cos    Array of coroutines to inject. Must be non-NULL.
- * @param count  Number of entries. 0 is a no-op.
- */
-extern void scheduler_inject(
-    scheduler_t* sched, mco_coro** cos, int32_t count);
-
-/**
- * @brief Inject a single coroutine into the global runq.
- *
- * Convenience wrapper over scheduler_inject for the common case of
- * a single wakeup. See scheduler_inject for the rationale.
- *
- * @param sched  Scheduler handle.
- * @param co     Coroutine to inject.
- */
-extern void scheduler_inject_one(scheduler_t* sched, mco_coro* co);
-
-/**
  * @brief Spawn a new coroutine on the scheduler.
  *
  * Allocates the coroutine and routes it through scheduler_schedule().

@@ -77,15 +77,6 @@
 #define SCHED_SPIN_ATTEMPTS      4
 #define SCHED_RUNQ_GRAB_MAX      32
 #define SCHED_TIMER_TICK_MS      1
-/**
- * Every SCHED_GLOBQ_INTERVAL scheduling iterations a worker pulls
- * from the global runq before consulting its local sources. This
- * guarantees coroutines injected by batch wakeups (netpoll style)
- * cannot starve behind a worker that keeps finding local work.
- * The constant matches Go and Tokio's convention; 61 is a prime
- * that does not resonate with common loop structures.
- */
-#define SCHED_GLOBQ_INTERVAL     61
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -93,7 +84,6 @@ typedef struct _sched_worker_s {
     platform_sem_t*      sem;
     scheduler_t*         sched;
     uint32_t             index;
-    uint32_t             schedtick;
     scheduler_park_fn_t  park_fn;
     void*                park_arg;
     _Atomic bool         parked;
@@ -225,35 +215,6 @@ static void _sched_wake_worker(scheduler_t* sched) {
     _sched_wake_poller(sched);
 }
 
-static mco_coro* _sched_try_runq(scheduler_t* sched, _sched_worker_t* w) {
-    /**
-     * Grab a fair share: at most SCHED_RUNQ_GRAB_MAX/nworkers+1.
-     * Returned coro is the one to run next; the rest land in the
-     * local deque for subsequent iterations.
-     *
-     * The original _sched_try_get_coro caller reaches this point only
-     * when the local deque is empty, so wsdeque_push cannot overflow.
-     * The schedtick fast-path caller in the worker main loop can
-     * reach this with a non-empty deque, so every push must tolerate
-     * failure: a full deque spills back to the global runq rather
-     * than silently dropping the coroutine.
-     */
-    queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
-    int32_t n = runq_pop_batch(
-        sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
-    if (n <= 0) {
-        return NULL;
-    }
-    for (int32_t i = 1; i < n; i++) {
-        _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
-        if (wsdeque_push(w->deque, c->co) != 0) {
-            runq_push(sched->runq, &c->runq_node);
-        }
-    }
-    _coro_ctx_t* ctx = queue_entry(nodes[0], _coro_ctx_t, runq_node);
-    return ctx->co;
-}
-
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     /* Highest priority: runnext slot (LIFO, cache-hot). */
     mco_coro* co = atomic_exchange(&w->runnext, NULL);
@@ -266,9 +227,20 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
         return co;
     }
 
-    co = _sched_try_runq(sched, w);
-    if (co) {
-        return co;
+    {
+        /* Grab a fair share: at most SCHED_RUNQ_GRAB_MAX/nworkers+1. */
+        queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
+        int32_t n = runq_pop_batch(
+            sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
+        if (n > 0) {
+            /* Push all but the first into the local deque. */
+            for (int32_t i = 1; i < n; i++) {
+                _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
+                wsdeque_push(w->deque, c->co);
+            }
+            _coro_ctx_t* ctx = queue_entry(nodes[0], _coro_ctx_t, runq_node);
+            return ctx->co;
+        }
     }
 
     if (sched->nworkers > 1) {
@@ -573,23 +545,8 @@ static int _sched_worker_entry(void* arg) {
          */
         _sched_timer_tick(sched);
 
-        /**
-         * Periodically take work from the global runq before consulting
-         * local sources. Without this, a worker that keeps finding
-         * coroutines in runnext / deque never reaches runq_pop, and
-         * IO-batch wakeups injected into the global runq (see
-         * scheduler_inject) accumulate until a worker eventually runs
-         * dry. Matches Go and Tokio's global-queue-interval idiom.
-         */
-        mco_coro* co = NULL;
-        if ((++w->schedtick) % SCHED_GLOBQ_INTERVAL == 0) {
-            co = _sched_try_runq(sched, w);
-        }
-
         /* Fast path: try to get a coroutine to run. */
-        if (!co) {
-            co = _sched_try_get_coro(sched, w);
-        }
+        mco_coro* co = _sched_try_get_coro(sched, w);
 
         if (co) {
             _sched_run_coro(w, co);
@@ -843,60 +800,6 @@ void scheduler_stop(scheduler_t* sched) {
         thrd_join(sched->workers[i].thread, NULL);
     }
     sched->joined = true;
-}
-
-void scheduler_inject(scheduler_t* sched, mco_coro** cos, int32_t count) {
-    /**
-     * Wakeup sources that deliver coroutines in batches (notably the
-     * IO poller draining a CQE batch) must not funnel everything into
-     * the caller's local deque, because that would make the draining
-     * worker monopolise those coroutines and leave peers idle. Pushing
-     * to the global runq instead gives every worker equal access via
-     * _sched_try_get_coro's runq_pop_batch pass.
-     *
-     * See also: Go runtime's injectglist in runtime/proc.go, which
-     * serves the same purpose for netpoll results.
-     */
-    if (count <= 0) {
-        return;
-    }
-    if (count == 1) {
-        _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(cos[0]);
-        runq_push(sched->runq, &ctx->runq_node);
-    } else {
-        /* Batch the push under a single runq lock acquisition. */
-        enum { SCHED_INJECT_STACK = 32 };
-        queue_node_t* stack_nodes[SCHED_INJECT_STACK];
-        queue_node_t** nodes = stack_nodes;
-        queue_node_t** heap  = NULL;
-        if (count > SCHED_INJECT_STACK) {
-            heap = (queue_node_t**)malloc(
-                (size_t)count * sizeof(queue_node_t*));
-            if (heap) {
-                nodes = heap;
-            } else {
-                /* Fall back to per-node pushes rather than dropping work. */
-                for (int32_t i = 0; i < count; i++) {
-                    _coro_ctx_t* ctx =
-                        (_coro_ctx_t*)mco_get_user_data(cos[i]);
-                    runq_push(sched->runq, &ctx->runq_node);
-                }
-                _sched_wake_worker(sched);
-                return;
-            }
-        }
-        for (int32_t i = 0; i < count; i++) {
-            _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(cos[i]);
-            nodes[i] = &ctx->runq_node;
-        }
-        runq_push_batch(sched->runq, nodes, count);
-        free(heap);
-    }
-    _sched_wake_worker(sched);
-}
-
-void scheduler_inject_one(scheduler_t* sched, mco_coro* co) {
-    scheduler_inject(sched, &co, 1);
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
