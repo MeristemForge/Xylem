@@ -90,8 +90,12 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * stopped but may still fire once if its callback was already
  * dispatched at the moment of the stop.
  *
- * See the threading-model comment at the top of this header for the
- * concurrency rules (one logical owner per direction).
+ * Safe to call from any thread, including while a read is parked on
+ * another thread, but concurrent setters on the read direction of
+ * the same handle are not safe: a single logical owner (typically
+ * the same coroutine that drives iowait_read) must drive the read
+ * deadline. See the "iowait concurrency model" comment at the top
+ * of this header for the full rules.
  *
  * @param w            IO wait handle.
  * @param deadline_ms  Monotonic deadline in ms (see xylem_utils_getnow
