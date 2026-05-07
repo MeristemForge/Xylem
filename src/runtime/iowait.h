@@ -29,13 +29,15 @@ _Pragma("once")
 typedef struct iowait_s iowait_t;
 
 /**
- * iowait threading model
- * ----------------------
+ * iowait concurrency model
  *
  * An iowait handle is one-reader / one-writer per direction: at most
  * one coroutine may be parked on `iowait_read` and at most one on
  * `iowait_write` at the same time. Read and write are independent;
  * they may be parked by two different coroutines simultaneously.
+ * Violating this rule is detected when the second parker tries to
+ * publish its park record and aborts the process with a diagnostic
+ * log; it is not silently tolerated.
  *
  * Wake sources (an IO event, a deadline timer, iowait_close) race
  * through a single arbitrator per direction, so the parked coroutine
@@ -51,6 +53,7 @@ typedef struct iowait_s iowait_t;
  * logical owner (typically the same coroutine that also reads or
  * writes) to drive the deadline.
  */
+
 /**
  * @brief Result of iowait_read / iowait_write.
  *

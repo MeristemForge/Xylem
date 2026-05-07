@@ -21,6 +21,7 @@
 
 #include "iowait.h"
 
+#include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
 #include "runtime.h"
@@ -199,8 +200,8 @@ static void _iowait_pool_register(iowait_pool_t* pool, iowait_t* w) {
 /**
  * Drop the handle's last reference and return it to the pool.
  *
- * At refcnt==0 no arm-reference or park-reference can still be
- * outstanding, so per-request state can be torn down with plain
+ * At refcnt==0 no timer-arm reference or park reference can still
+ * be outstanding, so per-request state can be torn down with plain
  * accesses.
  *
  * Poller un-registration does NOT happen here; iowait_close does it
@@ -401,9 +402,9 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     iowait_t*      w = d->w;
     _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
     /**
-     * Drop the arm-reference taken in _iowait_set_deadline. Must be
-     * the last thing we do here: once this ref is released, the
-     * iowait (and therefore `d` itself) may be freed by a racing
+     * Drop the timer-arm reference taken in _iowait_set_deadline.
+     * Must be the last thing we do here: once this ref is released,
+     * the iowait (and therefore `d` itself) may be freed by a racing
      * iowait_destroy, so `d` is not safe to touch below this point.
      */
     _iowait_unref(w);
@@ -430,7 +431,27 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
     p->co     = co;
     p->result = IOWAIT_READY;
 
-    atomic_store_explicit(&d->park, p, memory_order_release);
+    /**
+     * Publish our park record. The slot is single-occupancy by
+     * contract (one-reader / one-writer per direction; see iowait.h
+     * threading model). Using exchange here gives us a loud fatal if
+     * a second coroutine parks on the same direction -- without it
+     * the first parker is silently orphaned (no wakeup source will
+     * ever find it again) and its handle reference leaks.
+     */
+    _iowait_park_t* prev = atomic_exchange_explicit(
+        &d->park, p, memory_order_release);
+    if (prev != NULL) {
+        xylem_loge(
+            "iowait: concurrent park on same direction "
+            "violates single-reader/-writer contract "
+            "(iowait=%p dir=%s prev_park=%p new_park=%p); aborting",
+            (void*)w,
+            (d == &w->rd) ? "rd" : "wr",
+            (void*)prev,
+            (void*)p);
+        abort();
+    }
 
     _iowait_arm(w);
 
@@ -457,11 +478,11 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
  * allocated lazily; the header documents the threading constraint
  * on timer mutation.
  *
- * Refcount protocol: each successful (re-)arm owns one reference
- * on the iowait, released either by the timeout callback or here
- * when a rearm cancels a still-pending fire. Combined with the
- * scheduler keeping timer objects alive across an in-flight fire,
- * the callback always sees a live iowait even if iowait_destroy
+ * Refcount protocol: each successful timer (re-)arm owns one
+ * reference on the iowait, released either by the timeout callback
+ * or here when a timer rearm cancels a still-pending fire. Combined
+ * with the scheduler keeping timer objects alive across an in-flight
+ * fire, the callback always sees a live iowait even if iowait_destroy
  * races in.
  *
  * Known corner case: a deadline of 0 may still result in one late
@@ -472,10 +493,13 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
 
+    /* Cancel any timer arm still in flight; if we actually caught it
+     * before it fired, return the reference that arm owned. */
+    if (d->timer && sched_timer_stop(d->timer)) {
+        _iowait_unref(d->w);
+    }
+
     if (deadline_ms == 0) {
-        if (d->timer && sched_timer_stop(d->timer)) {
-            _iowait_unref(d->w);
-        }
         return;
     }
 
@@ -484,9 +508,6 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
         if (!d->timer) {
             return;
         }
-    } else if (sched_timer_stop(d->timer)) {
-        /* Return the ref owned by the previous arm we just cancelled. */
-        _iowait_unref(d->w);
     }
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
