@@ -23,7 +23,64 @@ _Pragma("once")
 
 typedef struct xylem_channel_s xylem_channel_t;
 
+/**
+ * Channel concurrency model
+ *
+ * A xylem_channel is MPSC: many senders, a single receiver. Shape
+ * matches tokio's mpsc / Rust's std::sync::mpsc; differs from Go's
+ * chan, which permits many receivers.
+ *
+ * Threading:
+ *   - send(), destroy() are safe from any thread.
+ *   - recv() must be called from inside a coroutine on a scheduler
+ *     worker (it parks). Only one coroutine may be the receiver for
+ *     the lifetime of the channel.
+ *
+ * Misuse that aborts the process:
+ *   - Two coroutines calling recv() on the same channel
+ *     concurrently. Detected when the second recv tries to publish
+ *     its park slot.
+ */
+
+/**
+ * @brief Create a new channel.
+ *
+ * @return Channel handle, or NULL on allocation failure.
+ */
 extern xylem_channel_t* xylem_channel_create(void);
-extern void             xylem_channel_destroy(xylem_channel_t* ch);
-extern int              xylem_channel_send(xylem_channel_t* ch, void* msg);
-extern void*            xylem_channel_recv(xylem_channel_t* ch);
+
+/**
+ * @brief Destroy the channel and free all buffered messages.
+ *
+ * Thread-safe. Wakes a parked receiver (if any) with a NULL message.
+ * After this call, send() on the same channel is a use-after-free.
+ *
+ * @param ch  Channel handle.
+ */
+extern void xylem_channel_destroy(xylem_channel_t* ch);
+
+/**
+ * @brief Send a message to the channel. Non-blocking, thread-safe.
+ *
+ * May be called from any thread and any number of senders in
+ * parallel. Does not copy `msg`; the pointer's lifetime is the
+ * caller's responsibility until the receiver consumes it.
+ *
+ * @param ch   Channel handle.
+ * @param msg  Opaque message pointer (must be non-NULL).
+ *
+ * @return 0 on success, -1 on invalid input or allocation failure.
+ */
+extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
+
+/**
+ * @brief Receive the next message. Blocks the caller coroutine.
+ *
+ * Single-receiver contract: at most one coroutine may be in recv()
+ * on a given channel at any time. Violating this aborts the process.
+ *
+ * @param ch  Channel handle.
+ *
+ * @return Message pointer, or NULL if the channel has been destroyed.
+ */
+extern void* xylem_channel_recv(xylem_channel_t* ch);

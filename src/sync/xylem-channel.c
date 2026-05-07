@@ -21,6 +21,8 @@
 
 #include "xylem/sync/xylem-channel.h"
 
+#include "xylem/xylem-logger.h"
+
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/mpsc.h"
@@ -95,7 +97,26 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
 static bool _channel_park_cb(mco_coro* co, void* arg) {
     xylem_channel_t* ch = (xylem_channel_t*)arg;
 
-    atomic_store(&ch->wait_coro, co);
+    /**
+     * Channel is MPSC by design: multiple senders, single receiver.
+     * Publishing the waiter slot with exchange (not store) turns a
+     * violated single-receiver contract into a loud failure instead
+     * of a silent orphaned coroutine + leaked handle.
+     *
+     * Senders and destroy always exchange the slot back to NULL
+     * before rescheduling the receiver, so on entry here the slot
+     * must be NULL under the single-receiver contract.
+     */
+    mco_coro* prev = atomic_exchange(&ch->wait_coro, co);
+    if (prev != NULL) {
+        xylem_loge(
+            "xylem_channel: concurrent recv violates "
+            "single-receiver contract (ch=%p prev=%p new=%p); aborting",
+            (void*)ch,
+            (void*)prev,
+            (void*)co);
+        abort();
+    }
 
     if (atomic_load(&ch->closed)) {
         mco_coro* expected = co;
