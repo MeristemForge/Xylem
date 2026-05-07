@@ -40,25 +40,6 @@ struct xylem_mutex_s {
     queue_t          waiters;
 };
 
-xylem_mutex_t* xylem_mutex_create(void) {
-    xylem_mutex_t* mtx =
-        (xylem_mutex_t*)calloc(1, sizeof(xylem_mutex_t));
-    if (!mtx) {
-        return NULL;
-    }
-    atomic_init(&mtx->state, 0);
-    spin_init(&mtx->guard);
-    queue_init(&mtx->waiters);
-    return mtx;
-}
-
-void xylem_mutex_destroy(xylem_mutex_t* mtx) {
-    if (!mtx) {
-        return;
-    }
-    free(mtx);
-}
-
 typedef struct {
     xylem_mutex_t*  mtx;
     _mutex_waiter_t waiter;
@@ -79,6 +60,25 @@ static bool _mutex_park_cb(mco_coro* co, void* arg) {
     queue_enqueue(&ctx->mtx->waiters, &ctx->waiter.node);
     spin_unlock(&ctx->mtx->guard);
     return true;
+}
+
+xylem_mutex_t* xylem_mutex_create(void) {
+    xylem_mutex_t* mtx =
+        (xylem_mutex_t*)calloc(1, sizeof(xylem_mutex_t));
+    if (!mtx) {
+        return NULL;
+    }
+    atomic_init(&mtx->state, 0);
+    spin_init(&mtx->guard);
+    queue_init(&mtx->waiters);
+    return mtx;
+}
+
+void xylem_mutex_destroy(xylem_mutex_t* mtx) {
+    if (!mtx) {
+        return;
+    }
+    free(mtx);
 }
 
 void xylem_mutex_lock(xylem_mutex_t* mtx) {
