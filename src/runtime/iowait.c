@@ -392,7 +392,14 @@ static _iowait_park_t* _iowait_claim(
 
 static void _iowait_wake_park(_iowait_park_t* p) {
     if (p) {
-        scheduler_schedule(runtime_get_scheduler(), p->co);
+        /**
+         * IO-originated wakeups inject into the global runq instead of
+         * the caller's local deque. When the poller delivers many CQEs
+         * in a single drain, per-event scheduler_schedule would pile
+         * every coroutine onto the draining worker's deque and starve
+         * peers (see scheduler_inject).
+         */
+        scheduler_inject_one(runtime_get_scheduler(), p->co);
     }
 }
 
