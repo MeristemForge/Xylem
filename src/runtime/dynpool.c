@@ -29,7 +29,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#define DYNPOOL_DEFAULT_MAX_THREADS  256
+#define DYNPOOL_DEFAULT_MAX_THREADS  512
 #define DYNPOOL_DEFAULT_IDLE_TIMEOUT 10000
 
 typedef struct _dynpool_job_s {
@@ -49,7 +49,7 @@ struct dynpool_s {
     _Atomic bool     running;
 };
 
-static int _dynpool_worker_entry(void* arg) {
+static int _dynpool_thread_entry(void* arg) {
     dynpool_t* pool = (dynpool_t*)arg;
 
     for (;;) {
@@ -80,9 +80,9 @@ static int _dynpool_worker_entry(void* arg) {
     return 0;
 }
 
-static void _dynpool_spawn_worker(dynpool_t* pool) {
+static void _dynpool_spawn_thread(dynpool_t* pool) {
     thrd_t thr;
-    if (thrd_create(&thr, _dynpool_worker_entry, pool) == thrd_success) {
+    if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
         atomic_fetch_add(&pool->thread_count, 1);
         thrd_detach(thr);
     }
@@ -134,7 +134,7 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
 
     if (atomic_load(&pool->idle_count) == 0 &&
         atomic_load(&pool->thread_count) < pool->max_threads) {
-        _dynpool_spawn_worker(pool);
+        _dynpool_spawn_thread(pool);
     }
 
     return 0;
@@ -147,13 +147,13 @@ void dynpool_destroy(dynpool_t* pool) {
 
     atomic_store(&pool->running, false);
 
-    /* Wake all idle workers so they can exit. */
+    /* Wake all idle pool threads so they can exit. */
     int32_t count = atomic_load(&pool->thread_count);
     for (int32_t i = 0; i < count; i++) {
         platform_sem_post(pool->sem);
     }
 
-    /* Wait for all workers to exit. */
+    /* Wait for all pool threads to exit. */
     while (atomic_load(&pool->thread_count) > 0) {
         thrd_yield();
     }

@@ -26,7 +26,7 @@ _Pragma("once")
 typedef struct dynpool_s dynpool_t;
 
 typedef struct {
-    int32_t  max_threads;   /* 0 = use default (256) */
+    int32_t  max_threads;   /* 0 = use default (512) */
     uint64_t idle_timeout;  /* 0 = use default (10000 ms) */
 } dynpool_opts_t;
 
@@ -44,7 +44,7 @@ extern dynpool_t* dynpool_create(dynpool_opts_t* opts);
 /**
  * @brief Submit a blocking task to the pool.
  *
- * The caller's push is lock-free. A worker thread will execute the task.
+ * The caller's push is lock-free. A pool thread will execute the task.
  *
  * @param pool     Pool handle.
  * @param routine  Function to execute.

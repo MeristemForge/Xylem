@@ -93,7 +93,7 @@ extern void scheduler_destroy(scheduler_t* sched);
  * each one. After this call returns, no coroutine scheduled on this
  * scheduler can run, but the scheduler's runq, poller, and worker
  * structures remain allocated so late cross-thread callers (for
- * instance dynpool workers finishing a blocking task with
+ * instance dynpool threads finishing a blocking task with
  * scheduler_schedule) can still touch the scheduler without UAF.
  * scheduler_destroy() must still be called afterwards to free the
  * memory. Idempotent: calling it a second time (or calling
