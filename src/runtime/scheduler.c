@@ -121,11 +121,11 @@ struct scheduler_s {
      * shutdown; without it their mco_coro + _coro_ctx_t leak because
      * parked coros are not reachable through runq / deque / runnext.
      *
-     * Guarded by coros_lock rather than a mutex because the critical
-     * sections are pure list ops and never park.
+     * Guarded by registry_lock rather than a mutex because the
+     * critical sections are pure list ops and never park.
      */
-    list_t                all_coros;
-    spin_t                coros_lock;
+    list_t                registry;
+    spin_t                registry_lock;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -134,7 +134,7 @@ typedef struct {
     void (*fn)(void*);
     void*        arg;
     queue_node_t runq_node;
-    list_node_t  all_link;
+    list_node_t  registry_node;
     mco_coro*    co;
 } _coro_ctx_t;
 
@@ -385,9 +385,9 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (mco_status(co) == MCO_DEAD) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
-        spin_lock(&w->sched->coros_lock);
-        list_remove(&w->sched->all_coros, &ctx->all_link);
-        spin_unlock(&w->sched->coros_lock);
+        spin_lock(&w->sched->registry_lock);
+        list_remove(&w->sched->registry, &ctx->registry_node);
+        spin_unlock(&w->sched->registry_lock);
 
         free(ctx);
         mco_destroy(co);
@@ -689,8 +689,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     heap_init(&sched->timers, _sched_timer_cmp);
     mtx_init(&sched->timer_lock, mtx_plain);
     mpsc_init(&sched->posts);
-    list_init(&sched->all_coros);
-    spin_init(&sched->coros_lock);
+    list_init(&sched->registry);
+    spin_init(&sched->registry_lock);
 
     platform_poller_init(&sched->poller);
     {
@@ -759,9 +759,9 @@ void scheduler_destroy(scheduler_t* sched) {
 
     /**
      * Reclaim every coroutine shell that was still alive at shutdown.
-     * all_coros is the single authoritative registry: it covers
-     * coros sitting in runq / deque / runnext as well as coros that
-     * were parked on channels, mutexes, iowait, or timers (none of
+     * registry is the single authoritative list: it covers coros
+     * sitting in runq / deque / runnext as well as coros that were
+     * parked on channels, mutexes, iowait, or timers (none of
      * which would otherwise be reachable at this point).
      *
      * This frees the mco_coro + _coro_ctx_t shell only. Heap objects
@@ -770,19 +770,19 @@ void scheduler_destroy(scheduler_t* sched) {
      * require a cancellation protocol in every parking primitive,
      * not a task for the scheduler alone.
      */
-    spin_lock(&sched->coros_lock);
-    while (!list_empty(&sched->all_coros)) {
-        list_node_t* n = list_head(&sched->all_coros);
-        list_remove(&sched->all_coros, n);
-        spin_unlock(&sched->coros_lock);
+    spin_lock(&sched->registry_lock);
+    while (!list_empty(&sched->registry)) {
+        list_node_t* n = list_head(&sched->registry);
+        list_remove(&sched->registry, n);
+        spin_unlock(&sched->registry_lock);
 
-        _coro_ctx_t* ctx = list_entry(n, _coro_ctx_t, all_link);
+        _coro_ctx_t* ctx = list_entry(n, _coro_ctx_t, registry_node);
         mco_destroy(ctx->co);
         free(ctx);
 
-        spin_lock(&sched->coros_lock);
+        spin_lock(&sched->registry_lock);
     }
-    spin_unlock(&sched->coros_lock);
+    spin_unlock(&sched->registry_lock);
 
     _sched_cleanup(sched, sched->nworkers);
 }
@@ -868,9 +868,9 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 
     ctx->co = co;
 
-    spin_lock(&sched->coros_lock);
-    list_insert_tail(&sched->all_coros, &ctx->all_link);
-    spin_unlock(&sched->coros_lock);
+    spin_lock(&sched->registry_lock);
+    list_insert_tail(&sched->registry, &ctx->registry_node);
+    spin_unlock(&sched->registry_lock);
 
     atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);
