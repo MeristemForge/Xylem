@@ -24,6 +24,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
+#include "container/list.h"
 #include "runtime.h"
 #include "scheduler.h"
 #include "thrds.h"
@@ -118,6 +119,13 @@ struct _iowait_park_s {
  *                reads it without the lock (transition is one-way).
  *                Under LT+oneshot, flipped by add/mod/del under
  *                arm_lock.
+ *
+ * `pool_*` fields are pool bookkeeping, not IO-wait state:
+ *   pool                - owning pool, used by retire to push back.
+ *   pool_freelist_node  - anchor on pool->freelist while idle.
+ *   pool_registry_node  - anchor on pool->registry for the
+ *                         handle's entire lifetime; walked once by
+ *                         iowait_pool_destroy.
  */
 struct iowait_s {
     platform_poller_sq_t* poller;
@@ -135,8 +143,8 @@ struct iowait_s {
     _Atomic bool          closed;
 
     iowait_pool_t*        pool;
-    struct iowait_s*      freelist_link;
-    struct iowait_s*      registry_link;
+    list_node_t           pool_freelist_node;
+    list_node_t           pool_registry_node;
 };
 
 /**
@@ -153,9 +161,9 @@ struct iowait_s {
  * iowait_pool_destroy. Bounded by peak concurrent handle count.
  */
 struct iowait_pool_s {
-    mtx_t     lock;
-    iowait_t* freelist_head;    /* LIFO freelist. */
-    iowait_t* registry_head;    /* Every handle ever minted; walked by destroy. */
+    mtx_t  lock;
+    list_t freelist;    /* LIFO freelist of iowait_t::pool_freelist_node. */
+    list_t registry;    /* All handles ever minted; walked by destroy. */
 };
 
 static inline void* _iowait_ud_encode(iowait_t* w, uint16_t gen) {
@@ -174,10 +182,11 @@ static inline uint16_t _iowait_ud_tag(void* ud) {
 
 static iowait_t* _iowait_pool_pop(iowait_pool_t* pool) {
     mtx_lock(&pool->lock);
-    iowait_t* w = pool->freelist_head;
-    if (w) {
-        pool->freelist_head = w->freelist_link;
-        w->freelist_link    = NULL;
+    iowait_t*    w = NULL;
+    list_node_t* n = list_head(&pool->freelist);
+    if (n) {
+        w = list_entry(n, iowait_t, pool_freelist_node);
+        list_remove(&pool->freelist, n);
     }
     mtx_unlock(&pool->lock);
     return w;
@@ -185,15 +194,13 @@ static iowait_t* _iowait_pool_pop(iowait_pool_t* pool) {
 
 static void _iowait_pool_push(iowait_pool_t* pool, iowait_t* w) {
     mtx_lock(&pool->lock);
-    w->freelist_link    = pool->freelist_head;
-    pool->freelist_head = w;
+    list_insert_head(&pool->freelist, &w->pool_freelist_node);
     mtx_unlock(&pool->lock);
 }
 
 static void _iowait_pool_register(iowait_pool_t* pool, iowait_t* w) {
     mtx_lock(&pool->lock);
-    w->registry_link    = pool->registry_head;
-    pool->registry_head = w;
+    list_insert_tail(&pool->registry, &w->pool_registry_node);
     mtx_unlock(&pool->lock);
 }
 
@@ -557,6 +564,8 @@ iowait_pool_t* iowait_pool_create(void) {
         free(pool);
         return NULL;
     }
+    list_init(&pool->freelist);
+    list_init(&pool->registry);
     return pool;
 }
 
@@ -569,12 +578,12 @@ void iowait_pool_destroy(iowait_pool_t* pool) {
      * handle resources + backing memory. Safe here: the scheduler is
      * already destroyed, no workers alive, no CQEs in flight.
      */
-    iowait_t* cur = pool->registry_head;
-    while (cur) {
-        iowait_t* next = cur->registry_link;
-        mtx_destroy(&cur->arm_lock);
-        free(cur);
-        cur = next;
+    while (!list_empty(&pool->registry)) {
+        list_node_t* n = list_head(&pool->registry);
+        iowait_t*    w = list_entry(n, iowait_t, pool_registry_node);
+        list_remove(&pool->registry, n);
+        mtx_destroy(&w->arm_lock);
+        free(w);
     }
     mtx_destroy(&pool->lock);
     free(pool);
