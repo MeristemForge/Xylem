@@ -48,6 +48,7 @@
 
 #include "scheduler.h"
 
+#include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
 #include "iowait.h"
@@ -878,6 +879,30 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 void scheduler_park(
     scheduler_t* sched, scheduler_park_fn_t fn, void* arg) {
     (void)sched;
+    /**
+     * park requires a coroutine execution context: a live worker TLS
+     * binding (so we can stash park_fn/arg) and a currently-running
+     * coroutine (so mco_yield has something to suspend). Neither
+     * holds for a caller that is a plain external pthread or a
+     * runtime-internal non-worker thread. Catch the misuse here
+     * rather than let it degenerate into a NULL deref / UB inside
+     * mco_yield.
+     *
+     * Runs on every park. Cost is a TLS read and a couple of NULL
+     * checks; negligible against the context switch that follows.
+     */
+    if (!_tls_worker || !mco_running()) {
+        xylem_loge(
+            "scheduler_park called without a coroutine context "
+            "(tls_worker=%p, mco_running=%p); park-style APIs "
+            "(iowait_read/write, channel_recv, mutex_lock, "
+            "waitgroup_wait, runtime_sleep/submit, tcp/udp I/O) "
+            "must be called from inside a coroutine running on a "
+            "scheduler worker; aborting",
+            (void*)_tls_worker,
+            (void*)mco_running());
+        abort();
+    }
     _tls_worker->park_fn  = fn;
     _tls_worker->park_arg = arg;
     mco_yield(mco_running());
