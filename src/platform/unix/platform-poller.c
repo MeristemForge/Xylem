@@ -25,7 +25,7 @@
 #include <string.h>
 #include <unistd.h>
 
-void platform_poller_destroy(platform_poller_sq_t* sq) {
+void platform_poller_deinit(platform_poller_sq_t* sq) {
     close(*sq);
 }
 

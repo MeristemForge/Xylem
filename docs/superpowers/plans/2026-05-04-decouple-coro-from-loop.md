@@ -818,7 +818,7 @@ void xylem_runtime_start(...) {
     scheduler_shutdown(g_sched);
     scheduler_destroy(g_sched);
     dynpool_destroy(g_dynpool);
-    platform_poller_destroy(&g_poller);
+    platform_poller_deinit(&g_poller);
     loop_destroy(g_loop);
     platform_sem_destroy(g_stop_sem);
     g_stop_sem = NULL;

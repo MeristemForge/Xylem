@@ -32,19 +32,16 @@ _Pragma("once")
 /** @brief Poller trigger mode: edge-triggered (ET) or level-triggered (LT). */
 #define PLATFORM_POLLER_TRIGGER_ET 0
 #define PLATFORM_POLLER_TRIGGER_LT 1
-/** @brief Poller submission queue handle (epoll fd or HANDLE). */
+
 #if defined(__linux__) || defined(__APPLE__)
 typedef int platform_poller_sq_t;
-/** @brief Platform file descriptor type (int on Unix). */
 typedef int platform_poller_fd_t;
 #define PLATFORM_POLLER_TRIGGER_MODE PLATFORM_POLLER_TRIGGER_ET
 #endif
 
 #if defined(_WIN32)
 #include "platform-socket.h"
-/** @brief Poller submission queue handle (HANDLE on Windows). */
 typedef HANDLE platform_poller_sq_t;
-/** @brief Platform file descriptor type (SOCKET on Windows). */
 typedef SOCKET platform_poller_fd_t;
 #define PLATFORM_POLLER_TRIGGER_MODE PLATFORM_POLLER_TRIGGER_LT
 #endif
@@ -82,9 +79,9 @@ typedef struct platform_poller_cqe_s {
  * via platform_poller_mod() to receive subsequent events.
  */
 typedef struct platform_poller_sqe_s {
-    platform_poller_op_t op; /*< Interest mask (read/write/both). */
-    platform_poller_fd_t fd; /*< File descriptor to monitor. */
-    void*                ud; /*< User data returned in cqe. */
+    platform_poller_op_t op;
+    platform_poller_fd_t fd;
+    void*                ud;
 } platform_poller_sqe_t;
 
 /**
@@ -97,11 +94,11 @@ typedef struct platform_poller_sqe_s {
 extern int platform_poller_init(platform_poller_sq_t* sq);
 
 /**
- * @brief Destroy a poller instance and release resources.
+ * @brief Deinitialize a poller instance and release resources.
  *
  * @param sq  Pointer to the poller handle.
  */
-extern void platform_poller_destroy(platform_poller_sq_t* sq);
+extern void platform_poller_deinit(platform_poller_sq_t* sq);
 
 /**
  * @brief Register a file descriptor with the poller.

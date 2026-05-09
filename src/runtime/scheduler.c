@@ -653,7 +653,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
         platform_socket_close(sched->wakeup_wr);
     }
 
-    platform_poller_destroy(&sched->poller);
+    platform_poller_deinit(&sched->poller);
     iowait_pool_destroy(sched->iowait_pool);
     free(sched);
 }

@@ -30,7 +30,7 @@ int platform_poller_init(platform_poller_sq_t* sq) {
     return (*sq == NULL) ? -1 : 0;
 }
 
-void platform_poller_destroy(platform_poller_sq_t* sq) {
+void platform_poller_deinit(platform_poller_sq_t* sq) {
     epoll_close(*sq);
 }
 
