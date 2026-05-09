@@ -21,7 +21,6 @@
 
 _Pragma("once")
 
-#include <stdbool.h>
 #include <stddef.h>
 
 #define xylem_logd(...)    xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
@@ -41,9 +40,12 @@ enum xylem_logger_level_e {
 /**
  * @brief Initialize the logger.
  *
+ * Log writes are dispatched asynchronously on a dedicated worker
+ * thread so the calling thread is never blocked by file I/O or by
+ * the user-supplied callback.
+ *
  * @param filename       Log file path, or NULL for stdout.
  * @param level          Minimum log level to output.
- * @param async          If true, logs are written asynchronously via thread pool.
  * @param max_file_size  Maximum log file size in bytes before rollover (truncate
  *                       and restart from beginning). 0 means no limit.
  *                       Ignored when filename is NULL (stdout).
@@ -51,7 +53,6 @@ enum xylem_logger_level_e {
 extern void xylem_logger_init(
     const char* restrict filename,
     xylem_logger_level_t level,
-    bool                 async,
     size_t               max_file_size);
 
 /**

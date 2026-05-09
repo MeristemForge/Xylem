@@ -148,7 +148,7 @@ static void _on_request(xylem_http_writer_t* w, xylem_http_req_t* req,
 }
 
 int main(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
 
     if (_ensure_cert() != 0) {
         xylem_loge("failed to generate self-signed certificate");

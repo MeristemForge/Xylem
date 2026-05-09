@@ -87,7 +87,7 @@ static void _main(void* arg) {
 }
 
 int main(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
     xylem_run(_main, NULL, NULL);
     xylem_logger_deinit();
     return 0;

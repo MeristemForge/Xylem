@@ -28,6 +28,7 @@
 
 #include <inttypes.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,11 +243,13 @@ static void _logger_do_init(
 void xylem_logger_init(
     const char* restrict filename,
     xylem_logger_level_t level,
-    bool                 async,
     size_t               max_file_size) {
     int expected = LOGGER_UNINIT;
     if (atomic_compare_exchange_strong(&_logger.state, &expected, LOGGER_INIT)) {
-        _logger_do_init(filename, level, async, max_file_size);
+        /* The public API only exposes the async path. The internal
+         * _logger_do_init still takes an async flag so the sync path
+         * below remains exercisable from in-tree debugging code. */
+        _logger_do_init(filename, level, true, max_file_size);
     }
 }
 

@@ -51,7 +51,7 @@ static void _print_res(const char* label, xylem_http_res_t* res) {
 }
 
 int main(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
 
     /* Create a session with default options. */
     xylem_http_session_t* session = xylem_http_session_create(NULL);

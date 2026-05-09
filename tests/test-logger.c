@@ -20,16 +20,28 @@
  */
 
 #include "xylem.h"
-#include "thrdpool.h"
 #include "assert.h"
 
 #include <string.h>
 
 #define LOG_FILE "test-logger-output.log"
 
+/* The logger always dispatches to its internal worker thread, so the
+ * callback fires from a different thread than the one that called
+ * xylem_logger_log. Tests take advantage of the fact that
+ * xylem_logger_deinit() drains the queue (thrdpool_destroy joins the
+ * worker), which establishes a happens-before edge and makes every
+ * callback-side write visible to the reader.
+ *
+ * Pattern: log everything for the case, call deinit, then assert.
+ * The ctx records the level and message of every callback invocation
+ * so multi-event cases can still verify the full sequence. */
+
+#define MAX_EVENTS 8
+
 typedef struct {
-    xylem_logger_level_t level;
-    char                 msg[4096];
+    xylem_logger_level_t levels[MAX_EVENTS];
+    char                 last_msg[4096];
     int                  count;
 } _logger_ctx_t;
 
@@ -37,21 +49,21 @@ static void _test_callback(xylem_logger_level_t level,
                             const char* restrict msg,
                             void* ud) {
     _logger_ctx_t* ctx = (_logger_ctx_t*)ud;
-    ctx->level = level;
-    strncpy(ctx->msg, msg, sizeof(ctx->msg) - 1);
-    ctx->msg[sizeof(ctx->msg) - 1] = '\0';
+    if (ctx->count < MAX_EVENTS) {
+        ctx->levels[ctx->count] = level;
+    }
+    strncpy(ctx->last_msg, msg, sizeof(ctx->last_msg) - 1);
+    ctx->last_msg[sizeof(ctx->last_msg) - 1] = '\0';
     ctx->count++;
 }
 
 static void _reset_ctx(_logger_ctx_t* ctx) {
-    ctx->level = XYLEM_LOGGER_LEVEL_DEBUG;
-    ctx->msg[0] = '\0';
-    ctx->count = 0;
+    memset(ctx, 0, sizeof(*ctx));
 }
 
 /* init/deinit without logging. */
 static void test_init_destroy(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
     xylem_logger_deinit();
 }
 
@@ -64,76 +76,64 @@ static void test_log_before_init(void) {
 static void test_callback_receives_message(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, 0);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 42, "hello %d", 123);
 
-    ASSERT(ctx.count == 1);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_INFO);
-    ASSERT(strstr(ctx.msg, "hello 123") != NULL);
-    ASSERT(strstr(ctx.msg, "test.c:42") != NULL);
-
-    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
+
+    ASSERT(ctx.count == 1);
+    ASSERT(ctx.levels[0] == XYLEM_LOGGER_LEVEL_INFO);
+    ASSERT(strstr(ctx.last_msg, "hello 123") != NULL);
+    ASSERT(strstr(ctx.last_msg, "test.c:42") != NULL);
 }
 
 /* level filtering: messages below threshold are suppressed. */
 static void test_level_filtering(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_WARN, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_WARN, 0);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, "test.c", 1, "debug");
-    ASSERT(ctx.count == 0);
-
-    xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 2, "info");
-    ASSERT(ctx.count == 0);
-
-    xylem_logger_log(XYLEM_LOGGER_LEVEL_WARN, "test.c", 3, "warn");
-    ASSERT(ctx.count == 1);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_WARN);
-
+    xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO,  "test.c", 2, "info");
+    xylem_logger_log(XYLEM_LOGGER_LEVEL_WARN,  "test.c", 3, "warn");
     xylem_logger_log(XYLEM_LOGGER_LEVEL_ERROR, "test.c", 4, "error");
-    ASSERT(ctx.count == 2);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_ERROR);
 
-    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
+
+    /* DEBUG and INFO are below the WARN threshold and must not fire. */
+    ASSERT(ctx.count == 2);
+    ASSERT(ctx.levels[0] == XYLEM_LOGGER_LEVEL_WARN);
+    ASSERT(ctx.levels[1] == XYLEM_LOGGER_LEVEL_ERROR);
 }
 
 /* log macros produce correct levels. */
 static void test_log_macros(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
+    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, 0);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logd("debug msg");
-    ASSERT(ctx.count == 1);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_DEBUG);
-
     xylem_logi("info msg");
-    ASSERT(ctx.count == 2);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_INFO);
-
     xylem_logw("warn msg");
-    ASSERT(ctx.count == 3);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_WARN);
-
     xylem_loge("error msg");
-    ASSERT(ctx.count == 4);
-    ASSERT(ctx.level == XYLEM_LOGGER_LEVEL_ERROR);
 
-    xylem_logger_set_callback(NULL, NULL);
     xylem_logger_deinit();
+
+    ASSERT(ctx.count == 4);
+    ASSERT(ctx.levels[0] == XYLEM_LOGGER_LEVEL_DEBUG);
+    ASSERT(ctx.levels[1] == XYLEM_LOGGER_LEVEL_INFO);
+    ASSERT(ctx.levels[2] == XYLEM_LOGGER_LEVEL_WARN);
+    ASSERT(ctx.levels[3] == XYLEM_LOGGER_LEVEL_ERROR);
 }
 
 /* file output: write to file and verify content. */
 static void test_file_output(void) {
     remove(LOG_FILE);
-    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, false, 0);
+    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, 0);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 99, "file test %s", "ok");
     xylem_logger_deinit();
@@ -151,30 +151,13 @@ static void test_file_output(void) {
     remove(LOG_FILE);
 }
 
-/* async mode: messages are delivered via thread pool. */
-static void test_async_mode(void) {
-    _logger_ctx_t ctx;
-    _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, true, 0);
-    xylem_logger_set_callback(_test_callback, &ctx);
-
-    xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 1, "async %d", 456);
-
-    /* deinit drains the async queue (thrdpool_destroy joins threads),
-       ensuring the callback has fired before we check the result. */
-    xylem_logger_deinit();
-
-    ASSERT(ctx.count == 1);
-    ASSERT(strstr(ctx.msg, "async 456") != NULL);
-}
-
 /* file rollover: file is truncated when exceeding max_file_size. */
 static void test_file_rollover(void) {
     remove(LOG_FILE);
 
     /* set a small threshold so a few log lines will exceed it */
     size_t max_size = 200;
-    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, false, max_size);
+    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, max_size);
 
     /* write enough lines to exceed the threshold */
     for (int32_t i = 0; i < 10; i++) {
@@ -213,6 +196,5 @@ int main(void) {
     test_log_macros();
     test_file_output();
     test_file_rollover();
-    test_async_mode();
     return 0;
 }
