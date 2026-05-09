@@ -21,10 +21,14 @@
 
 #include "xylem/sync/xylem-mutex.h"
 
+#include "xylem/xylem-logger.h"
+
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/queue.h"
 #include "sync/spin.h"
+
+#include "minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -82,6 +86,23 @@ void xylem_mutex_destroy(xylem_mutex_t* mtx) {
 }
 
 void xylem_mutex_lock(xylem_mutex_t* mtx) {
+    /**
+     * lock() is a coroutine-scoped operation even on the uncontended
+     * fast path. Allowing an external thread to win the CAS would
+     * leave the lock "held" by a non-coroutine owner; the next
+     * contender then parks via scheduler_park, which aborts outside
+     * a coroutine context anyway. Catching it here keeps the abort
+     * at the misuse site instead of at the first future contender.
+     */
+    if (!mco_running()) {
+        xylem_loge(
+            "xylem_mutex_lock called without a coroutine context "
+            "(mtx=%p); mutex is coroutine-owned and must be locked "
+            "from inside a coroutine on a scheduler worker; aborting",
+            (void*)mtx);
+        abort();
+    }
+
     uint32_t expected = 0;
     if (atomic_compare_exchange_strong(&mtx->state, &expected, 1)) {
         return;

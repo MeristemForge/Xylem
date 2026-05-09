@@ -24,6 +24,25 @@ _Pragma("once")
 typedef struct xylem_mutex_s xylem_mutex_t;
 
 /**
+ * Mutex concurrency model
+ *
+ * A xylem_mutex is a coroutine-owned lock: ownership is held by a
+ * coroutine (not an OS thread) between lock() and unlock(), and a
+ * contending lock() parks the caller instead of spinning the worker.
+ *
+ * Threading:
+ *   - create(), destroy(), unlock() are safe from any thread. unlock
+ *     from an external thread is permitted so a coroutine may hand
+ *     the lock off (the wakeup itself only needs a scheduler_schedule).
+ *   - lock() must be called from inside a coroutine on a scheduler
+ *     worker. This holds even on the uncontended fast path, because
+ *     an acquire from a non-coroutine thread cannot be safely parked
+ *     if contention arrives later and would leave the mutex in a
+ *     state that only aborts on the next contended acquire. Calling
+ *     lock() outside a coroutine context aborts the process.
+ */
+
+/**
  * @brief Create a new coroutine mutex.
  *
  * @return Pointer to the new mutex, or NULL on allocation failure.
