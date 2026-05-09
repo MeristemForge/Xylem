@@ -156,7 +156,7 @@ static void _on_close(xylem_ws_conn_t* conn,
 }
 
 int main(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
+    xylem_logger_init(NULL, NULL);
 
     if (_ensure_cert() != 0) {
         xylem_loge("failed to generate self-signed certificate");

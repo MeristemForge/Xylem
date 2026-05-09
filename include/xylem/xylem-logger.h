@@ -37,6 +37,31 @@ enum xylem_logger_level_e {
     XYLEM_LOGGER_LEVEL_ERROR,
 };
 
+typedef struct xylem_logger_opts_s xylem_logger_opts_t;
+
+/**
+ * @brief Logger configuration options.
+ *
+ * Pass NULL to xylem_logger_init() to use defaults (INFO level,
+ * no file-size limit). When opts is non-NULL every field is taken
+ * verbatim; there is no "zero means default" rule here because the
+ * level enum starts at DEBUG = 0. Initialise the fields you care
+ * about explicitly, for example:
+ *
+ *     xylem_logger_opts_t opts = {
+ *         .level         = XYLEM_LOGGER_LEVEL_INFO,
+ *         .max_file_size = 10 * 1024 * 1024,
+ *     };
+ *     xylem_logger_init("app.log", &opts);
+ */
+struct xylem_logger_opts_s {
+    xylem_logger_level_t level;         /*< Minimum log level to output. */
+    size_t               max_file_size; /*< Rollover threshold in bytes before the
+                                             log file is truncated and restarted.
+                                             0 means no limit. Ignored when
+                                             filename is NULL (stdout). */
+};
+
 /**
  * @brief Initialize the logger.
  *
@@ -44,16 +69,13 @@ enum xylem_logger_level_e {
  * thread so the calling thread is never blocked by file I/O or by
  * the user-supplied callback.
  *
- * @param filename       Log file path, or NULL for stdout.
- * @param level          Minimum log level to output.
- * @param max_file_size  Maximum log file size in bytes before rollover (truncate
- *                       and restart from beginning). 0 means no limit.
- *                       Ignored when filename is NULL (stdout).
+ * @param filename  Log file path, or NULL for stdout.
+ * @param opts      Logger options, or NULL for defaults
+ *                  (level = INFO, max_file_size = 0).
  */
 extern void xylem_logger_init(
-    const char* restrict filename,
-    xylem_logger_level_t level,
-    size_t               max_file_size);
+    const char* restrict       filename,
+    const xylem_logger_opts_t* opts);
 
 /**
  * @brief Deinitialize the logger and release resources.

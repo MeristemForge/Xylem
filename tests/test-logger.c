@@ -63,7 +63,7 @@ static void _reset_ctx(_logger_ctx_t* ctx) {
 
 /* init/deinit without logging. */
 static void test_init_destroy(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
+    xylem_logger_init(NULL, NULL);
     xylem_logger_deinit();
 }
 
@@ -76,7 +76,8 @@ static void test_log_before_init(void) {
 static void test_callback_receives_message(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, 0);
+    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
+    xylem_logger_init(NULL, &opts);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 42, "hello %d", 123);
@@ -93,7 +94,8 @@ static void test_callback_receives_message(void) {
 static void test_level_filtering(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_WARN, 0);
+    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_WARN };
+    xylem_logger_init(NULL, &opts);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, "test.c", 1, "debug");
@@ -113,7 +115,8 @@ static void test_level_filtering(void) {
 static void test_log_macros(void) {
     _logger_ctx_t ctx;
     _reset_ctx(&ctx);
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_DEBUG, 0);
+    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
+    xylem_logger_init(NULL, &opts);
     xylem_logger_set_callback(_test_callback, &ctx);
 
     xylem_logd("debug msg");
@@ -133,7 +136,8 @@ static void test_log_macros(void) {
 /* file output: write to file and verify content. */
 static void test_file_output(void) {
     remove(LOG_FILE);
-    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, 0);
+    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
+    xylem_logger_init(LOG_FILE, &opts);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 99, "file test %s", "ok");
     xylem_logger_deinit();
@@ -157,7 +161,11 @@ static void test_file_rollover(void) {
 
     /* set a small threshold so a few log lines will exceed it */
     size_t max_size = 200;
-    xylem_logger_init(LOG_FILE, XYLEM_LOGGER_LEVEL_DEBUG, max_size);
+    xylem_logger_opts_t opts = {
+        .level         = XYLEM_LOGGER_LEVEL_DEBUG,
+        .max_file_size = max_size,
+    };
+    xylem_logger_init(LOG_FILE, &opts);
 
     /* write enough lines to exceed the threshold */
     for (int32_t i = 0; i < 10; i++) {

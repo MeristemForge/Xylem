@@ -241,11 +241,18 @@ static void _logger_do_init(
 }
 
 void xylem_logger_init(
-    const char* restrict filename,
-    xylem_logger_level_t level,
-    size_t               max_file_size) {
+    const char* restrict       filename,
+    const xylem_logger_opts_t* opts) {
     int expected = LOGGER_UNINIT;
     if (atomic_compare_exchange_strong(&_logger.state, &expected, LOGGER_INIT)) {
+        /* Defaults match the documented behaviour when opts is NULL:
+         * INFO threshold, no rollover. */
+        xylem_logger_level_t level         = XYLEM_LOGGER_LEVEL_INFO;
+        size_t               max_file_size = 0;
+        if (opts) {
+            level         = opts->level;
+            max_file_size = opts->max_file_size;
+        }
         /* The public API only exposes the async path. The internal
          * _logger_do_init still takes an async flag so the sync path
          * below remains exercisable from in-tree debugging code. */

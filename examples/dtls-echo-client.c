@@ -56,7 +56,7 @@ static void _on_close(xylem_dtls_conn_t* dtls, int err, const char* errmsg) {
 }
 
 int main(void) {
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, 0);
+    xylem_logger_init(NULL, NULL);
 
     _loop = loop_create();
 
