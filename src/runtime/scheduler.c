@@ -340,6 +340,21 @@ static void _sched_process_io(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
     int n) {
+    /**
+     * Batch ready coroutines from this poll pass into one runq push
+     * + one wake via scheduler_schedule_batch. Sized to CQE_NUM * 2
+     * because each iowait can surface two directions (rd + wr) in a
+     * single CQE; _iowait_wake_park_batch still flushes inline on
+     * overflow, so mis-sizing only costs an extra push, never a lost
+     * wake.
+     */
+    mco_coro* batch_buf[PLATFORM_POLLER_CQE_NUM * 2];
+    runnable_batch_t batch = {
+        .buf = batch_buf,
+        .cap = (int32_t)(sizeof(batch_buf) / sizeof(batch_buf[0])),
+        .n   = 0,
+    };
+
     for (int i = 0; i < n; i++) {
         /**
          * ud == NULL is the sentinel for our own wakeup pipe; every
@@ -356,7 +371,11 @@ static void _sched_process_io(
             }
             continue;
         }
-        iowait_on_event((int)cqes[i].op, cqes[i].ud);
+        iowait_on_event(sched, (int)cqes[i].op, cqes[i].ud, &batch);
+    }
+
+    if (batch.n > 0) {
+        scheduler_schedule_batch(sched, batch.buf, batch.n);
     }
 }
 
@@ -794,6 +813,51 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
      * can leave newly scheduled work invisible to parked workers
      * until the deque overflows (up to 1024 tasks).
      */
+    if (atomic_load_explicit(
+            &sched->nspinning, memory_order_relaxed) == 0) {
+        _sched_wake_worker(sched);
+    }
+}
+
+void scheduler_schedule_batch(
+    scheduler_t* sched, mco_coro** cos, int32_t n) {
+    if (n <= 0) {
+        return;
+    }
+
+    /**
+     * Straight to global runq: every worker reaches this via
+     * _sched_try_get_coro's runq_pop_batch, spreading the load in
+     * one hop instead of going through any single worker's local
+     * deque. This is the Go injectglist / Tokio inject-on-park-ready
+     * model and is the main reason netpoll-produced work does not
+     * pile up on the driver alone.
+     *
+     * Up to 64 inline; larger batches allocate. Typical netpoll
+     * batches are well below 64 even on busy 10k-conn workloads.
+     */
+    enum { INLINE_CAP = 64 };
+    queue_node_t*  inline_nodes[INLINE_CAP];
+    queue_node_t** nodes = inline_nodes;
+    if (n > INLINE_CAP) {
+        nodes = (queue_node_t**)malloc((size_t)n * sizeof(*nodes));
+        if (!nodes) {
+            /* Fall back to per-coro schedule; slower but never drops. */
+            for (int32_t i = 0; i < n; i++) {
+                scheduler_schedule(sched, cos[i]);
+            }
+            return;
+        }
+    }
+    for (int32_t i = 0; i < n; i++) {
+        _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(cos[i]);
+        nodes[i] = &ctx->runq_node;
+    }
+    runq_push_batch(sched->runq, nodes, n);
+    if (nodes != inline_nodes) {
+        free(nodes);
+    }
+
     if (atomic_load_explicit(
             &sched->nspinning, memory_order_relaxed) == 0) {
         _sched_wake_worker(sched);

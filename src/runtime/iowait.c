@@ -403,6 +403,24 @@ static void _iowait_wake_park(_iowait_park_t* p) {
     }
 }
 
+/**
+ * Batch variant: append the parked coroutine to the caller's batch
+ * instead of scheduling inline. If the batch is full, flush it
+ * first so there is always room. Used by iowait_on_event so the
+ * whole poll pass amortises a single runq push + wake.
+ */
+static void _iowait_wake_park_batch(
+    scheduler_t* sched, runnable_batch_t* batch, _iowait_park_t* p) {
+    if (!p) {
+        return;
+    }
+    if (batch->n == batch->cap) {
+        scheduler_schedule_batch(sched, batch->buf, batch->n);
+        batch->n = 0;
+    }
+    batch->buf[batch->n++] = p->co;
+}
+
 static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
@@ -707,7 +725,11 @@ bool iowait_is_closed(iowait_t* w) {
     return atomic_load_explicit(&w->closed, memory_order_acquire);
 }
 
-void iowait_on_event(int revents, void* ud) {
+void iowait_on_event(
+    scheduler_t*      sched,
+    int               revents,
+    void*             ud,
+    runnable_batch_t* batch) {
     /**
      * ud was handed to the poller at registration time carrying a
      * generation tag (see _iowait_ud_encode). The handle may have
@@ -725,10 +747,12 @@ void iowait_on_event(int revents, void* ud) {
     }
 
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_READY));
+        _iowait_wake_park_batch(
+            sched, batch, _iowait_claim(&w->rd.park, IOWAIT_READY));
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_READY));
+        _iowait_wake_park_batch(
+            sched, batch, _iowait_claim(&w->wr.park, IOWAIT_READY));
     }
 
     /**

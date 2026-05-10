@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include "scheduler.h"
+
 #include "platform/platform-socket.h"
 
 #include <stdbool.h>
@@ -183,20 +185,36 @@ extern bool iowait_is_closed(iowait_t* w);
 /**
  * @brief Netpoll event callback.
  *
- * Invoked by the scheduler when a poll event fires for an iowait fd.
+ * Invoked by the scheduler while draining a batch of poll events.
  * Decodes the generation-tagged ud that was registered, rejects
  * stale CQEs whose target handle has been recycled since
- * registration, and otherwise wakes the parked coroutine(s)
- * according to the readiness mask. Under LT+oneshot pollers, re-
- * arms the fd if anyone is still parked; under ET the fd stays
- * armed after its initial registration.
+ * registration, and appends any newly-ready coroutines to @p batch
+ * rather than scheduling them inline; the caller flushes the batch
+ * with scheduler_schedule_batch once the poll pass completes. This
+ * moves per-event cost off the hot path and amortises the wake.
  *
+ * If @p batch is full when a ready coroutine is discovered the
+ * batch is flushed synchronously and then the coroutine is
+ * appended, so callers never need to size the batch for worst-case
+ * CQE depth.
+ *
+ * Under LT+oneshot pollers, re-arms the fd if anyone is still
+ * parked; under ET the fd stays armed after its initial
+ * registration.
+ *
+ * @param sched    Scheduler handle (used for the inline flush when
+ *                 @p batch fills up).
  * @param revents  Readiness mask.
  * @param ud       Opaque userdata that was registered via the
  *                 platform poller at iowait creation (internally a
  *                 generation-tagged iowait pointer).
+ * @param batch    Accumulator for ready coroutines. Must not be NULL.
  */
-extern void iowait_on_event(int revents, void* ud);
+extern void iowait_on_event(
+    scheduler_t*      sched,
+    int               revents,
+    void*             ud,
+    runnable_batch_t* batch);
 
 /**
  * @brief Opaque per-scheduler iowait handle pool.
