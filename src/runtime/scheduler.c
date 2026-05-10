@@ -76,7 +76,7 @@
 #define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_MAX_POLL_MS        5
 #define SCHED_SPIN_ATTEMPTS      4
-#define SCHED_RUNQ_GRAB_MAX      32
+#define SCHED_RUNQ_GRAB_MAX      256
 #define SCHED_TIMER_TICK_MS      1
 
 typedef struct _sched_worker_s {
@@ -218,12 +218,14 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
 
     {
         /**
-         * Fair share from global runq: cap per-grab so one worker
-         * can never monopolise the queue.
+         * Fair share from global runq: grab up to half of the
+         * currently-queued work (capped) so a searcher refills its
+         * local deque in one hop instead of coming back round after
+         * round. Mirrors Go's runqgrab.
          */
         queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
-        int32_t n = runq_pop_batch(
-            sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
+        int32_t n = runq_pop_half(
+            sched->runq, nodes, SCHED_RUNQ_GRAB_MAX);
         if (n > 0) {
             for (int32_t i = 1; i < n; i++) {
                 _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
