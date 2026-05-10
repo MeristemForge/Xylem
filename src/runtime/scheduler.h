@@ -245,6 +245,21 @@ extern void sched_timer_start(
 extern bool sched_timer_stop(sched_timer_t* timer);
 
 /**
+ * @brief Re-arm a timer with a new delay. Thread-safe.
+ *
+ * Preserves the cb, ud, and repeat interval that sched_timer_start()
+ * last configured. If the timer was still pending, its queued fire
+ * is cancelled; if it was inactive (never armed, callback already
+ * dispatched), it is armed fresh.
+ *
+ * @param timer       Timer handle, previously armed with sched_timer_start().
+ * @param timeout_ms  New delay in milliseconds.
+ *
+ * @return true if a pending fire was cancelled before it ran.
+ */
+extern bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms);
+
+/**
  * @brief Callback invoked when all coroutines have exited.
  *
  * @param ud  User data from scheduler_set_idle_cb().

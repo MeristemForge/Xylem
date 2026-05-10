@@ -1010,6 +1010,27 @@ bool sched_timer_stop(sched_timer_t* timer) {
     return cancelled;
 }
 
+bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
+    scheduler_t* sched = timer->sched;
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+
+    bool was_active;
+    mtx_lock(&sched->timer_lock);
+    was_active = timer->active;
+    if (was_active) {
+        heap_remove(&sched->timers, &timer->heap_node);
+    }
+    timer->timeout = now + timeout_ms;
+    timer->active  = true;
+    heap_insert(&sched->timers, &timer->heap_node);
+    mtx_unlock(&sched->timer_lock);
+
+    /* A worker in blocking poll may be holding a stale root timeout;
+     * poke it to recompute. Mirrors sched_timer_start. */
+    _sched_wake_poller(sched);
+    return was_active;
+}
+
 void scheduler_set_idle_cb(
     scheduler_t* sched, scheduler_idle_fn_t cb, void* ud) {
     sched->idle_cb = cb;
