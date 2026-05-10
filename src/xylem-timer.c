@@ -57,23 +57,23 @@ struct xylem_timer_s {
     _Atomic int32_t  refcnt;
 };
 
-static void _xylem_timer_unref(xylem_timer_t* t) {
+static void _timer_unref(xylem_timer_t* t) {
     if (atomic_fetch_sub_explicit(
             &t->refcnt, 1, memory_order_acq_rel) == 1) {
         free(t);
     }
 }
 
-static void _xylem_timer_fire(sched_timer_t* st, void* ud) {
+static void _timer_fire(sched_timer_t* st, void* ud) {
     (void)st;
     xylem_timer_t* t = (xylem_timer_t*)ud;
     t->cb(t, t->ud);
     if (!t->periodic) {
-        _xylem_timer_unref(t);
+        _timer_unref(t);
     }
 }
 
-static xylem_timer_t* _xylem_timer_arm(
+static xylem_timer_t* _timer_arm(
     uint64_t timeout_ms, uint64_t repeat_ms,
     xylem_timer_fn_t cb, void* ud) {
     scheduler_t* sched = runtime_get_scheduler();
@@ -97,13 +97,13 @@ static xylem_timer_t* _xylem_timer_arm(
     t->periodic = (repeat_ms != 0);
     atomic_store_explicit(&t->refcnt, 2, memory_order_relaxed);
 
-    sched_timer_start(t->st, _xylem_timer_fire, t, timeout_ms, repeat_ms);
+    sched_timer_start(t->st, _timer_fire, t, timeout_ms, repeat_ms);
     return t;
 }
 
 xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
-    return _xylem_timer_arm(delay_ms, 0, cb, ud);
+    return _timer_arm(delay_ms, 0, cb, ud);
 }
 
 xylem_timer_t* xylem_timer_every(
@@ -111,7 +111,7 @@ xylem_timer_t* xylem_timer_every(
     if (period_ms == 0) {
         return NULL;
     }
-    return _xylem_timer_arm(period_ms, period_ms, cb, ud);
+    return _timer_arm(period_ms, period_ms, cb, ud);
 }
 
 bool xylem_timer_cancel(xylem_timer_t* t) {
@@ -133,9 +133,9 @@ bool xylem_timer_cancel(xylem_timer_t* t) {
      * t->cb / t->ud from that cb is safe.
      */
     if (cancelled || t->periodic) {
-        _xylem_timer_unref(t);
+        _timer_unref(t);
     }
-    _xylem_timer_unref(t); /* creator ref */
+    _timer_unref(t); /* creator ref */
     return cancelled;
 }
 
