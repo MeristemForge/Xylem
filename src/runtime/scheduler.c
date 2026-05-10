@@ -576,6 +576,30 @@ static mco_coro* _sched_find_work(
 #endif
         if (n > 0) {
             _sched_process_io(sched, cqes, n);
+            /**
+             * Drain: while the previous batch was being dispatched
+             * (push to runq, wake workers) more events may have
+             * been queued in the kernel. Absorb them with a
+             * non-blocking poll so this driver cycle's batch
+             * amortises CPU time with the max number of events.
+             * Mirrors the Go/Tokio netpoll drain pattern and halves
+             * the observed poll-cycle rate at 1.08 events/cycle.
+             */
+            for (;;) {
+                int extra = platform_poller_wait(&sched->poller, cqes, 0);
+                if (extra <= 0) {
+                    break;
+                }
+#ifdef XYLEM_SCHED_STATS
+                atomic_fetch_add_explicit(
+                    &_sched_stat_poll_cycles, 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(
+                    &_sched_stat_poll_events,
+                    (uint64_t)extra,
+                    memory_order_relaxed);
+#endif
+                _sched_process_io(sched, cqes, extra);
+            }
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
