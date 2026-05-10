@@ -19,38 +19,38 @@
  *  IN THE SOFTWARE.
  */
 
-#include "container/stack.h"
+#include "container/lifo.h"
 
-void stack_init(stack_t* stack) {
-    stack->top = NULL;
-    stack->nelts = 0;
+void lifo_init(lifo_t* lifo) {
+    lifo->top = NULL;
+    lifo->nelts = 0;
 }
 
-bool stack_empty(stack_t* stack) {
-    return stack->nelts == 0;
+bool lifo_empty(lifo_t* lifo) {
+    return lifo->nelts == 0;
 }
 
-size_t stack_len(stack_t* stack) {
-    return stack->nelts;
+size_t lifo_len(lifo_t* lifo) {
+    return lifo->nelts;
 }
 
-void stack_push(stack_t* stack, stack_node_t* node) {
-    node->next = stack->top;
-    stack->top = node;
-    stack->nelts++;
+void lifo_push(lifo_t* lifo, lifo_node_t* node) {
+    node->next = lifo->top;
+    lifo->top = node;
+    lifo->nelts++;
 }
 
-stack_node_t* stack_pop(stack_t* stack) {
-    if (stack->top == NULL) {
+lifo_node_t* lifo_pop(lifo_t* lifo) {
+    if (lifo->top == NULL) {
         return NULL;
     }
-    stack_node_t* node = stack->top;
-    stack->top = node->next;
+    lifo_node_t* node = lifo->top;
+    lifo->top = node->next;
     node->next = NULL;
-    stack->nelts--;
+    lifo->nelts--;
     return node;
 }
 
-stack_node_t* stack_peek(stack_t* stack) {
-    return stack->top;
+lifo_node_t* lifo_peek(lifo_t* lifo) {
+    return lifo->top;
 }

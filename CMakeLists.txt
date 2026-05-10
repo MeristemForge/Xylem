@@ -60,7 +60,7 @@ set(SRCS
 	src/container/list.c
 	src/container/queue.c
 	src/container/rbtree.c
-	src/container/stack.c
+	src/container/lifo.c
 	src/container/xylem-ringbuf.c
 	src/container/xylem-heap.c
 	src/container/xylem-list.c

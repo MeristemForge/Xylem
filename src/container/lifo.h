@@ -24,64 +24,64 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stddef.h>
 
-typedef struct stack_node_s {
-    struct stack_node_s* next;
-} stack_node_t;
+typedef struct lifo_node_s {
+    struct lifo_node_s* next;
+} lifo_node_t;
 
-typedef struct stack_s {
-    stack_node_t* top;
-    size_t        nelts;
-} stack_t;
+typedef struct lifo_s {
+    lifo_node_t* top;
+    size_t       nelts;
+} lifo_t;
 
-#define stack_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
+#define lifo_entry(x, t, m) ((t*)((char*)(x) - offsetof(t, m)))
 
 /**
  * @brief Initialize a LIFO stack.
  *
- * @param stack  Pointer to the stack structure to initialize.
+ * @param lifo  Pointer to the lifo structure to initialize.
  */
-extern void stack_init(stack_t* stack);
+extern void lifo_init(lifo_t* lifo);
 
 /**
- * @brief Check whether the stack is empty.
+ * @brief Check whether the lifo is empty.
  *
- * @param stack  Pointer to the stack.
+ * @param lifo  Pointer to the lifo.
  *
- * @return true if the stack contains no nodes, false otherwise.
+ * @return true if the lifo contains no nodes, false otherwise.
  */
-extern bool stack_empty(stack_t* stack);
+extern bool lifo_empty(lifo_t* lifo);
 
 /**
- * @brief Return the number of nodes in the stack.
+ * @brief Return the number of nodes in the lifo.
  *
- * @param stack  Pointer to the stack.
+ * @param lifo  Pointer to the lifo.
  *
  * @return Number of nodes.
  */
-extern size_t stack_len(stack_t* stack);
+extern size_t lifo_len(lifo_t* lifo);
 
 /**
- * @brief Push a node onto the top of the stack.
+ * @brief Push a node onto the top of the lifo.
  *
- * @param stack  Pointer to the stack.
- * @param node   Pointer to the intrusive node to push.
+ * @param lifo  Pointer to the lifo.
+ * @param node  Pointer to the intrusive node to push.
  */
-extern void stack_push(stack_t* stack, stack_node_t* node);
+extern void lifo_push(lifo_t* lifo, lifo_node_t* node);
 
 /**
- * @brief Pop and return the top node from the stack.
+ * @brief Pop and return the top node from the lifo.
  *
- * @param stack  Pointer to the stack.
+ * @param lifo  Pointer to the lifo.
  *
- * @return Pointer to the popped node, or NULL if the stack is empty.
+ * @return Pointer to the popped node, or NULL if the lifo is empty.
  */
-extern stack_node_t* stack_pop(stack_t* stack);
+extern lifo_node_t* lifo_pop(lifo_t* lifo);
 
 /**
  * @brief Return the top node without removing it.
  *
- * @param stack  Pointer to the stack.
+ * @param lifo  Pointer to the lifo.
  *
- * @return Pointer to the top node, or NULL if the stack is empty.
+ * @return Pointer to the top node, or NULL if the lifo is empty.
  */
-extern stack_node_t* stack_peek(stack_t* stack);
+extern lifo_node_t* lifo_peek(lifo_t* lifo);
