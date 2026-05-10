@@ -107,6 +107,15 @@ struct scheduler_s {
     void*                 idle_ud;
     _Atomic bool          processing;
     _Atomic bool          running;
+    /**
+     * Set while the driver is blocked inside platform_poller_wait
+     * and cleared once it returns. Producers that need to deliver a
+     * non-fd wakeup (post, cross-thread schedule with no parked
+     * worker) consult it to decide whether a pipe wake is actually
+     * necessary: when false, the driver is already in user space
+     * and will observe the new work before its next blocking poll.
+     */
+    _Atomic bool          driver_in_poll;
     bool                  joined;
     _Atomic int32_t       nspinning;
     _Atomic int64_t       alive;
@@ -184,13 +193,6 @@ static int _sched_timer_cmp(
     return 0;
 }
 
-static void _sched_wake_poller(scheduler_t* sched) {
-    if (sched->wakeup_wr) {
-        char c = 1;
-        platform_socket_send(sched->wakeup_wr, &c, 1);
-    }
-}
-
 #ifdef XYLEM_SCHED_STATS
 #include <stdio.h>
 #include <time.h>
@@ -200,6 +202,9 @@ static _Atomic uint64_t _sched_stat_poll_block_ns;
 static _Atomic uint64_t _sched_stat_poll_events;
 static _Atomic uint64_t _sched_stat_driver_nonpoll_ns;
 static _Atomic uint64_t _sched_stat_driver_runs; /* # times a worker entered the driver loop */
+static _Atomic uint64_t _sched_stat_wake_poller;   /* # of pipe wake calls */
+static _Atomic uint64_t _sched_stat_wake_sem;      /* # of sem_post wakes */
+static _Atomic uint64_t _sched_stat_wake_skipped;  /* # of schedule calls that skipped wake */
 
 static uint64_t _sched_now_ns(void) {
     struct timespec ts;
@@ -213,6 +218,9 @@ void scheduler_stats_reset(void) {
     atomic_store(&_sched_stat_poll_events, 0);
     atomic_store(&_sched_stat_driver_nonpoll_ns, 0);
     atomic_store(&_sched_stat_driver_runs, 0);
+    atomic_store(&_sched_stat_wake_poller, 0);
+    atomic_store(&_sched_stat_wake_sem, 0);
+    atomic_store(&_sched_stat_wake_skipped, 0);
 }
 
 void scheduler_stats_dump(const char* tag) {
@@ -221,34 +229,63 @@ void scheduler_stats_dump(const char* tag) {
     uint64_t events  = atomic_load(&_sched_stat_poll_events);
     uint64_t nonpoll = atomic_load(&_sched_stat_driver_nonpoll_ns);
     uint64_t runs    = atomic_load(&_sched_stat_driver_runs);
+    uint64_t wp      = atomic_load(&_sched_stat_wake_poller);
+    uint64_t ws      = atomic_load(&_sched_stat_wake_sem);
+    uint64_t wk      = atomic_load(&_sched_stat_wake_skipped);
     if (cycles == 0) {
         fprintf(stderr, "[sched-stats %s] no poll cycles\n", tag);
         return;
     }
     fprintf(stderr,
             "[sched-stats %s] poll_cycles=%llu avg_block=%llu ns "
-            "avg_events=%.2f nonpoll_total=%llu ms driver_runs=%llu\n",
+            "avg_events=%.2f nonpoll_total=%llu ms driver_runs=%llu "
+            "wake_pipe=%llu wake_sem=%llu wake_skip=%llu\n",
             tag,
             (unsigned long long)cycles,
             (unsigned long long)(block / cycles),
             (double)events / (double)cycles,
             (unsigned long long)(nonpoll / 1000000ull),
-            (unsigned long long)runs);
+            (unsigned long long)runs,
+            (unsigned long long)wp,
+            (unsigned long long)ws,
+            (unsigned long long)wk);
 }
 #endif
 
+static void _sched_wake_poller(scheduler_t* sched) {
+    if (sched->wakeup_wr) {
+#ifdef XYLEM_SCHED_STATS
+        atomic_fetch_add_explicit(
+            &_sched_stat_wake_poller, 1, memory_order_relaxed);
+#endif
+        char c = 1;
+        platform_socket_send(sched->wakeup_wr, &c, 1);
+    }
+}
+
 /**
- * Wake one parked worker; if none, poke the poller so whoever is
- * the driver returns from its blocking wait.
+ * Wake one parked worker; if none, only pipe-wake the driver when
+ * it is actually blocked in poll. When it is in user space the
+ * driver will observe the new work on its next try_get_coro /
+ * process_posts pass, so the pipe wake is redundant -- and the
+ * observed 17% wake_pipe volume at conn=16 was hurting throughput
+ * by forcing early returns from poll with events <= 1.
  */
 static void _sched_wake_worker(scheduler_t* sched) {
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
+#ifdef XYLEM_SCHED_STATS
+            atomic_fetch_add_explicit(
+                &_sched_stat_wake_sem, 1, memory_order_relaxed);
+#endif
             platform_sem_post(sched->workers[i].sem);
             return;
         }
     }
-    _sched_wake_poller(sched);
+    if (atomic_load_explicit(
+            &sched->driver_in_poll, memory_order_seq_cst)) {
+        _sched_wake_poller(sched);
+    }
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
@@ -560,7 +597,25 @@ static mco_coro* _sched_find_work(
 #ifdef XYLEM_SCHED_STATS
         uint64_t t0 = _sched_now_ns();
 #endif
+        /**
+         * Publish that we are about to block. Producers of non-fd
+         * wakeups pipe-wake only while this is true; otherwise the
+         * driver is guaranteed to observe the new work on its next
+         * try_get_coro / process_posts pass. Re-check the runq + posts
+         * after publishing so a producer that beat the store to true
+         * still reaches the driver before it blocks.
+         */
+        atomic_store_explicit(
+            &sched->driver_in_poll, true, memory_order_seq_cst);
+        co = _sched_try_get_coro(sched, w);
+        if (co) {
+            atomic_store_explicit(
+                &sched->driver_in_poll, false, memory_order_relaxed);
+            return co;
+        }
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+        atomic_store_explicit(
+            &sched->driver_in_poll, false, memory_order_relaxed);
 #ifdef XYLEM_SCHED_STATS
         uint64_t t1 = _sched_now_ns();
         atomic_fetch_add_explicit(
@@ -918,6 +973,11 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     if (atomic_load_explicit(
             &sched->nspinning, memory_order_relaxed) == 0) {
         _sched_wake_worker(sched);
+    } else {
+#ifdef XYLEM_SCHED_STATS
+        atomic_fetch_add_explicit(
+            &_sched_stat_wake_skipped, 1, memory_order_relaxed);
+#endif
     }
 }
 
@@ -963,6 +1023,11 @@ void scheduler_schedule_batch(
     if (atomic_load_explicit(
             &sched->nspinning, memory_order_relaxed) == 0) {
         _sched_wake_worker(sched);
+    } else {
+#ifdef XYLEM_SCHED_STATS
+        atomic_fetch_add_explicit(
+            &_sched_stat_wake_skipped, 1, memory_order_relaxed);
+#endif
     }
 }
 
@@ -1038,7 +1103,9 @@ int scheduler_post(
     mpsc_push(&sched->posts, &req->node);
     /**
      * A spinning worker will drain posts on its next blocking poll
-     * without a wakeup. Only poke when everyone is idle/parked.
+     * without a wakeup. Only poke when everyone is idle/parked;
+     * _sched_wake_worker's pipe fall-through is driver_in_poll
+     * gated so a busy driver is not spuriously woken.
      */
     if (atomic_load(&sched->nspinning) == 0) {
         _sched_wake_worker(sched);
