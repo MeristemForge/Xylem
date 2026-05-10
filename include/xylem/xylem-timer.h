@@ -114,7 +114,9 @@ extern bool xylem_timer_cancel(xylem_timer_t* t);
  * dispatched; resetting a one-shot whose fire has already run is
  * not supported.
  *
- * @param t         Timer handle.
+ * Safe with @p t == NULL (no-op, returns false).
+ *
+ * @param t         Timer handle, or NULL.
  * @param delay_ms  New delay in milliseconds. Also becomes the new
  *                  period for periodic timers.
  *

@@ -130,5 +130,8 @@ bool xylem_timer_cancel(xylem_timer_t* t) {
 }
 
 bool xylem_timer_reset(xylem_timer_t* t, uint64_t delay_ms) {
+    if (!t) {
+        return false;
+    }
     return sched_timer_reset(t->st, delay_ms);
 }
