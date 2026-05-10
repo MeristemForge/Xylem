@@ -21,10 +21,8 @@
 
 /**
  * Scheduling model
- * ----------------
  *
  * N worker threads cooperate through a three-tier runnable pool:
- *
  *   1. per-worker `runnext` slot   - single LIFO hand-off, cache-hot
  *   2. per-worker work-stealing    - owner pushes/pops the tail, other
  *      deque (wsdeque)               workers steal from the head
@@ -32,18 +30,20 @@
  *                                    injection point for cross-thread
  *                                    scheduler_schedule() callers
  *
- * When a worker runs out of local work it spins a few times (non-
- * blocking polls + steals). The last remaining spinner does a
- * blocking poll that also processes timers and deferred posts, so
- * IO/timers/posts never starve even when all other workers are idle.
- * Workers without work eventually park on a per-worker semaphore;
- * scheduler_schedule wakes one parked worker on each push.
+ * When a worker runs out of local work it becomes a "searcher" and
+ * does a few non-blocking poll+steal rounds. Searchers are throttled
+ * to half the pool (Go/Tokio nspinning pattern) so a busy system
+ * does not spend its cycles probing empty queues. The last searcher
+ * out becomes the "driver": it owns the blocking poll that services
+ * IO, timers and deferred posts, handing the role off as soon as
+ * another worker starts searching. Non-searcher / non-driver workers
+ * park on a per-worker semaphore; cross-scheduler scheduler_schedule
+ * and scheduler_post wake at most one parked worker per push.
  *
  * Coroutine parking flows through scheduler_park: the park callback
- * is invoked *after* mco_yield returns, so a wakeup source can never
- * observe the coroutine pointer before the yield has actually
- * suspended it. iowait.c relies on this to avoid schedule-before-
- * yield races.
+ * runs *after* mco_yield returns, so a wakeup source can never
+ * observe the coroutine pointer before the yield has suspended it.
+ * iowait.c relies on this to avoid schedule-before-yield races.
  */
 
 #include "scheduler.h"
@@ -109,7 +109,6 @@ struct scheduler_s {
     _Atomic bool          running;
     bool                  joined;
     _Atomic int32_t       nspinning;
-    _Atomic int32_t       nparked;
     _Atomic int64_t       alive;
     _Atomic uint64_t      timer_last_tick_ms;
     /**
@@ -192,7 +191,10 @@ static void _sched_wake_poller(scheduler_t* sched) {
     }
 }
 
-/* Wake one parked worker; if none, poke the poller to unblock epoll_wait. */
+/**
+ * Wake one parked worker; if none, poke the poller so whoever is
+ * the driver returns from its blocking wait.
+ */
 static void _sched_wake_worker(scheduler_t* sched) {
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
@@ -204,7 +206,6 @@ static void _sched_wake_worker(scheduler_t* sched) {
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
-    /* runnext first: LIFO hand-off is cache-hot. */
     mco_coro* co = atomic_exchange(&w->runnext, NULL);
     if (co) {
         return co;
@@ -216,7 +217,10 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     }
 
     {
-        /* Fair share from global runq to avoid one worker monopolizing it. */
+        /**
+         * Fair share from global runq: cap per-grab so one worker
+         * can never monopolise the queue.
+         */
         queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
         int32_t n = runq_pop_batch(
             sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
@@ -249,7 +253,7 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
-/* ms until the earliest timer fires, lock held. -1 if empty. */
+/* ms until the earliest timer fires, or -1 if none. Caller holds timer_lock. */
 static int _sched_timeout_locked(scheduler_t* sched, uint64_t now) {
     heap_node_t* root = heap_peek(&sched->timers);
     if (!root) {
@@ -339,11 +343,10 @@ static void _sched_process_io(
     for (int i = 0; i < n; i++) {
         /**
          * ud == NULL is the sentinel for our own wakeup pipe; every
-         * other registration goes through iowait with a
+         * other registration comes from iowait with a
          * generation-tagged ud.
          */
         if (cqes[i].ud == NULL) {
-            /* Drain so the pipe can be re-triggered. */
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
             }
@@ -381,8 +384,10 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         w->park_fn  = NULL;
         w->park_arg = NULL;
         if (!fn(co, arg)) {
-            /* Park declined: prefer local deque, fall back to global
-               runq on overflow so we never drop a live coroutine. */
+            /**
+             * Park declined: reschedule. Fall back to global runq on
+             * local overflow so we never drop a live coroutine.
+             */
             if (wsdeque_push(w->deque, co) != 0) {
                 _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
                 runq_push(w->sched->runq, &ctx->runq_node);
@@ -397,73 +402,6 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
     _sched_handle_yield(w, co);
 }
 
-/**
- * Spin with non-blocking polls looking for a runnable coroutine.
- * Returns NULL if all attempts exhausted.
- */
-static mco_coro* _sched_try_spin(
-    scheduler_t* sched,
-    _sched_worker_t* w,
-    platform_poller_cqe_t* cqes) {
-    for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
-        int n = platform_poller_wait(&sched->poller, cqes, 0);
-        if (n > 0) {
-            _sched_process_io(sched, cqes, n);
-        }
-
-        mco_coro* co = _sched_try_get_coro(sched, w);
-        if (co) {
-            return co;
-        }
-    }
-    return NULL;
-}
-
-/**
- * Blocking poll loop for the last spinner. Services IO, timers, and
- * posts so they cannot be starved when every other worker is idle.
- */
-static mco_coro* _sched_poll_blocking(
-    scheduler_t* sched,
-    _sched_worker_t* w,
-    platform_poller_cqe_t* cqes) {
-    for (;;) {
-        if (!atomic_load(&sched->running)) {
-            break;
-        }
-
-        int poll_ms = _sched_timer_next_timeout(sched);
-        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
-            poll_ms = SCHED_MAX_POLL_MS;
-        }
-        int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
-        if (n > 0) {
-            _sched_process_io(sched, cqes, n);
-        }
-
-        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        _sched_process_timers(sched, now);
-
-        bool expected = false;
-        if (atomic_compare_exchange_strong(
-                &sched->processing, &expected, true)) {
-            _sched_process_posts(sched);
-            atomic_store(&sched->processing, false);
-        }
-
-        mco_coro* co = _sched_try_get_coro(sched, w);
-        if (co) {
-            return co;
-        }
-
-        /* Another worker took over spinning; we can stop. */
-        if (atomic_load(&sched->nspinning) > 0) {
-            break;
-        }
-    }
-    return NULL;
-}
-
 static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
     for (;;) {
         mco_coro* co = _sched_try_get_coro(sched, w);
@@ -475,14 +413,12 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
 }
 
 /**
- * Cooperative timer tick on the fast path.
+ * Opportunistic timer service on the worker fast path.
  *
- * Without this, a CPU-bound workload that keeps every worker busy on
- * runnable coroutines never reaches _sched_poll_blocking, so timers
- * (runtime_sleep, iowait deadlines) would starve indefinitely.
- *
- * The CAS on timer_last_tick_ms elects a single worker per window,
- * so the hot path for all other workers is just one atomic load.
+ * A CPU-bound workload keeps every worker busy on runnable coroutines
+ * and nobody reaches the driver's blocking poll, so timers would
+ * starve without this tick. One CAS on timer_last_tick_ms elects a
+ * single worker per window; everyone else pays just an atomic load.
  */
 static void _sched_timer_tick(scheduler_t* sched) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -502,6 +438,86 @@ static void _sched_timer_tick(scheduler_t* sched) {
     _sched_process_timers(sched, now);
 }
 
+/**
+ * Find a runnable coroutine, or return NULL to tell the caller to park.
+ *
+ * Implements the Go/Tokio nspinning pattern: at most half the workers
+ * are allowed to be searching at once, and the last searcher out of
+ * the spin phase becomes the driver that runs the blocking-poll loop
+ * (IO / timers / posts). The driver hands off as soon as another
+ * worker starts searching, so blocking-poll duty is never pinned.
+ */
+static mco_coro* _sched_find_work(
+    scheduler_t*           sched,
+    _sched_worker_t*       w,
+    platform_poller_cqe_t* cqes) {
+    mco_coro* co = _sched_try_get_coro(sched, w);
+    if (co) {
+        return co;
+    }
+
+    int32_t ns = atomic_fetch_add(&sched->nspinning, 1) + 1;
+    if (sched->nworkers > 1 && ns * 2 > sched->nworkers) {
+        atomic_fetch_sub(&sched->nspinning, 1);
+        return NULL;
+    }
+
+    for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
+        int n = platform_poller_wait(&sched->poller, cqes, 0);
+        if (n > 0) {
+            _sched_process_io(sched, cqes, n);
+        }
+        co = _sched_try_get_coro(sched, w);
+        if (co) {
+            atomic_fetch_sub(&sched->nspinning, 1);
+            return co;
+        }
+    }
+
+    /* Last searcher out becomes the driver; everyone else parks. */
+    int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
+    if (prev != 1) {
+        return NULL;
+    }
+
+    while (atomic_load(&sched->running)) {
+        int poll_ms = _sched_timer_next_timeout(sched);
+        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
+            poll_ms = SCHED_MAX_POLL_MS;
+        }
+        int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+        if (n > 0) {
+            _sched_process_io(sched, cqes, n);
+        }
+
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        _sched_process_timers(sched, now);
+
+        /**
+         * mpsc_pop is single-consumer; CAS elects exactly one drainer
+         * at a time. Losers skip this pass -- the winner (or our next
+         * round after it releases) will pick the work up.
+         */
+        bool expected = false;
+        if (atomic_compare_exchange_strong(
+                &sched->processing, &expected, true)) {
+            _sched_process_posts(sched);
+            atomic_store(&sched->processing, false);
+        }
+
+        co = _sched_try_get_coro(sched, w);
+        if (co) {
+            return co;
+        }
+
+        /* Another worker is searching -- hand the driver role over. */
+        if (atomic_load(&sched->nspinning) > 0) {
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
 static int _sched_worker_entry(void* arg) {
     _sched_worker_t* w = (_sched_worker_t*)arg;
     scheduler_t* sched = w->sched;
@@ -512,37 +528,15 @@ static int _sched_worker_entry(void* arg) {
     while (atomic_load(&sched->running)) {
         _sched_timer_tick(sched);
 
-        mco_coro* co = _sched_try_get_coro(sched, w);
-
+        mco_coro* co = _sched_find_work(sched, w, cqes);
         if (co) {
             _sched_run_coro(w, co);
-            continue;
-        }
-
-        atomic_fetch_add(&sched->nspinning, 1);
-
-        co = _sched_try_spin(sched, w, cqes);
-        if (co) {
-            atomic_fetch_sub(&sched->nspinning, 1);
-            _sched_run_coro(w, co);
-            continue;
-        }
-
-        /* Last spinner does a blocking poll so IO is never missed. */
-        int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
-        if (prev == 1) {
-            co = _sched_poll_blocking(sched, w, cqes);
-            if (co) {
-                _sched_run_coro(w, co);
-            }
             continue;
         }
 
         atomic_store(&w->parked, true);
-        atomic_fetch_add(&sched->nparked, 1);
         platform_sem_wait(w->sem);
         atomic_store(&w->parked, false);
-        atomic_fetch_sub(&sched->nparked, 1);
     }
 
     _sched_drain(w, sched);
@@ -759,45 +753,51 @@ void scheduler_stop(scheduler_t* sched) {
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
-    /**
-     * Fast path requires `sched == _tls_worker->sched` so a process
-     * running more than one scheduler still dispatches cross-
-     * scheduler calls via the slow path.
-     */
-    if (_tls_worker && _tls_worker->sched == sched) {
+    /* External thread or cross-scheduler: straight to global runq. */
+    if (!_tls_worker || _tls_worker->sched != sched) {
+        runq_push(sched->runq, &ctx->runq_node);
+    } else {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
-        if (!old) {
-            return;
-        }
-        /* runnext occupied; try local deque. */
-        if (wsdeque_push(_tls_worker->deque, old) == 0) {
-            return;
-        }
-        /* Deque full: drain half to global runq, then retry. */
-        mco_coro* batch[SCHED_DEQUE_HALF];
-        int32_t n = wsdeque_pop_half(_tls_worker->deque, batch, SCHED_DEQUE_HALF);
-        if (n > 0) {
-            queue_node_t* nodes[SCHED_DEQUE_HALF];
+        if (old && wsdeque_push(_tls_worker->deque, old) != 0) {
+            /**
+             * Deque full: spill the front half plus the displaced task
+             * into the global runq in one pass. Mirrors Go's
+             * runqputslow and Tokio's push_overflow -- a single
+             * batched push is simpler than splitting and racing
+             * other stealers.
+             */
+            mco_coro* batch[SCHED_DEQUE_HALF + 1];
+            int32_t n = wsdeque_pop_half(
+                _tls_worker->deque, batch, SCHED_DEQUE_HALF);
+            batch[n++] = old;
+
+            queue_node_t* nodes[SCHED_DEQUE_HALF + 1];
             for (int32_t i = 0; i < n; i++) {
                 _coro_ctx_t* c =
                     (_coro_ctx_t*)mco_get_user_data(batch[i]);
                 nodes[i] = &c->runq_node;
             }
             runq_push_batch(sched->runq, nodes, n);
-            _sched_wake_worker(sched);
         }
-        if (wsdeque_push(_tls_worker->deque, old) == 0) {
-            return;
-        }
-        /* Still full: last-resort global runq. */
-        _coro_ctx_t* old_ctx = (_coro_ctx_t*)mco_get_user_data(old);
-        runq_push(sched->runq, &old_ctx->runq_node);
-        _sched_wake_worker(sched);
-        return;
     }
-    /* External thread: use global runq. */
-    runq_push(sched->runq, &ctx->runq_node);
-    _sched_wake_worker(sched);
+
+    /**
+     * Ensure at least one worker is searching so the new task gets
+     * picked up promptly. Throttled on nspinning -- mirrors Go
+     * wakep() and Tokio notify_parked: if a searcher already exists
+     * it will discover the task via steal / runq grab on its next
+     * round, so waking another worker would only contend on CAS.
+     * When the searcher takes a task and starts running, nspinning
+     * drops back to 0; the next push wakes the next worker, so
+     * parallelism expands one step at a time until load is spread
+     * across cores. Without this, the local-deque fast path above
+     * can leave newly scheduled work invisible to parked workers
+     * until the deque overflows (up to 1024 tasks).
+     */
+    if (atomic_load_explicit(
+            &sched->nspinning, memory_order_relaxed) == 0) {
+        _sched_wake_worker(sched);
+    }
 }
 
 void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
@@ -895,9 +895,9 @@ void sched_timer_destroy(sched_timer_t* timer) {
         return;
     }
     /**
-     * stop() first so no new fires will be dequeued. A fire already
-     * in flight holds its own reference, so dropping the creator
-     * reference here is safe; last unref runs free().
+     * stop() so no new fires are dequeued. A fire already in flight
+     * holds its own ref, so dropping the creator ref is safe; the
+     * last unref runs free().
      */
     sched_timer_stop(timer);
     _sched_timer_unref(timer);
@@ -956,9 +956,11 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
         heap_remove(&sched->timers, &timer->heap_node);
     }
     timer->timeout = now + timeout_ms;
-    /* Periodic timers adopt timeout_ms as the new repeat interval so
+    /**
+     * Periodic timers adopt timeout_ms as the new repeat interval so
      * reset() restarts the clock coherently for both one-shot and
-     * periodic variants. */
+     * periodic variants.
+     */
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
     }
@@ -966,8 +968,10 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
-    /* Mirrors sched_timer_start: recompute in case blocking poll holds
-     * a stale root timeout. */
+    /**
+     * Mirrors sched_timer_start: recompute in case blocking poll
+     * holds a stale root timeout.
+     */
     _sched_wake_poller(sched);
     return was_active;
 }
