@@ -25,7 +25,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 #define EVERY_TARGET      5
 
 static void _watchdog_cb(xylem_timer_t* t, void* ud) {
