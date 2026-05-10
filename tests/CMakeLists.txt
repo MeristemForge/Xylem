@@ -29,6 +29,7 @@ xylem_add_test(mutex)
 xylem_add_test(channel)
 xylem_add_test(cond)
 xylem_add_test(runtime)
+xylem_add_test(timer)
 
 if(XYLEM_ENABLE_HTTP)
     xylem_add_test(http)
