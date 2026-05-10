@@ -94,6 +94,10 @@ struct _iowait_park_s {
     iowait_t*       w;
     _iowait_dir_t*  dir;
     iowait_result_t result;
+#ifdef XYLEM_IOWAIT_STATS
+    uint64_t        park_at_ns;
+    uint64_t        wake_at_ns;
+#endif
 };
 
 /**
@@ -304,6 +308,43 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms;
 }
 
+#ifdef XYLEM_IOWAIT_STATS
+#include <stdio.h>
+#include <time.h>
+
+static _Atomic uint64_t _iowait_stat_samples;
+static _Atomic uint64_t _iowait_stat_wait_ns;   /* park_at -> wake_at */
+static _Atomic uint64_t _iowait_stat_resume_ns; /* wake_at -> resume_at */
+
+static uint64_t _iowait_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+void iowait_stats_reset(void) {
+    atomic_store(&_iowait_stat_samples, 0);
+    atomic_store(&_iowait_stat_wait_ns, 0);
+    atomic_store(&_iowait_stat_resume_ns, 0);
+}
+
+void iowait_stats_dump(const char* tag) {
+    uint64_t n   = atomic_load(&_iowait_stat_samples);
+    uint64_t tw  = atomic_load(&_iowait_stat_wait_ns);
+    uint64_t tr  = atomic_load(&_iowait_stat_resume_ns);
+    if (n == 0) {
+        fprintf(stderr, "[iowait-stats %s] no samples\n", tag);
+        return;
+    }
+    fprintf(stderr,
+            "[iowait-stats %s] samples=%llu avg_wait=%llu ns avg_resume=%llu ns\n",
+            tag,
+            (unsigned long long)n,
+            (unsigned long long)(tw / n),
+            (unsigned long long)(tr / n));
+}
+#endif
+
 /**
  * Ensure the fd is registered with the poller.
  *
@@ -393,6 +434,9 @@ static _iowait_park_t* _iowait_claim(
     _iowait_park_t* p = atomic_exchange(slot, NULL);
     if (p) {
         p->result = result;
+#ifdef XYLEM_IOWAIT_STATS
+        p->wake_at_ns = _iowait_now_ns();
+#endif
     }
     return p;
 }
@@ -455,6 +499,10 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     p->co     = co;
     p->result = IOWAIT_READY;
+#ifdef XYLEM_IOWAIT_STATS
+    p->park_at_ns = _iowait_now_ns();
+    p->wake_at_ns = 0;
+#endif
 
     /**
      * Publish our park record. The slot is single-occupancy by
@@ -567,6 +615,22 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
 
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
+
+#ifdef XYLEM_IOWAIT_STATS
+    if (park.wake_at_ns != 0) {
+        uint64_t now = _iowait_now_ns();
+        atomic_fetch_add_explicit(
+            &_iowait_stat_wait_ns,
+            park.wake_at_ns - park.park_at_ns,
+            memory_order_relaxed);
+        atomic_fetch_add_explicit(
+            &_iowait_stat_resume_ns,
+            now - park.wake_at_ns,
+            memory_order_relaxed);
+        atomic_fetch_add_explicit(
+            &_iowait_stat_samples, 1, memory_order_relaxed);
+    }
+#endif
 
     iowait_result_t r = park.result;
     _iowait_unref(w);
