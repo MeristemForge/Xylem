@@ -35,9 +35,9 @@ typedef struct {
     uint16_t           port;
 } _ctx_t;
 
-static void _watchdog(void* arg) {
-    (void)arg;
-    xylem_sleep(SAFETY_TIMEOUT_MS);
+static void _watchdog_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
+    (void)ud;
     ASSERT(0 && "test timed out");
 }
 
@@ -87,10 +87,11 @@ static void _echo_main(void* arg) {
         .port  = TCP_PORT,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_spawn(_watchdog, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
     xylem_waitgroup_destroy(ctx.wg);
     xylem_channel_destroy(ctx.ready);
@@ -149,10 +150,11 @@ static void _fixed_main(void* arg) {
         .port  = TCP_PORT + 1,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_spawn(_watchdog, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
     xylem_spawn(_fixed_server, &ctx);
     xylem_spawn(_fixed_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
     xylem_waitgroup_destroy(ctx.wg);
     xylem_channel_destroy(ctx.ready);
@@ -213,10 +215,11 @@ static void _delim_main(void* arg) {
         .port  = TCP_PORT + 2,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_spawn(_watchdog, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
     xylem_spawn(_delim_server, &ctx);
     xylem_spawn(_delim_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
     xylem_waitgroup_destroy(ctx.wg);
     xylem_channel_destroy(ctx.ready);
@@ -284,10 +287,11 @@ static void _frame_main(void* arg) {
         .port  = TCP_PORT + 3,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_spawn(_watchdog, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
     xylem_spawn(_frame_server, &ctx);
     xylem_spawn(_frame_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
     xylem_waitgroup_destroy(ctx.wg);
     xylem_channel_destroy(ctx.ready);
@@ -309,9 +313,10 @@ static void _timeout_main(void* arg) {
     (void)arg;
     _ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
-    xylem_spawn(_watchdog, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
     xylem_spawn(_timeout_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
     xylem_waitgroup_destroy(ctx.wg);
     xylem_shutdown();
