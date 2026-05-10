@@ -247,13 +247,20 @@ extern bool sched_timer_stop(sched_timer_t* timer);
 /**
  * @brief Re-arm a timer with a new delay. Thread-safe.
  *
- * Preserves the cb, ud, and repeat interval that sched_timer_start()
- * last configured. If the timer was still pending, its queued fire
- * is cancelled; if it was inactive (never armed, callback already
- * dispatched), it is armed fresh.
+ * Preserves the cb and ud that sched_timer_start() last configured,
+ * and restarts the timer's clock from now:
+ *   - one-shot timers (repeat == 0) fire once, timeout_ms from now.
+ *   - periodic timers (repeat != 0) fire next in timeout_ms and
+ *     adopt timeout_ms as the new repeat interval for subsequent
+ *     fires.
+ *
+ * If the timer was still pending, its queued fire is cancelled; if
+ * it was inactive (never armed, callback already dispatched), it is
+ * armed fresh.
  *
  * @param timer       Timer handle, previously armed with sched_timer_start().
- * @param timeout_ms  New delay in milliseconds.
+ * @param timeout_ms  New delay in milliseconds. Also becomes the new
+ *                    repeat interval for periodic timers.
  *
  * @return true if a pending fire was cancelled before it ran.
  */

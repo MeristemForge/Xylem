@@ -29,10 +29,9 @@ typedef struct xylem_timer_s xylem_timer_t;
 /**
  * @brief Timer expiry callback.
  *
- * Runs on a scheduler worker thread, not inside a coroutine context.
- * Do not call coroutine-only primitives (xylem_sleep and friends)
- * from here; to do blocking or long-running work, xylem_spawn() a
- * coroutine from inside the callback.
+ * Not invoked in a coroutine context; do not call coroutine-only
+ * primitives (xylem_sleep and friends) from here. For blocking or
+ * long-running work, xylem_spawn() a coroutine from the callback.
  *
  * @param t   The timer that fired.
  * @param ud  User data from xylem_timer_after() / xylem_timer_every().
@@ -99,12 +98,25 @@ extern bool xylem_timer_cancel(xylem_timer_t* t);
 /**
  * @brief Re-arm a timer with a new delay. Thread-safe.
  *
- * Preserves the previously configured callback, user data, and --
- * for periodic timers -- the repeat interval. Typical use: sliding
- * idle-timeout ("reset the deadline whenever data arrives").
+ * Preserves the previously configured callback and user data, and
+ * restarts the timer's clock from now:
+ *   - one-shot timers (xylem_timer_after) fire once, @p delay_ms
+ *     from now.
+ *   - periodic timers (xylem_timer_every) fire next in @p delay_ms,
+ *     and @p delay_ms becomes the new repeat interval for every
+ *     subsequent fire.
+ *
+ * Typical uses: sliding idle-timeout ("reset the deadline whenever
+ * data arrives"), or adjusting a periodic timer's cadence without
+ * re-creating it.
+ *
+ * One-shot timers must be reset before their callback has been
+ * dispatched; resetting a one-shot whose fire has already run is
+ * not supported.
  *
  * @param t         Timer handle.
- * @param delay_ms  New delay in milliseconds.
+ * @param delay_ms  New delay in milliseconds. Also becomes the new
+ *                  period for periodic timers.
  *
  * @return true if a pending fire was cancelled before it ran.
  */

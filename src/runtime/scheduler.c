@@ -1021,7 +1021,13 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
         heap_remove(&sched->timers, &timer->heap_node);
     }
     timer->timeout = now + timeout_ms;
-    timer->active  = true;
+    /* Periodic timers adopt timeout_ms as the new repeat interval so
+     * reset() restarts the clock coherently for both one-shot and
+     * periodic variants. */
+    if (timer->repeat != 0) {
+        timer->repeat = timeout_ms;
+    }
+    timer->active = true;
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
