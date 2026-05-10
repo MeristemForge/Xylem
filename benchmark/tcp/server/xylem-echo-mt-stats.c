@@ -7,9 +7,10 @@
 
 #include "xylem.h"
 
-/* Project-internal header; only available when XYLEM_IOWAIT_STATS is
+/* Project-internal headers; only available when stats macros are
  * set. The benchmark build script wires this via -I and -D. */
 #include "runtime/iowait.h"
+#include "runtime/scheduler.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -19,7 +20,12 @@
 static void _dump(int sig) {
     char tag[32];
     snprintf(tag, sizeof(tag), "sig%d", sig);
+#ifdef XYLEM_IOWAIT_STATS
     iowait_stats_dump(tag);
+#endif
+#ifdef XYLEM_SCHED_STATS
+    scheduler_stats_dump(tag);
+#endif
     if (sig == SIGTERM || sig == SIGINT) {
         xylem_shutdown();
     }
@@ -75,12 +81,22 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT,  &sa, NULL);
 
+#ifdef XYLEM_IOWAIT_STATS
     iowait_stats_reset();
+#endif
+#ifdef XYLEM_SCHED_STATS
+    scheduler_stats_reset();
+#endif
 
     xylem_opts_t rt_opts = {0};
     rt_opts.workers      = workers;
     xylem_run(_acceptor, &port, &rt_opts);
 
+#ifdef XYLEM_IOWAIT_STATS
     iowait_stats_dump("final");
+#endif
+#ifdef XYLEM_SCHED_STATS
+    scheduler_stats_dump("final");
+#endif
     return 0;
 }

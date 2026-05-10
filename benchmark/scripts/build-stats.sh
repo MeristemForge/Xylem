@@ -14,7 +14,7 @@ mkdir -p "$BUILD" "$BIN"
 if [ ! -f "$BUILD/build.ninja" ]; then
     cmake -S "$ROOT" -B "$BUILD" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS='-O3 -DNDEBUG -DXYLEM_IOWAIT_STATS -flto' \
+        -DCMAKE_C_FLAGS='-O3 -DNDEBUG -DXYLEM_IOWAIT_STATS -DXYLEM_SCHED_STATS -flto' \
         -DXYLEM_ENABLE_TLS=OFF \
         -G Ninja >/dev/null
 fi
@@ -22,7 +22,7 @@ fi
 ninja -C "$BUILD" xylem >/dev/null
 LIB="$BUILD/libxylem.a"
 
-gcc -O3 -DNDEBUG -DXYLEM_IOWAIT_STATS -flto -Wall -Wextra \
+gcc -O3 -DNDEBUG -DXYLEM_IOWAIT_STATS -DXYLEM_SCHED_STATS -flto -Wall -Wextra \
     -I"$ROOT/include" -I"$ROOT/src" \
     "$BENCH/tcp/server/xylem-echo-mt-stats.c" \
     "$LIB" -lpthread -s -flto \

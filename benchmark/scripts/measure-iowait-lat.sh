@@ -36,4 +36,4 @@ done
 echo "conns=$CONNS size=${SIZE}B dur=${DUR}s workers=$WORKERS"
 printf "throughput=%s msg/s  p50=%s us  p99=%s us\n" "${tp:-?}" "${p50:-?}" "${p99:-?}"
 echo "--- stderr from server ---"
-grep '\[iowait-stats' /tmp/stats.stderr || echo "(no stats printed)"
+grep -E '\[(iowait|sched)-stats' /tmp/stats.stderr || echo "(no stats printed)"

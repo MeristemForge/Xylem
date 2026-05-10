@@ -191,6 +191,52 @@ static void _sched_wake_poller(scheduler_t* sched) {
     }
 }
 
+#ifdef XYLEM_SCHED_STATS
+#include <stdio.h>
+#include <time.h>
+
+static _Atomic uint64_t _sched_stat_poll_cycles;
+static _Atomic uint64_t _sched_stat_poll_block_ns;
+static _Atomic uint64_t _sched_stat_poll_events;
+static _Atomic uint64_t _sched_stat_driver_nonpoll_ns;
+static _Atomic uint64_t _sched_stat_driver_runs; /* # times a worker entered the driver loop */
+
+static uint64_t _sched_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+void scheduler_stats_reset(void) {
+    atomic_store(&_sched_stat_poll_cycles, 0);
+    atomic_store(&_sched_stat_poll_block_ns, 0);
+    atomic_store(&_sched_stat_poll_events, 0);
+    atomic_store(&_sched_stat_driver_nonpoll_ns, 0);
+    atomic_store(&_sched_stat_driver_runs, 0);
+}
+
+void scheduler_stats_dump(const char* tag) {
+    uint64_t cycles  = atomic_load(&_sched_stat_poll_cycles);
+    uint64_t block   = atomic_load(&_sched_stat_poll_block_ns);
+    uint64_t events  = atomic_load(&_sched_stat_poll_events);
+    uint64_t nonpoll = atomic_load(&_sched_stat_driver_nonpoll_ns);
+    uint64_t runs    = atomic_load(&_sched_stat_driver_runs);
+    if (cycles == 0) {
+        fprintf(stderr, "[sched-stats %s] no poll cycles\n", tag);
+        return;
+    }
+    fprintf(stderr,
+            "[sched-stats %s] poll_cycles=%llu avg_block=%llu ns "
+            "avg_events=%.2f nonpoll_total=%llu ms driver_runs=%llu\n",
+            tag,
+            (unsigned long long)cycles,
+            (unsigned long long)(block / cycles),
+            (double)events / (double)cycles,
+            (unsigned long long)(nonpoll / 1000000ull),
+            (unsigned long long)runs);
+}
+#endif
+
 /**
  * Wake one parked worker; if none, poke the poller so whoever is
  * the driver returns from its blocking wait.
@@ -501,12 +547,33 @@ static mco_coro* _sched_find_work(
         return NULL;
     }
 
+#ifdef XYLEM_SCHED_STATS
+    atomic_fetch_add_explicit(
+        &_sched_stat_driver_runs, 1, memory_order_relaxed);
+#endif
+
     while (atomic_load(&sched->running)) {
         int poll_ms = _sched_timer_next_timeout(sched);
         if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
             poll_ms = SCHED_MAX_POLL_MS;
         }
+#ifdef XYLEM_SCHED_STATS
+        uint64_t t0 = _sched_now_ns();
+#endif
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
+#ifdef XYLEM_SCHED_STATS
+        uint64_t t1 = _sched_now_ns();
+        atomic_fetch_add_explicit(
+            &_sched_stat_poll_cycles, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(
+            &_sched_stat_poll_block_ns, t1 - t0, memory_order_relaxed);
+        if (n > 0) {
+            atomic_fetch_add_explicit(
+                &_sched_stat_poll_events,
+                (uint64_t)n,
+                memory_order_relaxed);
+        }
+#endif
         if (n > 0) {
             _sched_process_io(sched, cqes, n);
         }
@@ -527,6 +594,15 @@ static mco_coro* _sched_find_work(
         }
 
         co = _sched_try_get_coro(sched, w);
+#ifdef XYLEM_SCHED_STATS
+        {
+            uint64_t t2 = _sched_now_ns();
+            atomic_fetch_add_explicit(
+                &_sched_stat_driver_nonpoll_ns,
+                t2 - t1,
+                memory_order_relaxed);
+        }
+#endif
         if (co) {
             return co;
         }

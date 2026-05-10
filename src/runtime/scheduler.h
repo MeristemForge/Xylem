@@ -320,3 +320,25 @@ typedef void (*scheduler_idle_fn_t)(void* ud);
  */
 extern void scheduler_set_idle_cb(
     scheduler_t* sched, scheduler_idle_fn_t cb, void* ud);
+
+#ifdef XYLEM_SCHED_STATS
+/**
+ * @brief Reset driver-loop instrumentation counters.
+ *
+ * Only defined when built with -DXYLEM_SCHED_STATS. Used by
+ * microbenchmarks to isolate a measurement window.
+ */
+extern void scheduler_stats_reset(void);
+
+/**
+ * @brief Dump driver-loop instrumentation counters to stderr.
+ *
+ * Reports, across all workers that have acted as driver:
+ *   - poll_cycles       : total platform_poller_wait calls
+ *   - avg_block_ns      : average time spent blocked inside poll
+ *   - avg_events        : events returned per poll on average
+ *   - nonpoll_total_ms  : total ms spent between poll calls
+ *   - driver_runs       : times a worker transitioned into driver
+ */
+extern void scheduler_stats_dump(const char* tag);
+#endif
