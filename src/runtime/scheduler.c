@@ -113,16 +113,10 @@ struct scheduler_s {
     _Atomic int64_t       alive;
     _Atomic uint64_t      timer_last_tick_ms;
     /**
-     * Central registry of every coroutine shell spawned on this
-     * scheduler. scheduler_spawn links the coro in, the MCO_DEAD
-     * branch of _sched_handle_yield unlinks it. On scheduler_destroy
-     * the list is walked to reclaim shells of coroutines that were
-     * still parked (waiting on channel/mutex/iowait/timer) at
-     * shutdown; without it their mco_coro + _coro_ctx_t leak because
-     * parked coros are not reachable through runq / deque / runnext.
-     *
-     * Guarded by registry_lock rather than a mutex because the
-     * critical sections are pure list ops and never park.
+     * Covers coroutines parked on channels/mutexes/iowait/timers
+     * which are not reachable through runq/deque/runnext and would
+     * otherwise leak on destroy. Spin lock because critical sections
+     * are pure list ops and never park.
      */
     list_t                registry;
     spin_t                registry_lock;
@@ -147,15 +141,9 @@ typedef struct {
 /**
  * sched_timer_s
  *
- * All non-atomic fields are mutated under sched->timer_lock.
- *
- * refcnt pins the timer across the in-flight-fire window.
- * _sched_process_timers dequeues under the lock, takes a ref, and
- * releases the lock before invoking cb; a racing sched_timer_destroy
- * can then drop the creator's ref without freeing the object out
- * from under the still-running callback. The object is freed on the
- * last unref, which is what makes destroy safe to call concurrently
- * with an in-flight fire.
+ * refcnt pins the timer across the in-flight-fire window so a racing
+ * sched_timer_destroy can drop the creator's ref without freeing the
+ * object out from under the still-running callback.
  */
 struct sched_timer_s {
     heap_node_t      heap_node;
@@ -204,7 +192,7 @@ static void _sched_wake_poller(scheduler_t* sched) {
     }
 }
 
-/* Wake one parked worker via its semaphore. */
+/* Wake one parked worker; if none, poke the poller to unblock epoll_wait. */
 static void _sched_wake_worker(scheduler_t* sched) {
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
@@ -212,12 +200,11 @@ static void _sched_wake_worker(scheduler_t* sched) {
             return;
         }
     }
-    /* No parked worker found -- wake the poller to unblock epoll_wait. */
     _sched_wake_poller(sched);
 }
 
 static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
-    /* Highest priority: runnext slot (LIFO, cache-hot). */
+    /* runnext first: LIFO hand-off is cache-hot. */
     mco_coro* co = atomic_exchange(&w->runnext, NULL);
     if (co) {
         return co;
@@ -229,12 +216,11 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     }
 
     {
-        /* Grab a fair share: at most SCHED_RUNQ_GRAB_MAX/nworkers+1. */
+        /* Fair share from global runq to avoid one worker monopolizing it. */
         queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
         int32_t n = runq_pop_batch(
             sched->runq, nodes, SCHED_RUNQ_GRAB_MAX / sched->nworkers + 1);
         if (n > 0) {
-            /* Push all but the first into the local deque. */
             for (int32_t i = 1; i < n; i++) {
                 _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
                 wsdeque_push(w->deque, c->co);
@@ -252,7 +238,6 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
             int32_t n = wsdeque_steal_half(
                 sched->workers[idx].deque, batch, SCHED_DEQUE_HALF);
             if (n > 0) {
-                /* Push all but the first into our local deque. */
                 for (int32_t j = 1; j < n; j++) {
                     wsdeque_push(w->deque, batch[j]);
                 }
@@ -264,7 +249,7 @@ static mco_coro* _sched_try_get_coro(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
-/* Compute ms until the earliest timer fires, with lock held. Returns -1 if empty. */
+/* ms until the earliest timer fires, lock held. -1 if empty. */
 static int _sched_timeout_locked(scheduler_t* sched, uint64_t now) {
     heap_node_t* root = heap_peek(&sched->timers);
     if (!root) {
@@ -306,21 +291,14 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
                     t->active = false;
                 }
                 /**
-                 * Snapshot cb/ud under the lock so a concurrent
-                 * sched_timer_start() cannot substitute a different
-                 * callback between dequeue and invocation. Delivering
-                 * the snapshot that was armed-at-dequeue is sufficient:
-                 * a concurrent start() that races this fire is simply
-                 * serviced on the next pass.
+                 * Snapshot cb/ud under lock so a concurrent start()
+                 * cannot swap the callback between dequeue and
+                 * invocation; a racing start() is simply serviced on
+                 * the next pass.
                  *
-                 * Pin the timer object across the unlocked cb call.
-                 * sched_timer_destroy may race in after we unlock and
-                 * drop the creator's reference; the extra ref taken
-                 * here keeps the object alive until cb returns, so
-                 * touching `timer` inside cb is safe. Callbacks still
-                 * must not assume the timer is armed after they run,
-                 * and must keep `ud`'s backing object alive via their
-                 * own mechanism.
+                 * Pin the timer across the unlocked cb call so a
+                 * racing destroy that drops the creator's ref does
+                 * not free the object while cb is running.
                  */
                 _sched_timer_ref(t);
                 timer = t;
@@ -339,7 +317,6 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
         _sched_timer_unref(timer);
     }
 
-    /* Return ms until next timer, or -1 if none. */
     mtx_lock(&sched->timer_lock);
     int timeout = _sched_timeout_locked(sched, now_ms);
     mtx_unlock(&sched->timer_lock);
@@ -361,13 +338,12 @@ static void _sched_process_io(
     int n) {
     for (int i = 0; i < n; i++) {
         /**
-         * ud == NULL is the sentinel for our own wakeup pipe: the
-         * only registration that passes NULL ud is sched->wakeup_sqe
-         * in scheduler_create. Everything else goes through iowait
-         * and carries a generation-tagged ud.
+         * ud == NULL is the sentinel for our own wakeup pipe; every
+         * other registration goes through iowait with a
+         * generation-tagged ud.
          */
         if (cqes[i].ud == NULL) {
-            /* Drain the wakeup pipe so it can be re-triggered. */
+            /* Drain so the pipe can be re-triggered. */
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
             }
@@ -405,9 +381,8 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         w->park_fn  = NULL;
         w->park_arg = NULL;
         if (!fn(co, arg)) {
-            /* Park declined: reschedule the coroutine. Prefer the local
-               deque; on overflow fall back to the global runq so we never
-               drop a live coroutine. */
+            /* Park declined: prefer local deque, fall back to global
+               runq on overflow so we never drop a live coroutine. */
             if (wsdeque_push(w->deque, co) != 0) {
                 _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
                 runq_push(w->sched->runq, &ctx->runq_node);
@@ -423,8 +398,8 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
 }
 
 /**
- * Spin with non-blocking polls, trying to find a runnable coroutine.
- * Returns the coroutine if found, NULL if all spin attempts exhausted.
+ * Spin with non-blocking polls looking for a runnable coroutine.
+ * Returns NULL if all attempts exhausted.
  */
 static mco_coro* _sched_try_spin(
     scheduler_t* sched,
@@ -445,8 +420,8 @@ static mco_coro* _sched_try_spin(
 }
 
 /**
- * Blocking poll loop for the last spinner. Services IO, timers, and posts
- * until work is found or another worker starts spinning.
+ * Blocking poll loop for the last spinner. Services IO, timers, and
+ * posts so they cannot be starved when every other worker is idle.
  */
 static mco_coro* _sched_poll_blocking(
     scheduler_t* sched,
@@ -481,7 +456,7 @@ static mco_coro* _sched_poll_blocking(
             return co;
         }
 
-        /* Another worker started spinning -- we can stop. */
+        /* Another worker took over spinning; we can stop. */
         if (atomic_load(&sched->nspinning) > 0) {
             break;
         }
@@ -502,16 +477,12 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
 /**
  * Cooperative timer tick on the fast path.
  *
- * _sched_process_timers is otherwise only reached by the last spinner
- * inside _sched_poll_blocking. If every worker stays permanently busy
- * on runnable coroutines (CPU-bound workload), no worker ever becomes
- * the last spinner and timers (runtime_sleep, iowait deadlines) would
- * be starved indefinitely.
+ * Without this, a CPU-bound workload that keeps every worker busy on
+ * runnable coroutines never reaches _sched_poll_blocking, so timers
+ * (runtime_sleep, iowait deadlines) would starve indefinitely.
  *
- * The tick runs at most once per SCHED_TIMER_TICK_MS across the whole
- * scheduler: a single CAS on timer_last_tick_ms elects one worker per
- * window to do the actual pass. All other workers pay only an atomic
- * load, so the hot path cost is negligible.
+ * The CAS on timer_last_tick_ms elects a single worker per window,
+ * so the hot path for all other workers is just one atomic load.
  */
 static void _sched_timer_tick(scheduler_t* sched) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -539,14 +510,8 @@ static int _sched_worker_entry(void* arg) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
-        /**
-         * Cooperative timer tick: ensures timers (runtime_sleep, iowait
-         * deadlines) cannot be starved when every worker stays busy on
-         * CPU-bound coroutines and nobody becomes the last spinner.
-         */
         _sched_timer_tick(sched);
 
-        /* Fast path: try to get a coroutine to run. */
         mco_coro* co = _sched_try_get_coro(sched, w);
 
         if (co) {
@@ -554,7 +519,6 @@ static int _sched_worker_entry(void* arg) {
             continue;
         }
 
-        /* No work found -- enter spinning state. */
         atomic_fetch_add(&sched->nspinning, 1);
 
         co = _sched_try_spin(sched, w, cqes);
@@ -564,10 +528,7 @@ static int _sched_worker_entry(void* arg) {
             continue;
         }
 
-        /**
-         * Spin failed. If we are the last spinner, do a blocking poll
-         * before parking so IO events are not missed.
-         */
+        /* Last spinner does a blocking poll so IO is never missed. */
         int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
         if (prev == 1) {
             co = _sched_poll_blocking(sched, w, cqes);
@@ -577,7 +538,6 @@ static int _sched_worker_entry(void* arg) {
             continue;
         }
 
-        /* Not the last spinner: park and wait for wakeup. */
         atomic_store(&w->parked, true);
         atomic_fetch_add(&sched->nparked, 1);
         platform_sem_wait(w->sem);
@@ -594,7 +554,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
 
     if (sched->workers) {
         if (!sched->joined) {
-            /* Wake all workers: both parked (sem) and polling (wakeup pipe). */
+            /* Wake both parked (sem) and polling (wakeup pipe) workers. */
             for (int32_t i = 0; i < nstarted; i++) {
                 platform_sem_post(sched->workers[i].sem);
                 _sched_wake_poller(sched);
@@ -620,14 +580,11 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     /**
-     * Force-drain the timer heap before releasing the lock and freeing
-     * the scheduler. Timers still armed at shutdown (for instance a
-     * runtime_sleep whose coroutine was abandoned by _sched_drain due
-     * to parking) would otherwise leak their sched_timer_t objects.
-     *
-     * We unref rather than free, because a timer callback already
-     * dequeued and in flight holds its own reference; the last unref
-     * is what actually frees the object.
+     * Force-drain timers still armed at shutdown (for instance a
+     * runtime_sleep whose coroutine was abandoned by _sched_drain)
+     * so their sched_timer_t objects do not leak. Unref rather than
+     * free because an in-flight callback holds its own reference;
+     * the last unref is what actually frees.
      */
     {
         mtx_lock(&sched->timer_lock);
@@ -758,17 +715,13 @@ void scheduler_destroy(scheduler_t* sched) {
     scheduler_stop(sched);
 
     /**
-     * Reclaim every coroutine shell that was still alive at shutdown.
-     * registry is the single authoritative list: it covers coros
-     * sitting in runq / deque / runnext as well as coros that were
-     * parked on channels, mutexes, iowait, or timers (none of
-     * which would otherwise be reachable at this point).
+     * Reclaim coroutine shells still alive at shutdown. Only registry
+     * sees coros parked on channels/mutexes/iowait/timers, which are
+     * not reachable through runq/deque/runnext.
      *
-     * This frees the mco_coro + _coro_ctx_t shell only. Heap objects
-     * a parked coroutine's stack still references (channel messages,
-     * user mallocs, iowait registrations) are not walked: that would
-     * require a cancellation protocol in every parking primitive,
-     * not a task for the scheduler alone.
+     * Shell-only reclaim: heap objects referenced from a parked
+     * coroutine's stack are not walked, as that would require a
+     * cancellation protocol in every parking primitive.
      */
     spin_lock(&sched->registry_lock);
     while (!list_empty(&sched->registry)) {
@@ -807,21 +760,20 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
     /**
-     * Fast path: the caller is itself a worker of this scheduler.
-     * The `sched == _tls_worker->sched` check is what makes the fast
-     * path safe in a process running more than one scheduler: cross-
-     * scheduler schedule falls through to the slow path.
+     * Fast path requires `sched == _tls_worker->sched` so a process
+     * running more than one scheduler still dispatches cross-
+     * scheduler calls via the slow path.
      */
     if (_tls_worker && _tls_worker->sched == sched) {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
         if (!old) {
             return;
         }
-        /* Slot was occupied -- push the old one to local deque. */
+        /* runnext occupied; try local deque. */
         if (wsdeque_push(_tls_worker->deque, old) == 0) {
             return;
         }
-        /* Local deque full: drain half to global runq, then retry. */
+        /* Deque full: drain half to global runq, then retry. */
         mco_coro* batch[SCHED_DEQUE_HALF];
         int32_t n = wsdeque_pop_half(_tls_worker->deque, batch, SCHED_DEQUE_HALF);
         if (n > 0) {
@@ -837,13 +789,13 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
         if (wsdeque_push(_tls_worker->deque, old) == 0) {
             return;
         }
-        /* Still full -- fallback to global runq. */
+        /* Still full: last-resort global runq. */
         _coro_ctx_t* old_ctx = (_coro_ctx_t*)mco_get_user_data(old);
         runq_push(sched->runq, &old_ctx->runq_node);
         _sched_wake_worker(sched);
         return;
     }
-    /* Slow path: external thread -- use global runq. */
+    /* External thread: use global runq. */
     runq_push(sched->runq, &ctx->runq_node);
     _sched_wake_worker(sched);
 }
@@ -880,16 +832,9 @@ void scheduler_park(
     scheduler_t* sched, scheduler_park_fn_t fn, void* arg) {
     (void)sched;
     /**
-     * park requires a coroutine execution context: a live worker TLS
-     * binding (so we can stash park_fn/arg) and a currently-running
-     * coroutine (so mco_yield has something to suspend). Neither
-     * holds for a caller that is a plain external pthread or a
-     * runtime-internal non-worker thread. Catch the misuse here
-     * rather than let it degenerate into a NULL deref / UB inside
-     * mco_yield.
-     *
-     * Runs on every park. Cost is a TLS read and a couple of NULL
-     * checks; negligible against the context switch that follows.
+     * park needs a worker TLS binding (to stash park_fn/arg) and a
+     * running coroutine (for mco_yield to suspend). Catch misuse
+     * here rather than UB-crash inside mco_yield.
      */
     if (!_tls_worker || !mco_running()) {
         xylem_loge(
@@ -926,10 +871,8 @@ int scheduler_post(
     req->ud = ud;
     mpsc_push(&sched->posts, &req->node);
     /**
-     * If a worker is already spinning it will drain posts on its
-     * next blocking-poll pass with no wakeup needed. Only poke the
-     * pool when every worker is idle/parked, in which case a
-     * wake_worker is required to make progress.
+     * A spinning worker will drain posts on its next blocking poll
+     * without a wakeup. Only poke when everyone is idle/parked.
      */
     if (atomic_load(&sched->nspinning) == 0) {
         _sched_wake_worker(sched);
@@ -952,15 +895,9 @@ void sched_timer_destroy(sched_timer_t* timer) {
         return;
     }
     /**
-     * stop() removes the timer from the heap so no further fires will
-     * be dequeued. A fire already in flight (dequeued but cb not yet
-     * invoked) still holds its own reference, so dropping the creator
-     * reference here will not free the object out from under it; the
-     * last ref drop (whichever path it happens on) runs free().
-     *
-     * Callbacks may still safely read `timer` while running, but must
-     * not assume the timer is armed after cb returns. `ud`'s backing
-     * object lifetime remains the caller's responsibility.
+     * stop() first so no new fires will be dequeued. A fire already
+     * in flight holds its own reference, so dropping the creator
+     * reference here is safe; last unref runs free().
      */
     sched_timer_stop(timer);
     _sched_timer_unref(timer);
@@ -988,10 +925,8 @@ void sched_timer_start(
     mtx_unlock(&sched->timer_lock);
 
     /**
-     * A worker in blocking poll picked a timeout from the old heap
-     * root; insertion of a new earlier root would otherwise wait
-     * out that stale timeout. Poking the wakeup pipe forces the
-     * blocking poll to return early and re-compute the timeout.
+     * A worker in blocking poll may be waiting on a stale (later)
+     * heap root timeout; poke it to recompute with the new root.
      */
     _sched_wake_poller(sched);
 }
@@ -1031,8 +966,8 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
-    /* A worker in blocking poll may be holding a stale root timeout;
-     * poke it to recompute. Mirrors sched_timer_start. */
+    /* Mirrors sched_timer_start: recompute in case blocking poll holds
+     * a stale root timeout. */
     _sched_wake_poller(sched);
     return was_active;
 }
