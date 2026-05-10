@@ -29,7 +29,7 @@
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
 
-#include "minicoro/minicoro.h"
+#include "runtime/minicoro/minicoro.h"
 
 #include <stdbool.h>
 #include <stdlib.h>

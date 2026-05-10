@@ -156,10 +156,6 @@ endif()
 target_include_directories(xylem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/net
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sync
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/encoding
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})

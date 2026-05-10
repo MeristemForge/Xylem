@@ -20,7 +20,7 @@
  */
 #include "runtime/runtime.h"
 #include "xylem/net/xylem-udp.h"
-#include "addr.h"
+#include "net/addr.h"
 #include "xylem/xylem-logger.h"
 
 #include "platform/platform-socket.h"

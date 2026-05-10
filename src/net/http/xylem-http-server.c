@@ -20,14 +20,14 @@
  */
 
 #include "xylem/net/http/xylem-http-server.h"
-#include "addr.h"
+#include "net/addr.h"
 #include "xylem/encoding/xylem-gzip.h"
 
 #include "http-common.h"
 #include "http-transport.h"
 
-#include "gzip/miniz/miniz.h"
-#include "http/llhttp/llhttp.h"
+#include "encoding/gzip/miniz/miniz.h"
+#include "net/http/llhttp/llhttp.h"
 
 #include <limits.h>
 #include <stdio.h>

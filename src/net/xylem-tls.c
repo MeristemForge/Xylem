@@ -21,7 +21,7 @@
 
 #include "xylem/net/xylem-tls.h"
 #include "runtime/runtime.h"
-#include "addr.h"
+#include "net/addr.h"
 
 #include "container/list.h"
 #include "xylem/xylem-logger.h"

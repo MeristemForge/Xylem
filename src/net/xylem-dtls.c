@@ -21,7 +21,7 @@
 
 #include "xylem/net/xylem-dtls.h"
 #include "runtime/runtime.h"
-#include "addr.h"
+#include "net/addr.h"
 #include "xylem/crypto/xylem-hmac256.h"
 #include "container/rbtree.h"
 #include "xylem/xylem-logger.h"

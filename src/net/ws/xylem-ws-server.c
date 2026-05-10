@@ -20,13 +20,13 @@
  */
 
 #include "xylem/net/ws/xylem-ws-server.h"
-#include "addr.h"
+#include "net/addr.h"
 
 #include "ws-common.h"
 #include "ws-handshake.h"
 #include "ws-transport.h"
 
-#include "http/llhttp/llhttp.h"
+#include "net/http/llhttp/llhttp.h"
 
 #include <stdlib.h>
 #include <string.h>

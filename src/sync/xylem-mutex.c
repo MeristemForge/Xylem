@@ -28,7 +28,7 @@
 #include "container/queue.h"
 #include "sync/spin.h"
 
-#include "minicoro/minicoro.h"
+#include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>

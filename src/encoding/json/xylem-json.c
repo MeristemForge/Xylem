@@ -21,7 +21,7 @@
 
 #include "xylem/encoding/xylem-json.h"
 
-#include "json/yyjson/yyjson.h"
+#include "encoding/json/yyjson/yyjson.h"
 
 #include <stdlib.h>
 #include <string.h>

@@ -20,7 +20,7 @@
  */
 #include "runtime/runtime.h"
 #include "xylem/net/xylem-rudp.h"
-#include "addr.h"
+#include "net/addr.h"
 
 #include "xylem/crypto/xylem-aes256.h"
 #include "xylem/encoding/xylem-bswap.h"
@@ -30,9 +30,9 @@
 #include "xylem/xylem-utils.h"
 
 #include "platform/platform-socket.h"
-#include "rudp/rudp-fec.h"
+#include "net/rudp/rudp-fec.h"
 
-#include "rudp/kcp/ikcp.h"
+#include "net/rudp/kcp/ikcp.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>

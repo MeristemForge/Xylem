@@ -21,7 +21,7 @@
 
 #include "xylem/encoding/xylem-gzip.h"
 
-#include "gzip/miniz/miniz.h"
+#include "encoding/gzip/miniz/miniz.h"
 
 #include <limits.h>
 #include <string.h>

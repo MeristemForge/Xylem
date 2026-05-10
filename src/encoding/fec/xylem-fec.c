@@ -25,7 +25,7 @@
 
 #include "thrds.h"
 
-#include "fec/reedsolomon-c/rs.h"
+#include "encoding/fec/reedsolomon-c/rs.h"
 
 #include <stdlib.h>
 #include <string.h>

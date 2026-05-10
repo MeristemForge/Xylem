@@ -20,7 +20,7 @@
  */
 
 #include "xylem/net/http/xylem-http-client.h"
-#include "addr.h"
+#include "net/addr.h"
 #include "xylem/encoding/xylem-gzip.h"
 #include "thrdpool.h"
 #include "xylem/xylem-utils.h"
@@ -30,7 +30,7 @@
 #include "http-common.h"
 #include "http-transport.h"
 
-#include "http/llhttp/llhttp.h"
+#include "net/http/llhttp/llhttp.h"
 
 #include <limits.h>
 #include <stddef.h>

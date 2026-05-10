@@ -24,7 +24,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
-#include "addr.h"
+#include "net/addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
