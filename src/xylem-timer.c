@@ -20,45 +20,23 @@
  */
 
 /**
- * xylem_timer_t wraps a sched_timer_t with its own refcount so a
+ * xylem_timer_t is a refcounted wrapper over sched_timer_t so a
  * cancel on one thread cannot free the handle while a fire is in
  * flight on another.
  *
- * Three reference roles (refcnt starts at 2 = creator + dispatch):
+ * Three ref roles (refcnt = 2 at creation: creator + dispatch):
+ *   creator  - paired with cancel.
+ *   dispatch - covers the gap between the scheduler snapshotting
+ *              cb/ud under timer_lock and the trampoline taking its
+ *              own fire ref; nothing in the trampoline itself can
+ *              protect that window. Released by the one-shot
+ *              trampoline on fire, by cancel otherwise.
+ *   fire     - transient; trampoline holds it across the user cb
+ *              so an in-cb self-cancel cannot free the handle
+ *              between cb return and the post-cb field reads.
  *
- *   creator ref
- *       Paired with xylem_timer_cancel. Always dropped by cancel.
- *
- *   dispatch ref
- *       Represents "the scheduler still has a fire to hand off, or
- *       is in the middle of handing one off". Covers the hazardous
- *       window between:
- *           scheduler: lock -> dequeue -> snapshot cb/ud -> unlock
- *       and:
- *           trampoline: enter -> take fire ref
- *       because nothing in the trampoline itself can protect that
- *       gap. Ownership rules:
- *           one-shot, trampoline ran       -> trampoline releases
- *           one-shot, cancel caught in heap-> cancel releases
- *           periodic (arm stays live)      -> cancel releases
- *       The `cancelled || periodic` gate in cancel, and the matching
- *       `!periodic` drop in the trampoline, encode these rules.
- *
- *   fire ref
- *       Transient; the trampoline takes one around the user callback
- *       so a cancel (or in-cb self-cancel) that drops creator /
- *       dispatch cannot free the handle while cb is still reading
- *       its fields.
- *
- * Fire-then-reset support: a one-shot whose trampoline already ran
- * has no dispatch ref. xylem_timer_reset detects this via
- * sched_timer_reset's was_active return and re-takes one, so the
- * next fire has a dispatch ref to release.
- *
- * Concurrency contract: xylem_timer_cancel is terminal. It must be
- * externally synchronized against xylem_timer_reset and any other
- * API on the same handle. After cancel returns, the handle is
- * invalid.
+ * xylem_timer_cancel is terminal: the caller must externally
+ * serialize it against any other API on the same handle.
  */
 
 #include "xylem/xylem-timer.h"
@@ -91,12 +69,12 @@ static void _timer_unref(xylem_timer_t* t) {
 static void _timer_fire(sched_timer_t* st, void* ud) {
     (void)st;
     xylem_timer_t* t = (xylem_timer_t*)ud;
-    /* Pin t across cb; cancel may race and drop creator+dispatch. */
+    /* Pin across cb: a racing cancel may drop creator + dispatch. */
     _timer_ref(t);
     t->cb(t, t->ud);
-    _timer_unref(t); /* fire ref */
+    _timer_unref(t); /* fire */
     if (!t->periodic) {
-        _timer_unref(t); /* dispatch ref: one-shot trampoline owns it */
+        _timer_unref(t); /* dispatch: one-shot trampoline owns it */
     }
 }
 
@@ -151,37 +129,27 @@ bool xylem_timer_cancel(xylem_timer_t* t) {
     t->st = NULL;
 
     /**
-     * Dispatch ref: cancel owns it when
-     *   - we caught a pending fire in the heap (cancelled=true), or
-     *   - the timer is periodic (trampoline never releases it).
-     * Otherwise (one-shot, already dequeued or already fired), the
-     * trampoline is in flight or done, and owns the release. Dropping
-     * it here would free the handle out from under a trampoline that
-     * has not yet reached its own fire-ref guard.
+     * Dispatch: only ours to drop when the trampoline will not.
+     *   cancelled   -> we caught the pending fire in the heap.
+     *   periodic    -> trampoline never releases it.
+     * For a one-shot that was already dequeued or already fired,
+     * the trampoline owns the release; dropping it here would free
+     * the handle before the trampoline takes its fire ref.
      */
     if (cancelled || t->periodic) {
         _timer_unref(t);
     }
-    _timer_unref(t); /* creator ref */
+    _timer_unref(t); /* creator */
     return cancelled;
 }
 
-bool xylem_timer_reset(xylem_timer_t* t, uint64_t delay_ms) {
+bool xylem_timer_reset(xylem_timer_t* t, uint64_t timeout_ms) {
     if (!t) {
         return false;
     }
-    /**
-     * sched_timer_reset reports whether the arm was still active.
-     *   was_active=true   -> previous dispatch ref is still live,
-     *                        reset just retargets it. No-op on refcount.
-     *   was_active=false  -> must be a one-shot whose trampoline
-     *                        already released the dispatch ref (or
-     *                        a periodic race that is effectively UB
-     *                        per the cancel-terminal contract).
-     *                        Re-take a dispatch ref so the fresh arm
-     *                        has one to hand off.
-     */
-    bool was_active = sched_timer_reset(t->st, delay_ms);
+    /* was_active=false means a one-shot trampoline already released
+     * the dispatch ref; re-take one for the fresh arm to hand off. */
+    bool was_active = sched_timer_reset(t->st, timeout_ms);
     if (!was_active && !t->periodic) {
         _timer_ref(t);
     }

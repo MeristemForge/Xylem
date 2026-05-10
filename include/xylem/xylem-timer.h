@@ -100,12 +100,12 @@ extern bool xylem_timer_cancel(xylem_timer_t* t);
  *
  * Preserves the previously configured callback and user data, and
  * restarts the timer's clock from now:
- *   - one-shot timers (xylem_timer_after) fire once, @p delay_ms
+ *   - one-shot timers (xylem_timer_after) fire once, @p timeout_ms
  *     from now. Resetting is supported both before and after the
  *     previous one-shot fire has been dispatched; the latter case
  *     re-arms the handle for a fresh single countdown.
- *   - periodic timers (xylem_timer_every) fire next in @p delay_ms,
- *     and @p delay_ms becomes the new repeat interval for every
+ *   - periodic timers (xylem_timer_every) fire next in @p timeout_ms,
+ *     and @p timeout_ms becomes the new repeat interval for every
  *     subsequent fire.
  *
  * Typical uses: sliding idle-timeout ("reset the deadline whenever
@@ -114,10 +114,11 @@ extern bool xylem_timer_cancel(xylem_timer_t* t);
  *
  * Safe with @p t == NULL (no-op, returns false).
  *
- * @param t         Timer handle, or NULL.
- * @param delay_ms  New delay in milliseconds. Also becomes the new
- *                  period for periodic timers.
+ * @param t           Timer handle, or NULL.
+ * @param timeout_ms  Delay in milliseconds until the next fire. Also
+ *                    becomes the new repeat interval for periodic
+ *                    timers.
  *
  * @return true if a pending fire was cancelled before it ran.
  */
-extern bool xylem_timer_reset(xylem_timer_t* t, uint64_t delay_ms);
+extern bool xylem_timer_reset(xylem_timer_t* t, uint64_t timeout_ms);
