@@ -685,8 +685,9 @@ static mco_coro* _sched_find_work(
                 memory_order_relaxed);
         }
 #endif
+        mco_coro* first = NULL;
         if (n > 0) {
-            mco_coro* first = _sched_process_io(sched, cqes, n);
+            first = _sched_process_io(sched, cqes, n);
             for (;;) {
                 int extra = platform_poller_wait(&sched->poller, cqes, 0);
                 if (extra <= 0) {
@@ -709,9 +710,6 @@ static mco_coro* _sched_find_work(
                     }
                 }
             }
-            if (first) {
-                co = first;
-            }
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -729,7 +727,19 @@ static mco_coro* _sched_find_work(
             atomic_store(&sched->processing, false);
         }
 
-        co = _sched_try_get_coro(sched, w);
+        /**
+         * Prefer the coroutine netpoll handed us directly over a
+         * runq/deque probe: losing `first` here (by unconditionally
+         * overwriting `co`) was stranding the accept coroutine under
+         * a c10k storm -- the only EPOLLIN on the listen fd was
+         * dispatched into `first`, nothing else enqueued it anywhere
+         * runnable, and ET mode never re-fires the event. Fall back
+         * to try_get_coro only when poll produced no work.
+         */
+        co = first;
+        if (!co) {
+            co = _sched_try_get_coro(sched, w);
+        }
 #ifdef XYLEM_SCHED_STATS
         {
             uint64_t t2 = _sched_now_ns();
