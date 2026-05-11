@@ -23,6 +23,7 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/un.h>
@@ -269,25 +270,19 @@ int platform_socket_get_socktype(platform_sock_t sock) {
 }
 
 ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
-    ssize_t n;
-    do {
-        n = recv(sock, buf, size, 0);
-    } while (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    ssize_t n = read(sock, buf, size);
+    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
+        n = read(sock, buf, size);
     }
-    return n;
+    return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
 ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
-    ssize_t n;
-    do {
-        n = send(sock, buf, size, 0);
-    } while (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    ssize_t n = write(sock, buf, size);
+    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
+        n = write(sock, buf, size);
     }
-    return n;
+    return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
 ssize_t platform_socket_recvall(platform_sock_t sock, void* buf, int size) {

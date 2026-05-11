@@ -55,7 +55,7 @@ typedef enum platform_poller_op_e {
 } platform_poller_op_t;
 
 /** @brief Maximum completion events per poll call. */
-#define PLATFORM_POLLER_CQE_NUM 1024
+#define PLATFORM_POLLER_CQE_NUM 128
 
 /** @brief Completion queue entry returned by platform_poller_wait. */
 typedef struct platform_poller_cqe_s {

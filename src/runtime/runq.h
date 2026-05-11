@@ -95,6 +95,15 @@ extern queue_node_t* runq_pop(runq_t* rq);
 extern int32_t runq_pop_half(runq_t* rq, queue_node_t** out, int32_t cap);
 
 /**
+ * @brief Pop up to min(size/nprocs + 1, cap) nodes from the queue.
+ *
+ * Thread-safe. Fair-share formula matching Go's globrunqget: each
+ * worker takes 1/Nth of the queue so local deques drain faster.
+ */
+extern int32_t runq_pop_nprocs(
+    runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs);
+
+/**
  * @brief Pop up to `max` nodes from the queue in one lock acquisition.
  *
  * Thread-safe: can be called from any thread. More efficient than calling

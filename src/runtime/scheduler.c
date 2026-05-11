@@ -74,8 +74,8 @@
 #define SCHED_DEFAULT_DEQUE_LOG2 10
 #define SCHED_DEQUE_HALF         (1 << (SCHED_DEFAULT_DEQUE_LOG2 - 1))
 #define SCHED_CORO_STACK_SIZE    131072
-#define SCHED_MAX_POLL_MS        5
-#define SCHED_SPIN_ATTEMPTS      4
+#define SCHED_MAX_POLL_MS        1
+#define SCHED_SPIN_ATTEMPTS      1
 #define SCHED_RUNQ_GRAB_MAX      256
 #define SCHED_TIMER_TICK_MS      1
 
@@ -89,6 +89,8 @@ typedef struct _sched_worker_s {
     void*                park_arg;
     _Atomic bool         parked;
     _Atomic(mco_coro*)   runnext;
+    uint32_t             sched_tick;
+    uint64_t             last_poll_ns;
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -116,6 +118,7 @@ struct scheduler_s {
      * and will observe the new work before its next blocking poll.
      */
     _Atomic bool          driver_in_poll;
+    _Atomic bool          driver_active;
     bool                  joined;
     _Atomic int32_t       nspinning;
     _Atomic int64_t       alive;
@@ -421,18 +424,15 @@ static void _sched_process_posts(scheduler_t* sched) {
     }
 }
 
-static void _sched_process_io(
+/**
+ * Process poll events. Returns the first ready coroutine directly
+ * (Go's gp := list.pop() pattern — zero global-runq round-trip).
+ * Remaining coroutines are injected into the global runq.
+ */
+static mco_coro* _sched_process_io(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
     int n) {
-    /**
-     * Batch ready coroutines from this poll pass into one runq push
-     * + one wake via scheduler_schedule_batch. Sized to CQE_NUM * 2
-     * because each iowait can surface two directions (rd + wr) in a
-     * single CQE; _iowait_wake_park_batch still flushes inline on
-     * overflow, so mis-sizing only costs an extra push, never a lost
-     * wake.
-     */
     mco_coro* batch_buf[PLATFORM_POLLER_CQE_NUM * 2];
     runnable_batch_t batch = {
         .buf = batch_buf,
@@ -441,11 +441,6 @@ static void _sched_process_io(
     };
 
     for (int i = 0; i < n; i++) {
-        /**
-         * ud == NULL is the sentinel for our own wakeup pipe; every
-         * other registration comes from iowait with a
-         * generation-tagged ud.
-         */
         if (cqes[i].ud == NULL) {
             char buf[64];
             while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
@@ -459,9 +454,15 @@ static void _sched_process_io(
         iowait_on_event(sched, (int)cqes[i].op, cqes[i].ud, &batch);
     }
 
-    if (batch.n > 0) {
-        scheduler_schedule_batch(sched, batch.buf, batch.n);
+    if (batch.n <= 0) {
+        return NULL;
     }
+
+    mco_coro* first = batch.buf[0];
+    if (batch.n > 1) {
+        scheduler_schedule_batch(sched, &batch.buf[1], batch.n - 1);
+    }
+    return first;
 }
 
 static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
@@ -551,37 +552,98 @@ static void _sched_timer_tick(scheduler_t* sched) {
  * (IO / timers / posts). The driver hands off as soon as another
  * worker starts searching, so blocking-poll duty is never pinned.
  */
+/**
+ * Go findRunnable() equivalent. Steps numbered to match Go's proc.go.
+ *
+ * Go:  local → global(size/nprocs+1) → netpoll(0) → steal → spin/block
+ * Ours: same order, same grab formula, same netpoll placement.
+ */
 static mco_coro* _sched_find_work(
     scheduler_t*           sched,
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
-    mco_coro* co = _sched_try_get_coro(sched, w);
+
+    /* Go step 1: local runq (runnext + deque). */
+    mco_coro* co = atomic_exchange(&w->runnext, NULL);
+    if (co) {
+        return co;
+    }
+    co = wsdeque_pop(w->deque);
     if (co) {
         return co;
     }
 
-    int32_t ns = atomic_fetch_add(&sched->nspinning, 1) + 1;
-    if (sched->nworkers > 1 && ns * 2 > sched->nworkers) {
-        atomic_fetch_sub(&sched->nspinning, 1);
-        return NULL;
+    /* Go step 2: global runq — grab size/nworkers+1 (Go's globrunqget). */
+    {
+        queue_node_t* nodes[SCHED_RUNQ_GRAB_MAX];
+        int32_t n = runq_pop_nprocs(
+            sched->runq, nodes, SCHED_RUNQ_GRAB_MAX,
+            sched->nworkers);
+        if (n > 0) {
+            for (int32_t i = 1; i < n; i++) {
+                _coro_ctx_t* c =
+                    queue_entry(nodes[i], _coro_ctx_t, runq_node);
+                wsdeque_push(w->deque, c->co);
+            }
+            _coro_ctx_t* ctx =
+                queue_entry(nodes[0], _coro_ctx_t, runq_node);
+            return ctx->co;
+        }
     }
 
-    for (int spin = 0; spin < SCHED_SPIN_ATTEMPTS; spin++) {
+    /* Go step 3: netpoll(0) — non-blocking poll before steal.
+     * Skip when a driver is already blocking in epoll_wait: our
+     * poll would just race it for the same events. Skipping lets
+     * the worker reach the park path sooner (more futex wakes,
+     * fewer redundant epoll_wait calls). */
+    if (!atomic_load_explicit(
+            &sched->driver_active, memory_order_relaxed)) {
         int n = platform_poller_wait(&sched->poller, cqes, 0);
         if (n > 0) {
-            _sched_process_io(sched, cqes, n);
-        }
-        co = _sched_try_get_coro(sched, w);
-        if (co) {
-            atomic_fetch_sub(&sched->nspinning, 1);
-            return co;
+            co = _sched_process_io(sched, cqes, n);
+            if (co) {
+                return co;
+            }
         }
     }
 
-    /* Last searcher out becomes the driver; everyone else parks. */
-    int32_t prev = atomic_fetch_sub(&sched->nspinning, 1);
-    if (prev != 1) {
-        return NULL;
+    /* Go step 4: steal from other workers. */
+    if (sched->nworkers > 1) {
+        uint32_t start = w->index + 1;
+        for (int32_t i = 0; i < sched->nworkers - 1; i++) {
+            uint32_t idx =
+                (start + (uint32_t)i) % (uint32_t)sched->nworkers;
+            mco_coro* batch[SCHED_DEQUE_HALF];
+            int32_t n = wsdeque_steal_half(
+                sched->workers[idx].deque, batch, SCHED_DEQUE_HALF);
+            if (n > 0) {
+                for (int32_t j = 1; j < n; j++) {
+                    wsdeque_push(w->deque, batch[j]);
+                }
+                return batch[0];
+            }
+        }
+    }
+
+    /**
+     * Go step 5: become the blocking-poll driver, or park.
+     *
+     * No spin phase: step 3 already did a non-blocking poll, and
+     * spinning again within microseconds finds nothing new but costs
+     * a syscall. Instead, exactly one worker becomes the driver via
+     * CAS; all others park on their semaphore and await a direct
+     * futex wake (matching Go's stopm/wakep pattern).
+     */
+    {
+        bool expected = false;
+        if (!atomic_compare_exchange_strong_explicit(
+                &sched->driver_active,
+                &expected,
+                true,
+                memory_order_acq_rel,
+                memory_order_acquire)) {
+            return NULL;
+        }
     }
 
 #ifdef XYLEM_SCHED_STATS
@@ -597,20 +659,14 @@ static mco_coro* _sched_find_work(
 #ifdef XYLEM_SCHED_STATS
         uint64_t t0 = _sched_now_ns();
 #endif
-        /**
-         * Publish that we are about to block. Producers of non-fd
-         * wakeups pipe-wake only while this is true; otherwise the
-         * driver is guaranteed to observe the new work on its next
-         * try_get_coro / process_posts pass. Re-check the runq + posts
-         * after publishing so a producer that beat the store to true
-         * still reaches the driver before it blocks.
-         */
         atomic_store_explicit(
             &sched->driver_in_poll, true, memory_order_seq_cst);
         co = _sched_try_get_coro(sched, w);
         if (co) {
             atomic_store_explicit(
                 &sched->driver_in_poll, false, memory_order_relaxed);
+            atomic_store_explicit(
+                &sched->driver_active, false, memory_order_release);
             return co;
         }
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
@@ -630,16 +686,7 @@ static mco_coro* _sched_find_work(
         }
 #endif
         if (n > 0) {
-            _sched_process_io(sched, cqes, n);
-            /**
-             * Drain: while the previous batch was being dispatched
-             * (push to runq, wake workers) more events may have
-             * been queued in the kernel. Absorb them with a
-             * non-blocking poll so this driver cycle's batch
-             * amortises CPU time with the max number of events.
-             * Mirrors the Go/Tokio netpoll drain pattern and halves
-             * the observed poll-cycle rate at 1.08 events/cycle.
-             */
+            mco_coro* first = _sched_process_io(sched, cqes, n);
             for (;;) {
                 int extra = platform_poller_wait(&sched->poller, cqes, 0);
                 if (extra <= 0) {
@@ -653,7 +700,17 @@ static mco_coro* _sched_find_work(
                     (uint64_t)extra,
                     memory_order_relaxed);
 #endif
-                _sched_process_io(sched, cqes, extra);
+                mco_coro* extra_co = _sched_process_io(sched, cqes, extra);
+                if (extra_co) {
+                    if (!first) {
+                        first = extra_co;
+                    } else {
+                        scheduler_schedule(sched, extra_co);
+                    }
+                }
+            }
+            if (first) {
+                co = first;
             }
         }
 
@@ -683,14 +740,21 @@ static mco_coro* _sched_find_work(
         }
 #endif
         if (co) {
-            return co;
-        }
-
-        /* Another worker is searching -- hand the driver role over. */
-        if (atomic_load(&sched->nspinning) > 0) {
-            return NULL;
+            /**
+             * Run one coroutine inline and loop back to poll.
+             * The driver never exits — this eliminates the
+             * driver-handoff gap that causes p50 spikes. One
+             * worker (6.25% of 16) acts as a combined poller
+             * + executor, matching Go's tight poll/run loop.
+             */
+            atomic_store_explicit(
+                &sched->driver_in_poll, false, memory_order_relaxed);
+            _sched_run_coro(w, co);
+            _sched_timer_tick(sched);
         }
     }
+    atomic_store_explicit(
+        &sched->driver_active, false, memory_order_release);
     return NULL;
 }
 
@@ -704,7 +768,20 @@ static int _sched_worker_entry(void* arg) {
     while (atomic_load(&sched->running)) {
         _sched_timer_tick(sched);
 
-        mco_coro* co = _sched_find_work(sched, w, cqes);
+        /**
+         * Go schedule(): every 61st execution, grab one from global
+         * runq before checking local, ensuring fairness.
+         */
+        mco_coro* co = NULL;
+        if (++w->sched_tick % 61 == 0) {
+            queue_node_t* node = runq_pop(sched->runq);
+            if (node) {
+                co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+            }
+        }
+        if (!co) {
+            co = _sched_find_work(sched, w, cqes);
+        }
         if (co) {
             _sched_run_coro(w, co);
             continue;

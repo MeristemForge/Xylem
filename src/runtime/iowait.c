@@ -35,6 +35,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+static _Atomic int32_t _iowait_nwaiters;
+
 _Static_assert(sizeof(void*) == 8,
     "iowait ud generation-tagging requires 64-bit pointers");
 
@@ -63,6 +65,9 @@ _Static_assert(sizeof(void*) == 8,
 #define IOWAIT_PTR_MASK  (((uintptr_t)1 << IOWAIT_TAG_SHIFT) - 1)
 #define IOWAIT_TAG_MASK  (0xFFFFu)
 
+#define IOWAIT_FLAG_CLOSED   ((uint32_t)1)
+#define IOWAIT_FLAG_DEADLINE ((uint32_t)2)
+
 typedef struct _iowait_park_s _iowait_park_t;
 typedef struct _iowait_dir_s  _iowait_dir_t;
 
@@ -79,6 +84,7 @@ struct _iowait_dir_s {
     _Atomic(_iowait_park_t*) park;
     sched_timer_t*           timer;
     _Atomic uint64_t         deadline;
+    _Atomic uint32_t         flags;
 #ifdef XYLEM_IOWAIT_STATS
     uint64_t                 last_return_ns;
 #endif
@@ -499,7 +505,13 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
-    _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
+    _iowait_park_t* p = _iowait_claim(&d->park, IOWAIT_TIMEOUT);
+    if (p) {
+        _iowait_wake_park(p);
+    } else {
+        atomic_fetch_or_explicit(
+            &d->flags, IOWAIT_FLAG_DEADLINE, memory_order_release);
+    }
     /**
      * Drop the timer-arm reference taken in _iowait_set_deadline.
      * Must be the last thing we do here: once this ref is released,
@@ -558,16 +570,15 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     _iowait_arm(w);
 
-    /* Close-race check: see _iowait_park_fn docstring. */
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+    /**
+     * Single-load race guard (Go's atomicInfo pattern). The flags
+     * word packs CLOSED and DEADLINE_EXPIRED so both races are
+     * detected in one acquire load instead of two.
+     */
+    uint32_t f = atomic_load_explicit(&d->flags, memory_order_acquire);
+    if (f & IOWAIT_FLAG_CLOSED) {
         _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_CLOSED));
-        return true;
-    }
-
-    /* Deadline-race check: see _iowait_park_fn docstring. */
-    uint64_t deadline = atomic_load_explicit(
-        &d->deadline, memory_order_acquire);
-    if (_iowait_deadline_passed(deadline)) {
+    } else if (f & IOWAIT_FLAG_DEADLINE) {
         _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
     }
     return true;
@@ -606,6 +617,9 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
         return;
     }
 
+    atomic_fetch_and_explicit(
+        &d->flags, ~IOWAIT_FLAG_DEADLINE, memory_order_relaxed);
+
     if (!d->timer) {
         d->timer = sched_timer_create(runtime_get_scheduler());
         if (!d->timer) {
@@ -631,18 +645,14 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
  * _iowait_claim first.
  */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        return IOWAIT_CLOSED;
-    }
-
-    uint64_t deadline = atomic_load_explicit(
-        &d->deadline, memory_order_acquire);
-    if (_iowait_deadline_passed(deadline)) {
-        return IOWAIT_TIMEOUT;
-    }
-
-    _iowait_ref(w);
-
+    /**
+     * No early-out checks for closed/deadline here. The post-publish
+     * guards in _iowait_park_fn handle both races (close-while-parking,
+     * deadline-while-parking). Removing the redundant pre-checks saves
+     * 2 atomic loads on the hot path. No ref needed either: the TCP
+     * conn layer holds its own ref around recv/send, keeping the iowait
+     * alive for the duration of the park.
+     */
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
 
@@ -700,9 +710,7 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     }
 #endif
 
-    iowait_result_t r = park.result;
-    _iowait_unref(w);
-    return r;
+    return park.result;
 }
 
 iowait_pool_t* iowait_pool_create(void) {
@@ -752,6 +760,8 @@ iowait_t* iowait_create(platform_sock_t fd) {
         atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
         atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
         atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
+        atomic_store_explicit(&w->rd.flags, 0, memory_order_relaxed);
+        atomic_store_explicit(&w->wr.flags, 0, memory_order_relaxed);
         atomic_store_explicit(&w->closed, false, memory_order_relaxed);
         w->registered = false;
 #ifdef XYLEM_IOWAIT_STATS
@@ -838,11 +848,15 @@ void iowait_close(iowait_t* w) {
     mtx_unlock(&w->arm_lock);
 
     /**
-     * Wake any waiter already visible in its park slot. A waiter
-     * still mid-park_fn self-wakes via the close-race check after
-     * publishing: the CAS above orders closed=true before the
-     * waiter's acquire load of closed.
+     * Publish the closed flag into both directions' packed flags
+     * word so _iowait_park_fn can detect close-race with a single
+     * atomic load (Go's atomicInfo / publishInfo pattern).
      */
+    atomic_fetch_or_explicit(
+        &w->rd.flags, IOWAIT_FLAG_CLOSED, memory_order_release);
+    atomic_fetch_or_explicit(
+        &w->wr.flags, IOWAIT_FLAG_CLOSED, memory_order_release);
+
     _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_CLOSED));
     _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_CLOSED));
 }
@@ -859,6 +873,10 @@ void iowait_destroy(iowait_t* w) {
 
 bool iowait_is_closed(iowait_t* w) {
     return atomic_load_explicit(&w->closed, memory_order_acquire);
+}
+
+bool iowait_any_waiters(void) {
+    return atomic_load_explicit(&_iowait_nwaiters, memory_order_relaxed) > 0;
 }
 
 void iowait_on_event(

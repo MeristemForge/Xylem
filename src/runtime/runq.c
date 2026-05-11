@@ -94,6 +94,29 @@ int32_t runq_pop_half(runq_t* rq, queue_node_t** out, int32_t cap) {
     return n;
 }
 
+int32_t runq_pop_nprocs(
+    runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs) {
+    if (cap <= 0 || nprocs <= 0) {
+        return 0;
+    }
+    mtx_lock(&rq->lock);
+    size_t  size = queue_len(&rq->q);
+    int32_t grab = (int32_t)(size / (size_t)nprocs + 1);
+    if (grab > cap) {
+        grab = cap;
+    }
+    int32_t n = 0;
+    while (n < grab) {
+        queue_node_t* node = queue_dequeue(&rq->q);
+        if (!node) {
+            break;
+        }
+        out[n++] = node;
+    }
+    mtx_unlock(&rq->lock);
+    return n;
+}
+
 int32_t runq_pop_batch(runq_t* rq, queue_node_t** out, int32_t max) {
     if (max <= 0) {
         return 0;
