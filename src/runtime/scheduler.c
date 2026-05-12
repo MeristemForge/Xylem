@@ -381,18 +381,24 @@ static mco_coro* _sched_process_io(
         .n   = 0,
     };
 
+    bool woken = false;
+
     for (int i = 0; i < n; i++) {
         if (cqes[i].ud == NULL) {
-            char buf[64];
-            while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
-            }
-            if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
-                sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
-                platform_poller_mod(&sched->poller, &sched->wakeup_sqe);
-            }
+            woken = true;
             continue;
         }
         iowait_on_event(sched, (int)cqes[i].op, cqes[i].ud, &batch);
+    }
+
+    if (woken) {
+        char buf[64];
+        while (platform_socket_recv(sched->wakeup_rd, buf, sizeof(buf)) > 0) {
+        }
+        if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+            sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+            platform_poller_mod(&sched->poller, &sched->wakeup_sqe);
+        }
     }
 
     if (batch.n <= 0) {
