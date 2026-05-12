@@ -215,7 +215,7 @@ extern bool iowait_any_waiters(void);
  * @param revents  Readiness mask.
  * @param ud       Opaque userdata that was registered via the
  *                 platform poller at iowait creation (internally a
- *                 generation-tagged iowait pointer).
+ *                 generation-tagged slab index).
  * @param batch    Accumulator for ready coroutines. Must not be NULL.
  */
 extern void iowait_on_event(
@@ -225,33 +225,31 @@ extern void iowait_on_event(
     runnable_batch_t* batch);
 
 /**
- * @brief Opaque per-scheduler iowait handle pool.
+ * @brief Opaque per-scheduler iowait handle slab.
  *
- * The pool recycles iowait handles so their backing memory stays
- * type-stable across their lifetime. This lets iowait_on_event safely
- * dispatch against a possibly-retired handle by verifying a
- * generation counter before touching request-specific state. Every
- * scheduler owns exactly one pool; iowait_create() looks it up via
- * the runtime's current scheduler.
+ * Paged slab allocator that keeps retired iowait handles alive in
+ * type-stable memory. Poller ud carries a (gen, slab-index) pair
+ * packed into a uintptr_t, supporting both 32-bit and 64-bit
+ * platforms. Every scheduler owns exactly one slab; iowait_create()
+ * looks it up via the runtime's current scheduler.
  */
-typedef struct iowait_pool_s iowait_pool_t;
+typedef struct iowait_slab_s iowait_slab_t;
 
 /**
- * @brief Create an iowait handle pool.
+ * @brief Create an iowait handle slab.
  *
- * @return New pool, or NULL on failure.
+ * @return New slab, or NULL on failure.
  */
-extern iowait_pool_t* iowait_pool_create(void);
+extern iowait_slab_t* iowait_slab_create(void);
 
 /**
- * @brief Destroy an iowait handle pool and free every handle it has
- * ever minted.
+ * @brief Destroy an iowait handle slab and free every page.
  *
  * Must only be called after the scheduler has been destroyed -- at
  * that point no worker threads are alive, so there are no in-flight
- * CQEs that could dereference pooled memory.
+ * CQEs that could dereference slab memory.
  *
- * @param pool  Pool to destroy, or NULL (no-op).
+ * @param slab  Slab to destroy, or NULL (no-op).
  */
-extern void iowait_pool_destroy(iowait_pool_t* pool);
+extern void iowait_slab_destroy(iowait_slab_t* slab);
 

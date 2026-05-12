@@ -101,7 +101,7 @@ struct scheduler_s {
     platform_poller_sqe_t wakeup_sqe;
     platform_sock_t       wakeup_rd;
     platform_sock_t       wakeup_wr;
-    iowait_pool_t*        iowait_pool;
+    iowait_slab_t*        iowait_slab;
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
     _Atomic bool          processing;
@@ -746,7 +746,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     platform_poller_deinit(&sched->poller);
-    iowait_pool_destroy(sched->iowait_pool);
+    iowait_slab_destroy(sched->iowait_slab);
     free(sched);
 }
 
@@ -803,8 +803,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     atomic_store(&sched->running, true);
 
-    sched->iowait_pool = iowait_pool_create();
-    if (!sched->iowait_pool) {
+    sched->iowait_slab = iowait_slab_create();
+    if (!sched->iowait_slab) {
         _sched_cleanup(sched, 0);
         return NULL;
     }
@@ -1043,8 +1043,8 @@ platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {
     return &sched->poller;
 }
 
-iowait_pool_t* scheduler_get_iowait_pool(scheduler_t* sched) {
-    return sched->iowait_pool;
+iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched) {
+    return sched->iowait_slab;
 }
 
 int scheduler_post(

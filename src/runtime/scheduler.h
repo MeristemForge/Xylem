@@ -29,7 +29,7 @@ _Pragma("once")
 typedef struct mco_coro      mco_coro;
 typedef struct scheduler_s   scheduler_t;
 typedef struct sched_timer_s sched_timer_t;
-typedef struct iowait_pool_s iowait_pool_t;
+typedef struct iowait_slab_s iowait_slab_t;
 
 /**
  * @brief Park callback invoked after a coroutine yields.
@@ -214,13 +214,13 @@ extern int scheduler_post(
 extern platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched);
 
 /**
- * @brief Get the scheduler's iowait handle pool.
+ * @brief Get the scheduler's iowait handle slab.
  *
  * @param sched  Scheduler handle.
  *
- * @return iowait handle pool owned by the scheduler.
+ * @return iowait handle slab owned by the scheduler.
  */
-extern iowait_pool_t* scheduler_get_iowait_pool(scheduler_t* sched);
+extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
 
 /**
  * @brief Create a timer attached to a scheduler.

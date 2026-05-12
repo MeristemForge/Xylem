@@ -24,46 +24,34 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
-#include "container/list.h"
 #include "runtime.h"
 #include "scheduler.h"
 #include "thrds.h"
 
 #include "minicoro/minicoro.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 static _Atomic int32_t _iowait_nwaiters;
-
-_Static_assert(sizeof(void*) == 8,
-    "iowait ud generation-tagging requires 64-bit pointers");
 
 /**
  * Generation-tagged userdata encoding.
  *
- * Under a handle pool a bare `iowait_t*` is unsafe as poller ud: a
- * CQE batch already returned by epoll_wait may still carry the old
- * pointer after the iowait has been recycled and, possibly,
- * reallocated as a fresh generation. Dispatching that stale CQE
- * would corrupt the new generation's state.
+ * Every poller ud carries a (gen, slab-index) pair packed into a
+ * uintptr_t. On 32-bit platforms the 16-bit index yields 65536
+ * maximum concurrent handles; on 64-bit the 48-bit index is
+ * effectively unbounded.
  *
- * We pack a 16-bit per-handle generation into the top 16 bits of
- * ud. On all 64-bit targets we care about (Linux x86-64/ARM64,
- * macOS ARM64, Windows x64 wepoll) user virtual addresses fit in
- * the bottom 48 bits, so these top bits are free. gen is bumped on
- * every retire; iowait_on_event rejects stale CQEs by comparing
- * the tag against the live gen after tryref.
- *
- * 16 bits give 65536 generations before aliasing. Aliasing would
- * require the same pool slot to cycle through 65536 destroy/create
- * pairs while a single CQE remains undispatched in a worker's
- * batch -- orders of magnitude beyond anything realistic.
+ * gen is bumped on every retire; iowait_on_event rejects stale
+ * CQEs by comparing the tag against the live gen after tryref.
  */
-#define IOWAIT_TAG_SHIFT 48
-#define IOWAIT_PTR_MASK  (((uintptr_t)1 << IOWAIT_TAG_SHIFT) - 1)
-#define IOWAIT_TAG_MASK  (0xFFFFu)
+#define IOWAIT_INDEX_BITS ((int)(sizeof(uintptr_t) * CHAR_BIT - 16))
+#define IOWAIT_INDEX_MASK (((uintptr_t)1 << IOWAIT_INDEX_BITS) - 1)
+#define IOWAIT_GEN_SHIFT  IOWAIT_INDEX_BITS
 
 #define IOWAIT_FLAG_CLOSED   ((uint32_t)1)
 #define IOWAIT_FLAG_DEADLINE ((uint32_t)2)
@@ -103,35 +91,16 @@ struct _iowait_park_s {
 };
 
 /**
- * Central iowait handle. Most fields are self-explanatory; the
- * non-trivial ones are:
+ * Central iowait handle.
  *
- *   arm_lock   - serialises the full "observe park slots -> publish
- *                sqe -> submit to poller" sequence in _iowait_arm.
- *                Without it, a parking worker and the poller thread
- *                can both compute an op from stale park snapshots
- *                and race into platform_poller_mod, letting the
- *                later MOD silently drop a direction the other
- *                thread just published.
- *   refcnt     - keeps the handle alive while waiters are parked
- *                or the poller still holds a callback pointer. At
- *                zero the handle returns to the pool (not freed),
- *                so iowait_on_event can safely dereference a stale
- *                ud and then reject it via the generation check.
- *   gen        - bumped on every retire. Low 16 bits are mirrored
- *                into the ud tag; iowait_on_event compares them.
- *   registered - whether the fd is currently in the poller. Under
- *                ET, set once and never cleared; the ET fast path
- *                reads it without the lock (transition is one-way).
- *                Under LT+oneshot, flipped by add/mod/del under
- *                arm_lock.
- *
- * `pool_*` fields are pool bookkeeping, not IO-wait state:
- *   pool                - owning pool, used by retire to push back.
- *   pool_freelist_node  - anchor on pool->freelist while idle.
- *   pool_registry_node  - anchor on pool->registry for the
- *                         handle's entire lifetime; walked once by
- *                         iowait_pool_destroy.
+ *   arm_lock   - serialises "observe parks -> publish sqe -> submit
+ *                to poller" in _iowait_arm.
+ *   refcnt     - at zero the handle returns to the slab freelist
+ *                (memory stays live); stale CQEs are rejected by
+ *                the generation check in _iowait_tryref.
+ *   gen        - bumped on every retire, mirrored into the ud tag.
+ *   slot_index - this slot's index in the owning slab, set once at
+ *                first page allocation, stable for the slab's life.
  */
 struct iowait_s {
     platform_poller_sq_t* poller;
@@ -148,70 +117,136 @@ struct iowait_s {
     bool                  registered;
     _Atomic bool          closed;
 
-    iowait_pool_t*        pool;
-    list_node_t           pool_freelist_node;
-    list_node_t           pool_registry_node;
+    iowait_slab_t*        slab;
+    uint32_t              slot_index;
 };
 
 /**
- * Per-scheduler iowait handle pool.
+ * Per-scheduler paged slab for iowait handles.
  *
- * Keeps retired iowait handles alive in type-stable memory so that
- * stale CQEs held by a worker's batch can still be safely dispatched
- * through iowait_on_event: the memory is guaranteed to remain a
- * valid iowait_t, and the per-handle generation counter lets the
- * dispatcher reject stale references.
+ * Keeps retired handles alive in type-stable memory so that stale
+ * CQEs can be safely dispatched through iowait_on_event: the slot
+ * memory is never freed, and the per-handle generation counter lets
+ * the dispatcher reject stale references.
  *
- * The pool never shrinks during the scheduler's lifetime; retired
- * handles return to the freelist and stay in memory until
- * iowait_pool_destroy. Bounded by peak concurrent handle count.
+ * Pages are allocated on demand and never freed until slab destroy.
+ * The fixed-size pages array avoids realloc so _iowait_slab_get is
+ * safe to call lock-free from iowait_on_event.
  */
-struct iowait_pool_s {
-    mtx_t  lock;
-    list_t freelist;    /* LIFO freelist of iowait_t::pool_freelist_node. */
-    list_t registry;    /* All handles ever minted; walked by destroy. */
+#define IOWAIT_PAGE_SHIFT 8
+#define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
+#define IOWAIT_FREE_END   UINT32_MAX
+
+#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 1024)
+
+_Static_assert(
+    (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
+        ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
+    "slab capacity exceeds addressable index range");
+
+struct iowait_slab_s {
+    mtx_t      lock;
+    iowait_t*  pages[IOWAIT_PAGES_MAX];
+    uint32_t   npages;
+    uint32_t   freehead;
 };
 
-static inline void* _iowait_ud_encode(iowait_t* w, uint16_t gen) {
-    uintptr_t p   = (uintptr_t)w & IOWAIT_PTR_MASK;
-    uintptr_t tag = (uintptr_t)gen << IOWAIT_TAG_SHIFT;
-    return (void*)(p | tag);
+static inline iowait_t* _iowait_slab_get(
+    iowait_slab_t* slab, uint32_t index) {
+    uint32_t zi     = index - 1;
+    uint32_t page   = zi >> IOWAIT_PAGE_SHIFT;
+    uint32_t offset = zi & (IOWAIT_PAGE_SIZE - 1);
+    return &slab->pages[page][offset];
 }
 
-static inline iowait_t* _iowait_ud_ptr(void* ud) {
-    return (iowait_t*)((uintptr_t)ud & IOWAIT_PTR_MASK);
+static inline uint32_t _iowait_free_next(iowait_t* slot) {
+    uint32_t v;
+    memcpy(&v, slot, sizeof(v));
+    return v;
+}
+
+static inline void _iowait_free_set_next(iowait_t* slot, uint32_t next) {
+    memcpy(slot, &next, sizeof(next));
+}
+
+static inline void* _iowait_ud_encode(uint32_t index, uint16_t gen) {
+    uintptr_t v = ((uintptr_t)gen << IOWAIT_GEN_SHIFT)
+                | ((uintptr_t)index & IOWAIT_INDEX_MASK);
+    return (void*)v;
+}
+
+static inline uint32_t _iowait_ud_index(void* ud) {
+    return (uint32_t)((uintptr_t)ud & IOWAIT_INDEX_MASK);
 }
 
 static inline uint16_t _iowait_ud_tag(void* ud) {
-    return (uint16_t)(((uintptr_t)ud >> IOWAIT_TAG_SHIFT) & IOWAIT_TAG_MASK);
+    return (uint16_t)((uintptr_t)ud >> IOWAIT_GEN_SHIFT);
 }
 
-static iowait_t* _iowait_pool_pop(iowait_pool_t* pool) {
-    mtx_lock(&pool->lock);
-    iowait_t*    w = NULL;
-    list_node_t* n = list_head(&pool->freelist);
-    if (n) {
-        w = list_entry(n, iowait_t, pool_freelist_node);
-        list_remove(&pool->freelist, n);
+static iowait_t* _iowait_slab_alloc(
+    iowait_slab_t* slab, uint32_t* out_index) {
+    mtx_lock(&slab->lock);
+
+    if (slab->freehead != IOWAIT_FREE_END) {
+        uint32_t  idx = slab->freehead;
+        iowait_t* w   = _iowait_slab_get(slab, idx);
+        slab->freehead = _iowait_free_next(w);
+        *out_index = idx;
+        mtx_unlock(&slab->lock);
+        return w;
     }
-    mtx_unlock(&pool->lock);
-    return w;
+
+    if (slab->npages >= IOWAIT_PAGES_MAX) {
+        mtx_unlock(&slab->lock);
+        return NULL;
+    }
+
+    iowait_t* page =
+        (iowait_t*)calloc(IOWAIT_PAGE_SIZE, sizeof(iowait_t));
+    if (!page) {
+        mtx_unlock(&slab->lock);
+        return NULL;
+    }
+
+    /* +1 so that index 0 is never used: encode(0, 0) == NULL, which
+     * the scheduler reserves for the wakeup-fd sentinel. */
+    uint32_t base = slab->npages * IOWAIT_PAGE_SIZE + 1;
+
+    for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
+        if (mtx_init(&page[i].arm_lock, mtx_plain) != thrd_success) {
+            for (uint32_t j = 0; j < i; j++) {
+                mtx_destroy(&page[j].arm_lock);
+            }
+            free(page);
+            mtx_unlock(&slab->lock);
+            return NULL;
+        }
+        page[i].slot_index = base + i;
+    }
+
+    slab->pages[slab->npages] = page;
+    slab->npages++;
+
+    for (uint32_t i = IOWAIT_PAGE_SIZE - 1; i >= 1; i--) {
+        _iowait_free_set_next(&page[i], slab->freehead);
+        slab->freehead = base + i;
+    }
+
+    *out_index = base;
+    mtx_unlock(&slab->lock);
+    return &page[0];
 }
 
-static void _iowait_pool_push(iowait_pool_t* pool, iowait_t* w) {
-    mtx_lock(&pool->lock);
-    list_insert_head(&pool->freelist, &w->pool_freelist_node);
-    mtx_unlock(&pool->lock);
-}
-
-static void _iowait_pool_register(iowait_pool_t* pool, iowait_t* w) {
-    mtx_lock(&pool->lock);
-    list_insert_tail(&pool->registry, &w->pool_registry_node);
-    mtx_unlock(&pool->lock);
+static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
+    iowait_t* w = _iowait_slab_get(slab, index);
+    mtx_lock(&slab->lock);
+    _iowait_free_set_next(w, slab->freehead);
+    slab->freehead = index;
+    mtx_unlock(&slab->lock);
 }
 
 /**
- * Drop the handle's last reference and return it to the pool.
+ * Drop the handle's last reference and return it to the slab.
  *
  * At refcnt==0 no timer-arm reference or park reference can still
  * be outstanding, so per-request state can be torn down with plain
@@ -223,11 +258,11 @@ static void _iowait_pool_register(iowait_pool_t* pool, iowait_t* w) {
  * a subsequent create() could hand that number to a fresh
  * subscription, and a belated EPOLL_CTL_DEL would clobber it.
  *
- * After tear-down we bump gen and splice onto the freelist. Any
- * stale CQE still in a worker's batch is rejected by
- * iowait_on_event's gen check after it reacquires a reference via
- * _iowait_tryref. arm_lock stays live across retire; it is torn
- * down only in iowait_pool_destroy().
+ * After tear-down we bump gen and return the slot to the slab
+ * freelist. Any stale CQE still in a worker's batch is rejected
+ * by iowait_on_event's gen check after it reacquires a reference
+ * via _iowait_tryref. arm_lock stays live across retire; it is
+ * torn down only in iowait_slab_destroy().
  */
 static void _iowait_retire(iowait_t* w) {
     if (w->rd.timer) {
@@ -247,7 +282,7 @@ static void _iowait_retire(iowait_t* w) {
      */
     atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
 
-    _iowait_pool_push(w->pool, w);
+    _iowait_slab_free(w->slab, w->slot_index);
 }
 
 static void _iowait_ref(iowait_t* w) {
@@ -264,7 +299,7 @@ static void _iowait_unref(iowait_t* w) {
  * Speculatively acquire a reference on a possibly-retired handle.
  *
  * Used only by iowait_on_event, which decoded an untrusted ud into
- * (ptr, tag) and must verify the handle still matches the tag
+ * (index, tag) and must verify the handle still matches the tag
  * before treating it as live. Two hazards:
  *
  *   1. refcnt may have already hit zero; don't resurrect a dead
@@ -582,87 +617,68 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     return park.result;
 }
 
-iowait_pool_t* iowait_pool_create(void) {
-    iowait_pool_t* pool = (iowait_pool_t*)calloc(1, sizeof(iowait_pool_t));
-    if (!pool) {
+iowait_slab_t* iowait_slab_create(void) {
+    iowait_slab_t* slab =
+        (iowait_slab_t*)calloc(1, sizeof(iowait_slab_t));
+    if (!slab) {
         return NULL;
     }
-    if (mtx_init(&pool->lock, mtx_plain) != thrd_success) {
-        free(pool);
+    if (mtx_init(&slab->lock, mtx_plain) != thrd_success) {
+        free(slab);
         return NULL;
     }
-    list_init(&pool->freelist);
-    list_init(&pool->registry);
-    return pool;
+    slab->freehead = IOWAIT_FREE_END;
+    return slab;
 }
 
-void iowait_pool_destroy(iowait_pool_t* pool) {
-    if (!pool) {
+void iowait_slab_destroy(iowait_slab_t* slab) {
+    if (!slab) {
         return;
     }
-    /**
-     * Walk every handle the pool has ever minted and release per-
-     * handle resources + backing memory. Safe here: the scheduler is
-     * already destroyed, no workers alive, no CQEs in flight.
-     */
-    while (!list_empty(&pool->registry)) {
-        list_node_t* n = list_head(&pool->registry);
-        iowait_t*    w = list_entry(n, iowait_t, pool_registry_node);
-        list_remove(&pool->registry, n);
-        mtx_destroy(&w->arm_lock);
-        free(w);
+    for (uint32_t p = 0; p < slab->npages; p++) {
+        iowait_t* page = slab->pages[p];
+        for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
+            mtx_destroy(&page[i].arm_lock);
+        }
+        free(page);
     }
-    mtx_destroy(&pool->lock);
-    free(pool);
+    mtx_destroy(&slab->lock);
+    free(slab);
 }
 
 iowait_t* iowait_create(platform_sock_t fd) {
-    iowait_pool_t* pool =
-        scheduler_get_iowait_pool(runtime_get_scheduler());
-    iowait_t* w = _iowait_pool_pop(pool);
-
-    if (w) {
-        /* Re-init per-request fields; keep gen (monotonic across life). */
-        w->rd.timer = NULL;
-        w->wr.timer = NULL;
-        atomic_store_explicit(&w->rd.park, NULL, memory_order_relaxed);
-        atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
-        atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
-        atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
-        atomic_store_explicit(&w->rd.flags, 0, memory_order_relaxed);
-        atomic_store_explicit(&w->wr.flags, 0, memory_order_relaxed);
-        atomic_store_explicit(&w->closed, false, memory_order_relaxed);
-        w->registered = false;
-    } else {
-        w = (iowait_t*)calloc(1, sizeof(iowait_t));
-        if (!w) {
-            return NULL;
-        }
-        if (mtx_init(&w->arm_lock, mtx_plain) != thrd_success) {
-            free(w);
-            return NULL;
-        }
-        w->pool = pool;
-        _iowait_pool_register(pool, w);
+    iowait_slab_t* slab =
+        scheduler_get_iowait_slab(runtime_get_scheduler());
+    uint32_t  index;
+    iowait_t* w = _iowait_slab_alloc(slab, &index);
+    if (!w) {
+        return NULL;
     }
+
+    w->rd.timer = NULL;
+    w->wr.timer = NULL;
+    atomic_store_explicit(&w->rd.park, NULL, memory_order_relaxed);
+    atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
+    atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->rd.flags, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->wr.flags, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->closed, false, memory_order_relaxed);
+    w->registered = false;
+
+    w->slab = slab;
 
     w->poller = runtime_get_poller();
     w->fd     = fd;
 
     w->sqe.fd = (platform_poller_fd_t)fd;
     w->sqe.op = PLATFORM_POLLER_NO_OP;
-    /* Stamp the current gen into ud so every CQE carries a tag. */
     uint16_t gen = atomic_load_explicit(&w->gen, memory_order_relaxed);
-    w->sqe.ud = _iowait_ud_encode(w, gen);
+    w->sqe.ud = _iowait_ud_encode(index, gen);
 
     w->rd.w = w;
     w->wr.w = w;
 
-    /**
-     * Release on refcnt publishes the reinitialised per-request
-     * state to any thread that later takes a ref via _iowait_tryref
-     * (acquire load of refcnt).
-     */
     atomic_store_explicit(&w->refcnt, 1, memory_order_release);
     return w;
 }
@@ -749,18 +765,10 @@ void iowait_on_event(
     int               revents,
     void*             ud,
     runnable_batch_t* batch) {
-    /**
-     * ud was handed to the poller at registration time carrying a
-     * generation tag (see _iowait_ud_encode). The handle may have
-     * since been retired into the pool and, possibly, reallocated
-     * to a fresh caller at a newer generation. Guard against that
-     * before dereferencing anything beyond the decoded pointer:
-     * _iowait_tryref both (a) refuses to resurrect a retired handle
-     * whose refcnt hit zero, and (b) refuses to dispatch against a
-     * handle whose generation no longer matches the tag we carried
-     * through the poller.
-     */
-    iowait_t* w = _iowait_tryref(_iowait_ud_ptr(ud), _iowait_ud_tag(ud));
+    uint32_t       index = _iowait_ud_index(ud);
+    uint16_t       tag   = _iowait_ud_tag(ud);
+    iowait_slab_t* slab  = scheduler_get_iowait_slab(sched);
+    iowait_t*      w     = _iowait_tryref(_iowait_slab_get(slab, index), tag);
     if (!w) {
         return;
     }
