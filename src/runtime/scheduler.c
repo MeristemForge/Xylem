@@ -73,7 +73,6 @@
 
 #define SCHED_DEQUE_CAP          256
 #define SCHED_CORO_STACK_SIZE    131072
-#define SCHED_MAX_POLL_MS        1
 #define SCHED_SPIN_ATTEMPTS      1
 #define SCHED_TIMER_TICK_MS      1
 
@@ -556,9 +555,6 @@ static mco_coro* _sched_worker_find_coro(
 
     while (atomic_load(&sched->running)) {
         int poll_ms = _sched_timer_next_timeout(sched);
-        if (poll_ms < 0 || poll_ms > SCHED_MAX_POLL_MS) {
-            poll_ms = SCHED_MAX_POLL_MS;
-        }
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
         co = _sched_worker_get_local(sched, w);
