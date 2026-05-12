@@ -72,29 +72,8 @@ queue_node_t* runq_pop(runq_t* rq) {
     return node;
 }
 
-int32_t runq_pop_half(runq_t* rq, queue_node_t** out, int32_t cap) {
-    if (cap <= 0) {
-        return 0;
-    }
-    mtx_lock(&rq->lock);
-    size_t  size = queue_len(&rq->q);
-    int32_t grab = (int32_t)(size / 2 + 1);
-    if (grab > cap) {
-        grab = cap;
-    }
-    int32_t n = 0;
-    while (n < grab) {
-        queue_node_t* node = queue_dequeue(&rq->q);
-        if (!node) {
-            break;
-        }
-        out[n++] = node;
-    }
-    mtx_unlock(&rq->lock);
-    return n;
-}
 
-int32_t runq_pop_nprocs(
+int32_t runq_pop_fair(
     runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs) {
     if (cap <= 0 || nprocs <= 0) {
         return 0;
@@ -102,6 +81,9 @@ int32_t runq_pop_nprocs(
     mtx_lock(&rq->lock);
     size_t  size = queue_len(&rq->q);
     int32_t grab = (int32_t)(size / (size_t)nprocs + 1);
+    if (grab > (int32_t)size) {
+        grab = (int32_t)size;
+    }
     if (grab > cap) {
         grab = cap;
     }
@@ -117,19 +99,3 @@ int32_t runq_pop_nprocs(
     return n;
 }
 
-int32_t runq_pop_batch(runq_t* rq, queue_node_t** out, int32_t max) {
-    if (max <= 0) {
-        return 0;
-    }
-    mtx_lock(&rq->lock);
-    int32_t n = 0;
-    while (n < max) {
-        queue_node_t* node = queue_dequeue(&rq->q);
-        if (!node) {
-            break;
-        }
-        out[n++] = node;
-    }
-    mtx_unlock(&rq->lock);
-    return n;
-}

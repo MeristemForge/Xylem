@@ -62,7 +62,7 @@ typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
 
 typedef struct scheduler_opts_s {
     int32_t  nworkers;  /*< 0 = use CPU count. */
-    uint32_t deque_cap; /*< 0 = use default (log2=10, 1024 slots). */
+    uint32_t deque_cap; /*< 0 = use default (256). Must be power of 2. */
 } scheduler_opts_t;
 
 /**
@@ -128,7 +128,7 @@ extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
  * and initialises `n = 0` before use.
  */
 typedef struct runnable_batch_s {
-    mco_coro** buf;
+    mco_coro** coros;
     int32_t    cap;
     int32_t    n;
 } runnable_batch_t;
@@ -140,7 +140,7 @@ typedef struct runnable_batch_s {
  * coroutines at once (currently the netpoll path in _sched_process_io).
  * Pushes the whole batch to the global runq in one go and performs
  * at most one wake, amortising both costs and letting every worker
- * pick tasks up via runq_pop_batch rather than steal-from-driver.
+ * pick tasks up via runq_pop_fair rather than steal-from-driver.
  *
  * Thread-safe. For single-coroutine wakes, use scheduler_schedule
  * instead (this one is optimised for the case n >= 2).
@@ -321,24 +321,3 @@ typedef void (*scheduler_idle_fn_t)(void* ud);
 extern void scheduler_set_idle_cb(
     scheduler_t* sched, scheduler_idle_fn_t cb, void* ud);
 
-#ifdef XYLEM_SCHED_STATS
-/**
- * @brief Reset driver-loop instrumentation counters.
- *
- * Only defined when built with -DXYLEM_SCHED_STATS. Used by
- * microbenchmarks to isolate a measurement window.
- */
-extern void scheduler_stats_reset(void);
-
-/**
- * @brief Dump driver-loop instrumentation counters to stderr.
- *
- * Reports, across all workers that have acted as driver:
- *   - poll_cycles       : total platform_poller_wait calls
- *   - avg_block_ns      : average time spent blocked inside poll
- *   - avg_events        : events returned per poll on average
- *   - nonpoll_total_ms  : total ms spent between poll calls
- *   - driver_runs       : times a worker transitioned into driver
- */
-extern void scheduler_stats_dump(const char* tag);
-#endif

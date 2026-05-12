@@ -255,25 +255,3 @@ extern iowait_pool_t* iowait_pool_create(void);
  */
 extern void iowait_pool_destroy(iowait_pool_t* pool);
 
-#ifdef XYLEM_IOWAIT_STATS
-/**
- * @brief Reset per-wait latency accumulators.
- *
- * Only defined when the library is built with -DXYLEM_IOWAIT_STATS.
- * Used by microbenchmarks to isolate the measurement window.
- */
-extern void iowait_stats_reset(void);
-
-/**
- * @brief Dump the current per-wait latency average to stderr.
- *
- * Reports average time between park_fn publishing a park record and
- * _iowait_claim waking it ("wait"), and between the claim and the
- * waiter returning from scheduler_park ("resume"). Wait measures
- * the kernel + poll dispatch window; resume measures scheduler
- * push + worker pickup.
- *
- * @param tag  Free-form label printed with the metrics.
- */
-extern void iowait_stats_dump(const char* tag);
-#endif

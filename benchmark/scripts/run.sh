@@ -21,10 +21,18 @@ set -euo pipefail
 #     idiomatic MT story).
 #   - TCP_NODELAY on accepted sockets, backlog 4096, 64 KB read buffer.
 #
-# Benchmark matrix
+# Benchmark matrix (defaults, configurable via CLI):
 #   ST row : payload in {64B, 4KB, 64KB} x conns in {1k, 10k}  = 6 runs / family
 #   MT row : same matrix with workers = $(nproc)                = 6 runs / family
 #   ConnRate : concurrency in {1k, 10k}                         = 2 runs x 2 rows
+#
+# CLI options for `bench`:
+#   --servers xylem,go,rust   select which servers to compare (comma-separated)
+#   --conns 1000,10000        connection counts (comma-separated)
+#   --payload 64,4096         payload sizes in bytes (comma-separated)
+#   --duration 10             test duration in seconds
+#   --mode st|mt|both         single-thread, multi-thread, or both (default: both)
+#   --no-connrate             skip connection-rate tests
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -171,7 +179,6 @@ cmd_build() {
     for cand in libuv; do
         local src="$BENCH_DIR/tcp/server/${cand}-echo.c"
         [ -f "$src" ] || continue
-        # Library linker flags: libuv -> -luv.
         local lflag="-l${cand#lib}"
         # shellcheck disable=SC2086
         gcc $CFLAGS_COMMON "$src" $lflag -lpthread $LDFLAGS_COMMON \
@@ -201,7 +208,6 @@ cmd_build() {
     ok "tcp servers (ST) built"
 
     info "building tcp servers (MT)..."
-    # xylem MT
     # shellcheck disable=SC2086
     gcc $CFLAGS_COMMON -I"$PROJECT_ROOT/include" \
         "$BENCH_DIR/tcp/server/xylem-echo-mt.c" \
@@ -254,7 +260,6 @@ cmd_build() {
 # bench
 # =============================================================================
 
-SERVERS=(xylem libuv boost go rust)
 DURATION=10
 PORT_BASE=9000
 
@@ -272,7 +277,9 @@ format_conns() {
 
 format_size() {
     local s="$1"
-    if [ "$s" -ge 1024 ]; then echo "$((s / 1024))K"; else echo "${s}B"; fi
+    if [ "$s" -ge 1048576 ]; then echo "$((s / 1048576))M"
+    elif [ "$s" -ge 1024 ]; then echo "$((s / 1024))K"
+    else echo "${s}B"; fi
 }
 
 kill_servers() {
@@ -280,12 +287,11 @@ kill_servers() {
     sleep 1
 }
 
-extract_num() {
-    # $1: file  $2: json key
-    grep "\"$2\"" "$1" 2>/dev/null | grep -oE '[0-9]+' | tail -1
+extract_json() {
+    # $1: file  $2: json key — extracts numeric value (int or float)
+    grep "\"$2\"" "$1" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1
 }
 
-# start_server <binary> <port> [workers]
 start_server() {
     local bin="$1" port="$2" workers="${3:-}"
     if [ -n "$workers" ]; then
@@ -294,6 +300,47 @@ start_server() {
         "$bin" "$port" >/dev/null 2>&1 &
     fi
     echo $!
+}
+
+snapshot_cpu() {
+    # Capture per-CPU jiffies from /proc/stat -> output file
+    grep '^cpu[0-9]' /proc/stat > "$1"
+}
+
+calc_cpu_usage() {
+    # Compare two /proc/stat snapshots, output "cpu0:XX% cpu1:YY% ..."
+    local before="$1" after="$2"
+    if [ ! -s "$before" ] || [ ! -s "$after" ]; then
+        echo "n/a"
+        return
+    fi
+    local result=""
+    while IFS= read -r line_after; do
+        local cpuname
+        cpuname=$(awk '{print $1}' <<< "$line_after")
+        local line_before
+        line_before=$(grep "^${cpuname} " "$before")
+        [ -z "$line_before" ] && continue
+
+        # /proc/stat fields: cpu user nice system idle iowait irq softirq [steal [guest [guest_nice]]]
+        # Use awk to sum all non-idle and compute idle
+        local idle1 total1 idle2 total2
+        idle1=$(awk '{print $5}' <<< "$line_before")
+        total1=$(awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}' <<< "$line_before")
+        idle2=$(awk '{print $5}' <<< "$line_after")
+        total2=$(awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}' <<< "$line_after")
+
+        local idle_d=$((idle2 - idle1))
+        local total_d=$((total2 - total1))
+
+        local pct=0
+        if [ "$total_d" -gt 0 ]; then
+            pct=$(( (total_d - idle_d) * 100 / total_d ))
+        fi
+        local cpunum="${cpuname#cpu}"
+        result="${result:+$result }cpu${cpunum}:${pct}%"
+    done < "$after"
+    echo "${result:-n/a}"
 }
 
 bench_throughput() {
@@ -307,7 +354,16 @@ bench_throughput() {
     conns_lbl="$(format_conns "$conns")"
     size_lbl="$(format_size "$payload")"
 
-    info "=== ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s ==="
+    info "=== ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT} ==="
+
+    if [ "$REPEAT" -gt 1 ]; then
+        printf "  %-10s %12s %8s %10s %10s %10s  %s\n" \
+            "SERVER" "msg/s(avg)" "MB/s" "p50(us)" "p99(us)" "max(us)" "runs"
+    else
+        printf "  %-10s %12s %8s %10s %10s %10s\n" \
+            "SERVER" "msg/s" "MB/s" "p50(us)" "p99(us)" "max(us)"
+    fi
+    printf "  %s\n" "------------------------------------------------------------------------"
 
     local offset=0
     for name in "${SERVERS[@]}"; do
@@ -324,26 +380,65 @@ bench_throughput() {
         pid="$(start_server "$bin" "$port" "$workers")"
         sleep 2
 
-        local out="$RUN_DIR/throughput-${row_label,,}-c${conns_lbl}-${size_lbl}-${name}.json"
-        "$BIN_DIR/tcp-bench" throughput \
-            -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
-            > "$out" 2>/dev/null || true
+        local tp_sum=0 p50_sum=0 p99_sum=0 max_sum=0 valid_runs=0
+        local tp_vals=""
+        local cpu_usage_last=""
+
+        for run in $(seq 1 "$REPEAT"); do
+            local out="$RUN_DIR/throughput-${row_label,,}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
+            local cpu_before="$RUN_DIR/.cpu-before-${name}-r${run}"
+            local cpu_after="$RUN_DIR/.cpu-after-${name}-r${run}"
+
+            snapshot_cpu "$cpu_before"
+
+            "$BIN_DIR/tcp-bench" throughput \
+                -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
+                > "$out" 2>/dev/null || true
+
+            snapshot_cpu "$cpu_after"
+            cpu_usage_last="$(calc_cpu_usage "$cpu_before" "$cpu_after")"
+            rm -f "$cpu_before" "$cpu_after"
+
+            if [ -s "$out" ]; then
+                local tp p50 p99 lat_max
+                tp=$(extract_json "$out" throughput_msg_per_sec)
+                p50=$(extract_json "$out" latency_p50_us)
+                p99=$(extract_json "$out" latency_p99_us)
+                lat_max=$(extract_json "$out" latency_max_us)
+                tp=${tp%%.*}; p50=${p50%%.*}; p99=${p99%%.*}; lat_max=${lat_max%%.*}
+                if [ -n "$tp" ] && [ "$tp" -gt 0 ]; then
+                    tp_sum=$((tp_sum + tp))
+                    p50_sum=$((p50_sum + p50))
+                    p99_sum=$((p99_sum + p99))
+                    max_sum=$((max_sum + lat_max))
+                    valid_runs=$((valid_runs + 1))
+                    tp_vals="${tp_vals:+$tp_vals,}$tp"
+                fi
+            fi
+
+            [ "$run" -lt "$REPEAT" ] && sleep 1
+        done
 
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
         sleep 1
 
-        if [ -s "$out" ]; then
-            local tp p50 p99
-            tp=$(extract_num "$out" throughput_msg_per_sec)
-            p50=$(extract_num "$out" latency_p50_us)
-            p99=$(extract_num "$out" latency_p99_us)
-            local mbps=0
-            [ -n "$tp" ] && mbps=$(( tp * payload / 1048576 ))
-            printf "  %-10s %10s msg/s  %6s MB/s  p50=%5s us  p99=%6s us\n" \
-                "$name" "${tp:-?}" "$mbps" "${p50:-?}" "${p99:-?}"
+        if [ "$valid_runs" -gt 0 ]; then
+            local tp_avg=$((tp_sum / valid_runs))
+            local p50_avg=$((p50_sum / valid_runs))
+            local p99_avg=$((p99_sum / valid_runs))
+            local max_avg=$((max_sum / valid_runs))
+            local mbps=$((tp_avg * payload / 1048576))
+            if [ "$REPEAT" -gt 1 ]; then
+                printf "  %-10s %12s %8s %10s %10s %10s  [%s]\n" \
+                    "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg" "$tp_vals"
+            else
+                printf "  %-10s %12s %8s %10s %10s %10s\n" \
+                    "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
+            fi
+            printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
         else
-            warn "$name: no output"
+            warn "$name: no valid output from $REPEAT runs"
         fi
     done
     echo ""
@@ -359,6 +454,9 @@ bench_connrate() {
     conc_lbl="$(format_conns "$concurrency")"
 
     info "=== ${row_label} ConnRate: concurrency=${conc_lbl} ${DURATION}s ==="
+
+    printf "  %-10s %12s %10s\n" "SERVER" "conn/s" "fails"
+    printf "  %-10s %12s %10s\n" "------" "------" "-----"
 
     local offset=0
     for name in "${SERVERS[@]}"; do
@@ -386,9 +484,9 @@ bench_connrate() {
 
         if [ -s "$out" ]; then
             local cps fails
-            cps=$(extract_num "$out" connects_per_sec)
-            fails=$(extract_num "$out" failed_connects)
-            printf "  %-10s %10s conn/s  fails=%s\n" \
+            cps=$(extract_json "$out" connects_per_sec)
+            fails=$(extract_json "$out" failed_connects)
+            printf "  %-10s %12s %10s\n" \
                 "$name" "${cps:-?}" "${fails:-0}"
         else
             warn "$name: no output"
@@ -409,30 +507,94 @@ cmd_bench() {
     mkdir -p "$RUN_DIR"
 
     info "results -> $RUN_DIR   (MT workers = ${nproc_val})"
+    info "servers: ${SERVERS[*]}"
+    info "conns: ${CONNS[*]}  payload: ${PAYLOADS[*]}  duration: ${DURATION}s  mode: ${MODE}"
     echo ""
 
     # ---- Single-thread row --------------------------------------------------
-    for payload in 64 4096 65536; do
-        for conns in 1000 10000; do
-            bench_throughput ST -echo "" "$conns" "$payload"
+    if [[ "$MODE" == "st" || "$MODE" == "both" ]]; then
+        for payload in "${PAYLOADS[@]}"; do
+            for conns in "${CONNS[@]}"; do
+                bench_throughput ST -echo "" "$conns" "$payload"
+            done
         done
-    done
-    for concurrency in 1000 10000; do
-        bench_connrate ST -echo "" "$concurrency"
-    done
+        if [ "$RUN_CONNRATE" = true ]; then
+            for conns in "${CONNS[@]}"; do
+                bench_connrate ST -echo "" "$conns"
+            done
+        fi
+    fi
 
     # ---- Multi-thread row ---------------------------------------------------
-    for payload in 64 4096 65536; do
-        for conns in 1000 10000; do
-            bench_throughput MT -echo-mt "$nproc_val" "$conns" "$payload"
+    if [[ "$MODE" == "mt" || "$MODE" == "both" ]]; then
+        for payload in "${PAYLOADS[@]}"; do
+            for conns in "${CONNS[@]}"; do
+                bench_throughput MT -echo-mt "$nproc_val" "$conns" "$payload"
+            done
         done
-    done
-    for concurrency in 1000 10000; do
-        bench_connrate MT -echo-mt "$nproc_val" "$concurrency"
-    done
+        if [ "$RUN_CONNRATE" = true ]; then
+            for conns in "${CONNS[@]}"; do
+                bench_connrate MT -echo-mt "$nproc_val" "$conns"
+            done
+        fi
+    fi
 
     ok "benchmarks complete"
     info "results written to $RUN_DIR"
+}
+
+# =============================================================================
+# parse bench options
+# =============================================================================
+
+SERVERS=(xylem libuv boost go rust)
+CONNS=(1000 10000)
+PAYLOADS=(64 4096 65536)
+MODE="both"
+RUN_CONNRATE=true
+REPEAT=1
+
+parse_bench_opts() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --servers|-s)
+                shift
+                IFS=',' read -ra SERVERS <<< "$1"
+                ;;
+            --conns|-c)
+                shift
+                IFS=',' read -ra CONNS <<< "$1"
+                ;;
+            --payload|-S)
+                shift
+                IFS=',' read -ra PAYLOADS <<< "$1"
+                ;;
+            --duration|-d)
+                shift
+                DURATION="$1"
+                ;;
+            --mode|-m)
+                shift
+                MODE="$1"
+                if [[ "$MODE" != "st" && "$MODE" != "mt" && "$MODE" != "both" ]]; then
+                    err "invalid mode: $MODE (must be st|mt|both)"
+                    exit 1
+                fi
+                ;;
+            --repeat|-r)
+                shift
+                REPEAT="$1"
+                ;;
+            --no-connrate)
+                RUN_CONNRATE=false
+                ;;
+            *)
+                err "unknown bench option: $1"
+                exit 1
+                ;;
+        esac
+        shift
+    done
 }
 
 # =============================================================================
@@ -441,22 +603,48 @@ cmd_bench() {
 
 usage() {
     cat <<EOF
-usage: $0 [install|build|bench|all]
+usage: $0 [install|build|bench|all] [bench-options...]
 
+Commands:
   install   apt packages, rust, libuv/boost (needs sudo)
   build     xylem static lib + tcp servers (ST + MT) + tcp-bench client
   bench     run ST + MT comparison benchmarks, write benchmark/results/<ts>/
   all       install + build + bench   (default)
+
+Bench options (pass after 'bench' or 'all'):
+  --servers, -s  xylem,go,rust     servers to compare (comma-separated)
+                                   available: xylem, libuv, boost, go, rust
+  --conns, -c    1000,10000        connection counts (comma-separated)
+  --payload, -S  64,4096,65536     payload sizes in bytes (comma-separated)
+  --duration, -d 10                test duration in seconds
+  --mode, -m     st|mt|both        single-thread / multi-thread / both
+  --repeat, -r   3                 repeat each test N times (avg results)
+  --no-connrate                    skip connection-rate tests
+
+Examples:
+  $0 bench --servers xylem,go,rust --conns 1000 --payload 64 --duration 5
+  $0 bench -s xylem,rust -c 1000,5000 -S 64,4096 -d 15 --mode st
+  $0 bench --servers go,xylem --no-connrate
 EOF
 }
 
 main() {
     local cmd="${1:-all}"
+    shift || true
+
     case "$cmd" in
         install) cmd_install ;;
         build)   cmd_build   ;;
-        bench)   cmd_bench   ;;
-        all)     cmd_install; cmd_build; cmd_bench ;;
+        bench)
+            parse_bench_opts "$@"
+            cmd_bench
+            ;;
+        all)
+            parse_bench_opts "$@"
+            cmd_install
+            cmd_build
+            cmd_bench
+            ;;
         -h|--help|help) usage ;;
         *) err "unknown command: $cmd"; usage; exit 1 ;;
     esac

@@ -85,9 +85,6 @@ struct _iowait_dir_s {
     sched_timer_t*           timer;
     _Atomic uint64_t         deadline;
     _Atomic uint32_t         flags;
-#ifdef XYLEM_IOWAIT_STATS
-    uint64_t                 last_return_ns;
-#endif
 };
 
 /**
@@ -103,10 +100,6 @@ struct _iowait_park_s {
     iowait_t*       w;
     _iowait_dir_t*  dir;
     iowait_result_t result;
-#ifdef XYLEM_IOWAIT_STATS
-    uint64_t        park_at_ns;
-    uint64_t        wake_at_ns;
-#endif
 };
 
 /**
@@ -317,69 +310,6 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms;
 }
 
-#ifdef XYLEM_IOWAIT_STATS
-#include <stdio.h>
-#include <time.h>
-
-static _Atomic uint64_t _iowait_stat_samples;
-static _Atomic uint64_t _iowait_stat_wait_ns;   /* park_at -> wake_at */
-static _Atomic uint64_t _iowait_stat_resume_ns; /* wake_at -> resume_at */
-static _Atomic uint64_t _iowait_stat_turnaround_ns; /* last return -> next park_at */
-static _Atomic uint64_t _iowait_stat_turnaround_samples;
-/* Turnaround distribution buckets (in ns, exclusive upper bound). */
-static _Atomic uint64_t _iowait_stat_turnaround_lt10us;
-static _Atomic uint64_t _iowait_stat_turnaround_lt100us;
-static _Atomic uint64_t _iowait_stat_turnaround_lt1ms;
-static _Atomic uint64_t _iowait_stat_turnaround_ge1ms;
-
-static uint64_t _iowait_now_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-
-void iowait_stats_reset(void) {
-    atomic_store(&_iowait_stat_samples, 0);
-    atomic_store(&_iowait_stat_wait_ns, 0);
-    atomic_store(&_iowait_stat_resume_ns, 0);
-    atomic_store(&_iowait_stat_turnaround_ns, 0);
-    atomic_store(&_iowait_stat_turnaround_samples, 0);
-    atomic_store(&_iowait_stat_turnaround_lt10us, 0);
-    atomic_store(&_iowait_stat_turnaround_lt100us, 0);
-    atomic_store(&_iowait_stat_turnaround_lt1ms, 0);
-    atomic_store(&_iowait_stat_turnaround_ge1ms, 0);
-}
-
-void iowait_stats_dump(const char* tag) {
-    uint64_t n   = atomic_load(&_iowait_stat_samples);
-    uint64_t tw  = atomic_load(&_iowait_stat_wait_ns);
-    uint64_t tr  = atomic_load(&_iowait_stat_resume_ns);
-    uint64_t ta  = atomic_load(&_iowait_stat_turnaround_ns);
-    uint64_t tas = atomic_load(&_iowait_stat_turnaround_samples);
-    uint64_t b1  = atomic_load(&_iowait_stat_turnaround_lt10us);
-    uint64_t b2  = atomic_load(&_iowait_stat_turnaround_lt100us);
-    uint64_t b3  = atomic_load(&_iowait_stat_turnaround_lt1ms);
-    uint64_t b4  = atomic_load(&_iowait_stat_turnaround_ge1ms);
-    if (n == 0) {
-        fprintf(stderr, "[iowait-stats %s] no samples\n", tag);
-        return;
-    }
-    fprintf(stderr,
-            "[iowait-stats %s] samples=%llu avg_wait=%llu ns "
-            "avg_resume=%llu ns avg_turnaround=%llu ns (n=%llu) "
-            "ta_hist: <10us=%llu <100us=%llu <1ms=%llu >=1ms=%llu\n",
-            tag,
-            (unsigned long long)n,
-            (unsigned long long)(tw / n),
-            (unsigned long long)(tr / n),
-            (unsigned long long)(tas ? ta / tas : 0),
-            (unsigned long long)tas,
-            (unsigned long long)b1,
-            (unsigned long long)b2,
-            (unsigned long long)b3,
-            (unsigned long long)b4);
-}
-#endif
 
 /**
  * Ensure the fd is registered with the poller.
@@ -470,9 +400,6 @@ static _iowait_park_t* _iowait_claim(
     _iowait_park_t* p = atomic_exchange(slot, NULL);
     if (p) {
         p->result = result;
-#ifdef XYLEM_IOWAIT_STATS
-        p->wake_at_ns = _iowait_now_ns();
-#endif
     }
     return p;
 }
@@ -495,10 +422,10 @@ static void _iowait_wake_park_batch(
         return;
     }
     if (batch->n == batch->cap) {
-        scheduler_schedule_batch(sched, batch->buf, batch->n);
+        scheduler_schedule_batch(sched, batch->coros, batch->n);
         batch->n = 0;
     }
-    batch->buf[batch->n++] = p->co;
+    batch->coros[batch->n++] = p->co;
 }
 
 static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
@@ -541,10 +468,6 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     p->co     = co;
     p->result = IOWAIT_READY;
-#ifdef XYLEM_IOWAIT_STATS
-    p->park_at_ns = _iowait_now_ns();
-    p->wake_at_ns = 0;
-#endif
 
     /**
      * Publish our park record. The slot is single-occupancy by
@@ -656,60 +579,6 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
 
-#ifdef XYLEM_IOWAIT_STATS
-    if (park.wake_at_ns != 0) {
-        uint64_t now = _iowait_now_ns();
-        atomic_fetch_add_explicit(
-            &_iowait_stat_wait_ns,
-            park.wake_at_ns - park.park_at_ns,
-            memory_order_relaxed);
-        atomic_fetch_add_explicit(
-            &_iowait_stat_resume_ns,
-            now - park.wake_at_ns,
-            memory_order_relaxed);
-        atomic_fetch_add_explicit(
-            &_iowait_stat_samples, 1, memory_order_relaxed);
-        /**
-         * Turnaround = time from the previous _iowait_wait return
-         * (park_fn records park_at_ns right before publishing the
-         * slot on the next call) to the current call's park_at_ns.
-         * Because park_at_ns fires after the coroutine has already
-         * done whatever user-space work is between two waits (recv,
-         * send, etc.), the delta isolates that user-space segment.
-         */
-        if (d->last_return_ns != 0 &&
-            park.park_at_ns > d->last_return_ns) {
-            uint64_t dt = park.park_at_ns - d->last_return_ns;
-            atomic_fetch_add_explicit(
-                &_iowait_stat_turnaround_ns,
-                dt,
-                memory_order_relaxed);
-            atomic_fetch_add_explicit(
-                &_iowait_stat_turnaround_samples,
-                1,
-                memory_order_relaxed);
-            if (dt < 10000ull) {
-                atomic_fetch_add_explicit(
-                    &_iowait_stat_turnaround_lt10us,
-                    1, memory_order_relaxed);
-            } else if (dt < 100000ull) {
-                atomic_fetch_add_explicit(
-                    &_iowait_stat_turnaround_lt100us,
-                    1, memory_order_relaxed);
-            } else if (dt < 1000000ull) {
-                atomic_fetch_add_explicit(
-                    &_iowait_stat_turnaround_lt1ms,
-                    1, memory_order_relaxed);
-            } else {
-                atomic_fetch_add_explicit(
-                    &_iowait_stat_turnaround_ge1ms,
-                    1, memory_order_relaxed);
-            }
-        }
-        d->last_return_ns = now;
-    }
-#endif
-
     return park.result;
 }
 
@@ -764,10 +633,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
         atomic_store_explicit(&w->wr.flags, 0, memory_order_relaxed);
         atomic_store_explicit(&w->closed, false, memory_order_relaxed);
         w->registered = false;
-#ifdef XYLEM_IOWAIT_STATS
-        w->rd.last_return_ns = 0;
-        w->wr.last_return_ns = 0;
-#endif
     } else {
         w = (iowait_t*)calloc(1, sizeof(iowait_t));
         if (!w) {

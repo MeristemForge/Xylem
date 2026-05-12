@@ -29,13 +29,11 @@ typedef struct wsdeque_s wsdeque_t;
 /**
  * @brief Create a work-stealing deque.
  *
- * Allocates a bounded circular buffer with capacity 2^log2_cap.
- *
- * @param log2_cap  Log2 of the capacity (e.g. 10 -> 1024 slots).
+ * @param cap  Capacity (must be a power of 2).
  *
  * @return Deque handle, or NULL on failure.
  */
-extern wsdeque_t* wsdeque_create(uint32_t log2_cap);
+extern wsdeque_t* wsdeque_create(uint32_t cap);
 
 /**
  * @brief Destroy a work-stealing deque and free its memory.
@@ -43,6 +41,15 @@ extern wsdeque_t* wsdeque_create(uint32_t log2_cap);
  * @param dq  Deque to destroy.
  */
 extern void wsdeque_destroy(wsdeque_t* dq);
+
+/**
+ * @brief Return the number of free slots (owner thread only).
+ *
+ * @param dq  Deque to query.
+ *
+ * @return Number of free slots.
+ */
+extern int32_t wsdeque_remaining(wsdeque_t* dq);
 
 /**
  * @brief Push a coroutine onto the deque (owner thread only).
@@ -77,15 +84,6 @@ extern mco_coro* wsdeque_pop(wsdeque_t* dq);
  * @return Number of coroutines removed.
  */
 extern int32_t wsdeque_pop_half(wsdeque_t* dq, mco_coro** out, int32_t cap);
-
-/**
- * @brief Steal a coroutine from the deque (any thread).
- *
- * @param dq  Deque to steal from.
- *
- * @return Coroutine pointer, or NULL if empty or contended.
- */
-extern mco_coro* wsdeque_steal(wsdeque_t* dq);
 
 /**
  * @brief Steal half of the coroutines from the deque (any thread).
