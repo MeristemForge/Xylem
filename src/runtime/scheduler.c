@@ -377,16 +377,17 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
 
         cb(timer, ud);
 
-        if (timer->repeat > 0) {
-            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-            mtx_lock(&sched->timer_lock);
+        mtx_lock(&sched->timer_lock);
+        if (timer->firing) {
             timer->firing = false;
-            if (timer->active) {
-                timer->timeout = now + timer->repeat;
+            if (timer->active && timer->repeat > 0) {
+                timer->timeout =
+                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                    + timer->repeat;
                 heap_insert(&sched->timers, &timer->heap_node);
             }
-            mtx_unlock(&sched->timer_lock);
         }
+        mtx_unlock(&sched->timer_lock);
 
         _sched_timer_unref(timer);
     }
@@ -1185,9 +1186,8 @@ void sched_timer_start(
     timer->timeout = now + timeout_ms;
     timer->repeat  = repeat_ms;
     timer->active  = true;
-    if (!timer->firing) {
-        heap_insert(&sched->timers, &timer->heap_node);
-    }
+    timer->firing  = false;
+    heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
     /**
@@ -1227,10 +1227,9 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
     }
-    timer->active = true;
-    if (!timer->firing) {
-        heap_insert(&sched->timers, &timer->heap_node);
-    }
+    timer->active  = true;
+    timer->firing  = false;
+    heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
     /**
