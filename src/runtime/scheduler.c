@@ -30,15 +30,12 @@
  *                                    injection point for cross-thread
  *                                    scheduler_schedule() callers
  *
- * When a worker runs out of local work it becomes a "searcher" and
- * does a few non-blocking poll+steal rounds. Searchers are throttled
- * to half the pool (Go/Tokio nspinning pattern) so a busy system
- * does not spend its cycles probing empty queues. The last searcher
- * out becomes the "driver": it owns the blocking poll that services
- * IO, timers and deferred posts, handing the role off as soon as
- * another worker starts searching. Non-searcher / non-driver workers
- * park on a per-worker semaphore; cross-scheduler scheduler_schedule
- * and scheduler_post wake at most one parked worker per push.
+ * When a worker runs out of local work it does a non-blocking
+ * poll + steal round. Exactly one idle worker becomes the "driver"
+ * via CAS on poller_running: it owns the blocking poll that services
+ * IO, timers and deferred posts. All other idle workers park on a
+ * per-worker semaphore; scheduler_schedule and scheduler_post wake
+ * at most one parked worker per push.
  *
  * Coroutine parking flows through scheduler_park: the park callback
  * runs *after* mco_yield returns, so a wakeup source can never
@@ -126,7 +123,6 @@ struct scheduler_s {
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
     bool                  joined;
-    _Atomic int32_t       nspinning;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
     /**
@@ -539,21 +535,7 @@ static void _sched_maintenance(scheduler_t* sched) {
     }
 }
 
-/**
- * Find a runnable coroutine, or return NULL to tell the caller to park.
- *
- * Implements the Go/Tokio nspinning pattern: at most half the workers
- * are allowed to be searching at once, and the last searcher out of
- * the spin phase becomes the driver that runs the blocking-poll loop
- * (IO / timers / posts). The driver hands off as soon as another
- * worker starts searching, so blocking-poll duty is never pinned.
- */
-/**
- * Go findRunnable() equivalent. Steps numbered to match Go's proc.go.
- *
- * Go:  local → global(size/nprocs+1) → netpoll(0) → steal → spin/block
- * Ours: same order, same grab formula, same netpoll placement.
- */
+/** Go findRunnable() equivalent: local → global → netpoll(0) → steal → driver/park. */
 static mco_coro* _sched_worker_find_coro(
     scheduler_t*           sched,
     _sched_worker_t*       w,
@@ -584,15 +566,7 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    /**
-     * Go step 5: become the blocking-poll driver, or park.
-     *
-     * No spin phase: step 3 already did a non-blocking poll, and
-     * spinning again within microseconds finds nothing new but costs
-     * a syscall. Instead, exactly one worker becomes the driver via
-     * CAS; all others park on their semaphore and await a direct
-     * futex wake (matching Go's stopm/wakep pattern).
-     */
+    /* Become the blocking-poll driver, or park. */
     {
         bool expected = false;
         if (!atomic_compare_exchange_strong_explicit(
@@ -993,23 +967,8 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
         }
     }
 
-    /**
-     * Ensure at least one worker is searching so the new task gets
-     * picked up promptly. Throttled on nspinning -- mirrors Go
-     * wakep() and Tokio notify_parked: if a searcher already exists
-     * it will discover the task via steal / runq grab on its next
-     * round, so waking another worker would only contend on CAS.
-     * When the searcher takes a task and starts running, nspinning
-     * drops back to 0; the next push wakes the next worker, so
-     * parallelism expands one step at a time until load is spread
-     * across cores. Without this, the local-deque fast path above
-     * can leave newly scheduled work invisible to parked workers
-     * until the deque overflows (up to 1024 tasks).
-     */
-    if (atomic_load_explicit(
-            &sched->nspinning, memory_order_relaxed) == 0) {
-        _sched_wake_worker(sched);
-    }
+    /* Wake a parked worker so the new task is picked up promptly. */
+    _sched_wake_worker(sched);
 }
 
 void scheduler_schedule_batch(
@@ -1051,10 +1010,7 @@ void scheduler_schedule_batch(
         free(nodes);
     }
 
-    if (atomic_load_explicit(
-            &sched->nspinning, memory_order_relaxed) == 0) {
-        _sched_wake_worker(sched);
-    }
+    _sched_wake_worker(sched);
 }
 
 void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
@@ -1130,15 +1086,7 @@ int scheduler_post(
     req->cb = cb;
     req->ud = ud;
     mpsc_push(&sched->posts, &req->node);
-    /**
-     * A spinning worker will drain posts on its next blocking poll
-     * without a wakeup. Only poke when everyone is idle/parked;
-     * _sched_wake_worker's pipe fall-through is poller_waiting
-     * gated so a busy driver is not spuriously woken.
-     */
-    if (atomic_load(&sched->nspinning) == 0) {
-        _sched_wake_worker(sched);
-    }
+    _sched_wake_worker(sched);
     return 0;
 }
 
