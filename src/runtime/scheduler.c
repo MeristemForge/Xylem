@@ -75,6 +75,15 @@
 #define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_SPIN_ATTEMPTS      1
 #define SCHED_TIMER_TICK_MS      1
+#define SCHED_CORO_POOL_CAP_MUL  64
+
+typedef struct {
+    spin_t    lock;
+    void**    slots;
+    int32_t   count;
+    int32_t   cap;
+    size_t    slot_size;
+} _coro_pool_t;
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
@@ -104,7 +113,7 @@ struct scheduler_s {
     iowait_slab_t*        iowait_slab;
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
-    _Atomic bool          processing;
+    _Atomic bool          post_draining;
     _Atomic bool          running;
     /**
      * Set while the driver is blocked inside platform_poller_wait
@@ -119,7 +128,7 @@ struct scheduler_s {
     bool                  joined;
     _Atomic int32_t       nspinning;
     _Atomic int64_t       alive;
-    _Atomic uint64_t      timer_last_tick_ms;
+    _Atomic uint64_t      last_maintenance_ms;
     /**
      * Covers coroutines parked on channels/mutexes/iowait/timers
      * which are not reachable through runq/deque/runnext and would
@@ -128,6 +137,7 @@ struct scheduler_s {
      */
     list_t                registry;
     spin_t                registry_lock;
+    _coro_pool_t          coro_pool;
 };
 
 static thread_local _sched_worker_t* _tls_worker;
@@ -167,6 +177,36 @@ struct sched_timer_s {
 static void _sched_coro_entry(mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
     ctx->fn(ctx->arg);
+}
+
+static void* _coro_pool_alloc(size_t size, void* allocator_data) {
+    _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
+
+    spin_lock(&pool->lock);
+    if (pool->count > 0) {
+        void* ptr = pool->slots[--pool->count];
+        spin_unlock(&pool->lock);
+        return ptr;
+    }
+    spin_unlock(&pool->lock);
+
+    return malloc(size);
+}
+
+static void _coro_pool_dealloc(
+    void* ptr, size_t size, void* allocator_data) {
+    _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
+    (void)size;
+
+    spin_lock(&pool->lock);
+    if (pool->count < pool->cap) {
+        pool->slots[pool->count++] = ptr;
+        spin_unlock(&pool->lock);
+        return;
+    }
+    spin_unlock(&pool->lock);
+
+    free(ptr);
 }
 
 static void _sched_timer_ref(sched_timer_t* timer) {
@@ -468,22 +508,22 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
 }
 
 /**
- * Opportunistic timer service on the worker fast path.
+ * Opportunistic maintenance on the worker fast path.
  *
  * A CPU-bound workload keeps every worker busy on runnable coroutines
- * and nobody reaches the driver's blocking poll, so timers would
- * starve without this tick. One CAS on timer_last_tick_ms elects a
- * single worker per window; everyone else pays just an atomic load.
+ * and nobody reaches the driver's blocking poll, so timers and posts
+ * would starve. One CAS on last_maintenance_ms elects a single worker
+ * per window; everyone else pays just an atomic load.
  */
-static void _sched_timer_tick(scheduler_t* sched) {
+static void _sched_maintenance(scheduler_t* sched) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     uint64_t last = atomic_load_explicit(
-        &sched->timer_last_tick_ms, memory_order_relaxed);
+        &sched->last_maintenance_ms, memory_order_relaxed);
     if (now - last < SCHED_TIMER_TICK_MS) {
         return;
     }
     if (!atomic_compare_exchange_strong_explicit(
-            &sched->timer_last_tick_ms,
+            &sched->last_maintenance_ms,
             &last,
             now,
             memory_order_acq_rel,
@@ -491,6 +531,13 @@ static void _sched_timer_tick(scheduler_t* sched) {
         return;
     }
     _sched_process_timers(sched, now);
+
+    bool expected = false;
+    if (atomic_compare_exchange_strong(
+            &sched->post_draining, &expected, true)) {
+        _sched_process_posts(sched);
+        atomic_store(&sched->post_draining, false);
+    }
 }
 
 /**
@@ -606,9 +653,9 @@ static mco_coro* _sched_worker_find_coro(
          */
         bool expected = false;
         if (atomic_compare_exchange_strong(
-                &sched->processing, &expected, true)) {
+                &sched->post_draining, &expected, true)) {
             _sched_process_posts(sched);
-            atomic_store(&sched->processing, false);
+            atomic_store(&sched->post_draining, false);
         }
 
         /**
@@ -638,7 +685,7 @@ static mco_coro* _sched_worker_find_coro(
             atomic_store_explicit(
                 &sched->poller_waiting, false, memory_order_relaxed);
             _sched_run_coro(w, co);
-            _sched_timer_tick(sched);
+            _sched_maintenance(sched);
         }
     }
     atomic_store_explicit(
@@ -654,7 +701,7 @@ static int _sched_worker_entry(void* arg) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
-        _sched_timer_tick(sched);
+        _sched_maintenance(sched);
 
         /**
          * Go schedule(): every 61st execution, grab one from global
@@ -747,6 +794,12 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
 
     platform_poller_deinit(&sched->poller);
     iowait_slab_destroy(sched->iowait_slab);
+
+    for (int32_t i = 0; i < sched->coro_pool.count; i++) {
+        free(sched->coro_pool.slots[i]);
+    }
+    free(sched->coro_pool.slots);
+
     free(sched);
 }
 
@@ -807,6 +860,25 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     if (!sched->iowait_slab) {
         _sched_cleanup(sched, 0);
         return NULL;
+    }
+
+    {
+        uint32_t pool_cap = (uint32_t)(nworkers * SCHED_CORO_POOL_CAP_MUL);
+        if (opts && opts->coro_pool_cap > 0) {
+            pool_cap = opts->coro_pool_cap;
+        }
+        mco_desc tmp = mco_desc_init(
+            _sched_coro_entry, SCHED_CORO_STACK_SIZE);
+        sched->coro_pool.slot_size = tmp.coro_size;
+        sched->coro_pool.cap       = (int32_t)pool_cap;
+        sched->coro_pool.count     = 0;
+        spin_init(&sched->coro_pool.lock);
+        sched->coro_pool.slots = (void**)malloc(
+            pool_cap * sizeof(void*));
+        if (!sched->coro_pool.slots) {
+            _sched_cleanup(sched, 0);
+            return NULL;
+        }
     }
 
     sched->nworkers = nworkers;
@@ -996,7 +1068,10 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     ctx->arg = arg;
 
     mco_desc desc = mco_desc_init(_sched_coro_entry, SCHED_CORO_STACK_SIZE);
-    desc.user_data = ctx;
+    desc.alloc_cb       = _coro_pool_alloc;
+    desc.dealloc_cb     = _coro_pool_dealloc;
+    desc.allocator_data = &sched->coro_pool;
+    desc.user_data      = ctx;
 
     mco_coro* co = NULL;
     if (mco_create(&co, &desc) != MCO_SUCCESS) {

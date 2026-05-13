@@ -61,8 +61,9 @@ typedef void (*scheduler_post_fn_t)(void* ud);
 typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
 
 typedef struct scheduler_opts_s {
-    int32_t  nworkers;  /*< 0 = use CPU count. */
-    uint32_t deque_cap; /*< 0 = use default (256). Must be power of 2. */
+    int32_t  nworkers;       /*< 0 = use CPU count. */
+    uint32_t deque_cap;      /*< 0 = use default (256). Must be power of 2. */
+    uint32_t coro_pool_cap;  /*< 0 = use default (nworkers * 64). */
 } scheduler_opts_t;
 
 /**

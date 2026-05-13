@@ -270,17 +270,17 @@ int platform_socket_get_socktype(platform_sock_t sock) {
 }
 
 ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
-    ssize_t n = read(sock, buf, size);
+    ssize_t n = recv(sock, buf, size, 0);
     if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
-        n = read(sock, buf, size);
+        n = recv(sock, buf, size, 0);
     }
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
 ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
-    ssize_t n = write(sock, buf, size);
+    ssize_t n = send(sock, buf, size, 0);
     if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
-        n = write(sock, buf, size);
+        n = send(sock, buf, size, 0);
     }
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
