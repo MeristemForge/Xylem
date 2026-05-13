@@ -171,7 +171,6 @@ struct sched_timer_s {
     uint64_t         timeout;
     uint64_t         repeat;
     bool             active;
-    bool             firing;
     _Atomic int32_t  refcnt;
 };
 
@@ -359,10 +358,21 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
             if (t->timeout <= now_ms) {
                 heap_dequeue(&sched->timers);
                 if (t->repeat > 0) {
-                    t->firing = true;
+                    t->timeout = now_ms + t->repeat;
+                    heap_insert(&sched->timers, &t->heap_node);
                 } else {
                     t->active = false;
                 }
+                /**
+                 * Snapshot cb/ud under lock so a concurrent start()
+                 * cannot swap the callback between dequeue and
+                 * invocation; a racing start() is simply serviced on
+                 * the next pass.
+                 *
+                 * Pin the timer across the unlocked cb call so a
+                 * racing destroy that drops the creator's ref does
+                 * not free the object while cb is running.
+                 */
                 _sched_timer_ref(t);
                 timer = t;
                 cb    = t->cb;
@@ -376,18 +386,6 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
         }
 
         cb(timer, ud);
-
-        mtx_lock(&sched->timer_lock);
-        if (timer->firing) {
-            timer->firing = false;
-            if (timer->active && timer->repeat > 0) {
-                timer->timeout =
-                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-                    + timer->repeat;
-                heap_insert(&sched->timers, &timer->heap_node);
-            }
-        }
-        mtx_unlock(&sched->timer_lock);
 
         _sched_timer_unref(timer);
     }
@@ -1178,7 +1176,7 @@ void sched_timer_start(
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     mtx_lock(&sched->timer_lock);
-    if (timer->active && !timer->firing) {
+    if (timer->active) {
         heap_remove(&sched->timers, &timer->heap_node);
     }
     timer->cb      = cb;
@@ -1186,7 +1184,6 @@ void sched_timer_start(
     timer->timeout = now + timeout_ms;
     timer->repeat  = repeat_ms;
     timer->active  = true;
-    timer->firing  = false;
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
@@ -1203,9 +1200,7 @@ bool sched_timer_stop(sched_timer_t* timer) {
     bool cancelled = false;
     mtx_lock(&sched->timer_lock);
     if (timer->active) {
-        if (!timer->firing) {
-            heap_remove(&sched->timers, &timer->heap_node);
-        }
+        heap_remove(&sched->timers, &timer->heap_node);
         timer->active = false;
         cancelled = true;
     }
@@ -1220,15 +1215,19 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     bool was_active;
     mtx_lock(&sched->timer_lock);
     was_active = timer->active;
-    if (was_active && !timer->firing) {
+    if (was_active) {
         heap_remove(&sched->timers, &timer->heap_node);
     }
     timer->timeout = now + timeout_ms;
+    /**
+     * Periodic timers adopt timeout_ms as the new repeat interval so
+     * reset() restarts the clock coherently for both one-shot and
+     * periodic variants.
+     */
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
     }
-    timer->active  = true;
-    timer->firing  = false;
+    timer->active = true;
     heap_insert(&sched->timers, &timer->heap_node);
     mtx_unlock(&sched->timer_lock);
 
