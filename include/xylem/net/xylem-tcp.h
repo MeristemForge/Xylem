@@ -192,12 +192,17 @@ extern int xylem_tcp_send(
 /**
  * @brief Close and destroy a connection.
  *
+ * The connection must not be used after this call. Read any needed
+ * state (xylem_tcp_get_error, xylem_tcp_remote_addr) before closing.
+ *
  * @param tcp  Connection handle.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the last error code from the connection.
+ *
+ * Must be called before xylem_tcp_close().
  *
  * @param tcp  Connection handle.
  *

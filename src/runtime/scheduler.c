@@ -470,21 +470,20 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         }
         return;
     }
-    if (w->park_fn) {
-        scheduler_park_fn_t fn = w->park_fn;
-        void* arg = w->park_arg;
-        w->park_fn  = NULL;
-        w->park_arg = NULL;
-        if (!fn(co, arg)) {
-            /**
-             * Park declined: reschedule. Fall back to global runq on
-             * local overflow so we never drop a live coroutine.
-             */
-            if (wsdeque_push(w->deque, co) != 0) {
-                _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-                runq_push(w->sched->runq, &ctx->runq_node);
-                _sched_wake_worker(w->sched);
-            }
+    if (!w->park_fn) {
+        xylem_logw("coroutine yielded without scheduler_park; rescheduling");
+        scheduler_schedule(w->sched, co);
+        return;
+    }
+    scheduler_park_fn_t fn = w->park_fn;
+    void* arg = w->park_arg;
+    w->park_fn  = NULL;
+    w->park_arg = NULL;
+    if (!fn(co, arg)) {
+        if (wsdeque_push(w->deque, co) != 0) {
+            _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+            runq_push(w->sched->runq, &ctx->runq_node);
+            _sched_wake_worker(w->sched);
         }
     }
 }

@@ -663,12 +663,6 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
     if (atomic_exchange(&tcp->closed, true)) {
         return;
     }
-
-    /**
-     * Wake any in-flight recv/send so they observe `closed` and return.
-     * The actual teardown (fd close, iowait_destroy, free) happens in
-     * _tcp_conn_unref() once the last in-flight call drops its reference.
-     */
     iowait_close(tcp->waiter);
     _tcp_conn_unref(tcp);
 }

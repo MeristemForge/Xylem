@@ -27,6 +27,7 @@
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 typedef struct {
@@ -39,6 +40,7 @@ typedef struct {
 static scheduler_t*    g_sched;
 static dynpool_t*      g_dynpool;
 static platform_sem_t* g_stop_sem;
+static _Atomic bool    g_shutdown;
 
 static void _runtime_idle_cb(void* ud) {
     (void)ud;
@@ -141,6 +143,8 @@ void runtime_run(
         workers = opts->workers;
     }
 
+    atomic_store(&g_shutdown, false);
+
     scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
     g_sched = scheduler_create(&sched_opts);
 
@@ -167,11 +171,11 @@ void runtime_run(
     dynpool_destroy(g_dynpool);
     scheduler_destroy(g_sched);
     platform_sem_destroy(g_stop_sem);
-    g_stop_sem = NULL;
 }
 
 void runtime_shutdown(void) {
-    if (g_stop_sem) {
+    bool expected = false;
+    if (atomic_compare_exchange_strong(&g_shutdown, &expected, true)) {
         platform_sem_post(g_stop_sem);
     }
 }
