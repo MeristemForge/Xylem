@@ -31,6 +31,7 @@
 #define PLATFORM_TCPV4_MSS 536
 #define PLATFORM_TCPV6_MSS 1220
 
+
 void platform_socket_enable_nonblocking(platform_sock_t sock, bool on) {
     int flag = fcntl(sock, F_GETFL, 0);
     if (flag == -1) {
