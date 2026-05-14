@@ -82,8 +82,8 @@ extern queue_node_t* runq_pop(runq_t* rq);
 /**
  * @brief Pop up to min(size/nprocs + 1, cap) nodes from the queue.
  *
- * Thread-safe. Fair-share formula matching Go's globrunqget: each
- * worker takes 1/Nth of the queue so local deques drain faster.
+ * Thread-safe. Fair-share formula: each worker takes 1/Nth of the
+ * queue so local deques drain faster.
  */
 extern int32_t runq_pop_fair(
     runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs);

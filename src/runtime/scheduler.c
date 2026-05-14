@@ -484,7 +484,7 @@ static void _sched_maintenance(scheduler_t* sched) {
     }
 }
 
-/** Go findRunnable() equivalent: local → global → netpoll(0) → steal → driver/park. */
+/* local → global → netpoll(0) → steal → driver/park. */
 static mco_coro* _sched_worker_find_coro(
     scheduler_t*           sched,
     _sched_worker_t*       w,
@@ -943,14 +943,8 @@ void scheduler_park(
     (void)sched;
     if (!_tls_worker || !mco_running()) {
         xylem_loge(
-            "scheduler_park called without a coroutine context "
-            "(tls_worker=%p, mco_running=%p); park-style APIs "
-            "(iowait_read/write, channel_recv, mutex_lock, "
-            "waitgroup_wait, runtime_sleep/submit, tcp/udp I/O) "
-            "must be called from inside a coroutine running on a "
-            "scheduler worker; aborting",
-            (void*)_tls_worker,
-            (void*)mco_running());
+            "scheduler_park: not in coroutine (worker=%p co=%p)",
+            (void*)_tls_worker, (void*)mco_running());
         abort();
     }
     _tls_worker->park_fn  = fn;

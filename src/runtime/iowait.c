@@ -336,13 +336,9 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
         &d->park, p, memory_order_release);
     if (prev != NULL) {
         xylem_loge(
-            "iowait: concurrent park on same direction "
-            "violates single-reader/-writer contract "
-            "(iowait=%p dir=%s prev_park=%p new_park=%p); aborting",
-            (void*)w,
+            "iowait: double park on %s (w=%p prev=%p new=%p)",
             (d == &w->rd) ? "rd" : "wr",
-            (void*)prev,
-            (void*)p);
+            (void*)w, (void*)prev, (void*)p);
         abort();
     }
 
@@ -389,7 +385,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
-/* Waiter determines the result after waking (Go netpollblock pattern). */
+/* Waiter determines the result after waking by re-checking conditions. */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
