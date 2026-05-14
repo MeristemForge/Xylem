@@ -41,9 +41,6 @@
 #define IOWAIT_INDEX_MASK (((uintptr_t)1 << IOWAIT_INDEX_BITS) - 1)
 #define IOWAIT_GEN_SHIFT  IOWAIT_INDEX_BITS
 
-#define IOWAIT_FLAG_CLOSED   ((uint32_t)1)
-#define IOWAIT_FLAG_DEADLINE ((uint32_t)2)
-
 typedef struct _iowait_park_s _iowait_park_t;
 typedef struct _iowait_dir_s  _iowait_dir_t;
 
@@ -53,15 +50,13 @@ struct _iowait_dir_s {
     _Atomic(_iowait_park_t*) park;
     sched_timer_t*           timer;
     _Atomic uint64_t         deadline;
-    _Atomic uint32_t         flags;
 };
 
 /* On caller's stack; published via dir->park. Wakers claim it with atomic_exchange. */
 struct _iowait_park_s {
-    mco_coro*       co;
-    iowait_t*       w;
-    _iowait_dir_t*  dir;
-    iowait_result_t result;
+    mco_coro*      co;
+    iowait_t*      w;
+    _iowait_dir_t* dir;
 };
 
 struct iowait_s {
@@ -297,13 +292,8 @@ static void _iowait_arm(iowait_t* w) {
 }
 
 /* atomic_exchange arbitrates IO/timer/close race; exactly one winner wakes the coro. */
-static _iowait_park_t* _iowait_claim(
-    _Atomic(_iowait_park_t*)* slot, iowait_result_t result) {
-    _iowait_park_t* p = atomic_exchange(slot, NULL);
-    if (p) {
-        p->result = result;
-    }
-    return p;
+static _iowait_park_t* _iowait_claim(_Atomic(_iowait_park_t*)* slot) {
+    return atomic_exchange(slot, NULL);
 }
 
 static void _iowait_wake_park(_iowait_park_t* p) {
@@ -328,13 +318,7 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
-    _iowait_park_t* p = _iowait_claim(&d->park, IOWAIT_TIMEOUT);
-    if (p) {
-        _iowait_wake_park(p);
-    } else {
-        atomic_fetch_or_explicit(
-            &d->flags, IOWAIT_FLAG_DEADLINE, memory_order_release);
-    }
+    _iowait_wake_park(_iowait_claim(&d->park));
     /* Drop timer-arm ref; d is unsafe after this (racing destroy may free w). */
     _iowait_unref(w);
 }
@@ -345,8 +329,7 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
     iowait_t*       w = p->w;
     _iowait_dir_t*  d = p->dir;
 
-    p->co     = co;
-    p->result = IOWAIT_READY;
+    p->co = co;
 
     /* Single-occupancy: exchange detects illegal concurrent park. */
     _iowait_park_t* prev = atomic_exchange_explicit(
@@ -365,12 +348,15 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     _iowait_arm(w);
 
-    /* Check both close and deadline races in one load. */
-    uint32_t f = atomic_load_explicit(&d->flags, memory_order_acquire);
-    if (f & IOWAIT_FLAG_CLOSED) {
-        _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_CLOSED));
-    } else if (f & IOWAIT_FLAG_DEADLINE) {
-        _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_TIMEOUT));
+    /* Re-check after publish: close or deadline may have raced in. */
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        _iowait_wake_park(_iowait_claim(&d->park));
+    } else {
+        uint64_t dl = atomic_load_explicit(
+            &d->deadline, memory_order_acquire);
+        if (dl > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= dl) {
+            _iowait_wake_park(_iowait_claim(&d->park));
+        }
     }
     return true;
 }
@@ -389,9 +375,6 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
         return;
     }
 
-    atomic_fetch_and_explicit(
-        &d->flags, ~IOWAIT_FLAG_DEADLINE, memory_order_relaxed);
-
     if (!d->timer) {
         d->timer = sched_timer_create(runtime_get_scheduler());
         if (!d->timer) {
@@ -406,11 +389,19 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
+/* Waiter determines the result after waking (Go netpollblock pattern). */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
 
-    return park.result;
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        return IOWAIT_CLOSED;
+    }
+    uint64_t dl = atomic_load_explicit(&d->deadline, memory_order_acquire);
+    if (dl > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= dl) {
+        return IOWAIT_TIMEOUT;
+    }
+    return IOWAIT_READY;
 }
 
 iowait_slab_t* iowait_slab_create(void) {
@@ -461,8 +452,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
     atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
-    atomic_store_explicit(&w->rd.flags, 0, memory_order_relaxed);
-    atomic_store_explicit(&w->wr.flags, 0, memory_order_relaxed);
     atomic_store_explicit(&w->closed, false, memory_order_relaxed);
     w->registered = false;
 
@@ -518,13 +507,8 @@ void iowait_close(iowait_t* w) {
     }
     mtx_unlock(&w->arm_lock);
 
-    atomic_fetch_or_explicit(
-        &w->rd.flags, IOWAIT_FLAG_CLOSED, memory_order_release);
-    atomic_fetch_or_explicit(
-        &w->wr.flags, IOWAIT_FLAG_CLOSED, memory_order_release);
-
-    _iowait_wake_park(_iowait_claim(&w->rd.park, IOWAIT_CLOSED));
-    _iowait_wake_park(_iowait_claim(&w->wr.park, IOWAIT_CLOSED));
+    _iowait_wake_park(_iowait_claim(&w->rd.park));
+    _iowait_wake_park(_iowait_claim(&w->wr.park));
 }
 
 void iowait_destroy(iowait_t* w) {
@@ -556,11 +540,11 @@ void iowait_on_event(
 
     if (revents & PLATFORM_POLLER_RD_OP) {
         _iowait_wake_park_batch(
-            sched, batch, _iowait_claim(&w->rd.park, IOWAIT_READY));
+            sched, batch, _iowait_claim(&w->rd.park));
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
         _iowait_wake_park_batch(
-            sched, batch, _iowait_claim(&w->wr.park, IOWAIT_READY));
+            sched, batch, _iowait_claim(&w->wr.park));
     }
 
     /* LT+oneshot: re-arm for still-parked directions. */
