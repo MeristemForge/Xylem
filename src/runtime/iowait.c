@@ -196,19 +196,10 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
     mtx_unlock(&slab->lock);
 }
 
-/* Last ref dropped: tear down, bump gen, return slot to slab freelist. */
+/* Last ref dropped: bump gen, return slot to slab freelist.
+ * Timers are kept alive for reuse by the next occupant. */
 static void _iowait_retire(iowait_t* w) {
-    if (w->rd.timer) {
-        sched_timer_destroy(w->rd.timer);
-        w->rd.timer = NULL;
-    }
-    if (w->wr.timer) {
-        sched_timer_destroy(w->wr.timer);
-        w->wr.timer = NULL;
-    }
-
     atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
-
     _iowait_slab_free(w->slab, w->slot_index);
 }
 
@@ -449,6 +440,12 @@ void iowait_slab_destroy(iowait_slab_t* slab) {
     for (uint32_t p = 0; p < slab->npages; p++) {
         iowait_t* page = slab->pages[p];
         for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
+            if (page[i].rd.timer) {
+                sched_timer_destroy(page[i].rd.timer);
+            }
+            if (page[i].wr.timer) {
+                sched_timer_destroy(page[i].wr.timer);
+            }
             mtx_destroy(&page[i].arm_lock);
         }
         free(page);
@@ -466,8 +463,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
         return NULL;
     }
 
-    w->rd.timer = NULL;
-    w->wr.timer = NULL;
     atomic_store_explicit(&w->rd.park, NULL, memory_order_relaxed);
     atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
     atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
