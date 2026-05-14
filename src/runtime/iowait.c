@@ -36,17 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/**
- * Generation-tagged userdata encoding.
- *
- * Every poller ud carries a (gen, slab-index) pair packed into a
- * uintptr_t. On 32-bit platforms the 16-bit index yields 65536
- * maximum concurrent handles; on 64-bit the 48-bit index is
- * effectively unbounded.
- *
- * gen is bumped on every retire; iowait_on_event rejects stale
- * CQEs by comparing the tag against the live gen after tryref.
- */
+/* Poller ud = (gen, slab-index) packed into uintptr_t. gen rejects stale CQEs. */
 #define IOWAIT_INDEX_BITS ((int)(sizeof(uintptr_t) * CHAR_BIT - 16))
 #define IOWAIT_INDEX_MASK (((uintptr_t)1 << IOWAIT_INDEX_BITS) - 1)
 #define IOWAIT_GEN_SHIFT  IOWAIT_INDEX_BITS
@@ -57,14 +47,7 @@
 typedef struct _iowait_park_s _iowait_park_t;
 typedef struct _iowait_dir_s  _iowait_dir_t;
 
-/**
- * Per-direction state. Read and write are fully symmetric; bundling
- * them shares helpers between the two slots.
- *
- * `timer` is allocated lazily on the first non-zero deadline and is
- * not safe against concurrent deadline sets on the same direction;
- * the public API documents this constraint.
- */
+/* Per-direction state (rd/wr symmetric). timer allocated lazily. */
 struct _iowait_dir_s {
     iowait_t*                w;
     _Atomic(_iowait_park_t*) park;
@@ -73,14 +56,7 @@ struct _iowait_dir_s {
     _Atomic uint32_t         flags;
 };
 
-/**
- * Per-park state kept on the caller's stack. The iowait publishes
- * a pointer to this via dir->park. Wakers race to atomically swap
- * the slot back to NULL; whichever thread succeeds sets `result`
- * and reschedules park->co. Every waker must go through
- * _iowait_claim because the record is only valid for the duration
- * of the scheduler_park call.
- */
+/* On caller's stack; published via dir->park. Wakers claim it with atomic_exchange. */
 struct _iowait_park_s {
     mco_coro*       co;
     iowait_t*       w;
@@ -88,18 +64,6 @@ struct _iowait_park_s {
     iowait_result_t result;
 };
 
-/**
- * Central iowait handle.
- *
- *   arm_lock   - serialises "observe parks -> publish sqe -> submit
- *                to poller" in _iowait_arm.
- *   refcnt     - at zero the handle returns to the slab freelist
- *                (memory stays live); stale CQEs are rejected by
- *                the generation check in _iowait_tryref.
- *   gen        - bumped on every retire, mirrored into the ud tag.
- *   slot_index - this slot's index in the owning slab, set once at
- *                first page allocation, stable for the slab's life.
- */
 struct iowait_s {
     platform_poller_sq_t* poller;
     platform_poller_sqe_t sqe;
@@ -119,18 +83,7 @@ struct iowait_s {
     uint32_t              slot_index;
 };
 
-/**
- * Per-scheduler paged slab for iowait handles.
- *
- * Keeps retired handles alive in type-stable memory so that stale
- * CQEs can be safely dispatched through iowait_on_event: the slot
- * memory is never freed, and the per-handle generation counter lets
- * the dispatcher reject stale references.
- *
- * Pages are allocated on demand and never freed until slab destroy.
- * The fixed-size pages array avoids realloc so _iowait_slab_get is
- * safe to call lock-free from iowait_on_event.
- */
+/* Paged slab: type-stable memory so stale CQEs can be safely rejected by gen check. */
 #define IOWAIT_PAGE_SHIFT 8
 #define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
 #define IOWAIT_FREE_END   UINT32_MAX
@@ -243,25 +196,7 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
     mtx_unlock(&slab->lock);
 }
 
-/**
- * Drop the handle's last reference and return it to the slab.
- *
- * At refcnt==0 no timer-arm reference or park reference can still
- * be outstanding, so per-request state can be torn down with plain
- * accesses.
- *
- * Poller un-registration does NOT happen here; iowait_close does it
- * synchronously. Deferring it to retire would race with fd reuse:
- * the caller's close() could let the kernel recycle the fd number,
- * a subsequent create() could hand that number to a fresh
- * subscription, and a belated EPOLL_CTL_DEL would clobber it.
- *
- * After tear-down we bump gen and return the slot to the slab
- * freelist. Any stale CQE still in a worker's batch is rejected
- * by iowait_on_event's gen check after it reacquires a reference
- * via _iowait_tryref. arm_lock stays live across retire; it is
- * torn down only in iowait_slab_destroy().
- */
+/* Last ref dropped: tear down, bump gen, return slot to slab freelist. */
 static void _iowait_retire(iowait_t* w) {
     if (w->rd.timer) {
         sched_timer_destroy(w->rd.timer);
@@ -272,12 +207,6 @@ static void _iowait_retire(iowait_t* w) {
         w->wr.timer = NULL;
     }
 
-    /**
-     * Bump the generation. Release ordering pairs with the acquire
-     * load in _iowait_on_event so a dispatcher that observes the new
-     * gen also observes the fact that refcnt just hit zero (and
-     * therefore the handle has been retired).
-     */
     atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
 
     _iowait_slab_free(w->slab, w->slot_index);
@@ -293,25 +222,7 @@ static void _iowait_unref(iowait_t* w) {
     }
 }
 
-/**
- * Speculatively acquire a reference on a possibly-retired handle.
- *
- * Used only by iowait_on_event, which decoded an untrusted ud into
- * (index, tag) and must verify the handle still matches the tag
- * before treating it as live. Two hazards:
- *
- *   1. refcnt may have already hit zero; don't resurrect a dead
- *      handle.
- *   2. The handle may have been recycled to a fresh caller at a
- *      newer generation; don't dispatch the old CQE to the new
- *      generation.
- *
- * The CAS loop handles (1): bump refcnt only if non-zero. After a
- * successful bump, re-read gen and compare against the tag. A
- * mismatch means the handle was retired *and* reused in the
- * window; drop the ref and return NULL. acq_rel on the bump syncs
- * with the retire path's gen++.
- */
+/* CAS-bump refcnt only if non-zero, then verify gen matches the CQE's tag. */
 static iowait_t* _iowait_tryref(iowait_t* w, uint16_t expected_tag) {
     int32_t cur =
         atomic_load_explicit(&w->refcnt, memory_order_acquire);
@@ -344,26 +255,7 @@ static bool _iowait_deadline_passed(uint64_t deadline_ms) {
 }
 
 
-/**
- * Ensure the fd is registered with the poller.
- *
- * ET: register once with RD+WR; after the first add every park
- * fast-returns. LT+oneshot: re-arm each time with the union of
- * currently-parked directions, since the kernel drops the
- * registration after every event.
- *
- * Called from both the parking worker and the poller thread. On
- * LT+oneshot they would otherwise both compute an op from a stale
- * park snapshot, write the shared sqe, and race into
- * platform_poller_mod -- the later MOD would silently drop a
- * direction the other thread just published. arm_lock serialises
- * the full "observe -> publish -> submit" sequence per handle;
- * cross-fd arms remain fully parallel.
- *
- * ET fast path reads `registered` without the lock because its
- * transition is one-way (false->true), so a stale false just falls
- * through to the locked slow path.
- */
+/* ET: register once with RD+WR. LT+oneshot: re-arm with parked directions under lock. */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return;
@@ -419,15 +311,7 @@ static void _iowait_arm(iowait_t* w) {
     mtx_unlock(&w->arm_lock);
 }
 
-/**
- * Single arbitration point for waking a parked coroutine.
- *
- * Up to three sources race to wake the same park: IO event, deadline
- * timer, and iowait_close(). atomic_exchange picks exactly one winner
- * and hands it the park pointer with the cause stamped into `result`.
- * Losers get NULL and must do nothing, guaranteeing the coroutine is
- * never double-scheduled.
- */
+/* atomic_exchange arbitrates IO/timer/close race; exactly one winner wakes the coro. */
 static _iowait_park_t* _iowait_claim(
     _Atomic(_iowait_park_t*)* slot, iowait_result_t result) {
     _iowait_park_t* p = atomic_exchange(slot, NULL);
@@ -443,12 +327,6 @@ static void _iowait_wake_park(_iowait_park_t* p) {
     }
 }
 
-/**
- * Batch variant: append the parked coroutine to the caller's batch
- * instead of scheduling inline. If the batch is full, flush it
- * first so there is always room. Used by iowait_on_event so the
- * whole poll pass amortises a single runq push + wake.
- */
 static void _iowait_wake_park_batch(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_park_t* p) {
     if (!p) {
@@ -472,28 +350,11 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
         atomic_fetch_or_explicit(
             &d->flags, IOWAIT_FLAG_DEADLINE, memory_order_release);
     }
-    /**
-     * Drop the timer-arm reference taken in _iowait_set_deadline.
-     * Must be the last thing we do here: once this ref is released,
-     * the iowait (and therefore `d` itself) may be freed by a racing
-     * iowait_destroy, so `d` is not safe to touch below this point.
-     */
+    /* Drop timer-arm ref; d is unsafe after this (racing destroy may free w). */
     _iowait_unref(w);
 }
 
-/**
- * Park body executed by scheduler_park after the coroutine has
- * saved its context. Publishes the park record, (re-)arms the fd,
- * then guards against two races that can swallow the wakeup:
- *
- *   - iowait_close() running between our slot publish and the yield:
- *     closer's _iowait_claim saw a NULL slot and skipped us.
- *   - Deadline timer firing before we published: _iowait_timeout_cb
- *     had nothing to claim.
- *
- * Both cases re-observe the condition after publishing and self-wake
- * by claiming our own park slot.
- */
+/* Publish park, arm fd, then re-check close/deadline to catch races. */
 static bool _iowait_park_fn(mco_coro* co, void* arg) {
     _iowait_park_t* p = (_iowait_park_t*)arg;
     iowait_t*       w = p->w;
@@ -502,14 +363,7 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
     p->co     = co;
     p->result = IOWAIT_READY;
 
-    /**
-     * Publish our park record. The slot is single-occupancy by
-     * contract (one-reader / one-writer per direction; see iowait.h
-     * threading model). Using exchange here gives us a loud fatal if
-     * a second coroutine parks on the same direction -- without it
-     * the first parker is silently orphaned (no wakeup source will
-     * ever find it again) and its handle reference leaks.
-     */
+    /* Single-occupancy: exchange detects illegal concurrent park. */
     _iowait_park_t* prev = atomic_exchange_explicit(
         &d->park, p, memory_order_release);
     if (prev != NULL) {
@@ -526,11 +380,7 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     _iowait_arm(w);
 
-    /**
-     * Single-load race guard (Go's atomicInfo pattern). The flags
-     * word packs CLOSED and DEADLINE_EXPIRED so both races are
-     * detected in one acquire load instead of two.
-     */
+    /* Check both close and deadline races in one load. */
     uint32_t f = atomic_load_explicit(&d->flags, memory_order_acquire);
     if (f & IOWAIT_FLAG_CLOSED) {
         _iowait_wake_park(_iowait_claim(&d->park, IOWAIT_CLOSED));
@@ -540,26 +390,7 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
     return true;
 }
 
-/**
- * Apply a new deadline to a direction.
- *
- * Publishes the deadline word first so a waiter can observe it via
- * the acquire load in _iowait_park_fn / _iowait_wait. The timer is
- * allocated lazily; the header documents the threading constraint
- * on timer mutation.
- *
- * Refcount protocol: each successful timer (re-)arm owns one
- * reference on the iowait, released either by the timeout callback
- * or here when a timer rearm cancels a still-pending fire. Combined
- * with the scheduler keeping timer objects alive across an in-flight
- * fire, the callback always sees a live iowait even if iowait_destroy
- * races in.
- *
- * Known corner case: a deadline of 0 may still result in one late
- * IOWAIT_TIMEOUT delivery if the callback was already dispatched
- * before sched_timer_stop acquired the timer lock. Memory-safe by
- * the refcount protocol, but the extra wake is not eliminated.
- */
+/* Each timer arm owns one iowait ref, released in the timeout cb or on rearm cancel. */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
 
@@ -590,11 +421,6 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
-/**
- * No early-out checks for closed/deadline: the post-publish guards
- * in _iowait_park_fn handle both races. No ref needed: the conn
- * layer holds its own ref around recv/send for the park's duration.
- */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
@@ -695,17 +521,7 @@ void iowait_close(iowait_t* w) {
         return;
     }
 
-    /**
-     * Drop the poller subscription synchronously before returning.
-     * This is what lets the caller safely close() the fd next:
-     * the kernel has already dropped our subscription, so no
-     * deferred EPOLL_CTL_DEL can clobber a recycled fd number.
-     *
-     * arm_lock serialises against concurrent _iowait_arm. After the
-     * CAS above every new arm sees closed=true at its entry acquire
-     * load and bails before touching the poller, so once we hold
-     * the lock any in-flight arm has finished and none will start.
-     */
+    /* Drop poller subscription now so the caller can safely close the fd. */
     mtx_lock(&w->arm_lock);
     if (w->registered) {
         platform_poller_del(w->poller, &w->sqe);
@@ -713,11 +529,6 @@ void iowait_close(iowait_t* w) {
     }
     mtx_unlock(&w->arm_lock);
 
-    /**
-     * Publish the closed flag into both directions' packed flags
-     * word so _iowait_park_fn can detect close-race with a single
-     * atomic load (Go's atomicInfo / publishInfo pattern).
-     */
     atomic_fetch_or_explicit(
         &w->rd.flags, IOWAIT_FLAG_CLOSED, memory_order_release);
     atomic_fetch_or_explicit(
@@ -763,12 +574,7 @@ void iowait_on_event(
             sched, batch, _iowait_claim(&w->wr.park, IOWAIT_READY));
     }
 
-    /**
-     * LT+oneshot: re-arm with whichever directions are still parked.
-     * A park that only races into its slot after we read it will take
-     * care of its own arm inside _iowait_park_fn. ET pollers stay
-     * armed after the initial registration.
-     */
+    /* LT+oneshot: re-arm for still-parked directions. */
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         _iowait_arm(w);
     }
