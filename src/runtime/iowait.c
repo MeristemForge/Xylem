@@ -240,12 +240,6 @@ static iowait_t* _iowait_tryref(iowait_t* w, uint16_t expected_tag) {
     return w;
 }
 
-static bool _iowait_deadline_passed(uint64_t deadline_ms) {
-    return deadline_ms != 0 &&
-           xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms;
-}
-
-
 /* ET: register once with RD+WR. LT+oneshot: re-arm with parked directions under lock. */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
