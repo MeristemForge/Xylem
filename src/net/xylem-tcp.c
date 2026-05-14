@@ -124,7 +124,7 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
      * dial; SO_SNDBUF tuning is likewise applied there. See
      * platform_socket_accept() for the rationale. */
 
-    atomic_store_explicit(&tcp->refcnt, 1, memory_order_relaxed);
+    _tcp_conn_ref(tcp);
     return tcp;
 }
 
@@ -576,7 +576,7 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         return NULL;
     }
 
-    atomic_store_explicit(&listener->refcnt, 1, memory_order_relaxed);
+    _tcp_listener_ref(listener);
 
     xylem_logi("tcp listener fd=%d listening on %s:%s",
                (int)fd,

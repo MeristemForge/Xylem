@@ -464,7 +464,7 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->rd.w = w;
     w->wr.w = w;
 
-    atomic_store_explicit(&w->refcnt, 1, memory_order_release);
+    _iowait_ref(w);
     return w;
 }
 

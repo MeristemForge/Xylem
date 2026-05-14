@@ -979,7 +979,7 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
         return NULL;
     }
     t->sched = sched;
-    atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
+    _sched_timer_ref(t);
     return t;
 }
 
