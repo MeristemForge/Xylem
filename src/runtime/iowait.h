@@ -183,14 +183,6 @@ extern void iowait_destroy(iowait_t* w);
 extern bool iowait_is_closed(iowait_t* w);
 
 /**
- * @brief Check if any coroutine is currently parked on iowait.
- *
- * Used by the scheduler to skip epoll_wait(0) when no I/O waiters
- * exist (Go's netpollAnyWaiters optimization).
- */
-extern bool iowait_any_waiters(void);
-
-/**
  * @brief Netpoll event callback.
  *
  * Invoked by the scheduler while draining a batch of poll events.

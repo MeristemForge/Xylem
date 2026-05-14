@@ -36,8 +36,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static _Atomic int32_t _iowait_nwaiters;
-
 /**
  * Generation-tagged userdata encoding.
  *
@@ -593,24 +591,11 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 }
 
 /**
- * Body of iowait_read/iowait_write.
- *
- * Fast paths: closed handle and already-past deadline both return
- * immediately without touching the scheduler. On the slow path we
- * take a ref to keep the handle alive across the park (a parallel
- * iowait_destroy would otherwise free us out from under the waiter)
- * and yield. `park.result` is stamped by whichever waker reaches
- * _iowait_claim first.
+ * No early-out checks for closed/deadline: the post-publish guards
+ * in _iowait_park_fn handle both races. No ref needed: the conn
+ * layer holds its own ref around recv/send for the park's duration.
  */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
-    /**
-     * No early-out checks for closed/deadline here. The post-publish
-     * guards in _iowait_park_fn handle both races (close-while-parking,
-     * deadline-while-parking). Removing the redundant pre-checks saves
-     * 2 atomic loads on the hot path. No ref needed either: the TCP
-     * conn layer holds its own ref around recv/send, keeping the iowait
-     * alive for the duration of the park.
-     */
     _iowait_park_t park = {.w = w, .dir = d};
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
 
@@ -754,10 +739,6 @@ void iowait_destroy(iowait_t* w) {
 
 bool iowait_is_closed(iowait_t* w) {
     return atomic_load_explicit(&w->closed, memory_order_acquire);
-}
-
-bool iowait_any_waiters(void) {
-    return atomic_load_explicit(&_iowait_nwaiters, memory_order_relaxed) > 0;
 }
 
 void iowait_on_event(

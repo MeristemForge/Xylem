@@ -70,7 +70,6 @@
 
 #define SCHED_DEQUE_CAP          256
 #define SCHED_CORO_STACK_SIZE    131072
-#define SCHED_SPIN_ATTEMPTS      1
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
 
@@ -263,9 +262,7 @@ static inline int32_t _sched_worker_grab_cap(wsdeque_t* dq) {
     return rem < half ? rem : half;
 }
 
-/* runnext + deque + global runq. */
 static mco_coro* _sched_worker_get_local(scheduler_t* sched, _sched_worker_t* w) {
-    /* Cache-hot: last scheduled lands here via runnext. */
     mco_coro* co = atomic_exchange(&w->runnext, NULL);
     if (co) {
         return co;
@@ -296,7 +293,6 @@ static mco_coro* _sched_worker_get_local(scheduler_t* sched, _sched_worker_t* w)
     return NULL;
 }
 
-/* Steal from peers to rebalance idle workers. */
 static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
     if (sched->nworkers <= 1) {
         return NULL;
@@ -541,14 +537,12 @@ static mco_coro* _sched_worker_find_coro(
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
 
-    /* Steps 1-2: runnext + deque + global runq. */
     mco_coro* co = _sched_worker_get_local(sched, w);
     if (co) {
         return co;
     }
 
-    /* Step 3: non-blocking poll before steal; skip when a driver
-     * is already blocking — our poll would just race it. */
+    /* Skip when a driver is already blocking — our poll would just race it. */
     if (!atomic_load_explicit(
             &sched->poller_running, memory_order_relaxed)) {
         int n = platform_poller_wait(&sched->poller, cqes, 0);
@@ -560,7 +554,6 @@ static mco_coro* _sched_worker_find_coro(
         }
     }
 
-    /* Step 4: steal from peers to rebalance idle workers. */
     co = _sched_worker_steal(sched, w);
     if (co) {
         return co;
@@ -581,6 +574,9 @@ static mco_coro* _sched_worker_find_coro(
 
     while (atomic_load(&sched->running)) {
         int poll_ms = _sched_timer_next_timeout(sched);
+        /* Publish intent before re-check: closes the race where a
+         * producer sees poller_waiting=false, pushes work, skips the
+         * pipe wake, and the work sits unseen until poll times out. */
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
         co = _sched_worker_get_local(sched, w);
@@ -648,13 +644,8 @@ static mco_coro* _sched_worker_find_coro(
             }
         }
         if (co) {
-            /**
-             * Run one coroutine inline and loop back to poll.
-             * The driver never exits — this eliminates the
-             * driver-handoff gap that causes p50 spikes. One
-             * worker (6.25% of 16) acts as a combined poller
-             * + executor, matching Go's tight poll/run loop.
-             */
+            /* Driver runs one coroutine inline and loops back to poll,
+             * eliminating the driver-handoff gap that causes p50 spikes. */
             atomic_store_explicit(
                 &sched->poller_waiting, false, memory_order_relaxed);
             _sched_run_coro(w, co);
@@ -967,7 +958,6 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
         }
     }
 
-    /* Wake a parked worker so the new task is picked up promptly. */
     _sched_wake_worker(sched);
 }
 

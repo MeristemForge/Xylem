@@ -98,12 +98,10 @@ int32_t wsdeque_pop_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
         half = (int64_t)cap;
     }
 
-    /* Read items from the top (oldest). */
     for (int64_t i = 0; i < half; i++) {
         out[i] = dq->coros[(t + i) & dq->mask];
     }
 
-    /* Advance top atomically (stealers may be racing). */
     if (!atomic_compare_exchange_strong_explicit(
             &dq->top, &t, t + half,
             memory_order_seq_cst, memory_order_relaxed)) {
@@ -167,18 +165,16 @@ int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
         return 0;
     }
 
-    /* Steal half, but at least 1 and at most cap. */
     int64_t half = (size + 1) / 2;
     if (half > (int64_t)cap) {
         half = (int64_t)cap;
     }
 
-    /* Read items before CAS. */
+    /* Snapshot before CAS: slots become invalid once top advances. */
     for (int64_t i = 0; i < half; i++) {
         out[i] = dq->coros[(t + i) & dq->mask];
     }
 
-    /* Atomically advance top by half. */
     if (!atomic_compare_exchange_strong_explicit(
             &dq->top, &t, t + half,
             memory_order_seq_cst, memory_order_relaxed)) {

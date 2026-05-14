@@ -189,12 +189,10 @@ extern void scheduler_park(
 /**
  * @brief Post a deferred callback to the scheduler.
  *
- * Thread-safe. The callback runs on whichever worker next executes
- * the blocking-poll pass (the last-spinner worker) -- so it is not
- * guaranteed to run on the calling thread, and not guaranteed to
- * run on any specific worker. Useful for hopping work from an
- * arbitrary thread onto the scheduler for serialisation with other
- * scheduler-owned state.
+ * Thread-safe. The callback runs on whichever worker next drains
+ * the post queue (either the blocking-poll driver or a worker in
+ * the maintenance path), so it is not guaranteed to run on the
+ * calling thread or on any specific worker.
  *
  * @param sched  Scheduler handle.
  * @param cb     Callback function.
