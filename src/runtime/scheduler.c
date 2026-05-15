@@ -627,7 +627,12 @@ static int _sched_worker_entry(void* arg) {
         }
 
         atomic_store(&w->parked, true);
-        platform_sem_wait(w->sem);
+        int timer_ms = _sched_timer_next_timeout(w);
+        if (timer_ms >= 0) {
+            platform_sem_timedwait(w->sem, (uint64_t)timer_ms);
+        } else {
+            platform_sem_wait(w->sem);
+        }
         atomic_store(&w->parked, false);
     }
 
@@ -1013,7 +1018,10 @@ void sched_timer_start(
     heap_insert(&ow->timers, &timer->heap_node);
     mtx_unlock(&ow->timer_lock);
 
-    _sched_wake_poller(timer->sched);
+    /* Wake the owner if parked so it recomputes its timed wait. */
+    if (atomic_load(&ow->parked)) {
+        platform_sem_post(ow->sem);
+    }
 }
 
 bool sched_timer_stop(sched_timer_t* timer) {
@@ -1048,7 +1056,9 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     heap_insert(&ow->timers, &timer->heap_node);
     mtx_unlock(&ow->timer_lock);
 
-    _sched_wake_poller(timer->sched);
+    if (atomic_load(&ow->parked)) {
+        platform_sem_post(ow->sem);
+    }
     return was_active;
 }
 
