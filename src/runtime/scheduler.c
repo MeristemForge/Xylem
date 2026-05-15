@@ -93,14 +93,14 @@ typedef struct _sched_worker_s {
     _Atomic(mco_coro*)   runnext;
     uint32_t             sched_tick;
     uint64_t             last_poll_ns;
+    heap_t               timers;
+    mtx_t                timer_lock;
 } _sched_worker_t;
 
 struct scheduler_s {
     _sched_worker_t*      workers;
     int32_t               nworkers;
     runq_t*               runq;
-    heap_t                timers;
-    mtx_t                 timer_lock;
     mpsc_t                posts;
     platform_poller_sq_t  poller;
     platform_poller_sqe_t wakeup_sqe;
@@ -149,7 +149,12 @@ struct sched_timer_s {
     uint64_t         repeat;
     bool             active;
     _Atomic int32_t  refcnt;
+    uint32_t         owner;
 };
+
+static inline _sched_worker_t* _sched_timer_owner(sched_timer_t* t) {
+    return &t->sched->workers[t->owner];
+}
 
 static void _sched_coro_entry(mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
@@ -287,9 +292,9 @@ static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
     return NULL;
 }
 
-/* ms until the earliest timer fires, or -1 if none. Caller holds timer_lock. */
-static int _sched_timeout_locked(scheduler_t* sched, uint64_t now) {
-    heap_node_t* root = heap_peek(&sched->timers);
+/* ms until the earliest timer fires, or -1 if none. Caller holds w->timer_lock. */
+static int _sched_timeout_locked(_sched_worker_t* w, uint64_t now) {
+    heap_node_t* root = heap_peek(&w->timers);
     if (!root) {
         return -1;
     }
@@ -301,41 +306,40 @@ static int _sched_timeout_locked(scheduler_t* sched, uint64_t now) {
     return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
-static int _sched_timer_next_timeout(scheduler_t* sched) {
+static int _sched_timer_next_timeout(_sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    mtx_lock(&sched->timer_lock);
-    int timeout = _sched_timeout_locked(sched, now);
-    mtx_unlock(&sched->timer_lock);
+    mtx_lock(&w->timer_lock);
+    int timeout = _sched_timeout_locked(w, now);
+    mtx_unlock(&w->timer_lock);
     return timeout;
 }
 
-static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
+static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
     for (;;) {
         sched_timer_t*   timer = NULL;
         sched_timer_fn_t cb    = NULL;
         void*            ud    = NULL;
 
-        mtx_lock(&sched->timer_lock);
-        heap_node_t* root = heap_peek(&sched->timers);
+        mtx_lock(&w->timer_lock);
+        heap_node_t* root = heap_peek(&w->timers);
         if (root) {
             sched_timer_t* t = heap_entry(root, sched_timer_t, heap_node);
             if (t->timeout <= now_ms) {
-                heap_dequeue(&sched->timers);
+                heap_dequeue(&w->timers);
                 if (t->repeat > 0) {
                     t->timeout = now_ms + t->repeat;
-                    heap_insert(&sched->timers, &t->heap_node);
+                    heap_insert(&w->timers, &t->heap_node);
                 } else {
                     t->active = false;
                 }
-                /* We unlock before calling cb; ref keeps t alive. */
                 _sched_timer_ref(t);
                 timer = t;
                 cb    = t->cb;
                 ud    = t->ud;
             }
         }
-        mtx_unlock(&sched->timer_lock);
+        mtx_unlock(&w->timer_lock);
 
         if (!timer) {
             break;
@@ -346,9 +350,9 @@ static int _sched_process_timers(scheduler_t* sched, uint64_t now_ms) {
         _sched_timer_unref(timer);
     }
 
-    mtx_lock(&sched->timer_lock);
-    int timeout = _sched_timeout_locked(sched, now_ms);
-    mtx_unlock(&sched->timer_lock);
+    mtx_lock(&w->timer_lock);
+    int timeout = _sched_timeout_locked(w, now_ms);
+    mtx_unlock(&w->timer_lock);
     return timeout;
 }
 
@@ -458,9 +462,11 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
     }
 }
 
-/* CPU-bound workloads bypass the driver; one CAS-elected worker services timers/posts. */
-static void _sched_maintenance(scheduler_t* sched) {
+/* CPU-bound workloads bypass the driver; each worker services its own timers. */
+static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    _sched_process_timers(w, now);
+
     uint64_t last = atomic_load_explicit(
         &sched->last_maintenance_ms, memory_order_relaxed);
     if (now - last < SCHED_TIMER_TICK_MS) {
@@ -474,7 +480,6 @@ static void _sched_maintenance(scheduler_t* sched) {
             memory_order_relaxed)) {
         return;
     }
-    _sched_process_timers(sched, now);
 
     bool expected = false;
     if (atomic_compare_exchange_strong(
@@ -526,7 +531,7 @@ static mco_coro* _sched_worker_find_coro(
     }
 
     while (atomic_load(&sched->running)) {
-        int poll_ms = _sched_timer_next_timeout(sched);
+        int poll_ms = _sched_timer_next_timeout(w);
         /* Set before re-check so producers don't skip the pipe wake. */
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
@@ -564,7 +569,7 @@ static mco_coro* _sched_worker_find_coro(
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        _sched_process_timers(sched, now);
+        _sched_process_timers(w, now);
 
         /* mpsc is single-consumer; CAS elects one drainer. */
         bool expected = false;
@@ -587,7 +592,7 @@ static mco_coro* _sched_worker_find_coro(
             atomic_store_explicit(
                 &sched->poller_waiting, false, memory_order_relaxed);
             _sched_run_coro(w, co);
-            _sched_maintenance(sched);
+            _sched_maintenance(sched, w);
         }
     }
     atomic_store_explicit(
@@ -603,7 +608,7 @@ static int _sched_worker_entry(void* arg) {
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
-        _sched_maintenance(sched);
+        _sched_maintenance(sched, w);
 
         /* Every 61st tick, check global runq first for fairness. */
         mco_coro* co = NULL;
@@ -646,12 +651,24 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
             sched->joined = true;
         }
         for (int32_t i = 0; i < sched->nworkers; i++) {
-            if (sched->workers[i].deque) {
-                wsdeque_destroy(sched->workers[i].deque);
+            _sched_worker_t* w = &sched->workers[i];
+            if (w->deque) {
+                wsdeque_destroy(w->deque);
             }
-            if (sched->workers[i].sem) {
-                platform_sem_destroy(sched->workers[i].sem);
+            if (w->sem) {
+                platform_sem_destroy(w->sem);
             }
+            /* Drain per-worker timers; unref because an in-flight cb may hold a ref. */
+            {
+                heap_node_t* n;
+                while ((n = heap_peek(&w->timers)) != NULL) {
+                    sched_timer_t* t = heap_entry(n, sched_timer_t, heap_node);
+                    heap_dequeue(&w->timers);
+                    t->active = false;
+                    _sched_timer_unref(t);
+                }
+            }
+            mtx_destroy(&w->timer_lock);
         }
         free(sched->workers);
     }
@@ -659,23 +676,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     if (sched->runq) {
         runq_destroy(sched->runq);
     }
-
-    /* Drain armed timers; unref (not free) because an in-flight cb may hold a ref. */
-    {
-        mtx_lock(&sched->timer_lock);
-        heap_node_t* n;
-        while ((n = heap_peek(&sched->timers)) != NULL) {
-            sched_timer_t* t = heap_entry(n, sched_timer_t, heap_node);
-            heap_dequeue(&sched->timers);
-            t->active = false;
-            mtx_unlock(&sched->timer_lock);
-            _sched_timer_unref(t);
-            mtx_lock(&sched->timer_lock);
-        }
-        mtx_unlock(&sched->timer_lock);
-    }
-
-    mtx_destroy(&sched->timer_lock);
 
     _sched_process_posts(sched);
 
@@ -724,8 +724,6 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         return NULL;
     }
 
-    heap_init(&sched->timers, _sched_timer_cmp);
-    mtx_init(&sched->timer_lock, mtx_plain);
     mpsc_init(&sched->posts);
     list_init(&sched->registry);
     spin_init(&sched->registry_lock);
@@ -788,6 +786,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         w->sem = platform_sem_create(0);
         w->sched = sched;
         w->index = (uint32_t)i;
+        heap_init(&w->timers, _sched_timer_cmp);
+        mtx_init(&w->timer_lock, mtx_plain);
 
         if (!w->deque || !w->sem) {
             _sched_cleanup(sched, 0);
@@ -979,6 +979,7 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
         return NULL;
     }
     t->sched = sched;
+    t->owner = _tls_worker ? _tls_worker->index : 0;
     _sched_timer_ref(t);
     return t;
 }
@@ -997,58 +998,57 @@ void sched_timer_start(
     void*            ud,
     uint64_t         timeout_ms,
     uint64_t         repeat_ms) {
-    scheduler_t* sched = timer->sched;
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    mtx_lock(&sched->timer_lock);
+    _sched_worker_t* ow = _sched_timer_owner(timer);
+    mtx_lock(&ow->timer_lock);
     if (timer->active) {
-        heap_remove(&sched->timers, &timer->heap_node);
+        heap_remove(&ow->timers, &timer->heap_node);
     }
     timer->cb      = cb;
     timer->ud      = ud;
     timer->timeout = now + timeout_ms;
     timer->repeat  = repeat_ms;
     timer->active  = true;
-    heap_insert(&sched->timers, &timer->heap_node);
-    mtx_unlock(&sched->timer_lock);
+    heap_insert(&ow->timers, &timer->heap_node);
+    mtx_unlock(&ow->timer_lock);
 
-    /* Poller may hold a stale timeout; wake it to recompute. */
-    _sched_wake_poller(sched);
+    _sched_wake_poller(timer->sched);
 }
 
 bool sched_timer_stop(sched_timer_t* timer) {
-    scheduler_t* sched = timer->sched;
+    _sched_worker_t* ow = _sched_timer_owner(timer);
 
     bool cancelled = false;
-    mtx_lock(&sched->timer_lock);
+    mtx_lock(&ow->timer_lock);
     if (timer->active) {
-        heap_remove(&sched->timers, &timer->heap_node);
+        heap_remove(&ow->timers, &timer->heap_node);
         timer->active = false;
         cancelled = true;
     }
-    mtx_unlock(&sched->timer_lock);
+    mtx_unlock(&ow->timer_lock);
     return cancelled;
 }
 
 bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
-    scheduler_t* sched = timer->sched;
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
+    _sched_worker_t* ow = _sched_timer_owner(timer);
     bool was_active;
-    mtx_lock(&sched->timer_lock);
+    mtx_lock(&ow->timer_lock);
     was_active = timer->active;
     if (was_active) {
-        heap_remove(&sched->timers, &timer->heap_node);
+        heap_remove(&ow->timers, &timer->heap_node);
     }
     timer->timeout = now + timeout_ms;
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
     }
     timer->active = true;
-    heap_insert(&sched->timers, &timer->heap_node);
-    mtx_unlock(&sched->timer_lock);
+    heap_insert(&ow->timers, &timer->heap_node);
+    mtx_unlock(&ow->timer_lock);
 
-    _sched_wake_poller(sched);
+    _sched_wake_poller(timer->sched);
     return was_active;
 }
 
