@@ -23,6 +23,7 @@
 
 #include "platform/platform-info.h"
 #include "platform/platform-sem.h"
+#include "platform/platform-socket.h"
 
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
@@ -144,6 +145,7 @@ void runtime_run(
     }
 
     atomic_store(&g_shutdown, false);
+    platform_socket_startup();
 
     scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
     g_sched = scheduler_create(&sched_opts);
@@ -161,6 +163,7 @@ void runtime_run(
     dynpool_destroy(g_dynpool);
     scheduler_destroy(g_sched);
     platform_sem_destroy(g_stop_sem);
+    platform_socket_cleanup();
 }
 
 void runtime_shutdown(void) {
