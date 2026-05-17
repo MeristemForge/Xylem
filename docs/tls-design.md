@@ -1,380 +1,215 @@
-# TLS 模块设计文档
+# TLS Module Design
 
-## 概述
+## Overview
 
-`xylem-tls` 在 TCP 模块之上提供 TLS 加密传输。核心设计：OpenSSL 永远不直接接触 socket fd，所有数据通过内存 BIO（`BIO_s_mem`）中转，实现加密层与传输层的完全解耦。
+`xylem-tls` provides TLS encrypted transport using a coroutine blocking-style API, mirroring `xylem-tcp` exactly. OpenSSL operates directly on the non-blocking socket fd via `SSL_set_fd` (Socket BIO). When SSL operations return `WANT_READ`/`WANT_WRITE`, the calling coroutine parks via `iowait_read()`/`iowait_write()` until the fd is ready.
 
-## 架构
-
-```mermaid
-graph LR
-    User[用户代码<br/>明文] -->|xylem_tls_send| TLS[xylem-tls<br/>SSL_write + 内存 BIO]
-    TLS -->|xylem_tcp_send| TCP[xylem-tcp<br/>密文]
-    TCP -->|socket| Network[网络]
-    Network -->|socket| TCP2[xylem-tcp<br/>密文]
-    TCP2 -->|on_read| TLS2[xylem-tls<br/>SSL_read + 内存 BIO]
-    TLS2 -->|on_read| User2[用户代码<br/>明文]
-```
-
-分层数据流：
+## Architecture
 
 ```
-发送: 用户 → xylem_tls_send(明文) → SSL_write → write_bio → BIO_read → xylem_tcp_send(密文) → 网络
-接收: 网络 → TCP on_read(密文) → BIO_write(read_bio) → SSL_read → TLS on_read(明文) → 用户
+User code (plaintext)
+    |
+    v
+xylem-tls (SSL_read / SSL_write via Socket BIO)
+    |
+    v
+Non-blocking socket fd + iowait (coroutine park/resume)
+    |
+    v
+Network
 ```
 
-## 公开类型
+TLS holds `fd + iowait` directly -- it is a peer of TCP, not layered on top of it.
 
-### 回调处理器
+## Public Types
 
 ```c
-typedef struct xylem_tls_handler_s {
-    void (*on_connect)(xylem_tls_conn_t* tls);
-    void (*on_accept)(xylem_tls_server_t* server, xylem_tls_conn_t* tls);
-    void (*on_read)(xylem_tls_conn_t* tls, void* data, size_t len);
-    void (*on_write_done)(xylem_tls_conn_t* tls,
-                          const void* data, size_t len, int status);
-    void (*on_timeout)(xylem_tls_conn_t* tls,
-                       xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_conn_t* tls, int err, const char* errmsg);
-    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
-} xylem_tls_handler_t;
-```
+typedef struct xylem_tls_conn_s     xylem_tls_conn_t;
+typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
+typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
-回调签名与 TCP handler 对称，额外增加 `on_heartbeat_miss`。超时类型复用 TCP 的 `xylem_tcp_timeout_type_t`。`on_close` 的 `errmsg` 参数直接透传自 TCP 层的 `on_close` 回调，提供可读的错误描述字符串。
-
-### TLS 选项
-
-```c
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp;        /**< Underlying TCP options. */
-    const char*      hostname;   /**< SNI hostname for client connections. */
+    size_t      max_read_buf;       /* Plaintext read buffer size, 0 = default 64KB. */
+    bool        disable_mss_clamp;  /* Disable MSS clamping on the socket. */
+    uint64_t    connect_timeout_ms; /* TCP connect + TLS handshake timeout, 0 = none. */
+    const char* hostname;           /* SNI hostname for certificate selection and verification. */
 } xylem_tls_opts_t;
 ```
 
-封装底层 TCP 选项和 TLS 层专属选项。`hostname` 用于客户端连接的 SNI 和主机名验证，`xylem_tls_dial` 内部会 `strdup` 保存。传 NULL 使用默认值。
+## Internal Structures
 
-### 不透明类型
-
-```c
-typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
-typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
-typedef struct xylem_tls_server_s xylem_tls_server_t;
-```
-
-## 内部结构
-
-### TLS 上下文
-
-```c
-struct xylem_tls_ctx_s {
-    SSL_CTX* ssl_ctx;        /* OpenSSL 上下文，使用 TLS_method() */
-    uint8_t* alpn_wire;      /* ALPN 协议列表（wire 格式） */
-    size_t   alpn_wire_len;
-    FILE*    keylog_file;    /* NSS Key Log 文件句柄 */
-};
-```
-
-通过 `SSL_CTX_get_ex_data` 机制在 keylog 回调中恢复 `xylem_tls_ctx_t` 指针（全局 `_tls_ex_data_idx`，首次使用时注册）。
-
-### TLS 连接
+### TLS Connection
 
 ```c
 struct xylem_tls_conn_s {
-    SSL*                  ssl;
-    BIO*                  read_bio;       /* 密文输入 BIO */
-    BIO*                  write_bio;      /* 密文输出 BIO */
-    xylem_tcp_conn_t*     tcp;            /* 底层 TCP 连接 */
-    xylem_tls_ctx_t*      ctx;
-    xylem_tls_handler_t*  handler;
-    xylem_tls_server_t*   server;         /* 服务端连接非 NULL */
-    void*                 userdata;
-    bool                  handshake_done;
-    bool                  closing;
-    _Atomic int32_t       refcount;       /* 引用计数，初始值 1 */
-    int                   close_err;      /* 关闭错误码，正常关闭为 0 */
-    const char*           close_errmsg;   /* 关闭错误描述，正常关闭为 NULL */
-    char*                 hostname;       /* SNI 主机名 */
-    char                  alpn[256];      /* 协商后的 ALPN 协议（null-terminated） */
-    xylem_list_node_t     server_node;    /* 服务器连接链表节点 */
-    xylem_queue_t         write_queue;    /* 待完成的 TLS 写请求队列 */
+    SSL*                   ssl;
+    iowait_t*              waiter;
+    platform_sock_t        fd;
+    xylem_tls_ctx_t*       ctx;
+    addr_t                 peer_addr;
+    xylem_tcp_frame_opts_t frame_opts;
+    char*                  read_buf;
+    size_t                 read_buf_cap;
+    size_t                 read_buf_pos;
+    size_t                 read_buf_len;
+    char                   alpn[256];
+    xylem_err_t            err;
+    _Atomic bool           closed;
 };
 ```
 
-`refcount` 在 `xylem_tls_dial` 和 `_tls_tcp_accept_cb`（服务端 accept）中初始化为 1。用户通过 `xylem_tls_conn_acquire`/`xylem_tls_conn_release` 管理跨线程引用。`_tls_tcp_close_cb` 通过 `xylem_loop_post` 将 `_tls_conn_decref` 延迟到下一轮事件循环迭代执行，当引用计数归零时释放连接内存。
-
-### TLS 写请求
+### TLS Listener
 
 ```c
-typedef struct _tls_write_req_s {
-    xylem_queue_node_t node;
-    const void*        data; /* 用户原始指针（零拷贝） */
-    size_t             len;
-} _tls_write_req_t;
-```
-
-跟踪单次 `xylem_tls_send` 调用在 TCP 写管道中的状态。零拷贝语义：存储用户原始指针，不复制明文数据。每次 `SSL_write` 后通过 `BIO_ctrl_pending` 一次性取出全部密文，执行一次 `xylem_tcp_send`。当该 TCP 写操作完成时（`_tls_tcp_write_done_cb`），从写队列出队并触发 TLS `on_write_done` 回调。用户必须保证缓冲区在 `on_write_done` 回调触发前保持有效且不可修改。
-
-### TLS 服务器
-
-```c
-struct xylem_tls_server_s {
-    xylem_tcp_listener_t*   tcp_server;     /* 底层 TCP 服务器 */
-    xylem_tls_ctx_t*      ctx;
-    xylem_tls_handler_t*  handler;
-    xylem_tls_opts_t      opts;           /* 完整 TLS 选项（含底层 TCP 选项） */
-    xylem_loop_t*         loop;
-    xylem_list_t          connections;    /* TLS 连接链表 */
-    void*                 userdata;
-    bool                  closing;
+struct xylem_tls_listener_s {
+    iowait_t*        waiter;
+    platform_sock_t  fd;
+    xylem_tls_ctx_t* ctx;
+    xylem_tls_opts_t opts;
+    _Atomic bool     closing;
 };
 ```
 
-## 上下文管理
+### TLS Context (unchanged)
 
-`xylem_tls_ctx_t` 是可复用的，一个上下文可被多个连接和服务器共享。
-
-| API | 功能 |
-|-----|------|
-| `xylem_tls_ctx_create()` | 创建上下文，使用 `TLS_method()`，默认启用对端验证，强制 TLS 1.2 最低版本 |
-| `xylem_tls_ctx_destroy()` | 释放 SSL_CTX、关闭 keylog 文件、释放 ALPN 数据 |
-| `xylem_tls_ctx_load_cert()` | 加载 PEM 证书链和私钥 |
-| `xylem_tls_ctx_set_ca()` | 设置 CA 证书用于对端验证 |
-| `xylem_tls_ctx_set_verify()` | 启用/禁用对端证书验证 |
-| `xylem_tls_ctx_set_alpn()` | 设置 ALPN 协议列表（wire 格式编码） |
-| `xylem_tls_ctx_set_keylog()` | 启用 NSS Key Log 输出（用于 Wireshark 解密） |
-
-ALPN 编码：将协议字符串数组转为 wire 格式（每个协议前缀一个长度字节），同时设置客户端提议（`SSL_CTX_set_alpn_protos`）和服务端选择回调（`SSL_CTX_set_alpn_select_cb`）。
-
-## 握手流程
-
-### 客户端握手
-
-```mermaid
-sequenceDiagram
-    participant User as 用户
-    participant TLS as xylem-tls
-    participant TCP as xylem-tcp
-    participant Net as 网络
-
-    User->>TLS: xylem_tls_dial()
-    TLS->>TCP: xylem_tcp_dial()
-    TCP->>Net: 非阻塞 connect
-    Net-->>TCP: 连接建立
-    TCP->>TLS: _tls_tcp_connect_cb
-    TLS->>TLS: 创建 SSL + BIO
-    TLS->>TLS: 设置 SNI (hostname)
-    TLS->>TLS: SSL_set_connect_state
-    TLS->>TLS: SSL_do_handshake → WANT_READ
-    TLS->>TCP: flush write_bio → xylem_tcp_send(ClientHello)
-    Net-->>TCP: ServerHello 等
-    TCP->>TLS: _tls_tcp_read_cb(密文)
-    TLS->>TLS: BIO_write(read_bio) + SSL_do_handshake
-    Note over TLS: 重复直到握手完成
-    TLS->>User: handler->on_connect
+```c
+struct xylem_tls_ctx_s {
+    SSL_CTX* ssl_ctx;
+    uint8_t* alpn_wire;
+    size_t   alpn_wire_len;
+    FILE*    keylog_file;
+};
 ```
 
-### 服务端握手
+## Socket BIO Model
 
-```mermaid
-sequenceDiagram
-    participant Client as 客户端
-    participant TCP as xylem-tcp
-    participant TLS as xylem-tls
-    participant User as 用户
+`SSL_set_fd(ssl, fd)` lets OpenSSL operate on the non-blocking socket directly. `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` is set because `SSL_write` may return `WANT_WRITE` after a partial write, and we retry with an offset pointer.
 
-    Client->>TCP: TCP 连接
-    TCP->>TLS: _tls_tcp_accept_cb
-    TLS->>TLS: 创建 TLS conn + SSL
-    TLS->>TLS: SSL_set_accept_state
-    TLS->>TLS: SSL_do_handshake → WANT_READ
-    Client->>TCP: ClientHello
-    TCP->>TLS: _tls_tcp_read_cb(密文)
-    TLS->>TLS: BIO_write(read_bio) + SSL_do_handshake
-    TLS->>TCP: flush write_bio → xylem_tcp_send(ServerHello)
-    Note over TLS: 重复直到握手完成
-    TLS->>User: handler->on_accept
+All SSL operations share the same pattern:
+
+```
+loop:
+  ret = SSL_op(ssl, ...)
+  err = SSL_get_error(ssl, ret)
+  if WANT_READ:  iowait_read(waiter)
+  if WANT_WRITE: iowait_write(waiter)
+  if error:      return failure
+  retry
 ```
 
-## 数据路径
+## Dial Flow
 
-### 读取路径
+1. DNS resolution (reuses addr_resolve)
+2. `platform_socket_dial()` creates non-blocking socket
+3. `iowait_write()` waits for connect completion (write deadline = timeout)
+4. Check `SO_ERROR` for connect result
+5. `SSL_new()` + `SSL_set_fd()` + `SSL_set_connect_state()`
+6. Set SNI: `SSL_set_tlsext_host_name` + `SSL_set1_host`
+7. `_tls_do_handshake()` drives handshake synchronously
+8. Cache ALPN result
+9. Clear deadlines, return connection
 
-```mermaid
-flowchart TD
-    A[TCP on_read 密文] --> B[BIO_write 到 read_bio]
-    B --> C{握手完成?}
-    C -->|否| D[SSL_do_handshake + flush]
-    C -->|是| E[循环 SSL_read]
-    E --> F{n > 0?}
-    F -->|是| G[回调 on_read 明文]
-    G --> H{closing?}
-    H -->|是| I[返回]
-    H -->|否| E
-    F -->|SSL_ERROR_ZERO_RETURN| J[对端关闭 TLS]
-    F -->|SSL_ERROR_WANT_WRITE| M[flush write_bio 重协商需发送数据]
-    F -->|SSL_ERROR_WANT_READ| K[等待更多数据]
-    F -->|其他错误| L[xylem_tls_close]
-```
+`connect_timeout_ms` covers the entire process (TCP connect + TLS handshake).
 
-SSL_read 错误（非 WANT_READ/WANT_WRITE/ZERO_RETURN）调用 `xylem_tls_close(tls)`，与其他关闭路径保持一致。`xylem_tls_close` 会尝试 `SSL_shutdown` 发送 close_notify（尽管 SSL 状态可能已损坏，`SSL_shutdown` 会安全地处理这种情况），然后关闭底层 TCP 连接。`_tls_tcp_close_cb` 随后触发，完成链表移除、`on_close` 回调和延迟释放。
+## Accept Flow
 
-### 写入路径
+1. `iowait_read()` waits for incoming connection
+2. `platform_socket_accept()` accepts client
+3. Create iowait for client fd
+4. `SSL_new()` + `SSL_set_fd()` + `SSL_set_accept_state()`
+5. `_tls_do_handshake()` drives handshake synchronously
+6. Cache ALPN result, return connection
 
-```mermaid
-flowchart TD
-    A[xylem_tls_send 明文] --> B{握手完成且未关闭?}
-    B -->|否| C[返回 -1]
-    B -->|是| F[_tls_process_write]
-    F --> G[SSL_write 用户缓冲区]
-    G --> H{n > 0?}
-    H -->|否| I[返回 -1]
-    H -->|是| J[_tls_flush_write_bio]
-    J --> K[BIO_ctrl_pending → malloc → BIO_read]
-    K --> L[xylem_tcp_send 密文堆缓冲区]
-    L --> M[入队 _tls_write_req_t]
-    M --> N[TCP on_write_done 触发时]
-    N --> O[free 密文 + 出队 + 回调 TLS on_write_done]
-```
+EAGAIN parks via iowait. EMFILE/ENFILE triggers exponential backoff via `runtime_sleep`.
 
-#### 零拷贝设计
+## Recv / Send
 
-`xylem_tls_send` 采用零拷贝语义：库不复制用户明文，直接将用户指针传给 `SSL_write` 进行加密。用户必须保证缓冲区在 `on_write_done` 回调触发前保持有效且不可修改。回调的 `data` 参数即用户传入的原始指针，用户应在回调中释放缓冲区。
+`_tls_raw_recv` and `_tls_raw_send` mirror TCP's `_tcp_raw_recv` and `_tcp_raw_send`, replacing `platform_socket_recv/send` with `SSL_read/SSL_write`. Both handle `WANT_READ` and `WANT_WRITE` by parking the coroutine.
 
-#### 密文缓冲区管理
+## Framing
 
-`SSL_write` 将明文加密后写入 write_bio（内存 BIO）。`_tls_flush_write_bio` 通过 `BIO_ctrl_pending` 获取密文总大小，一次性 `malloc` 分配堆缓冲区，`BIO_read` 取出全部密文，然后调用 `xylem_tcp_send`（零拷贝传递指针）。当底层 TCP 写完成时（`_tls_tcp_write_done_cb`），释放密文堆缓冲区（`free((void*)data)`）。
+TLS supports the same framing modes as TCP (NONE, FIXED, LENGTH, DELIMITER), operating on the decrypted plaintext stream. The buffered read and frame parsing logic is identical to TCP.
 
-#### 内存 BIO 特性
+## Deadlines
 
-由于使用内存 BIO，`SSL_write` 总是一次完成（写入内存缓冲区），不会返回 `SSL_ERROR_WANT_WRITE`，因此无需 `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER`。同理，每次 `SSL_write` 后 `_tls_flush_write_bio` 恰好产生一次 `xylem_tcp_send`，与写请求队列形成一一对应关系。
+`xylem_tls_set_read_deadline` and `xylem_tls_set_write_deadline` pass through directly to `iowait_set_rd_deadline` / `iowait_set_wr_deadline`.
 
-## 关闭流程
+## Close
 
-```mermaid
-sequenceDiagram
-    participant User as 用户
-    participant TLS as xylem-tls
-    participant TCP as xylem-tcp
+1. `atomic_exchange(&closed, true)` for idempotency
+2. `SSL_shutdown()` sends close_notify (best-effort, no retry on WANT_*)
+3. `iowait_close()` wakes parked coroutines
+4. `SSL_free()`, `iowait_destroy()`, `platform_socket_close()`, free buffers
 
-    User->>TLS: xylem_tls_close()
-    TLS->>TLS: atomic_load(closing) → 幂等检查
-    Note over TLS: closing = true
-    TLS->>TLS: SSL_shutdown → close_notify
-    TLS->>TCP: flush write_bio → xylem_tcp_send
-    TLS->>TCP: xylem_tcp_close()
-    TCP->>TLS: _tls_tcp_close_cb
-    TLS->>TLS: 从服务器连接链表移除
-    TLS->>User: handler->on_close
-    TLS->>TLS: SSL_free + free(hostname)
-    TLS->>TLS: xylem_loop_post 延迟释放
-```
+## Thread Safety
 
-`xylem_tls_close` 仅可在事件循环线程上调用。入口处通过 `atomic_load` 检查 `closing` 标志实现幂等性——若已为 `true` 则立即返回。通过幂等检查后，使用 `atomic_store` 设置 `closing = true`。
+Same as TCP:
+- One reader + one writer coroutine per connection (iowait one-reader/one-writer model)
+- `xylem_tls_close` can be called from any thread (iowait_close is thread-safe)
+- Deadline setters driven by the owning coroutine
 
-`_tls_tcp_close_cb` 在关闭前排空 TLS 写请求队列，对每个未完成的写请求回调 `on_write_done`（携带 status=-1），然后从服务器连接链表移除、回调 `on_close`、释放 SSL 和 hostname、通过 `xylem_loop_post` 延迟递减引用计数。
+## Context Management
 
-### 服务器关闭
+`xylem_tls_ctx_t` wraps `SSL_CTX` and is reusable across connections. Features:
+- Default: peer verification enabled, TLS 1.2 minimum
+- ALPN: wire-format encoding, both client proposal and server selection callback
+- Keylog: NSS Key Log format for Wireshark via `SSL_CTX_set_keylog_callback`
+- Ex-data index for recovering ctx pointer in keylog callback
 
-`xylem_tls_close_server` 循环取链表头节点直到链表为空，对每个节点：先从链表中移除（因为将 `tls->server` 置 NULL 后，`_tls_tcp_close_cb` 无法再执行移除），再将 `server` 指针置 NULL（因为 `xylem_tls_close` 是异步的，`_tls_tcp_close_cb` 可能在 server 释放后才触发），最后调用 `xylem_tls_close`。所有连接处理完毕后关闭底层 TCP 服务器，通过 `xylem_loop_post` 延迟释放 server 内存。
+## SNI and ALPN
 
-## SNI 与 ALPN
+- **SNI:** Set via `opts->hostname` in `xylem_tls_dial`. Calls `SSL_set_tlsext_host_name` (SNI extension) and `SSL_set1_host` (hostname verification).
+- **ALPN:** Configured on ctx via `xylem_tls_ctx_set_alpn`. Client proposes, server selects via `SSL_select_next_proto`. Result cached in `tls->alpn[256]` after handshake, queryable via `xylem_tls_get_alpn`.
 
-### SNI（服务器名称指示）
+## Error Codes
 
-SNI hostname 通过 `xylem_tls_opts_t.hostname` 在 `xylem_tls_dial` 时传入。`xylem_tls_dial` 内部 `strdup` 保存到 `tls->hostname`。在 TCP 连接建立后的 `_tls_tcp_connect_cb` 中，若 `hostname` 非 NULL：
-- `SSL_set_tlsext_host_name` 设置 SNI 扩展
-- `SSL_set1_host` 启用主机名验证
+| Error | Source |
+|-------|--------|
+| `XYLEM_ERR_TIMEOUT` | iowait deadline exceeded |
+| `XYLEM_ERR_CLOSED` | Local close / iowait_close |
+| `XYLEM_ERR_PEER_CLOSED` | `SSL_ERROR_ZERO_RETURN` (peer sent close_notify) |
+| `XYLEM_ERR_TLS` | SSL layer error (handshake failure, SSL_read/SSL_write fatal) |
 
-### ALPN（应用层协议协商）
+## Public API
 
-- 客户端：通过 `SSL_CTX_set_alpn_protos` 提议协议列表
-- 服务端：通过 `SSL_CTX_set_alpn_select_cb` 注册选择回调（`_tls_alpn_select_cb`），使用 `SSL_select_next_proto` 匹配
-- 握手完成后：`_tls_do_handshake` 中调用 `SSL_get0_alpn_selected` 获取协商结果，`memcpy` + null terminate 到 `tls->alpn[256]` 缓冲区（`SSL_get0_alpn_selected` 返回的指针非 null-terminated，不能直接当 C 字符串使用）
-- 查询结果：`xylem_tls_get_alpn` 返回 `tls->alpn`（若非空）或 NULL
-
-## 超时与心跳
-
-TCP 层的超时和心跳事件透明桥接到 TLS 层：
-
-- `_tls_tcp_timeout_cb`：将 TCP 超时事件转发为 TLS `on_timeout`
-- `_tls_tcp_heartbeat_cb`：将 TCP 心跳丢失事件转发为 TLS `on_heartbeat_miss`
-
-TLS 层不引入额外的定时器，完全复用 TCP 层的定时器机制。
-
-## 内部 TCP Handler
-
-TLS 模块注册两组静态 TCP handler：
-
-| Handler | 用途 | 包含的回调 |
-|---------|------|-----------|
-| `_tls_tcp_client_handler` | 客户端连接 | on_connect, on_read, on_write_done, on_close, on_timeout, on_heartbeat_miss |
-| `_tls_tcp_server_handler` | 服务端接受的连接 | on_accept, on_read, on_write_done, on_close, on_timeout, on_heartbeat_miss |
-
-TLS conn 通过 `xylem_tcp_set_userdata` 存储在 TCP conn 的 userdata 中，在 TCP 回调中通过 `xylem_tcp_get_userdata` 恢复。
-
-## 线程安全
-
-`xylem_loop_post` 是唯一的跨线程原语。`xylem_tls_send`、`xylem_tls_close` 及所有其他 API 仅可在事件循环线程上调用。
-
-用户如需从其他线程发起发送或关闭操作，应通过 `xylem_loop_post` 将回调转发到事件循环线程，在回调中调用同线程 API。跨线程使用连接句柄前需在事件循环线程上调用 `xylem_tls_conn_acquire` 递增引用计数，确保句柄在跨线程期间不被释放；待所有 posted 回调执行完毕后调用 `xylem_tls_conn_release` 递减引用计数。
-
-`tls->handshake_done` 和 `tls->closing` 是 plain `bool`，仅在事件循环线程上访问，无需原子操作。
-
-## 公开 API
-
-### 上下文
+### Context
 
 ```c
 xylem_tls_ctx_t* xylem_tls_ctx_create(void);
 void             xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
-int              xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
-                                         const char* cert, const char* key);
-int              xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
-void             xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable);
-int              xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
-                                        const char** protocols, size_t count);
-int              xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
+int  xylem_tls_ctx_load_cert(ctx, cert, key);
+int  xylem_tls_ctx_set_ca(ctx, ca_file);
+void xylem_tls_ctx_set_verify(ctx, enable);
+int  xylem_tls_ctx_set_alpn(ctx, protocols, count);
+int  xylem_tls_ctx_set_keylog(ctx, path);
 ```
 
-### 连接
+### Connection Lifecycle
 
 ```c
-xylem_tls_conn_t*   xylem_tls_dial(xylem_loop_t* loop, xylem_addr_t* addr,
-                                    xylem_tls_ctx_t* ctx,
-                                    xylem_tls_handler_t* handler,
-                                    xylem_tls_opts_t* opts);
-int                 xylem_tls_send(xylem_tls_conn_t* tls,
-                                    const void* data, size_t len);
-void                xylem_tls_close(xylem_tls_conn_t* tls);
+xylem_tls_conn_t*     xylem_tls_dial(host, port, ctx, opts);
+xylem_tls_listener_t* xylem_tls_listen(host, port, ctx, opts);
+xylem_tls_conn_t*     xylem_tls_accept(listener);
+void                  xylem_tls_close(tls);
+void                  xylem_tls_close_listener(listener);
 ```
 
-`xylem_tls_send` 和 `xylem_tls_close` 仅可在事件循环线程上调用。
+### I/O
 
 ```c
-void                xylem_tls_conn_acquire(xylem_tls_conn_t* tls);
-void                xylem_tls_conn_release(xylem_tls_conn_t* tls);
+int64_t xylem_tls_recv(tls, buf, len);
+int     xylem_tls_send(tls, data, len);
+void    xylem_tls_set_framing(tls, opts);
+void    xylem_tls_set_read_deadline(tls, deadline_ms);
+void    xylem_tls_set_write_deadline(tls, deadline_ms);
 ```
 
-`xylem_tls_conn_acquire` 递增引用计数，需在事件循环线程上调用（通常在 `on_connect` 或 `on_accept` 中，将连接句柄传递给其他线程前调用）。`xylem_tls_conn_release` 递减引用计数，归零时释放内存，可从任意线程调用。
+### Info
 
 ```c
-const char*         xylem_tls_get_alpn(xylem_tls_conn_t* tls);
-const xylem_addr_t* xylem_tls_get_peer_addr(xylem_tls_conn_t* tls);
-xylem_loop_t*       xylem_tls_get_loop(xylem_tls_conn_t* tls);
-void*               xylem_tls_get_userdata(xylem_tls_conn_t* tls);
-void                xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud);
-```
-
-### 服务器
-
-```c
-xylem_tls_server_t* xylem_tls_listen(xylem_loop_t* loop, xylem_addr_t* addr,
-                                      xylem_tls_ctx_t* ctx,
-                                      xylem_tls_handler_t* handler,
-                                      xylem_tls_opts_t* opts);
-void                xylem_tls_close_server(xylem_tls_server_t* server);
-void*               xylem_tls_server_get_userdata(xylem_tls_server_t* server);
-void                xylem_tls_server_set_userdata(xylem_tls_server_t* server,
-                                                   void* ud);
+xylem_err_t  xylem_tls_get_error(tls);
+int          xylem_tls_remote_addr(tls, host, host_len, port);
+int          xylem_tls_local_addr(tls, host, host_len, port);
+int          xylem_tls_listener_addr(ln, host, host_len, port);
+const char*  xylem_tls_get_alpn(tls);
 ```
