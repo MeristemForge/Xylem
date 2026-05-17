@@ -21,6 +21,7 @@
 
 #include "xylem/net/xylem-tcp.h"
 
+#include "xylem/encoding/xylem-varint.h"
 #include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
@@ -258,15 +259,23 @@ _tcp_recv_length(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     }
 
     uint64_t body_len = 0;
-    uint8_t* field    = hdr + tcp->frame_opts.length.field_offset;
 
-    if (tcp->frame_opts.length.big_endian) {
-        for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
-            body_len = (body_len << 8) | field[i];
+    if (tcp->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
+        size_t pos = (size_t)tcp->frame_opts.length.field_offset;
+        if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
+            tcp->err = XYLEM_ERR_UNKNOWN;
+            return -1;
         }
     } else {
-        for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
-            body_len |= (uint64_t)field[i] << (i * 8);
+        uint8_t* field = hdr + tcp->frame_opts.length.field_offset;
+        if (tcp->frame_opts.length.big_endian) {
+            for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
+                body_len = (body_len << 8) | field[i];
+            }
+        } else {
+            for (uint32_t i = 0; i < tcp->frame_opts.length.field_size; i++) {
+                body_len |= (uint64_t)field[i] << (i * 8);
+            }
         }
     }
 
@@ -386,6 +395,19 @@ _tcp_send_length(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
     }
 
     memset(hdr, 0, hdr_sz);
+
+    if (tcp->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
+        size_t pos = (size_t)tcp->frame_opts.length.field_offset;
+        if (!xylem_varint_encode((uint64_t)wire_len, hdr, hdr_sz, &pos)) {
+            tcp->err = XYLEM_ERR_UNKNOWN;
+            return -1;
+        }
+        if (_tcp_raw_send(tcp, hdr, pos) != 0) {
+            return -1;
+        }
+        return _tcp_raw_send(tcp, data, len);
+    }
+
     uint8_t* field = hdr + tcp->frame_opts.length.field_offset;
     uint64_t val   = (uint64_t)wire_len;
 

@@ -42,6 +42,11 @@ typedef enum xylem_tcp_frame_type_e {
     XYLEM_TCP_FRAME_DELIMITER, /*< Delimiter-terminated frames. */
 } xylem_tcp_frame_type_t;
 
+typedef enum xylem_tcp_length_coding_e {
+    XYLEM_TCP_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
+    XYLEM_TCP_LENGTH_VARINT,   /*< Variable-length integer (LEB128). */
+} xylem_tcp_length_coding_t;
+
 typedef struct xylem_tcp_frame_opts_s {
     xylem_tcp_frame_type_t type;
     union {
@@ -49,11 +54,12 @@ typedef struct xylem_tcp_frame_opts_s {
             size_t len; /*< Fixed frame length in bytes. */
         } fixed;
         struct {
-            uint32_t header_size;  /*< Total header size in bytes. */
-            uint32_t field_offset; /*< Byte offset of the length field. */
-            uint32_t field_size;   /*< Size of the length field (1-8). */
-            int32_t  adjustment;   /*< Added to decoded length for payload size. */
-            bool     big_endian;   /*< true: big-endian length field. */
+            uint32_t                  header_size;  /*< Total header size in bytes. */
+            uint32_t                  field_offset; /*< Byte offset of the length field. */
+            uint32_t                  field_size;   /*< Size of the length field (1-8). */
+            int32_t                   adjustment;   /*< Added to decoded length for payload size. */
+            xylem_tcp_length_coding_t coding;       /*< FIXEDINT or VARINT. */
+            bool                      big_endian;   /*< true: big-endian length field. */
         } length;
         struct {
             const char* delim;     /*< Delimiter bytes. */
