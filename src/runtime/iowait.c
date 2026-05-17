@@ -44,7 +44,7 @@
 #define IOWAIT_PAGE_SHIFT 8
 #define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
 #define IOWAIT_FREE_END   UINT32_MAX
-#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 1024)
+#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 4096)
 
 _Static_assert(
     (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
@@ -83,7 +83,7 @@ struct iowait_slab_s {
     mtx_t      lock;
     iowait_t*  pages[IOWAIT_PAGES_MAX];
     uint32_t   npages;
-    uint32_t   freehead;
+    uint32_t   free_slot;
 };
 
 static inline iowait_t* _iowait_slab_get(
@@ -122,10 +122,10 @@ static iowait_t* _iowait_slab_alloc(
     iowait_slab_t* slab, uint32_t* out_index) {
     mtx_lock(&slab->lock);
 
-    if (slab->freehead != IOWAIT_FREE_END) {
-        uint32_t  idx = slab->freehead;
+    if (slab->free_slot != IOWAIT_FREE_END) {
+        uint32_t  idx = slab->free_slot;
         iowait_t* w   = _iowait_slab_get(slab, idx);
-        slab->freehead = _iowait_free_next(w);
+        slab->free_slot = _iowait_free_next(w);
         *out_index = idx;
         mtx_unlock(&slab->lock);
         return w;
@@ -163,8 +163,8 @@ static iowait_t* _iowait_slab_alloc(
     slab->npages++;
 
     for (uint32_t i = IOWAIT_PAGE_SIZE - 1; i >= 1; i--) {
-        _iowait_free_set_next(&page[i], slab->freehead);
-        slab->freehead = base + i;
+        _iowait_free_set_next(&page[i], slab->free_slot);
+        slab->free_slot = base + i;
     }
 
     *out_index = base;
@@ -175,8 +175,8 @@ static iowait_t* _iowait_slab_alloc(
 static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
     iowait_t* w = _iowait_slab_get(slab, index);
     mtx_lock(&slab->lock);
-    _iowait_free_set_next(w, slab->freehead);
-    slab->freehead = index;
+    _iowait_free_set_next(w, slab->free_slot);
+    slab->free_slot = index;
     mtx_unlock(&slab->lock);
 }
 
@@ -388,7 +388,7 @@ iowait_slab_t* iowait_slab_create(void) {
         free(slab);
         return NULL;
     }
-    slab->freehead = IOWAIT_FREE_END;
+    slab->free_slot = IOWAIT_FREE_END;
     return slab;
 }
 
