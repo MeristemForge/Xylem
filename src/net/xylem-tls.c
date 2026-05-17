@@ -67,6 +67,7 @@ struct xylem_tls_conn_s {
     size_t                 read_buf_len;
     char                   alpn[256];
     xylem_err_t            err;
+    _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
 
@@ -395,8 +396,32 @@ static xylem_tls_conn_t* _tls_conn_alloc(
         return NULL;
     }
     tls->read_buf_cap = buf_cap;
+    atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
 
     return tls;
+}
+
+static void _tls_conn_ref(xylem_tls_conn_t* tls) {
+    atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
+}
+
+static void _tls_conn_unref(xylem_tls_conn_t* tls) {
+    if (atomic_fetch_sub_explicit(&tls->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    if (tls->ssl) {
+        SSL_free(tls->ssl);
+    }
+    if (tls->waiter) {
+        iowait_destroy(tls->waiter);
+    }
+    if (tls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        shutdown(tls->fd, PLATFORM_SHUT_WR);
+        platform_socket_close(tls->fd);
+    }
+    free(tls->read_buf);
+    free(tls);
 }
 
 static void _tls_conn_free(xylem_tls_conn_t* tls) {
@@ -540,13 +565,13 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
         return;
     }
 
-    if (tls->ssl) {
-        ERR_clear_error();
-        SSL_shutdown(tls->ssl);
-    }
+    /* Do not call SSL_shutdown here -- the SSL object may be in use
+     * by a parked recv/send coroutine. The TCP RST from socket close
+     * serves as the shutdown signal. SSL_free in unref is safe because
+     * it runs only after all ref holders (recv/send) have returned. */
 
     iowait_close(tls->waiter);
-    _tls_conn_free(tls);
+    _tls_conn_unref(tls);
 }
 
 
@@ -881,27 +906,42 @@ void xylem_tls_set_framing(
 
 int64_t
 xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    _tls_conn_ref(tls);
+    int64_t ret;
     switch (tls->frame_opts.type) {
     case XYLEM_TCP_FRAME_NONE:
-        return _tls_buffered_read(tls, buf, len);
+        ret = _tls_buffered_read(tls, buf, len);
+        break;
     case XYLEM_TCP_FRAME_FIXED:
-        return _tls_recv_fixed(tls, buf, len);
+        ret = _tls_recv_fixed(tls, buf, len);
+        break;
     case XYLEM_TCP_FRAME_LENGTH:
-        return _tls_recv_length(tls, buf, len);
+        ret = _tls_recv_length(tls, buf, len);
+        break;
     case XYLEM_TCP_FRAME_DELIMITER:
-        return _tls_recv_delimiter(tls, buf, len);
+        ret = _tls_recv_delimiter(tls, buf, len);
+        break;
     default:
-        return -1;
+        ret = -1;
+        break;
     }
+    _tls_conn_unref(tls);
+    return ret;
 }
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
+    _tls_conn_ref(tls);
+    int ret;
     switch (tls->frame_opts.type) {
     case XYLEM_TCP_FRAME_LENGTH:
-        return _tls_send_length(tls, data, len);
+        ret = _tls_send_length(tls, data, len);
+        break;
     default:
-        return _tls_raw_send(tls, data, len);
+        ret = _tls_raw_send(tls, data, len);
+        break;
     }
+    _tls_conn_unref(tls);
+    return ret;
 }
 
 
