@@ -111,7 +111,7 @@ if(XYLEM_ENABLE_TLS)
 
 	list(APPEND SRCS
 		src/net/xylem-tls.c
-		src/net/xylem-dtls.c
+		# src/net/xylem-dtls.c  # TODO: port to coroutine API
 	)
 endif()
 
