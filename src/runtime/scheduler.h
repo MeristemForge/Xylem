@@ -28,7 +28,7 @@ _Pragma("once")
 
 typedef struct mco_coro      mco_coro;
 typedef struct scheduler_s   scheduler_t;
-typedef struct sched_timer_s sched_timer_t;
+typedef struct xylem_timer_s sched_timer_t;
 typedef struct iowait_slab_s iowait_slab_t;
 
 /**

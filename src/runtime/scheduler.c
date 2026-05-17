@@ -140,7 +140,7 @@ typedef struct {
 } _sched_post_t;
 
 /* refcnt keeps the timer alive while its callback is running. */
-struct sched_timer_s {
+struct xylem_timer_s {
     heap_node_t      heap_node;
     scheduler_t*     sched;
     sched_timer_fn_t cb;

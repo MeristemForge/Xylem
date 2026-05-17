@@ -24,7 +24,7 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct sched_timer_s xylem_timer_t;
+typedef struct xylem_timer_s xylem_timer_t;
 
 /**
  * @brief Timer expiry callback.
