@@ -21,6 +21,7 @@
 
 #include "xylem/net/xylem-tcp.h"
 
+#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
@@ -45,7 +46,7 @@ struct xylem_tcp_conn_s {
     size_t                 read_buf_cap;
     size_t                 read_buf_pos;
     size_t                 read_buf_len;
-    int32_t                last_error;
+    xylem_err_t            err;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -57,6 +58,17 @@ struct xylem_tcp_listener_s {
     _Atomic int32_t refcnt;
     _Atomic bool    closing;
 };
+
+static xylem_err_t _tcp_map_error(int platform_err) {
+    switch (platform_err) {
+    case PLATFORM_SO_ERROR_ETIMEDOUT:   return XYLEM_ERR_TIMEOUT;
+    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_CONNRESET;
+    case PLATFORM_SO_ERROR_ECONNREFUSED:return XYLEM_ERR_CONNREFUSED;
+    case PLATFORM_SO_ERROR_ENETUNREACH: return XYLEM_ERR_NETUNREACH;
+    case PLATFORM_SO_ERROR_EHOSTUNREACH:return XYLEM_ERR_HOSTUNREACH;
+    default:                            return XYLEM_ERR_UNKNOWN;
+    }
+}
 
 static void _tcp_conn_ref(xylem_tcp_conn_t* tcp) {
     atomic_fetch_add_explicit(&tcp->refcnt, 1, memory_order_relaxed);
@@ -145,16 +157,16 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            tcp->last_error = err;
+            tcp->err = _tcp_map_error(err);
             return -1;
         }
 
         iowait_result_t r = iowait_read(tcp->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            tcp->last_error = (r == IOWAIT_TIMEOUT)
-                ? PLATFORM_SO_ERROR_ETIMEDOUT
-                : PLATFORM_SO_ERROR_ECONNRESET;
+            tcp->err = (r == IOWAIT_TIMEOUT)
+                ? XYLEM_ERR_TIMEOUT
+                : XYLEM_ERR_CONNRESET;
             return -1;
         }
     }
@@ -220,7 +232,7 @@ static int64_t
 _tcp_recv_fixed(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     size_t frame_len = tcp->frame_opts.fixed.len;
     if (frame_len > len) {
-        tcp->last_error = -1;
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
     if (_tcp_read_exact(tcp, buf, frame_len) != 0) {
@@ -235,7 +247,7 @@ _tcp_recv_length(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     uint32_t hdr_sz = tcp->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
-        tcp->last_error = -1;
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
@@ -259,13 +271,13 @@ _tcp_recv_length(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     int64_t adjusted
         = (int64_t)body_len + tcp->frame_opts.length.adjustment;
     if (adjusted < 0) {
-        tcp->last_error = -1;
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
     size_t payload_len = (size_t)adjusted;
     if (payload_len > len) {
-        tcp->last_error = -1;
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
@@ -314,7 +326,7 @@ _tcp_recv_delimiter(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
         }
     }
 
-    tcp->last_error = -1;
+    tcp->err = XYLEM_ERR_UNKNOWN;
     return -1;
 }
 
@@ -338,16 +350,16 @@ _tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            tcp->last_error = err;
+            tcp->err = _tcp_map_error(err);
             return -1;
         }
 
         iowait_result_t r = iowait_write(tcp->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            tcp->last_error = (r == IOWAIT_TIMEOUT)
-                ? PLATFORM_SO_ERROR_ETIMEDOUT
-                : PLATFORM_SO_ERROR_ECONNRESET;
+            tcp->err = (r == IOWAIT_TIMEOUT)
+                ? XYLEM_ERR_TIMEOUT
+                : XYLEM_ERR_CONNRESET;
             return -1;
         }
     }
@@ -457,7 +469,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         iowait_set_wr_deadline(tcp->waiter, 0);
 
         if (r != IOWAIT_READY) {
-            tcp->last_error = PLATFORM_SO_ERROR_ETIMEDOUT;
+            tcp->err = XYLEM_ERR_TIMEOUT;
             xylem_tcp_close(tcp);
             return NULL;
         }
@@ -466,7 +478,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
-            tcp->last_error = err;
+            tcp->err = _tcp_map_error(err);
             xylem_loge("tcp dial fd=%d connect error=%d (%s)",
                        (int)fd,
                        err,
@@ -652,8 +664,8 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
     _tcp_conn_unref(tcp);
 }
 
-int xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {
-    return tcp->last_error;
+xylem_err_t xylem_tcp_get_error(xylem_tcp_conn_t* tcp) {
+    return tcp->err;
 }
 
 int xylem_tcp_remote_addr(

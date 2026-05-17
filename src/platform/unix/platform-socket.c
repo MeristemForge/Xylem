@@ -277,6 +277,9 @@ ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
     if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
         n = recv(sock, buf, size, 0);
     }
+    if (n < 0 && (errno == EPIPE || errno == ENOTCONN)) {
+        errno = ECONNRESET;
+    }
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
@@ -284,6 +287,9 @@ ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
     ssize_t n = send(sock, buf, size, 0);
     if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
         n = send(sock, buf, size, 0);
+    }
+    if (n < 0 && (errno == EPIPE || errno == ENOTCONN)) {
+        errno = ECONNRESET;
     }
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }

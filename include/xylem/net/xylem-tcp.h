@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include "xylem/xylem-error.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -206,9 +208,9 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
  *
  * @param tcp  Connection handle.
  *
- * @return Platform-specific error code, or 0 if no error.
+ * @return Error code, or XYLEM_ERR_NONE if no error.
  */
-extern int xylem_tcp_get_error(xylem_tcp_conn_t* tcp);
+extern xylem_err_t xylem_tcp_get_error(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the remote address of the connection.

@@ -50,6 +50,7 @@ _Pragma("once")
 #include "xylem/container/xylem-rbtree.h"
 
 /* core */
+#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-serial.h"
