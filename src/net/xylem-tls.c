@@ -246,6 +246,12 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
                 return -1;
             }
         } else {
+            unsigned long ssl_err = ERR_peek_error();
+            xylem_loge("tls handshake: ssl_error=%d reason=%s",
+                       err,
+                       ERR_reason_error_string(ssl_err)
+                           ? ERR_reason_error_string(ssl_err)
+                           : "unknown");
             tls->err = XYLEM_ERR_TLS;
             return -1;
         }
@@ -302,6 +308,12 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
             }
             continue;
         }
+        unsigned long ssl_err = ERR_peek_error();
+        xylem_loge("tls SSL_read: ssl_error=%d reason=%s",
+                   err,
+                   ERR_reason_error_string(ssl_err)
+                       ? ERR_reason_error_string(ssl_err)
+                       : "unknown");
         tls->err = XYLEM_ERR_TLS;
         return -1;
     }
@@ -349,6 +361,12 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
             }
             continue;
         }
+        unsigned long ssl_err = ERR_peek_error();
+        xylem_loge("tls SSL_write: ssl_error=%d reason=%s",
+                   err,
+                   ERR_reason_error_string(ssl_err)
+                       ? ERR_reason_error_string(ssl_err)
+                       : "unknown");
         tls->err = XYLEM_ERR_TLS;
         return -1;
     }
