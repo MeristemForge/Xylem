@@ -655,6 +655,12 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
             }
             sched->joined = true;
         }
+
+        /* iowait timers reference per-worker timer_locks via
+           sched_timer_stop, so destroy the slab before the locks. */
+        iowait_slab_destroy(sched->iowait_slab);
+        sched->iowait_slab = NULL;
+
         for (int32_t i = 0; i < sched->nworkers; i++) {
             _sched_worker_t* w = &sched->workers[i];
             if (w->deque) {
@@ -663,7 +669,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
             if (w->sem) {
                 platform_sem_destroy(w->sem);
             }
-            /* Drain per-worker timers; unref because an in-flight cb may hold a ref. */
             {
                 heap_node_t* n;
                 while ((n = heap_peek(&w->timers)) != NULL) {
@@ -691,7 +696,9 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     platform_poller_deinit(&sched->poller);
-    iowait_slab_destroy(sched->iowait_slab);
+    if (sched->iowait_slab) {
+        iowait_slab_destroy(sched->iowait_slab);
+    }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
         free(sched->coro_pool.slots[i]);

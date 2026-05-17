@@ -319,7 +319,6 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
     _iowait_wake_park(_iowait_claim(&d->park));
-    /* Drop timer-arm ref; d is unsafe after this (racing destroy may free w). */
     _iowait_unref(w);
 }
 
