@@ -440,7 +440,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(
 
     tcp->peer_addr = resolved_addr;
 
-    xylem_logd("tcp dial fd=%d connected=%d", (int)fd, connected);
     if (!connected) {
         /**
          * Connect completion surfaces as writability on the fd. Apply
@@ -459,7 +458,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(
 
         if (r != IOWAIT_READY) {
             tcp->last_error = PLATFORM_SO_ERROR_ETIMEDOUT;
-            xylem_logd("tcp dial fd=%d connect timed out", (int)fd);
             xylem_tcp_close(tcp);
             return NULL;
         }
@@ -478,8 +476,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         }
     }
 
-    xylem_logi(
-        "tcp conn fd=%d connected to %s:%s", (int)fd, host, port_str);
     return tcp;
 }
 
@@ -577,11 +573,6 @@ xylem_tcp_listener_t* xylem_tcp_listen(
     }
 
     _tcp_listener_ref(listener);
-
-    xylem_logi("tcp listener fd=%d listening on %s:%s",
-               (int)fd,
-               host,
-               port_str);
     return listener;
 }
 
@@ -632,9 +623,6 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
         getpeername(
             fd, (struct sockaddr*)&tcp->peer_addr.storage, &peer_len);
 
-        xylem_logi("tcp listener fd=%d accepted conn fd=%d",
-                   (int)listener->fd,
-                   (int)fd);
         result = tcp;
         break;
     }
@@ -647,8 +635,6 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
     if (atomic_exchange(&listener->closing, true)) {
         return;
     }
-
-    xylem_logi("tcp listener fd=%d closing", (int)listener->fd);
 
     /**
      * Wake any accept coroutine; it will observe `closing`, drop its
