@@ -21,203 +21,216 @@
 
 _Pragma("once")
 
+#include "xylem/xylem-error.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-/* Framing strategy for UDS stream reassembly. */
-typedef enum xylem_uds_framing_type_e {
-    XYLEM_UDS_FRAME_NONE,   /*< No framing, raw byte stream. */
-    XYLEM_UDS_FRAME_FIXED,  /*< Fixed-length frames. */
-    XYLEM_UDS_FRAME_LENGTH, /*< Length-prefixed frames. */
-    XYLEM_UDS_FRAME_DELIM,  /*< Delimiter-separated frames. */
-    XYLEM_UDS_FRAME_CUSTOM, /*< User-supplied parse function. */
-} xylem_uds_framing_type_t;
+typedef struct xylem_uds_conn_s     xylem_uds_conn_t;
+typedef struct xylem_uds_listener_s xylem_uds_listener_t;
 
-/* Timeout category reported via on_timeout. */
-typedef enum xylem_uds_timeout_type_e {
-    XYLEM_UDS_TIMEOUT_READ,  /*< Read idle timeout. */
-    XYLEM_UDS_TIMEOUT_WRITE, /*< Write completion timeout. */
-} xylem_uds_timeout_type_t;
+typedef enum xylem_uds_frame_type_e {
+    XYLEM_UDS_FRAME_NONE,      /*< Raw mode, recv returns available bytes. */
+    XYLEM_UDS_FRAME_FIXED,     /*< Fixed-length frames. */
+    XYLEM_UDS_FRAME_LENGTH,    /*< Length-prefixed frames. */
+    XYLEM_UDS_FRAME_DELIMITER, /*< Delimiter-terminated frames. */
+} xylem_uds_frame_type_t;
 
-/* Encoding used for the length field in LENGTH framing. */
 typedef enum xylem_uds_length_coding_e {
     XYLEM_UDS_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
     XYLEM_UDS_LENGTH_VARINT,   /*< Variable-length integer. */
 } xylem_uds_length_coding_t;
 
-/* Framing configuration for UDS connections. */
-typedef struct xylem_uds_framing_s {
-    xylem_uds_framing_type_t type;
+typedef struct xylem_uds_frame_opts_s {
+    xylem_uds_frame_type_t type;
     union {
-        struct { size_t frame_size; }                          fixed;
         struct {
-            uint32_t                  header_size;   /*< Fixed header size. */
-            uint32_t                  field_offset;  /*< Length field offset. */
-            uint32_t                  field_size;    /*< Length field size. */
-            int32_t                   adjustment;    /*< Length adjustment. */
-            xylem_uds_length_coding_t coding;        /*< FIXEDINT or VARINT. */
-            bool                      field_big_endian; /*< Byte order. */
+            size_t len; /*< Fixed frame length in bytes. */
+        } fixed;
+        struct {
+            uint32_t                  header_size;  /*< Total header size in bytes. */
+            uint32_t                  field_offset; /*< Byte offset of the length field. */
+            uint32_t                  field_size;   /*< Size of the length field (1-8). */
+            int32_t                   adjustment;   /*< Added to decoded length for payload size. */
+            xylem_uds_length_coding_t coding;       /*< FIXEDINT or VARINT. */
+            bool                      big_endian;   /*< true: big-endian length field. */
         } length;
-        struct { const char* delim; size_t delim_len; }        delim;
-        struct { int (*parse)(const void* data, size_t len); } custom;
+        struct {
+            const char* delim;     /*< Delimiter bytes. */
+            size_t      delim_len; /*< Delimiter length, 0 = auto strlen. */
+        } delimiter;
     };
-} xylem_uds_framing_t;
-
-typedef struct xylem_uds_conn_s   xylem_uds_conn_t;
-typedef struct xylem_uds_server_s xylem_uds_server_t;
-
-/* UDS event callback set. */
-typedef struct xylem_uds_handler_s {
-    void (*on_connect)(xylem_uds_conn_t* conn);           /*< Client connected. */
-    void (*on_accept)(xylem_uds_server_t* server,
-                      xylem_uds_conn_t* conn);             /*< Server accepted. */
-    void (*on_read)(xylem_uds_conn_t* conn,
-                    void* data, size_t len);                /*< Frame received. */
-    void (*on_write_done)(xylem_uds_conn_t* conn,
-                          const void* data, size_t len,
-                          int status);                      /*< Write finished: data is the caller's original pointer. 0 = sent, -1 = not sent. */
-    void (*on_timeout)(xylem_uds_conn_t* conn,
-                       xylem_uds_timeout_type_t type);      /*< Timeout fired. */
-    void (*on_close)(xylem_uds_conn_t* conn,
-                     int err, const char* errmsg);          /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
-    void (*on_heartbeat_miss)(xylem_uds_conn_t* conn);     /*< No data received within heartbeat interval. */
-} xylem_uds_handler_t;
-
-/* UDS connection options. */
-typedef struct xylem_uds_opts_s {
-    xylem_uds_framing_t framing;            /*< Framing configuration. */
-    uint64_t            read_timeout_ms;    /*< Read idle timeout, 0 = none. */
-    uint64_t            write_timeout_ms;   /*< Write timeout, 0 = none. */
-    uint64_t            heartbeat_ms;       /*< Heartbeat interval, 0 = none. */
-    size_t              read_buf_size;      /*< Read buffer size, 0 = 65536. */
-} xylem_uds_opts_t;
+} xylem_uds_frame_opts_t;
 
 /**
- * @brief Create a UDS server and start listening.
+ * @brief Create a UDS listener bound to the given path.
  *
  * Binds to the specified filesystem path, sets non-blocking mode,
  * and registers with the event loop. Unlinks the path first if it
- * already exists. Calls handler->on_accept for new connections.
+ * already exists.
  *
- * @param loop     Event loop.
- * @param path     Unix domain socket path.
- * @param handler  Event callback set.
- * @param opts     UDS options, NULL for defaults.
+ * @param path  Unix domain socket path.
  *
- * @return Server handle, or NULL on failure.
+ * @return Listener handle, or NULL on failure.
  */
-extern xylem_uds_server_t* xylem_uds_listen(const char* path,
-                                             xylem_uds_handler_t* handler,
-                                             xylem_uds_opts_t* opts);
+extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
 
 /**
- * @brief Close a UDS server.
+ * @brief Accept a connection from the listener.
  *
- * Stops accepting new connections, closes all existing connections,
- * and unlinks the socket file.
+ * Suspends the calling coroutine until a client connects.
  *
- * @param server  Server handle.
+ * @param ln  Listener handle.
+ *
+ * @return Accepted connection, or NULL if the listener is closing.
  */
-extern void xylem_uds_close_server(xylem_uds_server_t* server);
+extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
+
+/**
+ * @brief Close and destroy a listener.
+ *
+ * Wakes any coroutine blocked in xylem_uds_accept().
+ *
+ * @param ln  Listener handle.
+ */
+extern void xylem_uds_close_listener(xylem_uds_listener_t* ln);
 
 /**
  * @brief Connect to a Unix domain socket.
  *
- * Creates a non-blocking AF_UNIX SOCK_STREAM socket and connects
- * to the specified path. Calls handler->on_connect on success.
+ * Suspends the calling coroutine until the connection is established
+ * or connect_timeout_ms elapses.
  *
- * @param loop     Event loop.
- * @param path     Unix domain socket path.
- * @param handler  Event callback set.
- * @param opts     UDS options, NULL for defaults.
+ * @param path                Unix domain socket path.
+ * @param connect_timeout_ms  Connect timeout in ms, 0 = no timeout.
  *
- * @return Connection handle, or NULL on failure.
+ * @return Connection handle, or NULL on failure or timeout.
  */
-extern xylem_uds_conn_t* xylem_uds_dial(const char* path,
-                                         xylem_uds_handler_t* handler,
-                                         xylem_uds_opts_t* opts);
+extern xylem_uds_conn_t* xylem_uds_dial(
+    const char* path,
+    uint64_t    connect_timeout_ms);
 
 /**
- * @brief Send data over a UDS connection (zero-copy).
+ * @brief Set the framing mode for subsequent recv/send calls.
  *
- * The caller retains ownership of the buffer until
- * handler->on_write_done fires. The library does NOT copy the data;
- * it stores the pointer and sends directly from the caller's buffer.
- * The caller MUST keep the buffer alive and unmodified until the
- * on_write_done callback is invoked with the same data pointer.
- *
- * @param conn  Connection handle.
- * @param data  Data to send (caller-owned, must outlive the send).
- * @param len   Data length in bytes.
- *
- * @return 0 on success (accepted), -1 on failure (connection closed).
+ * @param uds   Connection handle.
+ * @param opts  Frame options, NULL to reset to raw mode.
  */
-extern int xylem_uds_send(xylem_uds_conn_t* conn,
-                          const void* data, size_t len);
+extern void xylem_uds_set_framing(
+    xylem_uds_conn_t*       uds,
+    xylem_uds_frame_opts_t* opts);
 
 /**
- * @brief Close a UDS connection.
+ * @brief Set the read deadline for the connection.
  *
- * Flushes the write queue, then shuts down and closes the socket.
- * Calls handler->on_close when done.
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_uds_recv() calls fail with XYLEM_ERR_TIMEOUT.
  *
- * @param conn  Connection handle.
+ * @param uds          Connection handle.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
  */
-extern void xylem_uds_close(xylem_uds_conn_t* conn);
+extern void xylem_uds_set_read_deadline(
+    xylem_uds_conn_t* uds,
+    uint64_t           deadline_ms);
 
 /**
- * @brief Increment the reference count of a UDS connection.
+ * @brief Set the write deadline for the connection.
  *
- * Call before passing the connection handle to another thread.
- * Must be called from the event loop thread.
+ * Mirror of xylem_uds_set_read_deadline for the write direction.
  *
- * @param conn  Connection handle.
+ * @param uds          Connection handle.
+ * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
  */
-extern void xylem_uds_conn_ref(xylem_uds_conn_t* conn);
+extern void xylem_uds_set_write_deadline(
+    xylem_uds_conn_t* uds,
+    uint64_t           deadline_ms);
 
 /**
- * @brief Decrement the reference count of a UDS connection.
+ * @brief Receive data or a complete frame from the connection.
  *
- * When the count reaches zero the connection memory is freed.
- * May be called from any thread.
+ * Behavior depends on the configured framing mode:
+ *   - NONE:      returns 1~len available bytes (buffered read).
+ *   - FIXED:     returns exactly frame_opts.fixed.len bytes.
+ *   - LENGTH:    reads header, decodes length, returns payload.
+ *   - DELIMITER: reads until delimiter, returns data without it.
  *
- * @param conn  Connection handle.
+ * @param uds  Connection handle.
+ * @param buf  Destination buffer.
+ * @param len  Buffer size.
+ *
+ * @return Bytes received (>0), 0 if peer closed gracefully,
+ *         -1 on failure. Call xylem_uds_get_error() for the reason.
  */
-extern void xylem_uds_conn_unref(xylem_uds_conn_t* conn);
-
-
-/**
- * @brief Get user data attached to a connection.
- *
- * @param conn  Connection handle.
- *
- * @return User data pointer.
- */
-extern void* xylem_uds_get_userdata(xylem_uds_conn_t* conn);
-
-/**
- * @brief Set user data on a connection.
- *
- * @param conn  Connection handle.
- * @param ud    User data pointer.
- */
-extern void xylem_uds_set_userdata(xylem_uds_conn_t* conn, void* ud);
+extern int64_t xylem_uds_recv(
+    xylem_uds_conn_t* uds,
+    void*              buf,
+    size_t             len);
 
 /**
- * @brief Get user data attached to a UDS server.
+ * @brief Send data or a framed message to the connection.
  *
- * @param server  Server handle.
+ * Behavior depends on the configured framing mode:
+ *   - NONE/FIXED/DELIMITER: sends raw bytes, no framing applied.
+ *   - LENGTH: prepends the encoded length header before data.
  *
- * @return User data pointer.
+ * All bytes are written before returning (loops internally until
+ * the full buffer is sent or an error occurs).
+ *
+ * @param uds   Connection handle.
+ * @param data  Source buffer.
+ * @param len   Number of bytes to send.
+ *
+ * @return 0 on success, -1 on failure. Call xylem_uds_get_error()
+ *         for the reason.
  */
-extern void* xylem_uds_server_get_userdata(xylem_uds_server_t* server);
+extern int xylem_uds_send(
+    xylem_uds_conn_t* uds,
+    const void*        data,
+    size_t             len);
 
 /**
- * @brief Set user data on a UDS server.
+ * @brief Close and destroy a connection.
  *
- * @param server  Server handle.
- * @param ud      User data pointer.
+ * The connection must not be used after this call. Read any needed
+ * state (xylem_uds_get_error) before closing.
+ *
+ * @param uds  Connection handle.
  */
-extern void xylem_uds_server_set_userdata(xylem_uds_server_t* server,
-                                          void* ud);
+extern void xylem_uds_close(xylem_uds_conn_t* uds);
+
+/**
+ * @brief Get the last error code from the connection.
+ *
+ * Must be called before xylem_uds_close().
+ *
+ * @param uds  Connection handle.
+ *
+ * @return Error code, or XYLEM_ERR_NONE if no error.
+ */
+extern xylem_err_t xylem_uds_get_error(xylem_uds_conn_t* uds);
+
+/**
+ * @brief Shut down the write side of the connection.
+ *
+ * Sends a FIN to the peer, signalling that no more data will be
+ * written. The connection remains readable; the peer sees EOF on
+ * their next read. Use this for graceful half-close protocols.
+ *
+ * @param uds  Connection handle.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds);
+
+/**
+ * @brief Shut down the read side of the connection.
+ *
+ * Discards further incoming data. Subsequent recv calls return -1.
+ *
+ * @param uds  Connection handle.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_uds_shutdown_rd(xylem_uds_conn_t* uds);
