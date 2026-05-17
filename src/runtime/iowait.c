@@ -41,22 +41,24 @@
 #define IOWAIT_INDEX_MASK (((uintptr_t)1 << IOWAIT_INDEX_BITS) - 1)
 #define IOWAIT_GEN_SHIFT  IOWAIT_INDEX_BITS
 
-typedef struct _iowait_park_s _iowait_park_t;
-typedef struct _iowait_dir_s  _iowait_dir_t;
+#define IOWAIT_PAGE_SHIFT 8
+#define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
+#define IOWAIT_FREE_END   UINT32_MAX
+#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 1024)
+
+_Static_assert(
+    (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
+        ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
+    "slab capacity exceeds addressable index range");
+
+typedef struct _iowait_dir_s _iowait_dir_t;
 
 /* Per-direction state (rd/wr symmetric). timer allocated lazily. */
 struct _iowait_dir_s {
-    iowait_t*                w;
-    _Atomic(_iowait_park_t*) park;
-    sched_timer_t*           timer;
-    _Atomic uint64_t         deadline;
-};
-
-/* On caller's stack; published via dir->park. Wakers claim it with atomic_exchange. */
-struct _iowait_park_s {
-    mco_coro*      co;
-    iowait_t*      w;
-    _iowait_dir_t* dir;
+    iowait_t*          w;
+    _Atomic(mco_coro*) park;
+    sched_timer_t*     timer;
+    _Atomic uint64_t   deadline;
 };
 
 struct iowait_s {
@@ -77,18 +79,6 @@ struct iowait_s {
     iowait_slab_t*        slab;
     uint32_t              slot_index;
 };
-
-/* Paged slab: type-stable memory so stale CQEs can be safely rejected by gen check. */
-#define IOWAIT_PAGE_SHIFT 8
-#define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
-#define IOWAIT_FREE_END   UINT32_MAX
-
-#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 1024)
-
-_Static_assert(
-    (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
-        ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
-    "slab capacity exceeds addressable index range");
 
 struct iowait_slab_s {
     mtx_t      lock;
@@ -291,53 +281,45 @@ static void _iowait_arm(iowait_t* w) {
     mtx_unlock(&w->arm_lock);
 }
 
-/* atomic_exchange arbitrates IO/timer/close race; exactly one winner wakes the coro. */
-static _iowait_park_t* _iowait_claim(_Atomic(_iowait_park_t*)* slot) {
-    return atomic_exchange(slot, NULL);
-}
-
-static void _iowait_wake_park(_iowait_park_t* p) {
-    if (p) {
-        scheduler_schedule(runtime_get_scheduler(), p->co);
+static void _iowait_wake(mco_coro* co) {
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
     }
 }
 
-static void _iowait_wake_park_batch(
-    scheduler_t* sched, runnable_batch_t* batch, _iowait_park_t* p) {
-    if (!p) {
+static void _iowait_wake_batch(
+    scheduler_t* sched, runnable_batch_t* batch, mco_coro* co) {
+    if (!co) {
         return;
     }
     if (batch->n == batch->cap) {
         scheduler_schedule_batch(sched, batch->coros, batch->n);
         batch->n = 0;
     }
-    batch->coros[batch->n++] = p->co;
+    batch->coros[batch->n++] = co;
 }
 
 static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
-    _iowait_wake_park(_iowait_claim(&d->park));
+    _iowait_wake(atomic_exchange(&d->park, NULL));
     _iowait_unref(w);
 }
 
-/* Publish park, arm fd, then re-check close/deadline to catch races. */
+/* Publish co into dir->park, arm fd, then re-check close/deadline to catch races. */
 static bool _iowait_park_fn(mco_coro* co, void* arg) {
-    _iowait_park_t* p = (_iowait_park_t*)arg;
-    iowait_t*       w = p->w;
-    _iowait_dir_t*  d = p->dir;
-
-    p->co = co;
+    _iowait_dir_t* d = (_iowait_dir_t*)arg;
+    iowait_t*      w = d->w;
 
     /* Single-occupancy: exchange detects illegal concurrent park. */
-    _iowait_park_t* prev = atomic_exchange_explicit(
-        &d->park, p, memory_order_release);
+    mco_coro* prev = atomic_exchange_explicit(
+        &d->park, co, memory_order_release);
     if (prev != NULL) {
         xylem_loge(
             "iowait: double park on %s (w=%p prev=%p new=%p)",
             (d == &w->rd) ? "rd" : "wr",
-            (void*)w, (void*)prev, (void*)p);
+            (void*)w, (void*)prev, (void*)co);
         abort();
     }
 
@@ -345,12 +327,12 @@ static bool _iowait_park_fn(mco_coro* co, void* arg) {
 
     /* Re-check after publish: close or deadline may have raced in. */
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        _iowait_wake_park(_iowait_claim(&d->park));
+        _iowait_wake(atomic_exchange(&d->park, NULL));
     } else {
         uint64_t dl = atomic_load_explicit(
             &d->deadline, memory_order_acquire);
         if (dl > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= dl) {
-            _iowait_wake_park(_iowait_claim(&d->park));
+            _iowait_wake(atomic_exchange(&d->park, NULL));
         }
     }
     return true;
@@ -386,8 +368,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 
 /* Waiter determines the result after waking by re-checking conditions. */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
-    _iowait_park_t park = {.w = w, .dir = d};
-    scheduler_park(runtime_get_scheduler(), _iowait_park_fn, &park);
+    scheduler_park(runtime_get_scheduler(), _iowait_park_fn, d);
 
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
@@ -502,8 +483,8 @@ void iowait_close(iowait_t* w) {
     }
     mtx_unlock(&w->arm_lock);
 
-    _iowait_wake_park(_iowait_claim(&w->rd.park));
-    _iowait_wake_park(_iowait_claim(&w->wr.park));
+    _iowait_wake(atomic_exchange(&w->rd.park, NULL));
+    _iowait_wake(atomic_exchange(&w->wr.park, NULL));
 }
 
 void iowait_destroy(iowait_t* w) {
@@ -534,12 +515,10 @@ void iowait_on_event(
     }
 
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_wake_park_batch(
-            sched, batch, _iowait_claim(&w->rd.park));
+        _iowait_wake_batch(sched, batch, atomic_exchange(&w->rd.park, NULL));
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_wake_park_batch(
-            sched, batch, _iowait_claim(&w->wr.park));
+        _iowait_wake_batch(sched, batch, atomic_exchange(&w->wr.park, NULL));
     }
 
     /* LT+oneshot: re-arm for still-parked directions. */

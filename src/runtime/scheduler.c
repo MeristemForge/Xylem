@@ -242,7 +242,7 @@ static inline int32_t _sched_worker_grab_cap(wsdeque_t* dq) {
     return rem < half ? rem : half;
 }
 
-static mco_coro* _sched_worker_get_local(scheduler_t* sched, _sched_worker_t* w) {
+static mco_coro* _sched_worker_pop_coro(scheduler_t* sched, _sched_worker_t* w) {
     mco_coro* co = atomic_exchange(&w->runnext, NULL);
     if (co) {
         return co;
@@ -271,7 +271,7 @@ static mco_coro* _sched_worker_get_local(scheduler_t* sched, _sched_worker_t* w)
     return NULL;
 }
 
-static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
+static mco_coro* _sched_worker_steal_coro(scheduler_t* sched, _sched_worker_t* w) {
     if (sched->nworkers <= 1) {
         return NULL;
     }
@@ -451,9 +451,9 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
 
 static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
     for (;;) {
-        mco_coro* co = _sched_worker_get_local(sched, w);
+        mco_coro* co = _sched_worker_pop_coro(sched, w);
         if (!co) {
-            co = _sched_worker_steal(sched, w);
+            co = _sched_worker_steal_coro(sched, w);
         }
         if (!co) {
             break;
@@ -495,7 +495,7 @@ static mco_coro* _sched_worker_find_coro(
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
 
-    mco_coro* co = _sched_worker_get_local(sched, w);
+    mco_coro* co = _sched_worker_pop_coro(sched, w);
     if (co) {
         return co;
     }
@@ -512,7 +512,7 @@ static mco_coro* _sched_worker_find_coro(
         }
     }
 
-    co = _sched_worker_steal(sched, w);
+    co = _sched_worker_steal_coro(sched, w);
     if (co) {
         return co;
     }
@@ -535,9 +535,9 @@ static mco_coro* _sched_worker_find_coro(
         /* Set before re-check so producers don't skip the pipe wake. */
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
-        co = _sched_worker_get_local(sched, w);
+        co = _sched_worker_pop_coro(sched, w);
         if (!co) {
-            co = _sched_worker_steal(sched, w);
+            co = _sched_worker_steal_coro(sched, w);
         }
         if (co) {
             atomic_store_explicit(
@@ -582,9 +582,9 @@ static mco_coro* _sched_worker_find_coro(
         /* Prefer netpoll's coro; ET won't re-fire if we lose it. */
         co = first;
         if (!co) {
-            co = _sched_worker_get_local(sched, w);
+            co = _sched_worker_pop_coro(sched, w);
             if (!co) {
-                co = _sched_worker_steal(sched, w);
+                co = _sched_worker_steal_coro(sched, w);
             }
         }
         if (co) {
@@ -610,12 +610,26 @@ static int _sched_worker_entry(void* arg) {
     while (atomic_load(&sched->running)) {
         _sched_maintenance(sched, w);
 
-        /* Every 61st tick, check global runq first for fairness. */
+        /* Every 61st tick, check global runq + netpoll for fairness. */
         mco_coro* co = NULL;
         if (++w->sched_tick % 61 == 0) {
             queue_node_t* node = runq_pop(sched->runq);
             if (node) {
                 co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+            }
+            if (!atomic_load_explicit(
+                    &sched->poller_running, memory_order_relaxed)) {
+                int n = platform_poller_wait(&sched->poller, cqes, 0);
+                if (n > 0) {
+                    mco_coro* io_co = _sched_process_io(sched, cqes, n);
+                    if (io_co) {
+                        if (!co) {
+                            co = io_co;
+                        } else {
+                            scheduler_schedule(sched, io_co);
+                        }
+                    }
+                }
             }
         }
         if (!co) {

@@ -21,6 +21,8 @@
 
 #include "xylem/xylem-timer.h"
 
+#include <stddef.h>
+
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
