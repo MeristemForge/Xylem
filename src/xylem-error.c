@@ -36,6 +36,7 @@ const char* xylem_err_tostring(xylem_err_t err) {
     case XYLEM_ERR_PEER_CLOSED:  return "peer closed";
     case XYLEM_ERR_UNKNOWN:      return "unknown error";
     case XYLEM_ERR_TLS:          return "tls error";
+    case XYLEM_ERR_DTLS:         return "dtls error";
     }
     return "unknown error";
 }

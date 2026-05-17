@@ -42,6 +42,7 @@ typedef enum xylem_err_e {
     XYLEM_ERR_PEER_CLOSED          = 10, /*< Peer closed gracefully (read returned 0). */
     XYLEM_ERR_UNKNOWN      = 11, /*< Unmapped platform error. */
     XYLEM_ERR_TLS          = 12, /*< TLS/SSL layer error. */
+    XYLEM_ERR_DTLS         = 13, /*< DTLS layer error. */
 } xylem_err_t;
 
 /**
