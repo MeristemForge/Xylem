@@ -200,15 +200,15 @@ void* xylem_channel_recv(xylem_channel_t* ch) {
 
     void* payload = NULL;
     for (;;) {
-        if (atomic_load(&ch->closed)) {
-            break;
-        }
-
         mpsc_node_t* node = mpsc_pop(&ch->queue);
         if (node) {
             _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
             payload = m->payload;
             free(m);
+            break;
+        }
+
+        if (atomic_load(&ch->closed)) {
             break;
         }
 
