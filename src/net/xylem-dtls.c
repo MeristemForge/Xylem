@@ -880,6 +880,11 @@ static void _dtls_handshake_coro(void* arg) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
         if (ret == 1) {
+            /* Flush any final handshake message (e.g. Finished) that
+             * OpenSSL buffered into the write BIO on success. Without
+             * this the client never receives the server Finished and
+             * its handshake never completes. */
+            _dtls_server_flush_write_bio(dtls);
             dtls->handshake_done = true;
             success = true;
             break;
