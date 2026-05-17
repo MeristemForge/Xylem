@@ -411,6 +411,8 @@ static void _tls_conn_unref(xylem_tls_conn_t* tls) {
         return;
     }
     if (tls->ssl) {
+        ERR_clear_error();
+        SSL_shutdown(tls->ssl);
         SSL_free(tls->ssl);
     }
     if (tls->waiter) {
@@ -564,11 +566,6 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     if (atomic_exchange(&tls->closed, true)) {
         return;
     }
-
-    /* Do not call SSL_shutdown here -- the SSL object may be in use
-     * by a parked recv/send coroutine. The TCP RST from socket close
-     * serves as the shutdown signal. SSL_free in unref is safe because
-     * it runs only after all ref holders (recv/send) have returned. */
 
     iowait_close(tls->waiter);
     _tls_conn_unref(tls);
