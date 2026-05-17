@@ -86,7 +86,7 @@ struct iowait_slab_s {
     uint32_t   free_slot;
 };
 
-static inline iowait_t* _iowait_slab_get(
+static inline iowait_t* _iowait_slab_at(
     iowait_slab_t* slab, uint32_t index) {
     uint32_t zi     = index - 1;
     uint32_t page   = zi >> IOWAIT_PAGE_SHIFT;
@@ -94,13 +94,13 @@ static inline iowait_t* _iowait_slab_get(
     return &slab->pages[page][offset];
 }
 
-static inline uint32_t _iowait_free_next(iowait_t* slot) {
+static inline uint32_t _iowait_slot_next(iowait_t* slot) {
     uint32_t v;
     memcpy(&v, slot, sizeof(v));
     return v;
 }
 
-static inline void _iowait_free_set_next(iowait_t* slot, uint32_t next) {
+static inline void _iowait_slot_set_next(iowait_t* slot, uint32_t next) {
     memcpy(slot, &next, sizeof(next));
 }
 
@@ -124,8 +124,8 @@ static iowait_t* _iowait_slab_alloc(
 
     if (slab->free_slot != IOWAIT_FREE_END) {
         uint32_t  idx = slab->free_slot;
-        iowait_t* w   = _iowait_slab_get(slab, idx);
-        slab->free_slot = _iowait_free_next(w);
+        iowait_t* w   = _iowait_slab_at(slab, idx);
+        slab->free_slot = _iowait_slot_next(w);
         *out_index = idx;
         mtx_unlock(&slab->lock);
         return w;
@@ -163,7 +163,7 @@ static iowait_t* _iowait_slab_alloc(
     slab->npages++;
 
     for (uint32_t i = IOWAIT_PAGE_SIZE - 1; i >= 1; i--) {
-        _iowait_free_set_next(&page[i], slab->free_slot);
+        _iowait_slot_set_next(&page[i], slab->free_slot);
         slab->free_slot = base + i;
     }
 
@@ -173,9 +173,9 @@ static iowait_t* _iowait_slab_alloc(
 }
 
 static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
-    iowait_t* w = _iowait_slab_get(slab, index);
+    iowait_t* w = _iowait_slab_at(slab, index);
     mtx_lock(&slab->lock);
-    _iowait_free_set_next(w, slab->free_slot);
+    _iowait_slot_set_next(w, slab->free_slot);
     slab->free_slot = index;
     mtx_unlock(&slab->lock);
 }
@@ -507,7 +507,7 @@ void iowait_on_event(
     uint32_t       index = _iowait_ud_index(ud);
     uint16_t       tag   = _iowait_ud_tag(ud);
     iowait_slab_t* slab  = scheduler_get_iowait_slab(sched);
-    iowait_t*      w     = _iowait_tryref(_iowait_slab_get(slab, index), tag);
+    iowait_t*      w     = _iowait_tryref(_iowait_slab_at(slab, index), tag);
     if (!w) {
         return;
     }
