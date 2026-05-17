@@ -39,14 +39,72 @@ typedef struct xylem_tls_opts_s {
     const char* hostname;           /*< SNI hostname for certificate selection and verification. */
 } xylem_tls_opts_t;
 
+/**
+ * @brief Create a TLS context.
+ *
+ * Default: peer verification enabled, TLS 1.2 minimum.
+ *
+ * @return Context handle, or NULL on failure.
+ */
 extern xylem_tls_ctx_t* xylem_tls_ctx_create(void);
+
+/**
+ * @brief Destroy a TLS context. NULL-safe.
+ *
+ * @param ctx  Context handle.
+ */
 extern void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
+
+/**
+ * @brief Load a PEM certificate chain and private key.
+ *
+ * @param ctx   Context handle.
+ * @param cert  Path to PEM certificate chain file.
+ * @param key   Path to PEM private key file.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
                                    const char* cert, const char* key);
+
+/**
+ * @brief Set the CA certificate for peer verification.
+ *
+ * @param ctx      Context handle.
+ * @param ca_file  Path to CA certificate file.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
+
+/**
+ * @brief Enable or disable peer certificate verification.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to verify, false to skip.
+ */
 extern void xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set the ALPN protocol list.
+ *
+ * @param ctx        Context handle.
+ * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
+ * @param count      Number of protocols.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
                                   const char** protocols, size_t count);
+
+/**
+ * @brief Enable NSS Key Log output for Wireshark decryption.
+ *
+ * @param ctx   Context handle.
+ * @param path  Output file path, or NULL to disable.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
 
 /**
@@ -186,22 +244,59 @@ extern void xylem_tls_close_listener(xylem_tls_listener_t* ln);
  */
 extern xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls);
 
+/**
+ * @brief Get the remote address of the connection.
+ *
+ * @param tls       Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the remote port.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int xylem_tls_remote_addr(
     xylem_tls_conn_t* tls,
     char*             host,
     size_t            host_len,
     uint16_t*         port);
 
+/**
+ * @brief Get the local address of the connection.
+ *
+ * @param tls       Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int xylem_tls_local_addr(
     xylem_tls_conn_t* tls,
     char*             host,
     size_t            host_len,
     uint16_t*         port);
 
+/**
+ * @brief Get the local address of the listener.
+ *
+ * @param ln        Listener handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int xylem_tls_listener_addr(
     xylem_tls_listener_t* ln,
     char*                 host,
     size_t                host_len,
     uint16_t*             port);
 
+/**
+ * @brief Get the negotiated ALPN protocol.
+ *
+ * @param tls  Connection handle.
+ *
+ * @return Protocol string, or NULL if none negotiated.
+ */
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);

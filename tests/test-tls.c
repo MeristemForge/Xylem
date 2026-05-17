@@ -47,7 +47,6 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     ASSERT(0 && "test timed out");
 }
 
-/* --- PEM generation helpers --- */
 
 /**
  * Write PEM data to a file via memory BIO instead of passing FILE* directly
@@ -131,7 +130,6 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
     return rc;
 }
 
-/* --- test: ctx create/destroy --- */
 
 static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -139,7 +137,6 @@ static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-/* --- test: load cert valid/invalid --- */
 
 static void test_load_cert_valid(void) {
     const char* cert = "test_tls_cert.pem";
@@ -162,7 +159,6 @@ static void test_load_cert_invalid(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-/* --- test: set ca --- */
 
 static void test_set_ca(void) {
     const char* cert = "test_tls_ca.pem";
@@ -177,7 +173,6 @@ static void test_set_ca(void) {
     remove(key);
 }
 
-/* --- test: set verify --- */
 
 static void test_set_verify(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -187,7 +182,6 @@ static void test_set_verify(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-/* --- test: set alpn --- */
 
 static void test_set_alpn(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
@@ -197,7 +191,6 @@ static void test_set_alpn(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-/* --- test: handshake + echo --- */
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -282,7 +275,6 @@ static void test_handshake_and_echo(void) {
     xylem_run(_echo_main, NULL, NULL);
 }
 
-/* --- test: handshake failure (wrong CA) --- */
 
 static void _fail_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -361,7 +353,6 @@ static void test_handshake_failure(void) {
     xylem_run(_fail_main, NULL, NULL);
 }
 
-/* --- test: ALPN negotiation --- */
 
 static void _alpn_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -458,7 +449,6 @@ static void test_alpn_negotiation(void) {
     xylem_run(_alpn_main, NULL, NULL);
 }
 
-/* --- test: framing (length-prefix) --- */
 
 static const xylem_tcp_frame_opts_t _len_frame = {
     .type   = XYLEM_TCP_FRAME_LENGTH,
@@ -553,7 +543,6 @@ static void test_framing(void) {
     xylem_run(_frame_main, NULL, NULL);
 }
 
-/* --- test: read deadline --- */
 
 static void _deadline_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -635,7 +624,6 @@ static void test_read_deadline(void) {
     xylem_run(_deadline_main, NULL, NULL);
 }
 
-/* --- test: send after close --- */
 
 static void _sac_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -714,7 +702,6 @@ static void test_close(void) {
     xylem_run(_sac_main, NULL, NULL);
 }
 
-/* --- test: close listener --- */
 
 static void _cl_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -775,7 +762,6 @@ static void test_close_listener(void) {
     xylem_run(_cl_main, NULL, NULL);
 }
 
-/* --- test: keylog --- */
 
 static void _kl_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -861,7 +847,6 @@ static void test_keylog(void) {
     xylem_run(_kl_main, NULL, NULL);
 }
 
-/* --- main --- */
 
 int main(void) {
     test_ctx_create_destroy();

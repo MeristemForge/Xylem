@@ -78,7 +78,6 @@ struct xylem_tls_listener_s {
     _Atomic bool     closing;
 };
 
-/* --- ctx management --- */
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -220,7 +219,6 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-/* --- SSL I/O helpers --- */
 
 static int _tls_do_handshake(xylem_tls_conn_t* tls) {
     for (;;) {
@@ -373,7 +371,6 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
     return 0;
 }
 
-/* --- conn allocation --- */
 
 static xylem_tls_conn_t* _tls_conn_alloc(
     platform_sock_t fd, size_t max_read_buf) {
@@ -420,7 +417,6 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
     free(tls);
 }
 
-/* --- dial --- */
 
 xylem_tls_conn_t* xylem_tls_dial(
     const char*       host,
@@ -536,7 +532,6 @@ xylem_tls_conn_t* xylem_tls_dial(
     return tls;
 }
 
-/* --- close --- */
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
     if (atomic_exchange(&tls->closed, true)) {
@@ -552,7 +547,6 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     _tls_conn_free(tls);
 }
 
-/* --- listen --- */
 
 xylem_tls_listener_t* xylem_tls_listen(
     const char*       host,
@@ -596,7 +590,6 @@ xylem_tls_listener_t* xylem_tls_listen(
     return ln;
 }
 
-/* --- accept --- */
 
 xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     uint64_t backoff_ms = 5;
@@ -664,7 +657,6 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     }
 }
 
-/* --- close listener --- */
 
 void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     if (atomic_exchange(&ln->closing, true)) {
@@ -677,7 +669,6 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     free(ln);
 }
 
-/* --- framing / buffered read (mirrors TCP) --- */
 
 static int _tls_read_exact(xylem_tls_conn_t* tls, void* buf, size_t len) {
     char*  ptr = (char*)buf;
@@ -877,7 +868,6 @@ _tls_send_length(xylem_tls_conn_t* tls, const void* data, size_t len) {
     return _tls_raw_send(tls, data, len);
 }
 
-/* --- public recv / send --- */
 
 void xylem_tls_set_framing(
     xylem_tls_conn_t* tls, xylem_tcp_frame_opts_t* opts) {
@@ -913,7 +903,6 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     }
 }
 
-/* --- deadline --- */
 
 void xylem_tls_set_read_deadline(
     xylem_tls_conn_t* tls, uint64_t deadline_ms) {
@@ -925,7 +914,6 @@ void xylem_tls_set_write_deadline(
     iowait_set_wr_deadline(tls->waiter, deadline_ms);
 }
 
-/* --- info queries --- */
 
 xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls) {
     return tls->err;
