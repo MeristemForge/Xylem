@@ -21,33 +21,161 @@
 
 _Pragma("once")
 
+#include "xylem/xylem-error.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct xylem_udp_s xylem_udp_t;
 
-typedef struct xylem_udp_handler_s {
-    void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
-                    const char* host, uint16_t port);
-    void (*on_close)(xylem_udp_t* udp, int err, const char* errmsg);
-} xylem_udp_handler_t;
+/**
+ * @brief Create a bound UDP socket.
+ *
+ * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
+ * @param port  Bind port.
+ *
+ * @return UDP handle, or NULL on failure.
+ */
+extern xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port);
 
-extern xylem_udp_t* xylem_udp_listen(const char* host,
-                                     uint16_t port,
-                                     xylem_udp_handler_t* handler);
+/**
+ * @brief Create a connected UDP socket.
+ *
+ * Calls connect() so subsequent send/recv use the default peer.
+ *
+ * @param host  Remote hostname or IP address.
+ * @param port  Remote port.
+ *
+ * @return UDP handle, or NULL on failure.
+ */
+extern xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port);
 
-extern xylem_udp_t* xylem_udp_dial(const char* host,
-                                    uint16_t port,
-                                    xylem_udp_handler_t* handler);
+/**
+ * @brief Receive a datagram.
+ *
+ * Suspends the calling coroutine until a datagram arrives, the
+ * deadline passes, or the handle is closed.
+ *
+ * For unconnected sockets, writes the sender address into host/port.
+ * For connected sockets, host/port may be NULL.
+ *
+ * @param udp       UDP handle.
+ * @param buf       Destination buffer.
+ * @param len       Buffer size.
+ * @param host      Buffer for sender IP (46 bytes recommended), or NULL.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives sender port, or NULL.
+ *
+ * @return Bytes received (>0), -1 on failure. Call
+ *         xylem_udp_get_error() for the reason.
+ */
+extern int64_t xylem_udp_recvfrom(
+    xylem_udp_t* udp,
+    void*        buf,
+    size_t       len,
+    char*        host,
+    size_t       host_len,
+    uint16_t*    port);
 
-extern int xylem_udp_send(xylem_udp_t* udp,
-                          const char* host, uint16_t port,
-                          const void* data, size_t len);
+/**
+ * @brief Send a datagram.
+ *
+ * Suspends the calling coroutine if the socket buffer is full until
+ * writable, the deadline passes, or the handle is closed.
+ *
+ * For unconnected sockets, host/port specify the destination.
+ * For connected sockets, host must be NULL.
+ *
+ * @param udp   UDP handle.
+ * @param data  Source buffer.
+ * @param len   Number of bytes to send.
+ * @param host  Destination IP, or NULL for connected socket.
+ * @param port  Destination port (ignored when host is NULL).
+ *
+ * @return 0 on success, -1 on failure. Call xylem_udp_get_error()
+ *         for the reason.
+ */
+extern int xylem_udp_sendto(
+    xylem_udp_t* udp,
+    const void*  data,
+    size_t       len,
+    const char*  host,
+    uint16_t     port);
 
+/**
+ * @brief Set the read deadline.
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_udp_recvfrom() calls fail with XYLEM_ERR_TIMEOUT.
+ *
+ * @param udp          UDP handle.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
+ */
+extern void xylem_udp_set_read_deadline(
+    xylem_udp_t* udp, uint64_t deadline_ms);
+
+/**
+ * @brief Set the write deadline.
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_udp_sendto() calls fail with XYLEM_ERR_TIMEOUT.
+ *
+ * @param udp          UDP handle.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
+ */
+extern void xylem_udp_set_write_deadline(
+    xylem_udp_t* udp, uint64_t deadline_ms);
+
+/**
+ * @brief Close the UDP handle.
+ *
+ * Wakes any coroutine blocked in recvfrom/sendto. Idempotent.
+ *
+ * @param udp  UDP handle.
+ */
 extern void xylem_udp_close(xylem_udp_t* udp);
 
-extern void xylem_udp_ref(xylem_udp_t* udp);
-extern void xylem_udp_unref(xylem_udp_t* udp);
+/**
+ * @brief Get the last IO error.
+ *
+ * Must be called before xylem_udp_close().
+ *
+ * @param udp  UDP handle.
+ *
+ * @return Error code, or XYLEM_ERR_NONE if no error.
+ */
+extern xylem_err_t xylem_udp_get_error(xylem_udp_t* udp);
 
-extern void* xylem_udp_get_userdata(xylem_udp_t* udp);
-extern void  xylem_udp_set_userdata(xylem_udp_t* udp, void* ud);
+/**
+ * @brief Get the local bound address.
+ *
+ * @param udp       UDP handle.
+ * @param host      Buffer for address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_udp_local_addr(
+    xylem_udp_t* udp,
+    char*        host,
+    size_t       host_len,
+    uint16_t*    port);
+
+/**
+ * @brief Get the remote address (connected mode only).
+ *
+ * @param udp       UDP handle.
+ * @param host      Buffer for address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives remote port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_udp_remote_addr(
+    xylem_udp_t* udp,
+    char*        host,
+    size_t       host_len,
+    uint16_t*    port);

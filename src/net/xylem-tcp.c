@@ -62,7 +62,7 @@ struct xylem_tcp_listener_s {
 static xylem_err_t _tcp_map_error(int platform_err) {
     switch (platform_err) {
     case PLATFORM_SO_ERROR_ETIMEDOUT:   return XYLEM_ERR_TIMEOUT;
-    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_CONNRESET;
+    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_PEER_RESET;
     case PLATFORM_SO_ERROR_ECONNREFUSED:return XYLEM_ERR_CONNREFUSED;
     case PLATFORM_SO_ERROR_ENETUNREACH: return XYLEM_ERR_NETUNREACH;
     case PLATFORM_SO_ERROR_EHOSTUNREACH:return XYLEM_ERR_HOSTUNREACH;
@@ -142,6 +142,7 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
 
 static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+        tcp->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -151,6 +152,7 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             return n;
         }
         if (n == 0) {
+            tcp->err = XYLEM_ERR_PEER_CLOSED;
             return 0;
         }
 
@@ -166,7 +168,7 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
             || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
             tcp->err = (r == IOWAIT_TIMEOUT)
                 ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CONNRESET;
+                : XYLEM_ERR_CLOSED;
             return -1;
         }
     }
@@ -333,6 +335,7 @@ _tcp_recv_delimiter(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
 static int
 _tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
     if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+        tcp->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -359,7 +362,7 @@ _tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
             || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
             tcp->err = (r == IOWAIT_TIMEOUT)
                 ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CONNRESET;
+                : XYLEM_ERR_CLOSED;
             return -1;
         }
     }
@@ -372,11 +375,13 @@ _tcp_send_length(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
     uint32_t hdr_sz = tcp->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
     int64_t wire_len = (int64_t)len - tcp->frame_opts.length.adjustment;
     if (wire_len < 0) {
+        tcp->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 

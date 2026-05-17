@@ -128,15 +128,12 @@ extern void xylem_tcp_set_framing(
 /**
  * @brief Set the read deadline for the connection.
  *
- * Subsequent xylem_tcp_recv() calls return -1 (error XYLEM_ERR_TIMEOUT)
- * once the clock passes the deadline, even if partial data has been
- * read. An in-flight xylem_tcp_recv() parked on the same connection
- * is also woken up.
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_tcp_recv() calls fail with XYLEM_ERR_TIMEOUT.
  *
  * @param tcp          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms (from
- *                     xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)),
- *                     or 0 to clear the deadline.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
  */
 extern void xylem_tcp_set_read_deadline(
     xylem_tcp_conn_t* tcp,
@@ -167,8 +164,8 @@ extern void xylem_tcp_set_write_deadline(
  * @param buf  Destination buffer.
  * @param len  Buffer size.
  *
- * @return Bytes read (>0), 0 on peer close (NONE mode only),
- *         -1 on error/timeout/peer close mid-frame.
+ * @return Bytes received (>0), 0 if peer closed gracefully,
+ *         -1 on failure. Call xylem_tcp_get_error() for the reason.
  */
 extern int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
@@ -189,7 +186,8 @@ extern int64_t xylem_tcp_recv(
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
  *
- * @return 0 on success, -1 on error or timeout.
+ * @return 0 on success, -1 on failure. Call xylem_tcp_get_error()
+ *         for the reason.
  */
 extern int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,

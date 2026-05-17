@@ -31,7 +31,7 @@ _Pragma("once")
 typedef enum xylem_err_e {
     XYLEM_ERR_NONE         = 0,  /*< No error. */
     XYLEM_ERR_TIMEOUT      = 1,  /*< Deadline exceeded or operation timed out. */
-    XYLEM_ERR_CONNRESET    = 2,  /*< Connection reset by peer. */
+    XYLEM_ERR_PEER_RESET    = 2,  /*< Connection reset by peer. */
     XYLEM_ERR_CONNREFUSED  = 3,  /*< Connection refused by peer. */
     XYLEM_ERR_CLOSED       = 4,  /*< Handle was closed locally. */
     XYLEM_ERR_ADDRINUSE    = 5,  /*< Address already in use. */
@@ -39,7 +39,7 @@ typedef enum xylem_err_e {
     XYLEM_ERR_NETUNREACH   = 7,  /*< Network unreachable. */
     XYLEM_ERR_HOSTUNREACH  = 8,  /*< Host unreachable. */
     XYLEM_ERR_NOMEM        = 9,  /*< Out of memory or file descriptors. */
-    XYLEM_ERR_EOF          = 10, /*< Peer closed gracefully (read returned 0). */
+    XYLEM_ERR_PEER_CLOSED          = 10, /*< Peer closed gracefully (read returned 0). */
     XYLEM_ERR_UNKNOWN      = 11, /*< Unmapped platform error. */
 } xylem_err_t;
 

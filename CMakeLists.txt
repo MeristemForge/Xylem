@@ -71,6 +71,7 @@ set(SRCS
 	src/container/xylem-stack.c
 	src/net/addr.c
 	src/net/xylem-tcp.c
+	src/net/xylem-udp.c
 	src/encoding/json/xylem-json.c
 	src/encoding/json/yyjson/yyjson.c
 	src/encoding/gzip/xylem-gzip.c

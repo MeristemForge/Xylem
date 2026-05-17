@@ -25,7 +25,7 @@ const char* xylem_err_tostring(xylem_err_t err) {
     switch (err) {
     case XYLEM_ERR_NONE:         return "none";
     case XYLEM_ERR_TIMEOUT:      return "timeout";
-    case XYLEM_ERR_CONNRESET:    return "connection reset";
+    case XYLEM_ERR_PEER_RESET:   return "peer reset";
     case XYLEM_ERR_CONNREFUSED:  return "connection refused";
     case XYLEM_ERR_CLOSED:       return "closed";
     case XYLEM_ERR_ADDRINUSE:    return "address in use";
@@ -33,7 +33,7 @@ const char* xylem_err_tostring(xylem_err_t err) {
     case XYLEM_ERR_NETUNREACH:   return "network unreachable";
     case XYLEM_ERR_HOSTUNREACH:  return "host unreachable";
     case XYLEM_ERR_NOMEM:        return "out of memory";
-    case XYLEM_ERR_EOF:          return "eof";
+    case XYLEM_ERR_PEER_CLOSED:  return "peer closed";
     case XYLEM_ERR_UNKNOWN:      return "unknown error";
     }
     return "unknown error";
