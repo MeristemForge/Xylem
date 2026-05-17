@@ -222,7 +222,6 @@ static void _sched_wake_poller(scheduler_t* sched) {
     }
 }
 
-/* Wake one parked worker, or pipe-wake the driver only if it's blocked in poll. */
 static void _sched_wake_worker(scheduler_t* sched) {
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
@@ -365,7 +364,7 @@ static void _sched_process_posts(scheduler_t* sched) {
     }
 }
 
-/* Returns first ready coro directly; rest go to global runq. */
+/* First ready coro returned directly; rest batch-pushed to global runq. */
 static mco_coro* _sched_process_io(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
@@ -489,7 +488,7 @@ static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     }
 }
 
-/* local → global → netpoll(0) → steal → driver/park. */
+/* local -> global -> poll(0) -> steal -> driver/park. */
 static mco_coro* _sched_worker_find_coro(
     scheduler_t*           sched,
     _sched_worker_t*       w,
@@ -500,7 +499,7 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    /* Skip when a driver is already blocking — our poll would just race it. */
+    /* Another thread is already blocking in poll; skip to avoid contention. */
     if (!atomic_load_explicit(
             &sched->poller_running, memory_order_relaxed)) {
         int n = platform_poller_wait(&sched->poller, cqes, 0);
@@ -517,7 +516,7 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    /* Become the blocking-poll driver, or park. */
+    /* Try to become the sole blocking-poll driver. */
     {
         bool expected = false;
         if (!atomic_compare_exchange_strong_explicit(
@@ -579,7 +578,7 @@ static mco_coro* _sched_worker_find_coro(
             atomic_store(&sched->post_draining, false);
         }
 
-        /* Prefer netpoll's coro; ET won't re-fire if we lose it. */
+        /* ET won't re-fire; must consume the coro now or lose it. */
         co = first;
         if (!co) {
             co = _sched_worker_pop_coro(sched, w);
@@ -610,7 +609,7 @@ static int _sched_worker_entry(void* arg) {
     while (atomic_load(&sched->running)) {
         _sched_maintenance(sched, w);
 
-        /* Every 61st tick, check global runq + netpoll for fairness. */
+        /* Every 61st tick, inject I/O work to prevent starvation. */
         mco_coro* co = NULL;
         if (++w->sched_tick % 61 == 0) {
             queue_node_t* node = runq_pop(sched->runq);
@@ -659,7 +658,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
 
     if (sched->workers) {
         if (!sched->joined) {
-            /* Wake both parked (sem) and polling (wakeup pipe) workers. */
             for (int32_t i = 0; i < nstarted; i++) {
                 platform_sem_post(sched->workers[i].sem);
                 _sched_wake_poller(sched);
@@ -840,7 +838,7 @@ void scheduler_destroy(scheduler_t* sched) {
 
     scheduler_stop(sched);
 
-    /* Reclaim parked coros not reachable through runq/deque. */
+    /* Parked coros are unreachable from runq/deque; reclaim here. */
     spin_lock(&sched->registry_lock);
     while (!list_empty(&sched->registry)) {
         list_node_t* n = list_head(&sched->registry);
@@ -877,13 +875,12 @@ void scheduler_stop(scheduler_t* sched) {
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
-    /* External thread or cross-scheduler: straight to global runq. */
     if (!_tls_worker || _tls_worker->sched != sched) {
         runq_push(sched->runq, &ctx->runq_node);
     } else {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
         if (old && wsdeque_push(_tls_worker->deque, old) != 0) {
-            /* Deque full: spill half + displaced task to global runq. */
+            /* Deque full: spill to global runq. */
             mco_coro* batch[(SCHED_DEQUE_CAP / 2) + 1];
             int32_t n = wsdeque_pop_half(
                 _tls_worker->deque, batch, (SCHED_DEQUE_CAP / 2));
@@ -914,7 +911,6 @@ void scheduler_schedule_batch(
     if (n > INLINE_CAP) {
         nodes = (queue_node_t**)malloc((size_t)n * sizeof(*nodes));
         if (!nodes) {
-            /* Fall back to per-coro schedule; slower but never drops. */
             for (int32_t i = 0; i < n; i++) {
                 scheduler_schedule(sched, cos[i]);
             }

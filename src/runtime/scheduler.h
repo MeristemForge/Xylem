@@ -122,11 +122,8 @@ extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
 /**
  * @brief Fixed-capacity batch of runnable coroutines.
  *
- * Used by producers that naturally surface multiple runnable
- * coroutines at once (for instance netpoll processing) to collect
- * them before handing the whole batch to
- * scheduler_schedule_batch(). Caller provides the backing buffer
- * and initialises `n = 0` before use.
+ * Caller provides the backing buffer and initialises `n = 0`
+ * before use. scheduler_schedule_batch() flushes the batch.
  */
 typedef struct runnable_batch_s {
     mco_coro** coros;
@@ -137,14 +134,10 @@ typedef struct runnable_batch_s {
 /**
  * @brief Schedule a batch of coroutines with a single wake.
  *
- * Used by sources that naturally produce multiple runnable
- * coroutines at once (currently the netpoll path in _sched_process_io).
- * Pushes the whole batch to the global runq in one go and performs
- * at most one wake, amortising both costs and letting every worker
- * pick tasks up via runq_pop_fair rather than steal-from-driver.
+ * Pushes the whole batch to the global runq and performs at most
+ * one wake, amortising lock + signal costs.
  *
- * Thread-safe. For single-coroutine wakes, use scheduler_schedule
- * instead (this one is optimised for the case n >= 2).
+ * Thread-safe. For single-coroutine wakes, use scheduler_schedule.
  *
  * @param sched  Scheduler handle.
  * @param cos    Array of coroutines to schedule. Must not be NULL

@@ -183,31 +183,14 @@ extern void iowait_destroy(iowait_t* w);
 extern bool iowait_is_closed(iowait_t* w);
 
 /**
- * @brief Netpoll event callback.
+ * @brief Process a single I/O completion event.
  *
- * Invoked by the scheduler while draining a batch of poll events.
- * Decodes the generation-tagged ud that was registered, rejects
- * stale CQEs whose target handle has been recycled since
- * registration, and appends any newly-ready coroutines to @p batch
- * rather than scheduling them inline; the caller flushes the batch
- * with scheduler_schedule_batch once the poll pass completes. This
- * moves per-event cost off the hot path and amortises the wake.
+ * Rejects stale CQEs via generation tag, wakes parked coroutines
+ * into @p batch. Caller flushes the batch after the poll pass.
  *
- * If @p batch is full when a ready coroutine is discovered the
- * batch is flushed synchronously and then the coroutine is
- * appended, so callers never need to size the batch for worst-case
- * CQE depth.
- *
- * Under LT+oneshot pollers, re-arms the fd if anyone is still
- * parked; under ET the fd stays armed after its initial
- * registration.
- *
- * @param sched    Scheduler handle (used for the inline flush when
- *                 @p batch fills up).
+ * @param sched    Scheduler handle.
  * @param revents  Readiness mask.
- * @param ud       Opaque userdata that was registered via the
- *                 platform poller at iowait creation (internally a
- *                 generation-tagged slab index).
+ * @param ud       Generation-tagged slab index from the poller.
  * @param batch    Accumulator for ready coroutines. Must not be NULL.
  */
 extern void iowait_on_event(

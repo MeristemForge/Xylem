@@ -53,7 +53,6 @@ _Static_assert(
 
 typedef struct _iowait_dir_s _iowait_dir_t;
 
-/* Per-direction state (rd/wr symmetric). timer allocated lazily. */
 struct _iowait_dir_s {
     iowait_t*          w;
     _Atomic(mco_coro*) park;
@@ -198,7 +197,7 @@ static void _iowait_unref(iowait_t* w) {
     }
 }
 
-/* CAS-bump refcnt only if non-zero, then verify gen matches the CQE's tag. */
+/* Reject stale CQE: acquire ref only if alive and gen matches. */
 static iowait_t* _iowait_tryref(iowait_t* w, uint16_t expected_tag) {
     int32_t cur =
         atomic_load_explicit(&w->refcnt, memory_order_acquire);
@@ -307,7 +306,7 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
     _iowait_unref(w);
 }
 
-/* Publish co into dir->park, arm fd, then re-check close/deadline to catch races. */
+/* Re-check close/deadline after publish to catch races with concurrent wakers. */
 static bool _iowait_park_fn(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
     iowait_t*      w = d->w;
@@ -366,7 +365,6 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
-/* Waiter determines the result after waking by re-checking conditions. */
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     scheduler_park(runtime_get_scheduler(), _iowait_park_fn, d);
 

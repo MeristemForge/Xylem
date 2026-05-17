@@ -170,7 +170,7 @@ int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
         half = (int64_t)cap;
     }
 
-    /* Snapshot before CAS: slots become invalid once top advances. */
+    /* Snapshot before CAS; owner may overwrite slots after top advances. */
     for (int64_t i = 0; i < half; i++) {
         out[i] = dq->coros[(t + i) & dq->mask];
     }

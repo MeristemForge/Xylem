@@ -147,18 +147,15 @@ void dynpool_destroy(dynpool_t* pool) {
 
     atomic_store(&pool->running, false);
 
-    /* Wake all idle pool threads so they can exit. */
     int32_t count = atomic_load(&pool->thread_count);
     for (int32_t i = 0; i < count; i++) {
         platform_sem_post(pool->sem);
     }
 
-    /* Wait for all pool threads to exit. */
     while (atomic_load(&pool->thread_count) > 0) {
         thrd_yield();
     }
 
-    /* Drain remaining jobs. */
     mpsc_node_t* node;
     while ((node = mpsc_pop(&pool->queue)) != NULL) {
         _dynpool_job_t* job = mpsc_entry(node, _dynpool_job_t, node);

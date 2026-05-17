@@ -154,7 +154,6 @@ void runtime_run(
     scheduler_set_idle_cb(g_sched, _runtime_idle_cb, NULL);
     scheduler_spawn(g_sched, main_fn, arg);
 
-    /* Block until all coroutines exit or runtime_shutdown() is called. */
     platform_sem_wait(g_stop_sem);
 
     /* stop → dynpool_destroy → destroy: order prevents UAF in both directions. */
