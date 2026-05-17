@@ -677,3 +677,37 @@ int xylem_tcp_remote_addr(
     uint16_t*         port) {
     return addr_ntop(&tcp->peer_addr, host, host_len, port);
 }
+
+int xylem_tcp_local_addr(
+    xylem_tcp_conn_t* tcp,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port) {
+    addr_t addr;
+    socklen_t len = sizeof(addr.storage);
+    if (getsockname(tcp->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
+        return -1;
+    }
+    return addr_ntop(&addr, host, host_len, port);
+}
+
+int xylem_tcp_listener_addr(
+    xylem_tcp_listener_t* ln,
+    char*                 host,
+    size_t                host_len,
+    uint16_t*             port) {
+    addr_t addr;
+    socklen_t len = sizeof(addr.storage);
+    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
+        return -1;
+    }
+    return addr_ntop(&addr, host, host_len, port);
+}
+
+int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp) {
+    return shutdown(tcp->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
+}
+
+int xylem_tcp_shutdown_rd(xylem_tcp_conn_t* tcp) {
+    return shutdown(tcp->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
+}

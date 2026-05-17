@@ -225,3 +225,61 @@ extern int xylem_tcp_remote_addr(
     char*             host,
     size_t            host_len,
     uint16_t*         port);
+
+/**
+ * @brief Get the local address of the connection.
+ *
+ * @param tcp       Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_tcp_local_addr(
+    xylem_tcp_conn_t* tcp,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);
+
+/**
+ * @brief Get the local address of the listener.
+ *
+ * Useful after binding to port 0 to discover the assigned port.
+ *
+ * @param ln        Listener handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_tcp_listener_addr(
+    xylem_tcp_listener_t* ln,
+    char*                 host,
+    size_t                host_len,
+    uint16_t*             port);
+
+/**
+ * @brief Shut down the write side of the connection.
+ *
+ * Sends a FIN to the peer, signalling that no more data will be
+ * written. The connection remains readable; the peer sees EOF on
+ * their next read. Use this for graceful half-close protocols.
+ *
+ * @param tcp  Connection handle.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp);
+
+/**
+ * @brief Shut down the read side of the connection.
+ *
+ * Discards further incoming data. Subsequent recv calls return -1.
+ *
+ * @param tcp  Connection handle.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_tcp_shutdown_rd(xylem_tcp_conn_t* tcp);
