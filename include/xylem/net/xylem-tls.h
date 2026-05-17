@@ -22,36 +22,22 @@
 _Pragma("once")
 
 #include "xylem/net/xylem-tcp.h"
+#include "xylem/xylem-error.h"
 
-typedef int xylem_tcp_timeout_type_t;
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
-typedef struct xylem_tls_conn_s   xylem_tls_conn_t;
-typedef struct xylem_tls_ctx_s    xylem_tls_ctx_t;
-typedef struct xylem_tls_server_s xylem_tls_server_t;
+typedef struct xylem_tls_conn_s     xylem_tls_conn_t;
+typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
+typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
-/* TLS connection options. */
 typedef struct xylem_tls_opts_s {
-    xylem_tcp_opts_t tcp;           /*< Underlying TCP options. */
-    uint64_t         connect_timeout_ms; /*< Connect timeout, 0 = no timeout. */
-    const char*      hostname;   /*< SNI hostname for server certificate selection and hostname verification. */
+    size_t      max_read_buf;       /*< Plaintext read buffer size, 0 = default 64KB. */
+    bool        disable_mss_clamp;  /*< Disable MSS clamping on the socket. */
+    uint64_t    connect_timeout_ms; /*< TCP connect + TLS handshake timeout, 0 = none. */
+    const char* hostname;           /*< SNI hostname for certificate selection and verification. */
 } xylem_tls_opts_t;
-
-/* TLS event callback set. */
-typedef struct xylem_tls_handler_s {
-    void (*on_connect)(xylem_tls_conn_t* tls);
-    void (*on_accept)(xylem_tls_server_t* server,
-                      xylem_tls_conn_t* tls);
-    void (*on_read)(xylem_tls_conn_t* tls,
-                    void* data, size_t len);
-    void (*on_write_done)(xylem_tls_conn_t* tls,
-                          const void* data, size_t len,
-                          int status);
-    void (*on_timeout)(xylem_tls_conn_t* tls,
-                       xylem_tcp_timeout_type_t type);
-    void (*on_close)(xylem_tls_conn_t* tls,
-                     int err, const char* errmsg);
-    void (*on_heartbeat_miss)(xylem_tls_conn_t* tls);
-} xylem_tls_handler_t;
 
 extern xylem_tls_ctx_t* xylem_tls_ctx_create(void);
 extern void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
@@ -64,65 +50,158 @@ extern int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
 extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
 
 /**
- * @brief Initiate an asynchronous TLS connection.
+ * @brief Connect to a remote TLS endpoint.
  *
- * @param loop     Event loop.
- * @param host     Target address string.
- * @param port     Target port.
- * @param ctx      TLS context.
- * @param handler  Event callback set.
- * @param opts     TLS options, NULL for defaults.
+ * Suspends the calling coroutine until the TCP connection is established
+ * and the TLS handshake completes, or connect_timeout_ms elapses.
  *
- * @return TLS connection handle, or NULL on failure.
+ * @param host  Remote hostname or IP address.
+ * @param port  Remote port.
+ * @param ctx   TLS context.
+ * @param opts  TLS options, NULL for defaults.
+ *
+ * @return Connection handle, or NULL on failure or timeout.
  */
-extern xylem_tls_conn_t* xylem_tls_dial(const char* host,
-                                   uint16_t port,
-                                   xylem_tls_ctx_t* ctx,
-                                   xylem_tls_handler_t* handler,
-                                   xylem_tls_opts_t* opts);
+extern xylem_tls_conn_t* xylem_tls_dial(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts);
 
-extern int xylem_tls_send(xylem_tls_conn_t* tls,
-                          const void* data, size_t len);
+/**
+ * @brief Create a TLS listener bound to the given address.
+ *
+ * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
+ * @param port  Bind port.
+ * @param ctx   TLS context with cert+key loaded.
+ * @param opts  TLS options, NULL for defaults.
+ *
+ * @return Listener handle, or NULL on failure.
+ */
+extern xylem_tls_listener_t* xylem_tls_listen(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts);
+
+/**
+ * @brief Accept a connection from the listener.
+ *
+ * Suspends the calling coroutine until a client connects and the
+ * TLS handshake completes.
+ *
+ * @param ln  Listener handle.
+ *
+ * @return Accepted connection, or NULL if the listener is closing.
+ */
+extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
+
+/**
+ * @brief Set the framing mode for subsequent recv/send calls.
+ *
+ * @param tls   Connection handle.
+ * @param opts  Frame options, NULL to reset to raw mode.
+ */
+extern void xylem_tls_set_framing(
+    xylem_tls_conn_t*       tls,
+    xylem_tcp_frame_opts_t* opts);
+
+/**
+ * @brief Set the read deadline for the connection.
+ *
+ * @param tls          Connection handle.
+ * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ */
+extern void xylem_tls_set_read_deadline(
+    xylem_tls_conn_t* tls,
+    uint64_t          deadline_ms);
+
+/**
+ * @brief Set the write deadline for the connection.
+ *
+ * @param tls          Connection handle.
+ * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ */
+extern void xylem_tls_set_write_deadline(
+    xylem_tls_conn_t* tls,
+    uint64_t          deadline_ms);
+
+/**
+ * @brief Receive data or a complete frame from the connection.
+ *
+ * Behavior depends on the configured framing mode (same as TCP):
+ *   - NONE:      returns 1~len available bytes.
+ *   - FIXED:     returns exactly frame_opts.fixed.len bytes.
+ *   - LENGTH:    reads header, decodes length, returns payload.
+ *   - DELIMITER: reads until delimiter, returns data without it.
+ *
+ * @param tls  Connection handle.
+ * @param buf  Destination buffer.
+ * @param len  Buffer size.
+ *
+ * @return Bytes read (>0), 0 on peer close (NONE mode, error set
+ *         to XYLEM_ERR_PEER_CLOSED), -1 on error/timeout.
+ */
+extern int64_t xylem_tls_recv(
+    xylem_tls_conn_t* tls,
+    void*             buf,
+    size_t            len);
+
+/**
+ * @brief Send data or a framed message to the connection.
+ *
+ * All bytes are written before returning.
+ *
+ * @param tls   Connection handle.
+ * @param data  Source buffer.
+ * @param len   Number of bytes to send.
+ *
+ * @return 0 on success, -1 on error or timeout.
+ */
+extern int xylem_tls_send(
+    xylem_tls_conn_t* tls,
+    const void*       data,
+    size_t            len);
+
+/**
+ * @brief Close and destroy a connection.
+ *
+ * @param tls  Connection handle.
+ */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
-extern void xylem_tls_conn_ref(xylem_tls_conn_t* tls);
-extern void xylem_tls_conn_unref(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Close and destroy a listener.
+ *
+ * @param ln  Listener handle.
+ */
+extern void xylem_tls_close_listener(xylem_tls_listener_t* ln);
+
+/**
+ * @brief Get the last error code from the connection.
+ *
+ * @param tls  Connection handle.
+ *
+ * @return Error code, or XYLEM_ERR_NONE if no error.
+ */
+extern xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls);
+
+extern int xylem_tls_remote_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);
+
+extern int xylem_tls_local_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);
+
+extern int xylem_tls_listener_addr(
+    xylem_tls_listener_t* ln,
+    char*                 host,
+    size_t                host_len,
+    uint16_t*             port);
+
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
-
-/**
- * @brief Get the peer address of a TLS connection.
- *
- * @param tls   TLS connection handle.
- * @param host  Output buffer, must be at least XYLEM_ADDR_MAXHOST bytes.
- * @param port  Output port number.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int xylem_tls_remote_addr(xylem_tls_conn_t* tls,
-                                 char host[XYLEM_ADDR_MAXHOST],
-                                 uint16_t* port);
-
-extern void* xylem_tls_get_userdata(xylem_tls_conn_t* tls);
-extern void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud);
-
-/**
- * @brief Create a TLS server and start listening.
- *
- * @param loop     Event loop.
- * @param host     Bind address string.
- * @param port     Bind port.
- * @param ctx      TLS context with cert+key loaded.
- * @param handler  Event callback set.
- * @param opts     TLS options, NULL for defaults.
- *
- * @return Server handle, or NULL on failure.
- */
-extern xylem_tls_server_t* xylem_tls_listen(const char* host,
-                                            uint16_t port,
-                                            xylem_tls_ctx_t* ctx,
-                                            xylem_tls_handler_t* handler,
-                                            xylem_tls_opts_t* opts);
-
-extern void xylem_tls_close_server(xylem_tls_server_t* server);
-extern void* xylem_tls_server_get_userdata(xylem_tls_server_t* server);
-extern void xylem_tls_server_set_userdata(xylem_tls_server_t* server,
-                                          void* ud);
