@@ -128,9 +128,10 @@ extern void xylem_tcp_set_framing(
 /**
  * @brief Set the read deadline for the connection.
  *
- * Subsequent xylem_tcp_recv() calls return -1 (errno ETIMEDOUT) once
- * the clock passes the deadline, even if partial data has been read.
- * A deadline already-parked xylem_tcp_recv() is also woken up.
+ * Subsequent xylem_tcp_recv() calls return -1 (error XYLEM_ERR_TIMEOUT)
+ * once the clock passes the deadline, even if partial data has been
+ * read. An in-flight xylem_tcp_recv() parked on the same connection
+ * is also woken up.
  *
  * @param tcp          Connection handle.
  * @param deadline_ms  Monotonic deadline in ms (from
@@ -157,7 +158,7 @@ extern void xylem_tcp_set_write_deadline(
  * @brief Receive data or a complete frame from the connection.
  *
  * Behavior depends on the configured framing mode:
- *   - NONE:      returns 1~len available bytes (raw read).
+ *   - NONE:      returns 1~len available bytes (buffered read).
  *   - FIXED:     returns exactly frame_opts.fixed.len bytes.
  *   - LENGTH:    reads header, decodes length, returns payload.
  *   - DELIMITER: reads until delimiter, returns data without it.
@@ -166,7 +167,8 @@ extern void xylem_tcp_set_write_deadline(
  * @param buf  Destination buffer.
  * @param len  Buffer size.
  *
- * @return Bytes/frame length (>0), 0 on peer close, -1 on error/timeout.
+ * @return Bytes read (>0), 0 on peer close (NONE mode only),
+ *         -1 on error/timeout/peer close mid-frame.
  */
 extern int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
@@ -177,8 +179,11 @@ extern int64_t xylem_tcp_recv(
  * @brief Send data or a framed message to the connection.
  *
  * Behavior depends on the configured framing mode:
- *   - NONE/FIXED/DELIMITER: sends data as-is.
+ *   - NONE/FIXED/DELIMITER: sends raw bytes, no framing applied.
  *   - LENGTH: prepends the encoded length header before data.
+ *
+ * All bytes are written before returning (loops internally until
+ * the full buffer is sent or an error occurs).
  *
  * @param tcp   Connection handle.
  * @param data  Source buffer.
