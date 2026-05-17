@@ -20,14 +20,15 @@
  */
 
 #include "xylem/net/xylem-tls.h"
-#include "runtime/runtime.h"
-#include "net/addr.h"
 
-#include "container/list.h"
+#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
-#include "container/queue.h"
+#include "xylem/xylem-utils.h"
 
+#include "net/addr.h"
 #include "platform/platform-socket.h"
+#include "runtime/iowait.h"
+#include "runtime/runtime.h"
 #include "thrds.h"
 
 #include <openssl/err.h>
@@ -37,18 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Maximum TLS record payload (RFC 8446 section 5.1). */
-#define TLS_RECORD_MAX_PLAINTEXT 16384
-
-#define ERRMSG_UNKNOWN    "unknown"
-#define ERRMSG_HS_FAILED  "handshake failed"
-
-typedef enum {
-    TLS_STATE_CONNECTING,
-    TLS_STATE_CONNECTED,
-    TLS_STATE_CLOSING,
-    TLS_STATE_CLOSED,
-} _tls_state_t;
+#define DEFAULT_READ_BUF_SIZE 65536
 
 static int _tls_ex_data_idx = -1;
 static once_flag _tls_ex_data_once = ONCE_FLAG_INIT;
@@ -59,53 +49,36 @@ static void _tls_init_ex_data(void) {
 
 struct xylem_tls_ctx_s {
     SSL_CTX* ssl_ctx;
-    uint8_t* alpn_wire;   /* wire-format ALPN for client protos */
+    uint8_t* alpn_wire;
     size_t   alpn_wire_len;
     FILE*    keylog_file;
 };
 
 struct xylem_tls_conn_s {
-    SSL*                  ssl;
-    BIO*                  read_bio;
-    BIO*                  write_bio;
-    xylem_tcp_conn_t*     tcp;
-    xylem_tls_ctx_t*      ctx;
-    xylem_tls_handler_t*  handler;
-    xylem_tls_server_t*   server;
-    void*                 userdata;
-    _tls_state_t          state;
-    _Atomic int32_t       refcount;
-    int                   close_err;
-    const char*           close_errmsg;
-    char*                 hostname;
-    char                  alpn[256];
-    list_node_t     server_node;
-    queue_t         write_queue; /* pending TLS write requests */
+    SSL*                   ssl;
+    iowait_t*              waiter;
+    platform_sock_t        fd;
+    xylem_tls_ctx_t*       ctx;
+    addr_t                 peer_addr;
+    xylem_tcp_frame_opts_t frame_opts;
+    char*                  read_buf;
+    size_t                 read_buf_cap;
+    size_t                 read_buf_pos;
+    size_t                 read_buf_len;
+    char                   alpn[256];
+    xylem_err_t            err;
+    _Atomic bool           closed;
 };
 
-/**
- * Tracks one xylem_tls_send call through the TCP write pipeline.
- * Zero-copy: stores the caller's pointer directly. The caller must
- * keep the buffer alive until on_write_done fires.
- */
-typedef struct _tls_write_req_s {
-    queue_node_t node;
-    const void*        data; /* caller's original pointer */
-    size_t             len;
-} _tls_write_req_t;
-
-struct xylem_tls_server_s {
-    xylem_tcp_listener_t*   tcp_server;
-    xylem_tls_ctx_t*      ctx;
-    xylem_tls_handler_t*  handler;
-    xylem_tls_opts_t      opts;
-    loop_t*         loop;
-    list_t          connections;
-    void*                 userdata;
-    bool                  closing;
+struct xylem_tls_listener_s {
+    iowait_t*        waiter;
+    platform_sock_t  fd;
+    xylem_tls_ctx_t* ctx;
+    xylem_tls_opts_t opts;
+    _Atomic bool     closing;
 };
 
-static void _tls_destroy_conn(xylem_tls_conn_t* tls);
+/* --- ctx management --- */
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -134,7 +107,8 @@ static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
 }
 
 xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
-    xylem_tls_ctx_t* ctx = (xylem_tls_ctx_t*)calloc(1, sizeof(xylem_tls_ctx_t));
+    xylem_tls_ctx_t* ctx =
+        (xylem_tls_ctx_t*)calloc(1, sizeof(xylem_tls_ctx_t));
     if (!ctx) {
         return NULL;
     }
@@ -145,22 +119,12 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
         return NULL;
     }
 
-    /**
-     * SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER is not needed here because we
-     * use memory BIOs. SSL_write only writes into an in-memory buffer,
-     * never directly to a socket, so it always completes in a single call
-     * and never returns SSL_ERROR_WANT_WRITE during data transfer. The
-     * flag is only necessary with socket BIOs where SSL_write may
-     * partially complete and require a retry with the same buffer pointer.
-     */
-
-    /* Enable peer verification by default. */
+    /* Socket BIO may partially complete SSL_write; this flag lets the
+     * retry use a different buffer pointer for the same logical write. */
+    SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
-
-    /* Enforce TLS 1.2 as minimum version. */
     SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
 
-    /* Register ex_data index once for keylog callback to recover ctx. */
     call_once(&_tls_ex_data_once, _tls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _tls_ex_data_idx, ctx);
 
@@ -183,23 +147,18 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
     if (!ctx) {
         return -1;
     }
-
-    /* Close any previously opened keylog file. */
     if (ctx->keylog_file) {
         fclose(ctx->keylog_file);
         ctx->keylog_file = NULL;
     }
-
     if (!path) {
         SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
         return 0;
     }
-
     ctx->keylog_file = fopen(path, "a");
     if (!ctx->keylog_file) {
         return -1;
     }
-
     SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tls_keylog_cb);
     return 0;
 }
@@ -233,7 +192,6 @@ void xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable) {
 
 int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
                            const char** protocols, size_t count) {
-    /* Build wire-format: each protocol prefixed by its length byte. */
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
         total += 1 + strlen(protocols[i]);
@@ -262,670 +220,733 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-/**
- * Flush ciphertext from write BIO to TCP. Returns the number of TCP sends.
- *
- * Each ciphertext chunk is heap-allocated because the underlying TCP layer
- * uses zero-copy sends -- it holds a pointer to the data until its own
- * on_write_done fires. The allocation is freed in _tls_tcp_write_done_cb.
- */
-static bool _tls_flush_write_bio(xylem_tls_conn_t* tls) {
-    size_t pending = BIO_ctrl_pending(tls->write_bio);
-    if (pending == 0) {
-        return false;
-    }
+/* --- SSL I/O helpers --- */
 
-    char* ct = (char*)malloc(pending);
-    if (!ct) {
-        xylem_loge("tls conn %p flush_write_bio: alloc failed",
-                   (void*)tls);
-        return false;
-    }
-
-    int n = BIO_read(tls->write_bio, ct, (int)pending);
-    if (n <= 0) {
-        free(ct);
-        return false;
-    }
-
-    xylem_tcp_send(tls->tcp, ct, (size_t)n);
-    return true;
-}
-
-static void _tls_feed_read_bio(xylem_tls_conn_t* tls, void* data, size_t len) {
-    BIO_write(tls->read_bio, data, (int)len);
-}
-
-static void _tls_do_handshake(xylem_tls_conn_t* tls) {
-    ERR_clear_error();
-    int rc  = SSL_do_handshake(tls->ssl);
-    int err = SSL_get_error(tls->ssl, rc);
-
-    if (rc == 1) {
-        tls->state = TLS_STATE_CONNECTED;
-        _tls_flush_write_bio(tls);
-
-        /* Cache negotiated ALPN as a null-terminated string. */
-        const unsigned char* alpn_proto = NULL;
-        unsigned int         alpn_len   = 0;
-        SSL_get0_alpn_selected(tls->ssl, &alpn_proto, &alpn_len);
-        if (alpn_proto && alpn_len > 0 && alpn_len < sizeof(tls->alpn)) {
-            memcpy(tls->alpn, alpn_proto, alpn_len);
-            tls->alpn[alpn_len] = '\0';
+static int _tls_do_handshake(xylem_tls_conn_t* tls) {
+    for (;;) {
+        ERR_clear_error();
+        int ret = SSL_do_handshake(tls->ssl);
+        if (ret == 1) {
+            return 0;
         }
 
-        if (tls->server) {
-            xylem_logi("tls conn %p handshake complete (server)", (void*)tls);
-            if (tls->handler && tls->handler->on_accept) {
-                tls->handler->on_accept(tls->server, tls);
+        int err = SSL_get_error(tls->ssl, ret);
+        if (err == SSL_ERROR_WANT_READ) {
+            iowait_result_t r = iowait_read(tls->waiter);
+            if (r != IOWAIT_READY) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
+            }
+        } else if (err == SSL_ERROR_WANT_WRITE) {
+            iowait_result_t r = iowait_write(tls->waiter);
+            if (r != IOWAIT_READY) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
             }
         } else {
-            xylem_logi("tls conn %p handshake complete (client)", (void*)tls);
-            if (tls->handler && tls->handler->on_connect) {
-                tls->handler->on_connect(tls);
-            }
+            tls->err = XYLEM_ERR_TLS;
+            return -1;
         }
-        return;
     }
-
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        _tls_flush_write_bio(tls);
-        return;
-    }
-
-    /* Flush any pending alert before tearing down the TCP connection. */
-    unsigned long ssl_err_code = ERR_peek_error();
-    const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
-    xylem_logw("tls conn %p handshake failed ssl_err=%d (%s)",
-               (void*)tls, err,
-               ssl_err_str ? ssl_err_str : "unknown");
-    tls->close_err    = err;
-    tls->close_errmsg = ssl_err_str ? ssl_err_str : ERRMSG_HS_FAILED;
-    _tls_flush_write_bio(tls);
-    xylem_tls_close(tls);
 }
 
-static int _tls_init_ssl(xylem_tls_conn_t* tls) {
-    tls->ssl = SSL_new(tls->ctx->ssl_ctx);
-    if (!tls->ssl) {
-        xylem_loge("tls conn %p SSL_new failed", (void*)tls);
+static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
+    const unsigned char* alpn_proto = NULL;
+    unsigned int         alpn_len   = 0;
+    SSL_get0_alpn_selected(tls->ssl, &alpn_proto, &alpn_len);
+    if (alpn_proto && alpn_len > 0 && alpn_len < sizeof(tls->alpn)) {
+        memcpy(tls->alpn, alpn_proto, alpn_len);
+        tls->alpn[alpn_len] = '\0';
+    }
+}
+
+static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        tls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
-    tls->read_bio  = BIO_new(BIO_s_mem());
-    tls->write_bio = BIO_new(BIO_s_mem());
-    if (!tls->read_bio || !tls->write_bio) {
-        xylem_loge("tls conn %p BIO_new failed", (void*)tls);
-        /* BIO_free accepts NULL safely. */
-        BIO_free(tls->read_bio);
-        BIO_free(tls->write_bio);
-        SSL_free(tls->ssl);
-        tls->ssl       = NULL;
-        tls->read_bio  = NULL;
-        tls->write_bio = NULL;
+    for (;;) {
+        ERR_clear_error();
+        int n = SSL_read(tls->ssl, buf, (int)len);
+        if (n > 0) {
+            return n;
+        }
+
+        int err = SSL_get_error(tls->ssl, n);
+        if (err == SSL_ERROR_ZERO_RETURN) {
+            tls->err = XYLEM_ERR_PEER_CLOSED;
+            return 0;
+        }
+        if (err == SSL_ERROR_WANT_READ) {
+            iowait_result_t r = iowait_read(tls->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(&tls->closed,
+                                        memory_order_acquire)) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
+            }
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_WRITE) {
+            iowait_result_t r = iowait_write(tls->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(&tls->closed,
+                                        memory_order_acquire)) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
+            }
+            continue;
+        }
+        tls->err = XYLEM_ERR_TLS;
+        return -1;
+    }
+}
+
+static int _tls_raw_send(xylem_tls_conn_t* tls,
+                         const void* data, size_t len) {
+    if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        tls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
-    SSL_set_bio(tls->ssl, tls->read_bio, tls->write_bio);
+    const char* ptr = (const char*)data;
+    size_t      rem = len;
+
+    while (rem > 0) {
+        ERR_clear_error();
+        int n = SSL_write(tls->ssl, ptr, (int)rem);
+        if (n > 0) {
+            ptr += n;
+            rem -= (size_t)n;
+            continue;
+        }
+
+        int err = SSL_get_error(tls->ssl, n);
+        if (err == SSL_ERROR_WANT_WRITE) {
+            iowait_result_t r = iowait_write(tls->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(&tls->closed,
+                                        memory_order_acquire)) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
+            }
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_READ) {
+            iowait_result_t r = iowait_read(tls->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(&tls->closed,
+                                        memory_order_acquire)) {
+                tls->err = (r == IOWAIT_TIMEOUT)
+                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
+                return -1;
+            }
+            continue;
+        }
+        tls->err = XYLEM_ERR_TLS;
+        return -1;
+    }
     return 0;
 }
 
-static void _tls_tcp_connect_cb(xylem_tcp_conn_t* tcp) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
+/* --- conn allocation --- */
 
-    xylem_logd("tls conn %p tcp connected, starting handshake", (void*)tls);
-
-    if (_tls_init_ssl(tls) != 0) {
-        xylem_tcp_close(tcp);
-        return;
-    }
-
-    SSL_set_connect_state(tls->ssl);
-
-    if (tls->hostname) {
-        SSL_set_tlsext_host_name(tls->ssl, tls->hostname);
-        SSL_set1_host(tls->ssl, tls->hostname);
-    }
-
-    _tls_do_handshake(tls);
-}
-
-static void _tls_tcp_accept_cb(xylem_tcp_listener_t* tcp_server,
-                               xylem_tcp_conn_t* tcp) {
-    xylem_tls_server_t* server =
-        (xylem_tls_server_t*)xylem_tcp_listener_get_userdata(tcp_server);
-
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
-    if (!tls) {
-        xylem_loge("tls server accept: conn alloc failed");
-        xylem_tcp_set_userdata(tcp, NULL);
-        xylem_tcp_close(tcp);
-        return;
-    }
-
-    tls->tcp     = tcp;
-    tls->ctx     = server->ctx;
-    tls->handler = server->handler;
-    tls->server  = server;
-    atomic_store(&tls->refcount, 1);
-    queue_init(&tls->write_queue);
-
-    xylem_tcp_set_userdata(tcp, tls);
-
-    list_insert_tail(&server->connections, &tls->server_node);
-
-    if (_tls_init_ssl(tls) != 0) {
-        xylem_tcp_close(tcp);
-        return;
-    }
-
-    SSL_set_accept_state(tls->ssl);
-    _tls_do_handshake(tls);
-}
-
-static void _tls_tcp_read_cb(xylem_tcp_conn_t* tcp,
-                             void* data, size_t len) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
-
-    xylem_logd("tls conn %p tcp_read_cb len=%zu state=%d",
-               (void*)tls, len, (int)tls->state);
-
-    _tls_feed_read_bio(tls, data, len);
-
-    if (tls->state == TLS_STATE_CONNECTING) {
-        _tls_do_handshake(tls);
-        if (tls->state != TLS_STATE_CONNECTED) {
-            return;
-        }
-    }
-    if (tls->state != TLS_STATE_CONNECTED) {
-        return;
-    }
-    char buf[TLS_RECORD_MAX_PLAINTEXT];
-    int  n;
-
-    ERR_clear_error();
-    while ((n = SSL_read(tls->ssl, buf, sizeof(buf))) > 0) {
-        if (tls->handler && tls->handler->on_read) {
-            tls->handler->on_read(tls, buf, (size_t)n);
-        }
-        if (tls->state != TLS_STATE_CONNECTED) {
-            return;
-        }
-    }
-
-    int err = SSL_get_error(tls->ssl, n);
-    if (err == SSL_ERROR_ZERO_RETURN) {
-        xylem_logi("tls conn %p peer sent close_notify", (void*)tls);
-        xylem_tls_close(tls);
-        return;
-    }
-
-    if (err == SSL_ERROR_WANT_WRITE) {
-        /* Renegotiation needs to send data; flush and wait for next read. */
-        _tls_flush_write_bio(tls);
-        return;
-    }
-
-    if (err != SSL_ERROR_WANT_READ) {
-        unsigned long ssl_err_code = ERR_peek_error();
-        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
-        xylem_logw("tls conn %p SSL_read error=%d (%s)",
-                   (void*)tls, err,
-                   ssl_err_str ? ssl_err_str : "unknown");
-        tls->close_err    = err;
-        tls->close_errmsg = ssl_err_str ? ssl_err_str : ERRMSG_UNKNOWN;
-        xylem_tls_close(tls);
-    }
-}
-
-/* Decrement refcount; free the TLS handle when it reaches zero. */
-static void _tls_conn_unref(xylem_tls_conn_t* tls) {
-    if (atomic_fetch_sub(&tls->refcount, 1) == 1) {
-        free(tls);
-    }
-}
-
-/* Post callback: decrement refcount after the current iteration. */
-static void _tls_free_cb(loop_t* loop,
-                         loop_post_t* req,
-                         void* ud) {
-    (void)loop;
-    (void)req;
-    _tls_conn_unref((xylem_tls_conn_t*)ud);
-}
-
-static void _tls_tcp_close_cb(xylem_tcp_conn_t* tcp, int err,
-                              const char* errmsg) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
-    if (!tls) {
-        return;
-    }
-
-    tls->state = TLS_STATE_CLOSED;
-
-    xylem_logd("tls conn %p close err=%d (%s)",
-               (void*)tls, err, errmsg);
-
-    /* Drain pending TLS write requests that will never complete. */
-    queue_node_t* qn;
-    while ((qn = xylem_queue_dequeue(&tls->write_queue)) != NULL) {
-        _tls_write_req_t* req =
-            queue_entry(qn, _tls_write_req_t, node);
-        if (tls->handler && tls->handler->on_write_done) {
-            tls->handler->on_write_done(tls, req->data, req->len, -1);
-        }
-        free(req);
-    }
-
-    if (tls->server) {
-        list_remove(&tls->server->connections, &tls->server_node);
-        tls->server = NULL;
-    }
-
-    if (tls->handler && tls->handler->on_close) {
-        int         ce = tls->close_err    ? tls->close_err    : err;
-        const char* cm = tls->close_errmsg ? tls->close_errmsg : errmsg;
-        tls->handler->on_close(tls, ce, cm);
-    }
-
-    if (tls->ssl) {
-        SSL_free(tls->ssl);
-    }
-    free(tls->hostname);
-
-    loop_post(runtime_get_loop(), _tls_free_cb, tls);
-}
-
-static void _tls_tcp_timeout_cb(xylem_tcp_conn_t* tcp,
-                                xylem_tcp_timeout_type_t type) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
-    if (!tls || tls->state != TLS_STATE_CONNECTED) {
-        return;
-    }
-
-    xylem_logw("tls conn %p timeout type=%d", (void*)tls, (int)type);
-
-    if (tls->handler && tls->handler->on_timeout) {
-        tls->handler->on_timeout(tls, type);
-    }
-}
-
-static void _tls_tcp_heartbeat_cb(xylem_tcp_conn_t* tcp) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
-    if (!tls || tls->state != TLS_STATE_CONNECTED) {
-        return;
-    }
-
-    xylem_logw("tls conn %p heartbeat miss", (void*)tls);
-
-    if (tls->handler && tls->handler->on_heartbeat_miss) {
-        tls->handler->on_heartbeat_miss(tls);
-    }
-}
-
-/**
- * TCP on_write_done callback. Each TLS send produces exactly one
- * xylem_tcp_send (the full ciphertext from BIO_ctrl_pending). When
- * the TCP write completes we dequeue the front write request and
- * fire the TLS on_write_done.
- *
- * Handshake flushes also produce TCP writes, but the write_queue is
- * empty during handshake so those are silently ignored.
- *
- * The data pointer is a heap-allocated ciphertext buffer from
- * _tls_flush_write_bio and must be freed here.
- */
-static void _tls_tcp_write_done_cb(xylem_tcp_conn_t* tcp,
-                                   const void* data, size_t len,
-                                   int status) {
-    (void)len;
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)xylem_tcp_get_userdata(tcp);
-
-    free((void*)data);
-
-    if (!tls) {
-        return;
-    }
-
-    queue_node_t* front = xylem_queue_front(&tls->write_queue);
-    if (!front) {
-        return;
-    }
-
-    _tls_write_req_t* req =
-        queue_entry(front, _tls_write_req_t, node);
-    xylem_queue_dequeue(&tls->write_queue);
-
-    if (tls->handler && tls->handler->on_write_done) {
-        tls->handler->on_write_done(tls, req->data, req->len, status);
-    }
-    free(req);
-
-    if (tls->state == TLS_STATE_CLOSING &&
-        queue_empty(&tls->write_queue)) {
-        _tls_destroy_conn(tls);
-    }
-}
-
-/**
- * Per-server TCP handler used for accepted connections.
- * The TLS server pointer is stored via xylem_tcp_listener_set_userdata
- * and recovered in the accept callback.
- */
-static xylem_tcp_handler_t _tls_tcp_server_handler = {
-    .on_accept         = _tls_tcp_accept_cb,
-    .on_read           = _tls_tcp_read_cb,
-    .on_write_done     = _tls_tcp_write_done_cb,
-    .on_close          = _tls_tcp_close_cb,
-    .on_timeout        = _tls_tcp_timeout_cb,
-    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
-};
-
-static xylem_tcp_handler_t _tls_tcp_client_handler = {
-    .on_connect        = _tls_tcp_connect_cb,
-    .on_read           = _tls_tcp_read_cb,
-    .on_write_done     = _tls_tcp_write_done_cb,
-    .on_close          = _tls_tcp_close_cb,
-    .on_timeout        = _tls_tcp_timeout_cb,
-    .on_heartbeat_miss = _tls_tcp_heartbeat_cb,
-};
-
-/**
- * Deferred on_write_done for the defensive tcp_sends==0 path.
- * Firing synchronously would risk stack overflow if the user
- * calls xylem_tls_send again from inside on_write_done.
- */
-typedef struct _tls_write_done_s {
-    xylem_tls_conn_t* tls;
-    const void*       data;
-    size_t            len;
-} _tls_write_done_t;
-
-static void _tls_write_done_cb(loop_t* loop,
-                               loop_post_t* post,
-                               void* ud) {
-    (void)loop;
-    (void)post;
-    _tls_write_done_t* wd = (_tls_write_done_t*)ud;
-
-    /**
-     * Post callbacks that invoke user handlers must check liveness:
-     * the post queue is not cancellable, so the callback may fire
-     * after on_close has already been delivered to the user.
-     */
-    if (wd->tls->state == TLS_STATE_CLOSED) {
-        free(wd);
-        return;
-    }
-
-    if (wd->tls->handler && wd->tls->handler->on_write_done) {
-        wd->tls->handler->on_write_done(wd->tls, wd->data, wd->len, 0);
-    }
-
-    free(wd);
-}
-
-static int _tls_enqueue_write(xylem_tls_conn_t* tls,
-                              const void* data,
-                              size_t len) {
-    _tls_write_req_t* req =
-        (_tls_write_req_t*)malloc(sizeof(_tls_write_req_t));
-    if (!req) {
-        return -1;
-    }
-    req->data = data;
-    req->len  = len;
-
-    xylem_queue_enqueue(&tls->write_queue, &req->node);
-    return 0;
-}
-
-static int _tls_process_write(xylem_tls_conn_t* tls,
-                             const void* data,
-                             size_t len) {
-    ERR_clear_error();
-    /* Stream protocol: fatal SSL_write failure corrupts session state. */
-    int n = SSL_write(tls->ssl, data, (int)len);
-    if (n <= 0) {
-        unsigned long ssl_err_code = ERR_peek_error();
-        const char*   ssl_err_str  = ERR_reason_error_string(ssl_err_code);
-        xylem_logw("tls conn %p SSL_write failed (%s)",
-                   (void*)tls, ssl_err_str ? ssl_err_str : "unknown");
-        xylem_tls_close(tls);
-        return -1;
-    }
-
-    if (!_tls_flush_write_bio(tls)) {
-        /**
-         * SSL_write succeeded but BIO produced no output -- should not
-         * happen with memory BIOs. Defer on_write_done to the next loop
-         * iteration to prevent stack overflow from recursive sends.
-         */
-        if (tls->handler && tls->handler->on_write_done) {
-            _tls_write_done_t* wd =
-                (_tls_write_done_t*)malloc(sizeof(_tls_write_done_t));
-            if (!wd) {
-                return -1;
-            }
-            wd->tls  = tls;
-            wd->data = data;
-            wd->len  = len;
-            if (loop_post(runtime_get_loop(),
-                                _tls_write_done_cb, wd) != 0) {
-                free(wd);
-                return -1;
-            }
-        }
-        return 0;
-    }
-
-    return _tls_enqueue_write(tls, data, len);
-}
-
-int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
-    if (tls->state != TLS_STATE_CONNECTED) {
-        xylem_logd("tls conn %p send rejected (state=%d)",
-                   (void*)tls, (int)tls->state);
-        return -1;
-    }
-
-    if (!data || len == 0) {
-        return 0;
-    }
-
-    return _tls_process_write(tls, data, len);
-}
-
-xylem_tls_conn_t* xylem_tls_dial(loop_t* loop,
-                            const char* host,
-                            uint16_t port,
-                            xylem_tls_ctx_t* ctx,
-                            xylem_tls_handler_t* handler,
-                            xylem_tls_opts_t* opts) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
+static xylem_tls_conn_t* _tls_conn_alloc(
+    platform_sock_t fd, size_t max_read_buf) {
+    xylem_tls_conn_t* tls
+        = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
     if (!tls) {
         return NULL;
     }
 
-    tls->ctx     = ctx;
-    tls->handler = handler;
-    atomic_store(&tls->refcount, 1);
-    queue_init(&tls->write_queue);
+    tls->fd     = fd;
+    tls->waiter = iowait_create(fd);
+    if (!tls->waiter) {
+        free(tls);
+        return NULL;
+    }
 
-    if (opts && opts->hostname) {
-        tls->hostname = strdup(opts->hostname);
-        if (!tls->hostname) {
-            free(tls);
+    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
+    tls->read_buf = (char*)malloc(buf_cap);
+    if (!tls->read_buf) {
+        iowait_destroy(tls->waiter);
+        free(tls);
+        return NULL;
+    }
+    tls->read_buf_cap = buf_cap;
+
+    return tls;
+}
+
+static void _tls_conn_free(xylem_tls_conn_t* tls) {
+    if (tls->ssl) {
+        SSL_free(tls->ssl);
+    }
+    if (tls->waiter) {
+        iowait_destroy(tls->waiter);
+    }
+    if (tls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        /* Graceful TCP shutdown ensures buffered TLS records (including
+         * close_notify) are delivered before the kernel tears down the
+         * connection. Without this, closesocket may send RST. */
+        shutdown(tls->fd, PLATFORM_SHUT_WR);
+        platform_socket_close(tls->fd);
+    }
+    free(tls->read_buf);
+    free(tls);
+}
+
+/* --- dial --- */
+
+xylem_tls_conn_t* xylem_tls_dial(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts) {
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    const char* dial_host = host;
+    char        resolved_ip[INET6_ADDRSTRLEN];
+    addr_t      resolved_addr;
+
+    if (addr_pton(host, port, &resolved_addr) != 0) {
+        addr_t* addrs = NULL;
+        size_t  count = 0;
+        if (addr_resolve(host, &addrs, &count) != 0 || count == 0) {
+            xylem_loge("tls dial: DNS resolution failed for %s", host);
+            return NULL;
+        }
+        resolved_addr = addrs[0];
+        free(addrs);
+        uint16_t rport;
+        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
+        dial_host = resolved_ip;
+    }
+
+    bool            connected = false;
+    platform_sock_t fd        = platform_socket_dial(
+        dial_host, port_str, SOCK_STREAM, &connected, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("tls dial: socket creation failed for %s:%s",
+                   host, port_str);
+        return NULL;
+    }
+
+    if (opts && opts->disable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, false);
+    }
+
+    size_t             max_buf = opts ? opts->max_read_buf : 0;
+    xylem_tls_conn_t*  tls     = _tls_conn_alloc(fd, max_buf);
+    if (!tls) {
+        platform_socket_close(fd);
+        return NULL;
+    }
+
+    tls->ctx       = ctx;
+    tls->peer_addr = resolved_addr;
+
+    uint64_t connect_ms = opts ? opts->connect_timeout_ms : 0;
+    uint64_t deadline   = 0;
+    if (connect_ms > 0) {
+        deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                   + connect_ms;
+    }
+
+    /* Wait for TCP connect completion. */
+    if (!connected) {
+        if (deadline > 0) {
+            iowait_set_wr_deadline(tls->waiter, deadline);
+        }
+        iowait_result_t r = iowait_write(tls->waiter);
+        if (r != IOWAIT_READY) {
+            tls->err = XYLEM_ERR_TIMEOUT;
+            _tls_conn_free(tls);
+            return NULL;
+        }
+
+        int32_t   err    = 0;
+        socklen_t errlen = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
+        if (err != 0) {
+            xylem_loge("tls dial fd=%d connect error=%d (%s)",
+                       (int)fd, err, platform_socket_tostring(err));
+            _tls_conn_free(tls);
             return NULL;
         }
     }
 
-    uint64_t connect_ms = opts ? opts->connect_timeout_ms : 0;
-    xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
-    xylem_tcp_conn_t* tcp = xylem_tcp_dial(loop, addr,
-                                           &_tls_tcp_client_handler,
-                                           connect_ms, tcp_opts);
-    if (!tcp) {
-        free(tls->hostname);
-        free(tls);
+    /* Handshake needs both read and write deadlines. */
+    if (deadline > 0) {
+        iowait_set_rd_deadline(tls->waiter, deadline);
+        iowait_set_wr_deadline(tls->waiter, deadline);
+    }
+
+    tls->ssl = SSL_new(ctx->ssl_ctx);
+    if (!tls->ssl) {
+        xylem_loge("tls dial: SSL_new failed");
+        _tls_conn_free(tls);
+        return NULL;
+    }
+    SSL_set_fd(tls->ssl, (int)fd);
+    SSL_set_connect_state(tls->ssl);
+
+    const char* hostname = opts ? opts->hostname : NULL;
+    if (hostname) {
+        SSL_set_tlsext_host_name(tls->ssl, hostname);
+        SSL_set1_host(tls->ssl, hostname);
+    }
+
+    if (_tls_do_handshake(tls) != 0) {
+        xylem_loge("tls dial: handshake failed for %s:%s", host, port_str);
+        _tls_conn_free(tls);
         return NULL;
     }
 
-    tls->tcp = tcp;
-    xylem_tcp_set_userdata(tcp, tls);
+    /* Clear deadlines so subsequent I/O starts with no deadline. */
+    iowait_set_rd_deadline(tls->waiter, 0);
+    iowait_set_wr_deadline(tls->waiter, 0);
+
+    _tls_cache_alpn(tls);
     return tls;
 }
 
-static void _tls_destroy_conn(xylem_tls_conn_t* tls) {
-    if (tls->ssl) {
-        SSL_shutdown(tls->ssl);
-        _tls_flush_write_bio(tls);
-    }
-
-    xylem_tcp_close(tls->tcp);
-}
-
-static void _tls_graceful_close_cb(loop_t* loop,
-                                   loop_post_t* req,
-                                   void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ud;
-    if (tls->state == TLS_STATE_CLOSED) {
-        return;
-    }
-    _tls_destroy_conn(tls);
-}
+/* --- close --- */
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
-    if (tls->state == TLS_STATE_CLOSING ||
-        tls->state == TLS_STATE_CLOSED) {
+    if (atomic_exchange(&tls->closed, true)) {
         return;
     }
 
-    xylem_logi("tls conn %p close requested (state=%d)",
-               (void*)tls, (int)tls->state);
+    if (tls->ssl) {
+        ERR_clear_error();
+        SSL_shutdown(tls->ssl);
+    }
 
-    if (tls->state == TLS_STATE_CONNECTING) {
-        _tls_destroy_conn(tls);
+    iowait_close(tls->waiter);
+    _tls_conn_free(tls);
+}
+
+/* --- listen --- */
+
+xylem_tls_listener_t* xylem_tls_listen(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts) {
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    platform_sock_t fd
+        = platform_socket_listen(host, port_str, SOCK_STREAM, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("tls listen: failed for %s:%s", host, port_str);
+        return NULL;
+    }
+
+    if (opts && opts->disable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, false);
+    }
+
+    xylem_tls_listener_t* ln = (xylem_tls_listener_t*)calloc(
+        1, sizeof(xylem_tls_listener_t));
+    if (!ln) {
+        platform_socket_close(fd);
+        return NULL;
+    }
+
+    ln->fd  = fd;
+    ln->ctx = ctx;
+    if (opts) {
+        ln->opts = *opts;
+    }
+
+    ln->waiter = iowait_create(fd);
+    if (!ln->waiter) {
+        platform_socket_close(fd);
+        free(ln);
+        return NULL;
+    }
+
+    return ln;
+}
+
+/* --- accept --- */
+
+xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
+    uint64_t backoff_ms = 5;
+
+    for (;;) {
+        if (atomic_load_explicit(&ln->closing, memory_order_acquire)) {
+            return NULL;
+        }
+
+        platform_sock_t fd = platform_socket_accept(ln->fd, true);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            int err = platform_socket_get_lasterror();
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                if (iowait_read(ln->waiter) != IOWAIT_READY) {
+                    return NULL;
+                }
+                continue;
+            }
+
+            /* Resource exhaustion (EMFILE/ENFILE): exponential backoff
+             * prevents CPU spin while the fd table is full. */
+            xylem_logw("tls listener fd=%d accept error=%d (%s)",
+                       (int)ln->fd, err,
+                       platform_socket_tostring(err));
+            runtime_sleep(backoff_ms);
+            if (backoff_ms < 1000) {
+                backoff_ms *= 2;
+            }
+            continue;
+        }
+
+        backoff_ms = 5;
+
+        size_t max_buf = ln->opts.max_read_buf;
+        xylem_tls_conn_t* tls = _tls_conn_alloc(fd, max_buf);
+        if (!tls) {
+            platform_socket_close(fd);
+            continue;
+        }
+
+        tls->ctx = ln->ctx;
+
+        socklen_t peer_len = sizeof(tls->peer_addr.storage);
+        getpeername(
+            fd, (struct sockaddr*)&tls->peer_addr.storage, &peer_len);
+
+        tls->ssl = SSL_new(ln->ctx->ssl_ctx);
+        if (!tls->ssl) {
+            xylem_loge("tls accept: SSL_new failed");
+            _tls_conn_free(tls);
+            continue;
+        }
+        SSL_set_fd(tls->ssl, (int)fd);
+        SSL_set_accept_state(tls->ssl);
+
+        if (_tls_do_handshake(tls) != 0) {
+            xylem_logw("tls accept: handshake failed");
+            _tls_conn_free(tls);
+            return NULL;
+        }
+
+        _tls_cache_alpn(tls);
+        return tls;
+    }
+}
+
+/* --- close listener --- */
+
+void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
+    if (atomic_exchange(&ln->closing, true)) {
         return;
     }
 
-    tls->state = TLS_STATE_CLOSING;
+    iowait_close(ln->waiter);
+    iowait_destroy(ln->waiter);
+    platform_socket_close(ln->fd);
+    free(ln);
+}
 
-    if (queue_empty(&tls->write_queue)) {
-        loop_post(runtime_get_loop(),
-                        _tls_graceful_close_cb, tls);
+/* --- framing / buffered read (mirrors TCP) --- */
+
+static int _tls_read_exact(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    char*  ptr = (char*)buf;
+    size_t rem = len;
+
+    while (rem > 0) {
+        size_t avail = tls->read_buf_len - tls->read_buf_pos;
+        if (avail > 0) {
+            size_t copy = avail < rem ? avail : rem;
+            memcpy(ptr, tls->read_buf + tls->read_buf_pos, copy);
+            tls->read_buf_pos += copy;
+            ptr += copy;
+            rem -= copy;
+            continue;
+        }
+
+        tls->read_buf_pos = 0;
+        tls->read_buf_len = 0;
+
+        int64_t n = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
+        if (n <= 0) {
+            return -1;
+        }
+        tls->read_buf_len = (size_t)n;
     }
+    return 0;
+}
+
+static int64_t
+_tls_buffered_read(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    size_t avail = tls->read_buf_len - tls->read_buf_pos;
+    if (avail > 0) {
+        size_t copy = avail < len ? avail : len;
+        memcpy(buf, tls->read_buf + tls->read_buf_pos, copy);
+        tls->read_buf_pos += copy;
+        return (int64_t)copy;
+    }
+
+    if (len >= tls->read_buf_cap) {
+        return _tls_raw_recv(tls, buf, len);
+    }
+
+    tls->read_buf_pos = 0;
+    tls->read_buf_len = 0;
+
+    int64_t n = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
+    if (n <= 0) {
+        return n;
+    }
+    tls->read_buf_len = (size_t)n;
+
+    size_t copy = (size_t)n < len ? (size_t)n : len;
+    memcpy(buf, tls->read_buf, copy);
+    tls->read_buf_pos = copy;
+    return (int64_t)copy;
+}
+
+static int64_t
+_tls_recv_fixed(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    size_t frame_len = tls->frame_opts.fixed.len;
+    if (frame_len > len) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+    if (_tls_read_exact(tls, buf, frame_len) != 0) {
+        return -1;
+    }
+    return (int64_t)frame_len;
+}
+
+static int64_t
+_tls_recv_length(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    uint8_t  hdr[16];
+    uint32_t hdr_sz = tls->frame_opts.length.header_size;
+
+    if (hdr_sz > sizeof(hdr)) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+
+    if (_tls_read_exact(tls, hdr, hdr_sz) != 0) {
+        return -1;
+    }
+
+    uint64_t body_len = 0;
+    uint8_t* field    = hdr + tls->frame_opts.length.field_offset;
+
+    if (tls->frame_opts.length.big_endian) {
+        for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
+            body_len = (body_len << 8) | field[i];
+        }
+    } else {
+        for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
+            body_len |= (uint64_t)field[i] << (i * 8);
+        }
+    }
+
+    int64_t adjusted
+        = (int64_t)body_len + tls->frame_opts.length.adjustment;
+    if (adjusted < 0) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+
+    size_t payload_len = (size_t)adjusted;
+    if (payload_len > len) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+
+    if (payload_len > 0 && _tls_read_exact(tls, buf, payload_len) != 0) {
+        return -1;
+    }
+    return (int64_t)payload_len;
+}
+
+static int64_t
+_tls_recv_delimiter(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    const char* delim     = tls->frame_opts.delimiter.delim;
+    size_t      delim_len = tls->frame_opts.delimiter.delim_len;
+    if (delim_len == 0) {
+        delim_len = strlen(delim);
+    }
+
+    char*  dst = (char*)buf;
+    size_t pos = 0;
+
+    while (pos < len) {
+        size_t avail = tls->read_buf_len - tls->read_buf_pos;
+        if (avail == 0) {
+            tls->read_buf_pos = 0;
+            tls->read_buf_len = 0;
+            int64_t n
+                = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
+            if (n <= 0) {
+                return -1;
+            }
+            tls->read_buf_len = (size_t)n;
+            avail             = (size_t)n;
+        }
+
+        char* src = tls->read_buf + tls->read_buf_pos;
+        for (size_t i = 0; i < avail && pos < len; i++) {
+            dst[pos++] = src[i];
+            tls->read_buf_pos++;
+
+            if (pos >= delim_len
+                && memcmp(dst + pos - delim_len, delim, delim_len) == 0) {
+                pos -= delim_len;
+                dst[pos] = '\0';
+                return (int64_t)pos;
+            }
+        }
+    }
+
+    tls->err = XYLEM_ERR_UNKNOWN;
+    return -1;
+}
+
+static int
+_tls_send_length(xylem_tls_conn_t* tls, const void* data, size_t len) {
+    uint8_t  hdr[16];
+    uint32_t hdr_sz = tls->frame_opts.length.header_size;
+
+    if (hdr_sz > sizeof(hdr)) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+
+    int64_t wire_len = (int64_t)len - tls->frame_opts.length.adjustment;
+    if (wire_len < 0) {
+        tls->err = XYLEM_ERR_UNKNOWN;
+        return -1;
+    }
+
+    memset(hdr, 0, hdr_sz);
+    uint8_t* field = hdr + tls->frame_opts.length.field_offset;
+    uint64_t val   = (uint64_t)wire_len;
+
+    if (tls->frame_opts.length.big_endian) {
+        for (int32_t i = (int32_t)tls->frame_opts.length.field_size - 1;
+             i >= 0;
+             i--) {
+            field[i] = (uint8_t)(val & 0xFF);
+            val >>= 8;
+        }
+    } else {
+        for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
+            field[i] = (uint8_t)(val & 0xFF);
+            val >>= 8;
+        }
+    }
+
+    if (_tls_raw_send(tls, hdr, hdr_sz) != 0) {
+        return -1;
+    }
+    return _tls_raw_send(tls, data, len);
+}
+
+/* --- public recv / send --- */
+
+void xylem_tls_set_framing(
+    xylem_tls_conn_t* tls, xylem_tcp_frame_opts_t* opts) {
+    if (opts) {
+        tls->frame_opts = *opts;
+    } else {
+        memset(&tls->frame_opts, 0, sizeof(tls->frame_opts));
+    }
+}
+
+int64_t
+xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
+    switch (tls->frame_opts.type) {
+    case XYLEM_TCP_FRAME_NONE:
+        return _tls_buffered_read(tls, buf, len);
+    case XYLEM_TCP_FRAME_FIXED:
+        return _tls_recv_fixed(tls, buf, len);
+    case XYLEM_TCP_FRAME_LENGTH:
+        return _tls_recv_length(tls, buf, len);
+    case XYLEM_TCP_FRAME_DELIMITER:
+        return _tls_recv_delimiter(tls, buf, len);
+    default:
+        return -1;
+    }
+}
+
+int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
+    switch (tls->frame_opts.type) {
+    case XYLEM_TCP_FRAME_LENGTH:
+        return _tls_send_length(tls, data, len);
+    default:
+        return _tls_raw_send(tls, data, len);
+    }
+}
+
+/* --- deadline --- */
+
+void xylem_tls_set_read_deadline(
+    xylem_tls_conn_t* tls, uint64_t deadline_ms) {
+    iowait_set_rd_deadline(tls->waiter, deadline_ms);
+}
+
+void xylem_tls_set_write_deadline(
+    xylem_tls_conn_t* tls, uint64_t deadline_ms) {
+    iowait_set_wr_deadline(tls->waiter, deadline_ms);
+}
+
+/* --- info queries --- */
+
+xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls) {
+    return tls->err;
+}
+
+int xylem_tls_remote_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port) {
+    return addr_ntop(&tls->peer_addr, host, host_len, port);
+}
+
+int xylem_tls_local_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port) {
+    addr_t addr;
+    socklen_t alen = sizeof(addr.storage);
+    if (getsockname(tls->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
+        return -1;
+    }
+    return addr_ntop(&addr, host, host_len, port);
+}
+
+int xylem_tls_listener_addr(
+    xylem_tls_listener_t* ln,
+    char*                 host,
+    size_t                host_len,
+    uint16_t*             port) {
+    addr_t addr;
+    socklen_t alen = sizeof(addr.storage);
+    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
+        return -1;
+    }
+    return addr_ntop(&addr, host, host_len, port);
 }
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
     return tls->alpn[0] ? tls->alpn : NULL;
-}
-
-void* xylem_tls_get_userdata(xylem_tls_conn_t* tls) {
-    return tls->userdata;
-}
-
-int xylem_tls_remote_addr(xylem_tls_conn_t* tls,
-                          char host[INET6_ADDRSTRLEN],
-                          uint16_t* port) {
-    return xylem_tcp_remote_addr(tls->tcp, host, port);
-}
-
-loop_t* xylem_tls_get_loop(xylem_tls_conn_t* tls) {
-    return runtime_get_loop();
-}
-
-void xylem_tls_set_userdata(xylem_tls_conn_t* tls, void* ud) {
-    tls->userdata = ud;
-}
-
-void xylem_tls_conn_ref(xylem_tls_conn_t* tls) {
-    atomic_fetch_add(&tls->refcount, 1);
-}
-
-void xylem_tls_conn_unref(xylem_tls_conn_t* tls) {
-    _tls_conn_unref(tls);
-}
-
-xylem_tls_server_t* xylem_tls_listen(loop_t* loop,
-                                     const char* host,
-                                     uint16_t port,
-                                     xylem_tls_ctx_t* ctx,
-                                     xylem_tls_handler_t* handler,
-                                     xylem_tls_opts_t* opts) {
-    xylem_tls_server_t* server = (xylem_tls_server_t*)calloc(1, sizeof(xylem_tls_server_t));
-    if (!server) {
-        return NULL;
-    }
-
-    server->ctx     = ctx;
-    server->handler = handler;
-    server->loop    = loop;
-    list_init(&server->connections);
-
-    if (opts) {
-        server->opts = *opts;
-    }
-
-    xylem_tcp_opts_t* tcp_opts = opts ? &opts->tcp : NULL;
-    xylem_tcp_listener_t* tcp_server =
-        xylem_tcp_listen(loop, addr, &_tls_tcp_server_handler, tcp_opts);
-    if (!tcp_server) {
-        free(server);
-        return NULL;
-    }
-
-    server->tcp_server = tcp_server;
-    xylem_tcp_listener_set_userdata(tcp_server, server);
-
-    xylem_logi("tls server %p listening", (void*)server);
-    return server;
-}
-
-void* xylem_tls_server_get_userdata(xylem_tls_server_t* server) {
-    return server->userdata;
-}
-
-void xylem_tls_server_set_userdata(xylem_tls_server_t* server, void* ud) {
-    server->userdata = ud;
-}
-
-/* Post callback: free a server after the current iteration. */
-static void _tls_server_free_cb(loop_t* loop,
-                                loop_post_t* req,
-                                void* ud) {
-    (void)loop;
-    (void)req;
-    free(ud);
-}
-
-void xylem_tls_close_server(xylem_tls_server_t* server) {
-    if (!server || server->closing) {
-        return;
-    }
-    server->closing = true;
-
-    xylem_logi("tls server %p closing", (void*)server);
-
-    /**
-     * Detach all TLS sessions from the server before closing them.
-     * xylem_tls_close is async -- _tls_tcp_close_cb may fire after
-     * server is freed, so tls->server must be NULL by then.
-     *
-     * We must remove the node from the list ourselves because setting
-     * tls->server = NULL prevents _tls_tcp_close_cb from doing it.
-     */
-    while (!list_empty(&server->connections)) {
-        list_node_t* node = list_head(&server->connections);
-        xylem_tls_conn_t* tls = list_entry(node, xylem_tls_conn_t, server_node);
-        list_remove(&server->connections, node);
-        tls->server = NULL;
-        xylem_tls_close(tls);
-    }
-
-    xylem_tcp_close_listener(server->tcp_server);
-    loop_post(server->loop, _tls_server_free_cb, server);
 }
