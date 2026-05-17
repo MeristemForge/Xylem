@@ -60,7 +60,8 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
     platform_sock_t cli;
     do {
         cli = accept(sock, NULL, NULL);
-    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET && errno == EINTR);
+    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
+             && (errno == EINTR || errno == ECONNABORTED));
     if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
@@ -81,7 +82,8 @@ platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
     platform_sock_t cli;
     do {
         cli = accept(sock, NULL, NULL);
-    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET && errno == EINTR);
+    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
+             && (errno == EINTR || errno == ECONNABORTED));
     if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }

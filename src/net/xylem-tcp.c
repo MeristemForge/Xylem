@@ -589,6 +589,8 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
     _tcp_listener_ref(listener);
 
     xylem_tcp_conn_t* result = NULL;
+    uint64_t backoff_ms = 5;
+
     for (;;) {
         if (atomic_load_explicit(&listener->closing, memory_order_acquire)) {
             break;
@@ -599,29 +601,26 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
             int err = platform_socket_get_lasterror();
             if (err == PLATFORM_SO_ERROR_EAGAIN
                 || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                /* Expected: no pending connection. Park until readable. */
                 if (iowait_read(listener->waiter) != IOWAIT_READY) {
                     break;
                 }
                 continue;
             }
 
-            /**
-             * Non-EAGAIN error: could be transient (ECONNABORTED, EINTR,
-             * per-connection SSL/TCP reset) or resource exhaustion
-             * (EMFILE, ENFILE). In the latter case the listen fd stays
-             * readable and calling iowait_read returns immediately, so
-             * looping would burn 100% CPU. Sleep briefly as backoff
-             * before retrying; under fd exhaustion this lets other
-             * descriptors close, and under transient errors it is cheap.
-             */
+            /* Resource exhaustion (EMFILE/ENFILE): exponential backoff
+             * prevents CPU spin while the fd table is full. */
             xylem_logw("tcp listener fd=%d accept error=%d (%s)",
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));
-            runtime_sleep(10);
+            runtime_sleep(backoff_ms);
+            if (backoff_ms < 1000) {
+                backoff_ms *= 2;
+            }
             continue;
         }
+
+        backoff_ms = 5;
 
         xylem_tcp_conn_t* tcp = _tcp_conn_alloc(fd, listener->max_read_buf);
         if (!tcp) {
