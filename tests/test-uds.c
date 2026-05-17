@@ -20,12 +20,11 @@
  */
 
 #include "xylem.h"
-#include "runtime/runtime.h"
 #include "assert.h"
 
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdatomic.h>
 
 #ifdef _WIN32
 #define UDS_PATH "xylem-test-uds.sock"
@@ -33,561 +32,377 @@
 #define UDS_PATH "/tmp/xylem-test-uds.sock"
 #endif
 
+#define SAFETY_TIMEOUT_MS 10000
+
 typedef struct {
-    xylem_uds_server_t*  server;
-    xylem_uds_conn_t*    srv_conn;
-    xylem_uds_conn_t*    cli_conn;
-    xylem_uds_handler_t  srv_handler;
-    xylem_uds_handler_t  cli_handler;
-    int                  accept_called;
-    int                  connect_called;
-    int                  close_called;
-    int                  read_count;
-    int                  send_result;
-    int                  value;
-    char                 received[256];
-    size_t               received_len;
-    _Atomic bool         worker_done;
-} _test_ctx_t;
+    xylem_channel_t*   ready;
+    xylem_waitgroup_t* wg;
+} _ctx_t;
 
-static void _safety_timeout_cb(loop_t* loop,
-                                loop_timer_t* timer,
-                                void* ud) {
-    (void)loop;
-    (void)timer;
+static void _watchdog_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
     (void)ud;
-    xylem_shutdown();
+    ASSERT(0 && "test timed out");
 }
 
-static void _srv_accept_cb(xylem_uds_server_t* server,
-                            xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx =
-        (_test_ctx_t*)xylem_uds_server_get_userdata(server);
-    ctx->srv_conn = conn;
-    ctx->accept_called++;
-    xylem_uds_set_userdata(conn, ctx);
+/* --- test_echo: basic send/recv round-trip --- */
+
+static void _echo_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
+
+    char buf[256];
+    int64_t n = xylem_uds_recv(uds, buf, sizeof(buf));
+    ASSERT(n > 0);
+    ASSERT(xylem_uds_send(uds, buf, (size_t)n) == 0);
+
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void _srv_read_echo_cb(xylem_uds_conn_t* conn,
-                               void* data, size_t len) {
-    xylem_uds_send(conn, data, len);
+static void _echo_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    const char* msg = "hello xylem uds";
+    ASSERT(xylem_uds_send(uds, msg, strlen(msg)) == 0);
+
+    char buf[64];
+    int64_t n = xylem_uds_recv(uds, buf, sizeof(buf));
+    ASSERT(n == (int64_t)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void _dc_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->connect_called++;
-    xylem_uds_close(conn);
-    xylem_uds_close_server(ctx->server);
-    xylem_shutdown();
-}
-
-static void _test_dial_connect_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){.on_connect = _dc_connect_cb};
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_dial_connect(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_dial_connect_main, &ctx, NULL);
-    ASSERT(ctx.connect_called == 1);
-    remove(UDS_PATH);
-}
-
-static void _echo_cli_read_cb(xylem_uds_conn_t* conn,
-                                void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    if (len <= sizeof(ctx->received) - ctx->received_len) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
-    }
-    ctx->read_count++;
-    xylem_uds_close(conn);
-    xylem_uds_close(ctx->srv_conn);
-    xylem_uds_close_server(ctx->server);
-    xylem_shutdown();
-}
-
-static void _echo_cli_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->connect_called++;
-    xylem_uds_send(conn, "hello", 5);
-}
-
-static void _test_echo_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_echo_cb,
+static void _echo_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
     };
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_echo_server, &ctx);
+    xylem_spawn(_echo_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
-    ctx->cli_handler = (xylem_uds_handler_t){
-        .on_connect = _echo_cli_connect_cb,
-        .on_read    = _echo_cli_read_cb,
-    };
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
 }
 
 static void test_echo(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_echo_main, &ctx, NULL);
-    ASSERT(ctx.connect_called == 1);
-    ASSERT(ctx.accept_called == 1);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
+    xylem_run(_echo_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
-static void _sac_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_close(conn);
-    ctx->send_result = xylem_uds_send(conn, "x", 1);
-    xylem_uds_close_server(ctx->server);
+/* --- test_fixed: XYLEM_UDS_FRAME_FIXED framing --- */
+
+static void _fixed_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
+
+    ASSERT(xylem_uds_send(uds, "ABCD", 4) == 0);
+    xylem_sleep(30);
+    ASSERT(xylem_uds_send(uds, "EFGH", 4) == 0);
+
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fixed_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    xylem_uds_frame_opts_t frame = {
+        .type  = XYLEM_UDS_FRAME_FIXED,
+        .fixed = { .len = 8 },
+    };
+    xylem_uds_set_framing(uds, &frame);
+
+    char buf[16];
+    int64_t n = xylem_uds_recv(uds, buf, sizeof(buf));
+    ASSERT(n == 8);
+    ASSERT(memcmp(buf, "ABCDEFGH", 8) == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fixed_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_fixed_server, &ctx);
+    xylem_spawn(_fixed_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
     xylem_shutdown();
 }
 
-static void _test_send_after_close_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){.on_connect = _sac_connect_cb};
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_send_after_close(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_send_after_close_main, &ctx, NULL);
-    ASSERT(ctx.send_result == -1);
+static void test_fixed(void) {
+    xylem_run(_fixed_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
-static void _ud_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    int val = 42;
-    xylem_uds_set_userdata(conn, &val);
-    int* got = (int*)xylem_uds_get_userdata(conn);
-    ASSERT(got == &val);
-    ASSERT(*got == 42);
+/* --- test_delimiter: XYLEM_UDS_FRAME_DELIMITER with "\r\n" --- */
 
-    xylem_uds_set_userdata(conn, ctx);
-    xylem_uds_close(conn);
-    xylem_uds_close_server(ctx->server);
+static void _delim_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
+
+    ASSERT(xylem_uds_send(uds, "hello\r\nworld\r\n", 14) == 0);
+
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _delim_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    xylem_uds_frame_opts_t frame = {
+        .type      = XYLEM_UDS_FRAME_DELIMITER,
+        .delimiter = { .delim = "\r\n", .delim_len = 2 },
+    };
+    xylem_uds_set_framing(uds, &frame);
+
+    char line[64];
+    int64_t len = xylem_uds_recv(uds, line, sizeof(line));
+    ASSERT(len == 5);
+    ASSERT(memcmp(line, "hello", 5) == 0);
+
+    len = xylem_uds_recv(uds, line, sizeof(line));
+    ASSERT(len == 5);
+    ASSERT(memcmp(line, "world", 5) == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _delim_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_delim_server, &ctx);
+    xylem_spawn(_delim_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
     xylem_shutdown();
 }
 
-static void _test_userdata_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){.on_connect = _ud_connect_cb};
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_userdata(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_userdata_main, &ctx, NULL);
+static void test_delimiter(void) {
+    xylem_run(_delim_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
-static void _test_server_userdata_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
+/* --- test_frame: XYLEM_UDS_FRAME_LENGTH with 2-byte big-endian fixedint --- */
 
-    ctx->srv_handler = (xylem_uds_handler_t){0};
-    xylem_uds_server_t* server = xylem_uds_listen(UDS_PATH,
-                                                   &ctx->srv_handler, NULL);
-    ASSERT(server != NULL);
+static const xylem_uds_frame_opts_t _len_frame = {
+    .type   = XYLEM_UDS_FRAME_LENGTH,
+    .length = {
+        .header_size  = 2,
+        .field_offset = 0,
+        .field_size   = 2,
+        .adjustment   = 0,
+        .coding       = XYLEM_UDS_LENGTH_FIXEDINT,
+        .big_endian   = true,
+    },
+};
 
-    int val = 99;
-    xylem_uds_server_set_userdata(server, &val);
-    int* got = (int*)xylem_uds_server_get_userdata(server);
-    ASSERT(got == &val);
-    ASSERT(*got == 99);
-    ctx->value = *got;
+static void _frame_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
 
-    xylem_uds_close_server(server);
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
+
+    xylem_uds_frame_opts_t frame = _len_frame;
+    xylem_uds_set_framing(uds, &frame);
+
+    ASSERT(xylem_uds_send(uds, "FRAME1", 6) == 0);
+
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _frame_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    xylem_uds_frame_opts_t frame = _len_frame;
+    xylem_uds_set_framing(uds, &frame);
+
+    char buf[64];
+    int64_t n = xylem_uds_recv(uds, buf, sizeof(buf));
+    ASSERT(n == 6);
+    ASSERT(memcmp(buf, "FRAME1", 6) == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _frame_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_frame_server, &ctx);
+    xylem_spawn(_frame_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
     xylem_shutdown();
 }
 
-static void test_server_userdata(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_server_userdata_main, &ctx, NULL);
-    ASSERT(ctx.value == 99);
+static void test_frame(void) {
+    xylem_run(_frame_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
-static void _csac_close_cb(xylem_uds_conn_t* conn,
-                            int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->close_called++;
-    if (conn == ctx->cli_conn) {
-        xylem_shutdown();
-    }
-}
+/* --- test_varint: XYLEM_UDS_FRAME_LENGTH with varint coding --- */
 
-static void _csac_timer_cb(loop_t* loop,
-                            loop_timer_t* timer,
-                            void* ud) {
-    (void)loop;
-    (void)timer;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_uds_close_server(ctx->server);
-}
+static void _varint_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
 
-static void _csac_connect_cb(xylem_uds_conn_t* conn) {
-    (void)conn;
-}
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
 
-static void _test_close_server_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){
-        .on_accept = _srv_accept_cb,
-        .on_close  = _csac_close_cb,
+    xylem_uds_frame_opts_t frame = {
+        .type   = XYLEM_UDS_FRAME_LENGTH,
+        .length = {
+            .header_size  = 1,
+            .field_offset = 0,
+            .field_size   = 1,
+            .adjustment   = 0,
+            .coding       = XYLEM_UDS_LENGTH_VARINT,
+            .big_endian   = false,
+        },
     };
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
+    xylem_uds_set_framing(uds, &frame);
 
-    ctx->cli_handler = (xylem_uds_handler_t){
-        .on_connect = _csac_connect_cb,
-        .on_close   = _csac_close_cb,
+    ASSERT(xylem_uds_send(uds, "VARINTmsg", 9) == 0);
+
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _varint_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    xylem_uds_frame_opts_t frame = {
+        .type   = XYLEM_UDS_FRAME_LENGTH,
+        .length = {
+            .header_size  = 1,
+            .field_offset = 0,
+            .field_size   = 1,
+            .adjustment   = 0,
+            .coding       = XYLEM_UDS_LENGTH_VARINT,
+            .big_endian   = false,
+        },
     };
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
+    xylem_uds_set_framing(uds, &frame);
 
-    loop_timer_t* close_timer = loop_create_timer(runtime_get_loop());
-    loop_start_timer(close_timer, _csac_timer_cb, ctx, 100, 0);
+    char buf[64];
+    int64_t n = xylem_uds_recv(uds, buf, sizeof(buf));
+    ASSERT(n == 9);
+    ASSERT(memcmp(buf, "VARINTmsg", 9) == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_close_server_with_active_conn(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_close_server_main, &ctx, NULL);
-    ASSERT(ctx.close_called >= 1);
-    remove(UDS_PATH);
-}
-
-static void _ff_srv_read_cb(xylem_uds_conn_t* conn,
-                             void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    if (ctx->received_len + len <= sizeof(ctx->received)) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
-    }
-    ctx->read_count++;
-    if (ctx->read_count == 2) {
-        xylem_uds_close(conn);
-        xylem_uds_close(ctx->cli_conn);
-        xylem_uds_close_server(ctx->server);
-        xylem_shutdown();
-    }
-}
-
-static void _ff_cli_connect_cb(xylem_uds_conn_t* conn) {
-    xylem_uds_send(conn, "ABCDEFGH", 8);
-}
-
-static void _test_frame_fixed_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    xylem_uds_opts_t opts = {
-        .framing = {.type = XYLEM_UDS_FRAME_FIXED, .fixed = {.frame_size = 4}},
+static void _varint_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
     };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_varint_server, &ctx);
+    xylem_spawn(_varint_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
-    ctx->srv_handler = (xylem_uds_handler_t){
-        .on_accept = _srv_accept_cb,
-        .on_read   = _ff_srv_read_cb,
-    };
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, &opts);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){.on_connect = _ff_cli_connect_cb};
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_frame_fixed(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_frame_fixed_main, &ctx, NULL);
-    ASSERT(ctx.read_count == 2);
-    ASSERT(ctx.received_len == 8);
-    ASSERT(memcmp(ctx.received, "ABCD", 4) == 0);
-    ASSERT(memcmp(ctx.received + 4, "EFGH", 4) == 0);
-    remove(UDS_PATH);
-}
-
-/* --- Cross-thread send test --- */
-
-static void _xt_send_post_cb(loop_t* loop, loop_post_t* req,
-                              void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_uds_send(ctx->cli_conn, "hello", 5);
-}
-
-static void _xt_send_worker(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_get_loop(), _xt_send_post_cb, ctx);
-}
-
-static void _xt_send_cli_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_ref(conn);
-    dynpool_submit(runtime_get_dynpool(), _xt_send_worker, ctx);
-}
-
-static void _xt_send_cli_read_cb(xylem_uds_conn_t* conn,
-                                  void* data, size_t len) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    if (len <= sizeof(ctx->received) - ctx->received_len) {
-        memcpy(ctx->received + ctx->received_len, data, len);
-        ctx->received_len += len;
-    }
-    xylem_uds_close(conn);
-    xylem_uds_close(ctx->srv_conn);
-    xylem_uds_close_server(ctx->server);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
     xylem_shutdown();
 }
 
-static void _test_cross_thread_send_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){
-        .on_accept = _srv_accept_cb,
-        .on_read   = _srv_read_echo_cb,
-    };
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){
-        .on_connect = _xt_send_cli_connect_cb,
-        .on_read    = _xt_send_cli_read_cb,
-    };
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_cross_thread_send(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_cross_thread_send_main, &ctx, NULL);
-    ASSERT(ctx.received_len == 5);
-    ASSERT(memcmp(ctx.received, "hello", 5) == 0);
-    xylem_uds_conn_unref(ctx.cli_conn);
-    remove(UDS_PATH);
-}
-
-/* --- Cross-thread close test --- */
-
-static void _xt_close_post_cb(loop_t* loop, loop_post_t* req,
-                               void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_uds_close(ctx->cli_conn);
-}
-
-static void _xt_close_worker(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    loop_post(runtime_get_loop(), _xt_close_post_cb, ctx);
-}
-
-static void _xt_close_cli_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_ref(conn);
-    dynpool_submit(runtime_get_dynpool(), _xt_close_worker, ctx);
-}
-
-static void _xt_close_cli_close_cb(xylem_uds_conn_t* conn,
-                                    int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->close_called++;
-    xylem_uds_close_server(ctx->server);
-    xylem_shutdown();
-}
-
-static void _test_cross_thread_close_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){.on_accept = _srv_accept_cb};
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){
-        .on_connect = _xt_close_cli_connect_cb,
-        .on_close   = _xt_close_cli_close_cb,
-    };
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_cross_thread_close(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_cross_thread_close_main, &ctx, NULL);
-    ASSERT(ctx.close_called == 1);
-    xylem_uds_conn_unref(ctx.cli_conn);
-    remove(UDS_PATH);
-}
-
-/* --- Cross-thread send + stop-on-close test --- */
-
-static void _xt_soc_send_post_cb(loop_t* loop, loop_post_t* req,
-                                  void* ud) {
-    (void)loop;
-    (void)req;
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_uds_send(ctx->cli_conn, "ping", 4);
-}
-
-static void _xt_soc_worker(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-    for (int i = 0; i < 20; i++) {
-        loop_post(runtime_get_loop(), _xt_soc_send_post_cb, ctx);
-    }
-    atomic_store(&ctx->worker_done, true);
-}
-
-static void _xt_soc_srv_close_timer_cb(loop_t* loop,
-                                        loop_timer_t* timer,
-                                        void* ud) {
-    (void)loop;
-    loop_destroy_timer(timer);
-    _test_ctx_t* ctx = (_test_ctx_t*)ud;
-    xylem_uds_close(ctx->cli_conn);
-}
-
-static void _xt_soc_srv_read_cb(xylem_uds_conn_t* conn,
-                                 void* data, size_t len) {
-    (void)data;
-    (void)len;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->read_count++;
-    if (ctx->read_count == 1) {
-        loop_timer_t* t = loop_create_timer(runtime_get_loop());
-        loop_start_timer(t, _xt_soc_srv_close_timer_cb, ctx, 50, 0);
-    }
-}
-
-static void _xt_soc_cli_connect_cb(xylem_uds_conn_t* conn) {
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    xylem_uds_conn_ref(conn);
-    dynpool_submit(runtime_get_dynpool(), _xt_soc_worker, ctx);
-}
-
-static void _xt_soc_cli_close_cb(xylem_uds_conn_t* conn,
-                                  int err, const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    _test_ctx_t* ctx = (_test_ctx_t*)xylem_uds_get_userdata(conn);
-    ctx->close_called++;
-    xylem_uds_close(ctx->srv_conn);
-    xylem_uds_close_server(ctx->server);
-    xylem_shutdown();
-}
-
-static void _test_cross_thread_soc_main(void* arg) {
-    _test_ctx_t* ctx = (_test_ctx_t*)arg;
-
-    loop_timer_t* safety = loop_create_timer(runtime_get_loop());
-    loop_start_timer(safety, _safety_timeout_cb, NULL, 10000, 0);
-
-    ctx->srv_handler = (xylem_uds_handler_t){
-        .on_accept = _srv_accept_cb,
-        .on_read   = _xt_soc_srv_read_cb,
-    };
-    ctx->server = xylem_uds_listen(UDS_PATH, &ctx->srv_handler, NULL);
-    ASSERT(ctx->server != NULL);
-    xylem_uds_server_set_userdata(ctx->server, ctx);
-
-    ctx->cli_handler = (xylem_uds_handler_t){
-        .on_connect = _xt_soc_cli_connect_cb,
-        .on_close   = _xt_soc_cli_close_cb,
-    };
-    ctx->cli_conn = xylem_uds_dial(UDS_PATH, &ctx->cli_handler, NULL);
-    ASSERT(ctx->cli_conn != NULL);
-    xylem_uds_set_userdata(ctx->cli_conn, ctx);
-}
-
-static void test_cross_thread_send_stop_on_close(void) {
-    _test_ctx_t ctx = {0};
-    xylem_run(_test_cross_thread_soc_main, &ctx, NULL);
-    ASSERT(ctx.close_called == 1);
-    xylem_uds_conn_unref(ctx.cli_conn);
+static void test_varint(void) {
+    xylem_run(_varint_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
 int main(void) {
-
-    test_dial_connect();
     test_echo();
-    test_send_after_close();
-    test_userdata();
-    test_server_userdata();
-    test_close_server_with_active_conn();
-    test_frame_fixed();
-    test_cross_thread_send();
-    test_cross_thread_close();
-    test_cross_thread_send_stop_on_close();
-
+    test_fixed();
+    test_delimiter();
+    test_frame();
+    test_varint();
     return 0;
 }
