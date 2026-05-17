@@ -66,10 +66,10 @@ extern xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port);
  * @param host_len  Size of host buffer.
  * @param port      Receives sender port, or NULL.
  *
- * @return Bytes received (>0), -1 on failure. Call
+ * @return Bytes received (>=0), -1 on failure. Call
  *         xylem_udp_get_error() for the reason.
  */
-extern int64_t xylem_udp_recvfrom(
+extern int64_t xylem_udp_recv(
     xylem_udp_t* udp,
     void*        buf,
     size_t       len,
@@ -95,7 +95,7 @@ extern int64_t xylem_udp_recvfrom(
  * @return 0 on success, -1 on failure. Call xylem_udp_get_error()
  *         for the reason.
  */
-extern int xylem_udp_sendto(
+extern int xylem_udp_send(
     xylem_udp_t* udp,
     const void*  data,
     size_t       len,
@@ -106,7 +106,7 @@ extern int xylem_udp_sendto(
  * @brief Set the read deadline.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_recvfrom() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_udp_recv() calls fail with XYLEM_ERR_TIMEOUT.
  *
  * @param udp          UDP handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -119,7 +119,7 @@ extern void xylem_udp_set_read_deadline(
  * @brief Set the write deadline.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_sendto() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_udp_send() calls fail with XYLEM_ERR_TIMEOUT.
  *
  * @param udp          UDP handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -131,7 +131,7 @@ extern void xylem_udp_set_write_deadline(
 /**
  * @brief Close the UDP handle.
  *
- * Wakes any coroutine blocked in recvfrom/sendto. Idempotent.
+ * Wakes any coroutine blocked in recv/send. Idempotent.
  *
  * @param udp  UDP handle.
  */

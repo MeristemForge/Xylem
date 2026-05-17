@@ -135,7 +135,7 @@ xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port) {
     return udp;
 }
 
-int64_t xylem_udp_recvfrom(
+int64_t xylem_udp_recv(
     xylem_udp_t* udp,
     void*        buf,
     size_t       len,
@@ -162,7 +162,7 @@ int64_t xylem_udp_recvfrom(
                 udp->fd, buf, (int)len, &sender, &sender_len);
         }
 
-        if (n > 0) {
+        if (n >= 0) {
             if (host || port) {
                 addr_t addr;
                 if (udp->connected) {
@@ -197,7 +197,7 @@ int64_t xylem_udp_recvfrom(
     return ret;
 }
 
-int xylem_udp_sendto(
+int xylem_udp_send(
     xylem_udp_t* udp,
     const void*  data,
     size_t       len,
@@ -226,7 +226,7 @@ int xylem_udp_sendto(
                 udp->fd, data, (int)len, &dest.storage, addrlen);
         }
 
-        if (n > 0) {
+        if (n >= 0) {
             result = 0;
             break;
         }

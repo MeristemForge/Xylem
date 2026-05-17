@@ -19,9 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-/* ===================================================================
- * Section 1: Includes and defines
- * =================================================================== */
 
 #include "xylem/net/xylem-dtls.h"
 #include "xylem/xylem-error.h"
@@ -50,9 +47,6 @@
 #define DTLS_INBOX_CAP           64
 
 
-/* ===================================================================
- * Section 2: ex_data indices
- * =================================================================== */
 
 static int _dtls_ex_data_idx = -1;
 static int _dtls_peer_addr_idx = -1;
@@ -64,9 +58,6 @@ static void _dtls_init_ex_data(void) {
 }
 
 
-/* ===================================================================
- * Section 3: Internal structs
- * =================================================================== */
 
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
@@ -138,9 +129,6 @@ struct xylem_dtls_listener_s {
 };
 
 
-/* ===================================================================
- * Section 4: Cookie callbacks, ALPN callback, keylog callback
- * =================================================================== */
 
 static xylem_dtls_ctx_t* _dtls_get_ctx(SSL* ssl) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -152,10 +140,14 @@ static int _dtls_get_peer_addr(SSL* ssl, const uint8_t** out,
     addr_t* addr =
         (addr_t*)SSL_get_ex_data(ssl, _dtls_peer_addr_idx);
     if (!addr) {
+        {
+    }
         return -1;
     }
 
     if (addr->storage.ss_family == AF_INET) {
+        {
+    }
         *out     = (const uint8_t*)&addr->storage;
         *out_len = sizeof(struct sockaddr_in);
     } else if (addr->storage.ss_family == AF_INET6) {
@@ -170,6 +162,8 @@ static int _dtls_get_peer_addr(SSL* ssl, const uint8_t** out,
 static void _dtls_keylog_cb(const SSL* ssl, const char* line) {
     xylem_dtls_ctx_t* ctx = _dtls_get_ctx((SSL*)ssl);
     if (ctx && ctx->keylog_file) {
+        {
+    }
         fprintf(ctx->keylog_file, "%s\n", line);
         fflush(ctx->keylog_file);
     }
@@ -179,12 +173,16 @@ static int _dtls_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
                                     unsigned int* cookie_len) {
     xylem_dtls_ctx_t* ctx = _dtls_get_ctx(ssl);
     if (!ctx) {
+        {
+    }
         return 0;
     }
 
     const uint8_t* msg;
     size_t         msg_len;
     if (_dtls_get_peer_addr(ssl, &msg, &msg_len) < 0) {
+        {
+    }
         return 0;
     }
 
@@ -198,12 +196,16 @@ static int _dtls_cookie_verify_cb(SSL* ssl, const unsigned char* cookie,
                                   unsigned int cookie_len) {
     xylem_dtls_ctx_t* ctx = _dtls_get_ctx(ssl);
     if (!ctx) {
+        {
+    }
         return 0;
     }
 
     const uint8_t* msg;
     size_t         msg_len;
     if (_dtls_get_peer_addr(ssl, &msg, &msg_len) < 0) {
+        {
+    }
         return 0;
     }
 
@@ -212,6 +214,8 @@ static int _dtls_cookie_verify_cb(SSL* ssl, const unsigned char* cookie,
                           msg, msg_len, expected);
 
     if (cookie_len != DTLS_COOKIE_SIZE) {
+        {
+    }
         return 0;
     }
     return CRYPTO_memcmp(cookie, expected, DTLS_COOKIE_SIZE) == 0 ? 1 : 0;
@@ -234,23 +238,26 @@ static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
 }
 
 
-/* ===================================================================
- * Section 5: Context API
- * =================================================================== */
 
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)calloc(1, sizeof(xylem_dtls_ctx_t));
     if (!ctx) {
+        {
+    }
         return NULL;
     }
 
     ctx->ssl_ctx = SSL_CTX_new(DTLS_method());
     if (!ctx->ssl_ctx) {
+        {
+    }
         free(ctx);
         return NULL;
     }
 
     if (RAND_bytes(ctx->cookie_secret, sizeof(ctx->cookie_secret)) != 1) {
+        {
+    }
         SSL_CTX_free(ctx->ssl_ctx);
         free(ctx);
         return NULL;
@@ -274,9 +281,13 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
 
 void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     if (!ctx) {
+        {
+    }
         return;
     }
     if (ctx->keylog_file) {
+        {
+    }
         fclose(ctx->keylog_file);
     }
     SSL_CTX_free(ctx->ssl_ctx);
@@ -286,21 +297,29 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
 
 int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     if (!ctx) {
+        {
+    }
         return -1;
     }
 
     if (ctx->keylog_file) {
+        {
+    }
         fclose(ctx->keylog_file);
         ctx->keylog_file = NULL;
     }
 
     if (!path) {
+        {
+    }
         SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
         return 0;
     }
 
     ctx->keylog_file = fopen(path, "a");
     if (!ctx->keylog_file) {
+        {
+    }
         return -1;
     }
 
@@ -311,6 +330,8 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
 int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
                              const char* cert, const char* key) {
     if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
+        {
+    }
         xylem_loge("dtls ctx: failed to load cert %s", cert);
         return -1;
     }
@@ -324,6 +345,8 @@ int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
 
 int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
+        {
+    }
         xylem_loge("dtls ctx: failed to load CA %s", ca_file);
         return -1;
     }
@@ -339,16 +362,22 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
                             const char** protocols, size_t count) {
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
+        {
+    }
         total += 1 + strlen(protocols[i]);
     }
 
     uint8_t* wire = (uint8_t*)malloc(total);
     if (!wire) {
+        {
+    }
         return -1;
     }
 
     size_t off = 0;
     for (size_t i = 0; i < count; i++) {
+        {
+    }
         size_t plen = strlen(protocols[i]);
         wire[off++] = (uint8_t)plen;
         memcpy(wire + off, protocols[i], plen);
@@ -366,26 +395,33 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
 }
 
 
-/* ===================================================================
- * Section 6: Address comparison and rbtree comparators
- * =================================================================== */
 
 static int _dtls_addr_cmp(const addr_t* a, const addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
+        {
+    }
         return (int)a->storage.ss_family - (int)b->storage.ss_family;
     }
     if (a->storage.ss_family == AF_INET) {
+        {
+    }
         const struct sockaddr_in* sa = (const struct sockaddr_in*)&a->storage;
         const struct sockaddr_in* sb = (const struct sockaddr_in*)&b->storage;
         if (sa->sin_port != sb->sin_port) {
+            {
+        }
             return (int)ntohs(sa->sin_port) - (int)ntohs(sb->sin_port);
         }
         return memcmp(&sa->sin_addr, &sb->sin_addr, 4);
     }
     if (a->storage.ss_family == AF_INET6) {
+        {
+    }
         const struct sockaddr_in6* sa = (const struct sockaddr_in6*)&a->storage;
         const struct sockaddr_in6* sb = (const struct sockaddr_in6*)&b->storage;
         if (sa->sin6_port != sb->sin6_port) {
+            {
+        }
             return (int)ntohs(sa->sin6_port) - (int)ntohs(sb->sin6_port);
         }
         return memcmp(&sa->sin6_addr, &sb->sin6_addr, 16);
@@ -414,30 +450,38 @@ static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_listener_t* ln,
                                               addr_t* addr) {
     rbtree_node_t* node = rbtree_find(&ln->sessions, addr);
     if (!node) {
+        {
+    }
         return NULL;
     }
     return rbtree_entry(node, xylem_dtls_conn_t, server_node);
 }
 
 
-/* ===================================================================
- * Section 7: Inbox ring buffer functions
- * =================================================================== */
 
 static dtls_session_inbox_t* _inbox_create(scheduler_t* sched) {
     dtls_session_inbox_t* ib = calloc(1, sizeof(*ib));
-    if (!ib) return NULL;
+    if (!ib) {
+        return NULL;
+    }
     ib->cap   = DTLS_INBOX_CAP;
     ib->slots = calloc(ib->cap, sizeof(dtls_dgram_t*));
-    if (!ib->slots) { free(ib); return NULL; }
+    if (!ib->slots) {
+        free(ib);
+        return NULL;
+    }
     ib->sched = sched;
     ib->deadline_timer = sched_timer_create(sched);
     return ib;
 }
 
 static void _inbox_destroy(dtls_session_inbox_t* ib) {
-    if (!ib) return;
+    if (!ib) {
+        return;
+    }
     while (ib->head != ib->tail) {
+        {
+    }
         free(ib->slots[ib->head & (ib->cap - 1)]);
         ib->head++;
     }
@@ -447,14 +491,21 @@ static void _inbox_destroy(dtls_session_inbox_t* ib) {
 }
 
 static void _inbox_push(dtls_session_inbox_t* ib, dtls_dgram_t* dgram) {
-    if (ib->closed) { free(dgram); return; }
+    if (ib->closed) {
+        free(dgram);
+        return;
+    }
     uint32_t mask = ib->cap - 1;
     if (ib->tail - ib->head >= ib->cap) {
+        {
+    }
         free(dgram); return;
     }
     ib->slots[ib->tail & mask] = dgram;
     ib->tail++;
     if (ib->parked) {
+        {
+    }
         mco_coro* co = ib->parked;
         ib->parked = NULL;
         scheduler_schedule(ib->sched, co);
@@ -469,9 +520,15 @@ static bool _inbox_park_cb(mco_coro* co, void* arg) {
 
 static dtls_dgram_t* _inbox_pop(dtls_session_inbox_t* ib) {
     while (ib->head == ib->tail) {
-        if (ib->closed) return NULL;
+        {
+    }
+        if (ib->closed) {
+            return NULL;
+        }
         scheduler_park(ib->sched, _inbox_park_cb, ib);
-        if (ib->closed) return NULL;
+        if (ib->closed) {
+            return NULL;
+        }
     }
     uint32_t mask = ib->cap - 1;
     dtls_dgram_t* dgram = ib->slots[ib->head & mask];
@@ -484,6 +541,8 @@ static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
     dtls_session_inbox_t* ib = ud;
     ib->timed_out = true;
     if (ib->parked) {
+        {
+    }
         mco_coro* co = ib->parked;
         ib->parked = NULL;
         scheduler_schedule(ib->sched, co);
@@ -493,21 +552,35 @@ static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
 static dtls_dgram_t* _inbox_pop_with_deadline(
     dtls_session_inbox_t* ib, uint64_t deadline_ms) {
     while (ib->head == ib->tail) {
-        if (ib->closed) return NULL;
+        {
+    }
+        if (ib->closed) {
+            return NULL;
+        }
         ib->timed_out = false;
         if (deadline_ms > 0) {
+            {
+        }
             uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-            if (now >= deadline_ms) return NULL;
+            if (now >= deadline_ms) {
+                return NULL;
+            }
             sched_timer_start(ib->deadline_timer,
                               _inbox_deadline_cb, ib,
                               deadline_ms - now, 0);
         }
         scheduler_park(ib->sched, _inbox_park_cb, ib);
         if (deadline_ms > 0) {
+            {
+        }
             sched_timer_stop(ib->deadline_timer);
         }
-        if (ib->timed_out) return NULL;
-        if (ib->closed) return NULL;
+        if (ib->timed_out) {
+            return NULL;
+        }
+        if (ib->closed) {
+            return NULL;
+        }
     }
     uint32_t mask = ib->cap - 1;
     dtls_dgram_t* dgram = ib->slots[ib->head & mask];
@@ -516,9 +589,13 @@ static dtls_dgram_t* _inbox_pop_with_deadline(
 }
 
 static void _inbox_close(dtls_session_inbox_t* ib) {
-    if (!ib) return;
+    if (!ib) {
+        return;
+    }
     ib->closed = true;
     if (ib->parked) {
+        {
+    }
         mco_coro* co = ib->parked;
         ib->parked = NULL;
         scheduler_schedule(ib->sched, co);
@@ -526,19 +603,20 @@ static void _inbox_close(dtls_session_inbox_t* ib) {
 }
 
 
-/* ===================================================================
- * Section 8: Accept queue functions
- * =================================================================== */
 
 static void _accept_queue_push(xylem_dtls_listener_t* ln,
                                xylem_dtls_conn_t* conn) {
     uint32_t mask = ln->accept_cap - 1;
     if (ln->accept_tail - ln->accept_head >= ln->accept_cap) {
+        {
+    }
         return;
     }
     ln->accept_slots[ln->accept_tail & mask] = conn;
     ln->accept_tail++;
     if (ln->accept_parked) {
+        {
+    }
         mco_coro* co = ln->accept_parked;
         ln->accept_parked = NULL;
         scheduler_schedule(ln->sched, co);
@@ -553,9 +631,15 @@ static bool _accept_queue_park_cb(mco_coro* co, void* arg) {
 
 static xylem_dtls_conn_t* _accept_queue_pop(xylem_dtls_listener_t* ln) {
     while (ln->accept_head == ln->accept_tail) {
-        if (ln->accept_closed) return NULL;
+        {
+    }
+        if (ln->accept_closed) {
+            return NULL;
+        }
         scheduler_park(ln->sched, _accept_queue_park_cb, ln);
-        if (ln->accept_closed) return NULL;
+        if (ln->accept_closed) {
+            return NULL;
+        }
     }
     uint32_t mask = ln->accept_cap - 1;
     xylem_dtls_conn_t* conn = ln->accept_slots[ln->accept_head & mask];
@@ -566,6 +650,8 @@ static xylem_dtls_conn_t* _accept_queue_pop(xylem_dtls_listener_t* ln) {
 static void _accept_queue_close(xylem_dtls_listener_t* ln) {
     ln->accept_closed = true;
     if (ln->accept_parked) {
+        {
+    }
         mco_coro* co = ln->accept_parked;
         ln->accept_parked = NULL;
         scheduler_schedule(ln->sched, co);
@@ -573,14 +659,13 @@ static void _accept_queue_close(xylem_dtls_listener_t* ln) {
 }
 
 
-/* ===================================================================
- * Section 9: Server flush helper
- * =================================================================== */
 
 static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[16384];
     int  n;
     while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
+        {
+    }
         socklen_t addrlen =
             (dtls->peer_addr.storage.ss_family == AF_INET6)
                 ? (socklen_t)sizeof(struct sockaddr_in6)
@@ -592,16 +677,17 @@ static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
 }
 
 
-/* ===================================================================
- * Section 10: SSL init helper for server sessions
- * =================================================================== */
 
 static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
     dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
-    if (!dtls->ssl) return -1;
+    if (!dtls->ssl) {
+        return -1;
+    }
     dtls->read_bio  = BIO_new(BIO_s_mem());
     dtls->write_bio = BIO_new(BIO_s_mem());
     if (!dtls->read_bio || !dtls->write_bio) {
+        {
+    }
         BIO_free(dtls->read_bio);
         BIO_free(dtls->write_bio);
         SSL_free(dtls->ssl);
@@ -613,19 +699,24 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
 }
 
 
-/* ===================================================================
- * Section 11: Client path
- * =================================================================== */
 
 static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
     for (;;) {
+        {
+    }
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
-        if (ret == 1) return 0;
+        if (ret == 1) {
+            return 0;
+        }
         int err = SSL_get_error(dtls->ssl, ret);
         if (err == SSL_ERROR_WANT_READ) {
+            {
+        }
             iowait_result_t r = iowait_read(dtls->waiter);
             if (r != IOWAIT_READY) {
+                {
+            }
                 dtls->err = (r == IOWAIT_TIMEOUT)
                     ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
@@ -633,6 +724,8 @@ static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
         } else if (err == SSL_ERROR_WANT_WRITE) {
             iowait_result_t r = iowait_write(dtls->waiter);
             if (r != IOWAIT_READY) {
+                {
+            }
                 dtls->err = (r == IOWAIT_TIMEOUT)
                     ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
@@ -655,15 +748,23 @@ static void _dtls_cache_alpn(xylem_dtls_conn_t* dtls) {
     unsigned int         alpn_len   = 0;
     SSL_get0_alpn_selected(dtls->ssl, &alpn_proto, &alpn_len);
     if (alpn_proto && alpn_len > 0 && alpn_len < sizeof(dtls->alpn)) {
+        {
+    }
         memcpy(dtls->alpn, alpn_proto, alpn_len);
         dtls->alpn[alpn_len] = '\0';
     }
 }
 
 static void _dtls_client_free(xylem_dtls_conn_t* dtls) {
-    if (dtls->ssl) SSL_free(dtls->ssl);
-    if (dtls->waiter) iowait_destroy(dtls->waiter);
+    if (dtls->ssl) {
+        SSL_free(dtls->ssl);
+    }
+    if (dtls->waiter) {
+        iowait_destroy(dtls->waiter);
+    }
     if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        {
+    }
         platform_socket_close(dtls->fd);
     }
     free(dtls);
@@ -679,12 +780,17 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     platform_sock_t fd = platform_socket_dial(
         host, port_str, SOCK_DGRAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        {
+    }
         xylem_loge("dtls dial: socket failed for %s:%u", host, port);
         return NULL;
     }
 
     xylem_dtls_conn_t* dtls = calloc(1, sizeof(*dtls));
-    if (!dtls) { platform_socket_close(fd); return NULL; }
+    if (!dtls) {
+        platform_socket_close(fd);
+        return NULL;
+    }
 
     dtls->fd  = fd;
     dtls->ctx = ctx;
@@ -692,6 +798,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 
     dtls->waiter = iowait_create(fd);
     if (!dtls->waiter) {
+        {
+    }
         platform_socket_close(fd);
         free(dtls);
         return NULL;
@@ -706,6 +814,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 
     dtls->ssl = SSL_new(ctx->ssl_ctx);
     if (!dtls->ssl) {
+        {
+    }
         _dtls_client_free(dtls);
         return NULL;
     }
@@ -713,6 +823,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     SSL_set_connect_state(dtls->ssl);
 
     if (_dtls_client_do_handshake(dtls) != 0) {
+        {
+    }
         _dtls_client_free(dtls);
         return NULL;
     }
@@ -727,19 +839,29 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        {
+    }
         dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     for (;;) {
+        {
+    }
         ERR_clear_error();
         int n = SSL_read(dtls->ssl, buf, (int)len);
-        if (n > 0) return n;
+        if (n > 0) {
+            return n;
+        }
         int err = SSL_get_error(dtls->ssl, n);
         if (err == SSL_ERROR_ZERO_RETURN) {
+            {
+        }
             dtls->err = XYLEM_ERR_PEER_CLOSED;
             return 0;
         }
         if (err == SSL_ERROR_WANT_READ) {
+            {
+        }
             iowait_result_t r = iowait_read(dtls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
@@ -751,6 +873,8 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
             continue;
         }
         if (err == SSL_ERROR_WANT_WRITE) {
+            {
+        }
             iowait_result_t r = iowait_write(dtls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
@@ -769,15 +893,23 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
 static int _dtls_client_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        {
+    }
         dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     for (;;) {
+        {
+    }
         ERR_clear_error();
         int n = SSL_write(dtls->ssl, data, (int)len);
-        if (n > 0) return 0;
+        if (n > 0) {
+            return 0;
+        }
         int err = SSL_get_error(dtls->ssl, n);
         if (err == SSL_ERROR_WANT_WRITE) {
+            {
+        }
             iowait_result_t r = iowait_write(dtls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
@@ -789,6 +921,8 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
             continue;
         }
         if (err == SSL_ERROR_WANT_READ) {
+            {
+        }
             iowait_result_t r = iowait_read(dtls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
@@ -805,22 +939,23 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
 }
 
 static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
-    if (atomic_exchange(&dtls->closed, true)) return;
+    if (atomic_exchange(&dtls->closed, true)) {
+        return;
+    }
     iowait_close(dtls->waiter);
     _dtls_client_free(dtls);
 }
 
 
-/* ===================================================================
- * Section 12: Server path
- * =================================================================== */
 
 static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls);
 
 static void _dtls_retransmit_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     xylem_dtls_conn_t* dtls = ud;
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) return;
+    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        return;
+    }
     DTLSv1_handle_timeout(dtls->ssl);
     _dtls_server_flush_write_bio(dtls);
     _dtls_arm_retransmit(dtls);
@@ -829,22 +964,30 @@ static void _dtls_retransmit_cb(sched_timer_t* timer, void* ud) {
 static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls) {
     struct timeval tv;
     if (DTLSv1_get_timeout(dtls->ssl, &tv)) {
+        {
+    }
         uint64_t ms = (uint64_t)tv.tv_sec * 1000 +
                       (uint64_t)tv.tv_usec / 1000;
-        if (ms == 0) ms = 1;
+        if (ms == 0) {
+            ms = 1;
+        }
         sched_timer_start(dtls->retransmit_timer,
                           _dtls_retransmit_cb, dtls, ms, 0);
     }
 }
 
 static void _dtls_stop_retransmit(xylem_dtls_conn_t* dtls) {
-    if (dtls->retransmit_timer) sched_timer_stop(dtls->retransmit_timer);
+    if (dtls->retransmit_timer) {
+        sched_timer_stop(dtls->retransmit_timer);
+    }
 }
 
 static void _dtls_handshake_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     xylem_dtls_conn_t* dtls = ud;
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) return;
+    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        return;
+    }
     dtls->err = XYLEM_ERR_TIMEOUT;
     _inbox_close(dtls->inbox);
 }
@@ -854,6 +997,8 @@ static void _dtls_handshake_coro(void* arg) {
     xylem_dtls_listener_t* ln = dtls->listener;
 
     if (_dtls_init_ssl(dtls) != 0) {
+        {
+    }
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
@@ -871,8 +1016,12 @@ static void _dtls_handshake_coro(void* arg) {
 
     bool success = false;
     while (!dtls->handshake_done) {
+        {
+    }
         dtls_dgram_t* dgram = _inbox_pop(dtls->inbox);
-        if (!dgram) break;
+        if (!dgram) {
+            break;
+        }
 
         BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
         free(dgram);
@@ -880,6 +1029,8 @@ static void _dtls_handshake_coro(void* arg) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
         if (ret == 1) {
+            {
+        }
             /* Flush any final handshake message (e.g. Finished) that
              * OpenSSL buffered into the write BIO on success. Without
              * this the client never receives the server Finished and
@@ -892,6 +1043,8 @@ static void _dtls_handshake_coro(void* arg) {
 
         int err = SSL_get_error(dtls->ssl, ret);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            {
+        }
             _dtls_server_flush_write_bio(dtls);
             _dtls_arm_retransmit(dtls);
             continue;
@@ -906,6 +1059,8 @@ static void _dtls_handshake_coro(void* arg) {
     sched_timer_stop(dtls->handshake_timer);
 
     if (!success) {
+        {
+    }
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;
         sched_timer_destroy(dtls->retransmit_timer);
@@ -927,17 +1082,23 @@ static void _dtls_dispatcher(void* arg) {
     char buf[65535];
 
     while (!atomic_load_explicit(&ln->closing, memory_order_acquire)) {
+        {
+    }
         struct sockaddr_storage from_ss;
         socklen_t from_len = sizeof(from_ss);
         ssize_t n = platform_socket_recvfrom(
             ln->fd, buf, sizeof(buf), &from_ss, &from_len);
 
         if (n < 0) {
+            {
+        }
             int err = platform_socket_get_lasterror();
             if (err == PLATFORM_SO_ERROR_EAGAIN
                 || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 iowait_result_t r = iowait_read(ln->waiter);
-                if (r != IOWAIT_READY) break;
+                if (r != IOWAIT_READY) {
+                    break;
+                }
                 continue;
             }
             continue;
@@ -951,8 +1112,12 @@ static void _dtls_dispatcher(void* arg) {
         mtx_unlock(&ln->sessions_mtx);
 
         if (dtls) {
+            {
+        }
             dtls_dgram_t* dgram = malloc(sizeof(dtls_dgram_t) + (size_t)n);
             if (dgram) {
+                {
+            }
                 dgram->len = (size_t)n;
                 memcpy(dgram->data, buf, (size_t)n);
                 _inbox_push(dtls->inbox, dgram);
@@ -961,16 +1126,23 @@ static void _dtls_dispatcher(void* arg) {
         }
 
         dtls = calloc(1, sizeof(*dtls));
-        if (!dtls) continue;
+        if (!dtls) {
+            continue;
+        }
         dtls->ctx       = ln->ctx;
         dtls->peer_addr = from_addr;
         dtls->listener  = ln;
         dtls->inbox     = _inbox_create(ln->sched);
-        if (!dtls->inbox) { free(dtls); continue; }
+        if (!dtls->inbox) {
+            free(dtls);
+            continue;
+        }
 
         dtls->retransmit_timer = sched_timer_create(ln->sched);
         dtls->handshake_timer  = sched_timer_create(ln->sched);
         if (!dtls->retransmit_timer || !dtls->handshake_timer) {
+            {
+        }
             sched_timer_destroy(dtls->retransmit_timer);
             sched_timer_destroy(dtls->handshake_timer);
             _inbox_destroy(dtls->inbox);
@@ -980,6 +1152,8 @@ static void _dtls_dispatcher(void* arg) {
 
         dtls_dgram_t* dgram = malloc(sizeof(dtls_dgram_t) + (size_t)n);
         if (!dgram) {
+            {
+        }
             sched_timer_destroy(dtls->retransmit_timer);
             sched_timer_destroy(dtls->handshake_timer);
             _inbox_destroy(dtls->inbox);
@@ -1007,20 +1181,29 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     platform_sock_t fd =
         platform_socket_listen(host, port_str, SOCK_DGRAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        {
+    }
         xylem_loge("dtls listen: failed for %s:%u", host, port);
         return NULL;
     }
 
     xylem_dtls_listener_t* ln = calloc(1, sizeof(*ln));
-    if (!ln) { platform_socket_close(fd); return NULL; }
+    if (!ln) {
+        platform_socket_close(fd);
+        return NULL;
+    }
 
     ln->fd    = fd;
     ln->ctx   = ctx;
     ln->sched = runtime_get_scheduler();
-    if (opts) ln->opts = *opts;
+    if (opts) {
+        ln->opts = *opts;
+    }
 
     ln->waiter = iowait_create(fd);
     if (!ln->waiter) {
+        {
+    }
         platform_socket_close(fd);
         free(ln);
         return NULL;
@@ -1034,6 +1217,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     ln->accept_slots = calloc(ln->accept_cap,
                               sizeof(xylem_dtls_conn_t*));
     if (!ln->accept_slots) {
+        {
+    }
         iowait_destroy(ln->waiter);
         platform_socket_close(fd);
         free(ln);
@@ -1049,13 +1234,12 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
 }
 
 
-/* ===================================================================
- * Section 13: Server recv/send + unified API
- * =================================================================== */
 
 static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        {
+    }
         dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
@@ -1063,7 +1247,11 @@ retry:;
     dtls_dgram_t* dgram = _inbox_pop_with_deadline(
         dtls->inbox, dtls->rd_deadline_ms);
     if (!dgram) {
+        {
+    }
         if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+            {
+        }
             dtls->err = XYLEM_ERR_CLOSED;
         } else {
             dtls->err = XYLEM_ERR_TIMEOUT;
@@ -1075,14 +1263,20 @@ retry:;
 
     ERR_clear_error();
     int n = SSL_read(dtls->ssl, buf, (int)len);
-    if (n > 0) return n;
+    if (n > 0) {
+        return n;
+    }
 
     int err = SSL_get_error(dtls->ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN) {
+        {
+    }
         dtls->err = XYLEM_ERR_PEER_CLOSED;
         return 0;
     }
-    if (err == SSL_ERROR_WANT_READ) goto retry;
+    if (err == SSL_ERROR_WANT_READ) {
+        goto retry;
+    }
     dtls->err = XYLEM_ERR_DTLS;
     return -1;
 }
@@ -1090,12 +1284,16 @@ retry:;
 static int _dtls_server_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        {
+    }
         dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     ERR_clear_error();
     int n = SSL_write(dtls->ssl, data, (int)len);
     if (n <= 0) {
+        {
+    }
         dtls->err = XYLEM_ERR_DTLS;
         return -1;
     }
@@ -1105,6 +1303,8 @@ static int _dtls_server_send(xylem_dtls_conn_t* dtls,
 
 int64_t xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, size_t len) {
     if (dtls->listener) {
+        {
+    }
         return _dtls_server_recv(dtls, buf, len);
     }
     return _dtls_client_recv(dtls, buf, len);
@@ -1113,17 +1313,25 @@ int64_t xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, size_t len) {
 int xylem_dtls_send(xylem_dtls_conn_t* dtls,
                     const void* data, size_t len) {
     if (dtls->listener) {
+        {
+    }
         return _dtls_server_send(dtls, data, len);
     }
     return _dtls_client_send(dtls, data, len);
 }
 
 static void _dtls_server_session_close(xylem_dtls_conn_t* dtls) {
-    if (atomic_exchange(&dtls->closed, true)) return;
+    if (atomic_exchange(&dtls->closed, true)) {
+        return;
+    }
     _dtls_stop_retransmit(dtls);
-    if (dtls->handshake_timer) sched_timer_stop(dtls->handshake_timer);
+    if (dtls->handshake_timer) {
+        sched_timer_stop(dtls->handshake_timer);
+    }
 
     if (dtls->handshake_done && dtls->ssl) {
+        {
+    }
         SSL_shutdown(dtls->ssl);
         _dtls_server_flush_write_bio(dtls);
     }
@@ -1135,7 +1343,10 @@ static void _dtls_server_session_close(xylem_dtls_conn_t* dtls) {
     rbtree_remove(&ln->sessions, &dtls->server_node);
     mtx_unlock(&ln->sessions_mtx);
 
-    if (dtls->ssl) { SSL_free(dtls->ssl); dtls->ssl = NULL; }
+    if (dtls->ssl) {
+        SSL_free(dtls->ssl);
+        dtls->ssl = NULL;
+    }
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     _inbox_destroy(dtls->inbox);
@@ -1144,6 +1355,8 @@ static void _dtls_server_session_close(xylem_dtls_conn_t* dtls) {
 
 void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
     if (dtls->listener) {
+        {
+    }
         _dtls_server_session_close(dtls);
     } else {
         _dtls_client_close(dtls);
@@ -1151,10 +1364,14 @@ void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
 }
 
 void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
-    if (atomic_exchange(&ln->closing, true)) return;
+    if (atomic_exchange(&ln->closing, true)) {
+        return;
+    }
 
     mtx_lock(&ln->sessions_mtx);
     while (!rbtree_empty(&ln->sessions)) {
+        {
+    }
         rbtree_node_t* node = rbtree_min(&ln->sessions);
         xylem_dtls_conn_t* dtls =
             rbtree_entry(node, xylem_dtls_conn_t, server_node);
@@ -1178,6 +1395,8 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
 void xylem_dtls_set_read_deadline(
     xylem_dtls_conn_t* dtls, uint64_t deadline_ms) {
     if (dtls->listener) {
+        {
+    }
         dtls->rd_deadline_ms = deadline_ms;
     } else {
         iowait_set_rd_deadline(dtls->waiter, deadline_ms);
@@ -1187,6 +1406,8 @@ void xylem_dtls_set_read_deadline(
 void xylem_dtls_set_write_deadline(
     xylem_dtls_conn_t* dtls, uint64_t deadline_ms) {
     if (dtls->listener) {
+        {
+    }
         dtls->wr_deadline_ms = deadline_ms;
     } else {
         iowait_set_wr_deadline(dtls->waiter, deadline_ms);
@@ -1213,8 +1434,9 @@ int xylem_dtls_local_addr(
     platform_sock_t fd = dtls->listener ? dtls->listener->fd : dtls->fd;
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
-    if (getsockname(fd, (struct sockaddr*)&addr.storage, &len) != 0)
+    if (getsockname(fd, (struct sockaddr*)&addr.storage, &len) != 0) {
         return -1;
+    }
     return addr_ntop(&addr, host, host_len, port);
 }
 
@@ -1223,7 +1445,8 @@ int xylem_dtls_listener_addr(
     char* host, size_t host_len, uint16_t* port) {
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
-    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0)
+    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
         return -1;
+    }
     return addr_ntop(&addr, host, host_len, port);
 }

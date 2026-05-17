@@ -53,12 +53,12 @@ static void _echo_server(void* arg) {
     char     buf[64];
     char     sender_host[46];
     uint16_t sender_port = 0;
-    int64_t  n = xylem_udp_recvfrom(
+    int64_t  n = xylem_udp_recv(
         udp, buf, sizeof(buf), sender_host, sizeof(sender_host), &sender_port);
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "hello", 5) == 0);
 
-    ASSERT(xylem_udp_sendto(
+    ASSERT(xylem_udp_send(
         udp, "world", 5, sender_host, sender_port) == 0);
 
     xylem_udp_close(udp);
@@ -72,10 +72,10 @@ static void _echo_client(void* arg) {
     xylem_udp_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
 
-    ASSERT(xylem_udp_sendto(udp, "hello", 5, NULL, 0) == 0);
+    ASSERT(xylem_udp_send(udp, "hello", 5, NULL, 0) == 0);
 
     char    buf[64];
-    int64_t n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    int64_t n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "world", 5) == 0);
 
@@ -113,7 +113,7 @@ static void _addr_sender(void* arg) {
 
     xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_b);
     ASSERT(udp != NULL);
-    ASSERT(xylem_udp_sendto(udp, "ping", 4, UDP_HOST, ctx->port_a) == 0);
+    ASSERT(xylem_udp_send(udp, "ping", 4, UDP_HOST, ctx->port_a) == 0);
     xylem_udp_close(udp);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -127,7 +127,7 @@ static void _addr_receiver(void* arg) {
     char     buf[64];
     char     host[46];
     uint16_t port = 0;
-    int64_t  n = xylem_udp_recvfrom(udp, buf, sizeof(buf), host, sizeof(host), &port);
+    int64_t  n = xylem_udp_recv(udp, buf, sizeof(buf), host, sizeof(host), &port);
     ASSERT(n == 4);
     ASSERT(port == ctx->port_b);
 
@@ -169,7 +169,7 @@ static void _timeout_coro(void* arg) {
     xylem_udp_set_read_deadline(udp, deadline);
 
     char    buf[64];
-    int64_t n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    int64_t n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
     ASSERT(xylem_udp_get_error(udp) == XYLEM_ERR_TIMEOUT);
 
@@ -205,7 +205,7 @@ static void _close_recv_coro(void* arg) {
     xylem_channel_send(ctx->ready, udp);
 
     char    buf[64];
-    int64_t n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    int64_t n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
 
     xylem_waitgroup_done(ctx->wg);
@@ -251,9 +251,9 @@ static void _boundary_sender(void* arg) {
     xylem_udp_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
 
-    ASSERT(xylem_udp_sendto(udp, "A", 1, NULL, 0) == 0);
-    ASSERT(xylem_udp_sendto(udp, "BB", 2, NULL, 0) == 0);
-    ASSERT(xylem_udp_sendto(udp, "CCC", 3, NULL, 0) == 0);
+    ASSERT(xylem_udp_send(udp, "A", 1, NULL, 0) == 0);
+    ASSERT(xylem_udp_send(udp, "BB", 2, NULL, 0) == 0);
+    ASSERT(xylem_udp_send(udp, "CCC", 3, NULL, 0) == 0);
 
     xylem_udp_close(udp);
     xylem_waitgroup_done(ctx->wg);
@@ -268,13 +268,13 @@ static void _boundary_receiver(void* arg) {
     char buf[64];
     int64_t n;
 
-    n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 1 && buf[0] == 'A');
 
-    n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 2 && memcmp(buf, "BB", 2) == 0);
 
-    n = xylem_udp_recvfrom(udp, buf, sizeof(buf), NULL, 0, NULL);
+    n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 3 && memcmp(buf, "CCC", 3) == 0);
 
     xylem_udp_close(udp);
