@@ -18,1145 +18,638 @@
  *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  *  IN THE SOFTWARE.
  */
-#include "runtime/runtime.h"
+
 #include "xylem/net/xylem-uds.h"
-#include "xylem/xylem-logger.h"
+
 #include "xylem/encoding/xylem-varint.h"
-#include "container/queue.h"
-#include "container/list.h"
+#include "xylem/xylem-error.h"
+#include "xylem/xylem-logger.h"
+#include "xylem/xylem-utils.h"
 
 #include "platform/platform-socket.h"
+#include "runtime/iowait.h"
+#include "runtime/runtime.h"
 
-#include <inttypes.h>
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define UDS_DEFAULT_READ_BUF_SIZE 65536
-
-#define ERRMSG_NORMAL   "normal"
-#define ERRMSG_CLOSED   "closed normally"
-#define ERRMSG_INTERNAL "internal error"
-/**
- * sun_path is 104 bytes on macOS, 108 on Linux/Windows.
- * Use the smallest limit for cross-platform safety.
- */
-#define UDS_MAX_PATH              104
-
-typedef enum {
-    UDS_STATE_CONNECTING,
-    UDS_STATE_CONNECTED,
-    UDS_STATE_CLOSING,
-    UDS_STATE_CLOSED,
-} _uds_state_t;
-
-typedef struct _uds_write_req_s {
-    queue_node_t node;
-    const void*        data;
-    size_t             len;
-    size_t             offset;
-} _uds_write_req_t;
-
-typedef struct _uds_write_done_s {
-    xylem_uds_conn_t* conn;
-    const void*       data;
-    size_t            len;
-} _uds_write_done_t;
+#define DEFAULT_READ_BUF_SIZE 65536
+#define UDS_MAX_PATH          104
 
 struct xylem_uds_conn_s {
-    loop_t*         loop;
-    loop_io_t*      io;
-    platform_sock_t       fd;
-    xylem_uds_handler_t*  handler;
-    xylem_uds_opts_t      opts;
-    _uds_state_t          state;
-    _Atomic int32_t       refcount;
-    uint8_t*              read_buf;
-    size_t                read_len;
-    size_t                read_cap;
-    queue_t         write_queue;
-    loop_timer_t*   read_timer;
-    loop_timer_t*   write_timer;
-    loop_timer_t*   heartbeat_timer;
-    list_node_t     server_node;
-    xylem_uds_server_t*   server;
-    void*                 userdata;
+    iowait_t*              waiter;
+    platform_sock_t        fd;
+    xylem_uds_frame_opts_t frame_opts;
+    char*                  read_buf;
+    size_t                 read_buf_cap;
+    size_t                 read_buf_pos;
+    size_t                 read_buf_len;
+    xylem_err_t            err;
+    _Atomic int32_t        refcnt;
+    _Atomic bool           closed;
 };
 
-struct xylem_uds_server_s {
-    loop_t*         loop;
-    loop_io_t*      io;
-    platform_sock_t       fd;
-    xylem_uds_handler_t*  handler;
-    xylem_uds_opts_t      opts;
-    list_t          connections;
-    char                  path[UDS_MAX_PATH];
-    void*                 userdata;
-    bool                  closing;
+struct xylem_uds_listener_s {
+    iowait_t*       waiter;
+    platform_sock_t fd;
+    char            path[UDS_MAX_PATH];
+    _Atomic int32_t refcnt;
+    _Atomic bool    closing;
 };
 
-/**
- * Extract one complete frame from the connection's read buffer.
- * Returns > 0 on success (bytes consumed), 0 if data insufficient,
- * < 0 on error.
- */
-static ssize_t _uds_extract_frame(xylem_uds_conn_t* conn,
-                                  void** frame_out,
-                                  size_t* frame_len_out) {
-    uint8_t* data  = conn->read_buf;
-    size_t   avail = conn->read_len;
-
-    if (avail == 0) {
-        return 0;
-    }
-
-    switch (conn->opts.framing.type) {
-
-    case XYLEM_UDS_FRAME_NONE: {
-        *frame_out     = data;
-        *frame_len_out = avail;
-        return (ssize_t)avail;
-    }
-
-    case XYLEM_UDS_FRAME_FIXED: {
-        size_t fsz = conn->opts.framing.fixed.frame_size;
-        if (fsz == 0) {
-            xylem_loge("uds conn fd=%d frame_fixed: frame_size=0",
-                       (int)conn->fd);
-            return -1;
-        }
-        if (avail < fsz) {
-            return 0;
-        }
-        *frame_out     = data;
-        *frame_len_out = fsz;
-        return (ssize_t)fsz;
-    }
-
-    case XYLEM_UDS_FRAME_LENGTH: {
-        uint32_t hdr_sz  = conn->opts.framing.length.header_size;
-        uint32_t len_off = conn->opts.framing.length.field_offset;
-        uint32_t len_sz  = conn->opts.framing.length.field_size;
-        int32_t  adj     = conn->opts.framing.length.adjustment;
-
-        if (avail < hdr_sz) {
-            return 0;
-        }
-
-        uint32_t effective_hdr = hdr_sz;
-        uint64_t payload_len   = 0;
-
-        if (conn->opts.framing.length.coding == XYLEM_UDS_LENGTH_FIXEDINT) {
-            if (len_sz == 0 || len_sz > 8) {
-                xylem_loge("uds conn fd=%d frame_length: invalid "
-                           "field_size=%u", (int)conn->fd, len_sz);
-                return -1;
-            }
-            if (len_off > avail || len_sz > avail - len_off) {
-                return 0;
-            }
-            if (conn->opts.framing.length.field_big_endian) {
-                for (uint32_t i = 0; i < len_sz; i++) {
-                    payload_len = (payload_len << 8) | data[len_off + i];
-                }
-            } else {
-                for (uint32_t i = 0; i < len_sz; i++) {
-                    payload_len |=
-                        (uint64_t)data[len_off + i] << (i * 8);
-                }
-            }
-        } else {
-            size_t pos = (size_t)len_off;
-            if (!xylem_varint_decode(data, avail, &pos, &payload_len)) {
-                if (avail < hdr_sz + 10) {
-                    return 0;
-                }
-                return -1;
-            }
-            uint32_t varint_bytes = (uint32_t)(pos - len_off);
-            if (hdr_sz + varint_bytes < len_sz) {
-                xylem_loge("uds conn fd=%d frame_length: varint underflow",
-                           (int)conn->fd);
-                return -1;
-            }
-            effective_hdr = hdr_sz + varint_bytes - len_sz;
-        }
-
-        if (payload_len > (uint64_t)INT32_MAX) {
-            xylem_loge("uds conn fd=%d frame_length: payload_len overflow",
-                       (int)conn->fd);
-            return -1;
-        }
-
-        int64_t frame_size = (int64_t)effective_hdr +
-                             (int64_t)payload_len + (int64_t)adj;
-        if (frame_size <= 0 || (uint64_t)frame_size <= effective_hdr) {
-            xylem_loge("uds conn fd=%d frame_length: frame_size=%"
-                       PRId64 " invalid", (int)conn->fd, frame_size);
-            return -1;
-        }
-
-        size_t total = (size_t)frame_size;
-        if (avail < total) {
-            return 0;
-        }
-
-        *frame_out     = data + effective_hdr;
-        *frame_len_out = total - effective_hdr;
-        return (ssize_t)total;
-    }
-
-    case XYLEM_UDS_FRAME_DELIM: {
-        const char* delim     = conn->opts.framing.delim.delim;
-        size_t      delim_len = conn->opts.framing.delim.delim_len;
-        if (!delim || delim_len == 0) {
-            xylem_loge("uds conn fd=%d frame_delim: delim is NULL or "
-                       "empty", (int)conn->fd);
-            return -1;
-        }
-
-        ssize_t found_at = -1;
-        if (delim_len == 1) {
-            const void* p = memchr(data, delim[0], avail);
-            if (p) {
-                found_at = (ssize_t)((const uint8_t*)p - data);
-            }
-        } else {
-            for (size_t i = 0; i + delim_len <= avail; i++) {
-                if (memcmp(data + i, delim, delim_len) == 0) {
-                    found_at = (ssize_t)i;
-                    break;
-                }
-            }
-        }
-
-        if (found_at < 0) {
-            return 0;
-        }
-
-        size_t frame_len   = (size_t)found_at;
-        size_t consume_len = frame_len + delim_len;
-
-        *frame_out     = (frame_len > 0) ? data : NULL;
-        *frame_len_out = frame_len;
-        return (ssize_t)consume_len;
-    }
-
-    case XYLEM_UDS_FRAME_CUSTOM: {
-        if (!conn->opts.framing.custom.parse) {
-            xylem_loge("uds conn fd=%d frame_custom: parse is NULL",
-                       (int)conn->fd);
-            return -1;
-        }
-
-        int rc = conn->opts.framing.custom.parse(data, avail);
-
-        if (rc > 0) {
-            if ((size_t)rc > avail) {
-                xylem_loge("uds conn fd=%d frame_custom: parse returned "
-                           "%d > avail %zu", (int)conn->fd, rc, avail);
-                return -1;
-            }
-            *frame_out     = data;
-            *frame_len_out = (size_t)rc;
-            return rc;
-        }
-
-        return rc;
-    }
-
-    default:
-        return -1;
-    }
+static void _uds_conn_ref(xylem_uds_conn_t* uds) {
+    atomic_fetch_add_explicit(&uds->refcnt, 1, memory_order_relaxed);
 }
 
-static void _uds_read_timeout_cb(loop_t* loop,
-                                 loop_timer_t* timer,
-                                 void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-
-    xylem_logw("uds conn fd=%d read timeout", (int)conn->fd);
-    if (conn->handler && conn->handler->on_timeout) {
-        conn->handler->on_timeout(conn, XYLEM_UDS_TIMEOUT_READ);
-    }
-}
-
-static void _uds_write_timeout_cb(loop_t* loop,
-                                  loop_timer_t* timer,
-                                  void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-
-    xylem_logw("uds conn fd=%d write timeout", (int)conn->fd);
-    if (conn->handler && conn->handler->on_timeout) {
-        conn->handler->on_timeout(conn, XYLEM_UDS_TIMEOUT_WRITE);
-    }
-}
-
-static void _uds_heartbeat_timeout_cb(loop_t* loop,
-                                      loop_timer_t* timer,
-                                      void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-
-    xylem_logw("uds conn fd=%d heartbeat miss", (int)conn->fd);
-    if (conn->handler && conn->handler->on_heartbeat_miss) {
-        conn->handler->on_heartbeat_miss(conn);
-    }
-}
-
-/* Decrement refcount; free the connection when it reaches zero. */
-static void _uds_conn_unref(xylem_uds_conn_t* conn) {
-    if (atomic_fetch_sub(&conn->refcount, 1) == 1) {
-        free(conn);
-    }
-}
-
-/* Post callback: free a connection after the current iteration. */
-static void _uds_conn_free_cb(loop_t* loop,
-                               loop_post_t* req,
-                               void* ud) {
-    (void)loop;
-    (void)req;
-    _uds_conn_unref((xylem_uds_conn_t*)ud);
-}
-
-static void _uds_destroy_conn(xylem_uds_conn_t* conn, int err) {
-    conn->state = UDS_STATE_CLOSED;
-    xylem_logd("uds conn fd=%d destroy err=%d (%s)", (int)conn->fd, err,
-               err ? platform_socket_tostring(err) : ERRMSG_NORMAL);
-
-    if (conn->server) {
-        list_remove(&conn->server->connections, &conn->server_node);
-        conn->server = NULL;
-    }
-
-    loop_destroy_timer(conn->read_timer);
-    conn->read_timer = NULL;
-    loop_destroy_timer(conn->write_timer);
-    conn->write_timer = NULL;
-    loop_destroy_timer(conn->heartbeat_timer);
-    conn->heartbeat_timer = NULL;
-
-    loop_destroy_io(conn->io);
-    conn->io = NULL;
-    platform_socket_close(conn->fd);
-
-    free(conn->read_buf);
-    conn->read_buf = NULL;
-
-    if (conn->handler && conn->handler->on_close) {
-        const char* errmsg;
-        if (err == 0) {
-            errmsg = ERRMSG_CLOSED;
-        } else if (err < 0) {
-            errmsg = ERRMSG_INTERNAL;
-        } else {
-            errmsg = platform_socket_tostring(err);
-        }
-        conn->handler->on_close(conn, err, errmsg);
-    }
-
-    loop_post(conn->loop, _uds_conn_free_cb, conn);
-}
-
-static void _uds_close_conn(xylem_uds_conn_t* conn, int err) {
-    if (conn->state == UDS_STATE_CLOSED ||
-        conn->state == UDS_STATE_CLOSING) {
+static void _uds_conn_unref(xylem_uds_conn_t* uds) {
+    if (atomic_fetch_sub_explicit(&uds->refcnt, 1, memory_order_acq_rel)
+        != 1) {
         return;
     }
-
-    xylem_logd("uds conn fd=%d start_close err=%d (%s)", (int)conn->fd, err,
-               err ? platform_socket_tostring(err) : ERRMSG_NORMAL);
-    conn->state = UDS_STATE_CLOSING;
-
-    while (!queue_empty(&conn->write_queue)) {
-        queue_node_t* node =
-            xylem_queue_dequeue(&conn->write_queue);
-        _uds_write_req_t* req =
-            queue_entry(node, _uds_write_req_t, node);
-
-        if (conn->handler && conn->handler->on_write_done) {
-            conn->handler->on_write_done(conn, req->data, req->len, -1);
-        }
-
-        free(req);
+    if (uds->waiter) {
+        iowait_destroy(uds->waiter);
     }
-
-    _uds_destroy_conn(conn, err);
+    if (uds->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        shutdown(uds->fd, PLATFORM_SHUT_WR);
+        platform_socket_close(uds->fd);
+    }
+    free(uds->read_buf);
+    free(uds);
 }
 
-static void _uds_conn_io_cb(loop_t* loop,
-                             loop_io_t* io,
-                             loop_poller_op_t revents,
-                             void* ud);
+static void _uds_listener_ref(xylem_uds_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
 
-static void _uds_conn_readable_cb(xylem_uds_conn_t* conn) {
+static void _uds_listener_unref(xylem_uds_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    if (ln->waiter) {
+        iowait_destroy(ln->waiter);
+    }
+    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(ln->fd);
+    }
+    free(ln);
+}
+
+static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
+    xylem_uds_conn_t* uds
+        = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
+    if (!uds) {
+        return NULL;
+    }
+
+    uds->fd     = fd;
+    uds->waiter = iowait_create(fd);
+    if (!uds->waiter) {
+        free(uds);
+        return NULL;
+    }
+
+    uds->read_buf = (char*)malloc(DEFAULT_READ_BUF_SIZE);
+    if (!uds->read_buf) {
+        iowait_destroy(uds->waiter);
+        free(uds);
+        return NULL;
+    }
+    uds->read_buf_cap = DEFAULT_READ_BUF_SIZE;
+
+    _uds_conn_ref(uds);
+    return uds;
+}
+
+static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        uds->err = XYLEM_ERR_CLOSED;
+        return -1;
+    }
+
     for (;;) {
-        size_t space = conn->read_cap - conn->read_len;
-        if (space == 0) {
-            xylem_logw("uds conn fd=%d read buffer full, closing",
-                       (int)conn->fd);
-            _uds_close_conn(conn, -1);
-            return;
+        ssize_t n = platform_socket_recv(uds->fd, buf, (int)len);
+        if (n > 0) {
+            return n;
+        }
+        if (n == 0) {
+            uds->err = XYLEM_ERR_PEER_CLOSED;
+            return 0;
         }
 
-        ssize_t nread = platform_socket_recv(
-            conn->fd, conn->read_buf + conn->read_len, (int)space);
-
-        if (nread == 0) {
-            xylem_logi("uds conn fd=%d peer closed", (int)conn->fd);
-            _uds_close_conn(conn, 0);
-            return;
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            uds->err = XYLEM_ERR_UNKNOWN;
+            return -1;
         }
 
-        if (nread < 0) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                break;
-            }
-            xylem_logw("uds conn fd=%d recv error=%d (%s)",
-                       (int)conn->fd, err,
-                       platform_socket_tostring(err));
-            _uds_close_conn(conn, err);
-            return;
-        }
-
-        conn->read_len += (size_t)nread;
-
-        for (;;) {
-            void*  frame_data = NULL;
-            size_t frame_len  = 0;
-            ssize_t rc = _uds_extract_frame(conn, &frame_data, &frame_len);
-
-            if (rc > 0) {
-                if (conn->handler && conn->handler->on_read) {
-                    conn->handler->on_read(conn, frame_data, frame_len);
-                }
-
-                /**
-                 * Revalidate after on_read: user may have called
-                 * xylem_uds_close inside the callback, which frees
-                 * read_buf. Compacting or continuing the recv/extract
-                 * loop would touch freed memory.
-                 */
-                if (conn->state == UDS_STATE_CLOSED ||
-                    conn->state == UDS_STATE_CLOSING) {
-                    return;
-                }
-
-                conn->read_len -= (size_t)rc;
-                if (conn->read_len > 0) {
-                    memmove(conn->read_buf,
-                            conn->read_buf + (size_t)rc,
-                            conn->read_len);
-                }
-            } else if (rc == 0) {
-                break;
-            } else {
-                _uds_close_conn(conn, -1);
-                return;
-            }
-        }
-
-        if ((size_t)nread < space) {
-            break;
-        }
-    }
-
-    if (conn->opts.heartbeat_ms > 0 && conn->heartbeat_timer) {
-        loop_reset_timer(conn->heartbeat_timer,
-                               conn->opts.heartbeat_ms);
-    }
-
-    if (conn->opts.read_timeout_ms > 0 && conn->read_timer) {
-        loop_reset_timer(conn->read_timer,
-                               conn->opts.read_timeout_ms);
-    }
-}
-
-static void _uds_flush_writes(xylem_uds_conn_t* conn) {
-    while (!queue_empty(&conn->write_queue)) {
-        queue_node_t* front =
-            xylem_queue_front(&conn->write_queue);
-        _uds_write_req_t* req =
-            queue_entry(front, _uds_write_req_t, node);
-
-        const char* ptr = (const char*)req->data + req->offset;
-        size_t      rem = req->len - req->offset;
-
-        ssize_t n = platform_socket_send(conn->fd, ptr, (int)rem);
-
-        if (n < 0) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                return;
-            }
-
-            xylem_logw("uds conn fd=%d send error=%d (%s)",
-                       (int)conn->fd, err,
-                       platform_socket_tostring(err));
-
-            if (conn->state == UDS_STATE_CLOSING) {
-                while (!queue_empty(&conn->write_queue)) {
-                    queue_node_t* qn =
-                        xylem_queue_dequeue(&conn->write_queue);
-                    _uds_write_req_t* wr =
-                        queue_entry(qn, _uds_write_req_t, node);
-                    if (conn->handler && conn->handler->on_write_done) {
-                        conn->handler->on_write_done(
-                            conn, wr->data, wr->len, -1);
-                    }
-                    free(wr);
-                }
-                _uds_destroy_conn(conn, err);
-            } else {
-                _uds_close_conn(conn, err);
-            }
-            return;
-        }
-
-        req->offset += (size_t)n;
-
-        if (req->offset == req->len) {
-            xylem_queue_dequeue(&conn->write_queue);
-
-            if (conn->handler && conn->handler->on_write_done) {
-                conn->handler->on_write_done(
-                    conn, req->data, req->len, 0);
-            }
-
-            free(req);
-
-            if (conn->state == UDS_STATE_CLOSED ||
-                conn->state == UDS_STATE_CLOSING) {
-                return;
-            }
-
-            if (conn->opts.write_timeout_ms > 0 && conn->write_timer &&
-                !queue_empty(&conn->write_queue)) {
-                loop_reset_timer(conn->write_timer,
-                                       conn->opts.write_timeout_ms);
-            }
-        } else {
-            return;
-        }
-    }
-
-    if (conn->opts.write_timeout_ms > 0 && conn->write_timer) {
-        loop_stop_timer(conn->write_timer);
-    }
-
-    if (conn->state == UDS_STATE_CLOSING) {
-        shutdown(conn->fd, PLATFORM_SHUT_WR);
-        _uds_destroy_conn(conn, 0);
-    }
-}
-
-static void _uds_conn_io_cb(loop_t* loop,
-                             loop_io_t* io,
-                             loop_poller_op_t revents,
-                             void* ud) {
-    (void)loop;
-    (void)io;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-
-    if (revents & LOOP_POLLER_RD_OP) {
-        _uds_conn_readable_cb(conn);
-    }
-
-    if (conn->state == UDS_STATE_CLOSED) {
-        return;
-    }
-
-    if (revents & LOOP_POLLER_WR_OP) {
-        _uds_flush_writes(conn);
-
-        if (conn->state == UDS_STATE_CONNECTED &&
-            queue_empty(&conn->write_queue)) {
-            loop_start_io(conn->io, LOOP_POLLER_RD_OP,
-                                _uds_conn_io_cb, conn);
+        iowait_result_t r = iowait_read(uds->waiter);
+        if (r != IOWAIT_READY
+            || atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+            uds->err = (r == IOWAIT_TIMEOUT)
+                ? XYLEM_ERR_TIMEOUT
+                : XYLEM_ERR_CLOSED;
+            return -1;
         }
     }
 }
 
-/**
- * Common setup for a connected UDS socket: allocate read buffer,
- * start IO, start heartbeat/read timers.
- */
-static int _uds_setup_conn(xylem_uds_conn_t* conn) {
-    conn->state = UDS_STATE_CONNECTED;
-    conn->read_buf = (uint8_t*)malloc(conn->opts.read_buf_size);
-    if (!conn->read_buf) {
-        return -1;
-    }
-    conn->read_len = 0;
-    conn->read_cap = conn->opts.read_buf_size;
+static int _uds_read_exact(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    char*  ptr = (char*)buf;
+    size_t rem = len;
 
-    if (loop_start_io(conn->io, LOOP_POLLER_RD_OP,
-                            _uds_conn_io_cb, conn) != 0) {
-        free(conn->read_buf);
-        conn->read_buf = NULL;
-        return -1;
-    }
+    while (rem > 0) {
+        size_t avail = uds->read_buf_len - uds->read_buf_pos;
+        if (avail > 0) {
+            size_t copy = avail < rem ? avail : rem;
+            memcpy(ptr, uds->read_buf + uds->read_buf_pos, copy);
+            uds->read_buf_pos += copy;
+            ptr += copy;
+            rem -= copy;
+            continue;
+        }
 
-    if (conn->opts.heartbeat_ms > 0) {
-        if (!conn->heartbeat_timer) {
-            conn->heartbeat_timer =
-                loop_create_timer(conn->loop);
-        }
-        if (conn->heartbeat_timer) {
-            loop_start_timer(conn->heartbeat_timer,
-                                   _uds_heartbeat_timeout_cb,
-                                   conn, conn->opts.heartbeat_ms,
-                                   conn->opts.heartbeat_ms);
-        }
-    }
+        uds->read_buf_pos = 0;
+        uds->read_buf_len = 0;
 
-    if (conn->opts.read_timeout_ms > 0) {
-        if (!conn->read_timer) {
-            conn->read_timer =
-                loop_create_timer(conn->loop);
+        int64_t n = _uds_raw_recv(uds, uds->read_buf, uds->read_buf_cap);
+        if (n <= 0) {
+            return -1;
         }
-        if (conn->read_timer) {
-            loop_start_timer(conn->read_timer,
-                                   _uds_read_timeout_cb,
-                                   conn, conn->opts.read_timeout_ms, 0);
-        }
+        uds->read_buf_len = (size_t)n;
     }
-
-    if (conn->opts.write_timeout_ms > 0) {
-        if (!conn->write_timer) {
-            conn->write_timer =
-                loop_create_timer(conn->loop);
-        }
-    }
-
     return 0;
 }
 
-/* Dial IO callback: check SO_ERROR after non-blocking connect. */
-static void _uds_try_connect(loop_t* loop,
-                              loop_io_t* io,
-                              loop_poller_op_t revents,
-                              void* ud) {
-    (void)loop;
-    (void)io;
-    (void)revents;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-
-    int       err    = 0;
-    socklen_t errlen = sizeof(err);
-    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen) != 0) {
-        err = platform_socket_get_lasterror();
-        if (err == 0) {
-            err = -1;
-        }
+static int64_t
+_uds_buffered_read(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    size_t avail = uds->read_buf_len - uds->read_buf_pos;
+    if (avail > 0) {
+        size_t copy = avail < len ? avail : len;
+        memcpy(buf, uds->read_buf + uds->read_buf_pos, copy);
+        uds->read_buf_pos += copy;
+        return (int64_t)copy;
     }
 
-    if (err != 0) {
-        xylem_loge("uds conn fd=%d connect failed err=%d (%s)",
-                   (int)conn->fd, err,
-                   platform_socket_tostring(err));
-        _uds_destroy_conn(conn, err);
-        return;
+    if (len >= uds->read_buf_cap) {
+        return _uds_raw_recv(uds, buf, len);
     }
 
-    if (_uds_setup_conn(conn) != 0) {
-        _uds_close_conn(conn, -1);
-        return;
-    }
+    uds->read_buf_pos = 0;
+    uds->read_buf_len = 0;
 
-    xylem_logi("uds conn fd=%d connected", (int)conn->fd);
-    if (conn->handler && conn->handler->on_connect) {
-        conn->handler->on_connect(conn);
+    int64_t n = _uds_raw_recv(uds, uds->read_buf, uds->read_buf_cap);
+    if (n <= 0) {
+        return n;
     }
+    uds->read_buf_len = (size_t)n;
+
+    size_t copy = (size_t)n < len ? (size_t)n : len;
+    memcpy(buf, uds->read_buf, copy);
+    uds->read_buf_pos = copy;
+    return (int64_t)copy;
 }
 
-static void _uds_server_io_cb(loop_t* loop,
-                               loop_io_t* io,
-                               loop_poller_op_t revents,
-                               void* ud) {
-    (void)io;
-    (void)revents;
-    xylem_uds_server_t* server = (xylem_uds_server_t*)ud;
-
-    for (;;) {
-        platform_sock_t client_fd =
-            platform_socket_accept_unix(server->fd, true);
-
-        if (client_fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                break;
-            }
-            xylem_logw("uds server fd=%d accept error=%d (%s)",
-                       (int)server->fd, err,
-                       platform_socket_tostring(err));
-            continue;
-        }
-
-        xylem_uds_conn_t* conn =
-            (xylem_uds_conn_t*)calloc(1, sizeof(*conn));
-        if (!conn) {
-            xylem_logw("uds server fd=%d accept: conn alloc failed",
-                       (int)server->fd);
-            platform_socket_close(client_fd);
-            continue;
-        }
-
-        conn->loop    = loop;
-        conn->fd      = client_fd;
-        conn->handler = server->handler;
-        conn->opts    = server->opts;
-
-        atomic_store(&conn->refcount, 1);
-
-        queue_init(&conn->write_queue);
-
-        conn->io = loop_create_io(loop, client_fd);
-        if (!conn->io) {
-            xylem_logw("uds server fd=%d accept: io creation failed for fd=%d",
-                       (int)server->fd, (int)client_fd);
-            platform_socket_close(client_fd);
-            free(conn);
-            continue;
-        }
-
-        if (_uds_setup_conn(conn) != 0) {
-            xylem_logw("uds server fd=%d accept: setup failed for fd=%d",
-                       (int)server->fd, (int)client_fd);
-            loop_destroy_io(conn->io);
-            platform_socket_close(client_fd);
-            free(conn);
-            continue;
-        }
-
-        conn->server = server;
-        list_insert_tail(&server->connections,
-                               &conn->server_node);
-
-        xylem_logi("uds server fd=%d accepted conn fd=%d",
-                   (int)server->fd, (int)client_fd);
-
-        if (server->handler && server->handler->on_accept) {
-            server->handler->on_accept(server, conn);
-        }
-
-        if (server->closing) {
-            break;
-        }
+static int64_t
+_uds_recv_fixed(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    size_t frame_len = uds->frame_opts.fixed.len;
+    if (frame_len > len) {
+        uds->err = XYLEM_ERR_UNKNOWN;
+        return -1;
     }
+    if (_uds_read_exact(uds, buf, frame_len) != 0) {
+        return -1;
+    }
+    return (int64_t)frame_len;
 }
 
-/* Post callback: free a server after the current iteration. */
-static void _uds_server_free_cb(loop_t* loop,
-                                 loop_post_t* req,
-                                 void* ud) {
-    (void)loop;
-    (void)req;
-    free(ud);
-}
+static int64_t
+_uds_recv_length(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    uint8_t  hdr[16];
+    uint32_t hdr_sz = uds->frame_opts.length.header_size;
 
-void xylem_uds_close_server(xylem_uds_server_t* server) {
-    if (server->closing) {
-        return;
-    }
-
-    xylem_logi("uds server fd=%d closing", (int)server->fd);
-    server->closing = true;
-
-    loop_destroy_io(server->io);
-    server->io = NULL;
-    platform_socket_close(server->fd);
-
-    while (!list_empty(&server->connections)) {
-        list_node_t* node = list_head(&server->connections);
-        xylem_uds_conn_t* conn =
-            list_entry(node, xylem_uds_conn_t, server_node);
-        list_remove(&server->connections, node);
-        conn->server = NULL;
-        xylem_uds_close(conn);
-    }
-
-    /* Unlink the socket file. */
-    if (server->path[0] != '\0') {
-        remove(server->path);
-    }
-
-    loop_post(server->loop, _uds_server_free_cb, server);
-}
-
-static void _uds_graceful_close_cb(loop_t* loop,
-                                   loop_post_t* req,
-                                   void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-    if (conn->state == UDS_STATE_CLOSED) {
-        return;
-    }
-    _uds_destroy_conn(conn, 0);
-}
-
-void xylem_uds_close(xylem_uds_conn_t* conn) {
-    if (conn->state == UDS_STATE_CLOSING ||
-        conn->state == UDS_STATE_CLOSED) {
-        return;
-    }
-
-    xylem_logi("uds conn fd=%d graceful close requested",
-               (int)conn->fd);
-
-    if (conn->state == UDS_STATE_CONNECTING) {
-        _uds_destroy_conn(conn, 0);
-        return;
-    }
-
-    conn->state = UDS_STATE_CLOSING;
-
-    if (queue_empty(&conn->write_queue)) {
-        shutdown(conn->fd, PLATFORM_SHUT_WR);
-        /**
-         * Defer destroy via post instead of calling _uds_destroy_conn
-         * directly.  _uds_direct_write posts on_write_done to the same
-         * MPSC queue; if we destroy now, those posts see state==CLOSED
-         * and get silently dropped -- the user never receives write_done
-         * for data that was already sent.  Posting destroy ensures FIFO
-         * ordering: pending write_done callbacks fire first, then destroy.
-         */
-        loop_post(conn->loop, _uds_graceful_close_cb, conn);
-    }
-}
-
-/* Enqueue a write request and arm IO/timer. */
-static int _uds_enqueue_write(xylem_uds_conn_t* conn,
-                              const void* data,
-                              size_t len,
-                              size_t offset) {
-    _uds_write_req_t* req =
-        (_uds_write_req_t*)malloc(sizeof(*req));
-    if (!req) {
+    if (hdr_sz > sizeof(hdr)) {
+        uds->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
-    req->data   = data;
-    req->len    = len;
-    req->offset = offset;
+    if (_uds_read_exact(uds, hdr, hdr_sz) != 0) {
+        return -1;
+    }
 
-    bool was_empty = queue_empty(&conn->write_queue);
-    xylem_queue_enqueue(&conn->write_queue, &req->node);
+    uint64_t body_len = 0;
 
-    if (was_empty) {
-        loop_start_io(conn->io,
-                            LOOP_POLLER_RD_OP | LOOP_POLLER_WR_OP,
-                            _uds_conn_io_cb, conn);
+    if (uds->frame_opts.length.coding == XYLEM_UDS_LENGTH_VARINT) {
+        size_t pos = (size_t)uds->frame_opts.length.field_offset;
+        if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
+            uds->err = XYLEM_ERR_UNKNOWN;
+            return -1;
+        }
+    } else {
+        uint8_t* field = hdr + uds->frame_opts.length.field_offset;
 
-        if (conn->opts.write_timeout_ms > 0 && conn->write_timer) {
-            loop_start_timer(conn->write_timer,
-                                   _uds_write_timeout_cb,
-                                   conn, conn->opts.write_timeout_ms, 0);
+        if (uds->frame_opts.length.big_endian) {
+            for (uint32_t i = 0; i < uds->frame_opts.length.field_size;
+                 i++) {
+                body_len = (body_len << 8) | field[i];
+            }
+        } else {
+            for (uint32_t i = 0; i < uds->frame_opts.length.field_size;
+                 i++) {
+                body_len |= (uint64_t)field[i] << (i * 8);
+            }
         }
     }
 
-    return 0;
-}
-
-static void _uds_write_done_cb(loop_t* loop,
-                                loop_post_t* req,
-                                void* ud) {
-    (void)loop;
-    (void)req;
-    _uds_write_done_t* wd = (_uds_write_done_t*)ud;
-
-    /**
-     * Post callbacks that invoke user handlers must check liveness:
-     * the post queue is not cancellable, so the callback may fire
-     * after on_close has already been delivered to the user.
-     */
-    if (wd->conn->state == UDS_STATE_CLOSED) {
-        free(wd);
-        return;
+    int64_t adjusted
+        = (int64_t)body_len + uds->frame_opts.length.adjustment;
+    if (adjusted < 0) {
+        uds->err = XYLEM_ERR_UNKNOWN;
+        return -1;
     }
 
-    if (wd->conn->handler && wd->conn->handler->on_write_done) {
-        wd->conn->handler->on_write_done(wd->conn, wd->data, wd->len, 0);
+    size_t payload_len = (size_t)adjusted;
+    if (payload_len > len) {
+        uds->err = XYLEM_ERR_UNKNOWN;
+        return -1;
     }
 
-    free(wd);
+    if (payload_len > 0 && _uds_read_exact(uds, buf, payload_len) != 0) {
+        return -1;
+    }
+    return (int64_t)payload_len;
 }
 
-/* Try direct send, enqueue remainder if incomplete. */
-static int _uds_direct_write(xylem_uds_conn_t* conn,
-                              const void* data,
-                              size_t len) {
+static int64_t
+_uds_recv_delimiter(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    const char* delim     = uds->frame_opts.delimiter.delim;
+    size_t      delim_len = uds->frame_opts.delimiter.delim_len;
+    if (delim_len == 0) {
+        delim_len = strlen(delim);
+    }
+
+    char*  dst = (char*)buf;
+    size_t pos = 0;
+
+    while (pos < len) {
+        size_t avail = uds->read_buf_len - uds->read_buf_pos;
+        if (avail == 0) {
+            uds->read_buf_pos = 0;
+            uds->read_buf_len = 0;
+            int64_t n
+                = _uds_raw_recv(uds, uds->read_buf, uds->read_buf_cap);
+            if (n <= 0) {
+                return -1;
+            }
+            uds->read_buf_len = (size_t)n;
+            avail             = (size_t)n;
+        }
+
+        char* src = uds->read_buf + uds->read_buf_pos;
+        for (size_t i = 0; i < avail && pos < len; i++) {
+            dst[pos++] = src[i];
+            uds->read_buf_pos++;
+
+            if (pos >= delim_len
+                && memcmp(dst + pos - delim_len, delim, delim_len) == 0) {
+                pos -= delim_len;
+                dst[pos] = '\0';
+                return (int64_t)pos;
+            }
+        }
+    }
+
+    uds->err = XYLEM_ERR_UNKNOWN;
+    return -1;
+}
+
+static int
+_uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
+    if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        uds->err = XYLEM_ERR_CLOSED;
+        return -1;
+    }
+
     const char* ptr = (const char*)data;
-    size_t remaining = len;
+    size_t      rem = len;
 
-    while (remaining > 0) {
-        ssize_t n = platform_socket_send(conn->fd, ptr, (int)remaining);
+    while (rem > 0) {
+        ssize_t n = platform_socket_send(uds->fd, ptr, (int)rem);
         if (n > 0) {
             ptr += n;
-            remaining -= (size_t)n;
-        } else {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                break;
-            }
-            _uds_close_conn(conn, err);
+            rem -= (size_t)n;
+            continue;
+        }
+
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            uds->err = XYLEM_ERR_UNKNOWN;
+            return -1;
+        }
+
+        iowait_result_t r = iowait_write(uds->waiter);
+        if (r != IOWAIT_READY
+            || atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+            uds->err = (r == IOWAIT_TIMEOUT)
+                ? XYLEM_ERR_TIMEOUT
+                : XYLEM_ERR_CLOSED;
             return -1;
         }
     }
-
-    if (remaining == 0) {
-        if (conn->handler && conn->handler->on_write_done) {
-            _uds_write_done_t* wd =
-                (_uds_write_done_t*)malloc(sizeof(*wd));
-            if (!wd) {
-                return -1;
-            }
-            wd->conn = conn;
-            wd->data = data;
-            wd->len  = len;
-            if (loop_post(conn->loop, _uds_write_done_cb, wd) != 0) {
-                free(wd);
-                return -1;
-            }
-        }
-        return 0;
-    }
-
-    return _uds_enqueue_write(conn, data, len, len - remaining);
+    return 0;
 }
 
-static int _uds_process_write(xylem_uds_conn_t* conn,
-                              const void* data,
-                              size_t len) {
-    if (queue_empty(&conn->write_queue)) {
-        return _uds_direct_write(conn, data, len);
-    }
-    return _uds_enqueue_write(conn, data, len, 0);
-}
+static int
+_uds_send_length(xylem_uds_conn_t* uds, const void* data, size_t len) {
+    uint8_t  hdr[16];
+    uint32_t hdr_sz = uds->frame_opts.length.header_size;
 
-int xylem_uds_send(xylem_uds_conn_t* conn,
-                   const void* data, size_t len) {
-    if (conn->state != UDS_STATE_CONNECTED) {
+    if (hdr_sz > sizeof(hdr)) {
+        uds->err = XYLEM_ERR_UNKNOWN;
         return -1;
     }
 
-    if (!data || len == 0) {
-        return 0;
+    int64_t wire_len = (int64_t)len - uds->frame_opts.length.adjustment;
+    if (wire_len < 0) {
+        uds->err = XYLEM_ERR_UNKNOWN;
+        return -1;
     }
 
-    return _uds_process_write(conn, data, len);
+    memset(hdr, 0, hdr_sz);
+
+    if (uds->frame_opts.length.coding == XYLEM_UDS_LENGTH_VARINT) {
+        size_t pos = (size_t)uds->frame_opts.length.field_offset;
+        if (!xylem_varint_encode(
+                (uint64_t)wire_len, hdr, hdr_sz, &pos)) {
+            uds->err = XYLEM_ERR_UNKNOWN;
+            return -1;
+        }
+        if (_uds_raw_send(uds, hdr, pos) != 0) {
+            return -1;
+        }
+    } else {
+        uint8_t* field = hdr + uds->frame_opts.length.field_offset;
+        uint64_t val   = (uint64_t)wire_len;
+
+        if (uds->frame_opts.length.big_endian) {
+            for (int32_t i
+                 = (int32_t)uds->frame_opts.length.field_size - 1;
+                 i >= 0;
+                 i--) {
+                field[i] = (uint8_t)(val & 0xFF);
+                val >>= 8;
+            }
+        } else {
+            for (uint32_t i = 0;
+                 i < uds->frame_opts.length.field_size;
+                 i++) {
+                field[i] = (uint8_t)(val & 0xFF);
+                val >>= 8;
+            }
+        }
+
+        if (_uds_raw_send(uds, hdr, hdr_sz) != 0) {
+            return -1;
+        }
+    }
+    return _uds_raw_send(uds, data, len);
 }
 
-/**
- * When non-blocking connect succeeds immediately inside xylem_uds_dial,
- * on_connect would fire before dial returns -- the caller has no chance to
- * call set_userdata yet, so the callback sees NULL userdata.  Deferring to
- * the next loop iteration guarantees dial returns first.
- */
-static void _uds_connect_cb(loop_t* loop,
-                            loop_post_t* req,
-                            void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_uds_conn_t* conn = (xylem_uds_conn_t*)ud;
-    /**
-     * Post callbacks that invoke user handlers must check liveness:
-     * the post queue is not cancellable, so the callback may fire
-     * after on_close has already been delivered to the user.
-     */
-    if (conn->state == UDS_STATE_CLOSED ||
-        conn->state == UDS_STATE_CLOSING) {
+xylem_uds_listener_t* xylem_uds_listen(const char* path) {
+    if (!path || strlen(path) >= UDS_MAX_PATH) {
+        xylem_loge("uds listen: path is NULL or too long (max %d)",
+                   UDS_MAX_PATH - 1);
+        return NULL;
+    }
+
+    platform_sock_t fd = platform_socket_listen_unix(path, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("uds listen: socket creation failed for %s", path);
+        return NULL;
+    }
+
+    xylem_uds_listener_t* listener = (xylem_uds_listener_t*)calloc(
+        1, sizeof(xylem_uds_listener_t));
+    if (!listener) {
+        platform_socket_close(fd);
+        return NULL;
+    }
+
+    listener->fd = fd;
+    snprintf(listener->path, UDS_MAX_PATH, "%s", path);
+
+    listener->waiter = iowait_create(fd);
+    if (!listener->waiter) {
+        platform_socket_close(fd);
+        free(listener);
+        return NULL;
+    }
+
+    _uds_listener_ref(listener);
+    return listener;
+}
+
+xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
+    _uds_listener_ref(listener);
+
+    xylem_uds_conn_t* result = NULL;
+    uint64_t          backoff_ms = 5;
+
+    for (;;) {
+        if (atomic_load_explicit(
+                &listener->closing, memory_order_acquire)) {
+            break;
+        }
+
+        platform_sock_t fd
+            = platform_socket_accept_unix(listener->fd, true);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            int err = platform_socket_get_lasterror();
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                if (iowait_read(listener->waiter) != IOWAIT_READY) {
+                    break;
+                }
+                continue;
+            }
+
+            /* Resource exhaustion (EMFILE/ENFILE): exponential backoff
+             * prevents CPU spin while the fd table is full. */
+            xylem_logw("uds listener fd=%d accept error=%d (%s)",
+                       (int)listener->fd,
+                       err,
+                       platform_socket_tostring(err));
+            runtime_sleep(backoff_ms);
+            if (backoff_ms < 1000) {
+                backoff_ms *= 2;
+            }
+            continue;
+        }
+
+        backoff_ms = 5;
+
+        xylem_uds_conn_t* uds = _uds_conn_alloc(fd);
+        if (!uds) {
+            platform_socket_close(fd);
+            continue;
+        }
+
+        result = uds;
+        break;
+    }
+
+    _uds_listener_unref(listener);
+    return result;
+}
+
+void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
+    if (atomic_exchange(&listener->closing, true)) {
         return;
     }
-    if (conn->handler && conn->handler->on_connect) {
-        conn->handler->on_connect(conn);
+
+    iowait_close(listener->waiter);
+
+    if (listener->path[0] != '\0') {
+        remove(listener->path);
     }
+
+    _uds_listener_unref(listener);
 }
 
-/**
- * Roll back a partially initialised dial connection.
- * Each field is NULL-safe: calloc zeroes everything, so only
- * resources that were actually created get released.
- */
-static void _uds_dial_cleanup(xylem_uds_conn_t* conn) {
-    if (conn->io) {
-        loop_destroy_io(conn->io);
-    }
-    if (conn->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(conn->fd);
-    }
-    free(conn);
-}
-
-xylem_uds_conn_t* xylem_uds_dial(const char* path,
-                                  xylem_uds_handler_t* handler,
-                                  xylem_uds_opts_t* opts) {
-    loop_t* loop = runtime_get_loop();
+xylem_uds_conn_t* xylem_uds_dial(
+    const char* path,
+    uint64_t    connect_timeout_ms) {
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("uds dial: path is NULL or too long (max %d)",
                    UDS_MAX_PATH - 1);
         return NULL;
     }
 
-    xylem_uds_conn_t* conn =
-        (xylem_uds_conn_t*)calloc(1, sizeof(*conn));
-    if (!conn) {
-        return NULL;
-    }
-
-    if (opts) {
-        conn->opts = *opts;
-    }
-    if (conn->opts.read_buf_size == 0) {
-        conn->opts.read_buf_size = UDS_DEFAULT_READ_BUF_SIZE;
-    }
-
-    conn->loop    = loop;
-    conn->handler = handler;
-    conn->state = UDS_STATE_CONNECTING;
-
-    atomic_store(&conn->refcount, 1);
-
-    queue_init(&conn->write_queue);
-
-    bool connected = false;
-    platform_sock_t fd = platform_socket_dial_unix(path, &connected, true);
-
+    bool            connected = false;
+    platform_sock_t fd
+        = platform_socket_dial_unix(path, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("uds dial: socket creation failed for %s",
-                   path ? path : "(null)");
-        free(conn);
+        xylem_loge("uds dial: socket creation failed for %s", path);
         return NULL;
     }
 
-    conn->fd = fd;
-    xylem_logi("uds dial fd=%d to %s", (int)fd, path ? path : "(null)");
-
-    conn->io = loop_create_io(loop, conn->fd);
-    if (!conn->io) {
-        xylem_loge("uds dial fd=%d: io creation failed", (int)fd);
-        _uds_dial_cleanup(conn);
+    xylem_uds_conn_t* uds = _uds_conn_alloc(fd);
+    if (!uds) {
+        platform_socket_close(fd);
         return NULL;
     }
 
-    if (connected) {
-        if (_uds_setup_conn(conn) != 0) {
-            _uds_dial_cleanup(conn);
+    if (!connected) {
+        if (connect_timeout_ms > 0) {
+            uint64_t deadline
+                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                  + connect_timeout_ms;
+            iowait_set_wr_deadline(uds->waiter, deadline);
+        }
+        iowait_result_t r = iowait_write(uds->waiter);
+        iowait_set_wr_deadline(uds->waiter, 0);
+
+        if (r != IOWAIT_READY) {
+            uds->err = XYLEM_ERR_TIMEOUT;
+            xylem_uds_close(uds);
             return NULL;
         }
-        xylem_logi("uds conn fd=%d connected immediately", (int)fd);
-        loop_post(loop, _uds_connect_cb, conn);
-    } else {
-        loop_start_io(conn->io, LOOP_POLLER_WR_OP,
-                            _uds_try_connect, conn);
+
+        int32_t   err    = 0;
+        socklen_t errlen = sizeof(err);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
+        if (err != 0) {
+            uds->err = XYLEM_ERR_UNKNOWN;
+            xylem_loge("uds dial fd=%d connect error=%d (%s)",
+                       (int)fd,
+                       err,
+                       platform_socket_tostring(err));
+            xylem_uds_close(uds);
+            return NULL;
+        }
     }
 
-    return conn;
+    return uds;
 }
 
-/**
- * Roll back a partially initialised listen server.
- * Each field is NULL-safe: calloc zeroes everything, so only
- * resources that were actually created get released.
- */
-static void _uds_listen_cleanup(xylem_uds_server_t* server) {
-    if (server->io) {
-        loop_destroy_io(server->io);
-    }
-    if (server->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(server->fd);
-    }
-    free(server);
-}
-
-xylem_uds_server_t* xylem_uds_listen(const char* path,
-                                      xylem_uds_handler_t* handler,
-                                      xylem_uds_opts_t* opts) {
-    loop_t* loop = runtime_get_loop();
-    xylem_uds_server_t* server =
-        (xylem_uds_server_t*)calloc(1, sizeof(*server));
-    if (!server) {
-        return NULL;
-    }
-
+void xylem_uds_set_framing(
+    xylem_uds_conn_t* uds, xylem_uds_frame_opts_t* opts) {
     if (opts) {
-        server->opts = *opts;
+        uds->frame_opts = *opts;
+    } else {
+        memset(&uds->frame_opts, 0, sizeof(uds->frame_opts));
     }
-    if (server->opts.read_buf_size == 0) {
-        server->opts.read_buf_size = UDS_DEFAULT_READ_BUF_SIZE;
+}
+
+void xylem_uds_set_read_deadline(
+    xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    iowait_set_rd_deadline(uds->waiter, deadline_ms);
+}
+
+void xylem_uds_set_write_deadline(
+    xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    iowait_set_wr_deadline(uds->waiter, deadline_ms);
+}
+
+int64_t
+xylem_uds_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
+    _uds_conn_ref(uds);
+    int64_t ret;
+    switch (uds->frame_opts.type) {
+    case XYLEM_UDS_FRAME_NONE:
+        ret = _uds_buffered_read(uds, buf, len);
+        break;
+    case XYLEM_UDS_FRAME_FIXED:
+        ret = _uds_recv_fixed(uds, buf, len);
+        break;
+    case XYLEM_UDS_FRAME_LENGTH:
+        ret = _uds_recv_length(uds, buf, len);
+        break;
+    case XYLEM_UDS_FRAME_DELIMITER:
+        ret = _uds_recv_delimiter(uds, buf, len);
+        break;
+    default:
+        ret = -1;
+        break;
     }
+    _uds_conn_unref(uds);
+    return ret;
+}
 
-    server->loop    = loop;
-    server->handler = handler;
-    server->closing = false;
-
-    list_init(&server->connections);
-
-    if (!path || strlen(path) >= UDS_MAX_PATH) {
-        free(server);
-        xylem_loge("uds listen: path is NULL or too long (max %d)",
-                   UDS_MAX_PATH - 1);
-        return NULL;
+int xylem_uds_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
+    _uds_conn_ref(uds);
+    int ret;
+    switch (uds->frame_opts.type) {
+    case XYLEM_UDS_FRAME_LENGTH:
+        ret = _uds_send_length(uds, data, len);
+        break;
+    default:
+        ret = _uds_raw_send(uds, data, len);
+        break;
     }
-    snprintf(server->path, UDS_MAX_PATH, "%s", path);
+    _uds_conn_unref(uds);
+    return ret;
+}
 
-    platform_sock_t fd = platform_socket_listen_unix(path, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        free(server);
-        xylem_loge("uds listen: socket creation failed for %s", path);
-        return NULL;
+void xylem_uds_close(xylem_uds_conn_t* uds) {
+    if (atomic_exchange(&uds->closed, true)) {
+        return;
     }
-
-    server->fd = fd;
-
-    server->io = loop_create_io(loop, server->fd);
-    if (!server->io) {
-        xylem_loge("uds listen fd=%d: io creation failed", (int)fd);
-        _uds_listen_cleanup(server);
-        return NULL;
-    }
-    loop_start_io(server->io, LOOP_POLLER_RD_OP,
-                        _uds_server_io_cb, server);
-
-    xylem_logi("uds server fd=%d listening on %s",
-               (int)fd, path ? path : "(null)");
-    return server;
+    iowait_close(uds->waiter);
+    _uds_conn_unref(uds);
 }
 
-
-void* xylem_uds_get_userdata(xylem_uds_conn_t* conn) {
-    return conn->userdata;
+xylem_err_t xylem_uds_get_error(xylem_uds_conn_t* uds) {
+    return uds->err;
 }
 
-void xylem_uds_set_userdata(xylem_uds_conn_t* conn, void* ud) {
-    conn->userdata = ud;
+int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds) {
+    return shutdown(uds->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
 }
 
-void xylem_uds_conn_ref(xylem_uds_conn_t* conn) {
-    atomic_fetch_add(&conn->refcount, 1);
-}
-
-void xylem_uds_conn_unref(xylem_uds_conn_t* conn) {
-    _uds_conn_unref(conn);
-}
-
-void* xylem_uds_server_get_userdata(xylem_uds_server_t* server) {
-    return server->userdata;
-}
-
-void xylem_uds_server_set_userdata(xylem_uds_server_t* server, void* ud) {
-    server->userdata = ud;
+int xylem_uds_shutdown_rd(xylem_uds_conn_t* uds) {
+    return shutdown(uds->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
 }
