@@ -515,9 +515,11 @@ xylem_tls_conn_t* xylem_tls_dial(
     const char* hostname = opts ? opts->hostname : NULL;
     if (hostname) {
         SSL_set_tlsext_host_name(tls->ssl, hostname);
-        SSL_set1_host(tls->ssl, hostname);
+        int vmode = SSL_get_verify_mode(tls->ssl);
+        if (vmode & SSL_VERIFY_PEER) {
+            SSL_set1_host(tls->ssl, hostname);
+        }
     }
-
     if (_tls_do_handshake(tls) != 0) {
         xylem_loge("tls dial: handshake failed for %s:%s", host, port_str);
         _tls_conn_free(tls);
@@ -647,7 +649,6 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         SSL_set_accept_state(tls->ssl);
 
         if (_tls_do_handshake(tls) != 0) {
-            xylem_logw("tls accept: handshake failed");
             _tls_conn_free(tls);
             return NULL;
         }
