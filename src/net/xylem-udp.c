@@ -107,7 +107,7 @@ xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    bool            connected = false;
+    bool connected = false;
     platform_sock_t fd = platform_socket_dial(
         host, port_str, SOCK_DGRAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {

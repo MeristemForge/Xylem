@@ -457,8 +457,8 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         dial_host = resolved_ip;
     }
 
-    bool            connected = false;
-    platform_sock_t fd        = platform_socket_dial(
+    bool connected = false;
+    platform_sock_t fd = platform_socket_dial(
         dial_host, port_str, SOCK_STREAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge(
@@ -495,8 +495,13 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         iowait_result_t r = iowait_write(tcp->waiter);
         iowait_set_wr_deadline(tcp->waiter, 0);
 
-        if (r != IOWAIT_READY) {
+        if (r == IOWAIT_TIMEOUT) {
             tcp->err = XYLEM_ERR_TIMEOUT;
+            xylem_tcp_close(tcp);
+            return NULL;
+        }
+        if (r == IOWAIT_CLOSED) {
+            tcp->err = XYLEM_ERR_CLOSED;
             xylem_tcp_close(tcp);
             return NULL;
         }
