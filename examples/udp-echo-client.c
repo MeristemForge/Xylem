@@ -33,7 +33,7 @@
 
 #define SERVER_PORT 9001
 
-static void _on_read(xylem_udp_t* udp, void* data, size_t len,
+static void _on_read(xylem_udp_chan_t* udp, void* data, size_t len,
                      const char* host, uint16_t port) {
     (void)udp; (void)host; (void)port;
     xylem_logi("echo: %.*s", (int)len, (char*)data);
@@ -47,7 +47,7 @@ static void _client_main(void* arg) {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_dial("127.0.0.1", SERVER_PORT, &handler);
+    xylem_udp_chan_t* udp = xylem_udp_dial("127.0.0.1", SERVER_PORT, &handler);
     if (!udp) {
         xylem_loge("failed to connect to 127.0.0.1:%d", SERVER_PORT);
         xylem_shutdown();

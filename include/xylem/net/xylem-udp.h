@@ -26,7 +26,7 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct xylem_udp_s xylem_udp_t;
+typedef struct xylem_udp_chan_s xylem_udp_chan_t;
 
 /**
  * @brief Create a bound UDP socket.
@@ -36,7 +36,7 @@ typedef struct xylem_udp_s xylem_udp_t;
  *
  * @return UDP handle, or NULL on failure.
  */
-extern xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port);
+extern xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port);
 
 /**
  * @brief Create a connected UDP socket.
@@ -48,7 +48,7 @@ extern xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port);
  *
  * @return UDP handle, or NULL on failure.
  */
-extern xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port);
+extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
 
 /**
  * @brief Receive a datagram.
@@ -70,7 +70,7 @@ extern xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port);
  *         xylem_udp_get_error() for the reason.
  */
 extern int64_t xylem_udp_recv(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     void*        buf,
     size_t       len,
     char*        host,
@@ -96,7 +96,7 @@ extern int64_t xylem_udp_recv(
  *         for the reason.
  */
 extern int xylem_udp_send(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     const void*  data,
     size_t       len,
     const char*  host,
@@ -113,7 +113,7 @@ extern int xylem_udp_send(
  *                     to clear.
  */
 extern void xylem_udp_set_read_deadline(
-    xylem_udp_t* udp, uint64_t deadline_ms);
+    xylem_udp_chan_t* udp, uint64_t deadline_ms);
 
 /**
  * @brief Set the write deadline.
@@ -126,7 +126,7 @@ extern void xylem_udp_set_read_deadline(
  *                     to clear.
  */
 extern void xylem_udp_set_write_deadline(
-    xylem_udp_t* udp, uint64_t deadline_ms);
+    xylem_udp_chan_t* udp, uint64_t deadline_ms);
 
 /**
  * @brief Close the UDP handle.
@@ -135,7 +135,7 @@ extern void xylem_udp_set_write_deadline(
  *
  * @param udp  UDP handle.
  */
-extern void xylem_udp_close(xylem_udp_t* udp);
+extern void xylem_udp_close(xylem_udp_chan_t* udp);
 
 /**
  * @brief Get the last IO error.
@@ -146,7 +146,7 @@ extern void xylem_udp_close(xylem_udp_t* udp);
  *
  * @return Error code, or XYLEM_ERR_NONE if no error.
  */
-extern xylem_err_t xylem_udp_get_error(xylem_udp_t* udp);
+extern xylem_err_t xylem_udp_get_error(xylem_udp_chan_t* udp);
 
 /**
  * @brief Get the local bound address.
@@ -159,7 +159,7 @@ extern xylem_err_t xylem_udp_get_error(xylem_udp_t* udp);
  * @return 0 on success, -1 on error.
  */
 extern int xylem_udp_local_addr(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     char*        host,
     size_t       host_len,
     uint16_t*    port);
@@ -175,7 +175,7 @@ extern int xylem_udp_local_addr(
  * @return 0 on success, -1 on error.
  */
 extern int xylem_udp_remote_addr(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     char*        host,
     size_t       host_len,
     uint16_t*    port);

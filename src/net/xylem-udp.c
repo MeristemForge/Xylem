@@ -34,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct xylem_udp_s {
+struct xylem_udp_chan_s {
     iowait_t*       waiter;
     platform_sock_t fd;
     addr_t          peer_addr;
@@ -55,11 +55,11 @@ static xylem_err_t _udp_map_error(int platform_err) {
     }
 }
 
-static void _udp_ref(xylem_udp_t* udp) {
+static void _udp_chan_ref(xylem_udp_chan_t* udp) {
     atomic_fetch_add_explicit(&udp->refcnt, 1, memory_order_relaxed);
 }
 
-static void _udp_unref(xylem_udp_t* udp) {
+static void _udp_chan_unref(xylem_udp_chan_t* udp) {
     if (atomic_fetch_sub_explicit(&udp->refcnt, 1, memory_order_acq_rel)
         != 1) {
         return;
@@ -73,7 +73,7 @@ static void _udp_unref(xylem_udp_t* udp) {
     free(udp);
 }
 
-xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port) {
+xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -84,7 +84,7 @@ xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port) {
         return NULL;
     }
 
-    xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
+    xylem_udp_chan_t* udp = (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
     if (!udp) {
         platform_socket_close(fd);
         return NULL;
@@ -99,11 +99,11 @@ xylem_udp_t* xylem_udp_listen(const char* host, uint16_t port) {
         return NULL;
     }
 
-    _udp_ref(udp);
+    _udp_chan_ref(udp);
     return udp;
 }
 
-xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port) {
+xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -115,7 +115,7 @@ xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port) {
         return NULL;
     }
 
-    xylem_udp_t* udp = (xylem_udp_t*)calloc(1, sizeof(xylem_udp_t));
+    xylem_udp_chan_t* udp = (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
     if (!udp) {
         platform_socket_close(fd);
         return NULL;
@@ -131,18 +131,18 @@ xylem_udp_t* xylem_udp_dial(const char* host, uint16_t port) {
     }
 
     addr_pton(host, port, &udp->peer_addr);
-    _udp_ref(udp);
+    _udp_chan_ref(udp);
     return udp;
 }
 
 int64_t xylem_udp_recv(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     void*        buf,
     size_t       len,
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
-    _udp_ref(udp);
+    _udp_chan_ref(udp);
 
     int64_t ret = -1;
     for (;;) {
@@ -193,17 +193,17 @@ int64_t xylem_udp_recv(
         }
     }
 
-    _udp_unref(udp);
+    _udp_chan_unref(udp);
     return ret;
 }
 
 int xylem_udp_send(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     const void*  data,
     size_t       len,
     const char*  host,
     uint16_t     port) {
-    _udp_ref(udp);
+    _udp_chan_ref(udp);
 
     int result = -1;
     for (;;) {
@@ -248,32 +248,32 @@ int xylem_udp_send(
         }
     }
 
-    _udp_unref(udp);
+    _udp_chan_unref(udp);
     return result;
 }
 
-void xylem_udp_set_read_deadline(xylem_udp_t* udp, uint64_t deadline_ms) {
+void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     iowait_set_rd_deadline(udp->waiter, deadline_ms);
 }
 
-void xylem_udp_set_write_deadline(xylem_udp_t* udp, uint64_t deadline_ms) {
+void xylem_udp_set_write_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     iowait_set_wr_deadline(udp->waiter, deadline_ms);
 }
 
-void xylem_udp_close(xylem_udp_t* udp) {
+void xylem_udp_close(xylem_udp_chan_t* udp) {
     if (atomic_exchange(&udp->closed, true)) {
         return;
     }
     iowait_close(udp->waiter);
-    _udp_unref(udp);
+    _udp_chan_unref(udp);
 }
 
-xylem_err_t xylem_udp_get_error(xylem_udp_t* udp) {
+xylem_err_t xylem_udp_get_error(xylem_udp_chan_t* udp) {
     return udp->err;
 }
 
 int xylem_udp_local_addr(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
@@ -286,7 +286,7 @@ int xylem_udp_local_addr(
 }
 
 int xylem_udp_remote_addr(
-    xylem_udp_t* udp,
+    xylem_udp_chan_t* udp,
     char*        host,
     size_t       host_len,
     uint16_t*    port) {

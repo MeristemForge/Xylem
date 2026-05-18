@@ -80,7 +80,7 @@
 
 struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
-    xylem_udp_t*           udp;
+    xylem_udp_chan_t*           udp;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_server_t*   server;       /* non-NULL for server sessions */
     addr_t           peer_addr;
@@ -105,7 +105,7 @@ struct xylem_rudp_conn_s {
 };
 
 struct xylem_rudp_server_s {
-    xylem_udp_t*           udp;
+    xylem_udp_chan_t*           udp;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_opts_t      opts;
     loop_t*          loop;
@@ -248,7 +248,7 @@ static bool _rudp_decode_handshake(const void* data, size_t len,
  * Encrypt a UDP payload via AES-256-CTR and send it.
  * When aes is NULL the payload is sent unencrypted.
  */
-static void _rudp_encrypted_send(xylem_udp_t* udp, addr_t* dest,
+static void _rudp_encrypted_send(xylem_udp_chan_t* udp, addr_t* dest,
                                  xylem_aes256_t* aes,
                                  const void* data, size_t len) {
     char host[INET6_ADDRSTRLEN] = {0};
@@ -556,7 +556,7 @@ static void _rudp_recv_input(xylem_rudp_conn_t* rudp, void* data, size_t len) {
     }
 }
 
-static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
+static void _rudp_client_read_cb(xylem_udp_chan_t* udp, void* data,
                                  size_t len,
                                  const char* host, uint16_t port) {
     (void)host; (void)port;
@@ -601,7 +601,7 @@ static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
     }
 }
 
-static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
+static void _rudp_client_close_cb(xylem_udp_chan_t* udp, int err,
                                   const char* errmsg) {
     xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)xylem_udp_get_userdata(udp);
     if (!rudp) {
@@ -760,7 +760,7 @@ static void _rudp_server_dispatch_data(
 
 /* Handle a SYN handshake: send ACK and accept a new session if needed. */
 static void _rudp_server_handle_syn(
-    xylem_rudp_server_t* server, xylem_udp_t* udp,
+    xylem_rudp_server_t* server, xylem_udp_chan_t* udp,
     addr_t* addr, uint32_t conv) {
     /* Send ACK regardless (client may have missed the first). */
     uint8_t ack[RUDP_HANDSHAKE_SIZE];
@@ -772,7 +772,7 @@ static void _rudp_server_handle_syn(
     }
 }
 
-static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
+static void _rudp_server_read_cb(xylem_udp_chan_t* udp, void* data,
                                  size_t len,
                                  const char* host, uint16_t port) {
     xylem_rudp_server_t* server =
@@ -809,7 +809,7 @@ static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
     }
 }
 
-static void _rudp_server_close_cb(xylem_udp_t* udp, int err,
+static void _rudp_server_close_cb(xylem_udp_chan_t* udp, int err,
                                   const char* errmsg) {
     (void)err;
     (void)errmsg;
@@ -836,7 +836,7 @@ static xylem_udp_handler_t _rudp_server_udp_handler = {
  * resources that were actually created get released.
  */
 static void _rudp_dial_cleanup(xylem_rudp_conn_t* rudp,
-                                xylem_udp_t* udp) {
+                                xylem_udp_chan_t* udp) {
     xylem_aes256_destroy(rudp->aes);
     rudp_fec_enc_destroy(rudp->fec_enc);
     rudp_fec_dec_destroy(rudp->fec_dec);
@@ -878,7 +878,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(const char* host,
     rudp->fec_parity = opts ? opts->fec_parity : 0;
     atomic_store(&rudp->refcount, 1);
 
-    xylem_udp_t* udp = xylem_udp_dial(host, port,
+    xylem_udp_chan_t* udp = xylem_udp_dial(host, port,
                                       &_rudp_client_udp_handler);
     if (!udp) {
         free(rudp);
@@ -1062,7 +1062,7 @@ xylem_rudp_server_t* xylem_rudp_listen(const char* host,
     rbtree_init(&server->sessions, _rudp_session_cmp_nn,
                       _rudp_session_cmp_kn);
 
-    xylem_udp_t* udp = xylem_udp_listen(host, port,
+    xylem_udp_chan_t* udp = xylem_udp_listen(host, port,
                                         &_rudp_server_udp_handler);
     if (!udp) {
         xylem_aes256_destroy(server->aes);

@@ -46,7 +46,7 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -69,7 +69,7 @@ static void _echo_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_udp_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
 
     ASSERT(xylem_udp_send(udp, "hello", 5, NULL, 0) == 0);
@@ -111,7 +111,7 @@ static void _addr_sender(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_b);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_b);
     ASSERT(udp != NULL);
     ASSERT(xylem_udp_send(udp, "ping", 4, UDP_HOST, ctx->port_a) == 0);
     xylem_udp_close(udp);
@@ -120,7 +120,7 @@ static void _addr_sender(void* arg) {
 
 static void _addr_receiver(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -162,7 +162,7 @@ static void test_recvfrom_addr(void) {
 
 static void _timeout_coro(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
 
     uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 100;
@@ -200,7 +200,7 @@ static void test_deadline_timeout(void) {
 
 static void _close_recv_coro(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, udp);
 
@@ -213,7 +213,7 @@ static void _close_recv_coro(void* arg) {
 
 static void _close_closer_coro(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = (xylem_udp_t*)xylem_channel_recv(ctx->ready);
+    xylem_udp_chan_t* udp = (xylem_udp_chan_t*)xylem_channel_recv(ctx->ready);
 
     xylem_sleep(50);
     xylem_udp_close(udp);
@@ -248,7 +248,7 @@ static void _boundary_sender(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_udp_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
 
     ASSERT(xylem_udp_send(udp, "A", 1, NULL, 0) == 0);
@@ -261,7 +261,7 @@ static void _boundary_sender(void* arg) {
 
 static void _boundary_receiver(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_udp_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, ctx);
 

@@ -78,7 +78,7 @@ struct xylem_dtls_conn_s {
     SSL*                   ssl;
     BIO*                   read_bio;
     BIO*                   write_bio;
-    xylem_udp_t*           udp;            /* 底层 UDP 句柄 */
+    xylem_udp_chan_t*           udp;            /* 底层 UDP 句柄 */
     xylem_dtls_ctx_t*      ctx;
     xylem_dtls_handler_t*  handler;
     xylem_dtls_server_t*   server;         /* 服务端会话非 NULL */
@@ -103,7 +103,7 @@ struct xylem_dtls_conn_s {
 
 ```c
 struct xylem_dtls_server_s {
-    xylem_udp_t*           udp;       /* 共享的 UDP socket */
+    xylem_udp_chan_t*           udp;       /* 共享的 UDP socket */
     xylem_dtls_ctx_t*      ctx;
     xylem_dtls_handler_t*  handler;
     xylem_loop_t*          loop;

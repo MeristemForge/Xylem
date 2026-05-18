@@ -21,9 +21,9 @@ graph TB
 
 ```c
 typedef struct xylem_udp_handler_s {
-    void (*on_read)(xylem_udp_t* udp, void* data, size_t len,
+    void (*on_read)(xylem_udp_chan_t* udp, void* data, size_t len,
                     xylem_addr_t* addr);
-    void (*on_close)(xylem_udp_t* udp, int err, const char* errmsg);
+    void (*on_close)(xylem_udp_chan_t* udp, int err, const char* errmsg);
 } xylem_udp_handler_t;
 ```
 
@@ -33,13 +33,13 @@ typedef struct xylem_udp_handler_s {
 ### 不透明类型
 
 ```c
-typedef struct xylem_udp_s xylem_udp_t;
+typedef struct xylem_udp_chan_s xylem_udp_chan_t;
 ```
 
 ## 内部结构
 
 ```c
-struct xylem_udp_s {
+struct xylem_udp_chan_s {
     xylem_loop_t*         loop;
     xylem_loop_io_t*      io;
     platform_sock_t       fd;
@@ -68,7 +68,7 @@ struct xylem_udp_s {
 ### listen 模式（未连接）
 
 ```c
-xylem_udp_t* xylem_udp_listen(loop, addr, handler);
+xylem_udp_chan_t* xylem_udp_listen(loop, addr, handler);
 ```
 
 - 创建非阻塞 UDP socket 并 `bind` 到指定地址
@@ -79,7 +79,7 @@ xylem_udp_t* xylem_udp_listen(loop, addr, handler);
 ### dial 模式（已连接）
 
 ```c
-xylem_udp_t* xylem_udp_dial(loop, addr, handler);
+xylem_udp_chan_t* xylem_udp_dial(loop, addr, handler);
 ```
 
 - 创建非阻塞 UDP socket 并 `connect` 到目标地址
@@ -111,7 +111,7 @@ IO 回调内循环 `recv`/`recvfrom` 直到 `EAGAIN`，一次回调排空内核�
 ### 发送路径
 
 ```c
-int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
+int xylem_udp_send(xylem_udp_chan_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len);
 ```
 
@@ -157,31 +157,31 @@ sequenceDiagram
 
 ```c
 /* 绑定地址并开始接收（未连接模式） */
-xylem_udp_t* xylem_udp_listen(xylem_loop_t* loop,
+xylem_udp_chan_t* xylem_udp_listen(xylem_loop_t* loop,
                               xylem_addr_t* addr,
                               xylem_udp_handler_t* handler);
 
 /* 创建已连接 UDP socket */
-xylem_udp_t* xylem_udp_dial(xylem_loop_t* loop,
+xylem_udp_chan_t* xylem_udp_dial(xylem_loop_t* loop,
                             xylem_addr_t* addr,
                             xylem_udp_handler_t* handler);
 
 /* 发送数据报，dest 为 NULL 时使用已连接地址。线程安全。 */
-int xylem_udp_send(xylem_udp_t* udp, xylem_addr_t* dest,
+int xylem_udp_send(xylem_udp_chan_t* udp, xylem_addr_t* dest,
                    const void* data, size_t len);
 
 /* 关闭 UDP 句柄。线程安全。 */
-void xylem_udp_close(xylem_udp_t* udp);
+void xylem_udp_close(xylem_udp_chan_t* udp);
 
 /* 递增引用计数，需在事件循环线程上调用。 */
-void xylem_udp_acquire(xylem_udp_t* udp);
+void xylem_udp_acquire(xylem_udp_chan_t* udp);
 
 /* 递减引用计数，归零时释放内存。可从任意线程调用。 */
-void xylem_udp_release(xylem_udp_t* udp);
+void xylem_udp_release(xylem_udp_chan_t* udp);
 
 /* 获取关联的事件循环 */
-xylem_loop_t* xylem_udp_get_loop(xylem_udp_t* udp);
+xylem_loop_t* xylem_udp_get_loop(xylem_udp_chan_t* udp);
 
-void* xylem_udp_get_userdata(xylem_udp_t* udp);
-void  xylem_udp_set_userdata(xylem_udp_t* udp, void* ud);
+void* xylem_udp_get_userdata(xylem_udp_chan_t* udp);
+void  xylem_udp_set_userdata(xylem_udp_chan_t* udp, void* ud);
 ```

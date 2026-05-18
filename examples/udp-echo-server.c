@@ -33,7 +33,7 @@
 
 #define LISTEN_PORT 9001
 
-static void _on_read(xylem_udp_t* udp, void* data, size_t len,
+static void _on_read(xylem_udp_chan_t* udp, void* data, size_t len,
                      const char* host, uint16_t port) {
     xylem_logi("recv %zu bytes from %s:%u", len, host, port);
     xylem_udp_send(udp, host, port, data, len);
@@ -46,7 +46,7 @@ static void _server_main(void* arg) {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_listen("127.0.0.1", LISTEN_PORT, &handler);
+    xylem_udp_chan_t* udp = xylem_udp_listen("127.0.0.1", LISTEN_PORT, &handler);
     if (!udp) {
         xylem_loge("failed to bind on port %d", LISTEN_PORT);
         xylem_shutdown();

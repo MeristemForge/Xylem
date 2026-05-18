@@ -73,7 +73,7 @@ typedef struct xylem_rudp_server_s xylem_rudp_server_t;
 ```c
 struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
-    xylem_udp_t*           udp;
+    xylem_udp_chan_t*           udp;
     xylem_rudp_handler_t*  handler;
     xylem_rudp_server_t*   server;          /* 服务端会话非 NULL */
     xylem_addr_t           peer_addr;
@@ -110,7 +110,7 @@ struct xylem_rudp_conn_s {
 
 ```c
 struct xylem_rudp_server_s {
-    xylem_udp_t*           udp;       /* 共享的 UDP socket（listen 模式） */
+    xylem_udp_chan_t*           udp;       /* 共享的 UDP socket（listen 模式） */
     xylem_rudp_handler_t*  handler;
     xylem_rudp_opts_t      opts;
     xylem_loop_t*          loop;
