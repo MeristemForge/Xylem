@@ -89,12 +89,12 @@ extern xylem_tcp_listener_t* xylem_tcp_listen(
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL if the listener is closing.
+ * @return Accepted connection, or NULL if the listener is closed.
  */
 extern xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close and destroy a listener. Idempotent.
  *
  * Wakes any coroutine blocked in xylem_tcp_accept().
  *
@@ -201,10 +201,10 @@ extern int xylem_tcp_send(
     size_t            len);
 
 /**
- * @brief Close and destroy a connection.
+ * @brief Close a connection. Idempotent.
  *
- * The connection must not be used after this call. Read any needed
- * state (xylem_tcp_get_error, xylem_tcp_remote_addr) before closing.
+ * Wakes any coroutine blocked in recv/send. Read any needed state
+ * (xylem_tcp_get_error, xylem_tcp_remote_addr) before closing.
  *
  * @param tcp  Connection handle.
  */

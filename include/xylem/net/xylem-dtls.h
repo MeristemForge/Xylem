@@ -153,7 +153,7 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL if the listener is closing.
+ * @return Accepted connection, or NULL if the listener is closed.
  */
 extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
 
@@ -223,18 +223,17 @@ extern void xylem_dtls_set_write_deadline(
     uint64_t           deadline_ms);
 
 /**
- * @brief Close and destroy a connection.
+ * @brief Close a connection. Idempotent.
  *
- * Sends a DTLS close_notify alert to the peer. For server-side
- * connections, removes the session from the listener's session
- * tree.
+ * Wakes any coroutine blocked in recv/send. Read any needed state
+ * (xylem_dtls_get_error) before closing.
  *
  * @param dtls  Connection handle.
  */
 extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close and destroy a listener. Idempotent.
  *
  * Closes all active sessions, stops the dispatcher coroutine,
  * and frees all resources.

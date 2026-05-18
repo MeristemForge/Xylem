@@ -55,8 +55,15 @@ struct xylem_uds_listener_s {
     platform_sock_t fd;
     char            path[UDS_MAX_PATH];
     _Atomic int32_t refcnt;
-    _Atomic bool    closing;
+    _Atomic bool    closed;
 };
+
+static xylem_err_t _uds_map_error(int platform_err) {
+    switch (platform_err) {
+    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_PEER_RESET;
+    default:                            return XYLEM_ERR_UNKNOWN;
+    }
+}
 
 static void _uds_conn_ref(xylem_uds_conn_t* uds) {
     atomic_fetch_add_explicit(&uds->refcnt, 1, memory_order_relaxed);
@@ -141,7 +148,7 @@ static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            uds->err = XYLEM_ERR_UNKNOWN;
+            uds->err = _uds_map_error(err);
             return -1;
         }
 
@@ -346,7 +353,7 @@ _uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            uds->err = XYLEM_ERR_UNKNOWN;
+            uds->err = _uds_map_error(err);
             return -1;
         }
 
@@ -460,7 +467,7 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
 
     for (;;) {
         if (atomic_load_explicit(
-                &listener->closing, memory_order_acquire)) {
+                &listener->closed, memory_order_acquire)) {
             break;
         }
 
@@ -506,7 +513,7 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
 }
 
 void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
-    if (atomic_exchange(&listener->closing, true)) {
+    if (atomic_exchange(&listener->closed, true)) {
         return;
     }
 
@@ -528,7 +535,7 @@ xylem_uds_conn_t* xylem_uds_dial(
         return NULL;
     }
 
-    bool            connected = false;
+    bool connected = false;
     platform_sock_t fd
         = platform_socket_dial_unix(path, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
@@ -562,7 +569,7 @@ xylem_uds_conn_t* xylem_uds_dial(
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
-            uds->err = XYLEM_ERR_UNKNOWN;
+            uds->err = _uds_map_error(err);
             xylem_loge("uds dial fd=%d connect error=%d (%s)",
                        (int)fd,
                        err,

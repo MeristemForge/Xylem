@@ -83,14 +83,15 @@ extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL if the listener is closing.
+ * @return Accepted connection, or NULL if the listener is closed.
  */
 extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close and destroy a listener. Idempotent.
  *
  * Wakes any coroutine blocked in xylem_uds_accept().
+ * Unlinks the socket path from the filesystem.
  *
  * @param ln  Listener handle.
  */
@@ -191,10 +192,10 @@ extern int xylem_uds_send(
     size_t             len);
 
 /**
- * @brief Close and destroy a connection.
+ * @brief Close a connection. Idempotent.
  *
- * The connection must not be used after this call. Read any needed
- * state (xylem_uds_get_error) before closing.
+ * Wakes any coroutine blocked in recv/send. Read any needed state
+ * (xylem_uds_get_error) before closing.
  *
  * @param uds  Connection handle.
  */

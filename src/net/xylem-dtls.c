@@ -125,7 +125,7 @@ struct xylem_dtls_listener_s {
     mco_coro*             accept_parked;
     bool                  accept_closed;
 
-    _Atomic bool          closing;
+    _Atomic bool          closed;
 };
 
 
@@ -945,7 +945,7 @@ static void _dtls_dispatcher(void* arg) {
     xylem_dtls_listener_t* ln = arg;
     char buf[65535];
 
-    while (!atomic_load_explicit(&ln->closing, memory_order_acquire)) {
+    while (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
         struct sockaddr_storage from_ss;
         socklen_t from_len = sizeof(from_ss);
         ssize_t n = platform_socket_recvfrom(
@@ -1190,7 +1190,7 @@ void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
 }
 
 void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
-    if (atomic_exchange(&ln->closing, true)) {
+    if (atomic_exchange(&ln->closed, true)) {
         return;
     }
 

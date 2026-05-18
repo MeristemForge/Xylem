@@ -57,7 +57,7 @@ struct xylem_tcp_listener_s {
     platform_sock_t fd;
     size_t          max_read_buf;
     _Atomic int32_t refcnt;
-    _Atomic bool    closing;
+    _Atomic bool    closed;
 };
 
 static xylem_err_t _tcp_map_error(int platform_err) {
@@ -627,7 +627,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
     uint64_t backoff_ms = 5;
 
     for (;;) {
-        if (atomic_load_explicit(&listener->closing, memory_order_acquire)) {
+        if (atomic_load_explicit(&listener->closed, memory_order_acquire)) {
             break;
         }
 
@@ -676,12 +676,12 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
 }
 
 void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
-    if (atomic_exchange(&listener->closing, true)) {
+    if (atomic_exchange(&listener->closed, true)) {
         return;
     }
 
     /**
-     * Wake any accept coroutine; it will observe `closing`, drop its
+     * Wake any accept coroutine; it will observe `closed`, drop its
      * reference, and the last unref triggers teardown.
      */
     iowait_close(listener->waiter);

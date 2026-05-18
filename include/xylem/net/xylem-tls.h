@@ -150,7 +150,7 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL if the listener is closing.
+ * @return Accepted connection, or NULL if the listener is closed.
  */
 extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
 
@@ -222,14 +222,19 @@ extern int xylem_tls_send(
     size_t            len);
 
 /**
- * @brief Close and destroy a connection.
+ * @brief Close a connection. Idempotent.
+ *
+ * Wakes any coroutine blocked in recv/send. Read any needed state
+ * (xylem_tls_get_error, xylem_tls_remote_addr) before closing.
  *
  * @param tls  Connection handle.
  */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close and destroy a listener. Idempotent.
+ *
+ * Wakes any coroutine blocked in xylem_tls_accept().
  *
  * @param ln  Listener handle.
  */

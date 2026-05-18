@@ -77,7 +77,7 @@ struct xylem_tls_listener_s {
     platform_sock_t  fd;
     xylem_tls_ctx_t* ctx;
     xylem_tls_opts_t opts;
-    _Atomic bool     closing;
+    _Atomic bool     closed;
 };
 
 
@@ -620,7 +620,7 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     uint64_t backoff_ms = 5;
 
     for (;;) {
-        if (atomic_load_explicit(&ln->closing, memory_order_acquire)) {
+        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
             return NULL;
         }
 
@@ -683,7 +683,7 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
 
 
 void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
-    if (atomic_exchange(&ln->closing, true)) {
+    if (atomic_exchange(&ln->closed, true)) {
         return;
     }
 
