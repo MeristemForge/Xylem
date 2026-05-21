@@ -22,7 +22,6 @@
 #include "xylem/net/xylem-uds.h"
 
 #include "xylem/encoding/xylem-varint.h"
-#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
@@ -31,6 +30,7 @@
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,7 +45,6 @@ struct xylem_uds_conn_s {
     size_t                 read_buf_cap;
     size_t                 read_buf_pos;
     size_t                 read_buf_len;
-    xylem_err_t            err;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -57,13 +56,6 @@ struct xylem_uds_listener_s {
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
-
-static xylem_err_t _uds_map_error(int platform_err) {
-    switch (platform_err) {
-    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_PEER_RESET;
-    default:                            return XYLEM_ERR_UNKNOWN;
-    }
-}
 
 static void _uds_conn_ref(xylem_uds_conn_t* uds) {
     atomic_fetch_add_explicit(&uds->refcnt, 1, memory_order_relaxed);
@@ -131,7 +123,6 @@ static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
 
 static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
     if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
-        uds->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -141,23 +132,20 @@ static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
             return n;
         }
         if (n == 0) {
-            uds->err = XYLEM_ERR_PEER_CLOSED;
             return 0;
         }
 
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            uds->err = _uds_map_error(err);
+            xylem_loge("uds fd=%d recv error: %s",
+                       (int)uds->fd, platform_socket_tostring(err));
             return -1;
         }
 
         iowait_result_t r = iowait_read(uds->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&uds->closed, memory_order_acquire)) {
-            uds->err = (r == IOWAIT_TIMEOUT)
-                ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CLOSED;
             return -1;
         }
     }
@@ -223,7 +211,8 @@ static int64_t
 _uds_recv_fixed(xylem_uds_conn_t* uds, void* buf, size_t len) {
     size_t frame_len = uds->frame_opts.fixed.len;
     if (frame_len > len) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d recv: fixed frame %zu exceeds buffer %zu",
+                   (int)uds->fd, frame_len, len);
         return -1;
     }
     if (_uds_read_exact(uds, buf, frame_len) != 0) {
@@ -238,7 +227,8 @@ _uds_recv_length(xylem_uds_conn_t* uds, void* buf, size_t len) {
     uint32_t hdr_sz = uds->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d recv: header_size %u exceeds limit",
+                   (int)uds->fd, hdr_sz);
         return -1;
     }
 
@@ -251,7 +241,8 @@ _uds_recv_length(xylem_uds_conn_t* uds, void* buf, size_t len) {
     if (uds->frame_opts.length.coding == XYLEM_UDS_LENGTH_VARINT) {
         size_t pos = (size_t)uds->frame_opts.length.field_offset;
         if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
-            uds->err = XYLEM_ERR_UNKNOWN;
+            xylem_loge("uds fd=%d recv: varint decode failed",
+                       (int)uds->fd);
             return -1;
         }
     } else {
@@ -273,13 +264,14 @@ _uds_recv_length(xylem_uds_conn_t* uds, void* buf, size_t len) {
     int64_t adjusted
         = (int64_t)body_len + uds->frame_opts.length.adjustment;
     if (adjusted < 0) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d recv: negative payload length", (int)uds->fd);
         return -1;
     }
 
     size_t payload_len = (size_t)adjusted;
     if (payload_len > len) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d recv: payload %zu exceeds buffer %zu",
+                   (int)uds->fd, payload_len, len);
         return -1;
     }
 
@@ -328,14 +320,14 @@ _uds_recv_delimiter(xylem_uds_conn_t* uds, void* buf, size_t len) {
         }
     }
 
-    uds->err = XYLEM_ERR_UNKNOWN;
+    xylem_loge("uds fd=%d recv: delimiter not found within buffer",
+               (int)uds->fd);
     return -1;
 }
 
 static int
 _uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
     if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
-        uds->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -353,16 +345,14 @@ _uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            uds->err = _uds_map_error(err);
+            xylem_loge("uds fd=%d send error: %s",
+                       (int)uds->fd, platform_socket_tostring(err));
             return -1;
         }
 
         iowait_result_t r = iowait_write(uds->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&uds->closed, memory_order_acquire)) {
-            uds->err = (r == IOWAIT_TIMEOUT)
-                ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CLOSED;
             return -1;
         }
     }
@@ -375,13 +365,14 @@ _uds_send_length(xylem_uds_conn_t* uds, const void* data, size_t len) {
     uint32_t hdr_sz = uds->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d send: header_size %u exceeds limit",
+                   (int)uds->fd, hdr_sz);
         return -1;
     }
 
     int64_t wire_len = (int64_t)len - uds->frame_opts.length.adjustment;
     if (wire_len < 0) {
-        uds->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("uds fd=%d send: negative wire length", (int)uds->fd);
         return -1;
     }
 
@@ -391,7 +382,8 @@ _uds_send_length(xylem_uds_conn_t* uds, const void* data, size_t len) {
         size_t pos = (size_t)uds->frame_opts.length.field_offset;
         if (!xylem_varint_encode(
                 (uint64_t)wire_len, hdr, hdr_sz, &pos)) {
-            uds->err = XYLEM_ERR_UNKNOWN;
+            xylem_loge("uds fd=%d send: varint encode failed",
+                       (int)uds->fd);
             return -1;
         }
         if (_uds_raw_send(uds, hdr, pos) != 0) {
@@ -483,8 +475,6 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
                 continue;
             }
 
-            /* Resource exhaustion (EMFILE/ENFILE): exponential backoff
-             * prevents CPU spin while the fd table is full. */
             xylem_logw("uds listener fd=%d accept error=%d (%s)",
                        (int)listener->fd,
                        err,
@@ -560,7 +550,7 @@ xylem_uds_conn_t* xylem_uds_dial(
         iowait_set_wr_deadline(uds->waiter, 0);
 
         if (r != IOWAIT_READY) {
-            uds->err = XYLEM_ERR_TIMEOUT;
+            xylem_loge("uds dial: connect timeout for %s", path);
             xylem_uds_close(uds);
             return NULL;
         }
@@ -569,7 +559,6 @@ xylem_uds_conn_t* xylem_uds_dial(
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
-            uds->err = _uds_map_error(err);
             xylem_loge("uds dial fd=%d connect error=%d (%s)",
                        (int)fd,
                        err,
@@ -647,10 +636,6 @@ void xylem_uds_close(xylem_uds_conn_t* uds) {
     }
     iowait_close(uds->waiter);
     _uds_conn_unref(uds);
-}
-
-xylem_err_t xylem_uds_get_error(xylem_uds_conn_t* uds) {
-    return uds->err;
 }
 
 int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds) {

@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem/xylem-error.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -126,7 +124,7 @@ extern void xylem_uds_set_framing(
  * @brief Set the read deadline for the connection.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_uds_recv() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_uds_recv() calls return -1.
  *
  * @param uds          Connection handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -162,7 +160,7 @@ extern void xylem_uds_set_write_deadline(
  * @param len  Buffer size.
  *
  * @return Bytes received (>0), 0 if peer closed gracefully,
- *         -1 on failure. Call xylem_uds_get_error() for the reason.
+ *         -1 on error.
  */
 extern int64_t xylem_uds_recv(
     xylem_uds_conn_t* uds,
@@ -183,8 +181,7 @@ extern int64_t xylem_uds_recv(
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
  *
- * @return 0 on success, -1 on failure. Call xylem_uds_get_error()
- *         for the reason.
+ * @return 0 on success, -1 on error.
  */
 extern int xylem_uds_send(
     xylem_uds_conn_t* uds,
@@ -194,23 +191,11 @@ extern int xylem_uds_send(
 /**
  * @brief Close a connection. Idempotent.
  *
- * Wakes any coroutine blocked in recv/send. Read any needed state
- * (xylem_uds_get_error) before closing.
+ * Wakes any coroutine blocked in recv/send.
  *
  * @param uds  Connection handle.
  */
 extern void xylem_uds_close(xylem_uds_conn_t* uds);
-
-/**
- * @brief Get the last error code from the connection.
- *
- * Must be called before xylem_uds_close().
- *
- * @param uds  Connection handle.
- *
- * @return Error code, or XYLEM_ERR_NONE if no error.
- */
-extern xylem_err_t xylem_uds_get_error(xylem_uds_conn_t* uds);
 
 /**
  * @brief Shut down the write side of the connection.
