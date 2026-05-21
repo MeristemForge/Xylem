@@ -369,14 +369,8 @@ static xylem_tls_conn_t* _tls_conn_alloc(
         return NULL;
     }
 
-    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    tls->read_buf = (char*)malloc(buf_cap);
-    if (!tls->read_buf) {
-        iowait_destroy(tls->waiter);
-        free(tls);
-        return NULL;
-    }
-    tls->read_buf_cap = buf_cap;
+    tls->read_buf_cap
+        = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
 
     return tls;
@@ -699,35 +693,6 @@ static int _tls_read_exact(xylem_tls_conn_t* tls, void* buf, size_t len) {
 }
 
 static int64_t
-_tls_buffered_read(xylem_tls_conn_t* tls, void* buf, size_t len) {
-    size_t avail = tls->read_buf_len - tls->read_buf_pos;
-    if (avail > 0) {
-        size_t copy = avail < len ? avail : len;
-        memcpy(buf, tls->read_buf + tls->read_buf_pos, copy);
-        tls->read_buf_pos += copy;
-        return (int64_t)copy;
-    }
-
-    if (len >= tls->read_buf_cap) {
-        return _tls_raw_recv(tls, buf, len);
-    }
-
-    tls->read_buf_pos = 0;
-    tls->read_buf_len = 0;
-
-    int64_t n = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
-    if (n <= 0) {
-        return n;
-    }
-    tls->read_buf_len = (size_t)n;
-
-    size_t copy = (size_t)n < len ? (size_t)n : len;
-    memcpy(buf, tls->read_buf, copy);
-    tls->read_buf_pos = copy;
-    return (int64_t)copy;
-}
-
-static int64_t
 _tls_recv_fixed(xylem_tls_conn_t* tls, void* buf, size_t len) {
     size_t frame_len = tls->frame_opts.fixed.len;
     if (frame_len > len) {
@@ -903,11 +868,23 @@ void xylem_tls_set_framing(
 int64_t
 xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
     _tls_conn_ref(tls);
+
+    if (tls->frame_opts.type == XYLEM_TCP_FRAME_NONE) {
+        int64_t ret = _tls_raw_recv(tls, buf, len);
+        _tls_conn_unref(tls);
+        return ret;
+    }
+
+    if (!tls->read_buf) {
+        tls->read_buf = (char*)malloc(tls->read_buf_cap);
+        if (!tls->read_buf) {
+            _tls_conn_unref(tls);
+            return -1;
+        }
+    }
+
     int64_t ret;
     switch (tls->frame_opts.type) {
-    case XYLEM_TCP_FRAME_NONE:
-        ret = _tls_buffered_read(tls, buf, len);
-        break;
     case XYLEM_TCP_FRAME_FIXED:
         ret = _tls_recv_fixed(tls, buf, len);
         break;

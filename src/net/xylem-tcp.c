@@ -112,14 +112,8 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
         return NULL;
     }
 
-    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    tcp->read_buf = (char*)malloc(buf_cap);
-    if (!tcp->read_buf) {
-        iowait_destroy(tcp->waiter);
-        free(tcp);
-        return NULL;
-    }
-    tcp->read_buf_cap = buf_cap;
+    tcp->read_buf_cap
+        = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
 
     /* TCP_NODELAY and keepalive are set by the platform layer on accept /
      * dial; SO_SNDBUF tuning is likewise applied there. See
@@ -184,35 +178,6 @@ static int _tcp_read_exact(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
         tcp->read_buf_len = (size_t)n;
     }
     return 0;
-}
-
-static int64_t
-_tcp_buffered_read(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
-    size_t avail = tcp->read_buf_len - tcp->read_buf_pos;
-    if (avail > 0) {
-        size_t copy = avail < len ? avail : len;
-        memcpy(buf, tcp->read_buf + tcp->read_buf_pos, copy);
-        tcp->read_buf_pos += copy;
-        return (int64_t)copy;
-    }
-
-    if (len >= tcp->read_buf_cap) {
-        return _tcp_raw_recv(tcp, buf, len);
-    }
-
-    tcp->read_buf_pos = 0;
-    tcp->read_buf_len = 0;
-
-    int64_t n = _tcp_raw_recv(tcp, tcp->read_buf, tcp->read_buf_cap);
-    if (n <= 0) {
-        return n;
-    }
-    tcp->read_buf_len = (size_t)n;
-
-    size_t copy = (size_t)n < len ? (size_t)n : len;
-    memcpy(buf, tcp->read_buf, copy);
-    tcp->read_buf_pos = copy;
-    return (int64_t)copy;
 }
 
 static int64_t
@@ -531,11 +496,23 @@ void xylem_tcp_set_write_deadline(
 int64_t
 xylem_tcp_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     _tcp_conn_ref(tcp);
+
+    if (tcp->frame_opts.type == XYLEM_TCP_FRAME_NONE) {
+        int64_t ret = _tcp_raw_recv(tcp, buf, len);
+        _tcp_conn_unref(tcp);
+        return ret;
+    }
+
+    if (!tcp->read_buf) {
+        tcp->read_buf = (char*)malloc(tcp->read_buf_cap);
+        if (!tcp->read_buf) {
+            _tcp_conn_unref(tcp);
+            return -1;
+        }
+    }
+
     int64_t ret;
     switch (tcp->frame_opts.type) {
-    case XYLEM_TCP_FRAME_NONE:
-        ret = _tcp_buffered_read(tcp, buf, len);
-        break;
     case XYLEM_TCP_FRAME_FIXED:
         ret = _tcp_recv_fixed(tcp, buf, len);
         break;

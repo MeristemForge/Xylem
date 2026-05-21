@@ -109,12 +109,6 @@ static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
         return NULL;
     }
 
-    uds->read_buf = (char*)malloc(DEFAULT_READ_BUF_SIZE);
-    if (!uds->read_buf) {
-        iowait_destroy(uds->waiter);
-        free(uds);
-        return NULL;
-    }
     uds->read_buf_cap = DEFAULT_READ_BUF_SIZE;
 
     _uds_conn_ref(uds);
@@ -176,35 +170,6 @@ static int _uds_read_exact(xylem_uds_conn_t* uds, void* buf, size_t len) {
         uds->read_buf_len = (size_t)n;
     }
     return 0;
-}
-
-static int64_t
-_uds_buffered_read(xylem_uds_conn_t* uds, void* buf, size_t len) {
-    size_t avail = uds->read_buf_len - uds->read_buf_pos;
-    if (avail > 0) {
-        size_t copy = avail < len ? avail : len;
-        memcpy(buf, uds->read_buf + uds->read_buf_pos, copy);
-        uds->read_buf_pos += copy;
-        return (int64_t)copy;
-    }
-
-    if (len >= uds->read_buf_cap) {
-        return _uds_raw_recv(uds, buf, len);
-    }
-
-    uds->read_buf_pos = 0;
-    uds->read_buf_len = 0;
-
-    int64_t n = _uds_raw_recv(uds, uds->read_buf, uds->read_buf_cap);
-    if (n <= 0) {
-        return n;
-    }
-    uds->read_buf_len = (size_t)n;
-
-    size_t copy = (size_t)n < len ? (size_t)n : len;
-    memcpy(buf, uds->read_buf, copy);
-    uds->read_buf_pos = copy;
-    return (int64_t)copy;
 }
 
 static int64_t
@@ -593,11 +558,23 @@ void xylem_uds_set_write_deadline(
 int64_t
 xylem_uds_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
     _uds_conn_ref(uds);
+
+    if (uds->frame_opts.type == XYLEM_UDS_FRAME_NONE) {
+        int64_t ret = _uds_raw_recv(uds, buf, len);
+        _uds_conn_unref(uds);
+        return ret;
+    }
+
+    if (!uds->read_buf) {
+        uds->read_buf = (char*)malloc(uds->read_buf_cap);
+        if (!uds->read_buf) {
+            _uds_conn_unref(uds);
+            return -1;
+        }
+    }
+
     int64_t ret;
     switch (uds->frame_opts.type) {
-    case XYLEM_UDS_FRAME_NONE:
-        ret = _uds_buffered_read(uds, buf, len);
-        break;
     case XYLEM_UDS_FRAME_FIXED:
         ret = _uds_recv_fixed(uds, buf, len);
         break;
