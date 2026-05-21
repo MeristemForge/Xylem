@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem/xylem-error.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -171,7 +169,7 @@ extern void xylem_tcp_set_write_deadline(
  * @param len  Buffer size.
  *
  * @return Bytes received (>0), 0 if peer closed gracefully,
- *         -1 on failure. Call xylem_tcp_get_error() for the reason.
+ *         -1 on error.
  */
 extern int64_t xylem_tcp_recv(
     xylem_tcp_conn_t* tcp,
@@ -192,8 +190,7 @@ extern int64_t xylem_tcp_recv(
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
  *
- * @return 0 on success, -1 on failure. Call xylem_tcp_get_error()
- *         for the reason.
+ * @return 0 on success, -1 on error.
  */
 extern int xylem_tcp_send(
     xylem_tcp_conn_t* tcp,
@@ -204,22 +201,11 @@ extern int xylem_tcp_send(
  * @brief Close a connection. Idempotent.
  *
  * Wakes any coroutine blocked in recv/send. Read any needed state
- * (xylem_tcp_get_error, xylem_tcp_remote_addr) before closing.
+ * (xylem_tcp_remote_addr) before closing.
  *
  * @param tcp  Connection handle.
  */
 extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
-
-/**
- * @brief Get the last error code from the connection.
- *
- * Must be called before xylem_tcp_close().
- *
- * @param tcp  Connection handle.
- *
- * @return Error code, or XYLEM_ERR_NONE if no error.
- */
-extern xylem_err_t xylem_tcp_get_error(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the remote address of the connection.
