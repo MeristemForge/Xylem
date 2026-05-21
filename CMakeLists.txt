@@ -35,7 +35,6 @@ set(SRCS
 	src/runtime/runtime.c
 	src/xylem-logger.c
 	src/xylem-utils.c
-	src/xylem-error.c
 	src/xylem-serial.c
 	src/xylem-timer.c
 	src/container/mpsc.c
