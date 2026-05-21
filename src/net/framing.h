@@ -26,37 +26,40 @@ _Pragma("once")
 typedef int64_t (*framing_recv_fn)(void* ctx, void* buf, size_t len);
 typedef int (*framing_send_fn)(void* ctx, const void* data, size_t len);
 
-typedef struct framing_reader_s {
+typedef struct framing_s {
     framing_recv_fn recv_fn;
+    framing_send_fn send_fn;
     void*           ctx;
     int             fd;
     char*           read_buf;
     size_t          read_buf_cap;
     size_t          read_buf_pos;
     size_t          read_buf_len;
-} framing_reader_t;
+} framing_t;
 
 /**
- * @brief Initialize a framing reader.
+ * @brief Initialize a framing instance.
  *
- * @param r        Reader instance to initialize.
- * @param fn       Raw recv callback for the underlying transport.
- * @param ctx      Opaque context passed to fn.
+ * @param f        Framing instance to initialize.
+ * @param recv_fn  Raw recv callback for the underlying transport.
+ * @param send_fn  Raw send callback for the underlying transport.
+ * @param ctx      Opaque context passed to callbacks.
  * @param fd       Socket fd, used only for log messages.
  * @param buf_cap  Internal read buffer capacity (bytes).
  */
-extern void framing_reader_init(framing_reader_t* r,
-                                framing_recv_fn   fn,
-                                void*             ctx,
-                                int               fd,
-                                size_t            buf_cap);
+extern void framing_init(framing_t*      f,
+                         framing_recv_fn recv_fn,
+                         framing_send_fn send_fn,
+                         void*           ctx,
+                         int             fd,
+                         size_t          buf_cap);
 
 /**
- * @brief Deinitialize a framing reader, freeing its internal buffer.
+ * @brief Deinitialize a framing instance, freeing its internal buffer.
  *
- * @param r  Reader instance.
+ * @param f  Framing instance.
  */
-extern void framing_reader_deinit(framing_reader_t* r);
+extern void framing_deinit(framing_t* f);
 
 /**
  * @brief Receive a framed message.
@@ -65,14 +68,14 @@ extern void framing_reader_deinit(framing_reader_t* r);
  * For FIXED/LENGTH/DELIMITER: lazily allocates the internal read buffer
  * and dispatches to the corresponding framing decoder.
  *
- * @param r     Reader instance.
+ * @param f     Framing instance.
  * @param opts  Framing options.
  * @param buf   Destination buffer.
  * @param len   Destination buffer size.
  *
  * @return Bytes received on success, -1 on error.
  */
-extern int64_t framing_recv(framing_reader_t*           r,
+extern int64_t framing_recv(framing_t*                  f,
                             const xylem_framing_opts_t* opts,
                             void*                       buf,
                             size_t                      len);
@@ -85,16 +88,14 @@ extern int64_t framing_recv(framing_reader_t*           r,
  * For LENGTH: encodes length header + sends header + payload.
  * For DELIMITER: sends payload + delimiter.
  *
- * @param r        Reader instance (provides fd for logging).
- * @param opts     Framing options.
- * @param send_fn  Raw send callback for the underlying transport.
- * @param data     Payload to send.
- * @param len      Payload length.
+ * @param f     Framing instance.
+ * @param opts  Framing options.
+ * @param data  Payload to send.
+ * @param len   Payload length.
  *
  * @return 0 on success, -1 on error.
  */
-extern int framing_send(framing_reader_t*           r,
+extern int framing_send(framing_t*                  f,
                         const xylem_framing_opts_t* opts,
-                        framing_send_fn             send_fn,
                         const void*                 data,
                         size_t                      len);

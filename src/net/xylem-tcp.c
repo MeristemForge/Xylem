@@ -42,7 +42,7 @@ struct xylem_tcp_conn_s {
     platform_sock_t        fd;
     addr_t                 peer_addr;
     xylem_framing_opts_t frame_opts;
-    framing_reader_t        reader;
+    framing_t        framing;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -72,7 +72,7 @@ static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
         shutdown(tcp->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tcp->fd);
     }
-    framing_reader_deinit(&tcp->reader);
+    framing_deinit(&tcp->framing);
     free(tcp);
 }
 
@@ -122,8 +122,9 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
     }
 
     size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    framing_reader_init(
-        &tcp->reader, _tcp_raw_recv_adapter, tcp, (int)fd, buf_cap);
+    framing_init(
+        &tcp->framing, _tcp_raw_recv_adapter, _tcp_raw_send_adapter,
+        tcp, (int)fd, buf_cap);
 
     _tcp_conn_ref(tcp);
     return tcp;
@@ -306,15 +307,14 @@ void xylem_tcp_set_write_deadline(
 int64_t
 xylem_tcp_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     _tcp_conn_ref(tcp);
-    int64_t ret = framing_recv(&tcp->reader, &tcp->frame_opts, buf, len);
+    int64_t ret = framing_recv(&tcp->framing, &tcp->frame_opts, buf, len);
     _tcp_conn_unref(tcp);
     return ret;
 }
 
 int xylem_tcp_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
     _tcp_conn_ref(tcp);
-    int ret = framing_send(
-        &tcp->reader, &tcp->frame_opts, _tcp_raw_send_adapter, data, len);
+    int ret = framing_send(&tcp->framing, &tcp->frame_opts, data, len);
     _tcp_conn_unref(tcp);
     return ret;
 }

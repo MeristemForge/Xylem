@@ -41,7 +41,7 @@ struct xylem_uds_conn_s {
     iowait_t*              waiter;
     platform_sock_t        fd;
     xylem_framing_opts_t frame_opts;
-    framing_reader_t        reader;
+    framing_t        framing;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -70,7 +70,7 @@ static void _uds_conn_unref(xylem_uds_conn_t* uds) {
         shutdown(uds->fd, PLATFORM_SHUT_WR);
         platform_socket_close(uds->fd);
     }
-    framing_reader_deinit(&uds->reader);
+    framing_deinit(&uds->framing);
     free(uds);
 }
 
@@ -118,9 +118,9 @@ static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
         return NULL;
     }
 
-    framing_reader_init(
-        &uds->reader, _uds_raw_recv_adapter, uds, (int)fd,
-        DEFAULT_READ_BUF_SIZE);
+    framing_init(
+        &uds->framing, _uds_raw_recv_adapter, _uds_raw_send_adapter,
+        uds, (int)fd, DEFAULT_READ_BUF_SIZE);
 
     _uds_conn_ref(uds);
     return uds;
@@ -372,15 +372,14 @@ void xylem_uds_set_write_deadline(
 int64_t
 xylem_uds_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
     _uds_conn_ref(uds);
-    int64_t ret = framing_recv(&uds->reader, &uds->frame_opts, buf, len);
+    int64_t ret = framing_recv(&uds->framing, &uds->frame_opts, buf, len);
     _uds_conn_unref(uds);
     return ret;
 }
 
 int xylem_uds_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
     _uds_conn_ref(uds);
-    int ret = framing_send(
-        &uds->reader, &uds->frame_opts, _uds_raw_send_adapter, data, len);
+    int ret = framing_send(&uds->framing, &uds->frame_opts, data, len);
     _uds_conn_unref(uds);
     return ret;
 }

@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int _framing_read_exact(framing_reader_t* r, void* buf, size_t len) {
+static int _framing_read_exact(framing_t* r, void* buf, size_t len) {
     char*  ptr = (char*)buf;
     size_t rem = len;
 
@@ -55,7 +55,7 @@ static int _framing_read_exact(framing_reader_t* r, void* buf, size_t len) {
 }
 
 static int64_t
-_framing_recv_fixed(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_recv_fixed(framing_t* r, const xylem_framing_opts_t* opts,
             void* buf, size_t len) {
     size_t frame_len = opts->fixed.len;
     if (frame_len > len) {
@@ -70,7 +70,7 @@ _framing_recv_fixed(framing_reader_t* r, const xylem_framing_opts_t* opts,
 }
 
 static int64_t
-_framing_recv_length(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_recv_length(framing_t* r, const xylem_framing_opts_t* opts,
              void* buf, size_t len) {
     uint8_t  hdr[16];
     uint32_t hdr_sz = opts->length.header_size;
@@ -126,7 +126,7 @@ _framing_recv_length(framing_reader_t* r, const xylem_framing_opts_t* opts,
 }
 
 static int64_t
-_framing_recv_delimiter(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_recv_delimiter(framing_t* r, const xylem_framing_opts_t* opts,
                void* buf, size_t len) {
     const char* delim     = opts->delimiter.delim;
     size_t      delim_len = opts->delimiter.delim_len;
@@ -168,7 +168,7 @@ _framing_recv_delimiter(framing_reader_t* r, const xylem_framing_opts_t* opts,
     return -1;
 }
 
-int64_t framing_recv(framing_reader_t*           r,
+int64_t framing_recv(framing_t*           r,
                      const xylem_framing_opts_t* opts,
                      void*                       buf,
                      size_t                      len) {
@@ -196,7 +196,7 @@ int64_t framing_recv(framing_reader_t*           r,
 }
 
 static int
-_framing_send_length(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_send_length(framing_t* r, const xylem_framing_opts_t* opts,
              framing_send_fn send_fn, const void* data, size_t len) {
     uint8_t  hdr[16];
     uint32_t hdr_sz = opts->length.header_size;
@@ -249,7 +249,7 @@ _framing_send_length(framing_reader_t* r, const xylem_framing_opts_t* opts,
 }
 
 static int
-_framing_send_fixed(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_send_fixed(framing_t* r, const xylem_framing_opts_t* opts,
             framing_send_fn send_fn, const void* data, size_t len) {
     if (len != opts->fixed.len) {
         xylem_loge("fd=%d send: payload %zu != fixed frame %zu",
@@ -260,7 +260,7 @@ _framing_send_fixed(framing_reader_t* r, const xylem_framing_opts_t* opts,
 }
 
 static int
-_framing_send_delimiter(framing_reader_t* r, const xylem_framing_opts_t* opts,
+_framing_send_delimiter(framing_t* r, const xylem_framing_opts_t* opts,
                 framing_send_fn send_fn, const void* data, size_t len) {
     if (send_fn(r->ctx, data, len) != 0) {
         return -1;
@@ -272,36 +272,36 @@ _framing_send_delimiter(framing_reader_t* r, const xylem_framing_opts_t* opts,
     return send_fn(r->ctx, opts->delimiter.delim, delim_len);
 }
 
-int framing_send(framing_reader_t*           r,
+int framing_send(framing_t*                  f,
                  const xylem_framing_opts_t* opts,
-                 framing_send_fn             send_fn,
                  const void*                 data,
                  size_t                      len) {
     switch (opts->type) {
     case XYLEM_FRAMING_FIXED:
-        return _framing_send_fixed(r, opts, send_fn, data, len);
+        return _framing_send_fixed(f, opts, f->send_fn, data, len);
     case XYLEM_FRAMING_LENGTH:
-        return _framing_send_length(r, opts, send_fn, data, len);
+        return _framing_send_length(f, opts, f->send_fn, data, len);
     case XYLEM_FRAMING_DELIMITER:
-        return _framing_send_delimiter(r, opts, send_fn, data, len);
+        return _framing_send_delimiter(f, opts, f->send_fn, data, len);
     default:
-        return send_fn(r->ctx, data, len);
+        return f->send_fn(f->ctx, data, len);
     }
 }
 
-void framing_reader_init(
-    framing_reader_t* r, framing_recv_fn fn, void* ctx, int fd,
-    size_t buf_cap) {
-    r->recv_fn      = fn;
-    r->ctx          = ctx;
-    r->fd           = fd;
-    r->read_buf     = NULL;
-    r->read_buf_cap = buf_cap;
-    r->read_buf_pos = 0;
-    r->read_buf_len = 0;
+void framing_init(
+    framing_t* f, framing_recv_fn recv_fn, framing_send_fn send_fn,
+    void* ctx, int fd, size_t buf_cap) {
+    f->recv_fn      = recv_fn;
+    f->send_fn      = send_fn;
+    f->ctx          = ctx;
+    f->fd           = fd;
+    f->read_buf     = NULL;
+    f->read_buf_cap = buf_cap;
+    f->read_buf_pos = 0;
+    f->read_buf_len = 0;
 }
 
-void framing_reader_deinit(framing_reader_t* r) {
-    free(r->read_buf);
-    r->read_buf = NULL;
+void framing_deinit(framing_t* f) {
+    free(f->read_buf);
+    f->read_buf = NULL;
 }

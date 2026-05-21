@@ -61,7 +61,7 @@ struct xylem_tls_conn_s {
     xylem_tls_ctx_t*       ctx;
     addr_t                 peer_addr;
     xylem_framing_opts_t frame_opts;
-    framing_reader_t        reader;
+    framing_t        framing;
     char                   alpn[256];
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
@@ -394,8 +394,9 @@ static xylem_tls_conn_t* _tls_conn_alloc(
     }
 
     size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    framing_reader_init(
-        &tls->reader, _tls_raw_recv_adapter, tls, (int)fd, buf_cap);
+    framing_init(
+        &tls->framing, _tls_raw_recv_adapter, _tls_raw_send_adapter,
+        tls, (int)fd, buf_cap);
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
 
     return tls;
@@ -422,7 +423,7 @@ static void _tls_conn_unref(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    framing_reader_deinit(&tls->reader);
+    framing_deinit(&tls->framing);
     free(tls);
 }
 
@@ -440,7 +441,7 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    framing_reader_deinit(&tls->reader);
+    framing_deinit(&tls->framing);
     free(tls);
 }
 
@@ -717,15 +718,14 @@ void xylem_tls_set_framing(
 int64_t
 xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
     _tls_conn_ref(tls);
-    int64_t ret = framing_recv(&tls->reader, &tls->frame_opts, buf, len);
+    int64_t ret = framing_recv(&tls->framing, &tls->frame_opts, buf, len);
     _tls_conn_unref(tls);
     return ret;
 }
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     _tls_conn_ref(tls);
-    int ret = framing_send(
-        &tls->reader, &tls->frame_opts, _tls_raw_send_adapter, data, len);
+    int ret = framing_send(&tls->framing, &tls->frame_opts, data, len);
     _tls_conn_unref(tls);
     return ret;
 }
