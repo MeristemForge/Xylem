@@ -21,7 +21,6 @@
 
 
 #include "xylem/net/xylem-dtls.h"
-#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/crypto/xylem-hmac256.h"
@@ -89,7 +88,6 @@ struct xylem_dtls_conn_s {
     xylem_dtls_ctx_t*       ctx;
     addr_t                  peer_addr;
     char                    alpn[256];
-    xylem_err_t             err;
     _Atomic bool            closed;
     bool                    handshake_done;
 
@@ -625,15 +623,11 @@ static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
         if (err == SSL_ERROR_WANT_READ) {
             iowait_result_t r = iowait_read(dtls->waiter);
             if (r != IOWAIT_READY) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
         } else if (err == SSL_ERROR_WANT_WRITE) {
             iowait_result_t r = iowait_write(dtls->waiter);
             if (r != IOWAIT_READY) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
         } else {
@@ -643,7 +637,6 @@ static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
                        ERR_reason_error_string(ssl_err)
                            ? ERR_reason_error_string(ssl_err)
                            : "unknown");
-            dtls->err = XYLEM_ERR_DTLS;
             return -1;
         }
     }
@@ -733,7 +726,6 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     for (;;) {
@@ -744,7 +736,6 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
         }
         int err = SSL_get_error(dtls->ssl, n);
         if (err == SSL_ERROR_ZERO_RETURN) {
-            dtls->err = XYLEM_ERR_PEER_CLOSED;
             return 0;
         }
         if (err == SSL_ERROR_WANT_READ) {
@@ -752,8 +743,6 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
                                         memory_order_acquire)) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -763,13 +752,10 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
                                         memory_order_acquire)) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
         }
-        dtls->err = XYLEM_ERR_DTLS;
         return -1;
     }
 }
@@ -777,7 +763,6 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
 static int _dtls_client_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     for (;;) {
@@ -792,8 +777,6 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
                                         memory_order_acquire)) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -803,13 +786,10 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&dtls->closed,
                                         memory_order_acquire)) {
-                dtls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
         }
-        dtls->err = XYLEM_ERR_DTLS;
         return -1;
     }
 }
@@ -862,7 +842,6 @@ static void _dtls_handshake_timeout_cb(sched_timer_t* timer, void* ud) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         return;
     }
-    dtls->err = XYLEM_ERR_TIMEOUT;
     _inbox_close(dtls->inbox);
 }
 
@@ -917,7 +896,6 @@ static void _dtls_handshake_coro(void* arg) {
         }
 
         _dtls_server_flush_write_bio(dtls);
-        dtls->err = XYLEM_ERR_DTLS;
         break;
     }
 
@@ -1084,18 +1062,12 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
 static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 retry:;
     dtls_dgram_t* dgram = _inbox_pop_with_deadline(
         dtls->inbox, dtls->rd_deadline_ms);
     if (!dgram) {
-        if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-            dtls->err = XYLEM_ERR_CLOSED;
-        } else {
-            dtls->err = XYLEM_ERR_TIMEOUT;
-        }
         return -1;
     }
     BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
@@ -1109,26 +1081,22 @@ retry:;
 
     int err = SSL_get_error(dtls->ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN) {
-        dtls->err = XYLEM_ERR_PEER_CLOSED;
         return 0;
     }
     if (err == SSL_ERROR_WANT_READ) {
         goto retry;
     }
-    dtls->err = XYLEM_ERR_DTLS;
     return -1;
 }
 
 static int _dtls_server_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        dtls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
     ERR_clear_error();
     int n = SSL_write(dtls->ssl, data, (int)len);
     if (n <= 0) {
-        dtls->err = XYLEM_ERR_DTLS;
         return -1;
     }
     _dtls_server_flush_write_bio(dtls);
@@ -1232,10 +1200,6 @@ void xylem_dtls_set_write_deadline(
     } else {
         iowait_set_wr_deadline(dtls->waiter, deadline_ms);
     }
-}
-
-xylem_err_t xylem_dtls_get_error(xylem_dtls_conn_t* dtls) {
-    return dtls->err;
 }
 
 const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {

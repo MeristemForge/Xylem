@@ -171,7 +171,6 @@ static void _timeout_coro(void* arg) {
     char    buf[64];
     int64_t n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
-    ASSERT(xylem_udp_get_error(udp) == XYLEM_ERR_TIMEOUT);
 
     xylem_udp_close(udp);
     xylem_waitgroup_done(ctx->wg);

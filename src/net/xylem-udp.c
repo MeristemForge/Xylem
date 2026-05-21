@@ -21,7 +21,6 @@
 
 #include "xylem/net/xylem-udp.h"
 
-#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 
 #include "net/addr.h"
@@ -39,21 +38,9 @@ struct xylem_udp_chan_s {
     platform_sock_t fd;
     addr_t          peer_addr;
     bool            connected;
-    xylem_err_t     err;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
-
-static xylem_err_t _udp_map_error(int platform_err) {
-    switch (platform_err) {
-    case PLATFORM_SO_ERROR_ETIMEDOUT:   return XYLEM_ERR_TIMEOUT;
-    case PLATFORM_SO_ERROR_ECONNRESET:  return XYLEM_ERR_PEER_RESET;
-    case PLATFORM_SO_ERROR_ECONNREFUSED:return XYLEM_ERR_CONNREFUSED;
-    case PLATFORM_SO_ERROR_ENETUNREACH: return XYLEM_ERR_NETUNREACH;
-    case PLATFORM_SO_ERROR_EHOSTUNREACH:return XYLEM_ERR_HOSTUNREACH;
-    default:                            return XYLEM_ERR_UNKNOWN;
-    }
-}
 
 static void _udp_chan_ref(xylem_udp_chan_t* udp) {
     atomic_fetch_add_explicit(&udp->refcnt, 1, memory_order_relaxed);
@@ -147,7 +134,6 @@ int64_t xylem_udp_recv(
     int64_t ret = -1;
     for (;;) {
         if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            udp->err = XYLEM_ERR_CLOSED;
             break;
         }
 
@@ -179,16 +165,14 @@ int64_t xylem_udp_recv(
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            udp->err = _udp_map_error(err);
+            xylem_loge("udp fd=%d recv error: %s",
+                (int)udp->fd, platform_socket_tostring(err));
             break;
         }
 
         iowait_result_t r = iowait_read(udp->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            udp->err = (r == IOWAIT_TIMEOUT)
-                ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CLOSED;
             break;
         }
     }
@@ -208,7 +192,6 @@ int xylem_udp_send(
     int result = -1;
     for (;;) {
         if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            udp->err = XYLEM_ERR_CLOSED;
             break;
         }
 
@@ -234,16 +217,14 @@ int xylem_udp_send(
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            udp->err = _udp_map_error(err);
+            xylem_loge("udp fd=%d send error: %s",
+                (int)udp->fd, platform_socket_tostring(err));
             break;
         }
 
         iowait_result_t r = iowait_write(udp->waiter);
         if (r != IOWAIT_READY
             || atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            udp->err = (r == IOWAIT_TIMEOUT)
-                ? XYLEM_ERR_TIMEOUT
-                : XYLEM_ERR_CLOSED;
             break;
         }
     }
@@ -266,10 +247,6 @@ void xylem_udp_close(xylem_udp_chan_t* udp) {
     }
     iowait_close(udp->waiter);
     _udp_chan_unref(udp);
-}
-
-xylem_err_t xylem_udp_get_error(xylem_udp_chan_t* udp) {
-    return udp->err;
 }
 
 int xylem_udp_local_addr(

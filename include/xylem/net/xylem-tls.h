@@ -22,7 +22,6 @@
 _Pragma("once")
 
 #include "xylem/net/xylem-tcp.h"
-#include "xylem/xylem-error.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -197,8 +196,7 @@ extern void xylem_tls_set_write_deadline(
  * @param buf  Destination buffer.
  * @param len  Buffer size.
  *
- * @return Bytes read (>0), 0 on peer close (NONE mode, error set
- *         to XYLEM_ERR_PEER_CLOSED), -1 on error/timeout.
+ * @return Bytes read (>0), 0 on peer close, -1 on error/timeout.
  */
 extern int64_t xylem_tls_recv(
     xylem_tls_conn_t* tls,
@@ -225,7 +223,7 @@ extern int xylem_tls_send(
  * @brief Close a connection. Idempotent.
  *
  * Wakes any coroutine blocked in recv/send. Read any needed state
- * (xylem_tls_get_error, xylem_tls_remote_addr) before closing.
+ * (xylem_tls_remote_addr) before closing.
  *
  * @param tls  Connection handle.
  */
@@ -239,15 +237,6 @@ extern void xylem_tls_close(xylem_tls_conn_t* tls);
  * @param ln  Listener handle.
  */
 extern void xylem_tls_close_listener(xylem_tls_listener_t* ln);
-
-/**
- * @brief Get the last error code from the connection.
- *
- * @param tls  Connection handle.
- *
- * @return Error code, or XYLEM_ERR_NONE if no error.
- */
-extern xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls);
 
 /**
  * @brief Get the remote address of the connection.

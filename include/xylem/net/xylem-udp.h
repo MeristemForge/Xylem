@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem/xylem-error.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -66,8 +64,7 @@ extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
  * @param host_len  Size of host buffer.
  * @param port      Receives sender port, or NULL.
  *
- * @return Bytes received (>=0), -1 on failure. Call
- *         xylem_udp_get_error() for the reason.
+ * @return Bytes received (>=0), -1 on error.
  */
 extern int64_t xylem_udp_recv(
     xylem_udp_chan_t* udp,
@@ -92,8 +89,7 @@ extern int64_t xylem_udp_recv(
  * @param host  Destination IP, or NULL for connected socket.
  * @param port  Destination port (ignored when host is NULL).
  *
- * @return 0 on success, -1 on failure. Call xylem_udp_get_error()
- *         for the reason.
+ * @return 0 on success, -1 on error.
  */
 extern int xylem_udp_send(
     xylem_udp_chan_t* udp,
@@ -106,7 +102,7 @@ extern int xylem_udp_send(
  * @brief Set the read deadline.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_recv() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_udp_recv() calls return -1.
  *
  * @param udp          UDP handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -119,7 +115,7 @@ extern void xylem_udp_set_read_deadline(
  * @brief Set the write deadline.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_send() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_udp_send() calls return -1.
  *
  * @param udp          UDP handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -136,17 +132,6 @@ extern void xylem_udp_set_write_deadline(
  * @param udp  UDP handle.
  */
 extern void xylem_udp_close(xylem_udp_chan_t* udp);
-
-/**
- * @brief Get the last IO error.
- *
- * Must be called before xylem_udp_close().
- *
- * @param udp  UDP handle.
- *
- * @return Error code, or XYLEM_ERR_NONE if no error.
- */
-extern xylem_err_t xylem_udp_get_error(xylem_udp_chan_t* udp);
 
 /**
  * @brief Get the local bound address.

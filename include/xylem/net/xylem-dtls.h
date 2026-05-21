@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem/xylem-error.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -167,8 +165,7 @@ extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
  * @param buf   Destination buffer.
  * @param len   Buffer size.
  *
- * @return Bytes received (>0), 0 on peer close, -1 on failure.
- *         Call xylem_dtls_get_error() for the reason.
+ * @return Bytes received (>0), 0 on peer close, -1 on error.
  */
 extern int64_t xylem_dtls_recv(
     xylem_dtls_conn_t* dtls,
@@ -186,8 +183,7 @@ extern int64_t xylem_dtls_recv(
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
  *
- * @return 0 on success, -1 on failure. Call xylem_dtls_get_error()
- *         for the reason.
+ * @return 0 on success, -1 on error.
  */
 extern int xylem_dtls_send(
     xylem_dtls_conn_t* dtls,
@@ -198,7 +194,7 @@ extern int xylem_dtls_send(
  * @brief Set the read deadline for the connection.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_dtls_recv() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_dtls_recv() calls return -1.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -212,7 +208,7 @@ extern void xylem_dtls_set_read_deadline(
  * @brief Set the write deadline for the connection.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_dtls_send() calls fail with XYLEM_ERR_TIMEOUT.
+ * xylem_dtls_send() calls return -1.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -225,8 +221,7 @@ extern void xylem_dtls_set_write_deadline(
 /**
  * @brief Close a connection. Idempotent.
  *
- * Wakes any coroutine blocked in recv/send. Read any needed state
- * (xylem_dtls_get_error) before closing.
+ * Wakes any coroutine blocked in recv/send.
  *
  * @param dtls  Connection handle.
  */
@@ -241,15 +236,6 @@ extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
  * @param ln  Listener handle.
  */
 extern void xylem_dtls_close_listener(xylem_dtls_listener_t* ln);
-
-/**
- * @brief Get the last error code from the connection.
- *
- * @param dtls  Connection handle.
- *
- * @return Error code, or XYLEM_ERR_NONE if no error.
- */
-extern xylem_err_t xylem_dtls_get_error(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get the negotiated ALPN protocol.

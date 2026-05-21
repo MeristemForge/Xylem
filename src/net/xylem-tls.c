@@ -22,7 +22,6 @@
 #include "xylem/net/xylem-tls.h"
 
 #include "xylem/encoding/xylem-varint.h"
-#include "xylem/xylem-error.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
@@ -67,7 +66,6 @@ struct xylem_tls_conn_s {
     size_t                 read_buf_pos;
     size_t                 read_buf_len;
     char                   alpn[256];
-    xylem_err_t            err;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -234,15 +232,11 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
         if (err == SSL_ERROR_WANT_READ) {
             iowait_result_t r = iowait_read(tls->waiter);
             if (r != IOWAIT_READY) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
         } else if (err == SSL_ERROR_WANT_WRITE) {
             iowait_result_t r = iowait_write(tls->waiter);
             if (r != IOWAIT_READY) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
         } else {
@@ -252,7 +246,6 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
                        ERR_reason_error_string(ssl_err)
                            ? ERR_reason_error_string(ssl_err)
                            : "unknown");
-            tls->err = XYLEM_ERR_TLS;
             return -1;
         }
     }
@@ -270,7 +263,6 @@ static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
 
 static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
     if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        tls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -283,7 +275,6 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
 
         int err = SSL_get_error(tls->ssl, n);
         if (err == SSL_ERROR_ZERO_RETURN) {
-            tls->err = XYLEM_ERR_PEER_CLOSED;
             return 0;
         }
         if (err == SSL_ERROR_WANT_READ) {
@@ -291,8 +282,6 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
                                         memory_order_acquire)) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -302,8 +291,6 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
                                         memory_order_acquire)) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -314,7 +301,6 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
                    ERR_reason_error_string(ssl_err)
                        ? ERR_reason_error_string(ssl_err)
                        : "unknown");
-        tls->err = XYLEM_ERR_TLS;
         return -1;
     }
 }
@@ -322,7 +308,6 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
 static int _tls_raw_send(xylem_tls_conn_t* tls,
                          const void* data, size_t len) {
     if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        tls->err = XYLEM_ERR_CLOSED;
         return -1;
     }
 
@@ -344,8 +329,6 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
                                         memory_order_acquire)) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -355,8 +338,6 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
                                         memory_order_acquire)) {
-                tls->err = (r == IOWAIT_TIMEOUT)
-                    ? XYLEM_ERR_TIMEOUT : XYLEM_ERR_CLOSED;
                 return -1;
             }
             continue;
@@ -367,7 +348,6 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
                    ERR_reason_error_string(ssl_err)
                        ? ERR_reason_error_string(ssl_err)
                        : "unknown");
-        tls->err = XYLEM_ERR_TLS;
         return -1;
     }
     return 0;
@@ -509,7 +489,6 @@ xylem_tls_conn_t* xylem_tls_dial(
         }
         iowait_result_t r = iowait_write(tls->waiter);
         if (r != IOWAIT_READY) {
-            tls->err = XYLEM_ERR_TIMEOUT;
             _tls_conn_free(tls);
             return NULL;
         }
@@ -635,8 +614,6 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
                 continue;
             }
 
-            /* Resource exhaustion (EMFILE/ENFILE): exponential backoff
-             * prevents CPU spin while the fd table is full. */
             xylem_logw("tls listener fd=%d accept error=%d (%s)",
                        (int)ln->fd, err,
                        platform_socket_tostring(err));
@@ -754,7 +731,7 @@ static int64_t
 _tls_recv_fixed(xylem_tls_conn_t* tls, void* buf, size_t len) {
     size_t frame_len = tls->frame_opts.fixed.len;
     if (frame_len > len) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d recv: fixed frame %zu exceeds buffer %zu", (int)tls->fd, frame_len, len);
         return -1;
     }
     if (_tls_read_exact(tls, buf, frame_len) != 0) {
@@ -769,7 +746,7 @@ _tls_recv_length(xylem_tls_conn_t* tls, void* buf, size_t len) {
     uint32_t hdr_sz = tls->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d recv: header_size %u exceeds limit", (int)tls->fd, hdr_sz);
         return -1;
     }
 
@@ -782,7 +759,7 @@ _tls_recv_length(xylem_tls_conn_t* tls, void* buf, size_t len) {
     if (tls->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
         size_t pos = (size_t)tls->frame_opts.length.field_offset;
         if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
-            tls->err = XYLEM_ERR_UNKNOWN;
+            xylem_loge("tls fd=%d recv: varint decode failed", (int)tls->fd);
             return -1;
         }
     } else {
@@ -801,13 +778,13 @@ _tls_recv_length(xylem_tls_conn_t* tls, void* buf, size_t len) {
     int64_t adjusted
         = (int64_t)body_len + tls->frame_opts.length.adjustment;
     if (adjusted < 0) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d recv: negative payload length", (int)tls->fd);
         return -1;
     }
 
     size_t payload_len = (size_t)adjusted;
     if (payload_len > len) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d recv: payload %zu exceeds buffer %zu", (int)tls->fd, payload_len, len);
         return -1;
     }
 
@@ -856,7 +833,7 @@ _tls_recv_delimiter(xylem_tls_conn_t* tls, void* buf, size_t len) {
         }
     }
 
-    tls->err = XYLEM_ERR_UNKNOWN;
+    xylem_loge("tls fd=%d recv: delimiter not found within buffer", (int)tls->fd);
     return -1;
 }
 
@@ -866,13 +843,13 @@ _tls_send_length(xylem_tls_conn_t* tls, const void* data, size_t len) {
     uint32_t hdr_sz = tls->frame_opts.length.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d send: header_size %u exceeds limit", (int)tls->fd, hdr_sz);
         return -1;
     }
 
     int64_t wire_len = (int64_t)len - tls->frame_opts.length.adjustment;
     if (wire_len < 0) {
-        tls->err = XYLEM_ERR_UNKNOWN;
+        xylem_loge("tls fd=%d send: negative wire length", (int)tls->fd);
         return -1;
     }
 
@@ -881,7 +858,7 @@ _tls_send_length(xylem_tls_conn_t* tls, const void* data, size_t len) {
     if (tls->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
         size_t pos = (size_t)tls->frame_opts.length.field_offset;
         if (!xylem_varint_encode((uint64_t)wire_len, hdr, hdr_sz, &pos)) {
-            tls->err = XYLEM_ERR_UNKNOWN;
+            xylem_loge("tls fd=%d send: varint encode failed", (int)tls->fd);
             return -1;
         }
         if (_tls_raw_send(tls, hdr, pos) != 0) {
@@ -974,10 +951,6 @@ void xylem_tls_set_write_deadline(
     iowait_set_wr_deadline(tls->waiter, deadline_ms);
 }
 
-
-xylem_err_t xylem_tls_get_error(xylem_tls_conn_t* tls) {
-    return tls->err;
-}
 
 int xylem_tls_remote_addr(
     xylem_tls_conn_t* tls,
