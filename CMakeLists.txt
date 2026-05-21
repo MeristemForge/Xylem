@@ -69,6 +69,7 @@ set(SRCS
 	src/container/xylem-rbtree.c
 	src/container/xylem-stack.c
 	src/net/addr.c
+	src/net/framing.c
 	src/net/xylem-tcp.c
 	src/net/xylem-udp.c
 	src/net/xylem-uds.c

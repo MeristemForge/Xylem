@@ -21,11 +21,11 @@
 
 #include "xylem/net/xylem-tls.h"
 
-#include "xylem/encoding/xylem-varint.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
 #include "net/addr.h"
+#include "net/framing.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
@@ -60,11 +60,8 @@ struct xylem_tls_conn_s {
     platform_sock_t        fd;
     xylem_tls_ctx_t*       ctx;
     addr_t                 peer_addr;
-    xylem_tcp_frame_opts_t frame_opts;
-    char*                  read_buf;
-    size_t                 read_buf_cap;
-    size_t                 read_buf_pos;
-    size_t                 read_buf_len;
+    xylem_framing_opts_t frame_opts;
+    framing_reader_t        reader;
     char                   alpn[256];
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
@@ -373,6 +370,14 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
 }
 
 
+static int64_t _tls_raw_recv_adapter(void* ctx, void* buf, size_t len) {
+    return _tls_raw_recv((xylem_tls_conn_t*)ctx, buf, len);
+}
+
+static int _tls_raw_send_adapter(void* ctx, const void* data, size_t len) {
+    return _tls_raw_send((xylem_tls_conn_t*)ctx, data, len);
+}
+
 static xylem_tls_conn_t* _tls_conn_alloc(
     platform_sock_t fd, size_t max_read_buf) {
     xylem_tls_conn_t* tls
@@ -388,8 +393,9 @@ static xylem_tls_conn_t* _tls_conn_alloc(
         return NULL;
     }
 
-    tls->read_buf_cap
-        = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
+    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
+    framing_reader_init(
+        &tls->reader, _tls_raw_recv_adapter, tls, (int)fd, buf_cap);
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
 
     return tls;
@@ -416,7 +422,7 @@ static void _tls_conn_unref(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    free(tls->read_buf);
+    framing_reader_deinit(&tls->reader);
     free(tls);
 }
 
@@ -434,7 +440,7 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    free(tls->read_buf);
+    framing_reader_deinit(&tls->reader);
     free(tls);
 }
 
@@ -695,199 +701,12 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
 }
 
 
-static int _tls_read_exact(xylem_tls_conn_t* tls, void* buf, size_t len) {
-    char*  ptr = (char*)buf;
-    size_t rem = len;
 
-    while (rem > 0) {
-        size_t avail = tls->read_buf_len - tls->read_buf_pos;
-        if (avail > 0) {
-            size_t copy = avail < rem ? avail : rem;
-            memcpy(ptr, tls->read_buf + tls->read_buf_pos, copy);
-            tls->read_buf_pos += copy;
-            ptr += copy;
-            rem -= copy;
-            continue;
-        }
 
-        tls->read_buf_pos = 0;
-        tls->read_buf_len = 0;
-
-        int64_t n = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
-        if (n <= 0) {
-            return -1;
-        }
-        tls->read_buf_len = (size_t)n;
-    }
-    return 0;
-}
-
-static int64_t
-_tls_recv_fixed(xylem_tls_conn_t* tls, void* buf, size_t len) {
-    size_t frame_len = tls->frame_opts.fixed.len;
-    if (frame_len > len) {
-        xylem_loge("tls fd=%d recv: fixed frame %zu exceeds buffer %zu", (int)tls->fd, frame_len, len);
-        return -1;
-    }
-    if (_tls_read_exact(tls, buf, frame_len) != 0) {
-        return -1;
-    }
-    return (int64_t)frame_len;
-}
-
-static int64_t
-_tls_recv_length(xylem_tls_conn_t* tls, void* buf, size_t len) {
-    uint8_t  hdr[16];
-    uint32_t hdr_sz = tls->frame_opts.length.header_size;
-
-    if (hdr_sz > sizeof(hdr)) {
-        xylem_loge("tls fd=%d recv: header_size %u exceeds limit", (int)tls->fd, hdr_sz);
-        return -1;
-    }
-
-    if (_tls_read_exact(tls, hdr, hdr_sz) != 0) {
-        return -1;
-    }
-
-    uint64_t body_len = 0;
-
-    if (tls->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
-        size_t pos = (size_t)tls->frame_opts.length.field_offset;
-        if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
-            xylem_loge("tls fd=%d recv: varint decode failed", (int)tls->fd);
-            return -1;
-        }
-    } else {
-        uint8_t* field = hdr + tls->frame_opts.length.field_offset;
-        if (tls->frame_opts.length.big_endian) {
-            for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
-                body_len = (body_len << 8) | field[i];
-            }
-        } else {
-            for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
-                body_len |= (uint64_t)field[i] << (i * 8);
-            }
-        }
-    }
-
-    int64_t adjusted
-        = (int64_t)body_len + tls->frame_opts.length.adjustment;
-    if (adjusted < 0) {
-        xylem_loge("tls fd=%d recv: negative payload length", (int)tls->fd);
-        return -1;
-    }
-
-    size_t payload_len = (size_t)adjusted;
-    if (payload_len > len) {
-        xylem_loge("tls fd=%d recv: payload %zu exceeds buffer %zu", (int)tls->fd, payload_len, len);
-        return -1;
-    }
-
-    if (payload_len > 0 && _tls_read_exact(tls, buf, payload_len) != 0) {
-        return -1;
-    }
-    return (int64_t)payload_len;
-}
-
-static int64_t
-_tls_recv_delimiter(xylem_tls_conn_t* tls, void* buf, size_t len) {
-    const char* delim     = tls->frame_opts.delimiter.delim;
-    size_t      delim_len = tls->frame_opts.delimiter.delim_len;
-    if (delim_len == 0) {
-        delim_len = strlen(delim);
-    }
-
-    char*  dst = (char*)buf;
-    size_t pos = 0;
-
-    while (pos < len) {
-        size_t avail = tls->read_buf_len - tls->read_buf_pos;
-        if (avail == 0) {
-            tls->read_buf_pos = 0;
-            tls->read_buf_len = 0;
-            int64_t n
-                = _tls_raw_recv(tls, tls->read_buf, tls->read_buf_cap);
-            if (n <= 0) {
-                return -1;
-            }
-            tls->read_buf_len = (size_t)n;
-            avail             = (size_t)n;
-        }
-
-        char* src = tls->read_buf + tls->read_buf_pos;
-        for (size_t i = 0; i < avail && pos < len; i++) {
-            dst[pos++] = src[i];
-            tls->read_buf_pos++;
-
-            if (pos >= delim_len
-                && memcmp(dst + pos - delim_len, delim, delim_len) == 0) {
-                pos -= delim_len;
-                dst[pos] = '\0';
-                return (int64_t)pos;
-            }
-        }
-    }
-
-    xylem_loge("tls fd=%d recv: delimiter not found within buffer", (int)tls->fd);
-    return -1;
-}
-
-static int
-_tls_send_length(xylem_tls_conn_t* tls, const void* data, size_t len) {
-    uint8_t  hdr[16];
-    uint32_t hdr_sz = tls->frame_opts.length.header_size;
-
-    if (hdr_sz > sizeof(hdr)) {
-        xylem_loge("tls fd=%d send: header_size %u exceeds limit", (int)tls->fd, hdr_sz);
-        return -1;
-    }
-
-    int64_t wire_len = (int64_t)len - tls->frame_opts.length.adjustment;
-    if (wire_len < 0) {
-        xylem_loge("tls fd=%d send: negative wire length", (int)tls->fd);
-        return -1;
-    }
-
-    memset(hdr, 0, hdr_sz);
-
-    if (tls->frame_opts.length.coding == XYLEM_TCP_LENGTH_VARINT) {
-        size_t pos = (size_t)tls->frame_opts.length.field_offset;
-        if (!xylem_varint_encode((uint64_t)wire_len, hdr, hdr_sz, &pos)) {
-            xylem_loge("tls fd=%d send: varint encode failed", (int)tls->fd);
-            return -1;
-        }
-        if (_tls_raw_send(tls, hdr, pos) != 0) {
-            return -1;
-        }
-        return _tls_raw_send(tls, data, len);
-    }
-
-    uint8_t* field = hdr + tls->frame_opts.length.field_offset;
-    uint64_t val   = (uint64_t)wire_len;
-
-    if (tls->frame_opts.length.big_endian) {
-        for (int32_t i = (int32_t)tls->frame_opts.length.field_size - 1;
-             i >= 0;
-             i--) {
-            field[i] = (uint8_t)(val & 0xFF);
-            val >>= 8;
-        }
-    } else {
-        for (uint32_t i = 0; i < tls->frame_opts.length.field_size; i++) {
-            field[i] = (uint8_t)(val & 0xFF);
-            val >>= 8;
-        }
-    }
-
-    if (_tls_raw_send(tls, hdr, hdr_sz) != 0) {
-        return -1;
-    }
-    return _tls_raw_send(tls, data, len);
-}
 
 
 void xylem_tls_set_framing(
-    xylem_tls_conn_t* tls, xylem_tcp_frame_opts_t* opts) {
+    xylem_tls_conn_t* tls, xylem_framing_opts_t* opts) {
     if (opts) {
         tls->frame_opts = *opts;
     } else {
@@ -898,51 +717,15 @@ void xylem_tls_set_framing(
 int64_t
 xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
     _tls_conn_ref(tls);
-
-    if (tls->frame_opts.type == XYLEM_TCP_FRAME_NONE) {
-        int64_t ret = _tls_raw_recv(tls, buf, len);
-        _tls_conn_unref(tls);
-        return ret;
-    }
-
-    if (!tls->read_buf) {
-        tls->read_buf = (char*)malloc(tls->read_buf_cap);
-        if (!tls->read_buf) {
-            _tls_conn_unref(tls);
-            return -1;
-        }
-    }
-
-    int64_t ret;
-    switch (tls->frame_opts.type) {
-    case XYLEM_TCP_FRAME_FIXED:
-        ret = _tls_recv_fixed(tls, buf, len);
-        break;
-    case XYLEM_TCP_FRAME_LENGTH:
-        ret = _tls_recv_length(tls, buf, len);
-        break;
-    case XYLEM_TCP_FRAME_DELIMITER:
-        ret = _tls_recv_delimiter(tls, buf, len);
-        break;
-    default:
-        ret = -1;
-        break;
-    }
+    int64_t ret = framing_recv(&tls->reader, &tls->frame_opts, buf, len);
     _tls_conn_unref(tls);
     return ret;
 }
 
 int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     _tls_conn_ref(tls);
-    int ret;
-    switch (tls->frame_opts.type) {
-    case XYLEM_TCP_FRAME_LENGTH:
-        ret = _tls_send_length(tls, data, len);
-        break;
-    default:
-        ret = _tls_raw_send(tls, data, len);
-        break;
-    }
+    int ret = framing_send(
+        &tls->reader, &tls->frame_opts, _tls_raw_send_adapter, data, len);
     _tls_conn_unref(tls);
     return ret;
 }

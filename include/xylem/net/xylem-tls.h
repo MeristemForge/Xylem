@@ -161,7 +161,7 @@ extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
  */
 extern void xylem_tls_set_framing(
     xylem_tls_conn_t*       tls,
-    xylem_tcp_frame_opts_t* opts);
+    xylem_framing_opts_t* opts);
 
 /**
  * @brief Set the read deadline for the connection.

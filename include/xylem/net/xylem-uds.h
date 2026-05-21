@@ -25,41 +25,10 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
+#include "xylem/net/xylem-framing.h"
+
 typedef struct xylem_uds_conn_s     xylem_uds_conn_t;
 typedef struct xylem_uds_listener_s xylem_uds_listener_t;
-
-typedef enum xylem_uds_frame_type_e {
-    XYLEM_UDS_FRAME_NONE,      /*< Raw mode, recv returns available bytes. */
-    XYLEM_UDS_FRAME_FIXED,     /*< Fixed-length frames. */
-    XYLEM_UDS_FRAME_LENGTH,    /*< Length-prefixed frames. */
-    XYLEM_UDS_FRAME_DELIMITER, /*< Delimiter-terminated frames. */
-} xylem_uds_frame_type_t;
-
-typedef enum xylem_uds_length_coding_e {
-    XYLEM_UDS_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
-    XYLEM_UDS_LENGTH_VARINT,   /*< Variable-length integer. */
-} xylem_uds_length_coding_t;
-
-typedef struct xylem_uds_frame_opts_s {
-    xylem_uds_frame_type_t type;
-    union {
-        struct {
-            size_t len; /*< Fixed frame length in bytes. */
-        } fixed;
-        struct {
-            uint32_t                  header_size;  /*< Total header size in bytes. */
-            uint32_t                  field_offset; /*< Byte offset of the length field. */
-            uint32_t                  field_size;   /*< Size of the length field (1-8). */
-            int32_t                   adjustment;   /*< Added to decoded length for payload size. */
-            xylem_uds_length_coding_t coding;       /*< FIXEDINT or VARINT. */
-            bool                      big_endian;   /*< true: big-endian length field. */
-        } length;
-        struct {
-            const char* delim;     /*< Delimiter bytes. */
-            size_t      delim_len; /*< Delimiter length, 0 = auto strlen. */
-        } delimiter;
-    };
-} xylem_uds_frame_opts_t;
 
 /**
  * @brief Create a UDS listener bound to the given path.
@@ -118,7 +87,7 @@ extern xylem_uds_conn_t* xylem_uds_dial(
  */
 extern void xylem_uds_set_framing(
     xylem_uds_conn_t*       uds,
-    xylem_uds_frame_opts_t* opts);
+    xylem_framing_opts_t* opts);
 
 /**
  * @brief Set the read deadline for the connection.

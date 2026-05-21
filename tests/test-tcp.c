@@ -127,8 +127,8 @@ static void _fixed_client(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = {
-        .type  = XYLEM_TCP_FRAME_FIXED,
+    xylem_framing_opts_t frame = {
+        .type  = XYLEM_FRAMING_FIXED,
         .fixed = { .len = 8 },
     };
     xylem_tcp_set_framing(conn, &frame);
@@ -188,8 +188,8 @@ static void _delim_client(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = {
-        .type      = XYLEM_TCP_FRAME_DELIMITER,
+    xylem_framing_opts_t frame = {
+        .type      = XYLEM_FRAMING_DELIMITER,
         .delimiter = { .delim = "\r\n", .delim_len = 2 },
     };
     xylem_tcp_set_framing(conn, &frame);
@@ -230,8 +230,8 @@ static void test_delimiter(void) {
     xylem_run(_delim_main, NULL, NULL);
 }
 
-static const xylem_tcp_frame_opts_t _len_frame = {
-    .type   = XYLEM_TCP_FRAME_LENGTH,
+static const xylem_framing_opts_t _len_frame = {
+    .type   = XYLEM_FRAMING_LENGTH,
     .length = {
         .header_size  = 2,
         .field_offset = 0,
@@ -250,7 +250,7 @@ static void _frame_server(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_tcp_set_framing(conn, &frame);
 
     ASSERT(xylem_tcp_send(conn, "FRAME1", 6) == 0);
@@ -267,7 +267,7 @@ static void _frame_client(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_tcp_set_framing(conn, &frame);
 
     char buf[64];

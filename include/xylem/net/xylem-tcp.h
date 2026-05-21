@@ -25,6 +25,8 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
+#include "xylem/net/xylem-framing.h"
+
 typedef struct xylem_tcp_conn_s     xylem_tcp_conn_t;
 typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;
 
@@ -32,39 +34,6 @@ typedef struct xylem_tcp_opts_s {
     size_t max_read_buf;      /*< Internal read buffer size, 0 = default 64KB. */
     bool   disable_mss_clamp; /*< Disable MSS clamping on the socket. */
 } xylem_tcp_opts_t;
-
-typedef enum xylem_tcp_frame_type_e {
-    XYLEM_TCP_FRAME_NONE,      /*< Raw mode, recv returns available bytes. */
-    XYLEM_TCP_FRAME_FIXED,     /*< Fixed-length frames. */
-    XYLEM_TCP_FRAME_LENGTH,    /*< Length-prefixed frames. */
-    XYLEM_TCP_FRAME_DELIMITER, /*< Delimiter-terminated frames. */
-} xylem_tcp_frame_type_t;
-
-typedef enum xylem_tcp_length_coding_e {
-    XYLEM_TCP_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
-    XYLEM_TCP_LENGTH_VARINT,   /*< Variable-length integer (LEB128). */
-} xylem_tcp_length_coding_t;
-
-typedef struct xylem_tcp_frame_opts_s {
-    xylem_tcp_frame_type_t type;
-    union {
-        struct {
-            size_t len; /*< Fixed frame length in bytes. */
-        } fixed;
-        struct {
-            uint32_t                  header_size;  /*< Total header size in bytes. */
-            uint32_t                  field_offset; /*< Byte offset of the length field. */
-            uint32_t                  field_size;   /*< Size of the length field (1-8). */
-            int32_t                   adjustment;   /*< Added to decoded length for payload size. */
-            xylem_tcp_length_coding_t coding;       /*< FIXEDINT or VARINT. */
-            bool                      big_endian;   /*< true: big-endian length field. */
-        } length;
-        struct {
-            const char* delim;     /*< Delimiter bytes. */
-            size_t      delim_len; /*< Delimiter length, 0 = auto strlen. */
-        } delimiter;
-    };
-} xylem_tcp_frame_opts_t;
 
 /**
  * @brief Create a TCP listener bound to the given address.
@@ -127,7 +96,7 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(
  */
 extern void xylem_tcp_set_framing(
     xylem_tcp_conn_t*       tcp,
-    xylem_tcp_frame_opts_t* opts);
+    xylem_framing_opts_t* opts);
 
 /**
  * @brief Set the read deadline for the connection.

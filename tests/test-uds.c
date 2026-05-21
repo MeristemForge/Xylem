@@ -108,7 +108,7 @@ static void test_echo(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_fixed: XYLEM_UDS_FRAME_FIXED framing --- */
+/* --- test_fixed: XYLEM_FRAMING_FIXED framing --- */
 
 static void _fixed_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -135,8 +135,8 @@ static void _fixed_client(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = {
-        .type  = XYLEM_UDS_FRAME_FIXED,
+    xylem_framing_opts_t frame = {
+        .type  = XYLEM_FRAMING_FIXED,
         .fixed = { .len = 8 },
     };
     xylem_uds_set_framing(uds, &frame);
@@ -173,7 +173,7 @@ static void test_fixed(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_delimiter: XYLEM_UDS_FRAME_DELIMITER with "\r\n" --- */
+/* --- test_delimiter: XYLEM_FRAMING_DELIMITER with "\r\n" --- */
 
 static void _delim_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -198,8 +198,8 @@ static void _delim_client(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = {
-        .type      = XYLEM_UDS_FRAME_DELIMITER,
+    xylem_framing_opts_t frame = {
+        .type      = XYLEM_FRAMING_DELIMITER,
         .delimiter = { .delim = "\r\n", .delim_len = 2 },
     };
     xylem_uds_set_framing(uds, &frame);
@@ -240,16 +240,16 @@ static void test_delimiter(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_frame: XYLEM_UDS_FRAME_LENGTH with 2-byte big-endian fixedint --- */
+/* --- test_frame: XYLEM_FRAMING_LENGTH with 2-byte big-endian fixedint --- */
 
-static const xylem_uds_frame_opts_t _len_frame = {
-    .type   = XYLEM_UDS_FRAME_LENGTH,
+static const xylem_framing_opts_t _len_frame = {
+    .type   = XYLEM_FRAMING_LENGTH,
     .length = {
         .header_size  = 2,
         .field_offset = 0,
         .field_size   = 2,
         .adjustment   = 0,
-        .coding       = XYLEM_UDS_LENGTH_FIXEDINT,
+        .coding       = XYLEM_FRAMING_LENGTH_FIXEDINT,
         .big_endian   = true,
     },
 };
@@ -263,7 +263,7 @@ static void _frame_server(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_accept(ln);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_uds_set_framing(uds, &frame);
 
     ASSERT(xylem_uds_send(uds, "FRAME1", 6) == 0);
@@ -280,7 +280,7 @@ static void _frame_client(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_uds_set_framing(uds, &frame);
 
     char buf[64];
@@ -315,7 +315,7 @@ static void test_frame(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_varint: XYLEM_UDS_FRAME_LENGTH with varint coding --- */
+/* --- test_varint: XYLEM_FRAMING_LENGTH with varint coding --- */
 
 static void _varint_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -326,14 +326,14 @@ static void _varint_server(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_accept(ln);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = {
-        .type   = XYLEM_UDS_FRAME_LENGTH,
+    xylem_framing_opts_t frame = {
+        .type   = XYLEM_FRAMING_LENGTH,
         .length = {
             .header_size  = 1,
             .field_offset = 0,
             .field_size   = 1,
             .adjustment   = 0,
-            .coding       = XYLEM_UDS_LENGTH_VARINT,
+            .coding       = XYLEM_FRAMING_LENGTH_VARINT,
             .big_endian   = false,
         },
     };
@@ -353,14 +353,14 @@ static void _varint_client(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
     ASSERT(uds != NULL);
 
-    xylem_uds_frame_opts_t frame = {
-        .type   = XYLEM_UDS_FRAME_LENGTH,
+    xylem_framing_opts_t frame = {
+        .type   = XYLEM_FRAMING_LENGTH,
         .length = {
             .header_size  = 1,
             .field_offset = 0,
             .field_size   = 1,
             .adjustment   = 0,
-            .coding       = XYLEM_UDS_LENGTH_VARINT,
+            .coding       = XYLEM_FRAMING_LENGTH_VARINT,
             .big_endian   = false,
         },
     };

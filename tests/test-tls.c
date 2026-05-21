@@ -460,8 +460,8 @@ static void test_alpn_negotiation(void) {
 }
 
 
-static const xylem_tcp_frame_opts_t _len_frame = {
-    .type   = XYLEM_TCP_FRAME_LENGTH,
+static const xylem_framing_opts_t _len_frame = {
+    .type   = XYLEM_FRAMING_LENGTH,
     .length = {
         .header_size  = 2,
         .field_offset = 0,
@@ -481,7 +481,7 @@ static void _frame_server(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_tls_set_framing(conn, &frame);
     ASSERT(xylem_tls_send(conn, "FRAME1", 6) == 0);
 
@@ -498,7 +498,7 @@ static void _frame_client(void* arg) {
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    xylem_tcp_frame_opts_t frame = _len_frame;
+    xylem_framing_opts_t frame = _len_frame;
     xylem_tls_set_framing(conn, &frame);
 
     char buf[64];
