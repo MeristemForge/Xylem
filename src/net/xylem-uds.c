@@ -421,6 +421,7 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
 
     xylem_uds_conn_t* result = NULL;
     uint64_t          backoff_ms = 5;
+    int               retries   = 0;
 
     for (;;) {
         if (atomic_load_explicit(
@@ -444,6 +445,9 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));
+            if (++retries > 8) {
+                break;
+            }
             runtime_sleep(backoff_ms);
             if (backoff_ms < 1000) {
                 backoff_ms *= 2;
@@ -452,11 +456,12 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
         }
 
         backoff_ms = 5;
+        retries    = 0;
 
         xylem_uds_conn_t* uds = _uds_conn_alloc(fd);
         if (!uds) {
             platform_socket_close(fd);
-            continue;
+            break;
         }
 
         result = uds;

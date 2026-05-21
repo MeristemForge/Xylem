@@ -75,8 +75,27 @@ struct xylem_tls_listener_s {
     platform_sock_t  fd;
     xylem_tls_ctx_t* ctx;
     xylem_tls_opts_t opts;
+    _Atomic int32_t  refcnt;
     _Atomic bool     closed;
 };
+
+static void _tls_listener_ref(xylem_tls_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
+
+static void _tls_listener_unref(xylem_tls_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    if (ln->waiter) {
+        iowait_destroy(ln->waiter);
+    }
+    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(ln->fd);
+    }
+    free(ln);
+}
 
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
@@ -585,16 +604,21 @@ xylem_tls_listener_t* xylem_tls_listen(
         return NULL;
     }
 
+    _tls_listener_ref(ln);
     return ln;
 }
 
 
 xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
-    uint64_t backoff_ms = 5;
+    _tls_listener_ref(ln);
+
+    xylem_tls_conn_t* result     = NULL;
+    uint64_t          backoff_ms = 5;
+    int               retries    = 0;
 
     for (;;) {
         if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
-            return NULL;
+            break;
         }
 
         platform_sock_t fd = platform_socket_accept(ln->fd, true);
@@ -603,7 +627,7 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
             if (err == PLATFORM_SO_ERROR_EAGAIN
                 || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 if (iowait_read(ln->waiter) != IOWAIT_READY) {
-                    return NULL;
+                    break;
                 }
                 continue;
             }
@@ -611,6 +635,9 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
             xylem_logw("tls listener fd=%d accept error=%d (%s)",
                        (int)ln->fd, err,
                        platform_socket_tostring(err));
+            if (++retries > 8) {
+                break;
+            }
             runtime_sleep(backoff_ms);
             if (backoff_ms < 1000) {
                 backoff_ms *= 2;
@@ -619,12 +646,13 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         }
 
         backoff_ms = 5;
+        retries    = 0;
 
         size_t max_buf = ln->opts.max_read_buf;
         xylem_tls_conn_t* tls = _tls_conn_alloc(fd, max_buf);
         if (!tls) {
             platform_socket_close(fd);
-            continue;
+            break;
         }
 
         tls->ctx = ln->ctx;
@@ -644,12 +672,16 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
 
         if (_tls_do_handshake(tls) != 0) {
             _tls_conn_free(tls);
-            return NULL;
+            break;
         }
 
         _tls_cache_alpn(tls);
-        return tls;
+        result = tls;
+        break;
     }
+
+    _tls_listener_unref(ln);
+    return result;
 }
 
 
@@ -659,9 +691,7 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     }
 
     iowait_close(ln->waiter);
-    iowait_destroy(ln->waiter);
-    platform_socket_close(ln->fd);
-    free(ln);
+    _tls_listener_unref(ln);
 }
 
 

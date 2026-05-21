@@ -587,7 +587,8 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
     _tcp_listener_ref(listener);
 
     xylem_tcp_conn_t* result = NULL;
-    uint64_t backoff_ms = 5;
+    uint64_t          backoff_ms = 5;
+    int               retries   = 0;
 
     for (;;) {
         if (atomic_load_explicit(&listener->closed, memory_order_acquire)) {
@@ -609,6 +610,9 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));
+            if (++retries > 8) {
+                break;
+            }
             runtime_sleep(backoff_ms);
             if (backoff_ms < 1000) {
                 backoff_ms *= 2;
@@ -617,11 +621,12 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
         }
 
         backoff_ms = 5;
+        retries    = 0;
 
         xylem_tcp_conn_t* tcp = _tcp_conn_alloc(fd, listener->max_read_buf);
         if (!tcp) {
             platform_socket_close(fd);
-            continue;
+            break;
         }
 
         socklen_t peer_len = sizeof(tcp->peer_addr.storage);
