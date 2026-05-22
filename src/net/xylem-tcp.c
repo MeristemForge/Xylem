@@ -41,8 +41,8 @@ struct xylem_tcp_conn_s {
     iowait_t*              waiter;
     platform_sock_t        fd;
     addr_t                 peer_addr;
-    xylem_framing_opts_t frame_opts;
-    framing_t        framing;
+    xylem_framing_opts_t   frame_opts;
+    framing_t              framing;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -94,43 +94,8 @@ static void _tcp_listener_unref(xylem_tcp_listener_t* ln) {
     free(ln);
 }
 
-static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len);
-
-static int64_t _tcp_raw_recv_adapter(void* ctx, void* buf, size_t len) {
-    return _tcp_raw_recv((xylem_tcp_conn_t*)ctx, buf, len);
-}
-
-static int  _tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len);
-
-static int _tcp_raw_send_adapter(void* ctx, const void* data, size_t len) {
-    return _tcp_raw_send((xylem_tcp_conn_t*)ctx, data, len);
-}
-
-static xylem_tcp_conn_t* _tcp_conn_alloc(
-    platform_sock_t fd, size_t max_read_buf) {
-    xylem_tcp_conn_t* tcp
-        = (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
-    if (!tcp) {
-        return NULL;
-    }
-
-    tcp->fd     = fd;
-    tcp->waiter = iowait_create(fd);
-    if (!tcp->waiter) {
-        free(tcp);
-        return NULL;
-    }
-
-    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    framing_init(
-        &tcp->framing, _tcp_raw_recv_adapter, _tcp_raw_send_adapter,
-        tcp, (int)fd, buf_cap);
-
-    _tcp_conn_ref(tcp);
-    return tcp;
-}
-
-static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
+static int64_t _tcp_raw_recv(void* ctx, void* buf, size_t len) {
+    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ctx;
     if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
         return -1;
     }
@@ -160,8 +125,8 @@ static int64_t _tcp_raw_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
     }
 }
 
-static int
-_tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
+static int _tcp_raw_send(void* ctx, const void* data, size_t len) {
+    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ctx;
     if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
         return -1;
     }
@@ -194,6 +159,29 @@ _tcp_raw_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
     return 0;
 }
 
+static xylem_tcp_conn_t* _tcp_conn_alloc(
+    platform_sock_t fd, size_t max_read_buf) {
+    xylem_tcp_conn_t* tcp
+        = (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
+    if (!tcp) {
+        return NULL;
+    }
+
+    tcp->fd     = fd;
+    tcp->waiter = iowait_create(fd);
+    if (!tcp->waiter) {
+        free(tcp);
+        return NULL;
+    }
+
+    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
+    framing_init(
+        &tcp->framing, _tcp_raw_recv, _tcp_raw_send,
+        tcp, (int)fd, buf_cap);
+
+    _tcp_conn_ref(tcp);
+    return tcp;
+}
 
 xylem_tcp_conn_t* xylem_tcp_dial(
     const char*       host,

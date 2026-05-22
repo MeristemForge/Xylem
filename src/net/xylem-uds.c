@@ -40,8 +40,8 @@
 struct xylem_uds_conn_s {
     iowait_t*              waiter;
     platform_sock_t        fd;
-    xylem_framing_opts_t frame_opts;
-    framing_t        framing;
+    xylem_framing_opts_t   frame_opts;
+    framing_t              framing;
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
 };
@@ -92,41 +92,8 @@ static void _uds_listener_unref(xylem_uds_listener_t* ln) {
     free(ln);
 }
 
-static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len);
-
-static int64_t _uds_raw_recv_adapter(void* ctx, void* buf, size_t len) {
-    return _uds_raw_recv((xylem_uds_conn_t*)ctx, buf, len);
-}
-
-static int _uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len);
-
-static int _uds_raw_send_adapter(void* ctx, const void* data, size_t len) {
-    return _uds_raw_send((xylem_uds_conn_t*)ctx, data, len);
-}
-
-static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
-    xylem_uds_conn_t* uds
-        = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
-    if (!uds) {
-        return NULL;
-    }
-
-    uds->fd     = fd;
-    uds->waiter = iowait_create(fd);
-    if (!uds->waiter) {
-        free(uds);
-        return NULL;
-    }
-
-    framing_init(
-        &uds->framing, _uds_raw_recv_adapter, _uds_raw_send_adapter,
-        uds, (int)fd, DEFAULT_READ_BUF_SIZE);
-
-    _uds_conn_ref(uds);
-    return uds;
-}
-
-static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
+static int64_t _uds_raw_recv(void* ctx, void* buf, size_t len) {
+    xylem_uds_conn_t* uds = (xylem_uds_conn_t*)ctx;
     if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
         return -1;
     }
@@ -156,8 +123,8 @@ static int64_t _uds_raw_recv(xylem_uds_conn_t* uds, void* buf, size_t len) {
     }
 }
 
-static int
-_uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
+static int _uds_raw_send(void* ctx, const void* data, size_t len) {
+    xylem_uds_conn_t* uds = (xylem_uds_conn_t*)ctx;
     if (atomic_load_explicit(&uds->closed, memory_order_acquire)) {
         return -1;
     }
@@ -188,6 +155,28 @@ _uds_raw_send(xylem_uds_conn_t* uds, const void* data, size_t len) {
         }
     }
     return 0;
+}
+
+static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
+    xylem_uds_conn_t* uds
+        = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
+    if (!uds) {
+        return NULL;
+    }
+
+    uds->fd     = fd;
+    uds->waiter = iowait_create(fd);
+    if (!uds->waiter) {
+        free(uds);
+        return NULL;
+    }
+
+    framing_init(
+        &uds->framing, _uds_raw_recv, _uds_raw_send,
+        uds, (int)fd, DEFAULT_READ_BUF_SIZE);
+
+    _uds_conn_ref(uds);
+    return uds;
 }
 
 

@@ -60,8 +60,8 @@ struct xylem_tls_conn_s {
     platform_sock_t        fd;
     xylem_tls_ctx_t*       ctx;
     addr_t                 peer_addr;
-    xylem_framing_opts_t frame_opts;
-    framing_t        framing;
+    xylem_framing_opts_t   frame_opts;
+    framing_t              framing;
     char                   alpn[256];
     _Atomic int32_t        refcnt;
     _Atomic bool           closed;
@@ -277,7 +277,8 @@ static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
     }
 }
 
-static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
+static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ctx;
     if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
         return -1;
     }
@@ -321,8 +322,8 @@ static int64_t _tls_raw_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
     }
 }
 
-static int _tls_raw_send(xylem_tls_conn_t* tls,
-                         const void* data, size_t len) {
+static int _tls_raw_send(void* ctx, const void* data, size_t len) {
+    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ctx;
     if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
         return -1;
     }
@@ -370,14 +371,6 @@ static int _tls_raw_send(xylem_tls_conn_t* tls,
 }
 
 
-static int64_t _tls_raw_recv_adapter(void* ctx, void* buf, size_t len) {
-    return _tls_raw_recv((xylem_tls_conn_t*)ctx, buf, len);
-}
-
-static int _tls_raw_send_adapter(void* ctx, const void* data, size_t len) {
-    return _tls_raw_send((xylem_tls_conn_t*)ctx, data, len);
-}
-
 static xylem_tls_conn_t* _tls_conn_alloc(
     platform_sock_t fd, size_t max_read_buf) {
     xylem_tls_conn_t* tls
@@ -395,7 +388,7 @@ static xylem_tls_conn_t* _tls_conn_alloc(
 
     size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
     framing_init(
-        &tls->framing, _tls_raw_recv_adapter, _tls_raw_send_adapter,
+        &tls->framing, _tls_raw_recv, _tls_raw_send,
         tls, (int)fd, buf_cap);
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
 
