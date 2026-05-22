@@ -188,7 +188,7 @@ int xylem_udp_send(
     uint16_t     port) {
     _udp_chan_ref(udp);
 
-    int result = -1;
+    int ret = -1;
     for (;;) {
         if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
             break;
@@ -209,7 +209,7 @@ int xylem_udp_send(
         }
 
         if (n >= 0) {
-            result = 0;
+            ret = 0;
             break;
         }
 
@@ -229,7 +229,7 @@ int xylem_udp_send(
     }
 
     _udp_chan_unref(udp);
-    return result;
+    return ret;
 }
 
 void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
