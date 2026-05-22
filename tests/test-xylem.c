@@ -20,15 +20,16 @@
  */
 
 #include "xylem.h"
-#include "runtime/runtime.h"
 #include "assert.h"
 #include "thrds.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
-#include <string.h>
 
 #define SAFETY_TIMEOUT_MS 5000
+#define SPAWN_MANY_COUNT  1000
+#define SLEEP_ORDER_COUNT 4
+#define SUBMIT_CONC_COUNT 20
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
@@ -42,8 +43,6 @@ static void _timeout_coro(void* arg) {
 static void _start_safety_timer(void) {
     xylem_spawn(_timeout_coro, NULL);
 }
-
-/* --- test: start/stop cycle --- */
 
 static void _cycle_main(void* arg) {
     int* val = (int*)arg;
@@ -60,8 +59,6 @@ static void test_start_stop_cycle(void) {
     }
     ASSERT(val == 5);
 }
-
-/* --- test: stop from spawned --- */
 
 typedef struct {
     int tested;
@@ -84,8 +81,6 @@ static void test_stop_from_spawned(void) {
     xylem_run(_stop_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
-
-/* --- test: spawn from external thread --- */
 
 typedef struct {
     atomic_int count;
@@ -120,13 +115,9 @@ static void test_spawn_from_external_thread(void) {
     fprintf(stderr, "=== test_spawn_from_external_thread\n");
     _ext_ctx_t ctx = { .target = 50 };
     atomic_init(&ctx.count, 0);
-
     xylem_run(_ext_main, &ctx, &_rt_opts);
-
     ASSERT(atomic_load(&ctx.count) == ctx.target);
 }
-
-/* --- test: nested spawn --- */
 
 typedef struct {
     atomic_int depth_reached;
@@ -157,10 +148,6 @@ static void test_spawn_nested(void) {
     ASSERT(atomic_load(&ctx.depth_reached) == 2);
 }
 
-/* --- test: spawn many --- */
-
-#define SPAWN_MANY_COUNT 1000
-
 typedef struct {
     atomic_int done;
 } _many_ctx_t;
@@ -189,10 +176,8 @@ static void test_spawn_many(void) {
     ASSERT(atomic_load(&ctx.done) == SPAWN_MANY_COUNT);
 }
 
-/* --- test: sleep(0) --- */
-
 typedef struct {
-    int order[2];
+    int        order[2];
     atomic_int idx;
 } _sleep0_ctx_t;
 
@@ -200,13 +185,17 @@ static void _sleep0_first(void* arg) {
     _sleep0_ctx_t* ctx = (_sleep0_ctx_t*)arg;
     xylem_sleep(0);
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 1;
-    if (atomic_load(&ctx->idx) == 2) xylem_shutdown();
+    if (atomic_load(&ctx->idx) == 2) {
+        xylem_shutdown();
+    }
 }
 
 static void _sleep0_second(void* arg) {
     _sleep0_ctx_t* ctx = (_sleep0_ctx_t*)arg;
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 2;
-    if (atomic_load(&ctx->idx) == 2) xylem_shutdown();
+    if (atomic_load(&ctx->idx) == 2) {
+        xylem_shutdown();
+    }
 }
 
 static void _sleep0_main(void* arg) {
@@ -220,40 +209,24 @@ static void test_sleep_zero(void) {
     _sleep0_ctx_t ctx = {0};
     atomic_init(&ctx.idx, 0);
     xylem_run(_sleep0_main, &ctx, &_rt_opts);
-    /* both coroutines completed (order is non-deterministic with multi-worker) */
     ASSERT(atomic_load(&ctx.idx) == 2);
     ASSERT((ctx.order[0] == 1 && ctx.order[1] == 2) ||
            (ctx.order[0] == 2 && ctx.order[1] == 1));
 }
 
-/* --- test: sleep ordering --- */
-
-#define SLEEP_ORDER_COUNT 4
-
 typedef struct {
-    int order[SLEEP_ORDER_COUNT];
+    int        order[SLEEP_ORDER_COUNT];
     atomic_int idx;
 } _sleepord_ctx_t;
-
-static void _sleepord_coro(void* arg) {
-    _sleepord_ctx_t* ctx = ((_sleepord_ctx_t**)arg)[0];
-    int id = *(int*)((_sleepord_ctx_t**)arg + 1);
-    uint64_t ms = (uint64_t)((id + 1) * 30);
-    xylem_sleep(ms);
-    ctx->order[atomic_fetch_add(&ctx->idx, 1)] = id;
-    if (atomic_load(&ctx->idx) == SLEEP_ORDER_COUNT) {
-        xylem_shutdown();
-    }
-}
 
 typedef struct {
     _sleepord_ctx_t* ctx;
     int              id;
 } _sleepord_arg_t;
 
-static void _sleepord_coro2(void* arg) {
-    _sleepord_arg_t* a = (_sleepord_arg_t*)arg;
-    uint64_t ms = (uint64_t)((a->id + 1) * 30);
+static void _sleepord_coro(void* arg) {
+    _sleepord_arg_t* a  = (_sleepord_arg_t*)arg;
+    uint64_t         ms = (uint64_t)((a->id + 1) * 30);
     xylem_sleep(ms);
     a->ctx->order[atomic_fetch_add(&a->ctx->idx, 1)] = a->id;
     if (atomic_load(&a->ctx->idx) == SLEEP_ORDER_COUNT) {
@@ -268,8 +241,8 @@ static void _sleepord_main(void* arg) {
     _start_safety_timer();
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
         _sleepord_args[i].ctx = ctx;
-        _sleepord_args[i].id = i;
-        xylem_spawn(_sleepord_coro2, &_sleepord_args[i]);
+        _sleepord_args[i].id  = i;
+        xylem_spawn(_sleepord_coro, &_sleepord_args[i]);
     }
 }
 
@@ -282,8 +255,6 @@ static void test_sleep_ordering(void) {
         ASSERT(ctx.order[i] == i);
     }
 }
-
-/* --- test: submit basic --- */
 
 typedef struct {
     int input;
@@ -298,7 +269,7 @@ static void _submit_blocking(void* arg) {
 
 static void _submit_coro(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
-    int rc = xylem_submit(_submit_blocking, ctx);
+    int            rc  = xylem_submit(_submit_blocking, ctx);
     ASSERT(rc == 0);
     ASSERT(ctx->output == 84);
     ctx->tested = 1;
@@ -317,10 +288,6 @@ static void test_submit_basic(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* --- test: submit concurrent --- */
-
-#define SUBMIT_CONC_COUNT 20
-
 typedef struct {
     atomic_int done;
     int        tested;
@@ -328,15 +295,16 @@ typedef struct {
 
 static void _submit_conc_blocking(void* arg) {
     (void)arg;
-    /* simulate blocking work */
     volatile int sum = 0;
-    for (int i = 0; i < 10000; i++) sum += i;
+    for (int i = 0; i < 10000; i++) {
+        sum += i;
+    }
     (void)sum;
 }
 
 static void _submit_conc_coro(void* arg) {
     _submit_conc_ctx_t* ctx = (_submit_conc_ctx_t*)arg;
-    int rc = xylem_submit(_submit_conc_blocking, NULL);
+    int                 rc  = xylem_submit(_submit_conc_blocking, NULL);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&ctx->done, 1);
     if (prev == SUBMIT_CONC_COUNT - 1) {
@@ -362,12 +330,10 @@ static void test_submit_concurrent(void) {
     ASSERT(atomic_load(&ctx.done) == SUBMIT_CONC_COUNT);
 }
 
-/* --- test: submit result --- */
-
 typedef struct {
-    int values[4];
+    int        values[4];
     atomic_int done;
-    int tested;
+    int        tested;
 } _submit_res_ctx_t;
 
 typedef struct {
@@ -381,8 +347,8 @@ static void _submit_res_blocking(void* arg) {
 }
 
 static void _submit_res_coro(void* arg) {
-    _submit_res_arg_t* a = (_submit_res_arg_t*)arg;
-    int rc = xylem_submit(_submit_res_blocking, a);
+    _submit_res_arg_t* a  = (_submit_res_arg_t*)arg;
+    int                rc = xylem_submit(_submit_res_blocking, a);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&a->ctx->done, 1);
     if (prev == 3) {
