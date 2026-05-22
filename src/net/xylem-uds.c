@@ -49,6 +49,7 @@ struct xylem_uds_conn_s {
 struct xylem_uds_listener_s {
     iowait_t*       waiter;
     platform_sock_t fd;
+    size_t          max_read_buf;
     char            path[UDS_MAX_PATH];
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
@@ -157,7 +158,8 @@ static int _uds_raw_send(void* ctx, const void* data, size_t len) {
     return 0;
 }
 
-static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
+static xylem_uds_conn_t* _uds_conn_alloc(
+    platform_sock_t fd, size_t max_read_buf) {
     xylem_uds_conn_t* uds
         = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
     if (!uds) {
@@ -171,16 +173,18 @@ static xylem_uds_conn_t* _uds_conn_alloc(platform_sock_t fd) {
         return NULL;
     }
 
+    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
     framing_init(
         &uds->framing, _uds_raw_recv, _uds_raw_send,
-        uds, (int)fd, DEFAULT_READ_BUF_SIZE);
+        uds, (int)fd, buf_cap);
 
     _uds_conn_ref(uds);
     return uds;
 }
 
 
-xylem_uds_listener_t* xylem_uds_listen(const char* path) {
+xylem_uds_listener_t* xylem_uds_listen(
+    const char* path, xylem_uds_opts_t* opts) {
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("uds listen: path is NULL or too long (max %d)",
                    UDS_MAX_PATH - 1);
@@ -200,7 +204,8 @@ xylem_uds_listener_t* xylem_uds_listen(const char* path) {
         return NULL;
     }
 
-    listener->fd = fd;
+    listener->fd           = fd;
+    listener->max_read_buf = opts ? opts->max_read_buf : 0;
     snprintf(listener->path, UDS_MAX_PATH, "%s", path);
 
     listener->waiter = iowait_create(fd);
@@ -256,7 +261,8 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
         backoff_ms = 5;
         retries    = 0;
 
-        xylem_uds_conn_t* uds = _uds_conn_alloc(fd);
+        xylem_uds_conn_t* uds
+            = _uds_conn_alloc(fd, listener->max_read_buf);
         if (!uds) {
             platform_socket_close(fd);
             break;
@@ -285,8 +291,9 @@ void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
 }
 
 xylem_uds_conn_t* xylem_uds_dial(
-    const char* path,
-    uint64_t    connect_timeout_ms) {
+    const char*       path,
+    uint64_t          connect_timeout_ms,
+    xylem_uds_opts_t* opts) {
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("uds dial: path is NULL or too long (max %d)",
                    UDS_MAX_PATH - 1);
@@ -301,7 +308,8 @@ xylem_uds_conn_t* xylem_uds_dial(
         return NULL;
     }
 
-    xylem_uds_conn_t* uds = _uds_conn_alloc(fd);
+    size_t max_buf = opts ? opts->max_read_buf : 0;
+    xylem_uds_conn_t* uds = _uds_conn_alloc(fd, max_buf);
     if (!uds) {
         platform_socket_close(fd);
         return NULL;

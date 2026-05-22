@@ -70,10 +70,10 @@ _framing_recv_fixed(framing_t* r, const xylem_framing_opts_t* opts,
 }
 
 static int64_t
-_framing_recv_length(framing_t* r, const xylem_framing_opts_t* opts,
-             void* buf, size_t len) {
+_framing_recv_lenfield_fixint(framing_t* r, const xylem_framing_opts_t* opts,
+                              void* buf, size_t len) {
     uint8_t  hdr[16];
-    uint32_t hdr_sz = opts->length.header_size;
+    uint32_t hdr_sz = opts->lenfield_fixint.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
         xylem_loge("fd=%d recv: header_size %u exceeds limit",
@@ -86,27 +86,76 @@ _framing_recv_length(framing_t* r, const xylem_framing_opts_t* opts,
     }
 
     uint64_t body_len = 0;
+    uint8_t* field    = hdr + opts->lenfield_fixint.field_offset;
 
-    if (opts->length.coding == XYLEM_FRAMING_LENGTH_VARINT) {
-        size_t pos = (size_t)opts->length.field_offset;
-        if (!xylem_varint_decode(hdr, hdr_sz, &pos, &body_len)) {
-            xylem_loge("fd=%d recv: varint decode failed", r->fd);
-            return -1;
+    if (opts->lenfield_fixint.big_endian) {
+        for (uint32_t i = 0; i < opts->lenfield_fixint.field_size; i++) {
+            body_len = (body_len << 8) | field[i];
         }
     } else {
-        uint8_t* field = hdr + opts->length.field_offset;
-        if (opts->length.big_endian) {
-            for (uint32_t i = 0; i < opts->length.field_size; i++) {
-                body_len = (body_len << 8) | field[i];
-            }
-        } else {
-            for (uint32_t i = 0; i < opts->length.field_size; i++) {
-                body_len |= (uint64_t)field[i] << (i * 8);
-            }
+        for (uint32_t i = 0; i < opts->lenfield_fixint.field_size; i++) {
+            body_len |= (uint64_t)field[i] << (i * 8);
         }
     }
 
-    int64_t adjusted = (int64_t)body_len + opts->length.adjustment;
+    int64_t adjusted = (int64_t)body_len + opts->lenfield_fixint.adjustment;
+    if (adjusted < 0) {
+        xylem_loge("fd=%d recv: negative payload length", r->fd);
+        return -1;
+    }
+
+    size_t payload_len = (size_t)adjusted;
+    if (payload_len > len) {
+        xylem_loge("fd=%d recv: payload %zu exceeds buffer %zu",
+                   r->fd, payload_len, len);
+        return -1;
+    }
+
+    if (payload_len > 0 && _framing_read_exact(r, buf, payload_len) != 0) {
+        return -1;
+    }
+    return (int64_t)payload_len;
+}
+
+static int64_t
+_framing_recv_lenfield_varint(framing_t* r, const xylem_framing_opts_t* opts,
+                              void* buf, size_t len) {
+    uint32_t prefix_sz = opts->lenfield_varint.prefix_size;
+    if (prefix_sz > 0) {
+        uint8_t prefix[16];
+        if (prefix_sz > sizeof(prefix)) {
+            xylem_loge("fd=%d recv: prefix_size %u exceeds limit",
+                       r->fd, prefix_sz);
+            return -1;
+        }
+        if (_framing_read_exact(r, prefix, prefix_sz) != 0) {
+            return -1;
+        }
+    }
+
+    uint8_t vbuf[10];
+    size_t  vlen = 0;
+    for (;;) {
+        if (_framing_read_exact(r, &vbuf[vlen], 1) != 0) {
+            return -1;
+        }
+        if (!(vbuf[vlen++] & 0x80)) {
+            break;
+        }
+        if (vlen >= sizeof(vbuf)) {
+            xylem_loge("fd=%d recv: varint overflow", r->fd);
+            return -1;
+        }
+    }
+
+    uint64_t body_len = 0;
+    size_t   vpos     = 0;
+    if (!xylem_varint_decode(vbuf, vlen, &vpos, &body_len)) {
+        xylem_loge("fd=%d recv: varint decode failed", r->fd);
+        return -1;
+    }
+
+    int64_t adjusted = (int64_t)body_len + opts->lenfield_varint.adjustment;
     if (adjusted < 0) {
         xylem_loge("fd=%d recv: negative payload length", r->fd);
         return -1;
@@ -186,8 +235,10 @@ int64_t framing_recv(framing_t*           r,
     switch (opts->type) {
     case XYLEM_FRAMING_FIXED:
         return _framing_recv_fixed(r, opts, buf, len);
-    case XYLEM_FRAMING_LENGTH:
-        return _framing_recv_length(r, opts, buf, len);
+    case XYLEM_FRAMING_LENFIELD_FIXINT:
+        return _framing_recv_lenfield_fixint(r, opts, buf, len);
+    case XYLEM_FRAMING_LENFIELD_VARINT:
+        return _framing_recv_lenfield_varint(r, opts, buf, len);
     case XYLEM_FRAMING_DELIMITER:
         return _framing_recv_delimiter(r, opts, buf, len);
     default:
@@ -196,10 +247,11 @@ int64_t framing_recv(framing_t*           r,
 }
 
 static int
-_framing_send_length(framing_t* r, const xylem_framing_opts_t* opts,
-             framing_send_fn send_fn, const void* data, size_t len) {
+_framing_send_lenfield_fixint(framing_t* r, const xylem_framing_opts_t* opts,
+                              framing_send_fn send_fn, const void* data,
+                              size_t len) {
     uint8_t  hdr[16];
-    uint32_t hdr_sz = opts->length.header_size;
+    uint32_t hdr_sz = opts->lenfield_fixint.header_size;
 
     if (hdr_sz > sizeof(hdr)) {
         xylem_loge("fd=%d send: header_size %u exceeds limit",
@@ -207,7 +259,7 @@ _framing_send_length(framing_t* r, const xylem_framing_opts_t* opts,
         return -1;
     }
 
-    int64_t wire_len = (int64_t)len - opts->length.adjustment;
+    int64_t wire_len = (int64_t)len - opts->lenfield_fixint.adjustment;
     if (wire_len < 0) {
         xylem_loge("fd=%d send: negative wire length", r->fd);
         return -1;
@@ -215,34 +267,45 @@ _framing_send_length(framing_t* r, const xylem_framing_opts_t* opts,
 
     memset(hdr, 0, hdr_sz);
 
-    if (opts->length.coding == XYLEM_FRAMING_LENGTH_VARINT) {
-        size_t pos = (size_t)opts->length.field_offset;
-        if (!xylem_varint_encode((uint64_t)wire_len, hdr, hdr_sz, &pos)) {
-            xylem_loge("fd=%d send: varint encode failed", r->fd);
-            return -1;
-        }
-        if (send_fn(r->ctx, hdr, pos) != 0) {
-            return -1;
-        }
-        return send_fn(r->ctx, data, len);
-    }
-
-    uint8_t* field = hdr + opts->length.field_offset;
+    uint8_t* field = hdr + opts->lenfield_fixint.field_offset;
     uint64_t val   = (uint64_t)wire_len;
 
-    if (opts->length.big_endian) {
-        for (int32_t i = (int32_t)opts->length.field_size - 1; i >= 0; i--) {
+    if (opts->lenfield_fixint.big_endian) {
+        for (int32_t i = (int32_t)opts->lenfield_fixint.field_size - 1;
+             i >= 0; i--) {
             field[i] = (uint8_t)(val & 0xFF);
             val >>= 8;
         }
     } else {
-        for (uint32_t i = 0; i < opts->length.field_size; i++) {
+        for (uint32_t i = 0; i < opts->lenfield_fixint.field_size; i++) {
             field[i] = (uint8_t)(val & 0xFF);
             val >>= 8;
         }
     }
 
     if (send_fn(r->ctx, hdr, hdr_sz) != 0) {
+        return -1;
+    }
+    return send_fn(r->ctx, data, len);
+}
+
+static int
+_framing_send_lenfield_varint(framing_t* r, const xylem_framing_opts_t* opts,
+                              framing_send_fn send_fn, const void* data,
+                              size_t len) {
+    int64_t wire_len = (int64_t)len - opts->lenfield_varint.adjustment;
+    if (wire_len < 0) {
+        xylem_loge("fd=%d send: negative wire length", r->fd);
+        return -1;
+    }
+
+    uint8_t hdr[10];
+    size_t  pos = 0;
+    if (!xylem_varint_encode((uint64_t)wire_len, hdr, sizeof(hdr), &pos)) {
+        xylem_loge("fd=%d send: varint encode failed", r->fd);
+        return -1;
+    }
+    if (send_fn(r->ctx, hdr, pos) != 0) {
         return -1;
     }
     return send_fn(r->ctx, data, len);
@@ -279,8 +342,10 @@ int framing_send(framing_t*                  f,
     switch (opts->type) {
     case XYLEM_FRAMING_FIXED:
         return _framing_send_fixed(f, opts, f->send_fn, data, len);
-    case XYLEM_FRAMING_LENGTH:
-        return _framing_send_length(f, opts, f->send_fn, data, len);
+    case XYLEM_FRAMING_LENFIELD_FIXINT:
+        return _framing_send_lenfield_fixint(f, opts, f->send_fn, data, len);
+    case XYLEM_FRAMING_LENFIELD_VARINT:
+        return _framing_send_lenfield_varint(f, opts, f->send_fn, data, len);
     case XYLEM_FRAMING_DELIMITER:
         return _framing_send_delimiter(f, opts, f->send_fn, data, len);
     default:

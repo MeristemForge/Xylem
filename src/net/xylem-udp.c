@@ -26,7 +26,6 @@
 #include "net/addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
-#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdio.h>

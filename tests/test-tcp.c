@@ -231,8 +231,8 @@ static void test_delimiter(void) {
 }
 
 static const xylem_framing_opts_t _len_frame = {
-    .type   = XYLEM_FRAMING_LENGTH,
-    .length = {
+    .type            = XYLEM_FRAMING_LENFIELD_FIXINT,
+    .lenfield_fixint = {
         .header_size  = 2,
         .field_offset = 0,
         .field_size   = 2,
@@ -298,8 +298,75 @@ static void _frame_main(void* arg) {
     xylem_shutdown();
 }
 
-static void test_frame(void) {
+static void test_lenfield_fixint(void) {
     xylem_run(_frame_main, NULL, NULL);
+}
+
+static void _varint_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    xylem_framing_opts_t frame = {
+        .type            = XYLEM_FRAMING_LENFIELD_VARINT,
+        .lenfield_varint = { .prefix_size = 0, .adjustment = 0 },
+    };
+    xylem_tcp_set_framing(conn, &frame);
+
+    ASSERT(xylem_tcp_send(conn, "VARINTmsg", 9) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _varint_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_framing_opts_t frame = {
+        .type            = XYLEM_FRAMING_LENFIELD_VARINT,
+        .lenfield_varint = { .prefix_size = 0, .adjustment = 0 },
+    };
+    xylem_tcp_set_framing(conn, &frame);
+
+    char    buf[64];
+    int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+    ASSERT(n == 9);
+    ASSERT(memcmp(buf, "VARINTmsg", 9) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _varint_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TCP_PORT + 4,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_spawn(_varint_server, &ctx);
+    xylem_spawn(_varint_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
+}
+
+static void test_lenfield_varint(void) {
+    xylem_run(_varint_main, NULL, NULL);
 }
 
 static void _timeout_client(void* arg) {
@@ -330,7 +397,8 @@ int main(void) {
     test_echo();
     test_fixed();
     test_delimiter();
-    test_frame();
+    test_lenfield_fixint();
+    test_lenfield_varint();
     test_dial_timeout();
     return 0;
 }

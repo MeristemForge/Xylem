@@ -461,8 +461,8 @@ static void test_alpn_negotiation(void) {
 
 
 static const xylem_framing_opts_t _len_frame = {
-    .type   = XYLEM_FRAMING_LENGTH,
-    .length = {
+    .type            = XYLEM_FRAMING_LENFIELD_FIXINT,
+    .lenfield_fixint = {
         .header_size  = 2,
         .field_offset = 0,
         .field_size   = 2,

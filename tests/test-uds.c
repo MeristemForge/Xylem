@@ -49,7 +49,7 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -70,7 +70,7 @@ static void _echo_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0, NULL);
     ASSERT(uds != NULL);
 
     const char* msg = "hello xylem uds";
@@ -112,7 +112,7 @@ static void test_echo(void) {
 
 static void _fixed_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -132,7 +132,7 @@ static void _fixed_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0, NULL);
     ASSERT(uds != NULL);
 
     xylem_framing_opts_t frame = {
@@ -177,7 +177,7 @@ static void test_fixed(void) {
 
 static void _delim_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -195,7 +195,7 @@ static void _delim_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0, NULL);
     ASSERT(uds != NULL);
 
     xylem_framing_opts_t frame = {
@@ -240,23 +240,22 @@ static void test_delimiter(void) {
     remove(UDS_PATH);
 }
 
-/* --- test_frame: XYLEM_FRAMING_LENGTH with 2-byte big-endian fixedint --- */
+/* --- test_frame: XYLEM_FRAMING_LENFIELD_FIXINT with 2-byte big-endian --- */
 
 static const xylem_framing_opts_t _len_frame = {
-    .type   = XYLEM_FRAMING_LENGTH,
-    .length = {
+    .type            = XYLEM_FRAMING_LENFIELD_FIXINT,
+    .lenfield_fixint = {
         .header_size  = 2,
         .field_offset = 0,
         .field_size   = 2,
         .adjustment   = 0,
-        .coding       = XYLEM_FRAMING_LENGTH_FIXEDINT,
         .big_endian   = true,
     },
 };
 
 static void _frame_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -277,7 +276,7 @@ static void _frame_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0, NULL);
     ASSERT(uds != NULL);
 
     xylem_framing_opts_t frame = _len_frame;
@@ -310,16 +309,16 @@ static void _frame_main(void* arg) {
     xylem_shutdown();
 }
 
-static void test_frame(void) {
+static void test_lenfield_fixint(void) {
     xylem_run(_frame_main, NULL, NULL);
     remove(UDS_PATH);
 }
 
-/* --- test_varint: XYLEM_FRAMING_LENGTH with varint coding --- */
+/* --- test_varint: XYLEM_FRAMING_LENFIELD_VARINT --- */
 
 static void _varint_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -327,15 +326,8 @@ static void _varint_server(void* arg) {
     ASSERT(uds != NULL);
 
     xylem_framing_opts_t frame = {
-        .type   = XYLEM_FRAMING_LENGTH,
-        .length = {
-            .header_size  = 1,
-            .field_offset = 0,
-            .field_size   = 1,
-            .adjustment   = 0,
-            .coding       = XYLEM_FRAMING_LENGTH_VARINT,
-            .big_endian   = false,
-        },
+        .type            = XYLEM_FRAMING_LENFIELD_VARINT,
+        .lenfield_varint = { .prefix_size = 0, .adjustment = 0 },
     };
     xylem_uds_set_framing(uds, &frame);
 
@@ -350,19 +342,12 @@ static void _varint_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0, NULL);
     ASSERT(uds != NULL);
 
     xylem_framing_opts_t frame = {
-        .type   = XYLEM_FRAMING_LENGTH,
-        .length = {
-            .header_size  = 1,
-            .field_offset = 0,
-            .field_size   = 1,
-            .adjustment   = 0,
-            .coding       = XYLEM_FRAMING_LENGTH_VARINT,
-            .big_endian   = false,
-        },
+        .type            = XYLEM_FRAMING_LENFIELD_VARINT,
+        .lenfield_varint = { .prefix_size = 0, .adjustment = 0 },
     };
     xylem_uds_set_framing(uds, &frame);
 
@@ -393,7 +378,7 @@ static void _varint_main(void* arg) {
     xylem_shutdown();
 }
 
-static void test_varint(void) {
+static void test_lenfield_varint(void) {
     xylem_run(_varint_main, NULL, NULL);
     remove(UDS_PATH);
 }
@@ -402,7 +387,7 @@ int main(void) {
     test_echo();
     test_fixed();
     test_delimiter();
-    test_frame();
-    test_varint();
+    test_lenfield_fixint();
+    test_lenfield_varint();
     return 0;
 }

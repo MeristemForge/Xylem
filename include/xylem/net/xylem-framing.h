@@ -26,16 +26,12 @@ _Pragma("once")
 #include <stdint.h>
 
 typedef enum xylem_framing_type_e {
-    XYLEM_FRAMING_NONE,      /*< Raw mode, recv returns available bytes. */
-    XYLEM_FRAMING_FIXED,     /*< Fixed-length frames. */
-    XYLEM_FRAMING_LENGTH,    /*< Length-prefixed frames. */
-    XYLEM_FRAMING_DELIMITER, /*< Delimiter-terminated frames. */
+    XYLEM_FRAMING_NONE,             /*< Raw mode, recv returns available bytes. */
+    XYLEM_FRAMING_FIXED,            /*< Fixed-length frames. */
+    XYLEM_FRAMING_LENFIELD_FIXINT,  /*< Length-prefixed, fixed-width integer. */
+    XYLEM_FRAMING_LENFIELD_VARINT,  /*< Length-prefixed, variable-length integer (LEB128). */
+    XYLEM_FRAMING_DELIMITER,        /*< Delimiter-terminated frames. */
 } xylem_framing_type_t;
-
-typedef enum xylem_framing_length_coding_e {
-    XYLEM_FRAMING_LENGTH_FIXEDINT, /*< Fixed-width integer (1-8 bytes). */
-    XYLEM_FRAMING_LENGTH_VARINT,   /*< Variable-length integer (LEB128). */
-} xylem_framing_length_coding_t;
 
 typedef struct xylem_framing_opts_s {
     xylem_framing_type_t type;
@@ -44,16 +40,19 @@ typedef struct xylem_framing_opts_s {
             size_t len; /*< Fixed frame length in bytes. */
         } fixed;
         struct {
-            uint32_t                   header_size;  /*< Total header size in bytes. */
-            uint32_t                   field_offset; /*< Byte offset of the length field. */
-            uint32_t                   field_size;   /*< Size of the length field (1-8). */
-            int32_t                    adjustment;   /*< Added to decoded length for payload size. */
-            xylem_framing_length_coding_t coding;       /*< FIXEDINT or VARINT. */
-            bool                       big_endian;   /*< true: big-endian length field. */
-        } length;
+            uint32_t header_size;   /*< Total header size in bytes. */
+            uint32_t field_offset;  /*< Byte offset of the length field. */
+            uint32_t field_size;    /*< Length field width (1-8 bytes). */
+            int32_t  adjustment;    /*< Added to decoded length for payload size. */
+            bool     big_endian;    /*< true: big-endian byte order. */
+        } lenfield_fixint;
         struct {
-            const char* delim;     /*< Delimiter bytes. */
-            size_t      delim_len; /*< Delimiter length, 0 = auto strlen. */
+            uint32_t prefix_size;   /*< Fixed bytes before the varint. */
+            int32_t  adjustment;    /*< Added to decoded length for payload size. */
+        } lenfield_varint;
+        struct {
+            const char* delim;      /*< Delimiter bytes. */
+            size_t      delim_len;  /*< Delimiter length, 0 = auto strlen. */
         } delimiter;
     };
 } xylem_framing_opts_t;

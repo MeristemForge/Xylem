@@ -30,6 +30,10 @@ _Pragma("once")
 typedef struct xylem_uds_conn_s     xylem_uds_conn_t;
 typedef struct xylem_uds_listener_s xylem_uds_listener_t;
 
+typedef struct xylem_uds_opts_s {
+    size_t max_read_buf; /*< Internal read buffer size, 0 = default 64KB. */
+} xylem_uds_opts_t;
+
 /**
  * @brief Create a UDS listener bound to the given path.
  *
@@ -38,10 +42,13 @@ typedef struct xylem_uds_listener_s xylem_uds_listener_t;
  * already exists.
  *
  * @param path  Unix domain socket path.
+ * @param opts  Options, NULL for defaults.
  *
  * @return Listener handle, or NULL on failure.
  */
-extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
+extern xylem_uds_listener_t* xylem_uds_listen(
+    const char*       path,
+    xylem_uds_opts_t* opts);
 
 /**
  * @brief Accept a connection from the listener.
@@ -72,12 +79,14 @@ extern void xylem_uds_close_listener(xylem_uds_listener_t* ln);
  *
  * @param path                Unix domain socket path.
  * @param connect_timeout_ms  Connect timeout in ms, 0 = no timeout.
+ * @param opts                Options, NULL for defaults.
  *
  * @return Connection handle, or NULL on failure or timeout.
  */
 extern xylem_uds_conn_t* xylem_uds_dial(
-    const char* path,
-    uint64_t    connect_timeout_ms);
+    const char*       path,
+    uint64_t          connect_timeout_ms,
+    xylem_uds_opts_t* opts);
 
 /**
  * @brief Set the framing mode for subsequent recv/send calls.
