@@ -103,7 +103,7 @@ static void _tls_listener_unref(xylem_tls_listener_t* ln) {
     free(ln);
 }
 
-static int _tls_sni_cb(SSL* ssl, int* al, void* arg) {
+static int _tls_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
     (void)al;
     xylem_tls_ctx_t* ctx = (xylem_tls_ctx_t*)arg;
     const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
@@ -217,20 +217,18 @@ static SSL_CTX* _tls_create_child_ctx(xylem_tls_ctx_t* ctx) {
     SSL_CTX_set_verify(
         child, SSL_CTX_get_verify_mode(ctx->ssl_ctx), NULL);
 
-    /* Share the CA store from the main ctx. */
+    /* Child ctx has empty CA store; share the main one for mTLS. */
     X509_STORE* store = SSL_CTX_get_cert_store(ctx->ssl_ctx);
     if (store) {
         SSL_CTX_set1_cert_store(child, store);
     }
 
-    /* Copy ALPN settings. */
     if (ctx->alpn_wire && ctx->alpn_wire_len > 0) {
         SSL_CTX_set_alpn_protos(
             child, ctx->alpn_wire, (unsigned int)ctx->alpn_wire_len);
         SSL_CTX_set_alpn_select_cb(child, _tls_alpn_select_cb, ctx);
     }
 
-    /* Copy keylog callback. */
     if (ctx->keylog_file) {
         SSL_CTX_set_keylog_callback(child, _tls_keylog_cb);
     }
@@ -258,7 +256,6 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
         return 0;
     }
 
-    /* Create a child SSL_CTX for this hostname. */
     SSL_CTX* child = _tls_create_child_ctx(ctx);
     if (!child) {
         return -1;
@@ -274,7 +271,6 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
         return -1;
     }
 
-    /* Grow the SNI entries array if needed. */
     if (ctx->sni_count == ctx->sni_cap) {
         size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
         _tls_sni_entry_t* entries = (_tls_sni_entry_t*)realloc(
@@ -292,9 +288,8 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
     entry->ssl_ctx = child;
     ctx->sni_count++;
 
-    /* Register the SNI callback on the main ctx (once). */
     if (ctx->sni_count == 1) {
-        SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tls_sni_cb);
+        SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tls_ctx_sni_cb);
         SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
     }
 
@@ -573,7 +568,7 @@ xylem_tls_conn_t* xylem_tls_dial(
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
         size_t  count = 0;
-        if (addr_resolve(host, &addrs, &count) != 0 || count == 0) {
+        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
             xylem_loge("tls dial: DNS resolution failed for %s", host);
             return NULL;
         }

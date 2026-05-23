@@ -198,7 +198,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
         size_t  count = 0;
-        if (addr_resolve(host, &addrs, &count) != 0 || count == 0) {
+        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
             xylem_loge("tcp dial: DNS resolution failed for %s", host);
             return NULL;
         }

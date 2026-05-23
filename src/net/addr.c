@@ -31,6 +31,7 @@
 typedef struct {
     mco_coro* co;
     char*     host;
+    uint16_t  port;
     addr_t**  addrs;
     size_t*   count;
     int       status;
@@ -86,6 +87,13 @@ static void _addr_resolve_work(void* arg) {
             continue;
         }
         memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
+        if (rp->ai_family == AF_INET) {
+            ((struct sockaddr_in*)&arr[i].storage)->sin_port =
+                htons(ctx->port);
+        } else {
+            ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
+                htons(ctx->port);
+        }
         i++;
     }
 
@@ -171,6 +179,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
 
 int addr_resolve(
     const char* domain,
+    uint16_t port,
     addr_t** addrs,
     size_t* count) {
     if (!domain || !addrs || !count) {
@@ -179,6 +188,7 @@ int addr_resolve(
 
     _addr_resolve_ctx_t ctx;
     ctx.host   = (char*)domain;
+    ctx.port   = port;
     ctx.addrs  = addrs;
     ctx.count  = count;
     ctx.status = 0;

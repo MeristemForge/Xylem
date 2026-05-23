@@ -41,6 +41,10 @@ extern xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port);
  *
  * Calls connect() so subsequent send/recv use the default peer.
  *
+ * The host parameter accepts either a numeric IP (IPv4/IPv6) or a
+ * hostname. Hostnames are resolved via the runtime DNS resolver,
+ * matching the behavior of xylem_tcp_dial / xylem_tls_dial.
+ *
  * @param host  Remote hostname or IP address.
  * @param port  Remote port.
  *
@@ -80,13 +84,16 @@ extern int64_t xylem_udp_recv(
  * Suspends the calling coroutine if the socket buffer is full until
  * writable, the deadline passes, or the handle is closed.
  *
- * For unconnected sockets, host/port specify the destination.
+ * For unconnected sockets, host/port specify the destination. The
+ * host must be a numeric IP address (IPv4 or IPv6); hostnames are
+ * not resolved.
+ *
  * For connected sockets, host must be NULL.
  *
  * @param udp   UDP handle.
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
- * @param host  Destination IP, or NULL for connected socket.
+ * @param host  Destination IP (numeric), or NULL for connected socket.
  * @param port  Destination port (ignored when host is NULL).
  *
  * @return 0 on success, -1 on error.

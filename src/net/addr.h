@@ -66,7 +66,11 @@ extern int addr_ntop(
  * until the result is ready. The result array is heap-allocated;
  * the caller must free *addrs when done.
  *
+ * The supplied port is embedded into every returned sockaddr so
+ * callers can use the result directly with bind/connect/sendto.
+ *
  * @param domain  Domain name to resolve.
+ * @param port    Port to embed in each result.
  * @param addrs   Receives a malloc'd array of results (caller frees).
  * @param count   Receives the number of results.
  *
@@ -74,5 +78,6 @@ extern int addr_ntop(
  */
 extern int addr_resolve(
     const char* domain,
+    uint16_t port,
     addr_t** addrs,
     size_t* count);

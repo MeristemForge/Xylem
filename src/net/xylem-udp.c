@@ -93,9 +93,27 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
+    const char* dial_host = host;
+    char        resolved_ip[INET6_ADDRSTRLEN];
+    addr_t      resolved_addr;
+
+    if (addr_pton(host, port, &resolved_addr) != 0) {
+        addr_t* addrs = NULL;
+        size_t  count = 0;
+        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
+            xylem_loge("udp dial: DNS resolution failed for %s", host);
+            return NULL;
+        }
+        resolved_addr = addrs[0];
+        free(addrs);
+        uint16_t rport;
+        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
+        dial_host = resolved_ip;
+    }
+
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        host, port_str, SOCK_DGRAM, &connected, true);
+        dial_host, port_str, SOCK_DGRAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("udp dial: failed for %s:%s", host, port_str);
         return NULL;
@@ -109,6 +127,7 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
 
     udp->fd        = fd;
     udp->connected = true;
+    udp->peer_addr = resolved_addr;
     udp->waiter    = iowait_create(fd);
     if (!udp->waiter) {
         platform_socket_close(fd);
@@ -116,7 +135,6 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
         return NULL;
     }
 
-    addr_pton(host, port, &udp->peer_addr);
     _udp_chan_ref(udp);
     return udp;
 }
@@ -199,7 +217,11 @@ int xylem_udp_send(
             n = platform_socket_send(udp->fd, data, (int)len);
         } else {
             addr_t dest;
-            addr_pton(host, port, &dest);
+            if (addr_pton(host, port, &dest) != 0) {
+                xylem_loge("udp send: host must be numeric IP, got %s",
+                           host);
+                break;
+            }
             socklen_t addrlen =
                 (dest.storage.ss_family == AF_INET6)
                     ? (socklen_t)sizeof(struct sockaddr_in6)

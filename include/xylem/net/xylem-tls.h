@@ -154,9 +154,18 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  * Suspends the calling coroutine until a client connects and the
  * TLS handshake completes.
  *
+ * Returns NULL on listener close as well as per-connection errors
+ * (handshake failure, SSL_new failure, transient resource shortage).
+ * The listener remains usable after a per-connection failure; the
+ * caller decides the recovery policy (retry, throttle, count, give
+ * up). To distinguish shutdown from a transient error, pair this
+ * with a caller-owned cancellation flag set before
+ * xylem_tls_close_listener().
+ *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL if the listener is closed.
+ * @return Accepted connection, or NULL on listener close or per-
+ *         connection error.
  */
 extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
 
