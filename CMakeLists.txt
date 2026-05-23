@@ -73,6 +73,9 @@ set(SRCS
 	src/net/xylem-tcp.c
 	src/net/xylem-udp.c
 	src/net/xylem-uds.c
+	src/net/mux/mux-frame.c
+	src/net/mux/mux-stream.c
+	src/net/mux/xylem-mux.c
 	src/encoding/json/xylem-json.c
 	src/encoding/json/yyjson/yyjson.c
 	src/encoding/gzip/xylem-gzip.c
