@@ -25,7 +25,6 @@
 #include "xylem/xylem-utils.h"
 
 #include "net/addr.h"
-#include "net/framing.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-string.h"
 #include "runtime/iowait.h"
@@ -37,10 +36,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <string.h>
-
-#define DEFAULT_READ_BUF_SIZE 65536
 
 static int _tls_ex_data_idx = -1;
 static once_flag _tls_ex_data_once = ONCE_FLAG_INIT;
@@ -65,16 +61,14 @@ struct xylem_tls_ctx_s {
 };
 
 struct xylem_tls_conn_s {
-    SSL*                   ssl;
-    iowait_t*              waiter;
-    platform_sock_t        fd;
-    xylem_tls_ctx_t*       ctx;
-    addr_t                 peer_addr;
-    xylem_framing_opts_t   frame_opts;
-    framing_t              framing;
-    char                   alpn[256];
-    _Atomic int32_t        refcnt;
-    _Atomic bool           closed;
+    SSL*            ssl;
+    iowait_t*      waiter;
+    platform_sock_t fd;
+    xylem_tls_ctx_t* ctx;
+    addr_t          peer_addr;
+    char            alpn[256];
+    _Atomic int32_t refcnt;
+    _Atomic bool    closed;
 };
 
 struct xylem_tls_listener_s {
@@ -408,11 +402,10 @@ static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
 
 /**
  * Park on the right direction for an SSL_get_error result, with the
- * close-flag double-check that recv/send share. Returns:
+ * close-flag double-check that read/write share. Returns:
  *   0  retry the SSL op
  *   1  peer closed (SSL_ERROR_ZERO_RETURN)
  *  -1  fatal -- abort
- * @p op_name is included in the fatal log.
  */
 static int _tls_handle_io_block(xylem_tls_conn_t* tls, int ssl_err,
                                 const char* op_name) {
@@ -442,61 +435,7 @@ static int _tls_handle_io_block(xylem_tls_conn_t* tls, int ssl_err,
     return 0;
 }
 
-static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ctx;
-    if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        return -1;
-    }
-
-    for (;;) {
-        ERR_clear_error();
-        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
-        int    n     = SSL_read(tls->ssl, buf, (int)chunk);
-        if (n > 0) {
-            return n;
-        }
-
-        int rc = _tls_handle_io_block(
-            tls, SSL_get_error(tls->ssl, n), "SSL_read");
-        if (rc == 1) {
-            return 0;
-        }
-        if (rc < 0) {
-            return -1;
-        }
-    }
-}
-
-static int _tls_raw_send(void* ctx, const void* data, size_t len) {
-    xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ctx;
-    if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        return -1;
-    }
-
-    const char* ptr = (const char*)data;
-    size_t      rem = len;
-
-    while (rem > 0) {
-        ERR_clear_error();
-        size_t chunk = rem > INT_MAX ? (size_t)INT_MAX : rem;
-        int    n     = SSL_write(tls->ssl, ptr, (int)chunk);
-        if (n > 0) {
-            ptr += n;
-            rem -= (size_t)n;
-            continue;
-        }
-
-        int rc = _tls_handle_io_block(
-            tls, SSL_get_error(tls->ssl, n), "SSL_write");
-        if (rc != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static xylem_tls_conn_t* _tls_conn_alloc(
-    platform_sock_t fd, size_t max_read_buf) {
+static xylem_tls_conn_t* _tls_conn_create(platform_sock_t fd) {
     xylem_tls_conn_t* tls
         = (xylem_tls_conn_t*)calloc(1, sizeof(xylem_tls_conn_t));
     if (!tls) {
@@ -510,12 +449,7 @@ static xylem_tls_conn_t* _tls_conn_alloc(
         return NULL;
     }
 
-    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    framing_init(
-        &tls->framing, _tls_raw_recv, _tls_raw_send,
-        tls, (int)fd, buf_cap);
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
-
     return tls;
 }
 
@@ -540,7 +474,6 @@ static void _tls_conn_unref(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    framing_deinit(&tls->framing);
     free(tls);
 }
 
@@ -560,7 +493,6 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
-    framing_deinit(&tls->framing);
     free(tls);
 }
 
@@ -603,8 +535,7 @@ xylem_tls_conn_t* xylem_tls_dial(
         platform_socket_enable_mss_clamp(fd, false);
     }
 
-    size_t             max_buf = opts ? opts->max_read_buf : 0;
-    xylem_tls_conn_t*  tls     = _tls_conn_alloc(fd, max_buf);
+    xylem_tls_conn_t* tls = _tls_conn_create(fd);
     if (!tls) {
         platform_socket_close(fd);
         return NULL;
@@ -764,8 +695,7 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         backoff_ms = 5;
         retries    = 0;
 
-        size_t max_buf = ln->opts.max_read_buf;
-        xylem_tls_conn_t* tls = _tls_conn_alloc(fd, max_buf);
+        xylem_tls_conn_t* tls = _tls_conn_create(fd);
         if (!tls) {
             platform_socket_close(fd);
             break;
@@ -822,26 +752,63 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     _tls_listener_unref(ln);
 }
 
-void xylem_tls_set_framing(
-    xylem_tls_conn_t* tls, xylem_framing_opts_t* opts) {
-    if (opts) {
-        tls->frame_opts = *opts;
-    } else {
-        memset(&tls->frame_opts, 0, sizeof(tls->frame_opts));
-    }
-}
-
-int64_t
-xylem_tls_recv(xylem_tls_conn_t* tls, void* buf, size_t len) {
+int xylem_tls_read(xylem_tls_conn_t* tls, void* buf, int len) {
     _tls_conn_ref(tls);
-    int64_t ret = framing_recv(&tls->framing, &tls->frame_opts, buf, len);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        for (;;) {
+            ERR_clear_error();
+            int n = SSL_read(tls->ssl, buf, len);
+            if (n > 0) {
+                ret = n;
+                break;
+            }
+
+            int rc = _tls_handle_io_block(
+                tls, SSL_get_error(tls->ssl, n), "SSL_read");
+            if (rc == 1) {
+                ret = 0;
+                break;
+            }
+            if (rc < 0) {
+                break;
+            }
+        }
+    }
+
     _tls_conn_unref(tls);
     return ret;
 }
 
-int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
+int xylem_tls_write(xylem_tls_conn_t* tls, const void* data, int len) {
     _tls_conn_ref(tls);
-    int ret = framing_send(&tls->framing, &tls->frame_opts, data, len);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        const char* ptr = (const char*)data;
+        int         rem = len;
+
+        while (rem > 0) {
+            ERR_clear_error();
+            int n = SSL_write(tls->ssl, ptr, rem);
+            if (n > 0) {
+                ptr += n;
+                rem -= n;
+                continue;
+            }
+
+            int rc = _tls_handle_io_block(
+                tls, SSL_get_error(tls->ssl, n), "SSL_write");
+            if (rc != 0) {
+                break;
+            }
+        }
+        if (rem == 0) {
+            ret = 0;
+        }
+    }
+
     _tls_conn_unref(tls);
     return ret;
 }

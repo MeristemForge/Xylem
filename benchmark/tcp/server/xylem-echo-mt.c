@@ -9,9 +9,9 @@ static void _handle_conn(void* arg) {
     if (!buf) { xylem_tcp_close(conn); return; }
 
     for (;;) {
-        int64_t n = xylem_tcp_recv(conn, buf, 65536);
+        int n = xylem_tcp_read(conn, buf, 65536);
         if (n <= 0) break;
-        if (xylem_tcp_send(conn, buf, (size_t)n) != 0) break;
+        if (xylem_tcp_write(conn, buf, n) != 0) break;
     }
 
     free(buf);

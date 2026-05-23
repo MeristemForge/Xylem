@@ -24,6 +24,7 @@
 #include "assert.h"
 
 #include <openssl/evp.h>
+#include <stdint.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -47,6 +48,7 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     (void)ud;
     ASSERT(0 && "test timed out");
 }
+
 
 
 /**
@@ -213,9 +215,9 @@ static void _echo_server(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(xylem_tls_send(conn, buf, (size_t)n) == 0);
+    ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
     xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
@@ -231,11 +233,11 @@ static void _echo_client(void* arg) {
     ASSERT(conn != NULL);
 
     const char* msg = "hello xylem tls";
-    ASSERT(xylem_tls_send(conn, msg, strlen(msg)) == 0);
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
-    ASSERT(n == (int64_t)strlen(msg));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
     xylem_tls_close(conn);
@@ -380,9 +382,9 @@ static void _alpn_server(void* arg) {
 
     /* Echo a sync message so the client knows the server is alive. */
     char buf[8];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     if (n > 0) {
-        xylem_tls_send(conn, buf, (size_t)n);
+        xylem_tls_write(conn, buf, n);
     }
 
     xylem_tls_close(conn);
@@ -404,9 +406,9 @@ static void _alpn_client(void* arg) {
 
     /* Round-trip exchange ensures the server has completed its
      * handshake before we tear down the connection. */
-    ASSERT(xylem_tls_send(conn, "ok", 2) == 0);
+    ASSERT(xylem_tls_write(conn, "ok", 2) == 0);
     char buf[8];
-    xylem_tls_recv(conn, buf, sizeof(buf));
+    xylem_tls_read(conn, buf, sizeof(buf));
 
     xylem_tls_close(conn);
     xylem_waitgroup_done(ctx->wg);
@@ -460,98 +462,6 @@ static void test_alpn_negotiation(void) {
 }
 
 
-static const xylem_framing_opts_t _len_frame = {
-    .type            = XYLEM_FRAMING_LENFIELD_FIXINT,
-    .lenfield_fixint = {
-        .header_size  = 2,
-        .field_offset = 0,
-        .field_size   = 2,
-        .adjustment   = 0,
-        .big_endian   = true,
-    },
-};
-
-static void _frame_server(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tls_listener_t* ln = xylem_tls_listen(
-        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
-    ASSERT(ln != NULL);
-    xylem_channel_send(ctx->ready, ctx);
-
-    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
-    ASSERT(conn != NULL);
-
-    xylem_framing_opts_t frame = _len_frame;
-    xylem_tls_set_framing(conn, &frame);
-    ASSERT(xylem_tls_send(conn, "FRAME1", 6) == 0);
-
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _frame_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tls_conn_t* conn = xylem_tls_dial(
-        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
-    ASSERT(conn != NULL);
-
-    xylem_framing_opts_t frame = _len_frame;
-    xylem_tls_set_framing(conn, &frame);
-
-    char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
-    ASSERT(n == 6);
-    ASSERT(memcmp(buf, "FRAME1", 6) == 0);
-
-    xylem_tls_close(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _frame_main(void* arg) {
-    (void)arg;
-    const char* cert = "test_tls_frame_cert.pem";
-    const char* key  = "test_tls_frame_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-
-    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
-    ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
-    xylem_tls_ctx_set_verify(srv_ctx, false);
-
-    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
-    ASSERT(cli_ctx != NULL);
-    xylem_tls_ctx_set_verify(cli_ctx, false);
-
-    _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
-        .wg      = xylem_waitgroup_create(),
-        .srv_ctx = srv_ctx,
-        .cli_ctx = cli_ctx,
-        .port    = TLS_PORT + 3,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
-    xylem_spawn(_frame_server, &ctx);
-    xylem_spawn(_frame_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_tls_ctx_destroy(srv_ctx);
-    xylem_tls_ctx_destroy(cli_ctx);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    remove(cert);
-    remove(key);
-    xylem_shutdown();
-}
-
-static void test_framing(void) {
-    xylem_run(_frame_main, NULL, NULL);
-}
 
 
 static void _deadline_server(void* arg) {
@@ -583,7 +493,7 @@ static void _deadline_client(void* arg) {
     xylem_tls_set_read_deadline(conn, deadline);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
     xylem_tls_close(conn);
@@ -645,7 +555,7 @@ static void _sac_server(void* arg) {
     if (conn) {
         /* Drain the sync message then let the client close. */
         char buf[8];
-        xylem_tls_recv(conn, buf, sizeof(buf));
+        xylem_tls_read(conn, buf, sizeof(buf));
         xylem_tls_close(conn);
     }
     xylem_tls_close_listener(ln);
@@ -661,7 +571,7 @@ static void _sac_client(void* arg) {
     ASSERT(conn != NULL);
 
     /* Send a byte to ensure the server handshake completes. */
-    xylem_tls_send(conn, "x", 1);
+    xylem_tls_write(conn, "x", 1);
     xylem_tls_close(conn);
     /* conn is freed -- cannot use after close. */
 
@@ -783,7 +693,7 @@ static void _kl_server(void* arg) {
     if (conn) {
         /* Drain client sync to ensure both sides are handshake-complete. */
         char buf[8];
-        xylem_tls_recv(conn, buf, sizeof(buf));
+        xylem_tls_read(conn, buf, sizeof(buf));
         xylem_tls_close(conn);
     }
     xylem_tls_close_listener(ln);
@@ -798,7 +708,7 @@ static void _kl_client(void* arg) {
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
     /* Send a byte so the server knows we are connected. */
-    xylem_tls_send(conn, "k", 1);
+    xylem_tls_write(conn, "k", 1);
     xylem_tls_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -867,9 +777,9 @@ static void _sni_server(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(xylem_tls_send(conn, buf, (size_t)n) == 0);
+    ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
     xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
@@ -888,11 +798,11 @@ static void _sni_client(void* arg) {
     ASSERT(conn != NULL);
 
     const char* msg = "sni-ok";
-    ASSERT(xylem_tls_send(conn, msg, strlen(msg)) == 0);
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
-    ASSERT(n == (int64_t)strlen(msg));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
     xylem_tls_close(conn);
@@ -959,9 +869,9 @@ static void _addr_server(void* arg) {
     ASSERT(port != 0);
 
     char buf[256];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(xylem_tls_send(conn, buf, (size_t)n) == 0);
+    ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
     xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
@@ -983,10 +893,10 @@ static void _addr_client(void* arg) {
     ASSERT(port != 0);
 
     const char* msg = "addr-ok";
-    ASSERT(xylem_tls_send(conn, msg, strlen(msg)) == 0);
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
-    ASSERT(n == (int64_t)strlen(msg));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
 
     xylem_tls_close(conn);
     xylem_waitgroup_done(ctx->wg);
@@ -1046,10 +956,10 @@ static void _conc_send_server(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "hello", 5) == 0);
-    ASSERT(xylem_tls_send(conn, buf, (size_t)n) == 0);
+    ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
     xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
@@ -1064,10 +974,10 @@ static void _conc_send_client(void* arg) {
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    ASSERT(xylem_tls_send(conn, "hello", 5) == 0);
+    ASSERT(xylem_tls_write(conn, "hello", 5) == 0);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "hello", 5) == 0);
 
@@ -1151,7 +1061,7 @@ static void _conc_close_client(void* arg) {
     xylem_spawn(_conc_close_closer, conn);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
     xylem_waitgroup_done(ctx->wg);
@@ -1219,10 +1129,10 @@ static void _clac_server(void* arg) {
 
     /* Connection still works. */
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == 4);
     ASSERT(memcmp(buf, "ping", 4) == 0);
-    ASSERT(xylem_tls_send(conn, "pong", 4) == 0);
+    ASSERT(xylem_tls_write(conn, "pong", 4) == 0);
 
     xylem_tls_close(conn);
     xylem_waitgroup_done(ctx->wg);
@@ -1238,10 +1148,10 @@ static void _clac_client(void* arg) {
 
     /* Give server time to close listener. */
     xylem_sleep(50);
-    ASSERT(xylem_tls_send(conn, "ping", 4) == 0);
+    ASSERT(xylem_tls_write(conn, "ping", 4) == 0);
 
     char buf[64];
-    int64_t n = xylem_tls_recv(conn, buf, sizeof(buf));
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == 4);
     ASSERT(memcmp(buf, "pong", 4) == 0);
 
@@ -1302,7 +1212,6 @@ int main(void) {
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();
-    test_framing();
     test_read_deadline();
     test_close();
     test_close_listener();

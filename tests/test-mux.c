@@ -41,11 +41,11 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
 }
 
 static int64_t _tcp_mux_read(void* ctx, void* buf, size_t len) {
-    return xylem_tcp_recv((xylem_tcp_conn_t*)ctx, buf, len);
+    return xylem_tcp_read((xylem_tcp_conn_t*)ctx, buf, (int)len);
 }
 
 static int _tcp_mux_write(void* ctx, const void* data, size_t len) {
-    return xylem_tcp_send((xylem_tcp_conn_t*)ctx, data, len);
+    return xylem_tcp_write((xylem_tcp_conn_t*)ctx, data, (int)len);
 }
 
 static void _srv_echo_stream(void* arg) {

@@ -61,6 +61,8 @@ _Pragma("once")
 #include "xylem/net/xylem-rudp.h"
 #include "xylem/net/xylem-uds.h"
 #include "xylem/net/xylem-mux.h"
+#include "xylem/net/xylem-reader.h"
+#include "xylem/net/xylem-writer.h"
 #ifdef XYLEM_ENABLE_TLS
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-dtls.h"

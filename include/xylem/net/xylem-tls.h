@@ -21,8 +21,6 @@
 
 _Pragma("once")
 
-#include "xylem/net/xylem-tcp.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -32,8 +30,7 @@ typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
 typedef struct xylem_tls_opts_s {
-    size_t      max_read_buf;       /*< Plaintext read buffer size, 0 = default 64KB. */
-    bool        disable_mss_clamp;  /*< Disable MSS clamping on the socket. */
+    bool disable_mss_clamp; /*< Disable MSS clamping on the socket. */
     /**
      * Timeout in milliseconds for completing the TLS handshake.
      *
@@ -44,7 +41,7 @@ typedef struct xylem_tls_opts_s {
      * recommended on the accept side; without it, slow or malicious
      * clients can park the accept coroutine indefinitely (slowloris).
      */
-    uint64_t    handshake_timeout_ms;
+    uint64_t handshake_timeout_ms;
     /**
      * Expected peer identity. Accepts a DNS hostname (e.g. "bank.com")
      * or a numeric IP literal (IPv4 or IPv6). Drives two things:
@@ -91,10 +88,11 @@ extern void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
-                                   const char* hostname,
-                                   const char* cert,
-                                   const char* key);
+extern int xylem_tls_ctx_load_cert(
+    xylem_tls_ctx_t* ctx,
+    const char*      hostname,
+    const char*      cert,
+    const char*      key);
 
 /**
  * @brief Set the CA certificate for peer verification.
@@ -123,8 +121,10 @@ extern void xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
-                                  const char** protocols, size_t count);
+extern int xylem_tls_ctx_set_alpn(
+    xylem_tls_ctx_t* ctx,
+    const char**     protocols,
+    size_t           count);
 
 /**
  * @brief Enable NSS Key Log output for Wireshark decryption.
@@ -199,16 +199,6 @@ extern xylem_tls_listener_t* xylem_tls_listen(
 extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
 
 /**
- * @brief Set the framing mode for subsequent recv/send calls.
- *
- * @param tls   Connection handle.
- * @param opts  Frame options, NULL to reset to raw mode.
- */
-extern void xylem_tls_set_framing(
-    xylem_tls_conn_t*       tls,
-    xylem_framing_opts_t* opts);
-
-/**
  * @brief Set the read deadline for the connection.
  *
  * @param tls          Connection handle.
@@ -229,45 +219,44 @@ extern void xylem_tls_set_write_deadline(
     uint64_t          deadline_ms);
 
 /**
- * @brief Receive data or a complete frame from the connection.
+ * @brief Read data from the connection (read-some semantics).
  *
- * Behavior depends on the configured framing mode (same as TCP):
- *   - NONE:      returns 1~len available bytes.
- *   - FIXED:     returns exactly frame_opts.fixed.len bytes.
- *   - LENGTH:    reads header, decodes length, returns payload.
- *   - DELIMITER: reads until delimiter, returns data without it.
+ * Returns available plaintext data. Suspends the calling coroutine
+ * if no data is immediately available. At most len bytes are
+ * returned; the actual count may be less.
  *
  * @param tls  Connection handle.
  * @param buf  Destination buffer.
- * @param len  Buffer size.
+ * @param len  Maximum bytes to read.
  *
  * @return Bytes read (>0), 0 on peer close, -1 on error/timeout.
  */
-extern int64_t xylem_tls_recv(
+extern int xylem_tls_read(
     xylem_tls_conn_t* tls,
     void*             buf,
-    size_t            len);
+    int               len);
 
 /**
- * @brief Send data or a framed message to the connection.
+ * @brief Write all data to the connection.
  *
- * All bytes are written before returning.
+ * Encrypts and loops internally until all len bytes are sent or
+ * an error occurs. Suspends the calling coroutine as needed.
  *
  * @param tls   Connection handle.
  * @param data  Source buffer.
- * @param len   Number of bytes to send.
+ * @param len   Number of bytes to write.
  *
  * @return 0 on success, -1 on error or timeout.
  */
-extern int xylem_tls_send(
+extern int xylem_tls_write(
     xylem_tls_conn_t* tls,
     const void*       data,
-    size_t            len);
+    int               len);
 
 /**
  * @brief Close a connection. Idempotent.
  *
- * Wakes any coroutine blocked in recv/send. Read any needed state
+ * Wakes any coroutine blocked in read/write. Read any needed state
  * (xylem_tls_remote_addr) before closing.
  *
  * @param tls  Connection handle.

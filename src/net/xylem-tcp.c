@@ -25,7 +25,6 @@
 #include "xylem/xylem-utils.h"
 
 #include "net/addr.h"
-#include "net/framing.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
@@ -33,25 +32,19 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <string.h>
 
-#define DEFAULT_READ_BUF_SIZE 65536
-
 struct xylem_tcp_conn_s {
-    iowait_t*              waiter;
-    platform_sock_t        fd;
-    addr_t                 peer_addr;
-    xylem_framing_opts_t   frame_opts;
-    framing_t              framing;
-    _Atomic int32_t        refcnt;
-    _Atomic bool           closed;
+    iowait_t*       waiter;
+    platform_sock_t fd;
+    addr_t          peer_addr;
+    _Atomic int32_t refcnt;
+    _Atomic bool    closed;
 };
 
 struct xylem_tcp_listener_s {
     iowait_t*       waiter;
     platform_sock_t fd;
-    size_t          max_read_buf;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
@@ -73,7 +66,6 @@ static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
         shutdown(tcp->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tcp->fd);
     }
-    framing_deinit(&tcp->framing);
     free(tcp);
 }
 
@@ -95,75 +87,7 @@ static void _tcp_listener_unref(xylem_tcp_listener_t* ln) {
     free(ln);
 }
 
-static int64_t _tcp_raw_recv(void* ctx, void* buf, size_t len) {
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ctx;
-    if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-        return -1;
-    }
-
-    for (;;) {
-        size_t  chunk = len > INT_MAX ? (size_t)INT_MAX : len;
-        ssize_t n = platform_socket_recv(tcp->fd, buf, (int)chunk);
-        if (n > 0) {
-            return n;
-        }
-        if (n == 0) {
-            return 0;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("tcp fd=%d recv error: %s",
-                       (int)tcp->fd, platform_socket_tostring(err));
-            return -1;
-        }
-
-        iowait_result_t r = iowait_read(tcp->waiter);
-        if (r != IOWAIT_READY
-            || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            return -1;
-        }
-    }
-}
-
-static int _tcp_raw_send(void* ctx, const void* data, size_t len) {
-    xylem_tcp_conn_t* tcp = (xylem_tcp_conn_t*)ctx;
-    if (atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-        return -1;
-    }
-
-    const char* ptr = (const char*)data;
-    size_t      rem = len;
-
-    while (rem > 0) {
-        size_t  chunk = rem > INT_MAX ? (size_t)INT_MAX : rem;
-        ssize_t n = platform_socket_send(tcp->fd, ptr, (int)chunk);
-        if (n > 0) {
-            ptr += n;
-            rem -= (size_t)n;
-            continue;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("tcp fd=%d send error: %s",
-                       (int)tcp->fd, platform_socket_tostring(err));
-            return -1;
-        }
-
-        iowait_result_t r = iowait_write(tcp->waiter);
-        if (r != IOWAIT_READY
-            || atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static xylem_tcp_conn_t* _tcp_conn_alloc(
-    platform_sock_t fd, size_t max_read_buf) {
+static xylem_tcp_conn_t* _tcp_conn_create(platform_sock_t fd) {
     xylem_tcp_conn_t* tcp
         = (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
     if (!tcp) {
@@ -176,11 +100,6 @@ static xylem_tcp_conn_t* _tcp_conn_alloc(
         free(tcp);
         return NULL;
     }
-
-    size_t buf_cap = max_read_buf > 0 ? max_read_buf : DEFAULT_READ_BUF_SIZE;
-    framing_init(
-        &tcp->framing, _tcp_raw_recv, _tcp_raw_send,
-        tcp, (int)fd, buf_cap);
 
     _tcp_conn_ref(tcp);
     return tcp;
@@ -225,8 +144,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         platform_socket_enable_mss_clamp(fd, false);
     }
 
-    size_t            max_buf = opts ? opts->max_read_buf : 0;
-    xylem_tcp_conn_t* tcp     = _tcp_conn_alloc(fd, max_buf);
+    xylem_tcp_conn_t* tcp = _tcp_conn_create(fd);
     if (!tcp) {
         platform_socket_close(fd);
         return NULL;
@@ -238,7 +156,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         /**
          * Connect completion surfaces as writability on the fd. Apply
          * the connect timeout as a one-shot write deadline; it is
-         * cleared after dial returns so subsequent xylem_tcp_send calls
+         * cleared after dial returns so subsequent xylem_tcp_write calls
          * start with no deadline.
          */
         if (connect_timeout_ms > 0) {
@@ -276,15 +194,6 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     return tcp;
 }
 
-void xylem_tcp_set_framing(
-    xylem_tcp_conn_t* tcp, xylem_framing_opts_t* opts) {
-    if (opts) {
-        tcp->frame_opts = *opts;
-    } else {
-        memset(&tcp->frame_opts, 0, sizeof(tcp->frame_opts));
-    }
-}
-
 void xylem_tcp_set_read_deadline(
     xylem_tcp_conn_t* tcp, uint64_t deadline_ms) {
     iowait_set_rd_deadline(tcp->waiter, deadline_ms);
@@ -295,17 +204,75 @@ void xylem_tcp_set_write_deadline(
     iowait_set_wr_deadline(tcp->waiter, deadline_ms);
 }
 
-int64_t
-xylem_tcp_recv(xylem_tcp_conn_t* tcp, void* buf, size_t len) {
+int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
     _tcp_conn_ref(tcp);
-    int64_t ret = framing_recv(&tcp->framing, &tcp->frame_opts, buf, len);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+        for (;;) {
+            ssize_t n = platform_socket_recv(tcp->fd, buf, len);
+            if (n >= 0) {
+                ret = (int)n;
+                break;
+            }
+
+            int err = platform_socket_get_lasterror();
+            if (err != PLATFORM_SO_ERROR_EAGAIN
+                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                xylem_loge("tcp fd=%d read error: %s",
+                           (int)tcp->fd, platform_socket_tostring(err));
+                break;
+            }
+
+            iowait_result_t r = iowait_read(tcp->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(
+                       &tcp->closed, memory_order_acquire)) {
+                break;
+            }
+        }
+    }
+
     _tcp_conn_unref(tcp);
     return ret;
 }
 
-int xylem_tcp_send(xylem_tcp_conn_t* tcp, const void* data, size_t len) {
+int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
     _tcp_conn_ref(tcp);
-    int ret = framing_send(&tcp->framing, &tcp->frame_opts, data, len);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+        const char* ptr = (const char*)data;
+        int         rem = len;
+
+        while (rem > 0) {
+            ssize_t n = platform_socket_send(tcp->fd, ptr, rem);
+            if (n > 0) {
+                ptr += n;
+                rem -= (int)n;
+                continue;
+            }
+
+            int err = platform_socket_get_lasterror();
+            if (err != PLATFORM_SO_ERROR_EAGAIN
+                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                xylem_loge("tcp fd=%d write error: %s",
+                           (int)tcp->fd, platform_socket_tostring(err));
+                break;
+            }
+
+            iowait_result_t r = iowait_write(tcp->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(
+                       &tcp->closed, memory_order_acquire)) {
+                break;
+            }
+        }
+        if (rem == 0) {
+            ret = 0;
+        }
+    }
+
     _tcp_conn_unref(tcp);
     return ret;
 }
@@ -333,10 +300,7 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         return NULL;
     }
 
-    listener->fd = fd;
-    if (opts) {
-        listener->max_read_buf = opts->max_read_buf;
-    }
+    listener->fd     = fd;
     listener->waiter = iowait_create(fd);
     if (!listener->waiter) {
         platform_socket_close(fd);
@@ -388,7 +352,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
         backoff_ms = 5;
         retries    = 0;
 
-        xylem_tcp_conn_t* tcp = _tcp_conn_alloc(fd, listener->max_read_buf);
+        xylem_tcp_conn_t* tcp = _tcp_conn_create(fd);
         if (!tcp) {
             platform_socket_close(fd);
             break;

@@ -46,10 +46,10 @@ static void _server(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
     if (conn) {
         char    buf[1024];
-        int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+        int n = xylem_tcp_read(conn, buf, sizeof(buf));
         if (n > 0) {
             xylem_logi("[server] recv: %.*s", (int)n, buf);
-            xylem_tcp_send(conn, buf, (size_t)n);
+            xylem_tcp_write(conn, buf, (size_t)n);
         }
         xylem_tcp_close(conn);
     }
@@ -67,10 +67,10 @@ static void _client(void* arg) {
     }
     xylem_logi("[client] connected");
 
-    xylem_tcp_send(conn, "hello", 5);
+    xylem_tcp_write(conn, "hello", 5);
 
     char    buf[256];
-    int64_t n = xylem_tcp_recv(conn, buf, sizeof(buf));
+    int n = xylem_tcp_read(conn, buf, sizeof(buf));
     if (n > 0) {
         xylem_logi("[client] echo: %.*s", (int)n, buf);
     }

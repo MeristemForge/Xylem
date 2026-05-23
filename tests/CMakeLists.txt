@@ -33,6 +33,8 @@ xylem_add_test(cond)
 xylem_add_test(xylem)
 xylem_add_test(timer)
 xylem_add_test(mux)
+xylem_add_test(reader)
+xylem_add_test(writer)
 
 if(XYLEM_ENABLE_HTTP)
     xylem_add_test(http)
