@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (xylem_tls_ctx_load_cert(ctx, CERT_FILE, KEY_FILE) != 0) {
+    if (xylem_tls_ctx_load_cert(ctx, NULL, CERT_FILE, KEY_FILE) != 0) {
         fprintf(stderr, "failed to load %s / %s\n", CERT_FILE, KEY_FILE);
         xylem_tls_ctx_destroy(ctx);
         return 1;

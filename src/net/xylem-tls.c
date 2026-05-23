@@ -27,6 +27,7 @@
 #include "net/addr.h"
 #include "net/framing.h"
 #include "platform/platform-socket.h"
+#include "platform/platform-string.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
 #include "thrds.h"
@@ -47,11 +48,19 @@ static void _tls_init_ex_data(void) {
     _tls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
 
-struct xylem_tls_ctx_s {
+typedef struct _tls_sni_entry_s {
+    char     hostname[256];
     SSL_CTX* ssl_ctx;
-    uint8_t* alpn_wire;
-    size_t   alpn_wire_len;
-    FILE*    keylog_file;
+} _tls_sni_entry_t;
+
+struct xylem_tls_ctx_s {
+    SSL_CTX*          ssl_ctx;
+    uint8_t*          alpn_wire;
+    size_t            alpn_wire_len;
+    FILE*             keylog_file;
+    _tls_sni_entry_t* sni_entries;
+    size_t            sni_count;
+    size_t            sni_cap;
 };
 
 struct xylem_tls_conn_s {
@@ -92,6 +101,22 @@ static void _tls_listener_unref(xylem_tls_listener_t* ln) {
         platform_socket_close(ln->fd);
     }
     free(ln);
+}
+
+static int _tls_sni_cb(SSL* ssl, int* al, void* arg) {
+    (void)al;
+    xylem_tls_ctx_t* ctx = (xylem_tls_ctx_t*)arg;
+    const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    if (!name) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    for (size_t i = 0; i < ctx->sni_count; i++) {
+        if (platform_strcasecmp(name, ctx->sni_entries[i].hostname) == 0) {
+            SSL_set_SSL_CTX(ssl, ctx->sni_entries[i].ssl_ctx);
+            return SSL_TLSEXT_ERR_OK;
+        }
+    }
+    return SSL_TLSEXT_ERR_OK;
 }
 
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
@@ -149,6 +174,10 @@ void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    for (size_t i = 0; i < ctx->sni_count; i++) {
+        SSL_CTX_free(ctx->sni_entries[i].ssl_ctx);
+    }
+    free(ctx->sni_entries);
     if (ctx->keylog_file) {
         fclose(ctx->keylog_file);
     }
@@ -177,17 +206,98 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
     return 0;
 }
 
+static SSL_CTX* _tls_create_child_ctx(xylem_tls_ctx_t* ctx) {
+    SSL_CTX* child = SSL_CTX_new(TLS_method());
+    if (!child) {
+        return NULL;
+    }
+
+    SSL_CTX_set_mode(child, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    SSL_CTX_set_min_proto_version(child, TLS1_2_VERSION);
+    SSL_CTX_set_verify(
+        child, SSL_CTX_get_verify_mode(ctx->ssl_ctx), NULL);
+
+    /* Share the CA store from the main ctx. */
+    X509_STORE* store = SSL_CTX_get_cert_store(ctx->ssl_ctx);
+    if (store) {
+        SSL_CTX_set1_cert_store(child, store);
+    }
+
+    /* Copy ALPN settings. */
+    if (ctx->alpn_wire && ctx->alpn_wire_len > 0) {
+        SSL_CTX_set_alpn_protos(
+            child, ctx->alpn_wire, (unsigned int)ctx->alpn_wire_len);
+        SSL_CTX_set_alpn_select_cb(child, _tls_alpn_select_cb, ctx);
+    }
+
+    /* Copy keylog callback. */
+    if (ctx->keylog_file) {
+        SSL_CTX_set_keylog_callback(child, _tls_keylog_cb);
+    }
+
+    call_once(&_tls_ex_data_once, _tls_init_ex_data);
+    SSL_CTX_set_ex_data(child, _tls_ex_data_idx, ctx);
+
+    return child;
+}
+
 int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
-                            const char* cert, const char* key) {
-    if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
-        xylem_loge("tls ctx: failed to load cert %s", cert);
+                            const char* hostname,
+                            const char* cert,
+                            const char* key) {
+    if (!hostname) {
+        if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
+            xylem_loge("tls ctx: failed to load cert %s", cert);
+            return -1;
+        }
+        if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
+                                        SSL_FILETYPE_PEM) != 1) {
+            xylem_loge("tls ctx: failed to load key %s", key);
+            return -1;
+        }
+        return 0;
+    }
+
+    /* Create a child SSL_CTX for this hostname. */
+    SSL_CTX* child = _tls_create_child_ctx(ctx);
+    if (!child) {
         return -1;
     }
-    if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
-                                    SSL_FILETYPE_PEM) != 1) {
-        xylem_loge("tls ctx: failed to load key %s", key);
+    if (SSL_CTX_use_certificate_chain_file(child, cert) != 1) {
+        xylem_loge("tls ctx: failed to load cert %s for %s", cert, hostname);
+        SSL_CTX_free(child);
         return -1;
     }
+    if (SSL_CTX_use_PrivateKey_file(child, key, SSL_FILETYPE_PEM) != 1) {
+        xylem_loge("tls ctx: failed to load key %s for %s", key, hostname);
+        SSL_CTX_free(child);
+        return -1;
+    }
+
+    /* Grow the SNI entries array if needed. */
+    if (ctx->sni_count == ctx->sni_cap) {
+        size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
+        _tls_sni_entry_t* entries = (_tls_sni_entry_t*)realloc(
+            ctx->sni_entries, new_cap * sizeof(_tls_sni_entry_t));
+        if (!entries) {
+            SSL_CTX_free(child);
+            return -1;
+        }
+        ctx->sni_entries = entries;
+        ctx->sni_cap     = new_cap;
+    }
+
+    _tls_sni_entry_t* entry = &ctx->sni_entries[ctx->sni_count];
+    snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname);
+    entry->ssl_ctx = child;
+    ctx->sni_count++;
+
+    /* Register the SNI callback on the main ctx (once). */
+    if (ctx->sni_count == 1) {
+        SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tls_sni_cb);
+        SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
+    }
+
     return 0;
 }
 
@@ -243,17 +353,22 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
         }
 
         int err = SSL_get_error(tls->ssl, ret);
-        if (err == SSL_ERROR_WANT_READ) {
+        switch (err) {
+        case SSL_ERROR_WANT_READ: {
             iowait_result_t r = iowait_read(tls->waiter);
             if (r != IOWAIT_READY) {
                 return -1;
             }
-        } else if (err == SSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        case SSL_ERROR_WANT_WRITE: {
             iowait_result_t r = iowait_write(tls->waiter);
             if (r != IOWAIT_READY) {
                 return -1;
             }
-        } else {
+            break;
+        }
+        default: {
             unsigned long ssl_err = ERR_peek_error();
             xylem_loge("tls handshake: ssl_error=%d reason=%s",
                        err,
@@ -261,6 +376,7 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
                            ? ERR_reason_error_string(ssl_err)
                            : "unknown");
             return -1;
+        }
         }
     }
 }
@@ -289,10 +405,10 @@ static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
         }
 
         int err = SSL_get_error(tls->ssl, n);
-        if (err == SSL_ERROR_ZERO_RETURN) {
+        switch (err) {
+        case SSL_ERROR_ZERO_RETURN:
             return 0;
-        }
-        if (err == SSL_ERROR_WANT_READ) {
+        case SSL_ERROR_WANT_READ: {
             iowait_result_t r = iowait_read(tls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
@@ -301,7 +417,7 @@ static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
             }
             continue;
         }
-        if (err == SSL_ERROR_WANT_WRITE) {
+        case SSL_ERROR_WANT_WRITE: {
             iowait_result_t r = iowait_write(tls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
@@ -310,13 +426,16 @@ static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
             }
             continue;
         }
-        unsigned long ssl_err = ERR_peek_error();
-        xylem_loge("tls SSL_read: ssl_error=%d reason=%s",
-                   err,
-                   ERR_reason_error_string(ssl_err)
-                       ? ERR_reason_error_string(ssl_err)
-                       : "unknown");
-        return -1;
+        default: {
+            unsigned long ssl_err = ERR_peek_error();
+            xylem_loge("tls SSL_read: ssl_error=%d reason=%s",
+                       err,
+                       ERR_reason_error_string(ssl_err)
+                           ? ERR_reason_error_string(ssl_err)
+                           : "unknown");
+            return -1;
+        }
+        }
     }
 }
 
@@ -339,7 +458,8 @@ static int _tls_raw_send(void* ctx, const void* data, size_t len) {
         }
 
         int err = SSL_get_error(tls->ssl, n);
-        if (err == SSL_ERROR_WANT_WRITE) {
+        switch (err) {
+        case SSL_ERROR_WANT_WRITE: {
             iowait_result_t r = iowait_write(tls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
@@ -348,7 +468,7 @@ static int _tls_raw_send(void* ctx, const void* data, size_t len) {
             }
             continue;
         }
-        if (err == SSL_ERROR_WANT_READ) {
+        case SSL_ERROR_WANT_READ: {
             iowait_result_t r = iowait_read(tls->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(&tls->closed,
@@ -357,13 +477,16 @@ static int _tls_raw_send(void* ctx, const void* data, size_t len) {
             }
             continue;
         }
-        unsigned long ssl_err = ERR_peek_error();
-        xylem_loge("tls SSL_write: ssl_error=%d reason=%s",
-                   err,
-                   ERR_reason_error_string(ssl_err)
-                       ? ERR_reason_error_string(ssl_err)
-                       : "unknown");
-        return -1;
+        default: {
+            unsigned long ssl_err = ERR_peek_error();
+            xylem_loge("tls SSL_write: ssl_error=%d reason=%s",
+                       err,
+                       ERR_reason_error_string(ssl_err)
+                           ? ERR_reason_error_string(ssl_err)
+                           : "unknown");
+            return -1;
+        }
+        }
     }
     return 0;
 }
@@ -605,7 +728,7 @@ xylem_tls_listener_t* xylem_tls_listen(
 xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     _tls_listener_ref(ln);
 
-    xylem_tls_conn_t* result     = NULL;
+    xylem_tls_conn_t* conn       = NULL;
     uint64_t          backoff_ms = 5;
     int               retries    = 0;
 
@@ -669,12 +792,12 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         }
 
         _tls_cache_alpn(tls);
-        result = tls;
+        conn = tls;
         break;
     }
 
     _tls_listener_unref(ln);
-    return result;
+    return conn;
 }
 
 void xylem_tls_close_listener(xylem_tls_listener_t* ln) {

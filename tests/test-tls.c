@@ -155,7 +155,7 @@ static void test_load_cert_valid(void) {
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_destroy(ctx);
     remove(cert);
     remove(key);
@@ -164,7 +164,7 @@ static void test_load_cert_valid(void) {
 static void test_load_cert_invalid(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(ctx, "nonexistent.pem",
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, "nonexistent.pem",
                                    "nonexistent.pem") == -1);
     xylem_tls_ctx_destroy(ctx);
 }
@@ -250,7 +250,7 @@ static void _echo_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -325,7 +325,7 @@ static void _fail_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -422,7 +422,7 @@ static void _alpn_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
     ASSERT(xylem_tls_ctx_set_alpn(srv_ctx, protos, 2) == 0);
 
@@ -518,7 +518,7 @@ static void _frame_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -598,7 +598,7 @@ static void _deadline_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -676,7 +676,7 @@ static void _sac_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -742,7 +742,7 @@ static void _cl_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     _ctx_t ctx = {
@@ -812,7 +812,7 @@ static void _kl_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -907,7 +907,7 @@ static void _sni_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -1000,7 +1000,7 @@ static void _addr_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -1083,7 +1083,7 @@ static void _conc_send_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -1165,7 +1165,7 @@ static void _conc_close_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
@@ -1257,7 +1257,7 @@ static void _clac_main(void* arg) {
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();

@@ -111,7 +111,7 @@ static void* _http_tls_listen(loop_t* loop, addr_t* addr,
         free(br);
         return NULL;
     }
-    if (xylem_tls_ctx_load_cert(br->tls_ctx, tls_cert, tls_key) != 0) {
+    if (xylem_tls_ctx_load_cert(br->tls_ctx, NULL, tls_cert, tls_key) != 0) {
         xylem_tls_ctx_destroy(br->tls_ctx);
         free(br);
         return NULL;

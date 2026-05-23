@@ -57,14 +57,21 @@ extern void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
 /**
  * @brief Load a PEM certificate chain and private key.
  *
- * @param ctx   Context handle.
- * @param cert  Path to PEM certificate chain file.
- * @param key   Path to PEM private key file.
+ * When hostname is NULL the certificate becomes the default (used when
+ * no SNI matches). When hostname is non-NULL, the certificate is bound
+ * to that domain and selected via SNI during handshake.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert      Path to PEM certificate chain file.
+ * @param key       Path to PEM private key file.
  *
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
-                                   const char* cert, const char* key);
+                                   const char* hostname,
+                                   const char* cert,
+                                   const char* key);
 
 /**
  * @brief Set the CA certificate for peer verification.

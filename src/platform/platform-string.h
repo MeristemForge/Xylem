@@ -21,9 +21,8 @@
 
 _Pragma("once")
 
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
+#if defined(_WIN32)
+#define platform_strcasecmp _stricmp
+#elif defined(__linux__) || defined(__APPLE__)
+#define platform_strcasecmp strcasecmp
+#endif
