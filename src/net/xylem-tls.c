@@ -94,7 +94,6 @@ static void _tls_listener_unref(xylem_tls_listener_t* ln) {
     free(ln);
 }
 
-
 static void _tls_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
     xylem_tls_ctx_t* ctx =
@@ -235,7 +234,6 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-
 static int _tls_do_handshake(xylem_tls_conn_t* tls) {
     for (;;) {
         ERR_clear_error();
@@ -370,7 +368,6 @@ static int _tls_raw_send(void* ctx, const void* data, size_t len) {
     return 0;
 }
 
-
 static xylem_tls_conn_t* _tls_conn_alloc(
     platform_sock_t fd, size_t max_read_buf) {
     xylem_tls_conn_t* tls
@@ -437,7 +434,6 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
     framing_deinit(&tls->framing);
     free(tls);
 }
-
 
 xylem_tls_conn_t* xylem_tls_dial(
     const char*       host,
@@ -554,7 +550,6 @@ xylem_tls_conn_t* xylem_tls_dial(
     return tls;
 }
 
-
 void xylem_tls_close(xylem_tls_conn_t* tls) {
     if (atomic_exchange(&tls->closed, true)) {
         return;
@@ -563,7 +558,6 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     iowait_close(tls->waiter);
     _tls_conn_unref(tls);
 }
-
 
 xylem_tls_listener_t* xylem_tls_listen(
     const char*       host,
@@ -607,7 +601,6 @@ xylem_tls_listener_t* xylem_tls_listen(
     _tls_listener_ref(ln);
     return ln;
 }
-
 
 xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     _tls_listener_ref(ln);
@@ -684,7 +677,6 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
     return result;
 }
 
-
 void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     if (atomic_exchange(&ln->closed, true)) {
         return;
@@ -693,11 +685,6 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
     iowait_close(ln->waiter);
     _tls_listener_unref(ln);
 }
-
-
-
-
-
 
 void xylem_tls_set_framing(
     xylem_tls_conn_t* tls, xylem_framing_opts_t* opts) {
@@ -723,7 +710,6 @@ int xylem_tls_send(xylem_tls_conn_t* tls, const void* data, size_t len) {
     return ret;
 }
 
-
 void xylem_tls_set_read_deadline(
     xylem_tls_conn_t* tls, uint64_t deadline_ms) {
     iowait_set_rd_deadline(tls->waiter, deadline_ms);
@@ -733,7 +719,6 @@ void xylem_tls_set_write_deadline(
     xylem_tls_conn_t* tls, uint64_t deadline_ms) {
     iowait_set_wr_deadline(tls->waiter, deadline_ms);
 }
-
 
 int xylem_tls_remote_addr(
     xylem_tls_conn_t* tls,
