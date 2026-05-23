@@ -30,6 +30,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 struct xylem_udp_chan_s {
@@ -158,11 +159,12 @@ int64_t xylem_udp_recv(
         struct sockaddr_storage sender;
         socklen_t sender_len = sizeof(sender);
 
+        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
         if (udp->connected) {
-            n = platform_socket_recv(udp->fd, buf, (int)len);
+            n = platform_socket_recv(udp->fd, buf, (int)chunk);
         } else {
             n = platform_socket_recvfrom(
-                udp->fd, buf, (int)len, &sender, &sender_len);
+                udp->fd, buf, (int)chunk, &sender, &sender_len);
         }
 
         if (n >= 0) {
@@ -204,6 +206,11 @@ int xylem_udp_send(
     size_t       len,
     const char*  host,
     uint16_t     port) {
+    if (len > INT_MAX) {
+        xylem_loge("udp send: len %zu exceeds INT_MAX", len);
+        return -1;
+    }
+
     _udp_chan_ref(udp);
 
     int ret = -1;

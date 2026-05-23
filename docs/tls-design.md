@@ -31,8 +31,8 @@ typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 typedef struct xylem_tls_opts_s {
     size_t      max_read_buf;       /* Plaintext read buffer size, 0 = default 64KB. */
     bool        disable_mss_clamp;  /* Disable MSS clamping on the socket. */
-    uint64_t    connect_timeout_ms; /* TCP connect + TLS handshake timeout, 0 = none. */
-    const char* hostname;           /* SNI hostname for certificate selection and verification. */
+    uint64_t    handshake_timeout_ms; /* TLS handshake timeout (dial covers TCP+TLS, accept covers TLS only), 0 = none. */
+    const char* server_name;        /* Expected peer name (DNS hostname or IP literal); drives SNI and certificate identity verification. */
 } xylem_tls_opts_t;
 ```
 
@@ -109,7 +109,7 @@ loop:
 8. Cache ALPN result
 9. Clear deadlines, return connection
 
-`connect_timeout_ms` covers the entire process (TCP connect + TLS handshake).
+`handshake_timeout_ms` covers the entire dial process (TCP connect + TLS handshake). On the accept side it bounds the TLS handshake on an already-accepted TCP connection.
 
 ## Accept Flow
 
@@ -158,7 +158,7 @@ Same as TCP:
 
 ## SNI and ALPN
 
-- **SNI:** Set via `opts->hostname` in `xylem_tls_dial`. Calls `SSL_set_tlsext_host_name` (SNI extension) and `SSL_set1_host` (hostname verification).
+- **SNI:** Set via `opts->server_name` in `xylem_tls_dial`. Calls `SSL_set_tlsext_host_name` (SNI extension, only for DNS names) and `SSL_set1_host` (peer identity verification, accepts both DNS and IP). IP literals skip the SNI call per RFC 6066.
 - **ALPN:** Configured on ctx via `xylem_tls_ctx_set_alpn`. Client proposes, server selects via `SSL_select_next_proto`. Result cached in `tls->alpn[256]` after handshake, queryable via `xylem_tls_get_alpn`.
 
 ## Error Codes

@@ -881,7 +881,7 @@ static void _sni_client(void* arg) {
     xylem_channel_recv(ctx->ready);
 
     xylem_tls_opts_t opts = {0};
-    opts.hostname = "localhost";
+    opts.server_name = "localhost";
 
     xylem_tls_conn_t* conn = xylem_tls_dial(
         TLS_HOST, ctx->port, ctx->cli_ctx, &opts);

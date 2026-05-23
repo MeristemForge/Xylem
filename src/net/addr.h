@@ -46,17 +46,22 @@ extern int addr_pton(const char* src, uint16_t port, addr_t* dst);
 /**
  * @brief Convert an addr_t to a printable IP string and port.
  *
- * @param addr  Source addr_t.
- * @param dst   Destination buffer for IP string.
- * @param size  Size of dst buffer (INET6_ADDRSTRLEN recommended).
- * @param port  Receives the port number.
+ * Either dst or port may be NULL to skip that output. If both are
+ * NULL the call is a no-op that only validates the address family.
+ *
+ * @param addr     Source addr_t.
+ * @param dst      Destination buffer for IP string, or NULL.
+ * @param dst_len  Size of dst buffer (INET6_ADDRSTRLEN recommended).
+ *                 Must be large enough to hold the textual address;
+ *                 ignored when dst is NULL.
+ * @param port     Receives the port number, or NULL.
  *
  * @return 0 on success, -1 on error.
  */
 extern int addr_ntop(
     const addr_t* addr,
     char* dst,
-    size_t size,
+    size_t dst_len,
     uint16_t* port);
 
 /**

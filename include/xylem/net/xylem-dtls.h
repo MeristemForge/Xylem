@@ -31,7 +31,12 @@ typedef struct xylem_dtls_listener_s xylem_dtls_listener_t;
 
 typedef struct xylem_dtls_opts_s {
     uint64_t    connect_timeout_ms; /*< Handshake timeout in ms, 0 = default 30s. */
-    const char* hostname;           /*< SNI hostname for verification. */
+    /**
+     * Expected peer identity. Accepts a DNS hostname or numeric IP
+     * literal (IPv4 or IPv6). Drives SNI (only sent for DNS names;
+     * RFC 6066) and certificate identity verification.
+     */
+    const char* server_name;
 } xylem_dtls_opts_t;
 
 /**
@@ -111,7 +116,11 @@ extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
  * Suspends the calling coroutine until the DTLS handshake completes
  * or connect_timeout_ms elapses (default 30s).
  *
- * @param host  Remote hostname or IP address.
+ * The host parameter is the network destination to connect to; it is
+ * not used for certificate verification. Set opts->server_name to
+ * verify the peer's identity.
+ *
+ * @param host  Remote hostname or IP address to connect to.
  * @param port  Remote port.
  * @param ctx   DTLS context.
  * @param opts  DTLS options, NULL for defaults.

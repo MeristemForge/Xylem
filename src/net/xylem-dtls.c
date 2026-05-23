@@ -38,6 +38,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #define TLS_RECORD_MAX_PLAINTEXT 16384
@@ -239,8 +240,11 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
         return NULL;
     }
 
-    /* Socket BIO client path may partially complete SSL_write; this flag
-     * lets the retry use a different buffer pointer for the same write. */
+    /**
+     * Socket BIO client path may partially complete SSL_write; this
+     * flag lets the retry use a different buffer pointer for the
+     * same write.
+     */
     SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
@@ -612,6 +616,41 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
 
 
 
+/**
+ * Park on the right direction for an SSL_get_error result, with the
+ * close-flag double-check that DTLS recv/send share. Returns:
+ *   0  retry the SSL op
+ *   1  peer closed (SSL_ERROR_ZERO_RETURN)
+ *  -1  fatal -- abort
+ */
+static int _dtls_handle_io_block(xylem_dtls_conn_t* dtls, int ssl_err,
+                                 const char* op_name) {
+    iowait_result_t r;
+    switch (ssl_err) {
+    case SSL_ERROR_ZERO_RETURN:
+        return 1;
+    case SSL_ERROR_WANT_READ:
+        r = iowait_read(dtls->waiter);
+        break;
+    case SSL_ERROR_WANT_WRITE:
+        r = iowait_write(dtls->waiter);
+        break;
+    default: {
+        unsigned long e = ERR_peek_error();
+        xylem_loge("dtls %s: ssl_error=%d reason=%s",
+                   op_name, ssl_err,
+                   ERR_reason_error_string(e)
+                       ? ERR_reason_error_string(e) : "unknown");
+        return -1;
+    }
+    }
+    if (r != IOWAIT_READY
+        || atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        return -1;
+    }
+    return 0;
+}
+
 static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
     for (;;) {
         ERR_clear_error();
@@ -711,6 +750,24 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     SSL_set_fd(dtls->ssl, (int)fd);
     SSL_set_connect_state(dtls->ssl);
 
+    const char* server_name = opts ? opts->server_name : NULL;
+    if (server_name) {
+        /* RFC 6066 forbids IP literals in the SNI HostName extension. */
+        addr_t tmp;
+        bool is_ip = (addr_pton(server_name, 0, &tmp) == 0);
+        if (!is_ip) {
+            SSL_set_tlsext_host_name(dtls->ssl, server_name);
+        }
+        int vmode = SSL_get_verify_mode(dtls->ssl);
+        if (vmode & SSL_VERIFY_PEER) {
+            SSL_set1_host(dtls->ssl, server_name);
+        }
+    } else if (SSL_get_verify_mode(dtls->ssl) & SSL_VERIFY_PEER) {
+        xylem_logw("dtls dial: verify_peer enabled but opts->server_name "
+                   "is NULL; peer identity is not checked, only "
+                   "certificate chain trust (MITM risk)");
+    }
+
     if (_dtls_client_do_handshake(dtls) != 0) {
         _dtls_client_free(dtls);
         return NULL;
@@ -730,33 +787,19 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
     }
     for (;;) {
         ERR_clear_error();
-        int n = SSL_read(dtls->ssl, buf, (int)len);
+        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
+        int    n     = SSL_read(dtls->ssl, buf, (int)chunk);
         if (n > 0) {
             return n;
         }
-        int err = SSL_get_error(dtls->ssl, n);
-        if (err == SSL_ERROR_ZERO_RETURN) {
+        int rc = _dtls_handle_io_block(
+            dtls, SSL_get_error(dtls->ssl, n), "SSL_read");
+        if (rc == 1) {
             return 0;
         }
-        if (err == SSL_ERROR_WANT_READ) {
-            iowait_result_t r = iowait_read(dtls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&dtls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
+        if (rc < 0) {
+            return -1;
         }
-        if (err == SSL_ERROR_WANT_WRITE) {
-            iowait_result_t r = iowait_write(dtls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&dtls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
-        }
-        return -1;
     }
 }
 
@@ -765,32 +808,21 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         return -1;
     }
+    if (len > INT_MAX) {
+        xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
+        return -1;
+    }
     for (;;) {
         ERR_clear_error();
         int n = SSL_write(dtls->ssl, data, (int)len);
         if (n > 0) {
             return 0;
         }
-        int err = SSL_get_error(dtls->ssl, n);
-        if (err == SSL_ERROR_WANT_WRITE) {
-            iowait_result_t r = iowait_write(dtls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&dtls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
+        int rc = _dtls_handle_io_block(
+            dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
+        if (rc != 0) {
+            return -1;
         }
-        if (err == SSL_ERROR_WANT_READ) {
-            iowait_result_t r = iowait_read(dtls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&dtls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
-        }
-        return -1;
     }
 }
 
@@ -878,10 +910,11 @@ static void _dtls_handshake_coro(void* arg) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
         if (ret == 1) {
-            /* Flush any final handshake message (e.g. Finished) that
-             * OpenSSL buffered into the write BIO on success. Without
-             * this the client never receives the server Finished and
-             * its handshake never completes. */
+            /**
+             * SSL returned success but Server Finished is still
+             * buffered in the write BIO; flush so the client can
+             * complete.
+             */
             _dtls_server_flush_write_bio(dtls);
             dtls->handshake_done = true;
             success = true;
@@ -1064,34 +1097,40 @@ static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         return -1;
     }
-retry:;
-    dtls_dgram_t* dgram = _inbox_pop_with_deadline(
-        dtls->inbox, dtls->rd_deadline_ms);
-    if (!dgram) {
-        return -1;
-    }
-    BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
-    free(dgram);
+    for (;;) {
+        dtls_dgram_t* dgram = _inbox_pop_with_deadline(
+            dtls->inbox, dtls->rd_deadline_ms);
+        if (!dgram) {
+            return -1;
+        }
+        BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
+        free(dgram);
 
-    ERR_clear_error();
-    int n = SSL_read(dtls->ssl, buf, (int)len);
-    if (n > 0) {
-        return n;
-    }
+        ERR_clear_error();
+        size_t rchunk = len > INT_MAX ? (size_t)INT_MAX : len;
+        int    n      = SSL_read(dtls->ssl, buf, (int)rchunk);
+        if (n > 0) {
+            return n;
+        }
 
-    int err = SSL_get_error(dtls->ssl, n);
-    if (err == SSL_ERROR_ZERO_RETURN) {
-        return 0;
+        int err = SSL_get_error(dtls->ssl, n);
+        if (err == SSL_ERROR_ZERO_RETURN) {
+            return 0;
+        }
+        if (err != SSL_ERROR_WANT_READ) {
+            return -1;
+        }
+        /* WANT_READ: pull next datagram from the inbox and feed BIO. */
     }
-    if (err == SSL_ERROR_WANT_READ) {
-        goto retry;
-    }
-    return -1;
 }
 
 static int _dtls_server_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        return -1;
+    }
+    if (len > INT_MAX) {
+        xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
         return -1;
     }
     ERR_clear_error();

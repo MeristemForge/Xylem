@@ -132,34 +132,44 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
 int addr_ntop(
     const addr_t* addr,
     char* dst,
-    size_t size,
+    size_t dst_len,
     uint16_t* port) {
-    if (!addr || !dst || !port) {
+    if (!addr) {
         return -1;
     }
+
+    int            af;
+    const void*    in_addr;
+    uint16_t       net_port;
 
     switch (addr->storage.ss_family) {
     case AF_INET: {
         const struct sockaddr_in* sin =
             (const struct sockaddr_in*)&addr->storage;
-        if (!inet_ntop(AF_INET, &sin->sin_addr, dst, (socklen_t)size)) {
-            return -1;
-        }
-        *port = ntohs(sin->sin_port);
-        return 0;
+        af       = AF_INET;
+        in_addr  = &sin->sin_addr;
+        net_port = sin->sin_port;
+        break;
     }
     case AF_INET6: {
         const struct sockaddr_in6* sin6 =
             (const struct sockaddr_in6*)&addr->storage;
-        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, dst, (socklen_t)size)) {
-            return -1;
-        }
-        *port = ntohs(sin6->sin6_port);
-        return 0;
+        af       = AF_INET6;
+        in_addr  = &sin6->sin6_addr;
+        net_port = sin6->sin6_port;
+        break;
     }
     default:
         return -1;
     }
+
+    if (dst && !inet_ntop(af, in_addr, dst, (socklen_t)dst_len)) {
+        return -1;
+    }
+    if (port) {
+        *port = ntohs(net_port);
+    }
+    return 0;
 }
 
 static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {

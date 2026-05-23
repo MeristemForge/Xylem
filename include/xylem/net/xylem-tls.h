@@ -34,8 +34,31 @@ typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 typedef struct xylem_tls_opts_s {
     size_t      max_read_buf;       /*< Plaintext read buffer size, 0 = default 64KB. */
     bool        disable_mss_clamp;  /*< Disable MSS clamping on the socket. */
-    uint64_t    connect_timeout_ms; /*< TCP connect + TLS handshake timeout, 0 = none. */
-    const char* hostname;           /*< SNI hostname for certificate selection and verification. */
+    /**
+     * Timeout in milliseconds for completing the TLS handshake.
+     *
+     * - Dial: covers the full TCP connect + TLS handshake.
+     * - Accept: covers the TLS handshake on an accepted TCP connection.
+     *
+     * 0 means no timeout. Setting a non-zero value is strongly
+     * recommended on the accept side; without it, slow or malicious
+     * clients can park the accept coroutine indefinitely (slowloris).
+     */
+    uint64_t    handshake_timeout_ms;
+    /**
+     * Expected peer identity. Accepts a DNS hostname (e.g. "bank.com")
+     * or a numeric IP literal (IPv4 or IPv6). Drives two things:
+     *   - SNI extension (only sent for DNS names; RFC 6066 forbids
+     *     sending IP literals as SNI).
+     *   - Certificate identity verification: matched against the
+     *     peer certificate's DNS-type or IP-type SAN entries.
+     *
+     * Required for secure clients when verify_peer is enabled. If
+     * NULL, only certificate chain trust is checked, not the peer's
+     * identity, so any cert signed by a trusted CA is accepted
+     * (MITM risk).
+     */
+    const char* server_name;
 } xylem_tls_opts_t;
 
 /**
@@ -117,9 +140,15 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
  * @brief Connect to a remote TLS endpoint.
  *
  * Suspends the calling coroutine until the TCP connection is established
- * and the TLS handshake completes, or connect_timeout_ms elapses.
+ * and the TLS handshake completes, or handshake_timeout_ms elapses.
  *
- * @param host  Remote hostname or IP address.
+ * The host parameter is the network destination to connect to; it is
+ * not used for certificate verification. To verify the peer's
+ * identity, set opts->server_name. These can differ -- e.g. dialing
+ * a load balancer IP while expecting a certificate for the backend
+ * service hostname.
+ *
+ * @param host  Remote hostname or IP address to connect to.
  * @param port  Remote port.
  * @param ctx   TLS context.
  * @param opts  TLS options, NULL for defaults.

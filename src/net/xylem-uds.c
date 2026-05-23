@@ -32,6 +32,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #define DEFAULT_READ_BUF_SIZE 65536
@@ -100,7 +101,8 @@ static int64_t _uds_raw_recv(void* ctx, void* buf, size_t len) {
     }
 
     for (;;) {
-        ssize_t n = platform_socket_recv(uds->fd, buf, (int)len);
+        size_t  chunk = len > INT_MAX ? (size_t)INT_MAX : len;
+        ssize_t n = platform_socket_recv(uds->fd, buf, (int)chunk);
         if (n > 0) {
             return n;
         }
@@ -134,7 +136,8 @@ static int _uds_raw_send(void* ctx, const void* data, size_t len) {
     size_t      rem = len;
 
     while (rem > 0) {
-        ssize_t n = platform_socket_send(uds->fd, ptr, (int)rem);
+        size_t  chunk = rem > INT_MAX ? (size_t)INT_MAX : rem;
+        ssize_t n = platform_socket_send(uds->fd, ptr, (int)chunk);
         if (n > 0) {
             ptr += n;
             rem -= (size_t)n;

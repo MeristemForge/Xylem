@@ -37,6 +37,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #define DEFAULT_READ_BUF_SIZE 65536
@@ -158,8 +159,10 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
         return NULL;
     }
 
-    /* Socket BIO may partially complete SSL_write; this flag lets the
-     * retry use a different buffer pointer for the same logical write. */
+    /**
+     * Socket BIO may partially complete SSL_write; this flag lets the
+     * retry use a different buffer pointer for the same logical write.
+     */
     SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
     SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
@@ -339,6 +342,23 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
+static void _tls_apply_server_name(SSL* ssl, const char* server_name) {
+    if (server_name) {
+        /* RFC 6066 forbids IP literals in the SNI HostName extension. */
+        addr_t tmp;
+        if (addr_pton(server_name, 0, &tmp) != 0) {
+            SSL_set_tlsext_host_name(ssl, server_name);
+        }
+        if (SSL_get_verify_mode(ssl) & SSL_VERIFY_PEER) {
+            SSL_set1_host(ssl, server_name);
+        }
+    } else if (SSL_get_verify_mode(ssl) & SSL_VERIFY_PEER) {
+        xylem_logw("tls dial: verify_peer enabled but opts->server_name "
+                   "is NULL; peer identity is not checked, only "
+                   "certificate chain trust (MITM risk)");
+    }
+}
+
 static int _tls_do_handshake(xylem_tls_conn_t* tls) {
     for (;;) {
         ERR_clear_error();
@@ -386,6 +406,42 @@ static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
     }
 }
 
+/**
+ * Park on the right direction for an SSL_get_error result, with the
+ * close-flag double-check that recv/send share. Returns:
+ *   0  retry the SSL op
+ *   1  peer closed (SSL_ERROR_ZERO_RETURN)
+ *  -1  fatal -- abort
+ * @p op_name is included in the fatal log.
+ */
+static int _tls_handle_io_block(xylem_tls_conn_t* tls, int ssl_err,
+                                const char* op_name) {
+    iowait_result_t r;
+    switch (ssl_err) {
+    case SSL_ERROR_ZERO_RETURN:
+        return 1;
+    case SSL_ERROR_WANT_READ:
+        r = iowait_read(tls->waiter);
+        break;
+    case SSL_ERROR_WANT_WRITE:
+        r = iowait_write(tls->waiter);
+        break;
+    default: {
+        unsigned long e = ERR_peek_error();
+        xylem_loge("tls %s: ssl_error=%d reason=%s",
+                   op_name, ssl_err,
+                   ERR_reason_error_string(e)
+                       ? ERR_reason_error_string(e) : "unknown");
+        return -1;
+    }
+    }
+    if (r != IOWAIT_READY
+        || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
     xylem_tls_conn_t* tls = (xylem_tls_conn_t*)ctx;
     if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
@@ -394,42 +450,19 @@ static int64_t _tls_raw_recv(void* ctx, void* buf, size_t len) {
 
     for (;;) {
         ERR_clear_error();
-        int n = SSL_read(tls->ssl, buf, (int)len);
+        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
+        int    n     = SSL_read(tls->ssl, buf, (int)chunk);
         if (n > 0) {
             return n;
         }
 
-        int err = SSL_get_error(tls->ssl, n);
-        switch (err) {
-        case SSL_ERROR_ZERO_RETURN:
+        int rc = _tls_handle_io_block(
+            tls, SSL_get_error(tls->ssl, n), "SSL_read");
+        if (rc == 1) {
             return 0;
-        case SSL_ERROR_WANT_READ: {
-            iowait_result_t r = iowait_read(tls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&tls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
         }
-        case SSL_ERROR_WANT_WRITE: {
-            iowait_result_t r = iowait_write(tls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&tls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
-        }
-        default: {
-            unsigned long ssl_err = ERR_peek_error();
-            xylem_loge("tls SSL_read: ssl_error=%d reason=%s",
-                       err,
-                       ERR_reason_error_string(ssl_err)
-                           ? ERR_reason_error_string(ssl_err)
-                           : "unknown");
+        if (rc < 0) {
             return -1;
-        }
         }
     }
 }
@@ -445,42 +478,18 @@ static int _tls_raw_send(void* ctx, const void* data, size_t len) {
 
     while (rem > 0) {
         ERR_clear_error();
-        int n = SSL_write(tls->ssl, ptr, (int)rem);
+        size_t chunk = rem > INT_MAX ? (size_t)INT_MAX : rem;
+        int    n     = SSL_write(tls->ssl, ptr, (int)chunk);
         if (n > 0) {
             ptr += n;
             rem -= (size_t)n;
             continue;
         }
 
-        int err = SSL_get_error(tls->ssl, n);
-        switch (err) {
-        case SSL_ERROR_WANT_WRITE: {
-            iowait_result_t r = iowait_write(tls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&tls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
-        }
-        case SSL_ERROR_WANT_READ: {
-            iowait_result_t r = iowait_read(tls->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&tls->closed,
-                                        memory_order_acquire)) {
-                return -1;
-            }
-            continue;
-        }
-        default: {
-            unsigned long ssl_err = ERR_peek_error();
-            xylem_loge("tls SSL_write: ssl_error=%d reason=%s",
-                       err,
-                       ERR_reason_error_string(ssl_err)
-                           ? ERR_reason_error_string(ssl_err)
-                           : "unknown");
+        int rc = _tls_handle_io_block(
+            tls, SSL_get_error(tls->ssl, n), "SSL_write");
+        if (rc != 0) {
             return -1;
-        }
         }
     }
     return 0;
@@ -543,9 +552,11 @@ static void _tls_conn_free(xylem_tls_conn_t* tls) {
         iowait_destroy(tls->waiter);
     }
     if (tls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        /* Graceful TCP shutdown ensures buffered TLS records (including
+        /**
+         * Graceful TCP shutdown ensures buffered TLS records (including
          * close_notify) are delivered before the kernel tears down the
-         * connection. Without this, closesocket may send RST. */
+         * connection. Without this, closesocket may send RST.
+         */
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
@@ -602,7 +613,7 @@ xylem_tls_conn_t* xylem_tls_dial(
     tls->ctx       = ctx;
     tls->peer_addr = resolved_addr;
 
-    uint64_t connect_ms = opts ? opts->connect_timeout_ms : 0;
+    uint64_t connect_ms = opts ? opts->handshake_timeout_ms : 0;
     uint64_t deadline   = 0;
     if (connect_ms > 0) {
         deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
@@ -646,14 +657,8 @@ xylem_tls_conn_t* xylem_tls_dial(
     SSL_set_fd(tls->ssl, (int)fd);
     SSL_set_connect_state(tls->ssl);
 
-    const char* hostname = opts ? opts->hostname : NULL;
-    if (hostname) {
-        SSL_set_tlsext_host_name(tls->ssl, hostname);
-        int vmode = SSL_get_verify_mode(tls->ssl);
-        if (vmode & SSL_VERIFY_PEER) {
-            SSL_set1_host(tls->ssl, hostname);
-        }
-    }
+    _tls_apply_server_name(tls->ssl, opts ? opts->server_name : NULL);
+
     if (_tls_do_handshake(tls) != 0) {
         xylem_loge("tls dial: handshake failed for %s:%s", host, port_str);
         _tls_conn_free(tls);
@@ -781,9 +786,22 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         SSL_set_fd(tls->ssl, (int)fd);
         SSL_set_accept_state(tls->ssl);
 
+        uint64_t hs_ms = ln->opts.handshake_timeout_ms;
+        if (hs_ms > 0) {
+            uint64_t deadline =
+                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_ms;
+            iowait_set_rd_deadline(tls->waiter, deadline);
+            iowait_set_wr_deadline(tls->waiter, deadline);
+        }
+
         if (_tls_do_handshake(tls) != 0) {
             _tls_conn_free(tls);
             break;
+        }
+
+        if (hs_ms > 0) {
+            iowait_set_rd_deadline(tls->waiter, 0);
+            iowait_set_wr_deadline(tls->waiter, 0);
         }
 
         _tls_cache_alpn(tls);
