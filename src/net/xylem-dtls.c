@@ -19,7 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-
 #include "xylem/net/xylem-dtls.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
@@ -46,8 +45,6 @@
 #define DTLS_COOKIE_SIZE         32
 #define DTLS_INBOX_CAP           64
 
-
-
 static int _dtls_ex_data_idx = -1;
 static int _dtls_peer_addr_idx = -1;
 static once_flag _dtls_ex_data_once = ONCE_FLAG_INIT;
@@ -57,8 +54,6 @@ static void _dtls_init_ex_data(void) {
     _dtls_peer_addr_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
 
-
-
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
     uint8_t* alpn_wire;
@@ -67,26 +62,25 @@ struct xylem_dtls_ctx_s {
     uint8_t  cookie_secret[DTLS_COOKIE_SIZE];
 };
 
-typedef struct dtls_dgram_s {
+typedef struct _dtls_dgram_s {
     size_t len;
     char   data[];
-} dtls_dgram_t;
+} _dtls_dgram_t;
 
-typedef struct dtls_session_inbox_s {
-    dtls_dgram_t** slots;
-    uint32_t       cap;
-    uint32_t       head;
-    uint32_t       tail;
-    mco_coro*      parked;
-    scheduler_t*   sched;
-    sched_timer_t* deadline_timer;
-    bool           closed;
-    bool           timed_out;
-} dtls_session_inbox_t;
+typedef struct _dtls_session_inbox_s {
+    _dtls_dgram_t** slots;
+    uint32_t        cap;
+    uint32_t        head;
+    uint32_t        tail;
+    mco_coro*       parked;
+    scheduler_t*    sched;
+    sched_timer_t*  deadline_timer;
+    bool            closed;
+    bool            timed_out;
+} _dtls_session_inbox_t;
 
 struct xylem_dtls_conn_s {
     SSL*                    ssl;
-    xylem_dtls_ctx_t*       ctx;
     addr_t                  peer_addr;
     char                    alpn[256];
     _Atomic bool            closed;
@@ -97,7 +91,7 @@ struct xylem_dtls_conn_s {
     platform_sock_t          fd;
 
     /* server-side only (Memory BIO path) */
-    dtls_session_inbox_t*    inbox;
+    _dtls_session_inbox_t*    inbox;
     BIO*                     read_bio;
     BIO*                     write_bio;
     sched_timer_t*           retransmit_timer;
@@ -126,8 +120,6 @@ struct xylem_dtls_listener_s {
 
     _Atomic bool          closed;
 };
-
-
 
 static xylem_dtls_ctx_t* _dtls_get_ctx(SSL* ssl) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
@@ -219,8 +211,6 @@ static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
     }
     return SSL_TLSEXT_ERR_OK;
 }
-
-
 
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)calloc(1, sizeof(xylem_dtls_ctx_t));
@@ -352,8 +342,6 @@ int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
     return 0;
 }
 
-
-
 static int _dtls_addr_cmp(const addr_t* a, const addr_t* b) {
     if (a->storage.ss_family != b->storage.ss_family) {
         return (int)a->storage.ss_family - (int)b->storage.ss_family;
@@ -403,15 +391,14 @@ static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_listener_t* ln,
     return rbtree_entry(node, xylem_dtls_conn_t, server_node);
 }
 
-
-
-static dtls_session_inbox_t* _inbox_create(scheduler_t* sched) {
-    dtls_session_inbox_t* ib = calloc(1, sizeof(*ib));
+static _dtls_session_inbox_t* _inbox_create(scheduler_t* sched) {
+    _dtls_session_inbox_t* ib =
+        (_dtls_session_inbox_t*)calloc(1, sizeof(_dtls_session_inbox_t));
     if (!ib) {
         return NULL;
     }
     ib->cap   = DTLS_INBOX_CAP;
-    ib->slots = calloc(ib->cap, sizeof(dtls_dgram_t*));
+    ib->slots = (_dtls_dgram_t**)calloc(ib->cap, sizeof(_dtls_dgram_t*));
     if (!ib->slots) {
         free(ib);
         return NULL;
@@ -421,7 +408,7 @@ static dtls_session_inbox_t* _inbox_create(scheduler_t* sched) {
     return ib;
 }
 
-static void _inbox_destroy(dtls_session_inbox_t* ib) {
+static void _inbox_destroy(_dtls_session_inbox_t* ib) {
     if (!ib) {
         return;
     }
@@ -434,7 +421,7 @@ static void _inbox_destroy(dtls_session_inbox_t* ib) {
     free(ib);
 }
 
-static void _inbox_push(dtls_session_inbox_t* ib, dtls_dgram_t* dgram) {
+static void _inbox_push(_dtls_session_inbox_t* ib, _dtls_dgram_t* dgram) {
     if (ib->closed) {
         free(dgram);
         return;
@@ -453,30 +440,14 @@ static void _inbox_push(dtls_session_inbox_t* ib, dtls_dgram_t* dgram) {
 }
 
 static bool _inbox_park_cb(mco_coro* co, void* arg) {
-    dtls_session_inbox_t* ib = arg;
+    _dtls_session_inbox_t* ib = arg;
     ib->parked = co;
     return true;
 }
 
-static dtls_dgram_t* _inbox_pop(dtls_session_inbox_t* ib) {
-    while (ib->head == ib->tail) {
-        if (ib->closed) {
-            return NULL;
-        }
-        scheduler_park(ib->sched, _inbox_park_cb, ib);
-        if (ib->closed) {
-            return NULL;
-        }
-    }
-    uint32_t mask = ib->cap - 1;
-    dtls_dgram_t* dgram = ib->slots[ib->head & mask];
-    ib->head++;
-    return dgram;
-}
-
 static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
-    dtls_session_inbox_t* ib = ud;
+    _dtls_session_inbox_t* ib = ud;
     ib->timed_out = true;
     if (ib->parked) {
         mco_coro* co = ib->parked;
@@ -485,8 +456,9 @@ static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
     }
 }
 
-static dtls_dgram_t* _inbox_pop_with_deadline(
-    dtls_session_inbox_t* ib, uint64_t deadline_ms) {
+/* deadline_ms == 0 means wait forever. */
+static _dtls_dgram_t* _inbox_pop(
+    _dtls_session_inbox_t* ib, uint64_t deadline_ms) {
     while (ib->head == ib->tail) {
         if (ib->closed) {
             return NULL;
@@ -513,12 +485,12 @@ static dtls_dgram_t* _inbox_pop_with_deadline(
         }
     }
     uint32_t mask = ib->cap - 1;
-    dtls_dgram_t* dgram = ib->slots[ib->head & mask];
+    _dtls_dgram_t* dgram = ib->slots[ib->head & mask];
     ib->head++;
     return dgram;
 }
 
-static void _inbox_close(dtls_session_inbox_t* ib) {
+static void _inbox_close(_dtls_session_inbox_t* ib) {
     if (!ib) {
         return;
     }
@@ -529,8 +501,6 @@ static void _inbox_close(dtls_session_inbox_t* ib) {
         scheduler_schedule(ib->sched, co);
     }
 }
-
-
 
 static void _accept_queue_push(xylem_dtls_listener_t* ln,
                                xylem_dtls_conn_t* conn) {
@@ -578,8 +548,6 @@ static void _accept_queue_close(xylem_dtls_listener_t* ln) {
     }
 }
 
-
-
 static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[16384];
     int  n;
@@ -594,10 +562,8 @@ static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     }
 }
 
-
-
-static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
-    dtls->ssl = SSL_new(dtls->ctx->ssl_ctx);
+static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
+    dtls->ssl = SSL_new(ssl_ctx);
     if (!dtls->ssl) {
         return -1;
     }
@@ -613,8 +579,6 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls) {
     SSL_set_bio(dtls->ssl, dtls->read_bio, dtls->write_bio);
     return 0;
 }
-
-
 
 /**
  * Park on the right direction for an SSL_get_error result, with the
@@ -718,14 +682,14 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
 
-    xylem_dtls_conn_t* dtls = calloc(1, sizeof(*dtls));
+    xylem_dtls_conn_t* dtls =
+        (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
     if (!dtls) {
         platform_socket_close(fd);
         return NULL;
     }
 
     dtls->fd  = fd;
-    dtls->ctx = ctx;
     addr_pton(host, port, &dtls->peer_addr);
 
     dtls->waiter = iowait_create(fd);
@@ -834,8 +798,6 @@ static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
     _dtls_client_free(dtls);
 }
 
-
-
 static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls);
 
 static void _dtls_retransmit_cb(sched_timer_t* timer, void* ud) {
@@ -881,7 +843,7 @@ static void _dtls_handshake_coro(void* arg) {
     xylem_dtls_conn_t* dtls = arg;
     xylem_dtls_listener_t* ln = dtls->listener;
 
-    if (_dtls_init_ssl(dtls) != 0) {
+    if (_dtls_init_ssl(dtls, ln->ctx->ssl_ctx) != 0) {
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
@@ -899,7 +861,7 @@ static void _dtls_handshake_coro(void* arg) {
 
     bool success = false;
     while (!dtls->handshake_done) {
-        dtls_dgram_t* dgram = _inbox_pop(dtls->inbox);
+        _dtls_dgram_t* dgram = _inbox_pop(dtls->inbox, 0);
         if (!dgram) {
             break;
         }
@@ -935,11 +897,19 @@ static void _dtls_handshake_coro(void* arg) {
     _dtls_stop_retransmit(dtls);
     sched_timer_stop(dtls->handshake_timer);
 
+    /**
+     * Retransmit/handshake timers are only used during the handshake.
+     * Free them now (whether we succeeded or not) so long-lived
+     * sessions don't carry dead timers around.
+     */
+    sched_timer_destroy(dtls->retransmit_timer);
+    sched_timer_destroy(dtls->handshake_timer);
+    dtls->retransmit_timer = NULL;
+    dtls->handshake_timer  = NULL;
+
     if (!success) {
         SSL_free(dtls->ssl);
         dtls->ssl = NULL;
-        sched_timer_destroy(dtls->retransmit_timer);
-        sched_timer_destroy(dtls->handshake_timer);
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
@@ -983,7 +953,8 @@ static void _dtls_dispatcher(void* arg) {
         mtx_unlock(&ln->sessions_mtx);
 
         if (dtls) {
-            dtls_dgram_t* dgram = malloc(sizeof(dtls_dgram_t) + (size_t)n);
+            _dtls_dgram_t* dgram =
+                (_dtls_dgram_t*)malloc(sizeof(_dtls_dgram_t) + (size_t)n);
             if (dgram) {
                 dgram->len = (size_t)n;
                 memcpy(dgram->data, buf, (size_t)n);
@@ -992,39 +963,36 @@ static void _dtls_dispatcher(void* arg) {
             continue;
         }
 
-        dtls = calloc(1, sizeof(*dtls));
-        if (!dtls) {
-            continue;
-        }
-        dtls->ctx       = ln->ctx;
-        dtls->peer_addr = from_addr;
-        dtls->listener  = ln;
-        dtls->inbox     = _inbox_create(ln->sched);
-        if (!dtls->inbox) {
-            free(dtls);
-            continue;
-        }
-
-        dtls->retransmit_timer = sched_timer_create(ln->sched);
-        dtls->handshake_timer  = sched_timer_create(ln->sched);
-        if (!dtls->retransmit_timer || !dtls->handshake_timer) {
-            sched_timer_destroy(dtls->retransmit_timer);
-            sched_timer_destroy(dtls->handshake_timer);
-            _inbox_destroy(dtls->inbox);
-            free(dtls);
-            continue;
-        }
-
-        dtls_dgram_t* dgram = malloc(sizeof(dtls_dgram_t) + (size_t)n);
+        _dtls_dgram_t* dgram =
+            (_dtls_dgram_t*)malloc(sizeof(_dtls_dgram_t) + (size_t)n);
         if (!dgram) {
-            sched_timer_destroy(dtls->retransmit_timer);
-            sched_timer_destroy(dtls->handshake_timer);
-            _inbox_destroy(dtls->inbox);
-            free(dtls);
             continue;
         }
         dgram->len = (size_t)n;
         memcpy(dgram->data, buf, (size_t)n);
+
+        dtls = (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
+        if (!dtls) {
+            free(dgram);
+            continue;
+        }
+        dtls->peer_addr        = from_addr;
+        dtls->listener         = ln;
+        dtls->inbox            = _inbox_create(ln->sched);
+        dtls->retransmit_timer = sched_timer_create(ln->sched);
+        dtls->handshake_timer  = sched_timer_create(ln->sched);
+
+        if (!dtls->inbox
+            || !dtls->retransmit_timer
+            || !dtls->handshake_timer) {
+            sched_timer_destroy(dtls->retransmit_timer);
+            sched_timer_destroy(dtls->handshake_timer);
+            _inbox_destroy(dtls->inbox);
+            free(dtls);
+            free(dgram);
+            continue;
+        }
+
         _inbox_push(dtls->inbox, dgram);
 
         mtx_lock(&ln->sessions_mtx);
@@ -1048,7 +1016,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         return NULL;
     }
 
-    xylem_dtls_listener_t* ln = calloc(1, sizeof(*ln));
+    xylem_dtls_listener_t* ln =
+        (xylem_dtls_listener_t*)calloc(1, sizeof(xylem_dtls_listener_t));
     if (!ln) {
         platform_socket_close(fd);
         return NULL;
@@ -1073,9 +1042,10 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     mtx_init(&ln->sessions_mtx, mtx_plain);
 
     ln->accept_cap   = 64;
-    ln->accept_slots = calloc(ln->accept_cap,
-                              sizeof(xylem_dtls_conn_t*));
+    ln->accept_slots = (xylem_dtls_conn_t**)calloc(
+        ln->accept_cap, sizeof(xylem_dtls_conn_t*));
     if (!ln->accept_slots) {
+        mtx_destroy(&ln->sessions_mtx);
         iowait_destroy(ln->waiter);
         platform_socket_close(fd);
         free(ln);
@@ -1090,15 +1060,13 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     return _accept_queue_pop(ln);
 }
 
-
-
 static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         return -1;
     }
     for (;;) {
-        dtls_dgram_t* dgram = _inbox_pop_with_deadline(
+        _dtls_dgram_t* dgram = _inbox_pop(
             dtls->inbox, dtls->rd_deadline_ms);
         if (!dgram) {
             return -1;
