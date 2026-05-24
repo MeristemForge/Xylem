@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DEFAULT_BUF_SIZE 4096
+
 typedef int (*_reader_fn)(void* ctx, void* buf, int len);
 
 struct xylem_reader_s {
@@ -81,6 +83,10 @@ xylem_reader_t* xylem_reader_create(
     void*                    conn,
     xylem_reader_transport_t transport,
     int                      size) {
+    if (size <= 0) {
+        size = DEFAULT_BUF_SIZE;
+    }
+
     _reader_fn fn = _reader_resolve_transport(transport);
     if (!fn) {
         return NULL;

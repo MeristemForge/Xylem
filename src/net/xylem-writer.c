@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DEFAULT_BUF_SIZE 4096
+
 typedef int (*_writer_fn)(void* ctx, const void* data, int len);
 
 struct xylem_writer_s {
@@ -53,6 +55,10 @@ xylem_writer_t* xylem_writer_create(
     void*                    conn,
     xylem_writer_transport_t transport,
     int                      size) {
+    if (size <= 0) {
+        size = DEFAULT_BUF_SIZE;
+    }
+
     _writer_fn fn = _writer_resolve_transport(transport);
     if (!fn) {
         return NULL;
