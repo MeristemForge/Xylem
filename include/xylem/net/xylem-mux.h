@@ -38,8 +38,8 @@ typedef enum xylem_mux_transport_e {
 } xylem_mux_transport_t;
 
 typedef enum xylem_mux_role_e {
-    XYLEM_MUX_CLIENT, /*< Open streams use odd IDs (1,3,5...). */
-    XYLEM_MUX_SERVER  /*< Open streams use even IDs (2,4,6...). */
+    XYLEM_MUX_CLIENT, /*< Initiates connections. */
+    XYLEM_MUX_SERVER  /*< Accepts connections. */
 } xylem_mux_role_t;
 
 typedef struct xylem_mux_opts_s {

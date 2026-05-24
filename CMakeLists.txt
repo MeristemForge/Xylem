@@ -77,6 +77,9 @@ set(SRCS
 	src/net/mux/mux-frame.c
 	src/net/mux/mux-stream.c
 	src/net/mux/xylem-mux.c
+	src/net/rudp/xylem-rudp.c
+	src/net/rudp/rudp-fec.c
+	src/net/rudp/kcp/ikcp.c
 	src/encoding/json/xylem-json.c
 	src/encoding/json/yyjson/yyjson.c
 	src/encoding/gzip/xylem-gzip.c

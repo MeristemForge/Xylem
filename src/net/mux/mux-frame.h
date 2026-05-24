@@ -49,5 +49,18 @@ typedef struct {
     uint32_t length;
 } _mux_frame_hdr_t;
 
+/**
+ * @brief Serialize a frame header to wire format (big-endian).
+ *
+ * @param hdr  Header to encode.
+ * @param buf  Output buffer, must be at least MUX_FRAME_HDR_SIZE bytes.
+ */
 extern void mux_frame_encode(_mux_frame_hdr_t* hdr, uint8_t buf[MUX_FRAME_HDR_SIZE]);
+
+/**
+ * @brief Deserialize a wire-format buffer into a frame header.
+ *
+ * @param buf  Input buffer of MUX_FRAME_HDR_SIZE bytes.
+ * @param hdr  Output header struct.
+ */
 extern void mux_frame_decode(const uint8_t buf[MUX_FRAME_HDR_SIZE], _mux_frame_hdr_t* hdr);

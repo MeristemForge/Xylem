@@ -23,7 +23,6 @@
 #include "xylem/net/xylem-tcp.h"
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-uds.h"
-
 #include "xylem/xylem-logger.h"
 
 #include "mux-frame.h"
@@ -37,23 +36,23 @@
 
 #define MUX_MAX_FRAME_PAYLOAD 65535
 
-typedef int64_t (*_mux_read_fn)(void* ctx, void* buf, size_t len);
-typedef int (*_mux_write_fn)(void* ctx, const void* data, size_t len);
+typedef int64_t (*_mux_read_fn_t)(void* ctx, void* buf, size_t len);
+typedef int (*_mux_write_fn_t)(void* ctx, const void* data, size_t len);
 
 struct xylem_mux_s {
-    void*          transport_ctx;
-    _mux_read_fn   read_fn;
-    _mux_write_fn  write_fn;
-    xylem_mux_role_t role;
-    uint32_t           next_stream_id;
-    xylem_channel_t*   accept_ch;
-    xylem_mutex_t*     write_mu;
+    void*                       transport_ctx;
+    _mux_read_fn_t              read_fn;
+    _mux_write_fn_t             write_fn;
+    xylem_mux_role_t            role;
+    uint32_t                    next_stream_id;
+    xylem_channel_t*            accept_ch;
+    xylem_mutex_t*              write_mu;
     struct xylem_mux_stream_s** streams;
-    size_t             stream_count;
-    size_t             stream_cap;
-    uint32_t           max_stream_window;
-    _Atomic bool       closed;
-    _Atomic int32_t    refcnt;
+    size_t                      stream_count;
+    size_t                      stream_cap;
+    uint32_t                    max_stream_window;
+    _Atomic bool                closed;
+    _Atomic int32_t             refcnt;
 };
 
 static void _mux_ref(xylem_mux_t* mux) {
@@ -265,27 +264,26 @@ exit_loop:
 
 static int _mux_resolve_transport(
     xylem_mux_transport_t transport,
-    _mux_read_fn*         out_read,
-    _mux_write_fn*        out_write) {
+    _mux_read_fn_t*         out_read,
+    _mux_write_fn_t*        out_write) {
     switch (transport) {
     case XYLEM_MUX_TCP:
-        *out_read  = (_mux_read_fn)xylem_tcp_read;
-        *out_write = (_mux_write_fn)xylem_tcp_write;
+        *out_read  = (_mux_read_fn_t)xylem_tcp_read;
+        *out_write = (_mux_write_fn_t)xylem_tcp_write;
         return 0;
     case XYLEM_MUX_TLS:
-        *out_read  = (_mux_read_fn)xylem_tls_read;
-        *out_write = (_mux_write_fn)xylem_tls_write;
+        *out_read  = (_mux_read_fn_t)xylem_tls_read;
+        *out_write = (_mux_write_fn_t)xylem_tls_write;
         return 0;
     case XYLEM_MUX_UDS:
-        *out_read  = (_mux_read_fn)xylem_uds_read;
-        *out_write = (_mux_write_fn)xylem_uds_write;
+        *out_read  = (_mux_read_fn_t)xylem_uds_read;
+        *out_write = (_mux_write_fn_t)xylem_uds_write;
         return 0;
     case XYLEM_MUX_RUDP_STREAM:
-        /* TODO: wire up once RUDP stream API is available */
-        XYLEM_LOG_ERROR("RUDP stream transport not yet implemented for mux");
+        xylem_loge("RUDP stream transport not yet implemented for mux");
         return -1;
     default:
-        XYLEM_LOG_ERROR("unsupported transport for mux");
+        xylem_loge("unsupported transport for mux");
         return -1;
     }
 }
@@ -295,8 +293,8 @@ xylem_mux_t* xylem_mux_create(
     xylem_mux_transport_t transport,
     xylem_mux_role_t role,
     xylem_mux_opts_t* opts) {
-    _mux_read_fn  read_fn;
-    _mux_write_fn write_fn;
+    _mux_read_fn_t  read_fn;
+    _mux_write_fn_t write_fn;
     if (_mux_resolve_transport(transport, &read_fn, &write_fn) != 0) {
         return NULL;
     }

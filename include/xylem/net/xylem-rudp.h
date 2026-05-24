@@ -24,148 +24,197 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-#ifndef XYLEM_ADDR_MAXHOST
-#define XYLEM_ADDR_MAXHOST 46
-#endif
+typedef struct xylem_rudp_conn_s     xylem_rudp_conn_t;
+typedef struct xylem_rudp_listener_s xylem_rudp_listener_t;
 
-typedef struct xylem_rudp_conn_s   xylem_rudp_conn_t;
-typedef struct xylem_rudp_server_s xylem_rudp_server_t;
-
-typedef struct xylem_rudp_handler_s {
-    void (*on_connect)(xylem_rudp_conn_t* rudp);           /*< Handshake completed (client). */
-    void (*on_accept)(xylem_rudp_server_t* server,
-                      xylem_rudp_conn_t* rudp);             /*< New session accepted (server). */
-    void (*on_read)(xylem_rudp_conn_t* rudp,
-                    void* data, size_t len);                /*< Reliable message received. */
-    void (*on_close)(xylem_rudp_conn_t* rudp,
-                     int err, const char* errmsg);          /*< Closed: 0 = normal, -1 = internal error, >0 = platform errno. */
-} xylem_rudp_handler_t;
+typedef enum xylem_rudp_mode_e {
+    XYLEM_RUDP_STREAM,  /*< Byte stream, compatible with mux/reader/writer. */
+    XYLEM_RUDP_MESSAGE  /*< Preserves message boundaries. */
+} xylem_rudp_mode_t;
 
 typedef struct xylem_rudp_opts_s {
-    int32_t        mtu;           /*< MTU size, 0 for default (1400). */
-    uint64_t       timeout_ms;    /*< Dead-link timeout in ms, 0 to disable. */
-    uint64_t       handshake_ms;  /*< Handshake timeout in ms, 0 for default (5000). */
-    int32_t        fec_data;      /*< FEC data shards, 0 to disable FEC. */
-    int32_t        fec_parity;    /*< FEC parity shards, 0 to disable FEC. */
-    const uint8_t* aes_key;       /*< 32-byte AES-256 key, NULL to disable encryption. */
+    xylem_rudp_mode_t mode;              /*< Stream or message mode. */
+    uint32_t          mtu;               /*< UDP MTU, 0 = 1400. */
+    uint32_t          fec_data;          /*< FEC data shards, 0 = disabled. */
+    uint32_t          fec_parity;        /*< FEC parity shards, 0 = disabled. */
+    uint64_t          connect_timeout_ms; /*< Handshake timeout, 0 = 5000ms. */
+    uint64_t          timeout_ms;        /*< Dead link timeout, 0 = default. */
+    const uint8_t*    aes_key;           /*< 32-byte AES-256 key, NULL = disabled. */
 } xylem_rudp_opts_t;
 
 /**
- * @brief Initiate a reliable UDP connection.
+ * @brief Dial a reliable UDP connection.
  *
- * @param loop     Event loop.
- * @param host     Target address string.
- * @param port     Target port.
- * @param handler  Event callback set.
- * @param opts     RUDP options, NULL for defaults.
+ * Suspends the calling coroutine until the handshake completes
+ * or times out.
  *
- * @return RUDP handle, or NULL on failure.
+ * @param host  Target address string.
+ * @param port  Target port.
+ * @param opts  Options, or NULL for defaults.
+ *
+ * @return Connection handle, or NULL on failure.
  */
-extern xylem_rudp_conn_t* xylem_rudp_dial(const char* host,
-                                          uint16_t port,
-                                          xylem_rudp_handler_t* handler,
-                                          xylem_rudp_opts_t* opts);
+extern xylem_rudp_conn_t* xylem_rudp_dial(
+    const char*        host,
+    uint16_t           port,
+    xylem_rudp_opts_t* opts);
 
 /**
- * @brief Send data over a reliable UDP connection.
+ * @brief Start listening for reliable UDP connections.
  *
- * @param rudp  RUDP handle.
- * @param data  Data to send.
- * @param len   Data length in bytes.
+ * Spawns a background dispatcher coroutine.
  *
- * @return 0 on success, -1 on failure.
+ * @param host  Bind address string.
+ * @param port  Bind port.
+ * @param opts  Options, or NULL for defaults.
+ *
+ * @return Listener handle, or NULL on failure.
  */
-extern int xylem_rudp_send(xylem_rudp_conn_t* rudp,
-                           const void* data, size_t len);
+extern xylem_rudp_listener_t* xylem_rudp_listen(
+    const char*        host,
+    uint16_t           port,
+    xylem_rudp_opts_t* opts);
 
 /**
- * @brief Close a reliable UDP connection.
+ * @brief Accept an incoming RUDP connection.
  *
- * @param rudp  RUDP handle.
+ * Suspends the calling coroutine until a new session arrives
+ * or the listener closes.
+ *
+ * @param ln  Listener handle.
+ *
+ * @return Connection handle, or NULL if the listener is closed.
  */
-extern void xylem_rudp_close(xylem_rudp_conn_t* rudp);
+extern xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln);
 
 /**
- * @brief Increment the reference count of a RUDP session.
+ * @brief Close a RUDP listener.
  *
- * @param rudp  RUDP handle.
+ * Resets all active sessions and wakes any parked accept caller.
+ *
+ * @param ln  Listener handle.
  */
-extern void xylem_rudp_conn_ref(xylem_rudp_conn_t* rudp);
+extern void xylem_rudp_close_listener(xylem_rudp_listener_t* ln);
 
 /**
- * @brief Decrement the reference count of a RUDP session.
+ * @brief Read data from a stream-mode connection.
  *
- * @param rudp  RUDP handle.
+ * Suspends until data is available, the connection closes, or
+ * the read deadline expires.
+ *
+ * @param c    Connection handle.
+ * @param buf  Destination buffer.
+ * @param len  Buffer size.
+ *
+ * @return Bytes read (>0), 0 on remote close, -1 on error.
  */
-extern void xylem_rudp_conn_unref(xylem_rudp_conn_t* rudp);
+extern int xylem_rudp_read(
+    xylem_rudp_conn_t* c,
+    void*              buf,
+    int                len);
+
+/**
+ * @brief Write data on a stream-mode connection.
+ *
+ * @param c     Connection handle.
+ * @param data  Source buffer.
+ * @param len   Number of bytes to write.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_rudp_write(
+    xylem_rudp_conn_t* c,
+    const void*        data,
+    int                len);
+
+/**
+ * @brief Receive a message from a message-mode connection.
+ *
+ * Suspends until a complete message is available, the connection
+ * closes, or the read deadline expires.
+ *
+ * @param c    Connection handle.
+ * @param buf  Destination buffer.
+ * @param len  Buffer size.
+ *
+ * @return Message size (>0), 0 on remote close, -1 on error
+ *         or if buf is too small for the message.
+ */
+extern int xylem_rudp_recv(
+    xylem_rudp_conn_t* c,
+    void*              buf,
+    int                len);
+
+/**
+ * @brief Send a message on a message-mode connection.
+ *
+ * @param c     Connection handle.
+ * @param data  Message data.
+ * @param len   Message length.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_rudp_send(
+    xylem_rudp_conn_t* c,
+    const void*        data,
+    int                len);
+
+/**
+ * @brief Close a RUDP connection.
+ *
+ * @param c  Connection handle.
+ */
+extern void xylem_rudp_close(xylem_rudp_conn_t* c);
+
+/**
+ * @brief Set the read deadline for a connection.
+ *
+ * @param c            Connection handle.
+ * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
+ */
+extern void xylem_rudp_set_read_deadline(
+    xylem_rudp_conn_t* c,
+    uint64_t           deadline_ms);
+
+/**
+ * @brief Set the write deadline for a connection.
+ *
+ * @param c            Connection handle.
+ * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
+ */
+extern void xylem_rudp_set_write_deadline(
+    xylem_rudp_conn_t* c,
+    uint64_t           deadline_ms);
 
 /**
  * @brief Get the peer address of a connection.
  *
- * @param rudp  RUDP handle.
- * @param host  Output buffer, must be at least XYLEM_ADDR_MAXHOST bytes.
- * @param port  Output port number.
+ * @param c        Connection handle.
+ * @param host     Output buffer (at least 46 bytes).
+ * @param hostlen  Buffer size.
+ * @param port     Output port.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_rudp_remote_addr(xylem_rudp_conn_t* rudp,
-                                  char host[XYLEM_ADDR_MAXHOST],
-                                  uint16_t* port);
+extern int xylem_rudp_remote_addr(
+    xylem_rudp_conn_t* c,
+    char*              host,
+    int                hostlen,
+    uint16_t*          port);
 
 /**
  * @brief Get user data attached to a connection.
  *
- * @param rudp  RUDP handle.
+ * @param c  Connection handle.
  *
  * @return User data pointer.
  */
-extern void* xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp);
+extern void* xylem_rudp_get_userdata(xylem_rudp_conn_t* c);
 
 /**
  * @brief Set user data on a connection.
  *
- * @param rudp  RUDP handle.
- * @param ud    User data pointer.
+ * @param c   Connection handle.
+ * @param ud  User data pointer.
  */
-extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud);
-
-/**
- * @brief Create a reliable UDP server and start listening.
- *
- * @param loop     Event loop.
- * @param host     Bind address string.
- * @param port     Bind port.
- * @param handler  Event callback set.
- * @param opts     RUDP options, NULL for defaults.
- *
- * @return Server handle, or NULL on failure.
- */
-extern xylem_rudp_server_t* xylem_rudp_listen(const char* host,
-                                              uint16_t port,
-                                              xylem_rudp_handler_t* handler,
-                                              xylem_rudp_opts_t* opts);
-
-/**
- * @brief Close a reliable UDP server.
- *
- * @param server  Server handle.
- */
-extern void xylem_rudp_close_server(xylem_rudp_server_t* server);
-
-/**
- * @brief Get user data attached to a server.
- *
- * @param server  Server handle.
- *
- * @return User data pointer.
- */
-extern void* xylem_rudp_server_get_userdata(xylem_rudp_server_t* server);
-
-/**
- * @brief Set user data on a server.
- *
- * @param server  Server handle.
- * @param ud      User data pointer.
- */
-extern void xylem_rudp_server_set_userdata(xylem_rudp_server_t* server,
-                                           void* ud);
+extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* c, void* ud);

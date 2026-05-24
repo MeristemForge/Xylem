@@ -45,29 +45,74 @@ struct xylem_mux_stream_s {
     xylem_mux_t*        mux;
     uint32_t            id;
     _mux_stream_state_t state;
-    /* recv side */
     uint8_t*            recv_buf;
     size_t              recv_len;
     size_t              recv_cap;
     uint32_t            recv_window;
     _Atomic(mco_coro*)  recv_park;
-    /* send side */
     uint32_t            send_window;
     _Atomic(mco_coro*)  send_park;
-    /* deadline */
     uint64_t            rd_deadline;
     uint64_t            wr_deadline;
     _Atomic bool        closed;
     _Atomic int32_t     refcnt;
 };
 
+/**
+ * @brief Allocate and initialize a stream.
+ *
+ * @param mux     Owning mux session.
+ * @param id      Stream ID.
+ * @param window  Initial receive/send window size in bytes.
+ *
+ * @return Stream handle, or NULL on allocation failure.
+ */
 extern struct xylem_mux_stream_s* mux_stream_create(
     xylem_mux_t* mux, uint32_t id, uint32_t window);
+
+/**
+ * @brief Increment stream reference count.
+ *
+ * @param s  Stream handle.
+ */
 extern void mux_stream_ref(struct xylem_mux_stream_s* s);
+
+/**
+ * @brief Decrement stream reference count, freeing at zero.
+ *
+ * @param s  Stream handle.
+ */
 extern void mux_stream_unref(struct xylem_mux_stream_s* s);
+
+/**
+ * @brief Append received data to the stream buffer and wake the reader.
+ *
+ * @param s     Stream handle.
+ * @param data  Incoming payload.
+ * @param len   Payload size in bytes.
+ */
 extern void mux_stream_push_data(
     struct xylem_mux_stream_s* s, const void* data, size_t len);
+
+/**
+ * @brief Increase send window and wake a parked writer.
+ *
+ * @param s      Stream handle.
+ * @param delta  Window increment in bytes.
+ */
 extern void mux_stream_update_send_window(
     struct xylem_mux_stream_s* s, uint32_t delta);
+
+/**
+ * @brief Transition stream state on remote FIN and wake the reader.
+ *
+ * @param s  Stream handle.
+ */
 extern void mux_stream_notify_remote_fin(struct xylem_mux_stream_s* s);
+
+/**
+ * @brief Mark stream as reset and wake all parked coroutines.
+ *
+ * @param s  Stream handle.
+ */
 extern void mux_stream_notify_reset(struct xylem_mux_stream_s* s);
