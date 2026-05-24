@@ -20,8 +20,35 @@
  */
 
 #include "xylem/net/xylem-reader.h"
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/net/xylem-tls.h"
+#include "xylem/net/xylem-uds.h"
+#include "xylem/net/xylem-mux.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+typedef int (*_reader_fn)(void* ctx, void* buf, int len);
+
+struct xylem_reader_s {
+    void*      ctx;
+    _reader_fn read_fn;
+    int        buflen;
+    int        r;
+    int        w;
+    uint8_t    buf[];
+};
+
+static _reader_fn _reader_resolve_transport(xylem_reader_transport_t transport) {
+    switch (transport) {
+    case XYLEM_READER_TCP:         return (_reader_fn)xylem_tcp_read;
+    case XYLEM_READER_TLS:         return (_reader_fn)xylem_tls_read;
+    case XYLEM_READER_UDS:         return (_reader_fn)xylem_uds_read;
+    case XYLEM_READER_RUDP_STREAM: return NULL; /* TODO */
+    case XYLEM_READER_MUX:         return (_reader_fn)xylem_mux_read;
+    default:                       return NULL;
+    }
+}
 
 static int _reader_drain(xylem_reader_t* rd, void* dst, int len) {
     int buffered = rd->w - rd->r;
@@ -43,29 +70,36 @@ static int _reader_fill(xylem_reader_t* rd) {
         rd->r = 0;
     }
 
-    int n = rd->read_fn(rd->ctx, rd->buf + rd->w, rd->cap - rd->w);
+    int n = rd->read_fn(rd->ctx, rd->buf + rd->w, rd->buflen - rd->w);
     if (n > 0) {
         rd->w += n;
     }
     return n;
 }
 
-void xylem_reader_init(
-    xylem_reader_t*   rd,
-    void*             ctx,
-    xylem_reader_fn_t read_fn,
-    void*             buf,
-    int               cap) {
-    rd->ctx     = ctx;
-    rd->read_fn = read_fn;
-    rd->buf     = (uint8_t*)buf;
-    rd->cap     = cap;
-    rd->r       = 0;
-    rd->w       = 0;
+xylem_reader_t* xylem_reader_create(
+    void*                    conn,
+    xylem_reader_transport_t transport,
+    int                      size) {
+    _reader_fn fn = _reader_resolve_transport(transport);
+    if (!fn) {
+        return NULL;
+    }
+
+    xylem_reader_t* rd = (xylem_reader_t*)calloc(
+        1, sizeof(xylem_reader_t) + (size_t)size);
+    if (!rd) {
+        return NULL;
+    }
+
+    rd->ctx     = conn;
+    rd->read_fn = fn;
+    rd->buflen  = size;
+    return rd;
 }
 
-void xylem_reader_deinit(xylem_reader_t* rd) {
-    memset(rd, 0, sizeof(*rd));
+void xylem_reader_destroy(xylem_reader_t* rd) {
+    free(rd);
 }
 
 int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
@@ -74,7 +108,7 @@ int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
         return n;
     }
 
-    if (len >= rd->cap) {
+    if (len >= rd->buflen) {
         return rd->read_fn(rd->ctx, buf, len);
     }
 
@@ -135,7 +169,7 @@ int xylem_reader_read_until(
         rd->r = 0;
         rd->w = 0;
 
-        int n = rd->read_fn(rd->ctx, rd->buf, rd->cap);
+        int n = rd->read_fn(rd->ctx, rd->buf, rd->buflen);
         if (n <= 0) {
             return -1;
         }
@@ -144,7 +178,7 @@ int xylem_reader_read_until(
 }
 
 int xylem_reader_peek(xylem_reader_t* rd, void* buf, int len) {
-    if (len > rd->cap) {
+    if (len > rd->buflen) {
         return -1;
     }
 

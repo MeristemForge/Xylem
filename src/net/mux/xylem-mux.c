@@ -20,6 +20,9 @@
  */
 
 #include "xylem/net/xylem-mux.h"
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/net/xylem-tls.h"
+#include "xylem/net/xylem-uds.h"
 
 #include "xylem/xylem-logger.h"
 
@@ -34,11 +37,14 @@
 
 #define MUX_MAX_FRAME_PAYLOAD 65535
 
+typedef int64_t (*_mux_read_fn)(void* ctx, void* buf, size_t len);
+typedef int (*_mux_write_fn)(void* ctx, const void* data, size_t len);
+
 struct xylem_mux_s {
-    void*              transport_ctx;
-    xylem_mux_read_fn  read_fn;
-    xylem_mux_write_fn write_fn;
-    xylem_mux_role_t   role;
+    void*          transport_ctx;
+    _mux_read_fn   read_fn;
+    _mux_write_fn  write_fn;
+    xylem_mux_role_t role;
     uint32_t           next_stream_id;
     xylem_channel_t*   accept_ch;
     xylem_mutex_t*     write_mu;
@@ -257,20 +263,52 @@ exit_loop:
     _mux_unref(mux);
 }
 
+static int _mux_resolve_transport(
+    xylem_mux_transport_t transport,
+    _mux_read_fn*         out_read,
+    _mux_write_fn*        out_write) {
+    switch (transport) {
+    case XYLEM_MUX_TCP:
+        *out_read  = (_mux_read_fn)xylem_tcp_read;
+        *out_write = (_mux_write_fn)xylem_tcp_write;
+        return 0;
+    case XYLEM_MUX_TLS:
+        *out_read  = (_mux_read_fn)xylem_tls_read;
+        *out_write = (_mux_write_fn)xylem_tls_write;
+        return 0;
+    case XYLEM_MUX_UDS:
+        *out_read  = (_mux_read_fn)xylem_uds_read;
+        *out_write = (_mux_write_fn)xylem_uds_write;
+        return 0;
+    case XYLEM_MUX_RUDP_STREAM:
+        /* TODO: wire up once RUDP stream API is available */
+        XYLEM_LOG_ERROR("RUDP stream transport not yet implemented for mux");
+        return -1;
+    default:
+        XYLEM_LOG_ERROR("unsupported transport for mux");
+        return -1;
+    }
+}
+
 xylem_mux_t* xylem_mux_create(
-    void* ctx,
-    xylem_mux_read_fn read,
-    xylem_mux_write_fn write,
+    void* conn,
+    xylem_mux_transport_t transport,
     xylem_mux_role_t role,
     xylem_mux_opts_t* opts) {
+    _mux_read_fn  read_fn;
+    _mux_write_fn write_fn;
+    if (_mux_resolve_transport(transport, &read_fn, &write_fn) != 0) {
+        return NULL;
+    }
+
     xylem_mux_t* mux = (xylem_mux_t*)calloc(1, sizeof(xylem_mux_t));
     if (!mux) {
         return NULL;
     }
 
-    mux->transport_ctx = ctx;
-    mux->read_fn       = read;
-    mux->write_fn      = write;
+    mux->transport_ctx = conn;
+    mux->read_fn       = read_fn;
+    mux->write_fn      = write_fn;
     mux->role          = role;
     mux->next_stream_id = (role == XYLEM_MUX_CLIENT) ? 1 : 2;
 
@@ -300,7 +338,7 @@ xylem_mux_t* xylem_mux_create(
     return mux;
 }
 
-void xylem_mux_close(xylem_mux_t* mux) {
+void xylem_mux_destroy(xylem_mux_t* mux) {
     if (atomic_exchange(&mux->closed, true)) {
         return;
     }
@@ -386,7 +424,7 @@ static bool _mux_send_park_cb(mco_coro* co, void* arg) {
     return false;
 }
 
-int64_t xylem_mux_recv(xylem_mux_stream_t* s, void* buf, size_t len) {
+int64_t xylem_mux_read(xylem_mux_stream_t* s, void* buf, size_t len) {
     mux_stream_ref(s);
 
     for (;;) {
@@ -420,7 +458,7 @@ int64_t xylem_mux_recv(xylem_mux_stream_t* s, void* buf, size_t len) {
     }
 }
 
-int xylem_mux_send(xylem_mux_stream_t* s, const void* data, size_t len) {
+int xylem_mux_write(xylem_mux_stream_t* s, const void* data, size_t len) {
     mux_stream_ref(s);
     const uint8_t* ptr = (const uint8_t*)data;
     size_t         rem = len;
@@ -467,7 +505,7 @@ int xylem_mux_send(xylem_mux_stream_t* s, const void* data, size_t len) {
     return 0;
 }
 
-void xylem_mux_stream_close(xylem_mux_stream_t* s) {
+void xylem_mux_close_stream(xylem_mux_stream_t* s) {
     if (atomic_exchange(&s->closed, true)) {
         return;
     }

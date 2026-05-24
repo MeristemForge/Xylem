@@ -20,24 +20,59 @@
  */
 
 #include "xylem/net/xylem-writer.h"
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/net/xylem-tls.h"
+#include "xylem/net/xylem-uds.h"
+#include "xylem/net/xylem-mux.h"
 
+#include <stdlib.h>
 #include <string.h>
 
-void xylem_writer_init(
-    xylem_writer_t*   wr,
-    void*             ctx,
-    xylem_writer_fn_t write_fn,
-    void*             buf,
-    int               cap) {
-    wr->ctx      = ctx;
-    wr->write_fn = write_fn;
-    wr->buf      = (uint8_t*)buf;
-    wr->cap      = cap;
-    wr->w        = 0;
+typedef int (*_writer_fn)(void* ctx, const void* data, int len);
+
+struct xylem_writer_s {
+    void*      ctx;
+    _writer_fn write_fn;
+    int        buflen;
+    int        w;
+    uint8_t    buf[];
+};
+
+static _writer_fn _writer_resolve_transport(xylem_writer_transport_t transport) {
+    switch (transport) {
+    case XYLEM_WRITER_TCP:         return (_writer_fn)xylem_tcp_write;
+    case XYLEM_WRITER_TLS:         return (_writer_fn)xylem_tls_write;
+    case XYLEM_WRITER_UDS:         return (_writer_fn)xylem_uds_write;
+    case XYLEM_WRITER_RUDP_STREAM: return NULL; /* TODO */
+    case XYLEM_WRITER_MUX:         return (_writer_fn)xylem_mux_write;
+    default:                       return NULL;
+    }
 }
 
-void xylem_writer_deinit(xylem_writer_t* wr) {
-    memset(wr, 0, sizeof(*wr));
+xylem_writer_t* xylem_writer_create(
+    void*                    conn,
+    xylem_writer_transport_t transport,
+    int                      size) {
+    _writer_fn fn = _writer_resolve_transport(transport);
+    if (!fn) {
+        return NULL;
+    }
+
+    xylem_writer_t* wr = (xylem_writer_t*)calloc(
+        1, sizeof(xylem_writer_t) + (size_t)size);
+    if (!wr) {
+        return NULL;
+    }
+
+    wr->ctx      = conn;
+    wr->write_fn = fn;
+    wr->buflen   = size;
+    return wr;
+}
+
+void xylem_writer_destroy(xylem_writer_t* wr) {
+    xylem_writer_flush(wr);
+    free(wr);
 }
 
 int xylem_writer_flush(xylem_writer_t* wr) {
@@ -50,14 +85,14 @@ int xylem_writer_flush(xylem_writer_t* wr) {
 }
 
 int xylem_writer_write(xylem_writer_t* wr, const void* data, int len) {
-    if (len >= wr->cap) {
+    if (len >= wr->buflen) {
         if (xylem_writer_flush(wr) != 0) {
             return -1;
         }
         return wr->write_fn(wr->ctx, data, len);
     }
 
-    if (wr->w + len > wr->cap) {
+    if (wr->w + len > wr->buflen) {
         if (xylem_writer_flush(wr) != 0) {
             return -1;
         }

@@ -23,52 +23,42 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/**
- * Read function signature for the underlying transport.
- * Must return bytes read (>0), 0 on EOF, or negative on error.
- */
-typedef int (*xylem_reader_fn_t)(void* ctx, void* buf, int len);
+typedef enum xylem_reader_transport_e {
+    XYLEM_READER_TCP,
+    XYLEM_READER_TLS,
+    XYLEM_READER_UDS,
+    XYLEM_READER_RUDP_STREAM,
+    XYLEM_READER_MUX
+} xylem_reader_transport_t;
 
 /**
  * Buffered reader over any byte stream.
  *
- * Wraps a raw read function and provides read_full (exact byte count)
+ * Wraps a transport and provides read_full (exact byte count)
  * and read_until (delimiter scanning) on top of an internal buffer.
- * Caller owns the buffer memory.
  */
-typedef struct xylem_reader_s {
-    void*            ctx;     /*< Opaque transport context. */
-    xylem_reader_fn_t read_fn; /*< Underlying read-some function. */
-    uint8_t*         buf;     /*< Internal buffer (caller-provided). */
-    int              cap;     /*< Buffer capacity in bytes. */
-    int              r;       /*< Read cursor into buf. */
-    int              w;       /*< Write cursor into buf. */
-} xylem_reader_t;
+typedef struct xylem_reader_s xylem_reader_t;
 
 /**
- * @brief Initialize a buffered reader.
+ * @brief Create a buffered reader.
  *
- * @param rd       Reader to initialize.
- * @param ctx      Opaque context passed to read_fn.
- * @param read_fn  Underlying read function (read-some semantics).
- * @param buf      Caller-provided buffer.
- * @param cap      Buffer capacity in bytes. Must be > 0.
+ * @param conn       Transport connection handle.
+ * @param transport  Transport type (determines read function).
+ * @param size   Internal buffer size in bytes. Must be > 0.
+ *
+ * @return Reader handle, or NULL on failure.
  */
-extern void xylem_reader_init(
-    xylem_reader_t*   rd,
-    void*             ctx,
-    xylem_reader_fn_t read_fn,
-    void*             buf,
-    int               cap);
+extern xylem_reader_t* xylem_reader_create(
+    void*                    conn,
+    xylem_reader_transport_t transport,
+    int                      size);
 
 /**
- * @brief Deinitialize a buffered reader.
+ * @brief Destroy a buffered reader.
  *
- * Zeroes all fields. Does not free the caller-owned buffer.
- *
- * @param rd  Reader to deinitialize.
+ * @param rd  Reader to destroy.
  */
-extern void xylem_reader_deinit(xylem_reader_t* rd);
+extern void xylem_reader_destroy(xylem_reader_t* rd);
 
 /**
  * @brief Read up to len bytes (read-some semantics).

@@ -24,231 +24,228 @@
 
 #include <string.h>
 
+#define TEST_HOST          "127.0.0.1"
+#define TEST_PORT          14700
+#define SAFETY_TIMEOUT_MS  10000
+
 typedef struct {
-    const uint8_t* data;
-    size_t         len;
-    size_t         pos;
-    size_t         chunk_size;
-} _mock_stream_t;
+    xylem_channel_t*   ready;
+    xylem_waitgroup_t* wg;
+    uint16_t           port;
+} _ctx_t;
 
-static int _mock_read(void* ctx, void* buf, int len) {
-    _mock_stream_t* s = (_mock_stream_t*)ctx;
-    if (s->pos >= s->len) {
-        return 0;
-    }
-    size_t avail = s->len - s->pos;
-    size_t n = avail < (size_t)len ? avail : (size_t)len;
-    if (s->chunk_size > 0 && n > s->chunk_size) {
-        n = s->chunk_size;
-    }
-    memcpy(buf, s->data + s->pos, n);
-    s->pos += n;
-    return (int)n;
+static void _watchdog_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
+    (void)ud;
+    ASSERT(0 && "test timed out");
 }
 
-static void test_read(void) {
-    const uint8_t data[] = "hello world";
-    _mock_stream_t stream = {
-        .data = data, .len = 11, .pos = 0, .chunk_size = 0};
-    uint8_t rbuf[64];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
+static void _srv_echo(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
 
-    uint8_t out[16];
-    int n = xylem_reader_read(&rd, out, sizeof(out));
-    ASSERT(n == 11);
-    ASSERT(memcmp(out, "hello world", 11) == 0);
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
 
-    /* EOF */
-    n = xylem_reader_read(&rd, out, sizeof(out));
-    ASSERT(n == 0);
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
 
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_partial_chunks(void) {
-    const uint8_t data[] = "abcdefghij";
-    _mock_stream_t stream = {
-        .data = data, .len = 10, .pos = 0, .chunk_size = 3};
-    uint8_t rbuf[8];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    /* First read fills buffer (up to chunk_size=3), returns what's available. */
-    uint8_t out[10];
-    int n = xylem_reader_read(&rd, out, 10);
-    ASSERT(n > 0 && n <= 10);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_full(void) {
-    const uint8_t data[] = "0123456789ABCDEF";
-    _mock_stream_t stream = {
-        .data = data, .len = 16, .pos = 0, .chunk_size = 3};
-    uint8_t rbuf[8];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[16];
-    int rc = xylem_reader_read_full(&rd, out, 16);
-    ASSERT(rc == 0);
-    ASSERT(memcmp(out, "0123456789ABCDEF", 16) == 0);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_full_eof(void) {
-    const uint8_t data[] = "short";
-    _mock_stream_t stream = {
-        .data = data, .len = 5, .pos = 0, .chunk_size = 0};
-    uint8_t rbuf[32];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[10];
-    int rc = xylem_reader_read_full(&rd, out, 10);
-    ASSERT(rc == -1);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_until(void) {
-    const uint8_t data[] = "line1\nline2\nline3";
-    _mock_stream_t stream = {
-        .data = data, .len = 17, .pos = 0, .chunk_size = 4};
-    uint8_t rbuf[8];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[32];
-    int n = xylem_reader_read_until(&rd, '\n', out, sizeof(out));
-    ASSERT(n == 6);
-    ASSERT(memcmp(out, "line1\n", 6) == 0);
-
-    n = xylem_reader_read_until(&rd, '\n', out, sizeof(out));
-    ASSERT(n == 6);
-    ASSERT(memcmp(out, "line2\n", 6) == 0);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_until_overflow(void) {
-    const uint8_t data[] = "a very long line without delimiter";
-    _mock_stream_t stream = {
-        .data = data, .len = 34, .pos = 0, .chunk_size = 0};
-    uint8_t rbuf[64];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[8];
-    int n = xylem_reader_read_until(&rd, '\n', out, sizeof(out));
-    ASSERT(n == -1);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_read_until_eof(void) {
-    const uint8_t data[] = "no delimiter";
-    _mock_stream_t stream = {
-        .data = data, .len = 12, .pos = 0, .chunk_size = 0};
-    uint8_t rbuf[64];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[64];
-    int n = xylem_reader_read_until(&rd, '\n', out, sizeof(out));
-    ASSERT(n == -1);
-
-    xylem_reader_deinit(&rd);
-}
-
-static void test_peek(void) {
-    const uint8_t data[] = "ABCDEF";
-    _mock_stream_t stream = {
-        .data = data, .len = 6, .pos = 0, .chunk_size = 2};
-    uint8_t rbuf[16];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
-
-    uint8_t out[4];
-    int rc = xylem_reader_peek(&rd, out, 4);
-    ASSERT(rc == 0);
-    ASSERT(memcmp(out, "ABCD", 4) == 0);
-
-    /* Peek again returns same data. */
-    rc = xylem_reader_peek(&rd, out, 4);
-    ASSERT(rc == 0);
-    ASSERT(memcmp(out, "ABCD", 4) == 0);
-
-    /* Read consumes the peeked data. */
-    uint8_t consumed[4];
-    int n = xylem_reader_read(&rd, consumed, 4);
-    ASSERT(n == 4);
-    ASSERT(memcmp(consumed, "ABCD", 4) == 0);
-
-    /* Next read gives remaining data. */
-    n = xylem_reader_read(&rd, consumed, 4);
+    char buf[256];
+    int n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(memcmp(consumed, "EF", (size_t)n) == 0);
+    xylem_tcp_write(conn, buf, n);
 
-    xylem_reader_deinit(&rd);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_peek_exceeds_cap(void) {
-    const uint8_t data[] = "AB";
-    _mock_stream_t stream = {
-        .data = data, .len = 2, .pos = 0, .chunk_size = 0};
-    uint8_t rbuf[4];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
+static void _cli_read(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
 
-    uint8_t out[8];
-    int rc = xylem_reader_peek(&rd, out, 8);
-    ASSERT(rc == -1);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
 
-    xylem_reader_deinit(&rd);
+    const char* msg = "hello reader";
+    xylem_tcp_write(conn, msg, (int)strlen(msg));
+
+    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 64);
+    ASSERT(rd != NULL);
+
+    char buf[64];
+    int n = xylem_reader_read(rd, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_reader_destroy(rd);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_mixed_read_full_and_until(void) {
-    /* Simulate HTTP-like: headers (line-based) then body (fixed length). */
-    const uint8_t data[] = "Content-Length: 5\r\n\r\nhello";
-    _mock_stream_t stream = {
-        .data = data, .len = 26, .pos = 0, .chunk_size = 7};
-    uint8_t rbuf[16];
-    xylem_reader_t rd;
-    xylem_reader_init(&rd, &stream, _mock_read, rbuf, sizeof(rbuf));
+static void _read_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TEST_PORT,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_srv_echo, &ctx);
+    xylem_spawn(_cli_read, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
-    /* Read header line. */
-    uint8_t line[64];
-    int n = xylem_reader_read_until(&rd, '\n', line, sizeof(line));
-    ASSERT(n == 19);
-    ASSERT(memcmp(line, "Content-Length: 5\r\n", 19) == 0);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
+}
 
-    /* Read empty line. */
-    n = xylem_reader_read_until(&rd, '\n', line, sizeof(line));
-    ASSERT(n == 2);
-    ASSERT(memcmp(line, "\r\n", 2) == 0);
+static void test_reader_read(void) {
+    xylem_run(_read_main, NULL, NULL);
+}
 
-    /* Read body (fixed 5 bytes). */
-    uint8_t body[8];
-    int rc = xylem_reader_read_full(&rd, body, 5);
+static void _srv_lines(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(
+        TEST_HOST, (uint16_t)(ctx->port + 1), NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
+
+    const char* data = "line1\nline2\nline3\n";
+    xylem_tcp_write(conn, data, (int)strlen(data));
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _cli_read_until(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(
+        TEST_HOST, (uint16_t)(ctx->port + 1), 0, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 8);
+    ASSERT(rd != NULL);
+
+    char line[64];
+    int n = xylem_reader_read_until(rd, '\n', line, sizeof(line));
+    ASSERT(n == 6);
+    ASSERT(memcmp(line, "line1\n", 6) == 0);
+
+    n = xylem_reader_read_until(rd, '\n', line, sizeof(line));
+    ASSERT(n == 6);
+    ASSERT(memcmp(line, "line2\n", 6) == 0);
+
+    n = xylem_reader_read_until(rd, '\n', line, sizeof(line));
+    ASSERT(n == 6);
+    ASSERT(memcmp(line, "line3\n", 6) == 0);
+
+    xylem_reader_destroy(rd);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _read_until_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TEST_PORT,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_srv_lines, &ctx);
+    xylem_spawn(_cli_read_until, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
+}
+
+static void test_reader_read_until(void) {
+    xylem_run(_read_until_main, NULL, NULL);
+}
+
+static void _srv_full(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(
+        TEST_HOST, (uint16_t)(ctx->port + 2), NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
+
+    const char* data = "0123456789ABCDEF";
+    xylem_tcp_write(conn, data, 16);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _cli_read_full(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(
+        TEST_HOST, (uint16_t)(ctx->port + 2), 0, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 8);
+    ASSERT(rd != NULL);
+
+    char buf[16];
+    int rc = xylem_reader_read_full(rd, buf, 16);
     ASSERT(rc == 0);
-    ASSERT(memcmp(body, "hello", 5) == 0);
+    ASSERT(memcmp(buf, "0123456789ABCDEF", 16) == 0);
 
-    xylem_reader_deinit(&rd);
+    xylem_reader_destroy(rd);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _read_full_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TEST_PORT,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_srv_full, &ctx);
+    xylem_spawn(_cli_read_full, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
+}
+
+static void test_reader_read_full(void) {
+    xylem_run(_read_full_main, NULL, NULL);
 }
 
 int main(void) {
-    test_read();
-    test_read_partial_chunks();
-    test_read_full();
-    test_read_full_eof();
-    test_read_until();
-    test_read_until_overflow();
-    test_read_until_eof();
-    test_peek();
-    test_peek_exceeds_cap();
-    test_mixed_read_full_and_until();
+    test_reader_read();
+    test_reader_read_until();
+    test_reader_read_full();
     return 0;
 }

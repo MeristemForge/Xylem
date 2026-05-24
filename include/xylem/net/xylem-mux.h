@@ -30,8 +30,12 @@ _Pragma("once")
 typedef struct xylem_mux_s        xylem_mux_t;
 typedef struct xylem_mux_stream_s xylem_mux_stream_t;
 
-typedef int64_t (*xylem_mux_read_fn)(void* ctx, void* buf, size_t len);
-typedef int (*xylem_mux_write_fn)(void* ctx, const void* data, size_t len);
+typedef enum xylem_mux_transport_e {
+    XYLEM_MUX_TCP,
+    XYLEM_MUX_TLS,
+    XYLEM_MUX_UDS,
+    XYLEM_MUX_RUDP_STREAM
+} xylem_mux_transport_t;
 
 typedef enum xylem_mux_role_e {
     XYLEM_MUX_CLIENT, /*< Open streams use odd IDs (1,3,5...). */
@@ -50,29 +54,27 @@ typedef struct xylem_mux_opts_s {
  * Spawns a background reader coroutine that demultiplexes incoming
  * frames and dispatches them to the appropriate streams.
  *
- * @param ctx    Opaque transport context passed to read/write.
- * @param read   Transport read callback (same signature as tcp/tls recv).
- * @param write  Transport write callback (same signature as tcp/tls send).
- * @param role   Client or server (determines stream ID allocation).
- * @param opts   Options, or NULL for defaults.
+ * @param conn       Transport connection handle.
+ * @param transport  Transport type (determines read/write functions).
+ * @param role       Client or server (determines stream ID allocation).
+ * @param opts       Options, or NULL for defaults.
  *
  * @return Session handle, or NULL on failure.
  */
 extern xylem_mux_t* xylem_mux_create(
-    void*              ctx,
-    xylem_mux_read_fn  read,
-    xylem_mux_write_fn write,
-    xylem_mux_role_t   role,
-    xylem_mux_opts_t*  opts);
+    void*                  conn,
+    xylem_mux_transport_t  transport,
+    xylem_mux_role_t       role,
+    xylem_mux_opts_t*      opts);
 
 /**
- * @brief Close the mux session.
+ * @brief Destroy the mux session.
  *
  * Sends GoAway, resets all streams, and releases resources.
  *
  * @param mux  Session handle.
  */
-extern void xylem_mux_close(xylem_mux_t* mux);
+extern void xylem_mux_destroy(xylem_mux_t* mux);
 
 /**
  * @brief Open a new stream on the session.
@@ -109,7 +111,7 @@ extern xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux);
  *
  * @return Bytes read (>0), 0 on remote close, -1 on error/reset.
  */
-extern int64_t xylem_mux_recv(
+extern int64_t xylem_mux_read(
     xylem_mux_stream_t* s, void* buf, size_t len);
 
 /**
@@ -124,7 +126,7 @@ extern int64_t xylem_mux_recv(
  *
  * @return 0 on success, -1 on error/reset.
  */
-extern int xylem_mux_send(
+extern int xylem_mux_write(
     xylem_mux_stream_t* s, const void* data, size_t len);
 
 /**
@@ -132,7 +134,7 @@ extern int xylem_mux_send(
  *
  * @param s  Stream handle.
  */
-extern void xylem_mux_stream_close(xylem_mux_stream_t* s);
+extern void xylem_mux_close_stream(xylem_mux_stream_t* s);
 
 /**
  * @brief Set the read deadline for a stream.

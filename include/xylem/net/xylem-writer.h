@@ -23,51 +23,43 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/**
- * Write function signature for the underlying transport.
- * Must write all len bytes or return error.
- * Returns 0 on success, -1 on error.
- */
-typedef int (*xylem_writer_fn_t)(void* ctx, const void* data, int len);
+typedef enum xylem_writer_transport_e {
+    XYLEM_WRITER_TCP,
+    XYLEM_WRITER_TLS,
+    XYLEM_WRITER_UDS,
+    XYLEM_WRITER_RUDP_STREAM,
+    XYLEM_WRITER_MUX
+} xylem_writer_transport_t;
 
 /**
  * Buffered writer over any byte stream.
  *
  * Batches multiple small writes into fewer transport calls.
- * Caller owns the buffer memory.
  */
-typedef struct xylem_writer_s {
-    void*             ctx;      /*< Opaque transport context. */
-    xylem_writer_fn_t write_fn; /*< Underlying write-some function. */
-    uint8_t*          buf;      /*< Internal buffer (caller-provided). */
-    int               cap;      /*< Buffer capacity in bytes. */
-    int               w;        /*< Bytes buffered so far. */
-} xylem_writer_t;
+typedef struct xylem_writer_s xylem_writer_t;
 
 /**
- * @brief Initialize a buffered writer.
+ * @brief Create a buffered writer.
  *
- * @param wr        Writer to initialize.
- * @param ctx       Opaque context passed to write_fn.
- * @param write_fn  Underlying write function (write-some semantics).
- * @param buf       Caller-provided buffer.
- * @param cap       Buffer capacity in bytes. Must be > 0.
+ * @param conn       Transport connection handle.
+ * @param transport  Transport type (determines write function).
+ * @param size   Internal buffer size in bytes. Must be > 0.
+ *
+ * @return Writer handle, or NULL on failure.
  */
-extern void xylem_writer_init(
-    xylem_writer_t*   wr,
-    void*             ctx,
-    xylem_writer_fn_t write_fn,
-    void*             buf,
-    int               cap);
+extern xylem_writer_t* xylem_writer_create(
+    void*                    conn,
+    xylem_writer_transport_t transport,
+    int                      size);
 
 /**
- * @brief Reset writer state. Does not free the buffer.
+ * @brief Destroy a buffered writer.
  *
- * Discards any unflushed data.
+ * Flushes pending data before releasing resources.
  *
- * @param wr  Writer to reset.
+ * @param wr  Writer to destroy.
  */
-extern void xylem_writer_deinit(xylem_writer_t* wr);
+extern void xylem_writer_destroy(xylem_writer_t* wr);
 
 /**
  * @brief Write data through the buffer.

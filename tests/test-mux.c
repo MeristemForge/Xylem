@@ -40,22 +40,15 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     ASSERT(0 && "test timed out");
 }
 
-static int64_t _tcp_mux_read(void* ctx, void* buf, size_t len) {
-    return xylem_tcp_read((xylem_tcp_conn_t*)ctx, buf, (int)len);
-}
-
-static int _tcp_mux_write(void* ctx, const void* data, size_t len) {
-    return xylem_tcp_write((xylem_tcp_conn_t*)ctx, data, (int)len);
-}
 
 static void _srv_echo_stream(void* arg) {
     xylem_mux_stream_t* s = (xylem_mux_stream_t*)arg;
     char buf[256];
-    int64_t n = xylem_mux_recv(s, buf, sizeof(buf));
+    int64_t n = xylem_mux_read(s, buf, sizeof(buf));
     if (n > 0) {
-        xylem_mux_send(s, buf, (size_t)n);
+        xylem_mux_write(s, buf, (size_t)n);
     }
-    xylem_mux_stream_close(s);
+    xylem_mux_close_stream(s);
 }
 
 static void _srv_worker(void* arg) {
@@ -69,14 +62,14 @@ static void _srv_worker(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux = xylem_mux_create(
-        conn, _tcp_mux_read, _tcp_mux_write, XYLEM_MUX_SERVER, NULL);
+        conn, XYLEM_MUX_TCP, XYLEM_MUX_SERVER, NULL);
     ASSERT(mux != NULL);
 
     xylem_mux_stream_t* s = xylem_mux_accept_stream(mux);
     ASSERT(s != NULL);
     _srv_echo_stream(s);
 
-    xylem_mux_close(mux);
+    xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(ln);
     xylem_waitgroup_done(ctx->wg);
@@ -90,22 +83,22 @@ static void _cli_worker(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux = xylem_mux_create(
-        conn, _tcp_mux_read, _tcp_mux_write, XYLEM_MUX_CLIENT, NULL);
+        conn, XYLEM_MUX_TCP, XYLEM_MUX_CLIENT, NULL);
     ASSERT(mux != NULL);
 
     xylem_mux_stream_t* s = xylem_mux_open_stream(mux);
     ASSERT(s != NULL);
 
     const char* msg = "hello xylem mux";
-    ASSERT(xylem_mux_send(s, msg, strlen(msg)) == 0);
+    ASSERT(xylem_mux_write(s, msg, strlen(msg)) == 0);
 
     char buf[64];
-    int64_t n = xylem_mux_recv(s, buf, sizeof(buf));
+    int64_t n = xylem_mux_read(s, buf, sizeof(buf));
     ASSERT(n == (int64_t)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_mux_stream_close(s);
-    xylem_mux_close(mux);
+    xylem_mux_close_stream(s);
+    xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -146,7 +139,7 @@ static void _multi_srv_worker(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux = xylem_mux_create(
-        conn, _tcp_mux_read, _tcp_mux_write, XYLEM_MUX_SERVER, NULL);
+        conn, XYLEM_MUX_TCP, XYLEM_MUX_SERVER, NULL);
     ASSERT(mux != NULL);
 
     for (int i = 0; i < 3; i++) {
@@ -167,7 +160,7 @@ static void _multi_cli_worker(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux = xylem_mux_create(
-        conn, _tcp_mux_read, _tcp_mux_write, XYLEM_MUX_CLIENT, NULL);
+        conn, XYLEM_MUX_TCP, XYLEM_MUX_CLIENT, NULL);
     ASSERT(mux != NULL);
 
     for (int i = 0; i < 3; i++) {
@@ -176,17 +169,17 @@ static void _multi_cli_worker(void* arg) {
 
         char msg[32];
         snprintf(msg, sizeof(msg), "stream-%d", i);
-        ASSERT(xylem_mux_send(s, msg, strlen(msg)) == 0);
+        ASSERT(xylem_mux_write(s, msg, strlen(msg)) == 0);
 
         char buf[64];
-        int64_t n = xylem_mux_recv(s, buf, sizeof(buf));
+        int64_t n = xylem_mux_read(s, buf, sizeof(buf));
         ASSERT(n == (int64_t)strlen(msg));
         ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-        xylem_mux_stream_close(s);
+        xylem_mux_close_stream(s);
     }
 
-    xylem_mux_close(mux);
+    xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }

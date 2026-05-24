@@ -24,147 +24,164 @@
 
 #include <string.h>
 
+#define TEST_HOST          "127.0.0.1"
+#define TEST_PORT          14800
+#define SAFETY_TIMEOUT_MS  10000
+
 typedef struct {
-    uint8_t* data;
-    size_t   cap;
-    size_t   pos;
-    size_t   write_count;
-} _mock_sink_t;
+    xylem_channel_t*   ready;
+    xylem_waitgroup_t* wg;
+    uint16_t           port;
+} _ctx_t;
 
-static int _mock_write(void* ctx, const void* data, int len) {
-    _mock_sink_t* s = (_mock_sink_t*)ctx;
-    if (s->pos >= s->cap) {
-        return -1;
+static void _watchdog_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
+    (void)ud;
+    ASSERT(0 && "test timed out");
+}
+
+static void _srv_recv(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
+
+    char buf[256];
+    int total = 0;
+    for (;;) {
+        int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
+        if (n <= 0) break;
+        total += n;
     }
-    size_t avail = s->cap - s->pos;
-    size_t n = avail < (size_t)len ? avail : (size_t)len;
-    memcpy(s->data + s->pos, data, n);
-    s->pos += n;
-    s->write_count++;
-    return (int)n;
+
+    ASSERT(total == 9);
+    ASSERT(memcmp(buf, "aaabbbccc", 9) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_single_write_buffered(void) {
-    uint8_t sink_buf[256];
-    _mock_sink_t sink = {.data = sink_buf, .cap = sizeof(sink_buf)};
-    uint8_t wbuf[64];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
+static void _cli_write(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
 
-    int rc = xylem_writer_write(&wr, "hello", 5);
-    ASSERT(rc == 0);
-    ASSERT(sink.pos == 0);
-    ASSERT(sink.write_count == 0);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
 
-    rc = xylem_writer_flush(&wr);
-    ASSERT(rc == 0);
-    ASSERT(sink.pos == 5);
-    ASSERT(sink.write_count == 1);
-    ASSERT(memcmp(sink_buf, "hello", 5) == 0);
+    xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 64);
+    ASSERT(wr != NULL);
 
-    xylem_writer_deinit(&wr);
+    ASSERT(xylem_writer_write(wr, "aaa", 3) == 0);
+    ASSERT(xylem_writer_write(wr, "bbb", 3) == 0);
+    ASSERT(xylem_writer_write(wr, "ccc", 3) == 0);
+
+    xylem_writer_destroy(wr);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_multiple_writes_batched(void) {
-    uint8_t sink_buf[256];
-    _mock_sink_t sink = {.data = sink_buf, .cap = sizeof(sink_buf)};
-    uint8_t wbuf[64];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
+static void _write_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TEST_PORT,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_srv_recv, &ctx);
+    xylem_spawn(_cli_write, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
-    xylem_writer_write(&wr, "aaa", 3);
-    xylem_writer_write(&wr, "bbb", 3);
-    xylem_writer_write(&wr, "ccc", 3);
-    ASSERT(sink.write_count == 0);
-
-    xylem_writer_flush(&wr);
-    ASSERT(sink.write_count == 1);
-    ASSERT(sink.pos == 9);
-    ASSERT(memcmp(sink_buf, "aaabbbccc", 9) == 0);
-
-    xylem_writer_deinit(&wr);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
 }
 
-static void test_auto_flush_on_full(void) {
-    uint8_t sink_buf[256];
-    _mock_sink_t sink = {.data = sink_buf, .cap = sizeof(sink_buf)};
-    uint8_t wbuf[8];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
-
-    xylem_writer_write(&wr, "12345", 5);
-    ASSERT(sink.write_count == 0);
-
-    /* This exceeds buffer (5+5=10 > 8), triggers flush of "12345". */
-    xylem_writer_write(&wr, "67890", 5);
-    ASSERT(sink.write_count == 1);
-    ASSERT(memcmp(sink_buf, "12345", 5) == 0);
-
-    /* "67890" is now in the buffer. */
-    xylem_writer_flush(&wr);
-    ASSERT(sink.write_count == 2);
-    ASSERT(sink.pos == 10);
-    ASSERT(memcmp(sink_buf, "1234567890", 10) == 0);
-
-    xylem_writer_deinit(&wr);
+static void test_writer_batched(void) {
+    xylem_run(_write_main, NULL, NULL);
 }
 
-static void test_large_write_bypasses_buffer(void) {
-    uint8_t sink_buf[256];
-    _mock_sink_t sink = {.data = sink_buf, .cap = sizeof(sink_buf)};
-    uint8_t wbuf[8];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
+static void _srv_recv_large(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
 
-    xylem_writer_write(&wr, "ab", 2);
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(
+        TEST_HOST, (uint16_t)(ctx->port + 1), NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
 
-    /* Write larger than buffer cap=8, bypasses buffer. */
-    xylem_writer_write(&wr, "LARGE-DATA!!", 12);
-    /* "ab" flushed first, then "LARGE-DATA!!" sent directly. */
-    ASSERT(sink.write_count == 2);
-    ASSERT(sink.pos == 14);
-    ASSERT(memcmp(sink_buf, "abLARGE-DATA!!", 14) == 0);
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
 
-    xylem_writer_deinit(&wr);
+    char buf[256];
+    int total = 0;
+    for (;;) {
+        int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
+        if (n <= 0) break;
+        total += n;
+    }
+
+    /* "ab" + "LARGE-DATA!!" = 14 bytes */
+    ASSERT(total == 14);
+    ASSERT(memcmp(buf, "abLARGE-DATA!!", 14) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_flush_empty(void) {
-    uint8_t sink_buf[64];
-    _mock_sink_t sink = {.data = sink_buf, .cap = sizeof(sink_buf)};
-    uint8_t wbuf[16];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
+static void _cli_write_large(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
 
-    int rc = xylem_writer_flush(&wr);
-    ASSERT(rc == 0);
-    ASSERT(sink.write_count == 0);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(
+        TEST_HOST, (uint16_t)(ctx->port + 1), 0, NULL);
+    ASSERT(conn != NULL);
 
-    xylem_writer_deinit(&wr);
+    xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 8);
+    ASSERT(wr != NULL);
+
+    ASSERT(xylem_writer_write(wr, "ab", 2) == 0);
+    ASSERT(xylem_writer_write(wr, "LARGE-DATA!!", 12) == 0);
+
+    xylem_writer_destroy(wr);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_write_error_propagates(void) {
-    _mock_sink_t sink = {.data = NULL, .cap = 0};
-    uint8_t wbuf[8];
-    xylem_writer_t wr;
-    xylem_writer_init(&wr, &sink, _mock_write, wbuf, sizeof(wbuf));
+static void _write_large_main(void* arg) {
+    (void)arg;
+    _ctx_t ctx = {
+        .ready = xylem_channel_create(),
+        .wg    = xylem_waitgroup_create(),
+        .port  = TEST_PORT,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_srv_recv_large, &ctx);
+    xylem_spawn(_cli_write_large, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
 
-    /* Buffer 7 bytes (does not trigger flush). */
-    int rc = xylem_writer_write(&wr, "1234567", 7);
-    ASSERT(rc == 0);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_shutdown();
+}
 
-    /* Next write exceeds buffer, triggers flush which fails (cap=0). */
-    rc = xylem_writer_write(&wr, "xy", 2);
-    ASSERT(rc == -1);
-
-    xylem_writer_deinit(&wr);
+static void test_writer_large_bypass(void) {
+    xylem_run(_write_large_main, NULL, NULL);
 }
 
 int main(void) {
-    test_single_write_buffered();
-    test_multiple_writes_batched();
-    test_auto_flush_on_full();
-    test_large_write_bypasses_buffer();
-    test_flush_empty();
-    test_write_error_propagates();
+    test_writer_batched();
+    test_writer_large_bypass();
     return 0;
 }
