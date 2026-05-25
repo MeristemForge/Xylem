@@ -24,6 +24,8 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
+#include <stddef.h>
+
 xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
     scheduler_t* sched = runtime_get_scheduler();

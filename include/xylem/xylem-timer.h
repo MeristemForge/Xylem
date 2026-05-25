@@ -53,6 +53,8 @@ extern xylem_timer_t* xylem_timer_after(
  * @brief Cancel the timer and release the handle. Thread-safe.
  *
  * A callback already in flight may still run to completion.
+ * Must not be called concurrently with xylem_timer_reset() on
+ * the same handle.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer  Timer handle, or NULL.
