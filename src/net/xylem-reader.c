@@ -23,6 +23,7 @@
 #include "xylem/net/xylem-tcp.h"
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-uds.h"
+#include "xylem/net/xylem-rudp.h"
 #include "xylem/net/xylem-mux.h"
 
 #include <stdlib.h>
@@ -46,7 +47,7 @@ static _reader_fn _reader_resolve_transport(xylem_reader_transport_t transport) 
     case XYLEM_READER_TCP:         return (_reader_fn)xylem_tcp_read;
     case XYLEM_READER_TLS:         return (_reader_fn)xylem_tls_read;
     case XYLEM_READER_UDS:         return (_reader_fn)xylem_uds_read;
-    case XYLEM_READER_RUDP_STREAM: return NULL; /* TODO */
+    case XYLEM_READER_RUDP_STREAM: return (_reader_fn)xylem_rudp_read;
     case XYLEM_READER_MUX:         return (_reader_fn)xylem_mux_read;
     default:                       return NULL;
     }
