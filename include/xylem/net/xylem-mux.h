@@ -111,8 +111,8 @@ extern xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux);
  *
  * @return Bytes read (>0), 0 on remote close, -1 on error/reset.
  */
-extern int64_t xylem_mux_read(
-    xylem_mux_stream_t* s, void* buf, size_t len);
+extern int xylem_mux_read(
+    xylem_mux_stream_t* s, void* buf, int len);
 
 /**
  * @brief Send data on a stream.
@@ -127,7 +127,7 @@ extern int64_t xylem_mux_read(
  * @return 0 on success, -1 on error/reset.
  */
 extern int xylem_mux_write(
-    xylem_mux_stream_t* s, const void* data, size_t len);
+    xylem_mux_stream_t* s, const void* data, int len);
 
 /**
  * @brief Close a stream. Sends FIN to the peer.

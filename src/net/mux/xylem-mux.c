@@ -36,8 +36,8 @@
 
 #define MUX_MAX_FRAME_PAYLOAD 65535
 
-typedef int64_t (*_mux_read_fn_t)(void* ctx, void* buf, size_t len);
-typedef int (*_mux_write_fn_t)(void* ctx, const void* data, size_t len);
+typedef int (*_mux_read_fn_t)(void* ctx, void* buf, int len);
+typedef int (*_mux_write_fn_t)(void* ctx, const void* data, int len);
 
 struct xylem_mux_s {
     void*                       transport_ctx;
@@ -103,16 +103,16 @@ static int _mux_add_stream(
     return 0;
 }
 
-static int _mux_read_full(xylem_mux_t* mux, void* buf, size_t len) {
+static int _mux_read_full(xylem_mux_t* mux, void* buf, int len) {
     uint8_t* ptr = (uint8_t*)buf;
-    size_t   rem = len;
+    int      rem = len;
     while (rem > 0) {
-        int64_t n = mux->read_fn(mux->transport_ctx, ptr, rem);
+        int n = mux->read_fn(mux->transport_ctx, ptr, rem);
         if (n <= 0) {
             return -1;
         }
         ptr += n;
-        rem -= (size_t)n;
+        rem -= n;
     }
     return 0;
 }
@@ -143,6 +143,116 @@ static void _mux_send_window_update(
     _mux_write_frame(mux, &hdr, NULL);
 }
 
+static struct xylem_mux_stream_s* _mux_accept_syn(
+    xylem_mux_t* mux, uint32_t stream_id) {
+    struct xylem_mux_stream_s* s = _mux_find_stream(mux, stream_id);
+    if (!s) {
+        s = mux_stream_create(mux, stream_id, mux->max_stream_window);
+        if (s) {
+            s->state = MUX_STREAM_ESTABLISHED;
+            mux_stream_ref(s);
+            _mux_add_stream(mux, s);
+            xylem_channel_send(mux->accept_ch, s);
+        }
+    }
+    return s;
+}
+
+static int _mux_discard_payload(xylem_mux_t* mux, uint32_t length) {
+    uint8_t discard[4096];
+    int rem = (int)length;
+    while (rem > 0) {
+        int chunk = rem < (int)sizeof(discard) ? rem : (int)sizeof(discard);
+        if (_mux_read_full(mux, discard, chunk) != 0) {
+            return -1;
+        }
+        rem -= chunk;
+    }
+    return 0;
+}
+
+static int _mux_handle_data(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
+    struct xylem_mux_stream_s* s = _mux_find_stream(mux, hdr->stream_id);
+
+    if (hdr->flags & MUX_FLAG_SYN) {
+        s = _mux_accept_syn(mux, hdr->stream_id);
+    }
+
+    if (s && hdr->length > 0) {
+        uint8_t* payload = (uint8_t*)malloc(hdr->length);
+        if (payload && _mux_read_full(mux, payload, (int)hdr->length) == 0) {
+            mux_stream_push_data(s, payload, hdr->length);
+        }
+        free(payload);
+    } else if (hdr->length > 0) {
+        if (_mux_discard_payload(mux, hdr->length) != 0) {
+            return -1;
+        }
+    }
+
+    if (s && (hdr->flags & MUX_FLAG_FIN)) {
+        mux_stream_notify_remote_fin(s);
+    }
+    if (s && (hdr->flags & MUX_FLAG_RST)) {
+        mux_stream_notify_reset(s);
+    }
+    return 0;
+}
+
+static void _mux_handle_window_update(
+    xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
+    if (hdr->flags & MUX_FLAG_SYN) {
+        _mux_accept_syn(mux, hdr->stream_id);
+    }
+    struct xylem_mux_stream_s* s = _mux_find_stream(mux, hdr->stream_id);
+    if (s) {
+        mux_stream_update_send_window(s, hdr->length);
+    }
+}
+
+static void _mux_handle_ping(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
+    if (!(hdr->flags & MUX_FLAG_ACK)) {
+        _mux_frame_hdr_t pong = {
+            .version   = MUX_PROTO_VERSION,
+            .type      = MUX_TYPE_PING,
+            .flags     = MUX_FLAG_ACK,
+            .stream_id = 0,
+            .length    = hdr->length
+        };
+        _mux_write_frame(mux, &pong, NULL);
+    }
+}
+
+static void _mux_teardown(xylem_mux_t* mux) {
+    atomic_store_explicit(&mux->closed, true, memory_order_release);
+    for (size_t i = 0; i < mux->stream_count; i++) {
+        if (mux->streams[i]) {
+            mux_stream_notify_reset(mux->streams[i]);
+        }
+    }
+    xylem_channel_destroy(mux->accept_ch);
+    mux->accept_ch = NULL;
+    _mux_unref(mux);
+}
+
+static int _mux_dispatch(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
+    switch (hdr->type) {
+    case MUX_TYPE_DATA:
+        return _mux_handle_data(mux, hdr);
+    case MUX_TYPE_WINDOW_UPDATE:
+        _mux_handle_window_update(mux, hdr);
+        return 0;
+    case MUX_TYPE_PING:
+        _mux_handle_ping(mux, hdr);
+        return 0;
+    case MUX_TYPE_GO_AWAY:
+        atomic_store_explicit(&mux->closed, true, memory_order_release);
+        return 0;
+    default:
+        return 0;
+    }
+}
+
 static void _mux_reader_loop(void* arg) {
     xylem_mux_t* mux = (xylem_mux_t*)arg;
     uint8_t hdr_buf[MUX_FRAME_HDR_SIZE];
@@ -160,106 +270,12 @@ static void _mux_reader_loop(void* arg) {
             break;
         }
 
-        switch (hdr.type) {
-        case MUX_TYPE_DATA: {
-            struct xylem_mux_stream_s* s =
-                _mux_find_stream(mux, hdr.stream_id);
-
-            if (hdr.flags & MUX_FLAG_SYN) {
-                if (!s) {
-                    s = mux_stream_create(
-                        mux, hdr.stream_id, mux->max_stream_window);
-                    if (s) {
-                        s->state = MUX_STREAM_ESTABLISHED;
-                        mux_stream_ref(s);
-                        _mux_add_stream(mux, s);
-                        xylem_channel_send(mux->accept_ch, s);
-                    }
-                }
-            }
-
-            if (s && hdr.length > 0) {
-                uint8_t* payload = (uint8_t*)malloc(hdr.length);
-                if (payload
-                    && _mux_read_full(mux, payload, hdr.length) == 0) {
-                    mux_stream_push_data(s, payload, hdr.length);
-                }
-                free(payload);
-            } else if (hdr.length > 0) {
-                uint8_t discard[4096];
-                size_t rem = hdr.length;
-                while (rem > 0) {
-                    size_t chunk = rem < sizeof(discard)
-                                       ? rem : sizeof(discard);
-                    if (_mux_read_full(mux, discard, chunk) != 0) {
-                        goto exit_loop;
-                    }
-                    rem -= chunk;
-                }
-            }
-
-            if (s && (hdr.flags & MUX_FLAG_FIN)) {
-                mux_stream_notify_remote_fin(s);
-            }
-            if (s && (hdr.flags & MUX_FLAG_RST)) {
-                mux_stream_notify_reset(s);
-            }
-            break;
-        }
-        case MUX_TYPE_WINDOW_UPDATE: {
-            if (hdr.flags & MUX_FLAG_SYN) {
-                struct xylem_mux_stream_s* s =
-                    _mux_find_stream(mux, hdr.stream_id);
-                if (!s) {
-                    s = mux_stream_create(
-                        mux, hdr.stream_id, mux->max_stream_window);
-                    if (s) {
-                        s->state = MUX_STREAM_ESTABLISHED;
-                        mux_stream_ref(s);
-                        _mux_add_stream(mux, s);
-                        xylem_channel_send(mux->accept_ch, s);
-                    }
-                }
-            }
-            struct xylem_mux_stream_s* s =
-                _mux_find_stream(mux, hdr.stream_id);
-            if (s) {
-                mux_stream_update_send_window(s, hdr.length);
-            }
-            break;
-        }
-        case MUX_TYPE_PING: {
-            if (!(hdr.flags & MUX_FLAG_ACK)) {
-                _mux_frame_hdr_t pong = {
-                    .version   = MUX_PROTO_VERSION,
-                    .type      = MUX_TYPE_PING,
-                    .flags     = MUX_FLAG_ACK,
-                    .stream_id = 0,
-                    .length    = hdr.length
-                };
-                _mux_write_frame(mux, &pong, NULL);
-            }
-            break;
-        }
-        case MUX_TYPE_GO_AWAY: {
-            atomic_store_explicit(&mux->closed, true, memory_order_release);
-            break;
-        }
-        default:
+        if (_mux_dispatch(mux, &hdr) != 0) {
             break;
         }
     }
 
-exit_loop:
-    atomic_store_explicit(&mux->closed, true, memory_order_release);
-    for (size_t i = 0; i < mux->stream_count; i++) {
-        if (mux->streams[i]) {
-            mux_stream_notify_reset(mux->streams[i]);
-        }
-    }
-    xylem_channel_destroy(mux->accept_ch);
-    mux->accept_ch = NULL;
-    _mux_unref(mux);
+    _mux_teardown(mux);
 }
 
 static int _mux_resolve_transport(
@@ -422,17 +438,17 @@ static bool _mux_send_park_cb(mco_coro* co, void* arg) {
     return false;
 }
 
-int64_t xylem_mux_read(xylem_mux_stream_t* s, void* buf, size_t len) {
+int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
     mux_stream_ref(s);
 
     for (;;) {
         if (s->recv_len > 0) {
-            size_t n = s->recv_len < len ? s->recv_len : len;
-            memcpy(buf, s->recv_buf, n);
-            if (n < s->recv_len) {
-                memmove(s->recv_buf, s->recv_buf + n, s->recv_len - n);
+            int n = (int)s->recv_len < len ? (int)s->recv_len : len;
+            memcpy(buf, s->recv_buf, (size_t)n);
+            if ((size_t)n < s->recv_len) {
+                memmove(s->recv_buf, s->recv_buf + n, s->recv_len - (size_t)n);
             }
-            s->recv_len -= n;
+            s->recv_len -= (size_t)n;
 
             uint32_t consumed = s->mux->max_stream_window
                                 - s->recv_window - (uint32_t)s->recv_len;
@@ -442,7 +458,7 @@ int64_t xylem_mux_read(xylem_mux_stream_t* s, void* buf, size_t len) {
             }
 
             mux_stream_unref(s);
-            return (int64_t)n;
+            return n;
         }
 
         if (s->state == MUX_STREAM_REMOTE_CLOSE
@@ -456,10 +472,10 @@ int64_t xylem_mux_read(xylem_mux_stream_t* s, void* buf, size_t len) {
     }
 }
 
-int xylem_mux_write(xylem_mux_stream_t* s, const void* data, size_t len) {
+int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
     mux_stream_ref(s);
     const uint8_t* ptr = (const uint8_t*)data;
-    size_t         rem = len;
+    int            rem = len;
 
     while (rem > 0) {
         if (atomic_load_explicit(&s->closed, memory_order_acquire)

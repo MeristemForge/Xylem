@@ -44,9 +44,9 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
 static void _srv_echo_stream(void* arg) {
     xylem_mux_stream_t* s = (xylem_mux_stream_t*)arg;
     char buf[256];
-    int64_t n = xylem_mux_read(s, buf, sizeof(buf));
+    int n = xylem_mux_read(s, buf, (int)sizeof(buf));
     if (n > 0) {
-        xylem_mux_write(s, buf, (size_t)n);
+        xylem_mux_write(s, buf, n);
     }
     xylem_mux_close_stream(s);
 }
@@ -90,11 +90,11 @@ static void _cli_worker(void* arg) {
     ASSERT(s != NULL);
 
     const char* msg = "hello xylem mux";
-    ASSERT(xylem_mux_write(s, msg, strlen(msg)) == 0);
+    ASSERT(xylem_mux_write(s, msg, (int)strlen(msg)) == 0);
 
     char buf[64];
-    int64_t n = xylem_mux_read(s, buf, sizeof(buf));
-    ASSERT(n == (int64_t)strlen(msg));
+    int n = xylem_mux_read(s, buf, (int)sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
     xylem_mux_close_stream(s);
@@ -169,11 +169,11 @@ static void _multi_cli_worker(void* arg) {
 
         char msg[32];
         snprintf(msg, sizeof(msg), "stream-%d", i);
-        ASSERT(xylem_mux_write(s, msg, strlen(msg)) == 0);
+        ASSERT(xylem_mux_write(s, msg, (int)strlen(msg)) == 0);
 
         char buf[64];
-        int64_t n = xylem_mux_read(s, buf, sizeof(buf));
-        ASSERT(n == (int64_t)strlen(msg));
+        int n = xylem_mux_read(s, buf, (int)sizeof(buf));
+        ASSERT(n == (int)strlen(msg));
         ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
         xylem_mux_close_stream(s);
