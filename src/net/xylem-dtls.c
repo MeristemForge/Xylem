@@ -84,6 +84,7 @@ struct xylem_dtls_conn_s {
     addr_t                  peer_addr;
     char                    alpn[256];
     _Atomic bool            closed;
+    _Atomic int32_t         refcnt;
     bool                    handshake_done;
 
     /* client-side only (Socket BIO path) */
@@ -119,6 +120,7 @@ struct xylem_dtls_listener_s {
     bool                  accept_closed;
 
     _Atomic bool          closed;
+    _Atomic int32_t       refcnt;
 };
 
 static xylem_dtls_ctx_t* _dtls_get_ctx(SSL* ssl) {
@@ -506,6 +508,8 @@ static void _accept_queue_push(xylem_dtls_listener_t* ln,
                                xylem_dtls_conn_t* conn) {
     uint32_t mask = ln->accept_cap - 1;
     if (ln->accept_tail - ln->accept_head >= ln->accept_cap) {
+        xylem_logw("dtls: accept queue full, dropping connection");
+        xylem_dtls_close(conn);
         return;
     }
     ln->accept_slots[ln->accept_tail & mask] = conn;
@@ -548,18 +552,65 @@ static void _accept_queue_close(xylem_dtls_listener_t* ln) {
     }
 }
 
-static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
+static void _dtls_conn_ref(xylem_dtls_conn_t* dtls) {
+    atomic_fetch_add_explicit(&dtls->refcnt, 1, memory_order_relaxed);
+}
+
+static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
+    if (atomic_fetch_sub_explicit(&dtls->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    if (dtls->ssl) {
+        SSL_free(dtls->ssl);
+    }
+    if (dtls->waiter) {
+        iowait_destroy(dtls->waiter);
+    }
+    if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(dtls->fd);
+    }
+    sched_timer_destroy(dtls->retransmit_timer);
+    sched_timer_destroy(dtls->handshake_timer);
+    if (dtls->inbox) {
+        _inbox_destroy(dtls->inbox);
+    }
+    free(dtls);
+}
+
+static void _dtls_listener_ref(xylem_dtls_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
+
+static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    iowait_destroy(ln->waiter);
+    platform_socket_close(ln->fd);
+    mtx_destroy(&ln->sessions_mtx);
+    free(ln->accept_slots);
+    free(ln);
+}
+
+static int _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[16384];
     int  n;
+    int  result = 0;
     while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
         socklen_t addrlen =
             (dtls->peer_addr.storage.ss_family == AF_INET6)
                 ? (socklen_t)sizeof(struct sockaddr_in6)
                 : (socklen_t)sizeof(struct sockaddr_in);
-        platform_socket_sendto(
+        ssize_t sent = platform_socket_sendto(
             dtls->listener->fd, buf, n,
             &dtls->peer_addr.storage, addrlen);
+        if (sent < 0) {
+            result = -1;
+        }
     }
+    return result;
 }
 
 static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
@@ -615,7 +666,8 @@ static int _dtls_handle_io_block(xylem_dtls_conn_t* dtls, int ssl_err,
     return 0;
 }
 
-static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
+static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls,
+                                     uint64_t connect_deadline) {
     for (;;) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
@@ -624,7 +676,33 @@ static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls) {
         }
         int err = SSL_get_error(dtls->ssl, ret);
         if (err == SSL_ERROR_WANT_READ) {
+            uint64_t rd_deadline = connect_deadline;
+            struct timeval tv;
+            if (DTLSv1_get_timeout(dtls->ssl, &tv)) {
+                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                uint64_t ms = (uint64_t)tv.tv_sec * 1000
+                            + (uint64_t)tv.tv_usec / 1000;
+                if (ms == 0) {
+                    ms = 1;
+                }
+                uint64_t retransmit_dl = now + ms;
+                if (rd_deadline == 0 || retransmit_dl < rd_deadline) {
+                    rd_deadline = retransmit_dl;
+                }
+            }
+            iowait_set_rd_deadline(dtls->waiter, rd_deadline);
             iowait_result_t r = iowait_read(dtls->waiter);
+            if (r == IOWAIT_TIMEOUT) {
+                if (connect_deadline > 0) {
+                    uint64_t now =
+                        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                    if (now >= connect_deadline) {
+                        return -1;
+                    }
+                }
+                DTLSv1_handle_timeout(dtls->ssl);
+                continue;
+            }
             if (r != IOWAIT_READY) {
                 return -1;
             }
@@ -655,7 +733,7 @@ static void _dtls_cache_alpn(xylem_dtls_conn_t* dtls) {
     }
 }
 
-static void _dtls_client_free(xylem_dtls_conn_t* dtls) {
+static void _dtls_client_free_early(xylem_dtls_conn_t* dtls) {
     if (dtls->ssl) {
         SSL_free(dtls->ssl);
     }
@@ -689,6 +767,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
 
+    atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
     dtls->fd  = fd;
     addr_pton(host, port, &dtls->peer_addr);
 
@@ -708,7 +787,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 
     dtls->ssl = SSL_new(ctx->ssl_ctx);
     if (!dtls->ssl) {
-        _dtls_client_free(dtls);
+        _dtls_client_free_early(dtls);
         return NULL;
     }
     SSL_set_fd(dtls->ssl, (int)fd);
@@ -732,8 +811,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
                    "certificate chain trust (MITM risk)");
     }
 
-    if (_dtls_client_do_handshake(dtls) != 0) {
-        _dtls_client_free(dtls);
+    if (_dtls_client_do_handshake(dtls, deadline) != 0) {
+        _dtls_client_free_early(dtls);
         return NULL;
     }
 
@@ -746,56 +825,73 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 
 static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return -1;
+    _dtls_conn_ref(dtls);
+    int64_t ret = -1;
+
+    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        for (;;) {
+            ERR_clear_error();
+            size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
+            int    n     = SSL_read(dtls->ssl, buf, (int)chunk);
+            if (n > 0) {
+                ret = n;
+                break;
+            }
+            int rc = _dtls_handle_io_block(
+                dtls, SSL_get_error(dtls->ssl, n), "SSL_read");
+            if (rc == 1) {
+                ret = 0;
+                break;
+            }
+            if (rc < 0) {
+                break;
+            }
+        }
     }
-    for (;;) {
-        ERR_clear_error();
-        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
-        int    n     = SSL_read(dtls->ssl, buf, (int)chunk);
-        if (n > 0) {
-            return n;
-        }
-        int rc = _dtls_handle_io_block(
-            dtls, SSL_get_error(dtls->ssl, n), "SSL_read");
-        if (rc == 1) {
-            return 0;
-        }
-        if (rc < 0) {
-            return -1;
-        }
-    }
+
+    _dtls_conn_unref(dtls);
+    return ret;
 }
 
 static int _dtls_client_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return -1;
-    }
-    if (len > INT_MAX) {
-        xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
-        return -1;
-    }
-    for (;;) {
-        ERR_clear_error();
-        int n = SSL_write(dtls->ssl, data, (int)len);
-        if (n > 0) {
-            return 0;
+    _dtls_conn_ref(dtls);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        if (len > INT_MAX) {
+            xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
+        } else {
+            for (;;) {
+                ERR_clear_error();
+                int n = SSL_write(dtls->ssl, data, (int)len);
+                if (n > 0) {
+                    ret = 0;
+                    break;
+                }
+                int rc = _dtls_handle_io_block(
+                    dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
+                if (rc != 0) {
+                    break;
+                }
+            }
         }
-        int rc = _dtls_handle_io_block(
-            dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
-        if (rc != 0) {
-            return -1;
-        }
     }
+
+    _dtls_conn_unref(dtls);
+    return ret;
 }
 
 static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
     if (atomic_exchange(&dtls->closed, true)) {
         return;
     }
+    if (dtls->ssl) {
+        ERR_clear_error();
+        SSL_shutdown(dtls->ssl);
+    }
     iowait_close(dtls->waiter);
-    _dtls_client_free(dtls);
+    _dtls_conn_unref(dtls);
 }
 
 static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls);
@@ -843,12 +939,14 @@ static void _dtls_handshake_coro(void* arg) {
     xylem_dtls_conn_t* dtls = arg;
     xylem_dtls_listener_t* ln = dtls->listener;
 
+    _dtls_conn_ref(dtls);
+
     if (_dtls_init_ssl(dtls, ln->ctx->ssl_ctx) != 0) {
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
-        _inbox_destroy(dtls->inbox);
-        free(dtls);
+        _dtls_conn_unref(dtls);
+        _dtls_conn_unref(dtls);
         return;
     }
 
@@ -908,18 +1006,17 @@ static void _dtls_handshake_coro(void* arg) {
     dtls->handshake_timer  = NULL;
 
     if (!success) {
-        SSL_free(dtls->ssl);
-        dtls->ssl = NULL;
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
-        _inbox_destroy(dtls->inbox);
-        free(dtls);
+        _dtls_conn_unref(dtls);
+        _dtls_conn_unref(dtls);
         return;
     }
 
     _dtls_cache_alpn(dtls);
     _accept_queue_push(ln, dtls);
+    _dtls_conn_unref(dtls);
 }
 
 static void _dtls_dispatcher(void* arg) {
@@ -976,6 +1073,8 @@ static void _dtls_dispatcher(void* arg) {
             free(dgram);
             continue;
         }
+        atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
+        dtls->fd               = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
         dtls->inbox            = _inbox_create(ln->sched);
@@ -1001,6 +1100,8 @@ static void _dtls_dispatcher(void* arg) {
 
         runtime_spawn(_dtls_handshake_coro, dtls);
     }
+
+    _dtls_listener_unref(ln);
 }
 
 xylem_dtls_listener_t* xylem_dtls_listen(
@@ -1037,6 +1138,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         return NULL;
     }
 
+    atomic_store_explicit(&ln->refcnt, 2, memory_order_relaxed);
+
     rbtree_init(&ln->sessions,
                 _dtls_session_cmp_nn, _dtls_session_cmp_kn);
     mtx_init(&ln->sessions_mtx, mtx_plain);
@@ -1057,57 +1160,69 @@ xylem_dtls_listener_t* xylem_dtls_listen(
 }
 
 xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
-    return _accept_queue_pop(ln);
+    _dtls_listener_ref(ln);
+    xylem_dtls_conn_t* conn = _accept_queue_pop(ln);
+    _dtls_listener_unref(ln);
+    return conn;
 }
 
 static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
                                  void* buf, size_t len) {
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return -1;
-    }
-    for (;;) {
-        _dtls_dgram_t* dgram = _inbox_pop(
-            dtls->inbox, dtls->rd_deadline_ms);
-        if (!dgram) {
-            return -1;
-        }
-        BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
-        free(dgram);
+    _dtls_conn_ref(dtls);
+    int64_t ret = -1;
 
-        ERR_clear_error();
-        size_t rchunk = len > INT_MAX ? (size_t)INT_MAX : len;
-        int    n      = SSL_read(dtls->ssl, buf, (int)rchunk);
-        if (n > 0) {
-            return n;
-        }
+    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        for (;;) {
+            _dtls_dgram_t* dgram = _inbox_pop(
+                dtls->inbox, dtls->rd_deadline_ms);
+            if (!dgram) {
+                break;
+            }
+            BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
+            free(dgram);
 
-        int err = SSL_get_error(dtls->ssl, n);
-        if (err == SSL_ERROR_ZERO_RETURN) {
-            return 0;
+            ERR_clear_error();
+            size_t rchunk = len > INT_MAX ? (size_t)INT_MAX : len;
+            int    n      = SSL_read(dtls->ssl, buf, (int)rchunk);
+            if (n > 0) {
+                ret = n;
+                break;
+            }
+
+            int err = SSL_get_error(dtls->ssl, n);
+            if (err == SSL_ERROR_ZERO_RETURN) {
+                ret = 0;
+                break;
+            }
+            if (err != SSL_ERROR_WANT_READ) {
+                break;
+            }
         }
-        if (err != SSL_ERROR_WANT_READ) {
-            return -1;
-        }
-        /* WANT_READ: pull next datagram from the inbox and feed BIO. */
     }
+
+    _dtls_conn_unref(dtls);
+    return ret;
 }
 
 static int _dtls_server_send(xylem_dtls_conn_t* dtls,
                              const void* data, size_t len) {
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return -1;
+    _dtls_conn_ref(dtls);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        if (len > INT_MAX) {
+            xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
+        } else {
+            ERR_clear_error();
+            int n = SSL_write(dtls->ssl, data, (int)len);
+            if (n > 0) {
+                ret = _dtls_server_flush_write_bio(dtls);
+            }
+        }
     }
-    if (len > INT_MAX) {
-        xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
-        return -1;
-    }
-    ERR_clear_error();
-    int n = SSL_write(dtls->ssl, data, (int)len);
-    if (n <= 0) {
-        return -1;
-    }
-    _dtls_server_flush_write_bio(dtls);
-    return 0;
+
+    _dtls_conn_unref(dtls);
+    return ret;
 }
 
 int64_t xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, size_t len) {
@@ -1146,14 +1261,7 @@ static void _dtls_server_session_close(xylem_dtls_conn_t* dtls) {
     rbtree_remove(&ln->sessions, &dtls->server_node);
     mtx_unlock(&ln->sessions_mtx);
 
-    if (dtls->ssl) {
-        SSL_free(dtls->ssl);
-        dtls->ssl = NULL;
-    }
-    sched_timer_destroy(dtls->retransmit_timer);
-    sched_timer_destroy(dtls->handshake_timer);
-    _inbox_destroy(dtls->inbox);
-    free(dtls);
+    _dtls_conn_unref(dtls);
 }
 
 void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
@@ -1182,13 +1290,7 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
 
     iowait_close(ln->waiter);
     _accept_queue_close(ln);
-    /* Let the dispatcher coroutine exit after iowait_close wakes it. */
-    runtime_sleep(1);
-    iowait_destroy(ln->waiter);
-    platform_socket_close(ln->fd);
-    mtx_destroy(&ln->sessions_mtx);
-    free(ln->accept_slots);
-    free(ln);
+    _dtls_listener_unref(ln);
 }
 
 void xylem_dtls_set_read_deadline(
