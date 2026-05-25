@@ -117,6 +117,7 @@ struct scheduler_s {
     bool                  joined;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
+    _Atomic uint32_t      timer_rr;
     /* Tracks parked coros (not in runq/deque) so destroy can reclaim them. */
     list_t                registry;
     spin_t                registry_lock;
@@ -1012,7 +1013,13 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
         return NULL;
     }
     t->sched = sched;
-    t->owner = _tls_worker ? _tls_worker->index : 0;
+    if (_tls_worker) {
+        t->owner = _tls_worker->index;
+    } else {
+        uint32_t rr = atomic_fetch_add_explicit(
+            &sched->timer_rr, 1, memory_order_relaxed);
+        t->owner = rr % (uint32_t)sched->nworkers;
+    }
     _sched_timer_ref(t);
     return t;
 }
