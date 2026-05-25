@@ -102,28 +102,28 @@ extern void xylem_rudp_close_listener(xylem_rudp_listener_t* ln);
  * Suspends until data is available, the connection closes, or
  * the read deadline expires.
  *
- * @param c    Connection handle.
- * @param buf  Destination buffer.
- * @param len  Buffer size.
+ * @param conn  Connection handle.
+ * @param buf   Destination buffer.
+ * @param len   Buffer size.
  *
  * @return Bytes read (>0), 0 on remote close, -1 on error.
  */
 extern int xylem_rudp_read(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     void*              buf,
     int                len);
 
 /**
  * @brief Write data on a stream-mode connection.
  *
- * @param c     Connection handle.
+ * @param conn  Connection handle.
  * @param data  Source buffer.
  * @param len   Number of bytes to write.
  *
  * @return 0 on success, -1 on error.
  */
 extern int xylem_rudp_write(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     const void*        data,
     int                len);
 
@@ -133,63 +133,63 @@ extern int xylem_rudp_write(
  * Suspends until a complete message is available, the connection
  * closes, or the read deadline expires.
  *
- * @param c    Connection handle.
- * @param buf  Destination buffer.
- * @param len  Buffer size.
+ * @param conn  Connection handle.
+ * @param buf   Destination buffer.
+ * @param len   Buffer size.
  *
  * @return Message size (>0), 0 on remote close, -1 on error
  *         or if buf is too small for the message.
  */
 extern int xylem_rudp_recv(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     void*              buf,
     int                len);
 
 /**
  * @brief Send a message on a message-mode connection.
  *
- * @param c     Connection handle.
+ * @param conn  Connection handle.
  * @param data  Message data.
  * @param len   Message length.
  *
  * @return 0 on success, -1 on error.
  */
 extern int xylem_rudp_send(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     const void*        data,
     int                len);
 
 /**
  * @brief Close a RUDP connection.
  *
- * @param c  Connection handle.
+ * @param conn  Connection handle.
  */
-extern void xylem_rudp_close(xylem_rudp_conn_t* c);
+extern void xylem_rudp_close(xylem_rudp_conn_t* conn);
 
 /**
  * @brief Set the read deadline for a connection.
  *
- * @param c            Connection handle.
+ * @param conn         Connection handle.
  * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
  */
 extern void xylem_rudp_set_read_deadline(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     uint64_t           deadline_ms);
 
 /**
  * @brief Set the write deadline for a connection.
  *
- * @param c            Connection handle.
+ * @param conn         Connection handle.
  * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
  */
 extern void xylem_rudp_set_write_deadline(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     uint64_t           deadline_ms);
 
 /**
  * @brief Get the peer address of a connection.
  *
- * @param c        Connection handle.
+ * @param conn     Connection handle.
  * @param host     Output buffer (at least 46 bytes).
  * @param hostlen  Buffer size.
  * @param port     Output port.
@@ -197,7 +197,7 @@ extern void xylem_rudp_set_write_deadline(
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_rudp_remote_addr(
-    xylem_rudp_conn_t* c,
+    xylem_rudp_conn_t* conn,
     char*              host,
     int                hostlen,
     uint16_t*          port);

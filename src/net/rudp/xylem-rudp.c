@@ -39,10 +39,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Constants                                                           */
-/* ------------------------------------------------------------------ */
-
 #define RUDP_DEFAULT_MTU         1400
 #define RUDP_DEFAULT_TIMEOUT_MS  5000
 #define RUDP_DEFAULT_DEADLINK_MS 30000
@@ -55,10 +51,6 @@
 #define RUDP_AES_IV_SIZE         16
 #define RUDP_INBOX_CAP           64
 #define RUDP_ACCEPT_CAP          16
-
-/* ------------------------------------------------------------------ */
-/* Internal types                                                      */
-/* ------------------------------------------------------------------ */
 
 typedef struct _rudp_dgram_s {
     size_t len;
@@ -120,24 +112,12 @@ struct xylem_rudp_listener_s {
     mco_coro*              accept_parked;
 };
 
-/* ------------------------------------------------------------------ */
-/* Session tree key                                                     */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     const addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;
 
-/* ------------------------------------------------------------------ */
-/* Module state                                                        */
-/* ------------------------------------------------------------------ */
-
 static _Atomic uint32_t _rudp_next_conv = 0;
-
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
 
 static uint32_t _rudp_clock_ms(void) {
     return (uint32_t)(xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) &
@@ -252,11 +232,6 @@ static int _rudp_decrypt_packet(xylem_aes256_t* aes, void* data,
     *out_len = (size_t)n;
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* RBTree comparators                                                   */
-/* ------------------------------------------------------------------ */
-
 static int _rudp_session_cmp_nn(const rbtree_node_t* a,
                                 const rbtree_node_t* b) {
     const xylem_rudp_conn_t* ca =
@@ -307,11 +282,6 @@ static xylem_rudp_conn_t* _rudp_find_session(
     }
     return rbtree_entry(node, xylem_rudp_conn_t, listener_node);
 }
-
-/* ------------------------------------------------------------------ */
-/* KCP output callback                                                 */
-/* ------------------------------------------------------------------ */
-
 static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user) {
     (void)kcp;
@@ -334,11 +304,6 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
     }
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* KCP creation                                                        */
-/* ------------------------------------------------------------------ */
-
 static ikcpcb* _rudp_create_kcp(xylem_rudp_conn_t* c, uint32_t conv,
                                 xylem_rudp_opts_t* opts) {
     ikcpcb* kcp = ikcp_create(conv, c);
@@ -380,11 +345,6 @@ static ikcpcb* _rudp_create_kcp(xylem_rudp_conn_t* c, uint32_t conv,
 
     return kcp;
 }
-
-/* ------------------------------------------------------------------ */
-/* FEC init                                                            */
-/* ------------------------------------------------------------------ */
-
 static int _rudp_init_fec(xylem_rudp_conn_t* c, int mtu,
                           uint32_t fec_data, uint32_t fec_parity) {
     if (fec_data == 0 || fec_parity == 0) {
@@ -404,11 +364,6 @@ static int _rudp_init_fec(xylem_rudp_conn_t* c, int mtu,
     }
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/* FEC receive path                                                    */
-/* ------------------------------------------------------------------ */
-
 /**
  * Feed a decrypted packet into FEC decoder (if enabled) then into
  * KCP. Always flushes KCP after input so ACKs go out immediately.
@@ -431,11 +386,6 @@ static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
         ikcp_flush(c->kcp);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Update timer                                                        */
-/* ------------------------------------------------------------------ */
-
 static void _rudp_schedule_update(xylem_rudp_conn_t* c);
 
 static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
@@ -467,11 +417,6 @@ static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
     uint64_t delay = (next <= now) ? 1 : (uint64_t)(next - now);
     sched_timer_reset(c->update_timer, delay);
 }
-
-/* ------------------------------------------------------------------ */
-/* Inbox (server session receive buffer)                               */
-/* ------------------------------------------------------------------ */
-
 static _rudp_inbox_t* _rudp_inbox_create(scheduler_t* sched) {
     _rudp_inbox_t* ib =
         (_rudp_inbox_t*)calloc(1, sizeof(_rudp_inbox_t));
@@ -582,11 +527,6 @@ static void _rudp_inbox_close(_rudp_inbox_t* ib) {
         scheduler_schedule(ib->sched, co);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Accept queue                                                        */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_rudp_listener_t* ln;
 } _rudp_accept_park_ctx_t;
@@ -633,11 +573,6 @@ static xylem_rudp_conn_t* _rudp_accept_pop(xylem_rudp_listener_t* ln) {
         scheduler_park(ln->sched, _rudp_accept_park_fn, &ctx);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Client dial                                                         */
-/* ------------------------------------------------------------------ */
-
 xylem_rudp_conn_t* xylem_rudp_dial(
     const char*        host,
     uint16_t           port,
@@ -836,11 +771,6 @@ dial_fail:
     free(c);
     return NULL;
 }
-
-/* ------------------------------------------------------------------ */
-/* Client read (via iowait on connected socket)                        */
-/* ------------------------------------------------------------------ */
-
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
     char recv_buf[RUDP_RECV_BUF_SIZE];
 
@@ -900,11 +830,6 @@ static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
         _rudp_schedule_update(c);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Server session read (via inbox from dispatcher)                     */
-/* ------------------------------------------------------------------ */
-
 static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
     for (;;) {
         /* Try KCP recv first. */
@@ -929,59 +854,40 @@ static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
         _rudp_schedule_update(c);
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Public read                                                         */
-/* ------------------------------------------------------------------ */
-
-int xylem_rudp_read(xylem_rudp_conn_t* c, void* buf, int len) {
-    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
+    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
         return -1;
     }
-    if (c->listener) {
-        return _rudp_session_read(c, buf, len);
+    if (conn->listener) {
+        return _rudp_session_read(conn, buf, len);
     }
-    return _rudp_client_read(c, buf, len);
+    return _rudp_client_read(conn, buf, len);
 }
 
-/* ------------------------------------------------------------------ */
-/* Client write                                                        */
-/* ------------------------------------------------------------------ */
-
-int xylem_rudp_write(xylem_rudp_conn_t* c, const void* data, int len) {
-    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
+    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
         return -1;
     }
     if (!data || len <= 0) {
         return 0;
     }
 
-    int rc = ikcp_send(c->kcp, (const char*)data, len);
+    int rc = ikcp_send(conn->kcp, (const char*)data, len);
     if (rc < 0) {
         return -1;
     }
-    ikcp_flush(c->kcp);
-    _rudp_schedule_update(c);
+    ikcp_flush(conn->kcp);
+    _rudp_schedule_update(conn);
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Message-mode send/recv                                              */
-/* ------------------------------------------------------------------ */
-
-int xylem_rudp_recv(xylem_rudp_conn_t* c, void* buf, int len) {
-    /* Same as read for message mode. ikcp_recv returns one message. */
-    return xylem_rudp_read(c, buf, len);
+int xylem_rudp_recv(xylem_rudp_conn_t* conn, void* buf, int len) {
+    return xylem_rudp_read(conn, buf, len);
 }
 
-int xylem_rudp_send(xylem_rudp_conn_t* c, const void* data, int len) {
-    return xylem_rudp_write(c, data, len);
+int xylem_rudp_send(xylem_rudp_conn_t* conn, const void* data, int len) {
+    return xylem_rudp_write(conn, data, len);
 }
-
-/* ------------------------------------------------------------------ */
-/* Server dispatcher coroutine                                         */
-/* ------------------------------------------------------------------ */
-
 static void _rudp_dispatcher(void* arg) {
     xylem_rudp_listener_t* ln = (xylem_rudp_listener_t*)arg;
     char recv_buf[RUDP_RECV_BUF_SIZE];
@@ -1191,11 +1097,6 @@ dispatch_next:
         }
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Server listen                                                       */
-/* ------------------------------------------------------------------ */
-
 xylem_rudp_listener_t* xylem_rudp_listen(
     const char*        host,
     uint16_t           port,
@@ -1268,74 +1169,54 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     xylem_logi("rudp listen: bound on %s:%u", host, port);
     return ln;
 }
-
-/* ------------------------------------------------------------------ */
-/* Server accept                                                       */
-/* ------------------------------------------------------------------ */
-
 xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
     return _rudp_accept_pop(ln);
 }
 
-
-/* ------------------------------------------------------------------ */
-/* Close                                                               */
-/* ------------------------------------------------------------------ */
-
-void xylem_rudp_close(xylem_rudp_conn_t* c) {
-    if (!c) {
+void xylem_rudp_close(xylem_rudp_conn_t* conn) {
+    if (!conn) {
         return;
     }
-    if (atomic_exchange(&c->closed, true)) {
+    if (atomic_exchange(&conn->closed, true)) {
         return;
     }
 
-    xylem_logi("rudp conv=%u: closing", c->conv);
+    xylem_logi("rudp conv=%u: closing", conn->conv);
 
-    /* Stop update timer. */
-    if (c->update_timer) {
-        sched_timer_stop(c->update_timer);
-        sched_timer_destroy(c->update_timer);
-        c->update_timer = NULL;
+    if (conn->update_timer) {
+        sched_timer_stop(conn->update_timer);
+        sched_timer_destroy(conn->update_timer);
+        conn->update_timer = NULL;
     }
 
-    if (c->listener) {
-        /* Server session: close inbox, remove from tree. */
-        _rudp_inbox_close(c->inbox);
-        rbtree_remove(&c->listener->sessions, &c->listener_node);
+    if (conn->listener) {
+        _rudp_inbox_close(conn->inbox);
+        rbtree_remove(&conn->listener->sessions, &conn->listener_node);
     } else {
-        /* Client: close iowait (wakes read). */
-        iowait_close(c->waiter);
+        iowait_close(conn->waiter);
     }
 
-    if (c->kcp) {
-        ikcp_release(c->kcp);
-        c->kcp = NULL;
+    if (conn->kcp) {
+        ikcp_release(conn->kcp);
+        conn->kcp = NULL;
     }
 
-    rudp_fec_enc_destroy(c->fec_enc);
-    rudp_fec_dec_destroy(c->fec_dec);
-    c->fec_enc = NULL;
-    c->fec_dec = NULL;
+    rudp_fec_enc_destroy(conn->fec_enc);
+    rudp_fec_dec_destroy(conn->fec_dec);
+    conn->fec_enc = NULL;
+    conn->fec_dec = NULL;
 
-    if (!c->listener) {
-        /* Client owns the socket and iowait. */
-        iowait_destroy(c->waiter);
-        platform_socket_close(c->fd);
-        xylem_aes256_destroy(c->aes);
+    if (!conn->listener) {
+        iowait_destroy(conn->waiter);
+        platform_socket_close(conn->fd);
+        xylem_aes256_destroy(conn->aes);
     } else {
-        /* Server session does not own fd or AES (shared by listener). */
-        _rudp_inbox_destroy(c->inbox);
-        c->inbox = NULL;
+        _rudp_inbox_destroy(conn->inbox);
+        conn->inbox = NULL;
     }
 
-    free(c);
+    free(conn);
 }
-
-/* ------------------------------------------------------------------ */
-/* Close listener                                                      */
-/* ------------------------------------------------------------------ */
-
 void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     if (!ln) {
         return;
@@ -1372,37 +1253,22 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     free(ln->accept_slots);
     free(ln);
 }
-
-/* ------------------------------------------------------------------ */
-/* Deadlines                                                           */
-/* ------------------------------------------------------------------ */
-
 void xylem_rudp_set_read_deadline(
-    xylem_rudp_conn_t* c, uint64_t deadline_ms) {
-    c->rd_deadline_ms = deadline_ms;
-    /* For client connections, also set on iowait. */
-    if (!c->listener && c->waiter) {
-        iowait_set_rd_deadline(c->waiter, deadline_ms);
+    xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    conn->rd_deadline_ms = deadline_ms;
+    if (!conn->listener && conn->waiter) {
+        iowait_set_rd_deadline(conn->waiter, deadline_ms);
     }
 }
 
 void xylem_rudp_set_write_deadline(
-    xylem_rudp_conn_t* c, uint64_t deadline_ms) {
-    (void)c;
+    xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    (void)conn;
     (void)deadline_ms;
-    /**
-     * Write is non-blocking (ikcp_send + flush). The write deadline
-     * is a no-op for RUDP since KCP buffers internally and the output
-     * callback sends directly. Retained for API symmetry.
-     */
 }
 
-/* ------------------------------------------------------------------ */
-/* Accessors                                                           */
-/* ------------------------------------------------------------------ */
-
 int xylem_rudp_remote_addr(
-    xylem_rudp_conn_t* c, char* host, int hostlen, uint16_t* port) {
-    return addr_ntop(&c->peer_addr, host, (size_t)hostlen, port);
+    xylem_rudp_conn_t* conn, char* host, int hostlen, uint16_t* port) {
+    return addr_ntop(&conn->peer_addr, host, (size_t)hostlen, port);
 }
 
