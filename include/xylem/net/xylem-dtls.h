@@ -30,7 +30,15 @@ typedef struct xylem_dtls_ctx_s      xylem_dtls_ctx_t;
 typedef struct xylem_dtls_listener_s xylem_dtls_listener_t;
 
 typedef struct xylem_dtls_opts_s {
-    uint64_t    connect_timeout_ms; /*< Handshake timeout in ms, 0 = default 30s. */
+    /**
+     * Timeout in milliseconds for completing the DTLS handshake.
+     *
+     * - Dial: covers the handshake (with retransmissions).
+     * - Accept: per-session handshake timeout on the server side.
+     *
+     * 0 means default (30s).
+     */
+    uint64_t    handshake_timeout_ms;
     /**
      * Expected peer identity. Accepts a DNS hostname or numeric IP
      * literal (IPv4 or IPv6). Drives SNI (only sent for DNS names;

@@ -781,8 +781,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
 
-    uint64_t timeout = (opts && opts->connect_timeout_ms > 0)
-        ? opts->connect_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
+    uint64_t timeout = (opts && opts->handshake_timeout_ms > 0)
+        ? opts->handshake_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
     uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
                         + timeout;
     iowait_set_rd_deadline(dtls->waiter, deadline);
@@ -951,9 +951,11 @@ static void _dtls_handshake_coro(void* arg) {
     SSL_set_accept_state(dtls->ssl);
     SSL_set_ex_data(dtls->ssl, _dtls_peer_addr_idx, &dtls->peer_addr);
 
+    uint64_t hs_timeout = ln->opts.handshake_timeout_ms > 0
+        ? ln->opts.handshake_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
     sched_timer_start(dtls->handshake_timer,
                       _dtls_handshake_timeout_cb, dtls,
-                      DTLS_DEFAULT_TIMEOUT_MS, 0);
+                      hs_timeout, 0);
 
     bool success = false;
     while (!dtls->handshake_done) {
