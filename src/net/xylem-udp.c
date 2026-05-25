@@ -30,7 +30,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <string.h>
 
 struct xylem_udp_chan_s {
@@ -140,16 +139,16 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     return udp;
 }
 
-int64_t xylem_udp_recv(
+int xylem_udp_recv(
     xylem_udp_chan_t* udp,
     void*        buf,
-    size_t       len,
+    int          len,
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
     _udp_chan_ref(udp);
 
-    int64_t ret = -1;
+    int ret = -1;
     for (;;) {
         if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
             break;
@@ -159,12 +158,11 @@ int64_t xylem_udp_recv(
         struct sockaddr_storage sender;
         socklen_t sender_len = sizeof(sender);
 
-        size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
         if (udp->connected) {
-            n = platform_socket_recv(udp->fd, buf, (int)chunk);
+            n = platform_socket_recv(udp->fd, buf, len);
         } else {
             n = platform_socket_recvfrom(
-                udp->fd, buf, (int)chunk, &sender, &sender_len);
+                udp->fd, buf, len, &sender, &sender_len);
         }
 
         if (n >= 0) {
@@ -177,7 +175,7 @@ int64_t xylem_udp_recv(
                 }
                 addr_ntop(&addr, host, host_len, port);
             }
-            ret = (int64_t)n;
+            ret = (int)n;
             break;
         }
 
@@ -203,14 +201,9 @@ int64_t xylem_udp_recv(
 int xylem_udp_send(
     xylem_udp_chan_t* udp,
     const void*  data,
-    size_t       len,
+    int          len,
     const char*  host,
     uint16_t     port) {
-    if (len > INT_MAX) {
-        xylem_loge("udp send: len %zu exceeds INT_MAX", len);
-        return -1;
-    }
-
     _udp_chan_ref(udp);
 
     int ret = -1;
@@ -221,7 +214,7 @@ int xylem_udp_send(
 
         ssize_t n;
         if (!host || udp->connected) {
-            n = platform_socket_send(udp->fd, data, (int)len);
+            n = platform_socket_send(udp->fd, data, len);
         } else {
             addr_t dest;
             if (addr_pton(host, port, &dest) != 0) {
@@ -234,7 +227,7 @@ int xylem_udp_send(
                     ? (socklen_t)sizeof(struct sockaddr_in6)
                     : (socklen_t)sizeof(struct sockaddr_in);
             n = platform_socket_sendto(
-                udp->fd, data, (int)len, &dest.storage, addrlen);
+                udp->fd, data, len, &dest.storage, addrlen);
         }
 
         if (n >= 0) {

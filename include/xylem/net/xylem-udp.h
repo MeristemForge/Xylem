@@ -70,10 +70,10 @@ extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
  *
  * @return Bytes received (>=0), -1 on error.
  */
-extern int64_t xylem_udp_recv(
+extern int xylem_udp_recv(
     xylem_udp_chan_t* udp,
     void*        buf,
-    size_t       len,
+    int          len,
     char*        host,
     size_t       host_len,
     uint16_t*    port);
@@ -101,7 +101,7 @@ extern int64_t xylem_udp_recv(
 extern int xylem_udp_send(
     xylem_udp_chan_t* udp,
     const void*  data,
-    size_t       len,
+    int          len,
     const char*  host,
     uint16_t     port);
 

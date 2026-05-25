@@ -37,7 +37,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <string.h>
 
 #define TLS_RECORD_MAX_PLAINTEXT 16384
@@ -823,16 +822,15 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     return dtls;
 }
 
-static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
-                                 void* buf, size_t len) {
+static int _dtls_client_recv(xylem_dtls_conn_t* dtls,
+                             void* buf, int len) {
     _dtls_conn_ref(dtls);
-    int64_t ret = -1;
+    int ret = -1;
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
             ERR_clear_error();
-            size_t chunk = len > INT_MAX ? (size_t)INT_MAX : len;
-            int    n     = SSL_read(dtls->ssl, buf, (int)chunk);
+            int n = SSL_read(dtls->ssl, buf, len);
             if (n > 0) {
                 ret = n;
                 break;
@@ -854,26 +852,22 @@ static int64_t _dtls_client_recv(xylem_dtls_conn_t* dtls,
 }
 
 static int _dtls_client_send(xylem_dtls_conn_t* dtls,
-                             const void* data, size_t len) {
+                             const void* data, int len) {
     _dtls_conn_ref(dtls);
     int ret = -1;
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        if (len > INT_MAX) {
-            xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
-        } else {
-            for (;;) {
-                ERR_clear_error();
-                int n = SSL_write(dtls->ssl, data, (int)len);
-                if (n > 0) {
-                    ret = 0;
-                    break;
-                }
-                int rc = _dtls_handle_io_block(
-                    dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
-                if (rc != 0) {
-                    break;
-                }
+        for (;;) {
+            ERR_clear_error();
+            int n = SSL_write(dtls->ssl, data, len);
+            if (n > 0) {
+                ret = 0;
+                break;
+            }
+            int rc = _dtls_handle_io_block(
+                dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
+            if (rc != 0) {
+                break;
             }
         }
     }
@@ -1166,10 +1160,10 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     return conn;
 }
 
-static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
-                                 void* buf, size_t len) {
+static int _dtls_server_recv(xylem_dtls_conn_t* dtls,
+                             void* buf, int len) {
     _dtls_conn_ref(dtls);
-    int64_t ret = -1;
+    int ret = -1;
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
@@ -1182,8 +1176,7 @@ static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
             free(dgram);
 
             ERR_clear_error();
-            size_t rchunk = len > INT_MAX ? (size_t)INT_MAX : len;
-            int    n      = SSL_read(dtls->ssl, buf, (int)rchunk);
+            int n = SSL_read(dtls->ssl, buf, len);
             if (n > 0) {
                 ret = n;
                 break;
@@ -1205,19 +1198,15 @@ static int64_t _dtls_server_recv(xylem_dtls_conn_t* dtls,
 }
 
 static int _dtls_server_send(xylem_dtls_conn_t* dtls,
-                             const void* data, size_t len) {
+                             const void* data, int len) {
     _dtls_conn_ref(dtls);
     int ret = -1;
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        if (len > INT_MAX) {
-            xylem_loge("dtls send: len %zu exceeds INT_MAX", len);
-        } else {
-            ERR_clear_error();
-            int n = SSL_write(dtls->ssl, data, (int)len);
-            if (n > 0) {
-                ret = _dtls_server_flush_write_bio(dtls);
-            }
+        ERR_clear_error();
+        int n = SSL_write(dtls->ssl, data, len);
+        if (n > 0) {
+            ret = _dtls_server_flush_write_bio(dtls);
         }
     }
 
@@ -1225,7 +1214,7 @@ static int _dtls_server_send(xylem_dtls_conn_t* dtls,
     return ret;
 }
 
-int64_t xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, size_t len) {
+int xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
     if (dtls->listener) {
         return _dtls_server_recv(dtls, buf, len);
     }
@@ -1233,7 +1222,7 @@ int64_t xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, size_t len) {
 }
 
 int xylem_dtls_send(xylem_dtls_conn_t* dtls,
-                    const void* data, size_t len) {
+                    const void* data, int len) {
     if (dtls->listener) {
         return _dtls_server_send(dtls, data, len);
     }

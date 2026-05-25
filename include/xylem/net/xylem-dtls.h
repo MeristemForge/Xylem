@@ -176,10 +176,10 @@ extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
  *
  * @return Bytes received (>0), 0 on peer close, -1 on error.
  */
-extern int64_t xylem_dtls_recv(
+extern int xylem_dtls_recv(
     xylem_dtls_conn_t* dtls,
     void*              buf,
-    size_t             len);
+    int                len);
 
 /**
  * @brief Send an encrypted datagram on the connection.
@@ -197,7 +197,7 @@ extern int64_t xylem_dtls_recv(
 extern int xylem_dtls_send(
     xylem_dtls_conn_t* dtls,
     const void*        data,
-    size_t             len);
+    int                len);
 
 /**
  * @brief Set the read deadline for the connection.
