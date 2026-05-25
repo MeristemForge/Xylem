@@ -214,11 +214,41 @@ static void test_reset_repeat(void) {
     xylem_run(_reset_repeat_main, NULL, NULL);
 }
 
+static void _blocking_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
+    _after_ctx_t* ctx = (_after_ctx_t*)ud;
+    xylem_sleep(20);
+    atomic_fetch_add(&ctx->fires, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _blocking_main(void* arg) {
+    (void)arg;
+    _after_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* t  = xylem_timer_after(10, _blocking_cb, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(t);
+    xylem_timer_cancel(wd);
+
+    ASSERT(atomic_load(&ctx.fires) == 1);
+
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_shutdown();
+}
+
+static void test_blocking_cb(void) {
+    xylem_run(_blocking_main, NULL, NULL);
+}
+
 int main(void) {
     test_after();
     test_cancel();
     test_repeat();
     test_reset();
     test_reset_repeat();
+    test_blocking_cb();
     return 0;
 }

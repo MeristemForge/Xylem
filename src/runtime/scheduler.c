@@ -148,6 +148,7 @@ struct xylem_timer_s {
     uint64_t         timeout;
     uint64_t         repeat;
     bool             active;
+    bool             spawn;
     _Atomic int32_t  refcnt;
     uint32_t         owner;
 };
@@ -314,11 +315,15 @@ static int _sched_timer_next_timeout(_sched_worker_t* w) {
     return timeout;
 }
 
+static void _sched_timer_spawn_entry(void* arg) {
+    sched_timer_t* t = (sched_timer_t*)arg;
+    t->cb(t, t->ud);
+    _sched_timer_unref(t);
+}
+
 static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
     for (;;) {
-        sched_timer_t*   timer = NULL;
-        sched_timer_fn_t cb    = NULL;
-        void*            ud    = NULL;
+        sched_timer_t* timer = NULL;
 
         mtx_lock(&w->timer_lock);
         heap_node_t* root = heap_peek(&w->timers);
@@ -334,8 +339,6 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
                 }
                 _sched_timer_ref(t);
                 timer = t;
-                cb    = t->cb;
-                ud    = t->ud;
             }
         }
         mtx_unlock(&w->timer_lock);
@@ -344,8 +347,16 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
             break;
         }
 
-        cb(timer, ud);
-        _sched_timer_unref(timer);
+        if (timer->spawn) {
+            if (scheduler_spawn(
+                    w->sched, _sched_timer_spawn_entry, timer) != 0) {
+                xylem_loge("timer spawn failed");
+                _sched_timer_unref(timer);
+            }
+        } else {
+            timer->cb(timer, timer->ud);
+            _sched_timer_unref(timer);
+        }
     }
 
     mtx_lock(&w->timer_lock);
@@ -928,10 +939,10 @@ void scheduler_schedule_batch(
     _sched_wake_worker(sched);
 }
 
-void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
+int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)calloc(1, sizeof(_coro_ctx_t));
     if (!ctx) {
-        return;
+        return -1;
     }
 
     ctx->fn = fn;
@@ -946,7 +957,7 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     mco_coro* co = NULL;
     if (mco_create(&co, &desc) != MCO_SUCCESS) {
         free(ctx);
-        return;
+        return -1;
     }
 
     ctx->co = co;
@@ -957,6 +968,7 @@ void scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 
     atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);
+    return 0;
 }
 
 void scheduler_park(
@@ -1003,6 +1015,10 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
     t->owner = _tls_worker ? _tls_worker->index : 0;
     _sched_timer_ref(t);
     return t;
+}
+
+void sched_timer_set_spawn(sched_timer_t* timer, bool spawn) {
+    timer->spawn = spawn;
 }
 
 void sched_timer_destroy(sched_timer_t* timer) {

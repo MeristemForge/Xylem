@@ -34,6 +34,7 @@ xylem_timer_t* xylem_timer_after(
     if (!t) {
         return NULL;
     }
+    sched_timer_set_spawn(t, true);
     sched_timer_start(t, cb, ud, delay_ms, 0);
     return t;
 }

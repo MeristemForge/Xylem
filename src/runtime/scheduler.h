@@ -159,7 +159,7 @@ extern void scheduler_schedule_batch(
  * @param fn     Coroutine entry function.
  * @param arg    Opaque argument.
  */
-extern void scheduler_spawn(
+extern int scheduler_spawn(
     scheduler_t* sched, void (*fn)(void*), void* arg);
 
 /**
@@ -225,6 +225,8 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
  * @return Timer handle, or NULL on failure.
  */
 extern sched_timer_t* sched_timer_create(scheduler_t* sched);
+
+extern void sched_timer_set_spawn(sched_timer_t* timer, bool spawn);
 
 /**
  * @brief Destroy a timer. Stops it first if active.

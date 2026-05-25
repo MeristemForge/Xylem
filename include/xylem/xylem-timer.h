@@ -29,8 +29,6 @@ typedef struct xylem_timer_s xylem_timer_t;
 /**
  * @brief Timer expiry callback.
  *
- * Not in a coroutine context. Use xylem_spawn() for blocking work.
- *
  * @param t   The timer that fired.
  * @param ud  User data.
  */
