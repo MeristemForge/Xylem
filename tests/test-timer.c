@@ -36,7 +36,7 @@ typedef struct {
 typedef struct {
     atomic_int         fires;
     xylem_waitgroup_t* wg;
-} _every_ctx_t;
+} _repeat_ctx_t;
 
 typedef struct {
     atomic_uint_least64_t fired_at_ms;
@@ -47,7 +47,7 @@ typedef struct {
 typedef struct {
     atomic_int         fires;
     xylem_waitgroup_t* wg;
-} _reset_every_ctx_t;
+} _reset_repeat_ctx_t;
 
 static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     (void)t;
@@ -104,22 +104,23 @@ static void test_cancel(void) {
     xylem_run(_cancel_main, NULL, NULL);
 }
 
-static void _every_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    _every_ctx_t* ctx = (_every_ctx_t*)ud;
+static void _repeat_cb(xylem_timer_t* t, void* ud) {
+    _repeat_ctx_t* ctx = (_repeat_ctx_t*)ud;
     int prev = atomic_fetch_add(&ctx->fires, 1);
     if (prev + 1 == FIRE_TARGET) {
         xylem_waitgroup_done(ctx->wg);
+    } else {
+        xylem_timer_reset(t, 10);
     }
 }
 
-static void _every_main(void* arg) {
+static void _repeat_main(void* arg) {
     (void)arg;
-    _every_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
-    xylem_timer_t* t  = xylem_timer_every(10, _every_cb, &ctx);
+    xylem_timer_t* t  = xylem_timer_after(10, _repeat_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);
 
@@ -134,8 +135,8 @@ static void _every_main(void* arg) {
     xylem_shutdown();
 }
 
-static void test_every(void) {
-    xylem_run(_every_main, NULL, NULL);
+static void test_repeat(void) {
+    xylem_run(_repeat_main, NULL, NULL);
 }
 
 static void _reset_cb(xylem_timer_t* t, void* ud) {
@@ -173,23 +174,24 @@ static void test_reset(void) {
     xylem_run(_reset_main, NULL, NULL);
 }
 
-static void _reset_every_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    _reset_every_ctx_t* ctx = (_reset_every_ctx_t*)ud;
+static void _reset_repeat_cb(xylem_timer_t* t, void* ud) {
+    _reset_repeat_ctx_t* ctx = (_reset_repeat_ctx_t*)ud;
     int prev = atomic_fetch_add(&ctx->fires, 1);
     if (prev + 1 == FIRE_TARGET) {
         xylem_waitgroup_done(ctx->wg);
+    } else {
+        xylem_timer_reset(t, 30);
     }
 }
 
-static void _reset_every_main(void* arg) {
+static void _reset_repeat_main(void* arg) {
     (void)arg;
-    _reset_every_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _reset_repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
 
-    xylem_timer_t* t = xylem_timer_every(500, _reset_every_cb, &ctx);
+    xylem_timer_t* t = xylem_timer_after(500, _reset_repeat_cb, &ctx);
 
     xylem_sleep(20);
     uint64_t reset_at_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -208,15 +210,15 @@ static void _reset_every_main(void* arg) {
     xylem_shutdown();
 }
 
-static void test_reset_every(void) {
-    xylem_run(_reset_every_main, NULL, NULL);
+static void test_reset_repeat(void) {
+    xylem_run(_reset_repeat_main, NULL, NULL);
 }
 
 int main(void) {
     test_after();
     test_cancel();
-    test_every();
+    test_repeat();
     test_reset();
-    test_reset_every();
+    test_reset_repeat();
     return 0;
 }

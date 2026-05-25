@@ -21,8 +21,6 @@
 
 #include "xylem/xylem-timer.h"
 
-#include <stddef.h>
-
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
@@ -40,35 +38,18 @@ xylem_timer_t* xylem_timer_after(
     return t;
 }
 
-xylem_timer_t* xylem_timer_every(
-    uint64_t period_ms, xylem_timer_fn_t cb, void* ud) {
-    if (period_ms == 0) {
-        return NULL;
-    }
-    scheduler_t* sched = runtime_get_scheduler();
-    if (!sched || !cb) {
-        return NULL;
-    }
-    sched_timer_t* t = sched_timer_create(sched);
-    if (!t) {
-        return NULL;
-    }
-    sched_timer_start(t, cb, ud, period_ms, period_ms);
-    return t;
-}
-
-bool xylem_timer_cancel(xylem_timer_t* t) {
-    if (!t) {
+bool xylem_timer_cancel(xylem_timer_t* timer) {
+    if (!timer) {
         return false;
     }
-    bool stopped = sched_timer_stop(t);
-    sched_timer_destroy(t);
+    bool stopped = sched_timer_stop(timer);
+    sched_timer_destroy(timer);
     return stopped;
 }
 
-bool xylem_timer_reset(xylem_timer_t* t, uint64_t timeout_ms) {
-    if (!t) {
+bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
+    if (!timer) {
         return false;
     }
-    return sched_timer_reset(t, timeout_ms);
+    return sched_timer_reset(timer, delay_ms);
 }

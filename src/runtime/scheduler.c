@@ -345,7 +345,6 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
         }
 
         cb(timer, ud);
-
         _sched_timer_unref(timer);
     }
 
@@ -1025,7 +1024,8 @@ void sched_timer_start(
     _sched_worker_t* ow = _sched_timer_owner(timer);
     mtx_lock(&ow->timer_lock);
     if (timer->active) {
-        heap_remove(&ow->timers, &timer->heap_node);
+        xylem_loge("double start on active timer");
+        abort();
     }
     timer->cb      = cb;
     timer->ud      = ud;
