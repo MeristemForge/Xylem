@@ -86,11 +86,11 @@ struct xylem_dtls_conn_s {
     _Atomic int32_t         refcnt;
     bool                    handshake_done;
 
-    /* client-side only (Socket BIO path) */
+    /* client-side only */
     iowait_t*               waiter;
     platform_sock_t          fd;
 
-    /* server-side only (Memory BIO path) */
+    /* server-side only */
     _dtls_session_inbox_t*    inbox;
     BIO*                     read_bio;
     BIO*                     write_bio;
@@ -455,7 +455,6 @@ static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
     }
 }
 
-/* deadline_ms == 0 means wait forever. */
 static _dtls_dgram_t* _inbox_pop(
     _dtls_session_inbox_t* ib, uint64_t deadline_ms) {
     while (ib->head == ib->tail) {
@@ -646,13 +645,7 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
     return 0;
 }
 
-/**
- * Park on the right direction for an SSL_get_error result, with the
- * close-flag double-check that DTLS recv/send share. Returns:
- *   0  retry the SSL op
- *   1  peer closed (SSL_ERROR_ZERO_RETURN)
- *  -1  fatal -- abort
- */
+/* Returns: 0 = retry, 1 = peer closed, -1 = fatal. */
 static int _dtls_handle_io_block(xylem_dtls_conn_t* dtls, int ssl_err,
                                  const char* op_name) {
     iowait_result_t r;
@@ -937,14 +930,15 @@ static void _dtls_handshake_coro(void* arg) {
     xylem_dtls_conn_t* dtls = arg;
     xylem_dtls_listener_t* ln = dtls->listener;
 
+    /* Coro ref keeps conn alive while parked in _inbox_pop. */
     _dtls_conn_ref(dtls);
 
     if (_dtls_init_ssl(dtls, ln->ctx->ssl_ctx) != 0) {
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
-        _dtls_conn_unref(dtls);
-        _dtls_conn_unref(dtls);
+        _dtls_conn_unref(dtls); /* coro ref */
+        _dtls_conn_unref(dtls); /* owner ref (no one will accept) */
         return;
     }
 
@@ -970,11 +964,7 @@ static void _dtls_handshake_coro(void* arg) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
         if (ret == 1) {
-            /**
-             * SSL returned success but Server Finished is still
-             * buffered in the write BIO; flush so the client can
-             * complete.
-             */
+            /* Flush Server Finished so client can complete. */
             _dtls_server_flush_write_bio(dtls);
             dtls->handshake_done = true;
             success = true;
@@ -995,11 +985,7 @@ static void _dtls_handshake_coro(void* arg) {
     _dtls_stop_retransmit(dtls);
     sched_timer_stop(dtls->handshake_timer);
 
-    /**
-     * Retransmit/handshake timers are only used during the handshake.
-     * Free them now (whether we succeeded or not) so long-lived
-     * sessions don't carry dead timers around.
-     */
+    /* Free handshake-only timers so long-lived sessions stay lean. */
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     dtls->retransmit_timer = NULL;
@@ -1009,14 +995,14 @@ static void _dtls_handshake_coro(void* arg) {
         mtx_lock(&ln->sessions_mtx);
         rbtree_remove(&ln->sessions, &dtls->server_node);
         mtx_unlock(&ln->sessions_mtx);
-        _dtls_conn_unref(dtls);
-        _dtls_conn_unref(dtls);
+        _dtls_conn_unref(dtls); /* coro ref */
+        _dtls_conn_unref(dtls); /* owner ref */
         return;
     }
 
     _dtls_cache_alpn(dtls);
     _accept_queue_push(ln, dtls);
-    _dtls_conn_unref(dtls);
+    _dtls_conn_unref(dtls); /* coro ref; owner ref transfers to accept queue */
 }
 
 static void _dtls_dispatcher(void* arg) {

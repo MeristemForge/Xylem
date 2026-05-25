@@ -121,17 +121,16 @@ extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
 /**
  * @brief Connect to a remote DTLS endpoint.
  *
- * Suspends the calling coroutine until the DTLS handshake completes
- * or connect_timeout_ms elapses (default 30s).
+ * Suspends the calling coroutine until the handshake completes or
+ * handshake_timeout_ms elapses (default 30s).
  *
- * The host parameter is the network destination to connect to; it is
- * not used for certificate verification. Set opts->server_name to
- * verify the peer's identity.
+ * The host parameter is the network destination; it is not used for
+ * certificate verification. Set opts->server_name to verify identity.
  *
- * @param host  Remote hostname or IP address to connect to.
+ * @param host  Remote hostname or IP address.
  * @param port  Remote port.
  * @param ctx   DTLS context.
- * @param opts  DTLS options, NULL for defaults.
+ * @param opts  Options, or NULL for defaults.
  *
  * @return Connection handle, or NULL on failure or timeout.
  */
@@ -144,13 +143,10 @@ extern xylem_dtls_conn_t* xylem_dtls_dial(
 /**
  * @brief Create a DTLS listener bound to the given address.
  *
- * Spawns an internal dispatcher coroutine that demultiplexes
- * incoming datagrams to per-peer sessions.
- *
  * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
  * @param port  Bind port.
  * @param ctx   DTLS context with cert+key loaded.
- * @param opts  DTLS options, NULL for defaults.
+ * @param opts  Options, or NULL for defaults.
  *
  * @return Listener handle, or NULL on failure.
  */
@@ -163,8 +159,7 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
 /**
  * @brief Accept a connection from the listener.
  *
- * Suspends the calling coroutine until a client completes the
- * DTLS handshake (including cookie exchange).
+ * Suspends until a client completes the handshake.
  *
  * @param ln  Listener handle.
  *
@@ -173,10 +168,10 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
 extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
 
 /**
- * @brief Receive a decrypted datagram from the connection.
+ * @brief Receive a datagram from the connection.
  *
- * Suspends the calling coroutine until data arrives, the read
- * deadline passes, or the connection is closed.
+ * Suspends until data arrives, the read deadline passes, or
+ * the connection is closed.
  *
  * @param dtls  Connection handle.
  * @param buf   Destination buffer.
@@ -190,11 +185,7 @@ extern int xylem_dtls_recv(
     int                len);
 
 /**
- * @brief Send an encrypted datagram on the connection.
- *
- * Suspends the calling coroutine if the socket buffer is full
- * until writable, the write deadline passes, or the connection
- * is closed.
+ * @brief Send a datagram on the connection.
  *
  * @param dtls  Connection handle.
  * @param data  Source buffer.
