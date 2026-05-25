@@ -39,7 +39,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TLS_RECORD_MAX_PLAINTEXT 16384
 #define DTLS_DEFAULT_TIMEOUT_MS  30000
 #define DTLS_COOKIE_SIZE         32
 #define DTLS_INBOX_CAP           64
@@ -99,7 +98,6 @@ struct xylem_dtls_conn_s {
     xylem_dtls_listener_t*   listener;
     rbtree_node_t            server_node;
     uint64_t                 rd_deadline_ms;
-    uint64_t                 wr_deadline_ms;
 };
 
 struct xylem_dtls_listener_s {
@@ -134,16 +132,14 @@ static int _dtls_get_peer_addr(SSL* ssl, const uint8_t** out,
     if (!addr) {
         return -1;
     }
-
     if (addr->storage.ss_family == AF_INET) {
-        *out     = (const uint8_t*)&addr->storage;
         *out_len = sizeof(struct sockaddr_in);
     } else if (addr->storage.ss_family == AF_INET6) {
-        *out     = (const uint8_t*)&addr->storage;
         *out_len = sizeof(struct sockaddr_in6);
     } else {
         return -1;
     }
+    *out = (const uint8_t*)&addr->storage;
     return 0;
 }
 
@@ -732,18 +728,6 @@ static void _dtls_cache_alpn(xylem_dtls_conn_t* dtls) {
     }
 }
 
-static void _dtls_client_free_early(xylem_dtls_conn_t* dtls) {
-    if (dtls->ssl) {
-        SSL_free(dtls->ssl);
-    }
-    if (dtls->waiter) {
-        iowait_destroy(dtls->waiter);
-    }
-    if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(dtls->fd);
-    }
-    free(dtls);
-}
 
 xylem_dtls_conn_t* xylem_dtls_dial(
     const char* host, uint16_t port,
@@ -786,7 +770,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
 
     dtls->ssl = SSL_new(ctx->ssl_ctx);
     if (!dtls->ssl) {
-        _dtls_client_free_early(dtls);
+        _dtls_conn_unref(dtls);
         return NULL;
     }
     SSL_set_fd(dtls->ssl, (int)fd);
@@ -811,7 +795,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     }
 
     if (_dtls_client_do_handshake(dtls, deadline) != 0) {
-        _dtls_client_free_early(dtls);
+        _dtls_conn_unref(dtls);
         return NULL;
     }
 
@@ -1293,9 +1277,7 @@ void xylem_dtls_set_read_deadline(
 
 void xylem_dtls_set_write_deadline(
     xylem_dtls_conn_t* dtls, uint64_t deadline_ms) {
-    if (dtls->listener) {
-        dtls->wr_deadline_ms = deadline_ms;
-    } else {
+    if (!dtls->listener) {
         iowait_set_wr_deadline(dtls->waiter, deadline_ms);
     }
 }
