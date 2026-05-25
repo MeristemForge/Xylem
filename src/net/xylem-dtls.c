@@ -675,38 +675,38 @@ static int _dtls_handle_io_block(xylem_dtls_conn_t* dtls, int ssl_err,
 }
 
 static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls,
-                                     uint64_t connect_deadline) {
+                                     uint64_t deadline) {
     for (;;) {
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
         if (ret == 1) {
             return 0;
         }
-        int err = SSL_get_error(dtls->ssl, ret);
-        if (err == SSL_ERROR_WANT_READ) {
-            uint64_t rd_deadline = connect_deadline;
+
+        switch (SSL_get_error(dtls->ssl, ret)) {
+        case SSL_ERROR_WANT_READ: {
+            uint64_t rd_dl = deadline;
             struct timeval tv;
             if (DTLSv1_get_timeout(dtls->ssl, &tv)) {
-                uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
                 uint64_t ms = (uint64_t)tv.tv_sec * 1000
                             + (uint64_t)tv.tv_usec / 1000;
                 if (ms == 0) {
                     ms = 1;
                 }
-                uint64_t retransmit_dl = now + ms;
-                if (rd_deadline == 0 || retransmit_dl < rd_deadline) {
-                    rd_deadline = retransmit_dl;
+                uint64_t now =
+                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                uint64_t rt_dl = now + ms;
+                if (rd_dl == 0 || rt_dl < rd_dl) {
+                    rd_dl = rt_dl;
                 }
             }
-            iowait_set_rd_deadline(dtls->waiter, rd_deadline);
+            iowait_set_rd_deadline(dtls->waiter, rd_dl);
             iowait_result_t r = iowait_read(dtls->waiter);
             if (r == IOWAIT_TIMEOUT) {
-                if (connect_deadline > 0) {
-                    uint64_t now =
-                        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-                    if (now >= connect_deadline) {
-                        return -1;
-                    }
+                uint64_t now =
+                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                if (deadline > 0 && now >= deadline) {
+                    return -1;
                 }
                 DTLSv1_handle_timeout(dtls->ssl);
                 continue;
@@ -714,19 +714,23 @@ static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls,
             if (r != IOWAIT_READY) {
                 return -1;
             }
-        } else if (err == SSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        case SSL_ERROR_WANT_WRITE: {
             iowait_result_t r = iowait_write(dtls->waiter);
             if (r != IOWAIT_READY) {
                 return -1;
             }
-        } else {
-            unsigned long ssl_err = ERR_peek_error();
+            break;
+        }
+        default: {
+            unsigned long e = ERR_peek_error();
             xylem_loge("dtls handshake: ssl_error=%d reason=%s",
-                       err,
-                       ERR_reason_error_string(ssl_err)
-                           ? ERR_reason_error_string(ssl_err)
-                           : "unknown");
+                       SSL_get_error(dtls->ssl, ret),
+                       ERR_reason_error_string(e)
+                           ? ERR_reason_error_string(e) : "unknown");
             return -1;
+        }
         }
     }
 }
