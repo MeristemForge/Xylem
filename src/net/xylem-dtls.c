@@ -591,19 +591,40 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
     free(ln);
 }
 
-static int _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
+static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[16384];
     int  n;
-    int  result = 0;
     socklen_t addrlen =
         (dtls->peer_addr.storage.ss_family == AF_INET6)
             ? (socklen_t)sizeof(struct sockaddr_in6)
             : (socklen_t)sizeof(struct sockaddr_in);
 
     while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
+        platform_socket_sendto(
+            dtls->listener->fd, buf, n,
+            &dtls->peer_addr.storage, addrlen);
+    }
+}
+
+static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
+                                    const void* data, int len) {
+    socklen_t addrlen =
+        (dtls->peer_addr.storage.ss_family == AF_INET6)
+            ? (socklen_t)sizeof(struct sockaddr_in6)
+            : (socklen_t)sizeof(struct sockaddr_in);
+
+    ERR_clear_error();
+    int n = SSL_write(dtls->ssl, data, len);
+    if (n <= 0) {
+        return -1;
+    }
+
+    char buf[16384];
+    int  rd;
+    while ((rd = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
         for (;;) {
             ssize_t sent = platform_socket_sendto(
-                dtls->listener->fd, buf, n,
+                dtls->listener->fd, buf, rd,
                 &dtls->peer_addr.storage, addrlen);
             if (sent >= 0) {
                 break;
@@ -611,20 +632,15 @@ static int _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
             int err = platform_socket_get_lasterror();
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                result = -1;
-                break;
+                return -1;
             }
             iowait_result_t r = iowait_write(dtls->listener->waiter);
             if (r != IOWAIT_READY) {
-                result = -1;
-                break;
+                return -1;
             }
         }
-        if (result < 0) {
-            break;
-        }
     }
-    return result;
+    return 0;
 }
 
 static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
@@ -1201,11 +1217,7 @@ static int _dtls_server_send(xylem_dtls_conn_t* dtls,
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         xylem_mutex_lock(dtls->listener->write_mu);
-        ERR_clear_error();
-        int n = SSL_write(dtls->ssl, data, len);
-        if (n > 0) {
-            ret = _dtls_server_flush_write_bio(dtls);
-        }
+        ret = _dtls_server_send_record(dtls, data, len);
         xylem_mutex_unlock(dtls->listener->write_mu);
     }
 
