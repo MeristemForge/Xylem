@@ -86,7 +86,6 @@ struct xylem_rudp_conn_s {
     iowait_t*              waiter;
     xylem_rudp_mode_t      mode;
     addr_t                 peer_addr;
-    void*                  userdata;
     _Atomic bool           closed;
 
     sched_timer_t*         update_timer;
@@ -1407,10 +1406,3 @@ int xylem_rudp_remote_addr(
     return addr_ntop(&c->peer_addr, host, (size_t)hostlen, port);
 }
 
-void* xylem_rudp_get_userdata(xylem_rudp_conn_t* c) {
-    return c->userdata;
-}
-
-void xylem_rudp_set_userdata(xylem_rudp_conn_t* c, void* ud) {
-    c->userdata = ud;
-}

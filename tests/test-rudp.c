@@ -347,35 +347,6 @@ static void test_multi_session(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* test_userdata                                                       */
-/* ------------------------------------------------------------------ */
-
-static void _userdata_main(void* arg) {
-    (void)arg;
-
-    xylem_rudp_opts_t opts = {.mode = XYLEM_RUDP_STREAM};
-    xylem_rudp_listener_t* ln = xylem_rudp_listen(
-        RUDP_HOST, (uint16_t)(RUDP_PORT + 5), &opts);
-    ASSERT(ln != NULL);
-
-    xylem_rudp_conn_t* c = xylem_rudp_dial(
-        RUDP_HOST, (uint16_t)(RUDP_PORT + 5), &opts);
-    ASSERT(c != NULL);
-
-    int data = 42;
-    xylem_rudp_set_userdata(c, &data);
-    ASSERT(xylem_rudp_get_userdata(c) == &data);
-
-    xylem_rudp_close(c);
-    xylem_rudp_close_listener(ln);
-    xylem_shutdown();
-}
-
-static void test_userdata(void) {
-    xylem_run(_userdata_main, NULL, NULL);
-}
-
-/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -385,6 +356,5 @@ int main(void) {
     test_handshake_timeout();
     test_close_while_reading();
     test_multi_session();
-    test_userdata();
     return 0;
 }

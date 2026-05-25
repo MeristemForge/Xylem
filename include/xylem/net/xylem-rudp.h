@@ -202,19 +202,3 @@ extern int xylem_rudp_remote_addr(
     int                hostlen,
     uint16_t*          port);
 
-/**
- * @brief Get user data attached to a connection.
- *
- * @param c  Connection handle.
- *
- * @return User data pointer.
- */
-extern void* xylem_rudp_get_userdata(xylem_rudp_conn_t* c);
-
-/**
- * @brief Set user data on a connection.
- *
- * @param c   Connection handle.
- * @param ud  User data pointer.
- */
-extern void xylem_rudp_set_userdata(xylem_rudp_conn_t* c, void* ud);
