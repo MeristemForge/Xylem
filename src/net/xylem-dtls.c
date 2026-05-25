@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/xylem-dtls.h"
+#include "xylem/sync/xylem-mutex.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/crypto/xylem-hmac256.h"
@@ -107,6 +108,7 @@ struct xylem_dtls_listener_s {
     xylem_dtls_opts_t     opts;
     rbtree_t              sessions;
     mtx_t                 sessions_mtx;
+    xylem_mutex_t*        write_mu;
     scheduler_t*          sched;
 
     xylem_dtls_conn_t**   accept_slots;
@@ -585,6 +587,7 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
     iowait_destroy(ln->waiter);
     platform_socket_close(ln->fd);
     mtx_destroy(&ln->sessions_mtx);
+    xylem_mutex_destroy(ln->write_mu);
     free(ln->accept_slots);
     free(ln);
 }
@@ -593,16 +596,33 @@ static int _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     char buf[16384];
     int  n;
     int  result = 0;
+    socklen_t addrlen =
+        (dtls->peer_addr.storage.ss_family == AF_INET6)
+            ? (socklen_t)sizeof(struct sockaddr_in6)
+            : (socklen_t)sizeof(struct sockaddr_in);
+
     while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
-        socklen_t addrlen =
-            (dtls->peer_addr.storage.ss_family == AF_INET6)
-                ? (socklen_t)sizeof(struct sockaddr_in6)
-                : (socklen_t)sizeof(struct sockaddr_in);
-        ssize_t sent = platform_socket_sendto(
-            dtls->listener->fd, buf, n,
-            &dtls->peer_addr.storage, addrlen);
-        if (sent < 0) {
-            result = -1;
+        for (;;) {
+            ssize_t sent = platform_socket_sendto(
+                dtls->listener->fd, buf, n,
+                &dtls->peer_addr.storage, addrlen);
+            if (sent >= 0) {
+                break;
+            }
+            int err = platform_socket_get_lasterror();
+            if (err != PLATFORM_SO_ERROR_EAGAIN
+                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                result = -1;
+                break;
+            }
+            iowait_result_t r = iowait_write(dtls->listener->waiter);
+            if (r != IOWAIT_READY) {
+                result = -1;
+                break;
+            }
+        }
+        if (result < 0) {
+            break;
         }
     }
     return result;
@@ -1121,6 +1141,7 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     rbtree_init(&ln->sessions,
                 _dtls_session_cmp_nn, _dtls_session_cmp_kn);
     mtx_init(&ln->sessions_mtx, mtx_plain);
+    ln->write_mu = xylem_mutex_create();
 
     ln->accept_cap   = 64;
     ln->accept_slots = (xylem_dtls_conn_t**)calloc(
@@ -1187,11 +1208,13 @@ static int _dtls_server_send(xylem_dtls_conn_t* dtls,
     int ret = -1;
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+        xylem_mutex_lock(dtls->listener->write_mu);
         ERR_clear_error();
         int n = SSL_write(dtls->ssl, data, len);
         if (n > 0) {
             ret = _dtls_server_flush_write_bio(dtls);
         }
+        xylem_mutex_unlock(dtls->listener->write_mu);
     }
 
     _dtls_conn_unref(dtls);
