@@ -97,6 +97,7 @@ if(WIN32)
 		src/platform/win/platform-sem.c
 		src/platform/win/platform-serial.c
 		src/platform/win/platform-vmem.c
+		src/platform/win/platform-stackguard.c
 		src/platform/win/wepoll/wepoll.c
 	)
 endif()
@@ -110,6 +111,7 @@ if(UNIX)
 		src/platform/unix/platform-sem.c
 		src/platform/unix/platform-serial.c
 		src/platform/unix/platform-vmem.c
+		src/platform/unix/platform-stackguard.c
 	)
 endif()
 

@@ -58,6 +58,7 @@
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-vmem.h"
+#include "platform/platform-stackguard.h"
 #include "platform/platform-info.h"
 #include "sync/spin.h"
 #include "thrds.h"
@@ -76,8 +77,6 @@
 
 #define SCHED_CORO_STACK_SIZE \
     (sizeof(void*) >= 8 ? (1024 * 1024) : (256 * 1024))
-#define SCHED_CORO_INIT_COMMIT   (16 * 1024)
-#define SCHED_CORO_GROW_SIZE     (16 * 1024)
 
 typedef struct {
     spin_t    lock;
@@ -136,7 +135,6 @@ typedef struct {
     queue_node_t runq_node;
     list_node_t  registry_node;
     mco_coro*    co;
-    uintptr_t    last_sp;
     size_t       stack_committed;
 } _coro_ctx_t;
 
@@ -185,12 +183,8 @@ static size_t _coro_metadata_size(size_t coro_size) {
 
 static size_t _coro_init_commit(void) {
     size_t page_size = _vmem_page_size();
-    return (SCHED_CORO_INIT_COMMIT + page_size - 1) & ~(page_size - 1);
-}
-
-static size_t _coro_grow_size(void) {
-    size_t page_size = _vmem_page_size();
-    return (SCHED_CORO_GROW_SIZE + page_size - 1) & ~(page_size - 1);
+    size_t commit = (16 * 1024 + page_size - 1) & ~(page_size - 1);
+    return commit < 2 * page_size ? 2 * page_size : commit;
 }
 
 static void* _coro_pool_alloc(size_t size, void* allocator_data) {
@@ -257,11 +251,12 @@ static void _coro_pool_dealloc(
     void* ptr, size_t size, void* allocator_data) {
     _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
 
+    _coro_stack_reset(ptr, size);
+
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
         pool->slots[pool->count++] = ptr;
         spin_unlock(&pool->lock);
-        _coro_stack_reset(ptr, size);
         return;
     }
     spin_unlock(&pool->lock);
@@ -276,24 +271,9 @@ static void _coro_pool_dealloc(
     platform_vmem_release(ptr, total);
 }
 
-static bool _coro_stack_should_grow(_coro_ctx_t* ctx, mco_coro* co) {
-    if (PLATFORM_VMEM_STACK_EXTERNAL) {
-        return false;
-    }
-    if (!ctx->last_sp) {
-        return false;
-    }
-    size_t page_size      = _vmem_page_size();
-    size_t grow           = _coro_grow_size();
-    uintptr_t stack_base  = (uintptr_t)co->stack_base;
-    uintptr_t commit_low  = stack_base + co->stack_size - ctx->stack_committed;
-    uintptr_t threshold   = commit_low + grow;
-    return ctx->last_sp < threshold;
-}
-
 static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
     size_t page_size  = _vmem_page_size();
-    size_t grow       = _coro_grow_size();
+    size_t grow       = page_size;
     size_t max_commit = co->stack_size - page_size;
 
     if (ctx->stack_committed + grow > max_commit) {
@@ -303,20 +283,56 @@ static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
         return;
     }
 
-    char* stack_high    = (char*)co->stack_base + co->stack_size;
-    char* new_start     = stack_high - ctx->stack_committed - grow;
+    uintptr_t aligned_high = ((uintptr_t)co->stack_base + co->stack_size
+                              + page_size - 1) & ~(page_size - 1);
+    char* stack_high = (char*)aligned_high;
+    char* new_start  = stack_high - ctx->stack_committed - grow;
 
-    char* old_guard = new_start + grow;
-    platform_vmem_protect(old_guard, page_size, PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE);
+    char* old_guard = stack_high - ctx->stack_committed - page_size;
+    if (platform_vmem_protect(old_guard, page_size,
+            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) != 0) {
+        xylem_loge("coro stack grow: failed to unprotect old guard");
+        abort();
+    }
 
-    platform_vmem_commit(new_start, grow);
+    if (platform_vmem_commit(new_start, grow) != 0) {
+        xylem_loge("coro stack grow: failed to commit %zu bytes", grow);
+        abort();
+    }
     ctx->stack_committed += grow;
 
     char* new_guard = new_start - page_size;
     if ((uintptr_t)new_guard >= (uintptr_t)co->stack_base) {
-        platform_vmem_commit(new_guard, page_size);
-        platform_vmem_protect(new_guard, page_size, PLATFORM_VMEM_PROT_NONE);
+        if (platform_vmem_commit(new_guard, page_size) != 0) {
+            xylem_loge("coro stack grow: failed to commit guard page");
+            abort();
+        }
+        if (platform_vmem_protect(
+                new_guard, page_size, PLATFORM_VMEM_PROT_NONE) != 0) {
+            xylem_loge("coro stack grow: failed to protect guard page");
+            abort();
+        }
     }
+}
+
+static bool _coro_stack_fault(uintptr_t fault_addr) {
+    mco_coro* co = mco_running();
+    if (!co) {
+        return false;
+    }
+
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    size_t page_size  = _vmem_page_size();
+    uintptr_t aligned_high = ((uintptr_t)co->stack_base + co->stack_size
+                              + page_size - 1) & ~(page_size - 1);
+    uintptr_t commit_low = aligned_high - ctx->stack_committed;
+    uintptr_t stack_low  = (uintptr_t)co->stack_base;
+
+    if (fault_addr >= stack_low && fault_addr < commit_low) {
+        _coro_stack_grow(ctx, co);
+        return true;
+    }
+    return false;
 }
 
 static void _sched_timer_ref(sched_timer_t* timer) {
@@ -579,10 +595,6 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
 }
 
 static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
-    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-    if (_coro_stack_should_grow(ctx, co)) {
-        _coro_stack_grow(ctx, co);
-    }
     mco_resume(co);
     _sched_handle_yield(w, co);
 }
@@ -786,6 +798,9 @@ static int _sched_worker_entry(void* arg) {
 }
 
 static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
+    if (!PLATFORM_VMEM_STACK_EXTERNAL) {
+        platform_stackguard_remove();
+    }
     atomic_store(&sched->running, false);
 
     if (sched->workers) {
@@ -966,6 +981,10 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         }
     }
 
+    if (!PLATFORM_VMEM_STACK_EXTERNAL) {
+        platform_stackguard_install(_coro_stack_fault);
+    }
+
     return sched;
 }
 
@@ -1107,10 +1126,6 @@ void scheduler_park(
             (void*)_tls_worker, (void*)mco_running());
         abort();
     }
-
-    volatile char sp_anchor;
-    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(mco_running());
-    ctx->last_sp = (uintptr_t)&sp_anchor;
 
     _tls_worker->park_fn  = fn;
     _tls_worker->park_arg = arg;
