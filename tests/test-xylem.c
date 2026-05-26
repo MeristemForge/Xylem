@@ -31,6 +31,14 @@
 #define SLEEP_ORDER_COUNT 4
 #define SUBMIT_CONC_COUNT 20
 
+#define STKGROW_FRAME_BYTES   (8 * 1024)
+#define STKGROW_BASIC_DEPTH   4
+#define STKGROW_RECURSE_DEPTH 30
+#define STKGROW_CONC_COUNT    32
+#define STKGROW_CONC_DEPTH    6
+#define STKGROW_REUSE_COUNT   50
+#define STKGROW_REUSE_DEPTH   3
+
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
 static void _timeout_coro(void* arg) {
@@ -380,6 +388,212 @@ static void test_submit_result(void) {
     }
 }
 
+/**
+ * Coroutine stack growth tests.
+ *
+ * The runtime commits an initial 16KB at coroutine creation, then
+ * commits one grow_size (16KB) chunk at a time on resume, only
+ * after a park has set last_sp. So a coroutine cannot drop RSP by
+ * more than ~grow_size between yields, otherwise it overshoots the
+ * not-yet-committed region. These tests use small frames per
+ * recursion level with one yield per level to drive incremental
+ * growth, then read back every level's frame on the way up to
+ * detect any cross-frame corruption from grow.
+ *
+ * volatile + per-byte read-back defeats compiler optimization that
+ * might elide the stack writes; otherwise the test would not
+ * actually touch the pages we're trying to validate.
+ */
+
+typedef struct {
+    int tested;
+} _stkgrow_basic_ctx_t;
+
+static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
+    /**
+     * Per-frame buffer fits inside one grow_size chunk plus
+     * prologue overhead, so a single yield per level is enough to
+     * make room.
+     */
+    volatile uint8_t frame[STKGROW_FRAME_BYTES];
+    for (size_t i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(seed + (uint8_t)depth + (uint8_t)(i & 0x3f));
+    }
+
+    /* Park: sets last_sp so the next resume runs grow if needed. */
+    xylem_sleep(0);
+
+    uint64_t deeper = 0;
+    if (depth > 0) {
+        deeper = _stkgrow_recurse(depth - 1, seed);
+    }
+
+    /* Read back: prove deeper grows didn't corrupt this frame. */
+    uint64_t sum = 0;
+    for (size_t i = 0; i < sizeof(frame); i++) {
+        uint8_t expect =
+            (uint8_t)(seed + (uint8_t)depth + (uint8_t)(i & 0x3f));
+        ASSERT(frame[i] == expect);
+        sum += frame[i];
+    }
+    return sum + deeper;
+}
+
+static void _stkgrow_basic_coro(void* arg) {
+    _stkgrow_basic_ctx_t* ctx = (_stkgrow_basic_ctx_t*)arg;
+
+    /* depth * frame_bytes exceeds the initial commit, so grow must
+     * run at least once during the recursion. */
+    uint64_t sum = _stkgrow_recurse(STKGROW_BASIC_DEPTH, 0xa5);
+    ASSERT(sum > 0);
+
+    ctx->tested = 1;
+    xylem_shutdown();
+}
+
+static void _stkgrow_basic_main(void* arg) {
+    _start_safety_timer();
+    xylem_spawn(_stkgrow_basic_coro, arg);
+}
+
+static void test_coro_stack_grow(void) {
+    fprintf(stderr, "=== test_coro_stack_grow\n");
+    _stkgrow_basic_ctx_t ctx = {0};
+    xylem_run(_stkgrow_basic_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
+/**
+ * Recurse deep enough to drive many consecutive grows in one
+ * coroutine. On the way back up, every frame is re-validated to
+ * catch corruption from later grows touching earlier frames.
+ */
+
+typedef struct {
+    int tested;
+} _stkgrow_prog_ctx_t;
+
+static void _stkgrow_prog_coro(void* arg) {
+    _stkgrow_prog_ctx_t* ctx = (_stkgrow_prog_ctx_t*)arg;
+    uint64_t sum = _stkgrow_recurse(STKGROW_RECURSE_DEPTH, 0x37);
+    ASSERT(sum > 0);
+    ctx->tested = 1;
+    xylem_shutdown();
+}
+
+static void _stkgrow_prog_main(void* arg) {
+    _start_safety_timer();
+    xylem_spawn(_stkgrow_prog_coro, arg);
+}
+
+static void test_coro_stack_grow_deep_recursion(void) {
+    fprintf(stderr, "=== test_coro_stack_grow_deep_recursion\n");
+    _stkgrow_prog_ctx_t ctx = {0};
+    xylem_run(_stkgrow_prog_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
+/**
+ * Many coroutines hit grow concurrently across all workers.
+ * Each coroutine has its own reservation; this catches bugs in
+ * pool accounting or per-coroutine state that could let one
+ * coroutine's grow disturb another's stack.
+ */
+
+typedef struct {
+    atomic_int done;
+    int        tested;
+} _stkgrow_conc_ctx_t;
+
+typedef struct {
+    _stkgrow_conc_ctx_t* ctx;
+    int                  id;
+} _stkgrow_conc_arg_t;
+
+static _stkgrow_conc_arg_t _stkgrow_conc_args[STKGROW_CONC_COUNT];
+
+static void _stkgrow_conc_coro(void* arg) {
+    _stkgrow_conc_arg_t* a = (_stkgrow_conc_arg_t*)arg;
+    uint8_t seed = (uint8_t)(0x10 + a->id);
+
+    uint64_t sum = _stkgrow_recurse(STKGROW_CONC_DEPTH, seed);
+    ASSERT(sum > 0);
+
+    int prev = atomic_fetch_add(&a->ctx->done, 1);
+    if (prev == STKGROW_CONC_COUNT - 1) {
+        a->ctx->tested = 1;
+        xylem_shutdown();
+    }
+}
+
+static void _stkgrow_conc_main(void* arg) {
+    _stkgrow_conc_ctx_t* ctx = (_stkgrow_conc_ctx_t*)arg;
+    _start_safety_timer();
+    for (int i = 0; i < STKGROW_CONC_COUNT; i++) {
+        _stkgrow_conc_args[i].ctx = ctx;
+        _stkgrow_conc_args[i].id  = i;
+        xylem_spawn(_stkgrow_conc_coro, &_stkgrow_conc_args[i]);
+    }
+}
+
+static void test_coro_stack_grow_concurrent(void) {
+    fprintf(stderr, "=== test_coro_stack_grow_concurrent\n");
+    _stkgrow_conc_ctx_t ctx = {0};
+    atomic_init(&ctx.done, 0);
+    xylem_run(_stkgrow_conc_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
+}
+
+/**
+ * Recycle the same pool slot many times. Each coroutine spawns the
+ * next one then exits, so the pool returns the slot via
+ * _coro_stack_reset. The next coroutine reuses the slot and grows
+ * again. Catches state leaks between reset and the next grow
+ * (e.g. stale guard pages, inconsistent commit accounting).
+ */
+
+typedef struct {
+    int counter;
+    int target;
+    int tested;
+} _stkgrow_reuse_ctx_t;
+
+static void _stkgrow_reuse_coro(void* arg);
+
+static void _stkgrow_reuse_coro(void* arg) {
+    _stkgrow_reuse_ctx_t* ctx = (_stkgrow_reuse_ctx_t*)arg;
+
+    uint8_t  seed = (uint8_t)(0x80 + (ctx->counter & 0x7f));
+    uint64_t sum  = _stkgrow_recurse(STKGROW_REUSE_DEPTH, seed);
+    ASSERT(sum > 0);
+
+    if (++ctx->counter < ctx->target) {
+        xylem_spawn(_stkgrow_reuse_coro, ctx);
+    } else {
+        ctx->tested = 1;
+        xylem_shutdown();
+    }
+}
+
+static void _stkgrow_reuse_main(void* arg) {
+    _stkgrow_reuse_ctx_t* ctx = (_stkgrow_reuse_ctx_t*)arg;
+    _start_safety_timer();
+    xylem_spawn(_stkgrow_reuse_coro, ctx);
+}
+
+static void test_coro_stack_grow_pool_reuse(void) {
+    fprintf(stderr, "=== test_coro_stack_grow_pool_reuse\n");
+    _stkgrow_reuse_ctx_t ctx = { .counter = 0,
+                                 .target  = STKGROW_REUSE_COUNT,
+                                 .tested  = 0 };
+    /* Single worker so all coroutines hit the same pool slot. */
+    xylem_opts_t opts = { .workers = 1 };
+    xylem_run(_stkgrow_reuse_main, &ctx, &opts);
+    ASSERT(ctx.tested == 1);
+    ASSERT(ctx.counter == STKGROW_REUSE_COUNT);
+}
+
 int main(void) {
     test_start_stop_cycle();
     test_stop_from_spawned();
@@ -391,5 +605,9 @@ int main(void) {
     test_submit_basic();
     test_submit_concurrent();
     test_submit_result();
+    test_coro_stack_grow();
+    test_coro_stack_grow_deep_recursion();
+    test_coro_stack_grow_concurrent();
+    test_coro_stack_grow_pool_reuse();
     return 0;
 }
