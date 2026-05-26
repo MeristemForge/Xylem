@@ -127,16 +127,14 @@ static void _reader_client(void* arg) {
     ASSERT(conn != NULL);
 
     /* Use xylem_reader_t to read exactly 8 bytes (read_full). */
-    uint8_t rd_buf[256];
-    xylem_reader_t rd;
-    xylem_reader_init(
-        &rd, conn, (xylem_reader_fn_t)xylem_tcp_read, rd_buf, sizeof(rd_buf));
+    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
+    ASSERT(rd != NULL);
 
     char result[8];
-    ASSERT(xylem_reader_read_full(&rd, result, 8) == 0);
+    ASSERT(xylem_reader_read_full(rd, result, 8) == 0);
     ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
 
-    xylem_reader_deinit(&rd);
+    xylem_reader_destroy(rd);
     xylem_tcp_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -174,17 +172,15 @@ static void _writer_server(void* arg) {
     ASSERT(conn != NULL);
 
     /* Use xylem_writer_t to buffer multiple small writes. */
-    uint8_t wr_buf[256];
-    xylem_writer_t wr;
-    xylem_writer_init(
-        &wr, conn, (xylem_writer_fn_t)xylem_tcp_write, wr_buf, sizeof(wr_buf));
+    xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 256);
+    ASSERT(wr != NULL);
 
-    ASSERT(xylem_writer_write(&wr, "hello", 5) == 0);
-    ASSERT(xylem_writer_write(&wr, " ", 1) == 0);
-    ASSERT(xylem_writer_write(&wr, "world", 5) == 0);
-    ASSERT(xylem_writer_flush(&wr) == 0);
+    ASSERT(xylem_writer_write(wr, "hello", 5) == 0);
+    ASSERT(xylem_writer_write(wr, " ", 1) == 0);
+    ASSERT(xylem_writer_write(wr, "world", 5) == 0);
+    ASSERT(xylem_writer_flush(wr) == 0);
 
-    xylem_writer_deinit(&wr);
+    xylem_writer_destroy(wr);
     xylem_tcp_close(conn);
     xylem_tcp_close_listener(listener);
     xylem_waitgroup_done(ctx->wg);
@@ -197,16 +193,14 @@ static void _writer_client(void* arg) {
     xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
     ASSERT(conn != NULL);
 
-    uint8_t rd_buf[256];
-    xylem_reader_t rd;
-    xylem_reader_init(
-        &rd, conn, (xylem_reader_fn_t)xylem_tcp_read, rd_buf, sizeof(rd_buf));
+    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
+    ASSERT(rd != NULL);
 
     char result[11];
-    ASSERT(xylem_reader_read_full(&rd, result, 11) == 0);
+    ASSERT(xylem_reader_read_full(rd, result, 11) == 0);
     ASSERT(memcmp(result, "hello world", 11) == 0);
 
-    xylem_reader_deinit(&rd);
+    xylem_reader_destroy(rd);
     xylem_tcp_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }

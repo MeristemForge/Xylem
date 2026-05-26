@@ -130,16 +130,14 @@ static void _reader_client(void* arg) {
     xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
     ASSERT(uds != NULL);
 
-    uint8_t rd_buf[256];
-    xylem_reader_t rd;
-    xylem_reader_init(
-        &rd, uds, (xylem_reader_fn_t)xylem_uds_read, rd_buf, sizeof(rd_buf));
+    xylem_reader_t* rd = xylem_reader_create(uds, XYLEM_READER_UDS, 256);
+    ASSERT(rd != NULL);
 
     char result[8];
-    ASSERT(xylem_reader_read_full(&rd, result, 8) == 0);
+    ASSERT(xylem_reader_read_full(rd, result, 8) == 0);
     ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
 
-    xylem_reader_deinit(&rd);
+    xylem_reader_destroy(rd);
     xylem_uds_close(uds);
     xylem_waitgroup_done(ctx->wg);
 }
