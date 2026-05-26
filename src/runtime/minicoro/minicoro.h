@@ -1437,7 +1437,7 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   /* Initialize storage. */
   unsigned char* storage = (unsigned char*)storage_addr;
   /* Create the fiber. */
-  _mco_fiber* fib = (_mco_fiber*)CreateFiberEx(desc->stack_size, desc->stack_size, FIBER_FLAG_FLOAT_SWITCH, _mco_wrap_main, co);
+  _mco_fiber* fib = (_mco_fiber*)CreateFiberEx(16 * 1024, desc->stack_size, FIBER_FLAG_FLOAT_SWITCH, _mco_wrap_main, co);
   if(!fib) {
     MCO_LOG("failed to create fiber");
     return MCO_MAKE_CONTEXT_ERROR;

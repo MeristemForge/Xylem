@@ -207,6 +207,10 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
     }
     spin_unlock(&pool->lock);
 
+    if (PLATFORM_VMEM_STACK_EXTERNAL) {
+        return calloc(1, size);
+    }
+
     size_t page_size = _vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
 
@@ -233,6 +237,10 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
 }
 
 static void _coro_stack_reset(void* ptr, size_t size) {
+    if (PLATFORM_VMEM_STACK_EXTERNAL) {
+        return;
+    }
+
     size_t page_size = _vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
     size_t meta_size = _coro_metadata_size(total);
@@ -267,12 +275,20 @@ static void _coro_pool_dealloc(
     }
     spin_unlock(&pool->lock);
 
+    if (PLATFORM_VMEM_STACK_EXTERNAL) {
+        free(ptr);
+        return;
+    }
+
     size_t page_size = _vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
     platform_vmem_release(ptr, total);
 }
 
 static bool _coro_stack_should_grow(_coro_ctx_t* ctx, mco_coro* co) {
+    if (PLATFORM_VMEM_STACK_EXTERNAL) {
+        return false;
+    }
     if (!ctx->last_sp) {
         return false;
     }
@@ -850,10 +866,14 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
-        size_t page_size = _vmem_page_size();
-        size_t total = (sched->coro_pool.slot_size + page_size - 1) &
-                       ~(page_size - 1);
-        platform_vmem_release(sched->coro_pool.slots[i], total);
+        if (PLATFORM_VMEM_STACK_EXTERNAL) {
+            free(sched->coro_pool.slots[i]);
+        } else {
+            size_t page_size = _vmem_page_size();
+            size_t total = (sched->coro_pool.slot_size + page_size - 1) &
+                           ~(page_size - 1);
+            platform_vmem_release(sched->coro_pool.slots[i], total);
+        }
     }
     free(sched->coro_pool.slots);
 

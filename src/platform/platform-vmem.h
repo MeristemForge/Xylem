@@ -23,6 +23,12 @@ _Pragma("once")
 
 #include <stddef.h>
 
+#if defined(_WIN32) && defined(MCO_USE_FIBERS)
+#define PLATFORM_VMEM_STACK_EXTERNAL 1
+#else
+#define PLATFORM_VMEM_STACK_EXTERNAL 0
+#endif
+
 typedef enum platform_vmem_prot_e {
     PLATFORM_VMEM_PROT_NONE  = 0,
     PLATFORM_VMEM_PROT_READ  = 1 << 0,
