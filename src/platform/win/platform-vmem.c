@@ -19,12 +19,45 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-vmem.h"
 
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-vmem.h"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+size_t platform_vmem_page_size(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return (size_t)si.dwPageSize;
+}
+
+void* platform_vmem_reserve(size_t size) {
+    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
+}
+
+int platform_vmem_commit(void* ptr, size_t size) {
+    return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) ? 0 : -1;
+}
+
+void platform_vmem_decommit(void* ptr, size_t size) {
+    VirtualFree(ptr, size, MEM_DECOMMIT);
+}
+
+void platform_vmem_release(void* ptr, size_t size) {
+    (void)size;
+    VirtualFree(ptr, 0, MEM_RELEASE);
+}
+
+int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
+    DWORD flags;
+    if (prot == PLATFORM_VMEM_PROT_NONE) {
+        flags = PAGE_NOACCESS;
+    } else if (prot & PLATFORM_VMEM_PROT_WRITE) {
+        flags = PAGE_READWRITE;
+    } else {
+        flags = PAGE_READONLY;
+    }
+    DWORD old;
+    return VirtualProtect(ptr, size, flags, &old) ? 0 : -1;
+}

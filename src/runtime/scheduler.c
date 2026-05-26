@@ -57,6 +57,7 @@
 #include "container/queue.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
+#include "platform/platform-vmem.h"
 #include "platform/platform-info.h"
 #include "sync/spin.h"
 #include "thrds.h"
@@ -65,13 +66,18 @@
 
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define SCHED_DEQUE_CAP          256
-#define SCHED_CORO_STACK_SIZE    131072
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
+
+#define SCHED_CORO_STACK_SIZE \
+    (sizeof(void*) >= 8 ? (1024 * 1024) : (256 * 1024))
+#define SCHED_CORO_INIT_COMMIT   (16 * 1024)
+#define SCHED_CORO_GROW_SIZE     (16 * 1024)
 
 typedef struct {
     spin_t    lock;
@@ -132,6 +138,8 @@ typedef struct {
     queue_node_t runq_node;
     list_node_t  registry_node;
     mco_coro*    co;
+    uintptr_t    last_sp;
+    size_t       stack_committed;
 } _coro_ctx_t;
 
 typedef struct {
@@ -163,6 +171,31 @@ static void _sched_coro_entry(mco_coro* co) {
     ctx->fn(ctx->arg);
 }
 
+static size_t _vmem_page_size(void) {
+    static size_t cached;
+    if (!cached) {
+        cached = platform_vmem_page_size();
+    }
+    return cached;
+}
+
+static size_t _coro_metadata_size(size_t coro_size) {
+    size_t page_size = _vmem_page_size();
+    size_t stack = (size_t)SCHED_CORO_STACK_SIZE;
+    size_t meta  = coro_size > stack ? coro_size - stack : 0;
+    return (meta + page_size - 1) & ~(page_size - 1);
+}
+
+static size_t _coro_init_commit(void) {
+    size_t page_size = _vmem_page_size();
+    return (SCHED_CORO_INIT_COMMIT + page_size - 1) & ~(page_size - 1);
+}
+
+static size_t _coro_grow_size(void) {
+    size_t page_size = _vmem_page_size();
+    return (SCHED_CORO_GROW_SIZE + page_size - 1) & ~(page_size - 1);
+}
+
 static void* _coro_pool_alloc(size_t size, void* allocator_data) {
     _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
 
@@ -174,23 +207,112 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
     }
     spin_unlock(&pool->lock);
 
-    return malloc(size);
+    size_t page_size = _vmem_page_size();
+    size_t total     = (size + page_size - 1) & ~(page_size - 1);
+
+    char* base = (char*)platform_vmem_reserve(total);
+    if (!base) {
+        return NULL;
+    }
+
+    size_t meta_size     = _coro_metadata_size(total);
+    size_t initial_stack = _coro_init_commit();
+
+    /* Commit metadata at the low end. */
+    platform_vmem_commit(base, meta_size);
+
+    /* Commit initial stack pages at the high end. */
+    platform_vmem_commit(base + total - initial_stack, initial_stack);
+
+    /* Guard page just below the committed stack. */
+    char* guard = base + total - initial_stack - page_size;
+    platform_vmem_commit(guard, page_size);
+    platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
+
+    return base;
+}
+
+static void _coro_stack_reset(void* ptr, size_t size) {
+    size_t page_size = _vmem_page_size();
+    size_t total     = (size + page_size - 1) & ~(page_size - 1);
+    size_t meta_size = _coro_metadata_size(total);
+
+    size_t initial_stack = _coro_init_commit();
+    size_t guard_and_initial = page_size + initial_stack;
+
+    /* Decommit everything between metadata and the final guard+initial_stack. */
+    size_t decommit_start = meta_size;
+    size_t decommit_end   = total - guard_and_initial;
+    if (decommit_end > decommit_start) {
+        platform_vmem_decommit(
+            (char*)ptr + decommit_start, decommit_end - decommit_start);
+    }
+
+    /* Re-establish guard page. */
+    char* guard = (char*)ptr + total - initial_stack - page_size;
+    platform_vmem_commit(guard, page_size);
+    platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
 }
 
 static void _coro_pool_dealloc(
     void* ptr, size_t size, void* allocator_data) {
     _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
-    (void)size;
 
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
         pool->slots[pool->count++] = ptr;
         spin_unlock(&pool->lock);
+        _coro_stack_reset(ptr, size);
         return;
     }
     spin_unlock(&pool->lock);
 
-    free(ptr);
+    size_t page_size = _vmem_page_size();
+    size_t total     = (size + page_size - 1) & ~(page_size - 1);
+    platform_vmem_release(ptr, total);
+}
+
+static bool _coro_stack_should_grow(_coro_ctx_t* ctx, mco_coro* co) {
+    if (!ctx->last_sp) {
+        return false;
+    }
+    size_t page_size      = _vmem_page_size();
+    size_t grow           = _coro_grow_size();
+    uintptr_t stack_base  = (uintptr_t)co->stack_base;
+    uintptr_t commit_low  = stack_base + co->stack_size - ctx->stack_committed;
+    uintptr_t threshold   = commit_low + grow;
+    return ctx->last_sp < threshold;
+}
+
+static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
+    size_t page_size  = _vmem_page_size();
+    size_t grow       = _coro_grow_size();
+    size_t max_commit = co->stack_size - page_size;
+
+    if (ctx->stack_committed + grow > max_commit) {
+        grow = max_commit - ctx->stack_committed;
+    }
+    if (grow == 0) {
+        return;
+    }
+
+    char* stack_high    = (char*)co->stack_base + co->stack_size;
+    char* new_start     = stack_high - ctx->stack_committed - grow;
+
+    /* Remove old guard page (make it writable). */
+    char* old_guard = new_start + grow;
+    platform_vmem_protect(old_guard, page_size, PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE);
+
+    /* Commit new pages. */
+    platform_vmem_commit(new_start, grow);
+    ctx->stack_committed += grow;
+
+    /* Place new guard page one page below newly committed region. */
+    char* new_guard = new_start - page_size;
+    if ((uintptr_t)new_guard >= (uintptr_t)co->stack_base) {
+        platform_vmem_commit(new_guard, page_size);
+        platform_vmem_protect(new_guard, page_size, PLATFORM_VMEM_PROT_NONE);
+    }
 }
 
 static void _sched_timer_ref(sched_timer_t* timer) {
@@ -455,6 +577,10 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
 }
 
 static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    if (_coro_stack_should_grow(ctx, co)) {
+        _coro_stack_grow(ctx, co);
+    }
     mco_resume(co);
     _sched_handle_yield(w, co);
 }
@@ -724,7 +850,10 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
-        free(sched->coro_pool.slots[i]);
+        size_t page_size = _vmem_page_size();
+        size_t total = (sched->coro_pool.slot_size + page_size - 1) &
+                       ~(page_size - 1);
+        platform_vmem_release(sched->coro_pool.slots[i], total);
     }
     free(sched->coro_pool.slots);
 
@@ -961,7 +1090,8 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
         return -1;
     }
 
-    ctx->co = co;
+    ctx->co              = co;
+    ctx->stack_committed = _coro_init_commit();
 
     spin_lock(&sched->registry_lock);
     list_insert_tail(&sched->registry, &ctx->registry_node);
@@ -981,6 +1111,11 @@ void scheduler_park(
             (void*)_tls_worker, (void*)mco_running());
         abort();
     }
+
+    volatile char sp_anchor;
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(mco_running());
+    ctx->last_sp = (uintptr_t)&sp_anchor;
+
     _tls_worker->park_fn  = fn;
     _tls_worker->park_arg = arg;
     mco_yield(mco_running());

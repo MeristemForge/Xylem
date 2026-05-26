@@ -19,12 +19,41 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-vmem.h"
 
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-vmem.h"
+#include <sys/mman.h>
+#include <unistd.h>
+
+size_t platform_vmem_page_size(void) {
+    return (size_t)sysconf(_SC_PAGESIZE);
+}
+
+void* platform_vmem_reserve(size_t size) {
+    void* ptr = mmap(
+        NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return ptr != MAP_FAILED ? ptr : NULL;
+}
+
+int platform_vmem_commit(void* ptr, size_t size) {
+    return mprotect(ptr, size, PROT_READ | PROT_WRITE) == 0 ? 0 : -1;
+}
+
+void platform_vmem_decommit(void* ptr, size_t size) {
+    madvise(ptr, size, MADV_DONTNEED);
+    mprotect(ptr, size, PROT_NONE);
+}
+
+void platform_vmem_release(void* ptr, size_t size) {
+    munmap(ptr, size);
+}
+
+int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
+    int flags = PROT_NONE;
+    if (prot & PLATFORM_VMEM_PROT_READ) {
+        flags |= PROT_READ;
+    }
+    if (prot & PLATFORM_VMEM_PROT_WRITE) {
+        flags |= PROT_WRITE;
+    }
+    return mprotect(ptr, size, flags) == 0 ? 0 : -1;
+}
