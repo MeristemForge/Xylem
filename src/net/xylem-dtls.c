@@ -43,6 +43,7 @@
 #define DTLS_DEFAULT_TIMEOUT_MS  30000
 #define DTLS_COOKIE_SIZE         32
 #define DTLS_INBOX_CAP           64
+#define DTLS_PKT_BUF_SIZE        1500
 
 static int _dtls_ex_data_idx = -1;
 static int _dtls_peer_addr_idx = -1;
@@ -592,7 +593,7 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
 }
 
 static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
-    char buf[16384];
+    char buf[DTLS_PKT_BUF_SIZE];
     int  n;
     socklen_t addrlen =
         (dtls->peer_addr.storage.ss_family == AF_INET6)
@@ -619,7 +620,7 @@ static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
         return -1;
     }
 
-    char buf[16384];
+    char buf[DTLS_PKT_BUF_SIZE];
     int  rd;
     while ((rd = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
         for (;;) {
@@ -1027,7 +1028,7 @@ static void _dtls_handshake_coro(void* arg) {
 
 static void _dtls_dispatcher(void* arg) {
     xylem_dtls_listener_t* ln = arg;
-    char buf[65535];
+    char buf[DTLS_PKT_BUF_SIZE];
 
     while (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
         struct sockaddr_storage from_ss;
