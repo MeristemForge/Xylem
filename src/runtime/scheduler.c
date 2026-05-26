@@ -117,14 +117,12 @@ struct scheduler_s {
     void*                 idle_ud;
     _Atomic bool          post_draining;
     _Atomic bool          running;
-    /* True while driver is blocked in poll; producers check before pipe-waking. */
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
     bool                  joined;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
     _Atomic uint32_t      timer_rr;
-    /* Tracks parked coros (not in runq/deque) so destroy can reclaim them. */
     list_t                registry;
     spin_t                registry_lock;
     _coro_pool_t          coro_pool;
@@ -148,7 +146,6 @@ typedef struct {
     void*                ud;
 } _sched_post_t;
 
-/* refcnt keeps the timer alive while its callback is running. */
 struct xylem_timer_s {
     heap_node_t      heap_node;
     scheduler_t*     sched;
@@ -222,13 +219,9 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
     size_t meta_size     = _coro_metadata_size(total);
     size_t initial_stack = _coro_init_commit();
 
-    /* Commit metadata at the low end. */
     platform_vmem_commit(base, meta_size);
-
-    /* Commit initial stack pages at the high end. */
     platform_vmem_commit(base + total - initial_stack, initial_stack);
 
-    /* Guard page just below the committed stack. */
     char* guard = base + total - initial_stack - page_size;
     platform_vmem_commit(guard, page_size);
     platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
@@ -248,7 +241,6 @@ static void _coro_stack_reset(void* ptr, size_t size) {
     size_t initial_stack = _coro_init_commit();
     size_t guard_and_initial = page_size + initial_stack;
 
-    /* Decommit everything between metadata and the final guard+initial_stack. */
     size_t decommit_start = meta_size;
     size_t decommit_end   = total - guard_and_initial;
     if (decommit_end > decommit_start) {
@@ -256,7 +248,6 @@ static void _coro_stack_reset(void* ptr, size_t size) {
             (char*)ptr + decommit_start, decommit_end - decommit_start);
     }
 
-    /* Re-establish guard page. */
     char* guard = (char*)ptr + total - initial_stack - page_size;
     platform_vmem_commit(guard, page_size);
     platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
@@ -315,15 +306,12 @@ static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
     char* stack_high    = (char*)co->stack_base + co->stack_size;
     char* new_start     = stack_high - ctx->stack_committed - grow;
 
-    /* Remove old guard page (make it writable). */
     char* old_guard = new_start + grow;
     platform_vmem_protect(old_guard, page_size, PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE);
 
-    /* Commit new pages. */
     platform_vmem_commit(new_start, grow);
     ctx->stack_committed += grow;
 
-    /* Place new guard page one page below newly committed region. */
     char* new_guard = new_start - page_size;
     if ((uintptr_t)new_guard >= (uintptr_t)co->stack_base) {
         platform_vmem_commit(new_guard, page_size);
@@ -431,7 +419,6 @@ static mco_coro* _sched_worker_steal_coro(scheduler_t* sched, _sched_worker_t* w
     return NULL;
 }
 
-/* ms until the earliest timer fires, or -1 if none. Caller holds w->timer_lock. */
 static int _sched_timeout_locked(_sched_worker_t* w, uint64_t now) {
     heap_node_t* root = heap_peek(&w->timers);
     if (!root) {
@@ -513,7 +500,6 @@ static void _sched_process_posts(scheduler_t* sched) {
     }
 }
 
-/* First ready coro returned directly; rest batch-pushed to global runq. */
 static mco_coro* _sched_process_io(
     scheduler_t* sched,
     platform_poller_cqe_t* cqes,
@@ -614,7 +600,6 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
     }
 }
 
-/* CPU-bound workloads bypass the driver; each worker services its own timers. */
 static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     _sched_process_timers(w, now);
@@ -641,7 +626,6 @@ static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     }
 }
 
-/* local -> global -> poll(0) -> steal -> driver/park. */
 static mco_coro* _sched_worker_find_coro(
     scheduler_t*           sched,
     _sched_worker_t*       w,
@@ -652,7 +636,6 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    /* Another thread is already blocking in poll; skip to avoid contention. */
     if (!atomic_load_explicit(
             &sched->poller_running, memory_order_relaxed)) {
         int n = platform_poller_wait(&sched->poller, cqes, 0);
@@ -669,7 +652,6 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    /* Try to become the sole blocking-poll driver. */
     {
         bool expected = false;
         if (!atomic_compare_exchange_strong_explicit(
@@ -684,7 +666,7 @@ static mco_coro* _sched_worker_find_coro(
 
     while (atomic_load(&sched->running)) {
         int poll_ms = _sched_timer_next_timeout(w);
-        /* Set before re-check so producers don't skip the pipe wake. */
+        /* Must set before re-check so producers see it and pipe-wake. */
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
         co = _sched_worker_pop_coro(sched, w);
@@ -723,7 +705,6 @@ static mco_coro* _sched_worker_find_coro(
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
         _sched_process_timers(w, now);
 
-        /* mpsc is single-consumer; CAS elects one drainer. */
         bool expected = false;
         if (atomic_compare_exchange_strong(
                 &sched->post_draining, &expected, true)) {
@@ -731,7 +712,6 @@ static mco_coro* _sched_worker_find_coro(
             atomic_store(&sched->post_draining, false);
         }
 
-        /* ET won't re-fire; must consume the coro now or lose it. */
         co = first;
         if (!co) {
             co = _sched_worker_pop_coro(sched, w);
@@ -740,7 +720,6 @@ static mco_coro* _sched_worker_find_coro(
             }
         }
         if (co) {
-            /* Run inline to avoid driver-handoff latency. */
             atomic_store_explicit(
                 &sched->poller_waiting, false, memory_order_relaxed);
             _sched_run_coro(w, co);
@@ -762,7 +741,7 @@ static int _sched_worker_entry(void* arg) {
     while (atomic_load(&sched->running)) {
         _sched_maintenance(sched, w);
 
-        /* Every 61st tick, inject I/O work to prevent starvation. */
+        /* 61 is prime: avoids sync with power-of-two deque sizes. */
         mco_coro* co = NULL;
         if (++w->sched_tick % 61 == 0) {
             queue_node_t* node = runq_pop(sched->runq);
@@ -821,8 +800,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
             sched->joined = true;
         }
 
-        /* iowait timers reference per-worker timer_locks via
-           sched_timer_stop, so destroy the slab before the locks. */
+        /* iowait timers call sched_timer_stop which takes timer_lock. */
         iowait_slab_destroy(sched->iowait_slab);
         sched->iowait_slab = NULL;
 
@@ -998,7 +976,6 @@ void scheduler_destroy(scheduler_t* sched) {
 
     scheduler_stop(sched);
 
-    /* Parked coros are unreachable from runq/deque; reclaim here. */
     spin_lock(&sched->registry_lock);
     while (!list_empty(&sched->registry)) {
         list_node_t* n = list_head(&sched->registry);
@@ -1040,7 +1017,6 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     } else {
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
         if (old && wsdeque_push(_tls_worker->deque, old) != 0) {
-            /* Deque full: spill to global runq. */
             mco_coro* batch[(SCHED_DEQUE_CAP / 2) + 1];
             int32_t n = wsdeque_pop_half(
                 _tls_worker->deque, batch, (SCHED_DEQUE_CAP / 2));
@@ -1213,7 +1189,6 @@ void sched_timer_start(
     heap_insert(&ow->timers, &timer->heap_node);
     mtx_unlock(&ow->timer_lock);
 
-    /* Wake the owner if parked so it recomputes its timed wait. */
     if (atomic_load(&ow->parked)) {
         platform_sem_post(ow->sem);
     }

@@ -31,17 +31,12 @@
 #define PLATFORM_TCPV4_MSS 536
 #define PLATFORM_TCPV6_MSS 1220
 
-
 void platform_socket_enable_nonblocking(platform_sock_t sock, bool on) {
     int flag = fcntl(sock, F_GETFL, 0);
     if (flag == -1) {
         return;
     }
-    if (on) {
-        fcntl(sock, F_SETFL, flag | O_NONBLOCK);
-    } else {
-        fcntl(sock, F_SETFL, flag & ~O_NONBLOCK);
-    }
+    fcntl(sock, F_SETFL, on ? (flag | O_NONBLOCK) : (flag & ~O_NONBLOCK));
 }
 
 void platform_socket_set_rcvbuf(platform_sock_t sock, int val) {
@@ -56,39 +51,35 @@ void platform_socket_close(platform_sock_t sock) {
     close(sock);
 }
 
-platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
+static platform_sock_t _socket_accept(platform_sock_t sock, bool nonblocking) {
     platform_sock_t cli;
     do {
         cli = accept(sock, NULL, NULL);
     } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
              && (errno == EINTR || errno == ECONNABORTED));
+    if (cli != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_enable_nonblocking(cli, nonblocking);
+    }
+    return cli;
+}
+
+platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
+    platform_sock_t cli = _socket_accept(sock, nonblocking);
     if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
-    platform_socket_enable_nonblocking(cli, nonblocking);
-    /* TCP data-connection tuning: raise SO_SNDBUF so a 64KB send settles
-     * in one syscall (the Linux default ~16KB forces an EAGAIN loop on
-     * every large send, driving coroutine park + poller re-arm round
-     * trips). SO_RCVBUF is intentionally left untouched: on Linux the
-     * kernel autotunes rcvbuf from tcp_rmem[1] (~131KB) up to
-     * tcp_rmem[2] (~6MB); pinning it here would lock autotuning and
-     * hurt high-BDP paths. */
+    /**
+     * Linux default sndbuf (~16KB) forces EAGAIN on every large send,
+     * causing excessive coroutine park/re-arm cycles. rcvbuf left to
+     * kernel autotuning (tcp_rmem) to avoid hurting high-BDP paths.
+     */
     platform_socket_set_sndbuf(cli, 256 * 1024);
     return cli;
 }
 
 platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
                                             bool nonblocking) {
-    platform_sock_t cli;
-    do {
-        cli = accept(sock, NULL, NULL);
-    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
-             && (errno == EINTR || errno == ECONNABORTED));
-    if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        return PLATFORM_SO_ERROR_INVALID_SOCKET;
-    }
-    platform_socket_enable_nonblocking(cli, nonblocking);
-    return cli;
+    return _socket_accept(sock, nonblocking);
 }
 
 void platform_socket_enable_nodelay(platform_sock_t sock, bool on) {
@@ -139,18 +130,13 @@ platform_sock_t platform_socket_listen(
     int                  socktype,
     bool                 nonblocking) {
     platform_sock_t  sock;
-    struct addrinfo  hints;
     struct addrinfo* res;
     struct addrinfo* rp;
-
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = socktype;
-    hints.ai_flags = AI_PASSIVE;
-    hints.ai_protocol = 0;
-    hints.ai_canonname = NULL;
-    hints.ai_addr = NULL;
-    hints.ai_next = NULL;
+    struct addrinfo  hints = {
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = socktype,
+        .ai_flags    = AI_PASSIVE,
+    };
 
     if (getaddrinfo(host, port, &hints, &res)) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
@@ -173,18 +159,17 @@ platform_sock_t platform_socket_listen(
             platform_socket_close(sock);
             continue;
         }
-        /* TCP_NODELAY inheritance is platform-dependent; set on each accepted socket. */
         if (socktype == SOCK_STREAM) {
             if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
                 platform_socket_close(sock);
                 continue;
             }
             platform_socket_enable_mss_clamp(sock, true);
-            /* must be after mss_clamp due to TCP_NOOPT on macOS */
+            /* macOS TCP_NOOPT blocks NODELAY; must follow mss_clamp. */
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
-        /* this option not inherited by connection-socket */
+        /* Not inherited by accepted sockets. */
         platform_socket_enable_nonblocking(sock, nonblocking);
         break;
     }
@@ -211,18 +196,12 @@ platform_sock_t platform_socket_dial(
     bool                 nonblocking) {
     int              ret;
     platform_sock_t  sock = PLATFORM_SO_ERROR_INVALID_SOCKET;
-    struct addrinfo  hints;
     struct addrinfo* res;
     struct addrinfo* rp;
-
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = socktype;
-    hints.ai_flags = 0;
-    hints.ai_protocol = 0;
-    hints.ai_canonname = NULL;
-    hints.ai_addr = NULL;
-    hints.ai_next = NULL;
+    struct addrinfo  hints = {
+        .ai_family   = AF_UNSPEC,
+        .ai_socktype = socktype,
+    };
     if (getaddrinfo(host, port, &hints, &res)) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
@@ -238,8 +217,7 @@ platform_sock_t platform_socket_dial(
             platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
-            /* See platform_socket_accept() for the sndbuf rationale.
-             * rcvbuf intentionally left to Linux autotuning. */
+            /* See platform_socket_accept() for sndbuf rationale. */
             platform_socket_set_sndbuf(sock, 256 * 1024);
         }
         do {
@@ -264,19 +242,17 @@ platform_sock_t platform_socket_dial(
 }
 
 int platform_socket_get_socktype(platform_sock_t sock) {
-    int       type;
-    socklen_t len;
-
-    len = sizeof(int);
-    getsockopt(sock, SOL_SOCKET, SO_TYPE, &type, (socklen_t*)&len);
+    int       type = 0;
+    socklen_t len  = sizeof(int);
+    getsockopt(sock, SOL_SOCKET, SO_TYPE, &type, &len);
     return type;
 }
 
 ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
-    ssize_t n = recv(sock, buf, size, 0);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
+    ssize_t n;
+    do {
         n = recv(sock, buf, size, 0);
-    }
+    } while (n < 0 && errno == EINTR);
     if (n < 0 && (errno == EPIPE || errno == ENOTCONN)) {
         errno = ECONNRESET;
     }
@@ -284,47 +260,14 @@ ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
 }
 
 ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
-    ssize_t n = send(sock, buf, size, 0);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR) {
+    ssize_t n;
+    do {
         n = send(sock, buf, size, 0);
-    }
+    } while (n < 0 && errno == EINTR);
     if (n < 0 && (errno == EPIPE || errno == ENOTCONN)) {
         errno = ECONNRESET;
     }
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
-}
-
-ssize_t platform_socket_recvall(platform_sock_t sock, void* buf, int size) {
-    ssize_t off = 0;
-    while (off < size) {
-        ssize_t tmp;
-        do {
-            tmp = recv(sock, (char*)buf + off, size - (int)off, 0);
-        } while (tmp == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-        if (tmp == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-            return PLATFORM_SO_ERROR_SOCKET_ERROR;
-        }
-        if (tmp == 0) {
-            return off;
-        }
-        off += tmp;
-    }
-    return off;
-}
-
-ssize_t platform_socket_sendall(platform_sock_t sock, const void* buf, int size) {
-    ssize_t off = 0;
-    while (off < size) {
-        ssize_t tmp;
-        do {
-            tmp = send(sock, (const char*)buf + off, size - (int)off, 0);
-        } while (tmp == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-        if (tmp == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-            return PLATFORM_SO_ERROR_SOCKET_ERROR;
-        }
-        off += tmp;
-    }
-    return off;
 }
 
 ssize_t platform_socket_recvfrom(
@@ -336,11 +279,8 @@ ssize_t platform_socket_recvfrom(
     ssize_t n;
     do {
         n = recvfrom(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
-    } while (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-        return PLATFORM_SO_ERROR_SOCKET_ERROR;
-    }
-    return n;
+    } while (n < 0 && errno == EINTR);
+    return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
 ssize_t platform_socket_sendto(
@@ -352,11 +292,8 @@ ssize_t platform_socket_sendto(
     ssize_t n;
     do {
         n = sendto(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
-    } while (n == PLATFORM_SO_ERROR_SOCKET_ERROR && errno == EINTR);
-    if (n == PLATFORM_SO_ERROR_SOCKET_ERROR) {
-        return PLATFORM_SO_ERROR_SOCKET_ERROR;
-    }
-    return n;
+    } while (n < 0 && errno == EINTR);
+    return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }
 
 int platform_socket_socketpair(
@@ -377,16 +314,16 @@ int platform_socket_get_lasterror(void) {
 
 #if defined(__linux__)
 void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores) {
-    (void)(idx);
+    (void)idx;
     struct sock_filter bpf_code[] = {
         {BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF | SKF_AD_CPU},
         {BPF_ALU | BPF_MOD, 0, 0, cores},
-        {BPF_RET | BPF_A, 0, 0, 0}};
-
-    struct sock_fprog bpf_config = {0};
-    bpf_config.len = (sizeof(bpf_code) / sizeof(bpf_code[0]));
-    bpf_config.filter = bpf_code;
-
+        {BPF_RET | BPF_A, 0, 0, 0},
+    };
+    struct sock_fprog bpf_config = {
+        .len    = sizeof(bpf_code) / sizeof(bpf_code[0]),
+        .filter = bpf_code,
+    };
     setsockopt(
         sock,
         SOL_SOCKET,
@@ -396,9 +333,8 @@ void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores) {
 }
 
 int platform_socket_get_addressfamily(platform_sock_t sock) {
-    int       af;
-    socklen_t len;
-    len = sizeof(int);
+    int       af  = 0;
+    socklen_t len = sizeof(int);
     getsockopt(sock, SOL_SOCKET, SO_DOMAIN, &af, &len);
     return af;
 }
@@ -419,24 +355,29 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 }
 
 void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
-    int af = platform_socket_get_addressfamily(sock);
-    if (on) {
-        int mss = af == AF_INET ? PLATFORM_TCPV4_MSS : PLATFORM_TCPV6_MSS;
-        setsockopt(
-            sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
-    } else {
-        /* Reset to 0 lets the kernel use its default MSS. */
-        int mss = 0;
-        setsockopt(
-            sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
+    int af  = platform_socket_get_addressfamily(sock);
+    int mss = on ? (af == AF_INET ? PLATFORM_TCPV4_MSS : PLATFORM_TCPV6_MSS) : 0;
+    setsockopt(sock, IPPROTO_TCP, TCP_MAXSEG, (const void*)&mss, sizeof(int));
+}
+
+static int _socket_try_rcvbuf(platform_sock_t sock, int val) {
+    /* FORCE bypasses net.core.rmem_max with CAP_NET_ADMIN. */
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUFFORCE,
+                   (const void*)&val, sizeof(val)) != 0
+        && setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                      (const void*)&val, sizeof(val)) != 0) {
+        return -1;
     }
+    int       actual = 0;
+    socklen_t len    = sizeof(actual);
+    if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (void*)&actual, &len) == 0) {
+        return actual;
+    }
+    return val;
 }
 
 int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
-    /* Fallback ladder, tried in order after the caller's desired size fails. */
     static const int ladder[] = {
-        64 * 1024 * 1024,
-        16 * 1024 * 1024,
         8 * 1024 * 1024,
         4 * 1024 * 1024,
         1 * 1024 * 1024,
@@ -444,32 +385,18 @@ int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
     if (desired <= 0) {
         desired = 16 * 1024 * 1024;
     }
-    int sizes[1 + sizeof(ladder) / sizeof(int)];
-    sizes[0] = desired;
-    for (size_t i = 0; i < sizeof(ladder) / sizeof(int); ++i) {
-        sizes[i + 1] = ladder[i];
+    int rc = _socket_try_rcvbuf(sock, desired);
+    if (rc >= 0) {
+        return rc;
     }
-    for (size_t i = 0; i < sizeof(sizes) / sizeof(int); ++i) {
-        int val = sizes[i];
-        if (i > 0 && val >= desired) {
-            continue; /* already tried as `desired` or too large */
-        }
-        /* Try FORCE first: bypasses net.core.rmem_max when the process has
-         * CAP_NET_ADMIN. Silently fails with EPERM otherwise, in which case
-         * we fall back to the regular SO_RCVBUF path. */
-        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUFFORCE,
-                       (const void*)&val, sizeof(val)) != 0
-            && setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                          (const void*)&val, sizeof(val)) != 0) {
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); ++i) {
+        if (ladder[i] >= desired) {
             continue;
         }
-        int       actual = 0;
-        socklen_t len    = sizeof(actual);
-        if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                       (void*)&actual, &len) == 0) {
-            return actual;
+        rc = _socket_try_rcvbuf(sock, ladder[i]);
+        if (rc >= 0) {
+            return rc;
         }
-        return val;
     }
     return -1;
 }
@@ -484,9 +411,7 @@ void platform_socket_set_rss(platform_sock_t sock, uint16_t idx, int cores) {
 
 int platform_socket_get_addressfamily(platform_sock_t sock) {
     struct sockaddr_storage ss;
-    socklen_t               len;
-
-    len = sizeof(struct sockaddr_storage);
+    socklen_t              len = sizeof(ss);
     getsockname(sock, (struct sockaddr*)&ss, &len);
     return ss.ss_family;
 }
@@ -511,13 +436,22 @@ void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
 }
 
+static int _socket_try_rcvbuf_mac(platform_sock_t sock, int val) {
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+                   (const void*)&val, sizeof(val)) != 0) {
+        return -1;
+    }
+    int       actual = 0;
+    socklen_t len    = sizeof(actual);
+    if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (void*)&actual, &len) == 0) {
+        return actual;
+    }
+    return val;
+}
+
 int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
-    /* Fallback ladder, tried in order after the caller's desired size fails.
-     * macOS has no SO_RCVBUFFORCE; kernel clamps silently per
-     * kern.ipc.maxsockbuf. */
+    /* macOS has no SO_RCVBUFFORCE; kern.ipc.maxsockbuf clamps silently. */
     static const int ladder[] = {
-        64 * 1024 * 1024,
-        16 * 1024 * 1024,
         8 * 1024 * 1024,
         4 * 1024 * 1024,
         1 * 1024 * 1024,
@@ -525,27 +459,18 @@ int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
     if (desired <= 0) {
         desired = 16 * 1024 * 1024;
     }
-    int sizes[1 + sizeof(ladder) / sizeof(int)];
-    sizes[0] = desired;
-    for (size_t i = 0; i < sizeof(ladder) / sizeof(int); ++i) {
-        sizes[i + 1] = ladder[i];
+    int rc = _socket_try_rcvbuf_mac(sock, desired);
+    if (rc >= 0) {
+        return rc;
     }
-    for (size_t i = 0; i < sizeof(sizes) / sizeof(int); ++i) {
-        int val = sizes[i];
-        if (i > 0 && val >= desired) {
+    for (size_t i = 0; i < sizeof(ladder) / sizeof(ladder[0]); ++i) {
+        if (ladder[i] >= desired) {
             continue;
         }
-        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                       (const void*)&val, sizeof(val)) != 0) {
-            continue;
+        rc = _socket_try_rcvbuf_mac(sock, ladder[i]);
+        if (rc >= 0) {
+            return rc;
         }
-        int       actual = 0;
-        socklen_t len    = sizeof(actual);
-        if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-                       (void*)&actual, &len) == 0) {
-            return actual;
-        }
-        return val;
     }
     return -1;
 }
@@ -553,18 +478,17 @@ int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
 
 platform_sock_t platform_socket_listen_unix(const char* path,
                                             bool nonblocking) {
-    if (!path || strlen(path) == 0) {
+    if (!path || !*path) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
 
     struct sockaddr_un addr = {.sun_family = AF_UNIX};
-
     if (strlen(path) >= sizeof(addr.sun_path)) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
-    /* Remove stale socket file if it exists. */
+    /* bind() fails with EADDRINUSE if a previous socket file remains. */
     remove(path);
 
     platform_sock_t sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -590,12 +514,11 @@ platform_sock_t platform_socket_listen_unix(const char* path,
 platform_sock_t platform_socket_dial_unix(const char* path,
                                           bool* connected,
                                           bool nonblocking) {
-    if (!path || strlen(path) == 0) {
+    if (!path || !*path) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
 
     struct sockaddr_un addr = {.sun_family = AF_UNIX};
-
     if (strlen(path) >= sizeof(addr.sun_path)) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }

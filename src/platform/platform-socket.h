@@ -132,31 +132,6 @@ extern ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size);
  */
 extern ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size);
 
-/**
- * @brief Receive exactly size bytes from a connected socket.
- *
- * Loops internally until all bytes are received or an error occurs.
- *
- * @param sock  Connected socket.
- * @param buf   Buffer to receive into.
- * @param size  Exact number of bytes to receive.
- *
- * @return Total bytes received, or -1 on error.
- */
-extern ssize_t platform_socket_recvall(platform_sock_t sock, void* buf, int size);
-
-/**
- * @brief Send exactly size bytes on a connected socket.
- *
- * Loops internally until all bytes are sent or an error occurs.
- *
- * @param sock  Connected socket.
- * @param buf   Buffer containing data to send.
- * @param size  Exact number of bytes to send.
- *
- * @return Total bytes sent, or -1 on error.
- */
-extern ssize_t platform_socket_sendall(platform_sock_t sock, const void* buf, int size);
 
 /**
  * @brief Receive data from an unconnected (datagram) socket.
