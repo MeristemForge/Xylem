@@ -24,36 +24,35 @@
 #include <signal.h>
 #include <stddef.h>
 
-static platform_stackguard_cb_t s_callback;
-static struct sigaction          s_old_segv;
-static struct sigaction          s_old_bus;
+static platform_stackguard_cb_t _callback;
+static struct sigaction         _old_segv;
+static struct sigaction         _old_bus;
 
 static void _stackguard_handler(int sig, siginfo_t* info, void* uctx) {
     (void)uctx;
 
-    if (s_callback && s_callback((uintptr_t)info->si_addr)) {
+    if (_callback && _callback((uintptr_t)info->si_addr)) {
         return;
     }
 
-    struct sigaction* old = (sig == SIGBUS) ? &s_old_bus : &s_old_segv;
+    struct sigaction* old = (sig == SIGBUS) ? &_old_bus : &_old_segv;
     sigaction(sig, old, NULL);
     raise(sig);
 }
 
 void platform_stackguard_install(platform_stackguard_cb_t cb) {
-    s_callback = cb;
+    _callback = cb;
 
-    struct sigaction sa;
-    sa.sa_sigaction = _stackguard_handler;
-    sa.sa_flags     = SA_SIGINFO | SA_NODEFER;
-    sigemptyset(&sa.sa_mask);
+    struct sigaction sa = {0};
+    sa.sa_sigaction     = _stackguard_handler;
+    sa.sa_flags         = SA_SIGINFO | SA_NODEFER;
 
-    sigaction(SIGSEGV, &sa, &s_old_segv);
-    sigaction(SIGBUS, &sa, &s_old_bus);
+    sigaction(SIGSEGV, &sa, &_old_segv);
+    sigaction(SIGBUS, &sa, &_old_bus);
 }
 
-void platform_stackguard_remove(void) {
-    sigaction(SIGSEGV, &s_old_segv, NULL);
-    sigaction(SIGBUS, &s_old_bus, NULL);
-    s_callback = NULL;
+void platform_stackguard_uninstall(void) {
+    sigaction(SIGSEGV, &_old_segv, NULL);
+    sigaction(SIGBUS, &_old_bus, NULL);
+    _callback = NULL;
 }

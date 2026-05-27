@@ -26,8 +26,8 @@
 #endif
 #include <windows.h>
 
-static platform_stackguard_cb_t s_callback;
-static PVOID                    s_handler;
+static platform_stackguard_cb_t _callback;
+static PVOID                    _veh_handle;
 
 static LONG WINAPI _stackguard_handler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
@@ -36,7 +36,7 @@ static LONG WINAPI _stackguard_handler(PEXCEPTION_POINTERS ep) {
 
     uintptr_t fault_addr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
 
-    if (s_callback && s_callback(fault_addr)) {
+    if (_callback && _callback(fault_addr)) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -44,14 +44,14 @@ static LONG WINAPI _stackguard_handler(PEXCEPTION_POINTERS ep) {
 }
 
 void platform_stackguard_install(platform_stackguard_cb_t cb) {
-    s_callback = cb;
-    s_handler  = AddVectoredExceptionHandler(1, _stackguard_handler);
+    _callback   = cb;
+    _veh_handle = AddVectoredExceptionHandler(1, _stackguard_handler);
 }
 
-void platform_stackguard_remove(void) {
-    if (s_handler) {
-        RemoveVectoredExceptionHandler(s_handler);
-        s_handler = NULL;
+void platform_stackguard_uninstall(void) {
+    if (_veh_handle) {
+        RemoveVectoredExceptionHandler(_veh_handle);
+        _veh_handle = NULL;
     }
-    s_callback = NULL;
+    _callback = NULL;
 }

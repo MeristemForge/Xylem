@@ -27,4 +27,4 @@ _Pragma("once")
 typedef bool (*platform_stackguard_cb_t)(uintptr_t fault_addr);
 
 extern void platform_stackguard_install(platform_stackguard_cb_t cb);
-extern void platform_stackguard_remove(void);
+extern void platform_stackguard_uninstall(void);

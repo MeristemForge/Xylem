@@ -271,7 +271,7 @@ static void _coro_pool_dealloc(
     platform_vmem_release(ptr, total);
 }
 
-static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
+static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
     size_t page_size  = _vmem_page_size();
     size_t grow       = page_size;
     size_t max_commit = co->stack_size - page_size;
@@ -280,28 +280,21 @@ static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
         grow = max_commit - ctx->stack_committed;
     }
     if (grow == 0) {
-        return;
+        return false;
     }
 
-    uintptr_t aligned_high = ((uintptr_t)co->stack_base + co->stack_size
-                              + page_size - 1) & ~(page_size - 1);
-    char* stack_high = (char*)aligned_high;
-    char* new_start  = stack_high - ctx->stack_committed - grow;
+    uintptr_t stack_high = ((uintptr_t)co->stack_base + co->stack_size
+                             + page_size - 1) & ~(page_size - 1);
+    char* old_guard = (char*)stack_high - ctx->stack_committed - page_size;
 
-    char* old_guard = stack_high - ctx->stack_committed - page_size;
     if (platform_vmem_protect(old_guard, page_size,
             PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) != 0) {
         xylem_loge("coro stack grow: failed to unprotect old guard");
         abort();
     }
-
-    if (platform_vmem_commit(new_start, grow) != 0) {
-        xylem_loge("coro stack grow: failed to commit %zu bytes", grow);
-        abort();
-    }
     ctx->stack_committed += grow;
 
-    char* new_guard = new_start - page_size;
+    char* new_guard = old_guard - page_size;
     if ((uintptr_t)new_guard >= (uintptr_t)co->stack_base) {
         if (platform_vmem_commit(new_guard, page_size) != 0) {
             xylem_loge("coro stack grow: failed to commit guard page");
@@ -313,9 +306,10 @@ static void _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
             abort();
         }
     }
+    return true;
 }
 
-static bool _coro_stack_fault(uintptr_t fault_addr) {
+static bool _coro_stack_fault_cb(uintptr_t fault_addr) {
     mco_coro* co = mco_running();
     if (!co) {
         return false;
@@ -323,14 +317,13 @@ static bool _coro_stack_fault(uintptr_t fault_addr) {
 
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
     size_t page_size  = _vmem_page_size();
-    uintptr_t aligned_high = ((uintptr_t)co->stack_base + co->stack_size
-                              + page_size - 1) & ~(page_size - 1);
-    uintptr_t commit_low = aligned_high - ctx->stack_committed;
+    uintptr_t stack_high = ((uintptr_t)co->stack_base + co->stack_size
+                             + page_size - 1) & ~(page_size - 1);
+    uintptr_t commit_low = stack_high - ctx->stack_committed;
     uintptr_t stack_low  = (uintptr_t)co->stack_base;
 
     if (fault_addr >= stack_low && fault_addr < commit_low) {
-        _coro_stack_grow(ctx, co);
-        return true;
+        return _coro_stack_grow(ctx, co);
     }
     return false;
 }
@@ -799,7 +792,7 @@ static int _sched_worker_entry(void* arg) {
 
 static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     if (!PLATFORM_VMEM_STACK_EXTERNAL) {
-        platform_stackguard_remove();
+        platform_stackguard_uninstall();
     }
     atomic_store(&sched->running, false);
 
@@ -982,7 +975,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     }
 
     if (!PLATFORM_VMEM_STACK_EXTERNAL) {
-        platform_stackguard_install(_coro_stack_fault);
+        platform_stackguard_install(_coro_stack_fault_cb);
     }
 
     return sched;
