@@ -176,15 +176,8 @@ static size_t _vmem_page_size(void) {
 
 static size_t _coro_metadata_size(size_t coro_size) {
     size_t page_size = _vmem_page_size();
-    size_t stack = (size_t)SCHED_CORO_STACK_SIZE;
-    size_t meta  = coro_size > stack ? coro_size - stack : 0;
+    size_t meta = coro_size - (size_t)SCHED_CORO_STACK_SIZE;
     return (meta + page_size - 1) & ~(page_size - 1);
-}
-
-static size_t _coro_init_commit(void) {
-    size_t page_size = _vmem_page_size();
-    size_t commit = (16 * 1024 + page_size - 1) & ~(page_size - 1);
-    return commit < 2 * page_size ? 2 * page_size : commit;
 }
 
 static void* _coro_pool_alloc(size_t size, void* allocator_data) {
@@ -210,15 +203,11 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
         return NULL;
     }
 
-    size_t meta_size     = _coro_metadata_size(total);
-    size_t initial_stack = _coro_init_commit();
+    size_t meta_size   = _coro_metadata_size(total);
+    size_t init_commit = _vmem_page_size();
 
     platform_vmem_commit(base, meta_size);
-    platform_vmem_commit(base + total - initial_stack, initial_stack);
-
-    char* guard = base + total - initial_stack - page_size;
-    platform_vmem_commit(guard, page_size);
-    platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
+    platform_vmem_commit(base + total - init_commit, init_commit);
 
     return base;
 }
@@ -232,19 +221,14 @@ static void _coro_stack_reset(void* ptr, size_t size) {
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
     size_t meta_size = _coro_metadata_size(total);
 
-    size_t initial_stack = _coro_init_commit();
-    size_t guard_and_initial = page_size + initial_stack;
+    size_t init_commit = _vmem_page_size();
 
     size_t decommit_start = meta_size;
-    size_t decommit_end   = total - guard_and_initial;
+    size_t decommit_end   = total - init_commit;
     if (decommit_end > decommit_start) {
         platform_vmem_decommit(
             (char*)ptr + decommit_start, decommit_end - decommit_start);
     }
-
-    char* guard = (char*)ptr + total - initial_stack - page_size;
-    platform_vmem_commit(guard, page_size);
-    platform_vmem_protect(guard, page_size, PLATFORM_VMEM_PROT_NONE);
 }
 
 static void _coro_pool_dealloc(
@@ -272,40 +256,21 @@ static void _coro_pool_dealloc(
 }
 
 static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
-    size_t page_size  = _vmem_page_size();
-    size_t grow       = page_size;
-    size_t max_commit = co->stack_size - page_size;
+    size_t page_size = _vmem_page_size();
 
-    if (ctx->stack_committed + grow > max_commit) {
-        grow = max_commit - ctx->stack_committed;
-    }
-    if (grow == 0) {
+    if (ctx->stack_committed >= co->stack_size) {
         return false;
     }
 
     uintptr_t stack_high = ((uintptr_t)co->stack_base + co->stack_size
                              + page_size - 1) & ~(page_size - 1);
-    char* old_guard = (char*)stack_high - ctx->stack_committed - page_size;
+    char* next_page = (char*)stack_high - ctx->stack_committed - page_size;
 
-    if (platform_vmem_protect(old_guard, page_size,
-            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) != 0) {
-        xylem_loge("coro stack grow: failed to unprotect old guard");
+    if (platform_vmem_commit(next_page, page_size) != 0) {
+        xylem_loge("coro stack grow: failed to commit page");
         abort();
     }
-    ctx->stack_committed += grow;
-
-    char* new_guard = old_guard - page_size;
-    if ((uintptr_t)new_guard >= (uintptr_t)co->stack_base) {
-        if (platform_vmem_commit(new_guard, page_size) != 0) {
-            xylem_loge("coro stack grow: failed to commit guard page");
-            abort();
-        }
-        if (platform_vmem_protect(
-                new_guard, page_size, PLATFORM_VMEM_PROT_NONE) != 0) {
-            xylem_loge("coro stack grow: failed to protect guard page");
-            abort();
-        }
-    }
+    ctx->stack_committed += page_size;
     return true;
 }
 
@@ -1099,7 +1064,7 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     }
 
     ctx->co              = co;
-    ctx->stack_committed = _coro_init_commit();
+    ctx->stack_committed = _vmem_page_size();
 
     spin_lock(&sched->registry_lock);
     list_insert_tail(&sched->registry, &ctx->registry_node);
