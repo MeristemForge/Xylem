@@ -388,21 +388,15 @@ static void test_submit_result(void) {
     }
 }
 
-/**
- * Coroutine stack growth tests.
+/*
+ * Exception-driven stack growth tests.
  *
- * The runtime commits an initial 16KB at coroutine creation, then
- * commits one grow_size (16KB) chunk at a time on resume, only
- * after a park has set last_sp. So a coroutine cannot drop RSP by
- * more than ~grow_size between yields, otherwise it overshoots the
- * not-yet-committed region. These tests use small frames per
- * recursion level with one yield per level to drive incremental
- * growth, then read back every level's frame on the way up to
- * detect any cross-frame corruption from grow.
+ * The runtime reserves virtual address space per coroutine and commits
+ * only one page initially.  Further pages are committed on demand via
+ * a fault handler (VEH on Windows, SIGSEGV+sigaltstack on Unix).
  *
- * volatile + per-byte read-back defeats compiler optimization that
- * might elide the stack writes; otherwise the test would not
- * actually touch the pages we're trying to validate.
+ * volatile + per-byte read-back prevents the compiler from eliding
+ * stack writes that would otherwise not touch uncommitted pages.
  */
 
 typedef struct {
@@ -410,25 +404,16 @@ typedef struct {
 } _stkgrow_basic_ctx_t;
 
 static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
-    /**
-     * Per-frame buffer fits inside one grow_size chunk plus
-     * prologue overhead, so a single yield per level is enough to
-     * make room.
-     */
     volatile uint8_t frame[STKGROW_FRAME_BYTES];
     for (size_t i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(seed + (uint8_t)depth + (uint8_t)(i & 0x3f));
     }
-
-    /* Park: sets last_sp so the next resume runs grow if needed. */
-    xylem_sleep(0);
 
     uint64_t deeper = 0;
     if (depth > 0) {
         deeper = _stkgrow_recurse(depth - 1, seed);
     }
 
-    /* Read back: prove deeper grows didn't corrupt this frame. */
     uint64_t sum = 0;
     for (size_t i = 0; i < sizeof(frame); i++) {
         uint8_t expect =
@@ -441,12 +426,8 @@ static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
 
 static void _stkgrow_basic_coro(void* arg) {
     _stkgrow_basic_ctx_t* ctx = (_stkgrow_basic_ctx_t*)arg;
-
-    /* depth * frame_bytes exceeds the initial commit, so grow must
-     * run at least once during the recursion. */
     uint64_t sum = _stkgrow_recurse(STKGROW_BASIC_DEPTH, 0xa5);
     ASSERT(sum > 0);
-
     ctx->tested = 1;
     xylem_shutdown();
 }
@@ -463,11 +444,8 @@ static void test_coro_stack_grow(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/**
- * Recurse deep enough to drive many consecutive grows in one
- * coroutine. On the way back up, every frame is re-validated to
- * catch corruption from later grows touching earlier frames.
- */
+/* Deep recursion: many consecutive page faults in one coroutine.
+ * Validates earlier frames on unwind to detect cross-frame corruption. */
 
 typedef struct {
     int tested;
@@ -493,12 +471,8 @@ static void test_coro_stack_grow_deep_recursion(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/**
- * Many coroutines hit grow concurrently across all workers.
- * Each coroutine has its own reservation; this catches bugs in
- * pool accounting or per-coroutine state that could let one
- * coroutine's grow disturb another's stack.
- */
+/* Concurrent growth across all workers. Catches per-coroutine state
+ * bugs that could let one coroutine's growth disturb another's stack. */
 
 typedef struct {
     atomic_int done;
@@ -545,13 +519,8 @@ static void test_coro_stack_grow_concurrent(void) {
     ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
 }
 
-/**
- * Recycle the same pool slot many times. Each coroutine spawns the
- * next one then exits, so the pool returns the slot via
- * _coro_stack_reset. The next coroutine reuses the slot and grows
- * again. Catches state leaks between reset and the next grow
- * (e.g. stale guard pages, inconsistent commit accounting).
- */
+/* Pool slot reuse: coroutine exits → slot returned → next coroutine
+ * reuses the same slot and grows again. Catches stale commit state. */
 
 typedef struct {
     int counter;
@@ -594,6 +563,41 @@ static void test_coro_stack_grow_pool_reuse(void) {
     ASSERT(ctx.counter == STKGROW_REUSE_COUNT);
 }
 
+/* Single large frame: one function allocates far more than page_size,
+ * triggering multiple sequential page faults without recursion. */
+
+typedef struct {
+    int tested;
+} _stkgrow_large_ctx_t;
+
+static void _stkgrow_large_coro(void* arg) {
+    _stkgrow_large_ctx_t* ctx = (_stkgrow_large_ctx_t*)arg;
+    volatile uint8_t frame[64 * 1024];
+    for (size_t i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i ^ 0xab);
+    }
+    uint64_t sum = 0;
+    for (size_t i = 0; i < sizeof(frame); i++) {
+        ASSERT(frame[i] == (uint8_t)(i ^ 0xab));
+        sum += frame[i];
+    }
+    ASSERT(sum > 0);
+    ctx->tested = 1;
+    xylem_shutdown();
+}
+
+static void _stkgrow_large_main(void* arg) {
+    _start_safety_timer();
+    xylem_spawn(_stkgrow_large_coro, arg);
+}
+
+static void test_coro_stack_grow_large_frame(void) {
+    fprintf(stderr, "=== test_coro_stack_grow_large_frame\n");
+    _stkgrow_large_ctx_t ctx = {0};
+    xylem_run(_stkgrow_large_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
 int main(void) {
     test_start_stop_cycle();
     test_stop_from_spawned();
@@ -609,5 +613,6 @@ int main(void) {
     test_coro_stack_grow_deep_recursion();
     test_coro_stack_grow_concurrent();
     test_coro_stack_grow_pool_reuse();
+    test_coro_stack_grow_large_frame();
     return 0;
 }

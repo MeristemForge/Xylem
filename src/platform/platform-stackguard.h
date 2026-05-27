@@ -24,10 +24,37 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
+/**
+ * @brief Callback invoked on memory access fault.
+ *
+ * @param fault_addr  The faulting virtual address.
+ *
+ * @return true if the fault was handled, false to propagate.
+ */
 typedef bool (*platform_stackguard_cb_t)(uintptr_t fault_addr);
 
+/**
+ * @brief Install a process-wide fault handler for stack growth.
+ *
+ * @param cb  Callback invoked on access violation / SIGSEGV.
+ */
 extern void platform_stackguard_install(platform_stackguard_cb_t cb);
+
+/**
+ * @brief Remove the fault handler installed by platform_stackguard_install.
+ */
 extern void platform_stackguard_uninstall(void);
 
+/**
+ * @brief Per-thread setup for fault-driven stack growth.
+ *
+ * On Unix, allocates and registers an alternate signal stack so that
+ * SIGSEGV can be delivered when RSP is in uncommitted memory.
+ * No-op on Windows (VEH does not use the user stack).
+ */
 extern void platform_stackguard_thread_init(void);
+
+/**
+ * @brief Tear down per-thread state allocated by thread_init.
+ */
 extern void platform_stackguard_thread_deinit(void);
