@@ -58,3 +58,10 @@ extern void platform_stackguard_thread_init(void);
  * @brief Tear down per-thread state allocated by thread_init.
  */
 extern void platform_stackguard_thread_deinit(void);
+
+/**
+ * @brief Set the platform stack limit (lowest usable stack address).
+ *
+ * On Windows x64, updates TEB.StackLimit so __chkstk works correctly.
+ * No-op on other platforms.
+ */

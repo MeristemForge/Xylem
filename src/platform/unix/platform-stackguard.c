@@ -87,3 +87,4 @@ void platform_stackguard_thread_deinit(void) {
         _alt_stack_mem = NULL;
     }
 }
+

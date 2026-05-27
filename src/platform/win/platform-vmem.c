@@ -61,3 +61,4 @@ int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
     DWORD old;
     return VirtualProtect(ptr, size, flags, &old) ? 0 : -1;
 }
+

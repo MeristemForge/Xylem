@@ -68,8 +68,10 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 
 #define SCHED_DEQUE_CAP          256
 #define SCHED_TIMER_TICK_MS      1
@@ -204,7 +206,7 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
     }
 
     size_t meta_size   = _coro_metadata_size(total);
-    size_t init_commit = _vmem_page_size();
+    size_t init_commit = page_size;
 
     platform_vmem_commit(base, meta_size);
     platform_vmem_commit(base + total - init_commit, init_commit);
@@ -221,7 +223,7 @@ static void _coro_stack_reset(void* ptr, size_t size) {
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
     size_t meta_size = _coro_metadata_size(total);
 
-    size_t init_commit = _vmem_page_size();
+    size_t init_commit = page_size;
 
     size_t decommit_start = meta_size;
     size_t decommit_end   = total - init_commit;
@@ -255,24 +257,34 @@ static void _coro_pool_dealloc(
     platform_vmem_release(ptr, total);
 }
 
-static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
+static bool _coro_stack_grow(
+    _coro_ctx_t* ctx, mco_coro* co, uintptr_t fault_addr) {
     size_t page_size = _vmem_page_size();
 
-    /* Last page stays uncommitted as stack overflow guard. */
     if (ctx->stack_committed >= co->stack_size - page_size) {
-        xylem_loge("coro stack overflow (%zu bytes)", co->stack_size);
         return false;
     }
 
     uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
-    char* next_page = (char*)stack_high - ctx->stack_committed - page_size;
+    uintptr_t commit_low = stack_high - ctx->stack_committed;
+    uintptr_t fault_page = fault_addr & ~(page_size - 1);
+    uintptr_t meta_end   = stack_high - co->stack_size;
 
-    if (platform_vmem_commit(next_page, page_size) != 0) {
-        xylem_loge("coro stack grow: failed to commit page");
+    uintptr_t target = fault_page;
+    if (target < meta_end + page_size) {
+        target = meta_end + page_size;
+    }
+
+    size_t grow_bytes = commit_low - target;
+    if (grow_bytes == 0 || grow_bytes > co->stack_size) {
+        return false;
+    }
+
+    if (platform_vmem_commit((void*)target, grow_bytes) != 0) {
         abort();
     }
-    ctx->stack_committed += page_size;
+    ctx->stack_committed += grow_bytes;
     return true;
 }
 
@@ -286,11 +298,10 @@ static bool _coro_stack_fault_cb(uintptr_t fault_addr) {
     size_t page_size  = _vmem_page_size();
     uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
-    uintptr_t commit_low = stack_high - ctx->stack_committed;
     uintptr_t stack_low  = (uintptr_t)co->stack_base;
 
-    if (fault_addr >= stack_low && fault_addr < commit_low) {
-        return _coro_stack_grow(ctx, co);
+    if (fault_addr >= stack_low && fault_addr < stack_high - ctx->stack_committed) {
+        return _coro_stack_grow(ctx, co, fault_addr);
     }
     return false;
 }

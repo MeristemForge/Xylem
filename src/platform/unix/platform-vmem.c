@@ -57,3 +57,4 @@ int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
     }
     return mprotect(ptr, size, flags) == 0 ? 0 : -1;
 }
+
