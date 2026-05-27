@@ -260,6 +260,7 @@ static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
 
     /* Last page stays uncommitted as stack overflow guard. */
     if (ctx->stack_committed >= co->stack_size - page_size) {
+        xylem_loge("coro stack overflow (%zu bytes)", co->stack_size);
         return false;
     }
 
