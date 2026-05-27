@@ -28,3 +28,6 @@ typedef bool (*platform_stackguard_cb_t)(uintptr_t fault_addr);
 
 extern void platform_stackguard_install(platform_stackguard_cb_t cb);
 extern void platform_stackguard_uninstall(void);
+
+extern void platform_stackguard_thread_init(void);
+extern void platform_stackguard_thread_deinit(void);

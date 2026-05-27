@@ -55,3 +55,9 @@ void platform_stackguard_uninstall(void) {
     }
     _callback = NULL;
 }
+
+void platform_stackguard_thread_init(void) {
+}
+
+void platform_stackguard_thread_deinit(void) {
+}

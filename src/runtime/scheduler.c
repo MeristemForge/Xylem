@@ -258,11 +258,12 @@ static void _coro_pool_dealloc(
 static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
     size_t page_size = _vmem_page_size();
 
-    if (ctx->stack_committed >= co->stack_size) {
+    /* Last page stays uncommitted as stack overflow guard. */
+    if (ctx->stack_committed >= co->stack_size - page_size) {
         return false;
     }
 
-    uintptr_t stack_high = ((uintptr_t)co->stack_base + co->stack_size
+    uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
     char* next_page = (char*)stack_high - ctx->stack_committed - page_size;
 
@@ -282,7 +283,7 @@ static bool _coro_stack_fault_cb(uintptr_t fault_addr) {
 
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
     size_t page_size  = _vmem_page_size();
-    uintptr_t stack_high = ((uintptr_t)co->stack_base + co->stack_size
+    uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
     uintptr_t commit_low = stack_high - ctx->stack_committed;
     uintptr_t stack_low  = (uintptr_t)co->stack_base;
@@ -706,6 +707,10 @@ static int _sched_worker_entry(void* arg) {
     scheduler_t* sched = w->sched;
     _tls_worker = w;
 
+    if (!PLATFORM_VMEM_STACK_EXTERNAL) {
+        platform_stackguard_thread_init();
+    }
+
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
     while (atomic_load(&sched->running)) {
@@ -752,6 +757,10 @@ static int _sched_worker_entry(void* arg) {
     }
 
     _sched_drain(w, sched);
+
+    if (!PLATFORM_VMEM_STACK_EXTERNAL) {
+        platform_stackguard_thread_deinit();
+    }
     return 0;
 }
 

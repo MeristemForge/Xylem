@@ -21,12 +21,18 @@
 
 #include "platform/platform-stackguard.h"
 
+#include "xylem/xylem-logger.h"
+
 #include <signal.h>
 #include <stddef.h>
+#include <stdlib.h>
+
+#define STACKGUARD_ALT_STACK_SIZE (64 * 1024)
 
 static platform_stackguard_cb_t _callback;
 static struct sigaction         _old_segv;
 static struct sigaction         _old_bus;
+static _Thread_local void*      _alt_stack_mem;
 
 static void _stackguard_handler(int sig, siginfo_t* info, void* uctx) {
     (void)uctx;
@@ -45,7 +51,7 @@ void platform_stackguard_install(platform_stackguard_cb_t cb) {
 
     struct sigaction sa = {0};
     sa.sa_sigaction     = _stackguard_handler;
-    sa.sa_flags         = SA_SIGINFO | SA_NODEFER;
+    sa.sa_flags         = SA_SIGINFO | SA_NODEFER | SA_ONSTACK;
 
     sigaction(SIGSEGV, &sa, &_old_segv);
     sigaction(SIGBUS, &sa, &_old_bus);
@@ -55,4 +61,29 @@ void platform_stackguard_uninstall(void) {
     sigaction(SIGSEGV, &_old_segv, NULL);
     sigaction(SIGBUS, &_old_bus, NULL);
     _callback = NULL;
+}
+
+void platform_stackguard_thread_init(void) {
+    void* mem = malloc(STACKGUARD_ALT_STACK_SIZE);
+    if (!mem) {
+        xylem_loge("stackguard: failed to allocate alt stack");
+        return;
+    }
+    _alt_stack_mem = mem;
+
+    stack_t ss  = {0};
+    ss.ss_sp    = mem;
+    ss.ss_size  = STACKGUARD_ALT_STACK_SIZE;
+    ss.ss_flags = 0;
+    sigaltstack(&ss, NULL);
+}
+
+void platform_stackguard_thread_deinit(void) {
+    if (_alt_stack_mem) {
+        stack_t ss = {0};
+        ss.ss_flags = SS_DISABLE;
+        sigaltstack(&ss, NULL);
+        free(_alt_stack_mem);
+        _alt_stack_mem = NULL;
+    }
 }
