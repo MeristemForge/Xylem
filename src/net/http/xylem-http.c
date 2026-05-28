@@ -26,20 +26,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ─── TCP transport factory ──────────────────────────────────────── */
-
-static http_transport_t _make_tcp_transport(xylem_tcp_conn_t* conn) {
+static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
     return (http_transport_t){
-        .conn           = conn,
-        .read           = (int (*)(void*, void*, int))xylem_tcp_read,
-        .write          = (int (*)(void*, const void*, int))xylem_tcp_write,
-        .close          = (void (*)(void*))xylem_tcp_close,
+        .conn            = conn,
+        .read            = (int (*)(void*, void*, int))xylem_tcp_read,
+        .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
+        .close           = (void (*)(void*))xylem_tcp_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
     };
 }
-
-/* ─── Dial callback for plain-TCP HTTP ───────────────────────────── */
 
 static http_transport_t _http_dial(const char* host, uint16_t port,
                                    uint64_t timeout_ms, void* ctx) {
@@ -48,10 +44,8 @@ static http_transport_t _http_dial(const char* host, uint16_t port,
     if (!conn) {
         return (http_transport_t){0};
     }
-    return _make_tcp_transport(conn);
+    return _http_make_transport(conn);
 }
-
-/* ─── Server: accept-loop coroutine ─────────────────────────────── */
 
 static void _http_accept_coroutine(void* arg) {
     http_srv_t* srv = (http_srv_t*)arg;
@@ -70,19 +64,17 @@ static void _http_accept_coroutine(void* arg) {
             continue;
         }
         ctx->srv = srv;
-        ctx->transport = _make_tcp_transport(conn);
+        ctx->transport = _http_make_transport(conn);
 
         runtime_spawn(http_srv_conn_coroutine, ctx);
     }
 }
 
-/* ─── Server: public API ────────────────────────────────────────── */
-
 xylem_http_srv_t* xylem_http_listen(
-    const char*                       host,
-    uint16_t                          port,
-    xylem_http_handler_fn_t           handler,
-    void*                             userdata,
+    const char*                  host,
+    uint16_t                     port,
+    xylem_http_handler_fn_t      handler,
+    void*                        userdata,
     const xylem_http_srv_opts_t* opts) {
     (void)opts;
 
@@ -105,7 +97,7 @@ xylem_http_srv_t* xylem_http_listen(
     srv->handler        = handler;
     srv->userdata       = userdata;
 
-    /* port 0 lets the OS assign; query the actual port for server_port(). */
+    /* port 0 lets the OS assign; resolve for xylem_http_srv_port(). */
     char host_buf[46];
     uint16_t actual_port = 0;
     xylem_tcp_listener_addr(ln, host_buf, sizeof(host_buf), &actual_port);
@@ -121,7 +113,7 @@ void xylem_http_close(xylem_http_srv_t* srv) {
         return;
     }
     http_srv_t* s = (http_srv_t*)srv;
-    /* Closing the listener wakes the accept coroutine which then exits. */
+    /* Wakes the accept coroutine which then exits on NULL return. */
     s->close_listener(s->listener);
     free(s);
 }
@@ -129,8 +121,6 @@ void xylem_http_close(xylem_http_srv_t* srv) {
 uint16_t xylem_http_srv_port(xylem_http_srv_t* srv) {
     return srv ? ((http_srv_t*)srv)->port : 0;
 }
-
-/* ─── Client: public API ────────────────────────────────────────── */
 
 xylem_http_res_t* xylem_http_get(const char* url,
                                  const xylem_http_opts_t* opts) {
