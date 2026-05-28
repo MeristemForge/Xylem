@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem/net/http/xylem-http-common.h"
+#include "xylem/net/xylem-http.h"
 
 #include <stdbool.h>
 #include <stddef.h>

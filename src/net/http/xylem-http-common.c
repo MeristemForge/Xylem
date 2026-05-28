@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/net/http/xylem-http-common.h"
+#include "xylem/net/xylem-http.h"
 
 #include "http-common.h"
 
