@@ -38,7 +38,7 @@
 #include "xylem/xylem-utils.h"
 
 #include "encoding/gzip/miniz/miniz.h"
-#include "http-common.h"
+#include "utils.h"
 #include "net/http/llhttp/llhttp.h"
 #include "runtime/runtime.h"
 

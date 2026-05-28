@@ -129,9 +129,8 @@ endif()
 
 if(XYLEM_ENABLE_HTTP)
 	list(APPEND SRCS
-		src/net/http/http-common.c
+		src/net/http/utils.c
 		src/net/http/xylem-http.c
-		src/net/http/xylem-http-common.c
 		src/net/http/llhttp/llhttp.c
 		src/net/http/llhttp/http.c
 		src/net/http/llhttp/api.c
