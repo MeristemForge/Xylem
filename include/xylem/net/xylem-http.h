@@ -21,6 +21,8 @@
 
 _Pragma("once")
 
+#include "xylem/net/http/xylem-http-common.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,11 +31,6 @@ _Pragma("once")
 typedef struct xylem_tls_ctx_s xylem_tls_ctx_t;
 
 /* --- Common types --- */
-
-typedef struct {
-    const char* name;
-    const char* value;
-} xylem_http_hdr_t;
 
 typedef struct xylem_http_req_s    xylem_http_req_t;
 typedef struct xylem_http_res_s    xylem_http_res_t;
@@ -72,6 +69,17 @@ extern xylem_http_srv_t* xylem_http_listen(
     const xylem_http_srv_opts_t* opts);
 
 extern void xylem_http_close_server(xylem_http_srv_t* srv);
+
+/**
+ * @brief Get the listening port of the server.
+ *
+ * Useful when the server was started with port 0 (OS-assigned).
+ *
+ * @param srv  Server handle.
+ *
+ * @return Port number, or 0 on error.
+ */
+extern uint16_t xylem_http_server_port(xylem_http_srv_t* srv);
 
 /* --- Server: Gzip --- */
 
@@ -176,38 +184,3 @@ extern int xylem_http_static_serve(xylem_http_router_t* r,
 
 extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
 extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
-
-/* --- Utilities --- */
-
-extern char* xylem_http_url_encode(const char* src, size_t src_len,
-                                   size_t* out_len);
-extern char* xylem_http_url_decode(const char* src, size_t src_len,
-                                   size_t* out_len);
-
-typedef struct {
-    const char* allowed_origins;
-    const char* allowed_methods;
-    const char* allowed_headers;
-    const char* expose_headers;
-    int         max_age;
-    bool        allow_credentials;
-} xylem_http_cors_t;
-
-extern size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
-                                      const char* origin,
-                                      bool is_preflight,
-                                      xylem_http_hdr_t* out,
-                                      size_t out_cap);
-
-extern xylem_http_multipart_t* xylem_http_multipart_parse(
-    const char* content_type, const void* body, size_t body_len);
-extern size_t       xylem_http_multipart_count(const xylem_http_multipart_t* mp);
-extern const char*  xylem_http_multipart_name(const xylem_http_multipart_t* mp, size_t index);
-extern const char*  xylem_http_multipart_filename(const xylem_http_multipart_t* mp, size_t index);
-extern const char*  xylem_http_multipart_content_type(const xylem_http_multipart_t* mp, size_t index);
-extern const void*  xylem_http_multipart_data(const xylem_http_multipart_t* mp, size_t index);
-extern size_t       xylem_http_multipart_data_len(const xylem_http_multipart_t* mp, size_t index);
-extern void         xylem_http_multipart_destroy(xylem_http_multipart_t* mp);
-
-extern char* xylem_http_sse_build(const char* event, const char* data,
-                                  size_t* len);

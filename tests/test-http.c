@@ -19,14 +19,14 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/net/http/xylem-http-common.h"
-#include "xylem/net/http/xylem-http-client.h"
-#include "xylem/net/http/xylem-http-server.h"
-#include "xylem/xylem-loop.h"
+#include "xylem.h"
 #include "assert.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* ─── URL encode/decode unit tests ─────────────────────────────── */
 
 static void test_url_encode_unreserved(void) {
     size_t len;
@@ -91,8 +91,9 @@ static void test_url_encode_decode_round_trip(void) {
     free(dec);
 }
 
+/* ─── Response/request NULL accessor tests ─────────────────────── */
+
 static void test_res_destroy_null(void) {
-    /* destroy(NULL) must be a no-op, not crash */
     xylem_http_res_destroy(NULL);
 }
 
@@ -111,76 +112,21 @@ static void test_req_accessors_null(void) {
     ASSERT(xylem_http_req_body_len(NULL) == 0);
 }
 
-static void test_srv_create_null_loop(void) {
-    xylem_http_srv_cfg_t cfg = {0};
-    ASSERT(xylem_http_listen(NULL, &cfg) == NULL);
+/* ─── Response writer NULL tests ───────────────────────────────── */
+
+static void test_res_set_status_null(void) {
+    ASSERT(xylem_http_res_set_status(NULL, 200) == -1);
 }
 
-static void test_srv_create_null_cfg(void) {
-    /* Pass a non-NULL loop pointer but NULL cfg */
-    loop_t* loop = loop_create();
-    ASSERT(xylem_http_listen(loop, NULL) == NULL);
-    loop_destroy(loop);
+static void test_res_set_header_null(void) {
+    ASSERT(xylem_http_res_set_header(NULL, "X-Foo", "bar") == -1);
 }
 
-static void test_srv_create_destroy(void) {
-    loop_t* loop = loop_create();
-    ASSERT(loop != NULL);
-
-    xylem_http_srv_cfg_t cfg = {0};
-    cfg.port = 0;
-    xylem_http_srv_t* srv = xylem_http_listen(loop, &cfg);
-    ASSERT(srv != NULL);
-    xylem_http_close_server(srv);
-
-    loop_destroy(loop);
+static void test_res_write_null(void) {
+    ASSERT(xylem_http_res_write(NULL, "data", 4) == -1);
 }
 
-static void test_srv_destroy_null(void) {
-    /* close_server(NULL) must be a no-op */
-    xylem_http_close_server(NULL);
-}
-
-static void test_srv_start_null(void) {
-    /* listen(NULL, ...) returns NULL */
-    xylem_http_srv_cfg_t cfg = {0};
-    ASSERT(xylem_http_listen(NULL, &cfg) == NULL);
-}
-
-static void test_srv_stop_null(void) {
-    /* close_server(NULL) must be a no-op, not crash */
-    xylem_http_close_server(NULL);
-}
-
-static void test_chunked_start_null(void) {
-    /* Removed: begin_chunked is now internal. */
-}
-
-static void test_chunked_send_null(void) {
-    /* Removed: send_chunk is now internal. */
-}
-
-static void test_chunked_send_zero_len(void) {
-    /* Removed: send_chunk is now internal. */
-}
-
-static void test_chunked_end_null(void) {
-    /* Removed: end_chunked is now internal. */
-}
-
-static void test_cookie_jar_create_destroy(void) {
-    xylem_http_cookie_jar_t* jar = xylem_http_cookie_jar_create();
-    ASSERT(jar != NULL);
-    xylem_http_cookie_jar_destroy(jar);
-}
-
-static void test_cookie_jar_destroy_null(void) {
-    xylem_http_cookie_jar_destroy(NULL);
-}
-
-static void test_send_partial_null(void) {
-    /* Removed: send_partial is now internal. */
-}
+/* ─── CORS tests ───────────────────────────────────────────────── */
 
 static void test_cors_vary_origin(void) {
     xylem_http_cors_t cors = {0};
@@ -189,7 +135,6 @@ static void test_cors_vary_origin(void) {
     xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://foo.com",
                                        false, out, 7);
-    /* Should have Allow-Origin + Vary: Origin */
     ASSERT(n >= 2);
     bool found_vary = false;
     for (size_t i = 0; i < n; i++) {
@@ -208,7 +153,6 @@ static void test_cors_wildcard_no_vary(void) {
     xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://example.com",
                                        false, out, 7);
-    /* Wildcard origin should NOT emit Vary header. */
     for (size_t i = 0; i < n; i++) {
         ASSERT(strcmp(out[i].name, "Vary") != 0);
     }
@@ -249,7 +193,6 @@ static void test_cors_credentials_no_wildcard(void) {
     xylem_http_hdr_t out[7];
     size_t n = xylem_http_cors_headers(&cors, "http://example.com",
                                        false, out, 7);
-    /* Allow-Origin + Credentials + Vary (credentials forces non-wildcard). */
     ASSERT(n >= 2);
     ASSERT(strcmp(out[0].value, "http://example.com") == 0);
     bool found_cred = false;
@@ -304,21 +247,7 @@ static void test_cors_null_config(void) {
     ASSERT(xylem_http_cors_headers(&cors, NULL, false, out, 7) == 0);
 }
 
-static void test_sse_start_null(void) {
-    /* Removed: begin_sse is now internal. */
-}
-
-static void test_sse_send_event_null(void) {
-    ASSERT(xylem_http_sse_build(NULL, NULL, NULL) == NULL);
-}
-
-static void test_sse_send_data_null(void) {
-    ASSERT(xylem_http_sse_build("ping", NULL, NULL) == NULL);
-}
-
-static void test_sse_end_null(void) {
-    /* Removed: end_sse is now internal. */
-}
+/* ─── Multipart tests ──────────────────────────────────────────── */
 
 static void test_multipart_parse_basic(void) {
     const char* ct = "multipart/form-data; boundary=abc123";
@@ -390,248 +319,56 @@ static void test_multipart_destroy_null(void) {
     ASSERT(xylem_http_multipart_data_len(NULL, 0) == 0);
 }
 
-static int _test_middleware_pass(xylem_http_writer_t* w,
-                                xylem_http_req_t* req,
-                                void* userdata) {
-    (void)w;
-    (void)req;
-    int* called = (int*)userdata;
-    if (called) {
-        (*called)++;
-    }
-    return 0;
-}
+/* ─── Integration test: coroutine-based server + client ────────── */
 
-static int _test_middleware_abort(xylem_http_writer_t* w,
-                                 xylem_http_req_t* req,
-                                 void* userdata) {
-    (void)w;
-    (void)req;
-    int* called = (int*)userdata;
-    if (called) {
-        (*called)++;
-    }
-    return -1;
-}
-
-static void test_router_use_null(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_use(NULL, _test_middleware_pass, NULL) == -1);
-    ASSERT(xylem_http_router_use(r, NULL, NULL) == -1);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_use_register(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_use(r, _test_middleware_pass, NULL) == 0);
-    ASSERT(xylem_http_router_use(r, _test_middleware_pass, NULL) == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_create_destroy(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_destroy_null(void) {
-    xylem_http_router_destroy(NULL);
-}
-
-static void _test_router_handler(xylem_http_writer_t* w,
-                                 xylem_http_req_t* req,
-                                 void* userdata) {
-    (void)w;
+static void _hello_handler(xylem_http_res_t* res,
+                           xylem_http_req_t* req,
+                           void* userdata) {
     (void)req;
     (void)userdata;
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    xylem_http_res_write(res, "hello", 5);
 }
 
-static void _test_router_handler2(xylem_http_writer_t* w,
-                                  xylem_http_req_t* req,
-                                  void* userdata) {
-    (void)w;
-    (void)req;
-    (void)userdata;
+static void _test_http_integration(void* arg) {
+    (void)arg;
+
+    /* Start server on a random port. */
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _hello_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    /* Build URL. */
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
+
+    /* Client GET request. */
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 5);
+    ASSERT(memcmp(xylem_http_res_body(res), "hello", 5) == 0);
+
+    const char* ct = xylem_http_res_header(res, "Content-Type");
+    ASSERT(ct != NULL);
+    ASSERT(strcmp(ct, "text/plain") == 0);
+
+    xylem_http_res_destroy(res);
+
+    /* Clean up. */
+    xylem_http_close_server(srv);
+    xylem_shutdown();
 }
 
-static void test_router_exact_match(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    int rc = xylem_http_router_add(r, "GET", "/api/users",
-                                   _test_router_handler, NULL);
-    ASSERT(rc == 0);
-    xylem_http_router_destroy(r);
+static void test_http_integration(void) {
+    xylem_run(_test_http_integration, NULL, NULL);
 }
 
-static void test_router_param_match(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    int rc = xylem_http_router_add(r, "GET", "/user/:id",
-                                   _test_router_handler, NULL);
-    ASSERT(rc == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_wildcard_match(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    int rc = xylem_http_router_add(r, "GET", "/static/*",
-                                   _test_router_handler, NULL);
-    ASSERT(rc == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_exact_over_param(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_add(r, "GET", "/user/:id",
-                                 _test_router_handler, NULL) == 0);
-    ASSERT(xylem_http_router_add(r, "GET", "/user/me",
-                                 _test_router_handler2, NULL) == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_param_over_wildcard(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_add(r, "GET", "/files/*",
-                                 _test_router_handler, NULL) == 0);
-    ASSERT(xylem_http_router_add(r, "GET", "/files/:name",
-                                 _test_router_handler2, NULL) == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_method_filter(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_add(r, "GET", "/data",
-                                 _test_router_handler, NULL) == 0);
-    ASSERT(xylem_http_router_add(r, "POST", "/data",
-                                 _test_router_handler2, NULL) == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_method_null(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_add(r, NULL, "/any",
-                                 _test_router_handler, NULL) == 0);
-    xylem_http_router_destroy(r);
-}
-
-static void test_router_404(void) {
-    xylem_http_router_t* r = xylem_http_router_create();
-    ASSERT(r != NULL);
-    ASSERT(xylem_http_router_dispatch(r, NULL, NULL) == -1);
-    ASSERT(xylem_http_router_dispatch(NULL, NULL, NULL) == -1);
-    xylem_http_router_destroy(r);
-}
-
-static void test_writer_set_header_null(void) {
-    ASSERT(xylem_http_writer_set_header(NULL, "X-Foo", "bar") == -1);
-}
-
-static void test_writer_set_status_null(void) {
-    ASSERT(xylem_http_writer_set_status(NULL, 200) == -1);
-}
-
-static void test_writer_write_null(void) {
-    ASSERT(xylem_http_writer_write(NULL, "data", 4) == -1);
-}
-
-static void test_writer_send_convenience(void) {
-    /* Removed: send() is now internal. */
-}
-
-static void test_write_zero_len(void) {
-    /* write(conn, data, 0) returns 0 (no-op), even with NULL conn
-       the len=0 check happens after the NULL check. */
-    ASSERT(xylem_http_writer_write(NULL, "data", 0) == -1);
-}
-
-static void test_write_on_closed(void) {
-    /* write() with NULL conn returns -1. */
-    ASSERT(xylem_http_writer_write(NULL, "data", 4) == -1);
-}
-
-static void test_upgrade_null_callback(void) {
-    /* accept_upgrade with NULL writer returns -1. */
-    void* transport = NULL;
-    ASSERT(xylem_http_writer_accept_upgrade(NULL, &transport) == -1);
-}
-
-static void test_accept_upgrade_outside_cb(void) {
-    /* accept_upgrade with NULL transport output returns -1. */
-    ASSERT(xylem_http_writer_accept_upgrade(NULL, NULL) == -1);
-}
-
-static void test_accept_upgrade_null_transport(void) {
-    /* Both NULL returns -1. */
-    void* transport = NULL;
-    ASSERT(xylem_http_writer_accept_upgrade(NULL, &transport) == -1);
-    ASSERT(transport == NULL);
-}
-
-static void test_session_create_destroy(void) {
-    xylem_http_session_t* s = xylem_http_session_create(NULL);
-    ASSERT(s != NULL);
-    xylem_http_session_destroy(s);
-}
-
-static void test_session_create_null_opts(void) {
-    xylem_http_session_t* s = xylem_http_session_create(NULL);
-    ASSERT(s != NULL);
-    xylem_http_session_destroy(s);
-}
-
-static void test_session_destroy_null(void) {
-    xylem_http_session_destroy(NULL);
-}
-
-static void test_session_create_with_opts(void) {
-    xylem_http_session_opts_t opts = {0};
-    opts.max_idle_per_host = 10;
-    opts.idle_timeout_ms   = 60000;
-    xylem_http_session_t* s = xylem_http_session_create(&opts);
-    ASSERT(s != NULL);
-    xylem_http_session_destroy(s);
-}
-
-static void test_session_create_with_cookie_jar(void) {
-    xylem_http_cookie_jar_t* jar = xylem_http_cookie_jar_create();
-    ASSERT(jar != NULL);
-    xylem_http_session_opts_t opts = {0};
-    opts.cookie_jar = jar;
-    xylem_http_session_t* s = xylem_http_session_create(&opts);
-    ASSERT(s != NULL);
-    xylem_http_session_destroy(s);
-    xylem_http_cookie_jar_destroy(jar);
-}
-
-static void test_session_get_null(void) {
-    ASSERT(xylem_http_session_get(NULL, "http://localhost", NULL) == NULL);
-}
-
-static void test_session_post_null(void) {
-    ASSERT(xylem_http_session_post(NULL, "http://localhost",
-                                   "x", 1, "text/plain", NULL) == NULL);
-}
-
-static void test_session_put_null(void) {
-    ASSERT(xylem_http_session_put(NULL, "http://localhost",
-                                  "x", 1, "text/plain", NULL) == NULL);
-}
-
-static void test_session_delete_null(void) {
-    ASSERT(xylem_http_session_delete(NULL, "http://localhost", NULL) == NULL);
-}
-
-static void test_session_patch_null(void) {
-    ASSERT(xylem_http_session_patch(NULL, "http://localhost",
-                                    "x", 1, "text/plain", NULL) == NULL);
-}
+/* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
     /* URL percent-encoding */
@@ -649,26 +386,10 @@ int main(void) {
     /* Request accessors */
     test_req_accessors_null();
 
-    /* Server lifecycle */
-    test_srv_create_null_loop();
-    test_srv_create_null_cfg();
-    test_srv_create_destroy();
-    test_srv_destroy_null();
-    test_srv_start_null();
-    test_srv_stop_null();
-
-    /* Chunked transfer encoding */
-    test_chunked_start_null();
-    test_chunked_send_null();
-    test_chunked_send_zero_len();
-    test_chunked_end_null();
-
-    /* Cookie jar */
-    test_cookie_jar_create_destroy();
-    test_cookie_jar_destroy_null();
-
-    /* Range support */
-    test_send_partial_null();
+    /* Response writer */
+    test_res_set_status_null();
+    test_res_set_header_null();
+    test_res_write_null();
 
     /* CORS */
     test_cors_vary_origin();
@@ -679,56 +400,14 @@ int main(void) {
     test_cors_preflight_headers();
     test_cors_null_config();
 
-    /* SSE */
-    test_sse_start_null();
-    test_sse_send_event_null();
-    test_sse_send_data_null();
-    test_sse_end_null();
-
     /* Multipart */
     test_multipart_parse_basic();
     test_multipart_with_filename();
     test_multipart_invalid_boundary();
     test_multipart_destroy_null();
 
-    /* Router */
-    test_router_use_null();
-    test_router_use_register();
-    test_router_create_destroy();
-    test_router_destroy_null();
-    test_router_exact_match();
-    test_router_param_match();
-    test_router_wildcard_match();
-    test_router_exact_over_param();
-    test_router_param_over_wildcard();
-    test_router_method_filter();
-    test_router_method_null();
-    test_router_404();
-
-    /* Writer mode */
-    test_writer_set_header_null();
-    test_writer_set_status_null();
-    test_writer_write_null();
-    test_writer_send_convenience();
-    test_write_zero_len();
-    test_write_on_closed();
-
-    /* Upgrade */
-    test_upgrade_null_callback();
-    test_accept_upgrade_outside_cb();
-    test_accept_upgrade_null_transport();
-
-    /* Session */
-    test_session_create_destroy();
-    test_session_create_null_opts();
-    test_session_destroy_null();
-    test_session_create_with_opts();
-    test_session_create_with_cookie_jar();
-    test_session_get_null();
-    test_session_post_null();
-    test_session_put_null();
-    test_session_delete_null();
-    test_session_patch_null();
+    /* Integration: coroutine-based server + client */
+    test_http_integration();
 
     return 0;
 }

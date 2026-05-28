@@ -130,19 +130,12 @@ endif()
 if(XYLEM_ENABLE_HTTP)
 	list(APPEND SRCS
 		src/net/http/http-common.c
-		src/net/http/xylem-http-client.c
-		src/net/http/xylem-http-server.c
+		src/net/http/xylem-http.c
 		src/net/http/xylem-http-common.c
-		src/net/http/http-transport-tcp.c
 		src/net/http/llhttp/llhttp.c
 		src/net/http/llhttp/http.c
 		src/net/http/llhttp/api.c
 	)
-	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/http/http-transport-tls.c)
-	else()
-		list(APPEND SRCS src/net/http/http-transport-tls-stub.c)
-	endif()
 endif()
 
 if(XYLEM_ENABLE_WS)
@@ -176,7 +169,16 @@ target_include_directories(xylem
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
 
 if(XYLEM_ENABLE_TLS)
+	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_TLS)
 	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+if(XYLEM_ENABLE_HTTP)
+	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_HTTP)
+endif()
+
+if(XYLEM_ENABLE_WS)
+	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_WS)
 endif()
 
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_ASAN address)

@@ -68,9 +68,7 @@ _Pragma("once")
 #include "xylem/net/xylem-dtls.h"
 #endif
 #ifdef XYLEM_ENABLE_HTTP
-#include "xylem/net/http/xylem-http-common.h"
-#include "xylem/net/http/xylem-http-client.h"
-#include "xylem/net/http/xylem-http-server.h"
+#include "xylem/net/xylem-http.h"
 #endif
 #ifdef XYLEM_ENABLE_WS
 #include "xylem/net/ws/xylem-ws-common.h"

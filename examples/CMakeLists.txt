@@ -8,14 +8,14 @@ include_directories(${CMAKE_SOURCE_DIR}/src)
 add_executable(tcp-echo tcp-echo.c)
 target_link_libraries(tcp-echo PRIVATE xylem)
 
-# HTTP examples
-if(XYLEM_ENABLE_HTTP)
-    add_executable(http-static-server http-static-server.c)
-    target_link_libraries(http-static-server PRIVATE xylem)
-
-    add_executable(http-session-client http-session-client.c)
-    target_link_libraries(http-session-client PRIVATE xylem)
-endif()
+# HTTP examples (disabled: pending port to coroutine-based API)
+# if(XYLEM_ENABLE_HTTP)
+#     add_executable(http-static-server http-static-server.c)
+#     target_link_libraries(http-static-server PRIVATE xylem)
+#
+#     add_executable(http-session-client http-session-client.c)
+#     target_link_libraries(http-session-client PRIVATE xylem)
+# endif()
 
 # Serial example (disabled -- uses thrd_t directly, needs C11 threads header)
 # add_executable(serial-terminal serial-terminal.c)
