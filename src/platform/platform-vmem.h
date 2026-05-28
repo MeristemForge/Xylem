@@ -23,7 +23,8 @@ _Pragma("once")
 
 #include <stddef.h>
 
-#if defined(_WIN32) && defined(MCO_USE_FIBERS)
+#if defined(_WIN32)
+#define MCO_USE_FIBERS
 #define PLATFORM_VMEM_STACK_EXTERNAL 1
 #else
 #define PLATFORM_VMEM_STACK_EXTERNAL 0

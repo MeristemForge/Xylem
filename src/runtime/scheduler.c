@@ -68,7 +68,6 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -99,7 +98,6 @@ typedef struct _sched_worker_s {
     _Atomic bool         parked;
     _Atomic(mco_coro*)   runnext;
     uint32_t             sched_tick;
-    uint64_t             last_poll_ns;
     heap_t               timers;
     mtx_t                timer_lock;
 } _sched_worker_t;
@@ -257,34 +255,21 @@ static void _coro_pool_dealloc(
     platform_vmem_release(ptr, total);
 }
 
-static bool _coro_stack_grow(
-    _coro_ctx_t* ctx, mco_coro* co, uintptr_t fault_addr) {
+static bool _coro_stack_grow(_coro_ctx_t* ctx, mco_coro* co) {
     size_t page_size = _vmem_page_size();
 
+    /* Bottom page stays uncommitted as overflow guard. */
     if (ctx->stack_committed >= co->stack_size - page_size) {
         return false;
     }
 
     uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
-    uintptr_t commit_low = stack_high - ctx->stack_committed;
-    uintptr_t fault_page = fault_addr & ~(page_size - 1);
-    uintptr_t meta_end   = stack_high - co->stack_size;
-
-    uintptr_t target = fault_page;
-    if (target < meta_end + page_size) {
-        target = meta_end + page_size;
-    }
-
-    size_t grow_bytes = commit_low - target;
-    if (grow_bytes == 0 || grow_bytes > co->stack_size) {
-        return false;
-    }
-
-    if (platform_vmem_commit((void*)target, grow_bytes) != 0) {
+    void* page = (void*)(stack_high - ctx->stack_committed - page_size);
+    if (platform_vmem_commit(page, page_size) != 0) {
         abort();
     }
-    ctx->stack_committed += grow_bytes;
+    ctx->stack_committed += page_size;
     return true;
 }
 
@@ -295,13 +280,13 @@ static bool _coro_stack_fault_cb(uintptr_t fault_addr) {
     }
 
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-    size_t page_size  = _vmem_page_size();
+    size_t page_size = _vmem_page_size();
     uintptr_t stack_high = ((uintptr_t)co + co->coro_size
                              + page_size - 1) & ~(page_size - 1);
-    uintptr_t stack_low  = (uintptr_t)co->stack_base;
 
-    if (fault_addr >= stack_low && fault_addr < stack_high - ctx->stack_committed) {
-        return _coro_stack_grow(ctx, co, fault_addr);
+    if (fault_addr >= (uintptr_t)co->stack_base &&
+        fault_addr < stack_high - ctx->stack_committed) {
+        return _coro_stack_grow(ctx, co);
     }
     return false;
 }
@@ -703,8 +688,6 @@ static mco_coro* _sched_worker_find_coro(
             }
         }
         if (co) {
-            atomic_store_explicit(
-                &sched->poller_waiting, false, memory_order_relaxed);
             _sched_run_coro(w, co);
             _sched_maintenance(sched, w);
         }
@@ -1084,8 +1067,10 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
         return -1;
     }
 
-    ctx->co              = co;
-    ctx->stack_committed = _vmem_page_size();
+    ctx->co = co;
+    if (!PLATFORM_VMEM_STACK_EXTERNAL) {
+        ctx->stack_committed = _vmem_page_size();
+    }
 
     spin_lock(&sched->registry_lock);
     list_insert_tail(&sched->registry, &ctx->registry_node);

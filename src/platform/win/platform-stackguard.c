@@ -21,39 +21,11 @@
 
 #include "platform/platform-stackguard.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-static platform_stackguard_cb_t _callback;
-static PVOID                    _veh_handle;
-
-static LONG WINAPI _stackguard_handler(PEXCEPTION_POINTERS ep) {
-    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    uintptr_t fault_addr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
-
-    if (_callback && _callback(fault_addr)) {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
 void platform_stackguard_install(platform_stackguard_cb_t cb) {
-    _callback   = cb;
-    _veh_handle = AddVectoredExceptionHandler(1, _stackguard_handler);
+    (void)cb;
 }
 
 void platform_stackguard_uninstall(void) {
-    if (_veh_handle) {
-        RemoveVectoredExceptionHandler(_veh_handle);
-        _veh_handle = NULL;
-    }
-    _callback = NULL;
 }
 
 void platform_stackguard_thread_init(void) {
@@ -61,4 +33,3 @@ void platform_stackguard_thread_init(void) {
 
 void platform_stackguard_thread_deinit(void) {
 }
-

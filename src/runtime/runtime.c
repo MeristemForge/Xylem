@@ -25,6 +25,8 @@
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 
+#include "platform/platform-vmem.h"
+
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
 
