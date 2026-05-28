@@ -23,12 +23,6 @@ _Pragma("once")
 
 #include <stddef.h>
 
-#if defined(_WIN32)
-#define MCO_USE_FIBERS
-#define PLATFORM_VMEM_STACK_EXTERNAL 1
-#else
-#define PLATFORM_VMEM_STACK_EXTERNAL 0
-#endif
 
 typedef enum platform_vmem_prot_e {
     PLATFORM_VMEM_PROT_NONE  = 0,
@@ -67,9 +61,10 @@ extern void* platform_vmem_reserve(size_t size);
 extern int platform_vmem_commit(void* ptr, size_t size);
 
 /**
- * @brief Decommit physical pages, releasing memory back to the OS.
+ * @brief Release physical pages without changing protection.
  *
- * The address range remains reserved but becomes inaccessible.
+ * The address range remains accessible (mapped RW) but the OS may reclaim
+ * the physical backing.  Next access will fault in a fresh zero page.
  *
  * @param ptr   Page-aligned address within a committed region.
  * @param size  Number of bytes to decommit (must be page-aligned).

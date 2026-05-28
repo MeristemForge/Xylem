@@ -41,7 +41,7 @@ int platform_vmem_commit(void* ptr, size_t size) {
 }
 
 void platform_vmem_decommit(void* ptr, size_t size) {
-    VirtualFree(ptr, size, MEM_DECOMMIT);
+    VirtualAlloc(ptr, size, MEM_RESET, PAGE_READWRITE);
 }
 
 void platform_vmem_release(void* ptr, size_t size) {

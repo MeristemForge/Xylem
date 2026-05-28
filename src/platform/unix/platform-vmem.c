@@ -40,7 +40,6 @@ int platform_vmem_commit(void* ptr, size_t size) {
 
 void platform_vmem_decommit(void* ptr, size_t size) {
     madvise(ptr, size, MADV_DONTNEED);
-    mprotect(ptr, size, PROT_NONE);
 }
 
 void platform_vmem_release(void* ptr, size_t size) {
