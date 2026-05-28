@@ -1,0 +1,77 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
+_Pragma("once")
+
+#include "xylem/net/xylem-http.h"
+#include "xylem/net/xylem-tls.h"
+
+/* --- HTTPS Server --- */
+
+typedef struct xylem_https_listener_s xylem_https_listener_t;
+
+typedef struct {
+    size_t                  max_body_size;
+    uint64_t                idle_timeout_ms;
+    xylem_http_handler_fn_t on_upgrade;
+    void*                   upgrade_userdata;
+} xylem_https_listener_opts_t;
+
+extern xylem_https_listener_t* xylem_https_listen(
+    const char*                        host,
+    uint16_t                           port,
+    xylem_http_handler_fn_t            handler,
+    void*                              userdata,
+    xylem_tls_ctx_t*                   tls_ctx,
+    const xylem_https_listener_opts_t* opts);
+
+extern void     xylem_https_close_listener(xylem_https_listener_t* listener);
+extern uint16_t xylem_https_listener_port(xylem_https_listener_t* listener);
+extern void     xylem_https_listener_set_gzip(xylem_https_listener_t* listener,
+                                              const xylem_http_gzip_opts_t* opts);
+
+/* --- HTTPS Client --- */
+
+extern xylem_http_res_t* xylem_https_get(const char* url,
+                                         xylem_tls_ctx_t* tls_ctx,
+                                         const xylem_http_opts_t* opts);
+
+extern xylem_http_res_t* xylem_https_post(const char* url,
+                                          const void* body, size_t body_len,
+                                          const char* content_type,
+                                          xylem_tls_ctx_t* tls_ctx,
+                                          const xylem_http_opts_t* opts);
+
+extern xylem_http_res_t* xylem_https_put(const char* url,
+                                         const void* body, size_t body_len,
+                                         const char* content_type,
+                                         xylem_tls_ctx_t* tls_ctx,
+                                         const xylem_http_opts_t* opts);
+
+extern xylem_http_res_t* xylem_https_delete(const char* url,
+                                            xylem_tls_ctx_t* tls_ctx,
+                                            const xylem_http_opts_t* opts);
+
+extern xylem_http_res_t* xylem_https_patch(const char* url,
+                                           const void* body, size_t body_len,
+                                           const char* content_type,
+                                           xylem_tls_ctx_t* tls_ctx,
+                                           const xylem_http_opts_t* opts);

@@ -130,11 +130,15 @@ endif()
 if(XYLEM_ENABLE_HTTP)
 	list(APPEND SRCS
 		src/net/http/utils.c
+		src/net/http/http.c
 		src/net/http/xylem-http.c
 		src/net/http/llhttp/llhttp.c
 		src/net/http/llhttp/http.c
 		src/net/http/llhttp/api.c
 	)
+	if(XYLEM_ENABLE_TLS)
+		list(APPEND SRCS src/net/http/xylem-https.c)
+	endif()
 endif()
 
 if(XYLEM_ENABLE_WS)

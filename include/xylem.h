@@ -69,6 +69,9 @@ _Pragma("once")
 #endif
 #ifdef XYLEM_ENABLE_HTTP
 #include "xylem/net/xylem-http.h"
+#ifdef XYLEM_ENABLE_TLS
+#include "xylem/net/xylem-https.h"
+#endif
 #endif
 #ifdef XYLEM_ENABLE_WS
 #include "xylem/net/ws/xylem-ws-common.h"

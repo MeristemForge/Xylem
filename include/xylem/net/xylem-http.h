@@ -25,9 +25,6 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/* Forward declarations for optional TLS */
-typedef struct xylem_tls_ctx_s xylem_tls_ctx_t;
-
 /* --- Common types --- */
 
 typedef struct {
@@ -37,7 +34,7 @@ typedef struct {
 
 typedef struct xylem_http_req_s    xylem_http_req_t;
 typedef struct xylem_http_res_s    xylem_http_res_t;
-typedef struct xylem_http_srv_s    xylem_http_srv_t;
+typedef struct xylem_http_listener_s xylem_http_listener_t;
 typedef struct xylem_http_router_s xylem_http_router_t;
 typedef struct xylem_http_cookie_jar_s xylem_http_cookie_jar_t;
 typedef struct xylem_http_multipart_s  xylem_http_multipart_t;
@@ -57,32 +54,31 @@ typedef int (*xylem_http_middleware_fn_t)(
 /* --- Server --- */
 
 typedef struct {
-    xylem_tls_ctx_t*        tls_ctx;
     size_t                  max_body_size;
     uint64_t                idle_timeout_ms;
     xylem_http_handler_fn_t on_upgrade;
     void*                   upgrade_userdata;
-} xylem_http_srv_opts_t;
+} xylem_http_listener_opts_t;
 
-extern xylem_http_srv_t* xylem_http_listen(
-    const char*                  host,
-    uint16_t                     port,
-    xylem_http_handler_fn_t      handler,
-    void*                        userdata,
-    const xylem_http_srv_opts_t* opts);
+extern xylem_http_listener_t* xylem_http_listen(
+    const char*                       host,
+    uint16_t                          port,
+    xylem_http_handler_fn_t           handler,
+    void*                             userdata,
+    const xylem_http_listener_opts_t* opts);
 
-extern void xylem_http_close_server(xylem_http_srv_t* srv);
+extern void xylem_http_close_listener(xylem_http_listener_t* listener);
 
 /**
- * @brief Get the listening port of the server.
+ * @brief Get the listening port of the listener.
  *
- * Useful when the server was started with port 0 (OS-assigned).
+ * Useful when the listener was started with port 0 (OS-assigned).
  *
- * @param srv  Server handle.
+ * @param listener  Listener handle.
  *
  * @return Port number, or 0 on error.
  */
-extern uint16_t xylem_http_server_port(xylem_http_srv_t* srv);
+extern uint16_t xylem_http_listener_port(xylem_http_listener_t* listener);
 
 /* --- Server: Gzip --- */
 
@@ -93,8 +89,8 @@ typedef struct {
     const char* mime_types;
 } xylem_http_gzip_opts_t;
 
-extern void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
-                                    const xylem_http_gzip_opts_t* opts);
+extern void xylem_http_listener_set_gzip(xylem_http_listener_t* listener,
+                                         const xylem_http_gzip_opts_t* opts);
 
 /* --- Request accessors --- */
 
@@ -132,7 +128,6 @@ typedef struct {
     size_t                   max_body_size;
     const xylem_http_hdr_t*  headers;
     size_t                   header_count;
-    xylem_tls_ctx_t*         tls_ctx;
     const char*              range;
     xylem_http_cookie_jar_t* cookie_jar;
 } xylem_http_opts_t;
