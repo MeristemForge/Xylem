@@ -521,6 +521,38 @@ static void _finalize_response(xylem_http_res_t* res) {
     _transport_write(res->_transport, "0\r\n\r\n", 5);
 }
 
+int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport) {
+    if (!res || !res->_transport || !transport) return -1;
+    if (res->_headers_sent) return -1;
+
+    const char* resp = "HTTP/1.1 101 Switching Protocols\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n";
+    int n = res->_transport->write(res->_transport->conn,
+                                   resp, (int)strlen(resp));
+    if (n < 0) return -1;
+
+    /* Write any additional headers set by the caller */
+    for (size_t i = 0; i < res->header_count; i++) {
+        char hdr[512];
+        int hlen = snprintf(hdr, sizeof(hdr), "%s: %s\r\n",
+                            res->headers[i].name, res->headers[i].value);
+        if (hlen > 0) {
+            res->_transport->write(res->_transport->conn, hdr, hlen);
+        }
+    }
+
+    /* End headers */
+    res->_transport->write(res->_transport->conn, "\r\n", 2);
+
+    /* Detach transport — caller now owns the connection */
+    *transport = res->_transport;
+    res->_transport = NULL;
+    res->_headers_sent = true;
+
+    return 0;
+}
+
 static int _hdr_field_append(char** name, size_t* name_len, size_t* name_cap,
                              const char* at, size_t len) {
     size_t needed = *name_len + len + 1;
@@ -707,6 +739,24 @@ void http_srv_conn_coroutine(void* arg) {
         }
         if (ctx->srv->gzip_opts.enabled) {
             res._gzip_opts = &ctx->srv->gzip_opts;
+        }
+
+        /* Check for HTTP Upgrade */
+        bool is_upgrade = llhttp_get_upgrade(&sp.parser) != 0;
+
+        if (is_upgrade && ctx->srv->on_upgrade) {
+            ctx->srv->on_upgrade(&res, &sp.req, ctx->srv->upgrade_userdata);
+            http_headers_free(res.headers, res.header_count);
+            _srv_parser_destroy(&sp);
+            /* If upgrade succeeded, transport was detached — don't close */
+            if (!res._transport) {
+                free(ctx);
+                return;
+            }
+            /* Upgrade handler didn't actually upgrade; close normally */
+            _transport_close(&ctx->transport);
+            free(ctx);
+            return;
         }
 
         ctx->srv->handler(&res, &sp.req, ctx->srv->userdata);

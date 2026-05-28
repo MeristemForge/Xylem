@@ -76,9 +76,8 @@ xylem_http_srv_t* xylem_http_listen(
     xylem_http_handler_fn_t      handler,
     void*                        userdata,
     const xylem_http_srv_opts_t* opts) {
-    (void)opts;
 
-    if (!handler) {
+    if (!handler && !(opts && opts->on_upgrade)) {
         return NULL;
     }
 
@@ -96,6 +95,10 @@ xylem_http_srv_t* xylem_http_listen(
     srv->close_listener = (void (*)(void*))xylem_tcp_close_listener;
     srv->handler        = handler;
     srv->userdata       = userdata;
+    if (opts) {
+        srv->on_upgrade       = opts->on_upgrade;
+        srv->upgrade_userdata = opts->upgrade_userdata;
+    }
 
     /* port 0 lets the OS assign; resolve for xylem_http_srv_port(). */
     char host_buf[46];

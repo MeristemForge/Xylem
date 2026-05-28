@@ -92,9 +92,8 @@ xylem_https_srv_t* xylem_https_listen(
     void*                              userdata,
     xylem_tls_ctx_t*                   tls_ctx,
     const xylem_https_srv_opts_t* opts) {
-    (void)opts;
 
-    if (!handler || !tls_ctx) {
+    if ((!handler && !(opts && opts->on_upgrade)) || !tls_ctx) {
         return NULL;
     }
 
@@ -112,6 +111,10 @@ xylem_https_srv_t* xylem_https_listen(
     srv->close_listener = (void (*)(void*))xylem_tls_close_listener;
     srv->handler        = handler;
     srv->userdata       = userdata;
+    if (opts) {
+        srv->on_upgrade       = opts->on_upgrade;
+        srv->upgrade_userdata = opts->upgrade_userdata;
+    }
 
     /* port 0 lets the OS assign; resolve for xylem_https_srv_port(). */
     char host_buf[46];

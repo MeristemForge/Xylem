@@ -49,6 +49,8 @@ typedef struct http_srv_s {
     void*                   userdata;
     uint16_t                port;
     xylem_http_gzip_opts_t  gzip_opts;
+    xylem_http_handler_fn_t on_upgrade;
+    void*                   upgrade_userdata;
 } http_srv_t;
 
 /* Per-connection context for the server-side coroutine. */
