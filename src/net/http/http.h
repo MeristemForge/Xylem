@@ -19,13 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-/**
- * Internal shared declarations for the HTTP module.
- *
- * Both xylem-http.c (TCP) and xylem-https.c (TLS) include this header
- * to access the shared implementation in http.c.
- */
-
 _Pragma("once")
 
 #include "xylem/net/xylem-http.h"
@@ -37,8 +30,6 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/* ─── Transport abstraction (function-pointer based) ─────────────── */
-
 typedef struct {
     void* conn;
     int  (*read)(void* conn, void* buf, int len);
@@ -48,12 +39,8 @@ typedef struct {
     void (*set_wr_deadline)(void* conn, uint64_t ms);
 } http_transport_t;
 
-/* ─── Dial callback for client requests ──────────────────────────── */
-
 typedef http_transport_t (*http_dial_fn_t)(const char* host, uint16_t port,
                                            uint64_t timeout_ms, void* ctx);
-
-/* ─── Server internal structure ──────────────────────────────────── */
 
 typedef struct http_srv_s {
     void*                   listener;
@@ -69,8 +56,6 @@ typedef struct {
     http_srv_t*      srv;
     http_transport_t transport;
 } http_srv_conn_ctx_t;
-
-/* ─── Internal API (implemented in http.c) ───────────────────────── */
 
 /**
  * Server connection coroutine entry point.

@@ -19,14 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-/**
- * Shared HTTP implementation.
- *
- * Contains the core logic for request parsing, response writing, connection
- * pool, router, static file server, cookie jar, and gzip. Both xylem-http.c
- * (TCP transport) and xylem-https.c (TLS transport) delegate here.
- */
-
 #include "http.h"
 #include "xylem/encoding/xylem-gzip.h"
 
@@ -37,8 +29,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ─── Transport helpers (function-pointer dispatch) ──────────────── */
 
 static inline int _transport_read(http_transport_t* t, void* buf, int len) {
     return t->read(t->conn, buf, len);
@@ -51,8 +41,6 @@ static inline int _transport_write(http_transport_t* t, const void* data, int le
 static inline void _transport_close(http_transport_t* t) {
     t->close(t->conn);
 }
-
-/* ─── Client connection pool ──────────────────────────────────────── */
 
 #define POOL_MAX_IDLE_PER_HOST  5
 #define POOL_IDLE_TIMEOUT_MS    90000
@@ -174,8 +162,6 @@ static void _pool_release(const http_url_t* url, http_transport_t* t) {
     entry->count++;
 }
 
-/* ─── Request (server-side parsed request) ────────────────────────── */
-
 struct xylem_http_req_s {
     char           method[16];
     char*          url;
@@ -190,8 +176,6 @@ struct xylem_http_req_s {
     size_t         param_count;
     size_t         param_cap;
 };
-
-/* ─── Response (dual-purpose: server writer + client result) ──────── */
 
 struct xylem_http_res_s {
     /* Shared read fields (client result & server post-flush read-back) */
@@ -213,8 +197,6 @@ struct xylem_http_res_s {
     bool           accept_gzip;          /* client sent Accept-Encoding: gzip */
     const xylem_http_gzip_opts_t* _gzip_opts; /* points to srv->gzip_opts */
 };
-
-/* ─── Request accessors ───────────────────────────────────────────── */
 
 const char* xylem_http_req_method(const xylem_http_req_t* req) {
     return req ? req->method : NULL;
@@ -253,8 +235,6 @@ const char* xylem_http_req_param(const xylem_http_req_t* req,
     return NULL;
 }
 
-/* ─── Response accessors ──────────────────────────────────────────── */
-
 int xylem_http_res_status(const xylem_http_res_t* res) {
     return res ? res->status_code : 0;
 }
@@ -284,8 +264,6 @@ void xylem_http_res_destroy(xylem_http_res_t* res) {
     free(res);
 }
 
-/* ─── Server-side response writer ────────────────────────────────── */
-
 int xylem_http_res_set_status(xylem_http_res_t* res, int code) {
     if (!res || res->_headers_sent) {
         return -1;
@@ -303,8 +281,6 @@ int xylem_http_res_set_header(xylem_http_res_t* res,
                            &res->header_cap, name, strlen(name),
                            value, strlen(value));
 }
-
-/* ─── Gzip helpers ───────────────────────────────────────────────── */
 
 static const char* _default_compressible_types[] = {
     "text/html",
@@ -570,8 +546,6 @@ static void _finalize_response(xylem_http_res_t* res) {
     _transport_write(res->_transport, "0\r\n\r\n", 5);
 }
 
-/* ─── Server: llhttp callbacks for request parsing ────────────────── */
-
 typedef struct {
     llhttp_t          parser;
     llhttp_settings_t settings;
@@ -695,8 +669,6 @@ static void _srv_parser_destroy(_srv_parser_t* sp) {
     free(sp->cur_hdr_name);
 }
 
-/* ─── Server: per-connection coroutine ────────────────────────────── */
-
 void http_srv_conn_coroutine(void* arg) {
     http_srv_conn_ctx_t* ctx = (http_srv_conn_ctx_t*)arg;
     _srv_parser_t sp;
@@ -767,8 +739,6 @@ done:
     free(ctx);
 }
 
-/* ─── Server: gzip configuration ─────────────────────────────────── */
-
 void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
                                   const xylem_http_gzip_opts_t* opts) {
     if (!srv || !opts) {
@@ -776,8 +746,6 @@ void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
     }
     ((http_srv_t*)srv)->gzip_opts = *opts;
 }
-
-/* ─── Cookie jar ──────────────────────────────────────────────────── */
 
 typedef struct {
     char*    name;
@@ -1105,8 +1073,6 @@ static char* _cookie_jar_build(const xylem_http_cookie_jar_t* jar,
     return buf;
 }
 
-/* ─── Client: llhttp callbacks for response parsing ───────────────── */
-
 typedef struct {
     llhttp_t          parser;
     llhttp_settings_t settings;
@@ -1197,8 +1163,6 @@ static void _cli_parser_destroy(_cli_parser_t* cp) {
     free(cp->cur_hdr_name);
 }
 
-/* ─── Client: redirect URL resolution ────────────────────────────── */
-
 /**
  * Resolve a Location header value against the request URL.
  * Handles absolute URLs and relative paths (e.g., "/new-path").
@@ -1240,8 +1204,6 @@ static int _resolve_redirect_url(const char* location, const http_url_t* base,
 
     return 0;
 }
-
-/* ─── Client: core request execution ─────────────────────────────── */
 
 xylem_http_res_t* http_do_request(
     const char*              method,
@@ -1491,8 +1453,6 @@ redirect_loop:
     return res;
 }
 
-/* ─── Router ─────────────────────────────────────────────────────── */
-
 typedef struct {
     char*                   method;   /* NULL = match all methods */
     char*                   pattern;
@@ -1675,8 +1635,6 @@ static _match_type_t _route_match(const char* pattern,
 
     return result;
 }
-
-/* ─── Static file server ──────────────────────────────────────────── */
 
 static const struct { const char* ext; const char* mime; } _mime_map[] = {
     {".html", "text/html"},       {".htm",  "text/html"},
@@ -1967,8 +1925,6 @@ int xylem_http_static_serve(xylem_http_router_t* r,
      * non-GET/HEAD methods itself. */
     return xylem_http_router_add(r, NULL, pattern, _static_handler, ctx);
 }
-
-/* ─── Router dispatch ─────────────────────────────────────────────── */
 
 int xylem_http_router_dispatch(xylem_http_router_t* r,
                                xylem_http_res_t* res,
