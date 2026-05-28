@@ -110,6 +110,7 @@ static void test_req_accessors_null(void) {
     ASSERT(xylem_http_req_header(NULL, "Host") == NULL);
     ASSERT(xylem_http_req_body(NULL) == NULL);
     ASSERT(xylem_http_req_body_len(NULL) == 0);
+    ASSERT(xylem_http_req_param(NULL, "id") == NULL);
 }
 
 /* ─── Response writer NULL tests ───────────────────────────────── */
@@ -368,6 +369,555 @@ static void test_http_integration(void) {
     xylem_run(_test_http_integration, NULL, NULL);
 }
 
+/* ─── Connection pool test ────────────────────────────────────── */
+
+static void _pool_handler(xylem_http_res_t* res,
+                          xylem_http_req_t* req,
+                          void* userdata) {
+    (void)userdata;
+    const char* url = xylem_http_req_url(req);
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    xylem_http_res_write(res, url, strlen(url));
+}
+
+static void _test_pool_main(void* arg) {
+    (void)arg;
+
+    /* Start server on a random port. */
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _pool_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    /* First request. */
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/a", (unsigned)port);
+    xylem_http_res_t* r1 = xylem_http_get(url, NULL);
+    ASSERT(r1 != NULL);
+    ASSERT(xylem_http_res_status(r1) == 200);
+    ASSERT(xylem_http_res_body_len(r1) == 2);
+    ASSERT(memcmp(xylem_http_res_body(r1), "/a", 2) == 0);
+    xylem_http_res_destroy(r1);
+
+    /* Second request to same host -- should reuse pooled connection. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/b", (unsigned)port);
+    xylem_http_res_t* r2 = xylem_http_get(url, NULL);
+    ASSERT(r2 != NULL);
+    ASSERT(xylem_http_res_status(r2) == 200);
+    ASSERT(xylem_http_res_body_len(r2) == 2);
+    ASSERT(memcmp(xylem_http_res_body(r2), "/b", 2) == 0);
+    xylem_http_res_destroy(r2);
+
+    /* Third request to verify continued reuse. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/c", (unsigned)port);
+    xylem_http_res_t* r3 = xylem_http_get(url, NULL);
+    ASSERT(r3 != NULL);
+    ASSERT(xylem_http_res_status(r3) == 200);
+    ASSERT(xylem_http_res_body_len(r3) == 2);
+    ASSERT(memcmp(xylem_http_res_body(r3), "/c", 2) == 0);
+    xylem_http_res_destroy(r3);
+
+    xylem_http_close_server(srv);
+    xylem_shutdown();
+}
+
+static void test_pool_reuse(void) {
+    xylem_run(_test_pool_main, NULL, NULL);
+}
+
+/* ─── Router tests (integration via server+client) ────────────── */
+
+static void _route_hello(xylem_http_res_t* res, xylem_http_req_t* req,
+                         void* ud) {
+    (void)req; (void)ud;
+    xylem_http_res_write(res, "hello", 5);
+}
+
+static void _route_param(xylem_http_res_t* res, xylem_http_req_t* req,
+                         void* ud) {
+    (void)ud;
+    const char* id = xylem_http_req_param(req, "id");
+    if (id) {
+        xylem_http_res_write(res, id, strlen(id));
+    } else {
+        xylem_http_res_set_status(res, 500);
+        xylem_http_res_write(res, "no param", 8);
+    }
+}
+
+static void _route_wildcard(xylem_http_res_t* res, xylem_http_req_t* req,
+                            void* ud) {
+    (void)ud;
+    const char* url = xylem_http_req_url(req);
+    xylem_http_res_write(res, url, strlen(url));
+}
+
+static void _route_post_echo(xylem_http_res_t* res, xylem_http_req_t* req,
+                             void* ud) {
+    (void)ud;
+    const void* body = xylem_http_req_body(req);
+    size_t body_len = xylem_http_req_body_len(req);
+    xylem_http_res_write(res, body, body_len);
+}
+
+static int _mw_abort(xylem_http_res_t* res, xylem_http_req_t* req,
+                     void* ud) {
+    (void)req; (void)ud;
+    xylem_http_res_set_status(res, 403);
+    xylem_http_res_write(res, "forbidden", 9);
+    return -1;
+}
+
+static void _router_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+                            void* ud) {
+    xylem_http_router_t* router = (xylem_http_router_t*)ud;
+    xylem_http_router_dispatch(router, res, req);
+}
+
+static void _test_router_main(void* arg) {
+    (void)arg;
+
+    /* Create router. */
+    xylem_http_router_t* r = xylem_http_router_create();
+    ASSERT(r != NULL);
+
+    /* Add routes. */
+    ASSERT(xylem_http_router_add(r, "GET", "/api/hello",
+                                 _route_hello, NULL) == 0);
+    ASSERT(xylem_http_router_add(r, "GET", "/user/:id",
+                                 _route_param, NULL) == 0);
+    ASSERT(xylem_http_router_add(r, "GET", "/static/*",
+                                 _route_wildcard, NULL) == 0);
+    ASSERT(xylem_http_router_add(r, "POST", "/echo",
+                                 _route_post_echo, NULL) == 0);
+
+    /* Start server. */
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _router_handler, r, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    char url[128];
+
+    /* Test 1: Exact route match. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/api/hello", (unsigned)port);
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 5);
+    ASSERT(memcmp(xylem_http_res_body(res), "hello", 5) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 2: Path parameter capture. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/user/42", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 2);
+    ASSERT(memcmp(xylem_http_res_body(res), "42", 2) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 3: Wildcard match. */
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/static/css/app.css", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(memcmp(xylem_http_res_body(res), "/static/css/app.css", 19) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 4: 404 for unmatched route. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/nope", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 404);
+    ASSERT(xylem_http_res_body_len(res) == 9);
+    ASSERT(memcmp(xylem_http_res_body(res), "Not Found", 9) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 5: Method-specific route (POST /echo). */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/echo", (unsigned)port);
+    res = xylem_http_post(url, "data", 4, "text/plain", NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 4);
+    ASSERT(memcmp(xylem_http_res_body(res), "data", 4) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 6: Wrong method -> 404. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/echo", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 404);
+    ASSERT(xylem_http_res_body_len(res) == 9);
+    ASSERT(memcmp(xylem_http_res_body(res), "Not Found", 9) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Clean up. */
+    xylem_http_close_server(srv);
+    xylem_http_router_destroy(r);
+    xylem_shutdown();
+}
+
+static void test_router_basic(void) {
+    xylem_run(_test_router_main, NULL, NULL);
+}
+
+/* Router middleware abort test. */
+static void _test_router_mw_abort(void* arg) {
+    (void)arg;
+
+    xylem_http_router_t* r = xylem_http_router_create();
+    ASSERT(r != NULL);
+
+    /* Add middleware that aborts all requests. */
+    ASSERT(xylem_http_router_use(r, _mw_abort, NULL) == 0);
+
+    /* Add a route that should never be reached. */
+    ASSERT(xylem_http_router_add(r, "GET", "/secret",
+                                 _route_hello, NULL) == 0);
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _router_handler, r, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    char url[128];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/secret", (unsigned)port);
+
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    /* Middleware returned 403 with "forbidden" body. */
+    ASSERT(xylem_http_res_status(res) == 403);
+    ASSERT(xylem_http_res_body_len(res) == 9);
+    ASSERT(memcmp(xylem_http_res_body(res), "forbidden", 9) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close_server(srv);
+    xylem_http_router_destroy(r);
+    xylem_shutdown();
+}
+
+static void test_router_middleware_abort(void) {
+    xylem_run(_test_router_mw_abort, NULL, NULL);
+}
+
+/* ─── Gzip compression test ──────────────────────────────────── */
+
+static void _test_gzip_handler(xylem_http_res_t* res,
+                               xylem_http_req_t* req,
+                               void* ud) {
+    (void)req; (void)ud;
+    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    const char* body =
+        "hello gzip world, this is a test string that should be "
+        "compressed by the server";
+    xylem_http_res_write(res, body, strlen(body));
+}
+
+static void _test_gzip_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _test_gzip_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    xylem_http_gzip_opts_t gzip = {0};
+    gzip.enabled = true;
+    gzip.min_size = 1;
+    xylem_http_srv_set_gzip(srv, &gzip);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/", (unsigned)port);
+
+    /* Request with Accept-Encoding: gzip. */
+    xylem_http_hdr_t ae = {"Accept-Encoding", "gzip"};
+    xylem_http_opts_t opts = {0};
+    opts.headers = &ae;
+    opts.header_count = 1;
+    xylem_http_res_t* res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+
+    /* Client auto-decompresses, so body is original plaintext. */
+    const char* expected =
+        "hello gzip world, this is a test string that should be "
+        "compressed by the server";
+    ASSERT(xylem_http_res_body_len(res) == strlen(expected));
+    ASSERT(memcmp(xylem_http_res_body(res), expected, strlen(expected)) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close_server(srv);
+    xylem_shutdown();
+}
+
+static void test_gzip_compression(void) {
+    xylem_run(_test_gzip_main, NULL, NULL);
+}
+
+/* ─── Static file server test ─────────────────────────────────── */
+
+static void _test_static_main(void* arg) {
+    (void)arg;
+
+    /* Write a temp file to serve. */
+    FILE* f = fopen("_test_static.txt", "w");
+    ASSERT(f != NULL);
+    fprintf(f, "static content");
+    fclose(f);
+
+    /* Create a router with the static file server. */
+    xylem_http_router_t* r = xylem_http_router_create();
+    ASSERT(r != NULL);
+
+    xylem_http_static_opts_t opts = {0};
+    opts.root = ".";
+    opts.max_age = 3600;
+    ASSERT(xylem_http_static_serve(r, "/files/", &opts) == 0);
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _router_handler, r, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    char url[256];
+
+    /* Test 1: Serve an existing file. */
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/_test_static.txt", (unsigned)port);
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 14);
+    ASSERT(memcmp(xylem_http_res_body(res), "static content", 14) == 0);
+
+    /* Check Content-Type header. */
+    const char* ct = xylem_http_res_header(res, "Content-Type");
+    ASSERT(ct != NULL);
+    ASSERT(strcmp(ct, "text/plain") == 0);
+
+    /* Check Cache-Control header. */
+    const char* cc = xylem_http_res_header(res, "Cache-Control");
+    ASSERT(cc != NULL);
+    ASSERT(strcmp(cc, "max-age=3600") == 0);
+
+    xylem_http_res_destroy(res);
+
+    /* Test 2: 404 for missing file. */
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/nonexistent.txt", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 404);
+    xylem_http_res_destroy(res);
+
+    /* Test 3: Path traversal rejection (403). */
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/sub/../_test_static.txt",
+             (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    /* The ".." segment must be rejected as 403 Forbidden. */
+    ASSERT(xylem_http_res_status(res) == 403);
+    xylem_http_res_destroy(res);
+
+    /* Test 4: 405 for POST method. */
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/_test_static.txt", (unsigned)port);
+    res = xylem_http_post(url, "data", 4, "text/plain", NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 405);
+    xylem_http_res_destroy(res);
+
+    /* Clean up. */
+    xylem_http_close_server(srv);
+    xylem_http_router_destroy(r);
+    remove("_test_static.txt");
+    xylem_shutdown();
+}
+
+static void test_static_serve(void) {
+    xylem_run(_test_static_main, NULL, NULL);
+}
+
+/* ─── Redirect following test ──────────────────────────────────── */
+
+static void _test_redirect_handler(xylem_http_res_t* res,
+                                   xylem_http_req_t* req,
+                                   void* ud) {
+    (void)ud;
+    const char* url = xylem_http_req_url(req);
+
+    if (strcmp(url, "/old") == 0) {
+        xylem_http_res_set_status(res, 301);
+        xylem_http_res_set_header(res, "Location", "/new");
+        xylem_http_res_write(res, "", 0);
+    } else if (strcmp(url, "/new") == 0) {
+        xylem_http_res_write(res, "arrived", 7);
+    } else if (strcmp(url, "/chain1") == 0) {
+        xylem_http_res_set_status(res, 302);
+        xylem_http_res_set_header(res, "Location", "/chain2");
+        xylem_http_res_write(res, "", 0);
+    } else if (strcmp(url, "/chain2") == 0) {
+        xylem_http_res_set_status(res, 302);
+        xylem_http_res_set_header(res, "Location", "/chain3");
+        xylem_http_res_write(res, "", 0);
+    } else if (strcmp(url, "/chain3") == 0) {
+        xylem_http_res_write(res, "end", 3);
+    } else if (strcmp(url, "/see-other") == 0) {
+        /* 303 should change method to GET. */
+        xylem_http_res_set_status(res, 303);
+        xylem_http_res_set_header(res, "Location", "/get-only");
+        xylem_http_res_write(res, "", 0);
+    } else if (strcmp(url, "/get-only") == 0) {
+        /* Echo the method to verify it changed to GET. */
+        const char* method = xylem_http_req_method(req);
+        xylem_http_res_write(res, method, strlen(method));
+    } else {
+        xylem_http_res_set_status(res, 404);
+        xylem_http_res_write(res, "not found", 9);
+    }
+}
+
+static void _test_redirect_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _test_redirect_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    char url[128];
+    xylem_http_opts_t opts = {0};
+    opts.max_redirects = 5;
+
+    /* Test 1: Simple 301 redirect /old -> /new. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
+    xylem_http_res_t* res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 7);
+    ASSERT(memcmp(xylem_http_res_body(res), "arrived", 7) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 2: Redirect chain (302 -> 302 -> 200). */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/chain1", (unsigned)port);
+    res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 3);
+    ASSERT(memcmp(xylem_http_res_body(res), "end", 3) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 3: Without redirect following, we get the 301 response. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 301);
+    xylem_http_res_destroy(res);
+
+    /* Test 4: 303 should change POST to GET. */
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/see-other", (unsigned)port);
+    res = xylem_http_post(url, "body", 4, "text/plain", &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 3);
+    ASSERT(memcmp(xylem_http_res_body(res), "GET", 3) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 5: max_redirects=1 should stop after 1 hop. */
+    xylem_http_opts_t opts1 = {0};
+    opts1.max_redirects = 1;
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/chain1", (unsigned)port);
+    res = xylem_http_get(url, &opts1);
+    ASSERT(res != NULL);
+    /* After 1 redirect: chain1->chain2, chain2 responds 302 */
+    ASSERT(xylem_http_res_status(res) == 302);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close_server(srv);
+    xylem_shutdown();
+}
+
+static void test_redirect_following(void) {
+    xylem_run(_test_redirect_main, NULL, NULL);
+}
+
+/* ─── Cookie jar test ─────────────────────────────────────────── */
+
+static void _test_cookie_handler(xylem_http_res_t* res,
+                                 xylem_http_req_t* req,
+                                 void* ud) {
+    (void)ud;
+    const char* cookie = xylem_http_req_header(req, "Cookie");
+    if (!cookie) {
+        /* First request: set a cookie. */
+        xylem_http_res_set_header(res, "Set-Cookie",
+                                  "session=abc123; Path=/");
+        xylem_http_res_write(res, "set", 3);
+    } else {
+        /* Second request: echo the cookie. */
+        xylem_http_res_write(res, cookie, strlen(cookie));
+    }
+}
+
+static void _test_cookie_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _test_cookie_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_server_port(srv);
+    ASSERT(port != 0);
+
+    char url[128];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
+
+    xylem_http_cookie_jar_t* jar = xylem_http_cookie_jar_create();
+    ASSERT(jar != NULL);
+
+    xylem_http_opts_t opts = {0};
+    opts.cookie_jar = jar;
+
+    /* First request: server sets a cookie via Set-Cookie header. */
+    xylem_http_res_t* res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 3);
+    ASSERT(memcmp(xylem_http_res_body(res), "set", 3) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Second request: cookie should be sent back automatically. */
+    res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    /* Body is the echoed Cookie header: "session=abc123" */
+    ASSERT(xylem_http_res_body_len(res) == 14);
+    ASSERT(memcmp(xylem_http_res_body(res), "session=abc123", 14) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_cookie_jar_destroy(jar);
+    xylem_http_close_server(srv);
+    xylem_shutdown();
+}
+
+static void test_cookie_jar(void) {
+    xylem_run(_test_cookie_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -408,6 +958,25 @@ int main(void) {
 
     /* Integration: coroutine-based server + client */
     test_http_integration();
+
+    /* Connection pool reuse */
+    test_pool_reuse();
+
+    /* Router */
+    test_router_basic();
+    test_router_middleware_abort();
+
+    /* Gzip */
+    test_gzip_compression();
+
+    /* Static file server */
+    test_static_serve();
+
+    /* Redirect following */
+    test_redirect_following();
+
+    /* Cookie jar */
+    test_cookie_jar();
 
     return 0;
 }
