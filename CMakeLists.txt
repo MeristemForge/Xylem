@@ -141,18 +141,14 @@ endif()
 
 if(XYLEM_ENABLE_WS)
 	list(APPEND SRCS
-		src/net/ws/ws-common.c
-		src/net/ws/xylem-ws-client.c
-		src/net/ws/xylem-ws-server.c
+		src/net/ws/ws.c
+		src/net/ws/xylem-ws.c
 		src/net/ws/ws-utf8.c
 		src/net/ws/ws-frame.c
 		src/net/ws/ws-handshake.c
-		src/net/ws/ws-transport-tcp.c
 	)
 	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/ws/ws-transport-tls.c)
-	else()
-		list(APPEND SRCS src/net/ws/ws-transport-tls-stub.c)
+		list(APPEND SRCS src/net/ws/xylem-wss.c)
 	endif()
 endif()
 
