@@ -78,12 +78,12 @@ static void _http_accept_coroutine(void* arg) {
 
 /* ─── Server: public API ────────────────────────────────────────── */
 
-xylem_http_listener_t* xylem_http_listen(
+xylem_http_srv_t* xylem_http_listen(
     const char*                       host,
     uint16_t                          port,
     xylem_http_handler_fn_t           handler,
     void*                             userdata,
-    const xylem_http_listener_opts_t* opts) {
+    const xylem_http_srv_opts_t* opts) {
     (void)opts;
 
     if (!handler) {
@@ -113,10 +113,10 @@ xylem_http_listener_t* xylem_http_listen(
 
     runtime_spawn(_http_accept_coroutine, srv);
 
-    return (xylem_http_listener_t*)srv;
+    return (xylem_http_srv_t*)srv;
 }
 
-void xylem_http_close_listener(xylem_http_listener_t* srv) {
+void xylem_http_close(xylem_http_srv_t* srv) {
     if (!srv) {
         return;
     }
@@ -126,7 +126,7 @@ void xylem_http_close_listener(xylem_http_listener_t* srv) {
     free(s);
 }
 
-uint16_t xylem_http_listener_port(xylem_http_listener_t* srv) {
+uint16_t xylem_http_srv_port(xylem_http_srv_t* srv) {
     return srv ? ((http_srv_t*)srv)->port : 0;
 }
 

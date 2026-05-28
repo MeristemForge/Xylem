@@ -98,13 +98,13 @@ static void _https_accept_coroutine(void* arg) {
 
 /* ─── Server: public API ─────────────────────────────────────────── */
 
-xylem_https_listener_t* xylem_https_listen(
+xylem_https_srv_t* xylem_https_listen(
     const char*                        host,
     uint16_t                           port,
     xylem_http_handler_fn_t            handler,
     void*                              userdata,
     xylem_tls_ctx_t*                   tls_ctx,
-    const xylem_https_listener_opts_t* opts) {
+    const xylem_https_srv_opts_t* opts) {
     (void)opts;
 
     if (!handler || !tls_ctx) {
@@ -135,10 +135,10 @@ xylem_https_listener_t* xylem_https_listen(
     /* Spawn the accept loop. */
     runtime_spawn(_https_accept_coroutine, srv);
 
-    return (xylem_https_listener_t*)srv;
+    return (xylem_https_srv_t*)srv;
 }
 
-void xylem_https_close_listener(xylem_https_listener_t* srv) {
+void xylem_https_close(xylem_https_srv_t* srv) {
     if (!srv) {
         return;
     }
@@ -148,11 +148,11 @@ void xylem_https_close_listener(xylem_https_listener_t* srv) {
     free(s);
 }
 
-uint16_t xylem_https_listener_port(xylem_https_listener_t* srv) {
+uint16_t xylem_https_srv_port(xylem_https_srv_t* srv) {
     return srv ? ((http_srv_t*)srv)->port : 0;
 }
 
-void xylem_https_listener_set_gzip(xylem_https_listener_t* srv,
+void xylem_https_srv_set_gzip(xylem_https_srv_t* srv,
                                    const xylem_http_gzip_opts_t* opts) {
     if (!srv || !opts) {
         return;

@@ -769,7 +769,7 @@ done:
 
 /* ─── Server: gzip configuration ─────────────────────────────────── */
 
-void xylem_http_listener_set_gzip(xylem_http_listener_t* srv,
+void xylem_http_srv_set_gzip(xylem_http_srv_t* srv,
                                   const xylem_http_gzip_opts_t* opts) {
     if (!srv || !opts) {
         return;

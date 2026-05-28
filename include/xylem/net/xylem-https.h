@@ -26,26 +26,26 @@ _Pragma("once")
 
 /* --- HTTPS Server --- */
 
-typedef struct xylem_https_listener_s xylem_https_listener_t;
+typedef struct xylem_https_srv_s xylem_https_srv_t;
 
 typedef struct {
     size_t                  max_body_size;
     uint64_t                idle_timeout_ms;
     xylem_http_handler_fn_t on_upgrade;
     void*                   upgrade_userdata;
-} xylem_https_listener_opts_t;
+} xylem_https_srv_opts_t;
 
-extern xylem_https_listener_t* xylem_https_listen(
+extern xylem_https_srv_t* xylem_https_listen(
     const char*                        host,
     uint16_t                           port,
     xylem_http_handler_fn_t            handler,
     void*                              userdata,
     xylem_tls_ctx_t*                   tls_ctx,
-    const xylem_https_listener_opts_t* opts);
+    const xylem_https_srv_opts_t* opts);
 
-extern void     xylem_https_close_listener(xylem_https_listener_t* listener);
-extern uint16_t xylem_https_listener_port(xylem_https_listener_t* listener);
-extern void     xylem_https_listener_set_gzip(xylem_https_listener_t* listener,
+extern void     xylem_https_close(xylem_https_srv_t* listener);
+extern uint16_t xylem_https_srv_port(xylem_https_srv_t* listener);
+extern void     xylem_https_srv_set_gzip(xylem_https_srv_t* listener,
                                               const xylem_http_gzip_opts_t* opts);
 
 /* --- HTTPS Client --- */

@@ -72,7 +72,7 @@ int main(void) {
         .userdata   = NULL,
     };
 
-    xylem_http_listener_t* srv = xylem_http_listen(loop, &cfg);
+    xylem_http_srv_t* srv = xylem_http_listen(loop, &cfg);
     if (!srv) {
         xylem_loge("failed to start http server on port %d", LISTEN_PORT);
         return 1;
@@ -82,7 +82,7 @@ int main(void) {
                STATIC_ROOT, LISTEN_PORT);
     loop_run(loop);
 
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_http_router_destroy(_router);
     loop_destroy(loop);
     xylem_logger_deinit();

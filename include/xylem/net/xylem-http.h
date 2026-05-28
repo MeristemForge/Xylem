@@ -34,7 +34,7 @@ typedef struct {
 
 typedef struct xylem_http_req_s    xylem_http_req_t;
 typedef struct xylem_http_res_s    xylem_http_res_t;
-typedef struct xylem_http_listener_s xylem_http_listener_t;
+typedef struct xylem_http_srv_s xylem_http_srv_t;
 typedef struct xylem_http_router_s xylem_http_router_t;
 typedef struct xylem_http_cookie_jar_s xylem_http_cookie_jar_t;
 typedef struct xylem_http_multipart_s  xylem_http_multipart_t;
@@ -58,27 +58,27 @@ typedef struct {
     uint64_t                idle_timeout_ms;
     xylem_http_handler_fn_t on_upgrade;
     void*                   upgrade_userdata;
-} xylem_http_listener_opts_t;
+} xylem_http_srv_opts_t;
 
-extern xylem_http_listener_t* xylem_http_listen(
+extern xylem_http_srv_t* xylem_http_listen(
     const char*                       host,
     uint16_t                          port,
     xylem_http_handler_fn_t           handler,
     void*                             userdata,
-    const xylem_http_listener_opts_t* opts);
+    const xylem_http_srv_opts_t* opts);
 
-extern void xylem_http_close_listener(xylem_http_listener_t* listener);
+extern void xylem_http_close(xylem_http_srv_t* listener);
 
 /**
- * @brief Get the listening port of the listener.
+ * @brief Get the listening port of the server.
  *
- * Useful when the listener was started with port 0 (OS-assigned).
+ * Useful when the server was started with port 0 (OS-assigned).
  *
- * @param listener  Listener handle.
+ * @param srv  Server handle.
  *
  * @return Port number, or 0 on error.
  */
-extern uint16_t xylem_http_listener_port(xylem_http_listener_t* listener);
+extern uint16_t xylem_http_srv_port(xylem_http_srv_t* listener);
 
 /* --- Server: Gzip --- */
 
@@ -89,7 +89,7 @@ typedef struct {
     const char* mime_types;
 } xylem_http_gzip_opts_t;
 
-extern void xylem_http_listener_set_gzip(xylem_http_listener_t* listener,
+extern void xylem_http_srv_set_gzip(xylem_http_srv_t* listener,
                                          const xylem_http_gzip_opts_t* opts);
 
 /* --- Request accessors --- */

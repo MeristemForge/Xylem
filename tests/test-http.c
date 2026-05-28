@@ -336,11 +336,11 @@ static void _test_http_integration(void* arg) {
     (void)arg;
 
     /* Start server on a random port. */
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _hello_handler, NULL, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     /* Build URL. */
@@ -361,7 +361,7 @@ static void _test_http_integration(void* arg) {
     xylem_http_res_destroy(res);
 
     /* Clean up. */
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_shutdown();
 }
 
@@ -385,11 +385,11 @@ static void _test_pool_main(void* arg) {
     (void)arg;
 
     /* Start server on a random port. */
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _pool_handler, NULL, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     /* First request. */
@@ -420,7 +420,7 @@ static void _test_pool_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(r3), "/c", 2) == 0);
     xylem_http_res_destroy(r3);
 
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_shutdown();
 }
 
@@ -495,11 +495,11 @@ static void _test_router_main(void* arg) {
                                  _route_post_echo, NULL) == 0);
 
     /* Start server. */
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _router_handler, r, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     char url[128];
@@ -559,7 +559,7 @@ static void _test_router_main(void* arg) {
     xylem_http_res_destroy(res);
 
     /* Clean up. */
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_http_router_destroy(r);
     xylem_shutdown();
 }
@@ -582,11 +582,11 @@ static void _test_router_mw_abort(void* arg) {
     ASSERT(xylem_http_router_add(r, "GET", "/secret",
                                  _route_hello, NULL) == 0);
 
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _router_handler, r, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     char url[128];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/secret", (unsigned)port);
 
@@ -598,7 +598,7 @@ static void _test_router_mw_abort(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "forbidden", 9) == 0);
     xylem_http_res_destroy(res);
 
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_http_router_destroy(r);
     xylem_shutdown();
 }
@@ -623,17 +623,17 @@ static void _test_gzip_handler(xylem_http_res_t* res,
 static void _test_gzip_main(void* arg) {
     (void)arg;
 
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _test_gzip_handler, NULL, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     xylem_http_gzip_opts_t gzip = {0};
     gzip.enabled = true;
     gzip.min_size = 1;
-    xylem_http_listener_set_gzip(srv, &gzip);
+    xylem_http_srv_set_gzip(srv, &gzip);
 
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/", (unsigned)port);
@@ -655,7 +655,7 @@ static void _test_gzip_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), expected, strlen(expected)) == 0);
     xylem_http_res_destroy(res);
 
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_shutdown();
 }
 
@@ -683,11 +683,11 @@ static void _test_static_main(void* arg) {
     opts.max_age = 3600;
     ASSERT(xylem_http_static_serve(r, "/files/", &opts) == 0);
 
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _router_handler, r, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     char url[256];
@@ -740,7 +740,7 @@ static void _test_static_main(void* arg) {
     xylem_http_res_destroy(res);
 
     /* Clean up. */
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_http_router_destroy(r);
     remove("_test_static.txt");
     xylem_shutdown();
@@ -792,11 +792,11 @@ static void _test_redirect_handler(xylem_http_res_t* res,
 static void _test_redirect_main(void* arg) {
     (void)arg;
 
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _test_redirect_handler, NULL, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     char url[128];
@@ -847,7 +847,7 @@ static void _test_redirect_main(void* arg) {
     ASSERT(xylem_http_res_status(res) == 302);
     xylem_http_res_destroy(res);
 
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_shutdown();
 }
 
@@ -876,11 +876,11 @@ static void _test_cookie_handler(xylem_http_res_t* res,
 static void _test_cookie_main(void* arg) {
     (void)arg;
 
-    xylem_http_listener_t* srv = xylem_http_listen(
+    xylem_http_srv_t* srv = xylem_http_listen(
         "127.0.0.1", 0, _test_cookie_handler, NULL, NULL);
     ASSERT(srv != NULL);
 
-    uint16_t port = xylem_http_listener_port(srv);
+    uint16_t port = xylem_http_srv_port(srv);
     ASSERT(port != 0);
 
     char url[128];
@@ -910,7 +910,7 @@ static void _test_cookie_main(void* arg) {
     xylem_http_res_destroy(res);
 
     xylem_http_cookie_jar_destroy(jar);
-    xylem_http_close_listener(srv);
+    xylem_http_close(srv);
     xylem_shutdown();
 }
 
