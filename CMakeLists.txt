@@ -120,7 +120,8 @@ if(XYLEM_ENABLE_TLS)
 	list(APPEND SRCS
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
-		src/net/xylem-dtls.c
+		src/net/dtls/dtls.c
+		src/net/dtls/xylem-dtls.c
 		src/net/http/http-proxy.c
 		src/net/http/xylem-https.c
 		src/net/ws/xylem-wss.c
