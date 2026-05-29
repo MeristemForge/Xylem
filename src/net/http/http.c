@@ -1450,6 +1450,12 @@ xylem_http_res_t* http_do_request(
             _cli_parser_destroy(&ecp);
 
             if (keep_alive) {
+                if (transport.set_rd_deadline) {
+                    transport.set_rd_deadline(transport.conn, 0);
+                }
+                if (transport.set_wr_deadline) {
+                    transport.set_wr_deadline(transport.conn, 0);
+                }
                 _pool_release(&parsed, &transport);
             } else {
                 _transport_close(&transport);
