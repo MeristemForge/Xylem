@@ -11,13 +11,7 @@ option(XYLEM_ENABLE_TSAN  "enable data race detection" OFF)
 option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
-option(XYLEM_ENABLE_TLS "enable TLS/DTLS support (requires OpenSSL)" OFF)
-option(XYLEM_ENABLE_HTTP "enable HTTP client/server" OFF)
-option(XYLEM_ENABLE_WS "enable WebSocket client/server" OFF)
-
-if(XYLEM_ENABLE_WS AND NOT XYLEM_ENABLE_HTTP)
-	set(XYLEM_ENABLE_HTTP ON CACHE BOOL "" FORCE)
-endif()
+option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -126,35 +120,24 @@ if(XYLEM_ENABLE_TLS)
 	list(APPEND SRCS
 		src/net/xylem-tls.c
 		src/net/xylem-dtls.c
+		src/net/http/xylem-https.c
+		src/net/ws/xylem-wss.c
 	)
 endif()
 
-if(XYLEM_ENABLE_HTTP)
-	list(APPEND SRCS
-		src/net/http/utils.c
-		src/net/http/http.c
-		src/net/http/xylem-http.c
-		src/net/http/llhttp/llhttp.c
-		src/net/http/llhttp/http.c
-		src/net/http/llhttp/api.c
-	)
-	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/http/xylem-https.c)
-	endif()
-endif()
-
-if(XYLEM_ENABLE_WS)
-	list(APPEND SRCS
-		src/net/ws/ws.c
-		src/net/ws/xylem-ws.c
-		src/net/ws/ws-utf8.c
-		src/net/ws/ws-frame.c
-		src/net/ws/ws-handshake.c
-	)
-	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/ws/xylem-wss.c)
-	endif()
-endif()
+list(APPEND SRCS
+	src/net/http/utils.c
+	src/net/http/http.c
+	src/net/http/xylem-http.c
+	src/net/http/llhttp/llhttp.c
+	src/net/http/llhttp/http.c
+	src/net/http/llhttp/api.c
+	src/net/ws/ws.c
+	src/net/ws/xylem-ws.c
+	src/net/ws/ws-utf8.c
+	src/net/ws/ws-frame.c
+	src/net/ws/ws-handshake.c
+)
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
     add_library(xylem SHARED ${SRCS})
@@ -170,16 +153,7 @@ target_include_directories(xylem
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
 
 if(XYLEM_ENABLE_TLS)
-	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_TLS)
 	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-endif()
-
-if(XYLEM_ENABLE_HTTP)
-	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_HTTP)
-endif()
-
-if(XYLEM_ENABLE_WS)
-	target_compile_definitions(xylem PUBLIC XYLEM_ENABLE_WS)
 endif()
 
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_ASAN address)

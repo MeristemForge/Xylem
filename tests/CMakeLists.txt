@@ -36,13 +36,8 @@ xylem_add_test(mux)
 xylem_add_test(reader)
 xylem_add_test(writer)
 
-if(XYLEM_ENABLE_HTTP)
-    xylem_add_test(http)
-endif()
-
-if(XYLEM_ENABLE_WS)
-    xylem_add_test(ws)
-endif()
+xylem_add_test(http)
+xylem_add_test(ws)
 
 if(XYLEM_ENABLE_TLS)
     xylem_add_test(tls)

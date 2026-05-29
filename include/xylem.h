@@ -63,22 +63,12 @@ _Pragma("once")
 #include "xylem/net/xylem-mux.h"
 #include "xylem/net/xylem-reader.h"
 #include "xylem/net/xylem-writer.h"
-#ifdef XYLEM_ENABLE_TLS
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-dtls.h"
-#endif
-#ifdef XYLEM_ENABLE_HTTP
 #include "xylem/net/xylem-http.h"
-#ifdef XYLEM_ENABLE_TLS
 #include "xylem/net/xylem-https.h"
-#endif
-#endif
-#ifdef XYLEM_ENABLE_WS
 #include "xylem/net/xylem-ws.h"
-#ifdef XYLEM_ENABLE_TLS
 #include "xylem/net/xylem-wss.h"
-#endif
-#endif
 
 /* runtime */
 #include <stdint.h>
