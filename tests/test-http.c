@@ -1416,6 +1416,134 @@ static void test_max_requests(void) {
     xylem_run(_test_max_requests_main, NULL, NULL);
 }
 
+/* ─── Range request test ───────────────────────────────────────── */
+
+static void _test_range_request_main(void* arg) {
+    (void)arg;
+
+    /* Create a temporary file with known content. */
+    const char* dir = ".";
+    const char* filename = "test_range_file.txt";
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
+
+    FILE* f = fopen(filepath, "wb");
+    ASSERT(f != NULL);
+    fwrite("ABCDEFGHIJ", 1, 10, f);  /* 10 bytes: A=0, B=1, ..., J=9 */
+    fclose(f);
+
+    xylem_http_router_t* router = xylem_http_router_create();
+    ASSERT(router != NULL);
+    xylem_http_static_opts_t sopts = {0};
+    sopts.root = dir;
+    ASSERT(xylem_http_static_serve(router, "/files/", &sopts) == 0);
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _router_handler, router, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[128];
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/%s", (unsigned)port, filename);
+
+    /* Range: bytes=2-5 -> "CDEF" (4 bytes) */
+    xylem_http_hdr_t rng_hdr = {"Range", "bytes=2-5"};
+    xylem_http_opts_t opts = {0};
+    opts.headers = &rng_hdr;
+    opts.header_count = 1;
+    xylem_http_res_t* r = xylem_http_get(url, &opts);
+    ASSERT(r != NULL);
+    ASSERT(xylem_http_res_status(r) == 206);
+    ASSERT(xylem_http_res_body_len(r) == 4);
+    ASSERT(memcmp(xylem_http_res_body(r), "CDEF", 4) == 0);
+    const char* cr = xylem_http_res_header(r, "Content-Range");
+    ASSERT(cr != NULL);
+    ASSERT(strcmp(cr, "bytes 2-5/10") == 0);
+    xylem_http_res_destroy(r);
+
+    /* Full request should have Accept-Ranges header. */
+    xylem_http_res_t* r2 = xylem_http_get(url, NULL);
+    ASSERT(r2 != NULL);
+    ASSERT(xylem_http_res_status(r2) == 200);
+    ASSERT(xylem_http_res_body_len(r2) == 10);
+    const char* ar = xylem_http_res_header(r2, "Accept-Ranges");
+    ASSERT(ar != NULL);
+    ASSERT(strcmp(ar, "bytes") == 0);
+    xylem_http_res_destroy(r2);
+
+    xylem_http_close(srv);
+    xylem_http_router_destroy(router);
+    remove(filepath);
+    xylem_shutdown();
+}
+
+static void test_range_request(void) {
+    xylem_run(_test_range_request_main, NULL, NULL);
+}
+
+/* ─── ETag test ────────────────────────────────────────────────── */
+
+static void _test_etag_main(void* arg) {
+    (void)arg;
+
+    const char* dir = ".";
+    const char* filename = "test_etag_file.txt";
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "%s/%s", dir, filename);
+
+    FILE* f = fopen(filepath, "wb");
+    ASSERT(f != NULL);
+    fwrite("hello etag", 1, 10, f);
+    fclose(f);
+
+    xylem_http_router_t* router = xylem_http_router_create();
+    ASSERT(router != NULL);
+    xylem_http_static_opts_t sopts = {0};
+    sopts.root = dir;
+    ASSERT(xylem_http_static_serve(router, "/files/", &sopts) == 0);
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _router_handler, router, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[128];
+    snprintf(url, sizeof(url),
+             "http://127.0.0.1:%u/files/%s", (unsigned)port, filename);
+
+    /* First request: get ETag. */
+    xylem_http_res_t* r1 = xylem_http_get(url, NULL);
+    ASSERT(r1 != NULL);
+    ASSERT(xylem_http_res_status(r1) == 200);
+    const char* etag = xylem_http_res_header(r1, "ETag");
+    ASSERT(etag != NULL);
+    ASSERT(etag[0] == '"');  /* ETag is quoted. */
+
+    /* Second request with If-None-Match: expect 304. */
+    char etag_copy[64];
+    snprintf(etag_copy, sizeof(etag_copy), "%s", etag);
+    xylem_http_res_destroy(r1);
+
+    xylem_http_hdr_t inm_hdr = {"If-None-Match", etag_copy};
+    xylem_http_opts_t opts = {0};
+    opts.headers = &inm_hdr;
+    opts.header_count = 1;
+    xylem_http_res_t* r2 = xylem_http_get(url, &opts);
+    ASSERT(r2 != NULL);
+    ASSERT(xylem_http_res_status(r2) == 304);
+    xylem_http_res_destroy(r2);
+
+    xylem_http_close(srv);
+    xylem_http_router_destroy(router);
+    remove(filepath);
+    xylem_shutdown();
+}
+
+static void test_etag(void) {
+    xylem_run(_test_etag_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1507,6 +1635,12 @@ int main(void) {
 
     /* Max requests */
     test_max_requests();
+
+    /* Range requests */
+    test_range_request();
+
+    /* ETag / If-None-Match */
+    test_etag();
 
     return 0;
 }

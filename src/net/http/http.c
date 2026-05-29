@@ -2178,7 +2178,85 @@ static void _static_handler(xylem_http_res_t* res,
         return;
     }
 
+    /* Compute ETag: FNV-1a hash of content + size. */
+    char etag[24];
+    {
+        uint32_t hash = 0x811c9dc5u;
+        for (size_t i = 0; i < nread; i++) {
+            hash ^= content[i];
+            hash *= 0x01000193u;
+        }
+        snprintf(etag, sizeof(etag), "\"%08x-%zx\"", hash, nread);
+    }
+
+    /* Check If-None-Match -> return 304 if match. */
+    const char* inm = xylem_http_req_header(req, "If-None-Match");
+    if (inm && strcmp(inm, etag) == 0) {
+        free(content);
+        xylem_http_res_set_status(res, 304);
+        xylem_http_res_set_header(res, "ETag", etag);
+        return;
+    }
+
+    /* Check for Range request. */
+    const char* range_hdr = xylem_http_req_header(req, "Range");
+    if (range_hdr && strncmp(range_hdr, "bytes=", 6) == 0 &&
+        strcmp(method, "HEAD") != 0) {
+        size_t total = nread;
+        size_t start = 0, end_pos = total - 1;
+        const char* spec = range_hdr + 6;
+
+        if (spec[0] == '-') {
+            /* Suffix range: last N bytes. */
+            size_t suffix = (size_t)strtoul(spec + 1, NULL, 10);
+            if (suffix > total) {
+                suffix = total;
+            }
+            start = total - suffix;
+        } else {
+            start = (size_t)strtoul(spec, NULL, 10);
+            const char* dash = strchr(spec, '-');
+            if (dash && dash[1] != '\0') {
+                end_pos = (size_t)strtoul(dash + 1, NULL, 10);
+            }
+        }
+
+        if (start > end_pos || start >= total) {
+            free(content);
+            xylem_http_res_set_status(res, 416);
+            char cr[64];
+            snprintf(cr, sizeof(cr), "bytes */%zu", total);
+            xylem_http_res_set_header(res, "Content-Range", cr);
+            xylem_http_res_write(res, "Range Not Satisfiable", 21);
+            return;
+        }
+        if (end_pos >= total) {
+            end_pos = total - 1;
+        }
+
+        char cr[64];
+        snprintf(cr, sizeof(cr), "bytes %zu-%zu/%zu", start, end_pos, total);
+        xylem_http_res_set_header(res, "Content-Range", cr);
+        xylem_http_res_set_header(res, "Accept-Ranges", "bytes");
+        xylem_http_res_set_header(res, "Content-Type", mime);
+        xylem_http_res_set_header(res, "ETag", etag);
+
+        if (ctx->max_age > 0) {
+            char cache_val[64];
+            snprintf(cache_val, sizeof(cache_val), "max-age=%d", ctx->max_age);
+            xylem_http_res_set_header(res, "Cache-Control", cache_val);
+        }
+
+        xylem_http_res_set_status(res, 206);
+        xylem_http_res_write(res, content + start, end_pos - start + 1);
+        free(content);
+        return;
+    }
+
+    /* Normal response. */
+    xylem_http_res_set_header(res, "Accept-Ranges", "bytes");
     xylem_http_res_set_header(res, "Content-Type", mime);
+    xylem_http_res_set_header(res, "ETag", etag);
 
     if (ctx->max_age > 0) {
         char cache_val[64];
