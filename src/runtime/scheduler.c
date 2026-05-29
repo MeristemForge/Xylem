@@ -597,10 +597,10 @@ static mco_coro* _sched_worker_find_coro(
     }
 
     while (atomic_load(&sched->running)) {
-        int poll_ms = _sched_timer_next_timeout(w);
         /* Must set before re-check so producers see it and pipe-wake. */
         atomic_store_explicit(
             &sched->poller_waiting, true, memory_order_seq_cst);
+
         co = _sched_worker_pop_coro(sched, w);
         if (!co) {
             co = _sched_worker_steal_coro(sched, w);
@@ -612,6 +612,8 @@ static mco_coro* _sched_worker_find_coro(
                 &sched->poller_running, false, memory_order_release);
             return co;
         }
+
+        int poll_ms = _sched_timer_next_timeout(w);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         atomic_store_explicit(
             &sched->poller_waiting, false, memory_order_relaxed);
@@ -1117,6 +1119,10 @@ void sched_timer_start(
     if (atomic_load(&ow->parked)) {
         platform_sem_post(ow->sem);
     }
+    if (atomic_load_explicit(
+            &timer->sched->poller_waiting, memory_order_seq_cst)) {
+        _sched_wake_poller(timer->sched);
+    }
 }
 
 bool sched_timer_stop(sched_timer_t* timer) {
@@ -1153,6 +1159,10 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
 
     if (atomic_load(&ow->parked)) {
         platform_sem_post(ow->sem);
+    }
+    if (atomic_load_explicit(
+            &timer->sched->poller_waiting, memory_order_seq_cst)) {
+        _sched_wake_poller(timer->sched);
     }
     return was_active;
 }

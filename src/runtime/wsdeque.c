@@ -157,6 +157,10 @@ mco_coro* wsdeque_pop(wsdeque_t* dq) {
 }
 
 int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
+    if (cap <= 0) {
+        return 0;
+    }
+
     int64_t t = atomic_load_explicit(&dq->top, memory_order_seq_cst);
     int64_t b = atomic_load_explicit(&dq->bottom, memory_order_acquire);
 
@@ -165,21 +169,28 @@ int32_t wsdeque_steal_half(wsdeque_t* dq, mco_coro** out, int32_t cap) {
         return 0;
     }
 
-    int64_t half = (size + 1) / 2;
-    if (half > (int64_t)cap) {
-        half = (int64_t)cap;
+    int64_t target = (size + 1) / 2;
+    if (target > (int64_t)cap) {
+        target = (int64_t)cap;
     }
 
-    /* Snapshot before CAS; owner may overwrite slots after top advances. */
-    for (int64_t i = 0; i < half; i++) {
-        out[i] = dq->coros[(t + i) & dq->mask];
+    int32_t n = 0;
+    while (n < (int32_t)target) {
+        t = atomic_load_explicit(&dq->top, memory_order_seq_cst);
+        b = atomic_load_explicit(&dq->bottom, memory_order_acquire);
+        if (b - t <= 0) {
+            break;
+        }
+
+        mco_coro* co = dq->coros[t & dq->mask];
+
+        if (!atomic_compare_exchange_strong_explicit(
+                &dq->top, &t, t + 1,
+                memory_order_seq_cst, memory_order_relaxed)) {
+            break;
+        }
+        out[n++] = co;
     }
 
-    if (!atomic_compare_exchange_strong_explicit(
-            &dq->top, &t, t + half,
-            memory_order_seq_cst, memory_order_relaxed)) {
-        return 0;
-    }
-
-    return (int32_t)half;
+    return n;
 }
