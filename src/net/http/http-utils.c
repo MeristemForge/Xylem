@@ -1043,7 +1043,8 @@ struct xylem_http_multipart_builder_s {
 static void _build_gen_boundary(char* out) {
     static const char _alphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    uint64_t seed = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
+    static uint64_t _counter = 0;
+    uint64_t seed = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC) ^ (++_counter);
     for (int i = 0; i < 24; i++) {
         seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
         out[i] = _alphabet[(seed >> 33) % 62];
@@ -1229,6 +1230,10 @@ int xylem_http_multipart_build_finish(
                 "Content-Disposition: form-data; name=\"%s\"",
                 p->name);
         }
+        if (n < 0 || (size_t)n >= total - off) {
+            free(buf);
+            return -1;
+        }
         off += (size_t)n;
         buf[off++] = '\r';
         buf[off++] = '\n';
@@ -1238,6 +1243,10 @@ int xylem_http_multipart_build_finish(
             n = snprintf(
                 (char*)(buf + off), total - off,
                 "Content-Type: %s", p->content_type);
+            if (n < 0 || (size_t)n >= total - off) {
+                free(buf);
+                return -1;
+            }
             off += (size_t)n;
             buf[off++] = '\r';
             buf[off++] = '\n';
