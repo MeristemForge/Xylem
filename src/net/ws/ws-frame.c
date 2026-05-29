@@ -42,6 +42,7 @@ int ws_frame_decode_header(const uint8_t* data, size_t len,
     uint8_t b1 = data[1];
 
     out->fin    = (b0 & 0x80) != 0;
+    out->rsv1   = (b0 & 0x40) != 0;
     out->opcode = b0 & 0x0F;
     out->masked = (b1 & 0x80) != 0;
 

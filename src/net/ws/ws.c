@@ -37,6 +37,10 @@ static void _ws_opts_apply(xylem_ws_conn_t* conn, const xylem_ws_opts_t* opts) {
                                                            : WS_DEFAULT_FRAGMENT_THRESHOLD;
         conn->close_timeout_ms = opts->close_timeout_ms ? opts->close_timeout_ms
                                                         : WS_DEFAULT_CLOSE_TIMEOUT;
+        if (opts->permessage_deflate) {
+            conn->deflate_requested        = true;
+            conn->deflate_context_takeover = opts->deflate_context_takeover;
+        }
     } else {
         conn->max_msg_size       = WS_DEFAULT_MAX_MSG_SIZE;
         conn->fragment_threshold = WS_DEFAULT_FRAGMENT_THRESHOLD;
@@ -69,6 +73,7 @@ void ws_conn_free(xylem_ws_conn_t* conn) {
     if (!conn) {
         return;
     }
+    ws_deflate_cleanup(&conn->deflate_ctx);
     free(conn->recv_buf);
     free(conn->frag_buf);
     free(conn);
@@ -76,7 +81,7 @@ void ws_conn_free(xylem_ws_conn_t* conn) {
 
 
 static int _ws_write_frame(xylem_ws_conn_t* conn, bool fin, uint8_t opcode,
-                           const void* data, size_t len) {
+                           const void* data, size_t len, bool rsv1) {
     uint8_t hdr_buf[14];
     uint8_t mask_key[4] = {0};
 
@@ -87,6 +92,10 @@ static int _ws_write_frame(xylem_ws_conn_t* conn, bool fin, uint8_t opcode,
 
     size_t hdr_len = ws_frame_encode_header(hdr_buf, fin, opcode,
                                             conn->is_client, mask_key, len);
+
+    if (rsv1) {
+        hdr_buf[0] |= 0x40;
+    }
 
     int n = conn->transport.write(conn->transport.conn, hdr_buf, (int)hdr_len);
     if (n < 0) {
@@ -124,30 +133,51 @@ int xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
     }
 
     const uint8_t* p = (const uint8_t*)data;
-    size_t threshold = conn->fragment_threshold;
+    size_t         send_len = len;
+    void*          compressed = NULL;
+    bool           use_deflate = conn->deflate_ctx.active;
 
-    if (len <= threshold) {
-        return _ws_write_frame(conn, true, (uint8_t)opcode, p, len);
-    }
-
-    size_t offset = 0;
-    bool first = true;
-    while (offset < len) {
-        size_t chunk = len - offset;
-        if (chunk > threshold) {
-            chunk = threshold;
-        }
-        bool fin = (offset + chunk >= len);
-        uint8_t op = first ? (uint8_t)opcode : 0x0;
-
-        if (_ws_write_frame(conn, fin, op, p + offset, chunk) != 0) {
+    if (use_deflate) {
+        size_t comp_len = 0;
+        if (ws_deflate_compress(&conn->deflate_ctx, data, len,
+                                &compressed, &comp_len) != 0) {
             return -1;
         }
-
-        offset += chunk;
-        first = false;
+        p        = (const uint8_t*)compressed;
+        send_len = comp_len;
     }
-    return 0;
+
+    size_t threshold = conn->fragment_threshold;
+    int    result    = 0;
+
+    if (send_len <= threshold) {
+        result = _ws_write_frame(conn, true, (uint8_t)opcode,
+                                 p, send_len, use_deflate);
+    } else {
+        size_t offset = 0;
+        bool   first  = true;
+        while (offset < send_len) {
+            size_t chunk = send_len - offset;
+            if (chunk > threshold) {
+                chunk = threshold;
+            }
+            bool    fin = (offset + chunk >= send_len);
+            uint8_t op  = first ? (uint8_t)opcode : 0x0;
+            /* RSV1 only on the first frame. */
+            bool rsv1 = first && use_deflate;
+
+            if (_ws_write_frame(conn, fin, op, p + offset, chunk, rsv1) != 0) {
+                result = -1;
+                break;
+            }
+
+            offset += chunk;
+            first = false;
+        }
+    }
+
+    free(compressed);
+    return result;
 }
 
 
@@ -158,7 +188,7 @@ int xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len) {
     if (len > 125) {
         return -1;
     }
-    return _ws_write_frame(conn, true, 0x9, data, len);
+    return _ws_write_frame(conn, true, 0x9, data, len, false);
 }
 
 static int _ws_send_close_frame(xylem_ws_conn_t* conn, uint16_t code,
@@ -169,7 +199,7 @@ static int _ws_send_close_frame(xylem_ws_conn_t* conn, uint16_t code,
     if (plen < 0) {
         plen = 0;
     }
-    return _ws_write_frame(conn, true, 0x8, payload, (size_t)plen);
+    return _ws_write_frame(conn, true, 0x8, payload, (size_t)plen, false);
 }
 
 
@@ -232,6 +262,12 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                 return -1;
             }
 
+            /* RSV1 is only valid when permessage-deflate is negotiated. */
+            if (fh.rsv1 && !conn->deflate_ctx.active) {
+                conn->close_code = 1002;
+                return -1;
+            }
+
             size_t frame_total = fh.header_size + (size_t)fh.payload_len;
             if (conn->recv_len < frame_total) {
                 break;
@@ -260,7 +296,7 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                 }
                 return -1;
             } else if (fh.opcode == 0x9) { /* Ping -> auto-pong */
-                _ws_write_frame(conn, true, 0xA, payload, (size_t)fh.payload_len);
+                _ws_write_frame(conn, true, 0xA, payload, (size_t)fh.payload_len, false);
             } else if (fh.opcode == 0xA) { /* Pong -> discard */
                 /* noop */
             } else if (fh.opcode == 0x0) { /* Continuation */
@@ -273,19 +309,40 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                     return -1;
                 }
                 if (fh.fin) {
+                    void*  msg_data = conn->frag_buf;
+                    size_t msg_len  = conn->frag_len;
+
+                    /* Decompress reassembled fragments if compressed. */
+                    if (conn->frag_compressed && conn->deflate_ctx.active) {
+                        void*  dec     = NULL;
+                        size_t dec_len = 0;
+                        if (ws_deflate_decompress(&conn->deflate_ctx,
+                                                  conn->frag_buf, conn->frag_len,
+                                                  &dec, &dec_len,
+                                                  conn->max_msg_size) != 0) {
+                            conn->close_code = 1009;
+                            return -1;
+                        }
+                        free(conn->frag_buf);
+                        msg_data = dec;
+                        msg_len  = dec_len;
+                    }
+
                     if (conn->frag_opcode == 0x1) {
-                        if (ws_utf8_validate(conn->frag_buf, conn->frag_len) != 0) {
+                        if (ws_utf8_validate(msg_data, msg_len) != 0) {
+                            free(msg_data);
                             conn->close_code = 1007;
                             return -1;
                         }
                     }
                     msg->opcode = (xylem_ws_opcode_t)conn->frag_opcode;
-                    msg->data   = conn->frag_buf;
-                    msg->len    = conn->frag_len;
-                    conn->frag_buf = NULL;
-                    conn->frag_len = 0;
-                    conn->frag_cap = 0;
-                    conn->frag_active = false;
+                    msg->data   = msg_data;
+                    msg->len    = msg_len;
+                    conn->frag_buf      = NULL;
+                    conn->frag_len      = 0;
+                    conn->frag_cap      = 0;
+                    conn->frag_active   = false;
+                    conn->frag_compressed = false;
                     return 0;
                 }
             } else { /* Text or Binary */
@@ -298,27 +355,51 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                         conn->close_code = 1009;
                         return -1;
                     }
+
+                    void*  msg_data;
+                    size_t msg_len;
+
+                    if (fh.rsv1 && conn->deflate_ctx.active) {
+                        /* Decompress single-frame message. */
+                        void*  dec     = NULL;
+                        size_t dec_len = 0;
+                        if (ws_deflate_decompress(&conn->deflate_ctx,
+                                                  payload, (size_t)fh.payload_len,
+                                                  &dec, &dec_len,
+                                                  conn->max_msg_size) != 0) {
+                            conn->close_code = 1009;
+                            return -1;
+                        }
+                        msg_data = dec;
+                        msg_len  = dec_len;
+                    } else {
+                        void* copy = malloc(fh.payload_len ? (size_t)fh.payload_len : 1);
+                        if (!copy) {
+                            return -1;
+                        }
+                        if (fh.payload_len) {
+                            memcpy(copy, payload, (size_t)fh.payload_len);
+                        }
+                        msg_data = copy;
+                        msg_len  = (size_t)fh.payload_len;
+                    }
+
                     if (fh.opcode == 0x1) {
-                        if (ws_utf8_validate(payload, (size_t)fh.payload_len) != 0) {
+                        if (ws_utf8_validate(msg_data, msg_len) != 0) {
+                            free(msg_data);
                             conn->close_code = 1007;
                             return -1;
                         }
                     }
-                    void* copy = malloc(fh.payload_len ? (size_t)fh.payload_len : 1);
-                    if (!copy) {
-                        return -1;
-                    }
-                    if (fh.payload_len) {
-                        memcpy(copy, payload, (size_t)fh.payload_len);
-                    }
                     msg->opcode = (xylem_ws_opcode_t)fh.opcode;
-                    msg->data   = copy;
-                    msg->len    = (size_t)fh.payload_len;
+                    msg->data   = msg_data;
+                    msg->len    = msg_len;
                     return 0;
                 } else {
-                    conn->frag_active = true;
-                    conn->frag_opcode = fh.opcode;
-                    conn->frag_len = 0;
+                    conn->frag_active     = true;
+                    conn->frag_opcode     = fh.opcode;
+                    conn->frag_compressed = fh.rsv1;
+                    conn->frag_len        = 0;
                     if (_ws_frag_append(conn, payload, (size_t)fh.payload_len) != 0) {
                         conn->close_code = 1009;
                         return -1;
@@ -421,6 +502,27 @@ xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
 
     xylem_http_res_set_header(res, "Sec-WebSocket-Accept", accept_val);
 
+    /* Negotiate permessage-deflate if server opts request it. */
+    bool             deflate_agreed = false;
+    ws_deflate_offer_t deflate_offer = {0};
+
+    if (opts && opts->permessage_deflate) {
+        const char* ext_hdr = xylem_http_req_header(req, "Sec-WebSocket-Extensions");
+        if (ext_hdr && ws_deflate_parse_offer(ext_hdr, &deflate_offer) == 0) {
+            /* If server does not want context takeover, force it. */
+            if (!opts->deflate_context_takeover) {
+                deflate_offer.server_no_context_takeover = true;
+                deflate_offer.client_no_context_takeover = true;
+            }
+            char ext_resp[128];
+            if (ws_deflate_build_server_accept(&deflate_offer, ext_resp,
+                                               sizeof(ext_resp)) == 0) {
+                xylem_http_res_set_header(res, "Sec-WebSocket-Extensions", ext_resp);
+                deflate_agreed = true;
+            }
+        }
+    }
+
     void* transport_ptr = NULL;
     if (xylem_http_res_upgrade(res, &transport_ptr) != 0) {
         return NULL;
@@ -428,6 +530,18 @@ xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
 
     http_transport_t* tp = (http_transport_t*)transport_ptr;
     xylem_ws_conn_t* conn = ws_conn_create(*tp, false, opts);
+    if (!conn) {
+        return NULL;
+    }
+
+    if (deflate_agreed) {
+        bool no_takeover = deflate_offer.server_no_context_takeover;
+        if (ws_deflate_init(&conn->deflate_ctx, no_takeover) != 0) {
+            ws_conn_free(conn);
+            return NULL;
+        }
+    }
+
     return conn;
 }
 
@@ -442,8 +556,22 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
         return NULL;
     }
 
+    /* Build extension offer if deflate is requested. */
+    char   ext_offer[128];
+    char*  ext_ptr       = NULL;
+    bool   deflate_wanted = (opts && opts->permessage_deflate);
+
+    if (deflate_wanted) {
+        bool ctx_takeover = opts->deflate_context_takeover;
+        if (ws_deflate_build_client_offer(ctx_takeover, ext_offer,
+                                          sizeof(ext_offer)) == 0) {
+            ext_ptr = ext_offer;
+        }
+    }
+
     size_t req_len;
-    char* req = ws_handshake_build_request(host, port, path, key, &req_len);
+    char*  req = ws_handshake_build_request_ext(host, port, path, key,
+                                                ext_ptr, &req_len);
     if (!req) {
         transport.close(transport.conn);
         return NULL;
@@ -515,10 +643,50 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
         return NULL;
     }
 
+    /* Check if server accepted permessage-deflate. */
+    bool deflate_accepted = false;
+    bool no_context_takeover = false;
+
+    if (deflate_wanted) {
+        const char* ext_resp = strstr(resp_buf, "Sec-WebSocket-Extensions: ");
+        if (!ext_resp) {
+            ext_resp = strstr(resp_buf, "sec-websocket-extensions: ");
+        }
+        if (ext_resp) {
+            ext_resp += strlen("Sec-WebSocket-Extensions: ");
+            const char* ext_end = strstr(ext_resp, "\r\n");
+            if (ext_end) {
+                /* Temporarily null-terminate for parsing. */
+                size_t ext_len = (size_t)(ext_end - ext_resp);
+                char   ext_val[256];
+                if (ext_len < sizeof(ext_val)) {
+                    memcpy(ext_val, ext_resp, ext_len);
+                    ext_val[ext_len] = '\0';
+
+                    ws_deflate_offer_t server_offer = {0};
+                    if (ws_deflate_parse_offer(ext_val, &server_offer) == 0) {
+                        deflate_accepted = true;
+                        no_context_takeover =
+                            server_offer.server_no_context_takeover ||
+                            !(opts->deflate_context_takeover);
+                    }
+                }
+            }
+        }
+    }
+
     xylem_ws_conn_t* conn = ws_conn_create(transport, true, opts);
     if (!conn) {
         transport.close(transport.conn);
         return NULL;
+    }
+
+    if (deflate_accepted) {
+        if (ws_deflate_init(&conn->deflate_ctx, no_context_takeover) != 0) {
+            ws_conn_free(conn);
+            transport.close(transport.conn);
+            return NULL;
+        }
     }
 
     /* Move any leftover data after headers into recv_buf */

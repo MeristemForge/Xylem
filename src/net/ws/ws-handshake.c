@@ -141,6 +141,66 @@ char* ws_handshake_build_request(const char* host, uint16_t port,
     return buf;
 }
 
+char* ws_handshake_build_request_ext(const char* host, uint16_t port,
+                                     const char* path, const char* key,
+                                     const char* extensions,
+                                     size_t* out_len) {
+    if (host == NULL || path == NULL || key == NULL) {
+        return NULL;
+    }
+
+    if (extensions == NULL) {
+        return ws_handshake_build_request(host, port, path, key, out_len);
+    }
+
+    size_t host_len = strlen(host);
+    size_t path_len = strlen(path);
+    size_t key_len  = strlen(key);
+    size_t ext_len  = strlen(extensions);
+
+    /* Conservative upper bound for the request size */
+    size_t buf_size = path_len + host_len + key_len + ext_len + 320;
+    char*  buf      = (char*)malloc(buf_size);
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    int len;
+    if ((port == 80) || (port == 443)) {
+        len = snprintf(buf, buf_size,
+                       "GET %s HTTP/1.1\r\n"
+                       "Host: %s\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n"
+                       "Sec-WebSocket-Key: %s\r\n"
+                       "Sec-WebSocket-Version: 13\r\n"
+                       "Sec-WebSocket-Extensions: %s\r\n"
+                       "\r\n",
+                       path, host, key, extensions);
+    } else {
+        len = snprintf(buf, buf_size,
+                       "GET %s HTTP/1.1\r\n"
+                       "Host: %s:%" PRIu16 "\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n"
+                       "Sec-WebSocket-Key: %s\r\n"
+                       "Sec-WebSocket-Version: 13\r\n"
+                       "Sec-WebSocket-Extensions: %s\r\n"
+                       "\r\n",
+                       path, host, port, key, extensions);
+    }
+
+    if (len < 0 || (size_t)len >= buf_size) {
+        free(buf);
+        return NULL;
+    }
+
+    if (out_len != NULL) {
+        *out_len = (size_t)len;
+    }
+    return buf;
+}
+
 int ws_handshake_validate_accept(const char* expected_key,
                                  const char* accept_value) {
     if (expected_key == NULL || accept_value == NULL) {

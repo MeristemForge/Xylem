@@ -139,6 +139,7 @@ list(APPEND SRCS
 	src/net/ws/ws-utf8.c
 	src/net/ws/ws-frame.c
 	src/net/ws/ws-handshake.c
+	src/net/ws/ws-deflate.c
 )
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)

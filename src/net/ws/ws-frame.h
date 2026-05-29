@@ -28,6 +28,7 @@ _Pragma("once")
 /* Parsed WebSocket frame header (RFC 6455 section 5.2). */
 typedef struct {
     bool     fin;
+    bool     rsv1;
     uint8_t  opcode;
     bool     masked;
     uint64_t payload_len;

@@ -22,6 +22,7 @@
 _Pragma("once")
 
 #include "net/http/http.h"
+#include "ws-deflate.h"
 #include "xylem/net/xylem-ws.h"
 
 #include <stdbool.h>
@@ -53,6 +54,10 @@ struct xylem_ws_conn_s {
     bool              close_sent;
     bool              close_received;
     void*             userdata;
+    ws_deflate_ctx_t  deflate_ctx;
+    bool              deflate_requested;
+    bool              deflate_context_takeover;
+    bool              frag_compressed;
 };
 
 extern xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
