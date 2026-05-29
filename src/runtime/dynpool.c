@@ -61,13 +61,13 @@ static int _dynpool_thread_entry(void* arg) {
             break;
         }
 
-        if (rc != 0) {
-            break;
-        }
-
         mtx_lock(&pool->pop_mtx);
         mpsc_node_t* node = mpsc_pop(&pool->queue);
         mtx_unlock(&pool->pop_mtx);
+
+        if (!node && rc != 0) {
+            break;
+        }
 
         if (node) {
             _dynpool_job_t* job = mpsc_entry(node, _dynpool_job_t, node);
