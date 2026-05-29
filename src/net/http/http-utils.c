@@ -1309,3 +1309,69 @@ void xylem_http_multipart_build_destroy(
     free(b->parts);
     free(b);
 }
+
+char* xylem_http_sse_build(const char* event, const char* data, size_t* len) {
+    if (!data) {
+        return NULL;
+    }
+
+    size_t event_len = event ? strlen(event) : 0;
+    size_t data_len = strlen(data);
+
+    /* Compute output size: "event: <event>\n" + "data: <data>\n" + "\n" */
+    size_t total = 0;
+    if (event && event_len > 0) {
+        total += 7 + event_len + 1; /* "event: " + event + "\n" */
+    }
+
+    /* Split data by '\n' -- each line gets its own "data: " prefix. */
+    size_t line_count = 1;
+    for (size_t i = 0; i < data_len; i++) {
+        if (data[i] == '\n') {
+            line_count++;
+        }
+    }
+    total += line_count * 6 + data_len + line_count; /* "data: " per line + chars + "\n" per line */
+    total += 1; /* trailing "\n" to end the message */
+
+    char* buf = (char*)malloc(total + 1);
+    if (!buf) {
+        return NULL;
+    }
+
+    size_t off = 0;
+
+    if (event && event_len > 0) {
+        memcpy(buf + off, "event: ", 7);
+        off += 7;
+        memcpy(buf + off, event, event_len);
+        off += event_len;
+        buf[off++] = '\n';
+    }
+
+    const char* p = data;
+    const char* end = data + data_len;
+    while (p <= end) {
+        const char* nl = p;
+        while (nl < end && *nl != '\n') {
+            nl++;
+        }
+        size_t line_len = (size_t)(nl - p);
+        memcpy(buf + off, "data: ", 6);
+        off += 6;
+        if (line_len > 0) {
+            memcpy(buf + off, p, line_len);
+            off += line_len;
+        }
+        buf[off++] = '\n';
+        p = nl + 1;
+    }
+
+    buf[off++] = '\n';
+    buf[off] = '\0';
+
+    if (len) {
+        *len = off;
+    }
+    return buf;
+}

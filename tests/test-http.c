@@ -1155,6 +1155,39 @@ static void test_multipart_post(void) {
     xylem_run(_test_multipart_post_main, NULL, NULL);
 }
 
+static void test_sse_build(void) {
+    /* Basic event + data. */
+    size_t len = 0;
+    char* msg = xylem_http_sse_build("update", "hello", &len);
+    ASSERT(msg != NULL);
+    ASSERT(len > 0);
+    ASSERT(strcmp(msg, "event: update\ndata: hello\n\n") == 0);
+    ASSERT(len == strlen("event: update\ndata: hello\n\n"));
+    free(msg);
+
+    /* Data-only (no event). */
+    msg = xylem_http_sse_build(NULL, "world", &len);
+    ASSERT(msg != NULL);
+    ASSERT(strcmp(msg, "data: world\n\n") == 0);
+    ASSERT(len == strlen("data: world\n\n"));
+    free(msg);
+
+    /* Multi-line data splits into multiple data: lines. */
+    msg = xylem_http_sse_build("msg", "line1\nline2\nline3", &len);
+    ASSERT(msg != NULL);
+    ASSERT(strcmp(msg, "event: msg\ndata: line1\ndata: line2\ndata: line3\n\n") == 0);
+    free(msg);
+
+    /* NULL data returns NULL. */
+    ASSERT(xylem_http_sse_build("ev", NULL, NULL) == NULL);
+
+    /* Empty event string is omitted. */
+    msg = xylem_http_sse_build("", "test", &len);
+    ASSERT(msg != NULL);
+    ASSERT(strcmp(msg, "data: test\n\n") == 0);
+    free(msg);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1228,6 +1261,9 @@ int main(void) {
 
     /* Integration: multipart POST */
     test_multipart_post();
+
+    /* SSE builder */
+    test_sse_build();
 
     return 0;
 }
