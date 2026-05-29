@@ -23,10 +23,17 @@
 #include "xylem/net/xylem-tls.h"
 
 #include "http.h"
+#include "http-proxy.h"
+#include "net/tls/tls.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+typedef struct {
+    xylem_tls_ctx_t*          tls_ctx;
+    const xylem_http_proxy_t* proxy;
+} _https_dial_ctx_t;
 
 static http_transport_t _https_make_transport(xylem_tls_conn_t* conn) {
     return (http_transport_t){
@@ -41,7 +48,10 @@ static http_transport_t _https_make_transport(xylem_tls_conn_t* conn) {
 
 static http_transport_t _https_dial(const char* host, uint16_t port,
                                     uint64_t timeout_ms, void* ctx) {
-    xylem_tls_ctx_t* tls_ctx = (xylem_tls_ctx_t*)ctx;
+    _https_dial_ctx_t* dctx = (_https_dial_ctx_t*)ctx;
+    xylem_tls_ctx_t* tls_ctx = dctx->tls_ctx;
+    const xylem_http_proxy_t* proxy = dctx->proxy;
+
     bool owns_ctx = false;
     if (!tls_ctx) {
         tls_ctx = xylem_tls_ctx_create();
@@ -50,10 +60,28 @@ static http_transport_t _https_dial(const char* host, uint16_t port,
         }
         owns_ctx = true;
     }
+
     xylem_tls_opts_t tls_opts = {0};
     tls_opts.server_name = host;
     tls_opts.handshake_timeout_ms = (timeout_ms > 0) ? timeout_ms : 10000;
-    xylem_tls_conn_t* conn = xylem_tls_dial(host, port, tls_ctx, &tls_opts);
+
+    xylem_tls_conn_t* conn = NULL;
+
+    if (proxy && proxy->host) {
+        platform_sock_t fd = http_proxy_dial(
+            proxy->host, proxy->port, host, port,
+            timeout_ms, proxy->username, proxy->password);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            if (owns_ctx) {
+                xylem_tls_ctx_destroy(tls_ctx);
+            }
+            return (http_transport_t){0};
+        }
+        conn = tls_handshake(fd, tls_ctx, &tls_opts);
+    } else {
+        conn = xylem_tls_dial(host, port, tls_ctx, &tls_opts);
+    }
+
     if (owns_ctx) {
         xylem_tls_ctx_destroy(tls_ctx);
     }
@@ -153,8 +181,9 @@ void xylem_https_srv_set_gzip(xylem_https_srv_t* srv,
 xylem_http_res_t* xylem_https_get(const char* url,
                                   xylem_tls_ctx_t* tls_ctx,
                                   const xylem_http_opts_t* opts) {
+    _https_dial_ctx_t dctx = {tls_ctx, opts ? opts->proxy : NULL};
     return http_do_request("GET", url, NULL, 0, NULL, opts,
-                           _https_dial, tls_ctx);
+                           _https_dial, &dctx);
 }
 
 xylem_http_res_t* xylem_https_post(const char* url,
@@ -162,8 +191,9 @@ xylem_http_res_t* xylem_https_post(const char* url,
                                    const char* content_type,
                                    xylem_tls_ctx_t* tls_ctx,
                                    const xylem_http_opts_t* opts) {
+    _https_dial_ctx_t dctx = {tls_ctx, opts ? opts->proxy : NULL};
     return http_do_request("POST", url, body, body_len, content_type, opts,
-                           _https_dial, tls_ctx);
+                           _https_dial, &dctx);
 }
 
 xylem_http_res_t* xylem_https_put(const char* url,
@@ -171,15 +201,17 @@ xylem_http_res_t* xylem_https_put(const char* url,
                                   const char* content_type,
                                   xylem_tls_ctx_t* tls_ctx,
                                   const xylem_http_opts_t* opts) {
+    _https_dial_ctx_t dctx = {tls_ctx, opts ? opts->proxy : NULL};
     return http_do_request("PUT", url, body, body_len, content_type, opts,
-                           _https_dial, tls_ctx);
+                           _https_dial, &dctx);
 }
 
 xylem_http_res_t* xylem_https_delete(const char* url,
                                      xylem_tls_ctx_t* tls_ctx,
                                      const xylem_http_opts_t* opts) {
+    _https_dial_ctx_t dctx = {tls_ctx, opts ? opts->proxy : NULL};
     return http_do_request("DELETE", url, NULL, 0, NULL, opts,
-                           _https_dial, tls_ctx);
+                           _https_dial, &dctx);
 }
 
 xylem_http_res_t* xylem_https_patch(const char* url,
@@ -187,6 +219,7 @@ xylem_http_res_t* xylem_https_patch(const char* url,
                                     const char* content_type,
                                     xylem_tls_ctx_t* tls_ctx,
                                     const xylem_http_opts_t* opts) {
+    _https_dial_ctx_t dctx = {tls_ctx, opts ? opts->proxy : NULL};
     return http_do_request("PATCH", url, body, body_len, content_type, opts,
-                           _https_dial, tls_ctx);
+                           _https_dial, &dctx);
 }
