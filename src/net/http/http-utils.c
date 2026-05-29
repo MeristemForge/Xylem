@@ -19,9 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "utils.h"
-
-#include "xylem/net/xylem-http.h"
+#include "http-utils.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -48,7 +46,6 @@ int http_hex_digit(char c) {
 }
 
 
-/* ASCII lowercase table for fast case-insensitive comparison. */
 const uint8_t http_lower_table[256] = {
     0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
     16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
@@ -209,15 +206,6 @@ bool http_is_unreserved(uint8_t c) {
 }
 
 
-/**
- * Serialize an HTTP/1.1 request into a malloc'd buffer.
- * Fills Host, Content-Length, Connection, Content-Type, Expect headers.
- * Returns the buffer and sets *out_len. Caller frees.
- * Returns NULL on failure.
- *
- * When expect_continue is true, the body is NOT appended -- the caller
- * sends headers first, waits for 100, then sends body separately.
- */
 char* http_req_serialize(const char* method, const http_url_t* url,
                          const void* body, size_t body_len,
                          const char* content_type, bool expect_continue,
@@ -240,7 +228,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
                                         url->host, url->port);
     }
 
-    /* Check which auto-generated headers are overridden by custom ones. */
     const char* check_names[] = {
         "Host", "Content-Length", "Content-Type", "Connection", "Expect"
     };
@@ -253,14 +240,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     bool connection_overridden     = overridden[3];
     bool expect_overridden         = overridden[4];
 
-    /**
-     * Estimate buffer size:
-     * request line: method SP path SP "HTTP/1.1\r\n" (9+2)
-     * Host: "Host: " (6) + host_val + "\r\n" (2)
-     * Content-Length: "Content-Length: " (16) + digits (up to 20) + "\r\n" (2)
-     * Connection: "Connection: keep-alive\r\n" (24)
-     * final CRLF (2)
-     */
     size_t est = strlen(method) + 1 + strlen(url->path) + 11  /* request line */
                + custom_est
                + 6 + host_val_len + 2                          /* Host */
@@ -285,7 +264,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     size_t off = 0;
 
-    /* Request line: "METHOD /path HTTP/1.1\r\n" */
     size_t method_len = strlen(method);
     size_t path_len = strlen(url->path);
     memcpy(buf + off, method, method_len);
@@ -296,7 +274,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     memcpy(buf + off, " HTTP/1.1\r\n", 11);
     off += 11;
 
-    /* Write custom headers first. */
     for (size_t i = 0; i < custom_header_count; i++) {
         if (!custom_headers[i].name || !custom_headers[i].value) {
             continue;
@@ -313,7 +290,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
         buf[off++] = '\n';
     }
 
-    /* Write auto-generated headers, skipping overridden ones. */
     if (!host_overridden) {
         memcpy(buf + off, "Host: ", 6);
         off += 6;
@@ -523,9 +499,6 @@ const char* http_reason_phrase(int status) {
 }
 
 
-/* ===================================================================
- * Public utilities (formerly in xylem-http-common.c)
- * =================================================================== */
 
 char* xylem_http_url_encode(const char* src, size_t src_len,
                             size_t* out_len) {
@@ -592,7 +565,6 @@ char* xylem_http_url_decode(const char* src, size_t src_len,
 }
 
 
-/* Check if origin matches the allowed_origins list. */
 static bool _http_cors_origin_match(const char* allowed, const char* origin) {
     if (!allowed || !origin) {
         return false;
@@ -605,7 +577,6 @@ static bool _http_cors_origin_match(const char* allowed, const char* origin) {
     const char* p = allowed;
 
     while (*p) {
-        /* Skip leading whitespace. */
         while (*p == ' ' || *p == '\t') {
             p++;
         }
@@ -613,7 +584,6 @@ static bool _http_cors_origin_match(const char* allowed, const char* origin) {
         while (*p && *p != ',') {
             p++;
         }
-        /* Trim trailing whitespace. */
         const char* end = p;
         while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
             end--;
@@ -646,11 +616,10 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
 
     size_t n = 0;
 
-    /* Access-Control-Allow-Origin */
     if (n < out_cap) {
         out[n].name = "Access-Control-Allow-Origin";
         if (cors->allow_credentials) {
-            /* Must echo actual origin, not "*". */
+            /* Spec requires echoing actual origin when credentials are allowed. */
             out[n].value = origin;
         } else {
             out[n].value = cors->allowed_origins;
@@ -658,21 +627,18 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
         n++;
     }
 
-    /* Access-Control-Allow-Credentials */
     if (cors->allow_credentials && n < out_cap) {
         out[n].name  = "Access-Control-Allow-Credentials";
         out[n].value = "true";
         n++;
     }
 
-    /* Access-Control-Expose-Headers */
     if (cors->expose_headers && !is_preflight && n < out_cap) {
         out[n].name  = "Access-Control-Expose-Headers";
         out[n].value = cors->expose_headers;
         n++;
     }
 
-    /* Preflight-only headers. */
     if (is_preflight) {
         if (cors->allowed_methods && n < out_cap) {
             out[n].name  = "Access-Control-Allow-Methods";
@@ -685,13 +651,7 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
             n++;
         }
         if (cors->max_age > 0 && n < out_cap) {
-            /* max_age is stored as int; the caller's cors struct
-               must remain valid, so we use a static buffer approach.
-               Since this is single-threaded per request, a small
-               static buffer per call is fine -- but we need the value
-               to persist. We use the fact that max_age fits in a
-               fixed-size string. Caller must consume headers before
-               the next call. */
+            /* Static buffer: caller must consume headers before the next call. */
             static char _cors_max_age_buf[16];
             snprintf(_cors_max_age_buf, sizeof(_cors_max_age_buf),
                      "%d", cors->max_age);
@@ -701,9 +661,7 @@ size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
         }
     }
 
-    /* When allowed_origins is not "*", the response varies by Origin.
-       Caches must key on the Origin header to avoid serving a response
-       allowed for one origin to a different origin. */
+    /* Non-wildcard origins require Vary: Origin for correct cache keying. */
     if (!(cors->allowed_origins[0] == '*' &&
           cors->allowed_origins[1] == '\0') && n < out_cap) {
         out[n].name  = "Vary";
@@ -750,9 +708,7 @@ static char* _http_multipart_attr(const char* hdr, const char* attr) {
     const char* p = hdr;
 
     while ((p = strstr(p, attr)) != NULL) {
-        /* Ensure this is not a substring of another attribute.
-           Check that the character before attr is a space, semicolon,
-           or start of string. */
+        /* Guard against substring matches (e.g. "filename" vs "name"). */
         if (p != hdr) {
             char prev = *(p - 1);
             if (prev != ' ' && prev != ';' && prev != '\t') {
@@ -781,14 +737,11 @@ static char* _http_multipart_attr(const char* hdr, const char* attr) {
     return NULL;
 }
 
-/* Find Content-Type in part headers. */
 static char* _http_multipart_ct(const char* headers, size_t hdr_len) {
-    /* Search line by line for "Content-Type:" (case-insensitive). */
     const char* p = headers;
     const char* end = headers + hdr_len;
 
     while (p < end) {
-        /* Skip to start of line. */
         const char* line = p;
         const char* line_end = line;
         while (line_end < end && *line_end != '\r' && *line_end != '\n') {
@@ -797,7 +750,6 @@ static char* _http_multipart_ct(const char* headers, size_t hdr_len) {
         size_t line_len = (size_t)(line_end - line);
 
         if (line_len > 13) {
-            /* Check "Content-Type:" case-insensitively. */
             const char ct_lower[] = "content-type:";
             bool match = true;
             for (size_t i = 0; i < 13; i++) {
@@ -827,7 +779,6 @@ static char* _http_multipart_ct(const char* headers, size_t hdr_len) {
             }
         }
 
-        /* Advance past line ending. */
         p = line_end;
         if (p < end && *p == '\r') {
             p++;
@@ -851,7 +802,6 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         return NULL;
     }
 
-    /* Build delimiter: "\r\n--" + boundary */
     size_t delim_len = 4 + bnd_len;
     char* delim = (char*)malloc(delim_len + 1);
     if (!delim) {
@@ -871,9 +821,8 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
     const char* data = (const char*)body;
     const char* end  = data + body_len;
 
-    /* Skip preamble: find first "--" + boundary. */
+    /* First boundary has no leading \r\n (RFC 2046). */
     const char* p = data;
-    /* First boundary starts with "--" + boundary (no leading \r\n). */
     if (body_len < 2 + bnd_len || memcmp(p, "--", 2) != 0 ||
         memcmp(p + 2, bnd, bnd_len) != 0) {
         free(delim);
@@ -881,13 +830,11 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         return NULL;
     }
     p += 2 + bnd_len;
-    /* Skip \r\n after first boundary. */
     if (p + 2 <= end && p[0] == '\r' && p[1] == '\n') {
         p += 2;
     }
 
     while (p < end) {
-        /* Find next delimiter. */
         const char* next = NULL;
         for (const char* s = p; s + delim_len <= end; s++) {
             if (memcmp(s, delim, delim_len) == 0) {
@@ -899,7 +846,6 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
             break;
         }
 
-        /* Part data is from p to next. Parse headers + body. */
         size_t part_len = (size_t)(next - p);
         const char* hdr_end = NULL;
         for (const char* s = p; s + 4 <= p + part_len; s++) {
@@ -916,7 +862,6 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         const char* part_body = hdr_end + 4;
         size_t part_body_len = (size_t)(next - part_body);
 
-        /* Grow parts array. */
         if (mp->count >= mp->cap) {
             size_t new_cap = mp->cap ? mp->cap * 2 : 4;
             _http_multipart_part_t* tmp = (_http_multipart_part_t*)realloc(
@@ -931,8 +876,6 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
         _http_multipart_part_t* part = &mp->parts[mp->count];
         memset(part, 0, sizeof(*part));
 
-        /* Extract name and filename from Content-Disposition. */
-        /* Build a temporary NUL-terminated header string. */
         char* hdr_str = (char*)malloc(hdr_len + 1);
         if (hdr_str) {
             memcpy(hdr_str, p, hdr_len);
@@ -943,8 +886,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
             free(hdr_str);
         }
 
-        /* Copy part body. */
-        part->data = (char*)malloc(part_body_len + 1);
+        part->data = (uint8_t*)malloc(part_body_len + 1);
         if (part->data) {
             memcpy(part->data, part_body, part_body_len);
             part->data[part_body_len] = '\0';
@@ -953,9 +895,7 @@ xylem_http_multipart_t* xylem_http_multipart_parse(
 
         mp->count++;
 
-        /* Advance past delimiter. */
         p = next + delim_len;
-        /* Check for closing "--" or "\r\n". */
         if (p + 2 <= end && p[0] == '-' && p[1] == '-') {
             break; /* Final boundary. */
         }

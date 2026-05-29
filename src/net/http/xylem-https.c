@@ -19,9 +19,10 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http.h"
 #include "xylem/net/xylem-https.h"
 #include "xylem/net/xylem-tls.h"
+
+#include "http.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>
@@ -132,8 +133,8 @@ void xylem_https_close(xylem_https_srv_t* srv) {
         return;
     }
     http_srv_t* s = (http_srv_t*)srv;
-    s->close_listener(s->listener);
     /* Wakes the accept coroutine which then exits on NULL return. */
+    s->close_listener(s->listener);
     free(s);
 }
 

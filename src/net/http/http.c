@@ -22,9 +22,10 @@
 #include "http.h"
 #include "xylem/encoding/xylem-gzip.h"
 
+#include "platform/platform-io.h"
+
 #include "encoding/gzip/miniz/miniz.h"
 #include "net/http/llhttp/llhttp.h"
-#include "platform/platform-io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,8 @@ static inline void _transport_close(http_transport_t* t) {
     t->close(t->conn);
 }
 
+#define HTTP_IO_BUF_SIZE        4096
+#define HTTP_MAX_PATH           4096
 #define POOL_MAX_IDLE_PER_HOST  5
 #define POOL_IDLE_TIMEOUT_MS    90000
 #define POOL_MAX_HOSTS          32
@@ -61,7 +64,6 @@ typedef struct {
 static _pool_entry_t _pool[POOL_MAX_HOSTS];
 static size_t        _pool_size;
 
-/* Find or create a pool entry for the given key. Returns NULL if full. */
 static _pool_entry_t* _pool_find_entry(const char* key) {
     for (size_t i = 0; i < _pool_size; i++) {
         if (strcmp(_pool[i].key, key) == 0) {
@@ -71,10 +73,7 @@ static _pool_entry_t* _pool_find_entry(const char* key) {
     return NULL;
 }
 
-/**
- * Try to acquire an idle connection for the given parsed URL.
- * Evicts stale connections. Returns true and fills *out on success.
- */
+/* Evicts stale connections while searching. */
 static bool _pool_acquire(const http_url_t* url, http_transport_t* out) {
     char key[320];
     snprintf(key, sizeof(key), "%s:%u:%s", url->host, (unsigned)url->port,
@@ -105,10 +104,7 @@ static bool _pool_acquire(const http_url_t* url, http_transport_t* out) {
     return false;
 }
 
-/**
- * Return a keep-alive connection to the pool for later reuse.
- * If the pool for this host is full, the oldest idle connection is closed.
- */
+/* Evicts oldest if pool for this host is full. */
 static void _pool_release(const http_url_t* url, http_transport_t* t) {
     char key[320];
     snprintf(key, sizeof(key), "%s:%u:%s", url->host, (unsigned)url->port,
@@ -290,10 +286,6 @@ static const char* _default_compressible_types[] = {
 static const size_t _default_compressible_count =
     sizeof(_default_compressible_types) / sizeof(_default_compressible_types[0]);
 
-/**
- * Check if a Content-Type is compressible.
- * Compares the type prefix (before any ;params).
- */
 static bool _is_compressible(const char* content_type,
                              const xylem_http_gzip_opts_t* opts) {
     if (!content_type) {
@@ -312,12 +304,20 @@ static bool _is_compressible(const char* content_type,
     if (opts->mime_types && opts->mime_types[0]) {
         const char* p = opts->mime_types;
         while (*p) {
-            while (*p == ' ' || *p == ',') p++;
-            if (!*p) break;
+            while (*p == ' ' || *p == ',') {
+                p++;
+            }
+            if (!*p) {
+                break;
+            }
             const char* end = p;
-            while (*end && *end != ',') end++;
+            while (*end && *end != ',') {
+                end++;
+            }
             size_t tlen = (size_t)(end - p);
-            while (tlen > 0 && p[tlen - 1] == ' ') tlen--;
+            while (tlen > 0 && p[tlen - 1] == ' ') {
+                tlen--;
+            }
             if (tlen == ct_len && strncmp(p, content_type, ct_len) == 0) {
                 return true;
             }
@@ -336,10 +336,7 @@ static bool _is_compressible(const char* content_type,
     return false;
 }
 
-/**
- * Decide whether to activate gzip compression for this response.
- * Must be called before _flush_headers.
- */
+/* Must be called before _flush_headers. */
 static void _maybe_init_gzip(xylem_http_res_t* res) {
     if (!res->accept_gzip || !res->_gzip_opts ||
         !res->_gzip_opts->enabled) {
@@ -377,10 +374,7 @@ static void _maybe_init_gzip(xylem_http_res_t* res) {
                     "Content-Encoding", 16, "gzip", 4);
 }
 
-/**
- * Flush status line + headers with Transfer-Encoding: chunked.
- * Called on the first xylem_http_res_write().
- */
+/* Lazily called on first write; emits chunked encoding header. */
 static int _flush_headers(xylem_http_res_t* res) {
     if (!res->_transport) {
         return -1;
@@ -397,13 +391,9 @@ static int _flush_headers(xylem_http_res_t* res) {
     }
     est += 32; /* Transfer-Encoding: chunked\r\n\r\n */
 
-    char stack_buf[2048];
-    char* buf = stack_buf;
-    bool heap = false;
-    if (est > sizeof(stack_buf)) {
-        buf = (char*)malloc(est);
-        if (!buf) return -1;
-        heap = true;
+    char* buf = (char*)malloc(est);
+    if (!buf) {
+        return -1;
     }
 
     int off = snprintf(buf, est, "HTTP/1.1 %d %s\r\n", status, reason);
@@ -416,7 +406,7 @@ static int _flush_headers(xylem_http_res_t* res) {
                     "Transfer-Encoding: chunked\r\n\r\n");
 
     int rc = _transport_write(res->_transport, buf, off);
-    if (heap) free(buf);
+    free(buf);
     if (rc != 0) {
         return -1;
     }
@@ -424,9 +414,6 @@ static int _flush_headers(xylem_http_res_t* res) {
     return 0;
 }
 
-/**
- * Write a single chunked-encoded chunk to the transport.
- */
 static int _write_chunk(xylem_http_res_t* res, const void* data, size_t len) {
     char chunk_hdr[24];
     int hdr_len = snprintf(chunk_hdr, sizeof(chunk_hdr), "%zx\r\n", len);
@@ -462,7 +449,7 @@ int xylem_http_res_write(xylem_http_res_t* res,
         s->next_in = (const unsigned char*)data;
         s->avail_in = (mz_uint32)len;
 
-        uint8_t out_buf[4096];
+        uint8_t out_buf[HTTP_IO_BUF_SIZE];
         while (s->avail_in > 0) {
             s->next_out = out_buf;
             s->avail_out = (mz_uint32)sizeof(out_buf);
@@ -483,11 +470,6 @@ int xylem_http_res_write(xylem_http_res_t* res,
     return _write_chunk(res, data, len);
 }
 
-/**
- * Send the terminating chunk "0\r\n\r\n" after the handler returns.
- * If no writes happened, flush empty response first.
- * If gzip is active, flush the gzip stream with MZ_FINISH first.
- */
 static void _finalize_response(xylem_http_res_t* res) {
     if (!res->_transport) {
         return;
@@ -498,7 +480,7 @@ static void _finalize_response(xylem_http_res_t* res) {
 
     if (res->gzip_active && res->gzip_stream) {
         mz_stream* s = res->gzip_stream;
-        uint8_t out_buf[4096];
+        uint8_t out_buf[HTTP_IO_BUF_SIZE];
         s->next_in = NULL;
         s->avail_in = 0;
         int rc;
@@ -522,17 +504,22 @@ static void _finalize_response(xylem_http_res_t* res) {
 }
 
 int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport) {
-    if (!res || !res->_transport || !transport) return -1;
-    if (res->_headers_sent) return -1;
+    if (!res || !res->_transport || !transport) {
+        return -1;
+    }
+    if (res->_headers_sent) {
+        return -1;
+    }
 
     const char* resp = "HTTP/1.1 101 Switching Protocols\r\n"
                        "Upgrade: websocket\r\n"
                        "Connection: Upgrade\r\n";
     int n = res->_transport->write(res->_transport->conn,
                                    resp, (int)strlen(resp));
-    if (n < 0) return -1;
+    if (n < 0) {
+        return -1;
+    }
 
-    /* Write any additional headers set by the caller */
     for (size_t i = 0; i < res->header_count; i++) {
         char hdr[512];
         int hlen = snprintf(hdr, sizeof(hdr), "%s: %s\r\n",
@@ -542,10 +529,9 @@ int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport) {
         }
     }
 
-    /* End headers */
     res->_transport->write(res->_transport->conn, "\r\n", 2);
 
-    /* Detach transport — caller now owns the connection */
+    /* Detach: caller now owns the connection. */
     *transport = res->_transport;
     res->_transport = NULL;
     res->_headers_sent = true;
@@ -558,9 +544,13 @@ static int _hdr_field_append(char** name, size_t* name_len, size_t* name_cap,
     size_t needed = *name_len + len + 1;
     if (needed > *name_cap) {
         size_t new_cap = *name_cap ? *name_cap * 2 : 64;
-        while (new_cap < needed) new_cap *= 2;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
         char* tmp = (char*)realloc(*name, new_cap);
-        if (!tmp) return -1;
+        if (!tmp) {
+            return -1;
+        }
         *name = tmp;
         *name_cap = new_cap;
     }
@@ -575,9 +565,13 @@ static int _body_append(uint8_t** body, size_t* body_len, size_t* body_cap,
     size_t needed = *body_len + len;
     if (needed > *body_cap) {
         size_t new_cap = *body_cap ? *body_cap * 2 : 4096;
-        while (new_cap < needed) new_cap *= 2;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
         uint8_t* tmp = (uint8_t*)realloc(*body, new_cap);
-        if (!tmp) return -1;
+        if (!tmp) {
+            return -1;
+        }
         *body = tmp;
         *body_cap = new_cap;
     }
@@ -611,9 +605,13 @@ static int _srv_on_url(llhttp_t* p, const char* at, size_t len) {
     size_t needed = ctx->req.url_len + len + 1;
     if (needed > ctx->url_cap) {
         size_t new_cap = ctx->url_cap ? ctx->url_cap * 2 : 64;
-        while (new_cap < needed) new_cap *= 2;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
         char* tmp = (char*)realloc(ctx->req.url, new_cap);
-        if (!tmp) return -1;
+        if (!tmp) {
+            return -1;
+        }
         ctx->req.url = tmp;
         ctx->url_cap = new_cap;
     }
@@ -701,14 +699,19 @@ void http_srv_conn_coroutine(void* arg) {
     _srv_parser_t sp;
     _srv_parser_init(&sp);
 
-    char readbuf[4096];
+    char* readbuf = (char*)malloc(HTTP_IO_BUF_SIZE);
+    if (!readbuf) {
+        _transport_close(&ctx->transport);
+        free(ctx);
+        return;
+    }
     bool keep_alive = true;
 
     while (keep_alive) {
         sp.complete = false;
 
         while (!sp.complete) {
-            int n = _transport_read(&ctx->transport, readbuf, (int)sizeof(readbuf));
+            int n = _transport_read(&ctx->transport, readbuf, HTTP_IO_BUF_SIZE);
             if (n <= 0) {
                 goto done; /* peer closed or error */
             }
@@ -744,19 +747,19 @@ void http_srv_conn_coroutine(void* arg) {
             res._gzip_opts = &ctx->srv->gzip_opts;
         }
 
-        /* Check for HTTP Upgrade */
         bool is_upgrade = llhttp_get_upgrade(&sp.parser) != 0;
 
         if (is_upgrade && ctx->srv->on_upgrade) {
             ctx->srv->on_upgrade(&res, &sp.req, ctx->srv->upgrade_userdata);
             http_headers_free(res.headers, res.header_count);
             _srv_parser_destroy(&sp);
-            /* If upgrade succeeded, transport was detached — don't close */
             if (!res._transport) {
+                /* Upgrade succeeded: transport ownership transferred. */
+                free(readbuf);
                 free(ctx);
                 return;
             }
-            /* Upgrade handler didn't actually upgrade; close normally */
+            free(readbuf);
             _transport_close(&ctx->transport);
             free(ctx);
             return;
@@ -773,6 +776,7 @@ void http_srv_conn_coroutine(void* arg) {
 
 done:
     _srv_parser_destroy(&sp);
+    free(readbuf);
     _transport_close(&ctx->transport);
     free(ctx);
 }
@@ -852,10 +856,6 @@ static bool _cookie_iprefix(const char* s, const char* prefix, size_t plen) {
     return true;
 }
 
-/**
- * Parse a Set-Cookie header value into a _cookie_t.
- * Returns 0 on success, -1 on parse error.
- */
 static int _cookie_parse(const char* header, const char* req_host,
                          const char* req_path, _cookie_t* out) {
     memset(out, 0, sizeof(*out));
@@ -1025,9 +1025,6 @@ static void _cookie_jar_store(xylem_http_cookie_jar_t* jar, _cookie_t* c) {
     jar->cookies[jar->count++] = *c;
 }
 
-/**
- * Collect Set-Cookie headers from response and store in jar.
- */
 static void _cookie_jar_collect(xylem_http_cookie_jar_t* jar,
                                 const http_header_t* headers,
                                 size_t header_count,
@@ -1045,10 +1042,7 @@ static void _cookie_jar_collect(xylem_http_cookie_jar_t* jar,
     }
 }
 
-/**
- * Build a "name=val; name2=val2" cookie header value from matching cookies.
- * Returns malloc'd string or NULL if no cookies match.
- */
+/* Returns malloc'd "name=val; ..." string, or NULL if no cookies match. */
 static char* _cookie_jar_build(const xylem_http_cookie_jar_t* jar,
                                const char* scheme, const char* host,
                                const char* path) {
@@ -1172,11 +1166,6 @@ static void _cli_parser_destroy(_cli_parser_t* cp) {
     free(cp->cur_hdr_name);
 }
 
-/**
- * Resolve a Location header value against the request URL.
- * Handles absolute URLs and relative paths (e.g., "/new-path").
- * Returns 0 on success with resolved URL in *out, -1 on failure.
- */
 static int _resolve_redirect_url(const char* location, const http_url_t* base,
                                  http_url_t* out) {
     if (!location || !*location) {
@@ -1209,10 +1198,6 @@ static int _resolve_redirect_url(const char* location, const http_url_t* base,
     return 0;
 }
 
-/**
- * Try to acquire a connection from the pool or dial a new one.
- * Returns true on success with transport filled in.
- */
 static bool _http_acquire_conn(const http_url_t* parsed,
                                const xylem_http_opts_t* opts,
                                http_dial_fn_t dial_fn,
@@ -1231,13 +1216,7 @@ static bool _http_acquire_conn(const http_url_t* parsed,
     return transport->conn != NULL;
 }
 
-/**
- * Build a merged headers array injecting Cookie from jar.
- * On return, *out_hdrs and *out_count are set.
- * *out_cookie_val is set if a cookie string was allocated (caller frees).
- * *out_merged is set if a merged array was allocated (caller frees).
- * Returns 0 on success, -1 on allocation failure.
- */
+/* Caller frees *out_cookie_val and *out_merged. */
 static int _http_build_cookie_header(const xylem_http_opts_t* opts,
                                      const http_url_t* parsed,
                                      const xylem_http_hdr_t** out_hdrs,
@@ -1286,9 +1265,6 @@ static int _http_build_cookie_header(const xylem_http_opts_t* opts,
     return 0;
 }
 
-/**
- * Auto-decompress a gzip-encoded response body in place.
- */
 static void _http_decompress_body(xylem_http_res_t* res) {
     const char* ce = http_header_find(res->headers, res->header_count,
                                       "Content-Encoding");
@@ -1350,10 +1326,16 @@ xylem_http_res_t* http_do_request(
         return NULL;
     }
 
+    char* readbuf = (char*)malloc(HTTP_IO_BUF_SIZE);
+    if (!readbuf) {
+        return NULL;
+    }
+
     for (;;) {
 
     http_transport_t transport;
     if (!_http_acquire_conn(&parsed, opts, dial_fn, dial_ctx, &transport)) {
+        free(readbuf);
         return NULL;
     }
 
@@ -1379,6 +1361,7 @@ xylem_http_res_t* http_do_request(
     if (_http_build_cookie_header(opts, &parsed, &custom_hdrs, &custom_hdr_count,
                                   &cookie_val, &merged_hdrs) != 0) {
         _transport_close(&transport);
+        free(readbuf);
         return NULL;
     }
 
@@ -1392,6 +1375,7 @@ xylem_http_res_t* http_do_request(
 
     if (!req_buf) {
         _transport_close(&transport);
+        free(readbuf);
         return NULL;
     }
 
@@ -1399,21 +1383,22 @@ xylem_http_res_t* http_do_request(
     free(req_buf);
     if (wrc != 0) {
         _transport_close(&transport);
+        free(readbuf);
         return NULL;
     }
 
     xylem_http_res_t* res = (xylem_http_res_t*)calloc(1, sizeof(*res));
     if (!res) {
         _transport_close(&transport);
+        free(readbuf);
         return NULL;
     }
 
     _cli_parser_t cp;
     _cli_parser_init(&cp, res);
 
-    char readbuf[4096];
     while (!cp.complete) {
-        int n = _transport_read(&transport, readbuf, (int)sizeof(readbuf));
+        int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
         if (n <= 0) {
             if (n == 0) {
                 llhttp_finish(&cp.parser);
@@ -1424,6 +1409,7 @@ xylem_http_res_t* http_do_request(
             _cli_parser_destroy(&cp);
             _transport_close(&transport);
             xylem_http_res_destroy(res);
+            free(readbuf);
             return NULL;
         }
 
@@ -1434,6 +1420,7 @@ xylem_http_res_t* http_do_request(
             _cli_parser_destroy(&cp);
             _transport_close(&transport);
             xylem_http_res_destroy(res);
+            free(readbuf);
             return NULL;
         }
     }
@@ -1478,6 +1465,7 @@ xylem_http_res_t* http_do_request(
     }
 
     _http_decompress_body(res);
+    free(readbuf);
     return res;
 
     } /* for (;;) */
@@ -1588,10 +1576,7 @@ int xylem_http_router_use(xylem_http_router_t* r,
     return 0;
 }
 
-/**
- * Route match type for priority ordering.
- * Lower numeric value = higher priority.
- */
+/* Lower numeric value = higher priority. */
 typedef enum {
     _MATCH_EXACT    = 0,
     _MATCH_PARAM    = 1,
@@ -1599,18 +1584,6 @@ typedef enum {
     _MATCH_NONE     = 3,
 } _match_type_t;
 
-/**
- * Try to match a URL path against a route pattern.
- *
- * @param pattern      Route pattern string (NUL-terminated).
- * @param path         URL path (not necessarily NUL-terminated at path_len).
- * @param path_len     Length of the path to consider.
- * @param params       Output params array (may be NULL).
- * @param param_count  Output param count.
- * @param param_cap    Output param capacity.
- *
- * Returns the match type. _MATCH_NONE means no match.
- */
 static _match_type_t _route_match(const char* pattern,
                                   const char* path,
                                   size_t path_len,
@@ -1721,10 +1694,6 @@ typedef struct {
     size_t prefix_len;
 } _static_ctx_t;
 
-/**
- * Check if a path contains traversal sequences (e.g. "..").
- * Returns true if the path is unsafe.
- */
 static bool _path_has_traversal(const char* path) {
     const char* p = path;
     while (*p) {
@@ -1760,22 +1729,32 @@ static void _static_handler(xylem_http_res_t* res,
     const char* suffix = url + ctx->prefix_len;
     size_t suffix_len = path_len - ctx->prefix_len;
 
-    char suffix_buf[4096];
-    if (suffix_len >= sizeof(suffix_buf)) {
+    if (suffix_len >= HTTP_MAX_PATH) {
         xylem_http_res_set_status(res, 414);
         xylem_http_res_write(res, "URI Too Long", 12);
         return;
     }
+
+    char* pathbuf = (char*)malloc(HTTP_MAX_PATH * 3);
+    if (!pathbuf) {
+        xylem_http_res_set_status(res, 500);
+        xylem_http_res_write(res, "Internal Server Error", 21);
+        return;
+    }
+    char* suffix_buf = pathbuf;
+    char* fs_path    = pathbuf + HTTP_MAX_PATH;
+    char* gz_path    = pathbuf + HTTP_MAX_PATH * 2;
+
     memcpy(suffix_buf, suffix, suffix_len);
     suffix_buf[suffix_len] = '\0';
 
     if (_path_has_traversal(suffix_buf)) {
+        free(pathbuf);
         xylem_http_res_set_status(res, 403);
         xylem_http_res_write(res, "Forbidden", 9);
         return;
     }
 
-    char fs_path[4096];
     size_t root_len = strlen(ctx->root);
 
     if (root_len > 0 && (ctx->root[root_len - 1] == '/' ||
@@ -1787,32 +1766,32 @@ static void _static_handler(xylem_http_res_t* res,
                           (suffix_len > 0 && suffix_buf[suffix_len - 1] == '/');
 
     if (is_dir_request) {
-        int n = snprintf(fs_path, sizeof(fs_path), "%.*s/%s%s",
+        int n = snprintf(fs_path, HTTP_MAX_PATH, "%.*s/%s%s",
                          (int)root_len, ctx->root, suffix_buf,
                          ctx->index_file);
-        if (n < 0 || (size_t)n >= sizeof(fs_path)) {
+        if (n < 0 || (size_t)n >= HTTP_MAX_PATH) {
+            free(pathbuf);
             xylem_http_res_set_status(res, 414);
             xylem_http_res_write(res, "URI Too Long", 12);
             return;
         }
     } else {
-        int n = snprintf(fs_path, sizeof(fs_path), "%.*s/%s",
+        int n = snprintf(fs_path, HTTP_MAX_PATH, "%.*s/%s",
                          (int)root_len, ctx->root, suffix_buf);
-        if (n < 0 || (size_t)n >= sizeof(fs_path)) {
+        if (n < 0 || (size_t)n >= HTTP_MAX_PATH) {
+            free(pathbuf);
             xylem_http_res_set_status(res, 414);
             xylem_http_res_write(res, "URI Too Long", 12);
             return;
         }
     }
 
-
     bool serve_gzip = false;
-    char gz_path[4096];
 
     if (ctx->precompressed) {
         const char* ae = xylem_http_req_header(req, "Accept-Encoding");
         if (ae && strstr(ae, "gzip")) {
-            snprintf(gz_path, sizeof(gz_path), "%s.gz", fs_path);
+            snprintf(gz_path, HTTP_MAX_PATH, "%s.gz", fs_path);
             FILE* gz_f = platform_io_fopen(gz_path, "rb");
             if (gz_f) {
                 fclose(gz_f);
@@ -1822,7 +1801,10 @@ static void _static_handler(xylem_http_res_t* res,
     }
 
     const char* open_path = serve_gzip ? gz_path : fs_path;
+    const char* mime = _mime_lookup(fs_path);
     FILE* f = platform_io_fopen(open_path, "rb");
+    free(pathbuf);
+
     if (!f) {
         xylem_http_res_set_status(res, 404);
         xylem_http_res_write(res, "Not Found", 9);
@@ -1858,7 +1840,6 @@ static void _static_handler(xylem_http_res_t* res,
         return;
     }
 
-    const char* mime = _mime_lookup(fs_path);
     xylem_http_res_set_header(res, "Content-Type", mime);
 
     if (ctx->max_age > 0) {

@@ -19,8 +19,10 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http.h"
+#include "xylem/net/xylem-http.h"
 #include "xylem/net/xylem-tcp.h"
+
+#include "http.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>

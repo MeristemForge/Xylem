@@ -126,7 +126,7 @@ if(XYLEM_ENABLE_TLS)
 endif()
 
 list(APPEND SRCS
-	src/net/http/utils.c
+	src/net/http/http-utils.c
 	src/net/http/http.c
 	src/net/http/xylem-http.c
 	src/net/http/llhttp/llhttp.c

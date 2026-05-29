@@ -24,7 +24,7 @@ _Pragma("once")
 #include "xylem/net/xylem-http.h"
 #include "xylem/xylem-utils.h"
 
-#include "utils.h"
+#include "http-utils.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,16 +53,15 @@ typedef struct http_srv_s {
     void*                   upgrade_userdata;
 } http_srv_t;
 
-/* Per-connection context for the server-side coroutine. */
 typedef struct {
     http_srv_t*      srv;
     http_transport_t transport;
 } http_srv_conn_ctx_t;
 
 /**
- * Server connection coroutine entry point.
- * Reads HTTP requests, dispatches to the handler, auto-finalizes responses.
- * arg must point to a heap-allocated http_srv_conn_ctx_t (freed inside).
+ * @brief Server connection coroutine entry.
+ *
+ * @param arg  Heap-allocated http_srv_conn_ctx_t (freed inside).
  */
 extern void http_srv_conn_coroutine(void* arg);
 
