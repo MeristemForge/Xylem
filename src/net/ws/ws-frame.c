@@ -23,13 +23,11 @@
 
 #include <string.h>
 
-/* Check whether an opcode falls in a reserved range. */
 static bool _ws_frame_is_reserved_opcode(uint8_t opcode) {
     return (opcode >= 0x3 && opcode <= 0x7) ||
            (opcode >= 0xB && opcode <= 0xF);
 }
 
-/* Check whether an opcode is a control frame (>= 0x8). */
 static bool _ws_frame_is_control(uint8_t opcode) {
     return opcode >= 0x8;
 }
@@ -47,7 +45,6 @@ int ws_frame_decode_header(const uint8_t* data, size_t len,
     out->opcode = b0 & 0x0F;
     out->masked = (b1 & 0x80) != 0;
 
-    /* Reject reserved opcodes. */
     if (_ws_frame_is_reserved_opcode(out->opcode)) {
         return -2;
     }
@@ -193,7 +190,6 @@ int ws_frame_close_encode(uint16_t code, const char* reason,
         return -1;
     }
 
-    /* Status code in network byte order (big-endian). */
     out[0] = (uint8_t)(code >> 8);
     out[1] = (uint8_t)(code & 0xFF);
 
@@ -220,7 +216,6 @@ int ws_frame_close_decode(const uint8_t* data, size_t len,
         return -1;
     }
 
-    /* >= 2 bytes: parse status code from network byte order. */
     *code = (uint16_t)((uint16_t)data[0] << 8 | (uint16_t)data[1]);
 
     if (len > 2) {
@@ -231,7 +226,6 @@ int ws_frame_close_decode(const uint8_t* data, size_t len,
         *reason_len = 0;
     }
 
-    /* Check for reserved status codes. */
     if (ws_frame_close_validate_recv(*code) != 0) {
         return -2;
     }

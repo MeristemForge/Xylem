@@ -1,8 +1,30 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
+#include "xylem/net/xylem-http.h"
+
 #include "ws.h"
 #include "ws-frame.h"
 #include "ws-handshake.h"
 #include "ws-utf8.h"
-#include "xylem/net/xylem-http.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -26,12 +48,17 @@ xylem_ws_conn_t* ws_conn_create(http_transport_t transport,
                                  bool is_client,
                                  const xylem_ws_opts_t* opts) {
     xylem_ws_conn_t* conn = (xylem_ws_conn_t*)calloc(1, sizeof(*conn));
-    if (!conn) return NULL;
+    if (!conn) {
+        return NULL;
+    }
 
     conn->transport = transport;
     conn->is_client = is_client;
     conn->recv_buf  = (uint8_t*)malloc(WS_RECV_BUF_INIT);
-    if (!conn->recv_buf) { free(conn); return NULL; }
+    if (!conn->recv_buf) {
+        free(conn);
+        return NULL;
+    }
     conn->recv_cap = WS_RECV_BUF_INIT;
 
     _ws_opts_apply(conn, opts);
@@ -39,13 +66,14 @@ xylem_ws_conn_t* ws_conn_create(http_transport_t transport,
 }
 
 void ws_conn_free(xylem_ws_conn_t* conn) {
-    if (!conn) return;
+    if (!conn) {
+        return;
+    }
     free(conn->recv_buf);
     free(conn->frag_buf);
     free(conn);
 }
 
-/* --- Frame writing --- */
 
 static int _ws_write_frame(xylem_ws_conn_t* conn, bool fin, uint8_t opcode,
                            const void* data, size_t len) {
@@ -61,12 +89,16 @@ static int _ws_write_frame(xylem_ws_conn_t* conn, bool fin, uint8_t opcode,
                                             conn->is_client, mask_key, len);
 
     int n = conn->transport.write(conn->transport.conn, hdr_buf, (int)hdr_len);
-    if (n < 0) return -1;
+    if (n < 0) {
+        return -1;
+    }
 
     if (len > 0) {
         if (conn->is_client) {
             uint8_t* masked = (uint8_t*)malloc(len);
-            if (!masked) return -1;
+            if (!masked) {
+                return -1;
+            }
             memcpy(masked, data, len);
             ws_frame_apply_mask(masked, len, mask_key, 0);
             n = conn->transport.write(conn->transport.conn, masked, (int)len);
@@ -74,17 +106,22 @@ static int _ws_write_frame(xylem_ws_conn_t* conn, bool fin, uint8_t opcode,
         } else {
             n = conn->transport.write(conn->transport.conn, data, (int)len);
         }
-        if (n < 0) return -1;
+        if (n < 0) {
+            return -1;
+        }
     }
     return 0;
 }
 
-/* --- Send --- */
 
 int xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
                   const void* data, size_t len) {
-    if (!conn || conn->close_sent || conn->close_received) return -1;
-    if (opcode != XYLEM_WS_TEXT && opcode != XYLEM_WS_BINARY) return -1;
+    if (!conn || conn->close_sent || conn->close_received) {
+        return -1;
+    }
+    if (opcode != XYLEM_WS_TEXT && opcode != XYLEM_WS_BINARY) {
+        return -1;
+    }
 
     const uint8_t* p = (const uint8_t*)data;
     size_t threshold = conn->fragment_threshold;
@@ -93,17 +130,19 @@ int xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
         return _ws_write_frame(conn, true, (uint8_t)opcode, p, len);
     }
 
-    /* Fragment */
     size_t offset = 0;
     bool first = true;
     while (offset < len) {
         size_t chunk = len - offset;
-        if (chunk > threshold) chunk = threshold;
+        if (chunk > threshold) {
+            chunk = threshold;
+        }
         bool fin = (offset + chunk >= len);
         uint8_t op = first ? (uint8_t)opcode : 0x0;
 
-        if (_ws_write_frame(conn, fin, op, p + offset, chunk) != 0)
+        if (_ws_write_frame(conn, fin, op, p + offset, chunk) != 0) {
             return -1;
+        }
 
         offset += chunk;
         first = false;
@@ -111,11 +150,14 @@ int xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
     return 0;
 }
 
-/* --- Ping / Close frame helpers --- */
 
 int xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len) {
-    if (!conn || conn->close_sent || conn->close_received) return -1;
-    if (len > 125) return -1;
+    if (!conn || conn->close_sent || conn->close_received) {
+        return -1;
+    }
+    if (len > 125) {
+        return -1;
+    }
     return _ws_write_frame(conn, true, 0x9, data, len);
 }
 
@@ -124,18 +166,25 @@ static int _ws_send_close_frame(xylem_ws_conn_t* conn, uint16_t code,
     uint8_t payload[125];
     int plen = ws_frame_close_encode(code, reason, reason_len,
                                      payload, sizeof(payload));
-    if (plen < 0) plen = 0;
+    if (plen < 0) {
+        plen = 0;
+    }
     return _ws_write_frame(conn, true, 0x8, payload, (size_t)plen);
 }
 
-/* --- Recv --- */
 
 static int _ws_ensure_recv_buf(xylem_ws_conn_t* conn, size_t needed) {
-    if (conn->recv_cap >= needed) return 0;
+    if (conn->recv_cap >= needed) {
+        return 0;
+    }
     size_t new_cap = conn->recv_cap;
-    while (new_cap < needed) new_cap *= 2;
+    while (new_cap < needed) {
+        new_cap *= 2;
+    }
     uint8_t* nb = (uint8_t*)realloc(conn->recv_buf, new_cap);
-    if (!nb) return -1;
+    if (!nb) {
+        return -1;
+    }
     conn->recv_buf = nb;
     conn->recv_cap = new_cap;
     return 0;
@@ -143,12 +192,18 @@ static int _ws_ensure_recv_buf(xylem_ws_conn_t* conn, size_t needed) {
 
 static int _ws_frag_append(xylem_ws_conn_t* conn, const void* data, size_t len) {
     size_t needed = conn->frag_len + len;
-    if (conn->max_msg_size && needed > conn->max_msg_size) return -1;
+    if (conn->max_msg_size && needed > conn->max_msg_size) {
+        return -1;
+    }
     if (needed > conn->frag_cap) {
         size_t new_cap = conn->frag_cap ? conn->frag_cap : 4096;
-        while (new_cap < needed) new_cap *= 2;
+        while (new_cap < needed) {
+            new_cap *= 2;
+        }
         uint8_t* nb = (uint8_t*)realloc(conn->frag_buf, new_cap);
-        if (!nb) return -1;
+        if (!nb) {
+            return -1;
+        }
         conn->frag_buf = nb;
         conn->frag_cap = new_cap;
     }
@@ -158,33 +213,41 @@ static int _ws_frag_append(xylem_ws_conn_t* conn, const void* data, size_t len) 
 }
 
 int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
-    if (!conn || !msg) return -1;
-    if (conn->close_received) return -1;
+    if (!conn || !msg) {
+        return -1;
+    }
+    if (conn->close_received) {
+        return -1;
+    }
 
     for (;;) {
-        /* Try to decode a frame from recv_buf */
         while (conn->recv_len > 0) {
             ws_frame_header_t fh;
             int rc = ws_frame_decode_header(conn->recv_buf, conn->recv_len, &fh);
-            if (rc == -1) break; /* need more data */
-            if (rc == -2) { conn->close_code = 1002; return -1; }
+            if (rc == -1) {
+                break;
+            }
+            if (rc == -2) {
+                conn->close_code = 1002;
+                return -1;
+            }
 
             size_t frame_total = fh.header_size + (size_t)fh.payload_len;
-            if (conn->recv_len < frame_total) break; /* need more data */
+            if (conn->recv_len < frame_total) {
+                break;
+            }
 
             uint8_t* payload = conn->recv_buf + fh.header_size;
             if (fh.masked) {
                 ws_frame_apply_mask(payload, (size_t)fh.payload_len, fh.mask_key, 0);
             }
 
-            /* Consume frame from recv_buf */
             size_t remaining = conn->recv_len - frame_total;
             if (remaining > 0) {
                 memmove(conn->recv_buf, conn->recv_buf + frame_total, remaining);
             }
             conn->recv_len = remaining;
 
-            /* Handle by opcode */
             if (fh.opcode == 0x8) { /* Close */
                 uint16_t code; const char* reason; size_t rlen;
                 ws_frame_close_decode(payload, (size_t)fh.payload_len,
@@ -201,14 +264,19 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
             } else if (fh.opcode == 0xA) { /* Pong -> discard */
                 /* noop */
             } else if (fh.opcode == 0x0) { /* Continuation */
-                if (!conn->frag_active) { conn->close_code = 1002; return -1; }
+                if (!conn->frag_active) {
+                    conn->close_code = 1002;
+                    return -1;
+                }
                 if (_ws_frag_append(conn, payload, (size_t)fh.payload_len) != 0) {
-                    conn->close_code = 1009; return -1;
+                    conn->close_code = 1009;
+                    return -1;
                 }
                 if (fh.fin) {
                     if (conn->frag_opcode == 0x1) {
                         if (ws_utf8_validate(conn->frag_buf, conn->frag_len) != 0) {
-                            conn->close_code = 1007; return -1;
+                            conn->close_code = 1007;
+                            return -1;
                         }
                     }
                     msg->opcode = (xylem_ws_opcode_t)conn->frag_opcode;
@@ -221,37 +289,47 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                     return 0;
                 }
             } else { /* Text or Binary */
-                if (conn->frag_active) { conn->close_code = 1002; return -1; }
+                if (conn->frag_active) {
+                    conn->close_code = 1002;
+                    return -1;
+                }
                 if (fh.fin) {
                     if (conn->max_msg_size && fh.payload_len > conn->max_msg_size) {
-                        conn->close_code = 1009; return -1;
+                        conn->close_code = 1009;
+                        return -1;
                     }
                     if (fh.opcode == 0x1) {
                         if (ws_utf8_validate(payload, (size_t)fh.payload_len) != 0) {
-                            conn->close_code = 1007; return -1;
+                            conn->close_code = 1007;
+                            return -1;
                         }
                     }
                     void* copy = malloc(fh.payload_len ? (size_t)fh.payload_len : 1);
-                    if (!copy) return -1;
-                    if (fh.payload_len) memcpy(copy, payload, (size_t)fh.payload_len);
+                    if (!copy) {
+                        return -1;
+                    }
+                    if (fh.payload_len) {
+                        memcpy(copy, payload, (size_t)fh.payload_len);
+                    }
                     msg->opcode = (xylem_ws_opcode_t)fh.opcode;
                     msg->data   = copy;
                     msg->len    = (size_t)fh.payload_len;
                     return 0;
                 } else {
-                    /* Start fragmented message */
                     conn->frag_active = true;
                     conn->frag_opcode = fh.opcode;
                     conn->frag_len = 0;
                     if (_ws_frag_append(conn, payload, (size_t)fh.payload_len) != 0) {
-                        conn->close_code = 1009; return -1;
+                        conn->close_code = 1009;
+                        return -1;
                     }
                 }
             }
         }
 
-        /* Need more data from transport */
-        if (_ws_ensure_recv_buf(conn, conn->recv_len + 4096) != 0) return -1;
+        if (_ws_ensure_recv_buf(conn, conn->recv_len + 4096) != 0) {
+            return -1;
+        }
         int n = conn->transport.read(conn->transport.conn,
                                      conn->recv_buf + conn->recv_len,
                                      (int)(conn->recv_cap - conn->recv_len));
@@ -263,11 +341,12 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
     }
 }
 
-/* --- Close --- */
 
 int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
                    const char* reason, size_t reason_len) {
-    if (!conn) return -1;
+    if (!conn) {
+        return -1;
+    }
 
     if (!conn->close_sent) {
         if (code && ws_frame_close_validate_send(code) != 0) {
@@ -281,11 +360,15 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
         conn->transport.set_rd_deadline(conn->transport.conn,
                                         conn->close_timeout_ms);
         for (;;) {
-            if (_ws_ensure_recv_buf(conn, conn->recv_len + 4096) != 0) break;
+            if (_ws_ensure_recv_buf(conn, conn->recv_len + 4096) != 0) {
+                break;
+            }
             int n = conn->transport.read(conn->transport.conn,
                                          conn->recv_buf + conn->recv_len,
                                          (int)(conn->recv_cap - conn->recv_len));
-            if (n <= 0) break;
+            if (n <= 0) {
+                break;
+            }
             conn->recv_len += (size_t)n;
 
             ws_frame_header_t fh;
@@ -293,9 +376,13 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
             while (scan < conn->recv_len) {
                 int rc = ws_frame_decode_header(conn->recv_buf + scan,
                                                conn->recv_len - scan, &fh);
-                if (rc != 0) break;
+                if (rc != 0) {
+                    break;
+                }
                 size_t ftotal = fh.header_size + (size_t)fh.payload_len;
-                if (scan + ftotal > conn->recv_len) break;
+                if (scan + ftotal > conn->recv_len) {
+                    break;
+                }
                 if (fh.opcode == 0x8) {
                     conn->close_received = true;
                     goto close_done;
@@ -313,32 +400,37 @@ close_done:
     return 0;
 }
 
-/* --- Accept (server-side upgrade) --- */
 
 xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
                                  struct xylem_http_req_s* req,
                                  const xylem_ws_opts_t* opts) {
-    if (!res || !req) return NULL;
+    if (!res || !req) {
+        return NULL;
+    }
 
     const char* ws_key = xylem_http_req_header(req, "Sec-WebSocket-Key");
     const char* ws_ver = xylem_http_req_header(req, "Sec-WebSocket-Version");
-    if (!ws_key || !ws_ver || strcmp(ws_ver, "13") != 0) return NULL;
+    if (!ws_key || !ws_ver || strcmp(ws_ver, "13") != 0) {
+        return NULL;
+    }
 
     char accept_val[29];
-    if (ws_handshake_compute_accept(ws_key, accept_val, sizeof(accept_val)) != 0)
+    if (ws_handshake_compute_accept(ws_key, accept_val, sizeof(accept_val)) != 0) {
         return NULL;
+    }
 
     xylem_http_res_set_header(res, "Sec-WebSocket-Accept", accept_val);
 
     void* transport_ptr = NULL;
-    if (xylem_http_res_upgrade(res, &transport_ptr) != 0) return NULL;
+    if (xylem_http_res_upgrade(res, &transport_ptr) != 0) {
+        return NULL;
+    }
 
     http_transport_t* tp = (http_transport_t*)transport_ptr;
     xylem_ws_conn_t* conn = ws_conn_create(*tp, false, opts);
     return conn;
 }
 
-/* --- Dial (client-side handshake) --- */
 
 xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
                                const char* host, uint16_t port,
@@ -384,7 +476,9 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
         resp_len += (size_t)r;
         resp_buf[resp_len] = '\0';
 
-        if (strstr(resp_buf, "\r\n\r\n")) break;
+        if (strstr(resp_buf, "\r\n\r\n")) {
+            break;
+        }
     }
     transport.set_rd_deadline(transport.conn, 0);
 
@@ -393,9 +487,10 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
         return NULL;
     }
 
-    /* Find Sec-WebSocket-Accept header (case-insensitive search) */
     const char* acc = strstr(resp_buf, "Sec-WebSocket-Accept: ");
-    if (!acc) acc = strstr(resp_buf, "sec-websocket-accept: ");
+    if (!acc) {
+        acc = strstr(resp_buf, "sec-websocket-accept: ");
+    }
     if (!acc) {
         transport.close(transport.conn);
         return NULL;
@@ -437,7 +532,6 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
     return conn;
 }
 
-/* --- Utility functions --- */
 
 void xylem_ws_msg_free(xylem_ws_msg_t* msg) {
     if (msg && msg->data) {
@@ -456,5 +550,7 @@ void* xylem_ws_get_userdata(xylem_ws_conn_t* conn) {
 }
 
 void xylem_ws_set_userdata(xylem_ws_conn_t* conn, void* ud) {
-    if (conn) conn->userdata = ud;
+    if (conn) {
+        conn->userdata = ud;
+    }
 }

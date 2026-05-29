@@ -1,3 +1,24 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
 _Pragma("once")
 
 #include "net/http/http.h"
@@ -34,17 +55,17 @@ struct xylem_ws_conn_s {
     void*             userdata;
 };
 
-xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
-                                 struct xylem_http_req_s* req,
-                                 const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
+                                       struct xylem_http_req_s* req,
+                                       const xylem_ws_opts_t* opts);
 
-xylem_ws_conn_t* ws_conn_create(http_transport_t transport,
-                                 bool is_client,
-                                 const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t* ws_conn_create(http_transport_t transport,
+                                        bool is_client,
+                                        const xylem_ws_opts_t* opts);
 
-void ws_conn_free(xylem_ws_conn_t* conn);
+extern void ws_conn_free(xylem_ws_conn_t* conn);
 
-xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
-                               const char* host, uint16_t port,
-                               const char* path,
-                               const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
+                                      const char* host, uint16_t port,
+                                      const char* path,
+                                      const xylem_ws_opts_t* opts);
