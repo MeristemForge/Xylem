@@ -21,6 +21,7 @@
 
 _Pragma("once")
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,6 +46,8 @@ typedef struct {
     size_t   fragment_threshold;
     uint64_t handshake_timeout_ms;
     uint64_t close_timeout_ms;
+    bool     permessage_deflate;
+    bool     deflate_context_takeover;
 } xylem_ws_opts_t;
 
 /* --- Server: HTTP upgrade path --- */
