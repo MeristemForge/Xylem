@@ -29,6 +29,7 @@
 #include "mux-stream.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
+#include "sync/spin.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -50,6 +51,16 @@ struct xylem_mux_s {
     struct xylem_mux_stream_s** streams;
     size_t                      stream_count;
     size_t                      stream_cap;
+    /**
+     * `streams_lock` guards the streams[] array (streams, stream_count,
+     * stream_cap) and next_stream_id against concurrent access by the
+     * reader coroutine (accept-via-SYN) and user coroutines
+     * (open_stream). Streams are never removed from the array until the
+     * mux is freed, and each array slot holds a stream reference, so a
+     * pointer returned by _mux_find_stream stays valid for the mux's
+     * lifetime. Never held across a transport write or a park.
+     */
+    spin_t                      streams_lock;
     uint32_t                    max_stream_window;
     _Atomic bool                closed;
     _Atomic int32_t             refcnt;
@@ -77,6 +88,7 @@ static void _mux_unref(xylem_mux_t* mux) {
 
 static struct xylem_mux_stream_s* _mux_find_stream(
     xylem_mux_t* mux, uint32_t id) {
+    /* Caller must hold mux->streams_lock. */
     for (size_t i = 0; i < mux->stream_count; i++) {
         if (mux->streams[i] && mux->streams[i]->id == id) {
             return mux->streams[i];
@@ -87,6 +99,7 @@ static struct xylem_mux_stream_s* _mux_find_stream(
 
 static int _mux_add_stream(
     xylem_mux_t* mux, struct xylem_mux_stream_s* s) {
+    /* Caller must hold mux->streams_lock. */
     if (mux->stream_count == mux->stream_cap) {
         size_t new_cap = mux->stream_cap == 0 ? 16 : mux->stream_cap * 2;
         struct xylem_mux_stream_s** arr =
@@ -145,6 +158,9 @@ static void _mux_send_window_update(
 
 static struct xylem_mux_stream_s* _mux_accept_syn(
     xylem_mux_t* mux, uint32_t stream_id) {
+    bool created = false;
+
+    spin_lock(&mux->streams_lock);
     struct xylem_mux_stream_s* s = _mux_find_stream(mux, stream_id);
     if (!s) {
         s = mux_stream_create(mux, stream_id, mux->max_stream_window);
@@ -152,8 +168,16 @@ static struct xylem_mux_stream_s* _mux_accept_syn(
             s->state = MUX_STREAM_ESTABLISHED;
             mux_stream_ref(s);
             _mux_add_stream(mux, s);
-            xylem_channel_send(mux->accept_ch, s);
+            created = true;
         }
+    }
+    spin_unlock(&mux->streams_lock);
+
+    /* Hand the new stream to a parked accept coroutine outside the
+     * spin: xylem_channel_send may touch scheduler state and must not
+     * run under a spin lock. */
+    if (created) {
+        xylem_channel_send(mux->accept_ch, s);
     }
     return s;
 }
@@ -172,7 +196,9 @@ static int _mux_discard_payload(xylem_mux_t* mux, uint32_t length) {
 }
 
 static int _mux_handle_data(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
+    spin_lock(&mux->streams_lock);
     struct xylem_mux_stream_s* s = _mux_find_stream(mux, hdr->stream_id);
+    spin_unlock(&mux->streams_lock);
 
     if (hdr->flags & MUX_FLAG_SYN) {
         s = _mux_accept_syn(mux, hdr->stream_id);
@@ -204,7 +230,9 @@ static void _mux_handle_window_update(
     if (hdr->flags & MUX_FLAG_SYN) {
         _mux_accept_syn(mux, hdr->stream_id);
     }
+    spin_lock(&mux->streams_lock);
     struct xylem_mux_stream_s* s = _mux_find_stream(mux, hdr->stream_id);
+    spin_unlock(&mux->streams_lock);
     if (s) {
         mux_stream_update_send_window(s, hdr->length);
     }
@@ -225,11 +253,19 @@ static void _mux_handle_ping(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
 
 static void _mux_teardown(xylem_mux_t* mux) {
     atomic_store_explicit(&mux->closed, true, memory_order_release);
-    for (size_t i = 0; i < mux->stream_count; i++) {
-        if (mux->streams[i]) {
-            mux_stream_notify_reset(mux->streams[i]);
+
+    spin_lock(&mux->streams_lock);
+    size_t n = mux->stream_count;
+    spin_unlock(&mux->streams_lock);
+    for (size_t i = 0; i < n; i++) {
+        spin_lock(&mux->streams_lock);
+        struct xylem_mux_stream_s* s = mux->streams[i];
+        spin_unlock(&mux->streams_lock);
+        if (s) {
+            mux_stream_notify_reset(s);
         }
     }
+
     xylem_channel_destroy(mux->accept_ch);
     mux->accept_ch = NULL;
     _mux_unref(mux);
@@ -331,6 +367,8 @@ xylem_mux_t* xylem_mux_create(
         mux->max_stream_window = opts->max_stream_window;
     }
 
+    spin_init(&mux->streams_lock);
+
     mux->accept_ch = xylem_channel_create();
     if (!mux->accept_ch) {
         free(mux);
@@ -366,9 +404,15 @@ void xylem_mux_destroy(xylem_mux_t* mux) {
     };
     _mux_write_frame(mux, &hdr, NULL);
 
-    for (size_t i = 0; i < mux->stream_count; i++) {
-        if (mux->streams[i]) {
-            mux_stream_notify_reset(mux->streams[i]);
+    spin_lock(&mux->streams_lock);
+    size_t n = mux->stream_count;
+    spin_unlock(&mux->streams_lock);
+    for (size_t i = 0; i < n; i++) {
+        spin_lock(&mux->streams_lock);
+        struct xylem_mux_stream_s* s = mux->streams[i];
+        spin_unlock(&mux->streams_lock);
+        if (s) {
+            mux_stream_notify_reset(s);
         }
     }
     _mux_unref(mux);
@@ -379,8 +423,10 @@ xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
         return NULL;
     }
 
+    spin_lock(&mux->streams_lock);
     uint32_t id = mux->next_stream_id;
     mux->next_stream_id += 2;
+    spin_unlock(&mux->streams_lock);
 
     struct xylem_mux_stream_s* s =
         mux_stream_create(mux, id, mux->max_stream_window);
@@ -402,7 +448,9 @@ xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
     }
 
     mux_stream_ref(s);
+    spin_lock(&mux->streams_lock);
     _mux_add_stream(mux, s);
+    spin_unlock(&mux->streams_lock);
     return s;
 }
 
@@ -442,6 +490,7 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
     mux_stream_ref(s);
 
     for (;;) {
+        spin_lock(&s->lock);
         if (s->recv_len > 0) {
             int n = (int)s->recv_len < len ? (int)s->recv_len : len;
             memcpy(buf, s->recv_buf, (size_t)n);
@@ -452,8 +501,14 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
 
             uint32_t consumed = s->mux->max_stream_window
                                 - s->recv_window - (uint32_t)s->recv_len;
-            if (consumed >= s->mux->max_stream_window / 2) {
+            bool send_update = consumed >= s->mux->max_stream_window / 2;
+            if (send_update) {
                 s->recv_window += consumed;
+            }
+            spin_unlock(&s->lock);
+
+            /* Transport write happens outside the stream spin. */
+            if (send_update) {
                 _mux_send_window_update(s->mux, s->id, consumed);
             }
 
@@ -461,11 +516,14 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
             return n;
         }
 
-        if (s->state == MUX_STREAM_REMOTE_CLOSE
-            || s->state == MUX_STREAM_CLOSED
+        _mux_stream_state_t st = s->state;
+        spin_unlock(&s->lock);
+
+        if (st == MUX_STREAM_REMOTE_CLOSE
+            || st == MUX_STREAM_CLOSED
             || atomic_load_explicit(&s->closed, memory_order_acquire)) {
             mux_stream_unref(s);
-            return (s->state == MUX_STREAM_CLOSED) ? -1 : 0;
+            return (st == MUX_STREAM_CLOSED) ? -1 : 0;
         }
 
         scheduler_park(runtime_get_scheduler(), _mux_recv_park_cb, s);
@@ -478,19 +536,24 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
     int            rem = len;
 
     while (rem > 0) {
+        spin_lock(&s->lock);
         if (atomic_load_explicit(&s->closed, memory_order_acquire)
             || s->state == MUX_STREAM_CLOSED) {
+            spin_unlock(&s->lock);
             mux_stream_unref(s);
             return -1;
         }
 
-        if (s->send_window == 0) {
+        uint32_t window = s->send_window;
+        spin_unlock(&s->lock);
+
+        if (window == 0) {
             scheduler_park(
                 runtime_get_scheduler(), _mux_send_park_cb, s);
             continue;
         }
 
-        uint32_t chunk = s->send_window;
+        uint32_t chunk = window;
         if (chunk > MUX_MAX_FRAME_PAYLOAD) {
             chunk = MUX_MAX_FRAME_PAYLOAD;
         }
@@ -510,7 +573,9 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
             return -1;
         }
 
+        spin_lock(&s->lock);
         s->send_window -= chunk;
+        spin_unlock(&s->lock);
         ptr += chunk;
         rem -= chunk;
     }
@@ -524,11 +589,13 @@ void xylem_mux_close_stream(xylem_mux_stream_t* s) {
         return;
     }
 
+    spin_lock(&s->lock);
     if (s->state == MUX_STREAM_ESTABLISHED) {
         s->state = MUX_STREAM_LOCAL_CLOSE;
     } else {
         s->state = MUX_STREAM_CLOSED;
     }
+    spin_unlock(&s->lock);
 
     _mux_frame_hdr_t hdr = {
         .version   = MUX_PROTO_VERSION,

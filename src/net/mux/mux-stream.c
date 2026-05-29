@@ -46,6 +46,7 @@ struct xylem_mux_stream_s* mux_stream_create(
         free(s);
         return NULL;
     }
+    spin_init(&s->lock);
     atomic_store_explicit(&s->refcnt, 1, memory_order_relaxed);
     return s;
 }
@@ -83,6 +84,7 @@ void mux_stream_push_data(
     if (len == 0) {
         return;
     }
+    spin_lock(&s->lock);
     if (s->recv_len + len > s->recv_cap) {
         size_t new_cap = s->recv_cap * 2;
         while (new_cap < s->recv_len + len) {
@@ -90,6 +92,7 @@ void mux_stream_push_data(
         }
         uint8_t* buf = (uint8_t*)realloc(s->recv_buf, new_cap);
         if (!buf) {
+            spin_unlock(&s->lock);
             return;
         }
         s->recv_buf = buf;
@@ -98,26 +101,33 @@ void mux_stream_push_data(
     memcpy(s->recv_buf + s->recv_len, data, len);
     s->recv_len += len;
     s->recv_window -= (uint32_t)len;
+    spin_unlock(&s->lock);
     _mux_stream_wake_recv(s);
 }
 
 void mux_stream_update_send_window(
     struct xylem_mux_stream_s* s, uint32_t delta) {
+    spin_lock(&s->lock);
     s->send_window += delta;
+    spin_unlock(&s->lock);
     _mux_stream_wake_send(s);
 }
 
 void mux_stream_notify_remote_fin(struct xylem_mux_stream_s* s) {
+    spin_lock(&s->lock);
     if (s->state == MUX_STREAM_ESTABLISHED) {
         s->state = MUX_STREAM_REMOTE_CLOSE;
     } else if (s->state == MUX_STREAM_LOCAL_CLOSE) {
         s->state = MUX_STREAM_CLOSED;
     }
+    spin_unlock(&s->lock);
     _mux_stream_wake_recv(s);
 }
 
 void mux_stream_notify_reset(struct xylem_mux_stream_s* s) {
+    spin_lock(&s->lock);
     s->state = MUX_STREAM_CLOSED;
+    spin_unlock(&s->lock);
     atomic_store_explicit(&s->closed, true, memory_order_release);
     _mux_stream_wake_recv(s);
     _mux_stream_wake_send(s);

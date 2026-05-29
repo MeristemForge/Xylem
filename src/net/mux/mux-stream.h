@@ -23,6 +23,8 @@ _Pragma("once")
 
 #include "mux-frame.h"
 
+#include "sync/spin.h"
+
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,6 +46,15 @@ typedef enum {
 struct xylem_mux_stream_s {
     xylem_mux_t*        mux;
     uint32_t            id;
+    /**
+     * `lock` guards the mutable per-stream state shared between the
+     * mux reader coroutine (push_data / window / state transitions)
+     * and the user coroutine (read / write): recv_buf, recv_len,
+     * recv_cap, recv_window, send_window and state. Held only for the
+     * short buffer/window updates; never across a park or a transport
+     * write (those happen after the spin is released).
+     */
+    spin_t              lock;
     _mux_stream_state_t state;
     uint8_t*            recv_buf;
     size_t              recv_len;
