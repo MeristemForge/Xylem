@@ -29,10 +29,12 @@ _Pragma("once")
 typedef struct xylem_https_srv_s xylem_https_srv_t;
 
 typedef struct {
-    size_t                  max_body_size;
-    uint64_t                idle_timeout_ms;
-    xylem_http_handler_fn_t on_upgrade;
-    void*                   upgrade_userdata;
+    size_t                  max_body_size;     /**< 0 = default 1 MiB. */
+    uint64_t                idle_timeout_ms;   /**< 0 = default 60000 ms. */
+    uint64_t                header_timeout_ms; /**< 0 = default 10000 ms. */
+    uint64_t                max_requests;      /**< 0 = unlimited. */
+    xylem_http_handler_fn_t on_upgrade;        /**< Upgrade handler, NULL = reject 501. */
+    void*                   upgrade_userdata;  /**< Passed to on_upgrade. */
 } xylem_https_srv_opts_t;
 
 extern xylem_https_srv_t* xylem_https_listen(

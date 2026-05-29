@@ -70,6 +70,8 @@ typedef int (*xylem_http_middleware_fn_t)(
 typedef struct {
     size_t                  max_body_size;     /**< 0 = default 1 MiB. */
     uint64_t                idle_timeout_ms;   /**< 0 = default 60000 ms. */
+    uint64_t                header_timeout_ms; /**< 0 = default 10000 ms. */
+    uint64_t                max_requests;      /**< 0 = unlimited. */
     xylem_http_handler_fn_t on_upgrade;        /**< Upgrade handler, NULL = reject 501. */
     void*                   upgrade_userdata;  /**< Passed to on_upgrade. */
 } xylem_http_srv_opts_t;
@@ -102,6 +104,19 @@ extern xylem_http_srv_t* xylem_http_listen(
  * @param srv  Server handle, or NULL (no-op).
  */
 extern void xylem_http_close(xylem_http_srv_t* srv);
+
+/**
+ * @brief Gracefully shut down the server.
+ *
+ * Stops accepting new connections and waits up to timeout_ms for
+ * active connections to finish. Force-closes on timeout.
+ *
+ * @param srv         Server handle.
+ * @param timeout_ms  Maximum wait time, 0 = immediate close.
+ *
+ * @return 0 on clean shutdown, -1 on timeout.
+ */
+extern int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms);
 
 /**
  * @brief Get the listening port.

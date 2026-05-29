@@ -101,6 +101,13 @@ xylem_http_srv_t* xylem_http_listen(
         srv->on_upgrade       = opts->on_upgrade;
         srv->upgrade_userdata = opts->upgrade_userdata;
     }
+    srv->max_body_size = (opts && opts->max_body_size > 0)
+                         ? opts->max_body_size : (1024 * 1024);
+    srv->idle_timeout_ms = (opts && opts->idle_timeout_ms > 0)
+                           ? opts->idle_timeout_ms : 60000;
+    srv->header_timeout_ms = (opts && opts->header_timeout_ms > 0)
+                             ? opts->header_timeout_ms : 10000;
+    srv->max_requests = opts ? opts->max_requests : 0;
 
     /* port 0 lets the OS assign; resolve for xylem_http_srv_port(). */
     char host_buf[46];
@@ -121,6 +128,33 @@ void xylem_http_close(xylem_http_srv_t* srv) {
     /* Wakes the accept coroutine which then exits on NULL return. */
     s->close_listener(s->listener);
     free(s);
+}
+
+int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
+    if (!srv) {
+        return -1;
+    }
+    http_srv_t* s = (http_srv_t*)srv;
+    s->closing = true;
+    s->close_listener(s->listener);
+
+    if (timeout_ms == 0) {
+        free(s);
+        return 0;
+    }
+
+    uint64_t deadline =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
+    while (atomic_load(&s->active_conns) > 0) {
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        if (now >= deadline) {
+            free(s);
+            return -1;
+        }
+        runtime_sleep(1);
+    }
+    free(s);
+    return 0;
 }
 
 uint16_t xylem_http_srv_port(xylem_http_srv_t* srv) {

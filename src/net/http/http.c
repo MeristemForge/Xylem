@@ -588,6 +588,8 @@ typedef struct {
     size_t            cur_hdr_name_len;
     size_t            cur_hdr_name_cap;
     size_t            url_cap;
+    size_t            max_body_size;
+    http_transport_t* transport;
     bool              complete;
 } _srv_parser_t;
 
@@ -647,6 +649,10 @@ static int _srv_on_header_value_complete(llhttp_t* p) {
 
 static int _srv_on_body(llhttp_t* p, const char* at, size_t len) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
+    if (ctx->max_body_size > 0 &&
+        ctx->req.body_len + len > ctx->max_body_size) {
+        return -1;
+    }
     return _body_append(&ctx->req.body, &ctx->req.body_len,
                         &ctx->req.body_cap, at, len);
 }
@@ -698,22 +704,53 @@ void http_srv_conn_coroutine(void* arg) {
     http_srv_conn_ctx_t* ctx = (http_srv_conn_ctx_t*)arg;
     _srv_parser_t sp;
     _srv_parser_init(&sp);
+    sp.max_body_size = ctx->srv->max_body_size;
+    sp.transport = &ctx->transport;
+
+    atomic_fetch_add(&ctx->srv->active_conns, 1);
 
     char* readbuf = (char*)malloc(HTTP_IO_BUF_SIZE);
     if (!readbuf) {
+        atomic_fetch_sub(&ctx->srv->active_conns, 1);
         _transport_close(&ctx->transport);
         free(ctx);
         return;
     }
     bool keep_alive = true;
+    uint64_t request_count = 0;
 
     while (keep_alive) {
+        if (ctx->srv->closing) {
+            break;
+        }
+
         sp.complete = false;
 
+        /* Idle timeout: wait for next request. */
+        if (ctx->transport.set_rd_deadline) {
+            uint64_t idle_deadline =
+                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                + ctx->srv->idle_timeout_ms;
+            ctx->transport.set_rd_deadline(ctx->transport.conn, idle_deadline);
+        }
+
+        bool first_read = true;
         while (!sp.complete) {
             int n = _transport_read(&ctx->transport, readbuf, HTTP_IO_BUF_SIZE);
             if (n <= 0) {
-                goto done; /* peer closed or error */
+                goto done; /* peer closed, timeout, or error */
+            }
+
+            /* Slowloris: tighten deadline after first data arrives. */
+            if (first_read) {
+                first_read = false;
+                if (ctx->transport.set_rd_deadline) {
+                    uint64_t hdr_deadline =
+                        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                        + ctx->srv->header_timeout_ms;
+                    ctx->transport.set_rd_deadline(
+                        ctx->transport.conn, hdr_deadline);
+                }
             }
 
             llhttp_errno_t err = llhttp_execute(&sp.parser, readbuf, (size_t)n);
@@ -723,12 +760,25 @@ void http_srv_conn_coroutine(void* arg) {
                 llhttp_resume_after_upgrade(&sp.parser);
                 sp.complete = true;
             } else if (err != HPE_OK) {
-                const char* bad =
-                    "HTTP/1.1 400 Bad Request\r\n"
-                    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-                _transport_write(&ctx->transport, bad, (int)strlen(bad));
+                const char* resp;
+                if (err == HPE_USER) {
+                    resp = "HTTP/1.1 413 Payload Too Large\r\n"
+                           "Content-Length: 0\r\nConnection: close\r\n\r\n";
+                } else {
+                    resp = "HTTP/1.1 400 Bad Request\r\n"
+                           "Content-Length: 0\r\nConnection: close\r\n\r\n";
+                }
+                _transport_write(&ctx->transport, resp, (int)strlen(resp));
                 goto done;
             }
+        }
+
+        /* Clear deadlines for handler execution. */
+        if (ctx->transport.set_rd_deadline) {
+            ctx->transport.set_rd_deadline(ctx->transport.conn, 0);
+        }
+        if (ctx->transport.set_wr_deadline) {
+            ctx->transport.set_wr_deadline(ctx->transport.conn, 0);
         }
 
         keep_alive = llhttp_should_keep_alive(&sp.parser) != 0;
@@ -755,10 +805,12 @@ void http_srv_conn_coroutine(void* arg) {
             _srv_parser_destroy(&sp);
             if (!res._transport) {
                 /* Upgrade succeeded: transport ownership transferred. */
+                atomic_fetch_sub(&ctx->srv->active_conns, 1);
                 free(readbuf);
                 free(ctx);
                 return;
             }
+            atomic_fetch_sub(&ctx->srv->active_conns, 1);
             free(readbuf);
             _transport_close(&ctx->transport);
             free(ctx);
@@ -771,10 +823,17 @@ void http_srv_conn_coroutine(void* arg) {
 
         http_headers_free(res.headers, res.header_count);
 
+        request_count++;
+        if (ctx->srv->max_requests > 0 &&
+            request_count >= ctx->srv->max_requests) {
+            break;
+        }
+
         _srv_parser_reset(&sp);
     }
 
 done:
+    atomic_fetch_sub(&ctx->srv->active_conns, 1);
     _srv_parser_destroy(&sp);
     free(readbuf);
     _transport_close(&ctx->transport);

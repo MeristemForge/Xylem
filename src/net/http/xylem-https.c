@@ -144,6 +144,13 @@ xylem_https_srv_t* xylem_https_listen(
         srv->on_upgrade       = opts->on_upgrade;
         srv->upgrade_userdata = opts->upgrade_userdata;
     }
+    srv->max_body_size = (opts && opts->max_body_size > 0)
+                         ? opts->max_body_size : (1024 * 1024);
+    srv->idle_timeout_ms = (opts && opts->idle_timeout_ms > 0)
+                           ? opts->idle_timeout_ms : 60000;
+    srv->header_timeout_ms = (opts && opts->header_timeout_ms > 0)
+                             ? opts->header_timeout_ms : 10000;
+    srv->max_requests = opts ? opts->max_requests : 0;
 
     /* port 0 lets the OS assign; resolve for xylem_https_srv_port(). */
     char host_buf[46];

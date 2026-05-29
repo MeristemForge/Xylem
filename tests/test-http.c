@@ -1188,6 +1188,168 @@ static void test_sse_build(void) {
     free(msg);
 }
 
+/* ─── Body limit test ─────────────────────────────────────────── */
+
+static void _body_limit_handler(xylem_http_res_t* res,
+                                xylem_http_req_t* req,
+                                void* userdata) {
+    (void)userdata;
+    size_t blen = xylem_http_req_body_len(req);
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%zu", blen);
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_write(res, buf, (size_t)n);
+}
+
+static void _test_body_limit_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_opts_t opts = {0};
+    opts.max_body_size = 512; /* 512 bytes max */
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _body_limit_handler, NULL, &opts);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_srv_port(srv);
+    ASSERT(port != 0);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
+
+    /* Body under limit: should get 200. */
+    char small_body[256];
+    memset(small_body, 'A', sizeof(small_body));
+    xylem_http_res_t* res = xylem_http_post(
+        url, small_body, sizeof(small_body), "application/octet-stream", NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(memcmp(xylem_http_res_body(res), "256", 3) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Body over limit: should get 413. */
+    char* big_body = (char*)malloc(1024);
+    ASSERT(big_body != NULL);
+    memset(big_body, 'B', 1024);
+    res = xylem_http_post(
+        url, big_body, 1024, "application/octet-stream", NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 413);
+    xylem_http_res_destroy(res);
+    free(big_body);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_body_limit(void) {
+    xylem_run(_test_body_limit_main, NULL, NULL);
+}
+
+/* ─── Idle timeout test ───────────────────────────────────────── */
+
+static void _idle_timeout_handler(xylem_http_res_t* res,
+                                  xylem_http_req_t* req,
+                                  void* userdata) {
+    (void)req; (void)userdata;
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_write(res, "ok", 2);
+}
+
+static void _test_idle_timeout_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_opts_t opts = {0};
+    opts.idle_timeout_ms = 5000; /* 5 seconds */
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _idle_timeout_handler, NULL, &opts);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_srv_port(srv);
+    ASSERT(port != 0);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
+
+    /* Normal request should succeed with the timeout configured. */
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 2);
+    ASSERT(memcmp(xylem_http_res_body(res), "ok", 2) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Second request on reused connection should also succeed. */
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 2);
+    ASSERT(memcmp(xylem_http_res_body(res), "ok", 2) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_idle_timeout(void) {
+    xylem_run(_test_idle_timeout_main, NULL, NULL);
+}
+
+/* ─── Max requests test ───────────────────────────────────────── */
+
+static void _max_req_handler(xylem_http_res_t* res,
+                             xylem_http_req_t* req,
+                             void* userdata) {
+    (void)req; (void)userdata;
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_write(res, "ok", 2);
+}
+
+static void _test_max_requests_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_opts_t opts = {0};
+    opts.max_requests = 2;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _max_req_handler, NULL, &opts);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_srv_port(srv);
+    ASSERT(port != 0);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
+
+    /* First 2 requests should succeed on the same connection. */
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    xylem_http_res_destroy(res);
+
+    res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    xylem_http_res_destroy(res);
+
+    /*
+     * 3rd request: the server closed the connection after 2 requests.
+     * The client pool holds the stale conn. The next request will fail
+     * on the stale conn (returns NULL) because the client has no
+     * transparent retry. This verifies max_requests enforced closure.
+     */
+    res = xylem_http_get(url, NULL);
+    ASSERT(res == NULL);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_max_requests(void) {
+    xylem_run(_test_max_requests_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1264,6 +1426,15 @@ int main(void) {
 
     /* SSE builder */
     test_sse_build();
+
+    /* Body limit */
+    test_body_limit();
+
+    /* Idle timeout */
+    test_idle_timeout();
+
+    /* Max requests */
+    test_max_requests();
 
     return 0;
 }

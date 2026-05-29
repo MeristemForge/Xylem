@@ -26,6 +26,7 @@ _Pragma("once")
 
 #include "http-utils.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -51,6 +52,12 @@ typedef struct http_srv_s {
     xylem_http_gzip_opts_t  gzip_opts;
     xylem_http_handler_fn_t on_upgrade;
     void*                   upgrade_userdata;
+    size_t                  max_body_size;
+    uint64_t                idle_timeout_ms;
+    uint64_t                header_timeout_ms;
+    uint64_t                max_requests;
+    _Atomic int32_t         active_conns;
+    bool                    closing;
 } http_srv_t;
 
 typedef struct {
