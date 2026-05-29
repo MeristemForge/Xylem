@@ -236,10 +236,10 @@ int ws_deflate_parse_offer(const char* header, ws_deflate_offer_t* offer) {
             break;
         }
 
-        if (strncmp(p, "server_no_context_takeover", 25) == 0 &&
-            (p[25] == '\0' || p[25] == ';' || p[25] == ' ' || p[25] == ',')) {
+        if (strncmp(p, "server_no_context_takeover", 26) == 0 &&
+            (p[26] == '\0' || p[26] == ';' || p[26] == ' ' || p[26] == ',')) {
             offer->server_no_context_takeover = true;
-            p += 25;
+            p += 26;
         } else if (strncmp(p, "client_no_context_takeover", 26) == 0 &&
                    (p[26] == '\0' || p[26] == ';' || p[26] == ' ' ||
                     p[26] == ',')) {

@@ -190,6 +190,136 @@ static void test_null_guards(void* arg) {
     xylem_shutdown();
 }
 
+/* --- Test: permessage-deflate text echo --- */
+static void test_deflate_text_echo(void* arg) {
+    (void)arg;
+    xylem_ws_opts_t opts = { .permessage_deflate = true };
+    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
+                                              echo_handler, NULL, &opts);
+    ASSERT(l != NULL);
+    uint16_t port = xylem_ws_listener_port(l);
+
+    char url[64];
+    snprintf(url, sizeof(url), "ws://127.0.0.1:%u/", port);
+    xylem_ws_conn_t* c = xylem_ws_dial(url, &opts);
+    ASSERT(c != NULL);
+
+    const char* text = "hello permessage-deflate compression test!";
+    ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, text, strlen(text)) == 0);
+
+    xylem_ws_msg_t msg;
+    ASSERT(xylem_ws_recv(c, &msg) == 0);
+    ASSERT(msg.opcode == XYLEM_WS_TEXT);
+    ASSERT(msg.len == strlen(text));
+    ASSERT(memcmp(msg.data, text, msg.len) == 0);
+    xylem_ws_msg_free(&msg);
+
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_ws_close_listener(l);
+    xylem_shutdown();
+}
+
+/* --- Test: permessage-deflate context takeover --- */
+static void test_deflate_context_takeover(void* arg) {
+    (void)arg;
+    xylem_ws_opts_t opts = {
+        .permessage_deflate = true,
+        .deflate_context_takeover = true,
+    };
+    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
+                                              echo_handler, NULL, &opts);
+    ASSERT(l != NULL);
+    uint16_t port = xylem_ws_listener_port(l);
+
+    char url[64];
+    snprintf(url, sizeof(url), "ws://127.0.0.1:%u/", port);
+    xylem_ws_conn_t* c = xylem_ws_dial(url, &opts);
+    ASSERT(c != NULL);
+
+    for (int i = 0; i < 10; i++) {
+        char buf[128];
+        int len = snprintf(buf, sizeof(buf),
+                           "message number %d with repeated content for compression", i);
+        ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, buf, (size_t)len) == 0);
+
+        xylem_ws_msg_t msg;
+        ASSERT(xylem_ws_recv(c, &msg) == 0);
+        ASSERT(msg.len == (size_t)len);
+        ASSERT(memcmp(msg.data, buf, msg.len) == 0);
+        xylem_ws_msg_free(&msg);
+    }
+
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_ws_close_listener(l);
+    xylem_shutdown();
+}
+
+/* --- Test: permessage-deflate large binary --- */
+static void test_deflate_large_binary(void* arg) {
+    (void)arg;
+    xylem_ws_opts_t opts = {
+        .permessage_deflate = true,
+        .fragment_threshold = 4096,
+    };
+    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
+                                              echo_handler, NULL, &opts);
+    ASSERT(l != NULL);
+    uint16_t port = xylem_ws_listener_port(l);
+
+    char url[64];
+    snprintf(url, sizeof(url), "ws://127.0.0.1:%u/", port);
+    xylem_ws_conn_t* c = xylem_ws_dial(url, &opts);
+    ASSERT(c != NULL);
+
+    size_t big_len = 32768;
+    uint8_t* big = (uint8_t*)malloc(big_len);
+    ASSERT(big != NULL);
+    memset(big, 'A', big_len);
+
+    ASSERT(xylem_ws_send(c, XYLEM_WS_BINARY, big, big_len) == 0);
+
+    xylem_ws_msg_t msg;
+    ASSERT(xylem_ws_recv(c, &msg) == 0);
+    ASSERT(msg.opcode == XYLEM_WS_BINARY);
+    ASSERT(msg.len == big_len);
+    ASSERT(memcmp(msg.data, big, big_len) == 0);
+    xylem_ws_msg_free(&msg);
+
+    free(big);
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_ws_close_listener(l);
+    xylem_shutdown();
+}
+
+/* --- Test: deflate fallback when server has no deflate --- */
+static void test_deflate_disabled_fallback(void* arg) {
+    (void)arg;
+    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
+                                              echo_handler, NULL, NULL);
+    ASSERT(l != NULL);
+    uint16_t port = xylem_ws_listener_port(l);
+
+    char url[64];
+    snprintf(url, sizeof(url), "ws://127.0.0.1:%u/", port);
+    xylem_ws_opts_t client_opts = { .permessage_deflate = true };
+    xylem_ws_conn_t* c = xylem_ws_dial(url, &client_opts);
+    ASSERT(c != NULL);
+
+    const char* text = "no compression here";
+    ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, text, strlen(text)) == 0);
+
+    xylem_ws_msg_t msg;
+    ASSERT(xylem_ws_recv(c, &msg) == 0);
+    ASSERT(msg.opcode == XYLEM_WS_TEXT);
+    ASSERT(msg.len == strlen(text));
+    ASSERT(memcmp(msg.data, text, msg.len) == 0);
+    xylem_ws_msg_free(&msg);
+
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_ws_close_listener(l);
+    xylem_shutdown();
+}
+
 /* --- Runner --- */
 typedef void (*test_fn_t)(void*);
 
@@ -200,6 +330,10 @@ static test_fn_t tests[] = {
     test_multiple_messages,
     test_large_message,
     test_server_close,
+    test_deflate_text_echo,
+    test_deflate_context_takeover,
+    test_deflate_large_binary,
+    test_deflate_disabled_fallback,
 };
 
 static int test_count = (int)(sizeof(tests) / sizeof(tests[0]));
