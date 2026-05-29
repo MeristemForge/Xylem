@@ -1368,7 +1368,8 @@ xylem_http_res_t* http_do_request(
     size_t req_len = 0;
     char* req_buf = http_req_serialize(
         cur_method, &parsed, cur_body, cur_body_len, cur_content_type,
-        false, &req_len, custom_hdrs, custom_hdr_count);
+        false, &req_len, custom_hdrs, custom_hdr_count,
+        opts ? opts->auth : NULL);
 
     free(merged_hdrs);
     free(cookie_val);

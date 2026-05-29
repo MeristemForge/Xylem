@@ -21,6 +21,8 @@
 
 #include "http-utils.h"
 
+#include "xylem/encoding/xylem-base64.h"
+
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -211,7 +213,8 @@ char* http_req_serialize(const char* method, const http_url_t* url,
                          const char* content_type, bool expect_continue,
                          size_t* out_len,
                          const xylem_http_hdr_t* custom_headers,
-                         size_t custom_header_count) {
+                         size_t custom_header_count,
+                         const xylem_http_auth_t* auth) {
     char host_val[280];
     size_t host_val_len;
     bool is_default_port =
@@ -229,16 +232,48 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     }
 
     const char* check_names[] = {
-        "Host", "Content-Length", "Content-Type", "Connection", "Expect"
+        "Host", "Content-Length", "Content-Type", "Connection", "Expect",
+        "Authorization"
     };
-    bool overridden[5];
+    bool overridden[6];
     size_t custom_est = http_header_scan(custom_headers, custom_header_count,
-                                         check_names, overridden, 5);
+                                         check_names, overridden, 6);
     bool host_overridden           = overridden[0];
     bool content_length_overridden = overridden[1];
     bool content_type_overridden   = overridden[2];
     bool connection_overridden     = overridden[3];
     bool expect_overridden         = overridden[4];
+    bool auth_overridden           = overridden[5];
+
+    /* Compute auth header if needed. */
+    uint8_t* auth_b64 = NULL;
+    int auth_b64_len = 0;
+    if (!auth_overridden && auth && auth->username && auth->password) {
+        size_t ulen = strlen(auth->username);
+        size_t plen = strlen(auth->password);
+        size_t cred_len = ulen + 1 + plen;
+        char* cred = (char*)malloc(cred_len + 1);
+        if (cred) {
+            memcpy(cred, auth->username, ulen);
+            cred[ulen] = ':';
+            memcpy(cred + ulen + 1, auth->password, plen);
+            cred[cred_len] = '\0';
+
+            int b64_size = xylem_base64_encode_size((int)cred_len);
+            auth_b64 = (uint8_t*)malloc((size_t)b64_size + 1);
+            if (auth_b64) {
+                auth_b64_len = xylem_base64_encode_std(
+                    (const uint8_t*)cred, (int)cred_len,
+                    auth_b64, b64_size + 1);
+                if (auth_b64_len < 0) {
+                    free(auth_b64);
+                    auth_b64 = NULL;
+                    auth_b64_len = 0;
+                }
+            }
+            free(cred);
+        }
+    }
 
     size_t est = strlen(method) + 1 + strlen(url->path) + 11  /* request line */
                + custom_est
@@ -250,6 +285,9 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     if (content_type) {
         est += 14 + strlen(content_type) + 2;  /* "Content-Type: " + value + "\r\n" */
     }
+    if (auth_b64_len > 0) {
+        est += 21 + (size_t)auth_b64_len + 2;  /* "Authorization: Basic " + b64 + "\r\n" */
+    }
     if (expect_continue) {
         est += 24 + 2;  /* "Expect: 100-continue\r\n" */
     }
@@ -259,6 +297,7 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     char* buf = (char*)malloc(est);
     if (!buf) {
+        free(auth_b64);
         return NULL;
     }
 
@@ -324,6 +363,16 @@ char* http_req_serialize(const char* method, const http_url_t* url,
         memcpy(buf + off, "Connection: keep-alive\r\n", 24);
         off += 24;
     }
+
+    if (auth_b64_len > 0) {
+        memcpy(buf + off, "Authorization: Basic ", 21);
+        off += 21;
+        memcpy(buf + off, auth_b64, (size_t)auth_b64_len);
+        off += (size_t)auth_b64_len;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+    free(auth_b64);
 
     if (!expect_overridden && expect_continue) {
         memcpy(buf + off, "Expect: 100-continue\r\n", 22);

@@ -294,13 +294,27 @@ extern size_t xylem_http_res_body_len(const xylem_http_res_t* res);
 extern void xylem_http_res_destroy(xylem_http_res_t* res);
 
 typedef struct {
-    uint64_t                 timeout_ms;    /**< Request timeout, 0 = default 30s. */
-    int                      max_redirects; /**< 0 = no redirect following. */
-    size_t                   max_body_size; /**< 0 = default 10 MiB. */
-    const xylem_http_hdr_t*  headers;       /**< Custom request headers. */
-    size_t                   header_count;  /**< Number of custom headers. */
-    const char*              range;         /**< Range header value, NULL = omit. */
-    xylem_http_cookie_jar_t* cookie_jar;    /**< NULL = no cookie management. */
+    const char* username; /**< Basic auth username. */
+    const char* password; /**< Basic auth password. */
+} xylem_http_auth_t;
+
+typedef struct {
+    const char* host;     /**< Proxy hostname or IP. */
+    uint16_t    port;     /**< Proxy port. */
+    const char* username; /**< NULL = no auth. */
+    const char* password; /**< NULL = no auth. */
+} xylem_http_proxy_t;
+
+typedef struct {
+    uint64_t                    timeout_ms;    /**< Request timeout, 0 = default 30s. */
+    int                         max_redirects; /**< 0 = no redirect following. */
+    size_t                      max_body_size; /**< 0 = default 10 MiB. */
+    const xylem_http_hdr_t*     headers;       /**< Custom request headers. */
+    size_t                      header_count;  /**< Number of custom headers. */
+    const char*                 range;         /**< Range header value, NULL = omit. */
+    xylem_http_cookie_jar_t*    cookie_jar;    /**< NULL = no cookie management. */
+    const xylem_http_proxy_t*   proxy;         /**< NULL = direct connection. */
+    const xylem_http_auth_t*    auth;          /**< NULL = no authentication. */
 } xylem_http_opts_t;
 
 /**

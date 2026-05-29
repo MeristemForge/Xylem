@@ -103,6 +103,7 @@ extern int http_url_serialize(const http_url_t* url, char* buf,
  * @param out_len              Output: total serialized length.
  * @param custom_headers       Custom header array, or NULL.
  * @param custom_header_count  Number of custom headers.
+ * @param auth                 Basic auth credentials, or NULL.
  *
  * @return Allocated buffer on success, NULL on failure. Caller frees.
  */
@@ -111,7 +112,8 @@ extern char* http_req_serialize(const char* method, const http_url_t* url,
                                 const char* content_type,
                                 bool expect_continue, size_t* out_len,
                                 const xylem_http_hdr_t* custom_headers,
-                                size_t custom_header_count);
+                                size_t custom_header_count,
+                                const xylem_http_auth_t* auth);
 
 /**
  * @brief Case-insensitive ASCII comparison of two strings.

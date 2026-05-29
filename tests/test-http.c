@@ -918,6 +918,73 @@ static void test_cookie_jar(void) {
     xylem_run(_test_cookie_main, NULL, NULL);
 }
 
+/* ─── Basic authentication test ───────────────────────────────── */
+
+static void _auth_handler(xylem_http_res_t* res,
+                          xylem_http_req_t* req,
+                          void* ud) {
+    (void)ud;
+    const char* auth = xylem_http_req_header(req, "Authorization");
+    if (!auth) {
+        xylem_http_res_set_status(res, 401);
+        xylem_http_res_write(res, "unauthorized", 12);
+        return;
+    }
+
+    /* Expect "Basic <base64>" */
+    if (strncmp(auth, "Basic ", 6) != 0) {
+        xylem_http_res_set_status(res, 401);
+        xylem_http_res_write(res, "bad scheme", 10);
+        return;
+    }
+
+    /* Echo back the base64 portion. */
+    const char* b64 = auth + 6;
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_write(res, b64, strlen(b64));
+}
+
+static void _test_basic_auth_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _auth_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = xylem_http_srv_port(srv);
+    ASSERT(port != 0);
+
+    char url[128];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/auth", (unsigned)port);
+
+    /* Test 1: No auth -> 401. */
+    xylem_http_res_t* res = xylem_http_get(url, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 401);
+    ASSERT(xylem_http_res_body_len(res) == 12);
+    ASSERT(memcmp(xylem_http_res_body(res), "unauthorized", 12) == 0);
+    xylem_http_res_destroy(res);
+
+    /* Test 2: With auth -> 200, body = base64("user:pass") = "dXNlcjpwYXNz". */
+    xylem_http_auth_t auth_cred = {.username = "user", .password = "pass"};
+    xylem_http_opts_t opts = {0};
+    opts.auth = &auth_cred;
+
+    res = xylem_http_get(url, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(xylem_http_res_body_len(res) == 12);
+    ASSERT(memcmp(xylem_http_res_body(res), "dXNlcjpwYXNz", 12) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_basic_auth(void) {
+    xylem_run(_test_basic_auth_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -977,6 +1044,9 @@ int main(void) {
 
     /* Cookie jar */
     test_cookie_jar();
+
+    /* Basic authentication */
+    test_basic_auth();
 
     return 0;
 }
