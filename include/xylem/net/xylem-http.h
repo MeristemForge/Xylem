@@ -321,6 +321,28 @@ typedef struct {
     const char* password; /**< NULL = no auth. */
 } xylem_http_proxy_t;
 
+/**
+ * @brief Get proxy configuration from environment variables.
+ *
+ * Reads HTTP_PROXY / HTTPS_PROXY / NO_PROXY (and lowercase variants).
+ * Parses the proxy URL into a xylem_http_proxy_t. Returns NULL if no
+ * proxy is configured or the target host matches NO_PROXY.
+ *
+ * The returned proxy must be freed with xylem_http_proxy_from_env_free().
+ *
+ * @param url  Target URL (to determine http/https and check NO_PROXY).
+ *
+ * @return Heap-allocated proxy config, or NULL if direct connection.
+ */
+extern xylem_http_proxy_t* xylem_http_proxy_from_env(const char* url);
+
+/**
+ * @brief Free a proxy config returned by xylem_http_proxy_from_env.
+ *
+ * @param proxy  Proxy handle, or NULL (no-op).
+ */
+extern void xylem_http_proxy_from_env_free(xylem_http_proxy_t* proxy);
+
 typedef struct {
     uint64_t                    timeout_ms;    /**< Request timeout, 0 = default 30s. */
     int                         max_redirects; /**< 0 = no redirect following. */

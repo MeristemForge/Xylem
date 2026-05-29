@@ -1375,3 +1375,206 @@ char* xylem_http_sse_build(const char* event, const char* data, size_t* len) {
     }
     return buf;
 }
+
+static const char* _getenv_any(const char* upper, const char* lower) {
+    const char* val = getenv(upper);
+    if (val && *val) {
+        return val;
+    }
+    val = getenv(lower);
+    if (val && *val) {
+        return val;
+    }
+    return NULL;
+}
+
+static bool _no_proxy_match(const char* host, const char* no_proxy) {
+    if (!no_proxy || !*no_proxy) {
+        return false;
+    }
+    size_t host_len = strlen(host);
+    const char* p = no_proxy;
+
+    while (*p) {
+        while (*p == ' ' || *p == ',') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char* start = p;
+        while (*p && *p != ',') {
+            p++;
+        }
+        size_t entry_len = (size_t)(p - start);
+        /* Trim trailing spaces. */
+        while (entry_len > 0 && start[entry_len - 1] == ' ') {
+            entry_len--;
+        }
+
+        if (entry_len == 1 && start[0] == '*') {
+            return true;
+        }
+
+        /* Suffix match: ".example.com" matches "foo.example.com". */
+        if (entry_len <= host_len) {
+            const char* suffix = host + host_len - entry_len;
+            bool match = true;
+            for (size_t i = 0; i < entry_len; i++) {
+                char a = suffix[i];
+                char b = start[i];
+                if (a >= 'A' && a <= 'Z') {
+                    a = (char)(a + 32);
+                }
+                if (b >= 'A' && b <= 'Z') {
+                    b = (char)(b + 32);
+                }
+                if (a != b) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match && (entry_len == host_len ||
+                          host[host_len - entry_len - 1] == '.')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+xylem_http_proxy_t* xylem_http_proxy_from_env(const char* url) {
+    if (!url) {
+        return NULL;
+    }
+
+    /* Determine scheme. */
+    bool is_https = (strncmp(url, "https://", 8) == 0);
+    const char* proxy_url = NULL;
+
+    if (is_https) {
+        proxy_url = _getenv_any("HTTPS_PROXY", "https_proxy");
+    } else {
+        proxy_url = _getenv_any("HTTP_PROXY", "http_proxy");
+    }
+    if (!proxy_url) {
+        return NULL;
+    }
+
+    /* Extract host from target URL for NO_PROXY check. */
+    const char* host_start = strstr(url, "://");
+    if (!host_start) {
+        return NULL;
+    }
+    host_start += 3;
+    const char* host_end = host_start;
+    while (*host_end && *host_end != ':' && *host_end != '/' &&
+           *host_end != '?') {
+        host_end++;
+    }
+    size_t host_len = (size_t)(host_end - host_start);
+    char target_host[256];
+    if (host_len >= sizeof(target_host)) {
+        return NULL;
+    }
+    memcpy(target_host, host_start, host_len);
+    target_host[host_len] = '\0';
+
+    /* Check NO_PROXY. */
+    const char* no_proxy = _getenv_any("NO_PROXY", "no_proxy");
+    if (_no_proxy_match(target_host, no_proxy)) {
+        return NULL;
+    }
+
+    /* Parse proxy URL: [http://][user:pass@]host[:port] */
+    const char* p = proxy_url;
+    if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+    } else if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+    }
+
+    const char* userinfo_end = strchr(p, '@');
+    char* username = NULL;
+    char* password = NULL;
+
+    if (userinfo_end) {
+        const char* colon = memchr(p, ':', (size_t)(userinfo_end - p));
+        if (colon) {
+            size_t ulen = (size_t)(colon - p);
+            size_t plen = (size_t)(userinfo_end - colon - 1);
+            username = (char*)malloc(ulen + 1);
+            password = (char*)malloc(plen + 1);
+            if (username && password) {
+                memcpy(username, p, ulen);
+                username[ulen] = '\0';
+                memcpy(password, colon + 1, plen);
+                password[plen] = '\0';
+            } else {
+                free(username);
+                free(password);
+                return NULL;
+            }
+        }
+        p = userinfo_end + 1;
+    }
+
+    /* Parse host:port. */
+    const char* port_sep = NULL;
+    const char* end = p;
+    while (*end && *end != '/' && *end != '?') {
+        if (*end == ':') {
+            port_sep = end;
+        }
+        end++;
+    }
+
+    uint16_t port = 1080;
+    size_t phost_len;
+    if (port_sep) {
+        phost_len = (size_t)(port_sep - p);
+        port = (uint16_t)strtoul(port_sep + 1, NULL, 10);
+    } else {
+        phost_len = (size_t)(end - p);
+    }
+
+    if (phost_len == 0 || phost_len >= 256) {
+        free(username);
+        free(password);
+        return NULL;
+    }
+
+    char* proxy_host = (char*)malloc(phost_len + 1);
+    if (!proxy_host) {
+        free(username);
+        free(password);
+        return NULL;
+    }
+    memcpy(proxy_host, p, phost_len);
+    proxy_host[phost_len] = '\0';
+
+    xylem_http_proxy_t* result =
+        (xylem_http_proxy_t*)calloc(1, sizeof(xylem_http_proxy_t));
+    if (!result) {
+        free(proxy_host);
+        free(username);
+        free(password);
+        return NULL;
+    }
+
+    result->host = proxy_host;
+    result->port = port;
+    result->username = username;
+    result->password = password;
+    return result;
+}
+
+void xylem_http_proxy_from_env_free(xylem_http_proxy_t* proxy) {
+    if (!proxy) {
+        return;
+    }
+    free((void*)proxy->host);
+    free((void*)proxy->username);
+    free((void*)proxy->password);
+    free(proxy);
+}
