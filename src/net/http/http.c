@@ -955,12 +955,15 @@ void http_srv_conn_coroutine(void* arg) {
             }
         }
 
-        /* Clear deadlines for handler execution. */
+        /* Clear read deadline; set write deadline for response. */
         if (ctx->transport.set_rd_deadline) {
             ctx->transport.set_rd_deadline(ctx->transport.conn, 0);
         }
         if (ctx->transport.set_wr_deadline) {
-            ctx->transport.set_wr_deadline(ctx->transport.conn, 0);
+            uint64_t wr_deadline =
+                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                + ctx->srv->write_timeout_ms;
+            ctx->transport.set_wr_deadline(ctx->transport.conn, wr_deadline);
         }
 
         keep_alive = llhttp_should_keep_alive(&sp.parser) != 0;

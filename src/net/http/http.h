@@ -55,6 +55,7 @@ typedef struct http_srv_s {
     size_t                  max_body_size;
     uint64_t                idle_timeout_ms;
     uint64_t                header_timeout_ms;
+    uint64_t                write_timeout_ms;
     uint64_t                max_requests;
     _Atomic int32_t         active_conns;
     bool                    closing;

@@ -150,6 +150,8 @@ xylem_https_srv_t* xylem_https_listen(
                            ? opts->idle_timeout_ms : 60000;
     srv->header_timeout_ms = (opts && opts->header_timeout_ms > 0)
                              ? opts->header_timeout_ms : 10000;
+    srv->write_timeout_ms = (opts && opts->write_timeout_ms > 0)
+                            ? opts->write_timeout_ms : 30000;
     srv->max_requests = opts ? opts->max_requests : 0;
 
     /* port 0 lets the OS assign; resolve for xylem_https_srv_port(). */
