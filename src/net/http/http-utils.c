@@ -22,6 +22,7 @@
 #include "http-utils.h"
 
 #include "xylem/encoding/xylem-base64.h"
+#include "xylem/xylem-utils.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -1020,4 +1021,282 @@ void xylem_http_multipart_destroy(xylem_http_multipart_t* mp) {
     }
     free(mp->parts);
     free(mp);
+}
+
+
+typedef struct {
+    char*    name;
+    char*    filename;
+    char*    content_type;
+    uint8_t* data;
+    size_t   data_len;
+} _build_part_t;
+
+struct xylem_http_multipart_builder_s {
+    _build_part_t* parts;
+    size_t         count;
+    size_t         cap;
+    char           boundary[25];
+};
+
+/* Generate a 24-char alphanumeric boundary using nanosecond time as seed. */
+static void _build_gen_boundary(char* out) {
+    static const char _alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    uint64_t seed = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
+    for (int i = 0; i < 24; i++) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        out[i] = _alphabet[(seed >> 33) % 62];
+    }
+    out[24] = '\0';
+}
+
+xylem_http_multipart_builder_t* xylem_http_multipart_build_create(void) {
+    xylem_http_multipart_builder_t* b =
+        (xylem_http_multipart_builder_t*)calloc(
+            1, sizeof(xylem_http_multipart_builder_t));
+    if (!b) {
+        return NULL;
+    }
+    _build_gen_boundary(b->boundary);
+    return b;
+}
+
+/* Grow parts array and append a new part. */
+static int _build_add_part(xylem_http_multipart_builder_t* b,
+                           const char* name,
+                           const char* filename,
+                           const char* content_type,
+                           const void* data,
+                           size_t data_len) {
+    if (!b || !name) {
+        return -1;
+    }
+
+    if (b->count >= b->cap) {
+        size_t new_cap = b->cap ? b->cap * 2 : 4;
+        _build_part_t* tmp = (_build_part_t*)realloc(
+            b->parts, new_cap * sizeof(_build_part_t));
+        if (!tmp) {
+            return -1;
+        }
+        b->parts = tmp;
+        b->cap = new_cap;
+    }
+
+    _build_part_t* part = &b->parts[b->count];
+    memset(part, 0, sizeof(*part));
+
+    size_t name_len = strlen(name);
+    part->name = (char*)malloc(name_len + 1);
+    if (!part->name) {
+        return -1;
+    }
+    memcpy(part->name, name, name_len + 1);
+
+    if (filename) {
+        size_t fn_len = strlen(filename);
+        part->filename = (char*)malloc(fn_len + 1);
+        if (!part->filename) {
+            free(part->name);
+            part->name = NULL;
+            return -1;
+        }
+        memcpy(part->filename, filename, fn_len + 1);
+    }
+
+    if (content_type) {
+        size_t ct_len = strlen(content_type);
+        part->content_type = (char*)malloc(ct_len + 1);
+        if (!part->content_type) {
+            free(part->name);
+            free(part->filename);
+            part->name = NULL;
+            part->filename = NULL;
+            return -1;
+        }
+        memcpy(part->content_type, content_type, ct_len + 1);
+    }
+
+    if (data && data_len > 0) {
+        part->data = (uint8_t*)malloc(data_len);
+        if (!part->data) {
+            free(part->name);
+            free(part->filename);
+            free(part->content_type);
+            part->name = NULL;
+            part->filename = NULL;
+            part->content_type = NULL;
+            return -1;
+        }
+        memcpy(part->data, data, data_len);
+        part->data_len = data_len;
+    }
+
+    b->count++;
+    return 0;
+}
+
+int xylem_http_multipart_build_field(
+    xylem_http_multipart_builder_t* b,
+    const char* name,
+    const void* value,
+    size_t value_len) {
+    return _build_add_part(b, name, NULL, NULL, value, value_len);
+}
+
+int xylem_http_multipart_build_file(
+    xylem_http_multipart_builder_t* b,
+    const char* name,
+    const char* filename,
+    const char* content_type,
+    const void* data,
+    size_t data_len) {
+    if (!filename) {
+        return -1;
+    }
+    if (!content_type) {
+        content_type = "application/octet-stream";
+    }
+    return _build_add_part(b, name, filename, content_type, data, data_len);
+}
+
+int xylem_http_multipart_build_finish(
+    xylem_http_multipart_builder_t* b,
+    void** body,
+    size_t* body_len,
+    char** content_type) {
+    if (!b || !body || !body_len || !content_type) {
+        return -1;
+    }
+    if (b->count == 0) {
+        return -1;
+    }
+
+    size_t bnd_len = strlen(b->boundary);
+
+    /* Estimate total size. */
+    size_t total = 0;
+    for (size_t i = 0; i < b->count; i++) {
+        _build_part_t* p = &b->parts[i];
+        /* "--" + boundary + "\r\n" */
+        total += 2 + bnd_len + 2;
+        /* Content-Disposition: form-data; name="<name>" */
+        total += 38 + strlen(p->name) + 1;
+        if (p->filename) {
+            /* ; filename="<filename>" */
+            total += 12 + strlen(p->filename) + 1;
+        }
+        total += 2; /* \r\n after Content-Disposition */
+        if (p->content_type) {
+            /* Content-Type: <ct>\r\n */
+            total += 14 + strlen(p->content_type) + 2;
+        }
+        total += 2; /* blank line \r\n */
+        total += p->data_len;
+        total += 2; /* \r\n after data */
+    }
+    /* Final boundary: "--" + boundary + "--\r\n" */
+    total += 2 + bnd_len + 4;
+
+    uint8_t* buf = (uint8_t*)malloc(total);
+    if (!buf) {
+        return -1;
+    }
+
+    size_t off = 0;
+    for (size_t i = 0; i < b->count; i++) {
+        _build_part_t* p = &b->parts[i];
+
+        /* Boundary delimiter. */
+        buf[off++] = '-';
+        buf[off++] = '-';
+        memcpy(buf + off, b->boundary, bnd_len);
+        off += bnd_len;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+
+        /* Content-Disposition header. */
+        int n;
+        if (p->filename) {
+            n = snprintf(
+                (char*)(buf + off), total - off,
+                "Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"",
+                p->name, p->filename);
+        } else {
+            n = snprintf(
+                (char*)(buf + off), total - off,
+                "Content-Disposition: form-data; name=\"%s\"",
+                p->name);
+        }
+        off += (size_t)n;
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+
+        /* Content-Type header (file parts only). */
+        if (p->content_type) {
+            n = snprintf(
+                (char*)(buf + off), total - off,
+                "Content-Type: %s", p->content_type);
+            off += (size_t)n;
+            buf[off++] = '\r';
+            buf[off++] = '\n';
+        }
+
+        /* Blank line separating headers from body. */
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+
+        /* Part data. */
+        if (p->data_len > 0) {
+            memcpy(buf + off, p->data, p->data_len);
+            off += p->data_len;
+        }
+
+        /* Trailing \r\n after data. */
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+
+    /* Final boundary. */
+    buf[off++] = '-';
+    buf[off++] = '-';
+    memcpy(buf + off, b->boundary, bnd_len);
+    off += bnd_len;
+    buf[off++] = '-';
+    buf[off++] = '-';
+    buf[off++] = '\r';
+    buf[off++] = '\n';
+
+    *body = buf;
+    *body_len = off;
+
+    /* Build content_type string: "multipart/form-data; boundary=<boundary>" */
+    size_t ct_len = 30 + bnd_len; /* "multipart/form-data; boundary=" + boundary */
+    char* ct = (char*)malloc(ct_len + 1);
+    if (!ct) {
+        free(buf);
+        *body = NULL;
+        *body_len = 0;
+        return -1;
+    }
+    snprintf(ct, ct_len + 1, "multipart/form-data; boundary=%s", b->boundary);
+    *content_type = ct;
+
+    return 0;
+}
+
+void xylem_http_multipart_build_destroy(
+    xylem_http_multipart_builder_t* b) {
+    if (!b) {
+        return;
+    }
+    for (size_t i = 0; i < b->count; i++) {
+        free(b->parts[i].name);
+        free(b->parts[i].filename);
+        free(b->parts[i].content_type);
+        free(b->parts[i].data);
+    }
+    free(b->parts);
+    free(b);
 }

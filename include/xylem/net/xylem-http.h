@@ -620,6 +620,78 @@ extern size_t xylem_http_multipart_data_len(const xylem_http_multipart_t* mp,
  */
 extern void xylem_http_multipart_destroy(xylem_http_multipart_t* mp);
 
+typedef struct xylem_http_multipart_builder_s xylem_http_multipart_builder_t;
+
+/**
+ * @brief Create a multipart form-data builder.
+ *
+ * @return Builder handle, or NULL on failure.
+ */
+extern xylem_http_multipart_builder_t* xylem_http_multipart_build_create(void);
+
+/**
+ * @brief Add a text field to the multipart body.
+ *
+ * @param b          Builder handle.
+ * @param name       Field name (null-terminated).
+ * @param value      Field value.
+ * @param value_len  Value length in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_multipart_build_field(
+    xylem_http_multipart_builder_t* b,
+    const char* name,
+    const void* value,
+    size_t value_len);
+
+/**
+ * @brief Add a file part to the multipart body.
+ *
+ * @param b             Builder handle.
+ * @param name          Field name (null-terminated).
+ * @param filename      Filename for Content-Disposition.
+ * @param content_type  MIME type, or NULL for application/octet-stream.
+ * @param data          File data.
+ * @param data_len      File data length.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_multipart_build_file(
+    xylem_http_multipart_builder_t* b,
+    const char* name,
+    const char* filename,
+    const char* content_type,
+    const void* data,
+    size_t data_len);
+
+/**
+ * @brief Finalize and serialize the multipart body.
+ *
+ * Produces a buffer suitable for xylem_http_post(). The caller must free
+ * both *body and *content_type when done.
+ *
+ * @param b             Builder handle.
+ * @param body          Output: malloc'd body buffer.
+ * @param body_len      Output: body length.
+ * @param content_type  Output: malloc'd Content-Type string with boundary.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_multipart_build_finish(
+    xylem_http_multipart_builder_t* b,
+    void** body,
+    size_t* body_len,
+    char** content_type);
+
+/**
+ * @brief Destroy a multipart builder.
+ *
+ * @param b  Builder handle, or NULL (no-op).
+ */
+extern void xylem_http_multipart_build_destroy(
+    xylem_http_multipart_builder_t* b);
+
 /**
  * @brief Build an SSE-formatted message string.
  *

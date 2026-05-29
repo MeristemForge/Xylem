@@ -1029,6 +1029,132 @@ static void test_expect_continue(void) {
     xylem_run(_test_expect_continue_main, NULL, NULL);
 }
 
+/* ─── Multipart builder unit tests ────────────────────────────── */
+
+static void test_multipart_build_basic(void) {
+    xylem_http_multipart_builder_t* b = xylem_http_multipart_build_create();
+    ASSERT(b != NULL);
+
+    int rc = xylem_http_multipart_build_field(b, "name", "Alice", 5);
+    ASSERT(rc == 0);
+
+    rc = xylem_http_multipart_build_file(
+        b, "avatar", "photo.png", "image/png", "\x89PNG", 4);
+    ASSERT(rc == 0);
+
+    void* body = NULL;
+    size_t body_len = 0;
+    char* ct = NULL;
+    rc = xylem_http_multipart_build_finish(b, &body, &body_len, &ct);
+    ASSERT(rc == 0);
+    ASSERT(body != NULL);
+    ASSERT(body_len > 0);
+    ASSERT(ct != NULL);
+    ASSERT(strncmp(ct, "multipart/form-data; boundary=", 30) == 0);
+
+    /* Roundtrip: parse what we built. */
+    xylem_http_multipart_t* mp = xylem_http_multipart_parse(ct, body, body_len);
+    ASSERT(mp != NULL);
+    ASSERT(xylem_http_multipart_count(mp) == 2);
+
+    ASSERT(strcmp(xylem_http_multipart_name(mp, 0), "name") == 0);
+    ASSERT(xylem_http_multipart_data_len(mp, 0) == 5);
+    ASSERT(memcmp(xylem_http_multipart_data(mp, 0), "Alice", 5) == 0);
+    ASSERT(xylem_http_multipart_filename(mp, 0) == NULL);
+
+    ASSERT(strcmp(xylem_http_multipart_name(mp, 1), "avatar") == 0);
+    ASSERT(strcmp(xylem_http_multipart_filename(mp, 1), "photo.png") == 0);
+    ASSERT(strcmp(xylem_http_multipart_content_type(mp, 1), "image/png") == 0);
+    ASSERT(xylem_http_multipart_data_len(mp, 1) == 4);
+
+    xylem_http_multipart_destroy(mp);
+    free(body);
+    free(ct);
+    xylem_http_multipart_build_destroy(b);
+}
+
+static void test_multipart_build_empty(void) {
+    xylem_http_multipart_builder_t* b = xylem_http_multipart_build_create();
+    ASSERT(b != NULL);
+
+    void* body = NULL;
+    size_t body_len = 0;
+    char* ct = NULL;
+    int rc = xylem_http_multipart_build_finish(b, &body, &body_len, &ct);
+    ASSERT(rc == -1);
+
+    xylem_http_multipart_build_destroy(b);
+}
+
+static void test_multipart_build_destroy_null(void) {
+    xylem_http_multipart_build_destroy(NULL);
+}
+
+/* ─── Integration: multipart POST ────────────────────────────── */
+
+static void _multipart_echo_handler(xylem_http_res_t* res,
+                                    xylem_http_req_t* req,
+                                    void* userdata) {
+    (void)userdata;
+    const char* ct = xylem_http_req_header(req, "Content-Type");
+    const void* body = xylem_http_req_body(req);
+    size_t body_len = xylem_http_req_body_len(req);
+
+    xylem_http_multipart_t* mp = xylem_http_multipart_parse(ct, body, body_len);
+    if (!mp) {
+        xylem_http_res_set_status(res, 400);
+        xylem_http_res_write(res, "bad multipart", 13);
+        return;
+    }
+
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%zu", xylem_http_multipart_count(mp));
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_write(res, buf, (size_t)n);
+    xylem_http_multipart_destroy(mp);
+}
+
+static void _test_multipart_post_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _multipart_echo_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
+
+    xylem_http_multipart_builder_t* b = xylem_http_multipart_build_create();
+    ASSERT(b != NULL);
+    xylem_http_multipart_build_field(b, "key", "value", 5);
+    xylem_http_multipart_build_file(
+        b, "file", "data.bin", NULL, "ABCDEF", 6);
+
+    void* body = NULL;
+    size_t body_len = 0;
+    char* ct = NULL;
+    int rc = xylem_http_multipart_build_finish(b, &body, &body_len, &ct);
+    ASSERT(rc == 0);
+
+    xylem_http_res_t* res = xylem_http_post(url, body, body_len, ct, NULL);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(memcmp(xylem_http_res_body(res), "2", 1) == 0);
+    xylem_http_res_destroy(res);
+
+    free(body);
+    free(ct);
+    xylem_http_multipart_build_destroy(b);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_multipart_post(void) {
+    xylem_run(_test_multipart_post_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1094,6 +1220,14 @@ int main(void) {
 
     /* Expect/100-Continue */
     test_expect_continue();
+
+    /* Multipart builder */
+    test_multipart_build_basic();
+    test_multipart_build_empty();
+    test_multipart_build_destroy_null();
+
+    /* Integration: multipart POST */
+    test_multipart_post();
 
     return 0;
 }
