@@ -180,6 +180,10 @@ struct xylem_http_res_s {
     http_transport_t* _transport;  /* Non-NULL only while handler runs */
     bool              _headers_sent;
 
+    /* Buffered body for Content-Length response mode */
+    uint8_t*       _body_buf;
+    size_t         _body_buf_len;
+
     /* Server gzip compression state */
     mz_stream*     gzip_stream;
     bool           gzip_active;
@@ -438,17 +442,66 @@ int xylem_http_res_write(xylem_http_res_t* res,
         return 0;
     }
 
-    if (!res->_headers_sent) {
-        if (_flush_headers(res) != 0) {
+    /* Already streaming (chunked mode). */
+    if (res->_headers_sent) {
+        if (res->gzip_active && res->gzip_stream) {
+            mz_stream* s = res->gzip_stream;
+            s->next_in = (const unsigned char*)data;
+            s->avail_in = (mz_uint32)len;
+            uint8_t out_buf[HTTP_IO_BUF_SIZE];
+            while (s->avail_in > 0) {
+                s->next_out = out_buf;
+                s->avail_out = (mz_uint32)sizeof(out_buf);
+                int rc = mz_deflate(s, MZ_NO_FLUSH);
+                if (rc != MZ_OK && rc != MZ_BUF_ERROR) {
+                    return -1;
+                }
+                size_t produced = sizeof(out_buf) - s->avail_out;
+                if (produced > 0) {
+                    if (_write_chunk(res, out_buf, produced) != 0) {
+                        return -1;
+                    }
+                }
+            }
+            return 0;
+        }
+        return _write_chunk(res, data, len);
+    }
+
+    /* First write: buffer it for potential Content-Length mode. */
+    if (!res->_body_buf) {
+        res->_body_buf = (uint8_t*)malloc(len);
+        if (!res->_body_buf) {
+            return -1;
+        }
+        memcpy(res->_body_buf, data, len);
+        res->_body_buf_len = len;
+        return 0;
+    }
+
+    /* Second write: switch to chunked mode. */
+    if (_flush_headers(res) != 0) {
+        return -1;
+    }
+
+    /* Write buffered data as first chunk. */
+    if (res->_body_buf_len > 0) {
+        if (_write_chunk(res, res->_body_buf, res->_body_buf_len) != 0) {
+            free(res->_body_buf);
+            res->_body_buf = NULL;
+            res->_body_buf_len = 0;
             return -1;
         }
     }
+    free(res->_body_buf);
+    res->_body_buf = NULL;
+    res->_body_buf_len = 0;
 
+    /* Write current data. */
     if (res->gzip_active && res->gzip_stream) {
         mz_stream* s = res->gzip_stream;
         s->next_in = (const unsigned char*)data;
         s->avail_in = (mz_uint32)len;
-
         uint8_t out_buf[HTTP_IO_BUF_SIZE];
         while (s->avail_in > 0) {
             s->next_out = out_buf;
@@ -466,7 +519,6 @@ int xylem_http_res_write(xylem_http_res_t* res,
         }
         return 0;
     }
-
     return _write_chunk(res, data, len);
 }
 
@@ -474,6 +526,124 @@ static void _finalize_response(xylem_http_res_t* res) {
     if (!res->_transport) {
         return;
     }
+
+    /* Single-write response: use Content-Length if gzip is not active. */
+    if (!res->_headers_sent && res->_body_buf) {
+        _maybe_init_gzip(res);
+        if (res->gzip_active) {
+            /* Gzip active: fall through to chunked mode. */
+            if (_flush_headers(res) != 0) {
+                free(res->_body_buf);
+                res->_body_buf = NULL;
+                res->_body_buf_len = 0;
+                return;
+            }
+            /* Write buffered body through gzip + chunked. */
+            mz_stream* s = res->gzip_stream;
+            s->next_in = (const unsigned char*)res->_body_buf;
+            s->avail_in = (mz_uint32)res->_body_buf_len;
+            uint8_t out_buf[HTTP_IO_BUF_SIZE];
+            while (s->avail_in > 0) {
+                s->next_out = out_buf;
+                s->avail_out = (mz_uint32)sizeof(out_buf);
+                mz_deflate(s, MZ_NO_FLUSH);
+                size_t produced = sizeof(out_buf) - s->avail_out;
+                if (produced > 0) {
+                    _write_chunk(res, out_buf, produced);
+                }
+            }
+            free(res->_body_buf);
+            res->_body_buf = NULL;
+            res->_body_buf_len = 0;
+            /* Finalize gzip stream. */
+            int rc;
+            do {
+                s->next_out = out_buf;
+                s->avail_out = (mz_uint32)sizeof(out_buf);
+                rc = mz_deflate(s, MZ_FINISH);
+                size_t produced = sizeof(out_buf) - s->avail_out;
+                if (produced > 0) {
+                    _write_chunk(res, out_buf, produced);
+                }
+            } while (rc == MZ_OK);
+            mz_deflateEnd(s);
+            free(s);
+            res->gzip_stream = NULL;
+            res->gzip_active = false;
+            _transport_write(res->_transport, "0\r\n\r\n", 5);
+            return;
+        }
+
+        /* No gzip: use Content-Length mode. */
+        int status = res->status_code ? res->status_code : 200;
+        const char* reason = http_reason_phrase(status);
+
+        char cl_str[24];
+        int cl_n = snprintf(cl_str, sizeof(cl_str), "%zu", res->_body_buf_len);
+        http_header_add(&res->headers, &res->header_count, &res->header_cap,
+                        "Content-Length", 14, cl_str, (size_t)cl_n);
+
+        size_t est = 64 + strlen(reason);
+        for (size_t i = 0; i < res->header_count; i++) {
+            est += strlen(res->headers[i].name) +
+                   strlen(res->headers[i].value) + 4;
+        }
+        est += 2;
+
+        char* hdr_buf = (char*)malloc(est);
+        if (hdr_buf) {
+            int off = snprintf(hdr_buf, est, "HTTP/1.1 %d %s\r\n",
+                               status, reason);
+            for (size_t i = 0; i < res->header_count; i++) {
+                off += snprintf(hdr_buf + off, est - (size_t)off, "%s: %s\r\n",
+                                res->headers[i].name, res->headers[i].value);
+            }
+            off += snprintf(hdr_buf + off, est - (size_t)off, "\r\n");
+            _transport_write(res->_transport, hdr_buf, off);
+            free(hdr_buf);
+        }
+
+        if (res->_body_buf_len > 0) {
+            _transport_write(res->_transport, res->_body_buf,
+                             (int)res->_body_buf_len);
+        }
+        free(res->_body_buf);
+        res->_body_buf = NULL;
+        res->_body_buf_len = 0;
+        return;
+    }
+
+    /* No-body response (status set but no write called). */
+    if (!res->_headers_sent && !res->_body_buf) {
+        int status = res->status_code ? res->status_code : 200;
+        const char* reason = http_reason_phrase(status);
+
+        http_header_add(&res->headers, &res->header_count, &res->header_cap,
+                        "Content-Length", 14, "0", 1);
+
+        size_t est = 64 + strlen(reason);
+        for (size_t i = 0; i < res->header_count; i++) {
+            est += strlen(res->headers[i].name) +
+                   strlen(res->headers[i].value) + 4;
+        }
+        est += 2;
+
+        char* hdr_buf = (char*)malloc(est);
+        if (hdr_buf) {
+            int off = snprintf(hdr_buf, est, "HTTP/1.1 %d %s\r\n",
+                               status, reason);
+            for (size_t i = 0; i < res->header_count; i++) {
+                off += snprintf(hdr_buf + off, est - (size_t)off, "%s: %s\r\n",
+                                res->headers[i].name, res->headers[i].value);
+            }
+            off += snprintf(hdr_buf + off, est - (size_t)off, "\r\n");
+            _transport_write(res->_transport, hdr_buf, off);
+            free(hdr_buf);
+        }
+        return;
+    }
+
+    /* Chunked mode: finalize with gzip flush + 0-chunk. */
     if (!res->_headers_sent) {
         _flush_headers(res);
     }
@@ -657,6 +827,17 @@ static int _srv_on_body(llhttp_t* p, const char* at, size_t len) {
                         &ctx->req.body_cap, at, len);
 }
 
+static int _srv_on_headers_complete(llhttp_t* p) {
+    _srv_parser_t* ctx = (_srv_parser_t*)p->data;
+    const char* expect = http_header_find(
+        ctx->req.headers, ctx->req.header_count, "Expect");
+    if (expect && http_header_eq(expect, "100-continue") && ctx->transport) {
+        const char* cont = "HTTP/1.1 100 Continue\r\n\r\n";
+        ctx->transport->write(ctx->transport->conn, cont, 25);
+    }
+    return 0;
+}
+
 static int _srv_on_message_complete(llhttp_t* p) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
     ctx->complete = true;
@@ -672,6 +853,7 @@ static void _srv_parser_init(_srv_parser_t* sp) {
     sp->settings.on_header_value        = _srv_on_header_value;
     sp->settings.on_header_value_complete = _srv_on_header_value_complete;
     sp->settings.on_body                = _srv_on_body;
+    sp->settings.on_headers_complete    = _srv_on_headers_complete;
     sp->settings.on_message_complete    = _srv_on_message_complete;
     llhttp_init(&sp->parser, HTTP_REQUEST, &sp->settings);
     sp->parser.data = sp;
@@ -820,6 +1002,7 @@ void http_srv_conn_coroutine(void* arg) {
         ctx->srv->handler(&res, &sp.req, ctx->srv->userdata);
 
         _finalize_response(&res);
+        free(res._body_buf); /* safety: in case finalize did not handle it */
 
         http_headers_free(res.headers, res.header_count);
 

@@ -1029,6 +1029,72 @@ static void test_expect_continue(void) {
     xylem_run(_test_expect_continue_main, NULL, NULL);
 }
 
+/* ─── 100-Continue server reply test ──────────────────────────── */
+
+static void _test_100_server_reply_main(void* arg) {
+    (void)arg;
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _expect_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
+
+    char body[1024];
+    memset(body, 'X', sizeof(body));
+
+    xylem_http_opts_t opts = {.expect_continue = true};
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    xylem_http_res_t* res = xylem_http_post(
+        url, body, sizeof(body), "application/octet-stream", &opts);
+    uint64_t elapsed = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - start;
+
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    /* Should complete quickly since server sends 100 immediately. */
+    ASSERT(elapsed < 500);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_100_server_reply(void) {
+    xylem_run(_test_100_server_reply_main, NULL, NULL);
+}
+
+/* ─── Content-Length response mode test ──────────────────────── */
+
+static void _test_content_length_main(void* arg) {
+    (void)arg;
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _hello_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/", (unsigned)port);
+
+    xylem_http_res_t* r = xylem_http_get(url, NULL);
+    ASSERT(r != NULL);
+    ASSERT(xylem_http_res_status(r) == 200);
+    /* Single-write response should use Content-Length, not chunked. */
+    const char* cl = xylem_http_res_header(r, "Content-Length");
+    ASSERT(cl != NULL);
+    ASSERT(strcmp(cl, "5") == 0);
+    ASSERT(xylem_http_res_body_len(r) == 5);
+    ASSERT(memcmp(xylem_http_res_body(r), "hello", 5) == 0);
+    xylem_http_res_destroy(r);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_content_length_mode(void) {
+    xylem_run(_test_content_length_main, NULL, NULL);
+}
+
 /* ─── Multipart builder unit tests ────────────────────────────── */
 
 static void test_multipart_build_basic(void) {
@@ -1415,6 +1481,12 @@ int main(void) {
 
     /* Expect/100-Continue */
     test_expect_continue();
+
+    /* 100-Continue server reply (fast path) */
+    test_100_server_reply();
+
+    /* Content-Length response mode */
+    test_content_length_mode();
 
     /* Multipart builder */
     test_multipart_build_basic();
