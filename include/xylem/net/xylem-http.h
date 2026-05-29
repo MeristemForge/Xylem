@@ -718,3 +718,44 @@ extern void xylem_http_multipart_build_destroy(
  */
 extern char* xylem_http_sse_build(const char* event, const char* data,
                                   size_t* len);
+
+/**
+ * @brief Access log entry passed to the log callback.
+ */
+typedef struct {
+    const char* method;      /**< Request method. */
+    const char* path;        /**< Request path. */
+    int         status;      /**< Response status code. */
+    uint64_t    duration_ms; /**< Request handling duration in ms. */
+} xylem_http_access_log_t;
+
+/**
+ * @brief Access log callback type.
+ *
+ * @param entry     Log entry.
+ * @param userdata  Opaque pointer.
+ */
+typedef void (*xylem_http_access_log_fn_t)(
+    const xylem_http_access_log_t* entry, void* userdata);
+
+/**
+ * @brief Create an access log handler wrapper.
+ *
+ * Returns a handler function that logs each request via log_fn after
+ * calling the inner handler. Use the returned function as the server
+ * handler and pass *out_ctx as its userdata.
+ *
+ * @param handler   The actual request handler to wrap.
+ * @param userdata  Passed to handler.
+ * @param log_fn    Log callback invoked after each request.
+ * @param log_ud    Passed to log_fn.
+ * @param out_ctx   Output: opaque context (caller must free when done).
+ *
+ * @return Handler function to pass to xylem_http_listen, or NULL on failure.
+ */
+extern xylem_http_handler_fn_t xylem_http_access_log_wrap(
+    xylem_http_handler_fn_t    handler,
+    void*                      userdata,
+    xylem_http_access_log_fn_t log_fn,
+    void*                      log_ud,
+    void**                     out_ctx);

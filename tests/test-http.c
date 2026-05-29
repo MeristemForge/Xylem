@@ -1544,6 +1544,58 @@ static void test_etag(void) {
     xylem_run(_test_etag_main, NULL, NULL);
 }
 
+/* ─── Access log middleware ────────────────────────────────────── */
+
+static int  _log_call_count;
+static int  _log_last_status;
+static char _log_last_method[16];
+static char _log_last_path[256];
+
+static void _test_log_cb(const xylem_http_access_log_t* entry, void* ud) {
+    (void)ud;
+    _log_call_count++;
+    _log_last_status = entry->status;
+    snprintf(_log_last_method, sizeof(_log_last_method), "%s", entry->method);
+    snprintf(_log_last_path, sizeof(_log_last_path), "%s", entry->path);
+}
+
+static void _test_access_log_main(void* arg) {
+    (void)arg;
+
+    void* log_ctx = NULL;
+    xylem_http_handler_fn_t wrapped = xylem_http_access_log_wrap(
+        _hello_handler, NULL, _test_log_cb, NULL, &log_ctx);
+    ASSERT(wrapped != NULL);
+    ASSERT(log_ctx != NULL);
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, wrapped, log_ctx, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test-path", (unsigned)port);
+
+    _log_call_count = 0;
+    xylem_http_res_t* r = xylem_http_get(url, NULL);
+    ASSERT(r != NULL);
+    ASSERT(xylem_http_res_status(r) == 200);
+    xylem_http_res_destroy(r);
+
+    ASSERT(_log_call_count == 1);
+    ASSERT(_log_last_status == 200);
+    ASSERT(strcmp(_log_last_method, "GET") == 0);
+    ASSERT(strcmp(_log_last_path, "/test-path") == 0);
+
+    xylem_http_close(srv);
+    free(log_ctx);
+    xylem_shutdown();
+}
+
+static void test_access_log(void) {
+    xylem_run(_test_access_log_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1641,6 +1693,9 @@ int main(void) {
 
     /* ETag / If-None-Match */
     test_etag();
+
+    /* Access log middleware */
+    test_access_log();
 
     return 0;
 }

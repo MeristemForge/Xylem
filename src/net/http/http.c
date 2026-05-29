@@ -2024,6 +2024,56 @@ static const char* _mime_lookup(const char* path) {
     return "application/octet-stream";
 }
 
+/* ── Access log middleware ─────────────────────────────────────────── */
+
+typedef struct {
+    xylem_http_handler_fn_t    inner;
+    void*                      inner_ud;
+    xylem_http_access_log_fn_t log_fn;
+    void*                      log_ud;
+} _access_log_ctx_t;
+
+static void _http_access_log_handler(xylem_http_res_t* res,
+                                     xylem_http_req_t* req,
+                                     void* userdata) {
+    _access_log_ctx_t* ctx = (_access_log_ctx_t*)userdata;
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+
+    ctx->inner(res, req, ctx->inner_ud);
+
+    uint64_t elapsed = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - start;
+
+    xylem_http_access_log_t entry;
+    entry.method      = xylem_http_req_method(req);
+    entry.path        = xylem_http_req_url(req);
+    entry.status      = xylem_http_res_status(res);
+    entry.duration_ms = elapsed;
+    ctx->log_fn(&entry, ctx->log_ud);
+}
+
+xylem_http_handler_fn_t xylem_http_access_log_wrap(
+    xylem_http_handler_fn_t handler,
+    void* userdata,
+    xylem_http_access_log_fn_t log_fn,
+    void* log_ud,
+    void** out_ctx) {
+    if (!handler || !log_fn || !out_ctx) {
+        return NULL;
+    }
+    _access_log_ctx_t* ctx = (_access_log_ctx_t*)calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        return NULL;
+    }
+    ctx->inner    = handler;
+    ctx->inner_ud = userdata;
+    ctx->log_fn   = log_fn;
+    ctx->log_ud   = log_ud;
+    *out_ctx = ctx;
+    return _http_access_log_handler;
+}
+
+/* ── Static file server ────────────────────────────────────────────── */
+
 typedef struct {
     char  root[2048];
     char  index_file[64];
