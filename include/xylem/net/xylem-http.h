@@ -720,6 +720,26 @@ extern char* xylem_http_sse_build(const char* event, const char* data,
                                   size_t* len);
 
 /**
+ * @brief Serve in-memory content with automatic ETag, If-None-Match, and Range.
+ *
+ * Handles conditional requests (304) and partial content (206) automatically.
+ * Any handler can call this to get Go-style ServeContent behavior.
+ *
+ * @param res           Response writer.
+ * @param req           Request (for Range/If-None-Match headers).
+ * @param data          Content bytes.
+ * @param data_len      Content length.
+ * @param content_type  MIME type (e.g. "text/html").
+ *
+ * @note Caller is responsible for freeing data after this returns.
+ */
+extern void xylem_http_serve_content(xylem_http_res_t* res,
+                                     xylem_http_req_t* req,
+                                     const void* data,
+                                     size_t data_len,
+                                     const char* content_type);
+
+/**
  * @brief Access log entry passed to the log callback.
  */
 typedef struct {
