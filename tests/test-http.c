@@ -985,6 +985,50 @@ static void test_basic_auth(void) {
     xylem_run(_test_basic_auth_main, NULL, NULL);
 }
 
+/* ─── Expect/100-Continue ─────────────────────────────────────── */
+
+static void _expect_handler(xylem_http_res_t* res,
+                            xylem_http_req_t* req,
+                            void* userdata) {
+    (void)userdata;
+    size_t blen = xylem_http_req_body_len(req);
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%zu", blen);
+    xylem_http_res_write(res, buf, (size_t)n);
+}
+
+static void _test_expect_continue_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _expect_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+    uint16_t port = xylem_http_srv_port(srv);
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
+
+    char body[4096];
+    memset(body, 'A', sizeof(body));
+
+    xylem_http_opts_t opts = {.expect_continue = true};
+    xylem_http_res_t* res = xylem_http_post(
+        url, body, sizeof(body), "application/octet-stream", &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+    ASSERT(memcmp(xylem_http_res_body(res), "4096", 4) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_expect_continue(void) {
+    xylem_run(_test_expect_continue_main, NULL, NULL);
+}
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1047,6 +1091,9 @@ int main(void) {
 
     /* Basic authentication */
     test_basic_auth();
+
+    /* Expect/100-Continue */
+    test_expect_continue();
 
     return 0;
 }

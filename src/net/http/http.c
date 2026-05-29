@@ -1365,10 +1365,12 @@ xylem_http_res_t* http_do_request(
         return NULL;
     }
 
+    bool use_expect = opts && opts->expect_continue && cur_body_len > 0;
+
     size_t req_len = 0;
     char* req_buf = http_req_serialize(
         cur_method, &parsed, cur_body, cur_body_len, cur_content_type,
-        false, &req_len, custom_hdrs, custom_hdr_count,
+        use_expect, &req_len, custom_hdrs, custom_hdr_count,
         opts ? opts->auth : NULL);
 
     free(merged_hdrs);
@@ -1386,6 +1388,93 @@ xylem_http_res_t* http_do_request(
         _transport_close(&transport);
         free(readbuf);
         return NULL;
+    }
+
+    /* Expect/100-Continue: wait up to 1s for an interim response. */
+    if (use_expect) {
+        uint64_t expect_deadline =
+            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000;
+        if (transport.set_rd_deadline) {
+            transport.set_rd_deadline(transport.conn, expect_deadline);
+        }
+
+        xylem_http_res_t* interim =
+            (xylem_http_res_t*)calloc(1, sizeof(*interim));
+        if (!interim) {
+            _transport_close(&transport);
+            free(readbuf);
+            return NULL;
+        }
+
+        _cli_parser_t ecp;
+        _cli_parser_init(&ecp, interim);
+
+        bool got_response = false;
+        while (!ecp.complete) {
+            int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
+            if (n <= 0) {
+                /* Timeout or error -- send body anyway per RFC 7231. */
+                break;
+            }
+            llhttp_errno_t err =
+                llhttp_execute(&ecp.parser, readbuf, (size_t)n);
+            if (err == HPE_PAUSED) {
+                llhttp_resume(&ecp.parser);
+            } else if (err != HPE_OK) {
+                break;
+            }
+        }
+        got_response = ecp.complete;
+
+        if (got_response && interim->status_code == 100) {
+            /* Server confirmed -- discard interim, send body. */
+            _cli_parser_destroy(&ecp);
+            xylem_http_res_destroy(interim);
+
+            /* Restore original deadline. */
+            if (transport.set_rd_deadline) {
+                transport.set_rd_deadline(transport.conn, deadline_ms);
+            }
+
+            wrc = _transport_write(
+                &transport, cur_body, (int)cur_body_len);
+            if (wrc != 0) {
+                _transport_close(&transport);
+                free(readbuf);
+                return NULL;
+            }
+        } else if (got_response && interim->status_code != 100) {
+            /* Final error response (e.g. 413, 417) -- return it. */
+            bool keep_alive =
+                llhttp_should_keep_alive(&ecp.parser) != 0;
+            _cli_parser_destroy(&ecp);
+
+            if (keep_alive) {
+                _pool_release(&parsed, &transport);
+            } else {
+                _transport_close(&transport);
+            }
+
+            free(readbuf);
+            return interim;
+        } else {
+            /* Timeout -- send body anyway. */
+            _cli_parser_destroy(&ecp);
+            xylem_http_res_destroy(interim);
+
+            /* Restore original deadline. */
+            if (transport.set_rd_deadline) {
+                transport.set_rd_deadline(transport.conn, deadline_ms);
+            }
+
+            wrc = _transport_write(
+                &transport, cur_body, (int)cur_body_len);
+            if (wrc != 0) {
+                _transport_close(&transport);
+                free(readbuf);
+                return NULL;
+            }
+        }
     }
 
     xylem_http_res_t* res = (xylem_http_res_t*)calloc(1, sizeof(*res));

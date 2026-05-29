@@ -315,6 +315,7 @@ typedef struct {
     xylem_http_cookie_jar_t*    cookie_jar;    /**< NULL = no cookie management. */
     const xylem_http_proxy_t*   proxy;         /**< NULL = direct connection. */
     const xylem_http_auth_t*    auth;          /**< NULL = no authentication. */
+    bool                        expect_continue; /**< Send Expect: 100-continue for bodies. */
 } xylem_http_opts_t;
 
 /**
