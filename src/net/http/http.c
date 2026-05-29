@@ -716,6 +716,9 @@ void http_srv_conn_coroutine(void* arg) {
             llhttp_errno_t err = llhttp_execute(&sp.parser, readbuf, (size_t)n);
             if (err == HPE_PAUSED) {
                 llhttp_resume(&sp.parser);
+            } else if (err == HPE_PAUSED_UPGRADE) {
+                llhttp_resume_after_upgrade(&sp.parser);
+                sp.complete = true;
             } else if (err != HPE_OK) {
                 const char* bad =
                     "HTTP/1.1 400 Bad Request\r\n"

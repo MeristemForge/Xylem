@@ -74,9 +74,10 @@ _Pragma("once")
 #endif
 #endif
 #ifdef XYLEM_ENABLE_WS
-#include "xylem/net/ws/xylem-ws-common.h"
-#include "xylem/net/ws/xylem-ws-client.h"
-#include "xylem/net/ws/xylem-ws-server.h"
+#include "xylem/net/xylem-ws.h"
+#ifdef XYLEM_ENABLE_TLS
+#include "xylem/net/xylem-wss.h"
+#endif
 #endif
 
 /* runtime */
