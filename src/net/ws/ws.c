@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "xylem/net/xylem-http.h"
+#include "xylem/net/http/xylem-http.h"
 
 #include "ws.h"
 #include "ws-frame.h"

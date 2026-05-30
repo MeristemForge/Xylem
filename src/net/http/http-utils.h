@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem/net/xylem-http.h"
+#include "xylem/net/http/xylem-http.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -40,23 +40,6 @@ typedef struct {
     char* value;
 } http_header_t;
 
-/**
- * @brief Convert a hex character to its integer value.
- *
- * @param c  Hex character ('0'-'9', 'A'-'F', 'a'-'f').
- *
- * @return 0-15 on success, -1 if c is not a valid hex digit.
- */
-extern int http_hex_digit(char c);
-
-/**
- * @brief Check if a byte is an RFC 3986 unreserved character.
- *
- * @param c  Byte value to check.
- *
- * @return true if unreserved (A-Z, a-z, 0-9, '-', '.', '_', '~').
- */
-extern bool http_is_unreserved(uint8_t c);
 
 /**
  * @brief Parse a URL string into its components.
@@ -110,10 +93,13 @@ extern int http_url_serialize(const http_url_t* url, char* buf,
 extern char* http_req_serialize(const char* method, const http_url_t* url,
                                 const void* body, size_t body_len,
                                 const char* content_type,
-                                bool expect_continue, size_t* out_len,
+                                bool expect_continue, bool use_proxy,
+                                size_t* out_len,
                                 const xylem_http_hdr_t* custom_headers,
-                                size_t custom_header_count,
-                                const xylem_http_auth_t* auth);
+                                size_t custom_header_count);
+
+extern xylem_http_proxy_t* http_proxy_from_env(const char* url);
+extern void http_proxy_from_env_free(xylem_http_proxy_t* proxy);
 
 /**
  * @brief Case-insensitive ASCII comparison of two strings.

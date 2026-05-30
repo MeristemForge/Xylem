@@ -20,7 +20,7 @@
  */
 
 #include "xylem/net/xylem-ws.h"
-#include "xylem/net/xylem-http.h"
+#include "xylem/net/http/xylem-http.h"
 #include "xylem/net/xylem-tcp.h"
 
 #include "ws.h"
@@ -199,5 +199,7 @@ uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener) {
         return 0;
     }
     ws_listener_t* l = (ws_listener_t*)listener;
-    return xylem_http_srv_port(l->http_srv);
+    uint16_t port = 0;
+    xylem_http_srv_addr(l->http_srv, NULL, 0, &port);
+    return port;
 }

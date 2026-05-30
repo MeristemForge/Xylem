@@ -21,30 +21,28 @@
 
 _Pragma("once")
 
-#include "platform/platform-socket.h"
+#include "xylem/net/http/xylem-http.h"
 
-#include <stdint.h>
+#include <stdbool.h>
+
+typedef struct {
+    const char** allowed_origins; /* NULL-terminated, NULL = wildcard "*". */
+    const char** allowed_methods; /* NULL-terminated, NULL = "GET,POST,HEAD". */
+    const char** allowed_headers; /* NULL-terminated, NULL = allow any. */
+    const char** exposed_headers; /* NULL-terminated, NULL = none. */
+    int          max_age;         /* Preflight cache seconds, 0 = omit header. */
+    bool         allow_credentials;
+} xylem_http_cors_t;
 
 /**
- * @brief Connect to an HTTP CONNECT proxy and establish a tunnel.
+ * @brief CORS middleware handler.
  *
- * Dials the proxy, sends a CONNECT request, and waits for 200.
- * On success the returned fd is a transparent tunnel to the target.
+ * Pass a pointer to xylem_http_cors_t as userdata when registering:
+ *   xylem_http_router_use(router, xylem_http_cors_middleware, &cors_cfg);
  *
- * @param proxy_host   Proxy hostname or IP.
- * @param proxy_port   Proxy port.
- * @param target_host  Destination hostname.
- * @param target_port  Destination port.
- * @param timeout_ms   Connect timeout in ms, 0 = no timeout.
- * @param username     Proxy username, or NULL for no auth.
- * @param password     Proxy password, or NULL for no auth.
- *
- * @return Tunneled socket fd, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ * Handles OPTIONS preflight (responds 204, short-circuits) and injects
+ * Access-Control-* headers on normal requests before calling next.
  */
-extern platform_sock_t http_proxy_connect(const char* proxy_host,
-                                       uint16_t proxy_port,
-                                       const char* target_host,
-                                       uint16_t target_port,
-                                       uint64_t timeout_ms,
-                                       const char* username,
-                                       const char* password);
+extern void xylem_http_cors_middleware(xylem_http_res_t* res,
+                                      xylem_http_req_t* req,
+                                      void*             userdata);

@@ -54,6 +54,7 @@ set(SRCS
 	src/crypto/aes256/xylem-aes256.c
 	src/encoding/xylem-base64.c
 	src/encoding/xylem-bswap.c
+	src/encoding/xylem-url.c
 	src/encoding/xylem-varint.c
 	src/container/heap.c
 	src/container/list.c
@@ -84,6 +85,25 @@ set(SRCS
 	src/encoding/gzip/miniz/miniz.c
 	src/encoding/fec/reedsolomon-c/rs.c
 	src/encoding/fec/xylem-fec.c
+	src/net/http/http-utils.c
+	src/net/http/http-common.c
+	src/net/http/http-tcp.c
+	src/net/http/xylem-http.c
+	src/net/http/xylem-http-auth.c
+	src/net/http/xylem-http-cookie.c
+	src/net/http/xylem-http-form.c
+	src/net/http/xylem-http-multipart.c
+	src/net/http/xylem-http-router.c
+	src/net/http/xylem-http-fileserver.c
+	src/net/http/llhttp/llhttp.c
+	src/net/http/llhttp/http.c
+	src/net/http/llhttp/api.c
+	src/net/ws/ws.c
+	src/net/ws/xylem-ws.c
+	src/net/ws/ws-utf8.c
+	src/net/ws/ws-frame.c
+	src/net/ws/ws-handshake.c
+	src/net/ws/ws-deflate.c
 )
 
 if(WIN32)
@@ -123,25 +143,12 @@ if(XYLEM_ENABLE_TLS)
 		src/net/dtls/dtls.c
 		src/net/dtls/xylem-dtls.c
 		src/net/http/http-proxy.c
-		src/net/http/xylem-https.c
+		src/net/http/http-tls.c
 		src/net/ws/xylem-wss.c
 	)
+else()
+	list(APPEND SRCS src/net/http/http-tls-stub.c)
 endif()
-
-list(APPEND SRCS
-	src/net/http/http-utils.c
-	src/net/http/http.c
-	src/net/http/xylem-http.c
-	src/net/http/llhttp/llhttp.c
-	src/net/http/llhttp/http.c
-	src/net/http/llhttp/api.c
-	src/net/ws/ws.c
-	src/net/ws/xylem-ws.c
-	src/net/ws/ws-utf8.c
-	src/net/ws/ws-frame.c
-	src/net/ws/ws-handshake.c
-	src/net/ws/ws-deflate.c
-)
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
     add_library(xylem SHARED ${SRCS})

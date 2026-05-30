@@ -123,7 +123,7 @@ static int _http_proxy_connect_handshake(iowait_t* w, platform_sock_t fd,
     return 0;
 }
 
-platform_sock_t http_proxy_dial(const char* proxy_host,
+platform_sock_t http_proxy_connect(const char* proxy_host,
                                 uint16_t proxy_port,
                                 const char* target_host,
                                 uint16_t target_port,

@@ -37,6 +37,8 @@ xylem_add_test(reader)
 xylem_add_test(writer)
 
 xylem_add_test(http)
+xylem_add_test(http-form)
+xylem_add_test(http-multipart)
 xylem_add_test(ws)
 
 if(XYLEM_ENABLE_TLS)

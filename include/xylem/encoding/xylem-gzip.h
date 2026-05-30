@@ -35,7 +35,7 @@ _Pragma("once")
  *
  * @return Upper bound on the compressed output size in bytes.
  */
-extern size_t xylem_gzip_compress_bound(size_t slen);
+extern size_t xylem_gzip_compress_size(size_t slen);
 
 /**
  * @brief Compress data using gzip format (RFC 1952).
@@ -53,7 +53,7 @@ extern size_t xylem_gzip_compress_bound(size_t slen);
  * @return Number of bytes written to dst on success; -1 if dlen is
  *         insufficient or compression fails.
  *
- * @note Use xylem_gzip_compress_bound() to determine the required dlen.
+ * @note Use xylem_gzip_compress_size() to determine the required dlen.
  */
 extern int xylem_gzip_compress(const uint8_t* src, size_t slen, uint8_t* dst,
                                size_t dlen, int level);
@@ -85,7 +85,7 @@ extern int xylem_gzip_decompress(const uint8_t* src, size_t slen, uint8_t* dst,
  *
  * @return Upper bound on the deflated output size in bytes.
  */
-extern size_t xylem_gzip_deflate_bound(size_t slen);
+extern size_t xylem_gzip_deflate_size(size_t slen);
 
 /**
  * @brief Compress data using raw DEFLATE (RFC 1951).
@@ -103,7 +103,7 @@ extern size_t xylem_gzip_deflate_bound(size_t slen);
  * @return Number of bytes written to dst on success; -1 if dlen is
  *         insufficient or compression fails.
  *
- * @note Use xylem_gzip_deflate_bound() to determine the required dlen.
+ * @note Use xylem_gzip_deflate_size() to determine the required dlen.
  */
 extern int xylem_gzip_deflate(const uint8_t* src, size_t slen, uint8_t* dst,
                               size_t dlen, int level);

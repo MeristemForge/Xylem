@@ -28,7 +28,7 @@
 static void test_compress_decompress(void) {
     const char* input = "Hello, gzip world! This is a test string.";
     size_t slen = strlen(input);
-    size_t bound = xylem_gzip_compress_bound(slen);
+    size_t bound = xylem_gzip_compress_size(slen);
 
     uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
@@ -54,7 +54,7 @@ static void test_compress_decompress(void) {
 static void test_deflate_inflate(void) {
     const char* input = "Raw deflate round-trip test data.";
     size_t slen = strlen(input);
-    size_t bound = xylem_gzip_deflate_bound(slen);
+    size_t bound = xylem_gzip_deflate_size(slen);
 
     uint8_t* deflated = (uint8_t*)malloc(bound);
     ASSERT(deflated != NULL);
@@ -74,7 +74,7 @@ static void test_deflate_inflate(void) {
 
 /* Empty input produces a valid gzip stream that decompresses to nothing. */
 static void test_empty_input(void) {
-    size_t bound = xylem_gzip_compress_bound(0);
+    size_t bound = xylem_gzip_compress_size(0);
     uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
 
@@ -88,7 +88,7 @@ static void test_empty_input(void) {
     ASSERT(dlen == 0);
 
     /* Raw deflate/inflate with empty input. */
-    size_t dbound = xylem_gzip_deflate_bound(0);
+    size_t dbound = xylem_gzip_deflate_size(0);
     uint8_t* deflated = (uint8_t*)malloc(dbound);
     ASSERT(deflated != NULL);
 
@@ -125,7 +125,7 @@ static void test_large_data(void) {
         input[i] = (uint8_t)(i % 251);
     }
 
-    size_t bound = xylem_gzip_compress_bound(len);
+    size_t bound = xylem_gzip_compress_size(len);
     uint8_t* compressed = (uint8_t*)malloc(bound);
     ASSERT(compressed != NULL);
 
@@ -149,7 +149,7 @@ static void test_large_data(void) {
 static void test_compression_levels(void) {
     const char* input = "Test all compression levels.";
     size_t slen = strlen(input);
-    size_t bound = xylem_gzip_compress_bound(slen);
+    size_t bound = xylem_gzip_compress_size(slen);
     uint8_t compressed[256];
     ASSERT(bound <= sizeof(compressed));
 
@@ -189,12 +189,12 @@ static void test_null_dst(void) {
 
 /* Bound functions return non-zero for any input. */
 static void test_bound(void) {
-    ASSERT(xylem_gzip_compress_bound(0) > 0);
-    ASSERT(xylem_gzip_compress_bound(1024) > 1024);
-    ASSERT(xylem_gzip_deflate_bound(0) > 0);
-    ASSERT(xylem_gzip_deflate_bound(1024) > 0);
+    ASSERT(xylem_gzip_compress_size(0) > 0);
+    ASSERT(xylem_gzip_compress_size(1024) > 1024);
+    ASSERT(xylem_gzip_deflate_size(0) > 0);
+    ASSERT(xylem_gzip_deflate_size(1024) > 0);
     /* gzip bound is always larger than deflate bound by the overhead. */
-    ASSERT(xylem_gzip_compress_bound(100) > xylem_gzip_deflate_bound(100));
+    ASSERT(xylem_gzip_compress_size(100) > xylem_gzip_deflate_size(100));
 }
 
 int main(void) {

@@ -10,9 +10,6 @@ target_link_libraries(tcp-echo PRIVATE xylem)
 
 # HTTP examples (disabled: pending port to coroutine-based API)
 # if(XYLEM_ENABLE_HTTP)
-#     add_executable(http-static-server http-static-server.c)
-#     target_link_libraries(http-static-server PRIVATE xylem)
-#
 #     add_executable(http-session-client http-session-client.c)
 #     target_link_libraries(http-session-client PRIVATE xylem)
 # endif()
@@ -21,8 +18,3 @@ target_link_libraries(tcp-echo PRIVATE xylem)
 # add_executable(serial-terminal serial-terminal.c)
 # target_link_libraries(serial-terminal PRIVATE xylem)
 
-# TLS examples (only when TLS is enabled)
-if(XYLEM_ENABLE_TLS)
-    add_executable(https-static-server https-static-server.c)
-    target_link_libraries(https-static-server PRIVATE xylem OpenSSL::SSL OpenSSL::Crypto)
-endif()

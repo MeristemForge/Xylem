@@ -21,30 +21,30 @@
 
 _Pragma("once")
 
-#include "platform/platform-socket.h"
+#include "xylem/net/http/xylem-http-router.h"
 
-#include <stdint.h>
+#include <stdbool.h>
+
+typedef struct xylem_http_fileserver_opts_s {
+    const char* index_file;  /*< Default "index.html", NULL to disable. */
+    bool        dir_listing; /*< true = show directory listing. */
+} xylem_http_fileserver_opts_t;
 
 /**
- * @brief Connect to an HTTP CONNECT proxy and establish a tunnel.
+ * @brief Register a static file server on a router.
  *
- * Dials the proxy, sends a CONNECT request, and waits for 200.
- * On success the returned fd is a transparent tunnel to the target.
+ * Serves files from root_dir under url_prefix. Includes MIME type detection,
+ * ETag/Range support via xylem_http_serve_content, and path traversal protection.
  *
- * @param proxy_host   Proxy hostname or IP.
- * @param proxy_port   Proxy port.
- * @param target_host  Destination hostname.
- * @param target_port  Destination port.
- * @param timeout_ms   Connect timeout in ms, 0 = no timeout.
- * @param username     Proxy username, or NULL for no auth.
- * @param password     Proxy password, or NULL for no auth.
+ * @param router      Router handle.
+ * @param url_prefix  URL path prefix (e.g. "/static").
+ * @param root_dir    Filesystem root directory (e.g. "./public").
+ * @param opts        Options, or NULL for defaults (index.html enabled, no dir listing).
  *
- * @return Tunneled socket fd, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ * @return 0 on success, -1 on error.
  */
-extern platform_sock_t http_proxy_connect(const char* proxy_host,
-                                       uint16_t proxy_port,
-                                       const char* target_host,
-                                       uint16_t target_port,
-                                       uint64_t timeout_ms,
-                                       const char* username,
-                                       const char* password);
+extern int xylem_http_fileserver(
+    xylem_http_router_t*              router,
+    const char*                       url_prefix,
+    const char*                       root_dir,
+    const xylem_http_fileserver_opts_t* opts);

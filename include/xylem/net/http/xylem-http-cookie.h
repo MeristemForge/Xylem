@@ -21,30 +21,48 @@
 
 _Pragma("once")
 
-#include "platform/platform-socket.h"
-
-#include <stdint.h>
+#include "xylem/net/http/xylem-http.h"
 
 /**
- * @brief Connect to an HTTP CONNECT proxy and establish a tunnel.
+ * @brief Create a cookie jar.
  *
- * Dials the proxy, sends a CONNECT request, and waits for 200.
- * On success the returned fd is a transparent tunnel to the target.
- *
- * @param proxy_host   Proxy hostname or IP.
- * @param proxy_port   Proxy port.
- * @param target_host  Destination hostname.
- * @param target_port  Destination port.
- * @param timeout_ms   Connect timeout in ms, 0 = no timeout.
- * @param username     Proxy username, or NULL for no auth.
- * @param password     Proxy password, or NULL for no auth.
- *
- * @return Tunneled socket fd, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ * @return Cookie jar handle, or NULL on failure.
  */
-extern platform_sock_t http_proxy_connect(const char* proxy_host,
-                                       uint16_t proxy_port,
-                                       const char* target_host,
-                                       uint16_t target_port,
-                                       uint64_t timeout_ms,
-                                       const char* username,
-                                       const char* password);
+extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
+
+/**
+ * @brief Destroy a cookie jar. NULL-safe.
+ *
+ * @param jar  Cookie jar handle.
+ */
+extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
+
+/**
+ * @brief Manually set a cookie in the jar.
+ *
+ * @param jar    Cookie jar handle.
+ * @param url    URL to associate the cookie with (for domain/path matching).
+ * @param name   Cookie name.
+ * @param value  Cookie value.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_http_cookie_jar_set(
+    xylem_http_cookie_jar_t* jar,
+    const char*              url,
+    const char*              name,
+    const char*              value);
+
+/**
+ * @brief Get a cookie value from the jar.
+ *
+ * @param jar   Cookie jar handle.
+ * @param url   URL to match against (domain/path).
+ * @param name  Cookie name.
+ *
+ * @return Cookie value, or NULL if not found.
+ */
+extern const char* xylem_http_cookie_jar_get(
+    const xylem_http_cookie_jar_t* jar,
+    const char*                    url,
+    const char*                    name);

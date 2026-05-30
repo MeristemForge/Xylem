@@ -22,32 +22,11 @@
 #include "http-utils.h"
 
 #include "xylem/encoding/xylem-base64.h"
-#include "xylem/xylem-utils.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-int http_hex_digit(char c) {
-    static const int8_t _hex_table[256] = {
-        ['0'] = 0,  ['1'] = 1,  ['2'] = 2,  ['3'] = 3,
-        ['4'] = 4,  ['5'] = 5,  ['6'] = 6,  ['7'] = 7,
-        ['8'] = 8,  ['9'] = 9,
-        ['A'] = 10, ['B'] = 11, ['C'] = 12,
-        ['D'] = 13, ['E'] = 14, ['F'] = 15,
-        ['a'] = 10, ['b'] = 11, ['c'] = 12,
-        ['d'] = 13, ['e'] = 14, ['f'] = 15,
-    };
-    /* Table entries default to 0; distinguish '0' from invalid via range check. */
-    uint8_t u = (uint8_t)c;
-    int8_t v = _hex_table[u];
-    if (v != 0) {
-        return v;
-    }
-    return (c == '0') ? 0 : -1;
-}
-
 
 const uint8_t http_lower_table[256] = {
     0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
@@ -186,36 +165,12 @@ int http_url_serialize(const http_url_t* url, char* buf, size_t buf_size) {
     return 0;
 }
 
-
-/* RFC 3986 unreserved characters: A-Z a-z 0-9 - . _ ~ */
-static const uint8_t _unreserved_table[256] = {
-    ['-'] = 1, ['.'] = 1, ['_'] = 1, ['~'] = 1,
-    ['0'] = 1, ['1'] = 1, ['2'] = 1, ['3'] = 1, ['4'] = 1,
-    ['5'] = 1, ['6'] = 1, ['7'] = 1, ['8'] = 1, ['9'] = 1,
-    ['A'] = 1, ['B'] = 1, ['C'] = 1, ['D'] = 1, ['E'] = 1,
-    ['F'] = 1, ['G'] = 1, ['H'] = 1, ['I'] = 1, ['J'] = 1,
-    ['K'] = 1, ['L'] = 1, ['M'] = 1, ['N'] = 1, ['O'] = 1,
-    ['P'] = 1, ['Q'] = 1, ['R'] = 1, ['S'] = 1, ['T'] = 1,
-    ['U'] = 1, ['V'] = 1, ['W'] = 1, ['X'] = 1, ['Y'] = 1, ['Z'] = 1,
-    ['a'] = 1, ['b'] = 1, ['c'] = 1, ['d'] = 1, ['e'] = 1,
-    ['f'] = 1, ['g'] = 1, ['h'] = 1, ['i'] = 1, ['j'] = 1,
-    ['k'] = 1, ['l'] = 1, ['m'] = 1, ['n'] = 1, ['o'] = 1,
-    ['p'] = 1, ['q'] = 1, ['r'] = 1, ['s'] = 1, ['t'] = 1,
-    ['u'] = 1, ['v'] = 1, ['w'] = 1, ['x'] = 1, ['y'] = 1, ['z'] = 1,
-};
-
-bool http_is_unreserved(uint8_t c) {
-    return _unreserved_table[c] != 0;
-}
-
-
 char* http_req_serialize(const char* method, const http_url_t* url,
                          const void* body, size_t body_len,
                          const char* content_type, bool expect_continue,
-                         size_t* out_len,
+                         bool use_proxy, size_t* out_len,
                          const xylem_http_hdr_t* custom_headers,
-                         size_t custom_header_count,
-                         const xylem_http_auth_t* auth) {
+                         size_t custom_header_count) {
     char host_val[280];
     size_t host_val_len;
     bool is_default_port =
@@ -234,60 +189,37 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     const char* check_names[] = {
         "Host", "Content-Length", "Content-Type", "Connection", "Expect",
-        "Authorization"
+        "User-Agent", "Accept-Encoding"
     };
-    bool overridden[6];
+    bool overridden[7];
     size_t custom_est = http_header_scan(custom_headers, custom_header_count,
-                                         check_names, overridden, 6);
-    bool host_overridden           = overridden[0];
-    bool content_length_overridden = overridden[1];
-    bool content_type_overridden   = overridden[2];
-    bool connection_overridden     = overridden[3];
-    bool expect_overridden         = overridden[4];
-    bool auth_overridden           = overridden[5];
+                                         check_names, overridden, 7);
+    bool host_overridden            = overridden[0];
+    bool content_length_overridden  = overridden[1];
+    bool content_type_overridden    = overridden[2];
+    bool connection_overridden      = overridden[3];
+    bool expect_overridden          = overridden[4];
+    bool user_agent_overridden      = overridden[5];
+    bool accept_encoding_overridden = overridden[6];
 
-    /* Compute auth header if needed. */
-    uint8_t* auth_b64 = NULL;
-    int auth_b64_len = 0;
-    if (!auth_overridden && auth && auth->username && auth->password) {
-        size_t ulen = strlen(auth->username);
-        size_t plen = strlen(auth->password);
-        size_t cred_len = ulen + 1 + plen;
-        char* cred = (char*)malloc(cred_len + 1);
-        if (cred) {
-            memcpy(cred, auth->username, ulen);
-            cred[ulen] = ':';
-            memcpy(cred + ulen + 1, auth->password, plen);
-            cred[cred_len] = '\0';
-
-            int b64_size = xylem_base64_encode_size((int)cred_len);
-            auth_b64 = (uint8_t*)malloc((size_t)b64_size + 1);
-            if (auth_b64) {
-                auth_b64_len = xylem_base64_encode_std(
-                    (const uint8_t*)cred, (int)cred_len,
-                    auth_b64, b64_size + 1);
-                if (auth_b64_len < 0) {
-                    free(auth_b64);
-                    auth_b64 = NULL;
-                    auth_b64_len = 0;
-                }
-            }
-            free(cred);
-        }
+    /* Proxy mode: "GET http://host:port/path HTTP/1.1\r\n" */
+    size_t proxy_prefix_len = 0;
+    if (use_proxy) {
+        proxy_prefix_len = strlen(url->scheme) + 3 + host_val_len;
     }
 
-    size_t est = strlen(method) + 1 + strlen(url->path) + 11  /* request line */
+    size_t est = strlen(method) + 1 + proxy_prefix_len
+               + strlen(url->path) + 11                        /* request line */
                + custom_est
                + 6 + host_val_len + 2                          /* Host */
                + 16 + 20 + 2                                  /* Content-Length */
                + 24                                            /* Connection */
+               + 24                                            /* User-Agent */
+               + 30                                            /* Accept-Encoding */
                + 2;                                            /* final CRLF */
 
     if (content_type) {
         est += 14 + strlen(content_type) + 2;  /* "Content-Type: " + value + "\r\n" */
-    }
-    if (auth_b64_len > 0) {
-        est += 21 + (size_t)auth_b64_len + 2;  /* "Authorization: Basic " + b64 + "\r\n" */
     }
     if (expect_continue) {
         est += 24 + 2;  /* "Expect: 100-continue\r\n" */
@@ -298,7 +230,6 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     char* buf = (char*)malloc(est);
     if (!buf) {
-        free(auth_b64);
         return NULL;
     }
 
@@ -309,6 +240,15 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     memcpy(buf + off, method, method_len);
     off += method_len;
     buf[off++] = ' ';
+    if (use_proxy) {
+        size_t slen = strlen(url->scheme);
+        memcpy(buf + off, url->scheme, slen);
+        off += slen;
+        memcpy(buf + off, "://", 3);
+        off += 3;
+        memcpy(buf + off, host_val, host_val_len);
+        off += host_val_len;
+    }
     memcpy(buf + off, url->path, path_len);
     off += path_len;
     memcpy(buf + off, " HTTP/1.1\r\n", 11);
@@ -365,15 +305,15 @@ char* http_req_serialize(const char* method, const http_url_t* url,
         off += 24;
     }
 
-    if (auth_b64_len > 0) {
-        memcpy(buf + off, "Authorization: Basic ", 21);
-        off += 21;
-        memcpy(buf + off, auth_b64, (size_t)auth_b64_len);
-        off += (size_t)auth_b64_len;
-        buf[off++] = '\r';
-        buf[off++] = '\n';
+    if (!user_agent_overridden) {
+        memcpy(buf + off, "User-Agent: xylem/1.0\r\n", 23);
+        off += 23;
     }
-    free(auth_b64);
+
+    if (!accept_encoding_overridden) {
+        memcpy(buf + off, "Accept-Encoding: gzip\r\n", 23);
+        off += 23;
+    }
 
     if (!expect_overridden && expect_continue) {
         memcpy(buf + off, "Expect: 100-continue\r\n", 22);
@@ -548,834 +488,6 @@ const char* http_reason_phrase(int status) {
     }
 }
 
-
-
-char* xylem_http_url_encode(const char* src, size_t src_len,
-                            size_t* out_len) {
-    if (!src && src_len > 0) {
-        return NULL;
-    }
-
-    size_t max_len = src_len * 3 + 1;
-    char* out = (char*)malloc(max_len);
-    if (!out) {
-        return NULL;
-    }
-
-    static const char hex[] = "0123456789ABCDEF";
-    size_t j = 0;
-    for (size_t i = 0; i < src_len; i++) {
-        uint8_t c = (uint8_t)src[i];
-        if (http_is_unreserved(c)) {
-            out[j++] = (char)c;
-        } else {
-            out[j++] = '%';
-            out[j++] = hex[c >> 4];
-            out[j++] = hex[c & 0x0F];
-        }
-    }
-    out[j] = '\0';
-
-    if (out_len) {
-        *out_len = j;
-    }
-    return out;
-}
-
-char* xylem_http_url_decode(const char* src, size_t src_len,
-                            size_t* out_len) {
-    if (!src && src_len > 0) {
-        return NULL;
-    }
-
-    char* out = (char*)malloc(src_len + 1);
-    if (!out) {
-        return NULL;
-    }
-
-    size_t j = 0;
-    for (size_t i = 0; i < src_len; i++) {
-        if (src[i] == '%' && i + 2 < src_len) {
-            int hi = http_hex_digit(src[i + 1]);
-            int lo = http_hex_digit(src[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out[j++] = (char)((hi << 4) | lo);
-                i += 2;
-                continue;
-            }
-        }
-        out[j++] = src[i];
-    }
-    out[j] = '\0';
-
-    if (out_len) {
-        *out_len = j;
-    }
-    return out;
-}
-
-
-static bool _http_cors_origin_match(const char* allowed, const char* origin) {
-    if (!allowed || !origin) {
-        return false;
-    }
-    if (allowed[0] == '*' && allowed[1] == '\0') {
-        return true;
-    }
-
-    size_t origin_len = strlen(origin);
-    const char* p = allowed;
-
-    while (*p) {
-        while (*p == ' ' || *p == '\t') {
-            p++;
-        }
-        const char* start = p;
-        while (*p && *p != ',') {
-            p++;
-        }
-        const char* end = p;
-        while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
-            end--;
-        }
-
-        size_t len = (size_t)(end - start);
-        if (len == origin_len && memcmp(start, origin, len) == 0) {
-            return true;
-        }
-
-        if (*p == ',') {
-            p++;
-        }
-    }
-    return false;
-}
-
-size_t xylem_http_cors_headers(const xylem_http_cors_t* cors,
-                               const char* origin,
-                               bool is_preflight,
-                               xylem_http_hdr_t* out,
-                               size_t out_cap) {
-    if (!cors || !origin || !out || out_cap == 0) {
-        return 0;
-    }
-
-    if (!_http_cors_origin_match(cors->allowed_origins, origin)) {
-        return 0;
-    }
-
-    size_t n = 0;
-
-    if (n < out_cap) {
-        out[n].name = "Access-Control-Allow-Origin";
-        if (cors->allow_credentials) {
-            /* Spec requires echoing actual origin when credentials are allowed. */
-            out[n].value = origin;
-        } else {
-            out[n].value = cors->allowed_origins;
-        }
-        n++;
-    }
-
-    if (cors->allow_credentials && n < out_cap) {
-        out[n].name  = "Access-Control-Allow-Credentials";
-        out[n].value = "true";
-        n++;
-    }
-
-    if (cors->expose_headers && !is_preflight && n < out_cap) {
-        out[n].name  = "Access-Control-Expose-Headers";
-        out[n].value = cors->expose_headers;
-        n++;
-    }
-
-    if (is_preflight) {
-        if (cors->allowed_methods && n < out_cap) {
-            out[n].name  = "Access-Control-Allow-Methods";
-            out[n].value = cors->allowed_methods;
-            n++;
-        }
-        if (cors->allowed_headers && n < out_cap) {
-            out[n].name  = "Access-Control-Allow-Headers";
-            out[n].value = cors->allowed_headers;
-            n++;
-        }
-        if (cors->max_age > 0 && n < out_cap) {
-            /* Static buffer: caller must consume headers before the next call. */
-            static char _cors_max_age_buf[16];
-            snprintf(_cors_max_age_buf, sizeof(_cors_max_age_buf),
-                     "%d", cors->max_age);
-            out[n].name  = "Access-Control-Max-Age";
-            out[n].value = _cors_max_age_buf;
-            n++;
-        }
-    }
-
-    /* Non-wildcard origins require Vary: Origin for correct cache keying. */
-    if (!(cors->allowed_origins[0] == '*' &&
-          cors->allowed_origins[1] == '\0') && n < out_cap) {
-        out[n].name  = "Vary";
-        out[n].value = "Origin";
-        n++;
-    }
-
-    return n;
-}
-
-
-typedef struct {
-    char*    name;
-    char*    filename;
-    char*    content_type;
-    uint8_t* data;
-    size_t   data_len;
-} _http_multipart_part_t;
-
-struct xylem_http_multipart_s {
-    _http_multipart_part_t* parts;
-    size_t                  count;
-    size_t                  cap;
-};
-
-/* Extract boundary from Content-Type: multipart/form-data; boundary=XXX */
-static const char* _http_multipart_boundary(const char* ct, size_t* out_len) {
-    const char* p = strstr(ct, "boundary=");
-    if (!p) {
-        return NULL;
-    }
-    p += 9; /* strlen("boundary=") */
-    const char* start = p;
-    while (*p && *p != ';' && *p != ' ' && *p != '\t' && *p != '\r') {
-        p++;
-    }
-    *out_len = (size_t)(p - start);
-    return (*out_len > 0) ? start : NULL;
-}
-
-/* Extract a quoted attribute value from Content-Disposition. */
-static char* _http_multipart_attr(const char* hdr, const char* attr) {
-    size_t attr_len = strlen(attr);
-    const char* p = hdr;
-
-    while ((p = strstr(p, attr)) != NULL) {
-        /* Guard against substring matches (e.g. "filename" vs "name"). */
-        if (p != hdr) {
-            char prev = *(p - 1);
-            if (prev != ' ' && prev != ';' && prev != '\t') {
-                p += attr_len;
-                continue;
-            }
-        }
-        p += attr_len;
-        if (*p != '=' || *(p + 1) != '"') {
-            continue;
-        }
-        p += 2; /* skip =" */
-        const char* start = p;
-        while (*p && *p != '"') {
-            p++;
-        }
-        size_t len = (size_t)(p - start);
-        char* val = (char*)malloc(len + 1);
-        if (!val) {
-            return NULL;
-        }
-        memcpy(val, start, len);
-        val[len] = '\0';
-        return val;
-    }
-    return NULL;
-}
-
-static char* _http_multipart_ct(const char* headers, size_t hdr_len) {
-    const char* p = headers;
-    const char* end = headers + hdr_len;
-
-    while (p < end) {
-        const char* line = p;
-        const char* line_end = line;
-        while (line_end < end && *line_end != '\r' && *line_end != '\n') {
-            line_end++;
-        }
-        size_t line_len = (size_t)(line_end - line);
-
-        if (line_len > 13) {
-            const char ct_lower[] = "content-type:";
-            bool match = true;
-            for (size_t i = 0; i < 13; i++) {
-                char c = line[i];
-                if (c >= 'A' && c <= 'Z') {
-                    c = (char)(c + 32);
-                }
-                if (c != ct_lower[i]) {
-                    match = false;
-                    break;
-                }
-            }
-            if (match) {
-                const char* v = line + 13;
-                size_t remain = line_len - 13;
-                while (remain > 0 && (*v == ' ' || *v == '\t')) {
-                    v++;
-                    remain--;
-                }
-                char* ct = (char*)malloc(remain + 1);
-                if (!ct) {
-                    return NULL;
-                }
-                memcpy(ct, v, remain);
-                ct[remain] = '\0';
-                return ct;
-            }
-        }
-
-        p = line_end;
-        if (p < end && *p == '\r') {
-            p++;
-        }
-        if (p < end && *p == '\n') {
-            p++;
-        }
-    }
-    return NULL;
-}
-
-xylem_http_multipart_t* xylem_http_multipart_parse(
-    const char* content_type, const void* body, size_t body_len) {
-    if (!content_type || !body || body_len == 0) {
-        return NULL;
-    }
-
-    size_t bnd_len;
-    const char* bnd = _http_multipart_boundary(content_type, &bnd_len);
-    if (!bnd) {
-        return NULL;
-    }
-
-    size_t delim_len = 4 + bnd_len;
-    char* delim = (char*)malloc(delim_len + 1);
-    if (!delim) {
-        return NULL;
-    }
-    memcpy(delim, "\r\n--", 4);
-    memcpy(delim + 4, bnd, bnd_len);
-    delim[delim_len] = '\0';
-
-    xylem_http_multipart_t* mp =
-        (xylem_http_multipart_t*)calloc(1, sizeof(xylem_http_multipart_t));
-    if (!mp) {
-        free(delim);
-        return NULL;
-    }
-
-    const char* data = (const char*)body;
-    const char* end  = data + body_len;
-
-    /* First boundary has no leading \r\n (RFC 2046). */
-    const char* p = data;
-    if (body_len < 2 + bnd_len || memcmp(p, "--", 2) != 0 ||
-        memcmp(p + 2, bnd, bnd_len) != 0) {
-        free(delim);
-        free(mp);
-        return NULL;
-    }
-    p += 2 + bnd_len;
-    if (p + 2 <= end && p[0] == '\r' && p[1] == '\n') {
-        p += 2;
-    }
-
-    while (p < end) {
-        const char* next = NULL;
-        for (const char* s = p; s + delim_len <= end; s++) {
-            if (memcmp(s, delim, delim_len) == 0) {
-                next = s;
-                break;
-            }
-        }
-        if (!next) {
-            break;
-        }
-
-        size_t part_len = (size_t)(next - p);
-        const char* hdr_end = NULL;
-        for (const char* s = p; s + 4 <= p + part_len; s++) {
-            if (s[0] == '\r' && s[1] == '\n' && s[2] == '\r' && s[3] == '\n') {
-                hdr_end = s;
-                break;
-            }
-        }
-        if (!hdr_end) {
-            break;
-        }
-
-        size_t hdr_len = (size_t)(hdr_end - p);
-        const char* part_body = hdr_end + 4;
-        size_t part_body_len = (size_t)(next - part_body);
-
-        if (mp->count >= mp->cap) {
-            size_t new_cap = mp->cap ? mp->cap * 2 : 4;
-            _http_multipart_part_t* tmp = (_http_multipart_part_t*)realloc(
-                mp->parts, new_cap * sizeof(*tmp));
-            if (!tmp) {
-                break;
-            }
-            mp->parts = tmp;
-            mp->cap = new_cap;
-        }
-
-        _http_multipart_part_t* part = &mp->parts[mp->count];
-        memset(part, 0, sizeof(*part));
-
-        char* hdr_str = (char*)malloc(hdr_len + 1);
-        if (hdr_str) {
-            memcpy(hdr_str, p, hdr_len);
-            hdr_str[hdr_len] = '\0';
-            part->name     = _http_multipart_attr(hdr_str, "name");
-            part->filename = _http_multipart_attr(hdr_str, "filename");
-            part->content_type = _http_multipart_ct(hdr_str, hdr_len);
-            free(hdr_str);
-        }
-
-        part->data = (uint8_t*)malloc(part_body_len + 1);
-        if (part->data) {
-            memcpy(part->data, part_body, part_body_len);
-            part->data[part_body_len] = '\0';
-            part->data_len = part_body_len;
-        }
-
-        mp->count++;
-
-        p = next + delim_len;
-        if (p + 2 <= end && p[0] == '-' && p[1] == '-') {
-            break; /* Final boundary. */
-        }
-        if (p + 2 <= end && p[0] == '\r' && p[1] == '\n') {
-            p += 2;
-        }
-    }
-
-    free(delim);
-
-    if (mp->count == 0) {
-        free(mp->parts);
-        free(mp);
-        return NULL;
-    }
-
-    return mp;
-}
-
-size_t xylem_http_multipart_count(const xylem_http_multipart_t* mp) {
-    return mp ? mp->count : 0;
-}
-
-const char* xylem_http_multipart_name(
-    const xylem_http_multipart_t* mp, size_t index) {
-    if (!mp || index >= mp->count) {
-        return NULL;
-    }
-    return mp->parts[index].name;
-}
-
-const char* xylem_http_multipart_filename(
-    const xylem_http_multipart_t* mp, size_t index) {
-    if (!mp || index >= mp->count) {
-        return NULL;
-    }
-    return mp->parts[index].filename;
-}
-
-const char* xylem_http_multipart_content_type(
-    const xylem_http_multipart_t* mp, size_t index) {
-    if (!mp || index >= mp->count) {
-        return NULL;
-    }
-    return mp->parts[index].content_type;
-}
-
-const void* xylem_http_multipart_data(
-    const xylem_http_multipart_t* mp, size_t index) {
-    if (!mp || index >= mp->count) {
-        return NULL;
-    }
-    return mp->parts[index].data;
-}
-
-size_t xylem_http_multipart_data_len(
-    const xylem_http_multipart_t* mp, size_t index) {
-    if (!mp || index >= mp->count) {
-        return 0;
-    }
-    return mp->parts[index].data_len;
-}
-
-void xylem_http_multipart_destroy(xylem_http_multipart_t* mp) {
-    if (!mp) {
-        return;
-    }
-    for (size_t i = 0; i < mp->count; i++) {
-        free(mp->parts[i].name);
-        free(mp->parts[i].filename);
-        free(mp->parts[i].content_type);
-        free(mp->parts[i].data);
-    }
-    free(mp->parts);
-    free(mp);
-}
-
-
-typedef struct {
-    char*    name;
-    char*    filename;
-    char*    content_type;
-    uint8_t* data;
-    size_t   data_len;
-} _build_part_t;
-
-struct xylem_http_multipart_builder_s {
-    _build_part_t* parts;
-    size_t         count;
-    size_t         cap;
-    char           boundary[25];
-};
-
-/* Generate a 24-char alphanumeric boundary using nanosecond time as seed. */
-static void _build_gen_boundary(char* out) {
-    static const char _alphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    static uint64_t _counter = 0;
-    uint64_t seed = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC) ^ (++_counter);
-    for (int i = 0; i < 24; i++) {
-        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
-        out[i] = _alphabet[(seed >> 33) % 62];
-    }
-    out[24] = '\0';
-}
-
-xylem_http_multipart_builder_t* xylem_http_multipart_build_create(void) {
-    xylem_http_multipart_builder_t* b =
-        (xylem_http_multipart_builder_t*)calloc(
-            1, sizeof(xylem_http_multipart_builder_t));
-    if (!b) {
-        return NULL;
-    }
-    _build_gen_boundary(b->boundary);
-    return b;
-}
-
-/* Grow parts array and append a new part. */
-static int _build_add_part(xylem_http_multipart_builder_t* b,
-                           const char* name,
-                           const char* filename,
-                           const char* content_type,
-                           const void* data,
-                           size_t data_len) {
-    if (!b || !name) {
-        return -1;
-    }
-
-    if (b->count >= b->cap) {
-        size_t new_cap = b->cap ? b->cap * 2 : 4;
-        _build_part_t* tmp = (_build_part_t*)realloc(
-            b->parts, new_cap * sizeof(_build_part_t));
-        if (!tmp) {
-            return -1;
-        }
-        b->parts = tmp;
-        b->cap = new_cap;
-    }
-
-    _build_part_t* part = &b->parts[b->count];
-    memset(part, 0, sizeof(*part));
-
-    size_t name_len = strlen(name);
-    part->name = (char*)malloc(name_len + 1);
-    if (!part->name) {
-        return -1;
-    }
-    memcpy(part->name, name, name_len + 1);
-
-    if (filename) {
-        size_t fn_len = strlen(filename);
-        part->filename = (char*)malloc(fn_len + 1);
-        if (!part->filename) {
-            free(part->name);
-            part->name = NULL;
-            return -1;
-        }
-        memcpy(part->filename, filename, fn_len + 1);
-    }
-
-    if (content_type) {
-        size_t ct_len = strlen(content_type);
-        part->content_type = (char*)malloc(ct_len + 1);
-        if (!part->content_type) {
-            free(part->name);
-            free(part->filename);
-            part->name = NULL;
-            part->filename = NULL;
-            return -1;
-        }
-        memcpy(part->content_type, content_type, ct_len + 1);
-    }
-
-    if (data && data_len > 0) {
-        part->data = (uint8_t*)malloc(data_len);
-        if (!part->data) {
-            free(part->name);
-            free(part->filename);
-            free(part->content_type);
-            part->name = NULL;
-            part->filename = NULL;
-            part->content_type = NULL;
-            return -1;
-        }
-        memcpy(part->data, data, data_len);
-        part->data_len = data_len;
-    }
-
-    b->count++;
-    return 0;
-}
-
-int xylem_http_multipart_build_field(
-    xylem_http_multipart_builder_t* b,
-    const char* name,
-    const void* value,
-    size_t value_len) {
-    return _build_add_part(b, name, NULL, NULL, value, value_len);
-}
-
-int xylem_http_multipart_build_file(
-    xylem_http_multipart_builder_t* b,
-    const char* name,
-    const char* filename,
-    const char* content_type,
-    const void* data,
-    size_t data_len) {
-    if (!filename) {
-        return -1;
-    }
-    if (!content_type) {
-        content_type = "application/octet-stream";
-    }
-    return _build_add_part(b, name, filename, content_type, data, data_len);
-}
-
-int xylem_http_multipart_build_finish(
-    xylem_http_multipart_builder_t* b,
-    void** body,
-    size_t* body_len,
-    char** content_type) {
-    if (!b || !body || !body_len || !content_type) {
-        return -1;
-    }
-    if (b->count == 0) {
-        return -1;
-    }
-
-    size_t bnd_len = strlen(b->boundary);
-
-    /* Estimate total size. */
-    size_t total = 0;
-    for (size_t i = 0; i < b->count; i++) {
-        _build_part_t* p = &b->parts[i];
-        /* "--" + boundary + "\r\n" */
-        total += 2 + bnd_len + 2;
-        /* Content-Disposition: form-data; name="<name>" */
-        total += 38 + strlen(p->name) + 1;
-        if (p->filename) {
-            /* ; filename="<filename>" */
-            total += 12 + strlen(p->filename) + 1;
-        }
-        total += 2; /* \r\n after Content-Disposition */
-        if (p->content_type) {
-            /* Content-Type: <ct>\r\n */
-            total += 14 + strlen(p->content_type) + 2;
-        }
-        total += 2; /* blank line \r\n */
-        total += p->data_len;
-        total += 2; /* \r\n after data */
-    }
-    /* Final boundary: "--" + boundary + "--\r\n" */
-    total += 2 + bnd_len + 4;
-
-    uint8_t* buf = (uint8_t*)malloc(total);
-    if (!buf) {
-        return -1;
-    }
-
-    size_t off = 0;
-    for (size_t i = 0; i < b->count; i++) {
-        _build_part_t* p = &b->parts[i];
-
-        /* Boundary delimiter. */
-        buf[off++] = '-';
-        buf[off++] = '-';
-        memcpy(buf + off, b->boundary, bnd_len);
-        off += bnd_len;
-        buf[off++] = '\r';
-        buf[off++] = '\n';
-
-        /* Content-Disposition header. */
-        int n;
-        if (p->filename) {
-            n = snprintf(
-                (char*)(buf + off), total - off,
-                "Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"",
-                p->name, p->filename);
-        } else {
-            n = snprintf(
-                (char*)(buf + off), total - off,
-                "Content-Disposition: form-data; name=\"%s\"",
-                p->name);
-        }
-        if (n < 0 || (size_t)n >= total - off) {
-            free(buf);
-            return -1;
-        }
-        off += (size_t)n;
-        buf[off++] = '\r';
-        buf[off++] = '\n';
-
-        /* Content-Type header (file parts only). */
-        if (p->content_type) {
-            n = snprintf(
-                (char*)(buf + off), total - off,
-                "Content-Type: %s", p->content_type);
-            if (n < 0 || (size_t)n >= total - off) {
-                free(buf);
-                return -1;
-            }
-            off += (size_t)n;
-            buf[off++] = '\r';
-            buf[off++] = '\n';
-        }
-
-        /* Blank line separating headers from body. */
-        buf[off++] = '\r';
-        buf[off++] = '\n';
-
-        /* Part data. */
-        if (p->data_len > 0) {
-            memcpy(buf + off, p->data, p->data_len);
-            off += p->data_len;
-        }
-
-        /* Trailing \r\n after data. */
-        buf[off++] = '\r';
-        buf[off++] = '\n';
-    }
-
-    /* Final boundary. */
-    buf[off++] = '-';
-    buf[off++] = '-';
-    memcpy(buf + off, b->boundary, bnd_len);
-    off += bnd_len;
-    buf[off++] = '-';
-    buf[off++] = '-';
-    buf[off++] = '\r';
-    buf[off++] = '\n';
-
-    *body = buf;
-    *body_len = off;
-
-    /* Build content_type string: "multipart/form-data; boundary=<boundary>" */
-    size_t ct_len = 30 + bnd_len; /* "multipart/form-data; boundary=" + boundary */
-    char* ct = (char*)malloc(ct_len + 1);
-    if (!ct) {
-        free(buf);
-        *body = NULL;
-        *body_len = 0;
-        return -1;
-    }
-    snprintf(ct, ct_len + 1, "multipart/form-data; boundary=%s", b->boundary);
-    *content_type = ct;
-
-    return 0;
-}
-
-void xylem_http_multipart_build_destroy(
-    xylem_http_multipart_builder_t* b) {
-    if (!b) {
-        return;
-    }
-    for (size_t i = 0; i < b->count; i++) {
-        free(b->parts[i].name);
-        free(b->parts[i].filename);
-        free(b->parts[i].content_type);
-        free(b->parts[i].data);
-    }
-    free(b->parts);
-    free(b);
-}
-
-char* xylem_http_sse_build(const char* event, const char* data, size_t* len) {
-    if (!data) {
-        return NULL;
-    }
-
-    size_t event_len = event ? strlen(event) : 0;
-    size_t data_len = strlen(data);
-
-    /* Compute output size: "event: <event>\n" + "data: <data>\n" + "\n" */
-    size_t total = 0;
-    if (event && event_len > 0) {
-        total += 7 + event_len + 1; /* "event: " + event + "\n" */
-    }
-
-    /* Split data by '\n' -- each line gets its own "data: " prefix. */
-    size_t line_count = 1;
-    for (size_t i = 0; i < data_len; i++) {
-        if (data[i] == '\n') {
-            line_count++;
-        }
-    }
-    total += line_count * 6 + data_len + line_count; /* "data: " per line + chars + "\n" per line */
-    total += 1; /* trailing "\n" to end the message */
-
-    char* buf = (char*)malloc(total + 1);
-    if (!buf) {
-        return NULL;
-    }
-
-    size_t off = 0;
-
-    if (event && event_len > 0) {
-        memcpy(buf + off, "event: ", 7);
-        off += 7;
-        memcpy(buf + off, event, event_len);
-        off += event_len;
-        buf[off++] = '\n';
-    }
-
-    const char* p = data;
-    const char* end = data + data_len;
-    while (p <= end) {
-        const char* nl = p;
-        while (nl < end && *nl != '\n') {
-            nl++;
-        }
-        size_t line_len = (size_t)(nl - p);
-        memcpy(buf + off, "data: ", 6);
-        off += 6;
-        if (line_len > 0) {
-            memcpy(buf + off, p, line_len);
-            off += line_len;
-        }
-        buf[off++] = '\n';
-        p = nl + 1;
-    }
-
-    buf[off++] = '\n';
-    buf[off] = '\0';
-
-    if (len) {
-        *len = off;
-    }
-    return buf;
-}
-
 static const char* _getenv_any(const char* upper, const char* lower) {
     const char* val = getenv(upper);
     if (val && *val) {
@@ -1443,7 +555,7 @@ static bool _no_proxy_match(const char* host, const char* no_proxy) {
     return false;
 }
 
-xylem_http_proxy_t* xylem_http_proxy_from_env(const char* url) {
+xylem_http_proxy_t* http_proxy_from_env(const char* url) {
     if (!url) {
         return NULL;
     }
@@ -1569,7 +681,7 @@ xylem_http_proxy_t* xylem_http_proxy_from_env(const char* url) {
     return result;
 }
 
-void xylem_http_proxy_from_env_free(xylem_http_proxy_t* proxy) {
+void http_proxy_from_env_free(xylem_http_proxy_t* proxy) {
     if (!proxy) {
         return;
     }
@@ -1578,3 +690,4 @@ void xylem_http_proxy_from_env_free(xylem_http_proxy_t* proxy) {
     free((void*)proxy->password);
     free(proxy);
 }
+

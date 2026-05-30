@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "net/http/http.h"
+#include "net/http/http-common.h"
 #include "ws-deflate.h"
 #include "xylem/net/xylem-ws.h"
 

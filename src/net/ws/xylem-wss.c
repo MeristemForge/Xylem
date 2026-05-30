@@ -20,7 +20,7 @@
  */
 
 #include "xylem/net/xylem-wss.h"
-#include "xylem/net/xylem-https.h"
+#include "xylem/net/http/xylem-http.h"
 #include "xylem/net/xylem-tls.h"
 
 #include "ws.h"
@@ -133,7 +133,7 @@ xylem_ws_conn_t* xylem_wss_accept(struct xylem_http_res_s* res,
 
 
 typedef struct {
-    xylem_https_srv_t*     https_srv;
+    xylem_http_srv_t*      https_srv;
     xylem_ws_handler_fn_t  handler;
     void*                  userdata;
     xylem_ws_opts_t        opts;
@@ -194,11 +194,12 @@ xylem_wss_listener_t* xylem_wss_listen(const char* host, uint16_t port,
         l->opts = *opts;
     }
 
-    xylem_https_srv_opts_t srv_opts = {0};
-    srv_opts.on_upgrade      = _wss_upgrade_handler;
+    xylem_http_srv_opts_t srv_opts = {0};
+    srv_opts.on_upgrade       = _wss_upgrade_handler;
     srv_opts.upgrade_userdata = l;
+    srv_opts.tls_ctx          = tls_ctx;
 
-    l->https_srv = xylem_https_listen(host, port, NULL, NULL, tls_ctx, &srv_opts);
+    l->https_srv = xylem_https_listen(host, port, NULL, NULL, &srv_opts);
     if (!l->https_srv) {
         free(l);
         return NULL;
@@ -212,7 +213,7 @@ void xylem_wss_close_listener(xylem_wss_listener_t* listener) {
         return;
     }
     wss_listener_t* l = (wss_listener_t*)listener;
-    xylem_https_close(l->https_srv);
+    xylem_http_close(l->https_srv);
     free(l);
 }
 
@@ -221,5 +222,7 @@ uint16_t xylem_wss_listener_port(xylem_wss_listener_t* listener) {
         return 0;
     }
     wss_listener_t* l = (wss_listener_t*)listener;
-    return xylem_https_srv_port(l->https_srv);
+    uint16_t port = 0;
+    xylem_http_srv_addr(l->https_srv, NULL, 0, &port);
+    return port;
 }
