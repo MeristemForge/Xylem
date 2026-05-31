@@ -47,6 +47,11 @@ struct xylem_channel_s {
     _Atomic bool       timed_out;
 };
 
+typedef struct {
+    xylem_channel_t* ch;
+    uint64_t         deadline_ms; /*< 0 = no deadline */
+} _channel_park_ctx_t;
+
 static inline void _channel_ref(xylem_channel_t* ch) {
     atomic_fetch_add_explicit(&ch->refcnt, 1, memory_order_relaxed);
 }
@@ -66,87 +71,6 @@ static void _channel_unref(xylem_channel_t* ch) {
     }
     free(ch);
 }
-
-xylem_channel_t* xylem_channel_create(void) {
-    xylem_channel_t* ch =
-        (xylem_channel_t*)calloc(1, sizeof(xylem_channel_t));
-    if (!ch) {
-        return NULL;
-    }
-    mpsc_init(&ch->queue);
-    atomic_init(&ch->wait_coro, NULL);
-    atomic_init(&ch->closed, false);
-    atomic_init(&ch->refcnt, 1);
-    return ch;
-}
-
-void xylem_channel_close(xylem_channel_t* ch) {
-    if (!ch) {
-        xylem_loge("close(NULL); aborting");
-        abort();
-    }
-
-    if (atomic_exchange(&ch->closed, true)) {
-        xylem_loge("double close (ch=%p); aborting", (void*)ch);
-        abort();
-    }
-
-    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-}
-
-void xylem_channel_destroy(xylem_channel_t* ch) {
-    if (!ch) {
-        return;
-    }
-
-    /* Idempotent: close() may have already set this. */
-    atomic_store(&ch->closed, true);
-
-    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
-
-    _channel_unref(ch);
-}
-
-int xylem_channel_send(xylem_channel_t* ch, void* msg) {
-    if (!ch || !msg) {
-        return -1;
-    }
-
-    _channel_ref(ch);
-
-    if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
-        xylem_loge("send on closed channel (ch=%p); aborting",
-                   (void*)ch);
-        abort();
-    }
-
-    int rc = -1;
-    _channel_msg_t* m = (_channel_msg_t*)calloc(1, sizeof(_channel_msg_t));
-    if (m) {
-        m->payload = msg;
-        mpsc_push(&ch->queue, &m->node);
-
-        mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-        if (co) {
-            scheduler_schedule(runtime_get_scheduler(), co);
-        }
-        rc = 0;
-    }
-
-    _channel_unref(ch);
-    return rc;
-}
-
-typedef struct {
-    xylem_channel_t* ch;
-    uint64_t         deadline_ms; /*< 0 = no deadline */
-} _channel_park_ctx_t;
 
 static bool _channel_park_cb(mco_coro* co, void* arg) {
     _channel_park_ctx_t* ctx = (_channel_park_ctx_t*)arg;
@@ -250,6 +174,82 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
 
     _channel_unref(ch);
     return payload;
+}
+
+xylem_channel_t* xylem_channel_create(void) {
+    xylem_channel_t* ch =
+        (xylem_channel_t*)calloc(1, sizeof(xylem_channel_t));
+    if (!ch) {
+        return NULL;
+    }
+    mpsc_init(&ch->queue);
+    atomic_init(&ch->wait_coro, NULL);
+    atomic_init(&ch->closed, false);
+    atomic_init(&ch->refcnt, 1);
+    return ch;
+}
+
+void xylem_channel_close(xylem_channel_t* ch) {
+    if (!ch) {
+        xylem_loge("close(NULL); aborting");
+        abort();
+    }
+
+    if (atomic_exchange(&ch->closed, true)) {
+        xylem_loge("double close (ch=%p); aborting", (void*)ch);
+        abort();
+    }
+
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+}
+
+void xylem_channel_destroy(xylem_channel_t* ch) {
+    if (!ch) {
+        return;
+    }
+
+    /* Idempotent: close() may have already set this. */
+    atomic_store(&ch->closed, true);
+
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+
+    _channel_unref(ch);
+}
+
+int xylem_channel_send(xylem_channel_t* ch, void* msg) {
+    if (!ch || !msg) {
+        return -1;
+    }
+
+    _channel_ref(ch);
+
+    if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
+        xylem_loge("send on closed channel (ch=%p); aborting",
+                   (void*)ch);
+        abort();
+    }
+
+    int rc = -1;
+    _channel_msg_t* m = (_channel_msg_t*)calloc(1, sizeof(_channel_msg_t));
+    if (m) {
+        m->payload = msg;
+        mpsc_push(&ch->queue, &m->node);
+
+        mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+        if (co) {
+            scheduler_schedule(runtime_get_scheduler(), co);
+        }
+        rc = 0;
+    }
+
+    _channel_unref(ch);
+    return rc;
 }
 
 void* xylem_channel_recv(xylem_channel_t* ch) {
