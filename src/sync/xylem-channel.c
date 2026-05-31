@@ -43,13 +43,20 @@ typedef struct _channel_msg_s {
  *           before the callback can run). The timer-callback ref is
  *           what lets _channel_deadline_cb touch the channel safely
  *           even if the in-flight recv has already returned and the
- *           creator destroyed the channel concurrently. */
+ *           creator destroyed the channel concurrently.
+ *
+ * Like every xylem_ runtime object (tcp/udp/dtls conns all embed an
+ * iowait_t / sched_timer_t), a channel must not outlive xylem_run:
+ * destroy() releases the cached deadline timer, a scheduler-owned
+ * resource. The timer is created lazily on first timed recv and
+ * reused across calls -- recv_timeout is a per-packet hot path in
+ * DTLS/RUDP, so per-call create/destroy would be pure overhead. */
 struct xylem_channel_s {
     mpsc_t             queue;
     _Atomic(mco_coro*) wait_coro;
     _Atomic bool       closed;
     _Atomic int32_t    refcnt;
-    sched_timer_t*     deadline_timer; /*< lazily created by recv_timeout */
+    sched_timer_t*     deadline_timer; /*< lazily created, reused */
     _Atomic bool       timed_out;
 };
 
@@ -139,8 +146,11 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
     _channel_ref(ch);
 
     /* Lazily create the per-channel deadline timer on first timed
-     * recv. The single-receiver contract means only one coroutine
-     * ever drives recv, so no extra synchronisation is needed. */
+     * recv and reuse it thereafter. The single-receiver contract
+     * means only one coroutine ever drives recv, so no extra
+     * synchronisation is needed. The timer is a scheduler-owned
+     * resource released by destroy(), so the channel must not
+     * outlive xylem_run -- the same rule as every xylem_ object. */
     if (deadline_ms > 0 && !ch->deadline_timer) {
         ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
     }
