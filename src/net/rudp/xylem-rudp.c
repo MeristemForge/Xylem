@@ -639,7 +639,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
         if (now >= deadline) {
             xylem_loge("rudp dial conv=%u: handshake timeout", conv);
-            goto dial_fail;
+            _rudp_conn_unref(c);
+            return NULL;
         }
         uint64_t wait_deadline = now + RUDP_SYN_RETRANSMIT_MS;
         if (wait_deadline > deadline) {
@@ -649,7 +650,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
         iowait_result_t r = iowait_read(c->waiter);
 
         if (r == IOWAIT_CLOSED) {
-            goto dial_fail;
+            _rudp_conn_unref(c);
+            return NULL;
         }
         if (r == IOWAIT_TIMEOUT) {
             /* Retransmit SYN on next iteration. */
@@ -695,18 +697,6 @@ xylem_rudp_conn_t* xylem_rudp_dial(
 
     xylem_logi("rudp dial conv=%u: connected to %s:%u", conv, host, port);
     return c;
-
-dial_fail:
-    iowait_set_rd_deadline(c->waiter, 0);
-    sched_timer_destroy(c->update_timer);
-    ikcp_release(c->kcp);
-    rudp_fec_enc_destroy(c->fec_enc);
-    rudp_fec_dec_destroy(c->fec_dec);
-    xylem_aes256_destroy(c->aes);
-    iowait_destroy(c->waiter);
-    platform_socket_close(fd);
-    free(c);
-    return NULL;
 }
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
     char recv_buf[RUDP_RECV_BUF_SIZE];
@@ -833,6 +823,75 @@ int xylem_rudp_recv(xylem_rudp_conn_t* conn, void* buf, int len) {
 int xylem_rudp_send(xylem_rudp_conn_t* conn, const void* data, int len) {
     return xylem_rudp_write(conn, data, len);
 }
+/**
+ * Build a server session for a freshly handshaked peer and publish it:
+ * insert into the session tree, start its update timer and hand it to
+ * the accept channel. Returns 0 on success, -1 if any resource could
+ * not be allocated (all partially built state is freed before return).
+ */
+static int _rudp_accept_session(xylem_rudp_listener_t* ln,
+                                const addr_t* peer_addr, uint32_t hs_conv) {
+    xylem_rudp_conn_t* sess =
+        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
+    if (!sess) {
+        return -1;
+    }
+
+    atomic_store_explicit(&sess->refcnt, 1, memory_order_relaxed);
+    sess->fd        = ln->fd;
+    sess->conv      = hs_conv;
+    sess->peer_addr = *peer_addr;
+    sess->listener  = ln;
+    sess->mode      = ln->opts.mode;
+    sess->mtu       = (ln->opts.mtu > 0)
+        ? (int)ln->opts.mtu : RUDP_DEFAULT_MTU;
+    sess->aes       = ln->aes;
+
+    if (_rudp_init_fec(sess, sess->mtu, ln->opts.fec_data,
+                       ln->opts.fec_parity) != 0) {
+        free(sess);
+        return -1;
+    }
+
+    sess->kcp = _rudp_create_kcp(sess, hs_conv, &ln->opts);
+    if (!sess->kcp) {
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sess->inbox = xylem_channel_create();
+    if (!sess->inbox) {
+        ikcp_release(sess->kcp);
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sess->update_timer = sched_timer_create(ln->sched);
+    if (!sess->update_timer) {
+        xylem_channel_destroy(sess->inbox);
+        ikcp_release(sess->kcp);
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sched_timer_start(sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
+    _rudp_schedule_update(sess);
+
+    mtx_lock(&ln->sessions_mtx);
+    rbtree_insert(&ln->sessions, &sess->listener_node);
+    mtx_unlock(&ln->sessions_mtx);
+    xylem_channel_send(ln->accept_ch, sess);
+
+    xylem_logi("rudp listener: accepted conv=%u", hs_conv);
+    return 0;
+}
+
 static void _rudp_dispatcher(void* arg) {
     xylem_rudp_listener_t* ln = (xylem_rudp_listener_t*)arg;
     char recv_buf[RUDP_RECV_BUF_SIZE];
@@ -920,71 +979,7 @@ static void _rudp_dispatcher(void* arg) {
                               != NULL;
                 mtx_unlock(&ln->sessions_mtx);
                 if (!exists) {
-                    xylem_rudp_conn_t* sess =
-                        (xylem_rudp_conn_t*)calloc(
-                            1, sizeof(xylem_rudp_conn_t));
-                    if (sess) {
-                        atomic_store_explicit(
-                            &sess->refcnt, 1, memory_order_relaxed);
-                        sess->fd        = ln->fd;
-                        sess->conv      = hs_conv;
-                        sess->peer_addr = peer_addr;
-                        sess->listener  = ln;
-                        sess->mode      = ln->opts.mode;
-                        sess->mtu       = (ln->opts.mtu > 0)
-                            ? (int)ln->opts.mtu : RUDP_DEFAULT_MTU;
-                        sess->aes       = ln->aes;
-
-                        if (_rudp_init_fec(sess, sess->mtu,
-                                           ln->opts.fec_data,
-                                           ln->opts.fec_parity) != 0) {
-                            free(sess);
-                            goto dispatch_next;
-                        }
-
-                        sess->kcp = _rudp_create_kcp(
-                            sess, hs_conv, &ln->opts);
-                        if (!sess->kcp) {
-                            rudp_fec_enc_destroy(sess->fec_enc);
-                            rudp_fec_dec_destroy(sess->fec_dec);
-                            free(sess);
-                            goto dispatch_next;
-                        }
-
-                        sess->inbox = xylem_channel_create();
-                        if (!sess->inbox) {
-                            ikcp_release(sess->kcp);
-                            rudp_fec_enc_destroy(sess->fec_enc);
-                            rudp_fec_dec_destroy(sess->fec_dec);
-                            free(sess);
-                            goto dispatch_next;
-                        }
-
-                        sess->update_timer =
-                            sched_timer_create(ln->sched);
-                        if (!sess->update_timer) {
-                            xylem_channel_destroy(sess->inbox);
-                            ikcp_release(sess->kcp);
-                            rudp_fec_enc_destroy(sess->fec_enc);
-                            rudp_fec_dec_destroy(sess->fec_dec);
-                            free(sess);
-                            goto dispatch_next;
-                        }
-
-                        sched_timer_start(
-                            sess->update_timer,
-                            _rudp_update_timer_cb, sess, 10, 0);
-                        _rudp_schedule_update(sess);
-
-                        mtx_lock(&ln->sessions_mtx);
-                        rbtree_insert(
-                            &ln->sessions, &sess->listener_node);
-                        mtx_unlock(&ln->sessions_mtx);
-                        xylem_channel_send(ln->accept_ch, sess);
-
-                        xylem_logi("rudp listener: accepted conv=%u",
-                                   hs_conv);
-                    }
+                    _rudp_accept_session(ln, &peer_addr, hs_conv);
                 }
             }
             /* Ignore ACKs on server side. */
@@ -1052,7 +1047,6 @@ static void _rudp_dispatcher(void* arg) {
             }
         }
 
-dispatch_next:
         if (plain != recv_buf) {
             free(plain);
         }
