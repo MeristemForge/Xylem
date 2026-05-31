@@ -87,12 +87,12 @@ void xylem_http_cors_middleware(xylem_http_res_t* res,
     const char* origin = xylem_http_req_header(req, "Origin");
 
     if (!origin || !origin[0]) {
-        xylem_http_next(res, req);
+        xylem_http_router_next(res, req);
         return;
     }
 
     if (!_origin_allowed(cfg, origin)) {
-        xylem_http_next(res, req);
+        xylem_http_router_next(res, req);
         return;
     }
 
@@ -133,5 +133,5 @@ void xylem_http_cors_middleware(xylem_http_res_t* res,
 
     /* normal cross-origin request */
     _set_common_headers(res, cfg, origin);
-    xylem_http_next(res, req);
+    xylem_http_router_next(res, req);
 }

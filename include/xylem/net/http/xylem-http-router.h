@@ -60,10 +60,10 @@ extern int xylem_http_router_handle(
 /**
  * @brief Register a global middleware (onion model).
  *
- * Middleware executes in registration order. Call xylem_http_next() to
+ * Middleware executes in registration order. Call xylem_http_router_next() to
  * pass control to the next middleware / route handler. Code after
- * xylem_http_next() runs on the way back out (post-handler phase).
- * Not calling xylem_http_next() short-circuits the chain.
+ * xylem_http_router_next() runs on the way back out (post-handler phase).
+ * Not calling xylem_http_router_next() short-circuits the chain.
  *
  * @param router      Router handle.
  * @param middleware  Middleware handler function.
@@ -101,7 +101,7 @@ extern xylem_http_router_t* xylem_http_router_group(
  * @param res  Response handle.
  * @param req  Request handle.
  */
-extern void xylem_http_next(xylem_http_res_t* res, xylem_http_req_t* req);
+extern void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req);
 
 /**
  * @brief Get a path parameter value from a matched route.

@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-proxy.h"
+#include "http-internal.h"
 
 #include "xylem/encoding/xylem-base64.h"
 #include "xylem/xylem-utils.h"

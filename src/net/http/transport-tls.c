@@ -19,12 +19,17 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-common.h"
+/*
+ * TLS transport factory for the HTTP engine. Builds an http_transport_t
+ * over xylem_tls and drives accept/dial. Compiled only when TLS is
+ * enabled; the stub (transport-tls-stub.c) replaces it otherwise.
+ */
+
+#include "http-internal.h"
 
 #include "xylem/net/xylem-tls.h"
 
-#include "http-proxy.h"
-#include "net/tls/tls.h"
+#include "net/tls/tls-internal.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>
@@ -38,6 +43,9 @@ static http_transport_t _https_make_transport(xylem_tls_conn_t* conn) {
         .close           = (void (*)(void*))xylem_tls_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tls_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tls_set_write_deadline,
+        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tls_remote_addr,
+        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tls_local_addr,
+        .shutdown_wr     = NULL,
     };
 }
 
@@ -77,7 +85,7 @@ static http_transport_t _https_dial(const char* host, uint16_t port,
             }
             return (http_transport_t){0};
         }
-        conn = tls_handshake(fd, tls_ctx, &tls_opts);
+        conn = tls_client_handshake(fd, tls_ctx, &tls_opts);
     } else {
         conn = xylem_tls_dial(host, port, tls_ctx, &tls_opts);
     }
@@ -109,15 +117,15 @@ static void _https_accept_coroutine(void* arg) {
         }
         ctx->srv       = srv;
         ctx->transport = _https_make_transport(conn);
-        xylem_tls_remote_addr(
-            conn, ctx->remote_host, sizeof(ctx->remote_host),
-            &ctx->remote_port);
+        ctx->transport.remote_addr(
+            ctx->transport.conn, ctx->remote_host,
+            sizeof(ctx->remote_host), &ctx->remote_port);
 
         runtime_spawn(http_srv_conn_coroutine, ctx);
     }
 }
 
-xylem_http_srv_t* http_listen_tls(
+xylem_http_srv_t* http_tls_listen(
     const char*                  host,
     uint16_t                     port,
     xylem_http_handler_fn_t      handler,
@@ -158,29 +166,14 @@ xylem_http_srv_t* http_listen_tls(
     srv->close_listener = (void (*)(void*))xylem_tls_close_listener;
     srv->handler        = handler;
     srv->userdata       = userdata;
-    if (opts) {
-        srv->on_upgrade       = opts->on_upgrade;
-        srv->upgrade_userdata = opts->upgrade_userdata;
-        srv->idle_timeout_ms  = opts->idle_timeout_ms;
-        srv->read_header_timeout_ms = opts->read_header_timeout_ms;
-        srv->write_timeout_ms = opts->write_timeout_ms;
-    }
-    if (!srv->idle_timeout_ms) {
-        srv->idle_timeout_ms = 60000;
-    }
-    if (!srv->read_header_timeout_ms) {
-        srv->read_header_timeout_ms = 10000;
-    }
-    if (!srv->write_timeout_ms) {
-        srv->write_timeout_ms = 30000;
-    }
+    http_srv_init(srv, opts);
 
     xylem_tls_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
     runtime_spawn(_https_accept_coroutine, srv);
     return (xylem_http_srv_t*)srv;
 }
 
-xylem_http_res_t* http_request_tls(
+xylem_http_res_t* http_tls_request(
     const char*                  method,
     const char*                  url,
     const void*                  body,

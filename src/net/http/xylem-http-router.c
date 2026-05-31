@@ -21,7 +21,7 @@
 
 #include "xylem/net/http/xylem-http-router.h"
 
-#include "http-common.h"
+#include "http-internal.h"
 
 #include <stdlib.h>
 #include <string.h>

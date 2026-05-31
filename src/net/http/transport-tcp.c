@@ -19,7 +19,12 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-common.h"
+/*
+ * Plain-TCP transport factory for the HTTP engine. Builds an
+ * http_transport_t over xylem_tcp and drives accept/dial. Always built.
+ */
+
+#include "http-internal.h"
 
 #include "xylem/net/xylem-tcp.h"
 
@@ -35,6 +40,9 @@ static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
         .close           = (void (*)(void*))xylem_tcp_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
+        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
+        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
+        .shutdown_wr     = (int (*)(void*))xylem_tcp_shutdown_wr,
     };
 }
 
@@ -66,15 +74,15 @@ static void _http_accept_coroutine(void* arg) {
         }
         ctx->srv       = srv;
         ctx->transport = _http_make_transport(conn);
-        xylem_tcp_remote_addr(
-            conn, ctx->remote_host, sizeof(ctx->remote_host),
-            &ctx->remote_port);
+        ctx->transport.remote_addr(
+            ctx->transport.conn, ctx->remote_host,
+            sizeof(ctx->remote_host), &ctx->remote_port);
 
         runtime_spawn(http_srv_conn_coroutine, ctx);
     }
 }
 
-xylem_http_srv_t* http_listen_tcp(
+xylem_http_srv_t* http_tcp_listen(
     const char*                  host,
     uint16_t                     port,
     xylem_http_handler_fn_t      handler,
@@ -95,22 +103,7 @@ xylem_http_srv_t* http_listen_tcp(
     srv->close_listener = (void (*)(void*))xylem_tcp_close_listener;
     srv->handler        = handler;
     srv->userdata       = userdata;
-    if (opts) {
-        srv->on_upgrade       = opts->on_upgrade;
-        srv->upgrade_userdata = opts->upgrade_userdata;
-        srv->idle_timeout_ms  = opts->idle_timeout_ms;
-        srv->read_header_timeout_ms = opts->read_header_timeout_ms;
-        srv->write_timeout_ms = opts->write_timeout_ms;
-    }
-    if (!srv->idle_timeout_ms) {
-        srv->idle_timeout_ms = 60000;
-    }
-    if (!srv->read_header_timeout_ms) {
-        srv->read_header_timeout_ms = 10000;
-    }
-    if (!srv->write_timeout_ms) {
-        srv->write_timeout_ms = 30000;
-    }
+    http_srv_init(srv, opts);
 
     xylem_tcp_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
 
@@ -119,7 +112,7 @@ xylem_http_srv_t* http_listen_tcp(
     return (xylem_http_srv_t*)srv;
 }
 
-xylem_http_res_t* http_request_tcp(
+xylem_http_res_t* http_tcp_request(
     const char*                  method,
     const char*                  url,
     const void*                  body,

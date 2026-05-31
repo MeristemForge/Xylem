@@ -82,6 +82,9 @@ static http_transport_t _ws_make_tcp_transport(xylem_tcp_conn_t* conn) {
         .close           = (void (*)(void*))xylem_tcp_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
+        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
+        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
+        .shutdown_wr     = (int (*)(void*))xylem_tcp_shutdown_wr,
     };
 }
 

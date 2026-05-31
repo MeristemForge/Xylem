@@ -86,9 +86,8 @@ set(SRCS
 	src/encoding/fec/reedsolomon-c/rs.c
 	src/encoding/fec/xylem-fec.c
 	src/net/http/http-utils.c
-	src/net/http/http-common.c
-	src/net/http/http-tcp.c
 	src/net/http/xylem-http.c
+	src/net/http/transport-tcp.c
 	src/net/http/xylem-http-auth.c
 	src/net/http/xylem-http-cookie.c
 	src/net/http/xylem-http-form.c
@@ -141,11 +140,11 @@ if(XYLEM_ENABLE_TLS)
 		src/net/tls/xylem-tls.c
 		src/net/xylem-dtls.c
 		src/net/http/http-proxy.c
-		src/net/http/http-tls.c
+		src/net/http/transport-tls.c
 		src/net/ws/xylem-wss.c
 	)
 else()
-	list(APPEND SRCS src/net/http/http-tls-stub.c)
+	list(APPEND SRCS src/net/http/transport-tls-stub.c)
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)

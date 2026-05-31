@@ -103,7 +103,7 @@ void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
     const char* pass = colon + 1;
 
     if (cfg->check(user, pass, cfg->userdata)) {
-        xylem_http_next(res, req);
+        xylem_http_router_next(res, req);
         return;
     }
 
