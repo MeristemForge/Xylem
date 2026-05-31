@@ -37,7 +37,13 @@ typedef struct _channel_msg_s {
     void*       payload;
 } _channel_msg_t;
 
-/* refcnt: 1 for creator (dropped by destroy) + 1 per in-flight call. */
+/* refcnt: 1 for creator (dropped by destroy) + 1 per in-flight call
+ *         + 1 per armed deadline timer (dropped by the timer callback
+ *           when it runs, or by recv when it cancels a pending fire
+ *           before the callback can run). The timer-callback ref is
+ *           what lets _channel_deadline_cb touch the channel safely
+ *           even if the in-flight recv has already returned and the
+ *           creator destroyed the channel concurrently. */
 struct xylem_channel_s {
     mpsc_t             queue;
     _Atomic(mco_coro*) wait_coro;
@@ -117,6 +123,12 @@ static void _channel_deadline_cb(sched_timer_t* timer, void* ud) {
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
+    /* Release the ref the recv loop handed us when it armed the
+     * timer. Reaching zero here is safe: this callback runs while
+     * the scheduler holds its own ref on the timer object, so the
+     * sched_timer_destroy inside _channel_unref only drops the
+     * creator ref and does not free the timer out from under us. */
+    _channel_unref(ch);
 }
 
 static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
@@ -155,6 +167,14 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
                 break;
             }
             if (ch->deadline_timer) {
+                /* The timer callback dereferences ch asynchronously
+                 * and on a different worker. Hand it its own ref so
+                 * it stays valid even if this recv returns and the
+                 * channel is destroyed before the callback runs. The
+                 * ref is balanced either by the callback itself, or
+                 * by us below when sched_timer_stop cancels a fire
+                 * that will therefore never run. */
+                _channel_ref(ch);
                 sched_timer_start(ch->deadline_timer,
                                   _channel_deadline_cb, ch,
                                   deadline_ms - now, 0);
@@ -165,7 +185,28 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
         scheduler_park(runtime_get_scheduler(), _channel_park_cb, &ctx);
 
         if (deadline_ms > 0 && ch->deadline_timer) {
-            sched_timer_stop(ch->deadline_timer);
+            /* If stop() returns true the pending fire was cancelled
+             * and the callback will not run, so we own the ref we
+             * handed it above and must release it. If it returns
+             * false the callback already ran (or is running) and
+             * will release that ref itself. */
+            if (sched_timer_stop(ch->deadline_timer)) {
+                _channel_unref(ch);
+            }
+        }
+
+        /* A message that was delivered while we were parked must win
+         * over a deadline that fired in the same window: re-attempt
+         * the pop before honouring timed_out. Otherwise a sender that
+         * dequeued our wait slot just before the timer fired would
+         * leave its message stranded in the queue and we would
+         * wrongly report a timeout. */
+        node = mpsc_pop(&ch->queue);
+        if (node) {
+            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
+            payload = m->payload;
+            free(m);
+            break;
         }
         if (atomic_load_explicit(&ch->timed_out, memory_order_acquire)) {
             break;
