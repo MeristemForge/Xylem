@@ -49,7 +49,16 @@ void dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
-        dtls_inbox_destroy(dtls->inbox);
+        /* Drain residual datagrams (freeing their payloads, which the
+         * channel itself does not own) then destroy the channel. The
+         * inbox was already closed by xylem_dtls_close, so recv never
+         * parks here; it pops leftovers and returns NULL once empty. */
+        _dtls_dgram_t* dgram;
+        while ((dgram = (_dtls_dgram_t*)xylem_channel_recv(dtls->inbox))
+               != NULL) {
+            free(dgram);
+        }
+        xylem_channel_destroy(dtls->inbox);
     }
     free(dtls);
 }
@@ -67,165 +76,30 @@ void dtls_listener_unref(xylem_dtls_listener_t* ln) {
     platform_socket_close(ln->fd);
     mtx_destroy(&ln->sessions_mtx);
     xylem_mutex_destroy(ln->write_mu);
-    free(ln->accept_slots);
+    if (ln->accept_ch) {
+        xylem_channel_destroy(ln->accept_ch);
+    }
     free(ln);
 }
 
-_dtls_session_inbox_t* dtls_inbox_create(scheduler_t* sched) {
-    _dtls_session_inbox_t* ib =
-        (_dtls_session_inbox_t*)calloc(1, sizeof(_dtls_session_inbox_t));
-    if (!ib) {
-        return NULL;
-    }
-    ib->cap   = DTLS_INBOX_CAP;
-    ib->slots = (_dtls_dgram_t**)calloc(ib->cap, sizeof(_dtls_dgram_t*));
-    if (!ib->slots) {
-        free(ib);
-        return NULL;
-    }
-    ib->sched = sched;
-    ib->deadline_timer = sched_timer_create(sched);
-    return ib;
-}
-
-void dtls_inbox_destroy(_dtls_session_inbox_t* ib) {
-    if (!ib) {
-        return;
-    }
-    while (ib->head != ib->tail) {
-        free(ib->slots[ib->head & (ib->cap - 1)]);
-        ib->head++;
-    }
-    sched_timer_destroy(ib->deadline_timer);
-    free(ib->slots);
-    free(ib);
-}
-
-static void _inbox_deadline_cb(sched_timer_t* timer, void* ud) {
-    (void)timer;
-    _dtls_session_inbox_t* ib = ud;
-    ib->timed_out = true;
-    if (ib->parked) {
-        mco_coro* co = ib->parked;
-        ib->parked = NULL;
-        scheduler_schedule(ib->sched, co);
-    }
-}
-
-static bool _inbox_park_cb(mco_coro* co, void* arg) {
-    _dtls_session_inbox_t* ib = arg;
-    ib->parked = co;
-    return true;
-}
-
-void dtls_inbox_push(_dtls_session_inbox_t* ib, _dtls_dgram_t* dgram) {
-    if (ib->closed) {
+/**
+ * Copy a datagram into the session inbox channel. The receiver frees
+ * it. Bounded by DTLS_INBOX_CAP via dtls->inbox_len so a slow or
+ * absent reader cannot grow the channel without bound; on overflow
+ * the datagram is dropped (DTLS tolerates loss, the peer retransmits).
+ * The dispatcher holds sessions_mtx across find+push, so the session
+ * cannot be freed underneath this call.
+ */
+void dtls_inbox_push(xylem_dtls_conn_t* dtls, _dtls_dgram_t* dgram) {
+    if (atomic_load_explicit(&dtls->inbox_len, memory_order_relaxed)
+        >= (int32_t)DTLS_INBOX_CAP) {
         free(dgram);
         return;
     }
-    uint32_t mask = ib->cap - 1;
-    if (ib->tail - ib->head >= ib->cap) {
-        free(dgram); return;
-    }
-    ib->slots[ib->tail & mask] = dgram;
-    ib->tail++;
-    if (ib->parked) {
-        mco_coro* co = ib->parked;
-        ib->parked = NULL;
-        scheduler_schedule(ib->sched, co);
-    }
-}
-
-_dtls_dgram_t* dtls_inbox_pop(
-    _dtls_session_inbox_t* ib, uint64_t deadline_ms) {
-    while (ib->head == ib->tail) {
-        if (ib->closed) {
-            return NULL;
-        }
-        ib->timed_out = false;
-        if (deadline_ms > 0) {
-            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-            if (now >= deadline_ms) {
-                return NULL;
-            }
-            sched_timer_start(ib->deadline_timer,
-                              _inbox_deadline_cb, ib,
-                              deadline_ms - now, 0);
-        }
-        scheduler_park(ib->sched, _inbox_park_cb, ib);
-        if (deadline_ms > 0) {
-            sched_timer_stop(ib->deadline_timer);
-        }
-        if (ib->timed_out) {
-            return NULL;
-        }
-        if (ib->closed) {
-            return NULL;
-        }
-    }
-    uint32_t mask = ib->cap - 1;
-    _dtls_dgram_t* dgram = ib->slots[ib->head & mask];
-    ib->head++;
-    return dgram;
-}
-
-void dtls_inbox_close(_dtls_session_inbox_t* ib) {
-    if (!ib) {
-        return;
-    }
-    ib->closed = true;
-    if (ib->parked) {
-        mco_coro* co = ib->parked;
-        ib->parked = NULL;
-        scheduler_schedule(ib->sched, co);
-    }
-}
-
-static bool _accept_queue_park_cb(mco_coro* co, void* arg) {
-    xylem_dtls_listener_t* ln = arg;
-    ln->accept_parked = co;
-    return true;
-}
-
-void dtls_accept_queue_push(xylem_dtls_listener_t* ln,
-                            xylem_dtls_conn_t* conn) {
-    uint32_t mask = ln->accept_cap - 1;
-    if (ln->accept_tail - ln->accept_head >= ln->accept_cap) {
-        xylem_logw("dtls: accept queue full, dropping connection");
-        xylem_dtls_close(conn);
-        return;
-    }
-    ln->accept_slots[ln->accept_tail & mask] = conn;
-    ln->accept_tail++;
-    if (ln->accept_parked) {
-        mco_coro* co = ln->accept_parked;
-        ln->accept_parked = NULL;
-        scheduler_schedule(ln->sched, co);
-    }
-}
-
-xylem_dtls_conn_t* dtls_accept_queue_pop(xylem_dtls_listener_t* ln) {
-    while (ln->accept_head == ln->accept_tail) {
-        if (ln->accept_closed) {
-            return NULL;
-        }
-        scheduler_park(ln->sched, _accept_queue_park_cb, ln);
-        if (ln->accept_closed) {
-            return NULL;
-        }
-    }
-    uint32_t mask = ln->accept_cap - 1;
-    xylem_dtls_conn_t* conn = ln->accept_slots[ln->accept_head & mask];
-    ln->accept_head++;
-    return conn;
-}
-
-void dtls_accept_queue_close(xylem_dtls_listener_t* ln) {
-    ln->accept_closed = true;
-    if (ln->accept_parked) {
-        mco_coro* co = ln->accept_parked;
-        ln->accept_parked = NULL;
-        scheduler_schedule(ln->sched, co);
+    atomic_fetch_add_explicit(&dtls->inbox_len, 1, memory_order_relaxed);
+    if (xylem_channel_send(dtls->inbox, dgram) != 0) {
+        atomic_fetch_sub_explicit(&dtls->inbox_len, 1, memory_order_relaxed);
+        free(dgram);
     }
 }
 

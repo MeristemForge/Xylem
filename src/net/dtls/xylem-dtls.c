@@ -406,15 +406,6 @@ static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
     dtls_conn_unref(dtls);
 }
 
-static void _dtls_handshake_timeout_cb(sched_timer_t* timer, void* ud) {
-    (void)timer;
-    xylem_dtls_conn_t* dtls = ud;
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return;
-    }
-    dtls_inbox_close(dtls->inbox);
-}
-
 static void _dtls_handshake_coro(void* arg) {
     xylem_dtls_conn_t* dtls = arg;
     xylem_dtls_listener_t* ln = dtls->listener;
@@ -435,16 +426,24 @@ static void _dtls_handshake_coro(void* arg) {
 
     uint64_t hs_timeout = ln->opts.handshake_timeout_ms > 0
         ? ln->opts.handshake_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
-    sched_timer_start(dtls->handshake_timer,
-                      _dtls_handshake_timeout_cb, dtls,
-                      hs_timeout, 0);
+    uint64_t hs_deadline =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_timeout;
 
     bool success = false;
     while (!dtls->handshake_done) {
-        _dtls_dgram_t* dgram = dtls_inbox_pop(dtls->inbox, 0);
+        /* Bound the wait with the handshake deadline directly on the
+         * channel recv, instead of an external timer closing the
+         * inbox: closing the inbox while the session is still in the
+         * listener's tree would let the dispatcher send into a closed
+         * channel (which aborts). On timeout recv returns NULL and we
+         * fall through to the failure path below. */
+        _dtls_dgram_t* dgram = (_dtls_dgram_t*)xylem_channel_recv_timeout(
+            dtls->inbox, hs_deadline);
         if (!dgram) {
             break;
         }
+        atomic_fetch_sub_explicit(&dtls->inbox_len, 1,
+                                  memory_order_relaxed);
 
         BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
         free(dgram);
@@ -470,7 +469,6 @@ static void _dtls_handshake_coro(void* arg) {
     }
 
     dtls_stop_retransmit(dtls);
-    sched_timer_stop(dtls->handshake_timer);
 
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
@@ -487,7 +485,7 @@ static void _dtls_handshake_coro(void* arg) {
     }
 
     dtls_cache_alpn(dtls);
-    dtls_accept_queue_push(ln, dtls);
+    xylem_channel_send(ln->accept_ch, dtls);
     dtls_conn_unref(dtls);
 }
 
@@ -519,18 +517,22 @@ static void _dtls_dispatcher(void* arg) {
 
         mtx_lock(&ln->sessions_mtx);
         xylem_dtls_conn_t* dtls = dtls_find_session(ln, &from_addr);
-        mtx_unlock(&ln->sessions_mtx);
-
         if (dtls) {
+            /* Push under the lock so a concurrent xylem_dtls_close
+             * cannot remove + free the session between the lookup and
+             * the push. dtls_inbox_push only enqueues (it never
+             * parks), so the critical section stays short. */
             _dtls_dgram_t* dgram =
                 (_dtls_dgram_t*)malloc(sizeof(_dtls_dgram_t) + (size_t)n);
             if (dgram) {
                 dgram->len = (size_t)n;
                 memcpy(dgram->data, buf, (size_t)n);
-                dtls_inbox_push(dtls->inbox, dgram);
+                dtls_inbox_push(dtls, dgram);
             }
+            mtx_unlock(&ln->sessions_mtx);
             continue;
         }
+        mtx_unlock(&ln->sessions_mtx);
 
         _dtls_dgram_t* dgram =
             (_dtls_dgram_t*)malloc(sizeof(_dtls_dgram_t) + (size_t)n);
@@ -549,7 +551,7 @@ static void _dtls_dispatcher(void* arg) {
         dtls->fd               = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
-        dtls->inbox            = dtls_inbox_create(ln->sched);
+        dtls->inbox            = xylem_channel_create();
         dtls->retransmit_timer = sched_timer_create(ln->sched);
         dtls->handshake_timer  = sched_timer_create(ln->sched);
 
@@ -558,13 +560,15 @@ static void _dtls_dispatcher(void* arg) {
             || !dtls->handshake_timer) {
             sched_timer_destroy(dtls->retransmit_timer);
             sched_timer_destroy(dtls->handshake_timer);
-            dtls_inbox_destroy(dtls->inbox);
+            if (dtls->inbox) {
+                xylem_channel_destroy(dtls->inbox);
+            }
             free(dtls);
             free(dgram);
             continue;
         }
 
-        dtls_inbox_push(dtls->inbox, dgram);
+        dtls_inbox_push(dtls, dgram);
 
         mtx_lock(&ln->sessions_mtx);
         rbtree_insert(&ln->sessions, &dtls->server_node);
@@ -616,10 +620,9 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     mtx_init(&ln->sessions_mtx, mtx_plain);
     ln->write_mu = xylem_mutex_create();
 
-    ln->accept_cap   = 64;
-    ln->accept_slots = (xylem_dtls_conn_t**)calloc(
-        ln->accept_cap, sizeof(xylem_dtls_conn_t*));
-    if (!ln->accept_slots) {
+    ln->accept_ch = xylem_channel_create();
+    if (!ln->accept_ch) {
+        xylem_mutex_destroy(ln->write_mu);
         mtx_destroy(&ln->sessions_mtx);
         iowait_destroy(ln->waiter);
         platform_socket_close(fd);
@@ -633,7 +636,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
 
 xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     dtls_listener_ref(ln);
-    xylem_dtls_conn_t* conn = dtls_accept_queue_pop(ln);
+    xylem_dtls_conn_t* conn =
+        (xylem_dtls_conn_t*)xylem_channel_recv(ln->accept_ch);
     dtls_listener_unref(ln);
     return conn;
 }
@@ -645,11 +649,16 @@ static int _dtls_server_recv(xylem_dtls_conn_t* dtls,
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
-            _dtls_dgram_t* dgram = dtls_inbox_pop(
-                dtls->inbox, dtls->rd_deadline_ms);
+            _dtls_dgram_t* dgram =
+                (dtls->rd_deadline_ms > 0)
+                    ? (_dtls_dgram_t*)xylem_channel_recv_timeout(
+                          dtls->inbox, dtls->rd_deadline_ms)
+                    : (_dtls_dgram_t*)xylem_channel_recv(dtls->inbox);
             if (!dgram) {
                 break;
             }
+            atomic_fetch_sub_explicit(&dtls->inbox_len, 1,
+                                      memory_order_relaxed);
             BIO_write(dtls->read_bio, dgram->data, (int)dgram->len);
             free(dgram);
 
@@ -719,12 +728,22 @@ static void _dtls_server_session_close(xylem_dtls_conn_t* dtls) {
         dtls_server_flush_write_bio(dtls);
     }
 
-    dtls_inbox_close(dtls->inbox);
-
+    /* Unlink from the session tree FIRST so the dispatcher can no
+     * longer find this session and therefore cannot xylem_channel_send
+     * into the inbox after we close it (send-on-closed aborts). The
+     * dispatcher does find+push under sessions_mtx, so once the remove
+     * commits no further push can target this inbox. */
     xylem_dtls_listener_t* ln = dtls->listener;
     mtx_lock(&ln->sessions_mtx);
     rbtree_remove(&ln->sessions, &dtls->server_node);
     mtx_unlock(&ln->sessions_mtx);
+
+    /* Now close the inbox to wake a parked reader; the reader's
+     * in-flight recv holds a channel reference, so the channel stays
+     * alive until dtls_conn_unref drains and destroys it. */
+    if (dtls->inbox) {
+        xylem_channel_close(dtls->inbox);
+    }
 
     dtls_conn_unref(dtls);
 }
@@ -754,7 +773,7 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
     mtx_unlock(&ln->sessions_mtx);
 
     iowait_close(ln->waiter);
-    dtls_accept_queue_close(ln);
+    xylem_channel_close(ln->accept_ch);
     dtls_listener_unref(ln);
 }
 

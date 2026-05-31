@@ -22,6 +22,7 @@
 #include "xylem/sync/xylem-channel.h"
 
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-utils.h"
 
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
@@ -36,27 +37,14 @@ typedef struct _channel_msg_s {
     void*       payload;
 } _channel_msg_t;
 
-/**
- * Lifetime: refcnt coordinates memory safety between destroy and
- * in-flight send/recv calls.
- *
- *   refcnt holds one reference for the creator (dropped by destroy)
- *   plus one for each send/recv call currently on the stack. destroy
- *   only marks the channel closed and wakes the waiter; actual free
- *   happens in the last unref, which may come from destroy itself
- *   (no active calls) or from the last sender/receiver to leave.
- *
- *   Caller contract: it is a bug to invoke any API with a handle
- *   that has no remaining references (i.e. after all creators have
- *   called destroy). The first fetch_add in that case races with a
- *   concurrent free and is undefined behaviour -- identical to the
- *   rule around Arc<T> / shared_ptr.
- */
+/* refcnt: 1 for creator (dropped by destroy) + 1 per in-flight call. */
 struct xylem_channel_s {
     mpsc_t             queue;
     _Atomic(mco_coro*) wait_coro;
     _Atomic bool       closed;
     _Atomic int32_t    refcnt;
+    sched_timer_t*     deadline_timer; /*< lazily created by recv_timeout */
+    _Atomic bool       timed_out;
 };
 
 static inline void _channel_ref(xylem_channel_t* ch) {
@@ -68,11 +56,9 @@ static void _channel_unref(xylem_channel_t* ch) {
             &ch->refcnt, 1, memory_order_acq_rel) != 1) {
         return;
     }
-    /**
-     * Last reference out. All senders and the receiver have left,
-     * so the queue state is stable: drain any residual messages
-     * and release the handle itself.
-     */
+    if (ch->deadline_timer) {
+        sched_timer_destroy(ch->deadline_timer);
+    }
     mpsc_node_t* node;
     while ((node = mpsc_pop(&ch->queue)) != NULL) {
         _channel_msg_t* msg = mpsc_entry(node, _channel_msg_t, node);
@@ -94,11 +80,29 @@ xylem_channel_t* xylem_channel_create(void) {
     return ch;
 }
 
+void xylem_channel_close(xylem_channel_t* ch) {
+    if (!ch) {
+        xylem_loge("close(NULL); aborting");
+        abort();
+    }
+
+    if (atomic_exchange(&ch->closed, true)) {
+        xylem_loge("double close (ch=%p); aborting", (void*)ch);
+        abort();
+    }
+
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+}
+
 void xylem_channel_destroy(xylem_channel_t* ch) {
     if (!ch) {
         return;
     }
 
+    /* Idempotent: close() may have already set this. */
     atomic_store(&ch->closed, true);
 
     mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
@@ -106,13 +110,6 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 
-    /**
-     * Drop the creator's reference. Free happens here only if no
-     * send/recv calls are currently in flight; otherwise the last
-     * one to unref performs the actual cleanup. Either way, any
-     * thread still inside send/recv is guaranteed to see a live
-     * channel because it incremented refcnt at entry.
-     */
     _channel_unref(ch);
 }
 
@@ -122,6 +119,12 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     }
 
     _channel_ref(ch);
+
+    if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
+        xylem_loge("send on closed channel (ch=%p); aborting",
+                   (void*)ch);
+        abort();
+    }
 
     int rc = -1;
     _channel_msg_t* m = (_channel_msg_t*)calloc(1, sizeof(_channel_msg_t));
@@ -140,50 +143,41 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     return rc;
 }
 
-static bool _channel_park_cb(mco_coro* co, void* arg) {
-    xylem_channel_t* ch = (xylem_channel_t*)arg;
+typedef struct {
+    xylem_channel_t* ch;
+    uint64_t         deadline_ms; /*< 0 = no deadline */
+} _channel_park_ctx_t;
 
-    /**
-     * Channel is MPSC by design: multiple senders, single receiver.
-     * Publishing the waiter slot with exchange (not store) turns a
-     * violated single-receiver contract into a loud failure instead
-     * of a silent orphaned coroutine + leaked handle.
-     *
-     * Senders and destroy always exchange the slot back to NULL
-     * before rescheduling the receiver, so on entry here the slot
-     * must be NULL under the single-receiver contract.
-     */
+static bool _channel_park_cb(mco_coro* co, void* arg) {
+    _channel_park_ctx_t* ctx = (_channel_park_ctx_t*)arg;
+    xylem_channel_t*     ch  = ctx->ch;
+
+    /* Exchange detects concurrent recv (single-receiver violation). */
     mco_coro* prev = atomic_exchange(&ch->wait_coro, co);
     if (prev != NULL) {
         xylem_loge(
-            "xylem_channel: concurrent recv violates "
-            "single-receiver contract (ch=%p prev=%p new=%p); aborting",
+            "concurrent recv violates single-receiver contract "
+            "(ch=%p prev=%p new=%p); aborting",
             (void*)ch,
             (void*)prev,
             (void*)co);
         abort();
     }
 
-    if (atomic_load(&ch->closed)) {
-        mco_coro* expected = co;
-        if (atomic_compare_exchange_strong(&ch->wait_coro, &expected, NULL)) {
-            return false;
-        }
-        return true;
-    }
-
     /**
-     * Queue-state race check: use mpsc_empty, never mpsc_pop + push-
-     * back. Re-inserting a popped node via mpsc_push appends to the
-     * tail, which would reorder it behind any sender that pushed in
-     * between and violate FIFO for a single sender's successive
-     * messages. Peeking via mpsc_empty avoids touching the node at
-     * all -- if the queue appears non-empty, we decline the park and
-     * let the recv loop pop on its next iteration.
+     * Re-check after publishing the wait slot: a sender, close, or
+     * the deadline timer may have raced in between the emptiness
+     * test in the recv loop and publishing co here. Reclaim the slot
+     * and decline the park so the recv loop observes the new state.
+     * Peek with mpsc_empty only -- popping and re-pushing would break
+     * FIFO ordering.
      */
-    if (!mpsc_empty(&ch->queue)) {
+    if (atomic_load(&ch->closed)
+        || atomic_load_explicit(&ch->timed_out, memory_order_acquire)
+        || !mpsc_empty(&ch->queue)) {
         mco_coro* expected = co;
-        if (atomic_compare_exchange_strong(&ch->wait_coro, &expected, NULL)) {
+        if (atomic_compare_exchange_strong(
+                &ch->wait_coro, &expected, NULL)) {
             return false;
         }
     }
@@ -191,12 +185,31 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
-void* xylem_channel_recv(xylem_channel_t* ch) {
+static void _channel_deadline_cb(sched_timer_t* timer, void* ud) {
+    (void)timer;
+    xylem_channel_t* ch = (xylem_channel_t*)ud;
+    atomic_store_explicit(&ch->timed_out, true, memory_order_release);
+    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+}
+
+static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
     if (!ch) {
         return NULL;
     }
 
     _channel_ref(ch);
+
+    /* Lazily create the per-channel deadline timer on first timed
+     * recv. The single-receiver contract means only one coroutine
+     * ever drives recv, so no extra synchronisation is needed. */
+    if (deadline_ms > 0 && !ch->deadline_timer) {
+        ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
+    }
+
+    atomic_store_explicit(&ch->timed_out, false, memory_order_release);
 
     void* payload = NULL;
     for (;;) {
@@ -212,9 +225,38 @@ void* xylem_channel_recv(xylem_channel_t* ch) {
             break;
         }
 
-        scheduler_park(runtime_get_scheduler(), _channel_park_cb, ch);
+        if (deadline_ms > 0) {
+            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (now >= deadline_ms) {
+                break;
+            }
+            if (ch->deadline_timer) {
+                sched_timer_start(ch->deadline_timer,
+                                  _channel_deadline_cb, ch,
+                                  deadline_ms - now, 0);
+            }
+        }
+
+        _channel_park_ctx_t ctx = { .ch = ch, .deadline_ms = deadline_ms };
+        scheduler_park(runtime_get_scheduler(), _channel_park_cb, &ctx);
+
+        if (deadline_ms > 0 && ch->deadline_timer) {
+            sched_timer_stop(ch->deadline_timer);
+        }
+        if (atomic_load_explicit(&ch->timed_out, memory_order_acquire)) {
+            break;
+        }
     }
 
     _channel_unref(ch);
     return payload;
+}
+
+void* xylem_channel_recv(xylem_channel_t* ch) {
+    return _channel_recv_impl(ch, 0);
+}
+
+void* xylem_channel_recv_timeout(
+    xylem_channel_t* ch, uint64_t deadline_ms) {
+    return _channel_recv_impl(ch, deadline_ms);
 }

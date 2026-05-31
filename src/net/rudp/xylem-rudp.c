@@ -21,6 +21,7 @@
 
 #include "xylem/net/xylem-rudp.h"
 #include "xylem/crypto/xylem-aes256.h"
+#include "xylem/sync/xylem-channel.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
@@ -58,21 +59,6 @@ typedef struct _rudp_dgram_s {
     char   data[];
 } _rudp_dgram_t;
 
-/**
- * Per-session ring buffer that the dispatcher pushes datagrams into
- * and the session read coroutine pops from. Uses cooperative park/wake
- * because the scheduler is single-threaded cooperative.
- */
-typedef struct _rudp_inbox_s {
-    _rudp_dgram_t** slots;
-    uint32_t        cap;
-    uint32_t        head;
-    uint32_t        tail;
-    mco_coro*       parked;
-    scheduler_t*    sched;
-    bool            closed;
-} _rudp_inbox_t;
-
 struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
     platform_sock_t        fd;
@@ -93,7 +79,8 @@ struct xylem_rudp_conn_s {
     uint64_t               rd_deadline_ms;
 
     xylem_rudp_listener_t* listener;
-    _rudp_inbox_t*         inbox;
+    xylem_channel_t*       inbox;        /* server session datagram queue */
+    _Atomic int32_t        inbox_len;    /* bounded-queue guard */
     rbtree_node_t          listener_node;
 };
 
@@ -108,11 +95,7 @@ struct xylem_rudp_listener_s {
     uint8_t                aes_key_buf[32];
     _Atomic bool           closed;
 
-    xylem_rudp_conn_t**    accept_slots;
-    uint32_t               accept_cap;
-    uint32_t               accept_head;
-    uint32_t               accept_tail;
-    mco_coro*              accept_parked;
+    xylem_channel_t*       accept_ch;   /* delivers accepted sessions */
 };
 
 typedef struct {
@@ -420,52 +403,47 @@ static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
     uint64_t delay = (next <= now) ? 1 : (uint64_t)(next - now);
     sched_timer_reset(c->update_timer, delay);
 }
-static _rudp_inbox_t* _rudp_inbox_create(scheduler_t* sched) {
-    _rudp_inbox_t* ib =
-        (_rudp_inbox_t*)calloc(1, sizeof(_rudp_inbox_t));
-    if (!ib) {
-        return NULL;
-    }
-    ib->slots = (_rudp_dgram_t**)calloc(
-        RUDP_INBOX_CAP, sizeof(_rudp_dgram_t*));
-    if (!ib->slots) {
-        free(ib);
-        return NULL;
-    }
-    ib->cap   = RUDP_INBOX_CAP;
-    ib->sched = sched;
-    return ib;
-}
-
-static void _rudp_inbox_destroy(_rudp_inbox_t* ib) {
-    if (!ib) {
+/**
+ * Drain any datagrams still queued in a session inbox channel and
+ * destroy it. Called from _rudp_conn_unref once the session refcount
+ * hits zero, so no other thread touches the channel concurrently.
+ * The channel keeps already-queued payloads retrievable after close,
+ * so draining here frees them before destroy (which only frees node
+ * wrappers, not payloads).
+ */
+/**
+ * Drain residual datagrams from an already-closed session inbox and
+ * destroy it. The caller (xylem_rudp_close) has already closed the
+ * channel, so the drain recv() never parks: it pops any payloads the
+ * dispatcher queued, then returns NULL once empty. We free the
+ * payloads here because xylem_channel_destroy only frees the node
+ * wrappers, not the opaque dgram pointers. Runs from _rudp_conn_unref
+ * at refcount zero, so no other thread touches the channel.
+ */
+static void _rudp_inbox_destroy(xylem_channel_t* ch) {
+    if (!ch) {
         return;
     }
-    /* Drain any remaining datagrams. */
-    while (ib->head != ib->tail) {
-        uint32_t idx = ib->head % ib->cap;
-        free(ib->slots[idx]);
-        ib->head++;
+    _rudp_dgram_t* dgram;
+    while ((dgram = (_rudp_dgram_t*)xylem_channel_recv(ch)) != NULL) {
+        free(dgram);
     }
-    free(ib->slots);
-    free(ib);
+    xylem_channel_destroy(ch);
 }
 
 /**
- * Push a datagram into the inbox. If full, oldest is dropped.
- * Wakes a parked reader coroutine.
+ * Copy a datagram into the session inbox channel. The reader frees it.
+ * Bounded by RUDP_INBOX_CAP via conn->inbox_len: when the queue is
+ * full the datagram is dropped (KCP retransmits), preserving the
+ * back-pressure the old ring buffer provided over an unbounded channel.
+ * The dispatcher holds sessions_mtx across find+push so the session
+ * cannot be freed under us.
  */
-static void _rudp_inbox_push(_rudp_inbox_t* ib, const void* data,
+static void _rudp_inbox_push(xylem_rudp_conn_t* sess, const void* data,
                              size_t len) {
-    if (ib->closed) {
-        return;
-    }
-
-    /* Drop oldest if ring is full. */
-    if (ib->tail - ib->head >= ib->cap) {
-        uint32_t idx = ib->head % ib->cap;
-        free(ib->slots[idx]);
-        ib->head++;
+    if (atomic_load_explicit(&sess->inbox_len, memory_order_relaxed)
+        >= (int32_t)RUDP_INBOX_CAP) {
+        return; /* queue full: drop, KCP will retransmit */
     }
 
     _rudp_dgram_t* dgram =
@@ -476,107 +454,12 @@ static void _rudp_inbox_push(_rudp_inbox_t* ib, const void* data,
     dgram->len = len;
     memcpy(dgram->data, data, len);
 
-    uint32_t idx = ib->tail % ib->cap;
-    ib->slots[idx] = dgram;
-    ib->tail++;
-
-    if (ib->parked) {
-        mco_coro* co = ib->parked;
-        ib->parked = NULL;
-        scheduler_schedule(ib->sched, co);
+    atomic_fetch_add_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+    if (xylem_channel_send(sess->inbox, dgram) != 0) {
+        atomic_fetch_sub_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+        free(dgram);
     }
 }
-
-typedef struct {
-    _rudp_inbox_t* ib;
-} _rudp_inbox_park_ctx_t;
-
-static bool _rudp_inbox_park_fn(mco_coro* co, void* arg) {
-    _rudp_inbox_park_ctx_t* ctx = (_rudp_inbox_park_ctx_t*)arg;
-    ctx->ib->parked = co;
-    return true;
-}
-
-/**
- * Pop a datagram from the inbox. Parks the calling coroutine
- * if empty. Returns NULL if inbox is closed.
- */
-static _rudp_dgram_t* _rudp_inbox_pop(_rudp_inbox_t* ib) {
-    for (;;) {
-        if (ib->closed) {
-            return NULL;
-        }
-        if (ib->head != ib->tail) {
-            uint32_t idx = ib->head % ib->cap;
-            _rudp_dgram_t* dgram = ib->slots[idx];
-            ib->slots[idx] = NULL;
-            ib->head++;
-            return dgram;
-        }
-        /* Park until a push or close wakes us. */
-        _rudp_inbox_park_ctx_t ctx = { .ib = ib };
-        scheduler_park(ib->sched, _rudp_inbox_park_fn, &ctx);
-    }
-}
-
-static void _rudp_inbox_close(_rudp_inbox_t* ib) {
-    if (!ib || ib->closed) {
-        return;
-    }
-    ib->closed = true;
-    if (ib->parked) {
-        mco_coro* co = ib->parked;
-        ib->parked = NULL;
-        scheduler_schedule(ib->sched, co);
-    }
-}
-typedef struct {
-    xylem_rudp_listener_t* ln;
-} _rudp_accept_park_ctx_t;
-
-static bool _rudp_accept_park_fn(mco_coro* co, void* arg) {
-    _rudp_accept_park_ctx_t* ctx = (_rudp_accept_park_ctx_t*)arg;
-    ctx->ln->accept_parked = co;
-    return true;
-}
-
-static void _rudp_accept_push(xylem_rudp_listener_t* ln,
-                              xylem_rudp_conn_t* c) {
-    /* Drop oldest if full (should not happen under normal load). */
-    if (ln->accept_tail - ln->accept_head >= ln->accept_cap) {
-        uint32_t idx = ln->accept_head % ln->accept_cap;
-        xylem_rudp_close(ln->accept_slots[idx]);
-        ln->accept_head++;
-    }
-
-    uint32_t idx = ln->accept_tail % ln->accept_cap;
-    ln->accept_slots[idx] = c;
-    ln->accept_tail++;
-
-    if (ln->accept_parked) {
-        mco_coro* co = ln->accept_parked;
-        ln->accept_parked = NULL;
-        scheduler_schedule(ln->sched, co);
-    }
-}
-
-static xylem_rudp_conn_t* _rudp_accept_pop(xylem_rudp_listener_t* ln) {
-    for (;;) {
-        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
-            return NULL;
-        }
-        if (ln->accept_head != ln->accept_tail) {
-            uint32_t idx = ln->accept_head % ln->accept_cap;
-            xylem_rudp_conn_t* c = ln->accept_slots[idx];
-            ln->accept_slots[idx] = NULL;
-            ln->accept_head++;
-            return c;
-        }
-        _rudp_accept_park_ctx_t ctx = { .ln = ln };
-        scheduler_park(ln->sched, _rudp_accept_park_fn, &ctx);
-    }
-}
-
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
     atomic_fetch_add_explicit(&conn->refcnt, 1, memory_order_relaxed);
 }
@@ -584,7 +467,7 @@ static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
 /**
  * Drop a reference; the last one out performs the actual teardown.
  *
- * A reader parked in _rudp_inbox_pop / iowait_read holds a reference
+ * A reader parked in xylem_channel_recv / iowait_read holds a reference
  * across the park, so a concurrent xylem_rudp_close only marks the
  * session closed and wakes the reader -- the inbox, KCP state and the
  * conn itself stay alive until the woken reader drops its reference
@@ -827,7 +710,6 @@ dial_fail:
 }
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
     char recv_buf[RUDP_RECV_BUF_SIZE];
-
     for (;;) {
         /* Try reading from KCP first. */
         int n = ikcp_recv(c->kcp, (char*)buf, len);
@@ -849,36 +731,30 @@ static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
             return -1;
         }
         if (r == IOWAIT_TIMEOUT) {
-            /* Update KCP clock on timeout to handle retransmits. */
             ikcp_update(c->kcp, _rudp_clock_ms());
             _rudp_schedule_update(c);
             return -1;
         }
 
-        /* Read from connected socket. */
-        ssize_t rn = platform_socket_recv(
-            c->fd, recv_buf, (int)sizeof(recv_buf));
-        if (rn <= 0) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN ||
-                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+        /* ET poller: drain all queued datagrams until EAGAIN. */
+        for (;;) {
+            ssize_t rn = platform_socket_recv(
+                c->fd, recv_buf, (int)sizeof(recv_buf));
+            if (rn <= 0) {
+                break;
+            }
+
+            void*  plain     = NULL;
+            size_t plain_len = 0;
+            if (_rudp_decrypt_packet(c->aes, recv_buf, (size_t)rn,
+                                     &plain, &plain_len) != 0) {
                 continue;
             }
-            return -1;
-        }
 
-        /* Decrypt. */
-        void*  plain     = NULL;
-        size_t plain_len = 0;
-        if (_rudp_decrypt_packet(c->aes, recv_buf, (size_t)rn,
-                                 &plain, &plain_len) != 0) {
-            continue;
-        }
-
-        /* Feed through FEC + KCP. */
-        _rudp_recv_input(c, plain, plain_len);
-        if (plain != recv_buf) {
-            free(plain);
+            _rudp_recv_input(c, plain, plain_len);
+            if (plain != recv_buf) {
+                free(plain);
+            }
         }
 
         _rudp_schedule_update(c);
@@ -896,11 +772,14 @@ static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
             return -1;
         }
 
-        /* Pop a datagram from the inbox (parks if empty). */
-        _rudp_dgram_t* dgram = _rudp_inbox_pop(c->inbox);
+        /* Pull a datagram from the inbox channel (parks if empty;
+         * returns NULL once the channel is closed on teardown). */
+        _rudp_dgram_t* dgram =
+            (_rudp_dgram_t*)xylem_channel_recv(c->inbox);
         if (!dgram) {
             return -1;
         }
+        atomic_fetch_sub_explicit(&c->inbox_len, 1, memory_order_relaxed);
 
         /* Feed into FEC + KCP. */
         _rudp_recv_input(c, dgram->data, dgram->len);
@@ -1072,7 +951,7 @@ static void _rudp_dispatcher(void* arg) {
                             goto dispatch_next;
                         }
 
-                        sess->inbox = _rudp_inbox_create(ln->sched);
+                        sess->inbox = xylem_channel_create();
                         if (!sess->inbox) {
                             ikcp_release(sess->kcp);
                             rudp_fec_enc_destroy(sess->fec_enc);
@@ -1084,7 +963,7 @@ static void _rudp_dispatcher(void* arg) {
                         sess->update_timer =
                             sched_timer_create(ln->sched);
                         if (!sess->update_timer) {
-                            _rudp_inbox_destroy(sess->inbox);
+                            xylem_channel_destroy(sess->inbox);
                             ikcp_release(sess->kcp);
                             rudp_fec_enc_destroy(sess->fec_enc);
                             rudp_fec_dec_destroy(sess->fec_dec);
@@ -1101,7 +980,7 @@ static void _rudp_dispatcher(void* arg) {
                         rbtree_insert(
                             &ln->sessions, &sess->listener_node);
                         mtx_unlock(&ln->sessions_mtx);
-                        _rudp_accept_push(ln, sess);
+                        xylem_channel_send(ln->accept_ch, sess);
 
                         xylem_logi("rudp listener: accepted conv=%u",
                                    hs_conv);
@@ -1135,8 +1014,7 @@ static void _rudp_dispatcher(void* arg) {
                     xylem_rudp_conn_t* sess =
                         _rudp_find_session(ln, &peer_addr, conv);
                     if (sess && sess->inbox) {
-                        _rudp_inbox_push(
-                            sess->inbox, plain, plain_len);
+                        _rudp_inbox_push(sess, plain, plain_len);
                     }
                     mtx_unlock(&ln->sessions_mtx);
                 } else if (fec_type == RUDP_FEC_TYPE_PARITY) {
@@ -1155,8 +1033,7 @@ static void _rudp_dispatcher(void* arg) {
                                    &peer_addr.storage,
                                    sizeof(struct sockaddr_storage))
                             == 0 && s->inbox) {
-                            _rudp_inbox_push(
-                                s->inbox, plain, plain_len);
+                            _rudp_inbox_push(s, plain, plain_len);
                         }
                     }
                     mtx_unlock(&ln->sessions_mtx);
@@ -1169,7 +1046,7 @@ static void _rudp_dispatcher(void* arg) {
                 xylem_rudp_conn_t* sess =
                     _rudp_find_session(ln, &peer_addr, conv);
                 if (sess && sess->inbox) {
-                    _rudp_inbox_push(sess->inbox, plain, plain_len);
+                    _rudp_inbox_push(sess, plain, plain_len);
                 }
                 mtx_unlock(&ln->sessions_mtx);
             }
@@ -1236,10 +1113,9 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     rbtree_init(&ln->sessions, _rudp_session_cmp_nn, _rudp_session_cmp_kn);
     mtx_init(&ln->sessions_mtx, mtx_plain);
 
-    /* Accept queue. */
-    ln->accept_slots = (xylem_rudp_conn_t**)calloc(
-        RUDP_ACCEPT_CAP, sizeof(xylem_rudp_conn_t*));
-    if (!ln->accept_slots) {
+    /* Accept queue: a channel carrying accepted session pointers. */
+    ln->accept_ch = xylem_channel_create();
+    if (!ln->accept_ch) {
         mtx_destroy(&ln->sessions_mtx);
         xylem_aes256_destroy(ln->aes);
         iowait_destroy(ln->waiter);
@@ -1247,7 +1123,6 @@ xylem_rudp_listener_t* xylem_rudp_listen(
         free(ln);
         return NULL;
     }
-    ln->accept_cap = RUDP_ACCEPT_CAP;
 
     /* Spawn the background dispatcher coroutine. */
     runtime_spawn(_rudp_dispatcher, ln);
@@ -1256,7 +1131,8 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     return ln;
 }
 xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
-    return _rudp_accept_pop(ln);
+    xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)xylem_channel_recv(ln->accept_ch);
+    return c;
 }
 
 void xylem_rudp_close(xylem_rudp_conn_t* conn) {
@@ -1276,14 +1152,22 @@ void xylem_rudp_close(xylem_rudp_conn_t* conn) {
     }
 
     if (conn->listener) {
-        /* Wake a reader parked in _rudp_inbox_pop, then unlink from the
-         * listener's session tree under the lock. The reader holds a
-         * reference across its park, so the conn/inbox survive until it
-         * drops that reference in _rudp_conn_unref. */
-        _rudp_inbox_close(conn->inbox);
+        /* Unlink from the session tree FIRST, under the lock, so the
+         * dispatcher can no longer find this session and therefore
+         * cannot xylem_channel_send() into the inbox after we close
+         * it (send-on-closed aborts, Go-style). The dispatcher does
+         * find+send under the same sessions_mtx, so once the remove
+         * commits, no further send can target this inbox. */
         mtx_lock(&conn->listener->sessions_mtx);
         rbtree_remove(&conn->listener->sessions, &conn->listener_node);
         mtx_unlock(&conn->listener->sessions_mtx);
+
+        /* Now close the inbox channel to wake a parked reader. The
+         * reader's in-flight recv holds a channel reference, so the
+         * channel stays alive until _rudp_conn_unref drains+destroys
+         * it. The reader also holds a conn reference across its park,
+         * so conn survives until it drops that reference. */
+        xylem_channel_close(conn->inbox);
     } else {
         iowait_close(conn->waiter);
     }
@@ -1317,12 +1201,11 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     }
     mtx_unlock(&ln->sessions_mtx);
 
-    /* Wake accept waiter. */
-    if (ln->accept_parked) {
-        mco_coro* co = ln->accept_parked;
-        ln->accept_parked = NULL;
-        scheduler_schedule(ln->sched, co);
-    }
+    /* Wake the accept waiter and release the accept channel. Any
+     * session still queued in the channel was already closed by the
+     * session-teardown loop above (it was in the rbtree), so destroy
+     * only frees the channel's node wrappers. */
+    xylem_channel_destroy(ln->accept_ch);
 
     /* Clean up. */
     xylem_aes256_destroy(ln->aes);
@@ -1330,7 +1213,6 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     iowait_destroy(ln->waiter);
     platform_socket_close(ln->fd);
     mtx_destroy(&ln->sessions_mtx);
-    free(ln->accept_slots);
     free(ln);
 }
 void xylem_rudp_set_read_deadline(

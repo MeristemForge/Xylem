@@ -23,6 +23,7 @@ _Pragma("once")
 
 #include "xylem/net/xylem-dtls.h"
 #include "xylem/sync/xylem-mutex.h"
+#include "xylem/sync/xylem-channel.h"
 
 #include "container/rbtree.h"
 #include "net/addr.h"
@@ -46,18 +47,6 @@ typedef struct _dtls_dgram_s {
     char   data[];
 } _dtls_dgram_t;
 
-typedef struct _dtls_session_inbox_s {
-    _dtls_dgram_t** slots;
-    uint32_t        cap;
-    uint32_t        head;
-    uint32_t        tail;
-    mco_coro*       parked;
-    scheduler_t*    sched;
-    sched_timer_t*  deadline_timer;
-    bool            closed;
-    bool            timed_out;
-} _dtls_session_inbox_t;
-
 struct xylem_dtls_ctx_s {
     SSL_CTX* ssl_ctx;
     uint8_t* alpn_wire;
@@ -79,7 +68,8 @@ struct xylem_dtls_conn_s {
     platform_sock_t          fd;
 
     /* server-side only */
-    _dtls_session_inbox_t*    inbox;
+    xylem_channel_t*         inbox;
+    _Atomic int32_t          inbox_len;
     BIO*                     read_bio;
     BIO*                     write_bio;
     sched_timer_t*           retransmit_timer;
@@ -99,12 +89,7 @@ struct xylem_dtls_listener_s {
     xylem_mutex_t*        write_mu;
     scheduler_t*          sched;
 
-    xylem_dtls_conn_t**   accept_slots;
-    uint32_t              accept_cap;
-    uint32_t              accept_head;
-    uint32_t              accept_tail;
-    mco_coro*             accept_parked;
-    bool                  accept_closed;
+    xylem_channel_t*      accept_ch;
 
     _Atomic bool          closed;
     _Atomic int32_t       refcnt;
@@ -116,17 +101,7 @@ extern void dtls_conn_unref(xylem_dtls_conn_t* dtls);
 extern void dtls_listener_ref(xylem_dtls_listener_t* ln);
 extern void dtls_listener_unref(xylem_dtls_listener_t* ln);
 
-extern _dtls_session_inbox_t* dtls_inbox_create(scheduler_t* sched);
-extern void dtls_inbox_destroy(_dtls_session_inbox_t* ib);
-extern void dtls_inbox_push(_dtls_session_inbox_t* ib, _dtls_dgram_t* dgram);
-extern _dtls_dgram_t* dtls_inbox_pop(
-    _dtls_session_inbox_t* ib, uint64_t deadline_ms);
-extern void dtls_inbox_close(_dtls_session_inbox_t* ib);
-
-extern void dtls_accept_queue_push(xylem_dtls_listener_t* ln,
-                                   xylem_dtls_conn_t* conn);
-extern xylem_dtls_conn_t* dtls_accept_queue_pop(xylem_dtls_listener_t* ln);
-extern void dtls_accept_queue_close(xylem_dtls_listener_t* ln);
+extern void dtls_inbox_push(xylem_dtls_conn_t* dtls, _dtls_dgram_t* dgram);
 
 extern xylem_dtls_conn_t* dtls_find_session(xylem_dtls_listener_t* ln,
                                              addr_t* addr);

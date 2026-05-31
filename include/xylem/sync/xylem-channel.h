@@ -21,25 +21,17 @@
 
 _Pragma("once")
 
+#include <stdint.h>
+
 typedef struct xylem_channel_s xylem_channel_t;
 
 /**
- * Channel concurrency model
- *
- * A xylem_channel is MPSC: many senders, a single receiver. Shape
- * matches tokio's mpsc / Rust's std::sync::mpsc; differs from Go's
- * chan, which permits many receivers.
+ * MPSC channel: many senders, single receiver.
  *
  * Threading:
- *   - send(), destroy() are safe from any thread.
- *   - recv() must be called from inside a coroutine on a scheduler
- *     worker (it parks). Only one coroutine may be the receiver for
- *     the lifetime of the channel.
- *
- * Misuse that aborts the process:
- *   - Two coroutines calling recv() on the same channel
- *     concurrently. Detected when the second recv tries to publish
- *     its park slot.
+ *   - send(), close(), destroy() are safe from any thread.
+ *   - recv() must be called from a coroutine. Only one coroutine
+ *     may recv on a given channel; concurrent recv aborts.
  */
 
 /**
@@ -50,21 +42,33 @@ typedef struct xylem_channel_s xylem_channel_t;
 extern xylem_channel_t* xylem_channel_create(void);
 
 /**
- * @brief Destroy the channel and free all buffered messages.
+ * @brief Destroy the channel, releasing its memory.
  *
- * Thread-safe. Wakes a parked receiver (if any) with a NULL message.
- * After this call, send() on the same channel is a use-after-free.
+ * Any messages still queued are freed (node wrapper only -- payload
+ * lifetime is the caller's responsibility). Accepts NULL.
  *
  * @param ch  Channel handle.
  */
 extern void xylem_channel_destroy(xylem_channel_t* ch);
 
 /**
- * @brief Send a message to the channel. Non-blocking, thread-safe.
+ * @brief Close the channel, signalling no more sends.
  *
- * May be called from any thread and any number of senders in
- * parallel. Does not copy `msg`; the pointer's lifetime is the
- * caller's responsibility until the receiver consumes it.
+ * After close:
+ *   - recv() continues to return queued messages, then NULL.
+ *   - send() aborts the process.
+ *   - Closing again or closing NULL aborts.
+ *
+ * Does NOT free the channel; call destroy() after draining.
+ *
+ * @param ch  Channel handle.
+ */
+extern void xylem_channel_close(xylem_channel_t* ch);
+
+/**
+ * @brief Send a message. Non-blocking, thread-safe.
+ *
+ * Aborts if the channel is closed.
  *
  * @param ch   Channel handle.
  * @param msg  Opaque message pointer (must be non-NULL).
@@ -74,13 +78,34 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
 extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 
 /**
- * @brief Receive the next message. Blocks the caller coroutine.
+ * @brief Receive the next message. Blocks the calling coroutine.
  *
- * Single-receiver contract: at most one coroutine may be in recv()
- * on a given channel at any time. Violating this aborts the process.
+ * Concurrent recv from multiple coroutines aborts.
  *
  * @param ch  Channel handle.
  *
- * @return Message pointer, or NULL if the channel has been destroyed.
+ * @return Message pointer, or NULL if the channel is closed and empty.
  */
 extern void* xylem_channel_recv(xylem_channel_t* ch);
+
+/**
+ * @brief Receive the next message with a deadline. Blocks the
+ *        calling coroutine until a message arrives, the channel
+ *        closes, or the deadline passes.
+ *
+ * Concurrent recv from multiple coroutines aborts (same single-
+ * receiver contract as recv).
+ *
+ * @param ch           Channel handle.
+ * @param deadline_ms  Absolute monotonic deadline in milliseconds
+ *                     (see xylem_utils_getnow with
+ *                     XYLEM_TIME_PRECISION_MSEC). 0 means no
+ *                     deadline, identical to recv().
+ *
+ * @return Message pointer, or NULL if the deadline passed, or the
+ *         channel is closed and empty. The NULL cases are not
+ *         distinguished; callers needing the reason should track it
+ *         out of band.
+ */
+extern void* xylem_channel_recv_timeout(
+    xylem_channel_t* ch, uint64_t deadline_ms);
