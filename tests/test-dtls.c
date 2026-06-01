@@ -705,6 +705,158 @@ static void test_concurrent_sessions(void) {
 
 
 /* ------------------------------------------------------------------ */
+/* 9. test_full_duplex                                                */
+/*    One client connection is read by one coroutine and written by   */
+/*    another at the same time. With the client still on a socket BIO */
+/*    a direction-flip inside SSL parked a second coroutine on the    */
+/*    same iowait direction and aborted the process; the memory-BIO   */
+/*    client pump path makes concurrent read+write safe. Each write   */
+/*    is one datagram, echoed back verbatim by the server.            */
+/* ------------------------------------------------------------------ */
+
+/* Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
+ * whole batch before the server drains its session inbox, no datagram
+ * is dropped -- the reader can then assert an exact echo count. */
+#define FDX_MSG_COUNT 50
+#define FDX_MSG_SIZE  300
+
+typedef struct {
+    xylem_dtls_conn_t* conn;
+    xylem_waitgroup_t* wg;
+    int                ok;
+} _fdx_share_t;
+
+static void _fdx_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_dtls_listener_t* ln = xylem_dtls_listen(
+        DTLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
+    ASSERT(conn != NULL);
+
+    /* Echo each datagram back until all messages have been seen or the
+     * peer goes away (read returns <= 0). */
+    char buf[1024];
+    for (int i = 0; i < FDX_MSG_COUNT; i++) {
+        int n = xylem_dtls_read(conn, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        if (xylem_dtls_write(conn, buf, n) != 0) {
+            break;
+        }
+    }
+
+    /* Give the client time to drain before tearing down. */
+    xylem_sleep(200);
+    xylem_dtls_close(conn);
+    xylem_dtls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fdx_writer(void* arg) {
+    _fdx_share_t* sh = (_fdx_share_t*)arg;
+    char msg[FDX_MSG_SIZE];
+    memset(msg, 'a', sizeof(msg));
+
+    for (int i = 0; i < FDX_MSG_COUNT; i++) {
+        if (xylem_dtls_write(sh->conn, msg, (int)sizeof(msg)) != 0) {
+            sh->ok = 0;
+            break;
+        }
+    }
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _fdx_reader(void* arg) {
+    _fdx_share_t* sh = (_fdx_share_t*)arg;
+    char buf[1024];
+    int  got = 0;
+
+    while (got < FDX_MSG_COUNT) {
+        int n = xylem_dtls_read(sh->conn, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        ASSERT(n == FDX_MSG_SIZE);
+        got++;
+    }
+    if (got != FDX_MSG_COUNT) {
+        sh->ok = 0;
+    }
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _fdx_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_dtls_conn_t* conn = xylem_dtls_dial(
+        DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    /* Reader and writer drive the same connection concurrently; their
+     * own waitgroup lets us join before closing the connection once. */
+    xylem_waitgroup_t* io_wg = xylem_waitgroup_create();
+    _fdx_share_t sh = { .conn = conn, .wg = io_wg, .ok = 1 };
+    xylem_waitgroup_add(io_wg, 2);
+    xylem_spawn(_fdx_reader, &sh);
+    xylem_spawn(_fdx_writer, &sh);
+    xylem_waitgroup_wait(io_wg);
+    xylem_waitgroup_destroy(io_wg);
+    ASSERT(sh.ok == 1);
+
+    xylem_dtls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fdx_main(void* arg) {
+    (void)arg;
+    const char* cert = "test_dtls_fdx_cert.pem";
+    const char* key  = "test_dtls_fdx_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
+    ASSERT(srv_ctx != NULL);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
+    xylem_dtls_ctx_set_verify(srv_ctx, false);
+
+    xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    xylem_dtls_ctx_set_verify(cli_ctx, false);
+
+    _ctx_t ctx = {
+        .ready   = xylem_channel_create(),
+        .wg      = xylem_waitgroup_create(),
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = DTLS_PORT + 6,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_fdx_server, &ctx);
+    xylem_spawn(_fdx_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_dtls_ctx_destroy(srv_ctx);
+    xylem_dtls_ctx_destroy(cli_ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    remove(cert);
+    remove(key);
+    xylem_shutdown();
+}
+
+static void test_full_duplex(void) {
+    xylem_run(_fdx_main, NULL, NULL);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* main                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -717,5 +869,6 @@ int main(void) {
     test_recv_deadline();
     test_close_wakes_recv();
     test_concurrent_sessions();
+    test_full_duplex();
     return 0;
 }

@@ -71,15 +71,26 @@ struct xylem_dtls_conn_s {
     _Atomic int32_t         refcnt;
     bool                    handshake_done;
 
+    /**
+     * Memory BIOs decouple the SSL state machine from socket parking.
+     * Both client and server feed inbound ciphertext into read_bio and
+     * drain outbound ciphertext from write_bio; SSL never touches a
+     * socket directly. The server is fed by the listener dispatcher;
+     * the client pumps its own connected socket (below).
+     */
+    BIO*                     read_bio;
+    BIO*                     write_bio;
+
     /* client-side only */
     iowait_t*               waiter;
     platform_sock_t          fd;
+    xylem_mutex_t*           ssl_mu;   /*< serializes all SSL/BIO access. */
+    xylem_mutex_t*           rd_mu;    /*< sole parker on iowait read dir.  */
+    xylem_mutex_t*           wr_mu;    /*< sole parker on iowait write dir. */
 
     /* server-side only */
     xylem_channel_t*         inbox;
     _Atomic int32_t          inbox_len;
-    BIO*                     read_bio;
-    BIO*                     write_bio;
     sched_timer_t*           retransmit_timer;
     sched_timer_t*           handshake_timer;
     xylem_dtls_listener_t*   listener;
@@ -350,6 +361,9 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
         platform_socket_close(dtls->fd);
     }
+    xylem_mutex_destroy(dtls->ssl_mu);
+    xylem_mutex_destroy(dtls->rd_mu);
+    xylem_mutex_destroy(dtls->wr_mu);
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
@@ -532,92 +546,173 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
     return 0;
 }
 
-static int _dtls_handle_io_block(xylem_dtls_conn_t* dtls, int ssl_err,
-                                const char* op_name) {
-    iowait_result_t r;
-    switch (ssl_err) {
-    case SSL_ERROR_ZERO_RETURN:
-        return 1;
-    case SSL_ERROR_WANT_READ:
-        r = iowait_read(dtls->waiter);
-        break;
-    case SSL_ERROR_WANT_WRITE:
-        r = iowait_write(dtls->waiter);
-        break;
-    default: {
-        unsigned long e = ERR_peek_error();
-        xylem_loge("dtls %s: ssl_error=%d reason=%s",
-                   op_name, ssl_err,
-                   ERR_reason_error_string(e)
-                       ? ERR_reason_error_string(e) : "unknown");
-        return -1;
+/* Sentinel returned by _dtls_client_pump_in when the read direction
+ * timed out (deadline reached) rather than failing outright. */
+#define DTLS_PUMP_TIMEOUT (-2)
+
+/**
+ * Drain pending outbound ciphertext from write_bio to the connected
+ * socket, one datagram per BIO_read. Holds wr_mu so it is the sole
+ * parker on the iowait write direction, and takes ssl_mu only for the
+ * BIO_read itself -- never across a socket park -- so a concurrent
+ * reader can still touch the SSL state. Returns 0 once write_bio is
+ * empty, -1 on socket error or close.
+ */
+static int _dtls_client_pump_out(xylem_dtls_conn_t* dtls) {
+    int  ret = 0;
+    char buf[DTLS_PKT_BUF_SIZE];
+
+    xylem_mutex_lock(dtls->wr_mu);
+    for (;;) {
+        xylem_mutex_lock(dtls->ssl_mu);
+        int n = BIO_read(dtls->write_bio, buf, sizeof(buf));
+        xylem_mutex_unlock(dtls->ssl_mu);
+        if (n <= 0) {
+            break;
+        }
+        for (;;) {
+            ssize_t sent = platform_socket_send(dtls->fd, buf, n);
+            if (sent >= 0) {
+                break;
+            }
+            int err = platform_socket_get_lasterror();
+            if (err != PLATFORM_SO_ERROR_EAGAIN
+                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                ret = -1;
+                goto out;
+            }
+            iowait_result_t r = iowait_write(dtls->waiter);
+            if (r != IOWAIT_READY
+                || atomic_load_explicit(&dtls->closed,
+                                        memory_order_acquire)) {
+                ret = -1;
+                goto out;
+            }
+        }
     }
-    }
-    if (r != IOWAIT_READY
-        || atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return -1;
-    }
-    return 0;
+out:
+    xylem_mutex_unlock(dtls->wr_mu);
+    return ret;
 }
 
+/**
+ * Read one inbound datagram from the connected socket into read_bio.
+ * Holds rd_mu so it is the sole parker on the iowait read direction,
+ * and takes ssl_mu only for the BIO_write -- never across a socket
+ * park. Returns the byte count fed (>0), 0 on peer EOF,
+ * DTLS_PUMP_TIMEOUT when the read deadline passed, -1 on error/close.
+ */
+static int _dtls_client_pump_in(xylem_dtls_conn_t* dtls) {
+    int  ret = -1;
+    char buf[DTLS_PKT_BUF_SIZE];
+
+    xylem_mutex_lock(dtls->rd_mu);
+    for (;;) {
+        ssize_t n = platform_socket_recv(dtls->fd, buf, sizeof(buf));
+        if (n > 0) {
+            xylem_mutex_lock(dtls->ssl_mu);
+            BIO_write(dtls->read_bio, buf, (int)n);
+            xylem_mutex_unlock(dtls->ssl_mu);
+            ret = (int)n;
+            break;
+        }
+        if (n == 0) {
+            ret = 0;
+            break;
+        }
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            ret = -1;
+            break;
+        }
+        iowait_result_t r = iowait_read(dtls->waiter);
+        if (r == IOWAIT_TIMEOUT) {
+            ret = DTLS_PUMP_TIMEOUT;
+            break;
+        }
+        if (r != IOWAIT_READY
+            || atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+            ret = -1;
+            break;
+        }
+    }
+    xylem_mutex_unlock(dtls->rd_mu);
+    return ret;
+}
+
+/**
+ * Drive the client handshake on the memory BIOs, pumping ciphertext
+ * to/from the connected socket as the SSL state machine demands. The
+ * read wait is bounded by both the overall handshake deadline and the
+ * DTLS retransmit timer (DTLSv1_get_timeout); on the latter expiring
+ * DTLSv1_handle_timeout retransmits the last flight.
+ */
 static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls,
                                     uint64_t deadline) {
     for (;;) {
+        xylem_mutex_lock(dtls->ssl_mu);
         ERR_clear_error();
         int ret = SSL_do_handshake(dtls->ssl);
+        int err = (ret == 1) ? 0 : SSL_get_error(dtls->ssl, ret);
+        xylem_mutex_unlock(dtls->ssl_mu);
+
+        /* Flush any handshake flight produced before waiting on input. */
+        if (_dtls_client_pump_out(dtls) != 0) {
+            return -1;
+        }
+
         if (ret == 1) {
             return 0;
         }
-
-        switch (SSL_get_error(dtls->ssl, ret)) {
-        case SSL_ERROR_WANT_READ: {
-            uint64_t rd_dl = deadline;
+        if (err == SSL_ERROR_WANT_READ) {
+            uint64_t       rd_dl = deadline;
             struct timeval tv;
-            if (DTLSv1_get_timeout(dtls->ssl, &tv)) {
+            xylem_mutex_lock(dtls->ssl_mu);
+            int have_to = DTLSv1_get_timeout(dtls->ssl, &tv);
+            xylem_mutex_unlock(dtls->ssl_mu);
+            if (have_to) {
                 uint64_t ms = (uint64_t)tv.tv_sec * 1000
                             + (uint64_t)tv.tv_usec / 1000;
                 if (ms == 0) {
                     ms = 1;
                 }
-                uint64_t now =
-                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-                uint64_t rt_dl = now + ms;
+                uint64_t rt_dl =
+                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + ms;
                 if (rd_dl == 0 || rt_dl < rd_dl) {
                     rd_dl = rt_dl;
                 }
             }
             iowait_set_rd_deadline(dtls->waiter, rd_dl);
-            iowait_result_t r = iowait_read(dtls->waiter);
-            if (r == IOWAIT_TIMEOUT) {
+
+            int rc = _dtls_client_pump_in(dtls);
+            if (rc == DTLS_PUMP_TIMEOUT) {
                 uint64_t now =
                     xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
                 if (deadline > 0 && now >= deadline) {
                     return -1;
                 }
+                xylem_mutex_lock(dtls->ssl_mu);
                 DTLSv1_handle_timeout(dtls->ssl);
+                xylem_mutex_unlock(dtls->ssl_mu);
                 continue;
             }
-            if (r != IOWAIT_READY) {
+            if (rc <= 0) {
                 return -1;
             }
-            break;
+            continue;
         }
-        case SSL_ERROR_WANT_WRITE: {
-            iowait_result_t r = iowait_write(dtls->waiter);
-            if (r != IOWAIT_READY) {
-                return -1;
-            }
-            break;
+        if (err == SSL_ERROR_WANT_WRITE) {
+            /* Memory BIO never blocks writes; pump_out already flushed. */
+            continue;
         }
-        default: {
-            unsigned long e = ERR_peek_error();
-            xylem_loge("dtls handshake: ssl_error=%d reason=%s",
-                       SSL_get_error(dtls->ssl, ret),
-                       ERR_reason_error_string(e)
-                           ? ERR_reason_error_string(e) : "unknown");
-            return -1;
-        }
-        }
+
+        unsigned long e = ERR_peek_error();
+        xylem_loge("dtls handshake: ssl_error=%d reason=%s",
+                   err,
+                   ERR_reason_error_string(e)
+                       ? ERR_reason_error_string(e) : "unknown");
+        return -1;
     }
 }
 
@@ -669,21 +764,43 @@ static int _dtls_client_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
+            xylem_mutex_lock(dtls->ssl_mu);
             ERR_clear_error();
-            int n = SSL_read(dtls->ssl, buf, len);
+            int n   = SSL_read(dtls->ssl, buf, len);
+            int err = (n > 0) ? 0 : SSL_get_error(dtls->ssl, n);
+            xylem_mutex_unlock(dtls->ssl_mu);
+
             if (n > 0) {
                 ret = n;
                 break;
             }
-            int rc = _dtls_handle_io_block(
-                dtls, SSL_get_error(dtls->ssl, n), "SSL_read");
-            if (rc == 1) {
+            if (err == SSL_ERROR_ZERO_RETURN) {
                 ret = 0;
                 break;
             }
-            if (rc < 0) {
-                break;
+            if (err == SSL_ERROR_WANT_READ) {
+                /* Need more ciphertext; fetch one datagram. A read
+                 * deadline surfaces as DTLS_PUMP_TIMEOUT (-2) and ends
+                 * the read with -1, matching the documented contract. */
+                int rc = _dtls_client_pump_in(dtls);
+                if (rc <= 0) {
+                    break;
+                }
+                continue;
             }
+            if (err == SSL_ERROR_WANT_WRITE) {
+                /* Post-handshake message (rekey) must flush first. */
+                if (_dtls_client_pump_out(dtls) != 0) {
+                    break;
+                }
+                continue;
+            }
+            unsigned long e = ERR_peek_error();
+            xylem_loge("dtls SSL_read: ssl_error=%d reason=%s",
+                       err,
+                       ERR_reason_error_string(e)
+                           ? ERR_reason_error_string(e) : "unknown");
+            break;
         }
     }
 
@@ -698,17 +815,39 @@ static int _dtls_client_send(xylem_dtls_conn_t* dtls,
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
+            xylem_mutex_lock(dtls->ssl_mu);
             ERR_clear_error();
-            int n = SSL_write(dtls->ssl, data, len);
+            int n   = SSL_write(dtls->ssl, data, len);
+            int err = (n > 0) ? 0 : SSL_get_error(dtls->ssl, n);
+            xylem_mutex_unlock(dtls->ssl_mu);
+
             if (n > 0) {
-                ret = 0;
+                /* Flush the datagram SSL just buffered into write_bio. */
+                ret = (_dtls_client_pump_out(dtls) == 0) ? 0 : -1;
                 break;
             }
-            int rc = _dtls_handle_io_block(
-                dtls, SSL_get_error(dtls->ssl, n), "SSL_write");
-            if (rc != 0) {
-                break;
+            if (err == SSL_ERROR_WANT_WRITE) {
+                if (_dtls_client_pump_out(dtls) != 0) {
+                    break;
+                }
+                continue;
             }
+            if (err == SSL_ERROR_WANT_READ) {
+                /* Rekey needs inbound data before the write completes. */
+                if (_dtls_client_pump_out(dtls) != 0) {
+                    break;
+                }
+                if (_dtls_client_pump_in(dtls) <= 0) {
+                    break;
+                }
+                continue;
+            }
+            unsigned long e = ERR_peek_error();
+            xylem_loge("dtls SSL_write: ssl_error=%d reason=%s",
+                       err,
+                       ERR_reason_error_string(e)
+                           ? ERR_reason_error_string(e) : "unknown");
+            break;
         }
     }
 
@@ -720,10 +859,14 @@ static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
     if (atomic_exchange(&dtls->closed, true)) {
         return;
     }
-    if (dtls->ssl) {
-        ERR_clear_error();
-        SSL_shutdown(dtls->ssl);
-    }
+    /**
+     * Do not touch the SSL object here: a concurrent recv/send may be
+     * inside SSL_read/SSL_write under ssl_mu. Flipping closed + waking
+     * both iowait directions makes those calls return -1 and drop their
+     * ref; SSL_free then runs once at the final unref, with no parker
+     * left. (close_notify is best-effort on a datagram socket and is
+     * intentionally skipped, matching the TLS close path.)
+     */
     iowait_close(dtls->waiter);
     _dtls_conn_unref(dtls);
 }
@@ -1041,9 +1184,11 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     addr_pton(host, port, &dtls->peer_addr);
 
     dtls->waiter = iowait_create(fd);
-    if (!dtls->waiter) {
-        platform_socket_close(fd);
-        free(dtls);
+    dtls->ssl_mu = xylem_mutex_create();
+    dtls->rd_mu  = xylem_mutex_create();
+    dtls->wr_mu  = xylem_mutex_create();
+    if (!dtls->waiter || !dtls->ssl_mu || !dtls->rd_mu || !dtls->wr_mu) {
+        _dtls_conn_unref(dtls);
         return NULL;
     }
 
@@ -1054,12 +1199,17 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     iowait_set_rd_deadline(dtls->waiter, deadline);
     iowait_set_wr_deadline(dtls->waiter, deadline);
 
-    dtls->ssl = SSL_new(ctx->ssl_ctx);
-    if (!dtls->ssl) {
+    /**
+     * Memory BIOs (not SSL_set_fd): the connection pumps its own socket
+     * via _dtls_client_pump_in/out, which hold rd_mu/wr_mu so each
+     * iowait direction has a single parker. This lets one coroutine
+     * read while another writes the same connection without tripping
+     * the iowait one-parker-per-direction rule.
+     */
+    if (_dtls_init_ssl(dtls, ctx->ssl_ctx) != 0) {
         _dtls_conn_unref(dtls);
         return NULL;
     }
-    SSL_set_fd(dtls->ssl, (int)fd);
     SSL_set_connect_state(dtls->ssl);
 
     const char* server_name = opts ? opts->server_name : NULL;
