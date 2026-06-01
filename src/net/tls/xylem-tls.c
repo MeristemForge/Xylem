@@ -716,8 +716,18 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         }
 
         if (_tls_do_handshake(tls) != 0) {
+            /**
+             * A failed handshake (bad cert, protocol mismatch, peer
+             * disconnect, or handshake timeout) is per-connection and
+             * must NOT tear down the listener: callers such as the
+             * HTTPS accept coroutine treat a NULL return as
+             * "listener dead" and stop accepting, so a single bad
+             * client would otherwise DoS the whole server. Drop this
+             * connection and keep accepting -- the top-of-loop
+             * ln->closed check still breaks out on real shutdown.
+             */
             _tls_conn_destroy(tls);
-            break;
+            continue;
         }
 
         if (hs_ms > 0) {
