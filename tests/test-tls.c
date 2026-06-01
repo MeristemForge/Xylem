@@ -37,9 +37,11 @@
 
 typedef struct {
     xylem_channel_t*      ready;
+    xylem_channel_t*      gate;
     xylem_waitgroup_t*    wg;
     xylem_tls_ctx_t*      srv_ctx;
     xylem_tls_ctx_t*      cli_ctx;
+    xylem_tls_ctx_t*      good_ctx;
     uint16_t              port;
 } _ctx_t;
 
@@ -288,13 +290,37 @@ static void test_handshake_and_echo(void) {
 }
 
 
-static void _fail_client(void* arg) {
+static void _fail_bad_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
+    /* cli_ctx verifies against the wrong CA, so the handshake fails. */
     xylem_tls_conn_t* conn = xylem_tls_dial(
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn == NULL);
+
+    /* Release the good client only after our failed handshake has been
+     * driven, so the server sees the bad connection first. */
+    xylem_channel_send(ctx->gate, ctx);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fail_good_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->gate);
+
+    xylem_tls_conn_t* conn = xylem_tls_dial(
+        TLS_HOST, ctx->port, ctx->good_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    const char* msg = "after-failure";
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
+    char buf[64];
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_tls_close(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -305,13 +331,23 @@ static void _fail_server(void* arg) {
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
-    /* Accept will fail because client handshake fails. */
+    /**
+     * Regression: a first client whose handshake fails must NOT tear
+     * down the accept loop. accept() must drop the bad connection
+     * internally and go on to return the subsequent good client.
+     * Before the fix, accept() returned NULL on the failed handshake,
+     * which stops real HTTPS/WSS servers dead on a single bad
+     * ClientHello.
+     */
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
-    /* May or may not be NULL depending on timing. */
-    if (conn) {
-        xylem_tls_close(conn);
-    }
+    ASSERT(conn != NULL);
 
+    char buf[64];
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n > 0);
+    ASSERT(xylem_tls_write(conn, buf, n) == 0);
+
+    xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -330,30 +366,41 @@ static void _fail_main(void* arg) {
     ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
     xylem_tls_ctx_set_verify(srv_ctx, false);
 
+    /* Bad client: requires peer cert signed by cert2, server uses cert. */
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
     ASSERT(cli_ctx != NULL);
     xylem_tls_ctx_set_verify(cli_ctx, true);
     ASSERT(xylem_tls_ctx_set_ca(cli_ctx, cert2) == 0);
 
+    /* Good client: does not verify, so its handshake succeeds. */
+    xylem_tls_ctx_t* good_ctx = xylem_tls_ctx_create();
+    ASSERT(good_ctx != NULL);
+    xylem_tls_ctx_set_verify(good_ctx, false);
+
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
-        .wg      = xylem_waitgroup_create(),
-        .srv_ctx = srv_ctx,
-        .cli_ctx = cli_ctx,
-        .port    = TLS_PORT + 1,
+        .ready    = xylem_channel_create(),
+        .gate     = xylem_channel_create(),
+        .wg       = xylem_waitgroup_create(),
+        .srv_ctx  = srv_ctx,
+        .cli_ctx  = cli_ctx,
+        .good_ctx = good_ctx,
+        .port     = TLS_PORT + 1,
     };
-    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_waitgroup_add(ctx.wg, 3);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
                                           _watchdog_cb, NULL);
     xylem_spawn(_fail_server, &ctx);
-    xylem_spawn(_fail_client, &ctx);
+    xylem_spawn(_fail_bad_client, &ctx);
+    xylem_spawn(_fail_good_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(wd);
 
     xylem_tls_ctx_destroy(srv_ctx);
     xylem_tls_ctx_destroy(cli_ctx);
+    xylem_tls_ctx_destroy(good_ctx);
     xylem_waitgroup_destroy(ctx.wg);
     xylem_channel_destroy(ctx.ready);
+    xylem_channel_destroy(ctx.gate);
     remove(cert);
     remove(key);
     remove(cert2);
