@@ -24,6 +24,8 @@
 
 #include "platform/platform-serial.h"
 
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 static const uint32_t _serial_baudrate_map[] = {
@@ -36,7 +38,28 @@ static const uint32_t _serial_baudrate_map[] = {
 
 struct xylem_serial_s {
     platform_serial_t fd;
+    _Atomic int32_t   refcnt;
+    _Atomic bool      closed;
 };
+
+static void _serial_ref(xylem_serial_t* serial) {
+    atomic_fetch_add_explicit(&serial->refcnt, 1, memory_order_relaxed);
+}
+
+/**
+ * Drop a reference. The last one closes the OS handle and frees the
+ * object. Deferring the close to the final unref keeps the fd alive
+ * for the whole duration of any concurrent read/write, which closes
+ * the use-after-free and fd-reuse windows against close().
+ */
+static void _serial_unref(xylem_serial_t* serial) {
+    if (atomic_fetch_sub_explicit(&serial->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    platform_serial_close(serial->fd);
+    free(serial);
+}
 
 xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
     if (!opts || !opts->device) {
@@ -93,6 +116,8 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
         return NULL;
     }
     serial->fd = fd;
+    atomic_init(&serial->refcnt, 1);
+    atomic_init(&serial->closed, false);
     xylem_logi("serial: opened %s at %u baud",
                opts->device, _serial_baudrate_map[opts->baudrate]);
     return serial;
@@ -102,15 +127,26 @@ void xylem_serial_close(xylem_serial_t* serial) {
     if (!serial) {
         return;
     }
-    platform_serial_close(serial->fd);
-    free(serial);
+    /* atomic_exchange makes close idempotent and safe from any thread. */
+    if (atomic_exchange(&serial->closed, true)) {
+        return;
+    }
+    _serial_unref(serial);
 }
 
 int xylem_serial_read(xylem_serial_t* serial, void* buf, size_t len) {
     if (!serial) {
         return -1;
     }
-    return platform_serial_read(serial->fd, buf, len);
+    _serial_ref(serial);
+
+    int ret = -1;
+    if (!atomic_load_explicit(&serial->closed, memory_order_acquire)) {
+        ret = platform_serial_read(serial->fd, buf, len);
+    }
+
+    _serial_unref(serial);
+    return ret;
 }
 
 int xylem_serial_write(xylem_serial_t* serial,
@@ -118,5 +154,13 @@ int xylem_serial_write(xylem_serial_t* serial,
     if (!serial) {
         return -1;
     }
-    return platform_serial_write(serial->fd, buf, len);
+    _serial_ref(serial);
+
+    int ret = -1;
+    if (!atomic_load_explicit(&serial->closed, memory_order_acquire)) {
+        ret = platform_serial_write(serial->fd, buf, len);
+    }
+
+    _serial_unref(serial);
+    return ret;
 }

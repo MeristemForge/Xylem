@@ -78,6 +78,9 @@ typedef struct xylem_serial_opts_s {
  * returns an opaque handle for subsequent read/write operations.
  * All I/O through this handle is synchronous (blocking).
  *
+ * The handle is reference counted, so close may safely race with an
+ * in-flight read or write on another thread without use-after-free.
+ *
  * @param opts  Serial port configuration. Must not be NULL.
  *              opts->device must not be NULL.
  *
@@ -88,11 +91,15 @@ extern xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts);
 /**
  * @brief Close a serial port.
  *
- * Releases the underlying OS handle and frees the serial object.
- * Safe to call with NULL. NOT idempotent -- do not call twice on
- * the same non-NULL handle (double-free).
+ * Marks the handle closed and drops the caller's reference; the
+ * underlying OS handle and the object are released once the last
+ * in-flight read/write also releases its reference. Safe to call
+ * with NULL. Idempotent and safe to call from any thread.
  *
  * @param serial  Serial handle, or NULL.
+ *
+ * @note A blocking read/write already inside the OS call is not
+ *       interrupted; close takes effect once it returns.
  */
 extern void xylem_serial_close(xylem_serial_t* serial);
 
