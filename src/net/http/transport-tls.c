@@ -85,7 +85,7 @@ static http_transport_t _https_dial(const char* host, uint16_t port,
             }
             return (http_transport_t){0};
         }
-        conn = tls_client_handshake(fd, tls_ctx, &tls_opts);
+        conn = tls_client_handshake_fd(fd, tls_ctx, &tls_opts);
     } else {
         conn = xylem_tls_dial(host, port, tls_ctx, &tls_opts);
     }

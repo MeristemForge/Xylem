@@ -44,6 +44,6 @@ _Pragma("once")
  *
  * @return TLS connection handle, or NULL on failure (fd is closed).
  */
-extern xylem_tls_conn_t* tls_client_handshake(platform_sock_t fd,
-                                              xylem_tls_ctx_t* ctx,
-                                              xylem_tls_opts_t* opts);
+extern xylem_tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
+                                                 xylem_tls_ctx_t* ctx,
+                                                 xylem_tls_opts_t* opts);
