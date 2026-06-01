@@ -167,8 +167,12 @@ extern void iowait_close(iowait_t* w);
  *
  * Implicitly closes the handle if not already closed, then drops the
  * creator's reference. The handle is freed once all in-flight
- * references (from active waits and poller callbacks) have been
- * released, so it is safe to call while a waiter is still parked.
+ * references (held by in-flight poller callbacks and armed deadline
+ * timers, not by parked waiters) have been released. A parked waiter
+ * does not hold a reference, so the caller must keep the handle alive
+ * for as long as any coroutine may still be parked on it -- typically
+ * by reference-counting the owning connection so that destroy only
+ * runs once every reader and writer has returned.
  *
  * @param w  IO wait handle (NULL is ignored).
  */

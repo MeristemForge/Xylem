@@ -72,7 +72,7 @@ struct iowait_s {
 
     _Atomic int32_t       refcnt;
     _Atomic uint16_t      gen;
-    bool                  registered;
+    _Atomic bool          registered;
     _Atomic bool          closed;
 
     iowait_slab_t*        slab;
@@ -232,7 +232,7 @@ static void _iowait_arm(iowait_t* w) {
 
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
         /* Fast path: already registered, no need to touch the lock. */
-        if (w->registered) {
+        if (atomic_load_explicit(&w->registered, memory_order_acquire)) {
             return;
         }
     }
@@ -246,10 +246,11 @@ static void _iowait_arm(iowait_t* w) {
     }
 
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        if (!w->registered) {
+        if (!atomic_load_explicit(&w->registered, memory_order_relaxed)) {
             w->sqe.op = PLATFORM_POLLER_RW_OP;
             if (platform_poller_add(w->poller, &w->sqe) == 0) {
-                w->registered = true;
+                atomic_store_explicit(
+                    &w->registered, true, memory_order_release);
             }
         }
         mtx_unlock(&w->arm_lock);
@@ -269,9 +270,10 @@ static void _iowait_arm(iowait_t* w) {
     }
 
     w->sqe.op = op;
-    if (!w->registered) {
+    if (!atomic_load_explicit(&w->registered, memory_order_relaxed)) {
         if (platform_poller_add(w->poller, &w->sqe) == 0) {
-            w->registered = true;
+            atomic_store_explicit(
+                &w->registered, true, memory_order_release);
         }
     } else {
         platform_poller_mod(w->poller, &w->sqe);
@@ -427,7 +429,7 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->closed, false, memory_order_relaxed);
-    w->registered = false;
+    atomic_store_explicit(&w->registered, false, memory_order_relaxed);
 
     w->slab = slab;
 
@@ -475,9 +477,9 @@ void iowait_close(iowait_t* w) {
 
     /* Drop poller subscription now so the caller can safely close the fd. */
     mtx_lock(&w->arm_lock);
-    if (w->registered) {
+    if (atomic_load_explicit(&w->registered, memory_order_relaxed)) {
         platform_poller_del(w->poller, &w->sqe);
-        w->registered = false;
+        atomic_store_explicit(&w->registered, false, memory_order_relaxed);
     }
     mtx_unlock(&w->arm_lock);
 
