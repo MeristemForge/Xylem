@@ -94,7 +94,8 @@ static int _write_key_pem(BIO* bio, void* obj) {
                                     NULL, NULL, 0, NULL, NULL);
 }
 
-static int _gen_self_signed(const char* cert_path, const char* key_path) {
+static int _gen_self_signed_ex(const char* cert_path, const char* key_path,
+                               const char* cn, const char* san) {
     EVP_PKEY* pkey = EVP_PKEY_new();
     if (!pkey) {
         return -1;
@@ -118,15 +119,15 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
 
     X509_NAME* name = X509_get_subject_name(x509);
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char*)"localhost", -1, -1, 0);
+                               (const unsigned char*)cn, -1, -1, 0);
     X509_set_issuer_name(x509, name);
 
     /* SAN required by OpenSSL 3.x for hostname verification. */
-    X509_EXTENSION* san = X509V3_EXT_nconf_nid(
-        NULL, NULL, NID_subject_alt_name, "DNS:localhost,IP:127.0.0.1");
-    if (san) {
-        X509_add_ext(x509, san, -1);
-        X509_EXTENSION_free(san);
+    X509_EXTENSION* ext_san = X509V3_EXT_nconf_nid(
+        NULL, NULL, NID_subject_alt_name, san);
+    if (ext_san) {
+        X509_add_ext(x509, ext_san, -1);
+        X509_EXTENSION_free(ext_san);
     }
 
     X509_sign(x509, pkey, EVP_sha256());
@@ -142,6 +143,11 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
     X509_free(x509);
     EVP_PKEY_free(pkey);
     return rc;
+}
+
+static int _gen_self_signed(const char* cert_path, const char* key_path) {
+    return _gen_self_signed_ex(cert_path, key_path, "localhost",
+                               "DNS:localhost,IP:127.0.0.1");
 }
 
 
@@ -899,6 +905,138 @@ static void test_sni_hostname(void) {
     xylem_run(_sni_main, NULL, NULL);
 }
 
+/**
+ * Per-host SNI certificate selection. The server loads a default cert
+ * (CN=localhost) plus a per-host cert (CN=sni.example) chosen via SNI.
+ * Each client trusts ONLY one of the two certs and verifies the peer
+ * identity, so a successful handshake proves the server returned the
+ * specific cert that SNI should have selected -- not merely that some
+ * handshake completed.
+ */
+static void _sni_sel_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln = xylem_tls_listen(
+        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    /* One connection per client case; echo each payload back. */
+    for (int i = 0; i < 2; i++) {
+        xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+        ASSERT(conn != NULL);
+
+        char buf[64];
+        int n = xylem_tls_read(conn, buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(xylem_tls_write(conn, buf, n) == 0);
+        xylem_tls_close(conn);
+    }
+
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _sni_sel_roundtrip(xylem_tls_ctx_t* cctx, uint16_t port,
+                               const char* sni, const char* msg) {
+    xylem_tls_opts_t opts = {0};
+    opts.server_name = sni;
+
+    xylem_tls_conn_t* conn = xylem_tls_dial(TLS_HOST, port, cctx, &opts);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
+    char buf[64];
+    int n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_tls_close(conn);
+}
+
+static void _sni_sel_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    /**
+     * Case 1: SNI "sni.example" must select the per-host cert. cli_ctx
+     * trusts only that cert's CA and verifies identity "sni.example";
+     * if the server wrongly served the default cert the handshake would
+     * fail on both CA trust and hostname mismatch.
+     */
+    _sni_sel_roundtrip(ctx->cli_ctx, ctx->port, "sni.example", "host-cert");
+
+    /**
+     * Case 2: SNI "localhost" matches no per-host entry, so the server
+     * falls back to the default cert. good_ctx trusts only the default
+     * cert's CA and verifies identity "localhost".
+     */
+    _sni_sel_roundtrip(ctx->good_ctx, ctx->port, "localhost", "default-cert");
+
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _sni_sel_main(void* arg) {
+    (void)arg;
+    const char* def_cert  = "test_tls_snisel_def_cert.pem";
+    const char* def_key   = "test_tls_snisel_def_key.pem";
+    const char* host_cert = "test_tls_snisel_host_cert.pem";
+    const char* host_key  = "test_tls_snisel_host_key.pem";
+    ASSERT(_gen_self_signed(def_cert, def_key) == 0);
+    ASSERT(_gen_self_signed_ex(host_cert, host_key,
+                               "sni.example", "DNS:sni.example") == 0);
+
+    /* Server: default cert plus an SNI-selected per-host cert. */
+    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
+    ASSERT(srv_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, def_cert, def_key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, "sni.example",
+                                   host_cert, host_key) == 0);
+    xylem_tls_ctx_set_verify(srv_ctx, false);
+
+    /* Client for case 1: trusts only the per-host cert. */
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    xylem_tls_ctx_set_verify(cli_ctx, true);
+    ASSERT(xylem_tls_ctx_set_ca(cli_ctx, host_cert) == 0);
+
+    /* Client for case 2: trusts only the default cert. */
+    xylem_tls_ctx_t* good_ctx = xylem_tls_ctx_create();
+    ASSERT(good_ctx != NULL);
+    xylem_tls_ctx_set_verify(good_ctx, true);
+    ASSERT(xylem_tls_ctx_set_ca(good_ctx, def_cert) == 0);
+
+    _ctx_t ctx = {
+        .ready    = xylem_channel_create(),
+        .wg       = xylem_waitgroup_create(),
+        .srv_ctx  = srv_ctx,
+        .cli_ctx  = cli_ctx,
+        .good_ctx = good_ctx,
+        .port     = TLS_PORT + 9,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_sni_sel_server, &ctx);
+    xylem_spawn(_sni_sel_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    xylem_tls_ctx_destroy(good_ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    remove(def_cert);
+    remove(def_key);
+    remove(host_cert);
+    remove(host_key);
+    xylem_shutdown();
+}
+
+static void test_sni_cert_selection(void) {
+    xylem_run(_sni_sel_main, NULL, NULL);
+}
+
 static void _addr_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln = xylem_tls_listen(
@@ -1412,6 +1550,7 @@ int main(void) {
     test_close_listener();
     test_keylog();
     test_sni_hostname();
+    test_sni_cert_selection();
     test_remote_addr();
     test_concurrent_send();
     test_concurrent_close();

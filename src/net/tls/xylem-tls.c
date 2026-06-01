@@ -35,6 +35,7 @@
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -51,8 +52,10 @@
 #define TLS_IO_CHUNK (16 * 1024)
 
 typedef struct _tls_sni_entry_s {
-    char     hostname[256];
-    SSL_CTX* ssl_ctx;
+    char           hostname[256];
+    X509*          cert;   /*< leaf certificate for this SNI host. */
+    EVP_PKEY*      key;    /*< private key paired with cert. */
+    STACK_OF(X509)* chain; /*< intermediate chain (may be NULL). */
 } _tls_sni_entry_t;
 
 struct xylem_tls_ctx_s {
@@ -99,6 +102,14 @@ static void _tls_init_ex_data(void) {
     _tls_ex_data_idx = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
 }
 
+/**
+ * SNI servername callback. Selects the per-host certificate by setting
+ * it directly on the SSL connection -- the single ctx (and thus its
+ * keylog / ALPN / verify config) stays in force. Mirrors Go's
+ * GetCertificate / rustls' cert resolver: SNI only picks a cert, never
+ * swaps the whole configuration. When no host matches, the ctx default
+ * certificate is left untouched.
+ */
 static int _tls_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
     (void)al;
     xylem_tls_ctx_t* ctx = (xylem_tls_ctx_t*)arg;
@@ -107,10 +118,24 @@ static int _tls_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
         return SSL_TLSEXT_ERR_OK;
     }
     for (size_t i = 0; i < ctx->sni_count; i++) {
-        if (platform_strcasecmp(name, ctx->sni_entries[i].hostname) == 0) {
-            SSL_set_SSL_CTX(ssl, ctx->sni_entries[i].ssl_ctx);
+        _tls_sni_entry_t* e = &ctx->sni_entries[i];
+        if (platform_strcasecmp(name, e->hostname) != 0) {
+            continue;
+        }
+        /**
+         * use/set1 variants bump the refcount on the stored objects,
+         * so the ctx keeps ownership and each connection holds its own
+         * reference. Validated key/cert pairing at load time.
+         */
+        if (SSL_use_certificate(ssl, e->cert) != 1
+            || SSL_use_PrivateKey(ssl, e->key) != 1) {
+            xylem_loge("tls sni: failed to apply cert for %s", e->hostname);
             return SSL_TLSEXT_ERR_OK;
         }
+        if (e->chain) {
+            SSL_set1_chain(ssl, e->chain);
+        }
+        return SSL_TLSEXT_ERR_OK;
     }
     return SSL_TLSEXT_ERR_OK;
 }
@@ -139,37 +164,6 @@ static int _tls_alpn_select_cb(SSL* ssl, const unsigned char** out,
         return SSL_TLSEXT_ERR_NOACK;
     }
     return SSL_TLSEXT_ERR_OK;
-}
-
-static SSL_CTX* _tls_create_child_ctx(xylem_tls_ctx_t* ctx) {
-    SSL_CTX* child = SSL_CTX_new(TLS_method());
-    if (!child) {
-        return NULL;
-    }
-
-    SSL_CTX_set_min_proto_version(child, TLS1_2_VERSION);
-    SSL_CTX_set_verify(
-        child, SSL_CTX_get_verify_mode(ctx->ssl_ctx), NULL);
-
-    X509_STORE* store = SSL_CTX_get_cert_store(ctx->ssl_ctx);
-    if (store) {
-        SSL_CTX_set1_cert_store(child, store);
-    }
-
-    if (ctx->alpn_wire && ctx->alpn_wire_len > 0) {
-        SSL_CTX_set_alpn_protos(
-            child, ctx->alpn_wire, (unsigned int)ctx->alpn_wire_len);
-        SSL_CTX_set_alpn_select_cb(child, _tls_alpn_select_cb, ctx);
-    }
-
-    if (ctx->keylog_file) {
-        SSL_CTX_set_keylog_callback(child, _tls_keylog_cb);
-    }
-
-    call_once(&_tls_ex_data_once, _tls_init_ex_data);
-    SSL_CTX_set_ex_data(child, _tls_ex_data_idx, ctx);
-
-    return child;
 }
 
 static xylem_tls_conn_t* _tls_conn_create(platform_sock_t fd) {
@@ -748,7 +742,9 @@ void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx) {
         return;
     }
     for (size_t i = 0; i < ctx->sni_count; i++) {
-        SSL_CTX_free(ctx->sni_entries[i].ssl_ctx);
+        X509_free(ctx->sni_entries[i].cert);
+        EVP_PKEY_free(ctx->sni_entries[i].key);
+        sk_X509_pop_free(ctx->sni_entries[i].chain, X509_free);
     }
     free(ctx->sni_entries);
     if (ctx->keylog_file) {
@@ -779,6 +775,96 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
     return 0;
 }
 
+/**
+ * Load a PEM cert chain file into a leaf X509 plus its intermediate
+ * chain, and the matching private key from key_file. The first PEM
+ * certificate is the leaf; any following ones form the chain. On
+ * success out_cert and out_key are set (caller owns them) and *out_chain
+ * holds the intermediates (may be NULL if none). Returns 0 on success,
+ * -1 on failure (nothing is left allocated to the caller).
+ */
+static int _tls_load_pem_certkey(const char* cert_file,
+                                 const char* key_file,
+                                 X509** out_cert,
+                                 EVP_PKEY** out_key,
+                                 STACK_OF(X509)** out_chain) {
+    *out_cert  = NULL;
+    *out_key   = NULL;
+    *out_chain = NULL;
+
+    BIO* cbio = BIO_new_file(cert_file, "r");
+    if (!cbio) {
+        xylem_loge("tls ctx: failed to open cert %s", cert_file);
+        return -1;
+    }
+
+    X509* leaf = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+    if (!leaf) {
+        xylem_loge("tls ctx: failed to parse leaf cert %s", cert_file);
+        BIO_free(cbio);
+        return -1;
+    }
+
+    /* Remaining certs in the file form the intermediate chain. */
+    STACK_OF(X509)* chain = NULL;
+    for (;;) {
+        X509* extra = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+        if (!extra) {
+            /* EOF is the only expected stop; clear the residual error. */
+            ERR_clear_error();
+            break;
+        }
+        if (!chain) {
+            chain = sk_X509_new_null();
+            if (!chain) {
+                X509_free(extra);
+                X509_free(leaf);
+                BIO_free(cbio);
+                return -1;
+            }
+        }
+        if (sk_X509_push(chain, extra) <= 0) {
+            X509_free(extra);
+            sk_X509_pop_free(chain, X509_free);
+            X509_free(leaf);
+            BIO_free(cbio);
+            return -1;
+        }
+    }
+    BIO_free(cbio);
+
+    BIO* kbio = BIO_new_file(key_file, "r");
+    if (!kbio) {
+        xylem_loge("tls ctx: failed to open key %s", key_file);
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
+    }
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
+    BIO_free(kbio);
+    if (!pkey) {
+        xylem_loge("tls ctx: failed to parse key %s", key_file);
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
+    }
+
+    /* Reject a mismatched cert/key pair up front, not mid-handshake. */
+    if (X509_check_private_key(leaf, pkey) != 1) {
+        xylem_loge("tls ctx: cert %s and key %s do not match",
+                   cert_file, key_file);
+        EVP_PKEY_free(pkey);
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
+    }
+
+    *out_cert  = leaf;
+    *out_key   = pkey;
+    *out_chain = chain;
+    return 0;
+}
+
 int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
                             const char* hostname,
                             const char* cert,
@@ -796,18 +882,11 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
         return 0;
     }
 
-    SSL_CTX* child = _tls_create_child_ctx(ctx);
-    if (!child) {
-        return -1;
-    }
-    if (SSL_CTX_use_certificate_chain_file(child, cert) != 1) {
-        xylem_loge("tls ctx: failed to load cert %s for %s", cert, hostname);
-        SSL_CTX_free(child);
-        return -1;
-    }
-    if (SSL_CTX_use_PrivateKey_file(child, key, SSL_FILETYPE_PEM) != 1) {
-        xylem_loge("tls ctx: failed to load key %s for %s", key, hostname);
-        SSL_CTX_free(child);
+    X509*           leaf  = NULL;
+    EVP_PKEY*       pkey  = NULL;
+    STACK_OF(X509)* chain = NULL;
+    if (_tls_load_pem_certkey(cert, key, &leaf, &pkey, &chain) != 0) {
+        xylem_loge("tls ctx: failed to load cert/key for %s", hostname);
         return -1;
     }
 
@@ -816,7 +895,9 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
         _tls_sni_entry_t* entries = (_tls_sni_entry_t*)realloc(
             ctx->sni_entries, new_cap * sizeof(_tls_sni_entry_t));
         if (!entries) {
-            SSL_CTX_free(child);
+            EVP_PKEY_free(pkey);
+            sk_X509_pop_free(chain, X509_free);
+            X509_free(leaf);
             return -1;
         }
         ctx->sni_entries = entries;
@@ -825,7 +906,9 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
 
     _tls_sni_entry_t* entry = &ctx->sni_entries[ctx->sni_count];
     snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname);
-    entry->ssl_ctx = child;
+    entry->cert  = leaf;
+    entry->key   = pkey;
+    entry->chain = chain;
     ctx->sni_count++;
 
     if (ctx->sni_count == 1) {
