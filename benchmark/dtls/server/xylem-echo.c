@@ -97,7 +97,7 @@ static int _ensure_cert(void) {
 }
 
 static void _on_read(xylem_dtls_conn_t* dtls, void* data, size_t len) {
-    xylem_dtls_send(dtls, data, len);
+    xylem_dtls_write(dtls, data, len);
 }
 
 int main(int argc, char** argv) {

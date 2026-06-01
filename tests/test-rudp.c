@@ -128,9 +128,9 @@ static void _srv_echo_msg(void* arg) {
     ASSERT(c != NULL);
 
     char buf[256];
-    int n = xylem_rudp_recv(c, buf, sizeof(buf));
+    int n = xylem_rudp_read(c, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(xylem_rudp_send(c, buf, n) == 0);
+    ASSERT(xylem_rudp_write(c, buf, n) == 0);
 
     xylem_rudp_close(c);
     xylem_rudp_close_listener(ln);
@@ -147,10 +147,10 @@ static void _cli_echo_msg(void* arg) {
     ASSERT(c != NULL);
 
     const char* msg = "hello rudp message";
-    ASSERT(xylem_rudp_send(c, msg, (int)strlen(msg)) == 0);
+    ASSERT(xylem_rudp_write(c, msg, (int)strlen(msg)) == 0);
 
     char buf[64];
-    int n = xylem_rudp_recv(c, buf, sizeof(buf));
+    int n = xylem_rudp_read(c, buf, sizeof(buf));
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
@@ -287,9 +287,9 @@ static void _srv_multi(void* arg) {
         ASSERT(c != NULL);
 
         char buf[64];
-        int n = xylem_rudp_recv(c, buf, sizeof(buf));
+        int n = xylem_rudp_read(c, buf, sizeof(buf));
         ASSERT(n > 0);
-        ASSERT(xylem_rudp_send(c, buf, n) == 0);
+        ASSERT(xylem_rudp_write(c, buf, n) == 0);
         xylem_rudp_close(c);
     }
 
@@ -309,10 +309,10 @@ static void _cli_multi(void* arg) {
 
         char msg[32];
         snprintf(msg, sizeof(msg), "session-%d", i);
-        ASSERT(xylem_rudp_send(c, msg, (int)strlen(msg)) == 0);
+        ASSERT(xylem_rudp_write(c, msg, (int)strlen(msg)) == 0);
 
         char buf[64];
-        int n = xylem_rudp_recv(c, buf, sizeof(buf));
+        int n = xylem_rudp_read(c, buf, sizeof(buf));
         ASSERT(n == (int)strlen(msg));
         ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 

@@ -1061,13 +1061,6 @@ int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
     return ret;
 }
 
-int xylem_rudp_recv(xylem_rudp_conn_t* conn, void* buf, int len) {
-    return xylem_rudp_read(conn, buf, len);
-}
-
-int xylem_rudp_send(xylem_rudp_conn_t* conn, const void* data, int len) {
-    return xylem_rudp_write(conn, data, len);
-}
 
 xylem_rudp_listener_t* xylem_rudp_listen(
     const char*        host,

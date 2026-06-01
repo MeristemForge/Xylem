@@ -185,9 +185,9 @@ static void _echo_server(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+    int n = xylem_dtls_read(conn, buf, sizeof(buf));
     ASSERT(n > 0);
-    ASSERT(xylem_dtls_send(conn, buf, n) == 0);
+    ASSERT(xylem_dtls_write(conn, buf, n) == 0);
 
     xylem_dtls_close(conn);
     xylem_dtls_close_listener(ln);
@@ -203,10 +203,10 @@ static void _echo_client(void* arg) {
     ASSERT(conn != NULL);
 
     const char* msg = "hello xylem dtls";
-    ASSERT(xylem_dtls_send(conn, msg, strlen(msg)) == 0);
+    ASSERT(xylem_dtls_write(conn, msg, strlen(msg)) == 0);
 
     char buf[64];
-    int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+    int n = xylem_dtls_read(conn, buf, sizeof(buf));
     ASSERT(n == (int64_t)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
@@ -278,9 +278,9 @@ static void _alpn_server(void* arg) {
 
     /* Echo a sync message so the client knows the server is alive. */
     char buf[8];
-    int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+    int n = xylem_dtls_read(conn, buf, sizeof(buf));
     if (n > 0) {
-        xylem_dtls_send(conn, buf, n);
+        xylem_dtls_write(conn, buf, n);
     }
 
     xylem_dtls_close(conn);
@@ -302,9 +302,9 @@ static void _alpn_client(void* arg) {
 
     /* Round-trip exchange ensures the server has completed its
      * handshake before we tear down the connection. */
-    ASSERT(xylem_dtls_send(conn, "ok", 2) == 0);
+    ASSERT(xylem_dtls_write(conn, "ok", 2) == 0);
     char buf[8];
-    xylem_dtls_recv(conn, buf, sizeof(buf));
+    xylem_dtls_read(conn, buf, sizeof(buf));
 
     xylem_dtls_close(conn);
     xylem_waitgroup_done(ctx->wg);
@@ -375,7 +375,7 @@ static void _ci_server(void* arg) {
     if (conn) {
         /* Drain the sync message then close. */
         char buf[8];
-        xylem_dtls_recv(conn, buf, sizeof(buf));
+        xylem_dtls_read(conn, buf, sizeof(buf));
         xylem_dtls_close(conn);
     }
     xylem_dtls_close_listener(ln);
@@ -391,7 +391,7 @@ static void _ci_client(void* arg) {
     ASSERT(conn != NULL);
 
     /* Send a byte to ensure the server handshake completes. */
-    xylem_dtls_send(conn, "x", 1);
+    xylem_dtls_write(conn, "x", 1);
     xylem_dtls_close(conn);
 
     xylem_waitgroup_done(ctx->wg);
@@ -474,7 +474,7 @@ static void _dl_client(void* arg) {
     xylem_dtls_set_read_deadline(conn, deadline);
 
     char buf[64];
-    int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+    int n = xylem_dtls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
     xylem_dtls_close(conn);
@@ -606,9 +606,9 @@ static void test_close_wakes_recv(void) {
 static void _conc_echo_handler(void* arg) {
     xylem_dtls_conn_t* conn = (xylem_dtls_conn_t*)arg;
     char buf[256];
-    int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+    int n = xylem_dtls_read(conn, buf, sizeof(buf));
     if (n > 0) {
-        xylem_dtls_send(conn, buf, n);
+        xylem_dtls_write(conn, buf, n);
     }
     /* Wait for client to read the echo before closing. */
     xylem_sleep(100);
@@ -646,10 +646,10 @@ static void _conc_client_seq(void* arg) {
         char msg[64];
         int  len = snprintf(msg, sizeof(msg), "client-%d", i);
 
-        ASSERT(xylem_dtls_send(conn, msg, len) == 0);
+        ASSERT(xylem_dtls_write(conn, msg, len) == 0);
 
         char buf[64];
-        int n = xylem_dtls_recv(conn, buf, sizeof(buf));
+        int n = xylem_dtls_read(conn, buf, sizeof(buf));
         ASSERT(n == (int64_t)len);
         ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 

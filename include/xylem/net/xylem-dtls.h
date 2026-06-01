@@ -168,7 +168,7 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
 extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
 
 /**
- * @brief Receive a datagram from the connection.
+ * @brief Read a datagram from the connection.
  *
  * Suspends until data arrives, the read deadline passes, or
  * the connection is closed.
@@ -179,13 +179,13 @@ extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
  *
  * @return Bytes received (>0), 0 on peer close, -1 on error.
  */
-extern int xylem_dtls_recv(
+extern int xylem_dtls_read(
     xylem_dtls_conn_t* dtls,
     void*              buf,
     int                len);
 
 /**
- * @brief Send a datagram on the connection.
+ * @brief Write a datagram to the connection.
  *
  * @param dtls  Connection handle.
  * @param data  Source buffer.
@@ -193,7 +193,7 @@ extern int xylem_dtls_recv(
  *
  * @return 0 on success, -1 on error.
  */
-extern int xylem_dtls_send(
+extern int xylem_dtls_write(
     xylem_dtls_conn_t* dtls,
     const void*        data,
     int                len);
@@ -202,7 +202,7 @@ extern int xylem_dtls_send(
  * @brief Set the read deadline for the connection.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_dtls_recv() calls return -1.
+ * xylem_dtls_read() calls return -1.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
@@ -216,7 +216,7 @@ extern void xylem_dtls_set_read_deadline(
  * @brief Set the write deadline for the connection.
  *
  * Once the clock passes the deadline, in-flight and subsequent
- * xylem_dtls_send() calls return -1.
+ * xylem_dtls_write() calls return -1.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0

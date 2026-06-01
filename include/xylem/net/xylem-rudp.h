@@ -127,37 +127,6 @@ extern int xylem_rudp_write(
     const void*        data,
     int                len);
 
-/**
- * @brief Receive a message from a message-mode connection.
- *
- * Suspends until a complete message is available, the connection
- * closes, or the read deadline expires.
- *
- * @param conn  Connection handle.
- * @param buf   Destination buffer.
- * @param len   Buffer size.
- *
- * @return Message size (>0), 0 on remote close, -1 on error
- *         or if buf is too small for the message.
- */
-extern int xylem_rudp_recv(
-    xylem_rudp_conn_t* conn,
-    void*              buf,
-    int                len);
-
-/**
- * @brief Send a message on a message-mode connection.
- *
- * @param conn  Connection handle.
- * @param data  Message data.
- * @param len   Message length.
- *
- * @return 0 on success, -1 on error.
- */
-extern int xylem_rudp_send(
-    xylem_rudp_conn_t* conn,
-    const void*        data,
-    int                len);
 
 /**
  * @brief Close a RUDP connection.

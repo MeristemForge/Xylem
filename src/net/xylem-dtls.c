@@ -1154,15 +1154,15 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     return conn;
 }
 
-int xylem_dtls_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
+int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
     if (dtls->listener) {
         return _dtls_server_recv(dtls, buf, len);
     }
     return _dtls_client_recv(dtls, buf, len);
 }
 
-int xylem_dtls_send(xylem_dtls_conn_t* dtls,
-                    const void* data, int len) {
+int xylem_dtls_write(xylem_dtls_conn_t* dtls,
+                     const void* data, int len) {
     if (dtls->listener) {
         return _dtls_server_send(dtls, data, len);
     }
