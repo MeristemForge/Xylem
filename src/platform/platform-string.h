@@ -21,6 +21,7 @@
 
 _Pragma("once")
 
+/** @brief Case-insensitive string comparison. */
 #if defined(_WIN32)
 #define platform_strcasecmp _stricmp
 #elif defined(__linux__) || defined(__APPLE__)

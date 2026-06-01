@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "mpsc.h"
+#include "container/mpsc.h"
 
 #include <stddef.h>
 

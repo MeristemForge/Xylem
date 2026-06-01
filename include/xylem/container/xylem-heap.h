@@ -26,7 +26,7 @@ _Pragma("once")
 
 typedef struct xylem_heap_s xylem_heap_t;
 
-/* Comparator. Returns negative if a has higher priority than b. */
+/** @brief Comparator. Returns negative if a has higher priority than b. */
 typedef int (*xylem_heap_cmp_fn_t)(const void* a, const void* b);
 
 /**

@@ -436,7 +436,7 @@ void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
 }
 
-static int _socket_try_rcvbuf_mac(platform_sock_t sock, int val) {
+static int _socket_try_rcvbuf(platform_sock_t sock, int val) {
     if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
                    (const void*)&val, sizeof(val)) != 0) {
         return -1;
@@ -459,7 +459,7 @@ int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
     if (desired <= 0) {
         desired = 16 * 1024 * 1024;
     }
-    int rc = _socket_try_rcvbuf_mac(sock, desired);
+    int rc = _socket_try_rcvbuf(sock, desired);
     if (rc >= 0) {
         return rc;
     }
@@ -467,7 +467,7 @@ int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired) {
         if (ladder[i] >= desired) {
             continue;
         }
-        rc = _socket_try_rcvbuf_mac(sock, ladder[i]);
+        rc = _socket_try_rcvbuf(sock, ladder[i]);
         if (rc >= 0) {
             return rc;
         }

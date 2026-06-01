@@ -24,8 +24,7 @@
 #define RB_RED 0
 #define RB_BLACK 1
 
-static inline void
-_rbtree_rotate_left(rbtree_node_t* node, rbtree_t* tree) {
+static inline void _rbtree_rotate_left(rbtree_node_t* node, rbtree_t* tree) {
     rbtree_node_t* right = node->right;
 
     if ((node->right = right->left)) {
@@ -44,8 +43,7 @@ _rbtree_rotate_left(rbtree_node_t* node, rbtree_t* tree) {
     node->parent = right;
 }
 
-static inline void
-_rbtree_rotate_right(rbtree_node_t* node, rbtree_t* tree) {
+static inline void _rbtree_rotate_right(rbtree_node_t* node, rbtree_t* tree) {
     rbtree_node_t* left = node->left;
 
     if ((node->left = left->right)) {
@@ -74,8 +72,7 @@ static inline void _rbtree_link_node(
     *rb_link = node;
 }
 
-static void
-_rbtree_insert_color(rbtree_t* tree, rbtree_node_t* node) {
+static void _rbtree_insert_color(rbtree_t* tree, rbtree_node_t* node) {
     rbtree_node_t *parent, *gparent;
 
     while ((parent = node->parent) && parent->color == RB_RED) {
@@ -282,8 +279,7 @@ void rbtree_init(
     tree->cmp_kn = cmp_kn;
 }
 
-void
-rbtree_insert(rbtree_t* tree, rbtree_node_t* node) {
+void rbtree_insert(rbtree_t* tree, rbtree_node_t* node) {
     rbtree_node_t** p = &(tree->root);
     rbtree_node_t*  parent = NULL;
 
@@ -306,7 +302,7 @@ rbtree_insert(rbtree_t* tree, rbtree_node_t* node) {
 
 void rbtree_remove(rbtree_t* tree, rbtree_node_t* node) {
     rbtree_node_t *child, *parent;
-    char                 color;
+    uint8_t              color;
 
     if (!node->left) {
         child = node->right;

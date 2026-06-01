@@ -69,7 +69,7 @@ xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards) {
     }
 
     int total = data_shards + parity_shards;
-    fec->enc_shards = (uint8_t**)malloc((size_t)total * sizeof(uint8_t*));
+    fec->enc_shards = (uint8_t**)calloc((size_t)total, sizeof(uint8_t*));
     if (!fec->enc_shards) {
         reed_solomon_release(rs);
         free(fec);

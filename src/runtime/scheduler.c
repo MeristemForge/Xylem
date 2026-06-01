@@ -858,8 +858,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         sched->coro_pool.cap       = (int32_t)pool_cap;
         sched->coro_pool.count     = 0;
         spin_init(&sched->coro_pool.lock);
-        sched->coro_pool.slots = (void**)malloc(
-            pool_cap * sizeof(void*));
+        sched->coro_pool.slots = (void**)calloc(
+            pool_cap, sizeof(void*));
         if (!sched->coro_pool.slots) {
             _sched_cleanup(sched, 0);
             return NULL;
@@ -977,7 +977,7 @@ void scheduler_schedule_batch(
     queue_node_t*  inline_nodes[INLINE_CAP];
     queue_node_t** nodes = inline_nodes;
     if (n > INLINE_CAP) {
-        nodes = (queue_node_t**)malloc((size_t)n * sizeof(*nodes));
+        nodes = (queue_node_t**)calloc((size_t)n, sizeof(*nodes));
         if (!nodes) {
             for (int32_t i = 0; i < n; i++) {
                 scheduler_schedule(sched, cos[i]);

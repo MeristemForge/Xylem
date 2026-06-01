@@ -24,6 +24,7 @@ _Pragma("once")
 #include <stddef.h>
 
 
+/** @brief Virtual memory protection flags. */
 typedef enum platform_vmem_prot_e {
     PLATFORM_VMEM_PROT_NONE  = 0,
     PLATFORM_VMEM_PROT_READ  = 1 << 0,

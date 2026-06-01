@@ -24,7 +24,7 @@
 #include <stdlib.h>
 
 platform_sem_t* platform_sem_create(unsigned int value) {
-    platform_sem_t* sem = (platform_sem_t*)malloc(sizeof(platform_sem_t));
+    platform_sem_t* sem = (platform_sem_t*)calloc(1, sizeof(platform_sem_t));
     if (!sem) {
         return NULL;
     }
@@ -37,6 +37,9 @@ platform_sem_t* platform_sem_create(unsigned int value) {
 }
 
 void platform_sem_destroy(platform_sem_t* sem) {
+    if (!sem) {
+        return;
+    }
     CloseHandle(*sem);
     free(sem);
 }

@@ -212,7 +212,6 @@ ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
     return send(sock, buf, size, 0);
 }
 
-
 ssize_t platform_socket_recvfrom(
     platform_sock_t          sock,
     void*                    buf,

@@ -66,8 +66,7 @@ void heap_init(
     heap->cmp = cmp;
 }
 
-void
-heap_insert(heap_t* heap, heap_node_t* node) {
+void heap_insert(heap_t* heap, heap_node_t* node) {
     heap_node_t** parent;
     heap_node_t** child;
     size_t              path;

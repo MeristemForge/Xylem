@@ -44,8 +44,7 @@ static int _rbtree_cmp_nn_bridge(
     return na->cmp_dd(na->data, nb->data);
 }
 
-static int
-_rbtree_cmp_kn_bridge(const void* key, const rbtree_node_t* n) {
+static int _rbtree_cmp_kn_bridge(const void* key, const rbtree_node_t* n) {
     _rbtree_wrap_node_t* xn = rbtree_entry((rbtree_node_t*)n, _rbtree_wrap_node_t, node);
     return xn->cmp_kd(key, xn->data);
 }

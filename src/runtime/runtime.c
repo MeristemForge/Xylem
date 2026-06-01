@@ -114,7 +114,7 @@ void runtime_sleep(uint64_t ms) {
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {
-    _submit_ctx_t* ctx = (_submit_ctx_t*)malloc(sizeof(_submit_ctx_t));
+    _submit_ctx_t* ctx = (_submit_ctx_t*)calloc(1, sizeof(_submit_ctx_t));
     if (!ctx) {
         return -1;
     }
