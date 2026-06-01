@@ -24,6 +24,7 @@
 #include "tls-internal.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
+#include "xylem/sync/xylem-mutex.h"
 
 #include "net/addr.h"
 #include "platform/platform-socket.h"
@@ -32,6 +33,7 @@
 #include "runtime/runtime.h"
 #include "thrds.h"
 
+#include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <stdatomic.h>
@@ -40,6 +42,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define TLS_IO_CHUNK 16384
 
 typedef struct _tls_sni_entry_s {
     char     hostname[256];
@@ -58,6 +62,11 @@ struct xylem_tls_ctx_s {
 
 struct xylem_tls_conn_s {
     SSL*             ssl;
+    BIO*             rbio;       /*< network -> SSL: inbound ciphertext. */
+    BIO*             wbio;       /*< SSL -> network: outbound ciphertext. */
+    xylem_mutex_t*   ssl_mu;     /*< serializes all OpenSSL SSL/BIO access. */
+    xylem_mutex_t*   rd_mu;      /*< sole owner of iowait read direction. */
+    xylem_mutex_t*   wr_mu;      /*< sole owner of iowait write direction. */
     iowait_t*        waiter;
     platform_sock_t  fd;
     xylem_tls_ctx_t* ctx;
@@ -131,7 +140,6 @@ static SSL_CTX* _tls_create_child_ctx(xylem_tls_ctx_t* ctx) {
         return NULL;
     }
 
-    SSL_CTX_set_mode(child, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_min_proto_version(child, TLS1_2_VERSION);
     SSL_CTX_set_verify(
         child, SSL_CTX_get_verify_mode(ctx->ssl_ctx), NULL);
@@ -166,13 +174,50 @@ static xylem_tls_conn_t* _tls_conn_create(platform_sock_t fd) {
 
     tls->fd     = fd;
     tls->waiter = iowait_create(fd);
-    if (!tls->waiter) {
+    tls->ssl_mu = xylem_mutex_create();
+    tls->rd_mu  = xylem_mutex_create();
+    tls->wr_mu  = xylem_mutex_create();
+    if (!tls->waiter || !tls->ssl_mu || !tls->rd_mu || !tls->wr_mu) {
+        if (tls->waiter) {
+            iowait_destroy(tls->waiter);
+        }
+        xylem_mutex_destroy(tls->ssl_mu);
+        xylem_mutex_destroy(tls->rd_mu);
+        xylem_mutex_destroy(tls->wr_mu);
         free(tls);
         return NULL;
     }
 
     atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
     return tls;
+}
+
+/**
+ * Bind a fresh SSL to a pair of memory BIOs. Network I/O is driven
+ * separately via _tls_pump_in / _tls_pump_out so SSL_read and SSL_write
+ * never touch the socket directly; this decouples the SSL state machine
+ * from the read/write parking directions. On success SSL owns both BIOs
+ * and frees them in SSL_free.
+ */
+static int _tls_init_ssl(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx) {
+    tls->ssl = SSL_new(ssl_ctx);
+    if (!tls->ssl) {
+        xylem_loge("tls: SSL_new failed");
+        return -1;
+    }
+    tls->rbio = BIO_new(BIO_s_mem());
+    tls->wbio = BIO_new(BIO_s_mem());
+    if (!tls->rbio || !tls->wbio) {
+        BIO_free(tls->rbio);
+        BIO_free(tls->wbio);
+        SSL_free(tls->ssl);
+        tls->ssl  = NULL;
+        tls->rbio = NULL;
+        tls->wbio = NULL;
+        return -1;
+    }
+    SSL_set_bio(tls->ssl, tls->rbio, tls->wbio);
+    return 0;
 }
 
 static void _tls_conn_ref(xylem_tls_conn_t* tls) {
@@ -196,6 +241,9 @@ static void _tls_conn_unref(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
+    xylem_mutex_destroy(tls->ssl_mu);
+    xylem_mutex_destroy(tls->rd_mu);
+    xylem_mutex_destroy(tls->wr_mu);
     free(tls);
 }
 
@@ -210,43 +258,146 @@ static void _tls_conn_destroy(xylem_tls_conn_t* tls) {
         shutdown(tls->fd, PLATFORM_SHUT_WR);
         platform_socket_close(tls->fd);
     }
+    xylem_mutex_destroy(tls->ssl_mu);
+    xylem_mutex_destroy(tls->rd_mu);
+    xylem_mutex_destroy(tls->wr_mu);
     free(tls);
+}
+
+/**
+ * Send exactly len bytes to the socket, parking on the iowait write
+ * direction when the kernel buffer is full. Caller must hold wr_mu so
+ * this is the sole parker on that direction. Returns 0 on success, -1
+ * on socket error or close.
+ */
+static int _tls_send_all(xylem_tls_conn_t* tls, const char* buf, int len) {
+    int sent = 0;
+    while (sent < len) {
+        ssize_t w = platform_socket_send(tls->fd, buf + sent, len - sent);
+        if (w > 0) {
+            sent += (int)w;
+            continue;
+        }
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            xylem_loge("tls fd=%d send error: %s",
+                       (int)tls->fd, platform_socket_tostring(err));
+            return -1;
+        }
+        iowait_result_t r = iowait_write(tls->waiter);
+        if (r != IOWAIT_READY
+            || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Drain pending outbound ciphertext from wbio to the socket. Holds
+ * wr_mu so it is the sole parker on the iowait write direction, and
+ * takes ssl_mu only for the BIO_read itself -- never across a socket
+ * park -- so a concurrent reader can still touch the SSL state. Returns
+ * 0 once wbio is empty, -1 on socket error or close.
+ */
+static int _tls_pump_out(xylem_tls_conn_t* tls) {
+    char buf[TLS_IO_CHUNK];
+    int  ret = 0;
+
+    xylem_mutex_lock(tls->wr_mu);
+    for (;;) {
+        xylem_mutex_lock(tls->ssl_mu);
+        int n = BIO_read(tls->wbio, buf, (int)sizeof(buf));
+        xylem_mutex_unlock(tls->ssl_mu);
+        if (n <= 0) {
+            break;
+        }
+        if (_tls_send_all(tls, buf, n) != 0) {
+            ret = -1;
+            break;
+        }
+    }
+    xylem_mutex_unlock(tls->wr_mu);
+    return ret;
+}
+
+/**
+ * Read one chunk of inbound ciphertext from the socket into rbio. Holds
+ * rd_mu so it is the sole parker on the iowait read direction, and takes
+ * ssl_mu only for the BIO_write -- never across a socket park. Returns
+ * the byte count fed (>0), 0 on peer EOF, -1 on socket error or close.
+ */
+static int _tls_pump_in(xylem_tls_conn_t* tls) {
+    char buf[TLS_IO_CHUNK];
+    int  ret = -1;
+
+    xylem_mutex_lock(tls->rd_mu);
+    for (;;) {
+        ssize_t n = platform_socket_recv(tls->fd, buf, (int)sizeof(buf));
+        if (n > 0) {
+            xylem_mutex_lock(tls->ssl_mu);
+            BIO_write(tls->rbio, buf, (int)n);
+            xylem_mutex_unlock(tls->ssl_mu);
+            ret = (int)n;
+            break;
+        }
+        if (n == 0) {
+            ret = 0;
+            break;
+        }
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            xylem_loge("tls fd=%d recv error: %s",
+                       (int)tls->fd, platform_socket_tostring(err));
+            ret = -1;
+            break;
+        }
+        iowait_result_t r = iowait_read(tls->waiter);
+        if (r != IOWAIT_READY
+            || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+            ret = -1;
+            break;
+        }
+    }
+    xylem_mutex_unlock(tls->rd_mu);
+    return ret;
 }
 
 static int _tls_do_handshake(xylem_tls_conn_t* tls) {
     for (;;) {
+        xylem_mutex_lock(tls->ssl_mu);
         ERR_clear_error();
         int ret = SSL_do_handshake(tls->ssl);
+        int err = (ret == 1) ? 0 : SSL_get_error(tls->ssl, ret);
+        xylem_mutex_unlock(tls->ssl_mu);
+
+        /* Flush any handshake records produced before waiting on input. */
+        if (_tls_pump_out(tls) != 0) {
+            return -1;
+        }
+
         if (ret == 1) {
             return 0;
         }
+        if (err == SSL_ERROR_WANT_READ) {
+            if (_tls_pump_in(tls) <= 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_WRITE) {
+            continue;
+        }
 
-        int err = SSL_get_error(tls->ssl, ret);
-        switch (err) {
-        case SSL_ERROR_WANT_READ: {
-            iowait_result_t r = iowait_read(tls->waiter);
-            if (r != IOWAIT_READY) {
-                return -1;
-            }
-            break;
-        }
-        case SSL_ERROR_WANT_WRITE: {
-            iowait_result_t r = iowait_write(tls->waiter);
-            if (r != IOWAIT_READY) {
-                return -1;
-            }
-            break;
-        }
-        default: {
-            unsigned long ssl_err = ERR_peek_error();
-            xylem_loge("tls handshake: ssl_error=%d reason=%s",
-                       err,
-                       ERR_reason_error_string(ssl_err)
-                           ? ERR_reason_error_string(ssl_err)
-                           : "unknown");
-            return -1;
-        }
-        }
+        unsigned long e = ERR_peek_error();
+        xylem_loge("tls handshake: ssl_error=%d reason=%s",
+                   err,
+                   ERR_reason_error_string(e)
+                       ? ERR_reason_error_string(e)
+                       : "unknown");
+        return -1;
     }
 }
 
@@ -276,42 +427,11 @@ static void _tls_cache_alpn(xylem_tls_conn_t* tls) {
     }
 }
 
-static int _tls_handle_io_block(xylem_tls_conn_t* tls, int ssl_err,
-                                const char* op_name) {
-    iowait_result_t r;
-    switch (ssl_err) {
-    case SSL_ERROR_ZERO_RETURN:
-        return 1;
-    case SSL_ERROR_WANT_READ:
-        r = iowait_read(tls->waiter);
-        break;
-    case SSL_ERROR_WANT_WRITE:
-        r = iowait_write(tls->waiter);
-        break;
-    default: {
-        unsigned long e = ERR_peek_error();
-        xylem_loge("tls %s: ssl_error=%d reason=%s",
-                   op_name, ssl_err,
-                   ERR_reason_error_string(e)
-                       ? ERR_reason_error_string(e) : "unknown");
-        return -1;
-    }
-    }
-    if (r != IOWAIT_READY
-        || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        return -1;
-    }
-    return 0;
-}
-
 static int _tls_run_client_handshake(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx,
                                      const char* server_name) {
-    tls->ssl = SSL_new(ssl_ctx);
-    if (!tls->ssl) {
-        xylem_loge("tls: SSL_new failed");
+    if (_tls_init_ssl(tls, ssl_ctx) != 0) {
         return -1;
     }
-    SSL_set_fd(tls->ssl, (int)tls->fd);
     SSL_set_connect_state(tls->ssl);
 
     _tls_apply_server_name(tls->ssl, server_name);
@@ -358,7 +478,6 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
         return NULL;
     }
 
-    SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
     SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
 
@@ -698,13 +817,11 @@ xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
         getpeername(
             fd, (struct sockaddr*)&tls->peer_addr.storage, &peer_len);
 
-        tls->ssl = SSL_new(ln->ctx->ssl_ctx);
-        if (!tls->ssl) {
-            xylem_loge("tls accept: SSL_new failed");
+        if (_tls_init_ssl(tls, ln->ctx->ssl_ctx) != 0) {
+            xylem_loge("tls accept: SSL init failed");
             _tls_conn_destroy(tls);
             continue;
         }
-        SSL_set_fd(tls->ssl, (int)fd);
         SSL_set_accept_state(tls->ssl);
 
         uint64_t hs_ms = ln->opts.handshake_timeout_ms;
@@ -759,22 +876,37 @@ int xylem_tls_read(xylem_tls_conn_t* tls, void* buf, int len) {
 
     if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
         for (;;) {
+            xylem_mutex_lock(tls->ssl_mu);
             ERR_clear_error();
-            int n = SSL_read(tls->ssl, buf, len);
+            int n   = SSL_read(tls->ssl, buf, len);
+            int err = (n > 0) ? 0 : SSL_get_error(tls->ssl, n);
+            xylem_mutex_unlock(tls->ssl_mu);
+
             if (n > 0) {
                 ret = n;
                 break;
             }
-
-            int rc = _tls_handle_io_block(
-                tls, SSL_get_error(tls->ssl, n), "SSL_read");
-            if (rc == 1) {
+            if (err == SSL_ERROR_ZERO_RETURN) {
                 ret = 0;
                 break;
             }
-            if (rc < 0) {
-                break;
+            if (err == SSL_ERROR_WANT_READ) {
+                /* SSL needs more ciphertext; fetch a chunk from the
+                 * socket. EOF (0) or error (-1) both end the read. */
+                if (_tls_pump_in(tls) <= 0) {
+                    break;
+                }
+                continue;
             }
+            if (err == SSL_ERROR_WANT_WRITE) {
+                /* Post-handshake message (e.g. TLS 1.3 KeyUpdate) must
+                 * be flushed before SSL_read can proceed. */
+                if (_tls_pump_out(tls) != 0) {
+                    break;
+                }
+                continue;
+            }
+            break;
         }
     }
 
@@ -791,19 +923,40 @@ int xylem_tls_write(xylem_tls_conn_t* tls, const void* data, int len) {
         int         rem = len;
 
         while (rem > 0) {
+            xylem_mutex_lock(tls->ssl_mu);
             ERR_clear_error();
-            int n = SSL_write(tls->ssl, ptr, rem);
+            int n   = SSL_write(tls->ssl, ptr, rem);
+            int err = (n > 0) ? 0 : SSL_get_error(tls->ssl, n);
+            xylem_mutex_unlock(tls->ssl_mu);
+
             if (n > 0) {
+                /* Flush the ciphertext SSL just buffered into wbio. */
+                if (_tls_pump_out(tls) != 0) {
+                    break;
+                }
                 ptr += n;
                 rem -= n;
                 continue;
             }
-
-            int rc = _tls_handle_io_block(
-                tls, SSL_get_error(tls->ssl, n), "SSL_write");
-            if (rc != 0) {
-                break;
+            if (err == SSL_ERROR_WANT_WRITE) {
+                if (_tls_pump_out(tls) != 0) {
+                    break;
+                }
+                continue;
             }
+            if (err == SSL_ERROR_WANT_READ) {
+                /* Rare: renegotiation / KeyUpdate needs inbound data
+                 * before the write can complete. Flush first, then
+                 * feed one chunk of ciphertext. */
+                if (_tls_pump_out(tls) != 0) {
+                    break;
+                }
+                if (_tls_pump_in(tls) <= 0) {
+                    break;
+                }
+                continue;
+            }
+            break;
         }
         if (rem == 0) {
             ret = 0;

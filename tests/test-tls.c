@@ -1249,6 +1249,154 @@ static void test_close_listener_with_active_conn(void) {
     xylem_run(_clac_main, NULL, NULL);
 }
 
+/**
+ * Full-duplex regression: one connection is read by one coroutine and
+ * written by another at the same time. Before the memory-BIO rewrite,
+ * concurrent SSL_read/SSL_write on a single SSL aborted the process
+ * (iowait one-parker-per-direction violation) and raced the SSL state.
+ * The two client coroutines share a single connection through a small
+ * fanout struct; the server echoes every byte back.
+ */
+#define FDX_MSG_COUNT 200
+#define FDX_MSG_SIZE  300
+
+typedef struct {
+    xylem_tls_conn_t*  conn;
+    xylem_waitgroup_t* wg;
+    int                ok;
+} _fdx_share_t;
+
+static void _fdx_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln = xylem_tls_listen(
+        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+
+    /* Echo every byte until the peer closes (read returns <= 0). */
+    char    buf[1024];
+    int64_t echoed = 0;
+    int64_t total  = (int64_t)FDX_MSG_COUNT * FDX_MSG_SIZE;
+    while (echoed < total) {
+        int n = xylem_tls_read(conn, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        if (xylem_tls_write(conn, buf, n) != 0) {
+            break;
+        }
+        echoed += n;
+    }
+
+    xylem_tls_close(conn);
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fdx_writer(void* arg) {
+    _fdx_share_t* sh = (_fdx_share_t*)arg;
+    char msg[FDX_MSG_SIZE];
+    memset(msg, 'a', sizeof(msg));
+
+    for (int i = 0; i < FDX_MSG_COUNT; i++) {
+        if (xylem_tls_write(sh->conn, msg, (int)sizeof(msg)) != 0) {
+            sh->ok = 0;
+            break;
+        }
+    }
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _fdx_reader(void* arg) {
+    _fdx_share_t* sh = (_fdx_share_t*)arg;
+    int64_t want = (int64_t)FDX_MSG_COUNT * FDX_MSG_SIZE;
+    int64_t got  = 0;
+    char    buf[1024];
+
+    while (got < want) {
+        int n = xylem_tls_read(sh->conn, buf, sizeof(buf));
+        if (n <= 0) {
+            sh->ok = 0;
+            break;
+        }
+        got += n;
+    }
+    ASSERT(got == want);
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _fdx_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn = xylem_tls_dial(
+        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    /**
+     * Reader and writer drive the same connection concurrently. They
+     * get their own waitgroup so we can join them before closing the
+     * shared connection exactly once.
+     */
+    xylem_waitgroup_t* io_wg = xylem_waitgroup_create();
+    _fdx_share_t sh = { .conn = conn, .wg = io_wg, .ok = 1 };
+    xylem_waitgroup_add(io_wg, 2);
+    xylem_spawn(_fdx_reader, &sh);
+    xylem_spawn(_fdx_writer, &sh);
+    xylem_waitgroup_wait(io_wg);
+    xylem_waitgroup_destroy(io_wg);
+    ASSERT(sh.ok == 1);
+
+    xylem_tls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _fdx_main(void* arg) {
+    (void)arg;
+    const char* cert = "test_tls_fdx_cert.pem";
+    const char* key  = "test_tls_fdx_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
+    ASSERT(srv_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_tls_ctx_set_verify(srv_ctx, false);
+
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    xylem_tls_ctx_set_verify(cli_ctx, false);
+
+    _ctx_t ctx = {
+        .ready   = xylem_channel_create(),
+        .wg      = xylem_waitgroup_create(),
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 13,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _watchdog_cb, NULL);
+    xylem_spawn(_fdx_server, &ctx);
+    xylem_spawn(_fdx_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    remove(cert);
+    remove(key);
+    xylem_shutdown();
+}
+
+static void test_full_duplex(void) {
+    xylem_run(_fdx_main, NULL, NULL);
+}
+
 int main(void) {
     test_ctx_create_destroy();
     test_load_cert_valid();
@@ -1268,5 +1416,6 @@ int main(void) {
     test_concurrent_send();
     test_concurrent_close();
     test_close_listener_with_active_conn();
+    test_full_duplex();
     return 0;
 }
