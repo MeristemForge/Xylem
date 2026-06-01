@@ -85,6 +85,7 @@ struct xylem_dtls_conn_s {
     xylem_dtls_listener_t*   listener;
     rbtree_node_t            server_node;
     uint64_t                 rd_deadline_ms;
+    uint64_t                 wr_deadline_ms;
 };
 
 struct xylem_dtls_listener_s {
@@ -487,28 +488,30 @@ static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
         return -1;
     }
 
+    /* DTLS: one SSL_write produces exactly one datagram. */
     char buf[DTLS_PKT_BUF_SIZE];
-    int  rd;
-    while ((rd = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
-        for (;;) {
-            ssize_t sent = platform_socket_sendto(
-                dtls->listener->fd, buf, rd,
-                &dtls->peer_addr.storage, addrlen);
-            if (sent >= 0) {
-                break;
-            }
-            int err = platform_socket_get_lasterror();
-            if (err != PLATFORM_SO_ERROR_EAGAIN
-                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                return -1;
-            }
-            iowait_result_t r = iowait_write(dtls->listener->waiter);
-            if (r != IOWAIT_READY) {
-                return -1;
-            }
+    int rd = BIO_read(dtls->write_bio, buf, sizeof(buf));
+    if (rd <= 0) {
+        return -1;
+    }
+
+    for (;;) {
+        ssize_t sent = platform_socket_sendto(
+            dtls->listener->fd, buf, rd,
+            &dtls->peer_addr.storage, addrlen);
+        if (sent >= 0) {
+            return 0;
+        }
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            return -1;
+        }
+        iowait_result_t r = iowait_write(dtls->listener->waiter);
+        if (r != IOWAIT_READY) {
+            return -1;
         }
     }
-    return 0;
 }
 
 static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
@@ -963,7 +966,14 @@ static int _dtls_server_send(xylem_dtls_conn_t* dtls,
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         xylem_mutex_lock(dtls->listener->write_mu);
+        if (dtls->wr_deadline_ms > 0) {
+            iowait_set_wr_deadline(
+                dtls->listener->waiter, dtls->wr_deadline_ms);
+        }
         ret = _dtls_server_send_record(dtls, data, len);
+        if (dtls->wr_deadline_ms > 0) {
+            iowait_set_wr_deadline(dtls->listener->waiter, 0);
+        }
         xylem_mutex_unlock(dtls->listener->write_mu);
     }
 
@@ -1199,7 +1209,9 @@ void xylem_dtls_set_read_deadline(
 
 void xylem_dtls_set_write_deadline(
     xylem_dtls_conn_t* dtls, uint64_t deadline_ms) {
-    if (!dtls->listener) {
+    if (dtls->listener) {
+        dtls->wr_deadline_ms = deadline_ms;
+    } else {
         iowait_set_wr_deadline(dtls->waiter, deadline_ms);
     }
 }
