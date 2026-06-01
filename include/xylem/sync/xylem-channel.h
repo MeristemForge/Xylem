@@ -89,23 +89,21 @@ extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 extern void* xylem_channel_recv(xylem_channel_t* ch);
 
 /**
- * @brief Receive the next message with a deadline. Blocks the
+ * @brief Receive the next message with a timeout. Blocks the
  *        calling coroutine until a message arrives, the channel
- *        closes, or the deadline passes.
+ *        closes, or the timeout elapses.
  *
  * Concurrent recv from multiple coroutines aborts (same single-
  * receiver contract as recv).
  *
- * @param ch           Channel handle.
- * @param deadline_ms  Absolute monotonic deadline in milliseconds
- *                     (see xylem_utils_getnow with
- *                     XYLEM_TIME_PRECISION_MSEC). 0 means no
- *                     deadline, identical to recv().
+ * @param ch          Channel handle.
+ * @param timeout_ms  Relative timeout in milliseconds. 0 means no
+ *                    timeout, identical to recv().
  *
- * @return Message pointer, or NULL if the deadline passed, or the
+ * @return Message pointer, or NULL if the timeout elapsed, or the
  *         channel is closed and empty. The NULL cases are not
  *         distinguished; callers needing the reason should track it
  *         out of band.
  */
 extern void* xylem_channel_recv_timeout(
-    xylem_channel_t* ch, uint64_t deadline_ms);
+    xylem_channel_t* ch, uint64_t timeout_ms);

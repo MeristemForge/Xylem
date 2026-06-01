@@ -120,9 +120,7 @@ typedef struct {
  * (NULL) rather than blocking forever. */
 static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
-    uint64_t deadline =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 30;
-    void* msg = xylem_channel_recv_timeout(ctx->ch, deadline);
+    void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
     ASSERT(msg == NULL);
     ctx->tested = 1;
     xylem_channel_destroy(ctx->ch);
@@ -156,9 +154,7 @@ static void _to_sender_coro(void* arg) {
 
 static void _to_recv_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
-    uint64_t deadline =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000;
-    void* msg = xylem_channel_recv_timeout(ctx->ch, deadline);
+    void* msg = xylem_channel_recv_timeout(ctx->ch, 1000);
     ASSERT(msg == &_to_payload);
     ctx->tested = 1;
     xylem_channel_destroy(ctx->ch);
@@ -200,7 +196,8 @@ static void test_channel_timeout_deliver(void) {
 typedef struct {
     xylem_channel_t* ch;
     int              payload;
-    uint64_t         deadline;
+    uint64_t         timeout_ms;
+    uint64_t         send_at_ms;
     int              got_timeout;
     int              got_message;
 } _race_ctx_t;
@@ -210,15 +207,15 @@ static void _race_sender_coro(void* arg) {
     /* Aim the send at the deadline itself so the send wakeup and the
      * deadline timer fire in the same window. */
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    if (ctx->deadline > now) {
-        xylem_sleep(ctx->deadline - now);
+    if (ctx->send_at_ms > now) {
+        xylem_sleep(ctx->send_at_ms - now);
     }
     xylem_channel_send(ctx->ch, &ctx->payload);
 }
 
 static void _race_recv_coro(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
-    void* msg = xylem_channel_recv_timeout(ctx->ch, ctx->deadline);
+    void* msg = xylem_channel_recv_timeout(ctx->ch, ctx->timeout_ms);
     if (msg) {
         ASSERT(msg == &ctx->payload);
         ctx->got_message = 1;
@@ -236,9 +233,7 @@ static void _race_reaper_coro(void* arg) {
     /* Give a timed-out-but-pending send time to land. */
     xylem_sleep(40);
     void* leftover;
-    while ((leftover = xylem_channel_recv_timeout(
-                ctx->ch,
-                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC))) != NULL) {
+    while ((leftover = xylem_channel_recv_timeout(ctx->ch, 1)) != NULL) {
         ASSERT(leftover == &ctx->payload);
     }
     xylem_channel_destroy(ctx->ch);
@@ -249,7 +244,8 @@ static void _race_reaper_coro(void* arg) {
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
     _start_safety_timer();
-    ctx->deadline =
+    ctx->timeout_ms = 15;
+    ctx->send_at_ms =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 15;
     xylem_spawn(_race_recv_coro, ctx);
     xylem_spawn(_race_sender_coro, ctx);

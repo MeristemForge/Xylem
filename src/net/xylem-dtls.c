@@ -750,14 +750,21 @@ static void _dtls_handshake_coro(void* arg) {
 
     bool success = false;
     while (!dtls->handshake_done) {
-        /* Bound the wait with the handshake deadline directly on the
+        /**
+         * Bound the wait with the handshake deadline directly on the
          * channel recv, instead of an external timer closing the
          * inbox: closing the inbox while the session is still in the
          * listener's tree would let the dispatcher send into a closed
          * channel (which aborts). On timeout recv returns NULL and we
-         * fall through to the failure path below. */
+         * fall through to the failure path below.
+         */
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        uint64_t remaining = (now >= hs_deadline) ? 0 : hs_deadline - now;
+        if (remaining == 0) {
+            break;
+        }
         _dtls_dgram_t* dgram = (_dtls_dgram_t*)xylem_channel_recv_timeout(
-            dtls->inbox, hs_deadline);
+            dtls->inbox, remaining);
         if (!dgram) {
             break;
         }
@@ -905,11 +912,20 @@ static int _dtls_server_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
 
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         for (;;) {
-            _dtls_dgram_t* dgram =
-                (dtls->rd_deadline_ms > 0)
-                    ? (_dtls_dgram_t*)xylem_channel_recv_timeout(
-                          dtls->inbox, dtls->rd_deadline_ms)
-                    : (_dtls_dgram_t*)xylem_channel_recv(dtls->inbox);
+            _dtls_dgram_t* dgram = NULL;
+            if (dtls->rd_deadline_ms > 0) {
+                uint64_t now =
+                    xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+                uint64_t remaining = (now >= dtls->rd_deadline_ms)
+                    ? 0 : dtls->rd_deadline_ms - now;
+                if (remaining == 0) {
+                    break;
+                }
+                dgram = (_dtls_dgram_t*)xylem_channel_recv_timeout(
+                    dtls->inbox, remaining);
+            } else {
+                dgram = (_dtls_dgram_t*)xylem_channel_recv(dtls->inbox);
+            }
             if (!dgram) {
                 break;
             }

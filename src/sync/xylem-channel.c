@@ -37,20 +37,12 @@ typedef struct _channel_msg_s {
     void*       payload;
 } _channel_msg_t;
 
-/* refcnt: 1 for creator (dropped by destroy) + 1 per in-flight call
- *         + 1 per armed deadline timer (dropped by the timer callback
- *           when it runs, or by recv when it cancels a pending fire
- *           before the callback can run). The timer-callback ref is
- *           what lets _channel_deadline_cb touch the channel safely
- *           even if the in-flight recv has already returned and the
- *           creator destroyed the channel concurrently.
- *
- * Like every xylem_ runtime object (tcp/udp/dtls conns all embed an
- * iowait_t / sched_timer_t), a channel must not outlive xylem_run:
- * destroy() releases the cached deadline timer, a scheduler-owned
- * resource. The timer is created lazily on first timed recv and
- * reused across calls -- recv_timeout is a per-packet hot path in
- * DTLS/RUDP, so per-call create/destroy would be pure overhead. */
+/**
+ * refcnt: 1(creator) + 1(in-flight call) + 1(armed deadline timer).
+ * Timer ref lets the callback safely touch ch even if recv already
+ * returned and the creator destroyed the channel concurrently.
+ * Channel must not outlive xylem_run (deadline_timer is scheduler-owned).
+ */
 struct xylem_channel_s {
     mpsc_t             queue;
     _Atomic(mco_coro*) wait_coro;
@@ -85,11 +77,11 @@ static void _channel_unref(xylem_channel_t* ch) {
     free(ch);
 }
 
-static bool _channel_park_cb(mco_coro* co, void* arg) {
+static bool _channel_recv_park_cb(mco_coro* co, void* arg) {
     _channel_park_ctx_t* ctx = (_channel_park_ctx_t*)arg;
     xylem_channel_t*     ch  = ctx->ch;
 
-    /* Exchange detects concurrent recv (single-receiver violation). */
+    /* Detects single-receiver violation. */
     mco_coro* prev = atomic_exchange(&ch->wait_coro, co);
     if (prev != NULL) {
         xylem_loge(
@@ -102,12 +94,9 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     }
 
     /**
-     * Re-check after publishing the wait slot: a sender, close, or
-     * the deadline timer may have raced in between the emptiness
-     * test in the recv loop and publishing co here. Reclaim the slot
-     * and decline the park so the recv loop observes the new state.
-     * Peek with mpsc_empty only -- popping and re-pushing would break
-     * FIFO ordering.
+     * A sender/close/timer may have raced between the emptiness test
+     * and publishing co. Decline park so the recv loop retries.
+     * Peek only -- pop+re-push would break FIFO.
      */
     if (atomic_load(&ch->closed)
         || atomic_load_explicit(&ch->timed_out, memory_order_acquire)
@@ -122,7 +111,7 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
-static void _channel_deadline_cb(sched_timer_t* timer, void* ud) {
+static void _channel_deadline_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     xylem_channel_t* ch = (xylem_channel_t*)ud;
     atomic_store_explicit(&ch->timed_out, true, memory_order_release);
@@ -130,30 +119,26 @@ static void _channel_deadline_cb(sched_timer_t* timer, void* ud) {
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
-    /* Release the ref the recv loop handed us when it armed the
-     * timer. Reaching zero here is safe: this callback runs while
-     * the scheduler holds its own ref on the timer object, so the
-     * sched_timer_destroy inside _channel_unref only drops the
-     * creator ref and does not free the timer out from under us. */
+    /* Balance the ref recv handed us when arming the timer. */
     _channel_unref(ch);
 }
 
-static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
+static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
     if (!ch) {
+        xylem_loge("recv on NULL channel");
         return NULL;
     }
 
     _channel_ref(ch);
 
-    /* Lazily create the per-channel deadline timer on first timed
-     * recv and reuse it thereafter. The single-receiver contract
-     * means only one coroutine ever drives recv, so no extra
-     * synchronisation is needed. The timer is a scheduler-owned
-     * resource released by destroy(), so the channel must not
-     * outlive xylem_run -- the same rule as every xylem_ object. */
-    if (deadline_ms > 0 && !ch->deadline_timer) {
+    /* Lazily create; reused across calls (hot path in DTLS/RUDP). */
+    if (timeout_ms > 0 && !ch->deadline_timer) {
         ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
     }
+
+    uint64_t deadline_ms = (timeout_ms > 0)
+        ? xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms
+        : 0;
 
     atomic_store_explicit(&ch->timed_out, false, memory_order_release);
 
@@ -177,40 +162,31 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t deadline_ms) {
                 break;
             }
             if (ch->deadline_timer) {
-                /* The timer callback dereferences ch asynchronously
-                 * and on a different worker. Hand it its own ref so
-                 * it stays valid even if this recv returns and the
-                 * channel is destroyed before the callback runs. The
-                 * ref is balanced either by the callback itself, or
-                 * by us below when sched_timer_stop cancels a fire
-                 * that will therefore never run. */
+                /**
+                 * Ref for the timer callback -- balanced by the
+                 * callback itself or by us if stop() cancels it.
+                 */
                 _channel_ref(ch);
                 sched_timer_start(ch->deadline_timer,
-                                  _channel_deadline_cb, ch,
+                                  _channel_deadline_timeout_cb, ch,
                                   deadline_ms - now, 0);
             }
         }
 
         _channel_park_ctx_t ctx = { .ch = ch, .deadline_ms = deadline_ms };
-        scheduler_park(runtime_get_scheduler(), _channel_park_cb, &ctx);
+        scheduler_park(runtime_get_scheduler(), _channel_recv_park_cb, &ctx);
 
         if (deadline_ms > 0 && ch->deadline_timer) {
-            /* If stop() returns true the pending fire was cancelled
-             * and the callback will not run, so we own the ref we
-             * handed it above and must release it. If it returns
-             * false the callback already ran (or is running) and
-             * will release that ref itself. */
+            /* stop() true => callback will not run, we own its ref. */
             if (sched_timer_stop(ch->deadline_timer)) {
                 _channel_unref(ch);
             }
         }
 
-        /* A message that was delivered while we were parked must win
-         * over a deadline that fired in the same window: re-attempt
-         * the pop before honouring timed_out. Otherwise a sender that
-         * dequeued our wait slot just before the timer fired would
-         * leave its message stranded in the queue and we would
-         * wrongly report a timeout. */
+        /**
+         * Data wins over timeout -- avoids stranding a message that
+         * arrived in the same window the deadline fired.
+         */
         node = mpsc_pop(&ch->queue);
         if (node) {
             _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
@@ -262,7 +238,7 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
         return;
     }
 
-    /* Idempotent: close() may have already set this. */
+    /* Idempotent -- close() may have set this already. */
     atomic_store(&ch->closed, true);
 
     mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
@@ -275,6 +251,7 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
 
 int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     if (!ch || !msg) {
+        xylem_loge("send: NULL argument (ch=%p msg=%p)", (void*)ch, msg);
         return -1;
     }
 
@@ -308,6 +285,6 @@ void* xylem_channel_recv(xylem_channel_t* ch) {
 }
 
 void* xylem_channel_recv_timeout(
-    xylem_channel_t* ch, uint64_t deadline_ms) {
-    return _channel_recv_impl(ch, deadline_ms);
+    xylem_channel_t* ch, uint64_t timeout_ms) {
+    return _channel_recv_impl(ch, timeout_ms);
 }
