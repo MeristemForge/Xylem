@@ -26,9 +26,16 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct mco_coro      mco_coro;
-typedef struct scheduler_s   scheduler_t;
+/** @brief Forward declaration for minicoro coroutine. */
+typedef struct mco_coro mco_coro;
+
+/** @brief Opaque coroutine scheduler handle. */
+typedef struct scheduler_s scheduler_t;
+
+/** @brief Opaque scheduler timer handle. */
 typedef struct xylem_timer_s sched_timer_t;
+
+/** @brief Opaque iowait slab allocator handle. */
 typedef struct iowait_slab_s iowait_slab_t;
 
 /**
@@ -60,6 +67,7 @@ typedef void (*scheduler_post_fn_t)(void* ud);
  */
 typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
 
+/** @brief Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {
     int32_t  nworkers;       /*< 0 = use CPU count. */
     uint32_t deque_cap;      /*< 0 = use default (256). Must be power of 2. */
@@ -226,6 +234,7 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
  */
 extern sched_timer_t* sched_timer_create(scheduler_t* sched);
 
+/** @brief Set whether the timer callback runs in a spawned coroutine. */
 extern void sched_timer_set_spawn(sched_timer_t* timer, bool spawn);
 
 /**

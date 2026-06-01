@@ -65,6 +65,29 @@ struct xylem_waitgroup_s {
     queue_t       waiters;
 };
 
+typedef struct {
+    xylem_waitgroup_t* wg;
+    _wg_waiter_t       waiter;
+} _wg_park_ctx_t;
+
+static bool _wg_park_cb(mco_coro* co, void* arg) {
+    _wg_park_ctx_t*    ctx = (_wg_park_ctx_t*)arg;
+    xylem_waitgroup_t* wg  = ctx->wg;
+
+    ctx->waiter.co = co;
+
+    spin_lock(&wg->guard);
+    /* Re-check under the guard: a done() between the fast-path load
+     * and here may have already drained everyone. */
+    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
+        spin_unlock(&wg->guard);
+        return false;
+    }
+    queue_enqueue(&wg->waiters, &ctx->waiter.node);
+    spin_unlock(&wg->guard);
+    return true;
+}
+
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
     xylem_waitgroup_t* wg =
         (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
@@ -121,29 +144,6 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
         _wg_waiter_t* w = queue_entry(n, _wg_waiter_t, node);
         scheduler_schedule(sched, w->co);
     }
-}
-
-typedef struct {
-    xylem_waitgroup_t* wg;
-    _wg_waiter_t       waiter;
-} _wg_park_ctx_t;
-
-static bool _wg_park_cb(mco_coro* co, void* arg) {
-    _wg_park_ctx_t*    ctx = (_wg_park_ctx_t*)arg;
-    xylem_waitgroup_t* wg  = ctx->wg;
-
-    ctx->waiter.co = co;
-
-    spin_lock(&wg->guard);
-    /* Re-check under the guard: a done() between the fast-path load
-     * and here may have already drained everyone. */
-    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
-        spin_unlock(&wg->guard);
-        return false;
-    }
-    queue_enqueue(&wg->waiters, &ctx->waiter.node);
-    spin_unlock(&wg->guard);
-    return true;
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {

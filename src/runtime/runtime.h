@@ -26,6 +26,7 @@ _Pragma("once")
 
 #include <stdint.h>
 
+/** @brief Runtime configuration options. */
 typedef struct runtime_opts_s {
     int32_t workers;  /*< Thread pool size, 0 for default. */
 } runtime_opts_t;
@@ -82,10 +83,11 @@ extern void runtime_sleep(uint64_t ms);
  */
 extern int runtime_submit(void (*fn)(void*), void* arg);
 
-/**
- * Internal accessors used across the runtime / net modules. Not
- * part of the public API; callers must live inside src/.
- */
-extern scheduler_t*          runtime_get_scheduler(void);
+/** @brief Get the global scheduler instance. */
+extern scheduler_t* runtime_get_scheduler(void);
+
+/** @brief Get the global I/O poller instance. */
 extern platform_poller_sq_t* runtime_get_poller(void);
-extern dynpool_t*            runtime_get_dynpool(void);
+
+/** @brief Get the global dynamic thread pool instance. */
+extern dynpool_t* runtime_get_dynpool(void);

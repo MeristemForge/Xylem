@@ -24,7 +24,6 @@
 #include "platform/platform-info.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
-
 #include "platform/platform-vmem.h"
 
 #define MINICORO_IMPL
@@ -66,7 +65,7 @@ static void _runtime_sleep_timeout_cb(sched_timer_t* timer, void* ud) {
     scheduler_schedule(g_sched, co);
 }
 
-static bool _runtime_sleep_park_fn(mco_coro* co, void* arg) {
+static bool _runtime_sleep_park_cb(mco_coro* co, void* arg) {
     _sleep_park_t* p = (_sleep_park_t*)arg;
     sched_timer_start(p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
     return true;
@@ -79,7 +78,7 @@ static void _runtime_submit_worker(void* arg) {
     free(ctx);
 }
 
-static bool _runtime_submit_park_fn(mco_coro* co, void* arg) {
+static bool _runtime_submit_park_cb(mco_coro* co, void* arg) {
     _submit_park_t* p = (_submit_park_t*)arg;
     p->ctx->co = co;
     if (dynpool_submit(g_dynpool, _runtime_submit_worker, p->ctx) != 0) {
@@ -111,7 +110,7 @@ void runtime_sleep(uint64_t ms) {
         return;
     }
     _sleep_park_t park = { .timer = timer, .ms = ms };
-    scheduler_park(g_sched, _runtime_sleep_park_fn, &park);
+    scheduler_park(g_sched, _runtime_sleep_park_cb, &park);
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {
@@ -125,7 +124,7 @@ int runtime_submit(void (*fn)(void*), void* arg) {
     ctx->sched = g_sched;
 
     _submit_park_t park = { .ctx = ctx, .ok = true };
-    scheduler_park(g_sched, _runtime_submit_park_fn, &park);
+    scheduler_park(g_sched, _runtime_submit_park_cb, &park);
 
     if (!park.ok) {
         free(ctx);
@@ -160,7 +159,7 @@ void runtime_run(
 
     platform_sem_wait(g_stop_sem);
 
-    /* stop → dynpool_destroy → destroy: order prevents UAF in both directions. */
+    /* stop -> dynpool_destroy -> destroy: order prevents UAF. */
     scheduler_stop(g_sched);
     dynpool_destroy(g_dynpool);
     scheduler_destroy(g_sched);

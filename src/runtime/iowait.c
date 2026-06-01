@@ -307,7 +307,7 @@ static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
 }
 
 /* Re-check close/deadline after publish to catch races with concurrent wakers. */
-static bool _iowait_park_fn(mco_coro* co, void* arg) {
+static bool _iowait_park_cb(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
     iowait_t*      w = d->w;
 
@@ -366,7 +366,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 }
 
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
-    scheduler_park(runtime_get_scheduler(), _iowait_park_fn, d);
+    scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
 
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;

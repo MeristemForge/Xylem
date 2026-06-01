@@ -20,8 +20,8 @@
  */
 
 #include "xylem/sync/xylem-cond.h"
-#include "xylem/sync/xylem-mutex.h"
 
+#include "xylem/sync/xylem-mutex.h"
 #include "xylem/xylem-logger.h"
 
 #include "container/queue.h"

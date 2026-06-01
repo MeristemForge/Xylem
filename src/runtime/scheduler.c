@@ -131,8 +131,6 @@ struct scheduler_s {
     _coro_pool_t          coro_pool;
 };
 
-static thread_local _sched_worker_t* _tls_worker;
-
 typedef struct {
     void (*fn)(void*);
     void*        arg;
@@ -159,6 +157,8 @@ struct xylem_timer_s {
     _Atomic int32_t  refcnt;
     uint32_t         owner;
 };
+
+static thread_local _sched_worker_t* _tls_worker;
 
 static inline _sched_worker_t* _sched_timer_owner(sched_timer_t* t) {
     return &t->sched->workers[t->owner];

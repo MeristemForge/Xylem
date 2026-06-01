@@ -28,6 +28,7 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
+/** @brief Opaque I/O wait handle (per-fd, per-direction park). */
 typedef struct iowait_s iowait_t;
 
 /**
