@@ -144,7 +144,10 @@ if(XYLEM_ENABLE_TLS)
 		src/net/ws/xylem-wss.c
 	)
 else()
-	list(APPEND SRCS src/net/http/transport-tls-stub.c)
+	list(APPEND SRCS
+		src/net/http/transport-tls-stub.c
+		src/net/tls/xylem-tls-stub.c
+	)
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
