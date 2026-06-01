@@ -27,21 +27,21 @@ _Pragma("once")
 #define MUX_FRAME_HDR_SIZE 12
 #define MUX_PROTO_VERSION  0
 
-typedef enum {
+typedef enum _mux_frame_type_e {
     MUX_TYPE_DATA          = 0,
     MUX_TYPE_WINDOW_UPDATE = 1,
     MUX_TYPE_PING          = 2,
     MUX_TYPE_GO_AWAY       = 3
 } _mux_frame_type_t;
 
-typedef enum {
+typedef enum _mux_frame_flag_e {
     MUX_FLAG_SYN = 0x0001,
     MUX_FLAG_ACK = 0x0002,
     MUX_FLAG_FIN = 0x0004,
     MUX_FLAG_RST = 0x0008
 } _mux_frame_flag_t;
 
-typedef struct {
+typedef struct _mux_frame_hdr_s {
     uint8_t  version;
     uint8_t  type;
     uint16_t flags;

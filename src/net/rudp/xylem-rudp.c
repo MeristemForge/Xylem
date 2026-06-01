@@ -411,14 +411,6 @@ static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
 }
 
 /**
- * Drain any datagrams still queued in a session inbox channel and
- * destroy it. Called from _rudp_conn_unref once the session refcount
- * hits zero, so no other thread touches the channel concurrently.
- * The channel keeps already-queued payloads retrievable after close,
- * so draining here frees them before destroy (which only frees node
- * wrappers, not payloads).
- */
-/**
  * Drain residual datagrams from an already-closed session inbox and
  * destroy it. The caller (xylem_rudp_close) has already closed the
  * channel, so the drain recv() never parks: it pops any payloads the
@@ -828,10 +820,6 @@ static void _rudp_dispatcher(void* arg) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                         */
-/* ------------------------------------------------------------------ */
-
 xylem_rudp_conn_t* xylem_rudp_dial(
     const char*        host,
     uint16_t           port,
@@ -1060,7 +1048,6 @@ int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
     _rudp_conn_unref(conn);
     return ret;
 }
-
 
 xylem_rudp_listener_t* xylem_rudp_listen(
     const char*        host,

@@ -22,7 +22,6 @@
 #include "addr.h"
 
 #include "runtime/runtime.h"
-
 #include "runtime/scheduler.h"
 
 #include <stdlib.h>

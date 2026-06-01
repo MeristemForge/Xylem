@@ -127,7 +127,6 @@ extern int xylem_rudp_write(
     const void*        data,
     int                len);
 
-
 /**
  * @brief Close a RUDP connection.
  *

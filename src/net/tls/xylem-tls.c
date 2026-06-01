@@ -19,9 +19,9 @@
  *  IN THE SOFTWARE.
  */
 
-#include "tls-internal.h"
-
 #include "xylem/net/xylem-tls.h"
+
+#include "tls-internal.h"
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 

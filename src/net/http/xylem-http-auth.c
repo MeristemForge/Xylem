@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/http/xylem-http-auth.h"
+
 #include "xylem/net/http/xylem-http-router.h"
 
 #include "xylem/encoding/xylem-base64.h"

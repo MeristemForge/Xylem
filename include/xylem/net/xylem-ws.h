@@ -28,7 +28,7 @@ _Pragma("once")
 typedef struct xylem_ws_conn_s     xylem_ws_conn_t;
 typedef struct xylem_ws_listener_s xylem_ws_listener_t;
 
-typedef enum {
+typedef enum xylem_ws_opcode_e {
     XYLEM_WS_TEXT   = 0x1,
     XYLEM_WS_BINARY = 0x2,
 } xylem_ws_opcode_t;
@@ -50,41 +50,141 @@ typedef struct {
     bool     deflate_context_takeover;
 } xylem_ws_opts_t;
 
-/* --- Server: HTTP upgrade path --- */
-
 struct xylem_http_res_s;
 struct xylem_http_req_s;
 
+/**
+ * @brief Upgrade an HTTP request to a WebSocket connection (server side).
+ *
+ * @param res   HTTP response handle.
+ * @param req   HTTP request handle.
+ * @param opts  WebSocket options, or NULL for defaults.
+ *
+ * @return WebSocket connection, or NULL on failure.
+ */
 extern xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
                                          struct xylem_http_req_s* req,
                                          const xylem_ws_opts_t* opts);
 
-/* --- Server: standalone listener --- */
-
+/**
+ * @brief Start a standalone WebSocket server.
+ *
+ * @param host      Bind address, or NULL for any.
+ * @param port      Bind port.
+ * @param handler   Connection handler invoked per accepted client.
+ * @param userdata  Opaque pointer passed to handler.
+ * @param opts      WebSocket options, or NULL for defaults.
+ *
+ * @return Listener handle, or NULL on failure.
+ */
 extern xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
                                              xylem_ws_handler_fn_t handler,
                                              void* userdata,
                                              const xylem_ws_opts_t* opts);
+
+/**
+ * @brief Close a WebSocket listener and stop accepting connections.
+ *
+ * @param listener  Listener handle.
+ */
 extern void     xylem_ws_close_listener(xylem_ws_listener_t* listener);
+
+/**
+ * @brief Return the port the listener is bound to.
+ *
+ * @param listener  Listener handle.
+ *
+ * @return Bound port number.
+ */
 extern uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener);
 
-/* --- Client --- */
-
+/**
+ * @brief Connect to a WebSocket server.
+ *
+ * @param url   WebSocket URL (ws://host:port/path).
+ * @param opts  WebSocket options, or NULL for defaults.
+ *
+ * @return WebSocket connection, or NULL on failure.
+ */
 extern xylem_ws_conn_t* xylem_ws_dial(const char* url,
                                        const xylem_ws_opts_t* opts);
 
-/* --- Connection operations --- */
-
+/**
+ * @brief Send a message on the connection.
+ *
+ * @param conn    Connection handle.
+ * @param opcode  Message type (text or binary).
+ * @param data    Payload bytes.
+ * @param len     Payload length.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int  xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
                           const void* data, size_t len);
+
+/**
+ * @brief Receive the next message (blocks until available).
+ *
+ * @param conn  Connection handle.
+ * @param msg   Output message structure.
+ *
+ * @return 0 on success, -1 on error or connection closed.
+ */
 extern int  xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg);
+
+/**
+ * @brief Send a ping frame.
+ *
+ * @param conn  Connection handle.
+ * @param data  Optional ping payload.
+ * @param len   Payload length.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int  xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len);
+
+/**
+ * @brief Initiate a close handshake.
+ *
+ * @param conn        Connection handle.
+ * @param code        Close status code (RFC 6455).
+ * @param reason      Optional close reason string.
+ * @param reason_len  Length of reason.
+ *
+ * @return 0 on success, -1 on error.
+ */
 extern int  xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
                            const char* reason, size_t reason_len);
+
+/**
+ * @brief Free resources owned by a received message.
+ *
+ * @param msg  Message to free.
+ */
 extern void xylem_ws_msg_free(xylem_ws_msg_t* msg);
 
-/* --- Utilities --- */
-
+/**
+ * @brief Return the close code received from the peer.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return Close code, or 0 if not yet received.
+ */
 extern uint16_t xylem_ws_close_code(xylem_ws_conn_t* conn);
+
+/**
+ * @brief Get the user data pointer attached to the connection.
+ *
+ * @param conn  Connection handle.
+ *
+ * @return User data pointer.
+ */
 extern void*    xylem_ws_get_userdata(xylem_ws_conn_t* conn);
+
+/**
+ * @brief Set the user data pointer attached to the connection.
+ *
+ * @param conn  Connection handle.
+ * @param ud    User data pointer.
+ */
 extern void     xylem_ws_set_userdata(xylem_ws_conn_t* conn, void* ud);

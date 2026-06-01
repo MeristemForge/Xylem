@@ -41,7 +41,7 @@ struct xylem_mux_stream_s* mux_stream_create(
     s->recv_window = window;
     s->send_window = window;
     s->recv_cap    = window;
-    s->recv_buf    = (uint8_t*)malloc(s->recv_cap);
+    s->recv_buf    = (uint8_t*)calloc(1, s->recv_cap);
     if (!s->recv_buf) {
         free(s);
         return NULL;

@@ -42,15 +42,15 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-/* ===================================================================== *
- *  Transport abstraction
+/**
+ * Transport abstraction
  *
- *  The protocol engine talks to the network exclusively through this
- *  vtable. Whether the bytes travel over plain TCP or TLS is decided by
- *  which factory builds the transport, never by a conditional inside the
- *  engine. A build without TLS links the stub factories, which return a
- *  NULL transport; no macros leak into the engine or the dispatch layer.
- * ===================================================================== */
+ * The protocol engine talks to the network exclusively through this
+ * vtable. Whether the bytes travel over plain TCP or TLS is decided by
+ * which factory builds the transport, never by a conditional inside the
+ * engine. A build without TLS links the stub factories, which return a
+ * NULL transport; no macros leak into the engine or the dispatch layer.
+ */
 
 typedef struct {
     void* conn;
@@ -67,9 +67,7 @@ typedef struct {
 typedef http_transport_t (*http_dial_fn_t)(const char* host, uint16_t port,
                                            uint64_t timeout_ms, void* ctx);
 
-/* ===================================================================== *
- *  URL / header value types and stateless helpers (http-utils.c)
- * ===================================================================== */
+/* URL / header value types and stateless helpers (http-utils.c) */
 
 typedef struct {
     char     scheme[8];
@@ -237,9 +235,7 @@ extern const uint8_t http_lower_table[256];
  */
 extern const char* http_reason_phrase(int status);
 
-/* ===================================================================== *
- *  Proxy support (http-utils.c + http-proxy.c)
- * ===================================================================== */
+/* Proxy support (http-utils.c + http-proxy.c) */
 
 /**
  * @brief Build a proxy descriptor from the environment for a target URL.
@@ -284,9 +280,7 @@ extern platform_sock_t http_proxy_connect(const char* proxy_host,
                                           const char* username,
                                           const char* password);
 
-/* ===================================================================== *
- *  Request / response / server structures
- * ===================================================================== */
+/* Request / response / server structures */
 
 typedef struct {
     char* key;
@@ -347,9 +341,7 @@ typedef struct {
     uint16_t         remote_port;
 } http_srv_conn_ctx_t;
 
-/* ===================================================================== *
- *  Protocol engine (xylem-http.c)
- * ===================================================================== */
+/* Protocol engine (xylem-http.c) */
 
 /**
  * @brief Apply server options onto a freshly allocated server, filling
@@ -398,13 +390,13 @@ extern xylem_http_res_t* http_do_request(
     http_dial_fn_t               dial_fn,
     void*                        dial_ctx);
 
-/* ===================================================================== *
- *  Transport factories
+/**
+ * Transport factories
  *
- *  TCP factories live in transport-tcp.c (always built). TLS factories
- *  live in transport-tls.c when XYLEM_ENABLE_TLS is set, otherwise in
- *  transport-tls-stub.c where they return NULL.
- * ===================================================================== */
+ * TCP factories live in transport-tcp.c (always built). TLS factories
+ * live in transport-tls.c when XYLEM_ENABLE_TLS is set, otherwise in
+ * transport-tls-stub.c where they return NULL.
+ */
 
 extern xylem_http_srv_t* http_tcp_listen(
     const char*                  host,

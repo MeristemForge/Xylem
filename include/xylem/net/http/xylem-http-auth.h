@@ -25,7 +25,7 @@ _Pragma("once")
 
 #include <stdbool.h>
 
-/* ---- Client-side: build Authorization header value ---- */
+/* Client-side: build Authorization header value */
 
 /**
  * @brief Compute the buffer size needed for xylem_http_basic_auth().
@@ -53,7 +53,7 @@ extern int xylem_http_basic_auth(
     char*       buf,
     int         buflen);
 
-/* ---- Server-side: Basic Auth middleware ---- */
+/* Server-side: Basic Auth middleware */
 
 typedef bool (*xylem_http_auth_check_fn_t)(const char* user,
                                            const char* pass,

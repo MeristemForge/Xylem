@@ -34,7 +34,7 @@ typedef struct xylem_mux_s xylem_mux_t;
 
 #define MUX_DEFAULT_WINDOW 262144  /* 256KB */
 
-typedef enum {
+typedef enum _mux_stream_state_e {
     MUX_STREAM_INIT,
     MUX_STREAM_SYN_SENT,
     MUX_STREAM_ESTABLISHED,
