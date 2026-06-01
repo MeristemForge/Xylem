@@ -43,7 +43,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TLS_IO_CHUNK 16384
+/**
+ * Scratch size for shuttling ciphertext between the memory BIOs and the
+ * socket. Kept small to bound the pump functions' coroutine-stack frame
+ * (the buffer stays live across an iowait park); it need not match the
+ * TLS record size since SSL reassembles records from the BIO across
+ * multiple reads.
+ */
+#define TLS_IO_CHUNK 4096
 
 typedef struct _tls_sni_entry_s {
     char     hostname[256];
