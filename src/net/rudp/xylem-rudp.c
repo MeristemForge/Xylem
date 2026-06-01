@@ -1076,8 +1076,6 @@ xylem_rudp_listener_t* xylem_rudp_listen(
         return NULL;
     }
 
-    platform_socket_set_rcvbuf_max(fd, 0);
-
     xylem_rudp_listener_t* ln =
         (xylem_rudp_listener_t*)calloc(1, sizeof(xylem_rudp_listener_t));
     if (!ln) {
