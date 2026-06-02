@@ -830,37 +830,25 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
 }
 
 /**
- * Load a TLS identity (cert chain + matching private key) from PEM files.
- * The cert_file holds the leaf X509 followed by its intermediate chain;
- * the first PEM certificate is the leaf and any following ones form the
- * chain. The private key is read from key_file. On success out_cert and
- * out_key are set (caller owns them) and *out_chain holds the
- * intermediates (may be NULL if none). Returns 0 on success, -1 on
- * failure (nothing is left allocated to the caller).
+ * Parse a TLS identity (leaf cert + intermediate chain + matching key)
+ * from two already-open PEM BIOs. The cert BIO holds the leaf first,
+ * any following certs form the chain. The BIOs are not freed here. On
+ * success out_* are set (caller owns them); on failure nothing is left
+ * allocated to the caller.
  */
-static int _tls_load_pem_identity(const char* cert_file,
-                                 const char* key_file,
-                                 X509** out_cert,
-                                 EVP_PKEY** out_key,
-                                 STACK_OF(X509)** out_chain) {
+static int _tls_parse_pem_identity(BIO* cbio, BIO* kbio,
+                                   X509** out_cert, EVP_PKEY** out_key,
+                                   STACK_OF(X509)** out_chain) {
     *out_cert  = NULL;
     *out_key   = NULL;
     *out_chain = NULL;
 
-    BIO* cbio = BIO_new_file(cert_file, "r");
-    if (!cbio) {
-        xylem_loge("tls ctx: failed to open cert %s", cert_file);
-        return -1;
-    }
-
     X509* leaf = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
     if (!leaf) {
-        xylem_loge("tls ctx: failed to parse leaf cert %s", cert_file);
-        BIO_free(cbio);
+        xylem_loge("tls ctx: failed to parse leaf certificate");
         return -1;
     }
 
-    /* Remaining certs in the file form the intermediate chain. */
     STACK_OF(X509)* chain = NULL;
     for (;;) {
         X509* extra = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
@@ -874,7 +862,6 @@ static int _tls_load_pem_identity(const char* cert_file,
             if (!chain) {
                 X509_free(extra);
                 X509_free(leaf);
-                BIO_free(cbio);
                 return -1;
             }
         }
@@ -882,23 +869,13 @@ static int _tls_load_pem_identity(const char* cert_file,
             X509_free(extra);
             sk_X509_pop_free(chain, X509_free);
             X509_free(leaf);
-            BIO_free(cbio);
             return -1;
         }
     }
-    BIO_free(cbio);
 
-    BIO* kbio = BIO_new_file(key_file, "r");
-    if (!kbio) {
-        xylem_loge("tls ctx: failed to open key %s", key_file);
-        sk_X509_pop_free(chain, X509_free);
-        X509_free(leaf);
-        return -1;
-    }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
-    BIO_free(kbio);
     if (!pkey) {
-        xylem_loge("tls ctx: failed to parse key %s", key_file);
+        xylem_loge("tls ctx: failed to parse private key");
         sk_X509_pop_free(chain, X509_free);
         X509_free(leaf);
         return -1;
@@ -906,8 +883,7 @@ static int _tls_load_pem_identity(const char* cert_file,
 
     /* Reject a mismatched cert/key pair up front, not mid-handshake. */
     if (X509_check_private_key(leaf, pkey) != 1) {
-        xylem_loge("tls ctx: cert %s and key %s do not match",
-                   cert_file, key_file);
+        xylem_loge("tls ctx: certificate and key do not match");
         EVP_PKEY_free(pkey);
         sk_X509_pop_free(chain, X509_free);
         X509_free(leaf);
@@ -920,37 +896,61 @@ static int _tls_load_pem_identity(const char* cert_file,
     return 0;
 }
 
-int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
-                            const char* hostname,
-                            const char* cert,
-                            const char* key) {
-    if (!hostname) {
-        if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
-            xylem_loge("tls ctx: failed to load cert %s", cert);
-            return -1;
-        }
-        if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
-                                        SSL_FILETYPE_PEM) != 1) {
-            xylem_loge("tls ctx: failed to load key %s", key);
-            return -1;
-        }
-        return 0;
-    }
-
-    X509*           leaf  = NULL;
-    EVP_PKEY*       pkey  = NULL;
-    STACK_OF(X509)* chain = NULL;
-    if (_tls_load_pem_identity(cert, key, &leaf, &pkey, &chain) != 0) {
-        xylem_loge("tls ctx: failed to load cert/key for %s", hostname);
+/* Load a TLS identity from PEM files. See _tls_parse_pem_identity. */
+static int _tls_load_pem_identity(const char* cert_file,
+                                  const char* key_file,
+                                  X509** out_cert,
+                                  EVP_PKEY** out_key,
+                                  STACK_OF(X509)** out_chain) {
+    BIO* cbio = BIO_new_file(cert_file, "r");
+    if (!cbio) {
+        xylem_loge("tls ctx: failed to open cert %s", cert_file);
         return -1;
     }
+    BIO* kbio = BIO_new_file(key_file, "r");
+    if (!kbio) {
+        xylem_loge("tls ctx: failed to open key %s", key_file);
+        BIO_free(cbio);
+        return -1;
+    }
+    int rc = _tls_parse_pem_identity(cbio, kbio, out_cert, out_key, out_chain);
+    BIO_free(cbio);
+    BIO_free(kbio);
+    return rc;
+}
 
+/* Load a TLS identity from in-memory PEM buffers. */
+static int _tls_load_pem_identity_mem(const void* cert_pem, size_t cert_len,
+                                      const void* key_pem, size_t key_len,
+                                      X509** out_cert, EVP_PKEY** out_key,
+                                      STACK_OF(X509)** out_chain) {
+    BIO* cbio = BIO_new_mem_buf(cert_pem, (int)cert_len);
+    BIO* kbio = BIO_new_mem_buf(key_pem, (int)key_len);
+    if (!cbio || !kbio) {
+        BIO_free(cbio);
+        BIO_free(kbio);
+        return -1;
+    }
+    int rc = _tls_parse_pem_identity(cbio, kbio, out_cert, out_key, out_chain);
+    BIO_free(cbio);
+    BIO_free(kbio);
+    return rc;
+}
+
+/**
+ * Take ownership of (leaf, key, chain) into a new SNI entry bound to
+ * hostname. On allocation failure the identity is freed and -1 is
+ * returned, so the caller never has to clean up on error.
+ */
+static int _tls_store_sni_identity(xylem_tls_ctx_t* ctx, const char* hostname,
+                                   X509* leaf, EVP_PKEY* key,
+                                   STACK_OF(X509)* chain) {
     if (ctx->sni_count == ctx->sni_cap) {
         size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
         _tls_sni_entry_t* entries = (_tls_sni_entry_t*)realloc(
             ctx->sni_entries, new_cap * sizeof(_tls_sni_entry_t));
         if (!entries) {
-            EVP_PKEY_free(pkey);
+            EVP_PKEY_free(key);
             sk_X509_pop_free(chain, X509_free);
             X509_free(leaf);
             return -1;
@@ -962,11 +962,78 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
     _tls_sni_entry_t* entry = &ctx->sni_entries[ctx->sni_count];
     snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname);
     entry->cert  = leaf;
-    entry->key   = pkey;
+    entry->key   = key;
     entry->chain = chain;
     ctx->sni_count++;
-
     return 0;
+}
+
+/**
+ * Install (leaf, key, chain) as the ctx default identity. use/set1 bump
+ * the refcount on each object, so the caller keeps ownership of its own
+ * references and must free them afterwards.
+ */
+static int _tls_apply_default_identity(xylem_tls_ctx_t* ctx, X509* leaf,
+                                       EVP_PKEY* key, STACK_OF(X509)* chain) {
+    if (SSL_CTX_use_certificate(ctx->ssl_ctx, leaf) != 1
+        || SSL_CTX_use_PrivateKey(ctx->ssl_ctx, key) != 1) {
+        return -1;
+    }
+    if (chain && SSL_CTX_set1_chain(ctx->ssl_ctx, chain) != 1) {
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * Install a parsed identity into the ctx: as the default identity when
+ * hostname is NULL, or as an SNI-selected identity otherwise. Always
+ * consumes (leaf, key, chain) -- it takes ownership for the SNI case and
+ * frees its references for the default case (which only bumps refcounts).
+ */
+static int _tls_install_identity(xylem_tls_ctx_t* ctx, const char* hostname,
+                                 X509* leaf, EVP_PKEY* key,
+                                 STACK_OF(X509)* chain) {
+    if (hostname) {
+        return _tls_store_sni_identity(ctx, hostname, leaf, key, chain);
+    }
+    int rc = _tls_apply_default_identity(ctx, leaf, key, chain);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(chain, X509_free);
+    X509_free(leaf);
+    return rc;
+}
+
+int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
+                            const char* hostname,
+                            const char* cert,
+                            const char* key) {
+    X509*           leaf  = NULL;
+    EVP_PKEY*       pkey  = NULL;
+    STACK_OF(X509)* chain = NULL;
+    if (_tls_load_pem_identity(cert, key, &leaf, &pkey, &chain) != 0) {
+        return -1;
+    }
+    return _tls_install_identity(ctx, hostname, leaf, pkey, chain);
+}
+
+int xylem_tls_ctx_load_cert_mem(xylem_tls_ctx_t* ctx,
+                                const char* hostname,
+                                const void* cert_pem,
+                                size_t cert_len,
+                                const void* key_pem,
+                                size_t key_len) {
+    if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
+        return -1;
+    }
+    X509*           leaf  = NULL;
+    EVP_PKEY*       pkey  = NULL;
+    STACK_OF(X509)* chain = NULL;
+    if (_tls_load_pem_identity_mem(cert_pem, cert_len, key_pem, key_len,
+                                   &leaf, &pkey, &chain) != 0) {
+        return -1;
+    }
+    return _tls_install_identity(ctx, hostname, leaf, pkey, chain);
 }
 
 int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
@@ -1009,9 +1076,55 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     ctx->alpn_wire     = wire;
     ctx->alpn_wire_len = total;
 
+    /**
+     * One list serves both roles: the client offers it, the server uses
+     * the select cb to pick from it. The unused half is inert per role.
+     */
     SSL_CTX_set_alpn_protos(ctx->ssl_ctx, wire, (unsigned int)total);
     SSL_CTX_set_alpn_select_cb(ctx->ssl_ctx, _tls_alpn_select_cb, ctx);
 
+    return 0;
+}
+
+/* Map a public version selector to the OpenSSL version constant. */
+static int _tls_openssl_version(xylem_tls_version_t v) {
+    switch (v) {
+    case XYLEM_TLS_VERSION_1_2:
+        return TLS1_2_VERSION;
+    case XYLEM_TLS_VERSION_1_3:
+        return TLS1_3_VERSION;
+    default:
+        return 0;
+    }
+}
+
+int xylem_tls_ctx_set_versions(xylem_tls_ctx_t* ctx,
+                               xylem_tls_version_t min,
+                               xylem_tls_version_t max) {
+    if (min != XYLEM_TLS_VERSION_DEFAULT && max != XYLEM_TLS_VERSION_DEFAULT
+        && min > max) {
+        xylem_loge("tls ctx: min TLS version exceeds max");
+        return -1;
+    }
+
+    /**
+     * DEFAULT leaves a bound untouched: min keeps the create-time floor
+     * (TLS 1.2), max stays unset (newest the library supports). A 0
+     * argument to the OpenSSL setters means "no bound", so only call
+     * them for an explicit selector.
+     */
+    if (min != XYLEM_TLS_VERSION_DEFAULT) {
+        if (SSL_CTX_set_min_proto_version(ctx->ssl_ctx,
+                                          _tls_openssl_version(min)) != 1) {
+            return -1;
+        }
+    }
+    if (max != XYLEM_TLS_VERSION_DEFAULT) {
+        if (SSL_CTX_set_max_proto_version(ctx->ssl_ctx,
+                                          _tls_openssl_version(max)) != 1) {
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -1243,6 +1356,17 @@ int xylem_tls_listener_addr(
 
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
     return tls->alpn[0] ? tls->alpn : NULL;
+}
+
+xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls) {
+    switch (SSL_version(tls->ssl)) {
+    case TLS1_2_VERSION:
+        return XYLEM_TLS_VERSION_1_2;
+    case TLS1_3_VERSION:
+        return XYLEM_TLS_VERSION_1_3;
+    default:
+        return XYLEM_TLS_VERSION_DEFAULT;
+    }
 }
 
 xylem_tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,

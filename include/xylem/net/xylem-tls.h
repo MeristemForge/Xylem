@@ -29,6 +29,17 @@ typedef struct xylem_tls_conn_s     xylem_tls_conn_t;
 typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
+/**
+ * TLS protocol version selectors for xylem_tls_ctx_set_versions.
+ * XYLEM_TLS_VERSION_DEFAULT (0) leaves that bound at the library
+ * default (minimum TLS 1.2, no explicit maximum).
+ */
+typedef enum xylem_tls_version_e {
+    XYLEM_TLS_VERSION_DEFAULT = 0,
+    XYLEM_TLS_VERSION_1_2,
+    XYLEM_TLS_VERSION_1_3,
+} xylem_tls_version_t;
+
 typedef struct xylem_tls_opts_s {
     bool disable_mss_clamp; /*< Disable MSS clamping on the socket. */
     /**
@@ -50,10 +61,10 @@ typedef struct xylem_tls_opts_s {
      *   - Certificate identity verification: matched against the
      *     peer certificate's DNS-type or IP-type SAN entries.
      *
-     * Required for secure clients when verify_peer is enabled. If
-     * NULL, only certificate chain trust is checked, not the peer's
-     * identity, so any cert signed by a trusted CA is accepted
-     * (MITM risk).
+     * Required for secure clients (xylem_tls_ctx_verify_server enabled,
+     * the default). If NULL, only certificate chain trust is checked,
+     * not the peer's identity, so any cert signed by a trusted CA is
+     * accepted (MITM risk).
      */
     const char* server_name;
 } xylem_tls_opts_t;
@@ -61,7 +72,10 @@ typedef struct xylem_tls_opts_s {
 /**
  * @brief Create a TLS context.
  *
- * Default: peer verification enabled, TLS 1.2 minimum.
+ * Defaults: as a client, the server certificate is verified; as a
+ * server, no client certificate is requested; TLS 1.2 minimum, no
+ * maximum. See xylem_tls_ctx_verify_server / verify_client and
+ * xylem_tls_ctx_set_versions to change these.
  *
  * @return Context handle, or NULL on failure.
  */
@@ -93,6 +107,31 @@ extern int xylem_tls_ctx_load_cert(
     const char*      hostname,
     const char*      cert,
     const char*      key);
+
+/**
+ * @brief Load a PEM certificate chain and private key from memory.
+ *
+ * Same semantics as xylem_tls_ctx_load_cert but reads the PEM data from
+ * in-memory buffers instead of files, for certificates sourced from a
+ * secret store, environment, or embedded resource. The buffers are not
+ * retained after this call returns.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert_pem  PEM certificate chain bytes (leaf first).
+ * @param cert_len  Length of cert_pem in bytes.
+ * @param key_pem   PEM private key bytes.
+ * @param key_len   Length of key_pem in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_tls_ctx_load_cert_mem(
+    xylem_tls_ctx_t* ctx,
+    const char*      hostname,
+    const void*      cert_pem,
+    size_t           cert_len,
+    const void*      key_pem,
+    size_t           key_len);
 
 /**
  * @brief Set the CA certificate for peer verification.
@@ -152,6 +191,26 @@ extern int xylem_tls_ctx_set_alpn(
     xylem_tls_ctx_t* ctx,
     const char**     protocols,
     size_t           count);
+
+/**
+ * @brief Constrain the negotiated TLS protocol version range.
+ *
+ * Sets the minimum and maximum protocol versions the handshake will
+ * accept, for either role. XYLEM_TLS_VERSION_DEFAULT leaves a bound
+ * unchanged from the library default (min TLS 1.2, no explicit max).
+ * For example, pass (XYLEM_TLS_VERSION_1_3, XYLEM_TLS_VERSION_1_3) to
+ * require TLS 1.3 only.
+ *
+ * @param ctx  Context handle.
+ * @param min  Minimum acceptable version, or DEFAULT to keep current.
+ * @param max  Maximum acceptable version, or DEFAULT for no maximum.
+ *
+ * @return 0 on success, -1 on failure (e.g. min greater than max).
+ */
+extern int xylem_tls_ctx_set_versions(
+    xylem_tls_ctx_t*    ctx,
+    xylem_tls_version_t min,
+    xylem_tls_version_t max);
 
 /**
  * @brief Enable NSS Key Log output for Wireshark decryption.
@@ -355,3 +414,16 @@ extern int xylem_tls_listener_addr(
  * @return Protocol string, or NULL if none negotiated.
  */
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Get the negotiated TLS protocol version.
+ *
+ * Valid only after the handshake has completed (i.e. on a connection
+ * returned by xylem_tls_dial or xylem_tls_accept).
+ *
+ * @param tls  Connection handle.
+ *
+ * @return XYLEM_TLS_VERSION_1_2 or XYLEM_TLS_VERSION_1_3, or
+ *         XYLEM_TLS_VERSION_DEFAULT if the version is unknown.
+ */
+extern xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls);

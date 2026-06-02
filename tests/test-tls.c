@@ -214,6 +214,68 @@ static void test_set_alpn(void) {
 }
 
 
+/* Read a whole file into a freshly malloc'd buffer; caller frees. */
+static char* _read_file(const char* path, size_t* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)sz);
+    if (buf) {
+        *out_len = fread(buf, 1, (size_t)sz, f);
+    }
+    fclose(f);
+    return buf;
+}
+
+static void test_load_cert_mem(void) {
+    const char* cert = "test_tls_mem_cert.pem";
+    const char* key  = "test_tls_mem_key.pem";
+    ASSERT(_gen_self_signed(cert, key) == 0);
+
+    size_t cert_len = 0, key_len = 0;
+    char*  cert_buf = _read_file(cert, &cert_len);
+    char*  key_buf  = _read_file(key, &key_len);
+    ASSERT(cert_buf != NULL && key_buf != NULL);
+
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx != NULL);
+    /* Default identity from memory. */
+    ASSERT(xylem_tls_ctx_load_cert_mem(ctx, NULL, cert_buf, cert_len,
+                                       key_buf, key_len) == 0);
+    /* SNI-bound identity from memory. */
+    ASSERT(xylem_tls_ctx_load_cert_mem(ctx, "localhost", cert_buf, cert_len,
+                                       key_buf, key_len) == 0);
+    /* Empty buffers are rejected. */
+    ASSERT(xylem_tls_ctx_load_cert_mem(ctx, NULL, cert_buf, cert_len,
+                                       NULL, 0) == -1);
+    xylem_tls_ctx_destroy(ctx);
+
+    free(cert_buf);
+    free(key_buf);
+    remove(cert);
+    remove(key);
+}
+
+static void test_set_versions(void) {
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx != NULL);
+    /* TLS 1.3 only. */
+    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_3,
+                                      XYLEM_TLS_VERSION_1_3) == 0);
+    /* Floor only, no maximum. */
+    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_2,
+                                      XYLEM_TLS_VERSION_DEFAULT) == 0);
+    /* Inverted range is rejected. */
+    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_3,
+                                      XYLEM_TLS_VERSION_1_2) == -1);
+    xylem_tls_ctx_destroy(ctx);
+}
+
+
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln = xylem_tls_listen(
@@ -241,6 +303,10 @@ static void _echo_client(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_dial(
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
+
+    /* After a successful handshake the negotiated version is known. */
+    xylem_tls_version_t ver = xylem_tls_get_version(conn);
+    ASSERT(ver == XYLEM_TLS_VERSION_1_2 || ver == XYLEM_TLS_VERSION_1_3);
 
     const char* msg = "hello xylem tls";
     ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
@@ -1543,6 +1609,8 @@ int main(void) {
     test_set_ca();
     test_set_verify();
     test_set_alpn();
+    test_load_cert_mem();
+    test_set_versions();
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();
