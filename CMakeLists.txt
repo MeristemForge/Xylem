@@ -143,6 +143,15 @@ if(XYLEM_ENABLE_TLS)
 		src/net/http/transport-tls.c
 		src/net/ws/xylem-wss.c
 	)
+
+	# platform-tls depends on OpenSSL, so it lives in the TLS block
+	# rather than the unconditional platform source lists above.
+	if(WIN32)
+		list(APPEND SRCS src/platform/win/platform-tls.c)
+	endif()
+	if(UNIX)
+		list(APPEND SRCS src/platform/unix/platform-tls.c)
+	endif()
 else()
 	list(APPEND SRCS
 		src/net/http/transport-tls-stub.c

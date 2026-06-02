@@ -27,8 +27,10 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "net/addr.h"
+#include "platform/platform-io.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-string.h"
+#include "platform/platform-tls.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
 #include "thrds.h"
@@ -52,10 +54,10 @@
 #define TLS_IO_CHUNK (16 * 1024)
 
 typedef struct _tls_sni_entry_s {
-    char           hostname[256];
-    X509*          cert;   /*< leaf certificate for this SNI host. */
-    EVP_PKEY*      key;    /*< private key paired with cert. */
-    STACK_OF(X509)* chain; /*< intermediate chain (may be NULL). */
+    char            hostname[256];
+    X509*           cert;  /**< leaf certificate for this SNI host. */
+    EVP_PKEY*       key;   /**< private key paired with cert. */
+    STACK_OF(X509)* chain; /**< intermediate chain (may be NULL). */
 } _tls_sni_entry_t;
 
 struct xylem_tls_ctx_s {
@@ -82,18 +84,18 @@ struct xylem_tls_ctx_s {
 
 struct xylem_tls_conn_s {
     SSL*             ssl;
-    BIO*             rbio;       /*< network -> SSL: inbound ciphertext. */
-    BIO*             wbio;       /*< SSL -> network: outbound ciphertext. */
-    char*            rbuf;       /*< pump_in scratch, owned by rd_mu. */
-    char*            wbuf;       /*< pump_out scratch, owned by wr_mu. */
-    xylem_mutex_t*   ssl_mu;     /*< serializes all OpenSSL SSL/BIO access. */
-    xylem_mutex_t*   rd_mu;      /*< sole owner of iowait read direction. */
-    xylem_mutex_t*   wr_mu;      /*< sole owner of iowait write direction. */
+    BIO*             rbio;       /**< network -> SSL: inbound ciphertext. */
+    BIO*             wbio;       /**< SSL -> network: outbound ciphertext. */
+    char*            rbuf;       /**< pump_in scratch, owned by rd_mu. */
+    char*            wbuf;       /**< pump_out scratch, owned by wr_mu. */
+    xylem_mutex_t*   ssl_mu;     /**< serializes all OpenSSL SSL/BIO access. */
+    xylem_mutex_t*   rd_mu;      /**< sole owner of iowait read direction. */
+    xylem_mutex_t*   wr_mu;      /**< sole owner of iowait write direction. */
     iowait_t*        waiter;
     platform_sock_t  fd;
     xylem_tls_ctx_t* ctx;
     addr_t           peer_addr;
-    char             alpn[256];
+    char             alpn[32];
     _Atomic int32_t  refcnt;
     _Atomic bool     closed;
 };
@@ -821,7 +823,7 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
         SSL_CTX_set_keylog_callback(ctx->ssl_ctx, NULL);
         return 0;
     }
-    ctx->keylog_file = fopen(path, "a");
+    ctx->keylog_file = platform_io_fopen(path, "a");
     if (!ctx->keylog_file) {
         return -1;
     }
@@ -1036,9 +1038,17 @@ int xylem_tls_ctx_load_cert_mem(xylem_tls_ctx_t* ctx,
     return _tls_install_identity(ctx, hostname, leaf, pkey, chain);
 }
 
-int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
+int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
         xylem_loge("tls ctx: failed to load CA %s", ca_file);
+        return -1;
+    }
+    return 0;
+}
+
+int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx) {
+    if (platform_tls_load_system_ca(ctx->ssl_ctx) != 0) {
+        xylem_loge("tls ctx: failed to load system CA store");
         return -1;
     }
     return 0;

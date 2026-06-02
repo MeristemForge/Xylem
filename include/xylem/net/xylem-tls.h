@@ -30,43 +30,19 @@ typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
 /**
- * Negotiated TLS protocol version, returned by xylem_tls_get_version.
- * XYLEM_TLS_VERSION_UNKNOWN (0) means the version is not known (e.g.
- * before the handshake completes or an unrecognized version).
+ * Negotiated TLS protocol version (see xylem_tls_get_version).
  */
 typedef enum xylem_tls_version_e {
-    XYLEM_TLS_VERSION_UNKNOWN = 0,
+    XYLEM_TLS_VERSION_UNKNOWN = 0, /**< Not known (e.g. pre-handshake). */
     XYLEM_TLS_VERSION_1_2,
     XYLEM_TLS_VERSION_1_3,
 } xylem_tls_version_t;
 
 typedef struct xylem_tls_opts_s {
-    bool disable_mss_clamp; /*< Disable MSS clamping on the socket. */
-    /**
-     * Timeout in milliseconds for completing the TLS handshake.
-     *
-     * - Dial: covers the full TCP connect + TLS handshake.
-     * - Accept: covers the TLS handshake on an accepted TCP connection.
-     *
-     * 0 means no timeout. Setting a non-zero value is strongly
-     * recommended on the accept side; without it, slow or malicious
-     * clients can park the accept coroutine indefinitely (slowloris).
-     */
-    uint64_t handshake_timeout_ms;
-    /**
-     * Expected peer identity. Accepts a DNS hostname (e.g. "bank.com")
-     * or a numeric IP literal (IPv4 or IPv6). Drives two things:
-     *   - SNI extension (only sent for DNS names; RFC 6066 forbids
-     *     sending IP literals as SNI).
-     *   - Certificate identity verification: matched against the
-     *     peer certificate's DNS-type or IP-type SAN entries.
-     *
-     * Required for secure clients (xylem_tls_ctx_verify_server enabled,
-     * the default). If NULL, only certificate chain trust is checked,
-     * not the peer's identity, so any cert signed by a trusted CA is
-     * accepted (MITM risk).
-     */
-    const char* server_name;
+    bool        disable_mss_clamp;    /**< Disable socket MSS clamping. */
+    uint64_t    handshake_timeout_ms; /**< Connect+handshake timeout, 0=off. */
+    const char* server_name;          /**< Expected peer identity (SNI +
+                                            verification), NULL to skip. */
 } xylem_tls_opts_t;
 
 /**
@@ -134,14 +110,33 @@ extern int xylem_tls_ctx_load_cert_mem(
     size_t           key_len);
 
 /**
- * @brief Set the CA certificate for peer verification.
+ * @brief Add a CA certificate file to the trust store.
+ *
+ * The CAs become trust anchors for verifying the peer certificate (the
+ * server on a client, or the client on an mTLS server). Only these CAs
+ * are trusted unless xylem_tls_ctx_load_system_ca is also called, which
+ * is the narrow trust wanted for a private PKI or mTLS.
  *
  * @param ctx      Context handle.
- * @param ca_file  Path to CA certificate file.
+ * @param ca_file  Path to a PEM CA certificate (or bundle) file.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
+extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
+
+/**
+ * @brief Trust the system root certificate store.
+ *
+ * Lets a client verify servers using certificates from public CAs
+ * without naming a CA file. Combine with xylem_tls_ctx_load_ca to also
+ * trust a private CA. Avoid on an mTLS server, where it would accept
+ * any client certificate chaining to a public CA.
+ *
+ * @param ctx  Context handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx);
 
 /**
  * @brief Set whether a client verifies the server certificate.
@@ -166,7 +161,7 @@ extern void xylem_tls_ctx_verify_server(xylem_tls_ctx_t* ctx, bool enable);
  * Applies to the server role (xylem_tls_listen). When enabled the
  * server requests a client certificate during the handshake and fails
  * the connection if the client does not present one that verifies
- * against the configured CA (see xylem_tls_ctx_set_ca). Disabled by
+ * against the configured CA (see xylem_tls_ctx_load_ca). Disabled by
  * default, so a plain server accepts clients without a certificate.
  *
  * Has no effect on the client role. A context may be reused as both
@@ -246,17 +241,11 @@ extern xylem_tls_listener_t* xylem_tls_listen(
 /**
  * @brief Accept a connection from the listener.
  *
- * Suspends the calling coroutine until a client connects and the
- * TLS handshake completes.
- *
- * Per-connection handshake failures (bad cert, protocol mismatch,
- * client abort, handshake timeout) are handled internally: the
- * offending connection is dropped and accept keeps waiting for the
- * next client. This is required so a single bad client cannot tear
- * down a server's accept loop. NULL is therefore returned only when
- * the listener is closed (or on a fatal resource shortage that
- * prevents wrapping an accepted socket), so callers can treat NULL
- * as "stop accepting".
+ * Suspends the calling coroutine until a client connects and the TLS
+ * handshake completes. Per-connection handshake failures are absorbed
+ * internally and do not stop the listener, so NULL is returned only
+ * once the listener is closed -- callers can treat NULL as "stop
+ * accepting".
  *
  * @param ln  Listener handle.
  *

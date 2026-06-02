@@ -66,7 +66,7 @@ struct xylem_dtls_ctx_s {
 struct xylem_dtls_conn_s {
     SSL*                    ssl;
     addr_t                  peer_addr;
-    char                    alpn[256];
+    char                    alpn[32];
     _Atomic bool            closed;
     _Atomic int32_t         refcnt;
     bool                    handshake_done;

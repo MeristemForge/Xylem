@@ -109,7 +109,7 @@ This module is the dependency-free crypto that ships unconditionally. The
 TLS/DTLS modules are a separate, optional layer built on OpenSSL ≥ 3.5 and gated
 by `XYLEM_ENABLE_TLS`; when that is off, TLS is stubbed but these primitives
 remain fully available. See [`../architecture.md`](../architecture.md) §8 for the
-feature-gate overview. (TLS/DTLS design docs are deferred.)
+feature-gate overview, and [`tls.md`](tls.md) for the TLS/DTLS design.
 
 ## 6. Related docs
 

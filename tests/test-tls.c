@@ -180,17 +180,25 @@ static void test_load_cert_invalid(void) {
 }
 
 
-static void test_set_ca(void) {
+static void test_load_ca(void) {
     const char* cert = "test_tls_ca.pem";
     const char* key  = "test_tls_ca_key.pem";
     ASSERT(_gen_self_signed(cert, key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_set_ca(ctx, cert) == 0);
+    ASSERT(xylem_tls_ctx_load_ca(ctx, cert) == 0);
     xylem_tls_ctx_destroy(ctx);
     remove(cert);
     remove(key);
+}
+
+
+static void test_load_system_ca(void) {
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_system_ca(ctx) == 0);
+    xylem_tls_ctx_destroy(ctx);
 }
 
 
@@ -428,7 +436,7 @@ static void _fail_main(void* arg) {
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
     ASSERT(cli_ctx != NULL);
     xylem_tls_ctx_verify_server(cli_ctx, true);
-    ASSERT(xylem_tls_ctx_set_ca(cli_ctx, cert2) == 0);
+    ASSERT(xylem_tls_ctx_load_ca(cli_ctx, cert2) == 0);
 
     /* Good client: does not verify, so its handshake succeeds. */
     xylem_tls_ctx_t* good_ctx = xylem_tls_ctx_create();
@@ -1049,13 +1057,13 @@ static void _sni_sel_main(void* arg) {
     xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
     ASSERT(cli_ctx != NULL);
     xylem_tls_ctx_verify_server(cli_ctx, true);
-    ASSERT(xylem_tls_ctx_set_ca(cli_ctx, host_cert) == 0);
+    ASSERT(xylem_tls_ctx_load_ca(cli_ctx, host_cert) == 0);
 
     /* Client for case 2: trusts only the default cert. */
     xylem_tls_ctx_t* good_ctx = xylem_tls_ctx_create();
     ASSERT(good_ctx != NULL);
     xylem_tls_ctx_verify_server(good_ctx, true);
-    ASSERT(xylem_tls_ctx_set_ca(good_ctx, def_cert) == 0);
+    ASSERT(xylem_tls_ctx_load_ca(good_ctx, def_cert) == 0);
 
     _ctx_t ctx = {
         .ready    = xylem_channel_create(),
@@ -1591,7 +1599,8 @@ int main(void) {
     test_ctx_create_destroy();
     test_load_cert_valid();
     test_load_cert_invalid();
-    test_set_ca();
+    test_load_ca();
+    test_load_system_ca();
     test_set_verify();
     test_set_alpn();
     test_load_cert_mem();
