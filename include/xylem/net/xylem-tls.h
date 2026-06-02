@@ -105,12 +105,39 @@ extern int xylem_tls_ctx_load_cert(
 extern int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
 
 /**
- * @brief Enable or disable peer certificate verification.
+ * @brief Set whether a client verifies the server certificate.
+ *
+ * Applies to the client role (xylem_tls_dial). When enabled (the
+ * default) the server certificate chain is validated and, if
+ * opts.server_name is set, its identity is checked. Disabling it makes
+ * the client accept any certificate, which exposes it to MITM attacks;
+ * use only for tests or trusted networks.
+ *
+ * Has no effect on the server role. A context may be reused as both
+ * client and server; this setting only changes client dials.
  *
  * @param ctx     Context handle.
- * @param enable  true to verify, false to skip.
+ * @param enable  true to verify the server (default), false to skip.
  */
-extern void xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable);
+extern void xylem_tls_ctx_verify_server(xylem_tls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set whether a server requires a client certificate (mTLS).
+ *
+ * Applies to the server role (xylem_tls_listen). When enabled the
+ * server requests a client certificate during the handshake and fails
+ * the connection if the client does not present one that verifies
+ * against the configured CA (see xylem_tls_ctx_set_ca). Disabled by
+ * default, so a plain server accepts clients without a certificate.
+ *
+ * Has no effect on the client role. A context may be reused as both
+ * client and server; this setting only changes server accepts.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to require and verify a client cert, false to
+ *                request none (default).
+ */
+extern void xylem_tls_ctx_verify_client(xylem_tls_ctx_t* ctx, bool enable);
 
 /**
  * @brief Set the ALPN protocol list.

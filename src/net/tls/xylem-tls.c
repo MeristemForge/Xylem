@@ -66,6 +66,18 @@ struct xylem_tls_ctx_s {
     _tls_sni_entry_t* sni_entries;
     size_t            sni_count;
     size_t            sni_cap;
+    /**
+     * Verification policy, applied per connection by role since the two
+     * roles attach opposite meanings to a peer certificate:
+     *   - verify_server: client role (xylem_tls_dial). When true the
+     *     server certificate chain (and identity, via opts.server_name)
+     *     is verified. Defaults to true -- secure by default.
+     *   - verify_client: server role (xylem_tls_listen). When true the
+     *     server requests and verifies a client certificate (mTLS).
+     *     Defaults to false -- a public server asks for no client cert.
+     */
+    bool              verify_server;
+    bool              verify_client;
 };
 
 struct xylem_tls_conn_s {
@@ -468,6 +480,16 @@ static int _tls_client_handshake(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx,
     }
     SSL_set_connect_state(tls->ssl);
 
+    /**
+     * Apply the client-role policy per connection: verify the server
+     * certificate unless the caller disabled it. Set on the SSL (not the
+     * shared SSL_CTX) so a ctx reused for server accepts is unaffected.
+     */
+    SSL_set_verify(tls->ssl,
+                   tls->ctx->verify_server ? SSL_VERIFY_PEER
+                                           : SSL_VERIFY_NONE,
+                   NULL);
+
     _tls_apply_server_name(tls->ssl, server_name);
 
     if (_tls_do_handshake(tls) != 0) {
@@ -702,6 +724,20 @@ static xylem_tls_conn_t* _tls_server_handshake(xylem_tls_listener_t* ln,
     }
     SSL_set_accept_state(tls->ssl);
 
+    /**
+     * Apply the server-role policy per connection: request and verify a
+     * client certificate (mTLS) only when the caller opted in via
+     * xylem_tls_ctx_verify_client. Default is no client cert, so a
+     * public server does not challenge every client. Set on the SSL
+     * (not the shared SSL_CTX) so a ctx reused for client dials keeps
+     * verifying the server.
+     */
+    SSL_set_verify(tls->ssl,
+                   ln->ctx->verify_client
+                       ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                       : SSL_VERIFY_NONE,
+                   NULL);
+
     /* Arm the handshake deadline; disarm on success. */
     _tls_set_deadline(tls, _tls_make_deadline(ln->opts.handshake_timeout_ms));
 
@@ -728,8 +764,26 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
         return NULL;
     }
 
-    SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
+    /**
+     * Verification is applied per connection by role at handshake time
+     * (see _tls_client_handshake / _tls_server_handshake), not on the
+     * shared SSL_CTX, so one ctx reused as both client and server keeps
+     * the correct policy for each. Defaults: verify the server (secure
+     * client), do not request a client cert (plain server).
+     */
+    ctx->verify_server = true;
+    ctx->verify_client = false;
     SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
+
+    /**
+     * Install the SNI callback once at ctx creation. The callback is a
+     * no-op until SNI entries are added (it returns early on an empty
+     * table), so registering it unconditionally is safe and keeps all
+     * ctx-level config in one place. Doing it here also means the
+     * SSL_CTX stays read-only once connections start.
+     */
+    SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tls_ctx_sni_cb);
+    SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
 
     call_once(&_tls_ex_data_once, _tls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _tls_ex_data_idx, ctx);
@@ -776,14 +830,15 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
 }
 
 /**
- * Load a PEM cert chain file into a leaf X509 plus its intermediate
- * chain, and the matching private key from key_file. The first PEM
- * certificate is the leaf; any following ones form the chain. On
- * success out_cert and out_key are set (caller owns them) and *out_chain
- * holds the intermediates (may be NULL if none). Returns 0 on success,
- * -1 on failure (nothing is left allocated to the caller).
+ * Load a TLS identity (cert chain + matching private key) from PEM files.
+ * The cert_file holds the leaf X509 followed by its intermediate chain;
+ * the first PEM certificate is the leaf and any following ones form the
+ * chain. The private key is read from key_file. On success out_cert and
+ * out_key are set (caller owns them) and *out_chain holds the
+ * intermediates (may be NULL if none). Returns 0 on success, -1 on
+ * failure (nothing is left allocated to the caller).
  */
-static int _tls_load_pem_certkey(const char* cert_file,
+static int _tls_load_pem_identity(const char* cert_file,
                                  const char* key_file,
                                  X509** out_cert,
                                  EVP_PKEY** out_key,
@@ -885,7 +940,7 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
     X509*           leaf  = NULL;
     EVP_PKEY*       pkey  = NULL;
     STACK_OF(X509)* chain = NULL;
-    if (_tls_load_pem_certkey(cert, key, &leaf, &pkey, &chain) != 0) {
+    if (_tls_load_pem_identity(cert, key, &leaf, &pkey, &chain) != 0) {
         xylem_loge("tls ctx: failed to load cert/key for %s", hostname);
         return -1;
     }
@@ -911,11 +966,6 @@ int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx,
     entry->chain = chain;
     ctx->sni_count++;
 
-    if (ctx->sni_count == 1) {
-        SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tls_ctx_sni_cb);
-        SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
-    }
-
     return 0;
 }
 
@@ -927,9 +977,12 @@ int xylem_tls_ctx_set_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     return 0;
 }
 
-void xylem_tls_ctx_set_verify(xylem_tls_ctx_t* ctx, bool enable) {
-    int mode = enable ? SSL_VERIFY_PEER : SSL_VERIFY_NONE;
-    SSL_CTX_set_verify(ctx->ssl_ctx, mode, NULL);
+void xylem_tls_ctx_verify_server(xylem_tls_ctx_t* ctx, bool enable) {
+    ctx->verify_server = enable;
+}
+
+void xylem_tls_ctx_verify_client(xylem_tls_ctx_t* ctx, bool enable) {
+    ctx->verify_client = enable;
 }
 
 int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,

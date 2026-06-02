@@ -147,7 +147,7 @@ xylem_http_srv_t* http_tls_listen(
     }
     if (tls->ca) {
         xylem_tls_ctx_set_ca(tls_ctx, tls->ca);
-        xylem_tls_ctx_set_verify(tls_ctx, true);
+        xylem_tls_ctx_verify_client(tls_ctx, true);
     }
 
     xylem_tls_listener_t* ln = xylem_tls_listen(host, port, tls_ctx, NULL);
@@ -198,7 +198,7 @@ xylem_http_res_t* http_tls_request(
                     tls_ctx, NULL, opts->tls->cert, opts->tls->key);
             }
             if (opts->tls->skip_verify) {
-                xylem_tls_ctx_set_verify(tls_ctx, false);
+                xylem_tls_ctx_verify_server(tls_ctx, false);
             }
         }
     }

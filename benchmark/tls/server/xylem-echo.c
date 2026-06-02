@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
         xylem_tls_ctx_destroy(ctx);
         return 1;
     }
-    xylem_tls_ctx_set_verify(ctx, false);
+    xylem_tls_ctx_verify_client(ctx, false);
 
     xylem_addr_t addr;
     xylem_addr_pton("0.0.0.0", (uint16_t)port, &addr);
