@@ -163,7 +163,7 @@ static void test_load_cert_valid(void) {
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(ctx, cert, key) == 0);
+    ASSERT(xylem_dtls_ctx_load_cert(ctx, NULL, cert, key) == 0);
     xylem_dtls_ctx_destroy(ctx);
     remove(cert);
     remove(key);
@@ -222,12 +222,12 @@ static void _echo_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),
@@ -320,13 +320,13 @@ static void _alpn_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
     ASSERT(xylem_dtls_ctx_set_alpn(srv_ctx, protos, 2) == 0);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
     ASSERT(xylem_dtls_ctx_set_alpn(cli_ctx, protos, 2) == 0);
 
     _ctx_t ctx = {
@@ -405,12 +405,12 @@ static void _ci_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),
@@ -489,12 +489,12 @@ static void _dl_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),
@@ -563,8 +563,8 @@ static void _cw_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),
@@ -667,12 +667,12 @@ static void _conc_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),
@@ -820,12 +820,12 @@ static void _fdx_main(void* arg) {
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, cert, key) == 0);
-    xylem_dtls_ctx_set_verify(srv_ctx, false);
+    ASSERT(xylem_dtls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     xylem_dtls_ctx_t* cli_ctx = xylem_dtls_ctx_create();
     ASSERT(cli_ctx != NULL);
-    xylem_dtls_ctx_set_verify(cli_ctx, false);
+    xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
         .ready   = xylem_channel_create(),

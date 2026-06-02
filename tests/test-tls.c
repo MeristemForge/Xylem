@@ -297,10 +297,6 @@ static void _echo_client(void* arg) {
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    /* After a successful handshake the negotiated version is known. */
-    xylem_tls_version_t ver = xylem_tls_get_version(conn);
-    ASSERT(ver == XYLEM_TLS_VERSION_1_2 || ver == XYLEM_TLS_VERSION_1_3);
-
     const char* msg = "hello xylem tls";
     ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
 

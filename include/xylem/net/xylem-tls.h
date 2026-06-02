@@ -29,15 +29,6 @@ typedef struct xylem_tls_conn_s     xylem_tls_conn_t;
 typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
-/**
- * Negotiated TLS protocol version (see xylem_tls_get_version).
- */
-typedef enum xylem_tls_version_e {
-    XYLEM_TLS_VERSION_UNKNOWN = 0, /**< Not known (e.g. pre-handshake). */
-    XYLEM_TLS_VERSION_1_2,
-    XYLEM_TLS_VERSION_1_3,
-} xylem_tls_version_t;
-
 typedef struct xylem_tls_opts_s {
     bool        disable_mss_clamp;    /**< Disable socket MSS clamping. */
     uint64_t    handshake_timeout_ms; /**< Connect+handshake timeout, 0=off. */
@@ -383,16 +374,3 @@ extern int xylem_tls_listener_addr(
  * @return Protocol string, or NULL if none negotiated.
  */
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
-
-/**
- * @brief Get the negotiated TLS protocol version.
- *
- * Valid only after the handshake has completed (i.e. on a connection
- * returned by xylem_tls_dial or xylem_tls_accept).
- *
- * @param tls  Connection handle.
- *
- * @return XYLEM_TLS_VERSION_1_2 or XYLEM_TLS_VERSION_1_3, or
- *         XYLEM_TLS_VERSION_UNKNOWN if the version is unknown.
- */
-extern xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls);

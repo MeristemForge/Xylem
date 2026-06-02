@@ -45,13 +45,28 @@ typedef struct xylem_dtls_opts_s {
      * RFC 6066) and certificate identity verification.
      */
     const char* server_name;
+    /**
+     * Link-layer MTU hint passed to OpenSSL (DTLS_set_link_mtu) to
+     * bound the size of DTLS handshake/record datagrams so they are
+     * not IP-fragmented. Applies to both dial and accept.
+     *
+     * This stack drives OpenSSL through memory BIOs, so OpenSSL cannot
+     * discover the path MTU on its own. With 0, OpenSSL falls back to
+     * a small conservative MTU (handshake still works, just more
+     * fragments); set this to your link MTU (e.g. 1500) for efficient
+     * handshakes without IP fragmentation.
+     */
+    uint16_t    mtu;
 } xylem_dtls_opts_t;
 
 /**
  * @brief Create a DTLS context.
  *
- * Default: peer verification enabled, DTLS 1.2 minimum, cookie
- * exchange enabled for server-side anti-amplification.
+ * Defaults: as a client, the server certificate is verified; as a
+ * server, no client certificate is requested; DTLS 1.2 minimum; cookie
+ * exchange enabled for server-side anti-amplification. See
+ * xylem_dtls_ctx_verify_server / verify_client to change the
+ * verification defaults.
  *
  * @return Context handle, or NULL on failure.
  */
@@ -67,33 +82,109 @@ extern void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx);
 /**
  * @brief Load a PEM certificate chain and private key.
  *
- * @param ctx   Context handle.
- * @param cert  Path to PEM certificate chain file.
- * @param key   Path to PEM private key file.
+ * When hostname is NULL the certificate becomes the default (used when
+ * no SNI matches). When hostname is non-NULL, the certificate is bound
+ * to that domain and selected via SNI during handshake.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert      Path to PEM certificate chain file.
+ * @param key       Path to PEM private key file.
  *
  * @return 0 on success, -1 on failure.
  */
 extern int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
+                                    const char* hostname,
                                     const char* cert, const char* key);
 
 /**
- * @brief Set the CA certificate for peer verification.
+ * @brief Load a PEM certificate chain and private key from memory.
  *
- * @param ctx      Context handle.
- * @param ca_file  Path to CA certificate file.
+ * Same semantics as xylem_dtls_ctx_load_cert but reads the PEM data
+ * from in-memory buffers instead of files, for certificates sourced
+ * from a secret store, environment, or embedded resource. The buffers
+ * are not retained after this call returns.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert_pem  PEM certificate chain bytes (leaf first).
+ * @param cert_len  Length of cert_pem in bytes.
+ * @param key_pem   PEM private key bytes.
+ * @param key_len   Length of key_pem in bytes.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx,
-                                 const char* ca_file);
+extern int xylem_dtls_ctx_load_cert_mem(xylem_dtls_ctx_t* ctx,
+                                        const char* hostname,
+                                        const void* cert_pem,
+                                        size_t      cert_len,
+                                        const void* key_pem,
+                                        size_t      key_len);
 
 /**
- * @brief Enable or disable peer certificate verification.
+ * @brief Add a CA certificate file to the trust store.
+ *
+ * The CAs become trust anchors for verifying the peer certificate (the
+ * server on a client, or the client on an mTLS server). Only these CAs
+ * are trusted unless xylem_dtls_ctx_load_system_ca is also called,
+ * which is the narrow trust wanted for a private PKI or mTLS.
+ *
+ * @param ctx      Context handle.
+ * @param ca_file  Path to a PEM CA certificate (or bundle) file.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx,
+                                  const char* ca_file);
+
+/**
+ * @brief Trust the system root certificate store.
+ *
+ * Lets a client verify servers using certificates from public CAs
+ * without naming a CA file. Combine with xylem_dtls_ctx_load_ca to
+ * also trust a private CA. Avoid on an mTLS server, where it would
+ * accept any client certificate chaining to a public CA.
+ *
+ * @param ctx  Context handle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx);
+
+/**
+ * @brief Set whether a client verifies the server certificate.
+ *
+ * Applies to the client role (xylem_dtls_dial). When enabled (the
+ * default) the server certificate chain is validated and, if
+ * opts.server_name is set, its identity is checked. Disabling it makes
+ * the client accept any certificate, which exposes it to MITM attacks;
+ * use only for tests or trusted networks.
+ *
+ * Has no effect on the server role. A context may be reused as both
+ * client and server; this setting only changes client dials.
  *
  * @param ctx     Context handle.
- * @param enable  true to verify, false to skip.
+ * @param enable  true to verify the server (default), false to skip.
  */
-extern void xylem_dtls_ctx_set_verify(xylem_dtls_ctx_t* ctx, bool enable);
+extern void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set whether a server requires a client certificate (mTLS).
+ *
+ * Applies to the server role (xylem_dtls_listen). When enabled the
+ * server requests a client certificate during the handshake and fails
+ * the connection if the client does not present one that verifies
+ * against the configured CA (see xylem_dtls_ctx_load_ca). Disabled by
+ * default, so a plain server accepts clients without a certificate.
+ *
+ * Has no effect on the client role. A context may be reused as both
+ * client and server; this setting only changes server accepts.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to require and verify a client cert, false to
+ *                request none (default).
+ */
+extern void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable);
 
 /**
  * @brief Set the ALPN protocol list.

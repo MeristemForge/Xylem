@@ -1326,17 +1326,6 @@ const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
     return tls->alpn[0] ? tls->alpn : NULL;
 }
 
-xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls) {
-    switch (SSL_version(tls->ssl)) {
-    case TLS1_2_VERSION:
-        return XYLEM_TLS_VERSION_1_2;
-    case TLS1_3_VERSION:
-        return XYLEM_TLS_VERSION_1_3;
-    default:
-        return XYLEM_TLS_VERSION_UNKNOWN;
-    }
-}
-
 xylem_tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
                                           xylem_tls_ctx_t* ctx,
                                           xylem_tls_opts_t* opts) {

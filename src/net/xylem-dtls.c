@@ -29,13 +29,17 @@
 
 #include "container/rbtree.h"
 #include "net/addr.h"
+#include "platform/platform-io.h"
 #include "platform/platform-socket.h"
+#include "platform/platform-string.h"
+#include "platform/platform-tls.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "thrds.h"
 
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <stdatomic.h>
@@ -50,17 +54,53 @@
 #define DTLS_INBOX_CAP           64
 #define DTLS_PKT_BUF_SIZE        1500
 
+/**
+ * Effective ciphertext buffer size for a connection. OpenSSL sizes a
+ * DTLS record (and therefore the datagram it emits or expects) to the
+ * link MTU set via DTLS_set_link_mtu, so the scratch buffers that pump
+ * those datagrams to/from the socket must be at least that large or a
+ * record gets truncated on send / silently dropped on recv. A zero mtu
+ * keeps the historical 1500-byte default that matches OpenSSL's own
+ * conservative default-path sizing under memory BIOs.
+ */
+static inline size_t _dtls_bufsz(uint16_t mtu) {
+    return (mtu > DTLS_PKT_BUF_SIZE) ? (size_t)mtu
+                                     : (size_t)DTLS_PKT_BUF_SIZE;
+}
+
 typedef struct _dtls_dgram_s {
     size_t len;
     char   data[];
 } _dtls_dgram_t;
 
+typedef struct _dtls_sni_entry_s {
+    char            hostname[256];
+    X509*           cert;  /**< leaf certificate for this SNI host. */
+    EVP_PKEY*       key;   /**< private key paired with cert. */
+    STACK_OF(X509)* chain; /**< intermediate chain (may be NULL). */
+} _dtls_sni_entry_t;
+
 struct xylem_dtls_ctx_s {
-    SSL_CTX* ssl_ctx;
-    uint8_t* alpn_wire;
-    size_t   alpn_wire_len;
-    FILE*    keylog_file;
-    uint8_t  cookie_secret[DTLS_COOKIE_SIZE];
+    SSL_CTX*           ssl_ctx;
+    uint8_t*           alpn_wire;
+    size_t             alpn_wire_len;
+    FILE*              keylog_file;
+    uint8_t            cookie_secret[DTLS_COOKIE_SIZE];
+    _dtls_sni_entry_t* sni_entries;
+    size_t             sni_count;
+    size_t             sni_cap;
+    /**
+     * Verification policy, applied per connection by role since the two
+     * roles attach opposite meanings to a peer certificate:
+     *   - verify_server: client role (xylem_dtls_dial). When true the
+     *     server certificate chain (and identity, via opts.server_name)
+     *     is verified. Defaults to true -- secure by default.
+     *   - verify_client: server role (xylem_dtls_listen). When true the
+     *     server requests and verifies a client certificate (mTLS).
+     *     Defaults to false -- a public server asks for no client cert.
+     */
+    bool               verify_server;
+    bool               verify_client;
 };
 
 struct xylem_dtls_conn_s {
@@ -80,6 +120,21 @@ struct xylem_dtls_conn_s {
      */
     BIO*                     read_bio;
     BIO*                     write_bio;
+
+    /**
+     * Client-side ciphertext scratch buffers, sized to the link MTU
+     * (DTLS_set_link_mtu) so a record is never truncated on its way to
+     * or from the socket. wr_buf backs _dtls_client_pump_out (owned by
+     * wr_mu) and rd_buf backs _dtls_client_pump_in (owned by rd_mu), so
+     * the two pump directions never share a buffer and each is
+     * serialized by the mutex guarding its iowait direction. Unused by
+     * server-side connections, which drain via the listener buffer and
+     * feed inbound datagrams straight into read_bio. buf_sz is the
+     * allocated size of each buffer.
+     */
+    char*                    rd_buf;
+    char*                    wr_buf;
+    size_t                   buf_sz;
 
     /* client-side only */
     iowait_t*               waiter;
@@ -105,9 +160,19 @@ struct xylem_dtls_listener_s {
     xylem_dtls_ctx_t*     ctx;
     xylem_dtls_opts_t     opts;
     rbtree_t              sessions;
-    mtx_t                 sessions_mtx;
+    xylem_mutex_t*        sessions_mu;
     xylem_mutex_t*        write_mu;
     scheduler_t*          sched;
+
+    /**
+     * Outbound ciphertext scratch for the server data path, sized to
+     * the link MTU and guarded by write_mu (which already serializes
+     * _dtls_server_send_record across all sessions sharing this
+     * socket). Keeps the per-write hot path allocation-free even when
+     * a large MTU makes a stack buffer impractical.
+     */
+    char*                 send_buf;
+    size_t                send_buf_sz;
 
     xylem_channel_t*      accept_ch;
 
@@ -213,6 +278,64 @@ static int _dtls_alpn_select_cb(SSL* ssl, const unsigned char** out,
     return SSL_TLSEXT_ERR_OK;
 }
 
+/**
+ * SNI servername callback. Selects the per-host certificate by setting
+ * it directly on the SSL connection -- the single ctx (and thus its
+ * keylog / ALPN / verify config) stays in force. SNI only picks a cert,
+ * never swaps the whole configuration. When no host matches, the ctx
+ * default certificate is left untouched.
+ */
+static int _dtls_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
+    (void)al;
+    xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)arg;
+    const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    if (!name) {
+        return SSL_TLSEXT_ERR_OK;
+    }
+    for (size_t i = 0; i < ctx->sni_count; i++) {
+        _dtls_sni_entry_t* e = &ctx->sni_entries[i];
+        if (platform_strcasecmp(name, e->hostname) != 0) {
+            continue;
+        }
+        /**
+         * use/set1 variants bump the refcount on the stored objects,
+         * so the ctx keeps ownership and each connection holds its own
+         * reference. Validated key/cert pairing at load time.
+         */
+        if (SSL_use_certificate(ssl, e->cert) != 1
+            || SSL_use_PrivateKey(ssl, e->key) != 1) {
+            xylem_loge("dtls sni: failed to apply cert for %s", e->hostname);
+            return SSL_TLSEXT_ERR_OK;
+        }
+        if (e->chain) {
+            SSL_set1_chain(ssl, e->chain);
+        }
+        return SSL_TLSEXT_ERR_OK;
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/**
+ * Apply the connection's verify policy by role. Set per SSL (not on the
+ * shared SSL_CTX) so a single ctx reused as both client and server keeps
+ * the correct, opposite policy for each role:
+ *   - client: verify the server cert unless ctx->verify_server is off.
+ *   - server: request and require a client cert (mTLS) only when
+ *     ctx->verify_client is on; otherwise ask for none.
+ */
+static void _dtls_apply_verify(SSL* ssl, xylem_dtls_ctx_t* ctx,
+                               bool is_server) {
+    int mode;
+    if (is_server) {
+        mode = ctx->verify_client
+                   ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                   : SSL_VERIFY_NONE;
+    } else {
+        mode = ctx->verify_server ? SSL_VERIFY_PEER : SSL_VERIFY_NONE;
+    }
+    SSL_set_verify(ssl, mode, NULL);
+}
+
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)calloc(1, sizeof(xylem_dtls_ctx_t));
     if (!ctx) {
@@ -238,11 +361,29 @@ xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
      */
     SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
 
-    SSL_CTX_set_verify(ctx->ssl_ctx, SSL_VERIFY_PEER, NULL);
+    /**
+     * Verification is applied per connection by role at handshake time
+     * (see xylem_dtls_dial / _dtls_handshake_coro), not on the shared
+     * SSL_CTX, so one ctx reused as both client and server keeps the
+     * correct policy for each. Defaults: verify the server (secure
+     * client), do not request a client cert (plain server).
+     */
+    ctx->verify_server = true;
+    ctx->verify_client = false;
+
     SSL_CTX_set_cookie_generate_cb(ctx->ssl_ctx, _dtls_cookie_generate_cb);
     SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _dtls_cookie_verify_cb);
 
     SSL_CTX_set_min_proto_version(ctx->ssl_ctx, DTLS1_2_VERSION);
+
+    /**
+     * Install the SNI callback once at ctx creation. The callback is a
+     * no-op until SNI entries are added (it returns early on an empty
+     * table), so registering it unconditionally is safe and keeps all
+     * ctx-level config in one place.
+     */
+    SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _dtls_ctx_sni_cb);
+    SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
 
     call_once(&_dtls_ex_data_once, _dtls_init_ex_data);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _dtls_ex_data_idx, ctx);
@@ -254,6 +395,12 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    for (size_t i = 0; i < ctx->sni_count; i++) {
+        X509_free(ctx->sni_entries[i].cert);
+        EVP_PKEY_free(ctx->sni_entries[i].key);
+        sk_X509_pop_free(ctx->sni_entries[i].chain, X509_free);
+    }
+    free(ctx->sni_entries);
     if (ctx->keylog_file) {
         fclose(ctx->keylog_file);
     }
@@ -277,7 +424,7 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
         return 0;
     }
 
-    ctx->keylog_file = fopen(path, "a");
+    ctx->keylog_file = platform_io_fopen(path, "a");
     if (!ctx->keylog_file) {
         return -1;
     }
@@ -286,21 +433,217 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     return 0;
 }
 
-int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
-                             const char* cert, const char* key) {
-    if (SSL_CTX_use_certificate_chain_file(ctx->ssl_ctx, cert) != 1) {
-        xylem_loge("dtls ctx: failed to load cert %s", cert);
+/**
+ * Parse a DTLS identity (leaf cert + intermediate chain + matching key)
+ * from two already-open PEM BIOs. The cert BIO holds the leaf first,
+ * any following certs form the chain. The BIOs are not freed here. On
+ * success out_* are set (caller owns them); on failure nothing is left
+ * allocated to the caller.
+ */
+static int _dtls_parse_pem_identity(BIO* cbio, BIO* kbio,
+                                    X509** out_cert, EVP_PKEY** out_key,
+                                    STACK_OF(X509)** out_chain) {
+    *out_cert  = NULL;
+    *out_key   = NULL;
+    *out_chain = NULL;
+
+    X509* leaf = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+    if (!leaf) {
+        xylem_loge("dtls ctx: failed to parse leaf certificate");
         return -1;
     }
-    if (SSL_CTX_use_PrivateKey_file(ctx->ssl_ctx, key,
-                                    SSL_FILETYPE_PEM) != 1) {
-        xylem_loge("dtls ctx: failed to load key %s", key);
+
+    STACK_OF(X509)* chain = NULL;
+    for (;;) {
+        X509* extra = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
+        if (!extra) {
+            /* EOF is the only expected stop; clear the residual error. */
+            ERR_clear_error();
+            break;
+        }
+        if (!chain) {
+            chain = sk_X509_new_null();
+            if (!chain) {
+                X509_free(extra);
+                X509_free(leaf);
+                return -1;
+            }
+        }
+        if (sk_X509_push(chain, extra) <= 0) {
+            X509_free(extra);
+            sk_X509_pop_free(chain, X509_free);
+            X509_free(leaf);
+            return -1;
+        }
+    }
+
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
+    if (!pkey) {
+        xylem_loge("dtls ctx: failed to parse private key");
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
+    }
+
+    /* Reject a mismatched cert/key pair up front, not mid-handshake. */
+    if (X509_check_private_key(leaf, pkey) != 1) {
+        xylem_loge("dtls ctx: certificate and key do not match");
+        EVP_PKEY_free(pkey);
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
+    }
+
+    *out_cert  = leaf;
+    *out_key   = pkey;
+    *out_chain = chain;
+    return 0;
+}
+
+/* Load a DTLS identity from PEM files. See _dtls_parse_pem_identity. */
+static int _dtls_load_pem_identity(const char* cert_file,
+                                   const char* key_file,
+                                   X509** out_cert,
+                                   EVP_PKEY** out_key,
+                                   STACK_OF(X509)** out_chain) {
+    BIO* cbio = BIO_new_file(cert_file, "r");
+    if (!cbio) {
+        xylem_loge("dtls ctx: failed to open cert %s", cert_file);
+        return -1;
+    }
+    BIO* kbio = BIO_new_file(key_file, "r");
+    if (!kbio) {
+        xylem_loge("dtls ctx: failed to open key %s", key_file);
+        BIO_free(cbio);
+        return -1;
+    }
+    int rc =
+        _dtls_parse_pem_identity(cbio, kbio, out_cert, out_key, out_chain);
+    BIO_free(cbio);
+    BIO_free(kbio);
+    return rc;
+}
+
+/* Load a DTLS identity from in-memory PEM buffers. */
+static int _dtls_load_pem_identity_mem(const void* cert_pem, size_t cert_len,
+                                       const void* key_pem, size_t key_len,
+                                       X509** out_cert, EVP_PKEY** out_key,
+                                       STACK_OF(X509)** out_chain) {
+    BIO* cbio = BIO_new_mem_buf(cert_pem, (int)cert_len);
+    BIO* kbio = BIO_new_mem_buf(key_pem, (int)key_len);
+    if (!cbio || !kbio) {
+        BIO_free(cbio);
+        BIO_free(kbio);
+        return -1;
+    }
+    int rc =
+        _dtls_parse_pem_identity(cbio, kbio, out_cert, out_key, out_chain);
+    BIO_free(cbio);
+    BIO_free(kbio);
+    return rc;
+}
+
+/**
+ * Take ownership of (leaf, key, chain) into a new SNI entry bound to
+ * hostname. On allocation failure the identity is freed and -1 is
+ * returned, so the caller never has to clean up on error.
+ */
+static int _dtls_store_sni_identity(xylem_dtls_ctx_t* ctx,
+                                    const char* hostname,
+                                    X509* leaf, EVP_PKEY* key,
+                                    STACK_OF(X509)* chain) {
+    if (ctx->sni_count == ctx->sni_cap) {
+        size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
+        _dtls_sni_entry_t* entries = (_dtls_sni_entry_t*)realloc(
+            ctx->sni_entries, new_cap * sizeof(_dtls_sni_entry_t));
+        if (!entries) {
+            EVP_PKEY_free(key);
+            sk_X509_pop_free(chain, X509_free);
+            X509_free(leaf);
+            return -1;
+        }
+        ctx->sni_entries = entries;
+        ctx->sni_cap     = new_cap;
+    }
+
+    _dtls_sni_entry_t* entry = &ctx->sni_entries[ctx->sni_count];
+    snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname);
+    entry->cert  = leaf;
+    entry->key   = key;
+    entry->chain = chain;
+    ctx->sni_count++;
+    return 0;
+}
+
+/**
+ * Install (leaf, key, chain) as the ctx default identity. use/set1 bump
+ * the refcount on each object, so the caller keeps ownership of its own
+ * references and must free them afterwards.
+ */
+static int _dtls_apply_default_identity(xylem_dtls_ctx_t* ctx, X509* leaf,
+                                        EVP_PKEY* key,
+                                        STACK_OF(X509)* chain) {
+    if (SSL_CTX_use_certificate(ctx->ssl_ctx, leaf) != 1
+        || SSL_CTX_use_PrivateKey(ctx->ssl_ctx, key) != 1) {
+        return -1;
+    }
+    if (chain && SSL_CTX_set1_chain(ctx->ssl_ctx, chain) != 1) {
         return -1;
     }
     return 0;
 }
 
-int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
+/**
+ * Install a parsed identity into the ctx: as the default identity when
+ * hostname is NULL, or as an SNI-selected identity otherwise. Always
+ * consumes (leaf, key, chain) -- it takes ownership for the SNI case and
+ * frees its references for the default case (which only bumps refcounts).
+ */
+static int _dtls_install_identity(xylem_dtls_ctx_t* ctx, const char* hostname,
+                                  X509* leaf, EVP_PKEY* key,
+                                  STACK_OF(X509)* chain) {
+    if (hostname) {
+        return _dtls_store_sni_identity(ctx, hostname, leaf, key, chain);
+    }
+    int rc = _dtls_apply_default_identity(ctx, leaf, key, chain);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(chain, X509_free);
+    X509_free(leaf);
+    return rc;
+}
+
+int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
+                             const char* hostname,
+                             const char* cert, const char* key) {
+    X509*           leaf  = NULL;
+    EVP_PKEY*       pkey  = NULL;
+    STACK_OF(X509)* chain = NULL;
+    if (_dtls_load_pem_identity(cert, key, &leaf, &pkey, &chain) != 0) {
+        return -1;
+    }
+    return _dtls_install_identity(ctx, hostname, leaf, pkey, chain);
+}
+
+int xylem_dtls_ctx_load_cert_mem(xylem_dtls_ctx_t* ctx,
+                                 const char* hostname,
+                                 const void* cert_pem,
+                                 size_t      cert_len,
+                                 const void* key_pem,
+                                 size_t      key_len) {
+    if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
+        return -1;
+    }
+    X509*           leaf  = NULL;
+    EVP_PKEY*       pkey  = NULL;
+    STACK_OF(X509)* chain = NULL;
+    if (_dtls_load_pem_identity_mem(cert_pem, cert_len, key_pem, key_len,
+                                    &leaf, &pkey, &chain) != 0) {
+        return -1;
+    }
+    return _dtls_install_identity(ctx, hostname, leaf, pkey, chain);
+}
+
+int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
         xylem_loge("dtls ctx: failed to load CA %s", ca_file);
         return -1;
@@ -308,9 +651,20 @@ int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     return 0;
 }
 
-void xylem_dtls_ctx_set_verify(xylem_dtls_ctx_t* ctx, bool enable) {
-    int mode = enable ? SSL_VERIFY_PEER : SSL_VERIFY_NONE;
-    SSL_CTX_set_verify(ctx->ssl_ctx, mode, NULL);
+int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx) {
+    if (platform_tls_load_system_ca(ctx->ssl_ctx) != 0) {
+        xylem_loge("dtls ctx: failed to load system CA store");
+        return -1;
+    }
+    return 0;
+}
+
+void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable) {
+    ctx->verify_server = enable;
+}
+
+void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable) {
+    ctx->verify_client = enable;
 }
 
 int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
@@ -364,6 +718,8 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     xylem_mutex_destroy(dtls->ssl_mu);
     xylem_mutex_destroy(dtls->rd_mu);
     xylem_mutex_destroy(dtls->wr_mu);
+    free(dtls->rd_buf);
+    free(dtls->wr_buf);
     sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
@@ -392,8 +748,9 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
     }
     iowait_destroy(ln->waiter);
     platform_socket_close(ln->fd);
-    mtx_destroy(&ln->sessions_mtx);
+    xylem_mutex_destroy(ln->sessions_mu);
     xylem_mutex_destroy(ln->write_mu);
+    free(ln->send_buf);
     if (ln->accept_ch) {
         xylem_channel_destroy(ln->accept_ch);
     }
@@ -405,7 +762,7 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
  * it. Bounded by DTLS_INBOX_CAP via dtls->inbox_len so a slow or
  * absent reader cannot grow the channel without bound; on overflow
  * the datagram is dropped (DTLS tolerates loss, the peer retransmits).
- * The dispatcher holds sessions_mtx across find+push, so the session
+ * The dispatcher holds sessions_mu across find+push, so the session
  * cannot be freed underneath this call.
  */
 static void _dtls_inbox_push(xylem_dtls_conn_t* dtls, _dtls_dgram_t* dgram) {
@@ -470,23 +827,24 @@ static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_listener_t* ln,
     return rbtree_entry(node, xylem_dtls_conn_t, server_node);
 }
 
-static void _dtls_sessions_init(rbtree_t* tree) {
-    rbtree_init(tree, _dtls_session_cmp_nn, _dtls_session_cmp_kn);
-}
-
 static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
-    char buf[DTLS_PKT_BUF_SIZE];
+    size_t bufsz = _dtls_bufsz(dtls->listener->opts.mtu);
+    char*  buf   = (char*)malloc(bufsz);
+    if (!buf) {
+        return;
+    }
     int  n;
     socklen_t addrlen =
         (dtls->peer_addr.storage.ss_family == AF_INET6)
             ? (socklen_t)sizeof(struct sockaddr_in6)
             : (socklen_t)sizeof(struct sockaddr_in);
 
-    while ((n = BIO_read(dtls->write_bio, buf, sizeof(buf))) > 0) {
+    while ((n = BIO_read(dtls->write_bio, buf, (int)bufsz)) > 0) {
         platform_socket_sendto(
             dtls->listener->fd, buf, n,
             &dtls->peer_addr.storage, addrlen);
     }
+    free(buf);
 }
 
 static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
@@ -502,16 +860,18 @@ static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
         return -1;
     }
 
-    /* DTLS: one SSL_write produces exactly one datagram. */
-    char buf[DTLS_PKT_BUF_SIZE];
-    int rd = BIO_read(dtls->write_bio, buf, sizeof(buf));
+    /* DTLS: one SSL_write produces exactly one datagram. The listener
+     * send buffer is sized to the link MTU and guarded by write_mu,
+     * which the caller already holds. */
+    xylem_dtls_listener_t* ln = dtls->listener;
+    int rd = BIO_read(dtls->write_bio, ln->send_buf, (int)ln->send_buf_sz);
     if (rd <= 0) {
         return -1;
     }
 
     for (;;) {
         ssize_t sent = platform_socket_sendto(
-            dtls->listener->fd, buf, rd,
+            ln->fd, ln->send_buf, rd,
             &dtls->peer_addr.storage, addrlen);
         if (sent >= 0) {
             return 0;
@@ -546,6 +906,35 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
     return 0;
 }
 
+/**
+ * Apply a caller-supplied link MTU so OpenSSL sizes and fragments
+ * DTLS handshake records to avoid IP fragmentation.
+ *
+ * This connection drives memory BIOs, not a datagram-socket BIO, so
+ * OpenSSL has no socket to inspect and cannot do path-MTU discovery
+ * itself: BIO_CTRL_DGRAM_QUERY_MTU is unsupported on a mem BIO and
+ * returns nothing, so OpenSSL falls back to its small conservative
+ * minimum MTU (~256B), splitting the handshake into many fragments.
+ * The explicit hint replaces that fallback with the caller's value;
+ * SSL_OP_NO_QUERY_MTU keeps OpenSSL from re-querying the useless mem
+ * BIO on later writes.
+ *
+ * A zero mtu keeps OpenSSL's conservative built-in fallback. There is
+ * no adaptive PMTU in this architecture either way -- the socket is
+ * pumped by the app, not by OpenSSL.
+ *
+ * The per-connection and listener scratch buffers are sized via
+ * _dtls_bufsz(mtu) so a record produced at this MTU is never truncated
+ * when drained from write_bio, nor a datagram clipped on recvfrom.
+ */
+static void _dtls_apply_mtu(SSL* ssl, uint16_t mtu) {
+    if (mtu == 0) {
+        return;
+    }
+    SSL_set_options(ssl, SSL_OP_NO_QUERY_MTU);
+    DTLS_set_link_mtu(ssl, mtu);
+}
+
 /* Sentinel returned by _dtls_client_pump_in when the read direction
  * timed out (deadline reached) rather than failing outright. */
 #define DTLS_PUMP_TIMEOUT (-2)
@@ -560,12 +949,13 @@ static int _dtls_init_ssl(xylem_dtls_conn_t* dtls, SSL_CTX* ssl_ctx) {
  */
 static int _dtls_client_pump_out(xylem_dtls_conn_t* dtls) {
     int  ret = 0;
-    char buf[DTLS_PKT_BUF_SIZE];
+    char* buf    = dtls->wr_buf;
+    size_t bufsz = dtls->buf_sz;
 
     xylem_mutex_lock(dtls->wr_mu);
     for (;;) {
         xylem_mutex_lock(dtls->ssl_mu);
-        int n = BIO_read(dtls->write_bio, buf, sizeof(buf));
+        int n = BIO_read(dtls->write_bio, buf, (int)bufsz);
         xylem_mutex_unlock(dtls->ssl_mu);
         if (n <= 0) {
             break;
@@ -604,11 +994,12 @@ out:
  */
 static int _dtls_client_pump_in(xylem_dtls_conn_t* dtls) {
     int  ret = -1;
-    char buf[DTLS_PKT_BUF_SIZE];
+    char* buf    = dtls->rd_buf;
+    size_t bufsz = dtls->buf_sz;
 
     xylem_mutex_lock(dtls->rd_mu);
     for (;;) {
-        ssize_t n = platform_socket_recv(dtls->fd, buf, sizeof(buf));
+        ssize_t n = platform_socket_recv(dtls->fd, buf, bufsz);
         if (n > 0) {
             xylem_mutex_lock(dtls->ssl_mu);
             BIO_write(dtls->read_bio, buf, (int)n);
@@ -878,9 +1269,9 @@ static void _dtls_handshake_coro(void* arg) {
     _dtls_conn_ref(dtls);
 
     if (_dtls_init_ssl(dtls, ln->ctx->ssl_ctx) != 0) {
-        mtx_lock(&ln->sessions_mtx);
+        xylem_mutex_lock(ln->sessions_mu);
         rbtree_remove(&ln->sessions, &dtls->server_node);
-        mtx_unlock(&ln->sessions_mtx);
+        xylem_mutex_unlock(ln->sessions_mu);
         _dtls_conn_unref(dtls);
         _dtls_conn_unref(dtls);
         return;
@@ -888,6 +1279,8 @@ static void _dtls_handshake_coro(void* arg) {
 
     SSL_set_accept_state(dtls->ssl);
     SSL_set_ex_data(dtls->ssl, _dtls_peer_addr_idx, &dtls->peer_addr);
+    _dtls_apply_verify(dtls->ssl, ln->ctx, true);
+    _dtls_apply_mtu(dtls->ssl, ln->opts.mtu);
 
     uint64_t hs_timeout = ln->opts.handshake_timeout_ms > 0
         ? ln->opts.handshake_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
@@ -948,9 +1341,9 @@ static void _dtls_handshake_coro(void* arg) {
     dtls->handshake_timer  = NULL;
 
     if (!success) {
-        mtx_lock(&ln->sessions_mtx);
+        xylem_mutex_lock(ln->sessions_mu);
         rbtree_remove(&ln->sessions, &dtls->server_node);
-        mtx_unlock(&ln->sessions_mtx);
+        xylem_mutex_unlock(ln->sessions_mu);
         _dtls_conn_unref(dtls);
         _dtls_conn_unref(dtls);
         return;
@@ -963,13 +1356,20 @@ static void _dtls_handshake_coro(void* arg) {
 
 static void _dtls_dispatcher(void* arg) {
     xylem_dtls_listener_t* ln = arg;
-    char buf[DTLS_PKT_BUF_SIZE];
+    size_t bufsz = _dtls_bufsz(ln->opts.mtu);
+    char*  buf   = (char*)malloc(bufsz);
+    if (!buf) {
+        xylem_loge("dtls dispatcher: failed to allocate %zu-byte recv "
+                   "buffer", bufsz);
+        _dtls_listener_unref(ln);
+        return;
+    }
 
     while (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
-        struct sockaddr_storage from_ss;
-        socklen_t from_len = sizeof(from_ss);
+        addr_t from_addr;
+        socklen_t from_len = sizeof(from_addr.storage);
         ssize_t n = platform_socket_recvfrom(
-            ln->fd, buf, sizeof(buf), &from_ss, &from_len);
+            ln->fd, buf, bufsz, &from_addr.storage, &from_len);
 
         if (n < 0) {
             int err = platform_socket_get_lasterror();
@@ -984,10 +1384,7 @@ static void _dtls_dispatcher(void* arg) {
             continue;
         }
 
-        addr_t from_addr;
-        memcpy(&from_addr.storage, &from_ss, sizeof(from_ss));
-
-        mtx_lock(&ln->sessions_mtx);
+        xylem_mutex_lock(ln->sessions_mu);
         xylem_dtls_conn_t* dtls = _dtls_find_session(ln, &from_addr);
         if (dtls) {
             /* Push under the lock so a concurrent xylem_dtls_close
@@ -1001,10 +1398,10 @@ static void _dtls_dispatcher(void* arg) {
                 memcpy(dgram->data, buf, (size_t)n);
                 _dtls_inbox_push(dtls, dgram);
             }
-            mtx_unlock(&ln->sessions_mtx);
+            xylem_mutex_unlock(ln->sessions_mu);
             continue;
         }
-        mtx_unlock(&ln->sessions_mtx);
+        xylem_mutex_unlock(ln->sessions_mu);
 
         _dtls_dgram_t* dgram =
             (_dtls_dgram_t*)malloc(sizeof(_dtls_dgram_t) + (size_t)n);
@@ -1042,13 +1439,14 @@ static void _dtls_dispatcher(void* arg) {
 
         _dtls_inbox_push(dtls, dgram);
 
-        mtx_lock(&ln->sessions_mtx);
+        xylem_mutex_lock(ln->sessions_mu);
         rbtree_insert(&ln->sessions, &dtls->server_node);
-        mtx_unlock(&ln->sessions_mtx);
+        xylem_mutex_unlock(ln->sessions_mu);
 
         runtime_spawn(_dtls_handshake_coro, dtls);
     }
 
+    free(buf);
     _dtls_listener_unref(ln);
 }
 
@@ -1141,12 +1539,12 @@ static void _dtls_server_close_conn(xylem_dtls_conn_t* dtls) {
     /* Unlink from the session tree FIRST so the dispatcher can no
      * longer find this session and therefore cannot xylem_channel_send
      * into the inbox after we close it (send-on-closed aborts). The
-     * dispatcher does find+push under sessions_mtx, so once the remove
+     * dispatcher does find+push under sessions_mu, so once the remove
      * commits no further push can target this inbox. */
     xylem_dtls_listener_t* ln = dtls->listener;
-    mtx_lock(&ln->sessions_mtx);
+    xylem_mutex_lock(ln->sessions_mu);
     rbtree_remove(&ln->sessions, &dtls->server_node);
-    mtx_unlock(&ln->sessions_mtx);
+    xylem_mutex_unlock(ln->sessions_mu);
 
     /* Now close the inbox to wake a parked reader; the reader's
      * in-flight recv holds a channel reference, so the channel stays
@@ -1183,11 +1581,15 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     dtls->fd  = fd;
     addr_pton(host, port, &dtls->peer_addr);
 
+    dtls->buf_sz = _dtls_bufsz(opts ? opts->mtu : 0);
+    dtls->rd_buf = (char*)malloc(dtls->buf_sz);
+    dtls->wr_buf = (char*)malloc(dtls->buf_sz);
     dtls->waiter = iowait_create(fd);
     dtls->ssl_mu = xylem_mutex_create();
     dtls->rd_mu  = xylem_mutex_create();
     dtls->wr_mu  = xylem_mutex_create();
-    if (!dtls->waiter || !dtls->ssl_mu || !dtls->rd_mu || !dtls->wr_mu) {
+    if (!dtls->rd_buf || !dtls->wr_buf
+        || !dtls->waiter || !dtls->ssl_mu || !dtls->rd_mu || !dtls->wr_mu) {
         _dtls_conn_unref(dtls);
         return NULL;
     }
@@ -1211,6 +1613,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
     SSL_set_connect_state(dtls->ssl);
+    _dtls_apply_verify(dtls->ssl, ctx, false);
+    _dtls_apply_mtu(dtls->ssl, opts ? opts->mtu : 0);
 
     const char* server_name = opts ? opts->server_name : NULL;
     if (server_name) {
@@ -1220,12 +1624,11 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         if (!is_ip) {
             SSL_set_tlsext_host_name(dtls->ssl, server_name);
         }
-        int vmode = SSL_get_verify_mode(dtls->ssl);
-        if (vmode & SSL_VERIFY_PEER) {
+        if (ctx->verify_server) {
             SSL_set1_host(dtls->ssl, server_name);
         }
-    } else if (SSL_get_verify_mode(dtls->ssl) & SSL_VERIFY_PEER) {
-        xylem_logw("dtls dial: verify_peer enabled but opts->server_name "
+    } else if (ctx->verify_server) {
+        xylem_logw("dtls dial: verify_server enabled but opts->server_name "
                    "is NULL; peer identity is not checked, only "
                    "certificate chain trust (MITM risk)");
     }
@@ -1269,29 +1672,39 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         ln->opts = *opts;
     }
 
+    ln->send_buf_sz = _dtls_bufsz(ln->opts.mtu);
+    ln->send_buf    = (char*)malloc(ln->send_buf_sz);
+    if (!ln->send_buf) {
+        platform_socket_close(fd);
+        free(ln);
+        return NULL;
+    }
+
     ln->waiter = iowait_create(fd);
     if (!ln->waiter) {
         platform_socket_close(fd);
+        free(ln->send_buf);
         free(ln);
         return NULL;
     }
 
-    atomic_store_explicit(&ln->refcnt, 2, memory_order_relaxed);
+    _dtls_listener_ref(ln); /* caller's reference (released by close) */
 
-    _dtls_sessions_init(&ln->sessions);
-    mtx_init(&ln->sessions_mtx, mtx_plain);
-    ln->write_mu = xylem_mutex_create();
+    rbtree_init(&ln->sessions, _dtls_session_cmp_nn, _dtls_session_cmp_kn);
+    ln->sessions_mu = xylem_mutex_create();
+    ln->write_mu    = xylem_mutex_create();
+    if (!ln->sessions_mu || !ln->write_mu) {
+        _dtls_listener_unref(ln);
+        return NULL;
+    }
 
     ln->accept_ch = xylem_channel_create();
     if (!ln->accept_ch) {
-        xylem_mutex_destroy(ln->write_mu);
-        mtx_destroy(&ln->sessions_mtx);
-        iowait_destroy(ln->waiter);
-        platform_socket_close(fd);
-        free(ln);
+        _dtls_listener_unref(ln);
         return NULL;
     }
 
+    _dtls_listener_ref(ln); /* dispatcher's reference (released on exit) */
     runtime_spawn(_dtls_dispatcher, ln);
     return ln;
 }
@@ -1332,16 +1745,16 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
         return;
     }
 
-    mtx_lock(&ln->sessions_mtx);
+    xylem_mutex_lock(ln->sessions_mu);
     while (!rbtree_empty(&ln->sessions)) {
         rbtree_node_t* node = rbtree_min(&ln->sessions);
         xylem_dtls_conn_t* dtls =
             rbtree_entry(node, xylem_dtls_conn_t, server_node);
-        mtx_unlock(&ln->sessions_mtx);
+        xylem_mutex_unlock(ln->sessions_mu);
         xylem_dtls_close(dtls);
-        mtx_lock(&ln->sessions_mtx);
+        xylem_mutex_lock(ln->sessions_mu);
     }
-    mtx_unlock(&ln->sessions_mtx);
+    xylem_mutex_unlock(ln->sessions_mu);
 
     iowait_close(ln->waiter);
     xylem_channel_close(ln->accept_ch);

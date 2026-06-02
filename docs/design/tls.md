@@ -160,7 +160,7 @@ both roles from it: the client offers the list, and the server's select callback
 picks the first mutually supported protocol. The unused half is inert per role.
 After the handshake, `_tls_cache_alpn` copies OpenSSL's borrowed,
 non-NUL-terminated result into the connection's own `alpn` buffer once;
-`xylem_tls_get_version` / `xylem_tls_get_alpn` then read connection-local state
+`xylem_tls_get_alpn` then reads connection-local state
 with no lock and no OpenSSL call.
 
 ## 8. Connection lifecycle

@@ -119,12 +119,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (xylem_dtls_ctx_load_cert(ctx, CERT_FILE, KEY_FILE) != 0) {
+    if (xylem_dtls_ctx_load_cert(ctx, NULL, CERT_FILE, KEY_FILE) != 0) {
         fprintf(stderr, "failed to load %s / %s\n", CERT_FILE, KEY_FILE);
         xylem_dtls_ctx_destroy(ctx);
         return 1;
     }
-    xylem_dtls_ctx_set_verify(ctx, false);
+    xylem_dtls_ctx_verify_client(ctx, false);
 
     xylem_addr_t addr;
     xylem_addr_pton("0.0.0.0", (uint16_t)port, &addr);
