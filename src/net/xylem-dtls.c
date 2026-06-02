@@ -52,7 +52,7 @@
 #define DTLS_DEFAULT_TIMEOUT_MS  30000
 #define DTLS_COOKIE_SIZE         32
 #define DTLS_INBOX_CAP           64
-#define DTLS_PKT_BUF_SIZE        1500
+#define DTLS_DEFAULT_MTU         1500
 
 /**
  * Effective ciphertext buffer size for a connection. OpenSSL sizes a
@@ -63,9 +63,9 @@
  * keeps the historical 1500-byte default that matches OpenSSL's own
  * conservative default-path sizing under memory BIOs.
  */
-static inline size_t _dtls_bufsz(uint16_t mtu) {
-    return (mtu > DTLS_PKT_BUF_SIZE) ? (size_t)mtu
-                                     : (size_t)DTLS_PKT_BUF_SIZE;
+static inline size_t _dtls_record_bufsz(uint16_t mtu) {
+    return (mtu > DTLS_DEFAULT_MTU) ? (size_t)mtu
+                                    : (size_t)DTLS_DEFAULT_MTU;
 }
 
 typedef struct _dtls_dgram_s {
@@ -828,7 +828,7 @@ static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_listener_t* ln,
 }
 
 static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
-    size_t bufsz = _dtls_bufsz(dtls->listener->opts.mtu);
+    size_t bufsz = _dtls_record_bufsz(dtls->listener->opts.mtu);
     char*  buf   = (char*)malloc(bufsz);
     if (!buf) {
         return;
@@ -1356,7 +1356,7 @@ static void _dtls_handshake_coro(void* arg) {
 
 static void _dtls_dispatcher(void* arg) {
     xylem_dtls_listener_t* ln = arg;
-    size_t bufsz = _dtls_bufsz(ln->opts.mtu);
+    size_t bufsz = _dtls_record_bufsz(ln->opts.mtu);
     char*  buf   = (char*)malloc(bufsz);
     if (!buf) {
         xylem_loge("dtls dispatcher: failed to allocate %zu-byte recv "
@@ -1581,7 +1581,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     dtls->fd  = fd;
     addr_pton(host, port, &dtls->peer_addr);
 
-    dtls->buf_sz = _dtls_bufsz(opts ? opts->mtu : 0);
+    dtls->buf_sz = _dtls_record_bufsz(opts ? opts->mtu : 0);
     dtls->rd_buf = (char*)malloc(dtls->buf_sz);
     dtls->wr_buf = (char*)malloc(dtls->buf_sz);
     dtls->waiter = iowait_create(fd);
@@ -1672,7 +1672,7 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         ln->opts = *opts;
     }
 
-    ln->send_buf_sz = _dtls_bufsz(ln->opts.mtu);
+    ln->send_buf_sz = _dtls_record_bufsz(ln->opts.mtu);
     ln->send_buf    = (char*)malloc(ln->send_buf_sz);
     if (!ln->send_buf) {
         platform_socket_close(fd);
