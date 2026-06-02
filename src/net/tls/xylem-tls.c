@@ -1086,48 +1086,6 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx,
     return 0;
 }
 
-/* Map a public version selector to the OpenSSL version constant. */
-static int _tls_openssl_version(xylem_tls_version_t v) {
-    switch (v) {
-    case XYLEM_TLS_VERSION_1_2:
-        return TLS1_2_VERSION;
-    case XYLEM_TLS_VERSION_1_3:
-        return TLS1_3_VERSION;
-    default:
-        return 0;
-    }
-}
-
-int xylem_tls_ctx_set_versions(xylem_tls_ctx_t* ctx,
-                               xylem_tls_version_t min,
-                               xylem_tls_version_t max) {
-    if (min != XYLEM_TLS_VERSION_DEFAULT && max != XYLEM_TLS_VERSION_DEFAULT
-        && min > max) {
-        xylem_loge("tls ctx: min TLS version exceeds max");
-        return -1;
-    }
-
-    /**
-     * DEFAULT leaves a bound untouched: min keeps the create-time floor
-     * (TLS 1.2), max stays unset (newest the library supports). A 0
-     * argument to the OpenSSL setters means "no bound", so only call
-     * them for an explicit selector.
-     */
-    if (min != XYLEM_TLS_VERSION_DEFAULT) {
-        if (SSL_CTX_set_min_proto_version(ctx->ssl_ctx,
-                                          _tls_openssl_version(min)) != 1) {
-            return -1;
-        }
-    }
-    if (max != XYLEM_TLS_VERSION_DEFAULT) {
-        if (SSL_CTX_set_max_proto_version(ctx->ssl_ctx,
-                                          _tls_openssl_version(max)) != 1) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
 xylem_tls_conn_t* xylem_tls_dial(
     const char*       host,
     uint16_t          port,
@@ -1365,7 +1323,7 @@ xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls) {
     case TLS1_3_VERSION:
         return XYLEM_TLS_VERSION_1_3;
     default:
-        return XYLEM_TLS_VERSION_DEFAULT;
+        return XYLEM_TLS_VERSION_UNKNOWN;
     }
 }
 

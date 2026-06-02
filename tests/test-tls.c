@@ -260,21 +260,6 @@ static void test_load_cert_mem(void) {
     remove(key);
 }
 
-static void test_set_versions(void) {
-    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
-    ASSERT(ctx != NULL);
-    /* TLS 1.3 only. */
-    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_3,
-                                      XYLEM_TLS_VERSION_1_3) == 0);
-    /* Floor only, no maximum. */
-    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_2,
-                                      XYLEM_TLS_VERSION_DEFAULT) == 0);
-    /* Inverted range is rejected. */
-    ASSERT(xylem_tls_ctx_set_versions(ctx, XYLEM_TLS_VERSION_1_3,
-                                      XYLEM_TLS_VERSION_1_2) == -1);
-    xylem_tls_ctx_destroy(ctx);
-}
-
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -1610,7 +1595,6 @@ int main(void) {
     test_set_verify();
     test_set_alpn();
     test_load_cert_mem();
-    test_set_versions();
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();

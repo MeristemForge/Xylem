@@ -30,12 +30,12 @@ typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
 /**
- * TLS protocol version selectors for xylem_tls_ctx_set_versions.
- * XYLEM_TLS_VERSION_DEFAULT (0) leaves that bound at the library
- * default (minimum TLS 1.2, no explicit maximum).
+ * Negotiated TLS protocol version, returned by xylem_tls_get_version.
+ * XYLEM_TLS_VERSION_UNKNOWN (0) means the version is not known (e.g.
+ * before the handshake completes or an unrecognized version).
  */
 typedef enum xylem_tls_version_e {
-    XYLEM_TLS_VERSION_DEFAULT = 0,
+    XYLEM_TLS_VERSION_UNKNOWN = 0,
     XYLEM_TLS_VERSION_1_2,
     XYLEM_TLS_VERSION_1_3,
 } xylem_tls_version_t;
@@ -74,8 +74,8 @@ typedef struct xylem_tls_opts_s {
  *
  * Defaults: as a client, the server certificate is verified; as a
  * server, no client certificate is requested; TLS 1.2 minimum, no
- * maximum. See xylem_tls_ctx_verify_server / verify_client and
- * xylem_tls_ctx_set_versions to change these.
+ * maximum. See xylem_tls_ctx_verify_server / verify_client to change
+ * the verification defaults.
  *
  * @return Context handle, or NULL on failure.
  */
@@ -191,26 +191,6 @@ extern int xylem_tls_ctx_set_alpn(
     xylem_tls_ctx_t* ctx,
     const char**     protocols,
     size_t           count);
-
-/**
- * @brief Constrain the negotiated TLS protocol version range.
- *
- * Sets the minimum and maximum protocol versions the handshake will
- * accept, for either role. XYLEM_TLS_VERSION_DEFAULT leaves a bound
- * unchanged from the library default (min TLS 1.2, no explicit max).
- * For example, pass (XYLEM_TLS_VERSION_1_3, XYLEM_TLS_VERSION_1_3) to
- * require TLS 1.3 only.
- *
- * @param ctx  Context handle.
- * @param min  Minimum acceptable version, or DEFAULT to keep current.
- * @param max  Maximum acceptable version, or DEFAULT for no maximum.
- *
- * @return 0 on success, -1 on failure (e.g. min greater than max).
- */
-extern int xylem_tls_ctx_set_versions(
-    xylem_tls_ctx_t*    ctx,
-    xylem_tls_version_t min,
-    xylem_tls_version_t max);
 
 /**
  * @brief Enable NSS Key Log output for Wireshark decryption.
@@ -424,6 +404,6 @@ extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
  * @param tls  Connection handle.
  *
  * @return XYLEM_TLS_VERSION_1_2 or XYLEM_TLS_VERSION_1_3, or
- *         XYLEM_TLS_VERSION_DEFAULT if the version is unknown.
+ *         XYLEM_TLS_VERSION_UNKNOWN if the version is unknown.
  */
 extern xylem_tls_version_t xylem_tls_get_version(xylem_tls_conn_t* tls);
