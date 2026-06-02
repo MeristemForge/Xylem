@@ -26,52 +26,52 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-/** @brief Forward declaration for minicoro coroutine. */
+/* Forward declaration for minicoro coroutine. */
 typedef struct mco_coro mco_coro;
 
-/** @brief Opaque coroutine scheduler handle. */
+/* Opaque coroutine scheduler handle. */
 typedef struct scheduler_s scheduler_t;
 
-/** @brief Opaque scheduler timer handle. */
+/* Opaque scheduler timer handle. */
 typedef struct xylem_timer_s sched_timer_t;
 
-/** @brief Opaque iowait slab allocator handle. */
+/* Opaque iowait slab allocator handle. */
 typedef struct iowait_slab_s iowait_slab_t;
 
 /**
- * @brief Park callback invoked after a coroutine yields.
+ * Park callback invoked after a coroutine yields.
  *
  * Called on the worker thread with the suspended coroutine. If the
  * callback returns true, the coroutine is parked (not rescheduled).
  * If false, the worker pushes it back to its local deque.
  *
- * @param co   The suspended coroutine.
- * @param arg  User data from scheduler_park().
+ * co   The suspended coroutine.
+ * arg  User data from scheduler_park().
  *
- * @return true to park, false to reschedule immediately.
+ * Returns true to park, false to reschedule immediately.
  */
 typedef bool (*scheduler_park_fn_t)(mco_coro* co, void* arg);
 
 /**
- * @brief Callback type for scheduler_post() deferred execution.
+ * Callback type for scheduler_post() deferred execution.
  *
- * @param ud  User data passed to scheduler_post().
+ * ud  User data passed to scheduler_post().
  */
 typedef void (*scheduler_post_fn_t)(void* ud);
 
 /**
- * @brief Timer expiry callback.
+ * Timer expiry callback.
  *
- * @param timer  The timer that fired.
- * @param ud     User data from sched_timer_start().
+ * timer  The timer that fired.
+ * ud     User data from sched_timer_start().
  */
 typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
 
-/** @brief Configuration for scheduler_create. */
+/* Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {
-    int32_t  nworkers;       /*< 0 = use CPU count. */
-    uint32_t deque_cap;      /*< 0 = use default (256). Must be power of 2. */
-    uint32_t coro_pool_cap;  /*< 0 = use default (nworkers * 64). */
+    int32_t  nworkers;       /* 0 = use CPU count. */
+    uint32_t deque_cap;      /* 0 = use default (256). Must be power of 2. */
+    uint32_t coro_pool_cap;  /* 0 = use default (nworkers * 64). */
 } scheduler_opts_t;
 
 /**
@@ -128,7 +128,7 @@ extern void scheduler_stop(scheduler_t* sched);
 extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
 
 /**
- * @brief Fixed-capacity batch of runnable coroutines.
+ * Fixed-capacity batch of runnable coroutines.
  *
  * Caller provides the backing buffer and initialises `n = 0`
  * before use. scheduler_schedule_batch() flushes the batch.
@@ -305,9 +305,9 @@ extern bool sched_timer_stop(sched_timer_t* timer);
 extern bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms);
 
 /**
- * @brief Callback invoked when all coroutines have exited.
+ * Callback invoked when all coroutines have exited.
  *
- * @param ud  User data from scheduler_set_idle_cb().
+ * ud  User data from scheduler_set_idle_cb().
  */
 typedef void (*scheduler_idle_fn_t)(void* ud);
 

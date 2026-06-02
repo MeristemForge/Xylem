@@ -63,28 +63,27 @@ static void _serial_unref(xylem_serial_t* serial) {
 
 xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
     if (!opts || !opts->device) {
-        xylem_loge("serial: opts or device is NULL");
+        xylem_loge("<serial> open failed: opts or device NULL");
         return NULL;
     }
     if (opts->baudrate > XYLEM_SERIAL_BAUDRATE_115200) {
-        xylem_loge("serial: invalid baudrate %d", (int)opts->baudrate);
+        xylem_loge("<serial> invalid baudrate=%d", (int)opts->baudrate);
         return NULL;
     }
     if (opts->parity > XYLEM_SERIAL_PARITY_EVEN) {
-        xylem_loge("serial: invalid parity %d", (int)opts->parity);
+        xylem_loge("<serial> invalid parity=%d", (int)opts->parity);
         return NULL;
     }
     if (opts->databits > XYLEM_SERIAL_DATABITS_8) {
-        xylem_loge("serial: invalid databits %d", (int)opts->databits);
+        xylem_loge("<serial> invalid databits=%d", (int)opts->databits);
         return NULL;
     }
     if (opts->stopbits > XYLEM_SERIAL_STOPBITS_2) {
-        xylem_loge("serial: invalid stopbits %d", (int)opts->stopbits);
+        xylem_loge("<serial> invalid stopbits=%d", (int)opts->stopbits);
         return NULL;
     }
     if (opts->flowcontrol > XYLEM_SERIAL_FLOW_HARDWARE) {
-        xylem_loge("serial: invalid flowcontrol %d",
-                   (int)opts->flowcontrol);
+        xylem_loge("<serial> invalid flowcontrol=%d", (int)opts->flowcontrol);
         return NULL;
     }
 
@@ -104,22 +103,20 @@ xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts) {
 
     platform_serial_t fd = platform_serial_open(&config);
     if (fd == PLATFORM_SERIAL_INVALID) {
-        xylem_loge("serial: failed to open %s", opts->device);
+        xylem_loge("<serial> open failed device=%s", opts->device);
         return NULL;
     }
 
     xylem_serial_t* serial =
         (xylem_serial_t*)calloc(1, sizeof(xylem_serial_t));
     if (!serial) {
-        xylem_loge("serial: alloc failed for %s", opts->device);
+        xylem_loge("<serial> alloc failed device=%s", opts->device);
         platform_serial_close(fd);
         return NULL;
     }
     serial->fd = fd;
     atomic_init(&serial->refcnt, 1);
     atomic_init(&serial->closed, false);
-    xylem_logi("serial: opened %s at %u baud",
-               opts->device, _serial_baudrate_map[opts->baudrate]);
     return serial;
 }
 

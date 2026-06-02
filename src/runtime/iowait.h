@@ -28,7 +28,7 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-/** @brief Opaque I/O wait handle (per-fd, per-direction park). */
+/* Opaque I/O wait handle (per-fd, per-direction park). */
 typedef struct iowait_s iowait_t;
 
 /**
@@ -58,15 +58,15 @@ typedef struct iowait_s iowait_t;
  */
 
 /**
- * @brief Result of iowait_read / iowait_write.
+ * Result of iowait_read / iowait_write.
  *
  * Distinguishes the three ways a parked coroutine can wake up, each
  * mapping to a different error semantic at the protocol layer.
  */
 typedef enum iowait_result_e {
-    IOWAIT_READY   = 0, /*< fd became readable / writable. */
-    IOWAIT_TIMEOUT = 1, /*< deadline reached. */
-    IOWAIT_CLOSED  = 2, /*< iowait_close() was invoked. */
+    IOWAIT_READY   = 0, /* fd became readable / writable. */
+    IOWAIT_TIMEOUT = 1, /* deadline reached. */
+    IOWAIT_CLOSED  = 2, /* iowait_close() was invoked. */
 } iowait_result_t;
 
 /**
@@ -205,7 +205,7 @@ extern void iowait_on_event(
     runnable_batch_t* batch);
 
 /**
- * @brief Opaque per-scheduler iowait handle slab.
+ * Opaque per-scheduler iowait handle slab.
  *
  * Paged slab allocator that keeps retired iowait handles alive in
  * type-stable memory. Poller ud carries a (gen, slab-index) pair

@@ -55,9 +55,9 @@
 
 typedef struct _tls_sni_entry_s {
     char            hostname[256];
-    X509*           cert;  /**< leaf certificate for this SNI host. */
-    EVP_PKEY*       key;   /**< private key paired with cert. */
-    STACK_OF(X509)* chain; /**< intermediate chain (may be NULL). */
+    X509*           cert;  /* leaf certificate for this SNI host. */
+    EVP_PKEY*       key;   /* private key paired with cert. */
+    STACK_OF(X509)* chain; /* intermediate chain (may be NULL). */
 } _tls_sni_entry_t;
 
 struct xylem_tls_ctx_s {
@@ -84,13 +84,13 @@ struct xylem_tls_ctx_s {
 
 struct xylem_tls_conn_s {
     SSL*             ssl;
-    BIO*             rbio;       /**< network -> SSL: inbound ciphertext. */
-    BIO*             wbio;       /**< SSL -> network: outbound ciphertext. */
-    char*            rbuf;       /**< pump_in scratch, owned by rd_mu. */
-    char*            wbuf;       /**< pump_out scratch, owned by wr_mu. */
-    xylem_mutex_t*   ssl_mu;     /**< serializes all OpenSSL SSL/BIO access. */
-    xylem_mutex_t*   rd_mu;      /**< sole owner of iowait read direction. */
-    xylem_mutex_t*   wr_mu;      /**< sole owner of iowait write direction. */
+    BIO*             rbio;       /* network -> SSL: inbound ciphertext. */
+    BIO*             wbio;       /* SSL -> network: outbound ciphertext. */
+    char*            rbuf;       /* pump_in scratch, owned by rd_mu. */
+    char*            wbuf;       /* pump_out scratch, owned by wr_mu. */
+    xylem_mutex_t*   ssl_mu;     /* serializes all OpenSSL SSL/BIO access. */
+    xylem_mutex_t*   rd_mu;      /* sole owner of iowait read direction. */
+    xylem_mutex_t*   wr_mu;      /* sole owner of iowait write direction. */
     iowait_t*        waiter;
     platform_sock_t  fd;
     xylem_tls_ctx_t* ctx;
@@ -143,7 +143,7 @@ static int _tls_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
          */
         if (SSL_use_certificate(ssl, e->cert) != 1
             || SSL_use_PrivateKey(ssl, e->key) != 1) {
-            xylem_loge("tls sni: failed to apply cert for %s", e->hostname);
+            xylem_loge("<tls> sni apply cert failed host=%s", e->hostname);
             return SSL_TLSEXT_ERR_OK;
         }
         if (e->chain) {
@@ -222,7 +222,7 @@ static xylem_tls_conn_t* _tls_conn_create(platform_sock_t fd) {
 static int _tls_init_ssl(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx) {
     tls->ssl = SSL_new(ssl_ctx);
     if (!tls->ssl) {
-        xylem_loge("tls: SSL_new failed");
+        xylem_loge("<tls> SSL_new failed");
         return -1;
     }
     tls->rbio = BIO_new(BIO_s_mem());
@@ -347,7 +347,7 @@ static int _tls_send_all(xylem_tls_conn_t* tls, const char* buf, int len) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("tls fd=%d send error: %s",
+            xylem_loge("<tls> send failed fd=%d err=%s",
                        (int)tls->fd, platform_socket_tostring(err));
             return -1;
         }
@@ -412,7 +412,7 @@ static int _tls_pump_in(xylem_tls_conn_t* tls) {
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("tls fd=%d recv error: %s",
+            xylem_loge("<tls> recv failed fd=%d err=%s",
                        (int)tls->fd, platform_socket_tostring(err));
             ret = -1;
             break;
@@ -455,7 +455,7 @@ static int _tls_do_handshake(xylem_tls_conn_t* tls) {
         }
 
         unsigned long e = ERR_peek_error();
-        xylem_loge("tls handshake: ssl_error=%d reason=%s",
+        xylem_loge("<tls> handshake failed ssl_err=%d reason=%s",
                    err,
                    ERR_reason_error_string(e)
                        ? ERR_reason_error_string(e)
@@ -468,8 +468,8 @@ static void _tls_apply_server_name(SSL* ssl, const char* server_name) {
     int verify_peer = SSL_get_verify_mode(ssl) & SSL_VERIFY_PEER;
 
     if (!server_name && verify_peer) {
-        xylem_loge("tls dial: verify_peer enabled but server_name "
-                   "is NULL; peer identity is not checked (MITM risk)");
+        xylem_loge("<tls> dial server_name=NULL with verify_peer; "
+                   "peer identity unchecked (MITM risk)");
     }
     if (!server_name) {
         return;
@@ -550,7 +550,7 @@ static int _tls_resolve(const char* host, uint16_t port, char* ip_buf,
     addr_t* addrs = NULL;
     size_t  count = 0;
     if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
-        xylem_loge("tls dial: DNS resolution failed for %s", host);
+        xylem_loge("<tls> dial dns failed host=%s", host);
         return -1;
     }
 
@@ -578,7 +578,7 @@ static int _tls_wait_connect(xylem_tls_conn_t* tls) {
     socklen_t errlen = sizeof(err);
     getsockopt(tls->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
     if (err != 0) {
-        xylem_loge("tls dial fd=%d connect error=%d (%s)",
+        xylem_loge("<tls> dial connect failed fd=%d err=%d (%s)",
                    (int)tls->fd, err, platform_socket_tostring(err));
         return -1;
     }
@@ -704,7 +704,7 @@ static platform_sock_t _tls_accept_fd(xylem_tls_listener_t* ln) {
             continue;
         }
 
-        xylem_loge("tls listener fd=%d accept error=%d (%s)",
+        xylem_loge("<tls> accept failed fd=%d err=%d (%s)",
                    (int)ln->fd, err, platform_socket_tostring(err));
         if (++retries > 8) {
             break;
@@ -732,7 +732,7 @@ static xylem_tls_conn_t* _tls_server_handshake(xylem_tls_listener_t* ln,
                 &peer_len);
 
     if (_tls_init_ssl(tls, ln->ctx->ssl_ctx) != 0) {
-        xylem_loge("tls accept: SSL init failed");
+        xylem_loge("<tls> accept ssl init failed");
         _tls_conn_destroy(tls);
         return NULL;
     }
@@ -847,7 +847,7 @@ static int _tls_parse_pem_identity(BIO* cbio, BIO* kbio,
 
     X509* leaf = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
     if (!leaf) {
-        xylem_loge("tls ctx: failed to parse leaf certificate");
+        xylem_loge("<tls> parse leaf cert failed");
         return -1;
     }
 
@@ -877,7 +877,7 @@ static int _tls_parse_pem_identity(BIO* cbio, BIO* kbio,
 
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
     if (!pkey) {
-        xylem_loge("tls ctx: failed to parse private key");
+        xylem_loge("<tls> parse private key failed");
         sk_X509_pop_free(chain, X509_free);
         X509_free(leaf);
         return -1;
@@ -885,7 +885,7 @@ static int _tls_parse_pem_identity(BIO* cbio, BIO* kbio,
 
     /* Reject a mismatched cert/key pair up front, not mid-handshake. */
     if (X509_check_private_key(leaf, pkey) != 1) {
-        xylem_loge("tls ctx: certificate and key do not match");
+        xylem_loge("<tls> cert and key mismatch");
         EVP_PKEY_free(pkey);
         sk_X509_pop_free(chain, X509_free);
         X509_free(leaf);
@@ -906,12 +906,12 @@ static int _tls_load_pem_identity(const char* cert_file,
                                   STACK_OF(X509)** out_chain) {
     BIO* cbio = BIO_new_file(cert_file, "r");
     if (!cbio) {
-        xylem_loge("tls ctx: failed to open cert %s", cert_file);
+        xylem_loge("<tls> open cert failed path=%s", cert_file);
         return -1;
     }
     BIO* kbio = BIO_new_file(key_file, "r");
     if (!kbio) {
-        xylem_loge("tls ctx: failed to open key %s", key_file);
+        xylem_loge("<tls> open key failed path=%s", key_file);
         BIO_free(cbio);
         return -1;
     }
@@ -1040,7 +1040,7 @@ int xylem_tls_ctx_load_cert_mem(xylem_tls_ctx_t* ctx,
 
 int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     if (SSL_CTX_load_verify_locations(ctx->ssl_ctx, ca_file, NULL) != 1) {
-        xylem_loge("tls ctx: failed to load CA %s", ca_file);
+        xylem_loge("<tls> load ca failed path=%s", ca_file);
         return -1;
     }
     return 0;
@@ -1048,7 +1048,7 @@ int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
 
 int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx) {
     if (platform_tls_load_system_ca(ctx->ssl_ctx) != 0) {
-        xylem_loge("tls ctx: failed to load system CA store");
+        xylem_loge("<tls> load system ca failed");
         return -1;
     }
     return 0;
@@ -1116,7 +1116,7 @@ xylem_tls_conn_t* xylem_tls_dial(
     platform_sock_t fd        = platform_socket_dial(
         dial_host, port_str, SOCK_STREAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("tls dial: socket creation failed for %s:%s",
+        xylem_loge("<tls> dial socket failed host=%s port=%s",
                    host, port_str);
         return NULL;
     }
@@ -1146,7 +1146,7 @@ xylem_tls_conn_t* xylem_tls_dial(
 
     if (_tls_client_handshake(tls, ctx->ssl_ctx,
                                   opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("tls dial: handshake failed for %s:%s", host, port_str);
+        xylem_loge("<tls> dial handshake failed host=%s port=%s", host, port_str);
         _tls_conn_destroy(tls);
         return NULL;
     }
@@ -1175,7 +1175,7 @@ xylem_tls_listener_t* xylem_tls_listen(
     platform_sock_t fd
         = platform_socket_listen(host, port_str, SOCK_STREAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("tls listen: failed for %s:%s", host, port_str);
+        xylem_loge("<tls> listen failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -1343,7 +1343,7 @@ xylem_tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
 
     if (_tls_client_handshake(tls, ctx->ssl_ctx,
                                   opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("tls client handshake failed");
+        xylem_loge("<tls> client handshake failed");
         _tls_conn_destroy(tls);
         return NULL;
     }

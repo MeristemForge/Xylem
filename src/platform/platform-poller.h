@@ -29,7 +29,7 @@ _Pragma("once")
 #include <sys/event.h>
 #endif
 
-/** @brief Poller trigger mode: edge-triggered (ET) or level-triggered (LT). */
+/* Poller trigger mode: edge-triggered (ET) or level-triggered (LT). */
 #define PLATFORM_POLLER_TRIGGER_ET 0
 #define PLATFORM_POLLER_TRIGGER_LT 1
 
@@ -46,25 +46,25 @@ typedef SOCKET platform_poller_fd_t;
 #define PLATFORM_POLLER_TRIGGER_MODE PLATFORM_POLLER_TRIGGER_LT
 #endif
 
-/** @brief Poller operation mask (read, write, or both). */
+/* Poller operation mask (read, write, or both). */
 typedef enum platform_poller_op_e {
-    PLATFORM_POLLER_NO_OP = 0, /*< No interest. */
-    PLATFORM_POLLER_RD_OP = 1, /*< Read readiness. */
-    PLATFORM_POLLER_WR_OP = 2, /*< Write readiness. */
-    PLATFORM_POLLER_RW_OP = 3, /*< Read and write readiness. */
+    PLATFORM_POLLER_NO_OP = 0, /* No interest. */
+    PLATFORM_POLLER_RD_OP = 1, /* Read readiness. */
+    PLATFORM_POLLER_WR_OP = 2, /* Write readiness. */
+    PLATFORM_POLLER_RW_OP = 3, /* Read and write readiness. */
 } platform_poller_op_t;
 
-/** @brief Maximum completion events per poll call. */
+/* Maximum completion events per poll call. */
 #define PLATFORM_POLLER_CQE_NUM 128
 
-/** @brief Completion queue entry returned by platform_poller_wait. */
+/* Completion queue entry returned by platform_poller_wait. */
 typedef struct platform_poller_cqe_s {
-    platform_poller_op_t op; /*< Readiness mask that fired. */
-    void*                ud; /*< User data from the sqe registration. */
+    platform_poller_op_t op; /* Readiness mask that fired. */
+    void*                ud; /* User data from the sqe registration. */
 } platform_poller_cqe_t;
 
 /**
- * @brief Submission queue entry for registering an fd with the poller.
+ * Submission queue entry for registering an fd with the poller.
  *
  * The caller allocates this, sets op/fd/ud, and passes it to add/mod/del.
  * The same sqe pointer must be used for all operations on that fd. The

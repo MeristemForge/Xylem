@@ -23,10 +23,10 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/** @brief Forward declaration for minicoro coroutine. */
+/* Forward declaration for minicoro coroutine. */
 typedef struct mco_coro mco_coro;
 
-/** @brief Opaque work-stealing deque handle. */
+/* Opaque work-stealing deque handle. */
 typedef struct wsdeque_s wsdeque_t;
 
 /**

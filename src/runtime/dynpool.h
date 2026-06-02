@@ -23,13 +23,13 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/** @brief Opaque dynamic thread pool handle. */
+/* Opaque dynamic thread pool handle. */
 typedef struct dynpool_s dynpool_t;
 
-/** @brief Configuration for dynpool_create. */
+/* Configuration for dynpool_create. */
 typedef struct {
-    int32_t  max_threads;   /*< 0 = use default (512) */
-    uint64_t idle_timeout;  /*< 0 = use default (10000 ms) */
+    int32_t  max_threads;   /* 0 = use default (512) */
+    uint64_t idle_timeout;  /* 0 = use default (10000 ms) */
 } dynpool_opts_t;
 
 /**

@@ -27,10 +27,10 @@
 
 struct xylem_ringbuf_s {
     char*    buf;
-    uint64_t wpos; /*< write position */
-    uint64_t rpos; /*< read position */
-    uint32_t mask; /*< cap - 1 */
-    uint32_t esz;  /*< entry size in bytes */
+    uint64_t wpos; /* write position */
+    uint64_t rpos; /* read position */
+    uint32_t mask; /* cap - 1 */
+    uint32_t esz;  /* entry size in bytes */
 };
 
 static inline uint32_t _ringbuf_rounddown_pow2(uint32_t n) {

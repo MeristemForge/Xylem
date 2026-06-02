@@ -143,8 +143,10 @@ static iowait_t* _iowait_slab_alloc(
         return NULL;
     }
 
-    /* +1 so that index 0 is never used: encode(0, 0) == NULL, which
-     * the scheduler reserves for the wakeup-fd sentinel. */
+    /**
+     * +1 so that index 0 is never used: encode(0, 0) == NULL, which
+     * the scheduler reserves for the wakeup-fd sentinel.
+     */
     uint32_t base = slab->npages * IOWAIT_PAGE_SIZE + 1;
 
     for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
@@ -180,8 +182,10 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
     mtx_unlock(&slab->lock);
 }
 
-/* Last ref dropped: bump gen, return slot to slab freelist.
- * Timers are kept alive for reuse by the next occupant. */
+/**
+ * Last ref dropped: bump gen, return slot to slab freelist.
+ * Timers are kept alive for reuse by the next occupant.
+ */
 static void _iowait_retire(iowait_t* w) {
     atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
     _iowait_slab_free(w->slab, w->slot_index);
@@ -318,7 +322,7 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
         &d->park, co, memory_order_release);
     if (prev != NULL) {
         xylem_loge(
-            "iowait: double park on %s (w=%p prev=%p new=%p)",
+            "<iowait> double park dir=%s w=%p prev=%p new=%p",
             (d == &w->rd) ? "rd" : "wr",
             (void*)w, (void*)prev, (void*)co);
         abort();
@@ -343,8 +347,10 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
 
-    /* Cancel any timer arm still in flight; if we actually caught it
-     * before it fired, return the reference that arm owned. */
+    /**
+     * Cancel any timer arm still in flight; if we actually caught it
+     * before it fired, return the reference that arm owned.
+     */
     if (d->timer && sched_timer_stop(d->timer)) {
         _iowait_unref(d->w);
     }

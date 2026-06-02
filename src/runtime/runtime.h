@@ -26,9 +26,9 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/** @brief Runtime configuration options. */
+/* Runtime configuration options. */
 typedef struct runtime_opts_s {
-    int32_t workers;  /*< Thread pool size, 0 for default. */
+    int32_t workers;  /* Thread pool size, 0 for default. */
 } runtime_opts_t;
 
 /**

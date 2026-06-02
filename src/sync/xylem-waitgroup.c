@@ -118,8 +118,7 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
          * ever promised. Matches Go's "negative WaitGroup counter"
          * panic. Log first so the diagnostic survives the abort. */
         xylem_loge(
-            "xylem_waitgroup: done called with zero counter "
-            "(wg=%p); aborting",
+            "<waitgroup> done called with zero counter wg=%p; aborting",
             (void*)wg);
         abort();
     }

@@ -66,7 +66,7 @@ xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
     platform_sock_t fd =
         platform_socket_listen(host, port_str, SOCK_DGRAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("udp listen: failed for %s:%s", host, port_str);
+        xylem_loge("<udp> listen failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -101,7 +101,7 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
         addr_t* addrs = NULL;
         size_t  count = 0;
         if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
-            xylem_loge("udp dial: DNS resolution failed for %s", host);
+            xylem_loge("<udp> dial dns failed host=%s", host);
             return NULL;
         }
         resolved_addr = addrs[0];
@@ -115,7 +115,7 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     platform_sock_t fd = platform_socket_dial(
         dial_host, port_str, SOCK_DGRAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("udp dial: failed for %s:%s", host, port_str);
+        xylem_loge("<udp> dial failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -182,7 +182,7 @@ int xylem_udp_recv(
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("udp fd=%d recv error: %s",
+            xylem_loge("<udp> recv failed fd=%d err=%s",
                 (int)udp->fd, platform_socket_tostring(err));
             break;
         }
@@ -218,8 +218,7 @@ int xylem_udp_send(
         } else {
             addr_t dest;
             if (addr_pton(host, port, &dest) != 0) {
-                xylem_loge("udp send: host must be numeric IP, got %s",
-                           host);
+                xylem_loge("<udp> send needs numeric ip host=%s", host);
                 break;
             }
             socklen_t addrlen =
@@ -238,7 +237,7 @@ int xylem_udp_send(
         int err = platform_socket_get_lasterror();
         if (err != PLATFORM_SO_ERROR_EAGAIN
             && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("udp fd=%d send error: %s",
+            xylem_loge("<udp> send failed fd=%d err=%s",
                 (int)udp->fd, platform_socket_tostring(err));
             break;
         }

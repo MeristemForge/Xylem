@@ -124,10 +124,9 @@ void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx) {
      */
     if (!mco_running()) {
         xylem_loge(
-            "xylem_cond_wait called without a coroutine context "
-            "(cond=%p); cond wait is coroutine-owned and must be "
-            "called from inside a coroutine on a scheduler worker; "
-            "aborting",
+            "<cond> wait called without coroutine context cond=%p; "
+            "cond wait is coroutine-owned and must be called from "
+            "inside a coroutine on a scheduler worker; aborting",
             (void*)cond);
         abort();
     }

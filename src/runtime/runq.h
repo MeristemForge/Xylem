@@ -25,7 +25,7 @@ _Pragma("once")
 
 #include <stdint.h>
 
-/** @brief Opaque global run queue handle. */
+/* Opaque global run queue handle. */
 typedef struct runq_s runq_t;
 
 /**

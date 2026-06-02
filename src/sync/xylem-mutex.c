@@ -96,9 +96,9 @@ void xylem_mutex_lock(xylem_mutex_t* mtx) {
      */
     if (!mco_running()) {
         xylem_loge(
-            "xylem_mutex_lock called without a coroutine context "
-            "(mtx=%p); mutex is coroutine-owned and must be locked "
-            "from inside a coroutine on a scheduler worker; aborting",
+            "<mutex> lock called without coroutine context mtx=%p; "
+            "mutex is coroutine-owned and must be locked from inside "
+            "a coroutine on a scheduler worker; aborting",
             (void*)mtx);
         abort();
     }

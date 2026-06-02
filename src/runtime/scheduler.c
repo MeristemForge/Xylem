@@ -412,7 +412,7 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
         if (timer->spawn) {
             if (scheduler_spawn(
                     w->sched, _sched_timer_spawn_entry, timer) != 0) {
-                xylem_loge("timer spawn failed");
+                xylem_loge("<sched> timer spawn failed");
                 _sched_timer_unref(timer);
             }
         } else {
@@ -497,7 +497,7 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
         return;
     }
     if (!w->park_fn) {
-        xylem_logw("coroutine yielded without scheduler_park; rescheduling");
+        xylem_loge("<sched> yield without park co=%p", (void*)co);
         scheduler_schedule(w->sched, co);
         return;
     }
@@ -1034,7 +1034,7 @@ void scheduler_park(
     (void)sched;
     if (!_tls_worker || !mco_running()) {
         xylem_loge(
-            "scheduler_park: not in coroutine (worker=%p co=%p)",
+            "<sched> park outside coroutine worker=%p co=%p",
             (void*)_tls_worker, (void*)mco_running());
         abort();
     }
@@ -1105,7 +1105,7 @@ void sched_timer_start(
     _sched_worker_t* ow = _sched_timer_owner(timer);
     mtx_lock(&ow->timer_lock);
     if (timer->active) {
-        xylem_loge("double start on active timer");
+        xylem_loge("<sched> double start on active timer=%p", (void*)timer);
         abort();
     }
     timer->cb      = cb;

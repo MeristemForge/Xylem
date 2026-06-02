@@ -48,13 +48,13 @@ struct xylem_channel_s {
     _Atomic(mco_coro*) wait_coro;
     _Atomic bool       closed;
     _Atomic int32_t    refcnt;
-    sched_timer_t*     deadline_timer; /*< lazily created, reused */
+    sched_timer_t*     deadline_timer; /* lazily created, reused */
     _Atomic bool       timed_out;
 };
 
 typedef struct {
     xylem_channel_t* ch;
-    uint64_t         deadline_ms; /*< 0 = no deadline */
+    uint64_t         deadline_ms; /* 0 = no deadline */
 } _channel_park_ctx_t;
 
 static inline void _channel_ref(xylem_channel_t* ch) {
@@ -85,8 +85,8 @@ static bool _channel_recv_park_cb(mco_coro* co, void* arg) {
     mco_coro* prev = atomic_exchange(&ch->wait_coro, co);
     if (prev != NULL) {
         xylem_loge(
-            "concurrent recv violates single-receiver contract "
-            "(ch=%p prev=%p new=%p); aborting",
+            "<channel> concurrent recv violates single-receiver "
+            "contract ch=%p prev=%p new=%p; aborting",
             (void*)ch,
             (void*)prev,
             (void*)co);
@@ -125,7 +125,7 @@ static void _channel_deadline_timeout_cb(sched_timer_t* timer, void* ud) {
 
 static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
     if (!ch) {
-        xylem_loge("recv on NULL channel");
+        xylem_loge("<channel> recv on NULL channel");
         return NULL;
     }
 
@@ -218,12 +218,12 @@ xylem_channel_t* xylem_channel_create(void) {
 
 void xylem_channel_close(xylem_channel_t* ch) {
     if (!ch) {
-        xylem_loge("close(NULL); aborting");
+        xylem_loge("<channel> close on NULL channel; aborting");
         abort();
     }
 
     if (atomic_exchange(&ch->closed, true)) {
-        xylem_loge("double close (ch=%p); aborting", (void*)ch);
+        xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
         abort();
     }
 
@@ -251,14 +251,15 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
 
 int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     if (!ch || !msg) {
-        xylem_loge("send: NULL argument (ch=%p msg=%p)", (void*)ch, msg);
+        xylem_loge("<channel> send NULL argument ch=%p msg=%p",
+                   (void*)ch, msg);
         return -1;
     }
 
     _channel_ref(ch);
 
     if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
-        xylem_loge("send on closed channel (ch=%p); aborting",
+        xylem_loge("<channel> send on closed channel ch=%p; aborting",
                    (void*)ch);
         abort();
     }

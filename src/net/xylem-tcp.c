@@ -121,7 +121,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         addr_t* addrs = NULL;
         size_t  count = 0;
         if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
-            xylem_loge("tcp dial: DNS resolution failed for %s", host);
+            xylem_loge("<tcp> dial dns failed host=%s", host);
             return NULL;
         }
         resolved_addr = addrs[0];
@@ -136,7 +136,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         dial_host, port_str, SOCK_STREAM, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge(
-            "tcp dial: socket creation failed for %s:%s", host, port_str);
+            "<tcp> dial socket failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -169,7 +169,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         iowait_set_wr_deadline(tcp->waiter, 0);
 
         if (r == IOWAIT_TIMEOUT) {
-            xylem_loge("tcp dial: connect timeout for %s:%u", host, port);
+            xylem_loge("<tcp> dial connect timeout host=%s port=%u", host, port);
             xylem_tcp_close(tcp);
             return NULL;
         }
@@ -182,7 +182,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
-            xylem_loge("tcp dial fd=%d connect error=%d (%s)",
+            xylem_loge("<tcp> dial connect failed fd=%d err=%d (%s)",
                        (int)fd,
                        err,
                        platform_socket_tostring(err));
@@ -219,7 +219,7 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
             int err = platform_socket_get_lasterror();
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge("tcp fd=%d read error: %s",
+                xylem_loge("<tcp> read failed fd=%d err=%s",
                            (int)tcp->fd, platform_socket_tostring(err));
                 break;
             }
@@ -256,7 +256,7 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
             int err = platform_socket_get_lasterror();
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge("tcp fd=%d write error: %s",
+                xylem_loge("<tcp> write failed fd=%d err=%s",
                            (int)tcp->fd, platform_socket_tostring(err));
                 break;
             }
@@ -285,7 +285,7 @@ xylem_tcp_listener_t* xylem_tcp_listen(
     platform_sock_t fd
         = platform_socket_listen(host, port_str, SOCK_STREAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("tcp listen: failed for %s:%s", host, port_str);
+        xylem_loge("<tcp> listen failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -335,7 +335,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
                 continue;
             }
 
-            xylem_logw("tcp listener fd=%d accept error=%d (%s)",
+            xylem_loge("<tcp> accept failed fd=%d err=%d (%s)",
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));

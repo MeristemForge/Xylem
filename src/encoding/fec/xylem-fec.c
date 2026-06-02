@@ -47,12 +47,12 @@ xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards) {
     call_once(&_fec_init_flag, _fec_init_tables);
 
     if (data_shards <= 0 || parity_shards <= 0) {
-        xylem_loge("fec create: invalid shards (data=%d parity=%d)",
+        xylem_loge("<fec> create failed data=%d parity=%d",
                    data_shards, parity_shards);
         return NULL;
     }
     if (data_shards + parity_shards > 255) {
-        xylem_loge("fec create: total shards %d exceeds 255",
+        xylem_loge("<fec> create failed total=%d max=255",
                    data_shards + parity_shards);
         return NULL;
     }
@@ -80,7 +80,6 @@ xylem_fec_t* xylem_fec_create(int data_shards, int parity_shards) {
     fec->data_shards   = data_shards;
     fec->parity_shards = parity_shards;
 
-    xylem_logi("fec created data=%d parity=%d", data_shards, parity_shards);
     return fec;
 }
 
@@ -108,7 +107,7 @@ int xylem_fec_encode(xylem_fec_t* fec, uint8_t** data, uint8_t** parity,
 
     int rc = reed_solomon_encode(fec->rs, shards, total, (int)shard_size);
     if (rc != 0) {
-        xylem_logw("fec encode failed");
+        xylem_loge("<fec> encode failed rc=%d", rc);
     }
     return rc == 0 ? 0 : -1;
 }
@@ -123,7 +122,7 @@ int xylem_fec_reconstruct(xylem_fec_t* fec, uint8_t** shards, uint8_t* marks,
     int rc = reed_solomon_reconstruct(fec->rs, shards, marks, total,
                                       (int)shard_size);
     if (rc != 0) {
-        xylem_logw("fec reconstruct failed");
+        xylem_loge("<fec> reconstruct failed rc=%d", rc);
     }
     return rc == 0 ? 0 : -1;
 }

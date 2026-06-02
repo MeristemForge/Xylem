@@ -108,14 +108,13 @@ static xylem_uds_conn_t* _uds_conn_create(platform_sock_t fd) {
 
 xylem_uds_listener_t* xylem_uds_listen(const char* path) {
     if (!path || strlen(path) >= UDS_MAX_PATH) {
-        xylem_loge("uds listen: path is NULL or too long (max %d)",
-                   UDS_MAX_PATH - 1);
+        xylem_loge("<uds> listen bad path len_max=%d", UDS_MAX_PATH - 1);
         return NULL;
     }
 
     platform_sock_t fd = platform_socket_listen_unix(path, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("uds listen: socket creation failed for %s", path);
+        xylem_loge("<uds> listen failed path=%s", path);
         return NULL;
     }
 
@@ -165,7 +164,7 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
                 continue;
             }
 
-            xylem_logw("uds listener fd=%d accept error=%d (%s)",
+            xylem_loge("<uds> accept failed fd=%d err=%d (%s)",
                        (int)listener->fd,
                        err,
                        platform_socket_tostring(err));
@@ -214,8 +213,7 @@ xylem_uds_conn_t* xylem_uds_dial(
     const char* path,
     uint64_t    connect_timeout_ms) {
     if (!path || strlen(path) >= UDS_MAX_PATH) {
-        xylem_loge("uds dial: path is NULL or too long (max %d)",
-                   UDS_MAX_PATH - 1);
+        xylem_loge("<uds> dial bad path len_max=%d", UDS_MAX_PATH - 1);
         return NULL;
     }
 
@@ -223,7 +221,7 @@ xylem_uds_conn_t* xylem_uds_dial(
     platform_sock_t fd
         = platform_socket_dial_unix(path, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("uds dial: socket creation failed for %s", path);
+        xylem_loge("<uds> dial failed path=%s", path);
         return NULL;
     }
 
@@ -244,7 +242,7 @@ xylem_uds_conn_t* xylem_uds_dial(
         iowait_set_wr_deadline(uds->waiter, 0);
 
         if (r != IOWAIT_READY) {
-            xylem_loge("uds dial: connect timeout for %s", path);
+            xylem_loge("<uds> dial connect timeout path=%s", path);
             xylem_uds_close(uds);
             return NULL;
         }
@@ -253,7 +251,7 @@ xylem_uds_conn_t* xylem_uds_dial(
         socklen_t errlen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
-            xylem_loge("uds dial fd=%d connect error=%d (%s)",
+            xylem_loge("<uds> dial connect failed fd=%d err=%d (%s)",
                        (int)fd,
                        err,
                        platform_socket_tostring(err));
@@ -290,7 +288,7 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
             int err = platform_socket_get_lasterror();
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge("uds fd=%d read error: %s",
+                xylem_loge("<uds> read failed fd=%d err=%s",
                            (int)uds->fd, platform_socket_tostring(err));
                 break;
             }
@@ -327,7 +325,7 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
             int err = platform_socket_get_lasterror();
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge("uds fd=%d write error: %s",
+                xylem_loge("<uds> write failed fd=%d err=%s",
                            (int)uds->fd, platform_socket_tostring(err));
                 break;
             }
