@@ -238,6 +238,26 @@ static int _tls_init_ssl(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx) {
     return 0;
 }
 
+/**
+ * Apply the connection's verify policy by role. Set per SSL (not on the
+ * shared SSL_CTX) so a single ctx reused as both client and server keeps
+ * the correct, opposite policy for each role:
+ *   - client: verify the server cert unless ctx->verify_server is off.
+ *   - server: request and require a client cert (mTLS) only when
+ *     ctx->verify_client is on; otherwise ask for none.
+ */
+static void _tls_apply_verify(xylem_tls_conn_t* tls, bool is_server) {
+    int mode;
+    if (is_server) {
+        mode = tls->ctx->verify_client
+                   ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                   : SSL_VERIFY_NONE;
+    } else {
+        mode = tls->ctx->verify_server ? SSL_VERIFY_PEER : SSL_VERIFY_NONE;
+    }
+    SSL_set_verify(tls->ssl, mode, NULL);
+}
+
 static void _tls_conn_ref(xylem_tls_conn_t* tls) {
     atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
 }
@@ -480,15 +500,7 @@ static int _tls_client_handshake(xylem_tls_conn_t* tls, SSL_CTX* ssl_ctx,
     }
     SSL_set_connect_state(tls->ssl);
 
-    /**
-     * Apply the client-role policy per connection: verify the server
-     * certificate unless the caller disabled it. Set on the SSL (not the
-     * shared SSL_CTX) so a ctx reused for server accepts is unaffected.
-     */
-    SSL_set_verify(tls->ssl,
-                   tls->ctx->verify_server ? SSL_VERIFY_PEER
-                                           : SSL_VERIFY_NONE,
-                   NULL);
+    _tls_apply_verify(tls, false);
 
     _tls_apply_server_name(tls->ssl, server_name);
 
@@ -724,19 +736,7 @@ static xylem_tls_conn_t* _tls_server_handshake(xylem_tls_listener_t* ln,
     }
     SSL_set_accept_state(tls->ssl);
 
-    /**
-     * Apply the server-role policy per connection: request and verify a
-     * client certificate (mTLS) only when the caller opted in via
-     * xylem_tls_ctx_verify_client. Default is no client cert, so a
-     * public server does not challenge every client. Set on the SSL
-     * (not the shared SSL_CTX) so a ctx reused for client dials keeps
-     * verifying the server.
-     */
-    SSL_set_verify(tls->ssl,
-                   ln->ctx->verify_client
-                       ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
-                       : SSL_VERIFY_NONE,
-                   NULL);
+    _tls_apply_verify(tls, true);
 
     /* Arm the handshake deadline; disarm on success. */
     _tls_set_deadline(tls, _tls_make_deadline(ln->opts.handshake_timeout_ms));
