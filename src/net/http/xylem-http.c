@@ -43,6 +43,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * The public xylem_http_req_t / xylem_http_res_t are opaque wrappers
+ * whose single member is the internal struct. Internal machinery works
+ * on http_req_t / http_res_t directly; the public handle converts to
+ * the internal struct via first-member address equivalence (C 6.7.2.1),
+ * i.e. (http_req_t*)pub == &pub->internal.
+ */
+struct xylem_http_req_s {
+    http_req_t internal;
+};
+
+struct xylem_http_res_s {
+    http_res_t internal;
+};
+
 static inline int _transport_read(http_transport_t* t, void* buf, int len) {
     return t->read(t->conn, buf, len);
 }
@@ -187,11 +202,11 @@ static void _pool_release(const http_url_t* url, http_transport_t* t) {
 
 
 const char* xylem_http_req_method(const xylem_http_req_t* req) {
-    return req ? req->method : NULL;
+    return req ? req->internal.method : NULL;
 }
 
 const char* xylem_http_req_url(const xylem_http_req_t* req) {
-    return req ? req->url : NULL;
+    return req ? req->internal.url : NULL;
 }
 
 const char* xylem_http_req_header(const xylem_http_req_t* req,
@@ -199,7 +214,8 @@ const char* xylem_http_req_header(const xylem_http_req_t* req,
     if (!req || !name) {
         return NULL;
     }
-    return http_header_find(req->headers, req->header_count, name);
+    return http_header_find(req->internal.headers, req->internal.header_count,
+                            name);
 }
 
 int xylem_http_req_headers(const xylem_http_req_t* req,
@@ -208,17 +224,17 @@ int xylem_http_req_headers(const xylem_http_req_t* req,
     if (!req || !headers || !count) {
         return -1;
     }
-    *headers = (const xylem_http_hdr_t*)req->headers;
-    *count   = req->header_count;
+    *headers = (const xylem_http_hdr_t*)req->internal.headers;
+    *count   = req->internal.header_count;
     return 0;
 }
 
 const void* xylem_http_req_body(const xylem_http_req_t* req) {
-    return req ? (const void*)req->body : NULL;
+    return req ? (const void*)req->internal.body : NULL;
 }
 
 size_t xylem_http_req_body_len(const xylem_http_req_t* req) {
-    return req ? req->body_len : 0;
+    return req ? req->internal.body_len : 0;
 }
 
 int xylem_http_req_remote_addr(const xylem_http_req_t* req,
@@ -228,16 +244,16 @@ int xylem_http_req_remote_addr(const xylem_http_req_t* req,
         return -1;
     }
     if (host && host_len > 0) {
-        snprintf(host, host_len, "%s", req->remote_host);
+        snprintf(host, host_len, "%s", req->internal.remote_host);
     }
     if (port) {
-        *port = req->remote_port;
+        *port = req->internal.remote_port;
     }
     return 0;
 }
 
 int xylem_http_res_status(const xylem_http_res_t* res) {
-    return res ? res->status_code : 0;
+    return res ? res->internal.status_code : 0;
 }
 
 const char* xylem_http_res_header(const xylem_http_res_t* res,
@@ -245,46 +261,51 @@ const char* xylem_http_res_header(const xylem_http_res_t* res,
     if (!res || !name) {
         return NULL;
     }
-    return http_header_find(res->headers, res->header_count, name);
+    return http_header_find(res->internal.headers, res->internal.header_count,
+                            name);
 }
 
 const void* xylem_http_res_body(const xylem_http_res_t* res) {
-    return res ? (const void*)res->body : NULL;
+    return res ? (const void*)res->internal.body : NULL;
 }
 
 size_t xylem_http_res_body_len(const xylem_http_res_t* res) {
-    return res ? res->body_len : 0;
+    return res ? res->internal.body_len : 0;
 }
 
 void xylem_http_res_destroy(xylem_http_res_t* res) {
     if (!res) {
         return;
     }
-    http_headers_free(res->headers, res->header_count);
-    free(res->body);
+    http_headers_free(res->internal.headers, res->internal.header_count);
+    free(res->internal.body);
     free(res);
 }
 
 int xylem_http_res_set_status(xylem_http_res_t* res, int code) {
-    if (!res || res->_headers_sent) {
+    if (!res || res->internal._headers_sent) {
         return -1;
     }
-    res->status_code = code;
+    res->internal.status_code = code;
     return 0;
 }
 
 int xylem_http_res_set_header(xylem_http_res_t* res,
                               const char* name, const char* value) {
-    if (!res || !name || !value || res->_headers_sent) {
+    if (!res || !name || !value) {
         return -1;
     }
-    return http_header_add(&res->headers, &res->header_count,
-                           &res->header_cap, name, strlen(name),
+    http_res_t* internal = &res->internal;
+    if (internal->_headers_sent) {
+        return -1;
+    }
+    return http_header_add(&internal->headers, &internal->header_count,
+                           &internal->header_cap, name, strlen(name),
                            value, strlen(value));
 }
 
 
-static int _emit_response_head(xylem_http_res_t* res,
+static int _emit_response_head(http_res_t* res,
                                const char* extra_hdr) {
     if (!res->_transport) {
         return -1;
@@ -324,7 +345,7 @@ static int _emit_response_head(xylem_http_res_t* res,
 }
 
 /* Lazily called on first write; emits chunked encoding header. */
-static int _flush_headers(xylem_http_res_t* res) {
+static int _flush_headers(http_res_t* res) {
     int rc = _emit_response_head(res, "Transfer-Encoding: chunked\r\n");
     if (rc != 0) {
         return -1;
@@ -333,7 +354,7 @@ static int _flush_headers(xylem_http_res_t* res) {
     return 0;
 }
 
-static int _write_chunk(xylem_http_res_t* res, const void* data, size_t len) {
+static int _write_chunk(http_res_t* res, const void* data, size_t len) {
     char hdr[24];
     int hdr_len = snprintf(hdr, sizeof(hdr), "%zx\r\n", len);
 
@@ -360,7 +381,11 @@ static int _write_chunk(xylem_http_res_t* res, const void* data, size_t len) {
 
 int xylem_http_res_write(xylem_http_res_t* res,
                          const void* data, size_t len) {
-    if (!res || !res->_transport) {
+    if (!res) {
+        return -1;
+    }
+    http_res_t* internal = &res->internal;
+    if (!internal->_transport) {
         return -1;
     }
     if (len == 0) {
@@ -368,48 +393,49 @@ int xylem_http_res_write(xylem_http_res_t* res,
     }
 
     /* Already streaming (chunked mode). */
-    if (res->_headers_sent) {
-        return _write_chunk(res, data, len);
+    if (internal->_headers_sent) {
+        return _write_chunk(internal, data, len);
     }
 
     /* First write: buffer it for potential Content-Length mode. */
-    if (!res->_body_buf) {
-        res->_body_buf = (uint8_t*)malloc(len);
-        if (!res->_body_buf) {
+    if (!internal->_body_buf) {
+        internal->_body_buf = (uint8_t*)malloc(len);
+        if (!internal->_body_buf) {
             return -1;
         }
-        memcpy(res->_body_buf, data, len);
-        res->_body_buf_len = len;
+        memcpy(internal->_body_buf, data, len);
+        internal->_body_buf_len = len;
         return 0;
     }
 
     /* Second write: switch to chunked mode. */
-    if (_flush_headers(res) != 0) {
+    if (_flush_headers(internal) != 0) {
         return -1;
     }
 
     /* Write buffered data as first chunk. */
-    if (res->_body_buf_len > 0) {
-        if (_write_chunk(res, res->_body_buf, res->_body_buf_len) != 0) {
-            free(res->_body_buf);
-            res->_body_buf = NULL;
-            res->_body_buf_len = 0;
+    if (internal->_body_buf_len > 0) {
+        if (_write_chunk(internal, internal->_body_buf,
+                         internal->_body_buf_len) != 0) {
+            free(internal->_body_buf);
+            internal->_body_buf = NULL;
+            internal->_body_buf_len = 0;
             return -1;
         }
     }
-    free(res->_body_buf);
-    res->_body_buf = NULL;
-    res->_body_buf_len = 0;
+    free(internal->_body_buf);
+    internal->_body_buf = NULL;
+    internal->_body_buf_len = 0;
 
     /* Write current data. */
-    return _write_chunk(res, data, len);
+    return _write_chunk(internal, data, len);
 }
 
-static int _emit_fixed_headers(xylem_http_res_t* res) {
+static int _emit_fixed_headers(http_res_t* res) {
     return _emit_response_head(res, NULL);
 }
 
-static void _finalize_response(xylem_http_res_t* res) {
+static void _finalize_response(http_res_t* res) {
     if (!res->_transport) {
         return;
     }
@@ -450,37 +476,42 @@ static void _finalize_response(xylem_http_res_t* res) {
 }
 
 int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport) {
-    if (!res || !res->_transport || !transport) {
+    if (!res || !transport) {
         return -1;
     }
-    if (res->_headers_sent) {
+    http_res_t* internal = &res->internal;
+    if (!internal->_transport) {
+        return -1;
+    }
+    if (internal->_headers_sent) {
         return -1;
     }
 
     const char* resp = "HTTP/1.1 101 Switching Protocols\r\n"
                        "Upgrade: websocket\r\n"
                        "Connection: Upgrade\r\n";
-    int n = res->_transport->write(res->_transport->conn,
-                                   resp, (int)strlen(resp));
+    int n = internal->_transport->write(internal->_transport->conn,
+                                        resp, (int)strlen(resp));
     if (n < 0) {
         return -1;
     }
 
-    for (size_t i = 0; i < res->header_count; i++) {
+    for (size_t i = 0; i < internal->header_count; i++) {
         char hdr[512];
         int hlen = snprintf(hdr, sizeof(hdr), "%s: %s\r\n",
-                            res->headers[i].name, res->headers[i].value);
+                            internal->headers[i].name,
+                            internal->headers[i].value);
         if (hlen > 0) {
-            res->_transport->write(res->_transport->conn, hdr, hlen);
+            internal->_transport->write(internal->_transport->conn, hdr, hlen);
         }
     }
 
-    res->_transport->write(res->_transport->conn, "\r\n", 2);
+    internal->_transport->write(internal->_transport->conn, "\r\n", 2);
 
     /* Detach: caller now owns the connection. */
-    *transport = res->_transport;
-    res->_transport = NULL;
-    res->_headers_sent = true;
+    *transport = internal->_transport;
+    internal->_transport = NULL;
+    internal->_headers_sent = true;
 
     return 0;
 }
@@ -540,31 +571,33 @@ typedef struct {
 
 static int _srv_on_method(llhttp_t* p, const char* at, size_t len) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
-    size_t copy = len < sizeof(ctx->req.method) - 1
-                  ? len : sizeof(ctx->req.method) - 1;
-    memcpy(ctx->req.method, at, copy);
-    ctx->req.method[copy] = '\0';
+    http_req_t* req = &ctx->req.internal;
+    size_t copy = len < sizeof(req->method) - 1
+                  ? len : sizeof(req->method) - 1;
+    memcpy(req->method, at, copy);
+    req->method[copy] = '\0';
     return 0;
 }
 
 static int _srv_on_url(llhttp_t* p, const char* at, size_t len) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
-    size_t needed = ctx->req.url_len + len + 1;
+    http_req_t* req = &ctx->req.internal;
+    size_t needed = req->url_len + len + 1;
     if (needed > ctx->url_cap) {
         size_t new_cap = ctx->url_cap ? ctx->url_cap * 2 : 64;
         while (new_cap < needed) {
             new_cap *= 2;
         }
-        char* tmp = (char*)realloc(ctx->req.url, new_cap);
+        char* tmp = (char*)realloc(req->url, new_cap);
         if (!tmp) {
             return -1;
         }
-        ctx->req.url = tmp;
+        req->url = tmp;
         ctx->url_cap = new_cap;
     }
-    memcpy(ctx->req.url + ctx->req.url_len, at, len);
-    ctx->req.url_len += len;
-    ctx->req.url[ctx->req.url_len] = '\0';
+    memcpy(req->url + req->url_len, at, len);
+    req->url_len += len;
+    req->url[req->url_len] = '\0';
     return 0;
 }
 
@@ -576,8 +609,9 @@ static int _srv_on_header_field(llhttp_t* p, const char* at, size_t len) {
 
 static int _srv_on_header_value(llhttp_t* p, const char* at, size_t len) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
-    http_header_add(&ctx->req.headers, &ctx->req.header_count,
-                    &ctx->req.header_cap,
+    http_req_t* req = &ctx->req.internal;
+    http_header_add(&req->headers, &req->header_count,
+                    &req->header_cap,
                     ctx->cur_hdr_name, ctx->cur_hdr_name_len,
                     at, len);
     return 0;
@@ -594,14 +628,16 @@ static int _srv_on_header_value_complete(llhttp_t* p) {
 
 static int _srv_on_body(llhttp_t* p, const char* at, size_t len) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
-    return _body_append(&ctx->req.body, &ctx->req.body_len,
-                        &ctx->req.body_cap, at, len);
+    http_req_t* req = &ctx->req.internal;
+    return _body_append(&req->body, &req->body_len,
+                        &req->body_cap, at, len);
 }
 
 static int _srv_on_headers_complete(llhttp_t* p) {
     _srv_parser_t* ctx = (_srv_parser_t*)p->data;
+    http_req_t* req = &ctx->req.internal;
     const char* expect = http_header_find(
-        ctx->req.headers, ctx->req.header_count, "Expect");
+        req->headers, req->header_count, "Expect");
     if (expect && http_header_eq(expect, "100-continue") && ctx->transport) {
         const char* cont = "HTTP/1.1 100 Continue\r\n\r\n";
         ctx->transport->write(ctx->transport->conn, cont, 25);
@@ -631,9 +667,10 @@ static void _srv_parser_init(_srv_parser_t* sp) {
 }
 
 static void _srv_parser_destroy(_srv_parser_t* sp) {
-    free(sp->req.url);
-    http_headers_free(sp->req.headers, sp->req.header_count);
-    free(sp->req.body);
+    http_req_t* req = &sp->req.internal;
+    free(req->url);
+    http_headers_free(req->headers, req->header_count);
+    free(req->body);
     free(sp->cur_hdr_name);
 }
 
@@ -681,10 +718,12 @@ void http_srv_conn_coroutine(void* arg) {
         }
 
         bool first_read = true;
+        bool aborted = false;
         while (!sp.complete) {
             int n = _transport_read(&ctx->transport, readbuf, HTTP_IO_BUF_SIZE);
             if (n <= 0) {
-                goto done; /* peer closed, timeout, or error */
+                aborted = true; /* peer closed, timeout, or error */
+                break;
             }
 
             /* Slowloris: tighten deadline after first data arrives. */
@@ -715,8 +754,13 @@ void http_srv_conn_coroutine(void* arg) {
                            "Content-Length: 0\r\nConnection: close\r\n\r\n";
                 }
                 _transport_write(&ctx->transport, resp, (int)strlen(resp));
-                goto done;
+                aborted = true;
+                break;
             }
+        }
+
+        if (aborted) {
+            break;
         }
 
         /* Clear read deadline; set write deadline for response. */
@@ -732,21 +776,22 @@ void http_srv_conn_coroutine(void* arg) {
 
         keep_alive = llhttp_should_keep_alive(&sp.parser) != 0;
 
-        memcpy(sp.req.remote_host, ctx->remote_host, sizeof(ctx->remote_host));
-        sp.req.remote_port = ctx->remote_port;
+        memcpy(sp.req.internal.remote_host, ctx->remote_host,
+               sizeof(ctx->remote_host));
+        sp.req.internal.remote_port = ctx->remote_port;
 
         xylem_http_res_t res;
         memset(&res, 0, sizeof(res));
-        res._transport = &ctx->transport;
-        res.status_code = 200;
+        res.internal._transport = &ctx->transport;
+        res.internal.status_code = 200;
 
         bool is_upgrade = llhttp_get_upgrade(&sp.parser) != 0;
 
         if (is_upgrade && ctx->srv->on_upgrade) {
             ctx->srv->on_upgrade(&res, &sp.req, ctx->srv->upgrade_userdata);
-            http_headers_free(res.headers, res.header_count);
+            http_headers_free(res.internal.headers, res.internal.header_count);
             _srv_parser_destroy(&sp);
-            if (res._transport) {
+            if (res.internal._transport) {
                 _transport_close(&ctx->transport);
             }
             atomic_fetch_sub(&ctx->srv->active_conns, 1);
@@ -757,15 +802,14 @@ void http_srv_conn_coroutine(void* arg) {
 
         ctx->srv->handler(&res, &sp.req, ctx->srv->userdata);
 
-        _finalize_response(&res);
-        free(res._body_buf); /* safety: in case finalize did not handle it */
+        _finalize_response(&res.internal);
+        free(res.internal._body_buf); /* safety: in case finalize did not handle it */
 
-        http_headers_free(res.headers, res.header_count);
+        http_headers_free(res.internal.headers, res.internal.header_count);
 
         _srv_parser_reset(&sp);
     }
 
-done:
     atomic_fetch_sub(&ctx->srv->active_conns, 1);
     _srv_parser_destroy(&sp);
     free(readbuf);
@@ -777,7 +821,7 @@ done:
 typedef struct {
     llhttp_t          parser;
     llhttp_settings_t settings;
-    xylem_http_res_t* res;
+    http_res_t*       res;
     char*             cur_hdr_name;
     size_t            cur_hdr_name_len;
     size_t            cur_hdr_name_cap;
@@ -816,7 +860,7 @@ static int _cli_on_headers_complete(llhttp_t* p) {
 
 static int _cli_on_body(llhttp_t* p, const char* at, size_t len) {
     _cli_parser_t* ctx = (_cli_parser_t*)p->data;
-    xylem_http_res_t* res = ctx->res;
+    http_res_t* res = ctx->res;
     return _body_append(&res->body, &res->body_len, &res->body_cap, at, len);
 }
 
@@ -826,7 +870,7 @@ static int _cli_on_message_complete(llhttp_t* p) {
     return HPE_PAUSED;
 }
 
-static void _cli_parser_init(_cli_parser_t* cp, xylem_http_res_t* res) {
+static void _cli_parser_init(_cli_parser_t* cp, http_res_t* res) {
     memset(cp, 0, sizeof(*cp));
     cp->res = res;
     llhttp_settings_init(&cp->settings);
@@ -895,7 +939,7 @@ static bool _http_acquire_conn(const http_url_t* parsed,
 }
 
 
-static void _http_decompress_body(xylem_http_res_t* res) {
+static void _http_decompress_body(http_res_t* res) {
     const char* ce = http_header_find(res->headers, res->header_count,
                                       "Content-Encoding");
     if (!ce || !strstr(ce, "gzip") || !res->body || res->body_len == 0) {
@@ -1025,7 +1069,7 @@ xylem_http_res_t* http_do_request(
         }
 
         _cli_parser_t ecp;
-        _cli_parser_init(&ecp, interim);
+        _cli_parser_init(&ecp, &interim->internal);
 
         bool got_response = false;
         while (!ecp.complete) {
@@ -1044,7 +1088,7 @@ xylem_http_res_t* http_do_request(
         }
         got_response = ecp.complete;
 
-        if (got_response && interim->status_code != 100) {
+        if (got_response && interim->internal.status_code != 100) {
             /* Final error response (e.g. 413, 417) -- return it. */
             bool ka = llhttp_should_keep_alive(&ecp.parser) != 0;
             _cli_parser_destroy(&ecp);
@@ -1089,7 +1133,7 @@ xylem_http_res_t* http_do_request(
     }
 
     _cli_parser_t cp;
-    _cli_parser_init(&cp, res);
+    _cli_parser_init(&cp, &res->internal);
 
     while (!cp.complete) {
         int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
@@ -1128,12 +1172,13 @@ xylem_http_res_t* http_do_request(
         _transport_close(&transport);
     }
 
-    int status = res->status_code;
+    int status = res->internal.status_code;
     if (redirects_left > 0 &&
         (status == 301 || status == 302 || status == 303 ||
          status == 307 || status == 308)) {
 
-        const char* location = http_header_find(res->headers, res->header_count,
+        const char* location = http_header_find(res->internal.headers,
+                                                res->internal.header_count,
                                                 "Location");
         if (location) {
             http_url_t next_url;
@@ -1153,7 +1198,7 @@ xylem_http_res_t* http_do_request(
         }
     }
 
-    _http_decompress_body(res);
+    _http_decompress_body(&res->internal);
     free(readbuf);
     return res;
 

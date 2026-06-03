@@ -287,7 +287,7 @@ typedef struct {
     char* value;
 } http_router_param_t;
 
-struct xylem_http_req_s {
+typedef struct http_req_s {
     char              method[16];
     char*             url;
     size_t            url_len;
@@ -302,9 +302,9 @@ struct xylem_http_req_s {
     http_router_param_t* router_params;
     size_t               router_param_count;
     void*                _mw_chain;
-};
+} http_req_t;
 
-struct xylem_http_res_s {
+typedef struct http_res_s {
     int            status_code;
     http_header_t* headers;
     size_t         header_count;
@@ -316,7 +316,7 @@ struct xylem_http_res_s {
     bool              _headers_sent;
     uint8_t*       _body_buf;
     size_t         _body_buf_len;
-};
+} http_res_t;
 
 typedef struct http_srv_s {
     void*                   listener;

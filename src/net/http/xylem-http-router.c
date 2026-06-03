@@ -297,25 +297,27 @@ typedef struct {
     void*                   handler_userdata;
 } _mw_chain_t;
 
-void xylem_http_next(xylem_http_res_t* res, xylem_http_req_t* req) {
+void xylem_http_next(xylem_http_res_t* res, xylem_http_req_t* req_pub) {
+    http_req_t* req = (http_req_t*)req_pub;
     _mw_chain_t* chain = (_mw_chain_t*)req->_mw_chain;
     if (!chain) {
         return;
     }
     if (chain->index < chain->mw_count) {
         _middleware_t* mw = &chain->middlewares[chain->index++];
-        mw->handler(res, req, mw->userdata);
+        mw->handler(res, req_pub, mw->userdata);
     } else if (chain->handler) {
-        chain->handler(res, req, chain->handler_userdata);
+        chain->handler(res, req_pub, chain->handler_userdata);
     }
 }
 
 static void _router_dispatch(xylem_http_res_t* res,
-                             xylem_http_req_t* req,
+                             xylem_http_req_t* req_pub,
                              void* userdata) {
+    http_req_t* req = (http_req_t*)req_pub;
     xylem_http_router_t* router = (xylem_http_router_t*)userdata;
-    const char* method = xylem_http_req_method(req);
-    const char* url    = xylem_http_req_url(req);
+    const char* method = xylem_http_req_method(req_pub);
+    const char* url    = xylem_http_req_url(req_pub);
 
     /* match route */
     http_router_param_t params[ROUTER_MAX_PARAMS];
@@ -355,10 +357,10 @@ static void _router_dispatch(xylem_http_res_t* res,
     req->_mw_chain = &chain;
 
     /* kick off the chain */
-    xylem_http_next(res, req);
+    xylem_http_next(res, req_pub);
 
     /* if no middleware/handler responded and no route matched, send default 404 */
-    if (!matched && !chain.handler && !res->_headers_sent) {
+    if (!matched && !chain.handler && !((http_res_t*)res)->_headers_sent) {
         xylem_http_res_set_status(res, 404);
         xylem_http_res_write(res, "Not Found", 9);
     }
@@ -372,8 +374,9 @@ static void _router_dispatch(xylem_http_res_t* res,
 }
 
 const char* xylem_http_router_param(
-    const xylem_http_req_t* req,
+    const xylem_http_req_t* req_pub,
     const char*             name) {
+    const http_req_t* req = (const http_req_t*)req_pub;
     if (!req || !name || !req->router_params) {
         return NULL;
     }

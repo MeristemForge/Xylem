@@ -25,6 +25,7 @@
 
 #include "xylem/encoding/xylem-base64.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -64,6 +65,42 @@ int xylem_http_basic_auth(
     return 6 + enc_len;
 }
 
+static bool _basic_auth_ok(const xylem_http_basic_auth_cfg_t* cfg,
+                           const char* auth) {
+    if (!auth || strncmp(auth, "Basic ", 6) != 0) {
+        return false;
+    }
+
+    const char* b64 = auth + 6;
+    int b64_len = (int)strlen(b64);
+    int dec_cap = xylem_base64_decode_size(b64_len);
+    if (dec_cap <= 0) {
+        return false;
+    }
+
+    char decoded[256];
+    if (dec_cap >= (int)sizeof(decoded)) {
+        return false;
+    }
+
+    int dec_len = xylem_base64_decode_std(
+        (const uint8_t*)b64, b64_len, (uint8_t*)decoded, (int)sizeof(decoded));
+    if (dec_len <= 0) {
+        return false;
+    }
+    decoded[dec_len] = '\0';
+
+    char* colon = strchr(decoded, ':');
+    if (!colon) {
+        return false;
+    }
+    *colon = '\0';
+    const char* user = decoded;
+    const char* pass = colon + 1;
+
+    return cfg->check(user, pass, cfg->userdata) != 0;
+}
+
 void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
                                      xylem_http_req_t* req,
                                      void*             userdata) {
@@ -72,43 +109,11 @@ void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
     const char* realm = cfg->realm ? cfg->realm : "Restricted";
 
     const char* auth = xylem_http_req_header(req, "Authorization");
-    if (!auth || strncmp(auth, "Basic ", 6) != 0) {
-        goto reject;
-    }
-
-    const char* b64 = auth + 6;
-    int b64_len = (int)strlen(b64);
-    int dec_cap = xylem_base64_decode_size(b64_len);
-    if (dec_cap <= 0) {
-        goto reject;
-    }
-
-    char decoded[256];
-    if (dec_cap >= (int)sizeof(decoded)) {
-        goto reject;
-    }
-
-    int dec_len = xylem_base64_decode_std(
-        (const uint8_t*)b64, b64_len, (uint8_t*)decoded, (int)sizeof(decoded));
-    if (dec_len <= 0) {
-        goto reject;
-    }
-    decoded[dec_len] = '\0';
-
-    char* colon = strchr(decoded, ':');
-    if (!colon) {
-        goto reject;
-    }
-    *colon = '\0';
-    const char* user = decoded;
-    const char* pass = colon + 1;
-
-    if (cfg->check(user, pass, cfg->userdata)) {
+    if (_basic_auth_ok(cfg, auth)) {
         xylem_http_router_next(res, req);
         return;
     }
 
-reject:;
     char hdr[128];
     snprintf(hdr, sizeof(hdr), "Basic realm=\"%s\"", realm);
     xylem_http_res_set_status(res, 401);
