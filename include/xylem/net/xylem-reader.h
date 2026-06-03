@@ -85,9 +85,10 @@ extern int xylem_reader_read(
  *
  * @param rd   Reader handle.
  * @param buf  Destination buffer.
- * @param len  Exact number of bytes to read.
+ * @param len  Exact number of bytes to read. Must be > 0.
  *
- * @return 0 on success, -1 on EOF or error before len bytes.
+ * @return len on success, 0 on EOF before len bytes, negative on
+ *         transport error.
  */
 extern int xylem_reader_read_full(
     xylem_reader_t* rd,
@@ -106,8 +107,10 @@ extern int xylem_reader_read_full(
  * @param buf    Destination buffer.
  * @param len    Buffer size.
  *
- * @return Bytes written to buf (including delimiter), or -1 on
- *         error / EOF / overflow.
+ * @return Bytes written to buf (including delimiter) on success,
+ *         0 on EOF before the delimiter, negative on transport
+ *         error, or -1 if len bytes are consumed without finding
+ *         the delimiter (overflow).
  */
 extern int xylem_reader_read_until(
     xylem_reader_t* rd,

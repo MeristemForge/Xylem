@@ -211,7 +211,7 @@ static void _cli_read_full(void* arg) {
 
     char buf[16];
     int rc = xylem_reader_read_full(rd, buf, 16);
-    ASSERT(rc == 0);
+    ASSERT(rc == 16);
     ASSERT(memcmp(buf, "0123456789ABCDEF", 16) == 0);
 
     xylem_reader_destroy(rd);

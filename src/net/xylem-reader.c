@@ -139,12 +139,12 @@ int xylem_reader_read_full(xylem_reader_t* rd, void* buf, int len) {
     while (rem > 0) {
         int n = rd->read_fn(rd->ctx, dst, rem);
         if (n <= 0) {
-            return -1;
+            return n;
         }
         dst += n;
         rem -= n;
     }
-    return 0;
+    return len;
 }
 
 int xylem_reader_read_until(
@@ -179,7 +179,7 @@ int xylem_reader_read_until(
 
         int n = rd->read_fn(rd->ctx, rd->buf, rd->buflen);
         if (n <= 0) {
-            return -1;
+            return n;
         }
         rd->w = n;
     }

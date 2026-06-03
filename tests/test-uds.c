@@ -134,7 +134,7 @@ static void _reader_client(void* arg) {
     ASSERT(rd != NULL);
 
     char result[8];
-    ASSERT(xylem_reader_read_full(rd, result, 8) == 0);
+    ASSERT(xylem_reader_read_full(rd, result, 8) == 8);
     ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
 
     xylem_reader_destroy(rd);
