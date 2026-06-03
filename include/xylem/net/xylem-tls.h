@@ -30,10 +30,23 @@ typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
 typedef struct xylem_tls_opts_s {
-    bool        disable_mss_clamp;    /**< Disable socket MSS clamping. */
-    uint64_t    handshake_timeout_ms; /**< Connect+handshake timeout, 0=off. */
-    const char* server_name;          /**< Expected peer identity (SNI +
-                                            verification), NULL to skip. */
+    bool        disable_mss_clamp; /* Disable socket MSS clamping. */
+    /**
+     * Timeout in milliseconds for completing the connection.
+     *
+     * - Dial: bounds TCP connect and the TLS handshake together.
+     * - Accept: per-session handshake timeout on the server side.
+     *
+     * 0 means no timeout.
+     */
+    uint64_t    handshake_timeout_ms;
+    /**
+     * Expected server identity, used by the client role (dial) only
+     * and ignored when listening. Accepts a DNS hostname or numeric
+     * IP literal. Drives SNI (only sent for DNS names; RFC 6066) and
+     * certificate identity verification. NULL skips both.
+     */
+    const char* server_name;
 } xylem_tls_opts_t;
 
 /**
