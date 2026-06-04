@@ -302,9 +302,12 @@ static void _test_redirect_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "end", 3) == 0);
     xylem_http_res_destroy(res);
 
-    /* Test 3: Without redirect following, we get the 301 response. */
+    /* Test 3: With redirects disabled (max_redirects = 0), we get the
+     * 301 response directly. NULL opts would mean "default 10 hops". */
+    xylem_http_cli_opts_t opts_noredir = {0};
+    opts_noredir.max_redirects = 0;
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
-    res = xylem_http_get(url, NULL, 0, NULL);
+    res = xylem_http_get(url, NULL, 0, &opts_noredir);
     ASSERT(res != NULL);
     ASSERT(xylem_http_res_status(res) == 301);
     xylem_http_res_destroy(res);
@@ -385,8 +388,10 @@ static void _test_basic_auth_main(void* arg) {
     xylem_http_res_destroy(res);
 
     /* Test 2: With auth -> 200, body = base64("user:pass") = "dXNlcjpwYXNz". */
-    char* auth_val = xylem_http_basic_auth("user", "pass");
+    int   auth_size = xylem_http_basic_auth_size(4, 4);
+    char* auth_val  = (char*)malloc((size_t)auth_size);
     ASSERT(auth_val != NULL);
+    ASSERT(xylem_http_basic_auth("user", "pass", auth_val, auth_size) > 0);
     xylem_http_hdr_t auth_hdr = {"Authorization", auth_val};
 
     res = xylem_http_get(url, &auth_hdr, 1, NULL);
