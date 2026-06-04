@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/http/xylem-http.h"
+#include "xylem/xylem-utils.h"
 
 #include "ws.h"
 #include "ws-frame.h"
@@ -242,6 +243,21 @@ static int _ws_frag_append(xylem_ws_conn_t* conn, const void* data, size_t len) 
     return 0;
 }
 
+/**
+ * Drop a fully-consumed frame from the front of recv_buf, sliding any
+ * trailing (coalesced) frame data down to offset 0. Must be called only
+ * after the frame's payload has been copied out, never before: the
+ * payload aliases recv_buf and the slide would otherwise overwrite it
+ * with the next frame's bytes.
+ */
+static void _ws_recv_consume(xylem_ws_conn_t* conn, size_t frame_total) {
+    size_t remaining = conn->recv_len - frame_total;
+    if (remaining > 0) {
+        memmove(conn->recv_buf, conn->recv_buf + frame_total, remaining);
+    }
+    conn->recv_len = remaining;
+}
+
 int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
     if (!conn || !msg) {
         return -1;
@@ -278,11 +294,15 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                 ws_frame_apply_mask(payload, (size_t)fh.payload_len, fh.mask_key, 0);
             }
 
-            size_t remaining = conn->recv_len - frame_total;
-            if (remaining > 0) {
-                memmove(conn->recv_buf, conn->recv_buf + frame_total, remaining);
-            }
-            conn->recv_len = remaining;
+            /**
+             * `payload` aliases recv_buf, so the buffer must NOT be
+             * compacted until the payload has been fully consumed below.
+             * Compacting here lets a coalesced next frame (still masked)
+             * overwrite this frame's payload before it is copied out,
+             * corrupting fragmented / multi-frame reads. The compaction is
+             * deferred to the loop tail, after the payload is consumed.
+             */
+            bool message_ready = false;
 
             if (fh.opcode == 0x8) { /* Close */
                 uint16_t code; const char* reason; size_t rlen;
@@ -294,6 +314,7 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                     _ws_send_close_frame(conn, code, reason, rlen);
                     conn->close_sent = true;
                 }
+                _ws_recv_consume(conn, frame_total);
                 return -1;
             } else if (fh.opcode == 0x9) { /* Ping -> auto-pong */
                 _ws_write_frame(conn, true, 0xA, payload, (size_t)fh.payload_len, false);
@@ -343,7 +364,7 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                     conn->frag_cap      = 0;
                     conn->frag_active   = false;
                     conn->frag_compressed = false;
-                    return 0;
+                    message_ready = true;
                 }
             } else { /* Text or Binary */
                 if (conn->frag_active) {
@@ -394,7 +415,7 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                     msg->opcode = (xylem_ws_opcode_t)fh.opcode;
                     msg->data   = msg_data;
                     msg->len    = msg_len;
-                    return 0;
+                    message_ready = true;
                 } else {
                     conn->frag_active     = true;
                     conn->frag_opcode     = fh.opcode;
@@ -405,6 +426,13 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
                         return -1;
                     }
                 }
+            }
+
+            /* Payload consumed: now safe to drop the frame from recv_buf. */
+            _ws_recv_consume(conn, frame_total);
+
+            if (message_ready) {
+                return 0;
             }
         }
 
@@ -438,8 +466,11 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
     }
 
     if (!conn->close_received) {
+        uint64_t close_deadline =
+            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+            + conn->close_timeout_ms;
         conn->transport.set_rd_deadline(conn->transport.conn,
-                                        conn->close_timeout_ms);
+                                        close_deadline);
         for (;;) {
             if (_ws_ensure_recv_buf(conn, conn->recv_len + 4096) != 0) {
                 break;
@@ -580,7 +611,9 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
     uint64_t hs_timeout = (opts && opts->handshake_timeout_ms)
                           ? opts->handshake_timeout_ms
                           : WS_DEFAULT_HANDSHAKE_TIMEOUT;
-    transport.set_wr_deadline(transport.conn, hs_timeout);
+    uint64_t hs_deadline =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_timeout;
+    transport.set_wr_deadline(transport.conn, hs_deadline);
     int n = transport.write(transport.conn, req, (int)req_len);
     free(req);
     if (n < 0) {
@@ -589,7 +622,7 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
     }
     transport.set_wr_deadline(transport.conn, 0);
 
-    transport.set_rd_deadline(transport.conn, hs_timeout);
+    transport.set_rd_deadline(transport.conn, hs_deadline);
     char resp_buf[1024];
     size_t resp_len = 0;
 

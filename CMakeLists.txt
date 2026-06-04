@@ -101,6 +101,7 @@ set(SRCS
 	src/net/http/llhttp/api.c
 	src/net/ws/ws.c
 	src/net/ws/xylem-ws.c
+	src/net/ws/ws-tcp.c
 	src/net/ws/ws-utf8.c
 	src/net/ws/ws-frame.c
 	src/net/ws/ws-handshake.c
@@ -143,7 +144,7 @@ if(XYLEM_ENABLE_TLS)
 		src/net/tls/xylem-tls.c
 		src/net/xylem-dtls.c
 		src/net/http/http-transport-tls.c
-		src/net/ws/xylem-wss.c
+		src/net/ws/ws-tls.c
 	)
 
 	# platform-tls depends on OpenSSL, so it lives in the TLS block
@@ -158,6 +159,7 @@ else()
 	list(APPEND SRCS
 		src/net/http/http-transport-tls-stub.c
 		src/net/tls/xylem-tls-stub.c
+		src/net/ws/ws-tls-stub.c
 	)
 endif()
 

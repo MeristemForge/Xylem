@@ -41,6 +41,22 @@ typedef struct {
 
 typedef void (*xylem_ws_handler_fn_t)(xylem_ws_conn_t* conn, void* userdata);
 
+/**
+ * TLS configuration for secure WebSocket (wss), by certificate/CA files;
+ * no tls context is exposed. Mirrors the HTTP server/client TLS config:
+ *   - server (xylem_ws_listen with a wss listener): cert + key are
+ *     required; ca enables client-certificate verification (mTLS).
+ *   - client (xylem_ws_dial of a wss:// URL): ca pins a private CA
+ *     (NULL = system trust); skip_verify disables server verification
+ *     (tests only).
+ */
+typedef struct xylem_ws_tls_s {
+    const char* cert;        /*< PEM certificate path (server). */
+    const char* key;         /*< PEM private key path (server). */
+    const char* ca;          /*< CA path, NULL = system default. */
+    bool        skip_verify; /*< true = skip peer cert verification (client). */
+} xylem_ws_tls_t;
+
 typedef struct {
     size_t   max_msg_size;
     size_t   fragment_threshold;
@@ -48,6 +64,13 @@ typedef struct {
     uint64_t close_timeout_ms;
     bool     permessage_deflate;
     bool     deflate_context_takeover;
+    /**
+     * TLS configuration. Server: non-NULL makes xylem_ws_listen() a wss
+     * (TLS) listener; NULL makes it plain ws. Client: used only when the
+     * dialed URL is wss://; NULL means default TLS (system trust). When a
+     * wss:// URL is dialed with NULL opts, default TLS is used.
+     */
+    const xylem_ws_tls_t* tls;
 } xylem_ws_opts_t;
 
 struct xylem_http_res_s;
@@ -67,13 +90,15 @@ extern xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
                                          const xylem_ws_opts_t* opts);
 
 /**
- * @brief Start a standalone WebSocket server.
+ * @brief Start a standalone WebSocket server (ws or wss).
+ *
+ * Plain ws by default; set opts->tls (cert + key) to serve wss over TLS.
  *
  * @param host      Bind address, or NULL for any.
  * @param port      Bind port.
  * @param handler   Connection handler invoked per accepted client.
  * @param userdata  Opaque pointer passed to handler.
- * @param opts      WebSocket options, or NULL for defaults.
+ * @param opts      WebSocket options (opts->tls selects wss), or NULL.
  *
  * @return Listener handle, or NULL on failure.
  */
@@ -99,10 +124,13 @@ extern void     xylem_ws_close_listener(xylem_ws_listener_t* listener);
 extern uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener);
 
 /**
- * @brief Connect to a WebSocket server.
+ * @brief Connect to a WebSocket server (ws or wss).
  *
- * @param url   WebSocket URL (ws://host:port/path).
- * @param opts  WebSocket options, or NULL for defaults.
+ * The URL scheme selects transport: ws:// dials plain TCP, wss:// dials
+ * over TLS using opts->tls (NULL = default system trust).
+ *
+ * @param url   WebSocket URL (ws://host:port/path or wss://...).
+ * @param opts  WebSocket options (opts->tls used for wss), or NULL.
  *
  * @return WebSocket connection, or NULL on failure.
  */

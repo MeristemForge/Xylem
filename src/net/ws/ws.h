@@ -74,3 +74,9 @@ extern xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
                                       const char* host, uint16_t port,
                                       const char* path,
                                       const xylem_ws_opts_t* opts);
+
+/*
+ * The plain (ws) and secure (wss) dial factories are declared in their own
+ * headers, ws-tcp.h and ws-tls.h respectively, mirroring the http
+ * transport layout.
+ */

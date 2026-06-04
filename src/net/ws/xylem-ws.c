@@ -22,21 +22,36 @@
 #include "xylem/net/xylem-ws.h"
 
 #include "xylem/net/http/xylem-http.h"
-#include "xylem/net/xylem-tcp.h"
 
 #include "ws.h"
+#include "ws-tcp.h"
+#include "ws-tls.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 
-static int _ws_parse_url(const char* url, char* host, size_t host_cap,
+static int _ws_parse_url(const char* url, bool* is_tls,
+                         char* host, size_t host_cap,
                          uint16_t* port, char* path, size_t path_cap) {
-    if (!url || strncmp(url, "ws://", 5) != 0) {
+    if (!url) {
         return -1;
     }
-    const char* p = url + 5;
+
+    uint16_t default_port;
+    const char* p;
+    if (strncmp(url, "wss://", 6) == 0) {
+        *is_tls      = true;
+        default_port = 443;
+        p            = url + 6;
+    } else if (strncmp(url, "ws://", 5) == 0) {
+        *is_tls      = false;
+        default_port = 80;
+        p            = url + 5;
+    } else {
+        return -1;
+    }
 
     const char* colon = NULL;
     const char* slash = strchr(p, '/');
@@ -56,7 +71,7 @@ static int _ws_parse_url(const char* url, char* host, size_t host_cap,
     memcpy(host, p, hlen);
     host[hlen] = '\0';
 
-    *port = 80;
+    *port = default_port;
     if (colon) {
         *port = (uint16_t)strtol(colon + 1, NULL, 10);
     }
@@ -75,39 +90,21 @@ static int _ws_parse_url(const char* url, char* host, size_t host_cap,
 }
 
 
-static http_transport_t _ws_make_tcp_transport(xylem_tcp_conn_t* conn) {
-    return (http_transport_t){
-        .conn            = conn,
-        .read            = (int (*)(void*, void*, int))xylem_tcp_read,
-        .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
-        .close           = (void (*)(void*))xylem_tcp_close,
-        .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
-        .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
-        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
-        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
-        .shutdown_wr     = (int (*)(void*))xylem_tcp_shutdown_wr,
-    };
-}
-
-
 xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
     char host[256], path[1024];
     uint16_t port;
-    if (_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path)) != 0) {
+    bool is_tls;
+    if (_ws_parse_url(url, &is_tls, host, sizeof(host),
+                      &port, path, sizeof(path)) != 0) {
         return NULL;
     }
 
-    uint64_t timeout = (opts && opts->handshake_timeout_ms)
-                       ? opts->handshake_timeout_ms
-                       : WS_DEFAULT_HANDSHAKE_TIMEOUT;
-
-    xylem_tcp_conn_t* tcp = xylem_tcp_dial(host, port, timeout, NULL);
-    if (!tcp) {
-        return NULL;
+    /* Dispatch on scheme to the matching dial factory: wss -> ws_tls_dial
+     * (ws-tls.c, NULL stub when TLS is off), ws -> ws_tcp_dial (ws-tcp.c). */
+    if (is_tls) {
+        return ws_tls_dial(host, port, path, opts ? opts->tls : NULL, opts);
     }
-
-    http_transport_t transport = _ws_make_tcp_transport(tcp);
-    return ws_dial_impl(transport, host, port, path, opts);
+    return ws_tcp_dial(host, port, path, opts);
 }
 
 
@@ -182,6 +179,19 @@ xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
     xylem_http_srv_opts_t srv_opts = {0};
     srv_opts.on_upgrade      = _ws_upgrade_handler;
     srv_opts.upgrade_userdata = l;
+
+    /* wss: translate the ws TLS config to the http server's cert config so
+     * xylem_http_listen builds an HTTPS (TLS) listener. Plain ws leaves
+     * srv_opts.tls NULL. The struct is kept alive for the listen call only;
+     * http copies what it needs (paths are caller-owned strings). */
+    xylem_http_tls_t http_tls;
+    if (opts && opts->tls) {
+        http_tls.cert        = opts->tls->cert;
+        http_tls.key         = opts->tls->key;
+        http_tls.ca          = opts->tls->ca;
+        http_tls.skip_verify = opts->tls->skip_verify;
+        srv_opts.tls         = &http_tls;
+    }
 
     l->http_srv = xylem_http_listen(host, port, NULL, NULL, &srv_opts);
     if (!l->http_srv) { free(l); return NULL; }

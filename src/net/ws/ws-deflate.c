@@ -158,7 +158,7 @@ int ws_deflate_decompress(ws_deflate_ctx_t* ctx,
 
         total_out = buf_cap - (size_t)ctx->inflate_stream.avail_out;
 
-        if (rc == MZ_STREAM_END || ctx->inflate_stream.avail_in == 0) {
+        if (rc == MZ_STREAM_END) {
             break;
         }
 
@@ -168,27 +168,38 @@ int ws_deflate_decompress(ws_deflate_ctx_t* ctx,
             return -1;
         }
 
-        /* Need more output space. */
-        if (ctx->inflate_stream.avail_out == 0) {
-            size_t new_cap = buf_cap * 2;
-            if (max_size && new_cap > max_size) {
-                new_cap = max_size;
-            }
-            if (new_cap <= buf_cap) {
-                /* Already at max, cannot grow further. */
-                free(buf);
-                free(input);
-                return -1;
-            }
-            uint8_t* nb = (uint8_t*)realloc(buf, new_cap);
-            if (!nb) {
-                free(buf);
-                free(input);
-                return -1;
-            }
-            buf     = nb;
-            buf_cap = new_cap;
+        /**
+         * Inflate consumes all avail_in into its internal window before
+         * the corresponding output is fully emitted, so avail_in == 0 does
+         * NOT mean decompression is complete: there may still be buffered
+         * output to flush. Only stop once a call leaves output space unused
+         * (avail_out > 0) -- that is the signal inflate had nothing more to
+         * emit. While the output buffer keeps filling completely, grow it
+         * and keep draining.
+         */
+        if (ctx->inflate_stream.avail_out != 0) {
+            break;
         }
+
+        /* Output buffer full: grow and continue draining. */
+        size_t new_cap = buf_cap * 2;
+        if (max_size && new_cap > max_size) {
+            new_cap = max_size;
+        }
+        if (new_cap <= buf_cap) {
+            /* Already at max, cannot grow further. */
+            free(buf);
+            free(input);
+            return -1;
+        }
+        uint8_t* nb = (uint8_t*)realloc(buf, new_cap);
+        if (!nb) {
+            free(buf);
+            free(input);
+            return -1;
+        }
+        buf     = nb;
+        buf_cap = new_cap;
     }
 
     free(input);

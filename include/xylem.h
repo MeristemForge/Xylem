@@ -73,7 +73,6 @@ _Pragma("once")
 #include "xylem/net/http/xylem-http-router.h"
 #include "xylem/net/http/xylem-http-fileserver.h"
 #include "xylem/net/xylem-ws.h"
-#include "xylem/net/xylem-wss.h"
 
 /* runtime */
 #include <stdint.h>
