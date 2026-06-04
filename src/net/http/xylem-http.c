@@ -34,10 +34,11 @@
 
 #include "http.h"
 #include "http-utils.h"
-#include "transport-tcp.h"
-#include "transport-tls.h"
+#include "http-transport-tcp.h"
+#include "http-transport-tls.h"
 #include "runtime/runtime.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,18 @@ struct xylem_http_req_s {
 struct xylem_http_res_s {
     http_res_t internal;
 };
+
+/*
+ * The engine (http.c) hands user callbacks a public handle by casting
+ * (xylem_http_res_t*)&res where res is an internal http_res_t, relying on
+ * the wrapper's internal member sharing the struct's address. Enforce that
+ * layout invariant here so any reordering fails at compile time rather than
+ * silently corrupting access through the cast.
+ */
+_Static_assert(offsetof(struct xylem_http_req_s, internal) == 0,
+               "http_req_t must remain the first member of xylem_http_req_s");
+_Static_assert(offsetof(struct xylem_http_res_s, internal) == 0,
+               "http_res_t must remain the first member of xylem_http_res_s");
 
 /* ===================================================================== *
  *  Request accessors

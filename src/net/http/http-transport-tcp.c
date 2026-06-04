@@ -24,7 +24,8 @@
  * http_transport_t over xylem_tcp and drives accept/dial. Always built.
  */
 
-#include "transport-tcp.h"
+#include "http-transport-tcp.h"
+#include "http-utils.h"
 
 #include "xylem/net/xylem-tcp.h"
 
@@ -46,10 +47,25 @@ static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
     };
 }
 
+/*
+ * When dialing through a plain-HTTP proxy, ctx carries the proxy
+ * descriptor: the TCP connection targets the proxy (not the origin) and
+ * the request line uses absolute-form (handled by http_req_serialize via
+ * absolute_form). A NULL ctx means a direct connection to the origin.
+ */
 static http_transport_t _http_dial(const char* host, uint16_t port,
                                    uint64_t timeout_ms, void* ctx) {
-    (void)ctx;
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(host, port, timeout_ms, NULL);
+    const xylem_http_proxy_t* proxy = (const xylem_http_proxy_t*)ctx;
+
+    const char* dial_host = host;
+    uint16_t    dial_port = port;
+    if (proxy && proxy->host) {
+        dial_host = proxy->host;
+        dial_port = proxy->port;
+    }
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(dial_host, dial_port,
+                                            timeout_ms, NULL);
     if (!conn) {
         return (http_transport_t){0};
     }
@@ -121,7 +137,25 @@ xylem_http_res_t* http_tcp_request(
     const xylem_http_hdr_t*      headers,
     size_t                       header_count,
     const xylem_http_cli_opts_t* opts) {
-    return http_do_request(
+
+    /* Resolve the proxy: explicit opts->proxy wins, else the environment
+     * (http_proxy / no_proxy). A plain-HTTP proxy forwards via absolute-
+     * form, so dial the proxy and request absolute-form; no CONNECT
+     * tunnel. */
+    const xylem_http_proxy_t* proxy = opts ? opts->proxy : NULL;
+    xylem_http_proxy_t* env_proxy = NULL;
+    if (!proxy) {
+        env_proxy = http_proxy_from_env(url);
+        proxy = env_proxy;
+    }
+
+    bool absolute_form = (proxy && proxy->host);
+
+    xylem_http_res_t* res = http_do_request(
         method, url, body, body_len, content_type,
-        headers, header_count, opts, false, _http_dial, NULL);
+        headers, header_count, opts, absolute_form, _http_dial,
+        (void*)proxy);
+
+    http_proxy_from_env_free(env_proxy);
+    return res;
 }

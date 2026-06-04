@@ -22,7 +22,7 @@
 /*
  * TLS transport factory for the HTTP engine. Builds an http_transport_t
  * over the internal TLS engine and drives accept/dial. Compiled only
- * when TLS is enabled; the stub (transport-tls-stub.c) replaces it
+ * when TLS is enabled; the stub (http-transport-tls-stub.c) replaces it
  * otherwise.
  *
  * This factory talks to the engine directly (tls.h, tls_* API) rather
@@ -30,7 +30,7 @@
  * run the client handshake over a proxy-tunnel fd, which is internal.
  */
 
-#include "transport-tls.h"
+#include "http-transport-tls.h"
 #include "http-utils.h"
 #include "http-tunnel.h"
 
@@ -54,7 +54,7 @@ static http_transport_t _https_make_transport(tls_conn_t* conn) {
     };
 }
 
-typedef struct {
+typedef struct _https_dial_ctx_s {
     tls_ctx_t*                tls_ctx;
     const xylem_http_proxy_t* proxy;
 } _https_dial_ctx_t;
@@ -74,7 +74,7 @@ static http_transport_t _https_dial(const char* host, uint16_t port,
         owns_ctx = true;
     }
 
-    tls_opts_t tls_opts = {0};
+    xylem_tls_opts_t tls_opts = {0};
     tls_opts.server_name = host;
     tls_opts.handshake_timeout_ms = (timeout_ms > 0) ? timeout_ms : 10000;
 

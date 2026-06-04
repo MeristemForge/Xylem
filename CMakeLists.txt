@@ -89,7 +89,7 @@ set(SRCS
 	src/net/http/http-tunnel.c
 	src/net/http/http.c
 	src/net/http/xylem-http.c
-	src/net/http/transport-tcp.c
+	src/net/http/http-transport-tcp.c
 	src/net/http/xylem-http-auth.c
 	src/net/http/xylem-http-cookie.c
 	src/net/http/xylem-http-form.c
@@ -139,9 +139,10 @@ if(XYLEM_ENABLE_TLS)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
+		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
 		src/net/xylem-dtls.c
-		src/net/http/transport-tls.c
+		src/net/http/http-transport-tls.c
 		src/net/ws/xylem-wss.c
 	)
 
@@ -155,7 +156,7 @@ if(XYLEM_ENABLE_TLS)
 	endif()
 else()
 	list(APPEND SRCS
-		src/net/http/transport-tls-stub.c
+		src/net/http/http-transport-tls-stub.c
 		src/net/tls/xylem-tls-stub.c
 	)
 endif()

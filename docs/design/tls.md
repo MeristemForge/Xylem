@@ -178,7 +178,7 @@ backs off on transient accept errors -> `_tls_server_handshake` per connection
 dropped and accept keeps looping, so one bad client cannot tear down the accept
 loop. `xylem_tls_accept` returns NULL only when the listener is closed.
 
-**Proxy / upgrade:** `tls_client_handshake_fd` (internal, in `tls-internal.h`)
+**Proxy / upgrade:** `tls_client_handshake_fd` (internal, in `tls.h`)
 wraps an already-connected fd -- e.g. after an HTTP CONNECT tunnel -- and runs
 the client handshake, verifying `server_name` rather than the proxy address.
 

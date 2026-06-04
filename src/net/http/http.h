@@ -26,7 +26,7 @@
  * vtable, the URL/header value types, and the request/response/server
  * structures, plus the protocol-engine entry points. Stateless helpers
  * are declared in http-utils.h; the transport factories in
- * transport-tcp.h / transport-tls.h.
+ * http-transport-tcp.h / http-transport-tls.h.
  *
  * Not part of the public API. Do not include outside the HTTP/WS modules.
  */

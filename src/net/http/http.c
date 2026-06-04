@@ -25,8 +25,8 @@
  * Request/response parsing, the server connection coroutine, the client
  * request loop, connection pooling, and response assembly. The engine is
  * transport-agnostic: it speaks only through http_transport_t. Plain TCP
- * and TLS transports are built by separate factories (transport-tcp.c /
- * transport-tls.c); choosing between them happens in the public dispatch
+ * and TLS transports are built by separate factories (http-transport-tcp.c /
+ * http-transport-tls.c); choosing between them happens in the public dispatch
  * layer (xylem-http.c), never via a macro inside the engine.
  *
  * The engine works exclusively on the internal http_req_t / http_res_t

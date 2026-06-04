@@ -24,8 +24,9 @@
  *
  * Builds an http_transport_t over a TLS connection for the server
  * (listen) and client (request) paths. The real implementation lives in
- * transport-tls.c when XYLEM_ENABLE_TLS is set; otherwise transport-tls-
- * stub.c provides stubs that return NULL. Not part of the public API.
+ * http-transport-tls.c when XYLEM_ENABLE_TLS is set; otherwise http-
+ * transport-tls-stub.c provides stubs that return NULL. Not part of the
+ * public API.
  */
 
 _Pragma("once")

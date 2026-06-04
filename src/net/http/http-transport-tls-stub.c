@@ -19,31 +19,44 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
-
-#include "xylem/net/xylem-tls.h"
-
-#include "platform/platform-socket.h"
-
-/**
- * @brief Perform a client-side TLS handshake on an already-connected fd.
- *
- * Wraps a socket whose transport connection is already established (e.g.
- * one obtained from an HTTP CONNECT proxy tunnel) and drives the TLS
- * client handshake to completion. SNI and certificate identity checks
- * use opts->server_name, which need not match the address the fd is
- * connected to -- exactly the proxy case (connect to proxy, verify the
- * target).
- *
- * On success ownership of @p fd is transferred to the returned
- * connection; on failure @p fd is closed.
- *
- * @param fd   Connected socket (ownership transferred on success).
- * @param ctx  TLS context.
- * @param opts TLS options (server_name, handshake_timeout_ms, etc.).
- *
- * @return TLS connection handle, or NULL on failure (fd is closed).
+/*
+ * Stub TLS transport factory for builds without TLS support. Both
+ * factories return failure so the dispatch layer degrades to "HTTPS not
+ * available" with no macros leaking into the engine.
  */
-extern xylem_tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
-                                                 xylem_tls_ctx_t* ctx,
-                                                 xylem_tls_opts_t* opts);
+
+#include "http-transport-tls.h"
+
+xylem_http_srv_t* http_tls_listen(
+    const char*                  host,
+    uint16_t                     port,
+    xylem_http_handler_fn_t      handler,
+    void*                        userdata,
+    const xylem_http_srv_opts_t* opts) {
+    (void)host;
+    (void)port;
+    (void)handler;
+    (void)userdata;
+    (void)opts;
+    return NULL;
+}
+
+xylem_http_res_t* http_tls_request(
+    const char*                  method,
+    const char*                  url,
+    const void*                  body,
+    size_t                       body_len,
+    const char*                  content_type,
+    const xylem_http_hdr_t*      headers,
+    size_t                       header_count,
+    const xylem_http_cli_opts_t* opts) {
+    (void)method;
+    (void)url;
+    (void)body;
+    (void)body_len;
+    (void)content_type;
+    (void)headers;
+    (void)header_count;
+    (void)opts;
+    return NULL;
+}

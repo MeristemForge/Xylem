@@ -20,28 +20,50 @@
  */
 
 /*
- * Stub TLS transport factory for builds without TLS support. Both
- * factories return failure so the dispatch layer degrades to "HTTPS not
- * available" with no macros leaking into the engine.
+ * Plain-TCP HTTP transport factory (http-transport-tcp.c, always built).
+ *
+ * Builds an http_transport_t over a raw TCP connection for the server
+ * (listen) and client (request) paths. Not part of the public API.
  */
 
-#include "transport-tls.h"
+_Pragma("once")
 
-xylem_http_srv_t* http_tls_listen(
+#include "http.h"
+
+/**
+ * @brief Start an HTTP server over plain TCP.
+ *
+ * @param host      Bind host.
+ * @param port      Bind port.
+ * @param handler   Request handler.
+ * @param userdata  Opaque pointer passed to handler.
+ * @param opts      Server options, or NULL for defaults.
+ *
+ * @return Server handle, or NULL on failure.
+ */
+extern xylem_http_srv_t* http_tcp_listen(
     const char*                  host,
     uint16_t                     port,
     xylem_http_handler_fn_t      handler,
     void*                        userdata,
-    const xylem_http_srv_opts_t* opts) {
-    (void)host;
-    (void)port;
-    (void)handler;
-    (void)userdata;
-    (void)opts;
-    return NULL;
-}
+    const xylem_http_srv_opts_t* opts);
 
-xylem_http_res_t* http_tls_request(
+/**
+ * @brief Perform an HTTP client request over plain TCP.
+ *
+ * @param method        HTTP method string.
+ * @param url           Full URL.
+ * @param body          Request body, or NULL.
+ * @param body_len      Body length in bytes.
+ * @param content_type  Content-Type value, or NULL.
+ * @param headers       Custom headers, or NULL.
+ * @param header_count  Number of custom headers.
+ * @param opts          Client options, or NULL.
+ *
+ * @return Response object, or NULL on failure. Caller frees via
+ *         xylem_http_res_destroy().
+ */
+extern xylem_http_res_t* http_tcp_request(
     const char*                  method,
     const char*                  url,
     const void*                  body,
@@ -49,14 +71,4 @@ xylem_http_res_t* http_tls_request(
     const char*                  content_type,
     const xylem_http_hdr_t*      headers,
     size_t                       header_count,
-    const xylem_http_cli_opts_t* opts) {
-    (void)method;
-    (void)url;
-    (void)body;
-    (void)body_len;
-    (void)content_type;
-    (void)headers;
-    (void)header_count;
-    (void)opts;
-    return NULL;
-}
+    const xylem_http_cli_opts_t* opts);
