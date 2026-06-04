@@ -22,7 +22,9 @@
 _Pragma("once")
 
 #include "platform/platform-poller.h"
+#include "container/heap.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -32,8 +34,8 @@ typedef struct mco_coro mco_coro;
 /* Opaque coroutine scheduler handle. */
 typedef struct scheduler_s scheduler_t;
 
-/* Opaque scheduler timer handle. */
-typedef struct xylem_timer_s sched_timer_t;
+/* Scheduler timer handle. Defined below once sched_timer_fn_t exists. */
+typedef struct sched_timer_s sched_timer_t;
 
 /* Opaque iowait slab allocator handle. */
 typedef struct iowait_slab_s iowait_slab_t;
@@ -66,6 +68,26 @@ typedef void (*scheduler_post_fn_t)(void* ud);
  * ud     User data from sched_timer_start().
  */
 typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
+
+/**
+ * Scheduler timer.
+ *
+ * heap_node must remain embedded by value (the per-worker timer heap
+ * recovers the timer via heap_entry). Fields are owned by the timer's
+ * worker; see scheduler.c for the access/locking rules.
+ */
+struct sched_timer_s {
+    heap_node_t      heap_node;
+    scheduler_t*     sched;
+    sched_timer_fn_t cb;
+    void*            ud;
+    uint64_t         timeout;
+    uint64_t         repeat;
+    bool             active;
+    bool             spawn;
+    _Atomic int32_t  refcnt;
+    uint32_t         owner;
+};
 
 /* Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {

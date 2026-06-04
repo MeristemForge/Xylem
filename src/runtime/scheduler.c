@@ -139,24 +139,11 @@ typedef struct {
     mco_coro*    co;
 } _coro_ctx_t;
 
-typedef struct {
+typedef struct _sched_post_s {
     mpsc_node_t          node;
     scheduler_post_fn_t  cb;
     void*                ud;
 } _sched_post_t;
-
-struct xylem_timer_s {
-    heap_node_t      heap_node;
-    scheduler_t*     sched;
-    sched_timer_fn_t cb;
-    void*            ud;
-    uint64_t         timeout;
-    uint64_t         repeat;
-    bool             active;
-    bool             spawn;
-    _Atomic int32_t  refcnt;
-    uint32_t         owner;
-};
 
 static thread_local _sched_worker_t* _tls_worker;
 
