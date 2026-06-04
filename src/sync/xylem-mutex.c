@@ -33,7 +33,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-typedef struct {
+typedef struct _mutex_waiter_s {
     queue_node_t node;
     mco_coro*    co;
 } _mutex_waiter_t;
@@ -44,7 +44,7 @@ struct xylem_mutex_s {
     queue_t          waiters;
 };
 
-typedef struct {
+typedef struct _mutex_park_ctx_s {
     xylem_mutex_t*  mtx;
     _mutex_waiter_t waiter;
 } _mutex_park_ctx_t;

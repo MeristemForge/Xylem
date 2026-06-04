@@ -28,7 +28,7 @@ struct xylem_stack_s {
     lifo_t lifo;
 };
 
-typedef struct {
+typedef struct _stack_wrap_node_s {
     lifo_node_t node;
     void*       data;
 } _stack_wrap_node_t;

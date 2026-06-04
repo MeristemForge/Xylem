@@ -65,7 +65,7 @@ struct xylem_waitgroup_s {
     queue_t       waiters;
 };
 
-typedef struct {
+typedef struct _wg_park_ctx_s {
     xylem_waitgroup_t* wg;
     _wg_waiter_t       waiter;
 } _wg_park_ctx_t;

@@ -53,7 +53,7 @@ _Pragma("once")
  * NULL transport; no macros leak into the engine or the dispatch layer.
  */
 
-typedef struct {
+typedef struct http_transport_s {
     void* conn;
     int  (*read)(void* conn, void* buf, int len);
     int  (*write)(void* conn, const void* data, int len);
@@ -71,21 +71,21 @@ typedef http_transport_t (*http_dial_fn_t)(const char* host, uint16_t port,
 /* URL / header value types shared across the HTTP module. The stateless
  * helpers that operate on them are declared in http-utils.h. */
 
-typedef struct {
+typedef struct http_url_s {
     char     scheme[8];
     char     host[256];
     uint16_t port;
     char     path[2048];
 } http_url_t;
 
-typedef struct {
+typedef struct http_header_s {
     char* name;
     char* value;
 } http_header_t;
 
 /* Request / response / server structures */
 
-typedef struct {
+typedef struct http_router_param_s {
     char* key;
     char* value;
 } http_router_param_t;
@@ -137,7 +137,7 @@ typedef struct http_srv_s {
     bool                    closing;
 } http_srv_t;
 
-typedef struct {
+typedef struct http_srv_conn_ctx_s {
     http_srv_t*      srv;
     http_transport_t transport;
     char             remote_host[INET6_ADDRSTRLEN];

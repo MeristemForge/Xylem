@@ -28,14 +28,14 @@
 
 #define ROUTER_MAX_PARAMS 16
 
-typedef struct {
+typedef struct _route_s {
     char*                   method;
     char*                   pattern;
     xylem_http_handler_fn_t handler;
     void*                   userdata;
 } _route_t;
 
-typedef struct {
+typedef struct _middleware_s {
     xylem_http_handler_fn_t handler;
     void*                   userdata;
 } _middleware_t;
@@ -289,7 +289,7 @@ static void _free_params(http_router_param_t* params, size_t count) {
     }
 }
 
-typedef struct {
+typedef struct _mw_chain_s {
     _middleware_t*          middlewares;
     size_t                  mw_count;
     size_t                  index;

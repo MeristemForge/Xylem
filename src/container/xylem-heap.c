@@ -29,7 +29,7 @@ struct xylem_heap_s {
     xylem_heap_cmp_fn_t cmp;
 };
 
-typedef struct {
+typedef struct _heap_wrap_node_s {
     heap_node_t         node;
     void*               data;
     xylem_heap_cmp_fn_t cmp;

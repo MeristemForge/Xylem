@@ -75,7 +75,7 @@ struct xylem_cond_s {
     queue_t waiters;
 };
 
-typedef struct {
+typedef struct _cond_park_ctx_s {
     xylem_cond_t*  cond;
     xylem_mutex_t* mtx;
     _cond_waiter_t waiter;

@@ -83,7 +83,7 @@
 
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
 
-typedef struct {
+typedef struct _coro_pool_s {
     spin_t    lock;
     void**    slots;
     int32_t   count;
@@ -131,7 +131,7 @@ struct scheduler_s {
     _coro_pool_t          coro_pool;
 };
 
-typedef struct {
+typedef struct _coro_ctx_s {
     void (*fn)(void*);
     void*        arg;
     queue_node_t runq_node;

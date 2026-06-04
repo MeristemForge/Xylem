@@ -69,12 +69,12 @@ static inline void _transport_close(http_transport_t* t) {
  *  Client connection pool
  * ===================================================================== */
 
-typedef struct {
+typedef struct _pool_idle_conn_s {
     http_transport_t transport;
     uint64_t         idle_since; /* monotonic ms timestamp */
 } _pool_idle_conn_t;
 
-typedef struct {
+typedef struct _pool_entry_s {
     char               key[320]; /* "host:port:scheme" */
     _pool_idle_conn_t* conns;    /* dynamic array of idle conns */
     size_t             count;
@@ -459,7 +459,7 @@ static int _body_append(uint8_t** body, size_t* body_len, size_t* body_cap,
  *  Server request parser + connection coroutine
  * ===================================================================== */
 
-typedef struct {
+typedef struct _srv_parser_s {
     llhttp_t          parser;
     llhttp_settings_t settings;
     http_req_t        req;
@@ -747,7 +747,7 @@ void http_srv_init(http_srv_t* srv, const xylem_http_srv_opts_t* opts) {
  *  Client response parser + request loop
  * ===================================================================== */
 
-typedef struct {
+typedef struct _cli_parser_s {
     llhttp_t          parser;
     llhttp_settings_t settings;
     http_res_t*       res;

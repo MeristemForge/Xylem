@@ -133,14 +133,14 @@ xylem_ws_conn_t* xylem_wss_accept(struct xylem_http_res_s* res,
 }
 
 
-typedef struct {
+typedef struct wss_listener_s {
     xylem_http_srv_t*      https_srv;
     xylem_ws_handler_fn_t  handler;
     void*                  userdata;
     xylem_ws_opts_t        opts;
 } wss_listener_t;
 
-typedef struct {
+typedef struct _wss_conn_ctx_s {
     xylem_ws_conn_t*       conn;
     xylem_ws_handler_fn_t  handler;
     void*                  userdata;

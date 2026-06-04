@@ -27,14 +27,14 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct {
+typedef struct ws_deflate_ctx_s {
     mz_stream deflate_stream;
     mz_stream inflate_stream;
     bool      active;
     bool      no_context_takeover;
 } ws_deflate_ctx_t;
 
-typedef struct {
+typedef struct ws_deflate_offer_s {
     bool offered;
     bool server_no_context_takeover;
     bool client_no_context_takeover;

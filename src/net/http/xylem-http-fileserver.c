@@ -25,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
+typedef struct _fileserver_ctx_s {
     char* root_dir;
     char* index_file;
 } _fileserver_ctx_t;

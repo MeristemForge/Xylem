@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
+typedef struct _addr_resolve_ctx_s {
     mco_coro* co;
     char*     host;
     uint16_t  port;

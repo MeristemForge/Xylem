@@ -98,7 +98,7 @@ struct xylem_rudp_listener_s {
     xylem_channel_t*       accept_ch;   /* delivers accepted sessions */
 };
 
-typedef struct {
+typedef struct _rudp_session_key_s {
     const addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;

@@ -52,7 +52,7 @@ struct xylem_channel_s {
     _Atomic bool       timed_out;
 };
 
-typedef struct {
+typedef struct _channel_park_ctx_s {
     xylem_channel_t* ch;
     uint64_t         deadline_ms; /* 0 = no deadline */
 } _channel_park_ctx_t;

@@ -26,7 +26,7 @@ _Pragma("once")
 #include <stdint.h>
 
 /* Parsed WebSocket frame header (RFC 6455 section 5.2). */
-typedef struct {
+typedef struct ws_frame_header_s {
     bool     fin;
     bool     rsv1;
     uint8_t  opcode;

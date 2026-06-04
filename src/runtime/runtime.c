@@ -32,7 +32,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-typedef struct {
+typedef struct _submit_ctx_s {
     void (*fn)(void*);
     void*        arg;
     scheduler_t* sched;
@@ -49,12 +49,12 @@ static void _runtime_idle_cb(void* ud) {
     runtime_shutdown();
 }
 
-typedef struct {
+typedef struct _sleep_park_s {
     sched_timer_t* timer;
     uint64_t       ms;
 } _sleep_park_t;
 
-typedef struct {
+typedef struct _submit_park_s {
     _submit_ctx_t* ctx;
     bool           ok;
 } _submit_park_t;

@@ -65,7 +65,7 @@ extern int platform_io_vsprintf(char* str, size_t size, const char* restrict for
  * Contains the subset of stat fields needed by the HTTP static
  * file server: file size, modification time, and mode bits.
  */
-typedef struct {
+typedef struct platform_io_stat_s {
     int64_t size;    /* File size in bytes. */
     time_t  mtime;   /* Last modification time. */
     int32_t is_dir;  /* Non-zero if the path is a directory. */

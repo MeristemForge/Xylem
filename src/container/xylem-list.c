@@ -28,7 +28,7 @@ struct xylem_list_s {
     list_t list;
 };
 
-typedef struct {
+typedef struct _list_wrap_node_s {
     list_node_t node;
     void*       data;
 } _list_wrap_node_t;

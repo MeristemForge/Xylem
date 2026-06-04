@@ -27,7 +27,7 @@ _Pragma("once")
 typedef struct dynpool_s dynpool_t;
 
 /* Configuration for dynpool_create. */
-typedef struct {
+typedef struct dynpool_opts_s {
     int32_t  max_threads;   /* 0 = use default (512) */
     uint64_t idle_timeout;  /* 0 = use default (10000 ms) */
 } dynpool_opts_t;

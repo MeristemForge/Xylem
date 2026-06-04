@@ -30,7 +30,7 @@ struct xylem_rbtree_s {
     xylem_rbtree_cmp_kd_fn_t cmp_kd;
 };
 
-typedef struct {
+typedef struct _rbtree_wrap_node_s {
     rbtree_node_t            node;
     void*                    data;
     xylem_rbtree_cmp_dd_fn_t cmp_dd;
