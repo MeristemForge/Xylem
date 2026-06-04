@@ -30,7 +30,9 @@
  * run the client handshake over a proxy-tunnel fd, which is internal.
  */
 
-#include "http-internal.h"
+#include "transport-tls.h"
+#include "http-utils.h"
+#include "http-tunnel.h"
 
 #include "net/tls/tls.h"
 #include "runtime/runtime.h"
@@ -79,7 +81,7 @@ static http_transport_t _https_dial(const char* host, uint16_t port,
     tls_conn_t* conn = NULL;
 
     if (proxy && proxy->host) {
-        platform_sock_t fd = http_proxy_connect(
+        platform_sock_t fd = http_tunnel_connect(
             proxy->host, proxy->port, host, port,
             timeout_ms, proxy->username, proxy->password);
         if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {

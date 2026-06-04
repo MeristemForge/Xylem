@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-internal.h"
+#include "http-tunnel.h"
 
 #include "xylem/encoding/xylem-base64.h"
 #include "xylem/xylem-utils.h"
@@ -30,7 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int _http_proxy_write_all(iowait_t* w, platform_sock_t fd,
+static int _http_tunnel_write_all(iowait_t* w, platform_sock_t fd,
                                  const void* data, int len) {
     const char* ptr = (const char*)data;
     int         rem = len;
@@ -49,7 +49,7 @@ static int _http_proxy_write_all(iowait_t* w, platform_sock_t fd,
     return 0;
 }
 
-static int _http_proxy_read_some(iowait_t* w, platform_sock_t fd,
+static int _http_tunnel_read_some(iowait_t* w, platform_sock_t fd,
                                  void* buf, int len) {
     iowait_result_t r = iowait_read(w);
     if (r != IOWAIT_READY) {
@@ -58,11 +58,11 @@ static int _http_proxy_read_some(iowait_t* w, platform_sock_t fd,
     return platform_socket_recv(fd, buf, len);
 }
 
-static int _http_proxy_connect_handshake(iowait_t* w, platform_sock_t fd,
-                                         const char* target_host,
-                                         uint16_t target_port,
-                                         const char* username,
-                                         const char* password) {
+static int _http_tunnel_handshake(iowait_t* w, platform_sock_t fd,
+                                  const char* target_host,
+                                  uint16_t target_port,
+                                  const char* username,
+                                  const char* password) {
     char req[512];
     int off = snprintf(req, sizeof(req),
                        "CONNECT %s:%u HTTP/1.1\r\n"
@@ -95,7 +95,7 @@ static int _http_proxy_connect_handshake(iowait_t* w, platform_sock_t fd,
 
     off += snprintf(req + off, sizeof(req) - (size_t)off, "\r\n");
 
-    if (_http_proxy_write_all(w, fd, req, off) != 0) {
+    if (_http_tunnel_write_all(w, fd, req, off) != 0) {
         return -1;
     }
 
@@ -103,7 +103,7 @@ static int _http_proxy_connect_handshake(iowait_t* w, platform_sock_t fd,
     size_t resp_len = 0;
 
     while (resp_len < sizeof(resp) - 1) {
-        int n = _http_proxy_read_some(
+        int n = _http_tunnel_read_some(
             w, fd, resp + resp_len, (int)(sizeof(resp) - 1 - resp_len));
         if (n <= 0) {
             return -1;
@@ -123,7 +123,7 @@ static int _http_proxy_connect_handshake(iowait_t* w, platform_sock_t fd,
     return 0;
 }
 
-platform_sock_t http_proxy_connect(const char* proxy_host,
+platform_sock_t http_tunnel_connect(const char* proxy_host,
                                 uint16_t proxy_port,
                                 const char* target_host,
                                 uint16_t target_port,
@@ -162,7 +162,7 @@ platform_sock_t http_proxy_connect(const char* proxy_host,
         }
     }
 
-    if (_http_proxy_connect_handshake(w, fd, target_host, target_port,
+    if (_http_tunnel_handshake(w, fd, target_host, target_port,
                                       username, password) != 0) {
         iowait_destroy(w);
         platform_socket_close(fd);

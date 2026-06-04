@@ -21,7 +21,7 @@
 
 #include "xylem/net/http/xylem-http-router.h"
 
-#include "http-internal.h"
+#include "http.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -297,7 +297,7 @@ typedef struct {
     void*                   handler_userdata;
 } _mw_chain_t;
 
-void xylem_http_next(xylem_http_res_t* res, xylem_http_req_t* req_pub) {
+void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req_pub) {
     http_req_t* req = (http_req_t*)req_pub;
     _mw_chain_t* chain = (_mw_chain_t*)req->_mw_chain;
     if (!chain) {
@@ -357,7 +357,7 @@ static void _router_dispatch(xylem_http_res_t* res,
     req->_mw_chain = &chain;
 
     /* kick off the chain */
-    xylem_http_next(res, req_pub);
+    xylem_http_router_next(res, req_pub);
 
     /* if no middleware/handler responded and no route matched, send default 404 */
     if (!matched && !chain.handler && !((http_res_t*)res)->_headers_sent) {

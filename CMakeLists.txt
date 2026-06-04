@@ -86,6 +86,8 @@ set(SRCS
 	src/encoding/fec/reedsolomon-c/rs.c
 	src/encoding/fec/xylem-fec.c
 	src/net/http/http-utils.c
+	src/net/http/http-tunnel.c
+	src/net/http/http.c
 	src/net/http/xylem-http.c
 	src/net/http/transport-tcp.c
 	src/net/http/xylem-http-auth.c
@@ -139,7 +141,6 @@ if(XYLEM_ENABLE_TLS)
 	list(APPEND SRCS
 		src/net/tls/xylem-tls.c
 		src/net/xylem-dtls.c
-		src/net/http/http-proxy.c
 		src/net/http/transport-tls.c
 		src/net/ws/xylem-wss.c
 	)

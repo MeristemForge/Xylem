@@ -24,7 +24,7 @@
  * http_transport_t over xylem_tcp and drives accept/dial. Always built.
  */
 
-#include "http-internal.h"
+#include "transport-tcp.h"
 
 #include "xylem/net/xylem-tcp.h"
 

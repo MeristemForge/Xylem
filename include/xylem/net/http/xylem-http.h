@@ -244,6 +244,26 @@ extern int xylem_http_res_write(xylem_http_res_t* res,
 extern int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport);
 
 /**
+ * @brief Detach the underlying connection without sending any response.
+ *
+ * Unlike xylem_http_res_upgrade(), this writes no status line or headers:
+ * the engine simply relinquishes the connection and the caller owns every
+ * subsequent byte. Use it to implement CONNECT-style proxying, where the
+ * response (200 Connection Established vs. 502) must be decided only after
+ * dialing the upstream, or any custom protocol takeover.
+ *
+ * Must be called before any header or body byte has been sent. After a
+ * successful call the response handle no longer owns the connection;
+ * the caller is responsible for reading, writing, and closing it.
+ *
+ * @param res        Response handle.
+ * @param transport  Output: underlying connection handle (caller owns it).
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_http_res_hijack(xylem_http_res_t* res, void** transport);
+
+/**
  * @brief Get the response status code.
  *
  * @param res  Response handle.
