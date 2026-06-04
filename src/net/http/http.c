@@ -920,7 +920,7 @@ xylem_http_res_t* http_do_request(
     const xylem_http_hdr_t*      headers,
     size_t                       header_count,
     const xylem_http_cli_opts_t* opts,
-    bool                         use_proxy,
+    bool                         absolute_form,
     http_dial_fn_t               dial_fn,
     void*                        dial_ctx) {
 
@@ -976,7 +976,7 @@ xylem_http_res_t* http_do_request(
     size_t req_len = 0;
     char* req_buf = http_req_serialize(
         cur_method, &parsed, cur_body, cur_body_len, cur_content_type,
-        use_expect, use_proxy, &req_len, custom_hdrs, custom_hdr_count);
+        use_expect, absolute_form, &req_len, custom_hdrs, custom_hdr_count);
 
     if (!req_buf) {
         _transport_close(&transport);

@@ -168,7 +168,7 @@ int http_url_serialize(const http_url_t* url, char* buf, size_t buf_size) {
 char* http_req_serialize(const char* method, const http_url_t* url,
                          const void* body, size_t body_len,
                          const char* content_type, bool expect_continue,
-                         bool use_proxy, size_t* out_len,
+                         bool absolute_form, size_t* out_len,
                          const xylem_http_hdr_t* custom_headers,
                          size_t custom_header_count) {
     char host_val[280];
@@ -204,7 +204,7 @@ char* http_req_serialize(const char* method, const http_url_t* url,
 
     /* Proxy mode: "GET http://host:port/path HTTP/1.1\r\n" */
     size_t proxy_prefix_len = 0;
-    if (use_proxy) {
+    if (absolute_form) {
         proxy_prefix_len = strlen(url->scheme) + 3 + host_val_len;
     }
 
@@ -240,7 +240,7 @@ char* http_req_serialize(const char* method, const http_url_t* url,
     memcpy(buf + off, method, method_len);
     off += method_len;
     buf[off++] = ' ';
-    if (use_proxy) {
+    if (absolute_form) {
         size_t slen = strlen(url->scheme);
         memcpy(buf + off, url->scheme, slen);
         off += slen;

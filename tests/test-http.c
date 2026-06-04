@@ -587,6 +587,64 @@ static void test_idle_timeout(void) {
 
 
 
+/* ─── Plain-HTTP proxy (absolute-form forwarding) ─────────────── */
+
+/*
+ * Acts as the proxy: a plain-HTTP proxy receives the request line in
+ * absolute-form (full URL), so the server echoes back the URL it parsed.
+ * The client points at this server via opts.proxy; if the wiring is
+ * correct the echoed URL is the absolute target, not just the path.
+ */
+static void _proxy_handler(xylem_http_res_t* res,
+                           xylem_http_req_t* req,
+                           void* userdata) {
+    (void)userdata;
+    const char* url = xylem_http_req_url(req);
+    xylem_http_res_set_status(res, 200);
+    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    xylem_http_res_write(res, url, strlen(url));
+}
+
+static void _test_proxy_main(void* arg) {
+    (void)arg;
+
+    xylem_http_srv_t* srv = xylem_http_listen(
+        "127.0.0.1", 0, _proxy_handler, NULL, NULL);
+    ASSERT(srv != NULL);
+
+    uint16_t port = _srv_port(srv);
+    ASSERT(port != 0);
+
+    /* Route the request through the just-started server as a proxy. */
+    xylem_http_proxy_t proxy = {0};
+    proxy.host = "127.0.0.1";
+    proxy.port = port;
+
+    xylem_http_cli_opts_t opts = {0};
+    opts.proxy = &proxy;
+
+    /* Target a different (unconnectable) host: the request must reach the
+     * proxy, and the proxy must see the absolute-form URL. */
+    const char* target = "http://target.example/path/page";
+    xylem_http_res_t* res = xylem_http_get(target, NULL, 0, &opts);
+    ASSERT(res != NULL);
+    ASSERT(xylem_http_res_status(res) == 200);
+
+    /* The proxy echoes the request-line URL: it must be absolute-form. */
+    size_t blen = xylem_http_res_body_len(res);
+    ASSERT(blen == strlen(target));
+    ASSERT(memcmp(xylem_http_res_body(res), target, blen) == 0);
+    xylem_http_res_destroy(res);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void test_proxy_plain(void) {
+    xylem_run(_test_proxy_main, NULL, NULL);
+}
+
+
 /* ─── Main ─────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -634,6 +692,9 @@ int main(void) {
 
     /* Idle timeout */
     test_idle_timeout();
+
+    /* Plain-HTTP proxy (absolute-form forwarding) */
+    test_proxy_plain();
 
 
     return 0;

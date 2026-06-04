@@ -216,7 +216,8 @@ extern void http_srv_conn_coroutine(void* arg);
  * @param headers    Custom headers, or NULL.
  * @param header_count  Number of custom headers.
  * @param opts       Client options, or NULL.
- * @param use_proxy  Use absolute-form request target.
+ * @param absolute_form  Write the request target in absolute-form (proxy
+ *                       forwarding); origin-form when false.
  * @param dial_fn    Dial callback that creates a transport for a host.
  * @param dial_ctx   Opaque context passed to dial_fn.
  *
@@ -232,6 +233,6 @@ extern xylem_http_res_t* http_do_request(
     const xylem_http_hdr_t*      headers,
     size_t                       header_count,
     const xylem_http_cli_opts_t* opts,
-    bool                         use_proxy,
+    bool                         absolute_form,
     http_dial_fn_t               dial_fn,
     void*                        dial_ctx);

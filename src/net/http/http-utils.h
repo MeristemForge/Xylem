@@ -75,7 +75,9 @@ extern int http_url_serialize(const http_url_t* url, char* buf,
  * @param body_len             Body length in bytes.
  * @param content_type         Content-Type value, or NULL.
  * @param expect_continue      If true, add Expect: 100-continue and omit body.
- * @param use_proxy            If true, use absolute-form request target.
+ * @param absolute_form        If true, write the request target in absolute-
+ *                             form (GET http://host/path) for proxy
+ *                             forwarding; otherwise origin-form (GET /path).
  * @param out_len              Output: total serialized length.
  * @param custom_headers       Custom header array, or NULL.
  * @param custom_header_count  Number of custom headers.
@@ -85,7 +87,7 @@ extern int http_url_serialize(const http_url_t* url, char* buf,
 extern char* http_req_serialize(const char* method, const http_url_t* url,
                                 const void* body, size_t body_len,
                                 const char* content_type,
-                                bool expect_continue, bool use_proxy,
+                                bool expect_continue, bool absolute_form,
                                 size_t* out_len,
                                 const xylem_http_hdr_t* custom_headers,
                                 size_t custom_header_count);
