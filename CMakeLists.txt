@@ -143,7 +143,7 @@ if(XYLEM_ENABLE_TLS)
 		src/net/tls/tls-backend-openssl.c
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
-		src/net/xylem-dtls.c
+		src/net/tls/xylem-dtls.c
 		src/net/http/http-transport-tls.c
 		src/net/ws/ws-tls.c
 	)
