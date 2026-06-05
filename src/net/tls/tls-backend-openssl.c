@@ -527,3 +527,193 @@ int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx, const char* path) {
     SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tlsb_keylog_cb);
     return 0;
 }
+
+/* ===================================================================== *
+ *  Connection: one SSL state machine over memory buffers
+ * ===================================================================== */
+
+tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
+                                            bool is_server) {
+    tls_backend_conn_t* c = (tls_backend_conn_t*)calloc(1, sizeof(*c));
+    if (!c) {
+        return NULL;
+    }
+    c->ssl = SSL_new(ctx->ssl_ctx);
+    if (!c->ssl) {
+        free(c);
+        return NULL;
+    }
+    c->rbio = BIO_new(BIO_s_mem());
+    c->wbio = BIO_new(BIO_s_mem());
+    if (!c->rbio || !c->wbio) {
+        BIO_free(c->rbio);
+        BIO_free(c->wbio);
+        SSL_free(c->ssl);
+        free(c);
+        return NULL;
+    }
+    SSL_set_bio(c->ssl, c->rbio, c->wbio);   /* SSL owns both BIOs now */
+
+    /* DTLS server cookie path needs SSL -> conn lookup. */
+    SSL_set_ex_data(c->ssl, _tlsb_conn_ex_idx, c);
+
+    if (is_server) {
+        SSL_set_accept_state(c->ssl);
+    } else {
+        SSL_set_connect_state(c->ssl);
+    }
+    return c;
+}
+
+void tls_backend_conn_destroy(tls_backend_conn_t* c) {
+    if (!c) {
+        return;
+    }
+    if (c->ssl) {
+        SSL_free(c->ssl);   /* frees the bound BIOs too */
+    }
+    free(c);
+}
+
+void tls_backend_conn_configure(tls_backend_conn_t* c,
+                                const tls_backend_handshake_cfg_t* cfg) {
+    int mode;
+    switch (cfg->verify) {
+        case TLS_BACKEND_VERIFY_REQUIRE:
+            mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+            break;
+        case TLS_BACKEND_VERIFY_PEER:
+            mode = SSL_VERIFY_PEER;
+            break;
+        default:
+            mode = SSL_VERIFY_NONE;
+            break;
+    }
+    SSL_set_verify(c->ssl, mode, NULL);
+
+    if (cfg->sni_name) {
+        SSL_set_tlsext_host_name(c->ssl, cfg->sni_name);
+    }
+    if (cfg->verify_host) {
+        SSL_set1_host(c->ssl, cfg->verify_host);   /* copies */
+    }
+}
+
+int tls_backend_conn_feed(tls_backend_conn_t* c, const void* buf, int len) {
+    return BIO_write(c->rbio, buf, len) == len ? 0 : -1;
+}
+
+int tls_backend_conn_drain(tls_backend_conn_t* c, void* buf, int cap) {
+    int n = BIO_read(c->wbio, buf, cap);
+    if (n > 0) {
+        return n;
+    }
+    /* A mem BIO with no pending bytes returns <=0 with the retry flag
+     * set; that is "empty", not an error. Only a non-retry negative is a
+     * hard failure. */
+    return BIO_should_retry(c->wbio) ? 0 : (n < 0 ? -1 : 0);
+}
+
+static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
+    if (ret == 1) {
+        return TLS_BACKEND_OK;
+    }
+    int err = SSL_get_error(ssl, ret);
+    switch (err) {
+        case SSL_ERROR_WANT_READ:   return TLS_BACKEND_WANT_READ;
+        case SSL_ERROR_WANT_WRITE:  return TLS_BACKEND_WANT_WRITE;
+        case SSL_ERROR_ZERO_RETURN: return TLS_BACKEND_CLOSED;
+        default: {
+            unsigned long e = ERR_peek_error();
+            xylem_loge("<tls> ssl op failed ssl_err=%d reason=%s", err,
+                       ERR_reason_error_string(e)
+                           ? ERR_reason_error_string(e) : "unknown");
+            return TLS_BACKEND_ERROR;
+        }
+    }
+}
+
+tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c) {
+    ERR_clear_error();
+    int ret = SSL_do_handshake(c->ssl);
+    return _tlsb_state(c->ssl, ret);
+}
+
+tls_backend_state_t tls_backend_conn_read(tls_backend_conn_t* c,
+                                          void* buf, int len, int* out_n) {
+    ERR_clear_error();
+    int n = SSL_read(c->ssl, buf, len);
+    if (n > 0) {
+        *out_n = n;
+        return TLS_BACKEND_OK;
+    }
+    *out_n = 0;
+    return _tlsb_state(c->ssl, n);
+}
+
+tls_backend_state_t tls_backend_conn_write(tls_backend_conn_t* c,
+                                           const void* buf, int len,
+                                           int* out_n) {
+    ERR_clear_error();
+    int n = SSL_write(c->ssl, buf, len);
+    if (n > 0) {
+        *out_n = n;
+        return TLS_BACKEND_OK;
+    }
+    *out_n = 0;
+    return _tlsb_state(c->ssl, n);
+}
+
+void tls_backend_conn_shutdown(tls_backend_conn_t* c) {
+    if (c->ssl) {
+        ERR_clear_error();
+        SSL_shutdown(c->ssl);   /* queues close_notify into wbio */
+    }
+}
+
+void tls_backend_conn_get_alpn(tls_backend_conn_t* c, char* buf, size_t cap) {
+    const unsigned char* proto = NULL;
+    unsigned int         plen  = 0;
+    SSL_get0_alpn_selected(c->ssl, &proto, &plen);
+    if (proto && plen > 0 && (size_t)plen < cap) {
+        memcpy(buf, proto, plen);
+        buf[plen] = '\0';
+    } else if (cap > 0) {
+        buf[0] = '\0';
+    }
+}
+
+/* ===================================================================== *
+ *  DTLS-only extensions (datagram specifics)
+ * ===================================================================== */
+
+void dtls_backend_conn_set_mtu(tls_backend_conn_t* c, uint16_t mtu) {
+    if (mtu == 0) {
+        return;
+    }
+    SSL_set_options(c->ssl, SSL_OP_NO_QUERY_MTU);
+    DTLS_set_link_mtu(c->ssl, mtu);
+}
+
+void dtls_backend_conn_set_peer_addr(tls_backend_conn_t* c,
+                                     const void* sockaddr, size_t salen) {
+    if (salen > sizeof(c->peer)) {
+        salen = sizeof(c->peer);
+    }
+    memcpy(&c->peer, sockaddr, salen);
+    c->peer_len = salen;
+}
+
+bool dtls_backend_conn_get_timeout(tls_backend_conn_t* c, uint64_t* out_ms) {
+    struct timeval tv;
+    if (!DTLSv1_get_timeout(c->ssl, &tv)) {
+        return false;
+    }
+    uint64_t ms = (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+    *out_ms = (ms == 0) ? 1 : ms;
+    return true;
+}
+
+void dtls_backend_conn_handle_timeout(tls_backend_conn_t* c) {
+    DTLSv1_handle_timeout(c->ssl);
+}
