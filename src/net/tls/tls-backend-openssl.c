@@ -42,10 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#endif
-
 #define TLSB_COOKIE_SIZE 32
 
 typedef struct _tlsb_sni_entry_s {
@@ -483,6 +479,9 @@ int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx, const char* ca_file) {
  * mobile branch must precede the generic Unix branch.
  */
 int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx) {
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #if defined(_WIN32)
     if (SSL_CTX_load_verify_store(ctx->ssl_ctx,
                                   "org.openssl.winstore://") != 1) {
