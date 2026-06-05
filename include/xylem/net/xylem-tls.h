@@ -136,9 +136,16 @@ extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
  * trust a private CA. Avoid on an mTLS server, where it would accept
  * any client certificate chaining to a public CA.
  *
+ * Platform support: works on Linux, Windows, and macOS (via the CA
+ * bundle shipped with the linked OpenSSL). NOT supported on Android or
+ * iOS, whose system trust stores are not reachable from OpenSSL -- there
+ * this returns -1. On mobile (or whenever you want a fixed, self-managed
+ * trust set) bundle a CA file with the app and use xylem_tls_ctx_load_ca
+ * instead, e.g. curl's cacert.pem from https://curl.se/ca/cacert.pem.
+ *
  * @param ctx  Context handle.
  *
- * @return 0 on success, -1 on failure.
+ * @return 0 on success, -1 on failure (including unsupported platforms).
  */
 extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx);
 

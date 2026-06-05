@@ -42,6 +42,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #define TLSB_COOKIE_SIZE 32
 
 typedef struct _tlsb_sni_entry_s {
@@ -458,6 +462,26 @@ int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx, const char* ca_file) {
     return 0;
 }
 
+/**
+ * Load the platform's system trust store into the context. Supported only
+ * on the desktop/server OSes whose trust store OpenSSL can read directly:
+ *
+ *   - Windows: the winstore loader (OpenSSL 3.2+) reads the system ROOT
+ *     store on demand. OpenSSL's default verify paths are empty here.
+ *   - Linux / macOS: OpenSSL's default verify paths resolve to the
+ *     system/distribution CA bundle (or the bundle shipped alongside the
+ *     linked OpenSSL, e.g. Homebrew on macOS).
+ *
+ * On mobile (Android, iOS) there is no system trust store reachable from
+ * OpenSSL -- the CAs live behind the Java KeyStore / Security.framework,
+ * not on a path OpenSSL can load. So this fails loudly (returns -1, logs
+ * guidance) rather than silently loading zero anchors. Bundle a CA file
+ * with the app and use tls_backend_ctx_load_ca_file instead (e.g. curl's
+ * cacert.pem from https://curl.se/ca/cacert.pem).
+ *
+ * Order matters: __ANDROID__ implies __linux__ under the NDK, so the
+ * mobile branch must precede the generic Unix branch.
+ */
 int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx) {
 #if defined(_WIN32)
     if (SSL_CTX_load_verify_store(ctx->ssl_ctx,
@@ -465,13 +489,21 @@ int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx) {
         xylem_loge("<tls> load system ca failed");
         return -1;
     }
+    return 0;
+#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+    /* No OpenSSL-readable system trust store; use a bundled CA file. */
+    (void)ctx;
+    xylem_loge("<tls> load_system_ca unsupported on mobile; bundle a CA "
+               "file and use load_ca_file (e.g. curl's cacert.pem)");
+    return -1;
 #else
+    /* Linux / macOS: OpenSSL default verify paths -> system CA bundle. */
     if (SSL_CTX_set_default_verify_paths(ctx->ssl_ctx) != 1) {
         xylem_loge("<tls> load system ca failed");
         return -1;
     }
-#endif
     return 0;
+#endif
 }
 
 int tls_backend_ctx_set_alpn(tls_backend_ctx_t* ctx,

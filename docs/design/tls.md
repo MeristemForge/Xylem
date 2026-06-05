@@ -122,20 +122,34 @@ unchecked.
 | `xylem_tls_ctx_load_ca` | the CAs in a PEM file (narrow trust: private PKI / mTLS) |
 | `xylem_tls_ctx_load_system_ca` | the platform root store (public CAs) |
 
-`load_system_ca` is now a backend responsibility
-(`tls_backend_ctx_load_system_ca`), not a platform shim. The OS-specific split
-lives inside the OpenSSL backend (`tls-backend-openssl.c`) behind
-`#if defined(_WIN32)`:
+`load_system_ca` is a backend responsibility (`tls_backend_ctx_load_system_ca`),
+not a platform shim. The OS-specific split lives inside the OpenSSL backend
+(`tls-backend-openssl.c`). It is supported only on the desktop/server OSes whose
+trust store OpenSSL can read directly; mobile OSes keep their CAs behind the Java
+KeyStore / Security.framework, which OpenSSL cannot load, so there a bundled CA
+file is used instead:
 
-- **Unix:** `SSL_CTX_set_default_verify_paths` -- OpenSSL's default paths
-  resolve to the system CA bundle.
-- **Windows:** `SSL_CTX_load_verify_store("org.openssl.winstore://")`. OpenSSL's
-  default verify paths point at a build-time directory that is empty on Windows,
-  so they silently load nothing; the winstore loader (OpenSSL 3.2+) reads the
-  Windows ROOT store on demand during chain building. This OS-specific behavior
-  is isolated in the OpenSSL backend rather than a platform shim.
+| Platform | Mechanism | Status |
+|----------|-----------|--------|
+| Linux (desktop/server) | `SSL_CTX_set_default_verify_paths` -> distro CA bundle | works |
+| Windows | `SSL_CTX_load_verify_store("org.openssl.winstore://")` -> system ROOT store | works |
+| macOS | `SSL_CTX_set_default_verify_paths` -> bundle shipped with the linked OpenSSL (e.g. Homebrew's `cert.pem`), **not** the Keychain | works when OpenSSL ships a bundle |
+| Android | none -- KeyStore not reachable from OpenSSL | **unsupported** -- returns -1 |
+| iOS | none -- SecTrust-only, no on-disk bundle | **unsupported** -- returns -1 |
 
-The two calls compose (system roots plus a private CA). A server doing mTLS
+Notes:
+
+- **Windows** default verify paths point at a build-time directory that is empty
+  on Windows, so they load nothing; the winstore loader (OpenSSL 3.2+) reads the
+  ROOT store on demand during chain building.
+- **Android / iOS** have no OpenSSL-readable system trust store, so
+  `load_system_ca` fails loudly (returns -1, logs guidance) rather than silently
+  loading zero anchors. Bundle a CA file with the app and call
+  `xylem_tls_ctx_load_ca` instead (e.g. curl's `cacert.pem` from
+  <https://curl.se/ca/cacert.pem>). `load_ca_file` works on every platform since
+  it only reads a PEM you provide.
+
+The two load calls compose (system roots plus a private CA). A server doing mTLS
 should use `load_ca` alone, since adding the public roots would let any
 client cert chaining to a public CA authenticate.
 
