@@ -167,14 +167,21 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     return tls_backend_ctx_set_keylog(ctx->be, path);
 }
 
-int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx, const char* hostname,
-                             const char* cert, const char* key) {
+int xylem_dtls_ctx_load_cert(
+    xylem_dtls_ctx_t* ctx,
+    const char*       hostname,
+    const char*       cert,
+    const char*       key) {
     return tls_backend_ctx_load_cert_file(ctx->be, hostname, cert, key);
 }
 
-int xylem_dtls_ctx_load_cert_mem(xylem_dtls_ctx_t* ctx, const char* hostname,
-                                 const void* cert_pem, size_t cert_len,
-                                 const void* key_pem, size_t key_len) {
+int xylem_dtls_ctx_load_cert_mem(
+    xylem_dtls_ctx_t* ctx,
+    const char*       hostname,
+    const void*       cert_pem,
+    size_t            cert_len,
+    const void*       key_pem,
+    size_t            key_len) {
     if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
         return -1;
     }
@@ -186,8 +193,9 @@ int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     return tls_backend_ctx_load_ca_file(ctx->be, ca_file);
 }
 
-int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx,
-                                  const char* fallback_ca_file) {
+int xylem_dtls_ctx_load_system_ca(
+    xylem_dtls_ctx_t* ctx,
+    const char*       fallback_ca_file) {
     return tls_backend_ctx_load_system_ca(ctx->be, fallback_ca_file);
 }
 
@@ -199,8 +207,10 @@ void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable) {
     ctx->verify_client = enable;
 }
 
-int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
-                            const char** protocols, size_t count) {
+int xylem_dtls_ctx_set_alpn(
+    xylem_dtls_ctx_t* ctx,
+    const char**      protocols,
+    size_t            count) {
     return tls_backend_ctx_set_alpn(ctx->be, protocols, count);
 }
 
@@ -310,8 +320,9 @@ static int _dtls_addr_cmp(const addr_t* a, const addr_t* b) {
     return 0;
 }
 
-static int _dtls_session_cmp_nn(const rbtree_node_t* a,
-                                const rbtree_node_t* b) {
+static int _dtls_session_cmp_nn(
+    const rbtree_node_t* a,
+    const rbtree_node_t* b) {
     const xylem_dtls_conn_t* da =
         rbtree_entry(a, xylem_dtls_conn_t, server_node);
     const xylem_dtls_conn_t* db =
@@ -319,16 +330,18 @@ static int _dtls_session_cmp_nn(const rbtree_node_t* a,
     return _dtls_addr_cmp(&da->peer_addr, &db->peer_addr);
 }
 
-static int _dtls_session_cmp_kn(const void* key,
-                                const rbtree_node_t* node) {
+static int _dtls_session_cmp_kn(
+    const void*          key,
+    const rbtree_node_t* node) {
     const addr_t* addr = (const addr_t*)key;
     const xylem_dtls_conn_t* dtls =
         rbtree_entry(node, xylem_dtls_conn_t, server_node);
     return _dtls_addr_cmp(addr, &dtls->peer_addr);
 }
 
-static xylem_dtls_conn_t* _dtls_find_session(xylem_dtls_listener_t* ln,
-                                            addr_t* addr) {
+static xylem_dtls_conn_t* _dtls_find_session(
+    xylem_dtls_listener_t* ln,
+    addr_t*                addr) {
     rbtree_node_t* node = rbtree_find(&ln->sessions, addr);
     if (!node) {
         return NULL;
@@ -355,8 +368,10 @@ static void _dtls_server_flush_write_bio(xylem_dtls_conn_t* dtls) {
     free(buf);
 }
 
-static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
-                                   const void* data, int len) {
+static int _dtls_server_send_record(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len) {
     socklen_t addrlen =
         (dtls->peer_addr.storage.ss_family == AF_INET6)
             ? (socklen_t)sizeof(struct sockaddr_in6)
@@ -405,21 +420,15 @@ static int _dtls_server_send_record(xylem_dtls_conn_t* dtls,
 #define DTLS_PUMP_TIMEOUT (-2)
 
 /**
- * Drain pending outbound ciphertext from the backend to the connected
- * socket, one datagram per drain. Holds wr_mu so it is the sole parker
- * on the iowait write direction, and takes ssl_mu only for the drain
- * itself -- never across a socket park -- so a concurrent reader can
- * still touch the backend state. Returns 0 once the backend is empty,
- * -1 on socket error or close.
- */
-/**
  * Send one datagram on the connected socket, parking on the iowait write
  * direction when the kernel buffer is full. Caller holds wr_mu so this is
  * the sole parker on that direction. Returns 0 on success, -1 on socket
  * error or close.
  */
-static int _dtls_client_send_dgram(xylem_dtls_conn_t* dtls, const char* buf,
-                                   int n) {
+static int _dtls_client_send_dgram(
+    xylem_dtls_conn_t* dtls,
+    const char*        buf,
+    int                n) {
     for (;;) {
         ssize_t sent = platform_socket_send(dtls->fd, buf, n);
         if (sent >= 0) {
@@ -438,6 +447,14 @@ static int _dtls_client_send_dgram(xylem_dtls_conn_t* dtls, const char* buf,
     }
 }
 
+/**
+ * Drain pending outbound ciphertext from the backend to the connected
+ * socket, one datagram per drain. Holds wr_mu so it is the sole parker
+ * on the iowait write direction, and takes ssl_mu only for the drain
+ * itself -- never across a socket park -- so a concurrent reader can
+ * still touch the backend state. Returns 0 once the backend is empty,
+ * -1 on socket error or close.
+ */
 static int _dtls_client_pump_out(xylem_dtls_conn_t* dtls) {
     int    ret   = 0;
     char*  buf   = dtls->wr_buf;
@@ -514,8 +531,9 @@ static int _dtls_client_pump_in(xylem_dtls_conn_t* dtls) {
  * DTLS retransmit timer (dtls_backend_conn_get_timeout); on the latter
  * expiring dtls_backend_conn_handle_timeout retransmits the last flight.
  */
-static int _dtls_client_do_handshake(xylem_dtls_conn_t* dtls,
-                                     uint64_t deadline) {
+static int _dtls_client_do_handshake(
+    xylem_dtls_conn_t* dtls,
+    uint64_t           deadline) {
     for (;;) {
         xylem_mutex_lock(dtls->ssl_mu);
         tls_backend_state_t st = tls_backend_conn_handshake(dtls->be);
@@ -650,8 +668,10 @@ static int _dtls_client_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
     return ret;
 }
 
-static int _dtls_client_send_loop(xylem_dtls_conn_t* dtls,
-                                  const void* data, int len) {
+static int _dtls_client_send_loop(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len) {
     for (;;) {
         int n = 0;
         xylem_mutex_lock(dtls->ssl_mu);
@@ -686,8 +706,10 @@ static int _dtls_client_send_loop(xylem_dtls_conn_t* dtls,
     }
 }
 
-static int _dtls_client_send(xylem_dtls_conn_t* dtls,
-                            const void* data, int len) {
+static int _dtls_client_send(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len) {
     _dtls_conn_ref(dtls);
     int ret = -1;
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -956,8 +978,10 @@ static int _dtls_server_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
     return ret;
 }
 
-static int _dtls_server_send(xylem_dtls_conn_t* dtls,
-                            const void* data, int len) {
+static int _dtls_server_send(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len) {
     _dtls_conn_ref(dtls);
     int ret = -1;
 
@@ -1016,9 +1040,11 @@ static void _dtls_server_close_conn(xylem_dtls_conn_t* dtls) {
     _dtls_conn_unref(dtls);
 }
 
-xylem_dtls_conn_t* xylem_dtls_dial(const char* host, uint16_t port,
-                                   xylem_dtls_ctx_t* ctx,
-                                   xylem_dtls_opts_t* opts) {
+xylem_dtls_conn_t* xylem_dtls_dial(
+    const char*        host,
+    uint16_t           port,
+    xylem_dtls_ctx_t*  ctx,
+    xylem_dtls_opts_t* opts) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1105,9 +1131,11 @@ xylem_dtls_conn_t* xylem_dtls_dial(const char* host, uint16_t port,
     return dtls;
 }
 
-xylem_dtls_listener_t* xylem_dtls_listen(const char* host, uint16_t port,
-                                         xylem_dtls_ctx_t* ctx,
-                                         xylem_dtls_opts_t* opts) {
+xylem_dtls_listener_t* xylem_dtls_listen(
+    const char*        host,
+    uint16_t           port,
+    xylem_dtls_ctx_t*  ctx,
+    xylem_dtls_opts_t* opts) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1184,8 +1212,10 @@ int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
     return _dtls_client_recv(dtls, buf, len);
 }
 
-int xylem_dtls_write(xylem_dtls_conn_t* dtls,
-                     const void* data, int len) {
+int xylem_dtls_write(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len) {
     if (dtls->listener) {
         return _dtls_server_send(dtls, data, len);
     }
@@ -1221,8 +1251,9 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
     _dtls_listener_unref(ln);
 }
 
-void xylem_dtls_set_read_deadline(xylem_dtls_conn_t* dtls,
-                                  uint64_t deadline_ms) {
+void xylem_dtls_set_read_deadline(
+    xylem_dtls_conn_t* dtls,
+    uint64_t           deadline_ms) {
     if (dtls->listener) {
         dtls->rd_deadline_ms = deadline_ms;
     } else {
@@ -1230,8 +1261,9 @@ void xylem_dtls_set_read_deadline(xylem_dtls_conn_t* dtls,
     }
 }
 
-void xylem_dtls_set_write_deadline(xylem_dtls_conn_t* dtls,
-                                   uint64_t deadline_ms) {
+void xylem_dtls_set_write_deadline(
+    xylem_dtls_conn_t* dtls,
+    uint64_t           deadline_ms) {
     if (dtls->listener) {
         dtls->wr_deadline_ms = deadline_ms;
     } else {
@@ -1243,13 +1275,19 @@ const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {
     return dtls->alpn[0] ? dtls->alpn : NULL;
 }
 
-int xylem_dtls_remote_addr(xylem_dtls_conn_t* dtls, char* host,
-                           size_t host_len, uint16_t* port) {
+int xylem_dtls_remote_addr(
+    xylem_dtls_conn_t* dtls,
+    char*              host,
+    size_t             host_len,
+    uint16_t*          port) {
     return addr_ntop(&dtls->peer_addr, host, host_len, port);
 }
 
-int xylem_dtls_local_addr(xylem_dtls_conn_t* dtls, char* host,
-                          size_t host_len, uint16_t* port) {
+int xylem_dtls_local_addr(
+    xylem_dtls_conn_t* dtls,
+    char*              host,
+    size_t             host_len,
+    uint16_t*          port) {
     platform_sock_t fd = dtls->listener ? dtls->listener->fd : dtls->fd;
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
@@ -1259,8 +1297,11 @@ int xylem_dtls_local_addr(xylem_dtls_conn_t* dtls, char* host,
     return addr_ntop(&addr, host, host_len, port);
 }
 
-int xylem_dtls_listener_addr(xylem_dtls_listener_t* ln, char* host,
-                             size_t host_len, uint16_t* port) {
+int xylem_dtls_listener_addr(
+    xylem_dtls_listener_t* ln,
+    char*                  host,
+    size_t                 host_len,
+    uint16_t*              port) {
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {

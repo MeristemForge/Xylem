@@ -108,10 +108,11 @@ extern void               tls_backend_ctx_destroy(tls_backend_ctx_t* ctx);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_backend_ctx_load_cert_file(tls_backend_ctx_t* ctx,
-                                          const char* hostname,
-                                          const char* cert_file,
-                                          const char* key_file);
+extern int tls_backend_ctx_load_cert_file(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    const char*        cert_file,
+    const char*        key_file);
 
 /**
  * @brief Load a PEM certificate chain and private key from memory.
@@ -128,10 +129,13 @@ extern int tls_backend_ctx_load_cert_file(tls_backend_ctx_t* ctx,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_backend_ctx_load_cert_mem(tls_backend_ctx_t* ctx,
-                                         const char* hostname,
-                                         const void* cert_pem, size_t cert_len,
-                                         const void* key_pem,  size_t key_len);
+extern int tls_backend_ctx_load_cert_mem(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    const void*        cert_pem,
+    size_t             cert_len,
+    const void*        key_pem,
+    size_t             key_len);
 
 /**
  * @brief Add a CA certificate file to the trust store.
@@ -141,8 +145,9 @@ extern int tls_backend_ctx_load_cert_mem(tls_backend_ctx_t* ctx,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx,
-                                        const char* ca_file);
+extern int tls_backend_ctx_load_ca_file(
+    tls_backend_ctx_t* ctx,
+    const char*        ca_file);
 
 /**
  * @brief Load public-CA trust anchors: the system store plus a fallback.
@@ -155,8 +160,9 @@ extern int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx,
  *
  * @return 0 if at least one source loaded, -1 if none did.
  */
-extern int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
-                                          const char* fallback_ca_file);
+extern int tls_backend_ctx_load_system_ca(
+    tls_backend_ctx_t* ctx,
+    const char*        fallback_ca_file);
 
 /**
  * @brief Set the ALPN protocol list (offered by clients, selected by
@@ -168,8 +174,10 @@ extern int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_backend_ctx_set_alpn(tls_backend_ctx_t* ctx,
-                                    const char** protocols, size_t count);
+extern int tls_backend_ctx_set_alpn(
+    tls_backend_ctx_t* ctx,
+    const char**       protocols,
+    size_t             count);
 
 /**
  * @brief Enable NSS key-log output for Wireshark decryption.
@@ -179,8 +187,9 @@ extern int tls_backend_ctx_set_alpn(tls_backend_ctx_t* ctx,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx,
-                                      const char* path);
+extern int tls_backend_ctx_set_keylog(
+    tls_backend_ctx_t* ctx,
+    const char*        path);
 
 /**
  * @brief Create a connection state machine bound to a context.
@@ -190,8 +199,9 @@ extern int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx,
  *
  * @return Connection handle, or NULL on failure.
  */
-extern tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
-                                                   bool is_server);
+extern tls_backend_conn_t* tls_backend_conn_create(
+    tls_backend_ctx_t* ctx,
+    bool               is_server);
 
 /**
  * @brief Destroy a connection state machine. NULL-safe.
@@ -209,8 +219,9 @@ extern void tls_backend_conn_destroy(tls_backend_conn_t* c);
  * @param c    Connection handle.
  * @param cfg  Handshake configuration.
  */
-extern void tls_backend_conn_configure(tls_backend_conn_t* c,
-                                       const tls_backend_handshake_cfg_t* cfg);
+extern void tls_backend_conn_configure(
+    tls_backend_conn_t*                c,
+    const tls_backend_handshake_cfg_t* cfg);
 
 /**
  * @brief Hand inbound ciphertext to the state machine.
@@ -221,8 +232,10 @@ extern void tls_backend_conn_configure(tls_backend_conn_t* c,
  *
  * @return 0 on success, -1 on error.
  */
-extern int tls_backend_conn_feed(tls_backend_conn_t* c,
-                                 const void* buf, int len);
+extern int tls_backend_conn_feed(
+    tls_backend_conn_t* c,
+    const void*         buf,
+    int                 len);
 
 /**
  * @brief Take pending outbound ciphertext from the state machine.
@@ -233,8 +246,10 @@ extern int tls_backend_conn_feed(tls_backend_conn_t* c,
  *
  * @return Byte count (>0), 0 when empty, -1 on error.
  */
-extern int tls_backend_conn_drain(tls_backend_conn_t* c,
-                                  void* buf, int cap);
+extern int tls_backend_conn_drain(
+    tls_backend_conn_t* c,
+    void*               buf,
+    int                 cap);
 
 /**
  * @brief Advance the handshake state machine one step.
@@ -257,9 +272,11 @@ extern tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c);
  * @return TLS_BACKEND_OK with *out_n set, WANT_READ/WANT_WRITE to pump,
  *         TLS_BACKEND_CLOSED on clean shutdown, or TLS_BACKEND_ERROR.
  */
-extern tls_backend_state_t tls_backend_conn_read(tls_backend_conn_t* c,
-                                                 void* buf, int len,
-                                                 int* out_n);
+extern tls_backend_state_t tls_backend_conn_read(
+    tls_backend_conn_t* c,
+    void*               buf,
+    int                 len,
+    int*                out_n);
 
 /**
  * @brief Write application data for encryption.
@@ -272,9 +289,11 @@ extern tls_backend_state_t tls_backend_conn_read(tls_backend_conn_t* c,
  * @return TLS_BACKEND_OK with *out_n set, WANT_READ/WANT_WRITE to pump,
  *         or TLS_BACKEND_ERROR.
  */
-extern tls_backend_state_t tls_backend_conn_write(tls_backend_conn_t* c,
-                                                  const void* buf, int len,
-                                                  int* out_n);
+extern tls_backend_state_t tls_backend_conn_write(
+    tls_backend_conn_t* c,
+    const void*         buf,
+    int                 len,
+    int*                out_n);
 
 /**
  * @brief Queue a close-notify into the outbound buffer.
@@ -294,8 +313,10 @@ extern void tls_backend_conn_shutdown(tls_backend_conn_t* c);
  * @param buf  Destination buffer.
  * @param cap  Capacity of buf in bytes.
  */
-extern void tls_backend_conn_get_alpn(tls_backend_conn_t* c,
-                                      char* buf, size_t cap);
+extern void tls_backend_conn_get_alpn(
+    tls_backend_conn_t* c,
+    char*               buf,
+    size_t              cap);
 
 /**
  * @brief Set the link MTU so records fit a single datagram.
@@ -312,9 +333,10 @@ extern void dtls_backend_conn_set_mtu(tls_backend_conn_t* c, uint16_t mtu);
  * @param sockaddr  Peer sockaddr bytes.
  * @param salen     Length of the sockaddr in bytes.
  */
-extern void dtls_backend_conn_set_peer_addr(tls_backend_conn_t* c,
-                                            const void* sockaddr,
-                                            size_t salen);
+extern void dtls_backend_conn_set_peer_addr(
+    tls_backend_conn_t* c,
+    const void*         sockaddr,
+    size_t              salen);
 
 /**
  * @brief Query the current DTLS retransmit timeout.
@@ -324,8 +346,9 @@ extern void dtls_backend_conn_set_peer_addr(tls_backend_conn_t* c,
  *
  * @return true if a timeout is pending, false otherwise.
  */
-extern bool dtls_backend_conn_get_timeout(tls_backend_conn_t* c,
-                                          uint64_t* out_ms);
+extern bool dtls_backend_conn_get_timeout(
+    tls_backend_conn_t* c,
+    uint64_t*           out_ms);
 
 /**
  * @brief Process a DTLS retransmit-timer expiry (retransmits a flight).

@@ -127,8 +127,11 @@ extern int        tls_ctx_set_keylog(tls_ctx_t* ctx, const char* path);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_ctx_load_cert(tls_ctx_t* ctx, const char* hostname,
-                             const char* cert, const char* key);
+extern int tls_ctx_load_cert(
+    tls_ctx_t*  ctx,
+    const char* hostname,
+    const char* cert,
+    const char* key);
 
 /**
  * @brief Load a PEM certificate chain and private key from memory.
@@ -142,9 +145,13 @@ extern int tls_ctx_load_cert(tls_ctx_t* ctx, const char* hostname,
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tls_ctx_load_cert_mem(tls_ctx_t* ctx, const char* hostname,
-                                 const void* cert_pem, size_t cert_len,
-                                 const void* key_pem, size_t key_len);
+extern int tls_ctx_load_cert_mem(
+    tls_ctx_t*  ctx,
+    const char* hostname,
+    const void* cert_pem,
+    size_t      cert_len,
+    const void* key_pem,
+    size_t      key_len);
 
 /**
  * @brief Add a CA certificate file to the trust store.
@@ -164,8 +171,9 @@ extern int tls_ctx_load_ca(tls_ctx_t* ctx, const char* ca_file);
  *
  * @return 0 if at least one source loaded, -1 if none did.
  */
-extern int tls_ctx_load_system_ca(tls_ctx_t* ctx,
-                                  const char* fallback_ca_file);
+extern int tls_ctx_load_system_ca(
+    tls_ctx_t*  ctx,
+    const char* fallback_ca_file);
 
 /**
  * @brief Set whether a client verifies the server certificate.
@@ -192,8 +200,10 @@ extern void tls_ctx_verify_client(tls_ctx_t* ctx, bool enable);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int  tls_ctx_set_alpn(tls_ctx_t* ctx, const char** protocols,
-                             size_t count);
+extern int tls_ctx_set_alpn(
+    tls_ctx_t*   ctx,
+    const char** protocols,
+    size_t       count);
 
 /**
  * @brief Connect to a remote TLS endpoint and complete the handshake.
@@ -205,8 +215,11 @@ extern int  tls_ctx_set_alpn(tls_ctx_t* ctx, const char** protocols,
  *
  * @return Connection handle, or NULL on failure or timeout.
  */
-extern tls_conn_t* tls_dial(const char* host, uint16_t port,
-                            tls_ctx_t* ctx, xylem_tls_opts_t* opts);
+extern tls_conn_t* tls_dial(
+    const char*       host,
+    uint16_t          port,
+    tls_ctx_t*        ctx,
+    xylem_tls_opts_t* opts);
 
 /**
  * @brief Close a connection and release it. Idempotent.
@@ -225,8 +238,11 @@ extern void        tls_close(tls_conn_t* tls);
  *
  * @return Listener handle, or NULL on failure.
  */
-extern tls_listener_t* tls_listen(const char* host, uint16_t port,
-                                  tls_ctx_t* ctx, xylem_tls_opts_t* opts);
+extern tls_listener_t* tls_listen(
+    const char*       host,
+    uint16_t          port,
+    tls_ctx_t*        ctx,
+    xylem_tls_opts_t* opts);
 
 /**
  * @brief Accept and handshake the next connection.
@@ -295,8 +311,11 @@ extern void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms);
  *
  * @return 0 on success, -1 on error.
  */
-extern int tls_remote_addr(tls_conn_t* tls, char* host, size_t host_len,
-                           uint16_t* port);
+extern int tls_remote_addr(
+    tls_conn_t* tls,
+    char*       host,
+    size_t      host_len,
+    uint16_t*   port);
 
 /**
  * @brief Get the local address of the connection.
@@ -308,8 +327,11 @@ extern int tls_remote_addr(tls_conn_t* tls, char* host, size_t host_len,
  *
  * @return 0 on success, -1 on error.
  */
-extern int tls_local_addr(tls_conn_t* tls, char* host, size_t host_len,
-                          uint16_t* port);
+extern int tls_local_addr(
+    tls_conn_t* tls,
+    char*       host,
+    size_t      host_len,
+    uint16_t*   port);
 
 /**
  * @brief Get the local address of the listener.
@@ -321,8 +343,11 @@ extern int tls_local_addr(tls_conn_t* tls, char* host, size_t host_len,
  *
  * @return 0 on success, -1 on error.
  */
-extern int tls_listener_addr(tls_listener_t* ln, char* host, size_t host_len,
-                             uint16_t* port);
+extern int tls_listener_addr(
+    tls_listener_t* ln,
+    char*           host,
+    size_t          host_len,
+    uint16_t*       port);
 
 /**
  * @brief Get the negotiated ALPN protocol.
@@ -352,6 +377,7 @@ extern const char* tls_get_alpn(tls_conn_t* tls);
  *
  * @return TLS connection handle, or NULL on failure (fd is closed).
  */
-extern tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
-                                           tls_ctx_t* ctx,
-                                           xylem_tls_opts_t* opts);
+extern tls_conn_t* tls_client_handshake_fd(
+    platform_sock_t   fd,
+    tls_ctx_t*        ctx,
+    xylem_tls_opts_t* opts);

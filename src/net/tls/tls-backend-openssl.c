@@ -128,10 +128,13 @@ static void _tlsb_keylog_cb(const SSL* ssl, const char* line) {
     }
 }
 
-static int _tlsb_alpn_select_cb(SSL* ssl, const unsigned char** out,
-                                unsigned char* outlen,
-                                const unsigned char* in,
-                                unsigned int inlen, void* arg) {
+static int _tlsb_alpn_select_cb(
+    SSL*                  ssl,
+    const unsigned char** out,
+    unsigned char*        outlen,
+    const unsigned char*  in,
+    unsigned int          inlen,
+    void*                 arg) {
     (void)ssl;
     tls_backend_ctx_t* ctx = (tls_backend_ctx_t*)arg;
 
@@ -151,9 +154,12 @@ static int _tlsb_alpn_select_cb(SSL* ssl, const unsigned char** out,
  * success out_* are set (caller owns them); on failure nothing is left
  * allocated to the caller.
  */
-static int _tlsb_parse_pem_identity(BIO* cbio, BIO* kbio,
-                                    X509** out_cert, EVP_PKEY** out_key,
-                                    STACK_OF(X509)** out_chain) {
+static int _tlsb_parse_pem_identity(
+    BIO*             cbio,
+    BIO*             kbio,
+    X509**           out_cert,
+    EVP_PKEY**       out_key,
+    STACK_OF(X509)** out_chain) {
     *out_cert  = NULL;
     *out_key   = NULL;
     *out_chain = NULL;
@@ -212,11 +218,12 @@ static int _tlsb_parse_pem_identity(BIO* cbio, BIO* kbio,
 }
 
 /* Load a TLS identity from PEM files. See _tlsb_parse_pem_identity. */
-static int _tlsb_load_pem_identity(const char* cert_file,
-                                   const char* key_file,
-                                   X509** out_cert,
-                                   EVP_PKEY** out_key,
-                                   STACK_OF(X509)** out_chain) {
+static int _tlsb_load_pem_identity(
+    const char*      cert_file,
+    const char*      key_file,
+    X509**           out_cert,
+    EVP_PKEY**       out_key,
+    STACK_OF(X509)** out_chain) {
     BIO* cbio = BIO_new_file(cert_file, "r");
     if (!cbio) {
         xylem_loge("<tls> open cert failed path=%s", cert_file);
@@ -235,10 +242,14 @@ static int _tlsb_load_pem_identity(const char* cert_file,
 }
 
 /* Load a TLS identity from in-memory PEM buffers. */
-static int _tlsb_load_pem_identity_mem(const void* cert_pem, size_t cert_len,
-                                       const void* key_pem, size_t key_len,
-                                       X509** out_cert, EVP_PKEY** out_key,
-                                       STACK_OF(X509)** out_chain) {
+static int _tlsb_load_pem_identity_mem(
+    const void*      cert_pem,
+    size_t           cert_len,
+    const void*      key_pem,
+    size_t           key_len,
+    X509**           out_cert,
+    EVP_PKEY**       out_key,
+    STACK_OF(X509)** out_chain) {
     BIO* cbio = BIO_new_mem_buf(cert_pem, (int)cert_len);
     BIO* kbio = BIO_new_mem_buf(key_pem, (int)key_len);
     if (!cbio || !kbio) {
@@ -257,10 +268,12 @@ static int _tlsb_load_pem_identity_mem(const void* cert_pem, size_t cert_len,
  * hostname. On allocation failure the identity is freed and -1 is
  * returned, so the caller never has to clean up on error.
  */
-static int _tlsb_store_sni_identity(tls_backend_ctx_t* ctx,
-                                    const char* hostname,
-                                    X509* leaf, EVP_PKEY* key,
-                                    STACK_OF(X509)* chain) {
+static int _tlsb_store_sni_identity(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    X509*              leaf,
+    EVP_PKEY*          key,
+    STACK_OF(X509)*    chain) {
     if (ctx->sni_count == ctx->sni_cap) {
         size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
         _tlsb_sni_entry_t* entries = (_tlsb_sni_entry_t*)realloc(
@@ -289,8 +302,11 @@ static int _tlsb_store_sni_identity(tls_backend_ctx_t* ctx,
  * the refcount on each object, so the caller keeps ownership of its own
  * references and must free them afterwards.
  */
-static int _tlsb_apply_default_identity(tls_backend_ctx_t* ctx, X509* leaf,
-                                        EVP_PKEY* key, STACK_OF(X509)* chain) {
+static int _tlsb_apply_default_identity(
+    tls_backend_ctx_t* ctx,
+    X509*              leaf,
+    EVP_PKEY*          key,
+    STACK_OF(X509)*    chain) {
     if (SSL_CTX_use_certificate(ctx->ssl_ctx, leaf) != 1
         || SSL_CTX_use_PrivateKey(ctx->ssl_ctx, key) != 1) {
         return -1;
@@ -307,9 +323,12 @@ static int _tlsb_apply_default_identity(tls_backend_ctx_t* ctx, X509* leaf,
  * consumes (leaf, key, chain) -- it takes ownership for the SNI case and
  * frees its references for the default case (which only bumps refcounts).
  */
-static int _tlsb_install_identity(tls_backend_ctx_t* ctx, const char* hostname,
-                                  X509* leaf, EVP_PKEY* key,
-                                  STACK_OF(X509)* chain) {
+static int _tlsb_install_identity(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    X509*              leaf,
+    EVP_PKEY*          key,
+    STACK_OF(X509)*    chain) {
     if (hostname) {
         return _tlsb_store_sni_identity(ctx, hostname, leaf, key, chain);
     }
@@ -331,8 +350,10 @@ static int _tlsb_cookie_peer(SSL* ssl, const uint8_t** out, size_t* out_len) {
     return 0;
 }
 
-static int _tlsb_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
-                                    unsigned int* cookie_len) {
+static int _tlsb_cookie_generate_cb(
+    SSL*           ssl,
+    unsigned char* cookie,
+    unsigned int*  cookie_len) {
     SSL_CTX* sc = SSL_get_SSL_CTX(ssl);
     tls_backend_ctx_t* ctx =
         (tls_backend_ctx_t*)SSL_CTX_get_ex_data(sc, _tlsb_ctx_ex_idx);
@@ -346,8 +367,10 @@ static int _tlsb_cookie_generate_cb(SSL* ssl, unsigned char* cookie,
     return 1;
 }
 
-static int _tlsb_cookie_verify_cb(SSL* ssl, const unsigned char* cookie,
-                                  unsigned int cookie_len) {
+static int _tlsb_cookie_verify_cb(
+    SSL*                 ssl,
+    const unsigned char* cookie,
+    unsigned int         cookie_len) {
     SSL_CTX* sc = SSL_get_SSL_CTX(ssl);
     tls_backend_ctx_t* ctx =
         (tls_backend_ctx_t*)SSL_CTX_get_ex_data(sc, _tlsb_ctx_ex_idx);
@@ -419,10 +442,11 @@ void tls_backend_ctx_destroy(tls_backend_ctx_t* ctx) {
     free(ctx);
 }
 
-int tls_backend_ctx_load_cert_file(tls_backend_ctx_t* ctx,
-                                   const char* hostname,
-                                   const char* cert_file,
-                                   const char* key_file) {
+int tls_backend_ctx_load_cert_file(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    const char*        cert_file,
+    const char*        key_file) {
     X509*           leaf  = NULL;
     EVP_PKEY*       pkey  = NULL;
     STACK_OF(X509)* chain = NULL;
@@ -433,10 +457,13 @@ int tls_backend_ctx_load_cert_file(tls_backend_ctx_t* ctx,
     return _tlsb_install_identity(ctx, hostname, leaf, pkey, chain);
 }
 
-int tls_backend_ctx_load_cert_mem(tls_backend_ctx_t* ctx,
-                                  const char* hostname,
-                                  const void* cert_pem, size_t cert_len,
-                                  const void* key_pem,  size_t key_len) {
+int tls_backend_ctx_load_cert_mem(
+    tls_backend_ctx_t* ctx,
+    const char*        hostname,
+    const void*        cert_pem,
+    size_t             cert_len,
+    const void*        key_pem,
+    size_t             key_len) {
     if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
         return -1;
     }
@@ -510,27 +537,23 @@ static bool _tlsb_load_native_system_ca(tls_backend_ctx_t* ctx) {
  * target, or a custom OpenSSL install with no CA bundle. Point it at a CA
  * file shipped with the app (e.g. curl's cacert.pem from
  * https://curl.se/ca/cacert.pem).
- *
- * @param ctx               Backend context.
- * @param fallback_ca_file  PEM CA bundle path, or NULL for none.
- *
- * @return 0 if at least one source loaded, -1 if none did.
  */
-int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
-                                   const char* fallback_ca_file) {
-    bool sys_ok = _tlsb_load_native_system_ca(ctx);
+int tls_backend_ctx_load_system_ca(
+    tls_backend_ctx_t* ctx,
+    const char*        fallback_ca_file) {
+    bool has_system = _tlsb_load_native_system_ca(ctx);
 
-    bool fb_ok = false;
+    bool has_fallback = false;
     if (fallback_ca_file) {
-        fb_ok = (SSL_CTX_load_verify_locations(
-                     ctx->ssl_ctx, fallback_ca_file, NULL) == 1);
-        if (!fb_ok) {
+        has_fallback = (SSL_CTX_load_verify_locations(
+                            ctx->ssl_ctx, fallback_ca_file, NULL) == 1);
+        if (!has_fallback) {
             xylem_loge("<tls> load fallback ca failed path=%s",
                        fallback_ca_file);
         }
     }
 
-    if (!sys_ok && !fb_ok) {
+    if (!has_system && !has_fallback) {
         xylem_loge("<tls> load system ca failed: no system store and "
                    "no usable fallback (bundle a CA file, e.g. curl's "
                    "cacert.pem)");
@@ -539,8 +562,10 @@ int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
     return 0;
 }
 
-int tls_backend_ctx_set_alpn(tls_backend_ctx_t* ctx,
-                             const char** protocols, size_t count) {
+int tls_backend_ctx_set_alpn(
+    tls_backend_ctx_t* ctx,
+    const char**       protocols,
+    size_t             count) {
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
         total += 1 + strlen(protocols[i]);
@@ -593,8 +618,9 @@ int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx, const char* path) {
     return 0;
 }
 
-tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
-                                            bool is_server) {
+tls_backend_conn_t* tls_backend_conn_create(
+    tls_backend_ctx_t* ctx,
+    bool               is_server) {
     tls_backend_conn_t* c = (tls_backend_conn_t*)calloc(1, sizeof(*c));
     if (!c) {
         return NULL;
@@ -636,8 +662,9 @@ void tls_backend_conn_destroy(tls_backend_conn_t* c) {
     free(c);
 }
 
-void tls_backend_conn_configure(tls_backend_conn_t* c,
-                                const tls_backend_handshake_cfg_t* cfg) {
+void tls_backend_conn_configure(
+    tls_backend_conn_t*                c,
+    const tls_backend_handshake_cfg_t* cfg) {
     int mode;
     switch (cfg->verify) {
         case TLS_BACKEND_VERIFY_REQUIRE:
@@ -702,8 +729,11 @@ tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c) {
     return _tlsb_state(c->ssl, ret);
 }
 
-tls_backend_state_t tls_backend_conn_read(tls_backend_conn_t* c,
-                                          void* buf, int len, int* out_n) {
+tls_backend_state_t tls_backend_conn_read(
+    tls_backend_conn_t* c,
+    void*               buf,
+    int                 len,
+    int*                out_n) {
     ERR_clear_error();
     int n = SSL_read(c->ssl, buf, len);
     if (n > 0) {
@@ -714,9 +744,11 @@ tls_backend_state_t tls_backend_conn_read(tls_backend_conn_t* c,
     return _tlsb_state(c->ssl, n);
 }
 
-tls_backend_state_t tls_backend_conn_write(tls_backend_conn_t* c,
-                                           const void* buf, int len,
-                                           int* out_n) {
+tls_backend_state_t tls_backend_conn_write(
+    tls_backend_conn_t* c,
+    const void*         buf,
+    int                 len,
+    int*                out_n) {
     ERR_clear_error();
     int n = SSL_write(c->ssl, buf, len);
     if (n > 0) {
@@ -754,8 +786,10 @@ void dtls_backend_conn_set_mtu(tls_backend_conn_t* c, uint16_t mtu) {
     DTLS_set_link_mtu(c->ssl, mtu);
 }
 
-void dtls_backend_conn_set_peer_addr(tls_backend_conn_t* c,
-                                     const void* sockaddr, size_t salen) {
+void dtls_backend_conn_set_peer_addr(
+    tls_backend_conn_t* c,
+    const void*         sockaddr,
+    size_t              salen) {
     if (salen > sizeof(c->peer)) {
         salen = sizeof(c->peer);
     }

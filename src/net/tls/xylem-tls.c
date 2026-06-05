@@ -71,17 +71,24 @@ int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {
     return tls_ctx_set_keylog(&ctx->internal, path);
 }
 
-int xylem_tls_ctx_load_cert(xylem_tls_ctx_t* ctx, const char* hostname,
-                            const char* cert, const char* key) {
+int xylem_tls_ctx_load_cert(
+    xylem_tls_ctx_t* ctx,
+    const char*      hostname,
+    const char*      cert,
+    const char*      key) {
     if (!ctx) {
         return -1;
     }
     return tls_ctx_load_cert(&ctx->internal, hostname, cert, key);
 }
 
-int xylem_tls_ctx_load_cert_mem(xylem_tls_ctx_t* ctx, const char* hostname,
-                                const void* cert_pem, size_t cert_len,
-                                const void* key_pem, size_t key_len) {
+int xylem_tls_ctx_load_cert_mem(
+    xylem_tls_ctx_t* ctx,
+    const char*      hostname,
+    const void*      cert_pem,
+    size_t           cert_len,
+    const void*      key_pem,
+    size_t           key_len) {
     if (!ctx) {
         return -1;
     }
@@ -96,8 +103,9 @@ int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     return tls_ctx_load_ca(&ctx->internal, ca_file);
 }
 
-int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx,
-                                 const char* fallback_ca_file) {
+int xylem_tls_ctx_load_system_ca(
+    xylem_tls_ctx_t* ctx,
+    const char*      fallback_ca_file) {
     if (!ctx) {
         return -1;
     }
@@ -116,17 +124,21 @@ void xylem_tls_ctx_verify_client(xylem_tls_ctx_t* ctx, bool enable) {
     }
 }
 
-int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx, const char** protocols,
-                           size_t count) {
+int xylem_tls_ctx_set_alpn(
+    xylem_tls_ctx_t* ctx,
+    const char**     protocols,
+    size_t           count) {
     if (!ctx) {
         return -1;
     }
     return tls_ctx_set_alpn(&ctx->internal, protocols, count);
 }
 
-xylem_tls_conn_t* xylem_tls_dial(const char* host, uint16_t port,
-                                 xylem_tls_ctx_t* ctx,
-                                 xylem_tls_opts_t* opts) {
+xylem_tls_conn_t* xylem_tls_dial(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts) {
     return (xylem_tls_conn_t*)tls_dial(host, port,
                                        ctx ? &ctx->internal : NULL, opts);
 }
@@ -137,9 +149,11 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     }
 }
 
-xylem_tls_listener_t* xylem_tls_listen(const char* host, uint16_t port,
-                                       xylem_tls_ctx_t* ctx,
-                                       xylem_tls_opts_t* opts) {
+xylem_tls_listener_t* xylem_tls_listen(
+    const char*       host,
+    uint16_t          port,
+    xylem_tls_ctx_t*  ctx,
+    xylem_tls_opts_t* opts) {
     return (xylem_tls_listener_t*)tls_listen(host, port,
                                              ctx ? &ctx->internal : NULL, opts);
 }
@@ -180,24 +194,33 @@ void xylem_tls_set_write_deadline(xylem_tls_conn_t* tls, uint64_t deadline_ms) {
     }
 }
 
-int xylem_tls_remote_addr(xylem_tls_conn_t* tls, char* host, size_t host_len,
-                          uint16_t* port) {
+int xylem_tls_remote_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port) {
     if (!tls) {
         return -1;
     }
     return tls_remote_addr(&tls->internal, host, host_len, port);
 }
 
-int xylem_tls_local_addr(xylem_tls_conn_t* tls, char* host, size_t host_len,
-                         uint16_t* port) {
+int xylem_tls_local_addr(
+    xylem_tls_conn_t* tls,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port) {
     if (!tls) {
         return -1;
     }
     return tls_local_addr(&tls->internal, host, host_len, port);
 }
 
-int xylem_tls_listener_addr(xylem_tls_listener_t* ln, char* host,
-                            size_t host_len, uint16_t* port) {
+int xylem_tls_listener_addr(
+    xylem_tls_listener_t* ln,
+    char*                 host,
+    size_t                host_len,
+    uint16_t*             port) {
     if (!ln) {
         return -1;
     }
