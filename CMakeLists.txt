@@ -140,6 +140,7 @@ if(XYLEM_ENABLE_TLS)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
+		src/net/tls/tls-backend-openssl.c
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
 		src/net/xylem-dtls.c
