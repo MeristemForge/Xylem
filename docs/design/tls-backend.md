@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. This is a pure internal refactor: the public `xylem_tls_*` and
+Implemented. This is a pure internal refactor: the public `xylem_tls_*` and
 `xylem_dtls_*` API, ABI, and runtime behavior are unchanged. The goal is to
 isolate every OpenSSL dependency behind one backend-neutral internal interface
 so an alternative SSL library (wolfSSL via its OpenSSL-compatibility layer, or
@@ -251,24 +251,32 @@ src/net/tls/
 ├── tls-backend-openssl.c   # the ONLY file including <openssl/...>; also
 │                           #   absorbs the former platform-tls system-CA code
 ├── tls.h / tls.c           # TLS engine; includes only tls-backend.h
-├── dtls.h / dtls.c         # moved from src/net/xylem-dtls.c, engine half
 ├── xylem-tls.c             # public TLS shim (unchanged)
-├── xylem-dtls.c            # public DTLS shim, thinned to a first-member wrapper
+├── xylem-dtls.c            # DTLS engine + public API in one file (relocated
+│                           #   from src/net/; engine/shim split deferred)
 └── xylem-tls-stub.c / ...  # stubs (unchanged)
 ```
 
+> **Deferred:** the DTLS engine/shim split proposed below (`dtls.c` engine +
+> a thinned `xylem-dtls.c` shim, mirroring TLS) was **not** done. The file was
+> relocated to `src/net/tls/xylem-dtls.c` and migrated onto the backend
+> interface, but it remains a **combined engine + public API** file rather than
+> being split into `dtls.c` + a thin shim. Everything else in this section
+> shipped as described.
+
 Changes:
 
-- `src/net/xylem-dtls.c` (engine + public API in one ~1800-line file) is split
-  to mirror TLS: `dtls.c` (engine) + `xylem-dtls.c` (thin opaque-handle shim),
-  and relocated under `src/net/tls/`.
+- `src/net/xylem-dtls.c` (engine + public API in one ~1800-line file) is
+  relocated under `src/net/tls/` and migrated onto the backend interface. The
+  proposed split into `dtls.c` (engine) + a thin `xylem-dtls.c` shim was
+  **deferred**: it remains a single combined engine + public API file.
 - `src/platform/{win,unix}/platform-tls.c` and `src/platform/platform-tls.h`
   are **removed**. The Windows/Unix system-CA split was OpenSSL-specific and is
   absorbed into the OpenSSL backend.
 - The duplicated PEM parsing, SNI table, and ALPN wire encoding in the TLS and
   DTLS engines converge into the single backend implementation (`load_cert_*`,
   `set_alpn`).
-- CMake: under `XYLEM_ENABLE_TLS`, add `tls-backend-openssl.c`, add `dtls.c`,
+- CMake: under `XYLEM_ENABLE_TLS`, add `tls-backend-openssl.c`,
   drop `platform/*/platform-tls.c`. Reserve a `XYLEM_TLS_BACKEND` cache variable
   (currently only accepts `openssl`) to select the backend source at configure
   time.

@@ -7,8 +7,9 @@ It is an optional layer gated by `XYLEM_ENABLE_TLS`; when that is off the module
 is replaced by a stub and `https://` / `wss://` are unavailable.
 
 Sources: public API in `include/xylem/net/xylem-tls.h`, implementation in
-`src/net/tls/xylem-tls.c`, the system-CA platform shim in
-`src/platform/{win,unix}/platform-tls.c`. DTLS (`src/net/xylem-dtls.c`) mirrors
+`src/net/tls/tls.c` (engine) and `src/net/tls/xylem-tls.c` (public shim).
+OpenSSL access is isolated behind an internal backend interface; see
+[`tls-backend.md`](tls-backend.md). DTLS (`src/net/tls/xylem-dtls.c`) mirrors
 this design over datagrams.
 
 ## 1. Object model
@@ -42,7 +43,9 @@ in-memory BIOs, never letting OpenSSL touch the socket directly.
   to/from these memory buffers; it issues no syscalls of its own.
 - `_tls_pump_in` moves inbound ciphertext `recv() -> rbio`; `_tls_pump_out`
   drains outbound ciphertext `wbio -> send()`. These are the only functions
-  that touch the socket.
+  that touch the socket. (The `BIO_write`/`BIO_read` into those memory buffers
+  now go through the backend as `tls_backend_conn_feed`/`drain`; see
+  [`tls-backend.md`](tls-backend.md).)
 - When `SSL_read` / `SSL_write` / `SSL_do_handshake` return `WANT_READ` /
   `WANT_WRITE`, the driver loops: pump the socket in the requested direction
   (parking the coroutine via `iowait` if the kernel buffer is empty/full), then
@@ -119,16 +122,18 @@ unchecked.
 | `xylem_tls_ctx_load_ca` | the CAs in a PEM file (narrow trust: private PKI / mTLS) |
 | `xylem_tls_ctx_load_system_ca` | the platform root store (public CAs) |
 
-`load_system_ca` is a thin platform shim (`platform_tls_load_system_ca`):
+`load_system_ca` is now a backend responsibility
+(`tls_backend_ctx_load_system_ca`), not a platform shim. The OS-specific split
+lives inside the OpenSSL backend (`tls-backend-openssl.c`) behind
+`#if defined(_WIN32)`:
 
 - **Unix:** `SSL_CTX_set_default_verify_paths` -- OpenSSL's default paths
   resolve to the system CA bundle.
 - **Windows:** `SSL_CTX_load_verify_store("org.openssl.winstore://")`. OpenSSL's
   default verify paths point at a build-time directory that is empty on Windows,
   so they silently load nothing; the winstore loader (OpenSSL 3.2+) reads the
-  Windows ROOT store on demand during chain building. This is the one
-  OS-specific behavior, isolated in the platform layer per the platform-code
-  rule.
+  Windows ROOT store on demand during chain building. This OS-specific behavior
+  is isolated in the OpenSSL backend rather than a platform shim.
 
 The two calls compose (system roots plus a private CA). A server doing mTLS
 should use `load_ca` alone, since adding the public roots would let any
@@ -217,6 +222,6 @@ the client handshake, verifying `server_name` rather than the proxy address.
 - Park/resume and per-direction arbitration: [`../architecture.md`](../architecture.md) §6,
   [`runtime.md`](runtime.md).
 - Always-available (non-OpenSSL) crypto: [`crypto.md`](crypto.md).
-- System-CA platform shim and the platform-code rule: [`platform.md`](platform.md).
+- OpenSSL backend isolation and system-CA loading: [`tls-backend.md`](tls-backend.md).
 - Feature gate `XYLEM_ENABLE_TLS`: [`../architecture.md`](../architecture.md) §8,
   [`../build.md`](../build.md).
