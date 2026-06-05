@@ -129,25 +129,33 @@ extern int xylem_tls_ctx_load_cert_mem(
 extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
 
 /**
- * @brief Trust the system root certificate store.
+ * @brief Trust public-CA roots: the system store plus an optional bundle.
  *
- * Lets a client verify servers using certificates from public CAs
- * without naming a CA file. Combine with xylem_tls_ctx_load_ca to also
- * trust a private CA. Avoid on an mTLS server, where it would accept
- * any client certificate chaining to a public CA.
+ * Lets a client verify servers using certificates from public CAs. Loads
+ * trust anchors additively from two sources:
+ *   1. the platform system trust store (when OpenSSL can read it), and
+ *   2. fallback_ca_file, if non-NULL, as a PEM CA bundle.
+ * Both accumulate; the call succeeds if either source loads.
  *
- * Platform support: works on Linux, Windows, and macOS (via the CA
- * bundle shipped with the linked OpenSSL). NOT supported on Android or
- * iOS, whose system trust stores are not reachable from OpenSSL -- there
- * this returns -1. On mobile (or whenever you want a fixed, self-managed
- * trust set) bundle a CA file with the app and use xylem_tls_ctx_load_ca
- * instead, e.g. curl's cacert.pem from https://curl.se/ca/cacert.pem.
+ * Combine with xylem_tls_ctx_load_ca to also trust a private CA. Avoid on
+ * an mTLS server, where it would accept any client certificate chaining
+ * to a public CA.
  *
- * @param ctx  Context handle.
+ * The native system store is read on Linux, Windows, and macOS (via the
+ * CA bundle shipped with the linked OpenSSL). It is NOT available on
+ * Android or iOS, and may be empty for a statically linked /
+ * cross-compiled / custom OpenSSL whose build-time path is absent on the
+ * target. For all of those, pass fallback_ca_file pointing at a CA bundle
+ * shipped with your app (e.g. curl's cacert.pem from
+ * https://curl.se/ca/cacert.pem); pass NULL to use only the system store.
  *
- * @return 0 on success, -1 on failure (including unsupported platforms).
+ * @param ctx               Context handle.
+ * @param fallback_ca_file  PEM CA bundle path, or NULL for none.
+ *
+ * @return 0 if at least one source loaded, -1 if none did.
  */
-extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx);
+extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx,
+                                        const char* fallback_ca_file);
 
 /**
  * @brief Set whether a client verifies the server certificate.

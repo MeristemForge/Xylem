@@ -585,8 +585,8 @@ int tls_ctx_load_ca(tls_ctx_t* ctx, const char* ca_file) {
     return tls_backend_ctx_load_ca_file(ctx->be, ca_file);
 }
 
-int tls_ctx_load_system_ca(tls_ctx_t* ctx) {
-    return tls_backend_ctx_load_system_ca(ctx->be);
+int tls_ctx_load_system_ca(tls_ctx_t* ctx, const char* fallback_ca_file) {
+    return tls_backend_ctx_load_system_ca(ctx->be, fallback_ca_file);
 }
 
 void tls_ctx_verify_server(tls_ctx_t* ctx, bool enable) {

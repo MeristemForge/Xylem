@@ -111,7 +111,8 @@ extern int tls_ctx_load_cert_mem(tls_ctx_t* ctx, const char* hostname,
                                  const void* cert_pem, size_t cert_len,
                                  const void* key_pem, size_t key_len);
 extern int tls_ctx_load_ca(tls_ctx_t* ctx, const char* ca_file);
-extern int tls_ctx_load_system_ca(tls_ctx_t* ctx);
+extern int tls_ctx_load_system_ca(tls_ctx_t* ctx,
+                                  const char* fallback_ca_file);
 
 extern void tls_ctx_verify_server(tls_ctx_t* ctx, bool enable);
 extern void tls_ctx_verify_client(tls_ctx_t* ctx, bool enable);

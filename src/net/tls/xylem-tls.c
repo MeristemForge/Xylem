@@ -109,11 +109,12 @@ int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file) {
     return tls_ctx_load_ca(&ctx->internal, ca_file);
 }
 
-int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx) {
+int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx,
+                                 const char* fallback_ca_file) {
     if (!ctx) {
         return -1;
     }
-    return tls_ctx_load_system_ca(&ctx->internal);
+    return tls_ctx_load_system_ca(&ctx->internal, fallback_ca_file);
 }
 
 void xylem_tls_ctx_verify_server(xylem_tls_ctx_t* ctx, bool enable) {

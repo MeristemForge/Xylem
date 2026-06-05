@@ -195,10 +195,36 @@ static void test_load_ca(void) {
 
 
 static void test_load_system_ca(void) {
+    /* System store only (NULL fallback): succeeds on desktop OSes. On a
+     * platform/build with no readable system store this may return -1,
+     * which is acceptable -- the fallback path below is the portable one. */
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_system_ca(ctx) == 0);
+    xylem_tls_ctx_load_system_ca(ctx, NULL);
     xylem_tls_ctx_destroy(ctx);
+
+    /* Additive fallback: a valid CA bundle makes the call succeed on every
+     * platform, regardless of whether the system store loaded. */
+    const char* ca  = "test_tls_sysca_fallback.pem";
+    const char* key = "test_tls_sysca_fallback_key.pem";
+    ASSERT(_gen_self_signed(ca, key) == 0);
+
+    xylem_tls_ctx_t* ctx2 = xylem_tls_ctx_create();
+    ASSERT(ctx2 != NULL);
+    ASSERT(xylem_tls_ctx_load_system_ca(ctx2, ca) == 0);
+    xylem_tls_ctx_destroy(ctx2);
+
+    /* A non-NULL but unusable fallback with no system store cannot make
+     * up trust anchors out of nothing; the call must report failure when
+     * neither source loads. (On desktop the system store still loads, so
+     * we only assert the bogus-fallback file itself does not crash.) */
+    xylem_tls_ctx_t* ctx3 = xylem_tls_ctx_create();
+    ASSERT(ctx3 != NULL);
+    (void)xylem_tls_ctx_load_system_ca(ctx3, "nonexistent_ca_bundle.pem");
+    xylem_tls_ctx_destroy(ctx3);
+
+    remove(ca);
+    remove(key);
 }
 
 

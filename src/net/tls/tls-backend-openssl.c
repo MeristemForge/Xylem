@@ -459,50 +459,84 @@ int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx, const char* ca_file) {
 }
 
 /**
- * Load the platform's system trust store into the context. Supported only
- * on the desktop/server OSes whose trust store OpenSSL can read directly:
+ * Attempt to load the platform's native system trust store into ctx.
+ * Returns true if the platform has an OpenSSL-readable system store and
+ * the load call succeeded, false otherwise (including mobile, which has
+ * no OpenSSL-readable store at all).
  *
  *   - Windows: the winstore loader (OpenSSL 3.2+) reads the system ROOT
  *     store on demand. OpenSSL's default verify paths are empty here.
  *   - Linux / macOS: OpenSSL's default verify paths resolve to the
  *     system/distribution CA bundle (or the bundle shipped alongside the
  *     linked OpenSSL, e.g. Homebrew on macOS).
- *
- * On mobile (Android, iOS) there is no system trust store reachable from
- * OpenSSL -- the CAs live behind the Java KeyStore / Security.framework,
- * not on a path OpenSSL can load. So this fails loudly (returns -1, logs
- * guidance) rather than silently loading zero anchors. Bundle a CA file
- * with the app and use tls_backend_ctx_load_ca_file instead (e.g. curl's
- * cacert.pem from https://curl.se/ca/cacert.pem).
+ *   - Android / iOS: the CAs live behind the Java KeyStore /
+ *     Security.framework, not on a path OpenSSL can load -> false.
  *
  * Order matters: __ANDROID__ implies __linux__ under the NDK, so the
  * mobile branch must precede the generic Unix branch.
  */
-int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx) {
+static bool _tlsb_load_native_system_ca(tls_backend_ctx_t* ctx) {
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
 #if defined(_WIN32)
-    if (SSL_CTX_load_verify_store(ctx->ssl_ctx,
-                                  "org.openssl.winstore://") != 1) {
-        xylem_loge("<tls> load system ca failed");
-        return -1;
-    }
-    return 0;
+    return SSL_CTX_load_verify_store(ctx->ssl_ctx,
+                                     "org.openssl.winstore://") == 1;
 #elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
-    /* No OpenSSL-readable system trust store; use a bundled CA file. */
     (void)ctx;
-    xylem_loge("<tls> load_system_ca unsupported on mobile; bundle a CA "
-               "file and use load_ca_file (e.g. curl's cacert.pem)");
-    return -1;
+    return false;
 #else
-    /* Linux / macOS: OpenSSL default verify paths -> system CA bundle. */
-    if (SSL_CTX_set_default_verify_paths(ctx->ssl_ctx) != 1) {
-        xylem_loge("<tls> load system ca failed");
+    return SSL_CTX_set_default_verify_paths(ctx->ssl_ctx) == 1;
+#endif
+}
+
+/**
+ * Load trust anchors for verifying public CAs, combining (additively) the
+ * platform system store with an optional fallback CA file:
+ *
+ *   1. Try the native system store (see _tlsb_load_native_system_ca).
+ *   2. If fallback_ca_file is non-NULL, also load it as a PEM bundle.
+ *
+ * Anchors from both sources accumulate in the same X509_STORE, so the
+ * call succeeds as long as *either* source loaded. This is deliberately
+ * additive rather than "system, else fallback": OpenSSL's default-paths
+ * CApath is lazy (consulted per-hash at verify time), so there is no
+ * reliable way to detect whether the system store actually contained any
+ * certificates -- loading both and taking the union sidesteps that.
+ *
+ * The fallback is what makes this usable where the native store is absent
+ * or unreachable: mobile (Android/iOS), a statically linked or
+ * cross-compiled OpenSSL whose build-time OPENSSLDIR does not exist on the
+ * target, or a custom OpenSSL install with no CA bundle. Point it at a CA
+ * file shipped with the app (e.g. curl's cacert.pem from
+ * https://curl.se/ca/cacert.pem).
+ *
+ * @param ctx               Backend context.
+ * @param fallback_ca_file  PEM CA bundle path, or NULL for none.
+ *
+ * @return 0 if at least one source loaded, -1 if none did.
+ */
+int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
+                                   const char* fallback_ca_file) {
+    bool sys_ok = _tlsb_load_native_system_ca(ctx);
+
+    bool fb_ok = false;
+    if (fallback_ca_file) {
+        fb_ok = (SSL_CTX_load_verify_locations(
+                     ctx->ssl_ctx, fallback_ca_file, NULL) == 1);
+        if (!fb_ok) {
+            xylem_loge("<tls> load fallback ca failed path=%s",
+                       fallback_ca_file);
+        }
+    }
+
+    if (!sys_ok && !fb_ok) {
+        xylem_loge("<tls> load system ca failed: no system store and "
+                   "no usable fallback (bundle a CA file, e.g. curl's "
+                   "cacert.pem)");
         return -1;
     }
     return 0;
-#endif
 }
 
 int tls_backend_ctx_set_alpn(tls_backend_ctx_t* ctx,

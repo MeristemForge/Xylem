@@ -190,8 +190,9 @@ int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     return tls_backend_ctx_load_ca_file(ctx->be, ca_file);
 }
 
-int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx) {
-    return tls_backend_ctx_load_system_ca(ctx->be);
+int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx,
+                                  const char* fallback_ca_file) {
+    return tls_backend_ctx_load_system_ca(ctx->be, fallback_ca_file);
 }
 
 void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable) {

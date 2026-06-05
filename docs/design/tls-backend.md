@@ -130,7 +130,8 @@ int tls_backend_ctx_load_cert_mem (tls_backend_ctx_t* ctx, const char* hostname,
                                    const void* cert_pem, size_t cert_len,
                                    const void* key_pem,  size_t key_len);
 int tls_backend_ctx_load_ca_file  (tls_backend_ctx_t* ctx, const char* ca_file);
-int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx);
+int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
+                                   const char* fallback_ca_file);
 int tls_backend_ctx_set_alpn      (tls_backend_ctx_t* ctx,
                                    const char** protocols, size_t count);
 int tls_backend_ctx_set_keylog    (tls_backend_ctx_t* ctx, const char* path);
