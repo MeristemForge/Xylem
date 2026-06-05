@@ -103,7 +103,6 @@ struct xylem_dtls_conn_s {
     /* server-side only */
     xylem_channel_t*         inbox;
     _Atomic int32_t          inbox_len;
-    sched_timer_t*           retransmit_timer;
     sched_timer_t*           handshake_timer;
     xylem_dtls_listener_t*   listener;
     rbtree_node_t            server_node;
@@ -237,7 +236,6 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     xylem_mutex_destroy(dtls->wr_mu);
     free(dtls->rd_buf);
     free(dtls->wr_buf);
-    sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
         /**
@@ -597,33 +595,6 @@ static void _dtls_cache_alpn(xylem_dtls_conn_t* dtls) {
     tls_backend_conn_get_alpn(dtls->be, dtls->alpn, sizeof(dtls->alpn));
 }
 
-static void _dtls_retransmit_cb(sched_timer_t* timer, void* ud);
-
-static void _dtls_arm_retransmit(xylem_dtls_conn_t* dtls) {
-    uint64_t ms;
-    if (dtls_backend_conn_get_timeout(dtls->be, &ms)) {
-        sched_timer_start(dtls->retransmit_timer,
-                          _dtls_retransmit_cb, dtls, ms, 0);
-    }
-}
-
-static void _dtls_stop_retransmit(xylem_dtls_conn_t* dtls) {
-    if (dtls->retransmit_timer) {
-        sched_timer_stop(dtls->retransmit_timer);
-    }
-}
-
-static void _dtls_retransmit_cb(sched_timer_t* timer, void* ud) {
-    (void)timer;
-    xylem_dtls_conn_t* dtls = ud;
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
-        return;
-    }
-    dtls_backend_conn_handle_timeout(dtls->be);
-    _dtls_server_flush_write_bio(dtls);
-    _dtls_arm_retransmit(dtls);
-}
-
 static int _dtls_client_recv_loop(xylem_dtls_conn_t* dtls, void* buf, int len) {
     for (;;) {
         int n = 0;
@@ -773,22 +744,46 @@ static void _dtls_handshake_coro(void* arg) {
     bool success = false;
     while (!dtls->handshake_done) {
         /**
-         * Bound the wait with the handshake deadline directly on the
-         * channel recv, instead of an external timer closing the
-         * inbox: closing the inbox while the session is still in the
-         * listener's tree would let the dispatcher send into a closed
-         * channel (which aborts). On timeout recv returns NULL and we
-         * fall through to the failure path below.
+         * Bound the channel wait by the nearer of two deadlines: the
+         * overall handshake deadline and the DTLS retransmit timeout.
+         * The retransmit timer is driven inline here (not via an
+         * external sched_timer) so the handshake coroutine stays the
+         * sole owner of dtls->be -- the server session has no ssl_mu,
+         * and a cross-thread timer callback touching the same backend
+         * SSL object would be a data race. On a recv timeout we
+         * distinguish the two: the handshake deadline fails the
+         * handshake, the retransmit timeout resends the last flight and
+         * waits again.
          */
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        uint64_t remaining = (now >= hs_deadline) ? 0 : hs_deadline - now;
-        if (remaining == 0) {
+        if (hs_deadline > 0 && now >= hs_deadline) {
             break;
         }
+        uint64_t wait_ms = hs_deadline - now;
+
+        uint64_t rt_ms;
+        bool have_rt = dtls_backend_conn_get_timeout(dtls->be, &rt_ms);
+        if (have_rt && rt_ms < wait_ms) {
+            wait_ms = rt_ms;
+        }
+
         _dtls_dgram_t* dgram = (_dtls_dgram_t*)xylem_channel_recv_timeout(
-            dtls->inbox, remaining);
+            dtls->inbox, wait_ms);
         if (!dgram) {
-            break;
+            /**
+             * recv timed out. If the overall handshake deadline has
+             * passed, give up; otherwise it was the retransmit timer --
+             * resend the last flight and wait again.
+             */
+            now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (hs_deadline > 0 && now >= hs_deadline) {
+                break;
+            }
+            if (have_rt) {
+                dtls_backend_conn_handle_timeout(dtls->be);
+                _dtls_server_flush_write_bio(dtls);
+            }
+            continue;
         }
         atomic_fetch_sub_explicit(&dtls->inbox_len, 1,
                                   memory_order_relaxed);
@@ -805,18 +800,13 @@ static void _dtls_handshake_coro(void* arg) {
         }
         if (st == TLS_BACKEND_WANT_READ || st == TLS_BACKEND_WANT_WRITE) {
             _dtls_server_flush_write_bio(dtls);
-            _dtls_arm_retransmit(dtls);
             continue;
         }
         _dtls_server_flush_write_bio(dtls);
         break;
     }
 
-    _dtls_stop_retransmit(dtls);
-
-    sched_timer_destroy(dtls->retransmit_timer);
     sched_timer_destroy(dtls->handshake_timer);
-    dtls->retransmit_timer = NULL;
     dtls->handshake_timer  = NULL;
 
     if (!success) {
@@ -901,13 +891,10 @@ static void _dtls_dispatcher(void* arg) {
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
         dtls->inbox            = xylem_channel_create();
-        dtls->retransmit_timer = sched_timer_create(ln->sched);
         dtls->handshake_timer  = sched_timer_create(ln->sched);
 
         if (!dtls->inbox
-            || !dtls->retransmit_timer
             || !dtls->handshake_timer) {
-            sched_timer_destroy(dtls->retransmit_timer);
             sched_timer_destroy(dtls->handshake_timer);
             if (dtls->inbox) {
                 xylem_channel_destroy(dtls->inbox);
@@ -1006,7 +993,6 @@ static void _dtls_server_close_conn(xylem_dtls_conn_t* dtls) {
     if (atomic_exchange(&dtls->closed, true)) {
         return;
     }
-    _dtls_stop_retransmit(dtls);
     if (dtls->handshake_timer) {
         sched_timer_stop(dtls->handshake_timer);
     }
