@@ -6,3 +6,4 @@ out-ninja/
 out-linux/
 .DS_Store
 build.log
+.dev-build.bat
