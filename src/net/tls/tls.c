@@ -27,12 +27,9 @@
 
 #include "net/addr.h"
 #include "net/tls/tls-backend.h"
-#include "platform/platform-io.h"
 #include "platform/platform-socket.h"
-#include "platform/platform-string.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
-#include "thrds.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -50,8 +47,7 @@
 #define TLS_IO_CHUNK (16 * 1024)
 
 static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
-    tls_conn_t* tls =
-        (tls_conn_t*)calloc(1, sizeof(tls_conn_t));
+    tls_conn_t* tls = (tls_conn_t*)calloc(1, sizeof(tls_conn_t));
     if (!tls) {
         return NULL;
     }
@@ -254,22 +250,26 @@ static int _tls_do_handshake(tls_conn_t* tls) {
         tls_backend_state_t st = tls_backend_conn_handshake(tls->be);
         xylem_mutex_unlock(tls->ssl_mu);
 
+        /**
+         * Every handshake step may queue a flight (incl. a fatal alert on
+         * error), so flush before dispatching on the state.
+         */
         if (_tls_pump_out(tls) != 0) {
             return -1;
         }
-        if (st == TLS_BACKEND_OK) {
-            return 0;
-        }
-        if (st == TLS_BACKEND_WANT_READ) {
-            if (_tls_pump_in(tls) <= 0) {
+        switch (st) {
+            case TLS_BACKEND_OK:
+                return 0;
+            case TLS_BACKEND_WANT_READ:
+                if (_tls_pump_in(tls) <= 0) {
+                    return -1;
+                }
+                continue;
+            case TLS_BACKEND_WANT_WRITE:
+                continue;
+            default:
                 return -1;
-            }
-            continue;
         }
-        if (st == TLS_BACKEND_WANT_WRITE) {
-            continue;
-        }
-        return -1;
     }
 }
 
@@ -389,25 +389,25 @@ static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
         tls_backend_state_t st = tls_backend_conn_read(tls->be, buf, len, &n);
         xylem_mutex_unlock(tls->ssl_mu);
 
-        if (st == TLS_BACKEND_OK) {
-            return n;
-        }
-        if (st == TLS_BACKEND_CLOSED) {
-            return 0;
-        }
-        if (st == TLS_BACKEND_WANT_READ) {
-            if (_tls_pump_in(tls) <= 0) {
+        switch (st) {
+            case TLS_BACKEND_OK:
+                return n;
+            case TLS_BACKEND_CLOSED:
+                return 0;
+            case TLS_BACKEND_WANT_READ:
+                if (_tls_pump_in(tls) <= 0) {
+                    return -1;
+                }
+                continue;
+            case TLS_BACKEND_WANT_WRITE:
+                /* Rekey during read: flush the handshake flight first. */
+                if (_tls_pump_out(tls) != 0) {
+                    return -1;
+                }
+                continue;
+            default:
                 return -1;
-            }
-            continue;
         }
-        if (st == TLS_BACKEND_WANT_WRITE) {
-            if (_tls_pump_out(tls) != 0) {
-                return -1;
-            }
-            continue;
-        }
-        return -1;
     }
 }
 
@@ -427,30 +427,34 @@ static int _tls_write_loop(tls_conn_t* tls, const void* data,
         tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, rem, &n);
         xylem_mutex_unlock(tls->ssl_mu);
 
-        if (st == TLS_BACKEND_OK) {
-            if (_tls_pump_out(tls) != 0) {
+        switch (st) {
+            case TLS_BACKEND_OK:
+                if (_tls_pump_out(tls) != 0) {
+                    return -1;
+                }
+                ptr += n;
+                rem -= n;
+                continue;
+            case TLS_BACKEND_WANT_WRITE:
+                if (_tls_pump_out(tls) != 0) {
+                    return -1;
+                }
+                continue;
+            case TLS_BACKEND_WANT_READ:
+                /**
+                 * Rekey: send our flight before waiting on the peer's, or
+                 * both sides block forever.
+                 */
+                if (_tls_pump_out(tls) != 0) {
+                    return -1;
+                }
+                if (_tls_pump_in(tls) <= 0) {
+                    return -1;
+                }
+                continue;
+            default:
                 return -1;
-            }
-            ptr += n;
-            rem -= n;
-            continue;
         }
-        if (st == TLS_BACKEND_WANT_WRITE) {
-            if (_tls_pump_out(tls) != 0) {
-                return -1;
-            }
-            continue;
-        }
-        if (st == TLS_BACKEND_WANT_READ) {
-            if (_tls_pump_out(tls) != 0) {
-                return -1;
-            }
-            if (_tls_pump_in(tls) <= 0) {
-                return -1;
-            }
-            continue;
-        }
-        return -1;
     }
     return 0;
 }
@@ -500,7 +504,7 @@ static platform_sock_t _tls_accept_fd(tls_listener_t* ln) {
  * listener-level error -- the caller keeps accepting.
  */
 static tls_conn_t* _tls_server_handshake(tls_listener_t* ln,
-                                               tls_conn_t* tls) {
+                                         tls_conn_t* tls) {
     tls->ctx = ln->ctx;
 
     socklen_t peer_len = sizeof(tls->peer_addr.storage);
@@ -561,19 +565,14 @@ int tls_ctx_set_keylog(tls_ctx_t* ctx, const char* path) {
     return tls_backend_ctx_set_keylog(ctx->be, path);
 }
 
-int tls_ctx_load_cert(tls_ctx_t* ctx,
-                            const char* hostname,
-                            const char* cert,
-                            const char* key) {
+int tls_ctx_load_cert(tls_ctx_t* ctx, const char* hostname, const char* cert,
+                      const char* key) {
     return tls_backend_ctx_load_cert_file(ctx->be, hostname, cert, key);
 }
 
-int tls_ctx_load_cert_mem(tls_ctx_t* ctx,
-                                const char* hostname,
-                                const void* cert_pem,
-                                size_t cert_len,
-                                const void* key_pem,
-                                size_t key_len) {
+int tls_ctx_load_cert_mem(tls_ctx_t* ctx, const char* hostname,
+                          const void* cert_pem, size_t cert_len,
+                          const void* key_pem, size_t key_len) {
     if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
         return -1;
     }
@@ -597,16 +596,12 @@ void tls_ctx_verify_client(tls_ctx_t* ctx, bool enable) {
     ctx->verify_client = enable;
 }
 
-int tls_ctx_set_alpn(tls_ctx_t* ctx,
-                           const char** protocols, size_t count) {
+int tls_ctx_set_alpn(tls_ctx_t* ctx, const char** protocols, size_t count) {
     return tls_backend_ctx_set_alpn(ctx->be, protocols, count);
 }
 
-tls_conn_t* tls_dial(
-    const char*       host,
-    uint16_t          port,
-    tls_ctx_t*  ctx,
-    xylem_tls_opts_t* opts) {
+tls_conn_t* tls_dial(const char* host, uint16_t port, tls_ctx_t* ctx,
+                     xylem_tls_opts_t* opts) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -651,7 +646,8 @@ tls_conn_t* tls_dial(
     }
 
     if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("<tls> dial handshake failed host=%s port=%s", host, port_str);
+        xylem_loge("<tls> dial handshake failed host=%s port=%s", host,
+                   port_str);
         _tls_conn_destroy(tls);
         return NULL;
     }
@@ -669,11 +665,8 @@ void tls_close(tls_conn_t* tls) {
     _tls_conn_unref(tls);
 }
 
-tls_listener_t* tls_listen(
-    const char*       host,
-    uint16_t          port,
-    tls_ctx_t*  ctx,
-    xylem_tls_opts_t* opts) {
+tls_listener_t* tls_listen(const char* host, uint16_t port, tls_ctx_t* ctx,
+                           xylem_tls_opts_t* opts) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -688,8 +681,7 @@ tls_listener_t* tls_listen(
         platform_socket_enable_mss_clamp(fd, false);
     }
 
-    tls_listener_t* ln = (tls_listener_t*)calloc(
-        1, sizeof(tls_listener_t));
+    tls_listener_t* ln = (tls_listener_t*)calloc(1, sizeof(tls_listener_t));
     if (!ln) {
         platform_socket_close(fd);
         return NULL;
@@ -783,29 +775,21 @@ int tls_write(tls_conn_t* tls, const void* data, int len) {
     return ret;
 }
 
-void tls_set_read_deadline(
-    tls_conn_t* tls, uint64_t deadline_ms) {
+void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     iowait_set_rd_deadline(tls->waiter, deadline_ms);
 }
 
-void tls_set_write_deadline(
-    tls_conn_t* tls, uint64_t deadline_ms) {
+void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     iowait_set_wr_deadline(tls->waiter, deadline_ms);
 }
 
-int tls_remote_addr(
-    tls_conn_t* tls,
-    char*             host,
-    size_t            host_len,
-    uint16_t*         port) {
+int tls_remote_addr(tls_conn_t* tls, char* host, size_t host_len,
+                    uint16_t* port) {
     return addr_ntop(&tls->peer_addr, host, host_len, port);
 }
 
-int tls_local_addr(
-    tls_conn_t* tls,
-    char*             host,
-    size_t            host_len,
-    uint16_t*         port) {
+int tls_local_addr(tls_conn_t* tls, char* host, size_t host_len,
+                   uint16_t* port) {
     addr_t addr;
     socklen_t alen = sizeof(addr.storage);
     if (getsockname(tls->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
@@ -814,11 +798,8 @@ int tls_local_addr(
     return addr_ntop(&addr, host, host_len, port);
 }
 
-int tls_listener_addr(
-    tls_listener_t* ln,
-    char*                 host,
-    size_t                host_len,
-    uint16_t*             port) {
+int tls_listener_addr(tls_listener_t* ln, char* host, size_t host_len,
+                      uint16_t* port) {
     addr_t addr;
     socklen_t alen = sizeof(addr.storage);
     if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
@@ -831,9 +812,8 @@ const char* tls_get_alpn(tls_conn_t* tls) {
     return tls->alpn[0] ? tls->alpn : NULL;
 }
 
-tls_conn_t* tls_client_handshake_fd(platform_sock_t fd,
-                                          tls_ctx_t* ctx,
-                                          xylem_tls_opts_t* opts) {
+tls_conn_t* tls_client_handshake_fd(platform_sock_t fd, tls_ctx_t* ctx,
+                                    xylem_tls_opts_t* opts) {
     tls_conn_t* tls = _tls_conn_create(fd);
     if (!tls) {
         platform_socket_close(fd);

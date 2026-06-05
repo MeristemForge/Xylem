@@ -24,7 +24,6 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/crypto/xylem-hmac256.h"
 
-#include "net/addr.h"
 #include "platform/platform-io.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-string.h"
@@ -35,6 +34,7 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -132,8 +132,8 @@ static int _tlsb_alpn_select_cb(SSL* ssl, const unsigned char** out,
                                 unsigned char* outlen,
                                 const unsigned char* in,
                                 unsigned int inlen, void* arg) {
-    tls_backend_ctx_t* ctx = (tls_backend_ctx_t*)arg;
     (void)ssl;
+    tls_backend_ctx_t* ctx = (tls_backend_ctx_t*)arg;
 
     if (SSL_select_next_proto((unsigned char**)out, outlen,
                               ctx->alpn_wire,
@@ -593,10 +593,6 @@ int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx, const char* path) {
     return 0;
 }
 
-/* ===================================================================== *
- *  Connection: one SSL state machine over memory buffers
- * ===================================================================== */
-
 tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
                                             bool is_server) {
     tls_backend_conn_t* c = (tls_backend_conn_t*)calloc(1, sizeof(*c));
@@ -673,9 +669,11 @@ int tls_backend_conn_drain(tls_backend_conn_t* c, void* buf, int cap) {
     if (n > 0) {
         return n;
     }
-    /* A mem BIO with no pending bytes returns <=0 with the retry flag
+    /**
+     * A mem BIO with no pending bytes returns <=0 with the retry flag
      * set; that is "empty", not an error. Only a non-retry negative is a
-     * hard failure. */
+     * hard failure.
+     */
     return BIO_should_retry(c->wbio) ? 0 : (n < 0 ? -1 : 0);
 }
 
@@ -747,10 +745,6 @@ void tls_backend_conn_get_alpn(tls_backend_conn_t* c, char* buf, size_t cap) {
         buf[0] = '\0';
     }
 }
-
-/* ===================================================================== *
- *  DTLS-only extensions (datagram specifics)
- * ===================================================================== */
 
 void dtls_backend_conn_set_mtu(tls_backend_conn_t* c, uint16_t mtu) {
     if (mtu == 0) {

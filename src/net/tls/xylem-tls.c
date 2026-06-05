@@ -19,17 +19,15 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * TLS public API surface.
  *
- * Thin opaque-handle shim over the internal TLS engine (tls.c / tls.h).
- * The public xylem_tls_conn_t / ctx_t / listener_t are opaque wrappers
- * whose single member is the engine's concrete struct; by C first-member
- * address equivalence (6.7.2.1) a public-handle pointer and a pointer to
- * its internal engine struct share an address, so each shim function just
- * forwards to the matching tls_* engine entry point. The options struct
- * (xylem_tls_opts_t) is a transparent value type used as-is by the
- * engine, so no translation is needed for it.
+ * Thin opaque-handle shim over the internal TLS engine (tls.c). Each
+ * public handle wraps the engine's concrete struct as its sole, offset-0
+ * member, so by C first-member address equivalence (6.7.2.1) a plain cast
+ * converts between the two and every shim function just forwards to the
+ * matching tls_* entry point. xylem_tls_opts_t is a transparent value
+ * type the engine uses as-is, so it needs no wrapper.
  */
 
 #include "xylem/net/xylem-tls.h"
@@ -38,13 +36,6 @@
 
 #include <stddef.h>
 
-/*
- * Opaque public handles: one engine struct each, at offset 0. The engine
- * allocates and returns tls_* pointers; because the wrapper's only member
- * is that struct and sits at offset 0, the engine pointer and the public
- * handle pointer are interchangeable by a plain cast -- no extra wrapper
- * object is allocated (mirrors the http req/res wrappers).
- */
 struct xylem_tls_ctx_s {
     tls_ctx_t internal;
 };
@@ -64,10 +55,6 @@ _Static_assert(offsetof(struct xylem_tls_conn_s, internal) == 0,
 _Static_assert(offsetof(struct xylem_tls_listener_s, internal) == 0,
                "tls_listener_t must remain the first member of "
                "xylem_tls_listener_s");
-
-/* ===================================================================== *
- *  Context lifecycle and configuration
- * ===================================================================== */
 
 xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
     return (xylem_tls_ctx_t*)tls_ctx_create();
@@ -136,10 +123,6 @@ int xylem_tls_ctx_set_alpn(xylem_tls_ctx_t* ctx, const char** protocols,
     }
     return tls_ctx_set_alpn(&ctx->internal, protocols, count);
 }
-
-/* ===================================================================== *
- *  Connections and listeners
- * ===================================================================== */
 
 xylem_tls_conn_t* xylem_tls_dial(const char* host, uint16_t port,
                                  xylem_tls_ctx_t* ctx,

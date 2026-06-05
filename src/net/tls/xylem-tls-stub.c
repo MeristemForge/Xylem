@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Stub TLS read/write primitives for builds without TLS support. The
  * reader, writer, and mux transport tables name xylem_tls_read and
  * xylem_tls_write in their XYLEM_*_TLS cases; those files compile
