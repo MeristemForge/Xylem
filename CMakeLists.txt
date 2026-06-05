@@ -12,6 +12,9 @@ option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
 option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
+set(XYLEM_TLS_BACKEND "openssl" CACHE STRING
+    "TLS backend implementation (currently: openssl)")
+set_property(CACHE XYLEM_TLS_BACKEND PROPERTY STRINGS openssl)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -134,28 +137,23 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
+	if(NOT XYLEM_TLS_BACKEND STREQUAL "openssl")
+		message(FATAL_ERROR "unsupported XYLEM_TLS_BACKEND: ${XYLEM_TLS_BACKEND}")
+	endif()
+
 	find_package(OpenSSL 3.5 REQUIRED)
 
 	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
-		src/net/tls/tls-backend-openssl.c
+		src/net/tls/tls-backend-${XYLEM_TLS_BACKEND}.c
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
 		src/net/tls/xylem-dtls.c
 		src/net/http/http-transport-tls.c
 		src/net/ws/ws-tls.c
 	)
-
-	# platform-tls depends on OpenSSL, so it lives in the TLS block
-	# rather than the unconditional platform source lists above.
-	if(WIN32)
-		list(APPEND SRCS src/platform/win/platform-tls.c)
-	endif()
-	if(UNIX)
-		list(APPEND SRCS src/platform/unix/platform-tls.c)
-	endif()
 else()
 	list(APPEND SRCS
 		src/net/http/http-transport-tls-stub.c
