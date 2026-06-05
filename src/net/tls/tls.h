@@ -23,7 +23,8 @@
  * Internal TLS engine.
  *
  * Defines the real connection/context/listener structs and the engine
- * API (tls_*), built directly on OpenSSL and the coroutine runtime. The
+ * API (tls_*), built on the backend TLS interface and the coroutine
+ * runtime. The
  * public xylem_tls_* surface (xylem-tls.c) is a thin opaque-handle shim
  * over these; other internal consumers that need the engine directly --
  * the HTTPS transport factory (http-transport-tls.c), which runs the
@@ -40,10 +41,10 @@ _Pragma("once")
 #include "xylem/sync/xylem-mutex.h"
 
 #include "net/addr.h"
+#include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
 
-#include <openssl/ssl.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -65,45 +66,19 @@ typedef struct tls_ctx_s      tls_ctx_t;
 typedef struct tls_conn_s     tls_conn_t;
 typedef struct tls_listener_s tls_listener_t;
 
-/* Per-SNI-host certificate identity stored on a context. */
-typedef struct _tls_sni_entry_s {
-    char            hostname[256];
-    X509*           cert;  /* leaf certificate for this SNI host. */
-    EVP_PKEY*       key;   /* private key paired with cert. */
-    STACK_OF(X509)* chain; /* intermediate chain (may be NULL). */
-} _tls_sni_entry_t;
-
 struct tls_ctx_s {
-    SSL_CTX*          ssl_ctx;
-    uint8_t*          alpn_wire;
-    size_t            alpn_wire_len;
-    FILE*             keylog_file;
-    _tls_sni_entry_t* sni_entries;
-    size_t            sni_count;
-    size_t            sni_cap;
-    /**
-     * Verification policy, applied per connection by role since the two
-     * roles attach opposite meanings to a peer certificate:
-     *   - verify_server: client role (tls_dial). When true the server
-     *     certificate chain (and identity, via opts.server_name) is
-     *     verified. Defaults to true -- secure by default.
-     *   - verify_client: server role (tls_listen). When true the server
-     *     requests and verifies a client certificate (mTLS). Defaults to
-     *     false -- a public server asks for no client cert.
-     */
-    bool              verify_server;
-    bool              verify_client;
+    tls_backend_ctx_t* be;
+    bool               verify_server;
+    bool               verify_client;
 };
 
 struct tls_conn_s {
-    SSL*             ssl;
-    BIO*             rbio;       /* network -> SSL: inbound ciphertext. */
-    BIO*             wbio;       /* SSL -> network: outbound ciphertext. */
-    char*            rbuf;       /* pump_in scratch, owned by rd_mu. */
-    char*            wbuf;       /* pump_out scratch, owned by wr_mu. */
-    xylem_mutex_t*   ssl_mu;     /* serializes all OpenSSL SSL/BIO access. */
-    xylem_mutex_t*   rd_mu;      /* sole owner of iowait read direction. */
-    xylem_mutex_t*   wr_mu;      /* sole owner of iowait write direction. */
+    tls_backend_conn_t* be;     /* replaces ssl, rbio, wbio */
+    char*            rbuf;
+    char*            wbuf;
+    xylem_mutex_t*   ssl_mu;
+    xylem_mutex_t*   rd_mu;
+    xylem_mutex_t*   wr_mu;
     iowait_t*        waiter;
     platform_sock_t  fd;
     tls_ctx_t*       ctx;
