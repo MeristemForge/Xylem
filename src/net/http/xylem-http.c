@@ -220,7 +220,7 @@ void xylem_http_serve_content(xylem_http_res_t* res,
     const uint8_t* bytes = (const uint8_t*)data;
 
     /* Compute ETag: FNV-1a hash of content + size. */
-    char etag[24];
+    char etag[32];
     {
         uint32_t hash = 0x811c9dc5u;
         for (size_t i = 0; i < data_len; i++) {
@@ -264,7 +264,7 @@ void xylem_http_serve_content(xylem_http_res_t* res,
 
         if (start > end_pos || start >= total) {
             xylem_http_res_set_status(res, 416);
-            char cr[64];
+            char cr[80];
             snprintf(cr, sizeof(cr), "bytes */%zu", total);
             xylem_http_res_set_header(res, "Content-Range", cr);
             xylem_http_res_write(res, "Range Not Satisfiable", 21);
@@ -274,7 +274,7 @@ void xylem_http_serve_content(xylem_http_res_t* res,
             end_pos = total - 1;
         }
 
-        char cr[64];
+        char cr[80];
         snprintf(cr, sizeof(cr), "bytes %zu-%zu/%zu", start, end_pos, total);
         xylem_http_res_set_header(res, "Content-Range", cr);
         xylem_http_res_set_header(res, "Accept-Ranges", "bytes");

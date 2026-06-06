@@ -187,7 +187,9 @@ static void test_file_rollover(void) {
     f = fopen(LOG_FILE, "r");
     ASSERT(f != NULL);
     char buf[4096] = {0};
-    fread(buf, 1, sizeof(buf) - 1, f);
+    size_t rd = fread(buf, 1, sizeof(buf) - 1, f);
+    ASSERT(rd > 0);
+    buf[rd] = '\0';
     fclose(f);
 
     /* after rollover, early lines are gone; later lines should be present */

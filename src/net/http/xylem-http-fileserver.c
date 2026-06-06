@@ -162,8 +162,16 @@ static void _fileserver_handler(xylem_http_res_t* res,
         return;
     }
 
-    fread(data, 1, (size_t)size, f);
+    size_t nread = fread(data, 1, (size_t)size, f);
     fclose(f);
+
+    if (nread != (size_t)size) {
+        free(data);
+        free(full_path);
+        xylem_http_res_set_status(res, 500);
+        xylem_http_res_write(res, "Internal Server Error", 21);
+        return;
+    }
 
     const char* mime = _mime_type(full_path);
     xylem_http_serve_content(res, req, data, (size_t)size, mime);
