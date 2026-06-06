@@ -46,6 +46,10 @@
  */
 #define TLS_IO_CHUNK (16 * 1024)
 
+static void _tls_conn_ref(tls_conn_t* tls) {
+    atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
+}
+
 static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
     tls_conn_t* tls = (tls_conn_t*)calloc(1, sizeof(tls_conn_t));
     if (!tls) {
@@ -73,12 +77,8 @@ static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_store_explicit(&tls->refcnt, 1, memory_order_relaxed);
+    _tls_conn_ref(tls);
     return tls;
-}
-
-static void _tls_conn_ref(tls_conn_t* tls) {
-    atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
 }
 
 /**
@@ -727,15 +727,15 @@ tls_listener_t* tls_listen(
 tls_conn_t* tls_accept(tls_listener_t* ln) {
     _tls_listener_ref(ln);
 
-    tls_conn_t* conn = NULL;
+    tls_conn_t* ready = NULL;
     for (;;) {
         platform_sock_t fd = _tls_accept_fd(ln);
         if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
             break;
         }
 
-        tls_conn_t* tls = _tls_conn_create(fd);
-        if (!tls) {
+        tls_conn_t* pending = _tls_conn_create(fd);
+        if (!pending) {
             platform_socket_close(fd);
             break;
         }
@@ -749,14 +749,14 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
          * whole server. Drop it and keep accepting; _tls_accept_fd's
          * closed check breaks the loop on real shutdown.
          */
-        conn = _tls_server_handshake(ln, tls);
-        if (conn) {
+        ready = _tls_server_handshake(ln, pending);
+        if (ready) {
             break;
         }
     }
 
     _tls_listener_unref(ln);
-    return conn;
+    return ready;
 }
 
 void tls_close_listener(tls_listener_t* ln) {
