@@ -38,6 +38,7 @@ set(SRCS
 	src/xylem-utils.c
 	src/xylem-serial.c
 	src/xylem-timer.c
+	src/xylem-ticker.c
 	src/container/mpsc.c
 	src/thrdpool.c
 	src/runtime/wsdeque.c
