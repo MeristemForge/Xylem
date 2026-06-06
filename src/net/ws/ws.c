@@ -497,14 +497,16 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
                 }
                 if (fh.opcode == 0x8) {
                     conn->close_received = true;
-                    goto close_done;
+                    break;
                 }
                 scan += ftotal;
+            }
+            if (conn->close_received) {
+                break;
             }
         }
     }
 
-close_done:
     conn->transport.close(conn->transport.conn);
     if (!conn->_standalone) {
         ws_conn_free(conn);
