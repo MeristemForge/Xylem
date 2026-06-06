@@ -386,7 +386,7 @@ xylem_mux_t* xylem_mux_create(
     atomic_store_explicit(&mux->refcnt, 1, memory_order_relaxed);
 
     _mux_ref(mux);
-    xylem_spawn(_mux_reader_loop, mux);
+    runtime_spawn(_mux_reader_loop, mux);
 
     return mux;
 }
