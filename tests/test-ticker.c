@@ -1,0 +1,129 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
+#include "xylem.h"
+#include "assert.h"
+
+#include <stdatomic.h>
+#include <stdint.h>
+
+#define SAFETY_TIMEOUT_MS 10000
+#define TICK_INTERVAL_MS  20
+#define TICK_TARGET       5
+
+typedef struct {
+    xylem_ticker_t*    tk;
+    atomic_int         ticks;
+    atomic_bool        ended;
+    xylem_waitgroup_t* wg;
+} _consume_ctx_t;
+
+static void _watchdog_cb(xylem_timer_t* t, void* ud) {
+    (void)t;
+    (void)ud;
+    ASSERT(0 && "test timed out");
+}
+
+static void _tick_main(void* arg) {
+    (void)arg;
+    xylem_ticker_t* tk = xylem_ticker_create(TICK_INTERVAL_MS);
+    ASSERT(tk != NULL);
+
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+
+    uint64_t prev = 0;
+    for (int i = 0; i < TICK_TARGET; i++) {
+        uint64_t now = xylem_ticker_recv(tk);
+        ASSERT(now != 0);
+        ASSERT(now >= prev);
+        prev = now;
+    }
+
+    xylem_timer_cancel(wd);
+    xylem_ticker_destroy(tk);
+    xylem_shutdown();
+}
+
+static void test_tick(void) {
+    xylem_run(_tick_main, NULL, NULL);
+}
+
+static void _invalid_main(void* arg) {
+    (void)arg;
+    /* Zero interval and NULL handles are rejected without aborting. */
+    ASSERT(xylem_ticker_create(0) == NULL);
+    ASSERT(xylem_ticker_recv(NULL) == 0);
+    xylem_ticker_destroy(NULL);
+    xylem_shutdown();
+}
+
+static void test_invalid(void) {
+    xylem_run(_invalid_main, NULL, NULL);
+}
+
+static void _consumer(void* arg) {
+    _consume_ctx_t* c = (_consume_ctx_t*)arg;
+    for (;;) {
+        uint64_t now = xylem_ticker_recv(c->tk);
+        if (now == 0) {
+            atomic_store(&c->ended, true);
+            break;
+        }
+        atomic_fetch_add(&c->ticks, 1);
+    }
+    xylem_waitgroup_done(c->wg);
+}
+
+static void _destroy_main(void* arg) {
+    (void)arg;
+    _consume_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    ctx.tk = xylem_ticker_create(TICK_INTERVAL_MS);
+    ASSERT(ctx.tk != NULL);
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+
+    xylem_spawn(_consumer, &ctx);
+
+    /* Let a few ticks reach the consumer, then tear down: the parked
+     * recv must wake and return 0 so the consumer loop exits. */
+    xylem_sleep(TICK_INTERVAL_MS * 3);
+    xylem_ticker_destroy(ctx.tk);
+
+    xylem_waitgroup_wait(ctx.wg);
+    ASSERT(atomic_load(&ctx.ended));
+    ASSERT(atomic_load(&ctx.ticks) >= 1);
+
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_shutdown();
+}
+
+static void test_destroy_wakes_recv(void) {
+    xylem_run(_destroy_main, NULL, NULL);
+}
+
+int main(void) {
+    test_tick();
+    test_invalid();
+    test_destroy_wakes_recv();
+    return 0;
+}
