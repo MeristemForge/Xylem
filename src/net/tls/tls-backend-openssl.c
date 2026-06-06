@@ -707,6 +707,11 @@ int tls_backend_conn_drain(tls_backend_conn_t* c, void* buf, int cap) {
 }
 
 static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
+    /**
+     * Handshake success: SSL_do_handshake returns 1 (read/write map
+     * their own >0 before this). Else ret==1 -> SSL_ERROR_NONE -> false
+     * error.
+     */
     if (ret == 1) {
         return TLS_BACKEND_OK;
     }

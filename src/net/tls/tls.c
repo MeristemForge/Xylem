@@ -433,27 +433,26 @@ static int _tls_write_loop(
         tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, rem, &n);
         xylem_mutex_unlock(tls->ssl_mu);
 
+        /**
+         * A write step may queue ciphertext (the encrypted chunk, a
+         * rekey flight, or a fatal alert on error), so flush before
+         * dispatching on the state.
+         */
+        if (_tls_pump_out(tls) != 0) {
+            return -1;
+        }
         switch (st) {
             case TLS_BACKEND_OK:
-                if (_tls_pump_out(tls) != 0) {
-                    return -1;
-                }
                 ptr += n;
                 rem -= n;
                 continue;
             case TLS_BACKEND_WANT_WRITE:
-                if (_tls_pump_out(tls) != 0) {
-                    return -1;
-                }
                 continue;
             case TLS_BACKEND_WANT_READ:
                 /**
-                 * Rekey: send our flight before waiting on the peer's, or
-                 * both sides block forever.
+                 * Rekey: our flight is already flushed above; now wait
+                 * on the peer's, or both sides block forever.
                  */
-                if (_tls_pump_out(tls) != 0) {
-                    return -1;
-                }
                 if (_tls_pump_in(tls) <= 0) {
                     return -1;
                 }
