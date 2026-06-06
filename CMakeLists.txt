@@ -12,9 +12,6 @@ option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
 option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
-set(XYLEM_TLS_BACKEND "openssl" CACHE STRING
-    "TLS backend implementation (currently: openssl)")
-set_property(CACHE XYLEM_TLS_BACKEND PROPERTY STRINGS openssl)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -29,6 +26,17 @@ set(CMAKE_C_STANDARD 11)
 
 if(WIN32 AND MSVC)
 	add_compile_options("/experimental:c11atomics")
+endif()
+
+# clang-cl's ASan cannot link the debug CRT -- it errors with "doesn't support
+# linking with debug runtime libraries yet". When Xylem is built standalone
+# with ASan under clang-cl, force the release dynamic CRT (/MD) so a Debug
+# configuration still compiles. Guarded by PROJECT_IS_TOP_LEVEL so a consumer
+# that does add_subdirectory(xylem) keeps full control of its own CRT choice.
+# MSVC cl.exe has no such limitation and is left untouched.
+if(PROJECT_IS_TOP_LEVEL AND WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "Clang"
+   AND XYLEM_ENABLE_ASAN)
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 endif()
 
 set(SRCS
@@ -138,17 +146,13 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	if(NOT XYLEM_TLS_BACKEND STREQUAL "openssl")
-		message(FATAL_ERROR "unsupported XYLEM_TLS_BACKEND: ${XYLEM_TLS_BACKEND}")
-	endif()
-
 	find_package(OpenSSL 3.5 REQUIRED)
 
 	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
-		src/net/tls/tls-backend-${XYLEM_TLS_BACKEND}.c
+		src/net/tls/tls-backend-openssl.c
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
 		src/net/tls/xylem-dtls.c

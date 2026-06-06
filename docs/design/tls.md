@@ -506,8 +506,8 @@ What changed during migration:
   DTLS engines converged into the single backend implementation (`load_cert_*`,
   `set_alpn`).
 - CMake: under `XYLEM_ENABLE_TLS`, add `tls-backend-openssl.c`, drop
-  `platform/*/platform-tls.c`. A `XYLEM_TLS_BACKEND` cache variable (currently
-  only accepts `openssl`) selects the backend source at configure time.
+  `platform/*/platform-tls.c`. OpenSSL is the only backend; its source is
+  compiled in directly when TLS is enabled.
 
 ### 11.8 Verification
 
