@@ -699,8 +699,9 @@ static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
      * be inside a backend read/write under ssl_mu. Flipping closed +
      * waking both iowait directions makes those calls return -1 and drop
      * their ref; the backend is destroyed once at the final unref, with
-     * no parker left. (close_notify is best-effort on a datagram socket
-     * and is intentionally skipped, matching the TLS close path.)
+     * no parker left. (Unlike the TLS close path, which flushes a
+     * best-effort close_notify, we skip it here: it is best-effort on a
+     * datagram socket and not worth the backend access.)
      */
     iowait_close(dtls->waiter);
     _dtls_conn_unref(dtls);
@@ -989,7 +990,7 @@ static int _dtls_server_send(
     return ret;
 }
 
-static void _dtls_server_close_conn(xylem_dtls_conn_t* dtls) {
+static void _dtls_server_close(xylem_dtls_conn_t* dtls) {
     if (atomic_exchange(&dtls->closed, true)) {
         return;
     }
@@ -997,10 +998,14 @@ static void _dtls_server_close_conn(xylem_dtls_conn_t* dtls) {
         sched_timer_stop(dtls->handshake_timer);
     }
 
-    if (dtls->handshake_done && dtls->be) {
-        tls_backend_conn_shutdown(dtls->be);
-        _dtls_server_flush_write_bio(dtls);
-    }
+    /**
+     * No close_notify: it is best-effort on a datagram transport and the
+     * server session has no ssl_mu, so touching dtls->be here would race
+     * a concurrent reader/writer still in the backend. DTLS records are
+     * independently authenticated with explicit boundaries, so there is
+     * no stream-truncation concern to guard against -- just drop it,
+     * matching the client close path.
+     */
 
     /**
      * Unlink from the session tree FIRST so the dispatcher can no
@@ -1210,7 +1215,7 @@ int xylem_dtls_write(
 
 void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
     if (dtls->listener) {
-        _dtls_server_close_conn(dtls);
+        _dtls_server_close(dtls);
     } else {
         _dtls_client_close(dtls);
     }

@@ -46,15 +46,16 @@ typedef struct xylem_dtls_opts_s {
      */
     const char* server_name;
     /**
-     * Link-layer MTU hint passed to OpenSSL (DTLS_set_link_mtu) to
-     * bound the size of DTLS handshake/record datagrams so they are
-     * not IP-fragmented. Applies to both dial and accept.
+     * Link-layer MTU hint used to bound the size of DTLS
+     * handshake/record datagrams so they are not IP-fragmented.
+     * Applies to both dial and accept.
      *
-     * This stack drives OpenSSL through memory BIOs, so OpenSSL cannot
-     * discover the path MTU on its own. With 0, OpenSSL falls back to
-     * a small conservative MTU (handshake still works, just more
-     * fragments); set this to your link MTU (e.g. 1500) for efficient
-     * handshakes without IP fragmentation.
+     * The TLS engine drives the connection over in-memory buffers, not
+     * a socket the protocol stack can probe, so it cannot discover the
+     * path MTU on its own. With 0, a small conservative default is used
+     * (the handshake still works, just with more fragments); set this
+     * to your link MTU (e.g. 1500) for efficient, unfragmented
+     * handshakes.
      */
     uint16_t    mtu;
 } xylem_dtls_opts_t;
@@ -142,7 +143,7 @@ extern int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx,
  *
  * Lets a client verify servers using certificates from public CAs. Loads
  * trust anchors additively from two sources:
- *   1. the platform system trust store (when OpenSSL can read it), and
+ *   1. the platform system trust store (when it is readable), and
  *   2. fallback_ca_file, if non-NULL, as a PEM CA bundle.
  * Both accumulate; the call succeeds if either source loads.
  *
@@ -150,12 +151,11 @@ extern int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx,
  * on an mTLS server, where it would accept any client certificate
  * chaining to a public CA.
  *
- * The native system store is read on Linux, Windows, and macOS (via the
- * CA bundle shipped with the linked OpenSSL). It is NOT available on
- * Android or iOS, and may be empty for a statically linked /
- * cross-compiled / custom OpenSSL whose build-time path is absent on the
- * target. For all of those, pass fallback_ca_file pointing at a CA bundle
- * shipped with your app (e.g. curl's cacert.pem from
+ * The native system store is read on Linux, Windows, and macOS. It is NOT
+ * available on Android or iOS, and may be empty for a statically linked /
+ * cross-compiled / custom TLS build whose build-time trust path is absent
+ * on the target. For all of those, pass fallback_ca_file pointing at a CA
+ * bundle shipped with your app (e.g. curl's cacert.pem from
  * https://curl.se/ca/cacert.pem); pass NULL to use only the system store.
  *
  * @param ctx               Context handle.

@@ -133,7 +133,7 @@ extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
  *
  * Lets a client verify servers using certificates from public CAs. Loads
  * trust anchors additively from two sources:
- *   1. the platform system trust store (when OpenSSL can read it), and
+ *   1. the platform system trust store (when it is readable), and
  *   2. fallback_ca_file, if non-NULL, as a PEM CA bundle.
  * Both accumulate; the call succeeds if either source loads.
  *
@@ -141,12 +141,11 @@ extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
  * an mTLS server, where it would accept any client certificate chaining
  * to a public CA.
  *
- * The native system store is read on Linux, Windows, and macOS (via the
- * CA bundle shipped with the linked OpenSSL). It is NOT available on
- * Android or iOS, and may be empty for a statically linked /
- * cross-compiled / custom OpenSSL whose build-time path is absent on the
- * target. For all of those, pass fallback_ca_file pointing at a CA bundle
- * shipped with your app (e.g. curl's cacert.pem from
+ * The native system store is read on Linux, Windows, and macOS. It is NOT
+ * available on Android or iOS, and may be empty for a statically linked /
+ * cross-compiled / custom TLS build whose build-time trust path is absent
+ * on the target. For all of those, pass fallback_ca_file pointing at a CA
+ * bundle shipped with your app (e.g. curl's cacert.pem from
  * https://curl.se/ca/cacert.pem); pass NULL to use only the system store.
  *
  * @param ctx               Context handle.
