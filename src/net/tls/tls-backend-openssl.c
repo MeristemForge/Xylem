@@ -772,11 +772,13 @@ void tls_backend_conn_get_alpn(tls_backend_conn_t* c, char* buf, size_t cap) {
     const unsigned char* proto = NULL;
     unsigned int         plen  = 0;
     SSL_get0_alpn_selected(c->ssl, &proto, &plen);
+    if (cap == 0) {
+        return;
+    }
+    buf[0] = '\0';
     if (proto && plen > 0 && (size_t)plen < cap) {
         memcpy(buf, proto, plen);
         buf[plen] = '\0';
-    } else if (cap > 0) {
-        buf[0] = '\0';
     }
 }
 
