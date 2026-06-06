@@ -40,7 +40,7 @@ enum xylem_logger_level_e {
 typedef struct xylem_logger_opts_s xylem_logger_opts_t;
 
 /**
- * @brief Logger configuration options.
+ * Logger configuration options.
  *
  * Pass NULL to xylem_logger_init() to use defaults (INFO level,
  * no file-size limit). When opts is non-NULL every field is taken
@@ -55,11 +55,12 @@ typedef struct xylem_logger_opts_s xylem_logger_opts_t;
  *     xylem_logger_init("app.log", &opts);
  */
 struct xylem_logger_opts_s {
-    xylem_logger_level_t level;         /*< Minimum log level to output. */
-    size_t               max_file_size; /*< Rollover threshold in bytes before the
-                                             log file is truncated and restarted.
-                                             0 means no limit. Ignored when
-                                             filename is NULL (stdout). */
+    xylem_logger_level_t level;         /* Minimum log level to output. */
+    /**
+     * Rollover threshold in bytes before the log file is truncated and
+     * restarted. 0 means no limit. Ignored when filename is NULL (stdout).
+     */
+    size_t               max_file_size;
 };
 
 /**

@@ -26,14 +26,14 @@ _Pragma("once")
 #include <stddef.h>
 
 typedef struct xylem_http_multipart_part_s {
-    const char* name;         /*< Content-Disposition "name" value. */
-    size_t      name_len;     /*< Length of name. */
-    const char* filename;     /*< Content-Disposition "filename", or NULL. */
-    size_t      filename_len; /*< Length of filename. */
-    const char* content_type; /*< Content-Type of this part, or NULL. */
-    size_t      content_type_len; /*< Length of content_type. */
-    const void* body;         /*< Part body data (points into source). */
-    size_t      body_len;     /*< Length of body. */
+    const char* name;         /* Content-Disposition "name" value. */
+    size_t      name_len;     /* Length of name. */
+    const char* filename;     /* Content-Disposition "filename", or NULL. */
+    size_t      filename_len; /* Length of filename. */
+    const char* content_type; /* Content-Type of this part, or NULL. */
+    size_t      content_type_len; /* Length of content_type. */
+    const void* body;         /* Part body data (points into source). */
+    size_t      body_len;     /* Length of body. */
 } xylem_http_multipart_part_t;
 
 /**

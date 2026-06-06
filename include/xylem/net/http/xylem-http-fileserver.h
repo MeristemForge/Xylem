@@ -26,8 +26,8 @@ _Pragma("once")
 #include <stdbool.h>
 
 typedef struct xylem_http_fileserver_opts_s {
-    const char* index_file;  /*< Default "index.html", NULL to disable. */
-    bool        dir_listing; /*< true = show directory listing. */
+    const char* index_file;  /* Default "index.html", NULL to disable. */
+    bool        dir_listing; /* true = show directory listing. */
 } xylem_http_fileserver_opts_t;
 
 /**

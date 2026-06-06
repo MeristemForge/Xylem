@@ -62,7 +62,7 @@ typedef struct http_transport_s {
     void (*set_wr_deadline)(void* conn, uint64_t ms);
     int  (*remote_addr)(void* conn, char* host, size_t host_len, uint16_t* port);
     int  (*local_addr)(void* conn, char* host, size_t host_len, uint16_t* port);
-    int  (*shutdown_wr)(void* conn); /*< May be NULL (e.g. TLS). */
+    int  (*shutdown_wr)(void* conn); /* May be NULL (e.g. TLS). */
 } http_transport_t;
 
 typedef http_transport_t (*http_dial_fn_t)(const char* host, uint16_t port,

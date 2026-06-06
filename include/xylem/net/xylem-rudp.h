@@ -28,18 +28,18 @@ typedef struct xylem_rudp_conn_s     xylem_rudp_conn_t;
 typedef struct xylem_rudp_listener_s xylem_rudp_listener_t;
 
 typedef enum xylem_rudp_mode_e {
-    XYLEM_RUDP_STREAM,  /*< Byte stream, compatible with mux/reader/writer. */
-    XYLEM_RUDP_MESSAGE  /*< Preserves message boundaries. */
+    XYLEM_RUDP_STREAM,  /* Byte stream, compatible with mux/reader/writer. */
+    XYLEM_RUDP_MESSAGE  /* Preserves message boundaries. */
 } xylem_rudp_mode_t;
 
 typedef struct xylem_rudp_opts_s {
-    xylem_rudp_mode_t mode;              /*< Stream or message mode. */
-    uint32_t          mtu;               /*< UDP MTU, 0 = 1400. */
-    uint32_t          fec_data;          /*< FEC data shards, 0 = disabled. */
-    uint32_t          fec_parity;        /*< FEC parity shards, 0 = disabled. */
-    uint64_t          connect_timeout_ms; /*< Handshake timeout, 0 = 5000ms. */
-    uint64_t          timeout_ms;        /*< Dead link timeout, 0 = default. */
-    const uint8_t*    aes_key;           /*< 32-byte AES-256 key, NULL = disabled. */
+    xylem_rudp_mode_t mode;              /* Stream or message mode. */
+    uint32_t          mtu;               /* UDP MTU, 0 = 1400. */
+    uint32_t          fec_data;          /* FEC data shards, 0 = disabled. */
+    uint32_t          fec_parity;        /* FEC parity shards, 0 = disabled. */
+    uint64_t          connect_timeout_ms; /* Handshake timeout, 0 = 5000ms. */
+    uint64_t          timeout_ms;        /* Dead link timeout, 0 = default. */
+    const uint8_t*    aes_key;           /* 32-byte AES-256 key, NULL = disabled. */
 } xylem_rudp_opts_t;
 
 /**

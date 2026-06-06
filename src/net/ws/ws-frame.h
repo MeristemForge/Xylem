@@ -33,7 +33,7 @@ typedef struct ws_frame_header_s {
     bool     masked;
     uint64_t payload_len;
     uint8_t  mask_key[4];
-    size_t   header_size; /*< Total header bytes (2-14). */
+    size_t   header_size; /* Total header bytes (2-14). */
 } ws_frame_header_t;
 
 /**

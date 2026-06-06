@@ -51,10 +51,10 @@ typedef void (*xylem_ws_handler_fn_t)(xylem_ws_conn_t* conn, void* userdata);
  *     (tests only).
  */
 typedef struct xylem_ws_tls_s {
-    const char* cert;        /*< PEM certificate path (server). */
-    const char* key;         /*< PEM private key path (server). */
-    const char* ca;          /*< CA path, NULL = system default. */
-    bool        skip_verify; /*< true = skip peer cert verification (client). */
+    const char* cert;        /* PEM certificate path (server). */
+    const char* key;         /* PEM private key path (server). */
+    const char* ca;          /* CA path, NULL = system default. */
+    bool        skip_verify; /* true = skip peer cert verification (client). */
 } xylem_ws_tls_t;
 
 typedef struct {

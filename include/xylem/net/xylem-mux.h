@@ -38,14 +38,14 @@ typedef enum xylem_mux_transport_e {
 } xylem_mux_transport_t;
 
 typedef enum xylem_mux_role_e {
-    XYLEM_MUX_CLIENT, /*< Initiates connections. */
-    XYLEM_MUX_SERVER  /*< Accepts connections. */
+    XYLEM_MUX_CLIENT, /* Initiates connections. */
+    XYLEM_MUX_SERVER  /* Accepts connections. */
 } xylem_mux_role_t;
 
 typedef struct xylem_mux_opts_s {
-    uint32_t max_stream_window; /*< Per-stream flow control window, 0 = 256KB. */
-    uint32_t max_streams;       /*< Max concurrent streams, 0 = unlimited. */
-    uint64_t keepalive_ms;      /*< Ping interval, 0 = disabled. */
+    uint32_t max_stream_window; /* Per-stream flow control window, 0 = 256KB. */
+    uint32_t max_streams;       /* Max concurrent streams, 0 = unlimited. */
+    uint64_t keepalive_ms;      /* Ping interval, 0 = disabled. */
 } xylem_mux_opts_t;
 
 /**

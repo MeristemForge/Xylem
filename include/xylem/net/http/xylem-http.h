@@ -42,33 +42,33 @@ typedef void (*xylem_http_handler_fn_t)(
     void*             userdata);
 
 typedef struct xylem_http_tls_s {
-    const char* cert;        /*< PEM certificate path. */
-    const char* key;         /*< PEM private key path. */
-    const char* ca;          /*< CA path, NULL = system default. */
-    bool        skip_verify; /*< true = skip peer cert verification. */
+    const char* cert;        /* PEM certificate path. */
+    const char* key;         /* PEM private key path. */
+    const char* ca;          /* CA path, NULL = system default. */
+    bool        skip_verify; /* true = skip peer cert verification. */
 } xylem_http_tls_t;
 
 typedef struct xylem_http_srv_opts_s {
-    uint64_t                idle_timeout_ms;        /*< 0 = default 60000 ms. */
-    uint64_t                read_header_timeout_ms; /*< 0 = default 10000 ms. */
-    uint64_t                write_timeout_ms;       /*< 0 = default 30000 ms. */
-    xylem_http_handler_fn_t on_upgrade;             /*< Upgrade handler, NULL = reject 501. */
-    void*                   upgrade_userdata;       /*< Passed to on_upgrade. */
-    const xylem_http_tls_t* tls;                   /*< Non-NULL = HTTPS server. */
+    uint64_t                idle_timeout_ms;        /* 0 = default 60000 ms. */
+    uint64_t                read_header_timeout_ms; /* 0 = default 10000 ms. */
+    uint64_t                write_timeout_ms;       /* 0 = default 30000 ms. */
+    xylem_http_handler_fn_t on_upgrade;             /* Upgrade handler, NULL = reject 501. */
+    void*                   upgrade_userdata;       /* Passed to on_upgrade. */
+    const xylem_http_tls_t* tls;                   /* Non-NULL = HTTPS server. */
 } xylem_http_srv_opts_t;
 
 typedef struct xylem_http_proxy_s {
     const char* host;
     uint16_t    port;
-    const char* username; /*< NULL = no auth. */
-    const char* password; /*< NULL = no auth. */
+    const char* username; /* NULL = no auth. */
+    const char* password; /* NULL = no auth. */
 } xylem_http_proxy_t;
 
 typedef struct xylem_http_cli_opts_s {
-    uint64_t                  timeout_ms;    /*< 0 = no timeout. */
-    int                       max_redirects; /*< 0 = disable, default 10. */
-    const xylem_http_proxy_t* proxy;         /*< NULL = from env (HTTPS only). */
-    const xylem_http_tls_t*   tls;           /*< Non-NULL = custom TLS config. */
+    uint64_t                  timeout_ms;    /* 0 = no timeout. */
+    int                       max_redirects; /* 0 = disable, default 10. */
+    const xylem_http_proxy_t* proxy;         /* NULL = from env (HTTPS only). */
+    const xylem_http_tls_t*   tls;           /* Non-NULL = custom TLS config. */
 } xylem_http_cli_opts_t;
 
 /**

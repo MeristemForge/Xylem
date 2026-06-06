@@ -79,7 +79,7 @@ _Pragma("once")
 #include <stdint.h>
 
 typedef struct xylem_opts_s {
-    int32_t workers;  /*< Scheduler worker count, 0 for default (CPU count). */
+    int32_t workers;  /* Scheduler worker count, 0 for default (CPU count). */
 } xylem_opts_t;
 
 /**

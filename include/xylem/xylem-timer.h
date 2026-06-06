@@ -26,12 +26,7 @@ _Pragma("once")
 
 typedef struct xylem_timer_s xylem_timer_t;
 
-/**
- * @brief Timer expiry callback.
- *
- * @param t   The timer that fired.
- * @param ud  User data.
- */
+/* Timer expiry callback: t is the timer that fired, ud the user data. */
 typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
 
 /**
