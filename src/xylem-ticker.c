@@ -22,6 +22,7 @@
 #include "xylem/xylem-ticker.h"
 
 #include "xylem/sync/xylem-channel.h"
+#include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
 #include "runtime/runtime.h"
@@ -31,12 +32,12 @@
 #include <stdlib.h>
 
 struct xylem_ticker_s {
-    sched_timer_t*   timer;       /* inline repeat timer (spawn == false) */
-    xylem_channel_t* ch;          /* MPSC: cb sends, one consumer recvs   */
-    _Atomic bool     closed;      /* set once by xylem_ticker_destroy     */
-    _Atomic int32_t  pending;     /* 0/1 -- caps the channel at one tick  */
-    _Atomic uint64_t last_tick;   /* most recent tick time (ms)           */
-    _Atomic int32_t  refcnt;      /* lifetime, mirrors rudp/tcp sessions  */
+    sched_timer_t*   timer;     /* repeating, run inline (spawn == false) */
+    xylem_channel_t* ch;
+    _Atomic bool     closed;
+    _Atomic int32_t  pending;   /* 0/1 coalescing cap: drop ticks when behind */
+    _Atomic uint64_t last_tick;
+    _Atomic int32_t  refcnt;
 };
 
 /**
@@ -111,7 +112,15 @@ static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
     if (atomic_compare_exchange_strong_explicit(
             &t->pending, &expected, 1,
             memory_order_acq_rel, memory_order_relaxed)) {
-        xylem_channel_send(t->ch, &_ticker_tick);
+        /**
+         * On send failure (channel OOM) no token is enqueued, so leaving
+         * pending == 1 would wedge the ticker forever: recv blocks with
+         * nothing to drain and every later tick coalesces. Reopen the slot
+         * so a subsequent tick can retry the delivery.
+         */
+        if (xylem_channel_send(t->ch, &_ticker_tick) != 0) {
+            atomic_store_explicit(&t->pending, 0, memory_order_release);
+        }
     }
 
     _ticker_unref(t);
@@ -184,11 +193,14 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
     sched_timer_stop(ticker->timer);
 
     /**
-     * Wake a consumer blocked in recv. We never close the channel (that
-     * would make a racing cb send abort), so this send is always safe;
-     * the consumer sees closed and returns 0.
+     * Wake a consumer blocked in recv. We never close the channel here:
+     * a racing in-flight cb send would then abort on a closed channel.
      */
-    xylem_channel_send(ticker->ch, &_ticker_tick);
+    if (xylem_channel_send(ticker->ch, &_ticker_tick) != 0) {
+        xylem_loge("<ticker> wake send failed on destroy ticker=%p; "
+                   "a parked recv may not wake",
+                   (void*)ticker);
+    }
 
     /* Drop the creator's reference. */
     _ticker_unref(ticker);
