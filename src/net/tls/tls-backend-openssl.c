@@ -88,7 +88,7 @@ static void _tlsb_init_ex(void) {
  * swaps the whole configuration. When no host matches, the ctx default
  * certificate is left untouched.
  */
-static int _tlsb_sni_cb(SSL* ssl, int* al, void* arg) {
+static int _tlsb_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
     (void)al;
     tls_backend_ctx_t* ctx = (tls_backend_ctx_t*)arg;
     const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
@@ -118,7 +118,7 @@ static int _tlsb_sni_cb(SSL* ssl, int* al, void* arg) {
     return SSL_TLSEXT_ERR_OK;
 }
 
-static void _tlsb_keylog_cb(const SSL* ssl, const char* line) {
+static void _tlsb_ssl_keylog_cb(const SSL* ssl, const char* line) {
     SSL_CTX* ssl_ctx = SSL_get_SSL_CTX(ssl);
     tls_backend_ctx_t* ctx =
         (tls_backend_ctx_t*)SSL_CTX_get_ex_data(ssl_ctx, _tlsb_ctx_ex_idx);
@@ -357,7 +357,8 @@ static int _tlsb_cookie_generate_cb(
     SSL_CTX* sc = SSL_get_SSL_CTX(ssl);
     tls_backend_ctx_t* ctx =
         (tls_backend_ctx_t*)SSL_CTX_get_ex_data(sc, _tlsb_ctx_ex_idx);
-    const uint8_t* msg; size_t msg_len;
+    const uint8_t* msg;
+    size_t         msg_len;
     if (!ctx || _tlsb_cookie_peer(ssl, &msg, &msg_len) < 0) {
         return 0;
     }
@@ -374,7 +375,8 @@ static int _tlsb_cookie_verify_cb(
     SSL_CTX* sc = SSL_get_SSL_CTX(ssl);
     tls_backend_ctx_t* ctx =
         (tls_backend_ctx_t*)SSL_CTX_get_ex_data(sc, _tlsb_ctx_ex_idx);
-    const uint8_t* msg; size_t msg_len;
+    const uint8_t* msg;
+    size_t         msg_len;
     if (!ctx || _tlsb_cookie_peer(ssl, &msg, &msg_len) < 0) {
         return 0;
     }
@@ -405,7 +407,7 @@ tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {
     call_once(&_tlsb_ex_once, _tlsb_init_ex);
     SSL_CTX_set_ex_data(ctx->ssl_ctx, _tlsb_ctx_ex_idx, ctx);
 
-    SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tlsb_sni_cb);
+    SSL_CTX_set_tlsext_servername_callback(ctx->ssl_ctx, _tlsb_ctx_sni_cb);
     SSL_CTX_set_tlsext_servername_arg(ctx->ssl_ctx, ctx);
 
     if (proto == TLS_BACKEND_PROTO_DTLS) {
@@ -614,7 +616,7 @@ int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx, const char* path) {
     if (!ctx->keylog_file) {
         return -1;
     }
-    SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tlsb_keylog_cb);
+    SSL_CTX_set_keylog_callback(ctx->ssl_ctx, _tlsb_ssl_keylog_cb);
     return 0;
 }
 
