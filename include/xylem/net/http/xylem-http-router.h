@@ -44,7 +44,8 @@ extern void xylem_http_router_destroy(xylem_http_router_t* router);
  *
  * @param router    Router handle.
  * @param method    HTTP method (e.g. "GET", "POST").
- * @param pattern   Route pattern (e.g. "/users/:id", "/static/*filepath").
+ * @param pattern   Route pattern with named (":id") or catch-all
+ *                  ("*filepath") params, e.g. "/users/:id".
  * @param handler   Handler function.
  * @param userdata  Passed to handler.
  *

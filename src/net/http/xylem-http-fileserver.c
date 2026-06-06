@@ -204,7 +204,7 @@ int xylem_http_fileserver(
         }
     }
 
-    /* build pattern: prefix + "/*filepath" */
+    /* build pattern: url_prefix followed by a catch-all filepath segment */
     size_t plen = strlen(url_prefix);
     char* pattern = (char*)malloc(plen + 10 + 1);
     if (!pattern) {
