@@ -568,6 +568,10 @@ int tls_backend_ctx_set_alpn(
     tls_backend_ctx_t* ctx,
     const char**       protocols,
     size_t             count) {
+    if (count == 0) {
+        return -1;
+    }
+
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
         total += 1 + strlen(protocols[i]);

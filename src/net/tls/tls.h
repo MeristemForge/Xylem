@@ -250,6 +250,13 @@ extern tls_listener_t* tls_listen(
  * Per-connection handshake failures are absorbed; NULL is returned only
  * once the listener is closed.
  *
+ * Must be called from a single coroutine per listener: the accept parks
+ * on the listener's iowait read direction, which permits only one parker
+ * (a second concurrent accept aborts). To accept in parallel across
+ * cores, give each worker its own listener on the same port and rely on
+ * SO_REUSEPORT load balancing -- effective on Linux/macOS only; on
+ * Windows reuseport is a no-op, so use a single acceptor there.
+ *
  * @param ln  Listener handle.
  *
  * @return Accepted connection, or NULL when the listener is closed.

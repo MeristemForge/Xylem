@@ -46,6 +46,14 @@
  */
 #define TLS_IO_CHUNK (16 * 1024)
 
+/**
+ * Bound for the best-effort close_notify flush. Long enough to ride out
+ * a transiently full send buffer (e.g. close right after a large write),
+ * short enough that a slow/stalled/malicious peer can never pin the
+ * connection's teardown.
+ */
+#define TLS_CLOSE_NOTIFY_TIMEOUT_MS 1000
+
 static void _tls_conn_ref(tls_conn_t* tls) {
     atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
 }
@@ -127,23 +135,19 @@ static void _tls_conn_free(tls_conn_t* tls) {
     free(tls);
 }
 
-static void _tls_conn_unref(tls_conn_t* tls) {
-    if (atomic_fetch_sub_explicit(&tls->refcnt, 1, memory_order_acq_rel)
-        != 1) {
-        return;
-    }
-    if (tls->be) {
-        tls_backend_conn_shutdown(tls->be);
-        tls_backend_conn_destroy(tls->be);
-    }
-    _tls_conn_free(tls);
-}
-
 static void _tls_conn_destroy(tls_conn_t* tls) {
     if (tls->be) {
         tls_backend_conn_destroy(tls->be);
     }
     _tls_conn_free(tls);
+}
+
+static void _tls_conn_unref(tls_conn_t* tls) {
+    /* Graceful close_notify lives in tls_close; refcount drop only destroys. */
+    if (atomic_fetch_sub_explicit(&tls->refcnt, 1, memory_order_acq_rel)
+        == 1) {
+        _tls_conn_destroy(tls);
+    }
 }
 
 /**
@@ -216,8 +220,12 @@ static int _tls_pump_in(tls_conn_t* tls) {
         ssize_t n = platform_socket_recv(tls->fd, tls->rbuf, TLS_IO_CHUNK);
         if (n > 0) {
             xylem_mutex_lock(tls->ssl_mu);
-            tls_backend_conn_feed(tls->be, tls->rbuf, (int)n);
+            int fed = tls_backend_conn_feed(tls->be, tls->rbuf, (int)n);
             xylem_mutex_unlock(tls->ssl_mu);
+            if (fed != 0) {
+                ret = -1;
+                break;
+            }
             ret = (int)n;
             break;
         }
@@ -672,10 +680,51 @@ tls_conn_t* tls_dial(
     return tls;
 }
 
+/**
+ * Best-effort close_notify so the peer can tell a clean close from a
+ * truncation. Bounded park (not unbounded) so a stalled peer can never
+ * pin teardown; own send loop because `closed` is already set and would
+ * otherwise abort _tls_send_all mid-flush.
+ */
+static void _tls_flush_close_notify(tls_conn_t* tls) {
+    if (!tls->be) {
+        return;
+    }
+    xylem_mutex_lock(tls->wr_mu);
+    xylem_mutex_lock(tls->ssl_mu);
+    tls_backend_conn_shutdown(tls->be);
+    int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_IO_CHUNK);
+    xylem_mutex_unlock(tls->ssl_mu);
+
+    iowait_set_wr_deadline(tls->waiter,
+                           _tls_make_deadline(TLS_CLOSE_NOTIFY_TIMEOUT_MS));
+    int sent = 0;
+    while (n > 0 && sent < n) {
+        ssize_t w = platform_socket_send(tls->fd, tls->wbuf + sent, n - sent);
+        if (w > 0) {
+            sent += (int)w;
+            continue;
+        }
+        int err = platform_socket_get_lasterror();
+        if (err != PLATFORM_SO_ERROR_EAGAIN
+            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            break;
+        }
+        if (iowait_write(tls->waiter) != IOWAIT_READY) {
+            break;
+        }
+    }
+    iowait_set_wr_deadline(tls->waiter, 0);
+    xylem_mutex_unlock(tls->wr_mu);
+}
+
 void tls_close(tls_conn_t* tls) {
     if (atomic_exchange(&tls->closed, true)) {
         return;
     }
+
+    /* Best-effort close_notify before the waiter dies (bounded park). */
+    _tls_flush_close_notify(tls);
 
     iowait_close(tls->waiter);
     _tls_conn_unref(tls);

@@ -266,6 +266,14 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  * once the listener is closed -- callers can treat NULL as "stop
  * accepting".
  *
+ * Call from a single coroutine per listener (a second concurrent accept
+ * on the same listener is not allowed). To spread accept/handshake
+ * across cores, give each worker its own listener on the same port: the
+ * listen socket enables SO_REUSEPORT so the kernel load-balances new
+ * connections. This works on Linux and macOS only; on Windows
+ * SO_REUSEPORT is unavailable, so use a single acceptor that spawns a
+ * handler coroutine per accepted connection.
+ *
  * @param ln  Listener handle.
  *
  * @return Accepted connection, or NULL when the listener is closed.
