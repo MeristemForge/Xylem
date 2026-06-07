@@ -35,7 +35,7 @@ struct mpsc_node_s {
 
 typedef struct mpsc_s {
     _Atomic(mpsc_node_t*) tail;
-    mpsc_node_t*          head;
+    _Atomic(mpsc_node_t*) head;
     mpsc_node_t           sentinel;
 } mpsc_t;
 

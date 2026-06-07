@@ -25,7 +25,7 @@
 
 void mpsc_init(mpsc_t* q) {
     atomic_store_explicit(&q->sentinel.next, NULL, memory_order_relaxed);
-    q->head = &q->sentinel;
+    atomic_store_explicit(&q->head, &q->sentinel, memory_order_relaxed);
     atomic_store_explicit(&q->tail, &q->sentinel, memory_order_relaxed);
 }
 
@@ -37,7 +37,7 @@ void mpsc_push(mpsc_t* q, mpsc_node_t* node) {
 }
 
 mpsc_node_t* mpsc_pop(mpsc_t* q) {
-    mpsc_node_t* head = q->head;
+    mpsc_node_t* head = atomic_load_explicit(&q->head, memory_order_acquire);
     mpsc_node_t* next =
         atomic_load_explicit(&head->next, memory_order_acquire);
 
@@ -46,13 +46,13 @@ mpsc_node_t* mpsc_pop(mpsc_t* q) {
         if (next == NULL) {
             return NULL;
         }
-        q->head = next;
+        atomic_store_explicit(&q->head, next, memory_order_release);
         head     = next;
         next = atomic_load_explicit(&head->next, memory_order_acquire);
     }
 
     if (next != NULL) {
-        q->head = next;
+        atomic_store_explicit(&q->head, next, memory_order_release);
         return head;
     }
 
@@ -67,7 +67,7 @@ mpsc_node_t* mpsc_pop(mpsc_t* q) {
 
     next = atomic_load_explicit(&head->next, memory_order_acquire);
     if (next != NULL) {
-        q->head = next;
+        atomic_store_explicit(&q->head, next, memory_order_release);
         return head;
     }
 
@@ -75,7 +75,7 @@ mpsc_node_t* mpsc_pop(mpsc_t* q) {
 }
 
 bool mpsc_empty(mpsc_t* q) {
-    mpsc_node_t* head = q->head;
+    mpsc_node_t* head = atomic_load_explicit(&q->head, memory_order_acquire);
     mpsc_node_t* next =
         atomic_load_explicit(&head->next, memory_order_acquire);
 
