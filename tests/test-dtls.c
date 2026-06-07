@@ -54,7 +54,7 @@ static void test_ctx_create_destroy(void) {
 static void test_load_cert_valid(void) {
     const char* cert = "test_dtls_cert.pem";
     const char* key  = "test_dtls_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     ASSERT(ctx != NULL);
@@ -111,7 +111,7 @@ static void _echo_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_echo_cert.pem";
     const char* key  = "test_dtls_echo_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -131,7 +131,7 @@ static void _echo_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -207,7 +207,7 @@ static void _alpn_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_alpn_cert.pem";
     const char* key  = "test_dtls_alpn_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     const char* protos[] = {"h2", "http/1.1"};
 
@@ -231,7 +231,7 @@ static void _alpn_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_alpn_server, &ctx);
     xylem_spawn(_alpn_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -294,7 +294,7 @@ static void _ci_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_ci_cert.pem";
     const char* key  = "test_dtls_ci_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -314,7 +314,7 @@ static void _ci_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_ci_server, &ctx);
     xylem_spawn(_ci_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -376,7 +376,7 @@ static void _dl_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_dl_cert.pem";
     const char* key  = "test_dtls_dl_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -396,7 +396,7 @@ static void _dl_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_dl_server, &ctx);
     xylem_spawn(_dl_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -450,7 +450,7 @@ static void _cw_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_cw_cert.pem";
     const char* key  = "test_dtls_cw_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -466,7 +466,7 @@ static void _cw_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_cw_server, &ctx);
     xylem_spawn(_cw_closer, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -554,7 +554,7 @@ static void _conc_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_conc_cert.pem";
     const char* key  = "test_dtls_conc_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -575,7 +575,7 @@ static void _conc_main(void* arg) {
 
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_conc_server, &ctx);
     xylem_spawn(_conc_client_seq, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -713,7 +713,7 @@ static void _fdx_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_fdx_cert.pem";
     const char* key  = "test_dtls_fdx_key.pem";
-    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -733,7 +733,7 @@ static void _fdx_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_fdx_server, &ctx);
     xylem_spawn(_fdx_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);

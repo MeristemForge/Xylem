@@ -57,7 +57,7 @@ static void _mtx_worker(void* arg) {
 
 static void _test_mtx_main(void* arg) {
     _mtx_ctx_t* ctx = (_mtx_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx = xylem_mutex_create();
     for (int i = 0; i < MTX_WORKERS; i++) {
         xylem_spawn(_mtx_worker, ctx);
@@ -115,7 +115,7 @@ static void _mtx_pong(void* arg) {
 
 static void _test_mtx_pp_main(void* arg) {
     _mtx_pp_ctx_t* ctx = (_mtx_pp_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx = xylem_mutex_create();
     xylem_spawn(_mtx_ping, ctx);
     xylem_spawn(_mtx_pong, ctx);

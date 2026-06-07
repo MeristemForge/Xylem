@@ -66,7 +66,7 @@ static void _ch_receiver(void* arg) {
 
 static void _test_ch_main(void* arg) {
     _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->ch = xylem_channel_create();
     xylem_spawn(_ch_receiver, ctx);
     for (int i = 0; i < CH_SENDERS; i++) {
@@ -121,7 +121,7 @@ static void _to_basic_coro(void* arg) {
 
 static void _to_basic_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->ch = xylem_channel_create();
     xylem_spawn(_to_basic_coro, ctx);
 }
@@ -155,7 +155,7 @@ static void _to_recv_coro(void* arg) {
 
 static void _to_deliver_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->ch = xylem_channel_create();
     xylem_spawn(_to_recv_coro, ctx);
     xylem_spawn(_to_sender_coro, ctx);
@@ -256,7 +256,7 @@ static void _race_recv_coro(void* arg) {
 
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->timeout_ms = 5;
     ctx->send_at_ms =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 5;

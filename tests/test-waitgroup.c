@@ -54,7 +54,7 @@ static void _wg_waiter(void* arg) {
 
 static void _test_wg_main(void* arg) {
     _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     xylem_spawn(_wg_waiter, ctx);
@@ -108,7 +108,7 @@ static void _wg_multi_waiter(void* arg) {
 
 static void _test_wg_multi_main(void* arg) {
     _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     for (int i = 0; i < WG_MULTI_WAITERS; i++) {

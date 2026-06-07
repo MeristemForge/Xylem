@@ -91,7 +91,7 @@ static void _write_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_recv, &ctx);
     xylem_spawn(_cli_write, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -164,7 +164,7 @@ static void _write_large_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_recv_large, &ctx);
     xylem_spawn(_cli_write_large, &ctx);
     xylem_waitgroup_wait(ctx.wg);

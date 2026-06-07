@@ -94,7 +94,7 @@ static xylem_http_srv_t* _listen_tls(xylem_http_handler_fn_t handler) {
 
 static void _test_get_main(void* arg) {
     (void)arg;
-    ASSERT(_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
 
     xylem_http_srv_t* srv = _listen_tls(_hello_handler);
     ASSERT(srv != NULL);
@@ -133,7 +133,7 @@ static void test_https_get(void) {
 
 static void _test_pinned_ca_main(void* arg) {
     (void)arg;
-    ASSERT(_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
 
     xylem_http_srv_t* srv = _listen_tls(_hello_handler);
     ASSERT(srv != NULL);
@@ -170,7 +170,7 @@ static void test_https_pinned_ca(void) {
 
 static void _test_verify_fail_main(void* arg) {
     (void)arg;
-    ASSERT(_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
 
     xylem_http_srv_t* srv = _listen_tls(_hello_handler);
     ASSERT(srv != NULL);
@@ -200,7 +200,7 @@ static void test_https_verify_fail(void) {
 
 static void _test_post_main(void* arg) {
     (void)arg;
-    ASSERT(_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
 
     xylem_http_srv_t* srv = _listen_tls(_echo_handler);
     ASSERT(srv != NULL);
@@ -238,7 +238,7 @@ static void test_https_post(void) {
 
 static void _test_pool_main(void* arg) {
     (void)arg;
-    ASSERT(_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
 
     xylem_http_srv_t* srv = _listen_tls(_path_handler);
     ASSERT(srv != NULL);

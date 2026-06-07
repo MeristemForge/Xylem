@@ -42,7 +42,7 @@ _Pragma("once")
  * as the callback; it aborts the test if the deadline is reached. The
  * caller keeps the returned handle and cancels it on the success path.
  */
-static inline void _watchdog_cb(xylem_timer_t* timer, void* userdata) {
+static inline void _utils_watchdog_cb(xylem_timer_t* timer, void* userdata) {
     (void)timer;
     (void)userdata;
     ASSERT(0 && "test timed out");
@@ -53,7 +53,8 @@ static inline void _watchdog_cb(xylem_timer_t* timer, void* userdata) {
  * arm the deadline from inside the root coroutine. Self-destroys and
  * signals shutdown before aborting.
  */
-static inline void _watchdog_sched_cb(sched_timer_t* timer, void* userdata) {
+static inline void _utils_watchdog_sched_cb(sched_timer_t* timer,
+                                            void* userdata) {
     (void)userdata;
     sched_timer_destroy(timer);
     xylem_shutdown();
@@ -64,9 +65,9 @@ static inline void _watchdog_sched_cb(sched_timer_t* timer, void* userdata) {
  * Arm a scheduler-timer watchdog that aborts the test after timeout_ms.
  * Must be called from inside a coroutine on a scheduler worker.
  */
-static inline void _watchdog_start(uint64_t timeout_ms) {
+static inline void _utils_watchdog_start(uint64_t timeout_ms) {
     sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
-    sched_timer_start(t, _watchdog_sched_cb, NULL, timeout_ms, 0);
+    sched_timer_start(t, _utils_watchdog_sched_cb, NULL, timeout_ms, 0);
 }
 
 #ifdef TEST_WITH_TLS
@@ -86,9 +87,9 @@ static inline void _watchdog_start(uint64_t timeout_ms) {
  * triggers the OPENSSL_Applink error. Routing all FILE* operations
  * through the application's own CRT via a memory BIO avoids it entirely.
  */
-static inline int _cert_write_pem(const char* path,
-                                  int (*write_fn)(BIO*, void*),
-                                  void* obj) {
+static inline int _utils_cert_write_pem(const char* path,
+                                        int (*write_fn)(BIO*, void*),
+                                        void* obj) {
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         return -1;
@@ -110,11 +111,11 @@ static inline int _cert_write_pem(const char* path,
     return 0;
 }
 
-static inline int _cert_write_x509(BIO* bio, void* obj) {
+static inline int _utils_cert_write_x509(BIO* bio, void* obj) {
     return PEM_write_bio_X509(bio, (X509*)obj);
 }
 
-static inline int _cert_write_key(BIO* bio, void* obj) {
+static inline int _utils_cert_write_key(BIO* bio, void* obj) {
     return PEM_write_bio_PrivateKey(bio, (EVP_PKEY*)obj,
                                     NULL, NULL, 0, NULL, NULL);
 }
@@ -124,8 +125,9 @@ static inline int _cert_write_key(BIO* bio, void* obj) {
  * and subjectAltName (e.g. "DNS:localhost,IP:127.0.0.1"). Returns 0 on
  * success, -1 on failure.
  */
-static inline int _cert_gen_ex(const char* cert_path, const char* key_path,
-                               const char* cn, const char* san) {
+static inline int _utils_cert_gen_ex(const char* cert_path,
+                                     const char* key_path,
+                                     const char* cn, const char* san) {
     EVP_PKEY* pkey = EVP_PKEY_new();
     if (!pkey) {
         return -1;
@@ -163,10 +165,11 @@ static inline int _cert_gen_ex(const char* cert_path, const char* key_path,
     X509_sign(x509, pkey, EVP_sha256());
 
     int rc = 0;
-    if (_cert_write_pem(cert_path, _cert_write_x509, x509) != 0) {
+    if (_utils_cert_write_pem(cert_path, _utils_cert_write_x509, x509) != 0) {
         rc = -1;
     }
-    if (rc == 0 && _cert_write_pem(key_path, _cert_write_key, pkey) != 0) {
+    if (rc == 0 &&
+        _utils_cert_write_pem(key_path, _utils_cert_write_key, pkey) != 0) {
         rc = -1;
     }
 
@@ -179,9 +182,10 @@ static inline int _cert_gen_ex(const char* cert_path, const char* key_path,
  * Generate a self-signed cert/key valid for localhost / 127.0.0.1.
  * Returns 0 on success, -1 on failure.
  */
-static inline int _cert_gen(const char* cert_path, const char* key_path) {
-    return _cert_gen_ex(cert_path, key_path, "localhost",
-                        "DNS:localhost,IP:127.0.0.1");
+static inline int _utils_cert_gen(const char* cert_path,
+                                  const char* key_path) {
+    return _utils_cert_gen_ex(cert_path, key_path, "localhost",
+                              "DNS:localhost,IP:127.0.0.1");
 }
 
 #endif /* TEST_WITH_TLS */

@@ -86,7 +86,7 @@ static void _echo_main(void* arg) {
         .port_a = UDP_PORT_A,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -139,7 +139,7 @@ static void _addr_main(void* arg) {
         .port_b = UDP_PORT_B + 2,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_addr_receiver, &ctx);
     xylem_spawn(_addr_sender, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -178,7 +178,7 @@ static void _timeout_main(void* arg) {
         .port_a = UDP_PORT_A + 4,
     };
     xylem_waitgroup_add(ctx.wg, 1);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_timeout_coro, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(wd);
@@ -222,7 +222,7 @@ static void _close_main(void* arg) {
         .port_a = UDP_PORT_A + 6,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_close_recv_coro, &ctx);
     xylem_spawn(_close_closer_coro, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -283,7 +283,7 @@ static void _boundary_main(void* arg) {
         .port_a = UDP_PORT_A + 8,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_boundary_receiver, &ctx);
     xylem_spawn(_boundary_sender, &ctx);
     xylem_waitgroup_wait(ctx.wg);

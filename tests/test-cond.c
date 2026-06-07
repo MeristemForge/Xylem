@@ -78,7 +78,7 @@ static void _c_one_signaler(void* arg) {
 
 static void _test_c_one_main(void* arg) {
     _c_one_ctx_t* ctx = (_c_one_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
     xylem_spawn(_c_one_waiter, ctx);
@@ -151,7 +151,7 @@ static void _c_bcast_signaler(void* arg) {
 
 static void _test_c_bcast_main(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx        = xylem_mutex_create();
     ctx->cond       = xylem_cond_create();
     ctx->all_parked = xylem_cond_create();
@@ -261,7 +261,7 @@ static void _c_bq_consumer(void* arg) {
 
 static void _test_c_bq_main(void* arg) {
     _c_bq_ctx_t* ctx = (_c_bq_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx       = xylem_mutex_create();
     ctx->not_empty = xylem_cond_create();
     ctx->not_full  = xylem_cond_create();
@@ -342,7 +342,7 @@ static void _c_ext_submitter(void* arg) {
 
 static void _test_c_ext_main(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    _watchdog_start(SAFETY_TIMEOUT_MS);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx         = xylem_mutex_create();
     ctx->cond        = xylem_cond_create();
     ctx->parked_cond = xylem_cond_create();
