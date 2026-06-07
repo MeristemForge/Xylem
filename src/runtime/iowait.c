@@ -80,10 +80,10 @@ struct iowait_s {
 };
 
 struct iowait_slab_s {
-    mtx_t      lock;
-    iowait_t*  pages[IOWAIT_PAGES_MAX];
-    uint32_t   npages;
-    uint32_t   free_slot;
+    mtx_t              lock;
+    _Atomic(iowait_t*) pages[IOWAIT_PAGES_MAX];
+    _Atomic uint32_t   npages;
+    uint32_t           free_slot;
 };
 
 static inline iowait_t* _iowait_slab_at(
@@ -91,7 +91,11 @@ static inline iowait_t* _iowait_slab_at(
     uint32_t zi     = index - 1;
     uint32_t page   = zi >> IOWAIT_PAGE_SHIFT;
     uint32_t offset = zi & (IOWAIT_PAGE_SIZE - 1);
-    return &slab->pages[page][offset];
+    /* Acquire pairs with the release store in _iowait_slab_alloc so a lockless
+     * reader (iowait_on_event) sees the fully initialized page. */
+    iowait_t* base =
+        atomic_load_explicit(&slab->pages[page], memory_order_acquire);
+    return &base[offset];
 }
 
 static inline uint32_t _iowait_slot_next(iowait_t* slot) {
@@ -143,11 +147,14 @@ static iowait_t* _iowait_slab_alloc(
         return NULL;
     }
 
+    /* npages only changes under the lock; relaxed read is fine here. */
+    uint32_t npages = atomic_load_explicit(&slab->npages, memory_order_relaxed);
+
     /**
      * +1 so that index 0 is never used: encode(0, 0) == NULL, which
      * the scheduler reserves for the wakeup-fd sentinel.
      */
-    uint32_t base = slab->npages * IOWAIT_PAGE_SIZE + 1;
+    uint32_t base = npages * IOWAIT_PAGE_SIZE + 1;
 
     for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
         if (mtx_init(&page[i].arm_lock, mtx_plain) != thrd_success) {
@@ -161,8 +168,11 @@ static iowait_t* _iowait_slab_alloc(
         page[i].slot_index = base + i;
     }
 
-    slab->pages[slab->npages] = page;
-    slab->npages++;
+    /* Publish the fully-initialized page with release stores; lockless readers
+     * acquire-load these in _iowait_slab_at. Store the slot before bumping the
+     * count so a reader that observes npages also observes the page. */
+    atomic_store_explicit(&slab->pages[npages], page, memory_order_release);
+    atomic_store_explicit(&slab->npages, npages + 1, memory_order_release);
 
     for (uint32_t i = IOWAIT_PAGE_SIZE - 1; i >= 1; i--) {
         _iowait_slot_set_next(&page[i], slab->free_slot);
@@ -404,8 +414,10 @@ void iowait_slab_destroy(iowait_slab_t* slab) {
     if (!slab) {
         return;
     }
-    for (uint32_t p = 0; p < slab->npages; p++) {
-        iowait_t* page = slab->pages[p];
+    uint32_t npages = atomic_load_explicit(&slab->npages, memory_order_relaxed);
+    for (uint32_t p = 0; p < npages; p++) {
+        iowait_t* page =
+            atomic_load_explicit(&slab->pages[p], memory_order_relaxed);
         for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
             if (page[i].rd.timer) {
                 sched_timer_destroy(page[i].rd.timer);
