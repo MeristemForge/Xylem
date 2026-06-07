@@ -442,7 +442,8 @@ bench_throughput() {
         local cpu_usage_last=""
 
         for run in $(seq 1 "$REPEAT"); do
-            local out="$RUN_DIR/throughput-${row_label,,}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
+            local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
+            local out="$RUN_DIR/throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
             local cpu_before="$RUN_DIR/.cpu-before-${name}-r${run}"
             local cpu_after="$RUN_DIR/.cpu-after-${name}-r${run}"
 
@@ -536,7 +537,8 @@ bench_connrate() {
         pid="$(start_server "$bin" "$port" "$workers")"
         sleep 2
 
-        local out="$RUN_DIR/connrate-${row_label,,}-${conc_lbl}-${name}.json"
+        local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
+        local out="$RUN_DIR/connrate-${row_lc}-${conc_lbl}-${name}.json"
         "$BIN_DIR/tcp-bench" connrate \
             -c "$concurrency" -d "$DURATION" -p "$port" \
             > "$out" 2>/dev/null || true
