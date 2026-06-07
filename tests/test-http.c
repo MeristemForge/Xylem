@@ -33,7 +33,7 @@ static uint16_t _srv_port(xylem_http_srv_t* srv) {
     return port;
 }
 
-/* ─── URL encode/decode unit tests ─────────────────────────────── */
+/* URL encode/decode unit tests. */
 
 static void test_url_encode_unreserved(void) {
     uint8_t buf[64];
@@ -83,7 +83,7 @@ static void test_url_encode_decode_round_trip(void) {
     ASSERT(memcmp(dec, input, (size_t)input_len) == 0);
 }
 
-/* ─── Response/request NULL accessor tests ─────────────────────── */
+/* Response/request NULL accessor tests. */
 
 static void test_res_destroy_null(void) {
     xylem_http_res_destroy(NULL);
@@ -104,7 +104,7 @@ static void test_req_accessors_null(void) {
     ASSERT(xylem_http_req_body_len(NULL) == 0);
 }
 
-/* ─── Response writer NULL tests ───────────────────────────────── */
+/* Response writer NULL tests. */
 
 static void test_res_set_status_null(void) {
     ASSERT(xylem_http_res_set_status(NULL, 200) == -1);
@@ -120,7 +120,7 @@ static void test_res_write_null(void) {
 
 
 
-/* ─── Integration test: coroutine-based server + client ────────── */
+/* Integration test: coroutine-based server + client. */
 
 static void _hello_handler(xylem_http_res_t* res,
                            xylem_http_req_t* req,
@@ -169,7 +169,7 @@ static void test_http_integration(void) {
     xylem_run(_test_http_integration, NULL, NULL);
 }
 
-/* ─── Connection pool test ────────────────────────────────────── */
+/* Connection pool test. */
 
 static void _pool_handler(xylem_http_res_t* res,
                           xylem_http_req_t* req,
@@ -231,7 +231,7 @@ static void test_pool_reuse(void) {
 
 
 
-/* ─── Redirect following test ──────────────────────────────────── */
+/* Redirect following test. */
 
 static void _test_redirect_handler(xylem_http_res_t* res,
                                    xylem_http_req_t* req,
@@ -340,7 +340,7 @@ static void test_redirect_following(void) {
 }
 
 
-/* ─── Basic authentication test ───────────────────────────────── */
+/* Basic authentication test. */
 
 static void _auth_handler(xylem_http_res_t* res,
                           xylem_http_req_t* req,
@@ -410,7 +410,7 @@ static void test_basic_auth(void) {
     xylem_run(_test_basic_auth_main, NULL, NULL);
 }
 
-/* ─── Expect/100-Continue ─────────────────────────────────────── */
+/* Expect/100-Continue. */
 
 static void _expect_handler(xylem_http_res_t* res,
                             xylem_http_req_t* req,
@@ -453,7 +453,7 @@ static void test_expect_continue(void) {
     xylem_run(_test_expect_continue_main, NULL, NULL);
 }
 
-/* ─── 100-Continue server reply test ──────────────────────────── */
+/* 100-Continue server reply test. */
 
 static void _test_100_server_reply_main(void* arg) {
     (void)arg;
@@ -487,7 +487,7 @@ static void test_100_server_reply(void) {
     xylem_run(_test_100_server_reply_main, NULL, NULL);
 }
 
-/* ─── Content-Length response mode test ──────────────────────── */
+/* Content-Length response mode test. */
 
 static void _test_content_length_main(void* arg) {
     (void)arg;
@@ -520,7 +520,7 @@ static void test_content_length_mode(void) {
 
 
 
-/* ─── Body limit test ─────────────────────────────────────────── */
+/* Body limit test. */
 
 static void _body_limit_handler(xylem_http_res_t* res,
                                 xylem_http_req_t* req,
@@ -534,7 +534,7 @@ static void _body_limit_handler(xylem_http_res_t* res,
 }
 
 
-/* ─── Idle timeout test ───────────────────────────────────────── */
+/* Idle timeout test. */
 
 static void _idle_timeout_handler(xylem_http_res_t* res,
                                   xylem_http_req_t* req,
@@ -587,7 +587,7 @@ static void test_idle_timeout(void) {
 
 
 
-/* ─── Plain-HTTP proxy (absolute-form forwarding) ─────────────── */
+/* Plain-HTTP proxy (absolute-form forwarding). */
 
 /*
  * Acts as the proxy: a plain-HTTP proxy receives the request line in
@@ -645,7 +645,7 @@ static void test_proxy_plain(void) {
 }
 
 
-/* ─── Main ─────────────────────────────────────────────────────── */
+/* Main. */
 
 int main(void) {
     /* URL percent-encoding */

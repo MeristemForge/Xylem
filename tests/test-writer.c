@@ -54,7 +54,9 @@ static void _srv_recv(void* arg) {
     int total = 0;
     for (;;) {
         int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
-        if (n <= 0) break;
+        if (n <= 0) {
+            break;
+        }
         total += n;
     }
 
@@ -124,7 +126,9 @@ static void _srv_recv_large(void* arg) {
     int total = 0;
     for (;;) {
         int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
-        if (n <= 0) break;
+        if (n <= 0) {
+            break;
+        }
         total += n;
     }
 

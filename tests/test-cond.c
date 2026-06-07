@@ -43,17 +43,18 @@ static void _start_safety_timer(void) {
     sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 }
 
-/* ------------------------------------------------------------------
- * test_cond_signal_one: one signaler wakes one waiter, wait()
- * returns holding the mutex.
- * ------------------------------------------------------------------ */
+/*
+ * test_signal_one: one signaler wakes one waiter, wait() returns
+ * holding the mutex.
+ */
 
 typedef struct {
-    xylem_mutex_t* mtx;
-    xylem_cond_t*  cond;
-    int            flag;         /* protected by mtx */
-    int            waiter_done;  /* protected by mtx */
-    int            tested;
+    xylem_mutex_t*     mtx;
+    xylem_cond_t*      cond;
+    xylem_waitgroup_t* wg;
+    int                flag;         /* protected by mtx */
+    int                waiter_done;  /* protected by mtx */
+    int                tested;
 } _c_one_ctx_t;
 
 static void _c_one_waiter(void* arg) {
@@ -65,6 +66,7 @@ static void _c_one_waiter(void* arg) {
     /* predicate holds and we are holding mtx */
     ctx->waiter_done = 1;
     xylem_mutex_unlock(ctx->mtx);
+    xylem_waitgroup_done(ctx->wg);
 }
 
 static void _c_one_signaler(void* arg) {
@@ -74,14 +76,9 @@ static void _c_one_signaler(void* arg) {
     xylem_cond_signal(ctx->cond);
     xylem_mutex_unlock(ctx->mtx);
 
-    /* Busy-ish spin until the waiter observes the flag. */
-    for (int i = 0; i < 1000; i++) {
-        xylem_mutex_lock(ctx->mtx);
-        int done = ctx->waiter_done;
-        xylem_mutex_unlock(ctx->mtx);
-        if (done) break;
-        xylem_sleep(1);
-    }
+    /* Deterministic: block until the waiter has observed the flag and
+     * finished, rather than polling with a sleep. */
+    xylem_waitgroup_wait(ctx->wg);
 
     xylem_mutex_lock(ctx->mtx);
     ASSERT(ctx->waiter_done == 1);
@@ -99,27 +96,32 @@ static void _test_c_one_main(void* arg) {
     xylem_spawn(_c_one_signaler, ctx);
 }
 
-static void test_cond_signal_one(void) {
-    fprintf(stderr, "=== test_cond_signal_one\n");
+static void test_signal_one(void) {
+    fprintf(stderr, "=== test_signal_one\n");
     for (int round = 0; round < 20; round++) {
         _c_one_ctx_t ctx = {0};
+        ctx.wg = xylem_waitgroup_create();
+        xylem_waitgroup_add(ctx.wg, 1);
         xylem_run(_test_c_one_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
+        xylem_waitgroup_destroy(ctx.wg);
         xylem_cond_destroy(ctx.cond);
         xylem_mutex_destroy(ctx.mtx);
     }
 }
 
-/* ------------------------------------------------------------------
- * test_cond_broadcast: many waiters, one broadcast wakes them all.
- * ------------------------------------------------------------------ */
+/*
+ * test_broadcast: many waiters, one broadcast wakes them all.
+ */
 
 #define BCAST_WAITERS 32
 
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
+    xylem_cond_t*  all_parked;
     int            flag;         /* protected by mtx */
+    int            parked;       /* protected by mtx */
     atomic_int     released;
     int            tested;
 } _c_bcast_ctx_t;
@@ -127,6 +129,12 @@ typedef struct {
 static void _c_bcast_waiter(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
     xylem_mutex_lock(ctx->mtx);
+    /* Announce arrival, then park. The last waiter to park wakes the
+     * signaler; the mutex hand-off guarantees all waiters are parked on
+     * cond before the broadcast fires. */
+    if (++ctx->parked == BCAST_WAITERS) {
+        xylem_cond_signal(ctx->all_parked);
+    }
     while (!ctx->flag) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
@@ -141,9 +149,10 @@ static void _c_bcast_waiter(void* arg) {
 
 static void _c_bcast_signaler(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
-    /* Let waiters park first. */
-    xylem_sleep(10);
     xylem_mutex_lock(ctx->mtx);
+    while (ctx->parked < BCAST_WAITERS) {
+        xylem_cond_wait(ctx->all_parked, ctx->mtx);
+    }
     ctx->flag = 1;
     xylem_cond_broadcast(ctx->cond);
     xylem_mutex_unlock(ctx->mtx);
@@ -152,31 +161,33 @@ static void _c_bcast_signaler(void* arg) {
 static void _test_c_bcast_main(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
     _start_safety_timer();
-    ctx->mtx  = xylem_mutex_create();
-    ctx->cond = xylem_cond_create();
+    ctx->mtx        = xylem_mutex_create();
+    ctx->cond       = xylem_cond_create();
+    ctx->all_parked = xylem_cond_create();
     for (int i = 0; i < BCAST_WAITERS; i++) {
         xylem_spawn(_c_bcast_waiter, ctx);
     }
     xylem_spawn(_c_bcast_signaler, ctx);
 }
 
-static void test_cond_broadcast(void) {
-    fprintf(stderr, "=== test_cond_broadcast\n");
+static void test_broadcast(void) {
+    fprintf(stderr, "=== test_broadcast\n");
     for (int round = 0; round < 10; round++) {
         _c_bcast_ctx_t ctx = {0};
         xylem_run(_test_c_bcast_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.released) == BCAST_WAITERS);
+        xylem_cond_destroy(ctx.all_parked);
         xylem_cond_destroy(ctx.cond);
         xylem_mutex_destroy(ctx.mtx);
     }
 }
 
-/* ------------------------------------------------------------------
- * test_cond_bounded_queue: the canonical use case. Producers and
- * consumers on a fixed-size ring, coordinated by two conds (not_full,
- * not_empty) and one mutex.
- * ------------------------------------------------------------------ */
+/*
+ * test_bounded_queue: the canonical use case. Producers and consumers
+ * on a fixed-size ring, coordinated by two conds (not_full, not_empty)
+ * and one mutex.
+ */
 
 #define BQ_CAP       8
 #define BQ_PRODUCERS 4
@@ -271,8 +282,8 @@ static void _test_c_bq_main(void* arg) {
     }
 }
 
-static void test_cond_bounded_queue(void) {
-    fprintf(stderr, "=== test_cond_bounded_queue\n");
+static void test_bounded_queue(void) {
+    fprintf(stderr, "=== test_bounded_queue\n");
     for (int round = 0; round < 5; round++) {
         _c_bq_ctx_t ctx = {0};
         xylem_run(_test_c_bq_main, &ctx, &_rt_opts);
@@ -283,16 +294,18 @@ static void test_cond_bounded_queue(void) {
     }
 }
 
-/* ------------------------------------------------------------------
- * test_cond_external_signal: signal() called from a dynpool thread
+/*
+ * test_external_signal: signal() called from a dynpool thread
  * (non-worker) must wake a coroutine waiter. The predicate uses an
  * atomic flag so the external path does not need to take the
  * coroutine-owned mutex.
- * ------------------------------------------------------------------ */
+ */
 
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
+    xylem_cond_t*  parked_cond;
+    int            parked;       /* protected by mtx */
     atomic_int     ready;
     int            tested;
 } _c_ext_ctx_t;
@@ -309,6 +322,8 @@ static void _c_ext_external(void* arg) {
 static void _c_ext_waiter(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
     xylem_mutex_lock(ctx->mtx);
+    ctx->parked = 1;
+    xylem_cond_signal(ctx->parked_cond);
     while (atomic_load(&ctx->ready) == 0) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
@@ -319,7 +334,13 @@ static void _c_ext_waiter(void* arg) {
 
 static void _c_ext_submitter(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    xylem_sleep(10); /* let waiter park */
+    /* Block until the waiter is parked, so the external signal exercises
+     * the wake path rather than racing the waiter's first predicate check. */
+    xylem_mutex_lock(ctx->mtx);
+    while (!ctx->parked) {
+        xylem_cond_wait(ctx->parked_cond, ctx->mtx);
+    }
+    xylem_mutex_unlock(ctx->mtx);
     int rc = xylem_submit(_c_ext_external, ctx);
     ASSERT(rc == 0);
 }
@@ -327,27 +348,29 @@ static void _c_ext_submitter(void* arg) {
 static void _test_c_ext_main(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
     _start_safety_timer();
-    ctx->mtx  = xylem_mutex_create();
-    ctx->cond = xylem_cond_create();
+    ctx->mtx         = xylem_mutex_create();
+    ctx->cond        = xylem_cond_create();
+    ctx->parked_cond = xylem_cond_create();
     xylem_spawn(_c_ext_waiter, ctx);
     xylem_spawn(_c_ext_submitter, ctx);
 }
 
-static void test_cond_external_signal(void) {
-    fprintf(stderr, "=== test_cond_external_signal\n");
+static void test_external_signal(void) {
+    fprintf(stderr, "=== test_external_signal\n");
     for (int round = 0; round < 10; round++) {
         _c_ext_ctx_t ctx = {0};
         xylem_run(_test_c_ext_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
+        xylem_cond_destroy(ctx.parked_cond);
         xylem_cond_destroy(ctx.cond);
         xylem_mutex_destroy(ctx.mtx);
     }
 }
 
 int main(void) {
-    test_cond_signal_one();
-    test_cond_broadcast();
-    test_cond_bounded_queue();
-    test_cond_external_signal();
+    test_signal_one();
+    test_broadcast();
+    test_bounded_queue();
+    test_external_signal();
     return 0;
 }

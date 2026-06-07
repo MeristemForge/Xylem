@@ -76,8 +76,8 @@ static void _test_wg_main(void* arg) {
     }
 }
 
-static void test_waitgroup_concurrent(void) {
-    fprintf(stderr, "=== test_waitgroup_concurrent\n");
+static void test_concurrent(void) {
+    fprintf(stderr, "=== test_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _wg_ctx_t ctx = {0};
         xylem_run(_test_wg_main, &ctx, &_rt_opts);
@@ -130,8 +130,8 @@ static void _test_wg_multi_main(void* arg) {
     }
 }
 
-static void test_waitgroup_multi_waiter(void) {
-    fprintf(stderr, "=== test_waitgroup_multi_waiter\n");
+static void test_multi_waiter(void) {
+    fprintf(stderr, "=== test_multi_waiter\n");
     for (int round = 0; round < 20; round++) {
         _wg_multi_ctx_t ctx = {0};
         xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
@@ -142,7 +142,7 @@ static void test_waitgroup_multi_waiter(void) {
 }
 
 int main(void) {
-    test_waitgroup_concurrent();
-    test_waitgroup_multi_waiter();
+    test_concurrent();
+    test_multi_waiter();
     return 0;
 }

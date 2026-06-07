@@ -77,8 +77,8 @@ static void _test_mtx_main(void* arg) {
     }
 }
 
-static void test_mutex_concurrent(void) {
-    fprintf(stderr, "=== test_mutex_concurrent\n");
+static void test_concurrent(void) {
+    fprintf(stderr, "=== test_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _mtx_ctx_t ctx = {0};
         xylem_run(_test_mtx_main, &ctx, &_rt_opts);
@@ -134,8 +134,8 @@ static void _test_mtx_pp_main(void* arg) {
     xylem_spawn(_mtx_pong, ctx);
 }
 
-static void test_mutex_ping_pong(void) {
-    fprintf(stderr, "=== test_mutex_ping_pong\n");
+static void test_ping_pong(void) {
+    fprintf(stderr, "=== test_ping_pong\n");
     for (int round = 0; round < 50; round++) {
         _mtx_pp_ctx_t ctx = {0};
         xylem_run(_test_mtx_pp_main, &ctx, &_rt_opts);
@@ -145,7 +145,7 @@ static void test_mutex_ping_pong(void) {
 }
 
 int main(void) {
-    test_mutex_ping_pong();
-    test_mutex_concurrent();
+    test_ping_pong();
+    test_concurrent();
     return 0;
 }

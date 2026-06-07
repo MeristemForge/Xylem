@@ -141,9 +141,7 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 1. test_ctx_create_destroy                                         */
-/* ------------------------------------------------------------------ */
+/* test_ctx_create_destroy. */
 
 static void test_ctx_create_destroy(void) {
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
@@ -152,9 +150,7 @@ static void test_ctx_create_destroy(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 2. test_load_cert_valid                                            */
-/* ------------------------------------------------------------------ */
+/* test_load_cert_valid. */
 
 static void test_load_cert_valid(void) {
     const char* cert = "test_dtls_cert.pem";
@@ -170,9 +166,7 @@ static void test_load_cert_valid(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 3. test_handshake_and_echo                                         */
-/* ------------------------------------------------------------------ */
+/* test_handshake_and_echo. */
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -258,9 +252,7 @@ static void test_handshake_and_echo(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 4. test_alpn_negotiation                                           */
-/* ------------------------------------------------------------------ */
+/* test_alpn_negotiation. */
 
 static void _alpn_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -358,11 +350,9 @@ static void test_alpn_negotiation(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 5. test_close_idempotent                                           */
-/*    Verifies that closing a connection does not crash and that      */
-/*    the close_listener call after conn close also works cleanly.    */
-/* ------------------------------------------------------------------ */
+/* test_close_idempotent.
+ * Verifies that closing a connection does not crash and that
+ * the close_listener call after conn close also works cleanly. */
 
 static void _ci_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -441,9 +431,7 @@ static void test_close_idempotent(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 6. test_recv_deadline                                              */
-/* ------------------------------------------------------------------ */
+/* test_recv_deadline. */
 
 static void _dl_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -525,12 +513,10 @@ static void test_recv_deadline(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 7. test_close_wakes_recv                                           */
-/*    Tests that close_listener unblocks a pending accept call,       */
-/*    returning NULL. This verifies that shutdown signals propagate   */
-/*    correctly to blocked coroutines.                                */
-/* ------------------------------------------------------------------ */
+/* test_close_wakes_recv.
+ * Tests that close_listener unblocks a pending accept call,
+ * returning NULL. This verifies that shutdown signals propagate
+ * correctly to blocked coroutines. */
 
 static void _cw_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -594,12 +580,10 @@ static void test_close_wakes_recv(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 8. test_concurrent_sessions                                        */
-/*    Tests multiple sequential DTLS sessions on the same listener.   */
-/*    Each client connects, sends a unique message, receives the      */
-/*    echo, and disconnects before the next one starts.               */
-/* ------------------------------------------------------------------ */
+/* test_concurrent_sessions.
+ * Tests multiple sequential DTLS sessions on the same listener.
+ * Each client connects, sends a unique message, receives the
+ * echo, and disconnects before the next one starts. */
 
 #define CONC_COUNT 4
 
@@ -704,15 +688,13 @@ static void test_concurrent_sessions(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 9. test_full_duplex                                                */
-/*    One client connection is read by one coroutine and written by   */
-/*    another at the same time. With the client still on a socket BIO */
-/*    a direction-flip inside SSL parked a second coroutine on the    */
-/*    same iowait direction and aborted the process; the memory-BIO   */
-/*    client pump path makes concurrent read+write safe. Each write   */
-/*    is one datagram, echoed back verbatim by the server.            */
-/* ------------------------------------------------------------------ */
+/* test_full_duplex.
+ * One client connection is read by one coroutine and written by
+ * another at the same time. With the client still on a socket BIO
+ * a direction-flip inside SSL parked a second coroutine on the
+ * same iowait direction and aborted the process; the memory-BIO
+ * client pump path makes concurrent read+write safe. Each write
+ * is one datagram, echoed back verbatim by the server. */
 
 /* Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
  * whole batch before the server drains its session inbox, no datagram
@@ -856,9 +838,7 @@ static void test_full_duplex(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* main                                                               */
-/* ------------------------------------------------------------------ */
+/* main. */
 
 int main(void) {
     test_ctx_create_destroy();

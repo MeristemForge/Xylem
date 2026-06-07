@@ -38,7 +38,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ─── Self-signed certificate generation (matches test-tls.c) ──── */
+/* Self-signed certificate generation (matches test-tls.c). */
 
 static int _write_pem_to_file(const char* path,
                               int (*write_fn)(BIO*, void*),
@@ -122,7 +122,7 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
     return rc;
 }
 
-/* ─── Helpers ──────────────────────────────────────────────────── */
+/* Helpers. */
 
 #define WSS_CERT "test_wss_cert.pem"
 #define WSS_KEY  "test_wss_key.pem"
@@ -130,7 +130,7 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
 static const xylem_ws_tls_t _srv_tls = { .cert = WSS_CERT, .key = WSS_KEY };
 static const xylem_ws_tls_t _cli_tls = { .skip_verify = true };
 
-static void echo_handler(xylem_ws_conn_t* ws, void* ud) {
+static void _srv_echo_handler(xylem_ws_conn_t* ws, void* ud) {
     (void)ud;
     xylem_ws_msg_t msg;
     while (xylem_ws_recv(ws, &msg) == 0) {
@@ -140,7 +140,7 @@ static void echo_handler(xylem_ws_conn_t* ws, void* ud) {
     xylem_ws_close(ws, 1000, NULL, 0);
 }
 
-/* ─── Test: wss text echo ──────────────────────────────────────── */
+/* Test: wss text echo. */
 
 static void test_wss_text_echo(void* arg) {
     (void)arg;
@@ -148,7 +148,7 @@ static void test_wss_text_echo(void* arg) {
 
     xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             echo_handler, NULL, &srv_opts);
+                                             _srv_echo_handler, NULL, &srv_opts);
     ASSERT(l != NULL);
     uint16_t port = xylem_ws_listener_port(l);
     ASSERT(port != 0);
@@ -177,7 +177,7 @@ static void test_wss_text_echo(void* arg) {
     xylem_shutdown();
 }
 
-/* ─── Test: wss binary echo ────────────────────────────────────── */
+/* Test: wss binary echo. */
 
 static void test_wss_binary_echo(void* arg) {
     (void)arg;
@@ -185,7 +185,7 @@ static void test_wss_binary_echo(void* arg) {
 
     xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             echo_handler, NULL, &srv_opts);
+                                             _srv_echo_handler, NULL, &srv_opts);
     ASSERT(l != NULL);
     uint16_t port = xylem_ws_listener_port(l);
 
@@ -212,7 +212,7 @@ static void test_wss_binary_echo(void* arg) {
     xylem_shutdown();
 }
 
-/* ─── Test: wss multiple messages ──────────────────────────────── */
+/* Test: wss multiple messages. */
 
 static void test_wss_multiple_messages(void* arg) {
     (void)arg;
@@ -220,7 +220,7 @@ static void test_wss_multiple_messages(void* arg) {
 
     xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             echo_handler, NULL, &srv_opts);
+                                             _srv_echo_handler, NULL, &srv_opts);
     ASSERT(l != NULL);
     uint16_t port = xylem_ws_listener_port(l);
 
@@ -249,7 +249,7 @@ static void test_wss_multiple_messages(void* arg) {
     xylem_shutdown();
 }
 
-/* ─── Test: wss large fragmented message ───────────────────────── */
+/* Test: wss large fragmented message. */
 
 static void test_wss_large_message(void* arg) {
     (void)arg;
@@ -257,7 +257,7 @@ static void test_wss_large_message(void* arg) {
 
     xylem_ws_opts_t srv_opts = { .fragment_threshold = 1024, .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             echo_handler, NULL, &srv_opts);
+                                             _srv_echo_handler, NULL, &srv_opts);
     ASSERT(l != NULL);
     uint16_t port = xylem_ws_listener_port(l);
 
@@ -270,7 +270,9 @@ static void test_wss_large_message(void* arg) {
     size_t big_len = 8192;
     uint8_t* big = (uint8_t*)malloc(big_len);
     ASSERT(big != NULL);
-    for (size_t i = 0; i < big_len; i++) big[i] = (uint8_t)(i & 0xFF);
+    for (size_t i = 0; i < big_len; i++) {
+        big[i] = (uint8_t)(i & 0xFF);
+    }
 
     ASSERT(xylem_ws_send(c, XYLEM_WS_BINARY, big, big_len) == 0);
 
@@ -289,7 +291,7 @@ static void test_wss_large_message(void* arg) {
     xylem_shutdown();
 }
 
-/* ─── Test: wss with permessage-deflate ────────────────────────── */
+/* Test: wss with permessage-deflate. */
 
 static void test_wss_deflate(void* arg) {
     (void)arg;
@@ -300,7 +302,7 @@ static void test_wss_deflate(void* arg) {
         .tls                = &_srv_tls,
     };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             echo_handler, NULL, &srv_opts);
+                                             _srv_echo_handler, NULL, &srv_opts);
     ASSERT(l != NULL);
     uint16_t port = xylem_ws_listener_port(l);
 
@@ -330,7 +332,7 @@ static void test_wss_deflate(void* arg) {
     xylem_shutdown();
 }
 
-/* ─── Runner ───────────────────────────────────────────────────── */
+/* Runner. */
 
 typedef void (*test_fn_t)(void*);
 

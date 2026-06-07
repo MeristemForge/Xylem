@@ -34,18 +34,18 @@ static void test_init(void) {
 static void test_enqueue_dequeue(void) {
     xylem_queue_t* queue = xylem_queue_create();
 
-    int a = 10, b = 20, c = 30;
+    int32_t a = 10, b = 20, c = 30;
     ASSERT(xylem_queue_enqueue(queue, &a) == 0);
     ASSERT(xylem_queue_enqueue(queue, &b) == 0);
     ASSERT(xylem_queue_enqueue(queue, &c) == 0);
 
-    ASSERT(*(int*)xylem_queue_front(queue) == 10);
+    ASSERT(*(int32_t*)xylem_queue_front(queue) == 10);
     xylem_queue_dequeue(queue);
 
-    ASSERT(*(int*)xylem_queue_front(queue) == 20);
+    ASSERT(*(int32_t*)xylem_queue_front(queue) == 20);
     xylem_queue_dequeue(queue);
 
-    ASSERT(*(int*)xylem_queue_front(queue) == 30);
+    ASSERT(*(int32_t*)xylem_queue_front(queue) == 30);
     xylem_queue_dequeue(queue);
 
     ASSERT(xylem_queue_empty(queue));
@@ -55,7 +55,7 @@ static void test_enqueue_dequeue(void) {
 static void test_clear(void) {
     xylem_queue_t* queue = xylem_queue_create();
 
-    int vals[50];
+    int32_t vals[50];
     for (int i = 0; i < 50; i++) {
         vals[i] = i;
         xylem_queue_enqueue(queue, &vals[i]);
@@ -71,7 +71,7 @@ static void test_swap(void) {
     xylem_queue_t* a = xylem_queue_create();
     xylem_queue_t* b = xylem_queue_create();
 
-    int v1 = 10, v2 = 20, v3 = 30;
+    int32_t v1 = 10, v2 = 20, v3 = 30;
     xylem_queue_enqueue(a, &v1);
     xylem_queue_enqueue(a, &v2);
     xylem_queue_enqueue(b, &v3);
@@ -79,9 +79,9 @@ static void test_swap(void) {
     xylem_queue_swap(a, b);
 
     ASSERT(xylem_queue_len(a) == 1);
-    ASSERT(*(int*)xylem_queue_front(a) == 30);
+    ASSERT(*(int32_t*)xylem_queue_front(a) == 30);
     ASSERT(xylem_queue_len(b) == 2);
-    ASSERT(*(int*)xylem_queue_front(b) == 10);
+    ASSERT(*(int32_t*)xylem_queue_front(b) == 10);
 
     xylem_queue_destroy(a);
     xylem_queue_destroy(b);

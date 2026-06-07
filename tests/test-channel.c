@@ -48,6 +48,7 @@ static void _start_safety_timer(void) {
 
 typedef struct {
     xylem_channel_t* ch;
+    int              payload;
     atomic_int       recv_count;
     int              tested;
 } _ch_ctx_t;
@@ -55,8 +56,7 @@ typedef struct {
 static void _ch_sender(void* arg) {
     _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
     for (int i = 0; i < CH_MESSAGES; i++) {
-        static int val = 1;
-        xylem_channel_send(ctx->ch, &val);
+        xylem_channel_send(ctx->ch, &ctx->payload);
     }
 }
 
@@ -87,8 +87,8 @@ static void _test_ch_main(void* arg) {
     }
 }
 
-static void test_channel_concurrent(void) {
-    fprintf(stderr, "=== test_channel_concurrent\n");
+static void test_concurrent(void) {
+    fprintf(stderr, "=== test_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _ch_ctx_t ctx = {0};
         xylem_run(_test_ch_main, &ctx, &_rt_opts);
@@ -96,7 +96,8 @@ static void test_channel_concurrent(void) {
     }
 }
 
-/* --- recv_timeout coverage ----------------------------------------
+/*
+ * recv_timeout coverage.
  *
  * Teardown rule (library-wide, not channel-specific): every xylem_
  * runtime object embeds scheduler-owned resources -- tcp/udp/uds/
@@ -113,6 +114,7 @@ static void test_channel_concurrent(void) {
 
 typedef struct {
     xylem_channel_t* ch;
+    int              payload;
     int              tested;
 } _to_ctx_t;
 
@@ -135,8 +137,8 @@ static void _to_basic_main(void* arg) {
     xylem_spawn(_to_basic_coro, ctx);
 }
 
-static void test_channel_timeout_empty(void) {
-    fprintf(stderr, "=== test_channel_timeout_empty\n");
+static void test_timeout_empty(void) {
+    fprintf(stderr, "=== test_timeout_empty\n");
     _to_ctx_t ctx = {0};
     xylem_run(_to_basic_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
@@ -144,18 +146,16 @@ static void test_channel_timeout_empty(void) {
 
 /* A message that arrives before the deadline must be delivered, not
  * swallowed by the timeout. */
-static int _to_payload = 7;
-
 static void _to_sender_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     xylem_sleep(20);
-    xylem_channel_send(ctx->ch, &_to_payload);
+    xylem_channel_send(ctx->ch, &ctx->payload);
 }
 
 static void _to_recv_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 1000);
-    ASSERT(msg == &_to_payload);
+    ASSERT(msg == &ctx->payload);
     ctx->tested = 1;
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
@@ -170,8 +170,8 @@ static void _to_deliver_main(void* arg) {
     xylem_spawn(_to_sender_coro, ctx);
 }
 
-static void test_channel_timeout_deliver(void) {
-    fprintf(stderr, "=== test_channel_timeout_deliver\n");
+static void test_timeout_deliver(void) {
+    fprintf(stderr, "=== test_timeout_deliver\n");
     _to_ctx_t ctx = {0};
     xylem_run(_to_deliver_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
@@ -266,8 +266,8 @@ static void _race_main(void* arg) {
     xylem_spawn(_race_sender_coro, ctx);
 }
 
-static void test_channel_timeout_race(void) {
-    fprintf(stderr, "=== test_channel_timeout_race\n");
+static void test_timeout_race(void) {
+    fprintf(stderr, "=== test_timeout_race\n");
     for (int round = 0; round < TO_RACE_ROUNDS; round++) {
         _race_ctx_t ctx = {0};
         ctx.ch      = xylem_channel_create();
@@ -281,9 +281,9 @@ static void test_channel_timeout_race(void) {
 }
 
 int main(void) {
-    test_channel_concurrent();
-    test_channel_timeout_empty();
-    test_channel_timeout_deliver();
-    test_channel_timeout_race();
+    test_concurrent();
+    test_timeout_empty();
+    test_timeout_deliver();
+    test_timeout_race();
     return 0;
 }

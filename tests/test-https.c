@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ─── Self-signed certificate generation (matches test-tls.c) ──── */
+/* Self-signed certificate generation (matches test-tls.c). */
 
 /*
  * Write PEM via a memory BIO rather than passing FILE* into OpenSSL.
@@ -130,7 +130,7 @@ static int _gen_self_signed(const char* cert_path, const char* key_path) {
     return rc;
 }
 
-/* ─── Helpers ──────────────────────────────────────────────────── */
+/* Helpers. */
 
 #define HTTPS_CERT "test_https_cert.pem"
 #define HTTPS_KEY  "test_https_key.pem"
@@ -183,7 +183,7 @@ static xylem_http_srv_t* _listen_tls(xylem_http_handler_fn_t handler) {
     return xylem_http_listen("127.0.0.1", 0, handler, NULL, &opts);
 }
 
-/* ─── Test: basic HTTPS GET (skip_verify client) ───────────────── */
+/* Test: basic HTTPS GET (skip_verify client). */
 
 static void _test_get_main(void* arg) {
     (void)arg;
@@ -222,7 +222,7 @@ static void test_https_get(void) {
     xylem_run(_test_get_main, NULL, NULL);
 }
 
-/* ─── Test: pinned-CA verification (real cert checking path) ───── */
+/* Test: pinned-CA verification (real cert checking path). */
 
 static void _test_pinned_ca_main(void* arg) {
     (void)arg;
@@ -257,7 +257,7 @@ static void test_https_pinned_ca(void) {
     xylem_run(_test_pinned_ca_main, NULL, NULL);
 }
 
-/* ─── Test: verification failure on untrusted self-signed cert ── */
+/* Test: verification failure on untrusted self-signed cert. */
 
 static void _test_verify_fail_main(void* arg) {
     (void)arg;
@@ -285,7 +285,7 @@ static void test_https_verify_fail(void) {
     xylem_run(_test_verify_fail_main, NULL, NULL);
 }
 
-/* ─── Test: POST body echo over TLS ────────────────────────────── */
+/* Test: POST body echo over TLS. */
 
 static void _test_post_main(void* arg) {
     (void)arg;
@@ -323,7 +323,7 @@ static void test_https_post(void) {
     xylem_run(_test_post_main, NULL, NULL);
 }
 
-/* ─── Test: connection-pool reuse over TLS ─────────────────────── */
+/* Test: connection-pool reuse over TLS. */
 
 static void _test_pool_main(void* arg) {
     (void)arg;
@@ -360,7 +360,7 @@ static void test_https_pool_reuse(void) {
     xylem_run(_test_pool_main, NULL, NULL);
 }
 
-/* ─── Main ─────────────────────────────────────────────────────── */
+/* Main. */
 
 int main(void) {
     test_https_get();

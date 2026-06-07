@@ -40,9 +40,7 @@ static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     ASSERT(0 && "test timed out");
 }
 
-/* ------------------------------------------------------------------ */
-/* test_echo_stream                                                    */
-/* ------------------------------------------------------------------ */
+/* test_echo_stream */
 
 static void _srv_echo_stream(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -111,9 +109,7 @@ static void test_echo_stream(void) {
     xylem_run(_echo_stream_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_echo_message                                                   */
-/* ------------------------------------------------------------------ */
+/* test_echo_message */
 
 static void _srv_echo_msg(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -182,9 +178,7 @@ static void test_echo_message(void) {
     xylem_run(_echo_msg_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_handshake_timeout                                              */
-/* ------------------------------------------------------------------ */
+/* test_handshake_timeout */
 
 static void _cli_timeout(void* arg) {
     (void)arg;
@@ -204,9 +198,7 @@ static void test_handshake_timeout(void) {
     xylem_run(_cli_timeout, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_close_while_reading                                            */
-/* ------------------------------------------------------------------ */
+/* test_close_while_reading */
 
 static void _srv_close_early(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -269,9 +261,7 @@ static void test_close_while_reading(void) {
     xylem_run(_close_reading_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_multi_session                                                  */
-/* ------------------------------------------------------------------ */
+/* test_multi_session */
 
 static void _srv_multi(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -346,9 +336,7 @@ static void test_multi_session(void) {
     xylem_run(_multi_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
+/* main */
 
 int main(void) {
     test_echo_stream();

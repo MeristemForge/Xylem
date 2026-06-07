@@ -540,7 +540,7 @@ static void test_coro_stack_grow_concurrent(void) {
     ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
 }
 
-/* Pool slot reuse: coroutine exits → slot returned → next coroutine
+/* Pool slot reuse: coroutine exits -> slot returned -> next coroutine
  * reuses the same slot and grows again. Catches stale commit state. */
 
 typedef struct {

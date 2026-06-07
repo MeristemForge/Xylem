@@ -35,15 +35,15 @@ static void test_init(void) {
 static void test_insert_head_tail(void) {
     xylem_list_t* list = xylem_list_create();
 
-    int a = 10, b = 20, c = 30;
+    int32_t a = 10, b = 20, c = 30;
     ASSERT(xylem_list_insert_head(list, &a) == 0);
     ASSERT(xylem_list_insert_tail(list, &b) == 0);
     ASSERT(xylem_list_insert_head(list, &c) == 0);
 
     /* order: &c, &a, &b -> 30, 10, 20 */
     ASSERT(xylem_list_len(list) == 3);
-    ASSERT(*(int*)xylem_list_head(list) == 30);
-    ASSERT(*(int*)xylem_list_tail(list) == 20);
+    ASSERT(*(int32_t*)xylem_list_head(list) == 30);
+    ASSERT(*(int32_t*)xylem_list_tail(list) == 20);
 
     xylem_list_clear(list);
     ASSERT(xylem_list_empty(list));
@@ -53,22 +53,22 @@ static void test_insert_head_tail(void) {
 static void test_remove(void) {
     xylem_list_t* list = xylem_list_create();
 
-    int vals[] = {1, 2, 3, 4};
+    int32_t vals[] = {1, 2, 3, 4};
     for (int i = 0; i < 4; i++) {
         xylem_list_insert_tail(list, &vals[i]);
     }
 
     xylem_list_remove(list, &vals[0]);
-    ASSERT(*(int*)xylem_list_head(list) == 2);
+    ASSERT(*(int32_t*)xylem_list_head(list) == 2);
 
     xylem_list_remove(list, &vals[3]);
-    ASSERT(*(int*)xylem_list_tail(list) == 3);
+    ASSERT(*(int32_t*)xylem_list_tail(list) == 3);
 
     xylem_list_remove(list, &vals[1]);
     ASSERT(xylem_list_len(list) == 1);
-    ASSERT(*(int*)xylem_list_head(list) == 3);
+    ASSERT(*(int32_t*)xylem_list_head(list) == 3);
 
-    int x = 999;
+    int32_t x = 999;
     xylem_list_remove(list, &x);
     ASSERT(xylem_list_len(list) == 1);
 
@@ -97,7 +97,7 @@ static void test_swap(void) {
     xylem_list_t* a = xylem_list_create();
     xylem_list_t* b = xylem_list_create();
 
-    int v1 = 1, v2 = 2, v3 = 3;
+    int32_t v1 = 1, v2 = 2, v3 = 3;
     xylem_list_insert_tail(a, &v1);
     xylem_list_insert_tail(a, &v2);
     xylem_list_insert_tail(b, &v3);
@@ -105,10 +105,10 @@ static void test_swap(void) {
     xylem_list_swap(a, b);
 
     ASSERT(xylem_list_len(a) == 1);
-    ASSERT(*(int*)xylem_list_head(a) == 3);
+    ASSERT(*(int32_t*)xylem_list_head(a) == 3);
     ASSERT(xylem_list_len(b) == 2);
-    ASSERT(*(int*)xylem_list_head(b) == 1);
-    ASSERT(*(int*)xylem_list_tail(b) == 2);
+    ASSERT(*(int32_t*)xylem_list_head(b) == 1);
+    ASSERT(*(int32_t*)xylem_list_tail(b) == 2);
 
     xylem_list_destroy(a);
     xylem_list_destroy(b);

@@ -34,6 +34,11 @@ typedef struct {
     uint16_t           port;
 } _ctx_t;
 
+typedef struct {
+    xylem_mux_stream_t* stream;
+    xylem_waitgroup_t*  wg;
+} _stream_arg_t;
+
 static void _watchdog_cb(xylem_timer_t* t, void* ud) {
     (void)t;
     (void)ud;
@@ -49,6 +54,14 @@ static void _srv_echo_stream(void* arg) {
         xylem_mux_write(s, buf, n);
     }
     xylem_mux_close_stream(s);
+}
+
+/* Echo one stream, then signal the per-stream waitgroup so the server
+ * worker can tear down the mux only after every stream coroutine is done. */
+static void _srv_echo_stream_tracked(void* arg) {
+    _stream_arg_t* a = (_stream_arg_t*)arg;
+    _srv_echo_stream(a->stream);
+    xylem_waitgroup_done(a->wg);
 }
 
 static void _srv_worker(void* arg) {
@@ -142,12 +155,25 @@ static void _multi_srv_worker(void* arg) {
         conn, XYLEM_MUX_TCP, XYLEM_MUX_SERVER, NULL);
     ASSERT(mux != NULL);
 
+    xylem_waitgroup_t* swg = xylem_waitgroup_create();
+    xylem_waitgroup_add(swg, 3);
+    _stream_arg_t sargs[3];
     for (int i = 0; i < 3; i++) {
         xylem_mux_stream_t* s = xylem_mux_accept_stream(mux);
         ASSERT(s != NULL);
-        xylem_spawn(_srv_echo_stream, s);
+        sargs[i].stream = s;
+        sargs[i].wg     = swg;
+        xylem_spawn(_srv_echo_stream_tracked, &sargs[i]);
     }
 
+    /* Wait for all stream coroutines to finish before tearing down the
+     * mux/conn/listener they depend on. */
+    xylem_waitgroup_wait(swg);
+    xylem_waitgroup_destroy(swg);
+
+    xylem_mux_destroy(mux);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 

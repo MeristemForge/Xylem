@@ -23,8 +23,8 @@
 #include "assert.h"
 
 static int _int_cmp(const void* a, const void* b) {
-    int va = *(const int*)a;
-    int vb = *(const int*)b;
+    int32_t va = *(const int32_t*)a;
+    int32_t vb = *(const int32_t*)b;
     if (va < vb) {
         return -1;
     }
@@ -46,16 +46,16 @@ static void test_init(void) {
 static void test_insert_dequeue(void) {
     xylem_heap_t* heap = xylem_heap_create(_int_cmp);
 
-    int vals[] = {30, 10, 20, 5, 25};
+    int32_t vals[] = {30, 10, 20, 5, 25};
     for (int i = 0; i < 5; i++) {
         ASSERT(xylem_heap_insert(heap, &vals[i]) == 0);
     }
 
     ASSERT(xylem_heap_len(heap) == 5);
 
-    int expected[] = {5, 10, 20, 25, 30};
+    int32_t expected[] = {5, 10, 20, 25, 30};
     for (int i = 0; i < 5; i++) {
-        ASSERT(*(int*)xylem_heap_root(heap) == expected[i]);
+        ASSERT(*(int32_t*)xylem_heap_root(heap) == expected[i]);
         xylem_heap_dequeue(heap);
     }
     ASSERT(xylem_heap_empty(heap));
@@ -65,7 +65,7 @@ static void test_insert_dequeue(void) {
 static void test_clear(void) {
     xylem_heap_t* heap = xylem_heap_create(_int_cmp);
 
-    int vals[100];
+    int32_t vals[100];
     for (int i = 0; i < 100; i++) {
         vals[i] = i;
         xylem_heap_insert(heap, &vals[i]);
@@ -80,14 +80,14 @@ static void test_clear(void) {
 static void test_descending_insert(void) {
     xylem_heap_t* heap = xylem_heap_create(_int_cmp);
 
-    int vals[50];
+    int32_t vals[50];
     for (int i = 49; i >= 0; i--) {
         vals[i] = i;
         xylem_heap_insert(heap, &vals[i]);
     }
 
     for (int i = 0; i < 50; i++) {
-        ASSERT(*(int*)xylem_heap_root(heap) == i);
+        ASSERT(*(int32_t*)xylem_heap_root(heap) == i);
         xylem_heap_dequeue(heap);
     }
     ASSERT(xylem_heap_empty(heap));
