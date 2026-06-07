@@ -102,7 +102,13 @@ from cheapest to most contended:
 
 1. **`runnext` (per-worker, single slot).** A LIFO hand-off used when a worker
    schedules a coroutine onto itself. Cache-hot; checked first on pop. Pushing
-   a new coroutine here evicts the previous occupant down to the deque.
+   a new coroutine here evicts the previous occupant down to the deque. Only
+   the owning worker pops its `runnext`, so a stalled owner (blocked syscall,
+   long CPU loop) would normally strand the slot — steals touch only the deque.
+   As a last resort, after the local deque and every victim deque come up
+   empty, an idle worker may steal a `runnext` entry that has aged past
+   `SCHED_RUNNEXT_STEAL_MS`; the race with the owner's own pop is settled by an
+   atomic exchange, so a coroutine is never run twice.
 2. **Work-stealing deque (`wsdeque`, per-worker).** The owner pushes/pops the
    tail (LIFO, locality-friendly); other workers steal from the head (FIFO,
    oldest first). Lock-free Chase–Lev style. Default capacity 256 (power of 2).

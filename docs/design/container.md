@@ -120,16 +120,23 @@ pointer writes.
 ## 6. MPSC queue — the one concurrent container
 
 `mpsc_t` is a lock-free **multi-producer / single-consumer** intrusive queue
-(Vyukov-style) used for `scheduler_post()`. Two contracts matter and are easy to
-get wrong:
+(Vyukov-style) used for `scheduler_post()` and `xylem_channel`. Two contracts
+matter and are easy to get wrong:
 
 - **`mpsc_pop()` returning NULL does not mean "empty".** A producer may have
   claimed the tail slot but not yet linked its node, leaving the queue
   *temporarily inconsistent*. Consumers must retry from an outer loop (the
   scheduler does this on its poll cycle) rather than treat NULL as "drained".
-- **Single consumer only.** `push` is multi-producer safe via an atomic tail
-  exchange; `pop` must be called from one thread at a time. The scheduler
-  enforces this with a `post_draining` CAS so only one worker drains at once.
+- **One consumer at a time — but that consumer may move between threads.**
+  `push` is multi-producer safe via an atomic tail exchange. Concurrent `pop`
+  remains illegal (`pop` is a read-modify-write of `head` and would
+  double-pop). The single consumer, however, is often a coroutine that suspends
+  on one worker and resumes on another, so `head` is atomic (acquire/release)
+  to give its successive cross-thread accesses a happens-before edge — the
+  classic "single-threaded consumer" assumption does not hold under a
+  work-stealing runtime. The scheduler's post path serializes consumers with a
+  `post_draining` CAS; a channel's single-receiver contract does the same via
+  `wait_coro`.
 
 Every other container in this document is **not** thread-safe; callers
 serialize access (the runtime does so by confining most structures to a single
