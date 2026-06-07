@@ -33,6 +33,12 @@ struct mpsc_node_s {
     _Atomic(mpsc_node_t*) next;
 };
 
+/**
+ * Single consumer only; concurrent pop is illegal (pop is read-modify-write
+ * and would double-pop). head is atomic because that one consumer may be a
+ * coroutine that migrates across threads, so its successive accesses need a
+ * cross-thread happens-before edge.
+ */
 typedef struct mpsc_s {
     _Atomic(mpsc_node_t*) tail;
     _Atomic(mpsc_node_t*) head;

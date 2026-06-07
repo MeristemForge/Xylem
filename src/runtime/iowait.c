@@ -91,8 +91,10 @@ static inline iowait_t* _iowait_slab_at(
     uint32_t zi     = index - 1;
     uint32_t page   = zi >> IOWAIT_PAGE_SHIFT;
     uint32_t offset = zi & (IOWAIT_PAGE_SIZE - 1);
-    /* Acquire pairs with the release store in _iowait_slab_alloc so a lockless
-     * reader (iowait_on_event) sees the fully initialized page. */
+    /**
+     * Acquire pairs with the release store in _iowait_slab_alloc so a
+     * lockless reader (iowait_on_event) sees the fully initialized page.
+     */
     iowait_t* base =
         atomic_load_explicit(&slab->pages[page], memory_order_acquire);
     return &base[offset];
@@ -168,9 +170,11 @@ static iowait_t* _iowait_slab_alloc(
         page[i].slot_index = base + i;
     }
 
-    /* Publish the fully-initialized page with release stores; lockless readers
-     * acquire-load these in _iowait_slab_at. Store the slot before bumping the
-     * count so a reader that observes npages also observes the page. */
+    /**
+     * Publish the fully-initialized page with release stores; lockless
+     * readers acquire-load these in _iowait_slab_at. Store the slot before
+     * bumping the count so a reader that observes npages also sees the page.
+     */
     atomic_store_explicit(&slab->pages[npages], page, memory_order_release);
     atomic_store_explicit(&slab->npages, npages + 1, memory_order_release);
 

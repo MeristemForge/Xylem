@@ -81,7 +81,7 @@
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
 
-/*
+/**
  * A coroutine handed to a worker's runnext slot is normally consumed by that
  * worker on its very next schedule, so it almost never ages. If the owner is
  * stuck (blocked syscall, long CPU loop) the runnext coro would otherwise be
@@ -355,7 +355,7 @@ static mco_coro* _sched_worker_steal_coro(scheduler_t* sched, _sched_worker_t* w
     return NULL;
 }
 
-/*
+/**
  * Last-resort rescue: steal a stale runnext entry from another worker.
  *
  * runnext is normally single-owner (only its worker pops it), which makes it
@@ -972,9 +972,11 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     if (!_tls_worker || _tls_worker->sched != sched) {
         runq_push(sched->runq, &ctx->runq_node);
     } else {
-        /* Stamp before publishing so a stealer that sees the coro also sees
+        /**
+         * Stamp before publishing so a stealer that sees the coro also sees
          * a valid timestamp (relaxed is fine: the runnext store is the
-         * release that orders this). */
+         * release that orders this).
+         */
         atomic_store_explicit(
             &_tls_worker->runnext_ts,
             xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
