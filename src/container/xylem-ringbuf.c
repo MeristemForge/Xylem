@@ -27,10 +27,10 @@
 
 struct xylem_ringbuf_s {
     char*    buf;
-    uint64_t wpos; /* write pos  */
-    uint64_t rpos; /* read pos   */
-    uint32_t mask; /* mask = cap - 1 */
-    uint32_t esz;  /* entry size (bytes) */
+    uint64_t wpos; /* write position */
+    uint64_t rpos; /* read position */
+    uint32_t mask; /* cap - 1 */
+    uint32_t esz;  /* entry size in bytes */
 };
 
 static inline uint32_t _ringbuf_rounddown_pow2(uint32_t n) {
@@ -47,7 +47,6 @@ static inline uint32_t _ringbuf_rounddown_pow2(uint32_t n) {
 
 static inline void _ringbuf_write_internal(
     xylem_ringbuf_t* ring, const void* src, uint32_t len, uint64_t off) {
-
     uint32_t idx = (uint32_t)(off & ring->mask);
     uint32_t cap = ring->mask + 1;
     uint32_t esize = ring->esz;
@@ -74,7 +73,6 @@ static inline void _ringbuf_write_internal(
 
 static inline void _ringbuf_read_internal(
     xylem_ringbuf_t* ring, void* dst, uint32_t len, uint64_t off) {
-
     uint32_t idx = (uint32_t)(off & ring->mask);
     uint32_t cap = ring->mask + 1;
     uint32_t esize = ring->esz;
@@ -169,7 +167,6 @@ size_t xylem_ringbuf_avail(xylem_ringbuf_t* ring) {
 
 size_t xylem_ringbuf_write(
     xylem_ringbuf_t* ring, const void* buf, size_t entry_count) {
-
     size_t avail = xylem_ringbuf_avail(ring);
     if (entry_count > avail) {
         entry_count = avail;
@@ -181,8 +178,7 @@ size_t xylem_ringbuf_write(
     return entry_count;
 }
 
-size_t
-xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
+size_t xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     size_t len = xylem_ringbuf_len(ring);
     if (entry_count > len) {
         entry_count = len;
@@ -195,8 +191,7 @@ xylem_ringbuf_read(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     return (size_t)count32;
 }
 
-size_t
-xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
+size_t xylem_ringbuf_peek(xylem_ringbuf_t* ring, void* buf, size_t entry_count) {
     size_t len = xylem_ringbuf_len(ring);
     if (entry_count > len) {
         entry_count = len;

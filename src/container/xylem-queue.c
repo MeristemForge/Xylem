@@ -28,7 +28,7 @@ struct xylem_queue_s {
     queue_t queue;
 };
 
-typedef struct {
+typedef struct _queue_wrap_node_s {
     queue_node_t node;
     void*        data;
 } _queue_wrap_node_t;

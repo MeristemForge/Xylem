@@ -11,11 +11,10 @@ Xylem is a pure C library, **supplementing** — not replacing — the C11 stand
 
 # Features
 
-- **Cross-platform** — Windows, Linux, macOS, Android, and iOS
-- **Easy to use** — small, consistent APIs; get started in minutes
-- **High-performance event loop** — epoll / kqueue / iocp
-- **Thread-safe networking** — send and close from any thread without locking
-- **Protocol coverage** — TCP, UDP, UDS, TLS, DTLS, Reliable UDP, HTTP/1.1, WebSocket, Serial
+- **Platforms**    — Windows, Linux, macOS, Android, and iOS
+- **Coroutines**   — simple sequential code that scales to thousands of connections
+- **Dependencies** — C11 standard library only; OpenSSL optional for TLS
+- **Protocols**    — TCP, UDP, UDS, TLS, DTLS, Reliable UDP, HTTP/1.1, WebSocket, Serial
 
 
 # Build

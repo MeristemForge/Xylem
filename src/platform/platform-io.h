@@ -60,15 +60,15 @@ extern FILE* platform_io_fopen(const char* restrict file, const char* restrict m
 extern int platform_io_vsprintf(char* str, size_t size, const char* restrict format, va_list ap);
 
 /**
- * @brief File stat result (portable).
+ * File stat result (portable).
  *
  * Contains the subset of stat fields needed by the HTTP static
  * file server: file size, modification time, and mode bits.
  */
-typedef struct {
-    int64_t size;    /*< File size in bytes. */
-    time_t  mtime;   /*< Last modification time. */
-    int32_t is_dir;  /*< Non-zero if the path is a directory. */
+typedef struct platform_io_stat_s {
+    int64_t size;    /* File size in bytes. */
+    time_t  mtime;   /* Last modification time. */
+    int32_t is_dir;  /* Non-zero if the path is a directory. */
 } platform_io_stat_t;
 
 /**

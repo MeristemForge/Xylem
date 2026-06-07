@@ -4,40 +4,77 @@ Echo server benchmark comparing Xylem against popular networking libraries acros
 
 ## Competitors
 
-| Protocol | Xylem | libuv | libevent | libhv | Boost.Asio | Go | Rust (Tokio) |
-|----------|:-----:|:-----:|:--------:|:-----:|:----------:|:--:|:------------:|
-| TCP      | x     | x     | x        | x     | x          | x  | x            |
-| UDP      | x     | x     | x        | x     | x          | x  | x            |
-| TLS      | x     | x     | x        | x     | x          | x  | x            |
-| DTLS     | x     | -     | -        | -     | -          | x  | x            |
-| RUDP     | x     | -     | -        | -     | -          | -  | -            |
+| Protocol | Xylem | libuv | Boost.Asio | Go | Rust (Tokio) |
+|----------|:-----:|:-----:|:----------:|:--:|:------------:|
+| TCP      | x     | x     | x          | x  | x            |
+| UDP      | x     | x     | x          | x  | x            |
+| TLS      | x     | x     | x          | x  | x            |
+| DTLS     | x     | -     | -          | x  | x            |
+| RUDP     | x     | -     | -          | -  | -            |
 
-## Quick Start (WSL / Linux)
+## Runner Scripts
+
+Two platform-specific drivers live in `benchmark/scripts/`:
+
+| Script | Platform | Toolchain |
+|--------|----------|-----------|
+| `run-unix.sh` | Linux + macOS | GCC/Clang, auto-detected via `uname` |
+| `run-win.bat` | Windows | MSVC (`cl.exe`), run from a VS Developer Command Prompt |
+
+Each script exposes the same subcommands: `install`, `build`, `bench`, `all`
+(default), and the same bench options.
+
+## Quick Start
+
+### Linux / macOS
 
 ```bash
 cd benchmark/scripts
 
 # One command to install deps + build + run all benchmarks:
-./run.sh
+./run-unix.sh
 
 # Or step by step:
-./install-deps.sh      # install all dependencies from source (O3+LTO)
-./build.sh             # compile all binaries (Release, stripped)
-./run.sh tcp           # run only TCP benchmarks
-./report.sh            # generate comparison table from latest results
+./run-unix.sh install   # install dependencies (Linux: apt + source; macOS: brew)
+./run-unix.sh build     # compile all binaries (Release, stripped)
+./run-unix.sh bench     # run benchmarks, write results/<timestamp>/
+```
+
+### Windows
+
+Launch a "Developer Command Prompt for VS 2022" (so `cl.exe` and `cmake` are
+on `PATH` — see `docs/build.md`), then:
+
+```bat
+cd benchmark\scripts
+
+run-win.bat install    :: print winget/vcpkg setup guidance, verify cl.exe
+run-win.bat build      :: build xylem + servers + native Win32 (IOCP) bench client
+run-win.bat bench      :: run benchmarks, write results\<timestamp>\
 ```
 
 ## Usage
 
 ```bash
-# Run specific protocol with custom parameters:
-./run.sh tcp --conns 10000 --duration 60
-./run.sh tls --conns 5000 --duration 30
-./run.sh all --conns 1000 --duration 30
+# Custom parameters (same options on both scripts):
+./run-unix.sh bench --conns 10000 --duration 60
+./run-unix.sh bench --servers xylem,go,rust --payload 64,4096 --mode st
+./run-unix.sh bench -s xylem,rust -c 1000,5000 -d 15 --repeat 3
 
-# Generate report from a specific run:
-./report.sh results/20260501-143022/
+# Environment variables seed defaults (CLI overrides them):
+REPEAT=5 DURATION=5 CONNS=1000 ./run-unix.sh bench
 ```
+
+Bench options: `--servers` (xylem,libuv,boost,go,rust), `--conns`, `--payload`,
+`--duration`, `--mode` (st|mt|both), `--repeat`, `--no-connrate`.
+
+### Platform notes
+
+- **macOS** uses kqueue and lacks `SO_REUSEPORT` / `/proc`; per-CPU usage
+  sampling is Linux-only. The default server set narrows to `xylem,go,rust`.
+- **Windows** uses wepoll (IOCP-backed); same omissions apply. libuv/boost
+  servers require vcpkg and are off by default.
+- Numbers are only comparable within the same platform, not across platforms.
 
 ## Methodology
 
@@ -78,10 +115,8 @@ benchmark/
     server/                   echo server implementations
     client/                   bench client
   scripts/
-    install-deps.sh           dependency installer
-    build.sh                  build all binaries
-    run.sh                    run benchmarks
-    report.sh                 generate comparison tables
+    run-unix.sh               Linux/macOS driver (install/build/bench)
+    run-win.bat               Windows driver (install/build/bench)
   results/                    benchmark outputs
   bin/                        compiled binaries (gitignored)
 ```

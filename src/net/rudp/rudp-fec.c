@@ -58,7 +58,7 @@ struct rudp_fec_enc_s {
     uint16_t*    payload_sizes;  /* actual payload size per data shard */
 };
 
-typedef struct {
+typedef struct _fec_group_s {
     uint32_t  group_id;
     int       count;             /* shards received so far */
     int       max_payload;       /* max payload length seen */

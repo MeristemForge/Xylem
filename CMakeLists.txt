@@ -11,9 +11,7 @@ option(XYLEM_ENABLE_TSAN  "enable data race detection" OFF)
 option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
-option(XYLEM_ENABLE_TLS "enable TLS/DTLS support (requires OpenSSL)" OFF)
-option(XYLEM_ENABLE_HTTP "enable HTTP client/server" OFF)
-option(XYLEM_ENABLE_WS "enable WebSocket client/server" OFF)
+option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -30,16 +28,37 @@ if(WIN32 AND MSVC)
 	add_compile_options("/experimental:c11atomics")
 endif()
 
+# clang-cl's ASan cannot link the debug CRT -- it errors with "doesn't support
+# linking with debug runtime libraries yet". When Xylem is built standalone
+# with ASan under clang-cl, force the release dynamic CRT (/MD) so a Debug
+# configuration still compiles. Guarded by PROJECT_IS_TOP_LEVEL so a consumer
+# that does add_subdirectory(xylem) keeps full control of its own CRT choice.
+# MSVC cl.exe has no such limitation and is left untouched.
+if(PROJECT_IS_TOP_LEVEL AND WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "Clang"
+   AND XYLEM_ENABLE_ASAN)
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+
 set(SRCS
-	src/runtime/loop.c
-	src/runtime/xylem-runtime.c
+	src/xylem.c
+	src/runtime/runtime.c
 	src/xylem-logger.c
 	src/xylem-utils.c
 	src/xylem-serial.c
-	src/sync/mpsc.c
-	src/runtime/thrdpool.c
+	src/xylem-timer.c
+	src/xylem-ticker.c
+	src/container/mpsc.c
+	src/thrdpool.c
+	src/runtime/wsdeque.c
+	src/runtime/runq.c
+	src/runtime/dynpool.c
+	src/runtime/scheduler.c
+	src/runtime/iowait.c
 	src/sync/xylem-waitgroup.c
 	src/sync/xylem-channel.c
+	src/sync/xylem-mutex.c
+	src/sync/xylem-cond.c
+	src/sync/spin.c
 	src/crypto/xylem-sha1.c
 	src/crypto/xylem-sha256.c
 	src/crypto/xylem-hmac256.c
@@ -47,12 +66,13 @@ set(SRCS
 	src/crypto/aes256/xylem-aes256.c
 	src/encoding/xylem-base64.c
 	src/encoding/xylem-bswap.c
+	src/encoding/xylem-url.c
 	src/encoding/xylem-varint.c
 	src/container/heap.c
 	src/container/list.c
 	src/container/queue.c
 	src/container/rbtree.c
-	src/container/stack.c
+	src/container/lifo.c
 	src/container/xylem-ringbuf.c
 	src/container/xylem-heap.c
 	src/container/xylem-list.c
@@ -63,15 +83,41 @@ set(SRCS
 	src/net/xylem-tcp.c
 	src/net/xylem-udp.c
 	src/net/xylem-uds.c
-	src/net/rudp/kcp/ikcp.c
+	src/net/xylem-reader.c
+	src/net/xylem-writer.c
+	src/net/mux/mux-frame.c
+	src/net/mux/mux-stream.c
+	src/net/mux/xylem-mux.c
 	src/net/rudp/xylem-rudp.c
 	src/net/rudp/rudp-fec.c
+	src/net/rudp/kcp/ikcp.c
 	src/encoding/json/xylem-json.c
 	src/encoding/json/yyjson/yyjson.c
 	src/encoding/gzip/xylem-gzip.c
 	src/encoding/gzip/miniz/miniz.c
 	src/encoding/fec/reedsolomon-c/rs.c
 	src/encoding/fec/xylem-fec.c
+	src/net/http/http-utils.c
+	src/net/http/http-tunnel.c
+	src/net/http/http.c
+	src/net/http/xylem-http.c
+	src/net/http/http-transport-tcp.c
+	src/net/http/xylem-http-auth.c
+	src/net/http/xylem-http-cookie.c
+	src/net/http/xylem-http-form.c
+	src/net/http/xylem-http-multipart.c
+	src/net/http/xylem-http-router.c
+	src/net/http/xylem-http-fileserver.c
+	src/net/http/llhttp/llhttp.c
+	src/net/http/llhttp/http.c
+	src/net/http/llhttp/api.c
+	src/net/ws/ws.c
+	src/net/ws/xylem-ws.c
+	src/net/ws/ws-tcp.c
+	src/net/ws/ws-utf8.c
+	src/net/ws/ws-frame.c
+	src/net/ws/ws-handshake.c
+	src/net/ws/ws-deflate.c
 )
 
 if(WIN32)
@@ -80,7 +126,9 @@ if(WIN32)
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
 		src/platform/win/platform-socket.c
+		src/platform/win/platform-sem.c
 		src/platform/win/platform-serial.c
+		src/platform/win/platform-vmem.c
 		src/platform/win/wepoll/wepoll.c
 	)
 endif()
@@ -91,7 +139,9 @@ if(UNIX)
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-poller.c
 		src/platform/unix/platform-socket.c
+		src/platform/unix/platform-sem.c
 		src/platform/unix/platform-serial.c
+		src/platform/unix/platform-vmem.c
 	)
 endif()
 
@@ -102,44 +152,19 @@ if(XYLEM_ENABLE_TLS)
 	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
 
 	list(APPEND SRCS
-		src/net/xylem-tls.c
-		src/net/xylem-dtls.c
+		src/net/tls/tls-backend-openssl.c
+		src/net/tls/tls.c
+		src/net/tls/xylem-tls.c
+		src/net/tls/xylem-dtls.c
+		src/net/http/http-transport-tls.c
+		src/net/ws/ws-tls.c
 	)
-endif()
-
-if(XYLEM_ENABLE_HTTP)
+else()
 	list(APPEND SRCS
-		src/net/http/http-common.c
-		src/net/http/xylem-http-client.c
-		src/net/http/xylem-http-server.c
-		src/net/http/xylem-http-common.c
-		src/net/http/http-transport-tcp.c
-		src/net/http/llhttp/llhttp.c
-		src/net/http/llhttp/http.c
-		src/net/http/llhttp/api.c
+		src/net/http/http-transport-tls-stub.c
+		src/net/tls/xylem-tls-stub.c
+		src/net/ws/ws-tls-stub.c
 	)
-	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/http/http-transport-tls.c)
-	else()
-		list(APPEND SRCS src/net/http/http-transport-tls-stub.c)
-	endif()
-endif()
-
-if(XYLEM_ENABLE_WS)
-	list(APPEND SRCS
-		src/net/ws/ws-common.c
-		src/net/ws/xylem-ws-client.c
-		src/net/ws/xylem-ws-server.c
-		src/net/ws/ws-utf8.c
-		src/net/ws/ws-frame.c
-		src/net/ws/ws-handshake.c
-		src/net/ws/ws-transport-tcp.c
-	)
-	if(XYLEM_ENABLE_TLS)
-		list(APPEND SRCS src/net/ws/ws-transport-tls.c)
-	else()
-		list(APPEND SRCS src/net/ws/ws-transport-tls-stub.c)
-	endif()
 endif()
 
 if(XYLEM_ENABLE_DYNAMIC_LIBRARY)
@@ -151,10 +176,6 @@ endif()
 target_include_directories(xylem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/net
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sync
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/encoding
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})

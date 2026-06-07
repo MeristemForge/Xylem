@@ -26,10 +26,10 @@ _Pragma("once")
 
 typedef struct xylem_rbtree_s xylem_rbtree_t;
 
-/* Data-data comparator. Returns negative if a < b, zero if equal, positive if a > b. */
+/* Data-data comparator: negative if a < b, zero if equal, positive if a > b. */
 typedef int (*xylem_rbtree_cmp_dd_fn_t)(const void* a, const void* b);
 
-/* Key-data comparator for lookups. Returns negative if key < data, zero if match. */
+/* Key-data comparator for lookups: negative if key < data, zero if match. */
 typedef int (*xylem_rbtree_cmp_kd_fn_t)(const void* key, const void* data);
 
 /**

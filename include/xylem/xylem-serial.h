@@ -28,47 +28,47 @@ typedef struct xylem_serial_s xylem_serial_t;
 
 /* Serial port baud rate. */
 typedef enum xylem_serial_baudrate_e {
-    XYLEM_SERIAL_BAUDRATE_9600,   /*< 9600 baud. */
-    XYLEM_SERIAL_BAUDRATE_19200,  /*< 19200 baud. */
-    XYLEM_SERIAL_BAUDRATE_38400,  /*< 38400 baud. */
-    XYLEM_SERIAL_BAUDRATE_57600,  /*< 57600 baud. */
-    XYLEM_SERIAL_BAUDRATE_115200, /*< 115200 baud. */
+    XYLEM_SERIAL_BAUDRATE_9600,   /* 9600 baud. */
+    XYLEM_SERIAL_BAUDRATE_19200,  /* 19200 baud. */
+    XYLEM_SERIAL_BAUDRATE_38400,  /* 38400 baud. */
+    XYLEM_SERIAL_BAUDRATE_57600,  /* 57600 baud. */
+    XYLEM_SERIAL_BAUDRATE_115200, /* 115200 baud. */
 } xylem_serial_baudrate_t;
 
 /* Serial port parity mode. */
 typedef enum xylem_serial_parity_e {
-    XYLEM_SERIAL_PARITY_NONE,   /*< No parity. */
-    XYLEM_SERIAL_PARITY_ODD,    /*< Odd parity. */
-    XYLEM_SERIAL_PARITY_EVEN,   /*< Even parity. */
+    XYLEM_SERIAL_PARITY_NONE,   /* No parity. */
+    XYLEM_SERIAL_PARITY_ODD,    /* Odd parity. */
+    XYLEM_SERIAL_PARITY_EVEN,   /* Even parity. */
 } xylem_serial_parity_t;
 
 /* Serial port data bits. */
 typedef enum xylem_serial_databits_e {
-    XYLEM_SERIAL_DATABITS_7,    /*< 7 data bits. */
-    XYLEM_SERIAL_DATABITS_8,    /*< 8 data bits. */
+    XYLEM_SERIAL_DATABITS_7,    /* 7 data bits. */
+    XYLEM_SERIAL_DATABITS_8,    /* 8 data bits. */
 } xylem_serial_databits_t;
 
 /* Serial port stop bits. */
 typedef enum xylem_serial_stopbits_e {
-    XYLEM_SERIAL_STOPBITS_1,    /*< 1 stop bit. */
-    XYLEM_SERIAL_STOPBITS_2,    /*< 2 stop bits. */
+    XYLEM_SERIAL_STOPBITS_1,    /* 1 stop bit. */
+    XYLEM_SERIAL_STOPBITS_2,    /* 2 stop bits. */
 } xylem_serial_stopbits_t;
 
 /* Serial port flow control. */
 typedef enum xylem_serial_flowcontrol_e {
-    XYLEM_SERIAL_FLOW_NONE,     /*< No flow control. */
-    XYLEM_SERIAL_FLOW_HARDWARE, /*< Hardware (RTS/CTS). */
+    XYLEM_SERIAL_FLOW_NONE,     /* No flow control. */
+    XYLEM_SERIAL_FLOW_HARDWARE, /* Hardware (RTS/CTS). */
 } xylem_serial_flowcontrol_t;
 
 /* Serial port configuration. */
 typedef struct xylem_serial_opts_s {
-    const char*                  device;       /*< Device path ("COM3", "/dev/ttyUSB0"). */
-    xylem_serial_baudrate_t      baudrate;     /*< Baud rate. */
-    xylem_serial_parity_t        parity;       /*< Parity mode. */
-    xylem_serial_databits_t      databits;     /*< Data bits. */
-    xylem_serial_stopbits_t      stopbits;     /*< Stop bits. */
-    xylem_serial_flowcontrol_t   flowcontrol;  /*< Flow control, default NONE. */
-    uint32_t                     timeout_ms;   /*< Read timeout in ms, 0 = blocking. */
+    const char*                  device;       /* Device path ("COM3", "/dev/ttyUSB0"). */
+    xylem_serial_baudrate_t      baudrate;     /* Baud rate. */
+    xylem_serial_parity_t        parity;       /* Parity mode. */
+    xylem_serial_databits_t      databits;     /* Data bits. */
+    xylem_serial_stopbits_t      stopbits;     /* Stop bits. */
+    xylem_serial_flowcontrol_t   flowcontrol;  /* Flow control, default NONE. */
+    uint32_t                     timeout_ms;   /* Read timeout in ms, 0 = blocking. */
 } xylem_serial_opts_t;
 
 /**
@@ -77,6 +77,9 @@ typedef struct xylem_serial_opts_s {
  * Configures the serial port with the specified parameters and
  * returns an opaque handle for subsequent read/write operations.
  * All I/O through this handle is synchronous (blocking).
+ *
+ * The handle is reference counted, so close may safely race with an
+ * in-flight read or write on another thread without use-after-free.
  *
  * @param opts  Serial port configuration. Must not be NULL.
  *              opts->device must not be NULL.
@@ -88,11 +91,15 @@ extern xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts);
 /**
  * @brief Close a serial port.
  *
- * Releases the underlying OS handle and frees the serial object.
- * Safe to call with NULL. NOT idempotent -- do not call twice on
- * the same non-NULL handle (double-free).
+ * Marks the handle closed and drops the caller's reference; the
+ * underlying OS handle and the object are released once the last
+ * in-flight read/write also releases its reference. Safe to call
+ * with NULL. Idempotent and safe to call from any thread.
  *
  * @param serial  Serial handle, or NULL.
+ *
+ * @note A blocking read/write already inside the OS call is not
+ *       interrupted; close takes effect once it returns.
  */
 extern void xylem_serial_close(xylem_serial_t* serial);
 

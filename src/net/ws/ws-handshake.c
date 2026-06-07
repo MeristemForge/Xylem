@@ -44,7 +44,7 @@ int ws_handshake_gen_key(char* out, size_t out_size) {
     }
 
     uint8_t enc_buf[32];
-    int written = xylem_base64_encode_std(raw, 16, enc_buf, (int)sizeof(enc_buf));
+    int     written = xylem_base64_encode_std(raw, 16, enc_buf, (int)sizeof(enc_buf));
     if (written < 0) {
         return -1;
     }
@@ -61,7 +61,7 @@ int ws_handshake_compute_accept(const char* key,
         return -1;
     }
 
-    size_t key_len = strlen(key);
+    size_t key_len  = strlen(key);
     size_t guid_len = sizeof(_ws_handshake_guid) - 1;
 
     xylem_sha1_t* ctx = xylem_sha1_create();
@@ -78,7 +78,7 @@ int ws_handshake_compute_accept(const char* key,
 
     /* Base64 of 20 bytes = 28 chars */
     uint8_t enc_buf[32];
-    int written = xylem_base64_encode_std(digest, 20, enc_buf, (int)sizeof(enc_buf));
+    int     written = xylem_base64_encode_std(digest, 20, enc_buf, (int)sizeof(enc_buf));
     if (written < 0) {
         return -1;
     }
@@ -95,22 +95,13 @@ char* ws_handshake_build_request(const char* host, uint16_t port,
         return NULL;
     }
 
-    /*
-     * Build: GET <path> HTTP/1.1\r\n
-     *        Host: <host>:<port>\r\n
-     *        Upgrade: websocket\r\n
-     *        Connection: Upgrade\r\n
-     *        Sec-WebSocket-Key: <key>\r\n
-     *        Sec-WebSocket-Version: 13\r\n
-     *        \r\n
-     */
     size_t host_len = strlen(host);
     size_t path_len = strlen(path);
-    size_t key_len = strlen(key);
+    size_t key_len  = strlen(key);
 
     /* Conservative upper bound for the request size */
     size_t buf_size = path_len + host_len + key_len + 256;
-    char* buf = (char*)malloc(buf_size);
+    char*  buf      = (char*)malloc(buf_size);
     if (buf == NULL) {
         return NULL;
     }
@@ -150,6 +141,66 @@ char* ws_handshake_build_request(const char* host, uint16_t port,
     return buf;
 }
 
+char* ws_handshake_build_request_ext(const char* host, uint16_t port,
+                                     const char* path, const char* key,
+                                     const char* extensions,
+                                     size_t* out_len) {
+    if (host == NULL || path == NULL || key == NULL) {
+        return NULL;
+    }
+
+    if (extensions == NULL) {
+        return ws_handshake_build_request(host, port, path, key, out_len);
+    }
+
+    size_t host_len = strlen(host);
+    size_t path_len = strlen(path);
+    size_t key_len  = strlen(key);
+    size_t ext_len  = strlen(extensions);
+
+    /* Conservative upper bound for the request size */
+    size_t buf_size = path_len + host_len + key_len + ext_len + 320;
+    char*  buf      = (char*)malloc(buf_size);
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    int len;
+    if ((port == 80) || (port == 443)) {
+        len = snprintf(buf, buf_size,
+                       "GET %s HTTP/1.1\r\n"
+                       "Host: %s\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n"
+                       "Sec-WebSocket-Key: %s\r\n"
+                       "Sec-WebSocket-Version: 13\r\n"
+                       "Sec-WebSocket-Extensions: %s\r\n"
+                       "\r\n",
+                       path, host, key, extensions);
+    } else {
+        len = snprintf(buf, buf_size,
+                       "GET %s HTTP/1.1\r\n"
+                       "Host: %s:%" PRIu16 "\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n"
+                       "Sec-WebSocket-Key: %s\r\n"
+                       "Sec-WebSocket-Version: 13\r\n"
+                       "Sec-WebSocket-Extensions: %s\r\n"
+                       "\r\n",
+                       path, host, port, key, extensions);
+    }
+
+    if (len < 0 || (size_t)len >= buf_size) {
+        free(buf);
+        return NULL;
+    }
+
+    if (out_len != NULL) {
+        *out_len = (size_t)len;
+    }
+    return buf;
+}
+
 int ws_handshake_validate_accept(const char* expected_key,
                                  const char* accept_value) {
     if (expected_key == NULL || accept_value == NULL) {
@@ -173,16 +224,9 @@ char* ws_handshake_build_response(const char* accept_value,
         return NULL;
     }
 
-    /*
-     * Build: HTTP/1.1 101 Switching Protocols\r\n
-     *        Upgrade: websocket\r\n
-     *        Connection: Upgrade\r\n
-     *        Sec-WebSocket-Accept: <accept_value>\r\n
-     *        \r\n
-     */
     size_t accept_len = strlen(accept_value);
-    size_t buf_size = accept_len + 128;
-    char* buf = (char*)malloc(buf_size);
+    size_t buf_size   = accept_len + 128;
+    char*  buf        = (char*)malloc(buf_size);
     if (buf == NULL) {
         return NULL;
     }

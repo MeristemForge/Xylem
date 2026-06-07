@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-rudp.h"
 
 #include <signal.h>
@@ -70,7 +69,7 @@ static void send_echo(conn_t* c) {
     char buf[PAYLOAD_SIZE];
     memset(buf, 'A', PAYLOAD_SIZE);
     c->send_ts = now_us();
-    xylem_rudp_send(c->rudp, buf, PAYLOAD_SIZE);
+    xylem_rudp_write(c->rudp, buf, PAYLOAD_SIZE);
     c->awaiting_echo = true;
     g_msgs_sent++;
 }

@@ -23,29 +23,66 @@ _Pragma("once")
 
 #include "platform/platform-socket.h"
 
-#define ADDR_MAXHOST 46
-
-typedef struct loop_s      loop_t;
-typedef struct thrdpool_s  thrdpool_t;
-typedef struct addr_resolve_s addr_resolve_t;
+#include <stddef.h>
+#include <stdint.h>
 
 typedef struct addr_s {
     struct sockaddr_storage storage;
 } addr_t;
 
-typedef void (*addr_resolve_fn_t)(addr_t* addrs, size_t count,
-                                  int status, void* userdata);
+/**
+ * @brief Parse a numeric IP address string into an addr_t.
+ *
+ * Does not perform DNS resolution.
+ *
+ * @param src   Numeric IP string (IPv4 or IPv6).
+ * @param port  Port number to embed in the result.
+ * @param dst   Destination addr_t.
+ *
+ * @return 0 on success, -1 on invalid input.
+ */
+extern int addr_pton(const char* src, uint16_t port, addr_t* dst);
 
-extern int addr_pton(const char* host, uint16_t port, addr_t* addr);
+/**
+ * @brief Convert an addr_t to a printable IP string and port.
+ *
+ * Either dst or port may be NULL to skip that output. If both are
+ * NULL the call is a no-op that only validates the address family.
+ *
+ * @param addr     Source addr_t.
+ * @param dst      Destination buffer for IP string, or NULL.
+ * @param dst_len  Size of dst buffer (INET6_ADDRSTRLEN recommended).
+ *                 Must be large enough to hold the textual address;
+ *                 ignored when dst is NULL.
+ * @param port     Receives the port number, or NULL.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int addr_ntop(
+    const addr_t* addr,
+    char* dst,
+    size_t dst_len,
+    uint16_t* port);
 
-extern int addr_ntop(const addr_t* addr,
-                     char* host, size_t hostlen, uint16_t* port);
-
-extern addr_resolve_t* addr_resolve(loop_t* loop,
-                                    thrdpool_t* pool,
-                                    const char* host,
-                                    uint16_t port,
-                                    addr_resolve_fn_t cb,
-                                    void* userdata);
-
-extern void addr_resolve_cancel(addr_resolve_t* req);
+/**
+ * @brief Resolve a domain name to all addresses.
+ *
+ * Offloads getaddrinfo to the runtime thread pool and yields
+ * until the result is ready. The result array is heap-allocated;
+ * the caller must free *addrs when done.
+ *
+ * The supplied port is embedded into every returned sockaddr so
+ * callers can use the result directly with bind/connect/sendto.
+ *
+ * @param domain  Domain name to resolve.
+ * @param port    Port to embed in each result.
+ * @param addrs   Receives a malloc'd array of results (caller frees).
+ * @param count   Receives the number of results.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int addr_resolve(
+    const char* domain,
+    uint16_t port,
+    addr_t** addrs,
+    size_t* count);

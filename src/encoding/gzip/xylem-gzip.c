@@ -21,7 +21,7 @@
 
 #include "xylem/encoding/xylem-gzip.h"
 
-#include "gzip/miniz/miniz.h"
+#include "encoding/gzip/miniz/miniz.h"
 
 #include <limits.h>
 #include <string.h>
@@ -166,7 +166,7 @@ static int _gzip_raw_inflate(const uint8_t* src, size_t slen, uint8_t* dst,
     return (int)stream.total_out;
 }
 
-size_t xylem_gzip_deflate_bound(size_t slen) {
+size_t xylem_gzip_deflate_size(size_t slen) {
     mz_stream stream;
     memset(&stream, 0, sizeof(stream));
     mz_deflateInit2(&stream, MZ_DEFAULT_COMPRESSION, MZ_DEFLATED,
@@ -176,8 +176,8 @@ size_t xylem_gzip_deflate_bound(size_t slen) {
     return (size_t)bound;
 }
 
-size_t xylem_gzip_compress_bound(size_t slen) {
-    return xylem_gzip_deflate_bound(slen) + GZIP_OVERHEAD;
+size_t xylem_gzip_compress_size(size_t slen) {
+    return xylem_gzip_deflate_size(slen) + GZIP_OVERHEAD;
 }
 
 int xylem_gzip_compress(const uint8_t* src, size_t slen, uint8_t* dst,

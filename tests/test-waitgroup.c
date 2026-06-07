@@ -20,174 +20,129 @@
  */
 
 #include "xylem.h"
+#include "runtime/runtime.h"
+#include "runtime/scheduler.h"
 #include "assert.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 
-#define THREAD_COUNT    10
-#define STRESS_THREADS  20
+#define SAFETY_TIMEOUT_MS 5000
+
+static xylem_opts_t _rt_opts = { .workers = 4 };
+
+static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
+    (void)ud;
+    sched_timer_destroy(timer);
+    xylem_shutdown();
+    ASSERT(0 && "test timed out");
+}
+
+static void _start_safety_timer(void) {
+    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
+    sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
+}
+
+#define WG_WORKERS 50
 
 typedef struct {
     xylem_waitgroup_t* wg;
-    atomic_int*        completed;
-    atomic_int*        started;
-} _worker_ctx_t;
+    atomic_int         done_count;
+    int                tested;
+} _wg_ctx_t;
 
-static int _worker_thread(void* arg) {
-    _worker_ctx_t* ctx = (_worker_ctx_t*)arg;
-    atomic_fetch_add(ctx->started, 1);
-    /* Yield to let other threads start -- no sleep needed. */
-    thrd_yield();
-    atomic_fetch_add(ctx->completed, 1);
+static void _wg_worker(void* arg) {
+    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
+    atomic_fetch_add(&ctx->done_count, 1);
     xylem_waitgroup_done(ctx->wg);
-    return 0;
 }
 
-static int _early_done_thread(void* arg) {
-    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
-    xylem_waitgroup_done(wg);
-    return 0;
+static void _wg_waiter(void* arg) {
+    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
+    ctx->tested = 1;
+    xylem_shutdown();
 }
 
-static int _stress_thread(void* arg) {
-    xylem_waitgroup_t* wg = (xylem_waitgroup_t*)arg;
-    volatile int       dummy = 0;
-    int                iters = 10 + (rand() % 50);
-    for (int i = 0; i < iters; i++) {
-        dummy += i;
+static void _test_wg_main(void* arg) {
+    _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
+    _start_safety_timer();
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, WG_WORKERS);
+    xylem_spawn(_wg_waiter, ctx);
+    for (int i = 0; i < WG_WORKERS; i++) {
+        xylem_spawn(_wg_worker, ctx);
     }
-    xylem_waitgroup_done(wg);
-    return 0;
 }
 
-/* Create and immediately destroy. */
-static void test_create_destroy(void) {
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-    xylem_waitgroup_destroy(wg);
-}
-
-/* Basic add/done/wait without threads. */
-static void test_basic_operations(void) {
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-
-    xylem_waitgroup_add(wg, 0);
-    xylem_waitgroup_done(wg);
-
-    xylem_waitgroup_add(wg, 3);
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_wait(wg);
-
-    xylem_waitgroup_destroy(wg);
-}
-
-/* Multiple threads: wait blocks until all done. */
-static void test_multiple_threads(void) {
-    thrd_t threads[THREAD_COUNT];
-    _worker_ctx_t ctxs[THREAD_COUNT];
-    atomic_int completed = 0;
-    atomic_int started = 0;
-
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-    xylem_waitgroup_add(wg, THREAD_COUNT);
-
-    for (int i = 0; i < THREAD_COUNT; i++) {
-        ctxs[i].wg        = wg;
-        ctxs[i].completed = &completed;
-        ctxs[i].started   = &started;
-        ASSERT(thrd_create(&threads[i], _worker_thread, &ctxs[i]) == thrd_success);
+static void test_waitgroup_concurrent(void) {
+    fprintf(stderr, "=== test_waitgroup_concurrent\n");
+    for (int round = 0; round < 20; round++) {
+        _wg_ctx_t ctx = {0};
+        xylem_run(_test_wg_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+        xylem_waitgroup_destroy(ctx.wg);
     }
-
-    while (atomic_load(&started) < THREAD_COUNT) {
-        thrd_yield();
-    }
-
-    xylem_waitgroup_wait(wg);
-    ASSERT(atomic_load(&completed) == THREAD_COUNT);
-
-    /* Second wait should return immediately. */
-    xylem_waitgroup_wait(wg);
-
-    for (int i = 0; i < THREAD_COUNT; i++) {
-        thrd_join(threads[i], NULL);
-    }
-    xylem_waitgroup_destroy(wg);
 }
 
-/* Thread calls done before main calls wait. */
-static void test_early_done(void) {
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
+/* Multi-waiter broadcast: every waiter must be released by the
+ * done() that drops the counter to zero. Exercises the new
+ * queue-based waiters list introduced to replace the single-slot
+ * design. */
 
-    thrd_t thread;
-    xylem_waitgroup_add(wg, 1);
-    ASSERT(thrd_create(&thread, _early_done_thread, wg) == thrd_success);
+#define WG_MULTI_WAITERS 16
 
-    xylem_waitgroup_wait(wg);
-    thrd_join(thread, NULL);
-    xylem_waitgroup_destroy(wg);
+typedef struct {
+    xylem_waitgroup_t* wg;
+    atomic_int         done_count;
+    atomic_int         waiters_released;
+    int                tested;
+} _wg_multi_ctx_t;
+
+static void _wg_multi_worker(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    atomic_fetch_add(&ctx->done_count, 1);
+    xylem_waitgroup_done(ctx->wg);
 }
 
-/* Done without prior add (counter goes negative). */
-static void test_repeated_done(void) {
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_done(wg);
-    xylem_waitgroup_wait(wg);
-
-    xylem_waitgroup_destroy(wg);
+static void _wg_multi_waiter(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
+    int released = atomic_fetch_add(&ctx->waiters_released, 1) + 1;
+    if (released == WG_MULTI_WAITERS) {
+        ctx->tested = 1;
+        xylem_shutdown();
+    }
 }
 
-/* Large delta: add 1000, done 1000 times. */
-static void test_large_delta(void) {
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-
-    const size_t N = 1000;
-    xylem_waitgroup_add(wg, N);
-    for (size_t i = 0; i < N; i++) {
-        xylem_waitgroup_done(wg);
+static void _test_wg_multi_main(void* arg) {
+    _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
+    _start_safety_timer();
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, WG_WORKERS);
+    for (int i = 0; i < WG_MULTI_WAITERS; i++) {
+        xylem_spawn(_wg_multi_waiter, ctx);
     }
-    xylem_waitgroup_wait(wg);
-
-    xylem_waitgroup_destroy(wg);
+    for (int i = 0; i < WG_WORKERS; i++) {
+        xylem_spawn(_wg_multi_worker, ctx);
+    }
 }
 
-/* Concurrent stress: many threads with variable work. */
-static void test_concurrent_stress(void) {
-    srand((unsigned int)time(NULL));
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
-    ASSERT(wg != NULL);
-
-    thrd_t threads[STRESS_THREADS];
-    xylem_waitgroup_add(wg, STRESS_THREADS);
-
-    for (int i = 0; i < STRESS_THREADS; i++) {
-        ASSERT(thrd_create(&threads[i], _stress_thread, wg) == thrd_success);
+static void test_waitgroup_multi_waiter(void) {
+    fprintf(stderr, "=== test_waitgroup_multi_waiter\n");
+    for (int round = 0; round < 20; round++) {
+        _wg_multi_ctx_t ctx = {0};
+        xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.waiters_released) == WG_MULTI_WAITERS);
+        xylem_waitgroup_destroy(ctx.wg);
     }
-
-    xylem_waitgroup_wait(wg);
-
-    for (int i = 0; i < STRESS_THREADS; i++) {
-        thrd_join(threads[i], NULL);
-    }
-    xylem_waitgroup_destroy(wg);
 }
 
 int main(void) {
-    test_create_destroy();
-    test_basic_operations();
-    test_repeated_done();
-    test_large_delta();
-    test_multiple_threads();
-    test_early_done();
-    test_concurrent_stress();
+    test_waitgroup_concurrent();
+    test_waitgroup_multi_waiter();
     return 0;
 }

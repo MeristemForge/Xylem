@@ -20,6 +20,7 @@
  */
 
 #include "xylem/crypto/xylem-hmac256.h"
+
 #include "xylem/crypto/xylem-sha256.h"
 
 #include <string.h>

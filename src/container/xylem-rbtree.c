@@ -30,7 +30,7 @@ struct xylem_rbtree_s {
     xylem_rbtree_cmp_kd_fn_t cmp_kd;
 };
 
-typedef struct {
+typedef struct _rbtree_wrap_node_s {
     rbtree_node_t            node;
     void*                    data;
     xylem_rbtree_cmp_dd_fn_t cmp_dd;
@@ -44,8 +44,7 @@ static int _rbtree_cmp_nn_bridge(
     return na->cmp_dd(na->data, nb->data);
 }
 
-static int
-_rbtree_cmp_kn_bridge(const void* key, const rbtree_node_t* n) {
+static int _rbtree_cmp_kn_bridge(const void* key, const rbtree_node_t* n) {
     _rbtree_wrap_node_t* xn = rbtree_entry((rbtree_node_t*)n, _rbtree_wrap_node_t, node);
     return xn->cmp_kd(key, xn->data);
 }

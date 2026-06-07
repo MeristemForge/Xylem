@@ -1,5 +1,4 @@
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-udp.h"
 
 #include <stdio.h>
@@ -7,7 +6,7 @@
 
 #define DEFAULT_PORT 9001
 
-static void _on_read(xylem_udp_t* udp, void* data, size_t len,
+static void _on_read(xylem_udp_chan_t* udp, void* data, size_t len,
                      const char* host, uint16_t port) {
     xylem_udp_send(udp, host, port, data, len);
 }
@@ -23,7 +22,7 @@ int main(int argc, char** argv) {
         .on_read = _on_read,
     };
 
-    xylem_udp_t* udp = xylem_udp_listen(loop, "0.0.0.0", (uint16_t)port,
+    xylem_udp_chan_t* udp = xylem_udp_listen(loop, "0.0.0.0", (uint16_t)port,
                                          &handler);
     if (!udp) {
         fprintf(stderr, "failed to bind on port %d\n", port);

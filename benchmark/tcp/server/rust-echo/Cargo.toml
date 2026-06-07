@@ -4,7 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros"] }
+
+[[bin]]
+name = "tcp-rust-echo"
+path = "src/main.rs"
+
+[[bin]]
+name = "tcp-rust-echo-mt"
+path = "src/main_mt.rs"
 
 [profile.release]
 opt-level = 3

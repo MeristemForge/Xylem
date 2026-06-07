@@ -73,6 +73,28 @@ extern char* ws_handshake_build_request(const char* host, uint16_t port,
                                         size_t* out_len);
 
 /**
+ * @brief Build a client HTTP Upgrade request with optional extensions.
+ *
+ * Constructs the full HTTP/1.1 Upgrade request for the WebSocket
+ * opening handshake, optionally including a Sec-WebSocket-Extensions
+ * header. The returned string is malloc'd; the caller must free it.
+ *
+ * @param host        Target hostname.
+ * @param port        Target port number.
+ * @param path        Request path (e.g. "/ws").
+ * @param key         Base64-encoded Sec-WebSocket-Key.
+ * @param extensions  Extension offer string (may be NULL to omit).
+ * @param out_len     Receives the length of the returned string
+ *                    (excluding null terminator). May be NULL.
+ *
+ * @return Heap-allocated request string, or NULL on allocation failure.
+ */
+extern char* ws_handshake_build_request_ext(const char* host, uint16_t port,
+                                            const char* path, const char* key,
+                                            const char* extensions,
+                                            size_t* out_len);
+
+/**
  * @brief Validate a server's Sec-WebSocket-Accept value.
  *
  * Computes the expected accept value from expected_key and compares

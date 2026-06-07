@@ -20,17 +20,17 @@
  */
 
 #include "xylem/container/xylem-stack.h"
-#include "container/stack.h"
+#include "container/lifo.h"
 
 #include <stdlib.h>
 
 struct xylem_stack_s {
-    stack_t stack;
+    lifo_t lifo;
 };
 
-typedef struct {
-    stack_node_t node;
-    void*        data;
+typedef struct _stack_wrap_node_s {
+    lifo_node_t node;
+    void*       data;
 } _stack_wrap_node_t;
 
 static inline _stack_wrap_node_t* _stack_wrap_alloc(void* data) {
@@ -47,7 +47,7 @@ xylem_stack_t* xylem_stack_create(void) {
     if (!s) {
         return NULL;
     }
-    stack_init(&s->stack);
+    lifo_init(&s->lifo);
     return s;
 }
 
@@ -60,11 +60,11 @@ void xylem_stack_destroy(xylem_stack_t* stack) {
 }
 
 bool xylem_stack_empty(xylem_stack_t* stack) {
-    return stack_empty(&stack->stack);
+    return lifo_empty(&stack->lifo);
 }
 
 size_t xylem_stack_len(xylem_stack_t* stack) {
-    return stack_len(&stack->stack);
+    return lifo_len(&stack->lifo);
 }
 
 int xylem_stack_push(xylem_stack_t* stack, void* data) {
@@ -72,25 +72,25 @@ int xylem_stack_push(xylem_stack_t* stack, void* data) {
     if (!n) {
         return -1;
     }
-    stack_push(&stack->stack, &n->node);
+    lifo_push(&stack->lifo, &n->node);
     return 0;
 }
 
 void* xylem_stack_peek(xylem_stack_t* stack) {
-    stack_node_t* n = stack_peek(&stack->stack);
-    return n ? stack_entry(n, _stack_wrap_node_t, node)->data : NULL;
+    lifo_node_t* n = lifo_peek(&stack->lifo);
+    return n ? lifo_entry(n, _stack_wrap_node_t, node)->data : NULL;
 }
 
 void xylem_stack_pop(xylem_stack_t* stack) {
-    stack_node_t* n = stack_pop(&stack->stack);
+    lifo_node_t* n = lifo_pop(&stack->lifo);
     if (!n) {
         return;
     }
-    free(stack_entry(n, _stack_wrap_node_t, node));
+    free(lifo_entry(n, _stack_wrap_node_t, node));
 }
 
 void xylem_stack_clear(xylem_stack_t* stack) {
-    while (!stack_empty(&stack->stack)) {
+    while (!lifo_empty(&stack->lifo)) {
         xylem_stack_pop(stack);
     }
 }

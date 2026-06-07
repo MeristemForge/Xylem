@@ -19,157 +19,210 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-transport.h"
-#include "xylem/net/xylem-tls.h"
+/*
+ * TLS transport factory for the HTTP engine. Builds an http_transport_t
+ * over the internal TLS engine and drives accept/dial. Compiled only
+ * when TLS is enabled; the stub (http-transport-tls-stub.c) replaces it
+ * otherwise.
+ *
+ * This factory talks to the engine directly (tls.h, tls_* API) rather
+ * than the public xylem_tls_* shim: it needs tls_client_handshake_fd to
+ * run the client handshake over a proxy-tunnel fd, which is internal.
+ */
+
+#include "http-transport-tls.h"
+#include "http-utils.h"
+#include "http-tunnel.h"
+
+#include "net/tls/tls.h"
+#include "runtime/runtime.h"
 
 #include <stdlib.h>
+#include <string.h>
 
-/**
- * Per-connection context that bridges xylem_tls callbacks to the
- * generic http_transport_cb_t interface.
- */
-typedef struct {
-    http_transport_cb_t* cb;
-    void*                ctx;
-    xylem_tls_ctx_t*     tls_ctx;
-} _http_tls_bridge_t;
-
-static void _http_tls_connect_cb(xylem_tls_conn_t* tls) {
-    _http_tls_bridge_t* br = xylem_tls_get_userdata(tls);
-    br->cb->on_connect(tls, br->ctx);
-}
-
-static void _http_tls_accept_cb(xylem_tls_server_t* server,
-                           xylem_tls_conn_t* tls) {
-    _http_tls_bridge_t* br = xylem_tls_server_get_userdata(server);
-    xylem_tls_set_userdata(tls, br);
-    br->cb->on_accept(tls, br->ctx);
-}
-
-static void _http_tls_read_cb(xylem_tls_conn_t* tls, void* data, size_t len) {
-    _http_tls_bridge_t* br = xylem_tls_get_userdata(tls);
-    br->cb->on_read(tls, br->ctx, data, len);
-}
-
-static void _http_tls_close_cb(xylem_tls_conn_t* tls, int err,
-                          const char* errmsg) {
-    _http_tls_bridge_t* br = xylem_tls_get_userdata(tls);
-    br->cb->on_close(tls, br->ctx, err, errmsg);
-    free(br);
-}
-
-static void* _http_tls_dial(loop_t* loop, addr_t* addr,
-                       http_transport_cb_t* cb, void* ctx,
-                       xylem_tcp_opts_t* opts) {
-    _http_tls_bridge_t* br = (_http_tls_bridge_t*)calloc(1, sizeof(_http_tls_bridge_t));
-    if (!br) {
-        return NULL;
-    }
-    br->cb      = cb;
-    br->ctx     = ctx;
-    br->tls_ctx = xylem_tls_ctx_create();
-    if (!br->tls_ctx) {
-        free(br);
-        return NULL;
-    }
-
-    xylem_tls_handler_t handler = {
-        .on_connect = _http_tls_connect_cb,
-        .on_read    = _http_tls_read_cb,
-        .on_close   = _http_tls_close_cb,
+static http_transport_t _https_make_transport(tls_conn_t* conn) {
+    return (http_transport_t){
+        .conn            = conn,
+        .read            = (int (*)(void*, void*, int))tls_read,
+        .write           = (int (*)(void*, const void*, int))tls_write,
+        .close           = (void (*)(void*))tls_close,
+        .set_rd_deadline = (void (*)(void*, uint64_t))tls_set_read_deadline,
+        .set_wr_deadline = (void (*)(void*, uint64_t))tls_set_write_deadline,
+        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))tls_remote_addr,
+        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))tls_local_addr,
+        .shutdown_wr     = NULL,
     };
+}
+
+typedef struct _https_dial_ctx_s {
+    tls_ctx_t*                tls_ctx;
+    const xylem_http_proxy_t* proxy;
+} _https_dial_ctx_t;
+
+static http_transport_t _https_dial(const char* host, uint16_t port,
+                                    uint64_t timeout_ms, void* ctx) {
+    _https_dial_ctx_t* dctx = (_https_dial_ctx_t*)ctx;
+    tls_ctx_t* tls_ctx = dctx ? dctx->tls_ctx : NULL;
+    const xylem_http_proxy_t* proxy = dctx ? dctx->proxy : NULL;
+
+    bool owns_ctx = false;
+    if (!tls_ctx) {
+        tls_ctx = tls_ctx_create();
+        if (!tls_ctx) {
+            return (http_transport_t){0};
+        }
+        owns_ctx = true;
+    }
 
     xylem_tls_opts_t tls_opts = {0};
-    if (opts) {
-        tls_opts.tcp = *opts;
+    tls_opts.server_name = host;
+    tls_opts.handshake_timeout_ms = (timeout_ms > 0) ? timeout_ms : 10000;
+
+    tls_conn_t* conn = NULL;
+
+    if (proxy && proxy->host) {
+        platform_sock_t fd = http_tunnel_connect(
+            proxy->host, proxy->port, host, port,
+            timeout_ms, proxy->username, proxy->password);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            if (owns_ctx) {
+                tls_ctx_destroy(tls_ctx);
+            }
+            return (http_transport_t){0};
+        }
+        conn = tls_client_handshake_fd(fd, tls_ctx, &tls_opts);
+    } else {
+        conn = tls_dial(host, port, tls_ctx, &tls_opts);
     }
 
-    xylem_tls_conn_t* tls = xylem_tls_dial(loop, addr, br->tls_ctx,
-                                       &handler,
-                                       opts ? &tls_opts : NULL);
-    if (!tls) {
-        xylem_tls_ctx_destroy(br->tls_ctx);
-        free(br);
-        return NULL;
+    if (owns_ctx) {
+        tls_ctx_destroy(tls_ctx);
     }
-    xylem_tls_set_userdata(tls, br);
-    return tls;
+    if (!conn) {
+        return (http_transport_t){0};
+    }
+    return _https_make_transport(conn);
 }
 
-static void* _http_tls_listen(loop_t* loop, addr_t* addr,
-                         http_transport_cb_t* cb, void* ctx,
-                         xylem_tcp_opts_t* opts,
-                         const char* tls_cert, const char* tls_key) {
-    _http_tls_bridge_t* br = (_http_tls_bridge_t*)calloc(1, sizeof(_http_tls_bridge_t));
-    if (!br) {
-        return NULL;
+static void _https_accept_coroutine(void* arg) {
+    http_srv_t* srv = (http_srv_t*)arg;
+
+    for (;;) {
+        tls_conn_t* conn =
+            tls_accept((tls_listener_t*)srv->listener);
+        if (!conn) {
+            break;
+        }
+
+        http_srv_conn_ctx_t* ctx =
+            (http_srv_conn_ctx_t*)malloc(sizeof(*ctx));
+        if (!ctx) {
+            tls_close(conn);
+            continue;
+        }
+        ctx->srv       = srv;
+        ctx->transport = _https_make_transport(conn);
+        ctx->transport.remote_addr(
+            ctx->transport.conn, ctx->remote_host,
+            sizeof(ctx->remote_host), &ctx->remote_port);
+
+        runtime_spawn(http_srv_conn_coroutine, ctx);
     }
-    br->cb      = cb;
-    br->ctx     = ctx;
-    br->tls_ctx = xylem_tls_ctx_create();
-    if (!br->tls_ctx) {
-        free(br);
-        return NULL;
-    }
-    if (xylem_tls_ctx_load_cert(br->tls_ctx, tls_cert, tls_key) != 0) {
-        xylem_tls_ctx_destroy(br->tls_ctx);
-        free(br);
+}
+
+xylem_http_srv_t* http_tls_listen(
+    const char*                  host,
+    uint16_t                     port,
+    xylem_http_handler_fn_t      handler,
+    void*                        userdata,
+    const xylem_http_srv_opts_t* opts) {
+
+    const xylem_http_tls_t* tls = opts ? opts->tls : NULL;
+    if (!tls || !tls->cert || !tls->key) {
         return NULL;
     }
 
-    xylem_tls_handler_t handler = {
-        .on_accept = _http_tls_accept_cb,
-        .on_read   = _http_tls_read_cb,
-        .on_close  = _http_tls_close_cb,
-    };
-
-    xylem_tls_opts_t tls_opts = {0};
-    if (opts) {
-        tls_opts.tcp = *opts;
+    tls_ctx_t* tls_ctx = tls_ctx_create();
+    if (!tls_ctx) {
+        return NULL;
+    }
+    if (tls_ctx_load_cert(tls_ctx, NULL, tls->cert, tls->key) != 0) {
+        tls_ctx_destroy(tls_ctx);
+        return NULL;
+    }
+    if (tls->ca) {
+        tls_ctx_load_ca(tls_ctx, tls->ca);
+        tls_ctx_verify_client(tls_ctx, true);
     }
 
-    xylem_tls_server_t* srv = xylem_tls_listen(loop, addr, br->tls_ctx,
-                                                &handler,
-                                                opts ? &tls_opts : NULL);
+    tls_listener_t* ln = tls_listen(host, port, tls_ctx, NULL);
+    if (!ln) {
+        tls_ctx_destroy(tls_ctx);
+        return NULL;
+    }
+
+    http_srv_t* srv = (http_srv_t*)calloc(1, sizeof(*srv));
     if (!srv) {
-        xylem_tls_ctx_destroy(br->tls_ctx);
-        free(br);
+        tls_close_listener(ln);
+        tls_ctx_destroy(tls_ctx);
         return NULL;
     }
-    xylem_tls_server_set_userdata(srv, br);
-    return srv;
+    srv->listener       = ln;
+    srv->close_listener = (void (*)(void*))tls_close_listener;
+    srv->handler        = handler;
+    srv->userdata       = userdata;
+    http_srv_init(srv, opts);
+
+    tls_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
+    runtime_spawn(_https_accept_coroutine, srv);
+    return (xylem_http_srv_t*)srv;
 }
 
-static int _http_tls_send(void* handle, const void* data, size_t len) {
-    return xylem_tls_send(handle, data, len);
-}
+xylem_http_res_t* http_tls_request(
+    const char*                  method,
+    const char*                  url,
+    const void*                  body,
+    size_t                       body_len,
+    const char*                  content_type,
+    const xylem_http_hdr_t*      headers,
+    size_t                       header_count,
+    const xylem_http_cli_opts_t* opts) {
 
-static void _http_tls_close_conn(void* handle) {
-    xylem_tls_close(handle);
-}
+    tls_ctx_t* tls_ctx = NULL;
+    bool owns_ctx = false;
 
-static void _http_tls_close_server(void* handle) {
-    xylem_tls_close_server(handle);
-}
+    if (opts && opts->tls) {
+        tls_ctx = tls_ctx_create();
+        if (tls_ctx) {
+            owns_ctx = true;
+            if (opts->tls->ca) {
+                tls_ctx_load_ca(tls_ctx, opts->tls->ca);
+            }
+            if (opts->tls->cert && opts->tls->key) {
+                tls_ctx_load_cert(
+                    tls_ctx, NULL, opts->tls->cert, opts->tls->key);
+            }
+            if (opts->tls->skip_verify) {
+                tls_ctx_verify_server(tls_ctx, false);
+            }
+        }
+    }
 
-static void _http_tls_set_userdata(void* handle, void* ud) {
-    xylem_tls_set_userdata(handle, ud);
-}
+    const xylem_http_proxy_t* proxy = opts ? opts->proxy : NULL;
+    xylem_http_proxy_t* env_proxy = NULL;
+    if (!proxy) {
+        env_proxy = http_proxy_from_env(url);
+        proxy = env_proxy;
+    }
 
-static void* _http_tls_get_userdata(void* handle) {
-    return xylem_tls_get_userdata(handle);
-}
+    _https_dial_ctx_t dctx = {tls_ctx, proxy};
+    xylem_http_res_t* res = http_do_request(
+        method, url, body, body_len, content_type,
+        headers, header_count, opts, false, _https_dial, &dctx);
 
-static const http_transport_vt_t _http_tls_vt = {
-    .dial         = _http_tls_dial,
-    .listen       = _http_tls_listen,
-    .send         = _http_tls_send,
-    .close_conn   = _http_tls_close_conn,
-    .close_server = _http_tls_close_server,
-    .set_userdata = _http_tls_set_userdata,
-    .get_userdata = _http_tls_get_userdata,
-};
-
-const http_transport_vt_t* http_transport_tls(void) {
-    return &_http_tls_vt;
+    if (owns_ctx && tls_ctx) {
+        tls_ctx_destroy(tls_ctx);
+    }
+    http_proxy_from_env_free(env_proxy);
+    return res;
 }

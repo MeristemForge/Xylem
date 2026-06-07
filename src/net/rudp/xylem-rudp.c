@@ -18,245 +18,161 @@
  *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  *  IN THE SOFTWARE.
  */
-#include "runtime/runtime.h"
-#include "xylem/net/xylem-rudp.h"
-#include "addr.h"
 
+#include "xylem/net/xylem-rudp.h"
 #include "xylem/crypto/xylem-aes256.h"
-#include "xylem/encoding/xylem-bswap.h"
+#include "xylem/sync/xylem-channel.h"
 #include "xylem/xylem-logger.h"
-#include "container/rbtree.h"
-#include "xylem/net/xylem-udp.h"
 #include "xylem/xylem-utils.h"
 
+#include "net/addr.h"
+#include "container/rbtree.h"
 #include "platform/platform-socket.h"
-#include "rudp/rudp-fec.h"
+#include "runtime/iowait.h"
+#include "runtime/runtime.h"
+#include "runtime/scheduler.h"
+#include "thrds.h"
 
-#include "rudp/kcp/ikcp.h"
+#include "rudp-fec.h"
+#include "kcp/ikcp.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define ERRMSG_DEAD_LINK  "dead link"
-#define ERRMSG_HS_TIMEOUT "handshake timeout"
+#define RUDP_DEFAULT_MTU         1400
+#define RUDP_DEFAULT_TIMEOUT_MS  5000
+#define RUDP_DEFAULT_DEADLINK_MS 30000
+#define RUDP_RECV_BUF_SIZE       1500
+#define RUDP_HANDSHAKE_MAGIC     0x58594C4D /* "XYLM" */
+#define RUDP_HANDSHAKE_SYN       0x01
+#define RUDP_HANDSHAKE_ACK       0x02
+#define RUDP_HANDSHAKE_SIZE      9
+#define RUDP_SYN_RETRANSMIT_MS   1000
+#define RUDP_AES_IV_SIZE         16
+#define RUDP_INBOX_CAP           64
+#define RUDP_ACCEPT_CAP          16
 
-/* KCP recv buffer, large enough for one full KCP message. */
-#define RUDP_RECV_BUF_SIZE 65536
-
-/* Placeholder timeout for loop_start_timer before _rudp_schedule_update
- * overwrites it with the real value from ikcp_check. */
-#define RUDP_TIMER_INIT_MS 100
-
-/**
- * Handshake magic bytes to distinguish control packets from KCP data.
- * The first 4 bytes of a KCP packet are always the conv field, so we
- * use a magic prefix that cannot collide with valid conv values.
- */
-#define RUDP_HANDSHAKE_SYN    0x01
-#define RUDP_HANDSHAKE_ACK    0x02
-#define RUDP_HANDSHAKE_MAGIC  0x58594C4D  /* "XYLM" */
-
-/* Field sizes in handshake and KCP headers. */
-#define RUDP_MAGIC_SIZE       4  /* sizeof(uint32_t) handshake magic */
-#define RUDP_CONV_SIZE        4  /* sizeof(uint32_t) KCP conv field */
-#define RUDP_TYPE_SIZE        1  /* handshake type byte */
-
-/* Handshake packet layout: [magic:4][type:1][conv:4] = 9 bytes. */
-#define RUDP_HANDSHAKE_SIZE   (RUDP_MAGIC_SIZE + RUDP_TYPE_SIZE + RUDP_CONV_SIZE)
-
-/* Offsets within the handshake packet. */
-#define RUDP_OFF_TYPE         RUDP_MAGIC_SIZE
-#define RUDP_OFF_CONV         (RUDP_MAGIC_SIZE + RUDP_TYPE_SIZE)
-
-/* Default timeout for client waiting for handshake ACK. */
-#define RUDP_DEFAULT_HANDSHAKE_MS 5000
-
-/* Interval between SYN retransmissions during handshake. */
-#define RUDP_SYN_RETRANSMIT_MS 1000
-
-/* AES-256-CTR prepends a 16-byte IV to each encrypted packet. */
-#define RUDP_AES_IV_SIZE 16
+typedef struct _rudp_dgram_s {
+    size_t len;
+    char   data[];
+} _rudp_dgram_t;
 
 struct xylem_rudp_conn_s {
     ikcpcb*                kcp;
-    xylem_udp_t*           udp;
-    xylem_rudp_handler_t*  handler;
-    xylem_rudp_server_t*   server;       /* non-NULL for server sessions */
-    addr_t           peer_addr;
-    void*                  userdata;
-    bool                   handshake_done;
-    bool                   closing;
-    _Atomic int32_t        refcount;
-    int                    close_err;
-    const char*            close_errmsg;
+    platform_sock_t        fd;
+    iowait_t*              waiter;
+    xylem_rudp_mode_t      mode;
+    addr_t                 peer_addr;
+    _Atomic bool           closed;
+    _Atomic int32_t        refcnt;
+
+    sched_timer_t*         update_timer;
+
+    rudp_fec_enc_t*        fec_enc;
+    rudp_fec_dec_t*        fec_dec;
+    xylem_aes256_t*        aes;
+
     uint32_t               conv;
-    int                    mtu;          /* effective MTU for FEC create */
-    int                    fec_data;     /* per-session FEC data shards */
-    int                    fec_parity;   /* per-session FEC parity shards */
-    loop_t*          loop;
-    loop_timer_t*    update_timer;
-    loop_timer_t*    handshake_timer; /* client-side only */
-    uint64_t               handshake_deadline; /* absolute ms timestamp */
-    rbtree_node_t    server_node;
-    rudp_fec_enc_t*        fec_enc;      /* NULL when FEC disabled */
-    rudp_fec_dec_t*        fec_dec;      /* NULL when FEC disabled */
-    xylem_aes256_t*        aes;          /* client-only; server uses server->aes */
+    int                    mtu;
+    uint64_t               rd_deadline_ms;
+
+    xylem_rudp_listener_t* listener;
+    xylem_channel_t*       inbox;        /* server session datagram queue */
+    _Atomic int32_t        inbox_len;    /* bounded-queue guard */
+    rbtree_node_t          listener_node;
 };
 
-struct xylem_rudp_server_s {
-    xylem_udp_t*           udp;
-    xylem_rudp_handler_t*  handler;
+struct xylem_rudp_listener_s {
+    platform_sock_t        fd;
+    iowait_t*              waiter;
     xylem_rudp_opts_t      opts;
-    loop_t*          loop;
-    rbtree_t         sessions;
-    void*                  userdata;
-    xylem_aes256_t*        aes;            /* shared by all sessions */
-    uint8_t                aes_key_buf[32]; /* owned copy of AES key */
-    bool                   closing;
+    scheduler_t*           sched;
+    rbtree_t               sessions;
+    mtx_t                  sessions_mtx;
+    xylem_aes256_t*        aes;
+    uint8_t                aes_key_buf[32];
+    _Atomic bool           closed;
+
+    xylem_channel_t*       accept_ch;   /* delivers accepted sessions */
 };
 
-typedef struct {
-    addr_t* addr;
+typedef struct _rudp_session_key_s {
+    const addr_t* addr;
     uint32_t      conv;
 } _rudp_session_key_t;
 
-/* Module-level conv allocator, lazily seeded on first use. */
 static _Atomic uint32_t _rudp_next_conv = 0;
 
+static uint32_t _rudp_clock_ms(void) {
+    return (uint32_t)(xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) &
+                      0xFFFFFFFF);
+}
+
 static uint32_t _rudp_alloc_conv(void) {
-    uint32_t v = atomic_load(&_rudp_next_conv);
+    uint32_t v = atomic_load_explicit(&_rudp_next_conv, memory_order_relaxed);
     if (v == 0) {
         uint32_t seed = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
         atomic_compare_exchange_strong(&_rudp_next_conv, &v, seed);
     }
-    return atomic_fetch_add_explicit(&_rudp_next_conv, 1,
-                                     memory_order_relaxed);
-}
-
-static int _rudp_addr_cmp(const addr_t* a, const addr_t* b) {
-    if (a->storage.ss_family != b->storage.ss_family) {
-        return (int)a->storage.ss_family - (int)b->storage.ss_family;
-    }
-    if (a->storage.ss_family == AF_INET) {
-        const struct sockaddr_in* sa = (const struct sockaddr_in*)&a->storage;
-        const struct sockaddr_in* sb = (const struct sockaddr_in*)&b->storage;
-        if (sa->sin_port != sb->sin_port) {
-            return (int)ntohs(sa->sin_port) - (int)ntohs(sb->sin_port);
-        }
-        return memcmp(&sa->sin_addr, &sb->sin_addr, sizeof(sa->sin_addr));
-    }
-    if (a->storage.ss_family == AF_INET6) {
-        const struct sockaddr_in6* sa =
-            (const struct sockaddr_in6*)&a->storage;
-        const struct sockaddr_in6* sb =
-            (const struct sockaddr_in6*)&b->storage;
-        if (sa->sin6_port != sb->sin6_port) {
-            return (int)ntohs(sa->sin6_port) - (int)ntohs(sb->sin6_port);
-        }
-        return memcmp(&sa->sin6_addr, &sb->sin6_addr, sizeof(sa->sin6_addr));
-    }
-    return 0;
-}
-
-static int _rudp_session_cmp(const addr_t* a_addr, uint32_t a_conv,
-                             const addr_t* b_addr, uint32_t b_conv) {
-    int rc = _rudp_addr_cmp(a_addr, b_addr);
-    if (rc != 0) {
-        return rc;
-    }
-    if (a_conv < b_conv) {
-        return -1;
-    }
-    if (a_conv > b_conv) {
-        return 1;
-    }
-    return 0;
-}
-
-static int _rudp_session_cmp_nn(const rbtree_node_t* a,
-                                const rbtree_node_t* b) {
-    const xylem_rudp_conn_t* ra =
-        rbtree_entry(a, xylem_rudp_conn_t, server_node);
-    const xylem_rudp_conn_t* rb =
-        rbtree_entry(b, xylem_rudp_conn_t, server_node);
-    return _rudp_session_cmp(&ra->peer_addr, ra->conv,
-                             &rb->peer_addr, rb->conv);
-}
-
-static int _rudp_session_cmp_kn(const void* key,
-                                const rbtree_node_t* node) {
-    const _rudp_session_key_t* k = (const _rudp_session_key_t*)key;
-    const xylem_rudp_conn_t* rudp =
-        rbtree_entry(node, xylem_rudp_conn_t, server_node);
-    return _rudp_session_cmp(k->addr, k->conv,
-                             &rudp->peer_addr, rudp->conv);
-}
-
-static xylem_rudp_conn_t* _rudp_find_session(xylem_rudp_server_t* server,
-                                        addr_t* addr,
-                                        uint32_t conv) {
-    _rudp_session_key_t key = { .addr = addr, .conv = conv };
-    rbtree_node_t* node = rbtree_find(&server->sessions, &key);
-    if (!node) {
-        return NULL;
-    }
-    return rbtree_entry(node, xylem_rudp_conn_t, server_node);
-}
-
-/* Read a little-endian uint32 from a byte buffer (endian-safe). */
-static inline uint32_t _rudp_read_le32(const void* p) {
-    uint32_t v;
-    memcpy(&v, p, sizeof(v));
-    if (xylem_utils_getendian() == XYLEM_ENDIAN_BE) {
-        v = xylem_bswap(v);
-    }
-    return v;
-}
-
-/* Write a uint32 as little-endian into a byte buffer (endian-safe). */
-static inline void _rudp_write_le32(void* p, uint32_t v) {
-    if (xylem_utils_getendian() == XYLEM_ENDIAN_BE) {
-        v = xylem_bswap(v);
-    }
-    memcpy(p, &v, sizeof(v));
+    return atomic_fetch_add_explicit(
+        &_rudp_next_conv, 1, memory_order_relaxed);
 }
 
 static void _rudp_encode_handshake(uint8_t* buf, uint8_t type,
                                    uint32_t conv) {
-    _rudp_write_le32(buf, RUDP_HANDSHAKE_MAGIC);
-    buf[RUDP_OFF_TYPE] = type;
-    _rudp_write_le32(buf + RUDP_OFF_CONV, conv);
+    uint32_t magic = RUDP_HANDSHAKE_MAGIC;
+    memcpy(buf, &magic, 4);
+    buf[4] = type;
+    memcpy(buf + 5, &conv, 4);
 }
 
-static bool _rudp_decode_handshake(const void* data, size_t len,
-                                   uint8_t* type, uint32_t* conv) {
+static int _rudp_decode_handshake(const void* data, size_t len,
+                                  uint8_t* type, uint32_t* conv) {
     if (len != RUDP_HANDSHAKE_SIZE) {
-        return false;
+        return -1;
     }
     const uint8_t* buf = (const uint8_t*)data;
-    uint32_t magic = _rudp_read_le32(buf);
+    uint32_t magic;
+    memcpy(&magic, buf, 4);
     if (magic != RUDP_HANDSHAKE_MAGIC) {
-        return false;
+        return -1;
     }
-    *type = buf[RUDP_OFF_TYPE];
-    *conv = _rudp_read_le32(buf + RUDP_OFF_CONV);
-    return true;
+    *type = buf[4];
+    memcpy(conv, buf + 5, 4);
+    return 0;
 }
 
 /**
- * Encrypt a UDP payload via AES-256-CTR and send it.
- * When aes is NULL the payload is sent unencrypted.
+ * Send raw bytes on a client connection (connected socket) or
+ * a server session (sendto peer address).
  */
-static void _rudp_encrypted_send(xylem_udp_t* udp, addr_t* dest,
-                                 xylem_aes256_t* aes,
-                                 const void* data, size_t len) {
-    char host[ADDR_MAXHOST] = {0};
-    uint16_t port = 0;
-    if (dest) addr_ntop(dest, host, sizeof(host), &port);
+static void _rudp_raw_send(xylem_rudp_conn_t* c, const void* data,
+                           size_t len) {
+    if (c->listener) {
+        /* Server session: unconnected socket, use sendto. */
+        socklen_t addrlen =
+            (c->peer_addr.storage.ss_family == AF_INET6)
+                ? (socklen_t)sizeof(struct sockaddr_in6)
+                : (socklen_t)sizeof(struct sockaddr_in);
+        platform_socket_sendto(
+            c->fd, data, (int)len,
+            &c->peer_addr.storage, addrlen);
+    } else {
+        /* Client: connected socket. */
+        platform_socket_send(c->fd, data, (int)len);
+    }
+}
 
-    if (!aes) {
-        xylem_udp_send(udp, dest ? host : NULL, port, data, len);
+/**
+ * AES encrypt then send. When AES is NULL, sends plaintext.
+ * EAGAIN is acceptable here: KCP retransmits lost packets.
+ */
+static void _rudp_encrypt_send(xylem_rudp_conn_t* c, const void* data,
+                               size_t len) {
+    if (!c->aes) {
+        _rudp_raw_send(c, data, len);
         return;
     }
     size_t enc_size = xylem_aes256_ctr_encrypt_size(len);
@@ -265,846 +181,1047 @@ static void _rudp_encrypted_send(xylem_udp_t* udp, addr_t* dest,
         return;
     }
     int n = xylem_aes256_ctr_encrypt(
-        aes, (const uint8_t*)data, len, enc_buf, enc_size);
+        c->aes, (const uint8_t*)data, len, enc_buf, enc_size);
     if (n > 0) {
-        xylem_udp_send(udp, dest ? host : NULL, port, enc_buf, (size_t)n);
+        _rudp_raw_send(c, enc_buf, (size_t)n);
     }
     free(enc_buf);
 }
 
 /**
- * Decrypt a received UDP payload via AES-256-CTR.
- * Returns the plaintext in *out_data / *out_len (caller must free).
- * When aes is NULL, sets *out_data to the original data (no alloc).
- * Returns true on success, false on failure.
+ * AES decrypt in-place or allocate. When AES is NULL, returns
+ * the original pointer without allocation.
+ * Returns 0 on success, -1 on failure.
  */
-static bool _rudp_decrypt_packet(xylem_aes256_t* aes,
-                                 void* data, size_t len,
-                                 void** out_data, size_t* out_len,
-                                 bool* out_allocated) {
+static int _rudp_decrypt_packet(xylem_aes256_t* aes, void* data,
+                                size_t len, void** out, size_t* out_len) {
     if (!aes) {
-        *out_data      = data;
-        *out_len       = len;
-        *out_allocated = false;
-        return true;
+        *out     = data;
+        *out_len = len;
+        return 0;
     }
     size_t dec_size = xylem_aes256_ctr_decrypt_size(len);
     if (dec_size == 0) {
-        xylem_logw("rudp decrypt: packet too short (%zu bytes)", len);
-        return false;
+        return -1;
     }
     uint8_t* dec_buf = (uint8_t*)malloc(dec_size);
     if (!dec_buf) {
-        return false;
+        return -1;
     }
     int n = xylem_aes256_ctr_decrypt(
         aes, (const uint8_t*)data, len, dec_buf, dec_size);
     if (n <= 0) {
         free(dec_buf);
-        return false;
-    }
-    *out_data      = dec_buf;
-    *out_len       = (size_t)n;
-    *out_allocated = true;
-    return true;
-}
-
-/* KCP output callback: bridges KCP packets to UDP, via FEC if enabled. */
-static int _rudp_kcp_output_cb(const char* buf, int len,
-                               ikcpcb* kcp, void* user) {
-    (void)kcp;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)user;
-    if (rudp->closing) {
         return -1;
     }
+    *out     = dec_buf;
+    *out_len = (size_t)n;
+    return 0;
+}
 
-    /* Resolve AES context: client owns it, server session borrows it. */
-    xylem_aes256_t* aes = rudp->aes;
-    if (!aes && rudp->server) {
-        aes = rudp->server->aes;
+static int _rudp_session_cmp_nn(const rbtree_node_t* a,
+                                const rbtree_node_t* b) {
+    const xylem_rudp_conn_t* ca =
+        rbtree_entry(a, xylem_rudp_conn_t, listener_node);
+    const xylem_rudp_conn_t* cb =
+        rbtree_entry(b, xylem_rudp_conn_t, listener_node);
+
+    int rc = memcmp(&ca->peer_addr.storage, &cb->peer_addr.storage,
+                    sizeof(struct sockaddr_storage));
+    if (rc != 0) {
+        return rc;
     }
-
-    if (rudp->fec_enc) {
-        int max_out = rudp_fec_enc_feed_size(rudp->fec_enc);
-        rudp_fec_buf_t shards[RUDP_FEC_MAX_SHARDS];
-        int n = rudp_fec_enc_feed(rudp->fec_enc, buf, (size_t)len,
-                                  shards, max_out);
-        for (int i = 0; i < n; i++) {
-            _rudp_encrypted_send(rudp->udp, &rudp->peer_addr, aes,
-                                 shards[i].data, shards[i].len);
-        }
-    } else {
-        _rudp_encrypted_send(rudp->udp, &rudp->peer_addr, aes,
-                             buf, (size_t)len);
+    if (ca->conv < cb->conv) {
+        return -1;
+    }
+    if (ca->conv > cb->conv) {
+        return 1;
     }
     return 0;
 }
 
-/**
- * Truncate to 32-bit; unsigned subtraction wraps mod 2^32, so
- * elapsed-time differences remain correct across overflow.
- */
-static uint32_t _rudp_clock_ms(void) {
-    return (uint32_t)(xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) &
-                      0xFFFFFFFF);
+static int _rudp_session_cmp_kn(const void* key,
+                                const rbtree_node_t* node) {
+    const _rudp_session_key_t* k = (const _rudp_session_key_t*)key;
+    const xylem_rudp_conn_t* c =
+        rbtree_entry(node, xylem_rudp_conn_t, listener_node);
+
+    int rc = memcmp(&k->addr->storage, &c->peer_addr.storage,
+                    sizeof(struct sockaddr_storage));
+    if (rc != 0) {
+        return rc;
+    }
+    if (k->conv < c->conv) {
+        return -1;
+    }
+    if (k->conv > c->conv) {
+        return 1;
+    }
+    return 0;
 }
 
-static void _rudp_apply_opts(ikcpcb* kcp, const xylem_rudp_opts_t* opts,
-                            bool fec_enabled, bool aes_enabled) {
-    /* Always use fast mode: nodelay, 10ms interval, fast resend, no CC. */
-    int interval = 10;
-    ikcp_nodelay(kcp, 1, interval, 2, 1);
-    ikcp_wndsize(kcp, 32, 128);
-
-    int mtu = (opts && opts->mtu > 0) ? opts->mtu : 1400;
-    /**
-     * Reserve space for FEC header and AES IV so the total UDP
-     * payload stays within the configured MTU.
-     */
-    if (fec_enabled) {
-        mtu -= RUDP_FEC_HEADER_SIZE;
+static xylem_rudp_conn_t* _rudp_find_session(
+    xylem_rudp_listener_t* ln, const addr_t* addr, uint32_t conv) {
+    _rudp_session_key_t key = { .addr = addr, .conv = conv };
+    rbtree_node_t* node = rbtree_find(&ln->sessions, &key);
+    if (!node) {
+        return NULL;
     }
-    if (aes_enabled) {
-        mtu -= RUDP_AES_IV_SIZE;
-    }
-    ikcp_setmtu(kcp, mtu);
+    return rbtree_entry(node, xylem_rudp_conn_t, listener_node);
+}
 
-    if (opts && opts->timeout_ms > 0) {
-        kcp->dead_link = (IUINT32)(opts->timeout_ms / interval);
-        if (kcp->dead_link == 0) {
-            kcp->dead_link = 1;
+static int _rudp_kcp_output_cb(const char* buf, int len,
+                               ikcpcb* kcp, void* user) {
+    (void)kcp;
+    xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)user;
+    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+        return -1;
+    }
+
+    if (c->fec_enc) {
+        /* Feed each KCP segment through FEC; send resulting shards. */
+        int max_out = rudp_fec_enc_feed_size(c->fec_enc);
+        rudp_fec_buf_t shards[RUDP_FEC_MAX_SHARDS];
+        int n = rudp_fec_enc_feed(
+            c->fec_enc, buf, (size_t)len, shards, max_out);
+        for (int i = 0; i < n; i++) {
+            _rudp_encrypt_send(c, shards[i].data, shards[i].len);
         }
+    } else {
+        _rudp_encrypt_send(c, buf, (size_t)len);
     }
+    return 0;
 }
 
-static ikcpcb* _rudp_create_kcp(xylem_rudp_conn_t* rudp, uint32_t conv,
-                                const xylem_rudp_opts_t* opts) {
-    ikcpcb* kcp = ikcp_create(conv, rudp);
+static ikcpcb* _rudp_create_kcp(xylem_rudp_conn_t* c, uint32_t conv,
+                                xylem_rudp_opts_t* opts) {
+    ikcpcb* kcp = ikcp_create(conv, c);
     if (!kcp) {
         return NULL;
     }
     ikcp_setoutput(kcp, _rudp_kcp_output_cb);
-    bool fec = (rudp->fec_data > 0 && rudp->fec_parity > 0);
-    bool aes = (opts && opts->aes_key != NULL);
-    _rudp_apply_opts(kcp, opts, fec, aes);
+
+    /* Fast mode: nodelay=1, interval=10ms, fast-resend=2, no flow ctrl. */
+    ikcp_nodelay(kcp, 1, 10, 2, 1);
+    ikcp_wndsize(kcp, 32, 128);
+
+    if (opts && opts->mode == XYLEM_RUDP_STREAM) {
+        kcp->stream = 1;
+    }
+
+    int mtu = RUDP_DEFAULT_MTU;
+    if (opts && opts->mtu > 0) {
+        mtu = (int)opts->mtu;
+    }
+    /* Reserve space for FEC header and AES IV. */
+    if (opts && opts->fec_data > 0 && opts->fec_parity > 0) {
+        mtu -= RUDP_FEC_HEADER_SIZE;
+    }
+    if (opts && opts->aes_key) {
+        mtu -= RUDP_AES_IV_SIZE;
+    }
+    ikcp_setmtu(kcp, mtu);
+
+    uint64_t timeout_ms = RUDP_DEFAULT_DEADLINK_MS;
+    if (opts && opts->timeout_ms > 0) {
+        timeout_ms = opts->timeout_ms;
+    }
+    /* dead_link is checked each interval (10ms). */
+    kcp->dead_link = (IUINT32)(timeout_ms / 10);
+    if (kcp->dead_link == 0) {
+        kcp->dead_link = 1;
+    }
+
     return kcp;
 }
 
-static void _rudp_conn_decref(xylem_rudp_conn_t* rudp) {
-    if (atomic_fetch_sub(&rudp->refcount, 1) == 1) {
-        free(rudp);
+static int _rudp_init_fec(xylem_rudp_conn_t* c, int mtu,
+                          uint32_t fec_data, uint32_t fec_parity) {
+    if (fec_data == 0 || fec_parity == 0) {
+        return 0;
     }
+    c->fec_enc = rudp_fec_enc_create(
+        (int)fec_data, (int)fec_parity, mtu);
+    if (!c->fec_enc) {
+        return -1;
+    }
+    c->fec_dec = rudp_fec_dec_create(
+        (int)fec_data, (int)fec_parity, mtu);
+    if (!c->fec_dec) {
+        rudp_fec_enc_destroy(c->fec_enc);
+        c->fec_enc = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 /**
- * Deferred free so the session pointer stays valid through the
- * current loop iteration's callback chain.
+ * Feed a decrypted packet into FEC decoder (if enabled) then into
+ * KCP. Always flushes KCP after input so ACKs go out immediately.
  */
-static void _rudp_free_cb(loop_t* loop, loop_post_t* req,
-                          void* ud) {
-    (void)loop;
-    (void)req;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-    loop_destroy_timer(rudp->update_timer);
-    if (rudp->handshake_timer) {
-        loop_destroy_timer(rudp->handshake_timer);
-    }
-    rudp_fec_enc_destroy(rudp->fec_enc);
-    rudp_fec_dec_destroy(rudp->fec_dec);
-    xylem_aes256_destroy(rudp->aes);
-    _rudp_conn_decref(rudp);
-}
-
-/**
- * Drain the KCP recv queue and deliver complete messages via on_read.
- * Returns true if the session is still alive, false if closing was
- * triggered inside a callback.
- */
-static bool _rudp_drain_recv(xylem_rudp_conn_t* rudp) {
-    char buf[RUDP_RECV_BUF_SIZE];
-    int  n;
-    while ((n = ikcp_recv(rudp->kcp, buf, sizeof(buf))) > 0) {
-        if (rudp->handler && rudp->handler->on_read) {
-            rudp->handler->on_read(rudp, buf, (size_t)n);
-        }
-        if (rudp->closing) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/**
- * Common path after ikcp_input: flush ACKs, deliver any complete
- * messages, and reschedule the update timer.
- */
-static void _rudp_schedule_update(xylem_rudp_conn_t* rudp);
-
-static void _rudp_input_complete(xylem_rudp_conn_t* rudp) {
-    /**
-     * Flush pending ACKs immediately rather than waiting for the next
-     * update tick, so the peer gets timely RTT and window feedback.
-     */
-    ikcp_flush(rudp->kcp);
-
-    /**
-     * Fast path: deliver messages that fit in a single KCP segment
-     * (len <= mss) immediately without waiting for the next update.
-     */
-    if (!_rudp_drain_recv(rudp)) {
+static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
+                             size_t len) {
+    if (!c->fec_dec) {
+        ikcp_input(c->kcp, (const char*)data, (long)len);
+        ikcp_flush(c->kcp);
         return;
     }
 
-    _rudp_schedule_update(rudp);
+    int max_out = rudp_fec_dec_feed_size(c->fec_dec);
+    rudp_fec_buf_t out[RUDP_FEC_MAX_SHARDS];
+    int n = rudp_fec_dec_feed(c->fec_dec, data, len, out, max_out);
+    for (int i = 0; i < n; i++) {
+        ikcp_input(c->kcp, (const char*)out[i].data, (long)out[i].len);
+    }
+    if (n > 0) {
+        ikcp_flush(c->kcp);
+    }
 }
 
-static void _rudp_update_timeout_cb(loop_t* loop,
-                                    loop_timer_t* timer, void* ud) {
-    (void)loop;
+static void _rudp_schedule_update(xylem_rudp_conn_t* c);
+
+static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-    if (rudp->closing || !rudp->kcp) {
+    xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)ud;
+    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
         return;
     }
 
     uint32_t now = _rudp_clock_ms();
-    ikcp_update(rudp->kcp, now);
+    ikcp_update(c->kcp, now);
 
-    /* Check for dead link. */
-    if (rudp->kcp->state == (IUINT32)-1) {
-        xylem_logw("rudp conv=%u dead link detected", rudp->conv);
-        rudp->close_err    = -1;
-        rudp->close_errmsg = ERRMSG_DEAD_LINK;
-        xylem_rudp_close(rudp);
+    /* Detect dead link. */
+    if (c->kcp->state == (IUINT32)-1) {
+        xylem_logw("rudp conv=%u dead link", c->conv);
+        xylem_rudp_close(c);
         return;
     }
 
-    if (!_rudp_drain_recv(rudp)) {
-        return;
-    }
-
-    _rudp_schedule_update(rudp);
+    _rudp_schedule_update(c);
 }
 
-/**
- * Query ikcp_check for the next update time and arm a one-shot timer.
- * Forward-declared above because _rudp_update_timeout_cb also calls it.
- */
-static void _rudp_schedule_update(xylem_rudp_conn_t* rudp) {
-    if (rudp->closing || !rudp->kcp) {
+static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
+    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
         return;
     }
     uint32_t now  = _rudp_clock_ms();
-    uint32_t next = ikcp_check(rudp->kcp, now);
+    uint32_t next = ikcp_check(c->kcp, now);
     uint64_t delay = (next <= now) ? 1 : (uint64_t)(next - now);
-    loop_reset_timer(rudp->update_timer, delay);
-}
-
-static void _rudp_send_syn(xylem_rudp_conn_t* rudp) {
-    uint8_t syn[RUDP_HANDSHAKE_SIZE];
-    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, rudp->conv);
-    _rudp_encrypted_send(rudp->udp, NULL, rudp->aes,
-                         syn, RUDP_HANDSHAKE_SIZE);
-}
-
-static void _rudp_handshake_timeout_cb(loop_t* loop,
-                                       loop_timer_t* timer,
-                                       void* ud) {
-    (void)loop;
-    (void)timer;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)ud;
-
-    if (rudp->handshake_done ||
-        rudp->closing) {
-        return;
-    }
-
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    if (now >= rudp->handshake_deadline) {
-        xylem_logw("rudp conv=%u handshake timed out", rudp->conv);
-        rudp->close_err    = -1;
-        rudp->close_errmsg = ERRMSG_HS_TIMEOUT;
-        xylem_rudp_close(rudp);
-        return;
-    }
-
-    /* Retransmit SYN. */
-    _rudp_send_syn(rudp);
-    xylem_logd("rudp conv=%u SYN retransmit", rudp->conv);
+    sched_timer_reset(c->update_timer, delay);
 }
 
 /**
- * Unified receive path: decode FEC if enabled, then feed KCP.
+ * Drain residual datagrams from an already-closed session inbox and
+ * destroy it. The caller (xylem_rudp_close) has already closed the
+ * channel, so the drain recv() never parks: it pops any payloads the
+ * dispatcher queued, then returns NULL once empty. We free the
+ * payloads here because xylem_channel_destroy only frees the node
+ * wrappers, not the opaque dgram pointers. Runs from _rudp_conn_unref
+ * at refcount zero, so no other thread touches the channel.
  */
-static void _rudp_recv_input(xylem_rudp_conn_t* rudp, void* data, size_t len) {
-    if (!rudp->fec_dec) {
-        ikcp_input(rudp->kcp, (const char*)data, (long)len);
-        _rudp_input_complete(rudp);
+static void _rudp_inbox_destroy(xylem_channel_t* ch) {
+    if (!ch) {
         return;
     }
-
-    int max_out = rudp_fec_dec_feed_size(rudp->fec_dec);
-    rudp_fec_buf_t out[RUDP_FEC_MAX_SHARDS];
-    int n = rudp_fec_dec_feed(rudp->fec_dec, data, len, out, max_out);
-
-    for (int i = 0; i < n; i++) {
-        ikcp_input(rudp->kcp, (const char*)out[i].data, (long)out[i].len);
+    _rudp_dgram_t* dgram;
+    while ((dgram = (_rudp_dgram_t*)xylem_channel_recv(ch)) != NULL) {
+        free(dgram);
     }
-
-    if (n > 0) {
-        _rudp_input_complete(rudp);
-    }
+    xylem_channel_destroy(ch);
 }
-
-static void _rudp_client_read_cb(xylem_udp_t* udp, void* data,
-                                 size_t len,
-                                 const char* host, uint16_t port) {
-    (void)host; (void)port;
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)xylem_udp_get_userdata(udp);
-    if (!rudp || rudp->closing) {
-        return;
-    }
-
-    /* Decrypt at the outermost layer before any dispatch. */
-    void*  plain     = NULL;
-    size_t plain_len = 0;
-    bool   allocated = false;
-    if (!_rudp_decrypt_packet(rudp->aes, data, len,
-                              &plain, &plain_len, &allocated)) {
-        return;
-    }
-
-    if (!rudp->handshake_done) {
-        uint8_t  type;
-        uint32_t conv;
-        if (_rudp_decode_handshake(plain, plain_len, &type, &conv) &&
-            type == RUDP_HANDSHAKE_ACK && conv == rudp->conv) {
-            rudp->handshake_done = true;
-            if (rudp->handshake_timer) {
-                loop_stop_timer(rudp->handshake_timer);
-            }
-            xylem_logi("rudp conv=%u handshake complete", rudp->conv);
-            _rudp_schedule_update(rudp);
-            if (rudp->handler && rudp->handler->on_connect) {
-                rudp->handler->on_connect(rudp);
-            }
-        }
-        if (allocated) {
-            free(plain);
-        }
-        return;
-    }
-
-    _rudp_recv_input(rudp, plain, plain_len);
-    if (allocated) {
-        free(plain);
-    }
-}
-
-static void _rudp_client_close_cb(xylem_udp_t* udp, int err,
-                                  const char* errmsg) {
-    xylem_rudp_conn_t* rudp = (xylem_rudp_conn_t*)xylem_udp_get_userdata(udp);
-    if (!rudp) {
-        return;
-    }
-
-    /**
-     * Mark closing and stop timers to prevent _rudp_handshake_timeout_cb
-     * or _rudp_update_timeout_cb from firing after the UDP socket is gone.
-     * On Linux/macOS a connected UDP socket may receive ECONNREFUSED
-     * (ICMP port unreachable) before the handshake timer fires.
-     */
-    rudp->closing = true;
-    loop_stop_timer(rudp->update_timer);
-    if (rudp->handshake_timer) {
-        loop_stop_timer(rudp->handshake_timer);
-    }
-
-    /* Propagate UDP-layer error only when RUDP has not set its own. */
-    if (rudp->close_err == 0 && err != 0) {
-        rudp->close_err    = err;
-        rudp->close_errmsg = errmsg;
-    }
-
-    if (rudp->kcp) {
-        ikcp_release(rudp->kcp);
-        rudp->kcp = NULL;
-    }
-    if (rudp->handler && rudp->handler->on_close) {
-        rudp->handler->on_close(rudp, rudp->close_err, rudp->close_errmsg);
-    }
-    loop_post(rudp->loop, _rudp_free_cb, rudp);
-}
-
-/* Helper to create FEC encoder/decoder pair from per-session params. */
-static bool _rudp_init_fec(xylem_rudp_conn_t* rudp, int mtu) {
-    if (rudp->fec_data <= 0 || rudp->fec_parity <= 0) {
-        return true;
-    }
-    int effective_mtu = mtu > 0 ? mtu : 1400;
-    rudp->fec_enc = rudp_fec_enc_create(rudp->fec_data, rudp->fec_parity,
-                                        effective_mtu);
-    if (!rudp->fec_enc) {
-        return false;
-    }
-    rudp->fec_dec = rudp_fec_dec_create(rudp->fec_data, rudp->fec_parity,
-                                        effective_mtu);
-    if (!rudp->fec_dec) {
-        rudp_fec_enc_destroy(rudp->fec_enc);
-        rudp->fec_enc = NULL;
-        return false;
-    }
-    return true;
-}
-
-/* Accept a new session from a SYN handshake. */
-static void _rudp_accept_session(
-    xylem_rudp_server_t* server, addr_t* addr, uint32_t conv) {
-    xylem_rudp_conn_t* rudp =
-        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
-    if (!rudp) {
-        xylem_loge("rudp server: session alloc failed");
-        return;
-    }
-
-    rudp->udp        = server->udp;
-    rudp->handler    = server->handler;
-    rudp->server     = server;
-    rudp->peer_addr  = *addr;
-    rudp->conv       = conv;
-    rudp->loop       = server->loop;
-    rudp->mtu        = server->opts.mtu > 0 ? server->opts.mtu : 1400;
-    rudp->fec_data   = server->opts.fec_data;
-    rudp->fec_parity = server->opts.fec_parity;
-
-    rudp->update_timer = loop_create_timer(server->loop);
-
-    rudp->kcp = _rudp_create_kcp(rudp, conv, &server->opts);
-    if (!rudp->kcp) {
-        xylem_loge("rudp conv=%u kcp creation failed", conv);
-        loop_destroy_timer(rudp->update_timer);
-        free(rudp);
-        return;
-    }
-
-    if (!_rudp_init_fec(rudp, rudp->mtu)) {
-        xylem_loge("rudp conv=%u fec init failed", conv);
-        ikcp_release(rudp->kcp);
-        loop_destroy_timer(rudp->update_timer);
-        free(rudp);
-        return;
-    }
-
-    rudp->handshake_done = true;
-    atomic_store(&rudp->refcount, 1);
-    rbtree_insert(&server->sessions, &rudp->server_node);
-    xylem_logi("rudp conv=%u session accepted (aes=%s fec=%d+%d)",
-               conv, server->aes ? "on" : "off",
-               rudp->fec_data, rudp->fec_parity);
-
-    loop_start_timer(rudp->update_timer,
-                           _rudp_update_timeout_cb, rudp,
-                           RUDP_TIMER_INIT_MS, 0);
-    _rudp_schedule_update(rudp);
-
-    if (rudp->handler && rudp->handler->on_accept) {
-        rudp->handler->on_accept(server, rudp);
-    }
-}
-
-/* Dispatch a data packet (FEC or raw KCP) to the correct session. */
-static void _rudp_server_dispatch_data(
-    xylem_rudp_server_t* server, void* plain, size_t plain_len,
-    addr_t* addr) {
-    if (plain_len < RUDP_CONV_SIZE) {
-        return;
-    }
-
-    const uint8_t* p = (const uint8_t*)plain;
-    uint16_t maybe_fec_type = 0;
-    if (plain_len >= RUDP_FEC_HEADER_SIZE) {
-        maybe_fec_type = (uint16_t)((uint16_t)p[4] |
-                                    ((uint16_t)p[5] << 8));
-    }
-
-    if (maybe_fec_type == RUDP_FEC_TYPE_DATA) {
-        if (plain_len < RUDP_FEC_HEADER_SIZE + RUDP_CONV_SIZE) {
-            return;
-        }
-        uint32_t conv = _rudp_read_le32(p + RUDP_FEC_HEADER_SIZE);
-        xylem_rudp_conn_t* rudp = _rudp_find_session(server, addr, conv);
-        if (rudp) {
-            _rudp_recv_input(rudp, plain, plain_len);
-        }
-    } else if (maybe_fec_type == RUDP_FEC_TYPE_PARITY) {
-        rbtree_node_t* node =
-            rbtree_min(&server->sessions);
-        while (node) {
-            xylem_rudp_conn_t* rudp =
-                rbtree_entry(node, xylem_rudp_conn_t, server_node);
-            node = rbtree_next(node);
-            if (_rudp_addr_cmp(&rudp->peer_addr, addr) == 0 &&
-                rudp->fec_dec) {
-                _rudp_recv_input(rudp, plain, plain_len);
-            }
-        }
-    } else {
-        uint32_t conv = _rudp_read_le32(plain);
-        xylem_rudp_conn_t* rudp = _rudp_find_session(server, addr, conv);
-        if (rudp) {
-            ikcp_input(rudp->kcp, (const char*)plain, (long)plain_len);
-            _rudp_input_complete(rudp);
-        }
-    }
-}
-
-/* Handle a SYN handshake: send ACK and accept a new session if needed. */
-static void _rudp_server_handle_syn(
-    xylem_rudp_server_t* server, xylem_udp_t* udp,
-    addr_t* addr, uint32_t conv) {
-    /* Send ACK regardless (client may have missed the first). */
-    uint8_t ack[RUDP_HANDSHAKE_SIZE];
-    _rudp_encode_handshake(ack, RUDP_HANDSHAKE_ACK, conv);
-    _rudp_encrypted_send(udp, addr, server->aes, ack, RUDP_HANDSHAKE_SIZE);
-
-    if (!_rudp_find_session(server, addr, conv)) {
-        _rudp_accept_session(server, addr, conv);
-    }
-}
-
-static void _rudp_server_read_cb(xylem_udp_t* udp, void* data,
-                                 size_t len,
-                                 const char* host, uint16_t port) {
-    xylem_rudp_server_t* server =
-        (xylem_rudp_server_t*)xylem_udp_get_userdata(udp);
-
-    if (server->closing) {
-        return;
-    }
-
-    addr_t addr;
-    addr_pton(host, port, &addr);
-
-    /* Decrypt at the outermost layer before any dispatch. */
-    void*  plain     = NULL;
-    size_t plain_len = 0;
-    bool   allocated = false;
-    if (!_rudp_decrypt_packet(server->aes, data, len,
-                              &plain, &plain_len, &allocated)) {
-        return;
-    }
-
-    uint8_t  hs_type;
-    uint32_t hs_conv;
-    if (_rudp_decode_handshake(plain, plain_len, &hs_type, &hs_conv)) {
-        if (hs_type == RUDP_HANDSHAKE_SYN) {
-            _rudp_server_handle_syn(server, udp, &addr, hs_conv);
-        }
-    } else {
-        _rudp_server_dispatch_data(server, plain, plain_len, &addr);
-    }
-
-    if (allocated) {
-        free(plain);
-    }
-}
-
-static void _rudp_server_close_cb(xylem_udp_t* udp, int err,
-                                  const char* errmsg) {
-    (void)err;
-    (void)errmsg;
-    xylem_rudp_server_t* server =
-        (xylem_rudp_server_t*)xylem_udp_get_userdata(udp);
-    xylem_aes256_destroy(server->aes);
-    memset(server->aes_key_buf, 0, sizeof(server->aes_key_buf));
-    free(server);
-}
-
-static xylem_udp_handler_t _rudp_client_udp_handler = {
-    .on_read  = _rudp_client_read_cb,
-    .on_close = _rudp_client_close_cb,
-};
-
-static xylem_udp_handler_t _rudp_server_udp_handler = {
-    .on_read  = _rudp_server_read_cb,
-    .on_close = _rudp_server_close_cb,
-};
 
 /**
- * Roll back a partially initialised dial session.
- * Each field is NULL-safe: calloc zeroes everything, so only
- * resources that were actually created get released.
+ * Copy a datagram into the session inbox channel. The reader frees it.
+ * Bounded by RUDP_INBOX_CAP via conn->inbox_len: when the queue is
+ * full the datagram is dropped (KCP retransmits), preserving the
+ * back-pressure the old ring buffer provided over an unbounded channel.
+ * The dispatcher holds sessions_mtx across find+push so the session
+ * cannot be freed under us.
  */
-static void _rudp_dial_cleanup(xylem_rudp_conn_t* rudp,
-                                xylem_udp_t* udp) {
-    xylem_aes256_destroy(rudp->aes);
-    rudp_fec_enc_destroy(rudp->fec_enc);
-    rudp_fec_dec_destroy(rudp->fec_dec);
-    if (rudp->kcp) {
-        ikcp_release(rudp->kcp);
+static void _rudp_inbox_push(xylem_rudp_conn_t* sess, const void* data,
+                             size_t len) {
+    if (atomic_load_explicit(&sess->inbox_len, memory_order_relaxed)
+        >= (int32_t)RUDP_INBOX_CAP) {
+        return; /* queue full: drop, KCP will retransmit */
     }
-    if (rudp->handshake_timer) {
-        loop_destroy_timer(rudp->handshake_timer);
+
+    _rudp_dgram_t* dgram =
+        (_rudp_dgram_t*)malloc(sizeof(_rudp_dgram_t) + len);
+    if (!dgram) {
+        return;
     }
-    if (rudp->update_timer) {
-        loop_destroy_timer(rudp->update_timer);
+    dgram->len = len;
+    memcpy(dgram->data, data, len);
+
+    atomic_fetch_add_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+    if (xylem_channel_send(sess->inbox, dgram) != 0) {
+        atomic_fetch_sub_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+        free(dgram);
     }
-    if (udp) {
-        xylem_udp_set_userdata(udp, NULL);
-        xylem_udp_close(udp);
-    }
-    free(rudp);
 }
 
-xylem_rudp_conn_t* xylem_rudp_dial(const char* host,
-                                   uint16_t port,
-                                   xylem_rudp_handler_t* handler,
-                                   xylem_rudp_opts_t* opts) {
-    loop_t* loop = runtime_loop();
-    xylem_rudp_conn_t* rudp =
-        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
-    if (!rudp) {
-        return NULL;
+static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
+    atomic_fetch_add_explicit(&conn->refcnt, 1, memory_order_relaxed);
+}
+
+/**
+ * Drop a reference; the last one out performs the actual teardown.
+ *
+ * A reader parked in xylem_channel_recv / iowait_read holds a reference
+ * across the park, so a concurrent xylem_rudp_close only marks the
+ * session closed and wakes the reader -- the inbox, KCP state and the
+ * conn itself stay alive until the woken reader drops its reference
+ * here. Mirrors the refcounting used by tcp/tls/dtls connections.
+ */
+static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
+    if (atomic_fetch_sub_explicit(&conn->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
     }
 
-    uint32_t conv = _rudp_alloc_conv();
-
-    rudp->handler    = handler;
-    addr_pton(host, port, &rudp->peer_addr);
-    rudp->conv       = conv;
-    rudp->loop       = loop;
-    rudp->mtu        = (opts && opts->mtu > 0) ? opts->mtu : 1400;
-    rudp->fec_data   = opts ? opts->fec_data : 0;
-    rudp->fec_parity = opts ? opts->fec_parity : 0;
-    atomic_store(&rudp->refcount, 1);
-
-    xylem_udp_t* udp = xylem_udp_dial(host, port,
-                                      &_rudp_client_udp_handler);
-    if (!udp) {
-        free(rudp);
-        return NULL;
+    if (conn->update_timer) {
+        sched_timer_destroy(conn->update_timer);
+        conn->update_timer = NULL;
     }
 
-    rudp->udp = udp;
-    xylem_udp_set_userdata(udp, rudp);
-
-    rudp->update_timer    = loop_create_timer(loop);
-    rudp->handshake_timer = loop_create_timer(loop);
-
-    rudp->kcp = _rudp_create_kcp(rudp, conv, opts);
-    if (!rudp->kcp) {
-        xylem_loge("rudp conv=%u kcp creation failed", conv);
-        _rudp_dial_cleanup(rudp, udp);
-        return NULL;
+    if (conn->kcp) {
+        ikcp_release(conn->kcp);
+        conn->kcp = NULL;
     }
 
-    if (!_rudp_init_fec(rudp, rudp->mtu)) {
-        xylem_loge("rudp conv=%u fec init failed", conv);
-        _rudp_dial_cleanup(rudp, udp);
-        return NULL;
+    rudp_fec_enc_destroy(conn->fec_enc);
+    rudp_fec_dec_destroy(conn->fec_dec);
+    conn->fec_enc = NULL;
+    conn->fec_dec = NULL;
+
+    if (!conn->listener) {
+        /* Client owns its socket, waiter and AES context. */
+        iowait_destroy(conn->waiter);
+        platform_socket_close(conn->fd);
+        xylem_aes256_destroy(conn->aes);
+    } else {
+        /* Server session shares the listener's socket and AES; it
+         * only owns its inbox. */
+        _rudp_inbox_destroy(conn->inbox);
+        conn->inbox = NULL;
     }
 
-    if (opts && opts->aes_key) {
-        rudp->aes = xylem_aes256_create(opts->aes_key);
-        if (!rudp->aes) {
-            xylem_loge("rudp conv=%u aes init failed", conv);
-            _rudp_dial_cleanup(rudp, udp);
-            return NULL;
+    free(conn);
+}
+
+static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
+    char recv_buf[RUDP_RECV_BUF_SIZE];
+    for (;;) {
+        /* Try reading from KCP first. */
+        int n = ikcp_recv(c->kcp, (char*)buf, len);
+        if (n > 0) {
+            return n;
         }
+
+        if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+            return -1;
+        }
+
+        /* Set deadline for iowait. */
+        if (c->rd_deadline_ms > 0) {
+            iowait_set_rd_deadline(c->waiter, c->rd_deadline_ms);
+        }
+
+        iowait_result_t r = iowait_read(c->waiter);
+        if (r == IOWAIT_CLOSED) {
+            return -1;
+        }
+        if (r == IOWAIT_TIMEOUT) {
+            ikcp_update(c->kcp, _rudp_clock_ms());
+            _rudp_schedule_update(c);
+            return -1;
+        }
+
+        /* ET poller: drain all queued datagrams until EAGAIN. */
+        for (;;) {
+            ssize_t rn = platform_socket_recv(
+                c->fd, recv_buf, (int)sizeof(recv_buf));
+            if (rn <= 0) {
+                break;
+            }
+
+            void*  plain     = NULL;
+            size_t plain_len = 0;
+            if (_rudp_decrypt_packet(c->aes, recv_buf, (size_t)rn,
+                                     &plain, &plain_len) != 0) {
+                continue;
+            }
+
+            _rudp_recv_input(c, plain, plain_len);
+            if (plain != recv_buf) {
+                free(plain);
+            }
+        }
+
+        _rudp_schedule_update(c);
     }
-
-    xylem_logi("rudp conv=%u dial started (aes=%s fec=%d+%d)",
-               conv, rudp->aes ? "on" : "off",
-               rudp->fec_data, rudp->fec_parity);
-
-    /* Initial start so _rudp_schedule_update can use reset. */
-    loop_start_timer(rudp->update_timer, _rudp_update_timeout_cb,
-                           rudp, RUDP_TIMER_INIT_MS, 0);
-
-    _rudp_send_syn(rudp);
-
-    uint64_t hs_ms = (opts && opts->handshake_ms > 0)
-                         ? opts->handshake_ms
-                         : RUDP_DEFAULT_HANDSHAKE_MS;
-    rudp->handshake_deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_ms;
-    uint64_t interval = RUDP_SYN_RETRANSMIT_MS;
-    if (interval > hs_ms) {
-        interval = hs_ms;
-    }
-    loop_start_timer(rudp->handshake_timer,
-                           _rudp_handshake_timeout_cb, rudp,
-                           interval, interval);
-
-    return rudp;
 }
 
-static int _rudp_process_write(xylem_rudp_conn_t* rudp,
-                               const void* data, size_t len) {
-    if (len > RUDP_RECV_BUF_SIZE) {
-        xylem_logd("rudp conv=%u send rejected: message too large (%zu > %d)",
-                   rudp->conv, len, RUDP_RECV_BUF_SIZE);
+static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
+    for (;;) {
+        /* Try KCP recv first. */
+        int n = ikcp_recv(c->kcp, (char*)buf, len);
+        if (n > 0) {
+            return n;
+        }
+
+        if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+            return -1;
+        }
+
+        /* Pull a datagram from the inbox channel (parks if empty;
+         * returns NULL once the channel is closed on teardown). */
+        _rudp_dgram_t* dgram =
+            (_rudp_dgram_t*)xylem_channel_recv(c->inbox);
+        if (!dgram) {
+            return -1;
+        }
+        atomic_fetch_sub_explicit(&c->inbox_len, 1, memory_order_relaxed);
+
+        /* Feed into FEC + KCP. */
+        _rudp_recv_input(c, dgram->data, dgram->len);
+        free(dgram);
+        _rudp_schedule_update(c);
+    }
+}
+
+/**
+ * Build a server session for a freshly handshaked peer and publish it:
+ * insert into the session tree, start its update timer and hand it to
+ * the accept channel. Returns 0 on success, -1 if any resource could
+ * not be allocated (all partially built state is freed before return).
+ */
+static int _rudp_accept_session(xylem_rudp_listener_t* ln,
+                                const addr_t* peer_addr, uint32_t hs_conv) {
+    xylem_rudp_conn_t* sess =
+        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
+    if (!sess) {
         return -1;
     }
 
-    int rc = ikcp_send(rudp->kcp, (const char*)data, (int)len);
-    if (rc < 0) {
+    atomic_store_explicit(&sess->refcnt, 1, memory_order_relaxed);
+    sess->fd        = ln->fd;
+    sess->conv      = hs_conv;
+    sess->peer_addr = *peer_addr;
+    sess->listener  = ln;
+    sess->mode      = ln->opts.mode;
+    sess->mtu       = (ln->opts.mtu > 0)
+        ? (int)ln->opts.mtu : RUDP_DEFAULT_MTU;
+    sess->aes       = ln->aes;
+
+    if (_rudp_init_fec(sess, sess->mtu, ln->opts.fec_data,
+                       ln->opts.fec_parity) != 0) {
+        free(sess);
         return -1;
     }
-    ikcp_flush(rudp->kcp);
-    _rudp_schedule_update(rudp);
+
+    sess->kcp = _rudp_create_kcp(sess, hs_conv, &ln->opts);
+    if (!sess->kcp) {
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sess->inbox = xylem_channel_create();
+    if (!sess->inbox) {
+        ikcp_release(sess->kcp);
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sess->update_timer = sched_timer_create(ln->sched);
+    if (!sess->update_timer) {
+        xylem_channel_destroy(sess->inbox);
+        ikcp_release(sess->kcp);
+        rudp_fec_enc_destroy(sess->fec_enc);
+        rudp_fec_dec_destroy(sess->fec_dec);
+        free(sess);
+        return -1;
+    }
+
+    sched_timer_start(sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
+    _rudp_schedule_update(sess);
+
+    mtx_lock(&ln->sessions_mtx);
+    rbtree_insert(&ln->sessions, &sess->listener_node);
+    mtx_unlock(&ln->sessions_mtx);
+    xylem_channel_send(ln->accept_ch, sess);
+
+    xylem_logi("rudp listener: accepted conv=%u", hs_conv);
     return 0;
 }
 
-int xylem_rudp_send(xylem_rudp_conn_t* rudp, const void* data, size_t len) {
-    if (!rudp->handshake_done ||
-        rudp->closing) {
-        xylem_logd("rudp conv=%u send rejected (handshake=%d closing=%d)",
-                   rudp->conv,
-                   (int)rudp->handshake_done,
-                   (int)rudp->closing);
-        return -1;
-    }
+static void _rudp_dispatcher(void* arg) {
+    xylem_rudp_listener_t* ln = (xylem_rudp_listener_t*)arg;
+    char recv_buf[RUDP_RECV_BUF_SIZE];
 
-    if (!data || len == 0) {
-        return 0;
-    }
-
-    return _rudp_process_write(rudp, data, len);
-}
-
-void xylem_rudp_close(xylem_rudp_conn_t* rudp) {
-    if (rudp->closing) {
-        return;
-    }
-    rudp->closing = true;
-
-    xylem_logi("rudp conv=%u closing", rudp->conv);
-
-    loop_stop_timer(rudp->update_timer);
-
-    if (rudp->handshake_timer) {
-        loop_stop_timer(rudp->handshake_timer);
-    }
-
-    if (rudp->server) {
-        rbtree_remove(&rudp->server->sessions, &rudp->server_node);
-
-        if (rudp->kcp) {
-            ikcp_release(rudp->kcp);
-            rudp->kcp = NULL;
+    for (;;) {
+        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+            break;
         }
 
-        if (rudp->handler && rudp->handler->on_close) {
-            rudp->handler->on_close(rudp, rudp->close_err,
-                                    rudp->close_errmsg);
+        struct sockaddr_storage sender;
+        socklen_t sender_len = sizeof(sender);
+        ssize_t n = platform_socket_recvfrom(
+            ln->fd, recv_buf, (int)sizeof(recv_buf),
+            &sender, &sender_len);
+
+        if (n <= 0) {
+            int err = platform_socket_get_lasterror();
+            if (err == PLATFORM_SO_ERROR_EAGAIN ||
+                err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                iowait_result_t r = iowait_read(ln->waiter);
+                if (r != IOWAIT_READY) {
+                    break;
+                }
+                continue;
+            }
+            /* Fatal recv error. */
+            xylem_loge("rudp listener: recvfrom error=%d (%s)",
+                       err, platform_socket_tostring(err));
+            break;
         }
 
-        loop_post(rudp->loop, _rudp_free_cb, rudp);
-    } else {
-        xylem_udp_close(rudp->udp);
+        /* Decrypt outer layer. */
+        void*  plain     = NULL;
+        size_t plain_len = 0;
+        if (_rudp_decrypt_packet(ln->aes, recv_buf, (size_t)n,
+                                 &plain, &plain_len) != 0) {
+            continue;
+        }
+
+        addr_t peer_addr;
+        memcpy(&peer_addr.storage, &sender, sizeof(sender));
+
+        /* Check if this is a handshake packet. */
+        uint8_t  hs_type;
+        uint32_t hs_conv;
+        if (_rudp_decode_handshake(plain, plain_len,
+                                   &hs_type, &hs_conv) == 0) {
+            if (hs_type == RUDP_HANDSHAKE_SYN) {
+                /* Send ACK regardless (handles retransmitted SYNs). */
+                uint8_t ack[RUDP_HANDSHAKE_SIZE];
+                _rudp_encode_handshake(ack, RUDP_HANDSHAKE_ACK, hs_conv);
+
+                /* Encrypt and sendto. */
+                if (ln->aes) {
+                    size_t enc_size =
+                        xylem_aes256_ctr_encrypt_size(RUDP_HANDSHAKE_SIZE);
+                    uint8_t* enc_buf = (uint8_t*)malloc(enc_size);
+                    if (enc_buf) {
+                        int en = xylem_aes256_ctr_encrypt(
+                            ln->aes, ack, RUDP_HANDSHAKE_SIZE,
+                            enc_buf, enc_size);
+                        if (en > 0) {
+                            socklen_t addrlen =
+                                (sender.ss_family == AF_INET6)
+                                    ? (socklen_t)sizeof(struct sockaddr_in6)
+                                    : (socklen_t)sizeof(struct sockaddr_in);
+                            platform_socket_sendto(
+                                ln->fd, enc_buf, en, &sender, addrlen);
+                        }
+                        free(enc_buf);
+                    }
+                } else {
+                    socklen_t addrlen =
+                        (sender.ss_family == AF_INET6)
+                            ? (socklen_t)sizeof(struct sockaddr_in6)
+                            : (socklen_t)sizeof(struct sockaddr_in);
+                    platform_socket_sendto(
+                        ln->fd, ack, RUDP_HANDSHAKE_SIZE,
+                        &sender, addrlen);
+                }
+
+                /* Create session if it does not exist. */
+                mtx_lock(&ln->sessions_mtx);
+                bool exists = _rudp_find_session(ln, &peer_addr, hs_conv)
+                              != NULL;
+                mtx_unlock(&ln->sessions_mtx);
+                if (!exists) {
+                    _rudp_accept_session(ln, &peer_addr, hs_conv);
+                }
+            }
+            /* Ignore ACKs on server side. */
+        } else {
+            /* Data packet: route to the correct session. */
+            if (ln->opts.fec_data > 0 && ln->opts.fec_parity > 0 &&
+                plain_len >= RUDP_FEC_HEADER_SIZE) {
+                /**
+                 * FEC-encoded: check shard type. Data shards carry
+                 * the KCP header at offset 8, so conv is extractable.
+                 * Parity shards have no KCP payload; route to all
+                 * sessions from this peer (typically one).
+                 */
+                const uint8_t* p = (const uint8_t*)plain;
+                uint16_t fec_type = (uint16_t)(
+                    (uint16_t)p[4] | ((uint16_t)p[5] << 8));
+
+                if (fec_type == RUDP_FEC_TYPE_DATA &&
+                    plain_len >= RUDP_FEC_HEADER_SIZE + 4) {
+                    uint32_t conv;
+                    memcpy(&conv, p + RUDP_FEC_HEADER_SIZE, 4);
+                    /* Hold the lock across find+push so the session
+                     * cannot be removed and freed between lookup and
+                     * inbox push. _rudp_inbox_push only enqueues (it
+                     * never parks), so this critical section is short. */
+                    mtx_lock(&ln->sessions_mtx);
+                    xylem_rudp_conn_t* sess =
+                        _rudp_find_session(ln, &peer_addr, conv);
+                    if (sess && sess->inbox) {
+                        _rudp_inbox_push(sess, plain, plain_len);
+                    }
+                    mtx_unlock(&ln->sessions_mtx);
+                } else if (fec_type == RUDP_FEC_TYPE_PARITY) {
+                    /**
+                     * Parity shards cannot be keyed by conv; deliver
+                     * to every session from this peer so each FEC
+                     * decoder can attempt recovery.
+                     */
+                    mtx_lock(&ln->sessions_mtx);
+                    rbtree_node_t* nd = rbtree_min(&ln->sessions);
+                    while (nd) {
+                        xylem_rudp_conn_t* s = rbtree_entry(
+                            nd, xylem_rudp_conn_t, listener_node);
+                        nd = rbtree_next(nd);
+                        if (memcmp(&s->peer_addr.storage,
+                                   &peer_addr.storage,
+                                   sizeof(struct sockaddr_storage))
+                            == 0 && s->inbox) {
+                            _rudp_inbox_push(s, plain, plain_len);
+                        }
+                    }
+                    mtx_unlock(&ln->sessions_mtx);
+                }
+            } else if (plain_len >= 4) {
+                /* No FEC: conv is first 4 bytes of KCP header. */
+                uint32_t conv;
+                memcpy(&conv, plain, 4);
+                mtx_lock(&ln->sessions_mtx);
+                xylem_rudp_conn_t* sess =
+                    _rudp_find_session(ln, &peer_addr, conv);
+                if (sess && sess->inbox) {
+                    _rudp_inbox_push(sess, plain, plain_len);
+                }
+                mtx_unlock(&ln->sessions_mtx);
+            }
+        }
+
+        if (plain != recv_buf) {
+            free(plain);
+        }
     }
 }
 
-int xylem_rudp_remote_addr(xylem_rudp_conn_t* rudp,
-                           char host[ADDR_MAXHOST],
-                           uint16_t* port) {
-    return addr_ntop(&rudp->peer_addr, host, ADDR_MAXHOST, port);
-}
+xylem_rudp_conn_t* xylem_rudp_dial(
+    const char*        host,
+    uint16_t           port,
+    xylem_rudp_opts_t* opts) {
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", port);
 
+    /* Resolve hostname if needed. */
+    const char* dial_host = host;
+    char        resolved_ip[INET6_ADDRSTRLEN];
+    addr_t      resolved_addr;
 
-void* xylem_rudp_get_userdata(xylem_rudp_conn_t* rudp) {
-    return rudp->userdata;
-}
+    if (addr_pton(host, port, &resolved_addr) != 0) {
+        addr_t* addrs = NULL;
+        size_t  count = 0;
+        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
+            xylem_loge("rudp dial: DNS resolution failed for %s", host);
+            return NULL;
+        }
+        resolved_addr = addrs[0];
+        free(addrs);
+        uint16_t rport;
+        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
+        dial_host = resolved_ip;
+    }
 
-void xylem_rudp_set_userdata(xylem_rudp_conn_t* rudp, void* ud) {
-    rudp->userdata = ud;
-}
-
-void xylem_rudp_conn_acquire(xylem_rudp_conn_t* rudp) {
-    atomic_fetch_add(&rudp->refcount, 1);
-}
-
-void xylem_rudp_conn_release(xylem_rudp_conn_t* rudp) {
-    _rudp_conn_decref(rudp);
-}
-
-xylem_rudp_server_t* xylem_rudp_listen(const char* host,
-                                       uint16_t port,
-                                       xylem_rudp_handler_t* handler,
-                                       xylem_rudp_opts_t* opts) {
-    loop_t* loop = runtime_loop();
-    xylem_rudp_server_t* server =
-        (xylem_rudp_server_t*)calloc(1, sizeof(xylem_rudp_server_t));
-    if (!server) {
+    bool connected = false;
+    platform_sock_t fd = platform_socket_dial(
+        dial_host, port_str, SOCK_DGRAM, &connected, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("rudp dial: socket creation failed for %s:%u", host, port);
         return NULL;
     }
 
-    server->handler = handler;
-    server->loop    = loop;
-    if (opts) {
-        server->opts = *opts;
+    platform_socket_set_rcvbuf_max(fd, 0);
+
+    xylem_rudp_conn_t* c =
+        (xylem_rudp_conn_t*)calloc(1, sizeof(xylem_rudp_conn_t));
+    if (!c) {
+        platform_socket_close(fd);
+        return NULL;
     }
 
-    /**
-     * Deep-copy the AES key into server-owned storage so the caller
-     * can free or reuse the original buffer after listen returns.
-     */
-    if (server->opts.aes_key) {
-        memcpy(server->aes_key_buf, server->opts.aes_key, 32);
-        server->opts.aes_key = server->aes_key_buf;
-        server->aes = xylem_aes256_create(server->aes_key_buf);
-        if (!server->aes) {
-            xylem_loge("rudp server: aes init failed");
-            free(server);
+    scheduler_t* sched = runtime_get_scheduler();
+    uint32_t conv = _rudp_alloc_conv();
+
+    atomic_store_explicit(&c->refcnt, 1, memory_order_relaxed);
+    c->fd        = fd;
+    c->conv      = conv;
+    c->peer_addr = resolved_addr;
+    c->mode      = opts ? opts->mode : XYLEM_RUDP_STREAM;
+    c->mtu       = (opts && opts->mtu > 0) ? (int)opts->mtu : RUDP_DEFAULT_MTU;
+
+    c->waiter = iowait_create(fd);
+    if (!c->waiter) {
+        platform_socket_close(fd);
+        free(c);
+        return NULL;
+    }
+
+    /* AES setup. */
+    if (opts && opts->aes_key) {
+        c->aes = xylem_aes256_create(opts->aes_key);
+        if (!c->aes) {
+            xylem_loge("rudp dial conv=%u: AES init failed", conv);
+            iowait_destroy(c->waiter);
+            platform_socket_close(fd);
+            free(c);
             return NULL;
         }
     }
-    rbtree_init(&server->sessions, _rudp_session_cmp_nn,
-                      _rudp_session_cmp_kn);
 
-    xylem_udp_t* udp = xylem_udp_listen(host, port,
-                                        &_rudp_server_udp_handler);
-    if (!udp) {
-        xylem_aes256_destroy(server->aes);
-        memset(server->aes_key_buf, 0, sizeof(server->aes_key_buf));
-        free(server);
+    /* FEC setup. */
+    if (opts && _rudp_init_fec(c, c->mtu, opts->fec_data,
+                               opts->fec_parity) != 0) {
+        xylem_loge("rudp dial conv=%u: FEC init failed", conv);
+        xylem_aes256_destroy(c->aes);
+        iowait_destroy(c->waiter);
+        platform_socket_close(fd);
+        free(c);
         return NULL;
     }
 
-    server->udp = udp;
-    xylem_udp_set_userdata(udp, server);
+    /* KCP setup. */
+    c->kcp = _rudp_create_kcp(c, conv, opts);
+    if (!c->kcp) {
+        xylem_loge("rudp dial conv=%u: KCP create failed", conv);
+        rudp_fec_enc_destroy(c->fec_enc);
+        rudp_fec_dec_destroy(c->fec_dec);
+        xylem_aes256_destroy(c->aes);
+        iowait_destroy(c->waiter);
+        platform_socket_close(fd);
+        free(c);
+        return NULL;
+    }
 
-    int fec_d = server->opts.fec_data;
-    int fec_p = server->opts.fec_parity;
-    xylem_logi("rudp server listening (aes=%s fec=%d+%d)",
-               server->aes ? "on" : "off", fec_d, fec_p);
+    /* Update timer. */
+    c->update_timer = sched_timer_create(sched);
+    if (!c->update_timer) {
+        ikcp_release(c->kcp);
+        rudp_fec_enc_destroy(c->fec_enc);
+        rudp_fec_dec_destroy(c->fec_dec);
+        xylem_aes256_destroy(c->aes);
+        iowait_destroy(c->waiter);
+        platform_socket_close(fd);
+        free(c);
+        return NULL;
+    }
 
-    return server;
+    /* Handshake: loop sending SYN until ACK or timeout. */
+    uint64_t hs_timeout = RUDP_DEFAULT_TIMEOUT_MS;
+    if (opts && opts->connect_timeout_ms > 0) {
+        hs_timeout = opts->connect_timeout_ms;
+    }
+    uint64_t deadline =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + hs_timeout;
+    uint8_t syn[RUDP_HANDSHAKE_SIZE];
+    _rudp_encode_handshake(syn, RUDP_HANDSHAKE_SYN, conv);
+
+    uint8_t recv_buf[RUDP_HANDSHAKE_SIZE + RUDP_AES_IV_SIZE + 64];
+    bool handshake_done = false;
+
+    while (!handshake_done) {
+        /* Send SYN. */
+        _rudp_encrypt_send(c, syn, RUDP_HANDSHAKE_SIZE);
+
+        /* Wait for response with retransmit timeout. */
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        if (now >= deadline) {
+            xylem_loge("rudp dial conv=%u: handshake timeout", conv);
+            _rudp_conn_unref(c);
+            return NULL;
+        }
+        uint64_t wait_deadline = now + RUDP_SYN_RETRANSMIT_MS;
+        if (wait_deadline > deadline) {
+            wait_deadline = deadline;
+        }
+        iowait_set_rd_deadline(c->waiter, wait_deadline);
+        iowait_result_t r = iowait_read(c->waiter);
+
+        if (r == IOWAIT_CLOSED) {
+            _rudp_conn_unref(c);
+            return NULL;
+        }
+        if (r == IOWAIT_TIMEOUT) {
+            /* Retransmit SYN on next iteration. */
+            continue;
+        }
+
+        /* IOWAIT_READY: read the response. */
+        ssize_t n = platform_socket_recv(
+            fd, recv_buf, (int)sizeof(recv_buf));
+        if (n <= 0) {
+            continue;
+        }
+
+        /* Decrypt if needed. */
+        void*  plain     = NULL;
+        size_t plain_len = 0;
+        if (_rudp_decrypt_packet(c->aes, recv_buf, (size_t)n,
+                                 &plain, &plain_len) != 0) {
+            continue;
+        }
+
+        uint8_t  hs_type;
+        uint32_t hs_conv;
+        if (_rudp_decode_handshake(plain, plain_len,
+                                   &hs_type, &hs_conv) == 0 &&
+            hs_type == RUDP_HANDSHAKE_ACK && hs_conv == conv) {
+            handshake_done = true;
+        }
+
+        /* Free decrypted buffer if it was allocated. */
+        if (plain != recv_buf) {
+            free(plain);
+        }
+    }
+
+    /* Clear read deadline used during handshake. */
+    iowait_set_rd_deadline(c->waiter, 0);
+
+    /* Start the KCP update timer. */
+    sched_timer_start(
+        c->update_timer, _rudp_update_timer_cb, c, 10, 0);
+    _rudp_schedule_update(c);
+
+    xylem_logi("rudp dial conv=%u: connected to %s:%u", conv, host, port);
+    return c;
 }
 
-void xylem_rudp_close_server(xylem_rudp_server_t* server) {
-    if (server->closing) {
+int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
+    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+        return -1;
+    }
+    /* Hold a reference across the (parking) read so a concurrent
+     * xylem_rudp_close cannot free the conn/inbox out from under us. */
+    _rudp_conn_ref(conn);
+    int ret;
+    if (conn->listener) {
+        ret = _rudp_session_read(conn, buf, len);
+    } else {
+        ret = _rudp_client_read(conn, buf, len);
+    }
+    _rudp_conn_unref(conn);
+    return ret;
+}
+
+int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
+    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+        return -1;
+    }
+    if (!data || len <= 0) {
+        return 0;
+    }
+
+    _rudp_conn_ref(conn);
+    int ret = -1;
+    if (!atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+        int rc = ikcp_send(conn->kcp, (const char*)data, len);
+        if (rc >= 0) {
+            ikcp_flush(conn->kcp);
+            _rudp_schedule_update(conn);
+            ret = 0;
+        }
+    }
+    _rudp_conn_unref(conn);
+    return ret;
+}
+
+xylem_rudp_listener_t* xylem_rudp_listen(
+    const char*        host,
+    uint16_t           port,
+    xylem_rudp_opts_t* opts) {
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", port);
+
+    platform_sock_t fd =
+        platform_socket_listen(host, port_str, SOCK_DGRAM, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("rudp listen: bind failed for %s:%u", host, port);
+        return NULL;
+    }
+
+    xylem_rudp_listener_t* ln =
+        (xylem_rudp_listener_t*)calloc(1, sizeof(xylem_rudp_listener_t));
+    if (!ln) {
+        platform_socket_close(fd);
+        return NULL;
+    }
+
+    scheduler_t* sched = runtime_get_scheduler();
+
+    ln->fd    = fd;
+    ln->sched = sched;
+    if (opts) {
+        ln->opts = *opts;
+    }
+
+    ln->waiter = iowait_create(fd);
+    if (!ln->waiter) {
+        platform_socket_close(fd);
+        free(ln);
+        return NULL;
+    }
+
+    /* Deep-copy AES key so caller can free original. */
+    if (ln->opts.aes_key) {
+        memcpy(ln->aes_key_buf, ln->opts.aes_key, 32);
+        ln->opts.aes_key = ln->aes_key_buf;
+        ln->aes = xylem_aes256_create(ln->aes_key_buf);
+        if (!ln->aes) {
+            xylem_loge("rudp listen: AES init failed");
+            iowait_destroy(ln->waiter);
+            platform_socket_close(fd);
+            free(ln);
+            return NULL;
+        }
+    }
+
+    rbtree_init(&ln->sessions, _rudp_session_cmp_nn, _rudp_session_cmp_kn);
+    mtx_init(&ln->sessions_mtx, mtx_plain);
+
+    /* Accept queue: a channel carrying accepted session pointers. */
+    ln->accept_ch = xylem_channel_create();
+    if (!ln->accept_ch) {
+        mtx_destroy(&ln->sessions_mtx);
+        xylem_aes256_destroy(ln->aes);
+        iowait_destroy(ln->waiter);
+        platform_socket_close(fd);
+        free(ln);
+        return NULL;
+    }
+
+    /* Spawn the background dispatcher coroutine. */
+    runtime_spawn(_rudp_dispatcher, ln);
+
+    xylem_logi("rudp listen: bound on %s:%u", host, port);
+    return ln;
+}
+
+xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
+    xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)xylem_channel_recv(ln->accept_ch);
+    return c;
+}
+
+void xylem_rudp_close(xylem_rudp_conn_t* conn) {
+    if (!conn) {
         return;
     }
-    server->closing = true;
-
-    xylem_logi("rudp server closing");
-
-    while (!rbtree_empty(&server->sessions)) {
-        rbtree_node_t* node = rbtree_min(&server->sessions);
-        xylem_rudp_conn_t* rudp =
-            rbtree_entry(node, xylem_rudp_conn_t, server_node);
-        xylem_rudp_close(rudp);
+    if (atomic_exchange(&conn->closed, true)) {
+        return;
     }
 
-    /* _rudp_server_close_cb frees server. */
-    xylem_udp_close(server->udp);
+    xylem_logi("rudp conv=%u: closing", conn->conv);
+
+    /* Stop the update timer so no further ikcp_update fires; the timer
+     * object is destroyed by the last _rudp_conn_unref. */
+    if (conn->update_timer) {
+        sched_timer_stop(conn->update_timer);
+    }
+
+    if (conn->listener) {
+        /* Unlink from the session tree FIRST, under the lock, so the
+         * dispatcher can no longer find this session and therefore
+         * cannot xylem_channel_send() into the inbox after we close
+         * it (send-on-closed aborts, Go-style). The dispatcher does
+         * find+send under the same sessions_mtx, so once the remove
+         * commits, no further send can target this inbox. */
+        mtx_lock(&conn->listener->sessions_mtx);
+        rbtree_remove(&conn->listener->sessions, &conn->listener_node);
+        mtx_unlock(&conn->listener->sessions_mtx);
+
+        /* Now close the inbox channel to wake a parked reader. The
+         * reader's in-flight recv holds a channel reference, so the
+         * channel stays alive until _rudp_conn_unref drains+destroys
+         * it. The reader also holds a conn reference across its park,
+         * so conn survives until it drops that reference. */
+        xylem_channel_close(conn->inbox);
+    } else {
+        iowait_close(conn->waiter);
+    }
+
+    /* Drop the owner reference; the last reference out frees the conn. */
+    _rudp_conn_unref(conn);
 }
 
-void* xylem_rudp_server_get_userdata(xylem_rudp_server_t* server) {
-    return server->userdata;
+void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    if (atomic_exchange(&ln->closed, true)) {
+        return;
+    }
+
+    xylem_logi("rudp listener: closing");
+
+    /* Wake the dispatcher if parked in iowait_read. */
+    iowait_close(ln->waiter);
+
+    /* Close all active sessions. xylem_rudp_close re-acquires
+     * sessions_mtx, so release it around each call. */
+    mtx_lock(&ln->sessions_mtx);
+    while (!rbtree_empty(&ln->sessions)) {
+        rbtree_node_t* node = rbtree_min(&ln->sessions);
+        xylem_rudp_conn_t* sess =
+            rbtree_entry(node, xylem_rudp_conn_t, listener_node);
+        mtx_unlock(&ln->sessions_mtx);
+        xylem_rudp_close(sess);
+        mtx_lock(&ln->sessions_mtx);
+    }
+    mtx_unlock(&ln->sessions_mtx);
+
+    /* Wake the accept waiter and release the accept channel. Any
+     * session still queued in the channel was already closed by the
+     * session-teardown loop above (it was in the rbtree), so destroy
+     * only frees the channel's node wrappers. */
+    xylem_channel_destroy(ln->accept_ch);
+
+    /* Clean up. */
+    xylem_aes256_destroy(ln->aes);
+    memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
+    iowait_destroy(ln->waiter);
+    platform_socket_close(ln->fd);
+    mtx_destroy(&ln->sessions_mtx);
+    free(ln);
 }
 
-void xylem_rudp_server_set_userdata(xylem_rudp_server_t* server, void* ud) {
-    server->userdata = ud;
+void xylem_rudp_set_read_deadline(
+    xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    conn->rd_deadline_ms = deadline_ms;
+    if (!conn->listener && conn->waiter) {
+        iowait_set_rd_deadline(conn->waiter, deadline_ms);
+    }
+}
+
+void xylem_rudp_set_write_deadline(
+    xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    (void)conn;
+    (void)deadline_ms;
+}
+
+int xylem_rudp_remote_addr(
+    xylem_rudp_conn_t* conn, char* host, int hostlen, uint16_t* port) {
+    return addr_ntop(&conn->peer_addr, host, (size_t)hostlen, port);
 }

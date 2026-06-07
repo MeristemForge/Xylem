@@ -43,10 +43,15 @@ _Pragma("once")
 #define PLATFORM_SO_ERROR_EAGAIN          EAGAIN
 #define PLATFORM_SO_ERROR_EWOULDBLOCK     EWOULDBLOCK
 #define PLATFORM_SO_ERROR_ECONNRESET      ECONNRESET
+#define PLATFORM_SO_ERROR_ECONNREFUSED    ECONNREFUSED
 #define PLATFORM_SO_ERROR_ETIMEDOUT       ETIMEDOUT
+#define PLATFORM_SO_ERROR_ENETUNREACH     ENETUNREACH
+#define PLATFORM_SO_ERROR_EHOSTUNREACH    EHOSTUNREACH
 #define PLATFORM_SO_ERROR_INVALID_SOCKET  -1
 #define PLATFORM_SO_ERROR_SOCKET_ERROR    -1
+#define PLATFORM_SHUT_RD                  SHUT_RD
 #define PLATFORM_SHUT_WR                  SHUT_WR
+#define PLATFORM_SHUT_RDWR                SHUT_RDWR
 
 typedef int platform_sock_t;
 #endif
@@ -64,10 +69,15 @@ typedef int platform_sock_t;
 #define PLATFORM_SO_ERROR_EAGAIN          WSAEWOULDBLOCK
 #define PLATFORM_SO_ERROR_EWOULDBLOCK     WSAEWOULDBLOCK
 #define PLATFORM_SO_ERROR_ECONNRESET      WSAECONNRESET
+#define PLATFORM_SO_ERROR_ECONNREFUSED    WSAECONNREFUSED
 #define PLATFORM_SO_ERROR_ETIMEDOUT       WSAETIMEDOUT
+#define PLATFORM_SO_ERROR_ENETUNREACH     WSAENETUNREACH
+#define PLATFORM_SO_ERROR_EHOSTUNREACH    WSAEHOSTUNREACH
 #define PLATFORM_SO_ERROR_INVALID_SOCKET  INVALID_SOCKET
 #define PLATFORM_SO_ERROR_SOCKET_ERROR    SOCKET_ERROR
+#define PLATFORM_SHUT_RD                  SD_RECEIVE
 #define PLATFORM_SHUT_WR                  SD_SEND
+#define PLATFORM_SHUT_RDWR                SD_BOTH
 
 typedef SOCKET  platform_sock_t;
 #ifndef _XYLEM_SSIZE_T
@@ -122,31 +132,6 @@ extern ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size);
  */
 extern ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size);
 
-/**
- * @brief Receive exactly size bytes from a connected socket.
- *
- * Loops internally until all bytes are received or an error occurs.
- *
- * @param sock  Connected socket.
- * @param buf   Buffer to receive into.
- * @param size  Exact number of bytes to receive.
- *
- * @return Total bytes received, or -1 on error.
- */
-extern ssize_t platform_socket_recvall(platform_sock_t sock, void* buf, int size);
-
-/**
- * @brief Send exactly size bytes on a connected socket.
- *
- * Loops internally until all bytes are sent or an error occurs.
- *
- * @param sock  Connected socket.
- * @param buf   Buffer containing data to send.
- * @param size  Exact number of bytes to send.
- *
- * @return Total bytes sent, or -1 on error.
- */
-extern ssize_t platform_socket_sendall(platform_sock_t sock, const void* buf, int size);
 
 /**
  * @brief Receive data from an unconnected (datagram) socket.
@@ -198,7 +183,13 @@ extern int platform_socket_socketpair(int domain, int type, int protocol, platfo
 extern const char* platform_socket_tostring(int error);
 
 /**
- * @brief Accept an incoming connection.
+ * @brief Accept an incoming connection on a TCP listening socket.
+ *
+ * Applies TCP data-connection tuning to the accepted socket
+ * (SO_SNDBUF raised from the Linux default ~16KB to 256KB so a 64KB
+ * send can settle in one syscall instead of looping through EAGAIN +
+ * coroutine park + poller re-arm). For AF_UNIX listeners use
+ * platform_socket_accept_unix() instead, which skips this tuning.
  *
  * @param sock         Listening socket.
  * @param nonblocking  If true, set the accepted socket to non-blocking mode.
@@ -264,6 +255,33 @@ extern void platform_socket_set_rcvbuf(platform_sock_t sock, int val);
  * @param val   Buffer size in bytes.
  */
 extern void platform_socket_set_sndbuf(platform_sock_t sock, int val);
+
+/**
+ * @brief Best-effort raise of SO_RCVBUF with platform-aware fallbacks.
+ *
+ * Intended for protocols where larger receive buffers reduce packet drops
+ * under burst (UDP, RUDP). Behavior per platform:
+ *
+ *  - Linux: first tries SO_RCVBUFFORCE (bypasses net.core.rmem_max but
+ *    requires CAP_NET_ADMIN); falls back to SO_RCVBUF which the kernel
+ *    will clamp to rmem_max. Operators should raise net.core.rmem_max
+ *    for best effect on unprivileged processes.
+ *  - macOS: uses SO_RCVBUF; kernel clamps silently per sysctl
+ *    kern.ipc.maxsockbuf.
+ *  - Windows: uses SO_RCVBUF; AFD enforces its own NonPagedPool cap.
+ *
+ * If the desired size is not accepted, progressively smaller fallbacks
+ * are attempted (64/16/8/4/1 MB).
+ *
+ * @param sock     Socket to configure.
+ * @param desired  Preferred buffer size in bytes; the kernel may grant
+ *                 less. Pass <= 0 to use a sensible default (16 MB).
+ * @return         Actual SO_RCVBUF value reported by getsockopt after
+ *                 the call (may be larger than requested on Linux due
+ *                 to the documented `val * 2` accounting), or -1 if
+ *                 neither setsockopt path succeeded.
+ */
+extern int platform_socket_set_rcvbuf_max(platform_sock_t sock, int desired);
 
 /**
  * @brief Configure RSS (Receive Side Scaling) on a socket.
@@ -369,6 +387,23 @@ extern void platform_socket_enable_reuseport(platform_sock_t sock, bool on);
  * @return Listening socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
 extern platform_sock_t platform_socket_listen_unix(const char* path,
+                                                   bool nonblocking);
+
+/**
+ * @brief Accept an incoming connection on a Unix domain listening socket.
+ *
+ * Separate from platform_socket_accept() because the latter applies TCP
+ * data-connection tuning (SO_SNDBUF) that is either ineffective or has
+ * undesirable side effects on AF_UNIX sockets (kernel clamps SO_SNDBUF
+ * to wmem_default on Linux; the effective buffer is a per-peer kernel
+ * page queue, not a TCP send window).
+ *
+ * @param sock         Listening UDS socket.
+ * @param nonblocking  If true, set the accepted socket to non-blocking mode.
+ *
+ * @return Accepted socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ */
+extern platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
                                                    bool nonblocking);
 
 /**

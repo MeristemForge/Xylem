@@ -19,9 +19,44 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-transport.h"
+/*
+ * Stub TLS transport factory for builds without TLS support. Both
+ * factories return failure so the dispatch layer degrades to "HTTPS not
+ * available" with no macros leaking into the engine.
+ */
 
-/* Stub: HTTPS not available when built without TLS support. */
-const http_transport_vt_t* http_transport_tls(void) {
+#include "http-transport-tls.h"
+
+xylem_http_srv_t* http_tls_listen(
+    const char*                  host,
+    uint16_t                     port,
+    xylem_http_handler_fn_t      handler,
+    void*                        userdata,
+    const xylem_http_srv_opts_t* opts) {
+    (void)host;
+    (void)port;
+    (void)handler;
+    (void)userdata;
+    (void)opts;
+    return NULL;
+}
+
+xylem_http_res_t* http_tls_request(
+    const char*                  method,
+    const char*                  url,
+    const void*                  body,
+    size_t                       body_len,
+    const char*                  content_type,
+    const xylem_http_hdr_t*      headers,
+    size_t                       header_count,
+    const xylem_http_cli_opts_t* opts) {
+    (void)method;
+    (void)url;
+    (void)body;
+    (void)body_len;
+    (void)content_type;
+    (void)headers;
+    (void)header_count;
+    (void)opts;
     return NULL;
 }

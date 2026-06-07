@@ -25,93 +25,385 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-#ifndef XYLEM_ADDR_MAXHOST
-#define XYLEM_ADDR_MAXHOST 46
-#endif
+typedef struct xylem_dtls_conn_s     xylem_dtls_conn_t;
+typedef struct xylem_dtls_ctx_s      xylem_dtls_ctx_t;
+typedef struct xylem_dtls_listener_s xylem_dtls_listener_t;
 
-typedef struct xylem_dtls_conn_s   xylem_dtls_conn_t;
-typedef struct xylem_dtls_ctx_s    xylem_dtls_ctx_t;
-typedef struct xylem_dtls_server_s xylem_dtls_server_t;
+typedef struct xylem_dtls_opts_s {
+    /**
+     * Timeout in milliseconds for completing the DTLS handshake.
+     *
+     * - Dial: covers the handshake (with retransmissions).
+     * - Accept: per-session handshake timeout on the server side.
+     *
+     * 0 means default (30s).
+     */
+    uint64_t    handshake_timeout_ms;
+    /**
+     * Expected peer identity. Accepts a DNS hostname or numeric IP
+     * literal (IPv4 or IPv6). Drives SNI (only sent for DNS names;
+     * RFC 6066) and certificate identity verification.
+     */
+    const char* server_name;
+    /**
+     * Link-layer MTU hint used to bound the size of DTLS
+     * handshake/record datagrams so they are not IP-fragmented.
+     * Applies to both dial and accept.
+     *
+     * The TLS engine drives the connection over in-memory buffers, not
+     * a socket the protocol stack can probe, so it cannot discover the
+     * path MTU on its own. With 0, a small conservative default is used
+     * (the handshake still works, just with more fragments); set this
+     * to your link MTU (e.g. 1500) for efficient, unfragmented
+     * handshakes.
+     */
+    uint16_t    mtu;
+} xylem_dtls_opts_t;
 
-/* DTLS event callback set. */
-typedef struct xylem_dtls_handler_s {
-    void (*on_connect)(xylem_dtls_conn_t* dtls);
-    void (*on_accept)(xylem_dtls_server_t* server,
-                      xylem_dtls_conn_t* dtls);
-    void (*on_read)(xylem_dtls_conn_t* dtls,
-                    void* data, size_t len);
-    void (*on_close)(xylem_dtls_conn_t* dtls,
-                     int err, const char* errmsg);
-} xylem_dtls_handler_t;
-
+/**
+ * @brief Create a DTLS context.
+ *
+ * Defaults: as a client, the server certificate is verified; as a
+ * server, no client certificate is requested; DTLS 1.2 minimum; cookie
+ * exchange enabled for server-side anti-amplification. See
+ * xylem_dtls_ctx_verify_server / verify_client to change the
+ * verification defaults.
+ *
+ * @return Context handle, or NULL on failure.
+ */
 extern xylem_dtls_ctx_t* xylem_dtls_ctx_create(void);
+
+/**
+ * @brief Destroy a DTLS context. NULL-safe.
+ *
+ * @param ctx  Context handle.
+ */
 extern void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx);
+
+/**
+ * @brief Load a PEM certificate chain and private key.
+ *
+ * When hostname is NULL the certificate becomes the default (used when
+ * no SNI matches). When hostname is non-NULL, the certificate is bound
+ * to that domain and selected via SNI during handshake.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert      Path to PEM certificate chain file.
+ * @param key       Path to PEM private key file.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
+                                    const char* hostname,
                                     const char* cert, const char* key);
-extern int xylem_dtls_ctx_set_ca(xylem_dtls_ctx_t* ctx,
-                                 const char* ca_file);
-extern void xylem_dtls_ctx_set_verify(xylem_dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Load a PEM certificate chain and private key from memory.
+ *
+ * Same semantics as xylem_dtls_ctx_load_cert but reads the PEM data
+ * from in-memory buffers instead of files, for certificates sourced
+ * from a secret store, environment, or embedded resource. The buffers
+ * are not retained after this call returns.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  Domain name for SNI selection, or NULL for default.
+ * @param cert_pem  PEM certificate chain bytes (leaf first).
+ * @param cert_len  Length of cert_pem in bytes.
+ * @param key_pem   PEM private key bytes.
+ * @param key_len   Length of key_pem in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_dtls_ctx_load_cert_mem(xylem_dtls_ctx_t* ctx,
+                                        const char* hostname,
+                                        const void* cert_pem,
+                                        size_t      cert_len,
+                                        const void* key_pem,
+                                        size_t      key_len);
+
+/**
+ * @brief Add a CA certificate file to the trust store.
+ *
+ * The CAs become trust anchors for verifying the peer certificate (the
+ * server on a client, or the client on an mTLS server). Only these CAs
+ * are trusted unless xylem_dtls_ctx_load_system_ca is also called,
+ * which is the narrow trust wanted for a private PKI or mTLS.
+ *
+ * @param ctx      Context handle.
+ * @param ca_file  Path to a PEM CA certificate (or bundle) file.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx,
+                                  const char* ca_file);
+
+/**
+ * @brief Trust public-CA roots: the system store plus an optional bundle.
+ *
+ * Lets a client verify servers using certificates from public CAs. Loads
+ * trust anchors additively from two sources:
+ *   1. the platform system trust store (when it is readable), and
+ *   2. fallback_ca_file, if non-NULL, as a PEM CA bundle.
+ * Both accumulate; the call succeeds if either source loads.
+ *
+ * Combine with xylem_dtls_ctx_load_ca to also trust a private CA. Avoid
+ * on an mTLS server, where it would accept any client certificate
+ * chaining to a public CA.
+ *
+ * The native system store is read on Linux, Windows, and macOS. It is NOT
+ * available on Android or iOS, and may be empty for a statically linked /
+ * cross-compiled / custom TLS build whose build-time trust path is absent
+ * on the target. For all of those, pass fallback_ca_file pointing at a CA
+ * bundle shipped with your app (e.g. curl's cacert.pem from
+ * https://curl.se/ca/cacert.pem); pass NULL to use only the system store.
+ *
+ * @param ctx               Context handle.
+ * @param fallback_ca_file  PEM CA bundle path, or NULL for none.
+ *
+ * @return 0 if at least one source loaded, -1 if none did.
+ */
+extern int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx,
+                                         const char* fallback_ca_file);
+
+/**
+ * @brief Set whether a client verifies the server certificate.
+ *
+ * Applies to the client role (xylem_dtls_dial). When enabled (the
+ * default) the server certificate chain is validated and, if
+ * opts.server_name is set, its identity is checked. Disabling it makes
+ * the client accept any certificate, which exposes it to MITM attacks;
+ * use only for tests or trusted networks.
+ *
+ * Has no effect on the server role. A context may be reused as both
+ * client and server; this setting only changes client dials.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to verify the server (default), false to skip.
+ */
+extern void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set whether a server requires a client certificate (mTLS).
+ *
+ * Applies to the server role (xylem_dtls_listen). When enabled the
+ * server requests a client certificate during the handshake and fails
+ * the connection if the client does not present one that verifies
+ * against the configured CA (see xylem_dtls_ctx_load_ca). Disabled by
+ * default, so a plain server accepts clients without a certificate.
+ *
+ * Has no effect on the client role. A context may be reused as both
+ * client and server; this setting only changes server accepts.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to require and verify a client cert, false to
+ *                request none (default).
+ */
+extern void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set the ALPN protocol list.
+ *
+ * @param ctx        Context handle.
+ * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
+ * @param count      Number of protocols.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
                                    const char** protocols, size_t count);
+
+/**
+ * @brief Enable NSS Key Log output for Wireshark decryption.
+ *
+ * @param ctx   Context handle.
+ * @param path  Output file path, or NULL to disable.
+ *
+ * @return 0 on success, -1 on failure.
+ */
 extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
                                      const char* path);
 
 /**
- * @brief Initiate an asynchronous DTLS connection.
+ * @brief Connect to a remote DTLS endpoint.
  *
- * @param loop     Event loop.
- * @param host     Target address string.
- * @param port     Target port.
- * @param ctx      DTLS context.
- * @param handler  Event callback set.
+ * Suspends the calling coroutine until the handshake completes or
+ * handshake_timeout_ms elapses (default 30s).
  *
- * @return DTLS session handle, or NULL on failure.
+ * The host parameter is the network destination; it is not used for
+ * certificate verification. Set opts->server_name to verify identity.
+ *
+ * @param host  Remote hostname or IP address.
+ * @param port  Remote port.
+ * @param ctx   DTLS context.
+ * @param opts  Options, or NULL for defaults.
+ *
+ * @return Connection handle, or NULL on failure or timeout.
  */
-extern xylem_dtls_conn_t* xylem_dtls_dial(const char* host,
-                                     uint16_t port,
-                                     xylem_dtls_ctx_t* ctx,
-                                     xylem_dtls_handler_t* handler);
+extern xylem_dtls_conn_t* xylem_dtls_dial(
+    const char*        host,
+    uint16_t           port,
+    xylem_dtls_ctx_t*  ctx,
+    xylem_dtls_opts_t* opts);
 
-extern int xylem_dtls_send(xylem_dtls_conn_t* dtls,
-                           const void* data, size_t len);
+/**
+ * @brief Create a DTLS listener bound to the given address.
+ *
+ * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
+ * @param port  Bind port.
+ * @param ctx   DTLS context with cert+key loaded.
+ * @param opts  Options, or NULL for defaults.
+ *
+ * @return Listener handle, or NULL on failure.
+ */
+extern xylem_dtls_listener_t* xylem_dtls_listen(
+    const char*        host,
+    uint16_t           port,
+    xylem_dtls_ctx_t*  ctx,
+    xylem_dtls_opts_t* opts);
+
+/**
+ * @brief Accept a connection from the listener.
+ *
+ * Suspends until a client completes the handshake.
+ *
+ * @param ln  Listener handle.
+ *
+ * @return Accepted connection, or NULL if the listener is closed.
+ */
+extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
+
+/**
+ * @brief Read a datagram from the connection.
+ *
+ * Suspends until data arrives, the read deadline passes, or
+ * the connection is closed.
+ *
+ * @param dtls  Connection handle.
+ * @param buf   Destination buffer.
+ * @param len   Buffer size.
+ *
+ * @return Bytes received (>0), 0 on peer close, -1 on error.
+ */
+extern int xylem_dtls_read(
+    xylem_dtls_conn_t* dtls,
+    void*              buf,
+    int                len);
+
+/**
+ * @brief Write a datagram to the connection.
+ *
+ * @param dtls  Connection handle.
+ * @param data  Source buffer.
+ * @param len   Number of bytes to send.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_dtls_write(
+    xylem_dtls_conn_t* dtls,
+    const void*        data,
+    int                len);
+
+/**
+ * @brief Set the read deadline for the connection.
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_dtls_read() calls return -1.
+ *
+ * @param dtls         Connection handle.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
+ */
+extern void xylem_dtls_set_read_deadline(
+    xylem_dtls_conn_t* dtls,
+    uint64_t           deadline_ms);
+
+/**
+ * @brief Set the write deadline for the connection.
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_dtls_write() calls return -1.
+ *
+ * @param dtls         Connection handle.
+ * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ *                     to clear.
+ */
+extern void xylem_dtls_set_write_deadline(
+    xylem_dtls_conn_t* dtls,
+    uint64_t           deadline_ms);
+
+/**
+ * @brief Close a connection. Idempotent.
+ *
+ * Wakes any coroutine blocked in recv/send.
+ *
+ * @param dtls  Connection handle.
+ */
 extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
-extern void xylem_dtls_conn_acquire(xylem_dtls_conn_t* dtls);
-extern void xylem_dtls_conn_release(xylem_dtls_conn_t* dtls);
+
+/**
+ * @brief Close and destroy a listener. Idempotent.
+ *
+ * Closes all active sessions, stops the dispatcher coroutine,
+ * and frees all resources.
+ *
+ * @param ln  Listener handle.
+ */
+extern void xylem_dtls_close_listener(xylem_dtls_listener_t* ln);
+
+/**
+ * @brief Get the negotiated ALPN protocol.
+ *
+ * @param dtls  Connection handle.
+ *
+ * @return Protocol string, or NULL if none negotiated.
+ */
 extern const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls);
 
 /**
- * @brief Get the peer address of a DTLS session.
+ * @brief Get the remote address of the connection.
  *
- * @param dtls  DTLS session handle.
- * @param host  Output buffer, must be at least XYLEM_ADDR_MAXHOST bytes.
- * @param port  Output port number.
+ * @param dtls      Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the remote port.
  *
- * @return 0 on success, -1 on failure.
+ * @return 0 on success, -1 on error.
  */
-extern int xylem_dtls_remote_addr(xylem_dtls_conn_t* dtls,
-                                  char host[XYLEM_ADDR_MAXHOST],
-                                  uint16_t* port);
-
-extern void* xylem_dtls_get_userdata(xylem_dtls_conn_t* dtls);
-extern void xylem_dtls_set_userdata(xylem_dtls_conn_t* dtls, void* ud);
+extern int xylem_dtls_remote_addr(
+    xylem_dtls_conn_t* dtls,
+    char*              host,
+    size_t             host_len,
+    uint16_t*          port);
 
 /**
- * @brief Create a DTLS server and start listening.
+ * @brief Get the local address of the connection.
  *
- * @param loop     Event loop.
- * @param host     Bind address string.
- * @param port     Bind port.
- * @param ctx      DTLS context with cert+key loaded.
- * @param handler  Event callback set.
+ * @param dtls      Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
  *
- * @return Server handle, or NULL on failure.
+ * @return 0 on success, -1 on error.
  */
-extern xylem_dtls_server_t* xylem_dtls_listen(const char* host,
-                                              uint16_t port,
-                                              xylem_dtls_ctx_t* ctx,
-                                              xylem_dtls_handler_t* handler);
+extern int xylem_dtls_local_addr(
+    xylem_dtls_conn_t* dtls,
+    char*              host,
+    size_t             host_len,
+    uint16_t*          port);
 
-extern void xylem_dtls_close_server(xylem_dtls_server_t* server);
-extern void* xylem_dtls_server_get_userdata(xylem_dtls_server_t* server);
-extern void xylem_dtls_server_set_userdata(xylem_dtls_server_t* server,
-                                           void* ud);
+/**
+ * @brief Get the local address of the listener.
+ *
+ * @param ln        Listener handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_dtls_listener_addr(
+    xylem_dtls_listener_t* ln,
+    char*                  host,
+    size_t                 host_len,
+    uint16_t*              port);

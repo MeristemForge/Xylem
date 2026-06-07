@@ -1,5 +1,4 @@
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-dtls.h"
 
 #include <stdio.h>
@@ -98,7 +97,7 @@ static int _ensure_cert(void) {
 }
 
 static void _on_read(xylem_dtls_conn_t* dtls, void* data, size_t len) {
-    xylem_dtls_send(dtls, data, len);
+    xylem_dtls_write(dtls, data, len);
 }
 
 int main(int argc, char** argv) {
@@ -120,12 +119,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (xylem_dtls_ctx_load_cert(ctx, CERT_FILE, KEY_FILE) != 0) {
+    if (xylem_dtls_ctx_load_cert(ctx, NULL, CERT_FILE, KEY_FILE) != 0) {
         fprintf(stderr, "failed to load %s / %s\n", CERT_FILE, KEY_FILE);
         xylem_dtls_ctx_destroy(ctx);
         return 1;
     }
-    xylem_dtls_ctx_set_verify(ctx, false);
+    xylem_dtls_ctx_verify_client(ctx, false);
 
     xylem_addr_t addr;
     xylem_addr_pton("0.0.0.0", (uint16_t)port, &addr);

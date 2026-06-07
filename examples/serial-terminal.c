@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, _signal_handler);
     signal(SIGTERM, _signal_handler);
 
-    xylem_logger_init(NULL, XYLEM_LOGGER_LEVEL_INFO, false, 0);
+    xylem_logger_init(NULL, NULL);
 
     xylem_serial_baudrate_t baudrate = XYLEM_SERIAL_BAUDRATE_115200;
     if (argc >= 3) {

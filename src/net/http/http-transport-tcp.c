@@ -19,142 +19,143 @@
  *  IN THE SOFTWARE.
  */
 
-#include "http-transport.h"
+/*
+ * Plain-TCP transport factory for the HTTP engine. Builds an
+ * http_transport_t over xylem_tcp and drives accept/dial. Always built.
+ */
+
+#include "http-transport-tcp.h"
+#include "http-utils.h"
+
+#include "xylem/net/xylem-tcp.h"
+
+#include "runtime/runtime.h"
 
 #include <stdlib.h>
 
-/**
- * Per-connection context that bridges xylem_tcp callbacks to the
- * generic http_transport_cb_t interface.
+static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
+    return (http_transport_t){
+        .conn            = conn,
+        .read            = (int (*)(void*, void*, int))xylem_tcp_read,
+        .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
+        .close           = (void (*)(void*))xylem_tcp_close,
+        .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
+        .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
+        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
+        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
+        .shutdown_wr     = (int (*)(void*))xylem_tcp_shutdown_wr,
+    };
+}
+
+/*
+ * When dialing through a plain-HTTP proxy, ctx carries the proxy
+ * descriptor: the TCP connection targets the proxy (not the origin) and
+ * the request line uses absolute-form (handled by http_req_serialize via
+ * absolute_form). A NULL ctx means a direct connection to the origin.
  */
-typedef struct {
-    http_transport_cb_t* cb;
-    void*                ctx;
-} _http_tcp_bridge_t;
+static http_transport_t _http_dial(const char* host, uint16_t port,
+                                   uint64_t timeout_ms, void* ctx) {
+    const xylem_http_proxy_t* proxy = (const xylem_http_proxy_t*)ctx;
 
-static void _http_tcp_connect_cb(xylem_tcp_conn_t* conn) {
-    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
-    br->cb->on_connect(conn, br->ctx);
-}
-
-static void _http_tcp_accept_cb(xylem_tcp_listener_t* server,
-                                xylem_tcp_conn_t* conn) {
-    _http_tcp_bridge_t* br = xylem_tcp_listener_get_userdata(server);
-    xylem_tcp_set_userdata(conn, br);
-    br->cb->on_accept(conn, br->ctx);
-}
-
-static void _http_tcp_read_cb(xylem_tcp_conn_t* conn,
-                              void* data, size_t len) {
-    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
-    br->cb->on_read(conn, br->ctx, data, len);
-}
-
-static void _http_tcp_write_done_cb(xylem_tcp_conn_t* conn,
-                                    const void* data, size_t len, int status) {
-    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
-    if (br->cb->on_write_done) {
-        br->cb->on_write_done(conn, br->ctx, data, len, status);
+    const char* dial_host = host;
+    uint16_t    dial_port = port;
+    if (proxy && proxy->host) {
+        dial_host = proxy->host;
+        dial_port = proxy->port;
     }
-}
 
-static void _http_tcp_close_cb(xylem_tcp_conn_t* conn, int err,
-                               const char* errmsg) {
-    _http_tcp_bridge_t* br = xylem_tcp_get_userdata(conn);
-    br->cb->on_close(conn, br->ctx, err, errmsg);
-    free(br);
-}
-
-static void* _http_tcp_dial(loop_t* loop, addr_t* addr,
-                            http_transport_cb_t* cb, void* ctx,
-                            xylem_tcp_opts_t* opts) {
-    _http_tcp_bridge_t* br =
-        (_http_tcp_bridge_t*)calloc(1, sizeof(_http_tcp_bridge_t));
-    if (!br) {
-        return NULL;
-    }
-    br->cb  = cb;
-    br->ctx = ctx;
-
-    xylem_tcp_handler_t handler = {
-        .on_connect    = _http_tcp_connect_cb,
-        .on_read       = _http_tcp_read_cb,
-        .on_write_done = _http_tcp_write_done_cb,
-        .on_close      = _http_tcp_close_cb,
-    };
-
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(loop, addr, &handler, opts);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(dial_host, dial_port,
+                                            timeout_ms, NULL);
     if (!conn) {
-        free(br);
-        return NULL;
+        return (http_transport_t){0};
     }
-    xylem_tcp_set_userdata(conn, br);
-    return conn;
+    return _http_make_transport(conn);
 }
 
-static void* _http_tcp_listen(loop_t* loop, addr_t* addr,
-                              http_transport_cb_t* cb, void* ctx,
-                              xylem_tcp_opts_t* opts,
-                              const char* tls_cert, const char* tls_key) {
-    (void)tls_cert;
-    (void)tls_key;
+static void _http_accept_coroutine(void* arg) {
+    http_srv_t* srv = (http_srv_t*)arg;
 
-    _http_tcp_bridge_t* br =
-        (_http_tcp_bridge_t*)calloc(1, sizeof(_http_tcp_bridge_t));
-    if (!br) {
+    for (;;) {
+        xylem_tcp_conn_t* conn =
+            xylem_tcp_accept((xylem_tcp_listener_t*)srv->listener);
+        if (!conn) {
+            break;
+        }
+
+        http_srv_conn_ctx_t* ctx =
+            (http_srv_conn_ctx_t*)malloc(sizeof(*ctx));
+        if (!ctx) {
+            xylem_tcp_close(conn);
+            continue;
+        }
+        ctx->srv       = srv;
+        ctx->transport = _http_make_transport(conn);
+        ctx->transport.remote_addr(
+            ctx->transport.conn, ctx->remote_host,
+            sizeof(ctx->remote_host), &ctx->remote_port);
+
+        runtime_spawn(http_srv_conn_coroutine, ctx);
+    }
+}
+
+xylem_http_srv_t* http_tcp_listen(
+    const char*                  host,
+    uint16_t                     port,
+    xylem_http_handler_fn_t      handler,
+    void*                        userdata,
+    const xylem_http_srv_opts_t* opts) {
+
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(host, port, NULL);
+    if (!ln) {
         return NULL;
     }
-    br->cb  = cb;
-    br->ctx = ctx;
 
-    xylem_tcp_handler_t handler = {
-        .on_accept     = _http_tcp_accept_cb,
-        .on_read       = _http_tcp_read_cb,
-        .on_write_done = _http_tcp_write_done_cb,
-        .on_close      = _http_tcp_close_cb,
-    };
-
-    xylem_tcp_listener_t* srv = xylem_tcp_listen(loop, addr, &handler, opts);
+    http_srv_t* srv = (http_srv_t*)calloc(1, sizeof(*srv));
     if (!srv) {
-        free(br);
+        xylem_tcp_close_listener(ln);
         return NULL;
     }
-    xylem_tcp_listener_set_userdata(srv, br);
-    return srv;
+    srv->listener       = ln;
+    srv->close_listener = (void (*)(void*))xylem_tcp_close_listener;
+    srv->handler        = handler;
+    srv->userdata       = userdata;
+    http_srv_init(srv, opts);
+
+    xylem_tcp_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
+
+    runtime_spawn(_http_accept_coroutine, srv);
+
+    return (xylem_http_srv_t*)srv;
 }
 
-static int _http_tcp_send(void* handle, const void* data, size_t len) {
-    return xylem_tcp_send(handle, data, len);
-}
+xylem_http_res_t* http_tcp_request(
+    const char*                  method,
+    const char*                  url,
+    const void*                  body,
+    size_t                       body_len,
+    const char*                  content_type,
+    const xylem_http_hdr_t*      headers,
+    size_t                       header_count,
+    const xylem_http_cli_opts_t* opts) {
 
-static void _http_tcp_close_conn(void* handle) {
-    xylem_tcp_close(handle);
-}
+    /* Resolve the proxy: explicit opts->proxy wins, else the environment
+     * (http_proxy / no_proxy). A plain-HTTP proxy forwards via absolute-
+     * form, so dial the proxy and request absolute-form; no CONNECT
+     * tunnel. */
+    const xylem_http_proxy_t* proxy = opts ? opts->proxy : NULL;
+    xylem_http_proxy_t* env_proxy = NULL;
+    if (!proxy) {
+        env_proxy = http_proxy_from_env(url);
+        proxy = env_proxy;
+    }
 
-static void _http_tcp_close_server(void* handle) {
-    _http_tcp_bridge_t* br = xylem_tcp_listener_get_userdata(handle);
-    xylem_tcp_close_listener(handle);
-    free(br);
-}
+    bool absolute_form = (proxy && proxy->host);
 
-static void _http_tcp_set_userdata(void* handle, void* ud) {
-    xylem_tcp_set_userdata(handle, ud);
-}
+    xylem_http_res_t* res = http_do_request(
+        method, url, body, body_len, content_type,
+        headers, header_count, opts, absolute_form, _http_dial,
+        (void*)proxy);
 
-static void* _http_tcp_get_userdata(void* handle) {
-    return xylem_tcp_get_userdata(handle);
-}
-
-static const http_transport_vt_t _http_tcp_vt = {
-    .dial         = _http_tcp_dial,
-    .listen       = _http_tcp_listen,
-    .send         = _http_tcp_send,
-    .close_conn   = _http_tcp_close_conn,
-    .close_server = _http_tcp_close_server,
-    .set_userdata = _http_tcp_set_userdata,
-    .get_userdata = _http_tcp_get_userdata,
-};
-
-const http_transport_vt_t* http_transport_tcp(void) {
-    return &_http_tcp_vt;
+    http_proxy_from_env_free(env_proxy);
+    return res;
 }

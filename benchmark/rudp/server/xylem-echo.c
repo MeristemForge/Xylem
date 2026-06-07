@@ -1,5 +1,4 @@
 #include "xylem.h"
-#include "runtime/loop.h"
 #include "xylem/net/xylem-rudp.h"
 
 #include <stdio.h>
@@ -8,7 +7,7 @@
 #define DEFAULT_PORT 9002
 
 static void _on_read(xylem_rudp_conn_t* rudp, void* data, size_t len) {
-    xylem_rudp_send(rudp, data, len);
+    xylem_rudp_write(rudp, data, len);
 }
 
 int main(int argc, char** argv) {

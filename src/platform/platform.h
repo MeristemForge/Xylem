@@ -26,3 +26,5 @@ _Pragma("once")
 #include "platform-poller.h"
 #include "platform-serial.h"
 #include "platform-socket.h"
+#include "platform-string.h"
+#include "platform-vmem.h"
