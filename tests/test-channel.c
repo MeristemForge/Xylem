@@ -190,16 +190,24 @@ static void test_channel_timeout_deliver(void) {
  * yields a timeout with the message left in the queue, freed at
  * destroy; that is correct and indistinguishable from the outside,
  * so this is a robustness stress test rather than a deterministic
- * regression. */
+ * regression.
+ *
+ * Teardown is synchronized deterministically with a waitgroup rather
+ * than a fixed sleep: the sender done()s after send() returns and the
+ * receiver wait()s before draining/destroying. This guarantees the
+ * send has fully completed before the channel is freed (no race with
+ * a late send touching a destroyed channel) and keeps the test fast
+ * regardless of how late the send lands. */
 #define TO_RACE_ROUNDS 200
 
 typedef struct {
-    xylem_channel_t* ch;
-    int              payload;
-    uint64_t         timeout_ms;
-    uint64_t         send_at_ms;
-    int              got_timeout;
-    int              got_message;
+    xylem_channel_t*   ch;
+    xylem_waitgroup_t* wg;
+    int                payload;
+    uint64_t           timeout_ms;
+    uint64_t           send_at_ms;
+    int                got_timeout;
+    int                got_message;
 } _race_ctx_t;
 
 static void _race_sender_coro(void* arg) {
@@ -211,6 +219,9 @@ static void _race_sender_coro(void* arg) {
         xylem_sleep(ctx->send_at_ms - now);
     }
     xylem_channel_send(ctx->ch, &ctx->payload);
+    /* Signal completion: the send has fully returned, so the receiver
+     * may now safely drain and destroy the channel. */
+    xylem_waitgroup_done(ctx->wg);
 }
 
 static void _race_recv_coro(void* arg) {
@@ -227,13 +238,16 @@ static void _race_recv_coro(void* arg) {
      * aborts). The receiver coroutine itself drains any late-delivered
      * message and tears the channel down -- a separate reaper calling
      * recv would be a second concurrent consumer and race q->head.
-     * The send is aimed at the deadline, so on a timeout it may land
-     * just afterward; wait it out, then drain so the channel is empty
-     * before destroy. A late message left in the queue is still a
-     * timeout from the outside, so got_message is not set here. */
-    xylem_sleep(40);
-    void* leftover;
-    while ((leftover = xylem_channel_recv_timeout(ctx->ch, 1)) != NULL) {
+     * Wait for the sender to finish (deterministic, no timing guess):
+     * once done() has fired the send has returned and the node is
+     * enqueued. On a timeout the message is therefore now sitting in
+     * the queue -- drain exactly that one (a plain recv returns it
+     * immediately, it is already present). A late message left in the
+     * queue is still a timeout from the outside, so got_message is not
+     * set here. */
+    xylem_waitgroup_wait(ctx->wg);
+    if (ctx->got_timeout) {
+        void* leftover = xylem_channel_recv(ctx->ch);
         ASSERT(leftover == &ctx->payload);
     }
     xylem_channel_destroy(ctx->ch);
@@ -244,9 +258,10 @@ static void _race_recv_coro(void* arg) {
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
     _start_safety_timer();
-    ctx->timeout_ms = 15;
+    ctx->timeout_ms = 5;
     ctx->send_at_ms =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 15;
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 5;
+    xylem_waitgroup_add(ctx->wg, 1);
     xylem_spawn(_race_recv_coro, ctx);
     xylem_spawn(_race_sender_coro, ctx);
 }
@@ -256,10 +271,12 @@ static void test_channel_timeout_race(void) {
     for (int round = 0; round < TO_RACE_ROUNDS; round++) {
         _race_ctx_t ctx = {0};
         ctx.ch      = xylem_channel_create();
+        ctx.wg      = xylem_waitgroup_create();
         ctx.payload = round;
         xylem_run(_race_main, &ctx, &_rt_opts);
 
         ASSERT(ctx.got_message ^ ctx.got_timeout);
+        xylem_waitgroup_destroy(ctx.wg);
     }
 }
 
