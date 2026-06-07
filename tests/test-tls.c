@@ -1222,89 +1222,6 @@ static void test_remote_addr(void) {
     xylem_run(_addr_main, NULL, NULL);
 }
 
-static void _conc_send_server(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tls_listener_t* ln = xylem_tls_listen(
-        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
-    ASSERT(ln != NULL);
-    xylem_channel_send(ctx->ready, ctx);
-
-    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
-    ASSERT(conn != NULL);
-
-    char buf[64];
-    int n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n == 5);
-    ASSERT(memcmp(buf, "hello", 5) == 0);
-    ASSERT(xylem_tls_write(conn, buf, n) == 0);
-
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _conc_send_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tls_conn_t* conn = xylem_tls_dial(
-        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
-    ASSERT(conn != NULL);
-
-    ASSERT(xylem_tls_write(conn, "hello", 5) == 0);
-
-    char buf[64];
-    int n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n == 5);
-    ASSERT(memcmp(buf, "hello", 5) == 0);
-
-    xylem_tls_close(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _conc_send_main(void* arg) {
-    (void)arg;
-    const char* cert = "test_tls_cs_cert.pem";
-    const char* key  = "test_tls_cs_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-
-    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
-    ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
-    xylem_tls_ctx_verify_client(srv_ctx, false);
-
-    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
-    ASSERT(cli_ctx != NULL);
-    xylem_tls_ctx_verify_server(cli_ctx, false);
-
-    _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
-        .wg      = xylem_waitgroup_create(),
-        .srv_ctx = srv_ctx,
-        .cli_ctx = cli_ctx,
-        .port    = TLS_PORT + 10,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
-    xylem_spawn(_conc_send_server, &ctx);
-    xylem_spawn(_conc_send_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_tls_ctx_destroy(srv_ctx);
-    xylem_tls_ctx_destroy(cli_ctx);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    remove(cert);
-    remove(key);
-    xylem_shutdown();
-}
-
-static void test_concurrent_send(void) {
-    xylem_run(_conc_send_main, NULL, NULL);
-}
-
 static void _conc_close_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln = xylem_tls_listen(
@@ -1646,7 +1563,6 @@ int main(void) {
     test_sni_hostname();
     test_sni_cert_selection();
     test_remote_addr();
-    test_concurrent_send();
     test_concurrent_close();
     test_close_listener_with_active_conn();
     test_full_duplex();

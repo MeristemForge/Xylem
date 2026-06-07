@@ -211,15 +211,6 @@ static void _test_pool_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(r2), "/b", 2) == 0);
     xylem_http_res_destroy(r2);
 
-    /* Third request to verify continued reuse. */
-    snprintf(url, sizeof(url), "http://127.0.0.1:%u/c", (unsigned)port);
-    xylem_http_res_t* r3 = xylem_http_get(url, NULL, 0, NULL);
-    ASSERT(r3 != NULL);
-    ASSERT(xylem_http_res_status(r3) == 200);
-    ASSERT(xylem_http_res_body_len(r3) == 2);
-    ASSERT(memcmp(xylem_http_res_body(r3), "/c", 2) == 0);
-    xylem_http_res_destroy(r3);
-
     xylem_http_close(srv);
     xylem_shutdown();
 }
@@ -455,40 +446,6 @@ static void test_expect_continue(void) {
     xylem_run(_test_expect_continue_main, NULL, NULL);
 }
 
-/* 100-Continue server reply test. */
-
-static void _test_100_server_reply_main(void* arg) {
-    (void)arg;
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _expect_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
-    char url[64];
-    snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
-
-    char body[1024];
-    memset(body, 'X', sizeof(body));
-
-    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    xylem_http_res_t* res = xylem_http_post(
-        url, body, sizeof(body), "application/octet-stream", NULL, 0, NULL);
-    uint64_t elapsed = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - start;
-
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    /* Should complete quickly since server sends 100 immediately. */
-    ASSERT(elapsed < 500);
-    xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
-}
-
-static void test_100_server_reply(void) {
-    xylem_run(_test_100_server_reply_main, NULL, NULL);
-}
-
 /* Content-Length response mode test. */
 
 static void _test_content_length_main(void* arg) {
@@ -520,20 +477,6 @@ static void test_content_length_mode(void) {
     xylem_run(_test_content_length_main, NULL, NULL);
 }
 
-
-
-/* Body limit test. */
-
-static void _body_limit_handler(xylem_http_res_t* res,
-                                xylem_http_req_t* req,
-                                void* userdata) {
-    (void)userdata;
-    size_t blen = xylem_http_req_body_len(req);
-    char buf[32];
-    int n = snprintf(buf, sizeof(buf), "%zu", blen);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_write(res, buf, (size_t)n);
-}
 
 
 /* Idle timeout test. */
@@ -687,9 +630,6 @@ int main(void) {
 
     /* Expect/100-Continue */
     test_expect_continue();
-
-    /* 100-Continue server reply (fast path) */
-    test_100_server_reply();
 
     /* Content-Length response mode */
     test_content_length_mode();

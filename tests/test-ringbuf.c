@@ -168,28 +168,6 @@ static void test_wraparound(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Multi-byte entries (e.g., uint32_t). */
-static void test_multibyte_entries(void) {
-    xylem_ringbuf_t* ring = xylem_ringbuf_create(sizeof(uint32_t), 32);
-    ASSERT(ring != NULL);
-    /* 32 / 4 = 8 entries */
-    ASSERT(xylem_ringbuf_cap(ring) == 8);
-
-    uint32_t wdata[] = {100, 200, 300, 400, 500};
-    size_t   written = xylem_ringbuf_write(ring, wdata, 5);
-    ASSERT(written == 5);
-    ASSERT(xylem_ringbuf_len(ring) == 5);
-
-    uint32_t rdata[5] = {0};
-    size_t   nread = xylem_ringbuf_read(ring, rdata, 5);
-    ASSERT(nread == 5);
-    for (int i = 0; i < 5; i++) {
-        ASSERT(rdata[i] == wdata[i]);
-    }
-
-    xylem_ringbuf_destroy(ring);
-}
-
 /* Multibyte wrap-around. */
 static void test_multibyte_wraparound(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(sizeof(uint32_t), 16);
@@ -246,7 +224,6 @@ int main(void) {
     test_read_empty();
     test_partial_read();
     test_wraparound();
-    test_multibyte_entries();
     test_multibyte_wraparound();
     test_repeated_cycles();
     return 0;

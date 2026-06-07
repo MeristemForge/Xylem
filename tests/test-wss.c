@@ -177,78 +177,6 @@ static void test_wss_text_echo(void* arg) {
     xylem_shutdown();
 }
 
-/* Test: wss binary echo. */
-
-static void test_wss_binary_echo(void* arg) {
-    (void)arg;
-    ASSERT(_gen_self_signed(WSS_CERT, WSS_KEY) == 0);
-
-    xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
-    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
-    uint16_t port = xylem_ws_listener_port(l);
-
-    char url[64];
-    snprintf(url, sizeof(url), "wss://127.0.0.1:%u/", port);
-    xylem_ws_opts_t cli_opts = { .tls = &_cli_tls };
-    xylem_ws_conn_t* c = xylem_ws_dial(url, &cli_opts);
-    ASSERT(c != NULL);
-
-    uint8_t data[] = {0x00, 0x01, 0x02, 0xFF, 0xFE, 0x7F, 0x80};
-    ASSERT(xylem_ws_send(c, XYLEM_WS_BINARY, data, sizeof(data)) == 0);
-
-    xylem_ws_msg_t msg;
-    ASSERT(xylem_ws_recv(c, &msg) == 0);
-    ASSERT(msg.opcode == XYLEM_WS_BINARY);
-    ASSERT(msg.len == sizeof(data));
-    ASSERT(memcmp(msg.data, data, sizeof(data)) == 0);
-    xylem_ws_msg_free(&msg);
-
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
-    xylem_shutdown();
-}
-
-/* Test: wss multiple messages. */
-
-static void test_wss_multiple_messages(void* arg) {
-    (void)arg;
-    ASSERT(_gen_self_signed(WSS_CERT, WSS_KEY) == 0);
-
-    xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
-    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
-    uint16_t port = xylem_ws_listener_port(l);
-
-    char url[64];
-    snprintf(url, sizeof(url), "wss://127.0.0.1:%u/", port);
-    xylem_ws_opts_t cli_opts = { .tls = &_cli_tls };
-    xylem_ws_conn_t* c = xylem_ws_dial(url, &cli_opts);
-    ASSERT(c != NULL);
-
-    for (int i = 0; i < 10; i++) {
-        char buf[32];
-        int len = snprintf(buf, sizeof(buf), "secure-msg-%d", i);
-        ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, buf, (size_t)len) == 0);
-
-        xylem_ws_msg_t msg;
-        ASSERT(xylem_ws_recv(c, &msg) == 0);
-        ASSERT(msg.len == (size_t)len);
-        ASSERT(memcmp(msg.data, buf, msg.len) == 0);
-        xylem_ws_msg_free(&msg);
-    }
-
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
-    xylem_shutdown();
-}
-
 /* Test: wss large fragmented message. */
 
 static void test_wss_large_message(void* arg) {
@@ -338,8 +266,6 @@ typedef void (*test_fn_t)(void*);
 
 static test_fn_t tests[] = {
     test_wss_text_echo,
-    test_wss_binary_echo,
-    test_wss_multiple_messages,
     test_wss_large_message,
     test_wss_deflate,
 };

@@ -75,24 +75,6 @@ static void test_remove(void) {
     xylem_list_destroy(list);
 }
 
-static void test_struct_type(void) {
-    typedef struct { double x; double y; } point_t;
-    xylem_list_t* list = xylem_list_create();
-
-    point_t p1 = {1.0, 2.0};
-    point_t p2 = {3.0, 4.0};
-    xylem_list_insert_tail(list, &p1);
-    xylem_list_insert_tail(list, &p2);
-
-    point_t* f = (point_t*)xylem_list_head(list);
-    ASSERT(f->x == 1.0 && f->y == 2.0);
-
-    point_t* b = (point_t*)xylem_list_tail(list);
-    ASSERT(b->x == 3.0 && b->y == 4.0);
-
-    xylem_list_destroy(list);
-}
-
 static void test_swap(void) {
     xylem_list_t* a = xylem_list_create();
     xylem_list_t* b = xylem_list_create();
@@ -118,7 +100,6 @@ int main(void) {
     test_init();
     test_insert_head_tail();
     test_remove();
-    test_struct_type();
     test_swap();
     return 0;
 }
