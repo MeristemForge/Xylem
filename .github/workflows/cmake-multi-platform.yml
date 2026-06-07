@@ -231,3 +231,177 @@ jobs:
 
     - name: Build (iOS)
       run: cmake --build build
+
+  # ── Android (x86_64 emulator, build + TLS + RUN TESTS) ──
+  test-android:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # KVM is required for hardware-accelerated x86_64 emulation.
+    - name: Enable KVM
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+
+    - name: Cache OpenSSL (Android x86_64)
+      id: cache-openssl-android-x86
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/openssl-android-x86_64
+        key: openssl-${{ env.OPENSSL_VERSION }}-android-x86_64
+
+    - name: Cross-compile OpenSSL for Android x86_64
+      if: steps.cache-openssl-android-x86.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" -o openssl.tar.gz
+        tar xzf openssl.tar.gz
+        cd "openssl-${OPENSSL_VERSION}"
+
+        export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+        export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
+        ./Configure android-x86_64 \
+          -D__ANDROID_API__=29 \
+          --prefix="${{ github.workspace }}/openssl-android-x86_64" \
+          --openssldir="${{ github.workspace }}/openssl-android-x86_64/ssl" \
+          no-docs no-tests no-shared
+        make -j$(nproc)
+        make install_sw
+
+    - name: Configure CMake (Android x86_64)
+      shell: bash
+      run: |
+        cmake \
+          -B build \
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI=x86_64 \
+          -DANDROID_PLATFORM=android-29 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_FIND_ROOT_PATH="${{ github.workspace }}/openssl-android-x86_64" \
+          -DXYLEM_ENABLE_TESTING=ON \
+          -DXYLEM_ENABLE_TLS=ON \
+          -DOPENSSL_ROOT_DIR="${{ github.workspace }}/openssl-android-x86_64" \
+          -S .
+
+    - name: Build (Android x86_64)
+      run: cmake --build build --config Release -j
+
+    - name: Run tests on Android emulator
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: 29
+        arch: x86_64
+        target: google_apis
+        force-avd-creation: false
+        emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+        disable-animations: true
+        script: |
+          adb wait-for-device
+          adb shell "mkdir -p /data/local/tmp/xylem"
+          fail=0
+          for bin in build/tests/test-*; do
+            [ -f "$bin" ] && [ -x "$bin" ] || continue
+            name="$(basename "$bin")"
+            echo "::group::$name"
+            adb push "$bin" /data/local/tmp/xylem/ >/dev/null
+            adb shell "cd /data/local/tmp/xylem && chmod 755 ./$name && ./$name; echo __EXIT__:\$?" \
+              > run.log 2>&1
+            cat run.log
+            code="$(grep '__EXIT__:' run.log | tail -1 | sed 's/.*__EXIT__://' | tr -d '\r ')"
+            echo "::endgroup::"
+            if [ "$code" != "0" ]; then
+              echo "FAILED: $name (exit ${code:-?})"
+              fail=1
+            fi
+          done
+          exit $fail
+
+  # ── iOS (arm64 simulator, build + TLS + RUN TESTS) ──
+  test-ios:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache OpenSSL (iOS simulator)
+      id: cache-openssl-ios-sim
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/openssl-ios-sim
+        key: openssl-${{ env.OPENSSL_VERSION }}-ios-simulator-arm64
+
+    - name: Cross-compile OpenSSL for iOS simulator (arm64)
+      if: steps.cache-openssl-ios-sim.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" -o openssl.tar.gz
+        tar xzf openssl.tar.gz
+        cd "openssl-${OPENSSL_VERSION}"
+
+        # iossimulator-xcrun builds against the iPhoneSimulator SDK; -arch
+        # picks the slice (arm64 to match the Apple-silicon CI runner).
+        export IPHONEOS_DEPLOYMENT_TARGET=15.0
+        ./Configure iossimulator-xcrun -arch arm64 \
+          --prefix="${{ github.workspace }}/openssl-ios-sim" \
+          --openssldir="${{ github.workspace }}/openssl-ios-sim/ssl" \
+          no-docs no-tests no-shared
+        make -j$(sysctl -n hw.ncpu)
+        make install_sw
+
+    - name: Configure CMake (iOS simulator)
+      shell: bash
+      run: |
+        cmake \
+          -B build \
+          -G Ninja \
+          -DCMAKE_SYSTEM_NAME=iOS \
+          -DCMAKE_OSX_SYSROOT=iphonesimulator \
+          -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_FIND_ROOT_PATH="${{ github.workspace }}/openssl-ios-sim" \
+          -DXYLEM_ENABLE_TESTING=ON \
+          -DXYLEM_ENABLE_TLS=ON \
+          -DOPENSSL_ROOT_DIR="${{ github.workspace }}/openssl-ios-sim" \
+          -S .
+
+    - name: Build (iOS simulator)
+      run: cmake --build build
+
+    - name: Boot iOS simulator
+      id: sim
+      shell: bash
+      run: |
+        # Pick the newest available iPhone device type + iOS runtime.
+        DEVICE_ID="$(xcrun simctl create xylem-ci \
+          "$(xcrun simctl list devicetypes -j | python3 -c 'import sys,json; d=[x for x in json.load(sys.stdin)["devicetypes"] if "iPhone" in x["name"]]; print(d[-1]["identifier"])')")"
+        xcrun simctl boot "$DEVICE_ID"
+        xcrun simctl bootstatus "$DEVICE_ID" -b
+        echo "device_id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Run tests on iOS simulator
+      shell: bash
+      run: |
+        fail=0
+        for bin in build/tests/test-*; do
+          [ -f "$bin" ] && [ -x "$bin" ] || continue
+          name="$(basename "$bin")"
+          echo "::group::$name"
+          if xcrun simctl spawn "${{ steps.sim.outputs.device_id }}" "$PWD/$bin"; then
+            echo "ok: $name"
+          else
+            echo "FAILED: $name (exit $?)"
+            fail=1
+          fi
+          echo "::endgroup::"
+        done
+        exit $fail
+
+    - name: Shutdown simulator
+      if: always()
+      run: xcrun simctl shutdown "${{ steps.sim.outputs.device_id }}" || true
