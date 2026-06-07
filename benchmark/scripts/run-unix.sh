@@ -384,6 +384,22 @@ calc_cpu_usage() {
     echo "${result:-n/a}"
 }
 
+# -----------------------------------------------------------------------------
+# per-process (server PID) sampling: peak RSS
+# -----------------------------------------------------------------------------
+
+# Peak resident set size (KB) of a server PID, including child threads.
+# Linux: VmHWM from /proc/<pid>/status. macOS: current RSS via ps (no peak).
+proc_peak_rss_kb() {
+    local pid="$1"
+    if [ "$PLATFORM" = "linux" ]; then
+        [ -r "/proc/$pid/status" ] || { echo ""; return; }
+        awk '/^VmHWM:/ {print $2}' "/proc/$pid/status" 2>/dev/null
+    else
+        ps -o rss= -p "$pid" 2>/dev/null | tr -d ' '
+    fi
+}
+
 bench_throughput() {
     local row_label="$1"          # "ST" or "MT"
     local bin_suffix="$2"         # "-echo" or "-echo-mt"
@@ -459,6 +475,8 @@ bench_throughput() {
             [ "$run" -lt "$REPEAT" ] && sleep 1
         done
 
+        local srv_peak_rss; srv_peak_rss="$(proc_peak_rss_kb "$pid")"
+
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
         sleep 1
@@ -476,6 +494,9 @@ bench_throughput() {
                 printf "  %-10s %12s %8s %10s %10s %10s\n" \
                     "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             fi
+            # server process peak RSS (the compared subject)
+            printf "  %10s srv: peak_rss=%s\n" "" \
+                "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)"
             if [ "$CPU_SAMPLING" = true ]; then
                 printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
             fi

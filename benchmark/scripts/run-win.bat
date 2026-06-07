@@ -20,7 +20,8 @@ REM Each family has a single-threaded (ST) and multi-threaded (MT) binary.
 REM
 REM NOTE: the Windows bench client uses IOCP (tcp-bench-win.c). Windows lacks
 REM SO_REUSEPORT / /proc; per-CPU usage sampling is not available and numbers
-REM are NOT comparable to the Linux or macOS suites.
+REM are NOT comparable to the Linux or macOS suites. Server peak working-set
+REM (peak_rss) is reported via PowerShell Get-Process.
 REM
 REM CLI options mirror run-unix.sh (env vars seed defaults):
 REM   --servers xylem,go,rust   select which servers to compare
@@ -397,6 +398,8 @@ for %%N in (%SERVERS:,= %) do (
             if %%R LSS %REPEAT% ping -n 2 127.0.0.1 >nul
         )
 
+        call :proc_peak_rss "tcp-!name!%BSUFFIX%.exe"
+        set "srv_peak=!_PEAK_RSS!"
         call :stop_server
         ping -n 2 127.0.0.1 >nul
 
@@ -408,6 +411,7 @@ for %%N in (%SERVERS:,= %) do (
             ) else (
                 echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!
             )
+            if defined srv_peak (echo              srv: peak_rss=!srv_peak!MB) else (echo              srv: peak_rss=n/a)
         ) else (
             call :warn "!name!: no valid output from %REPEAT% runs"
         )
@@ -465,6 +469,13 @@ for %%N in (%SERVERS:,= %) do (
     )
 )
 echo.
+goto :eof
+
+REM proc_peak_rss <image.exe> -> _PEAK_RSS (peak working set in MB, or empty)
+REM Uses PowerShell Get-Process PeakWorkingSet64; mirrors VmHWM on Linux.
+:proc_peak_rss
+set "_PEAK_RSS="
+for /f "usebackq delims=" %%M in (`powershell -NoProfile -Command "$p=Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension('%~1')) -ErrorAction SilentlyContinue; if ($p) { [int]((($p | Measure-Object PeakWorkingSet64 -Maximum).Maximum)/1MB) }" 2^>nul`) do set "_PEAK_RSS=%%M"
 goto :eof
 
 REM start_server <bin> <port> <workers>  -- launches server in a titled window
