@@ -288,7 +288,7 @@ cmd_build() {
     info "building tcp-bench client..."
     # shellcheck disable=SC2086
     gcc $CFLAGS_COMMON \
-        "$BENCH_DIR/tcp/client/tcp-bench.c" \
+        "$BENCH_DIR/tcp/client/tcp-bench-unix.c" \
         $LDFLAGS_COMMON -o "$BIN_DIR/tcp-bench"
     ok "tcp-bench built"
 

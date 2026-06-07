@@ -8,7 +8,7 @@
  *
  * Each socket carries one outstanding-op context per direction. A single
  * thread drives GetQueuedCompletionStatus in a loop; this mirrors the
- * single-threaded client design of the POSIX side (tcp-bench.c) -- the
+ * single-threaded client design of the POSIX side (tcp-bench-unix.c) -- the
  * *server* is what we are benchmarking, not the client.
  *
  * Modes: throughput | connrate | memory
