@@ -94,6 +94,7 @@ typedef struct scheduler_opts_s {
     int32_t  nworkers;       /* 0 = use CPU count. */
     uint32_t deque_cap;      /* 0 = use default (256). Must be power of 2. */
     uint32_t coro_pool_cap;  /* 0 = use default (nworkers * 64). */
+    size_t   coro_stack_size;/* 0 = use default (128 KB). */
 } scheduler_opts_t;
 
 /**

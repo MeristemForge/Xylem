@@ -149,6 +149,9 @@ void runtime_run(
     platform_socket_startup();
 
     scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
+    if (opts && opts->coro_stack_size > 0) {
+        sched_opts.coro_stack_size = opts->coro_stack_size;
+    }
     g_sched = scheduler_create(&sched_opts);
 
     g_dynpool = dynpool_create(NULL);

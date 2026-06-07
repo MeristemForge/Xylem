@@ -80,6 +80,7 @@ _Pragma("once")
 
 typedef struct xylem_opts_s {
     int32_t workers;  /* Scheduler worker count, 0 for default (CPU count). */
+    size_t  coro_stack_size; /* Coroutine stack size in bytes, 0 for default. */
 } xylem_opts_t;
 
 /**

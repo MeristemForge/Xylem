@@ -89,6 +89,7 @@ typedef struct _coro_pool_s {
     int32_t   count;
     int32_t   cap;
     size_t    slot_size;
+    size_t    stack_size;
 } _coro_pool_t;
 
 typedef struct _sched_worker_s {
@@ -164,9 +165,9 @@ static size_t _vmem_page_size(void) {
     return cached;
 }
 
-static size_t _coro_metadata_size(size_t coro_size) {
+static size_t _coro_metadata_size(size_t coro_size, size_t stack_size) {
     size_t page_size = _vmem_page_size();
-    size_t meta = coro_size - (size_t)SCHED_CORO_STACK_SIZE;
+    size_t meta = coro_size - stack_size;
     return (meta + page_size - 1) & ~(page_size - 1);
 }
 
@@ -195,21 +196,21 @@ static void* _coro_pool_alloc(size_t size, void* allocator_data) {
 
     platform_vmem_commit(base, total);
 
-    size_t meta_size = _coro_metadata_size(total);
+    size_t meta_size = _coro_metadata_size(total, pool->stack_size);
     platform_vmem_protect(
         base + meta_size, page_size, PLATFORM_VMEM_PROT_NONE);
 
     return base;
 }
 
-static void _coro_stack_reset(void* ptr, size_t size) {
+static void _coro_stack_reset(_coro_pool_t* pool, void* ptr, size_t size) {
     if (STACK_EXTERNAL) {
         return;
     }
 
     size_t page_size = _vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
-    size_t meta_size = _coro_metadata_size(total);
+    size_t meta_size = _coro_metadata_size(total, pool->stack_size);
 
     size_t stack_start = meta_size + page_size;
     if (total > stack_start) {
@@ -221,7 +222,7 @@ static void _coro_pool_dealloc(
     void* ptr, size_t size, void* allocator_data) {
     _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
 
-    _coro_stack_reset(ptr, size);
+    _coro_stack_reset(pool, ptr, size);
 
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
@@ -839,11 +840,15 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         if (opts && opts->coro_pool_cap > 0) {
             pool_cap = opts->coro_pool_cap;
         }
-        mco_desc tmp = mco_desc_init(
-            _sched_coro_entry, SCHED_CORO_STACK_SIZE);
-        sched->coro_pool.slot_size = tmp.coro_size;
-        sched->coro_pool.cap       = (int32_t)pool_cap;
-        sched->coro_pool.count     = 0;
+        size_t stack_size = SCHED_CORO_STACK_SIZE;
+        if (opts && opts->coro_stack_size > 0) {
+            stack_size = opts->coro_stack_size;
+        }
+        mco_desc tmp = mco_desc_init(_sched_coro_entry, stack_size);
+        sched->coro_pool.slot_size  = tmp.coro_size;
+        sched->coro_pool.stack_size = stack_size;
+        sched->coro_pool.cap        = (int32_t)pool_cap;
+        sched->coro_pool.count      = 0;
         spin_init(&sched->coro_pool.lock);
         sched->coro_pool.slots = (void**)calloc(
             pool_cap, sizeof(void*));
@@ -993,7 +998,8 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     ctx->fn = fn;
     ctx->arg = arg;
 
-    mco_desc desc = mco_desc_init(_sched_coro_entry, SCHED_CORO_STACK_SIZE);
+    mco_desc desc = mco_desc_init(
+        _sched_coro_entry, sched->coro_pool.stack_size);
     desc.alloc_cb       = _coro_pool_alloc;
     desc.dealloc_cb     = _coro_pool_dealloc;
     desc.allocator_data = &sched->coro_pool;

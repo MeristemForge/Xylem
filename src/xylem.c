@@ -35,6 +35,7 @@ void xylem_run(
     void (*main_fn)(void*), void* arg, xylem_opts_t* opts) {
     runtime_opts_t rt_opts = {
         .workers = opts ? opts->workers : 0,
+        .coro_stack_size = opts ? opts->coro_stack_size : 0,
     };
     runtime_run(main_fn, arg, &rt_opts);
 }

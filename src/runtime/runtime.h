@@ -29,6 +29,7 @@ _Pragma("once")
 /* Runtime configuration options. */
 typedef struct runtime_opts_s {
     int32_t workers;  /* Thread pool size, 0 for default. */
+    size_t  coro_stack_size; /* Coroutine stack size, 0 for default. */
 } runtime_opts_t;
 
 /**
