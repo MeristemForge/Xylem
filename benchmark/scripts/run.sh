@@ -2,16 +2,21 @@
 set -euo pipefail
 
 # =============================================================================
-# Xylem TCP benchmark suite
+# Xylem TCP benchmark suite (cross-platform: Linux + macOS)
 # -----------------------------------------------------------------------------
-#   install  - install system dependencies (requires sudo)
+#   install  - install system dependencies (Linux: sudo apt + source builds;
+#              macOS: guidance via brew)
 #   build    - build xylem + all TCP echo servers (ST + MT) + bench client
 #   bench    - run comparison benchmarks and write results/<ts>/
 #   all      - install + build + bench                             [default]
 #
-# Compared servers (5 families):
-#   xylem, libuv, boost, go, rust
+# Compared servers (Linux: 5 families): xylem, libuv, boost, go, rust
+# On macOS the default set narrows to xylem, go, rust (libuv/boost are
+# typically absent; missing binaries are skipped automatically anyway).
 # Each family has a single-threaded (ST) and multi-threaded (MT) binary.
+#
+# NOTE: macOS uses kqueue and lacks SO_REUSEPORT / /proc; its numbers are
+# NOT comparable to the Linux suite. Per-CPU usage sampling is Linux-only.
 #
 # Fairness rules for MT servers:
 #   - MT workers run as N pthreads / N goroutines / N tokio workers.
@@ -48,10 +53,45 @@ warn() { printf "\033[1;33m[warn]\033[0m %s\n" "$1"; }
 err()  { printf "\033[1;31m[err]\033[0m %s\n" "$1" >&2; }
 
 # =============================================================================
+# platform detection
+# =============================================================================
+
+if [ "$(uname -s)" = "Darwin" ]; then
+    PLATFORM="macos"
+    CPU_SAMPLING=false          # no /proc/stat on macOS
+    ULIMIT_HARD=100000
+    ncpu() { sysctl -n hw.ncpu; }
+else
+    PLATFORM="linux"
+    CPU_SAMPLING=true
+    ULIMIT_HARD=200000
+    ncpu() { nproc; }
+fi
+
+# =============================================================================
 # install
 # =============================================================================
 
 cmd_install() {
+    if [ "$PLATFORM" = "macos" ]; then
+        info "macOS detected; installing deps via Homebrew..."
+        if ! command -v brew >/dev/null 2>&1; then
+            err "Homebrew not found. Install it from https://brew.sh then re-run."
+            exit 1
+        fi
+        local BREW_PKGS=(cmake ninja pkg-config openssl go rust libuv boost)
+        local missing=()
+        local pkg
+        for pkg in "${BREW_PKGS[@]}"; do
+            brew list "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+        fi
+        ok "all dependencies ready (macOS)"
+        return
+    fi
+
     if [ "$(id -u)" -ne 0 ]; then
         info "escalating to root for dependency install..."
         exec sudo -E "$0" install
@@ -60,7 +100,7 @@ cmd_install() {
     local LIBUV_VERSION="1.49.2"
     local BOOST_VERSION="1.87.0"
     local PREFIX="/usr/local"
-    local JOBS; JOBS="$(nproc)"
+    local JOBS; JOBS="$(ncpu)"
 
     info "apt base packages..."
     local APT_PKGS=(
@@ -164,7 +204,7 @@ cmd_build() {
         -DCMAKE_C_FLAGS='-O3 -DNDEBUG -flto' \
         -DXYLEM_ENABLE_TLS=OFF \
         -G Ninja >/dev/null 2>&1
-    ninja -C "$BUILD_DIR" xylem -j"$(nproc)"
+    ninja -C "$BUILD_DIR" xylem -j"$(ncpu)"
     local XYLEM_LIB="$BUILD_DIR/libxylem.a"
     ok "xylem built"
 
@@ -260,8 +300,8 @@ cmd_build() {
 # bench
 # =============================================================================
 
-DURATION=10
-PORT_BASE=9000
+DURATION="${DURATION:-10}"
+PORT_BASE="${PORT_BASE:-9000}"
 
 ensure_bin() {
     if [ ! -d "$BIN_DIR" ] || [ ! -x "$BIN_DIR/tcp-bench" ]; then
@@ -303,7 +343,8 @@ start_server() {
 }
 
 snapshot_cpu() {
-    # Capture per-CPU jiffies from /proc/stat -> output file
+    # Capture per-CPU jiffies from /proc/stat -> output file (Linux only)
+    [ "$CPU_SAMPLING" = true ] || { : > "$1"; return; }
     grep '^cpu[0-9]' /proc/stat > "$1"
 }
 
@@ -398,7 +439,6 @@ bench_throughput() {
             snapshot_cpu "$cpu_after"
             cpu_usage_last="$(calc_cpu_usage "$cpu_before" "$cpu_after")"
             rm -f "$cpu_before" "$cpu_after"
-
             if [ -s "$out" ]; then
                 local tp p50 p99 lat_max
                 tp=$(extract_json "$out" throughput_msg_per_sec)
@@ -436,7 +476,9 @@ bench_throughput() {
                 printf "  %-10s %12s %8s %10s %10s %10s\n" \
                     "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             fi
-            printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
+            if [ "$CPU_SAMPLING" = true ]; then
+                printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
+            fi
         else
             warn "$name: no valid output from $REPEAT runs"
         fi
@@ -498,10 +540,10 @@ bench_connrate() {
 cmd_bench() {
     ensure_bin
 
-    ulimit -n 200000 2>/dev/null || ulimit -n 65535 2>/dev/null || true
+    ulimit -n "$ULIMIT_HARD" 2>/dev/null || ulimit -n 65535 2>/dev/null || true
     kill_servers
 
-    local nproc_val; nproc_val="$(nproc)"
+    local nproc_val; nproc_val="$(ncpu)"
     local ts; ts="$(date +%Y%m%d-%H%M%S)"
     RUN_DIR="$RESULTS_ROOT/$ts"
     mkdir -p "$RUN_DIR"
@@ -547,12 +589,19 @@ cmd_bench() {
 # parse bench options
 # =============================================================================
 
-SERVERS=(xylem libuv boost go rust)
-CONNS=(1000 10000)
-PAYLOADS=(64 4096 65536)
-MODE="both"
+# Defaults (env vars seed them; CLI options override).
+# macOS narrows the default server set (libuv/boost typically absent).
+if [ "$PLATFORM" = "macos" ]; then
+    SERVERS=(xylem go rust)
+else
+    SERVERS=(xylem libuv boost go rust)
+fi
+IFS=',' read -ra CONNS    <<< "${CONNS:-1000,10000}"
+IFS=',' read -ra PAYLOADS <<< "${PAYLOADS:-64,4096,65536}"
+DURATION="${DURATION:-10}"
+MODE="${MODE:-both}"
+REPEAT="${REPEAT:-1}"
 RUN_CONNRATE=true
-REPEAT=1
 
 parse_bench_opts() {
     while [ $# -gt 0 ]; do
@@ -605,15 +654,19 @@ usage() {
     cat <<EOF
 usage: $0 [install|build|bench|all] [bench-options...]
 
+Cross-platform (Linux + macOS). Current platform: $PLATFORM
+
 Commands:
-  install   apt packages, rust, libuv/boost (needs sudo)
+  install   Linux: apt + rust + source-built libuv/boost (needs sudo)
+            macOS: Homebrew packages
   build     xylem static lib + tcp servers (ST + MT) + tcp-bench client
   bench     run ST + MT comparison benchmarks, write benchmark/results/<ts>/
   all       install + build + bench   (default)
 
-Bench options (pass after 'bench' or 'all'):
+Bench options (pass after 'bench' or 'all'; env vars seed defaults):
   --servers, -s  xylem,go,rust     servers to compare (comma-separated)
                                    available: xylem, libuv, boost, go, rust
+                                   (macOS default: xylem,go,rust)
   --conns, -c    1000,10000        connection counts (comma-separated)
   --payload, -S  64,4096,65536     payload sizes in bytes (comma-separated)
   --duration, -d 10                test duration in seconds
@@ -621,10 +674,15 @@ Bench options (pass after 'bench' or 'all'):
   --repeat, -r   3                 repeat each test N times (avg results)
   --no-connrate                    skip connection-rate tests
 
+Notes:
+  macOS uses kqueue and lacks SO_REUSEPORT / /proc; per-CPU usage sampling
+  is Linux-only and its numbers are NOT comparable to the Linux suite.
+
 Examples:
   $0 bench --servers xylem,go,rust --conns 1000 --payload 64 --duration 5
   $0 bench -s xylem,rust -c 1000,5000 -S 64,4096 -d 15 --mode st
   $0 bench --servers go,xylem --no-connrate
+  REPEAT=5 DURATION=5 CONNS=1000 $0 bench   # env-var style (macOS legacy)
 EOF
 }
 
