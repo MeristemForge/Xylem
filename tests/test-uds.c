@@ -26,9 +26,11 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Relative path: valid for AF_UNIX on both Windows and Unix, created in
+/**
+ * Relative path: valid for AF_UNIX on both Windows and Unix, created in
  * the test's working directory and removed after each case. Avoids a
- * platform conditional here (see style guide platform-layer rule). */
+ * platform conditional here (see style guide platform-layer rule).
+ */
 #define UDS_PATH "xylem-test-uds.sock"
 
 #define SAFETY_TIMEOUT_MS 10000

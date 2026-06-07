@@ -292,8 +292,10 @@ static void _alpn_client(void* arg) {
     ASSERT(alpn != NULL);
     ASSERT(strcmp(alpn, "h2") == 0);
 
-    /* Round-trip exchange ensures the server has completed its
-     * handshake before we tear down the connection. */
+    /**
+     * Round-trip exchange ensures the server has completed its
+     * handshake before we tear down the connection.
+     */
     ASSERT(xylem_dtls_write(conn, "ok", 2) == 0);
     char buf[8];
     xylem_dtls_read(conn, buf, sizeof(buf));
@@ -350,9 +352,11 @@ static void test_alpn_negotiation(void) {
 }
 
 
-/* test_close_idempotent.
+/**
+ * test_close_idempotent.
  * Verifies that closing a connection does not crash and that
- * the close_listener call after conn close also works cleanly. */
+ * the close_listener call after conn close also works cleanly.
+ */
 
 static void _ci_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -513,10 +517,12 @@ static void test_recv_deadline(void) {
 }
 
 
-/* test_close_wakes_recv.
+/**
+ * test_close_wakes_recv.
  * Tests that close_listener unblocks a pending accept call,
  * returning NULL. This verifies that shutdown signals propagate
- * correctly to blocked coroutines. */
+ * correctly to blocked coroutines.
+ */
 
 static void _cw_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -580,10 +586,12 @@ static void test_close_wakes_recv(void) {
 }
 
 
-/* test_concurrent_sessions.
+/**
+ * test_concurrent_sessions.
  * Tests multiple sequential DTLS sessions on the same listener.
  * Each client connects, sends a unique message, receives the
- * echo, and disconnects before the next one starts. */
+ * echo, and disconnects before the next one starts.
+ */
 
 #define CONC_COUNT 4
 
@@ -688,17 +696,21 @@ static void test_concurrent_sessions(void) {
 }
 
 
-/* test_full_duplex.
+/**
+ * test_full_duplex.
  * One client connection is read by one coroutine and written by
  * another at the same time. With the client still on a socket BIO
  * a direction-flip inside SSL parked a second coroutine on the
  * same iowait direction and aborted the process; the memory-BIO
  * client pump path makes concurrent read+write safe. Each write
- * is one datagram, echoed back verbatim by the server. */
+ * is one datagram, echoed back verbatim by the server.
+ */
 
-/* Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
+/**
+ * Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
  * whole batch before the server drains its session inbox, no datagram
- * is dropped -- the reader can then assert an exact echo count. */
+ * is dropped -- the reader can then assert an exact echo count.
+ */
 #define FDX_MSG_COUNT 50
 #define FDX_MSG_SIZE  300
 
@@ -718,8 +730,10 @@ static void _fdx_server(void* arg) {
     xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
     ASSERT(conn != NULL);
 
-    /* Echo each datagram back until all messages have been seen or the
-     * peer goes away (read returns <= 0). */
+    /**
+     * Echo each datagram back until all messages have been seen or the
+     * peer goes away (read returns <= 0).
+     */
     char buf[1024];
     for (int i = 0; i < FDX_MSG_COUNT; i++) {
         int n = xylem_dtls_read(conn, buf, sizeof(buf));
@@ -779,8 +793,10 @@ static void _fdx_client(void* arg) {
         DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    /* Reader and writer drive the same connection concurrently; their
-     * own waitgroup lets us join before closing the connection once. */
+    /**
+     * Reader and writer drive the same connection concurrently; their
+     * own waitgroup lets us join before closing the connection once.
+     */
     xylem_waitgroup_t* io_wg = xylem_waitgroup_create();
     _fdx_share_t sh = { .conn = conn, .wg = io_wg, .ok = 1 };
     xylem_waitgroup_add(io_wg, 2);

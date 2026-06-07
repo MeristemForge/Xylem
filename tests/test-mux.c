@@ -56,8 +56,10 @@ static void _srv_echo_stream(void* arg) {
     xylem_mux_close_stream(s);
 }
 
-/* Echo one stream, then signal the per-stream waitgroup so the server
- * worker can tear down the mux only after every stream coroutine is done. */
+/**
+ * Echo one stream, then signal the per-stream waitgroup so the server
+ * worker can tear down the mux only after every stream coroutine is done.
+ */
 static void _srv_echo_stream_tracked(void* arg) {
     _stream_arg_t* a = (_stream_arg_t*)arg;
     _srv_echo_stream(a->stream);
@@ -166,8 +168,10 @@ static void _multi_srv_worker(void* arg) {
         xylem_spawn(_srv_echo_stream_tracked, &sargs[i]);
     }
 
-    /* Wait for all stream coroutines to finish before tearing down the
-     * mux/conn/listener they depend on. */
+    /**
+     * Wait for all stream coroutines to finish before tearing down the
+     * mux/conn/listener they depend on.
+     */
     xylem_waitgroup_wait(swg);
     xylem_waitgroup_destroy(swg);
 

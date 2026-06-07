@@ -96,7 +96,7 @@ static void test_concurrent(void) {
     }
 }
 
-/*
+/**
  * recv_timeout coverage.
  *
  * Teardown rule (library-wide, not channel-specific): every xylem_
@@ -118,8 +118,10 @@ typedef struct {
     int              tested;
 } _to_ctx_t;
 
-/* An empty channel with an elapsed deadline must report a timeout
- * (NULL) rather than blocking forever. */
+/**
+ * An empty channel with an elapsed deadline must report a timeout
+ * (NULL) rather than blocking forever.
+ */
 static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
@@ -144,8 +146,10 @@ static void test_timeout_empty(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* A message that arrives before the deadline must be delivered, not
- * swallowed by the timeout. */
+/**
+ * A message that arrives before the deadline must be delivered, not
+ * swallowed by the timeout.
+ */
 static void _to_sender_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     xylem_sleep(20);
@@ -177,7 +181,8 @@ static void test_timeout_deliver(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* Stress the send/deadline overlap: drive send to land at roughly
+/**
+ * Stress the send/deadline overlap: drive send to land at roughly
  * the same instant as the deadline, many times. This exercises the
  * exact window where the "false timeout strands a delivered message"
  * race lived. Invariants checked here:
@@ -197,7 +202,8 @@ static void test_timeout_deliver(void) {
  * receiver wait()s before draining/destroying. This guarantees the
  * send has fully completed before the channel is freed (no race with
  * a late send touching a destroyed channel) and keeps the test fast
- * regardless of how late the send lands. */
+ * regardless of how late the send lands.
+ */
 #define TO_RACE_ROUNDS 200
 
 typedef struct {
@@ -212,15 +218,19 @@ typedef struct {
 
 static void _race_sender_coro(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
-    /* Aim the send at the deadline itself so the send wakeup and the
-     * deadline timer fire in the same window. */
+    /**
+     * Aim the send at the deadline itself so the send wakeup and the
+     * deadline timer fire in the same window.
+     */
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     if (ctx->send_at_ms > now) {
         xylem_sleep(ctx->send_at_ms - now);
     }
     xylem_channel_send(ctx->ch, &ctx->payload);
-    /* Signal completion: the send has fully returned, so the receiver
-     * may now safely drain and destroy the channel. */
+    /**
+     * Signal completion: the send has fully returned, so the receiver
+     * may now safely drain and destroy the channel.
+     */
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -234,7 +244,8 @@ static void _race_recv_coro(void* arg) {
         ctx->got_timeout = 1;
     }
 
-    /* Single-receiver contract (see xylem-channel.h: concurrent recv
+    /**
+     * Single-receiver contract (see xylem-channel.h: concurrent recv
      * aborts). The receiver coroutine itself drains any late-delivered
      * message and tears the channel down -- a separate reaper calling
      * recv would be a second concurrent consumer and race q->head.
@@ -244,7 +255,8 @@ static void _race_recv_coro(void* arg) {
      * the queue -- drain exactly that one (a plain recv returns it
      * immediately, it is already present). A late message left in the
      * queue is still a timeout from the outside, so got_message is not
-     * set here. */
+     * set here.
+     */
     xylem_waitgroup_wait(ctx->wg);
     if (ctx->got_timeout) {
         void* leftover = xylem_channel_recv(ctx->ch);

@@ -26,7 +26,8 @@
 
 #define LOG_FILE "test-logger-output.log"
 
-/* The logger always dispatches to its internal worker thread, so the
+/**
+ * The logger always dispatches to its internal worker thread, so the
  * callback fires from a different thread than the one that called
  * xylem_logger_log. Tests take advantage of the fact that
  * xylem_logger_deinit() drains the queue (thrdpool_destroy joins the
@@ -35,7 +36,8 @@
  *
  * Pattern: log everything for the case, call deinit, then assert.
  * The ctx records the level and message of every callback invocation
- * so multi-event cases can still verify the full sequence. */
+ * so multi-event cases can still verify the full sequence.
+ */
 
 #define MAX_EVENTS 8
 

@@ -86,10 +86,12 @@ static void test_concurrent(void) {
     }
 }
 
-/* Multi-waiter broadcast: every waiter must be released by the
+/**
+ * Multi-waiter broadcast: every waiter must be released by the
  * done() that drops the counter to zero. Exercises the new
  * queue-based waiters list introduced to replace the single-slot
- * design. */
+ * design.
+ */
 
 #define WG_MULTI_WAITERS 16
 

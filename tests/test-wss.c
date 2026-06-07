@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * WSS (WebSocket over TLS) integration tests. test-ws.c covers plain ws://
  * and test-tls.c covers the raw TLS engine; this file covers the wss path:
  * a TLS-backed WebSocket listener, wss:// scheme dispatch in xylem_ws_dial,

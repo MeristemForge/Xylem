@@ -302,8 +302,10 @@ static void _test_redirect_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "end", 3) == 0);
     xylem_http_res_destroy(res);
 
-    /* Test 3: With redirects disabled (max_redirects = 0), we get the
-     * 301 response directly. NULL opts would mean "default 10 hops". */
+    /**
+     * Test 3: With redirects disabled (max_redirects = 0), we get the
+     * 301 response directly. NULL opts would mean "default 10 hops".
+     */
     xylem_http_cli_opts_t opts_noredir = {0};
     opts_noredir.max_redirects = 0;
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
@@ -589,7 +591,7 @@ static void test_idle_timeout(void) {
 
 /* Plain-HTTP proxy (absolute-form forwarding). */
 
-/*
+/**
  * Acts as the proxy: a plain-HTTP proxy receives the request line in
  * absolute-form (full URL), so the server echoes back the URL it parsed.
  * The client points at this server via opts.proxy; if the wiring is
@@ -623,8 +625,10 @@ static void _test_proxy_main(void* arg) {
     xylem_http_cli_opts_t opts = {0};
     opts.proxy = &proxy;
 
-    /* Target a different (unconnectable) host: the request must reach the
-     * proxy, and the proxy must see the absolute-form URL. */
+    /**
+     * Target a different (unconnectable) host: the request must reach the
+     * proxy, and the proxy must see the absolute-form URL.
+     */
     const char* target = "http://target.example/path/page";
     xylem_http_res_t* res = xylem_http_get(target, NULL, 0, &opts);
     ASSERT(res != NULL);

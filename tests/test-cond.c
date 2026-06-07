@@ -43,7 +43,7 @@ static void _start_safety_timer(void) {
     sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
 }
 
-/*
+/**
  * test_signal_one: one signaler wakes one waiter, wait() returns
  * holding the mutex.
  */
@@ -76,8 +76,10 @@ static void _c_one_signaler(void* arg) {
     xylem_cond_signal(ctx->cond);
     xylem_mutex_unlock(ctx->mtx);
 
-    /* Deterministic: block until the waiter has observed the flag and
-     * finished, rather than polling with a sleep. */
+    /**
+     * Deterministic: block until the waiter has observed the flag and
+     * finished, rather than polling with a sleep.
+     */
     xylem_waitgroup_wait(ctx->wg);
 
     xylem_mutex_lock(ctx->mtx);
@@ -110,7 +112,7 @@ static void test_signal_one(void) {
     }
 }
 
-/*
+/**
  * test_broadcast: many waiters, one broadcast wakes them all.
  */
 
@@ -129,9 +131,11 @@ typedef struct {
 static void _c_bcast_waiter(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
     xylem_mutex_lock(ctx->mtx);
-    /* Announce arrival, then park. The last waiter to park wakes the
+    /**
+     * Announce arrival, then park. The last waiter to park wakes the
      * signaler; the mutex hand-off guarantees all waiters are parked on
-     * cond before the broadcast fires. */
+     * cond before the broadcast fires.
+     */
     if (++ctx->parked == BCAST_WAITERS) {
         xylem_cond_signal(ctx->all_parked);
     }
@@ -183,7 +187,7 @@ static void test_broadcast(void) {
     }
 }
 
-/*
+/**
  * test_bounded_queue: the canonical use case. Producers and consumers
  * on a fixed-size ring, coordinated by two conds (not_full, not_empty)
  * and one mutex.
@@ -294,7 +298,7 @@ static void test_bounded_queue(void) {
     }
 }
 
-/*
+/**
  * test_external_signal: signal() called from a dynpool thread
  * (non-worker) must wake a coroutine waiter. The predicate uses an
  * atomic flag so the external path does not need to take the
@@ -312,9 +316,11 @@ typedef struct {
 
 static void _c_ext_external(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    /* Runs on a dynpool thread. Write the atomic predicate first,
+    /**
+     * Runs on a dynpool thread. Write the atomic predicate first,
      * then broadcast so any already-parked waiter wakes up and
-     * re-checks. */
+     * re-checks.
+     */
     atomic_store(&ctx->ready, 1);
     xylem_cond_broadcast(ctx->cond);
 }
@@ -334,8 +340,10 @@ static void _c_ext_waiter(void* arg) {
 
 static void _c_ext_submitter(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    /* Block until the waiter is parked, so the external signal exercises
-     * the wake path rather than racing the waiter's first predicate check. */
+    /**
+     * Block until the waiter is parked, so the external signal exercises
+     * the wake path rather than racing the waiter's first predicate check.
+     */
     xylem_mutex_lock(ctx->mtx);
     while (!ctx->parked) {
         xylem_cond_wait(ctx->parked_cond, ctx->mtx);

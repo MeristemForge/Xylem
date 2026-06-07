@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * HTTPS integration tests: exercise the TLS HTTP transport
  * (http-transport-tls.c, http_tls_listen / http_tls_request) end-to-end.
  * test-tls.c covers the raw TLS engine; this file covers its integration
@@ -41,7 +41,7 @@
 
 /* Self-signed certificate generation (matches test-tls.c). */
 
-/*
+/**
  * Write PEM via a memory BIO rather than passing FILE* into OpenSSL.
  * On Windows the OpenSSL DLL and the app may link different CRTs whose
  * FILE structs are incompatible; routing FILE* through the app's own CRT
@@ -235,8 +235,10 @@ static void _test_pinned_ca_main(void* arg) {
     char url[64];
     snprintf(url, sizeof(url), "https://127.0.0.1:%u/", (unsigned)port);
 
-    /* Pin the self-signed cert as the trusted CA: verification is ON and
-     * must succeed because the SAN contains IP:127.0.0.1. */
+    /**
+     * Pin the self-signed cert as the trusted CA: verification is ON and
+     * must succeed because the SAN contains IP:127.0.0.1.
+     */
     xylem_http_tls_t cli_tls = { .ca = HTTPS_CERT };
     xylem_http_cli_opts_t opts = {0};
     opts.tls = &cli_tls;
@@ -270,8 +272,10 @@ static void _test_verify_fail_main(void* arg) {
     char url[64];
     snprintf(url, sizeof(url), "https://127.0.0.1:%u/", (unsigned)port);
 
-    /* Default TLS (system trust, verification ON, no pinned CA): the
-     * self-signed cert is untrusted, so the request must fail. */
+    /**
+     * Default TLS (system trust, verification ON, no pinned CA): the
+     * self-signed cert is untrusted, so the request must fail.
+     */
     xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(res == NULL);
 
