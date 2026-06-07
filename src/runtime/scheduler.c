@@ -556,17 +556,6 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
-    if (!atomic_load_explicit(
-            &sched->poller_running, memory_order_relaxed)) {
-        int n = platform_poller_wait(&sched->poller, cqes, 0);
-        if (n > 0) {
-            co = _sched_process_io(sched, cqes, n);
-            if (co) {
-                return co;
-            }
-        }
-    }
-
     co = _sched_worker_steal_coro(sched, w);
     if (co) {
         return co;
@@ -667,20 +656,6 @@ static int _sched_worker_entry(void* arg) {
             queue_node_t* node = runq_pop(sched->runq);
             if (node) {
                 co = queue_entry(node, _coro_ctx_t, runq_node)->co;
-            }
-            if (!atomic_load_explicit(
-                    &sched->poller_running, memory_order_relaxed)) {
-                int n = platform_poller_wait(&sched->poller, cqes, 0);
-                if (n > 0) {
-                    mco_coro* io_co = _sched_process_io(sched, cqes, n);
-                    if (io_co) {
-                        if (!co) {
-                            co = io_co;
-                        } else {
-                            scheduler_schedule(sched, io_co);
-                        }
-                    }
-                }
             }
         }
         if (!co) {
