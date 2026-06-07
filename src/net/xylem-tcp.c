@@ -60,6 +60,14 @@ static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
         return;
     }
     if (tcp->waiter) {
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference -- without this the waiter (slab slot)
+         * would linger until a stale deadline set by the caller fires.
+         */
+        iowait_set_rd_deadline(tcp->waiter, 0);
+        iowait_set_wr_deadline(tcp->waiter, 0);
         iowait_destroy(tcp->waiter);
     }
     if (tcp->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {

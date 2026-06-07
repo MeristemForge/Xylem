@@ -51,6 +51,14 @@ static void _udp_chan_unref(xylem_udp_chan_t* udp) {
         return;
     }
     if (udp->waiter) {
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference -- without this the waiter (slab slot)
+         * would linger until a stale deadline set by the caller fires.
+         */
+        iowait_set_rd_deadline(udp->waiter, 0);
+        iowait_set_wr_deadline(udp->waiter, 0);
         iowait_destroy(udp->waiter);
     }
     if (udp->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
