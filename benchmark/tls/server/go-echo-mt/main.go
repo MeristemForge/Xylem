@@ -8,21 +8,20 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
-
-	"github.com/pion/dtls/v2"
 )
 
-func generateSelfSignedCert() (*tls.Certificate, error) {
+func generateSelfSignedCert() (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return tls.Certificate{}, err
 	}
 
 	tmpl := &x509.Certificate{
@@ -35,28 +34,53 @@ func generateSelfSignedCert() (*tls.Certificate, error) {
 
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return nil, err
+		return tls.Certificate{}, err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return nil, err
+		return tls.Certificate{}, err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, err
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+func handleConn(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 65536)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+			}
+			return
+		}
+		_, err = conn.Write(buf[:n])
+		if err != nil {
+			return
+		}
 	}
-	return &cert, nil
 }
 
 func main() {
-	port := flag.Int("port", 9444, "listen port")
-	flag.Parse()
+	port := 9443
+	workers := 4
 
-	runtime.GOMAXPROCS(1)
+	if len(os.Args) > 1 {
+		if p, err := strconv.Atoi(os.Args[1]); err == nil {
+			port = p
+		}
+	}
+	if len(os.Args) > 2 {
+		if w, err := strconv.Atoi(os.Args[2]); err == nil {
+			workers = w
+		}
+	}
+
+	runtime.GOMAXPROCS(workers)
 
 	cert, err := generateSelfSignedCert()
 	if err != nil {
@@ -64,44 +88,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("0.0.0.0:%d", *port))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve addr error: %v\n", err)
-		os.Exit(1)
-	}
-
-	config := &dtls.Config{
-		Certificates:       []tls.Certificate{*cert},
-		InsecureSkipVerify: true,
-	}
-
-	listener, err := dtls.Listen("udp", addr, config)
+	config := &tls.Config{Certificates: []tls.Certificate{cert}}
+	addr := fmt.Sprintf("0.0.0.0:%d", port)
+	ln, err := tls.Listen("tcp", addr, config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "listen error: %v\n", err)
 		os.Exit(1)
 	}
-	defer listener.Close()
 
-	fmt.Fprintf(os.Stderr, "go dtls echo server listening on 0.0.0.0:%d (GOMAXPROCS=1)\n", *port)
+	fmt.Fprintf(os.Stderr, "go tls echo server listening on %s (GOMAXPROCS=%d)\n", addr, workers)
 
 	for {
-		conn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			continue
 		}
-		go func(c net.Conn) {
-			defer c.Close()
-			buf := make([]byte, 65536)
-			for {
-				n, err := c.Read(buf)
-				if err != nil {
-					return
-				}
-				_, err = c.Write(buf[:n])
-				if err != nil {
-					return
-				}
-			}
-		}(conn)
+		go handleConn(conn)
 	}
 }

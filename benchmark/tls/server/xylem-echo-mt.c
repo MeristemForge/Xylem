@@ -1,5 +1,12 @@
+/* Xylem TLS echo server (multi-threaded).
+ *
+ * Same coroutine design as the ST variant: one acceptor coroutine loops
+ * xylem_tls_accept() and spawns a handler coroutine per connection. The
+ * only difference is the scheduler worker count (argv[2]); the runtime's
+ * work-stealing scheduler spreads the handler coroutines across workers.
+ * A self-signed certificate is generated at startup via OpenSSL. */
 #include "xylem.h"
-#include "xylem/net/xylem-dtls.h"
+#include "xylem/net/xylem-tls.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,7 +15,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
-#define DEFAULT_PORT 9444
+#define DEFAULT_PORT 9443
 #define CERT_FILE    "bench-cert.pem"
 #define KEY_FILE     "bench-key.pem"
 
@@ -16,9 +23,7 @@ static int _write_pem_to_file(const char* path,
                               int (*write_fn)(BIO*, void*),
                               void* obj) {
     BIO* bio = BIO_new(BIO_s_mem());
-    if (!bio) {
-        return -1;
-    }
+    if (!bio) return -1;
     if (write_fn(bio, obj) != 1) {
         BIO_free(bio);
         return -1;
@@ -55,15 +60,10 @@ static int _ensure_cert(void) {
     fprintf(stderr, "generating self-signed certificate...\n");
 
     EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
-        return -1;
-    }
+    if (!pkey) return -1;
 
     EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!pctx) {
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
+    if (!pctx) { EVP_PKEY_free(pkey); return -1; }
 
     EVP_PKEY_keygen_init(pctx);
     EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
@@ -84,68 +84,83 @@ static int _ensure_cert(void) {
     X509_sign(x509, pkey, EVP_sha256());
 
     int rc = 0;
-    if (_write_pem_to_file(CERT_FILE, _write_cert, x509) != 0) {
-        rc = -1;
-    }
-    if (rc == 0 && _write_pem_to_file(KEY_FILE, _write_key, pkey) != 0) {
-        rc = -1;
-    }
+    if (_write_pem_to_file(CERT_FILE, _write_cert, x509) != 0) rc = -1;
+    if (rc == 0 && _write_pem_to_file(KEY_FILE, _write_key, pkey) != 0) rc = -1;
 
     X509_free(x509);
     EVP_PKEY_free(pkey);
     return rc;
 }
 
-static void _on_read(xylem_dtls_conn_t* dtls, void* data, size_t len) {
-    xylem_dtls_write(dtls, data, len);
+static void _handle_conn(void* arg) {
+    xylem_tls_conn_t* conn = (xylem_tls_conn_t*)arg;
+    char* buf = (char*)malloc(65536);
+    if (!buf) { xylem_tls_close(conn); return; }
+
+    for (;;) {
+        int n = xylem_tls_read(conn, buf, 65536);
+        if (n <= 0) break;
+        if (xylem_tls_write(conn, buf, n) != 0) break;
+    }
+
+    free(buf);
+    xylem_tls_close(conn);
 }
 
-int main(int argc, char** argv) {
-    int port = DEFAULT_PORT;
-    if (argc > 1) port = atoi(argv[1]);
+static void _acceptor(void* arg) {
+    int port = *(int*)arg;
 
-
-    loop_t* loop = loop_create();
-
-    xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     if (!ctx) {
-        fprintf(stderr, "failed to create dtls context\n");
-        return 1;
+        fprintf(stderr, "failed to create tls context\n");
+        xylem_shutdown();
+        return;
     }
 
     if (_ensure_cert() != 0) {
         fprintf(stderr, "failed to generate self-signed certificate\n");
-        xylem_dtls_ctx_destroy(ctx);
-        return 1;
+        xylem_tls_ctx_destroy(ctx);
+        xylem_shutdown();
+        return;
     }
 
-    if (xylem_dtls_ctx_load_cert(ctx, NULL, CERT_FILE, KEY_FILE) != 0) {
+    if (xylem_tls_ctx_load_cert(ctx, NULL, CERT_FILE, KEY_FILE) != 0) {
         fprintf(stderr, "failed to load %s / %s\n", CERT_FILE, KEY_FILE);
-        xylem_dtls_ctx_destroy(ctx);
-        return 1;
+        xylem_tls_ctx_destroy(ctx);
+        xylem_shutdown();
+        return;
     }
-    xylem_dtls_ctx_verify_client(ctx, false);
+    xylem_tls_ctx_verify_client(ctx, false);
 
-    xylem_addr_t addr;
-    xylem_addr_pton("0.0.0.0", (uint16_t)port, &addr);
-
-    xylem_dtls_handler_t handler = {
-        .on_accept = NULL,
-        .on_read   = _on_read,
-        .on_close  = NULL,
-    };
-
-    xylem_dtls_server_t* server = xylem_dtls_listen(loop, &addr, ctx, &handler);
+    xylem_tls_listener_t* server =
+        xylem_tls_listen("0.0.0.0", (uint16_t)port, ctx, NULL);
     if (!server) {
         fprintf(stderr, "failed to listen on port %d\n", port);
-        xylem_dtls_ctx_destroy(ctx);
-        return 1;
+        xylem_tls_ctx_destroy(ctx);
+        xylem_shutdown();
+        return;
     }
 
-    fprintf(stderr, "xylem dtls echo server listening on 0.0.0.0:%d\n", port);
-    loop_run(loop);
+    fprintf(stderr, "xylem tls echo server listening on 0.0.0.0:%d\n", port);
 
-    xylem_dtls_ctx_destroy(ctx);
-    loop_destroy(loop);
+    for (;;) {
+        xylem_tls_conn_t* conn = xylem_tls_accept(server);
+        if (!conn) break;
+        xylem_spawn(_handle_conn, conn);
+    }
+
+    xylem_tls_close_listener(server);
+    xylem_tls_ctx_destroy(ctx);
+}
+
+int main(int argc, char** argv) {
+    int port = DEFAULT_PORT;
+    int workers = 4;
+    if (argc > 1) port = atoi(argv[1]);
+    if (argc > 2) workers = atoi(argv[2]);
+
+    xylem_opts_t rt_opts = {0};
+    rt_opts.workers = workers;
+    xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }

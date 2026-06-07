@@ -12,6 +12,11 @@ func main() {
 	port := flag.Int("port", 9001, "listen port")
 	flag.Parse()
 
+	if flag.NArg() > 0 {
+		if p, err := fmt.Sscanf(flag.Arg(0), "%d", port); p == 1 && err == nil {
+		}
+	}
+
 	runtime.GOMAXPROCS(1)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", *port)

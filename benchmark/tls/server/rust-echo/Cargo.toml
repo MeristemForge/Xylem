@@ -4,12 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros"] }
 tokio-rustls = "0.25"
 rustls = "0.22"
 rustls-pemfile = "2"
-rcgen = "0.13"
-clap = { version = "4", features = ["derive"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+# Pin transitive crates that bumped to edition 2024 (need cargo >= 1.85) back to
+# versions compatible with the system toolchain (Rust 1.75).
+time = "=0.3.36"
+
+[[bin]]
+name = "tls-rust-echo"
+path = "src/main.rs"
+
+[[bin]]
+name = "tls-rust-echo-mt"
+path = "src/main_mt.rs"
 
 [profile.release]
 opt-level = 3

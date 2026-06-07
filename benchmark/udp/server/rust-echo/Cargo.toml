@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "net", "macros"] }
-clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "udp-rust-echo"
+path = "src/main.rs"
 
 [profile.release]
 opt-level = 3

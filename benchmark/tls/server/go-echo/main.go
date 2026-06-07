@@ -69,6 +69,11 @@ func main() {
 	port := flag.Int("port", 9443, "listen port")
 	flag.Parse()
 
+	if flag.NArg() > 0 {
+		if p, err := fmt.Sscanf(flag.Arg(0), "%d", port); p == 1 && err == nil {
+		}
+	}
+
 	runtime.GOMAXPROCS(1)
 
 	cert, err := generateSelfSignedCert()

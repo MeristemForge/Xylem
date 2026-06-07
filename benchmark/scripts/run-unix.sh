@@ -2,42 +2,27 @@
 set -euo pipefail
 
 # =============================================================================
-# Xylem TCP benchmark suite (cross-platform: Linux + macOS)
+# Xylem benchmark suite (cross-platform: Linux + macOS)
 # -----------------------------------------------------------------------------
 #   install  - install system dependencies (Linux: sudo apt + source builds;
 #              macOS: guidance via brew)
-#   build    - build xylem + all TCP echo servers (ST + MT) + bench client
+#   build    - build xylem + echo servers + bench client for each protocol
 #   bench    - run comparison benchmarks and write results/<ts>/
 #   all      - install + build + bench                             [default]
 #
-# Compared servers (Linux: 5 families): xylem, libuv, boost, go, rust
-# On macOS the default set narrows to xylem, go, rust (libuv/boost are
-# typically absent; missing binaries are skipped automatically anyway).
-# Each family has a single-threaded (ST) and multi-threaded (MT) binary.
+# Protocols (--proto, comma-separated): tcp, udp, tls
+#   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
+#   udp : datagram echo, ports from 9001, ST only, throughput
+#   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
+#         (xylem built with -DXYLEM_ENABLE_TLS=ON; servers link OpenSSL)
+#
+# Compared servers (Linux: 5 families): xylem, libuv, boost, go, rust.
+# On macOS the default set narrows to xylem, go, rust. Missing binaries are
+# skipped automatically. UDP has no MT row (the public UDP API exposes no
+# SO_REUSEPORT, so a single bound port cannot be fanned across workers).
 #
 # NOTE: macOS uses kqueue and lacks SO_REUSEPORT / /proc; its numbers are
 # NOT comparable to the Linux suite. Per-CPU usage sampling is Linux-only.
-#
-# Fairness rules for MT servers:
-#   - MT workers run as N pthreads / N goroutines / N tokio workers.
-#   - Each worker has its own listen socket with SO_REUSEPORT so the
-#     kernel load-balances accepts (except xylem/go/rust which use
-#     their native shared-runtime work-stealing -- each project's
-#     idiomatic MT story).
-#   - TCP_NODELAY on accepted sockets, backlog 4096, 64 KB read buffer.
-#
-# Benchmark matrix (defaults, configurable via CLI):
-#   ST row : payload in {64B, 4KB, 64KB} x conns in {1k, 10k}  = 6 runs / family
-#   MT row : same matrix with workers = $(nproc)                = 6 runs / family
-#   ConnRate : concurrency in {1k, 10k}                         = 2 runs x 2 rows
-#
-# CLI options for `bench`:
-#   --servers xylem,go,rust   select which servers to compare (comma-separated)
-#   --conns 1000,10000        connection counts (comma-separated)
-#   --payload 64,4096         payload sizes in bytes (comma-separated)
-#   --duration 10             test duration in seconds
-#   --mode st|mt|both         single-thread, multi-thread, or both (default: both)
-#   --no-connrate             skip connection-rate tests
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,6 +52,29 @@ else
     ULIMIT_HARD=200000
     ncpu() { nproc; }
 fi
+
+# =============================================================================
+# per-protocol configuration
+# =============================================================================
+# Sets PROTO_PORT_BASE / PROTO_HAS_MT / PROTO_HAS_CONNRATE / PROTO_TLS for the
+# current protocol $1.
+proto_config() {
+    case "$1" in
+        tcp) PROTO_PORT_BASE=9000; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=false ;;
+        udp) PROTO_PORT_BASE=9001; PROTO_HAS_MT=false; PROTO_HAS_CONNRATE=false; PROTO_TLS=false ;;
+        tls) PROTO_PORT_BASE=9443; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=true  ;;
+        *)   err "unknown protocol: $1 (must be tcp|udp|tls)"; exit 1 ;;
+    esac
+}
+
+# Does the protocol list contain tls? (decides the xylem TLS build flag)
+protos_need_tls() {
+    local p
+    for p in "${PROTOS[@]}"; do
+        [ "$p" = "tls" ] && return 0
+    done
+    return 1
+}
 
 # =============================================================================
 # install
@@ -192,105 +200,125 @@ cmd_install() {
 # build
 # =============================================================================
 
+CFLAGS_COMMON="-O3 -DNDEBUG -flto -Wall -Wextra"
+LDFLAGS_COMMON="-s -flto"
+
+# OpenSSL location for the TLS suite. Set OPENSSL_ROOT to a custom OpenSSL
+# install/build tree (e.g. one built from source when the distro's libssl is
+# older than the version CMakeLists requires); empty uses the system OpenSSL.
+OSSL_INC=""
+OSSL_LIB="-lssl -lcrypto"
+if [ -n "${OPENSSL_ROOT:-}" ]; then
+    OSSL_INC="-I${OPENSSL_ROOT}/include"
+    OSSL_LIB="-L${OPENSSL_ROOT} -Wl,-rpath,${OPENSSL_ROOT} -lssl -lcrypto"
+fi
+
+# Build all servers + client for a single protocol $1 against $XYLEM_LIB.
+build_proto() {
+    local proto="$1"
+    proto_config "$proto"
+
+    local xylem_extra="-lpthread"
+    local client_extra=""
+    local inc_extra=""
+    if [ "$PROTO_TLS" = true ]; then
+        xylem_extra="-lpthread $OSSL_LIB"
+        client_extra="$OSSL_LIB"
+        inc_extra="$OSSL_INC"
+    fi
+
+    # which suffixes to build: "" (ST) always, "-mt" only if the proto has MT
+    local suffixes=("")
+    [ "$PROTO_HAS_MT" = true ] && suffixes+=("-mt")
+
+    local suf src
+    for suf in "${suffixes[@]}"; do
+        local label="ST"; [ -n "$suf" ] && label="MT"
+        info "building ${proto} servers (${label})..."
+
+        # xylem
+        src="$BENCH_DIR/${proto}/server/xylem-echo${suf}.c"
+        if [ -f "$src" ]; then
+            # shellcheck disable=SC2086
+            gcc $CFLAGS_COMMON $inc_extra -I"$PROJECT_ROOT/include" "$src" \
+                "$XYLEM_LIB" $xylem_extra $LDFLAGS_COMMON \
+                -o "$BIN_DIR/${proto}-xylem-echo${suf}" \
+                || warn "skip xylem ${label} (build failed)"
+        fi
+
+        # libuv
+        src="$BENCH_DIR/${proto}/server/libuv-echo${suf}.c"
+        if [ -f "$src" ]; then
+            # shellcheck disable=SC2086
+            gcc $CFLAGS_COMMON $inc_extra "$src" -luv $client_extra -lpthread $LDFLAGS_COMMON \
+                -o "$BIN_DIR/${proto}-libuv-echo${suf}" \
+                || warn "skip libuv ${label} (build failed)"
+        fi
+
+        # boost
+        src="$BENCH_DIR/${proto}/server/boost-echo${suf}.cpp"
+        if [ -f "$src" ]; then
+            # shellcheck disable=SC2086
+            g++ $CFLAGS_COMMON $inc_extra -std=c++17 "$src" \
+                -lboost_system $client_extra -lpthread $LDFLAGS_COMMON \
+                -o "$BIN_DIR/${proto}-boost-echo${suf}" \
+                || warn "skip boost ${label} (build failed)"
+        fi
+
+        # go
+        local godir="$BENCH_DIR/${proto}/server/go-echo${suf}"
+        if [ -d "$godir" ] && command -v go >/dev/null 2>&1; then
+            ( cd "$godir" && \
+              CGO_ENABLED=0 go build -ldflags="-s -w" \
+                  -o "$BIN_DIR/${proto}-go-echo${suf}" . ) \
+              || warn "skip go ${label} (build failed)"
+        fi
+
+        # rust (single crate with per-bin targets)
+        if [ -d "$BENCH_DIR/${proto}/server/rust-echo" ] && command -v cargo >/dev/null 2>&1; then
+            ( cd "$BENCH_DIR/${proto}/server/rust-echo" && \
+              cargo build --release -q --bin "${proto}-rust-echo${suf}" && \
+              cp "target/release/${proto}-rust-echo${suf}" "$BIN_DIR/" && \
+              strip "$BIN_DIR/${proto}-rust-echo${suf}" ) \
+              || warn "skip rust ${label} (build failed)"
+        fi
+    done
+
+    info "building ${proto}-bench client..."
+    # shellcheck disable=SC2086
+    gcc $CFLAGS_COMMON $inc_extra "$BENCH_DIR/${proto}/client/${proto}-bench-unix.c" \
+        $client_extra $LDFLAGS_COMMON -o "$BIN_DIR/${proto}-bench" \
+        || { err "failed to build ${proto}-bench client"; return 1; }
+    ok "${proto}-bench built"
+}
+
 cmd_build() {
     mkdir -p "$BIN_DIR"
 
-    local CFLAGS_COMMON="-O3 -DNDEBUG -flto -Wall -Wextra"
-    local LDFLAGS_COMMON="-s -flto"
+    local tls_flag="OFF"
+    if protos_need_tls; then tls_flag="ON"; fi
 
-    info "building xylem static library..."
+    local ossl_cmake=""
+    if [ -n "${OPENSSL_ROOT:-}" ]; then
+        ossl_cmake="-DOPENSSL_ROOT_DIR=$OPENSSL_ROOT"
+    fi
+
+    info "building xylem static library (XYLEM_ENABLE_TLS=${tls_flag})..."
+    # shellcheck disable=SC2086
     cmake -S "$PROJECT_ROOT" -B "$BUILD_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS='-O3 -DNDEBUG -flto' \
-        -DXYLEM_ENABLE_TLS=OFF \
-        -G Ninja >/dev/null 2>&1
+        -DXYLEM_ENABLE_TLS="$tls_flag" \
+        $ossl_cmake \
+        -G Ninja
     ninja -C "$BUILD_DIR" xylem -j"$(ncpu)"
-    local XYLEM_LIB="$BUILD_DIR/libxylem.a"
+    XYLEM_LIB="$BUILD_DIR/libxylem.a"
     ok "xylem built"
 
-    info "building tcp servers (ST)..."
-    # shellcheck disable=SC2086
-    gcc $CFLAGS_COMMON -I"$PROJECT_ROOT/include" \
-        "$BENCH_DIR/tcp/server/xylem-echo.c" \
-        "$XYLEM_LIB" -lpthread $LDFLAGS_COMMON \
-        -o "$BIN_DIR/tcp-xylem-echo"
-
-    local cand
-    for cand in libuv; do
-        local src="$BENCH_DIR/tcp/server/${cand}-echo.c"
-        [ -f "$src" ] || continue
-        local lflag="-l${cand#lib}"
-        # shellcheck disable=SC2086
-        gcc $CFLAGS_COMMON "$src" $lflag -lpthread $LDFLAGS_COMMON \
-            -o "$BIN_DIR/tcp-${cand}-echo" || warn "skip ${cand} ST (build failed)"
+    local proto
+    for proto in "${PROTOS[@]}"; do
+        build_proto "$proto"
     done
-
-    if [ -f "$BENCH_DIR/tcp/server/boost-echo.cpp" ]; then
-        # shellcheck disable=SC2086
-        g++ $CFLAGS_COMMON -std=c++17 \
-            "$BENCH_DIR/tcp/server/boost-echo.cpp" \
-            -lboost_system -lpthread $LDFLAGS_COMMON \
-            -o "$BIN_DIR/tcp-boost-echo" || warn "skip boost ST (build failed)"
-    fi
-
-    if [ -d "$BENCH_DIR/tcp/server/go-echo" ] && command -v go >/dev/null 2>&1; then
-        ( cd "$BENCH_DIR/tcp/server/go-echo" && \
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_DIR/tcp-go-echo" . ) \
-          || warn "skip go ST (build failed)"
-    fi
-
-    if [ -d "$BENCH_DIR/tcp/server/rust-echo" ] && command -v cargo >/dev/null 2>&1; then
-        ( cd "$BENCH_DIR/tcp/server/rust-echo" && cargo build --release -q --bin tcp-rust-echo && \
-          cp target/release/tcp-rust-echo "$BIN_DIR/" && \
-          strip "$BIN_DIR/tcp-rust-echo" ) \
-          || warn "skip rust ST (build failed)"
-    fi
-    ok "tcp servers (ST) built"
-
-    info "building tcp servers (MT)..."
-    # shellcheck disable=SC2086
-    gcc $CFLAGS_COMMON -I"$PROJECT_ROOT/include" \
-        "$BENCH_DIR/tcp/server/xylem-echo-mt.c" \
-        "$XYLEM_LIB" -lpthread $LDFLAGS_COMMON \
-        -o "$BIN_DIR/tcp-xylem-echo-mt"
-
-    for cand in libuv; do
-        local src="$BENCH_DIR/tcp/server/${cand}-echo-mt.c"
-        [ -f "$src" ] || continue
-        local lflag="-l${cand#lib}"
-        # shellcheck disable=SC2086
-        gcc $CFLAGS_COMMON "$src" $lflag -lpthread $LDFLAGS_COMMON \
-            -o "$BIN_DIR/tcp-${cand}-echo-mt" || warn "skip ${cand} MT (build failed)"
-    done
-
-    if [ -f "$BENCH_DIR/tcp/server/boost-echo-mt.cpp" ]; then
-        # shellcheck disable=SC2086
-        g++ $CFLAGS_COMMON -std=c++17 \
-            "$BENCH_DIR/tcp/server/boost-echo-mt.cpp" \
-            -lboost_system -lpthread $LDFLAGS_COMMON \
-            -o "$BIN_DIR/tcp-boost-echo-mt" || warn "skip boost MT (build failed)"
-    fi
-
-    if [ -d "$BENCH_DIR/tcp/server/go-echo-mt" ] && command -v go >/dev/null 2>&1; then
-        ( cd "$BENCH_DIR/tcp/server/go-echo-mt" && \
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_DIR/tcp-go-echo-mt" . ) \
-          || warn "skip go MT (build failed)"
-    fi
-
-    if [ -d "$BENCH_DIR/tcp/server/rust-echo" ] && command -v cargo >/dev/null 2>&1; then
-        ( cd "$BENCH_DIR/tcp/server/rust-echo" && cargo build --release -q --bin tcp-rust-echo-mt && \
-          cp target/release/tcp-rust-echo-mt "$BIN_DIR/" && \
-          strip "$BIN_DIR/tcp-rust-echo-mt" ) \
-          || warn "skip rust MT (build failed)"
-    fi
-    ok "tcp servers (MT) built"
-
-    info "building tcp-bench client..."
-    # shellcheck disable=SC2086
-    gcc $CFLAGS_COMMON \
-        "$BENCH_DIR/tcp/client/tcp-bench-unix.c" \
-        $LDFLAGS_COMMON -o "$BIN_DIR/tcp-bench"
-    ok "tcp-bench built"
 
     echo ""
     ls -lh "$BIN_DIR"
@@ -300,14 +328,16 @@ cmd_build() {
 # bench
 # =============================================================================
 
-DURATION="${DURATION:-10}"
-PORT_BASE="${PORT_BASE:-9000}"
+PORT_BASE="${PORT_BASE:-9000}"   # overridden per-proto during bench
 
 ensure_bin() {
-    if [ ! -d "$BIN_DIR" ] || [ ! -x "$BIN_DIR/tcp-bench" ]; then
-        err "binaries missing in $BIN_DIR; run: $0 build"
-        exit 1
-    fi
+    local proto
+    for proto in "${PROTOS[@]}"; do
+        if [ ! -x "$BIN_DIR/${proto}-bench" ]; then
+            err "binaries missing in $BIN_DIR; run: $0 build --proto $(IFS=,; echo "${PROTOS[*]}")"
+            exit 1
+        fi
+    done
 }
 
 format_conns() {
@@ -323,12 +353,11 @@ format_size() {
 }
 
 kill_servers() {
-    pkill -f "$BIN_DIR/tcp-.*-echo" 2>/dev/null || true
+    pkill -f "$BIN_DIR/${CUR_PROTO}-.*-echo" 2>/dev/null || true
     sleep 1
 }
 
 extract_json() {
-    # $1: file  $2: json key — extracts numeric value (int or float)
     grep "\"$2\"" "$1" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1
 }
 
@@ -343,13 +372,11 @@ start_server() {
 }
 
 snapshot_cpu() {
-    # Capture per-CPU jiffies from /proc/stat -> output file (Linux only)
     [ "$CPU_SAMPLING" = true ] || { : > "$1"; return; }
     grep '^cpu[0-9]' /proc/stat > "$1"
 }
 
 calc_cpu_usage() {
-    # Compare two /proc/stat snapshots, output "cpu0:XX% cpu1:YY% ..."
     local before="$1" after="$2"
     if [ ! -s "$before" ] || [ ! -s "$after" ]; then
         echo "n/a"
@@ -363,8 +390,6 @@ calc_cpu_usage() {
         line_before=$(grep "^${cpuname} " "$before")
         [ -z "$line_before" ] && continue
 
-        # /proc/stat fields: cpu user nice system idle iowait irq softirq [steal [guest [guest_nice]]]
-        # Use awk to sum all non-idle and compute idle
         local idle1 total1 idle2 total2
         idle1=$(awk '{print $5}' <<< "$line_before")
         total1=$(awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}' <<< "$line_before")
@@ -384,12 +409,7 @@ calc_cpu_usage() {
     echo "${result:-n/a}"
 }
 
-# -----------------------------------------------------------------------------
-# per-process (server PID) sampling: peak RSS
-# -----------------------------------------------------------------------------
-
 # Peak resident set size (KB) of a server PID, including child threads.
-# Linux: VmHWM from /proc/<pid>/status. macOS: current RSS via ps (no peak).
 proc_peak_rss_kb() {
     local pid="$1"
     if [ "$PLATFORM" = "linux" ]; then
@@ -411,7 +431,7 @@ bench_throughput() {
     conns_lbl="$(format_conns "$conns")"
     size_lbl="$(format_size "$payload")"
 
-    info "=== ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT} ==="
+    info "=== [${CUR_PROTO}] ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT} ==="
 
     if [ "$REPEAT" -gt 1 ]; then
         printf "  %-10s %12s %8s %10s %10s %10s  %s\n" \
@@ -425,7 +445,7 @@ bench_throughput() {
     local offset=0
     for name in "${SERVERS[@]}"; do
         local port=$((PORT_BASE + offset))
-        local bin="$BIN_DIR/tcp-${name}${bin_suffix}"
+        local bin="$BIN_DIR/${CUR_PROTO}-${name}${bin_suffix}"
         offset=$((offset + 1))
 
         if [ ! -x "$bin" ]; then
@@ -443,13 +463,13 @@ bench_throughput() {
 
         for run in $(seq 1 "$REPEAT"); do
             local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
-            local out="$RUN_DIR/throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
+            local out="$RUN_DIR/${CUR_PROTO}-throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
             local cpu_before="$RUN_DIR/.cpu-before-${name}-r${run}"
             local cpu_after="$RUN_DIR/.cpu-after-${name}-r${run}"
 
             snapshot_cpu "$cpu_before"
 
-            "$BIN_DIR/tcp-bench" throughput \
+            "$BIN_DIR/${CUR_PROTO}-bench" throughput \
                 -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
                 > "$out" 2>/dev/null || true
 
@@ -495,7 +515,6 @@ bench_throughput() {
                 printf "  %-10s %12s %8s %10s %10s %10s\n" \
                     "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             fi
-            # server process peak RSS (the compared subject)
             printf "  %10s srv: peak_rss=%s\n" "" \
                 "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)"
             if [ "$CPU_SAMPLING" = true ]; then
@@ -517,7 +536,7 @@ bench_connrate() {
     local conc_lbl
     conc_lbl="$(format_conns "$concurrency")"
 
-    info "=== ${row_label} ConnRate: concurrency=${conc_lbl} ${DURATION}s ==="
+    info "=== [${CUR_PROTO}] ${row_label} ConnRate: concurrency=${conc_lbl} ${DURATION}s ==="
 
     printf "  %-10s %12s %10s\n" "SERVER" "conn/s" "fails"
     printf "  %-10s %12s %10s\n" "------" "------" "-----"
@@ -525,7 +544,7 @@ bench_connrate() {
     local offset=0
     for name in "${SERVERS[@]}"; do
         local port=$((PORT_BASE + offset))
-        local bin="$BIN_DIR/tcp-${name}${bin_suffix}"
+        local bin="$BIN_DIR/${CUR_PROTO}-${name}${bin_suffix}"
         offset=$((offset + 1))
 
         if [ ! -x "$bin" ]; then
@@ -538,8 +557,8 @@ bench_connrate() {
         sleep 2
 
         local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
-        local out="$RUN_DIR/connrate-${row_lc}-${conc_lbl}-${name}.json"
-        "$BIN_DIR/tcp-bench" connrate \
+        local out="$RUN_DIR/${CUR_PROTO}-connrate-${row_lc}-${conc_lbl}-${name}.json"
+        "$BIN_DIR/${CUR_PROTO}-bench" connrate \
             -c "$concurrency" -d "$DURATION" -p "$port" \
             > "$out" 2>/dev/null || true
 
@@ -560,18 +579,17 @@ bench_connrate() {
     echo ""
 }
 
-cmd_bench() {
-    ensure_bin
-
-    ulimit -n "$ULIMIT_HARD" 2>/dev/null || ulimit -n 65535 2>/dev/null || true
-    kill_servers
+# Run the full matrix for one protocol.
+bench_proto() {
+    CUR_PROTO="$1"
+    proto_config "$CUR_PROTO"
+    PORT_BASE="$PROTO_PORT_BASE"
 
     local nproc_val; nproc_val="$(ncpu)"
-    local ts; ts="$(date +%Y%m%d-%H%M%S)"
-    RUN_DIR="$RESULTS_ROOT/$ts"
-    mkdir -p "$RUN_DIR"
 
-    info "results -> $RUN_DIR   (MT workers = ${nproc_val})"
+    kill_servers
+
+    info "=== protocol: ${CUR_PROTO}  (port base ${PORT_BASE}) ==="
     info "servers: ${SERVERS[*]}"
     info "conns: ${CONNS[*]}  payload: ${PAYLOADS[*]}  duration: ${DURATION}s  mode: ${MODE}"
     echo ""
@@ -583,26 +601,49 @@ cmd_bench() {
                 bench_throughput ST -echo "" "$conns" "$payload"
             done
         done
-        if [ "$RUN_CONNRATE" = true ]; then
+        if [ "$RUN_CONNRATE" = true ] && [ "$PROTO_HAS_CONNRATE" = true ]; then
             for conns in "${CONNS[@]}"; do
                 bench_connrate ST -echo "" "$conns"
             done
         fi
     fi
 
-    # ---- Multi-thread row ---------------------------------------------------
-    if [[ "$MODE" == "mt" || "$MODE" == "both" ]]; then
+    # ---- Multi-thread row (skipped for protocols without MT, e.g. udp) ------
+    if [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = true ]; then
         for payload in "${PAYLOADS[@]}"; do
             for conns in "${CONNS[@]}"; do
                 bench_throughput MT -echo-mt "$nproc_val" "$conns" "$payload"
             done
         done
-        if [ "$RUN_CONNRATE" = true ]; then
+        if [ "$RUN_CONNRATE" = true ] && [ "$PROTO_HAS_CONNRATE" = true ]; then
             for conns in "${CONNS[@]}"; do
                 bench_connrate MT -echo-mt "$nproc_val" "$conns"
             done
         fi
+    elif [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = false ]; then
+        info "[${CUR_PROTO}] no MT row for this protocol; skipping."
+        echo ""
     fi
+}
+
+cmd_bench() {
+    ensure_bin
+
+    ulimit -n "$ULIMIT_HARD" 2>/dev/null || ulimit -n 65535 2>/dev/null || true
+
+    local ts; ts="$(date +%Y%m%d-%H%M%S)"
+    RUN_DIR="$RESULTS_ROOT/$ts"
+    mkdir -p "$RUN_DIR"
+
+    local nproc_val; nproc_val="$(ncpu)"
+    info "results -> $RUN_DIR   (MT workers = ${nproc_val})"
+    info "protocols: ${PROTOS[*]}"
+    echo ""
+
+    local proto
+    for proto in "${PROTOS[@]}"; do
+        bench_proto "$proto"
+    done
 
     ok "benchmarks complete"
     info "results written to $RUN_DIR"
@@ -612,15 +653,14 @@ cmd_bench() {
 # parse bench options
 # =============================================================================
 
-# Defaults (env vars seed them; CLI options override).
-# macOS narrows the default server set (libuv/boost typically absent).
 if [ "$PLATFORM" = "macos" ]; then
     SERVERS=(xylem go rust)
 else
     SERVERS=(xylem libuv boost go rust)
 fi
-IFS=',' read -ra CONNS    <<< "${CONNS:-1000,10000}"
-IFS=',' read -ra PAYLOADS <<< "${PAYLOADS:-64,4096,65536}"
+IFS=',' read -ra PROTOS    <<< "${PROTO:-tcp}"
+IFS=',' read -ra CONNS     <<< "${CONNS:-1000,10000}"
+IFS=',' read -ra PAYLOADS  <<< "${PAYLOADS:-64,4096,65536}"
 DURATION="${DURATION:-10}"
 MODE="${MODE:-both}"
 REPEAT="${REPEAT:-1}"
@@ -629,6 +669,10 @@ RUN_CONNRATE=true
 parse_bench_opts() {
     while [ $# -gt 0 ]; do
         case "$1" in
+            --proto|-P)
+                shift
+                IFS=',' read -ra PROTOS <<< "$1"
+                ;;
             --servers|-s)
                 shift
                 IFS=',' read -ra SERVERS <<< "$1"
@@ -667,6 +711,10 @@ parse_bench_opts() {
         esac
         shift
     done
+
+    # validate protocols up front
+    local p
+    for p in "${PROTOS[@]}"; do proto_config "$p"; done
 }
 
 # =============================================================================
@@ -675,37 +723,42 @@ parse_bench_opts() {
 
 usage() {
     cat <<EOF
-usage: $0 [install|build|bench|all] [bench-options...]
+usage: $0 [install|build|bench|all] [options...]
 
 Cross-platform (Linux + macOS). Current platform: $PLATFORM
 
 Commands:
   install   Linux: apt + rust + source-built libuv/boost (needs sudo)
             macOS: Homebrew packages
-  build     xylem static lib + tcp servers (ST + MT) + tcp-bench client
-  bench     run ST + MT comparison benchmarks, write benchmark/results/<ts>/
+  build     xylem static lib + per-protocol servers + bench clients
+  bench     run comparison benchmarks, write benchmark/results/<ts>/
   all       install + build + bench   (default)
 
-Bench options (pass after 'bench' or 'all'; env vars seed defaults):
-  --servers, -s  xylem,go,rust     servers to compare (comma-separated)
-                                   available: xylem, libuv, boost, go, rust
-                                   (macOS default: xylem,go,rust)
-  --conns, -c    1000,10000        connection counts (comma-separated)
-  --payload, -S  64,4096,65536     payload sizes in bytes (comma-separated)
-  --duration, -d 10                test duration in seconds
-  --mode, -m     st|mt|both        single-thread / multi-thread / both
-  --repeat, -r   3                 repeat each test N times (avg results)
-  --no-connrate                    skip connection-rate tests
+Options (pass after the command; env vars seed defaults):
+  --proto, -P    tcp,udp,tls        protocols to build/bench (default: tcp)
+                                    tcp/tls: ST+MT, throughput+connrate
+                                    udp: ST only, throughput
+  --servers, -s  xylem,go,rust      servers to compare (comma-separated)
+                                    available: xylem, libuv, boost, go, rust
+                                    (macOS default: xylem,go,rust)
+  --conns, -c    1000,10000         connection counts (comma-separated)
+  --payload, -S  64,4096,65536      payload sizes in bytes (comma-separated)
+  --duration, -d 10                 test duration in seconds
+  --mode, -m     st|mt|both         single-thread / multi-thread / both
+  --repeat, -r   3                  repeat each test N times (avg results)
+  --no-connrate                     skip connection-rate tests
 
 Notes:
-  macOS uses kqueue and lacks SO_REUSEPORT / /proc; per-CPU usage sampling
-  is Linux-only and its numbers are NOT comparable to the Linux suite.
+  TLS requires OpenSSL; xylem is built with -DXYLEM_ENABLE_TLS=ON when tls is
+  among the protocols. UDP has no MT row.
+  macOS uses kqueue and lacks SO_REUSEPORT / /proc; numbers are NOT comparable
+  to the Linux suite.
 
 Examples:
-  $0 bench --servers xylem,go,rust --conns 1000 --payload 64 --duration 5
-  $0 bench -s xylem,rust -c 1000,5000 -S 64,4096 -d 15 --mode st
-  $0 bench --servers go,xylem --no-connrate
-  REPEAT=5 DURATION=5 CONNS=1000 $0 bench   # env-var style (macOS legacy)
+  $0 build --proto tcp,udp,tls
+  $0 bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
+  $0 bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
+  $0 all --proto tcp,udp,tls --duration 15
 EOF
 }
 
@@ -715,7 +768,10 @@ main() {
 
     case "$cmd" in
         install) cmd_install ;;
-        build)   cmd_build   ;;
+        build)
+            parse_bench_opts "$@"
+            cmd_build
+            ;;
         bench)
             parse_bench_opts "$@"
             cmd_bench

@@ -1,4 +1,3 @@
-use clap::Parser;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
@@ -6,12 +5,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-
-#[derive(Parser)]
-struct Args {
-    #[arg(default_value_t = 9443)]
-    port: u16,
-}
 
 fn generate_config() -> Arc<ServerConfig> {
     let subject_alt_names = vec!["localhost".to_string()];
@@ -33,11 +26,14 @@ fn generate_config() -> Arc<ServerConfig> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let args = Args::parse();
+    let port: u16 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9443);
     let config = generate_config();
     let acceptor = TlsAcceptor::from(config);
 
-    let addr = format!("0.0.0.0:{}", args.port);
+    let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).await.unwrap();
 
     eprintln!("rust tls echo server listening on {} (single-thread)", addr);
