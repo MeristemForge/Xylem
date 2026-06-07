@@ -108,7 +108,7 @@ xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
         size_t  count = 0;
-        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
+        if (addr_resolve(host, port, 0, &addrs, &count) != 0 || count == 0) {
             xylem_loge("<udp> dial dns failed host=%s", host);
             return NULL;
         }

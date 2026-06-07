@@ -65,24 +65,34 @@ extern int addr_ntop(
     uint16_t* port);
 
 /**
- * @brief Resolve a domain name to all addresses.
+ * @brief Resolve a domain name to all addresses, with a timeout.
  *
- * Offloads getaddrinfo to the runtime thread pool and yields
- * until the result is ready. The result array is heap-allocated;
- * the caller must free *addrs when done.
+ * Offloads the blocking getaddrinfo to the runtime thread pool and
+ * yields the calling coroutine until the result is ready or the
+ * timeout elapses. The result array is heap-allocated; the caller
+ * must free *addrs when done (only valid on a 0 return).
  *
  * The supplied port is embedded into every returned sockaddr so
  * callers can use the result directly with bind/connect/sendto.
  *
- * @param domain  Domain name to resolve.
- * @param port    Port to embed in each result.
- * @param addrs   Receives a malloc'd array of results (caller frees).
- * @param count   Receives the number of results.
+ * Timeout semantics mirror Go's cgo resolver and Tokio's default
+ * (spawn_blocking) resolver: getaddrinfo cannot be cancelled, so on
+ * timeout the coroutine resumes with an error while the pool thread
+ * keeps running the lookup in the background; its result is discarded
+ * and its resources are released once it finally returns. Pass 0 to
+ * wait indefinitely (no timeout).
  *
- * @return 0 on success, -1 on failure.
+ * @param domain      Domain name to resolve.
+ * @param port        Port to embed in each result.
+ * @param timeout_ms  Resolve timeout in milliseconds, or 0 for none.
+ * @param addrs       Receives a malloc'd array of results (caller frees).
+ * @param count       Receives the number of results.
+ *
+ * @return 0 on success, -1 on failure or timeout.
  */
 extern int addr_resolve(
     const char* domain,
     uint16_t port,
+    uint64_t timeout_ms,
     addr_t** addrs,
     size_t* count);

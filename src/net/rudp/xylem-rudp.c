@@ -845,7 +845,9 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
         size_t  count = 0;
-        if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
+        uint64_t resolve_timeout = opts ? opts->connect_timeout_ms : 0;
+        if (addr_resolve(host, port, resolve_timeout, &addrs, &count) != 0
+            || count == 0) {
             xylem_loge("rudp dial: DNS resolution failed for %s", host);
             return NULL;
         }

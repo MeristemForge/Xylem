@@ -24,80 +24,116 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
+/**
+ * Resolve request context.
+ *
+ * Heap-allocated and reference-counted so the lookup can outlive the
+ * waiting coroutine: getaddrinfo is not cancellable, so on timeout the
+ * coroutine resumes with an error while the pool thread keeps running
+ * the lookup. The completion and the deadline timer race through a
+ * single-winner atomic exchange on `waiter`, so the coroutine is woken
+ * exactly once; `timed_out` is stamped only by the winning timer.
+ *
+ * refcnt: 1 (originator/waiter) + 1 (pool job) + 1 (armed timer).
+ * The last unref frees host, any unclaimed result, and the timer.
+ */
 typedef struct _addr_resolve_ctx_s {
-    mco_coro* co;
-    char*     host;
-    uint16_t  port;
-    addr_t**  addrs;
-    size_t*   count;
-    int       status;
+    _Atomic(mco_coro*) waiter;
+    char*              host;
+    uint16_t           port;
+    uint64_t           timeout_ms;
+    addr_t*            result;
+    size_t             result_count;
+    int                status;     /* worker outcome: 0 ok, -1 fail */
+    _Atomic bool       timed_out;  /* set only by the winning timer */
+    sched_timer_t*     timer;
+    _Atomic int32_t    refcnt;
 } _addr_resolve_ctx_t;
 
-static void _addr_resolve_finish(
-    _addr_resolve_ctx_t* ctx,
-    addr_t* arr,
-    size_t count) {
-    *ctx->addrs = arr;
-    *ctx->count = count;
-    ctx->status = arr ? 0 : -1;
-    scheduler_schedule(runtime_get_scheduler(), ctx->co);
+static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
+    if (atomic_fetch_sub_explicit(&ctx->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    if (ctx->timer) {
+        sched_timer_destroy(ctx->timer);
+    }
+    free(ctx->result); /* NULL on success (ownership transferred to caller). */
+    free(ctx->host);
+    free(ctx);
 }
 
 static void _addr_resolve_work(void* arg) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
 
-    struct addrinfo hints;
+    struct addrinfo  hints;
     struct addrinfo* res = NULL;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
 
     if (getaddrinfo(ctx->host, NULL, &hints, &res) != 0 || !res) {
-        _addr_resolve_finish(ctx, NULL, 0);
-        return;
+        goto done;
     }
 
-    size_t n = 0;
-    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
-        if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6) {
-            n++;
+    {
+        size_t n = 0;
+        for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+            if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6) {
+                n++;
+            }
         }
-    }
+        if (n == 0) {
+            freeaddrinfo(res);
+            goto done;
+        }
 
-    if (n == 0) {
+        addr_t* arr = (addr_t*)calloc(n, sizeof(addr_t));
+        if (!arr) {
+            freeaddrinfo(res);
+            goto done;
+        }
+
+        size_t i = 0;
+        for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+            if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
+                continue;
+            }
+            memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
+            if (rp->ai_family == AF_INET) {
+                ((struct sockaddr_in*)&arr[i].storage)->sin_port =
+                    htons(ctx->port);
+            } else {
+                ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
+                    htons(ctx->port);
+            }
+            i++;
+        }
         freeaddrinfo(res);
-        _addr_resolve_finish(ctx, NULL, 0);
-        return;
+
+        ctx->result       = arr;
+        ctx->result_count = i;
+        ctx->status       = 0;
     }
 
-    addr_t* arr = (addr_t*)calloc(n, sizeof(addr_t));
-    if (!arr) {
-        freeaddrinfo(res);
-        _addr_resolve_finish(ctx, NULL, 0);
-        return;
-    }
-
-    size_t i = 0;
-    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
-        if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
-            continue;
+done:
+    {
+        /**
+         * Single-winner wake: if the timeout already claimed the
+         * waiter, co is NULL and the result we just built is discarded
+         * (freed by the last unref). Otherwise wake the coroutine.
+         */
+        mco_coro* co = atomic_exchange_explicit(
+            &ctx->waiter, NULL, memory_order_acq_rel);
+        if (co) {
+            scheduler_schedule(runtime_get_scheduler(), co);
         }
-        memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
-        if (rp->ai_family == AF_INET) {
-            ((struct sockaddr_in*)&arr[i].storage)->sin_port =
-                htons(ctx->port);
-        } else {
-            ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
-                htons(ctx->port);
-        }
-        i++;
+        _addr_ctx_unref(ctx);
     }
-
-    freeaddrinfo(res);
-    _addr_resolve_finish(ctx, arr, i);
 }
 
 int addr_pton(const char* src, uint16_t port, addr_t* dst) {
@@ -171,17 +207,46 @@ int addr_ntop(
     return 0;
 }
 
+static void _addr_resolve_timeout_cb(sched_timer_t* timer, void* ud) {
+    (void)timer;
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
+
+    /* Single-winner: only stamp timed_out and wake if we beat the worker. */
+    mco_coro* co = atomic_exchange_explicit(
+        &ctx->waiter, NULL, memory_order_acq_rel);
+    if (co) {
+        atomic_store_explicit(&ctx->timed_out, true, memory_order_release);
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+    _addr_ctx_unref(ctx);
+}
+
 static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
-    ctx->co = co;
-    if (dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, ctx) != 0) {
+
+    /* Publish the waiter before submitting so a fast completion sees it. */
+    atomic_store_explicit(&ctx->waiter, co, memory_order_release);
+
+    /* Reference for the pool job. */
+    atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+    if (dynpool_submit(
+            runtime_get_dynpool(), _addr_resolve_work, ctx) != 0) {
         /**
-         * Submit failed (e.g. OOM). Record the error, decline the park,
-         * and the coroutine resumes with status=-1. Not handling this
-         * would orphan the coroutine permanently with no wakeup source.
+         * Submit failed (e.g. OOM). Undo the job ref, reclaim the
+         * waiter, and decline the park so the coroutine resumes inline
+         * with status == -1. Not declining would orphan it forever.
          */
+        atomic_fetch_sub_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+        atomic_store_explicit(&ctx->waiter, NULL, memory_order_relaxed);
         ctx->status = -1;
         return false;
+    }
+
+    /* Arm the deadline timer; one reference for the armed timer. */
+    if (ctx->timer) {
+        atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+        sched_timer_start(
+            ctx->timer, _addr_resolve_timeout_cb, ctx, ctx->timeout_ms, 0);
     }
     return true;
 }
@@ -189,24 +254,65 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
 int addr_resolve(
     const char* domain,
     uint16_t port,
+    uint64_t timeout_ms,
     addr_t** addrs,
     size_t* count) {
     if (!domain || !addrs || !count) {
         return -1;
     }
 
-    _addr_resolve_ctx_t ctx;
-    ctx.host   = (char*)domain;
-    ctx.port   = port;
-    ctx.addrs  = addrs;
-    ctx.count  = count;
-    ctx.status = 0;
-
     *addrs = NULL;
     *count = 0;
 
-    scheduler_park(
-        runtime_get_scheduler(), _addr_resolve_park_cb, &ctx);
+    _addr_resolve_ctx_t* ctx =
+        (_addr_resolve_ctx_t*)calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        return -1;
+    }
 
-    return ctx.status;
+    size_t hlen = strlen(domain) + 1;
+    ctx->host = (char*)malloc(hlen);
+    if (!ctx->host) {
+        free(ctx);
+        return -1;
+    }
+    memcpy(ctx->host, domain, hlen);
+
+    ctx->port       = port;
+    ctx->timeout_ms = timeout_ms;
+    ctx->status     = -1;
+    atomic_init(&ctx->waiter, NULL);
+    atomic_init(&ctx->timed_out, false);
+    atomic_init(&ctx->refcnt, 1); /* originator reference */
+
+    /* Best-effort: if the timer cannot be created, fall back to no timeout. */
+    if (timeout_ms > 0) {
+        ctx->timer = sched_timer_create(runtime_get_scheduler());
+    }
+
+    scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
+
+    int rc;
+    if (atomic_load_explicit(&ctx->timed_out, memory_order_acquire)) {
+        /* Timed out: the worker may still run, so do not touch result. */
+        rc = -1;
+    } else {
+        rc = ctx->status;
+        if (rc == 0) {
+            *addrs = ctx->result;
+            *count = ctx->result_count;
+            ctx->result = NULL; /* ownership transferred to the caller */
+        }
+
+        /**
+         * We won the race (or never armed): cancel a still-pending
+         * timer and drop its reference if we caught it before it fired.
+         */
+        if (ctx->timer && sched_timer_stop(ctx->timer)) {
+            _addr_ctx_unref(ctx);
+        }
+    }
+
+    _addr_ctx_unref(ctx); /* drop originator reference */
+    return rc;
 }

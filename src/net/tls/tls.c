@@ -342,6 +342,7 @@ static void _tls_listener_unref(tls_listener_t* ln) {
 static int _tls_resolve(
     const char*  host,
     uint16_t     port,
+    uint64_t     timeout_ms,
     char*        ip_buf,
     size_t       ip_buf_len,
     const char** dial_host,
@@ -353,7 +354,8 @@ static int _tls_resolve(
 
     addr_t* addrs = NULL;
     size_t  count = 0;
-    if (addr_resolve(host, port, &addrs, &count) != 0 || count == 0) {
+    if (addr_resolve(host, port, timeout_ms, &addrs, &count) != 0
+        || count == 0) {
         xylem_loge("<tls> dial dns failed host=%s", host);
         return -1;
     }
@@ -632,7 +634,8 @@ tls_conn_t* tls_dial(
     const char* dial_host = NULL;
     char        resolved_ip[INET6_ADDRSTRLEN];
     addr_t      resolved_addr;
-    if (_tls_resolve(host, port, resolved_ip, sizeof(resolved_ip),
+    if (_tls_resolve(host, port, opts ? opts->handshake_timeout_ms : 0,
+                     resolved_ip, sizeof(resolved_ip),
                      &dial_host, &resolved_addr) != 0) {
         return NULL;
     }
