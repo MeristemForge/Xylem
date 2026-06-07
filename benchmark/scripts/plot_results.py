@@ -11,9 +11,13 @@ Usage:
 If RESULTS_DIR is omitted, the most recent benchmark/results/<timestamp>/
 directory is used. Charts are written into <RESULTS_DIR>/charts/.
 
-Filename conventions produced by the runners:
-    throughput-{st|mt}-c{1k|10k}-{64B|4K|64K}-{server}-r{run}.json
-    connrate-{st|mt}-{1k|10k}-{server}.json
+Filename conventions produced by the runners (the <proto>- prefix is
+optional for backward compatibility with older, TCP-only result sets):
+    {proto}-throughput-{st|mt}-c{1k|10k}-{64B|4K|64K}-{server}-r{run}.json
+    {proto}-connrate-{st|mt}-{1k|10k}-{server}.json
+
+A results directory may contain several protocols; charts are emitted
+per protocol, e.g. tls_throughput_mt.png.
 """
 import glob
 import json
@@ -40,11 +44,13 @@ PAYLOAD_BYTES = {"64B": 64, "4K": 4096, "64K": 65536}
 CONN_ORDER = ["1k", "10k"]
 
 TP_RE = re.compile(
-    r"throughput-(?P<mode>st|mt)-c(?P<conns>\d+k?)-(?P<payload>\d+[BK])-"
+    r"(?:(?P<proto>tcp|udp|tls)-)?throughput-(?P<mode>st|mt)-"
+    r"c(?P<conns>\d+k?)-(?P<payload>\d+[BK])-"
     r"(?P<server>[a-z]+)-r(?P<run>\d+)\.json$"
 )
 CR_RE = re.compile(
-    r"connrate-(?P<mode>st|mt)-(?P<conns>\d+k?)-(?P<server>[a-z]+)\.json$"
+    r"(?:(?P<proto>tcp|udp|tls)-)?connrate-(?P<mode>st|mt)-"
+    r"(?P<conns>\d+k?)-(?P<server>[a-z]+)\.json$"
 )
 
 
@@ -62,11 +68,12 @@ def find_results_dir():
 
 
 def load(results_dir):
-    """Return (throughput, connrate) nested dicts keyed by parsed dimensions."""
-    # throughput[mode][(payload, conns)][server] -> {metric: avg}
-    raw_tp = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    # connrate[mode][conns][server] -> conn/s
-    connrate = defaultdict(lambda: defaultdict(dict))
+    """Return (throughput, connrate) keyed by protocol then dimensions."""
+    # raw_tp[proto][mode][(payload, conns)][server] -> [data, ...]
+    raw_tp = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
+    # connrate[proto][mode][conns][server] -> conn/s
+    connrate = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
 
     for path in glob.glob(os.path.join(results_dir, "*.json")):
         name = os.path.basename(path)
@@ -78,31 +85,32 @@ def load(results_dir):
 
         m = TP_RE.match(name)
         if m:
-            mode = m["mode"]
+            proto = m["proto"] or "tcp"
             key = (m["payload"], m["conns"])
-            srv = m["server"]
-            raw_tp[mode][key][srv].append(data)
+            raw_tp[proto][m["mode"]][key][m["server"]].append(data)
             continue
 
         m = CR_RE.match(name)
         if m:
+            proto = m["proto"] or "tcp"
             cps = data.get("connects_per_sec") or data.get("connrate") or 0
-            connrate[m["mode"]][m["conns"]][m["server"]] = cps
+            connrate[proto][m["mode"]][m["conns"]][m["server"]] = cps
 
-    # average runs
-    tp = defaultdict(lambda: defaultdict(dict))
-    for mode, scenarios in raw_tp.items():
-        for key, servers in scenarios.items():
-            for srv, runs in servers.items():
-                def avg(field):
-                    vals = [r.get(field, 0) for r in runs if r.get(field)]
-                    return sum(vals) / len(vals) if vals else 0
-                tp[mode][key][srv] = {
-                    "throughput": avg("throughput_msg_per_sec"),
-                    "p50": avg("latency_p50_us"),
-                    "p99": avg("latency_p99_us"),
-                    "max": avg("latency_max_us"),
-                }
+    # average runs -> tp[proto][mode][key][server]
+    tp = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+    for proto, modes in raw_tp.items():
+        for mode, scenarios in modes.items():
+            for key, servers in scenarios.items():
+                for srv, runs in servers.items():
+                    def avg(field):
+                        vals = [r.get(field, 0) for r in runs if r.get(field)]
+                        return sum(vals) / len(vals) if vals else 0
+                    tp[proto][mode][key][srv] = {
+                        "throughput": avg("throughput_msg_per_sec"),
+                        "p50": avg("latency_p50_us"),
+                        "p99": avg("latency_p99_us"),
+                        "max": avg("latency_max_us"),
+                    }
     return tp, connrate
 
 
@@ -140,7 +148,7 @@ def present_servers(tp_mode):
     return [s for s in SERVERS if s in seen] + [s for s in seen if s not in SERVERS]
 
 
-def plot_throughput(tp, out_dir):
+def plot_throughput(tp, out_dir, proto):
     for mode in ("st", "mt"):
         if mode not in tp:
             continue
@@ -155,23 +163,23 @@ def plot_throughput(tp, out_dir):
             vals = [tp[mode][k].get(srv, {}).get("throughput", 0) / 1000 for k in keys]
             tp_series.append((srv, vals))
         grouped_bar(ax_tp, cats, tp_series, "throughput (k msg/s)",
-                    f"TCP throughput — {mode.upper()}")
+                    f"{proto.upper()} throughput — {mode.upper()}")
 
         lat_series = []
         for srv in servers:
             vals = [tp[mode][k].get(srv, {}).get("p99", 0) / 1000 for k in keys]
             lat_series.append((srv, vals))
         grouped_bar(ax_lat, cats, lat_series, "p99 latency (ms, log)",
-                    f"TCP p99 latency — {mode.upper()}", logy=True)
+                    f"{proto.upper()} p99 latency — {mode.upper()}", logy=True)
 
         fig.tight_layout()
-        out = os.path.join(out_dir, f"throughput_{mode}.png")
+        out = os.path.join(out_dir, f"{proto}_throughput_{mode}.png")
         fig.savefig(out, dpi=130)
         plt.close(fig)
         print(f"  wrote {out}")
 
 
-def plot_connrate(connrate, out_dir):
+def plot_connrate(connrate, out_dir, proto):
     if not connrate:
         return
     modes = [m for m in ("st", "mt") if m in connrate]
@@ -193,15 +201,15 @@ def plot_connrate(connrate, out_dir):
     for srv in servers:
         vals = [connrate[m][c].get(srv, 0) / 1000 for (m, c) in col_keys]
         series.append((srv, vals))
-    grouped_bar(ax, cats, series, "conn/s (k)", "TCP connection rate")
+    grouped_bar(ax, cats, series, "conn/s (k)", f"{proto.upper()} connection rate")
     fig.tight_layout()
-    out = os.path.join(out_dir, "connrate.png")
+    out = os.path.join(out_dir, f"{proto}_connrate.png")
     fig.savefig(out, dpi=130)
     plt.close(fig)
     print(f"  wrote {out}")
 
 
-def plot_throughput_vs_payload(tp, out_dir):
+def plot_throughput_vs_payload(tp, out_dir, proto):
     """Throughput as a function of payload size — small-msg vs bandwidth bound."""
     modes = [m for m in ("st", "mt") if m in tp]
     if not modes:
@@ -227,9 +235,9 @@ def plot_throughput_vs_payload(tp, out_dir):
             ax.set_title(f"{mode.upper()}  c{conns}", fontweight="bold")
             ax.grid(True, which="both", linestyle="--", alpha=0.4)
             ax.legend(fontsize=8)
-    fig.suptitle("TCP throughput vs payload size", fontweight="bold")
+    fig.suptitle(f"{proto.upper()} throughput vs payload size", fontweight="bold")
     fig.tight_layout()
-    out = os.path.join(out_dir, "throughput_vs_payload.png")
+    out = os.path.join(out_dir, f"{proto}_throughput_vs_payload.png")
     fig.savefig(out, dpi=130)
     plt.close(fig)
     print(f"  wrote {out}")
@@ -243,9 +251,11 @@ def main():
     tp, connrate = load(results_dir)
     if not tp and not connrate:
         sys.exit("no parseable benchmark JSON found")
-    plot_throughput(tp, out_dir)
-    plot_throughput_vs_payload(tp, out_dir)
-    plot_connrate(connrate, out_dir)
+    protos = sorted(set(tp) | set(connrate))
+    for proto in protos:
+        plot_throughput(tp.get(proto, {}), out_dir, proto)
+        plot_throughput_vs_payload(tp.get(proto, {}), out_dir, proto)
+        plot_connrate(connrate.get(proto, {}), out_dir, proto)
     print(f"charts -> {out_dir}")
 
 
