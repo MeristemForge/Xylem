@@ -33,7 +33,13 @@
 
 #define STKGROW_FRAME_BYTES   (8 * 1024)
 #define STKGROW_BASIC_DEPTH   4
-#define STKGROW_RECURSE_DEPTH 12
+/* Deep-recursion depth is bounded by the smallest usable coroutine stack
+ * across platforms. The 128 KiB coroutine stack is inclusive of metadata
+ * and a guard page, so the writable region shrinks as the OS page size
+ * grows: on 16 KiB-page targets (Apple Silicon) only ~88 KiB is usable.
+ * 8 frames * 8 KiB ~= 72 KiB keeps a margin below that worst case while
+ * still faulting across several pages on the way down. */
+#define STKGROW_RECURSE_DEPTH 8
 #define STKGROW_CONC_COUNT    32
 #define STKGROW_CONC_DEPTH    6
 #define STKGROW_REUSE_COUNT   50
