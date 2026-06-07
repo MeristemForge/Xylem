@@ -21,16 +21,18 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
-#ifdef _WIN32
+/**
+ * Relative path: valid for AF_UNIX on both Windows and Unix, created in
+ * the test's working directory and removed after each case. Avoids a
+ * platform conditional here (see style guide platform-layer rule).
+ */
 #define UDS_PATH "xylem-test-uds.sock"
-#else
-#define UDS_PATH "/tmp/xylem-test-uds.sock"
-#endif
 
 #define SAFETY_TIMEOUT_MS 10000
 
@@ -38,12 +40,6 @@ typedef struct {
     xylem_channel_t*   ready;
     xylem_waitgroup_t* wg;
 } _ctx_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -90,7 +86,7 @@ static void _echo_main(void* arg) {
         .wg    = xylem_waitgroup_create(),
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -149,7 +145,7 @@ static void _reader_main(void* arg) {
         .wg    = xylem_waitgroup_create(),
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_reader_server, &ctx);
     xylem_spawn(_reader_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);

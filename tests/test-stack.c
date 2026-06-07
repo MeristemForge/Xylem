@@ -34,19 +34,19 @@ static void test_init(void) {
 static void test_push_pop(void) {
     xylem_stack_t* stack = xylem_stack_create();
 
-    int a = 10, b = 20, c = 30;
+    int32_t a = 10, b = 20, c = 30;
     ASSERT(xylem_stack_push(stack, &a) == 0);
     ASSERT(xylem_stack_push(stack, &b) == 0);
     ASSERT(xylem_stack_push(stack, &c) == 0);
 
     ASSERT(xylem_stack_len(stack) == 3);
-    ASSERT(*(int*)xylem_stack_peek(stack) == 30);
+    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 30);
 
     xylem_stack_pop(stack);
-    ASSERT(*(int*)xylem_stack_peek(stack) == 20);
+    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 20);
 
     xylem_stack_pop(stack);
-    ASSERT(*(int*)xylem_stack_peek(stack) == 10);
+    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 10);
 
     xylem_stack_pop(stack);
     ASSERT(xylem_stack_empty(stack));

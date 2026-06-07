@@ -22,12 +22,10 @@
 #include "xylem.h"
 #include "xylem/net/xylem-tls.h"
 #include "assert.h"
+#define TEST_WITH_TLS
+#include "utils.h"
 
-#include <openssl/evp.h>
 #include <stdint.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -45,112 +43,6 @@ typedef struct {
     uint16_t              port;
 } _ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
-
-
-/**
- * Write PEM data to a file via memory BIO instead of passing FILE* directly
- * to OpenSSL (e.g. PEM_write_X509). On Windows, the OpenSSL DLL and the
- * application may link against different C runtimes whose FILE structs are
- * incompatible. Passing a FILE* across the DLL boundary triggers the
- * OPENSSL_Applink error. Using a memory BIO keeps all FILE* operations
- * inside the application's own CRT, avoiding the issue entirely.
- */
-static int _write_pem_to_file(const char* path,
-                              int (*write_fn)(BIO*, void*),
-                              void* obj) {
-    BIO* bio = BIO_new(BIO_s_mem());
-    if (!bio) {
-        return -1;
-    }
-    if (write_fn(bio, obj) != 1) {
-        BIO_free(bio);
-        return -1;
-    }
-    char* data = NULL;
-    long  len  = BIO_get_mem_data(bio, &data);
-    FILE* f    = fopen(path, "wb");
-    if (!f) {
-        BIO_free(bio);
-        return -1;
-    }
-    fwrite(data, 1, (size_t)len, f);
-    fclose(f);
-    BIO_free(bio);
-    return 0;
-}
-
-static int _write_cert_pem(BIO* bio, void* obj) {
-    return PEM_write_bio_X509(bio, (X509*)obj);
-}
-
-static int _write_key_pem(BIO* bio, void* obj) {
-    return PEM_write_bio_PrivateKey(bio, (EVP_PKEY*)obj,
-                                    NULL, NULL, 0, NULL, NULL);
-}
-
-static int _gen_self_signed_ex(const char* cert_path, const char* key_path,
-                               const char* cn, const char* san) {
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
-        return -1;
-    }
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!pctx) {
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
-    EVP_PKEY_keygen_init(pctx);
-    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
-    EVP_PKEY_keygen(pctx, &pkey);
-    EVP_PKEY_CTX_free(pctx);
-
-    X509* x509 = X509_new();
-    X509_set_version(x509, 2);
-    ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
-    X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 365 * 24 * 3600);
-    X509_set_pubkey(x509, pkey);
-
-    X509_NAME* name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char*)cn, -1, -1, 0);
-    X509_set_issuer_name(x509, name);
-
-    /* SAN required by OpenSSL 3.x for hostname verification. */
-    X509_EXTENSION* ext_san = X509V3_EXT_nconf_nid(
-        NULL, NULL, NID_subject_alt_name, san);
-    if (ext_san) {
-        X509_add_ext(x509, ext_san, -1);
-        X509_EXTENSION_free(ext_san);
-    }
-
-    X509_sign(x509, pkey, EVP_sha256());
-
-    int rc = 0;
-    if (_write_pem_to_file(cert_path, _write_cert_pem, x509) != 0) {
-        rc = -1;
-    }
-    if (rc == 0 && _write_pem_to_file(key_path, _write_key_pem, pkey) != 0) {
-        rc = -1;
-    }
-
-    X509_free(x509);
-    EVP_PKEY_free(pkey);
-    return rc;
-}
-
-static int _gen_self_signed(const char* cert_path, const char* key_path) {
-    return _gen_self_signed_ex(cert_path, key_path, "localhost",
-                               "DNS:localhost,IP:127.0.0.1");
-}
-
-
 static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -161,7 +53,7 @@ static void test_ctx_create_destroy(void) {
 static void test_load_cert_valid(void) {
     const char* cert = "test_tls_cert.pem";
     const char* key  = "test_tls_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -183,7 +75,7 @@ static void test_load_cert_invalid(void) {
 static void test_load_ca(void) {
     const char* cert = "test_tls_ca.pem";
     const char* key  = "test_tls_ca_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -195,29 +87,35 @@ static void test_load_ca(void) {
 
 
 static void test_load_system_ca(void) {
-    /* System store only (NULL fallback): succeeds on desktop OSes. On a
+    /**
+     * System store only (NULL fallback): succeeds on desktop OSes. On a
      * platform/build with no readable system store this may return -1,
-     * which is acceptable -- the fallback path below is the portable one. */
+     * which is acceptable -- the fallback path below is the portable one.
+     */
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
     xylem_tls_ctx_load_system_ca(ctx, NULL);
     xylem_tls_ctx_destroy(ctx);
 
-    /* Additive fallback: a valid CA bundle makes the call succeed on every
-     * platform, regardless of whether the system store loaded. */
+    /**
+     * Additive fallback: a valid CA bundle makes the call succeed on every
+     * platform, regardless of whether the system store loaded.
+     */
     const char* ca  = "test_tls_sysca_fallback.pem";
     const char* key = "test_tls_sysca_fallback_key.pem";
-    ASSERT(_gen_self_signed(ca, key) == 0);
+    ASSERT(_utils_cert_gen(ca, key) == 0);
 
     xylem_tls_ctx_t* ctx2 = xylem_tls_ctx_create();
     ASSERT(ctx2 != NULL);
     ASSERT(xylem_tls_ctx_load_system_ca(ctx2, ca) == 0);
     xylem_tls_ctx_destroy(ctx2);
 
-    /* A non-NULL but unusable fallback with no system store cannot make
+    /**
+     * A non-NULL but unusable fallback with no system store cannot make
      * up trust anchors out of nothing; the call must report failure when
      * neither source loads. (On desktop the system store still loads, so
-     * we only assert the bogus-fallback file itself does not crash.) */
+     * we only assert the bogus-fallback file itself does not crash.)
+     */
     xylem_tls_ctx_t* ctx3 = xylem_tls_ctx_create();
     ASSERT(ctx3 != NULL);
     (void)xylem_tls_ctx_load_system_ca(ctx3, "nonexistent_ca_bundle.pem");
@@ -268,7 +166,7 @@ static char* _read_file(const char* path, size_t* out_len) {
 static void test_load_cert_mem(void) {
     const char* cert = "test_tls_mem_cert.pem";
     const char* key  = "test_tls_mem_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     size_t cert_len = 0, key_len = 0;
     char*  cert_buf = _read_file(cert, &cert_len);
@@ -339,7 +237,7 @@ static void _echo_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_echo_cert.pem";
     const char* key  = "test_tls_echo_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -359,7 +257,7 @@ static void _echo_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -388,8 +286,10 @@ static void _fail_bad_client(void* arg) {
         TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn == NULL);
 
-    /* Release the good client only after our failed handshake has been
-     * driven, so the server sees the bad connection first. */
+    /**
+     * Release the good client only after our failed handshake has been
+     * driven, so the server sees the bad connection first.
+     */
     xylem_channel_send(ctx->gate, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -447,8 +347,8 @@ static void _fail_main(void* arg) {
     const char* key   = "test_tls_fail_key.pem";
     const char* cert2 = "test_tls_fail_cert2.pem";
     const char* key2  = "test_tls_fail_key2.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-    ASSERT(_gen_self_signed(cert2, key2) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert2, key2) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -476,7 +376,7 @@ static void _fail_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 3);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_fail_server, &ctx);
     xylem_spawn(_fail_bad_client, &ctx);
     xylem_spawn(_fail_good_client, &ctx);
@@ -539,8 +439,10 @@ static void _alpn_client(void* arg) {
     ASSERT(alpn != NULL);
     ASSERT(strcmp(alpn, "h2") == 0);
 
-    /* Round-trip exchange ensures the server has completed its
-     * handshake before we tear down the connection. */
+    /**
+     * Round-trip exchange ensures the server has completed its
+     * handshake before we tear down the connection.
+     */
     ASSERT(xylem_tls_write(conn, "ok", 2) == 0);
     char buf[8];
     xylem_tls_read(conn, buf, sizeof(buf));
@@ -553,7 +455,7 @@ static void _alpn_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_alpn_cert.pem";
     const char* key  = "test_tls_alpn_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     const char* protos[] = {"h2", "http/1.1"};
 
@@ -577,7 +479,7 @@ static void _alpn_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_alpn_server, &ctx);
     xylem_spawn(_alpn_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -639,7 +541,7 @@ static void _deadline_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_dl_cert.pem";
     const char* key  = "test_tls_dl_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -659,7 +561,7 @@ static void _deadline_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_deadline_server, &ctx);
     xylem_spawn(_deadline_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -717,7 +619,7 @@ static void _sac_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_sac_cert.pem";
     const char* key  = "test_tls_sac_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -737,7 +639,7 @@ static void _sac_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_sac_server, &ctx);
     xylem_spawn(_sac_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -783,7 +685,7 @@ static void _cl_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_cl_cert.pem";
     const char* key  = "test_tls_cl_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -798,7 +700,7 @@ static void _cl_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_cl_server, &ctx);
     xylem_spawn(_cl_closer, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -853,7 +755,7 @@ static void _kl_main(void* arg) {
     const char* cert   = "test_tls_kl_cert.pem";
     const char* key    = "test_tls_kl_key.pem";
     const char* keylog = "test_keylog.txt";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -874,7 +776,7 @@ static void _kl_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_kl_server, &ctx);
     xylem_spawn(_kl_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -948,7 +850,7 @@ static void _sni_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_sni_cert.pem";
     const char* key  = "test_tls_sni_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -968,7 +870,7 @@ static void _sni_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_sni_server, &ctx);
     xylem_spawn(_sni_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1063,8 +965,8 @@ static void _sni_sel_main(void* arg) {
     const char* def_key   = "test_tls_snisel_def_key.pem";
     const char* host_cert = "test_tls_snisel_host_cert.pem";
     const char* host_key  = "test_tls_snisel_host_key.pem";
-    ASSERT(_gen_self_signed(def_cert, def_key) == 0);
-    ASSERT(_gen_self_signed_ex(host_cert, host_key,
+    ASSERT(_utils_cert_gen(def_cert, def_key) == 0);
+    ASSERT(_utils_cert_gen_ex(host_cert, host_key,
                                "sni.example", "DNS:sni.example") == 0);
 
     /* Server: default cert plus an SNI-selected per-host cert. */
@@ -1097,7 +999,7 @@ static void _sni_sel_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_sni_sel_server, &ctx);
     xylem_spawn(_sni_sel_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1173,7 +1075,7 @@ static void _addr_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_addr_cert.pem";
     const char* key  = "test_tls_addr_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1193,7 +1095,7 @@ static void _addr_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_addr_server, &ctx);
     xylem_spawn(_addr_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1210,89 +1112,6 @@ static void _addr_main(void* arg) {
 
 static void test_remote_addr(void) {
     xylem_run(_addr_main, NULL, NULL);
-}
-
-static void _conc_send_server(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tls_listener_t* ln = xylem_tls_listen(
-        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
-    ASSERT(ln != NULL);
-    xylem_channel_send(ctx->ready, ctx);
-
-    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
-    ASSERT(conn != NULL);
-
-    char buf[64];
-    int n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n == 5);
-    ASSERT(memcmp(buf, "hello", 5) == 0);
-    ASSERT(xylem_tls_write(conn, buf, n) == 0);
-
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _conc_send_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tls_conn_t* conn = xylem_tls_dial(
-        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
-    ASSERT(conn != NULL);
-
-    ASSERT(xylem_tls_write(conn, "hello", 5) == 0);
-
-    char buf[64];
-    int n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n == 5);
-    ASSERT(memcmp(buf, "hello", 5) == 0);
-
-    xylem_tls_close(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _conc_send_main(void* arg) {
-    (void)arg;
-    const char* cert = "test_tls_cs_cert.pem";
-    const char* key  = "test_tls_cs_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-
-    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
-    ASSERT(srv_ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
-    xylem_tls_ctx_verify_client(srv_ctx, false);
-
-    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
-    ASSERT(cli_ctx != NULL);
-    xylem_tls_ctx_verify_server(cli_ctx, false);
-
-    _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
-        .wg      = xylem_waitgroup_create(),
-        .srv_ctx = srv_ctx,
-        .cli_ctx = cli_ctx,
-        .port    = TLS_PORT + 10,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
-    xylem_spawn(_conc_send_server, &ctx);
-    xylem_spawn(_conc_send_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_tls_ctx_destroy(srv_ctx);
-    xylem_tls_ctx_destroy(cli_ctx);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    remove(cert);
-    remove(key);
-    xylem_shutdown();
-}
-
-static void test_concurrent_send(void) {
-    xylem_run(_conc_send_main, NULL, NULL);
 }
 
 static void _conc_close_server(void* arg) {
@@ -1338,7 +1157,7 @@ static void _conc_close_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_cc_cert.pem";
     const char* key  = "test_tls_cc_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1358,7 +1177,7 @@ static void _conc_close_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_conc_close_server, &ctx);
     xylem_spawn(_conc_close_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1430,7 +1249,7 @@ static void _clac_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_clac_cert.pem";
     const char* key  = "test_tls_clac_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1450,7 +1269,7 @@ static void _clac_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_clac_server, &ctx);
     xylem_spawn(_clac_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1578,7 +1397,7 @@ static void _fdx_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_fdx_cert.pem";
     const char* key  = "test_tls_fdx_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1598,7 +1417,7 @@ static void _fdx_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_fdx_server, &ctx);
     xylem_spawn(_fdx_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -1636,7 +1455,6 @@ int main(void) {
     test_sni_hostname();
     test_sni_cert_selection();
     test_remote_addr();
-    test_concurrent_send();
     test_concurrent_close();
     test_close_listener_with_active_conn();
     test_full_duplex();

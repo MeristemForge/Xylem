@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -49,12 +50,6 @@ typedef struct {
     xylem_waitgroup_t* wg;
 } _reset_repeat_ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
 static void _after_cb(xylem_timer_t* t, void* ud) {
     (void)t;
     _after_ctx_t* ctx = (_after_ctx_t*)ud;
@@ -67,7 +62,7 @@ static void _after_main(void* arg) {
     _after_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_timer_t* t  = xylem_timer_after(30, _after_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);
@@ -91,7 +86,7 @@ static void _cancel_cb(xylem_timer_t* t, void* ud) {
 
 static void _cancel_main(void* arg) {
     (void)arg;
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_timer_t* t  = xylem_timer_after(1000, _cancel_cb, NULL);
     ASSERT(xylem_timer_cancel(t));
     xylem_sleep(50);
@@ -119,7 +114,7 @@ static void _repeat_main(void* arg) {
     _repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_timer_t* t  = xylem_timer_after(10, _repeat_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);
@@ -152,7 +147,7 @@ static void _reset_main(void* arg) {
     _reset_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 
     ctx.armed_at_ms  = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     xylem_timer_t* t = xylem_timer_after(100, _reset_cb, &ctx);
@@ -189,7 +184,7 @@ static void _reset_repeat_main(void* arg) {
     _reset_repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 
     xylem_timer_t* t = xylem_timer_after(500, _reset_repeat_cb, &ctx);
 
@@ -227,7 +222,7 @@ static void _blocking_main(void* arg) {
     _after_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_timer_t* t  = xylem_timer_after(10, _blocking_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);

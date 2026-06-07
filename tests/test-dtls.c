@@ -22,11 +22,9 @@
 #include "xylem.h"
 #include "xylem/net/xylem-dtls.h"
 #include "assert.h"
+#define TEST_WITH_TLS
+#include "utils.h"
 
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -42,108 +40,7 @@ typedef struct {
     uint16_t              port;
 } _ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
-
-/**
- * Write PEM data to a file via memory BIO instead of passing FILE* directly
- * to OpenSSL (e.g. PEM_write_X509). On Windows, the OpenSSL DLL and the
- * application may link against different C runtimes whose FILE structs are
- * incompatible. Passing a FILE* across the DLL boundary triggers the
- * OPENSSL_Applink error. Using a memory BIO keeps all FILE* operations
- * inside the application's own CRT, avoiding the issue entirely.
- */
-static int _write_pem_to_file(const char* path,
-                              int (*write_fn)(BIO*, void*),
-                              void* obj) {
-    BIO* bio = BIO_new(BIO_s_mem());
-    if (!bio) {
-        return -1;
-    }
-    if (write_fn(bio, obj) != 1) {
-        BIO_free(bio);
-        return -1;
-    }
-    char* data = NULL;
-    long  len  = BIO_get_mem_data(bio, &data);
-    FILE* f    = fopen(path, "wb");
-    if (!f) {
-        BIO_free(bio);
-        return -1;
-    }
-    fwrite(data, 1, (size_t)len, f);
-    fclose(f);
-    BIO_free(bio);
-    return 0;
-}
-
-static int _write_cert_pem(BIO* bio, void* obj) {
-    return PEM_write_bio_X509(bio, (X509*)obj);
-}
-
-static int _write_key_pem(BIO* bio, void* obj) {
-    return PEM_write_bio_PrivateKey(bio, (EVP_PKEY*)obj,
-                                    NULL, NULL, 0, NULL, NULL);
-}
-
-static int _gen_self_signed(const char* cert_path, const char* key_path) {
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
-        return -1;
-    }
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!pctx) {
-        EVP_PKEY_free(pkey);
-        return -1;
-    }
-    EVP_PKEY_keygen_init(pctx);
-    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
-    EVP_PKEY_keygen(pctx, &pkey);
-    EVP_PKEY_CTX_free(pctx);
-
-    X509* x509 = X509_new();
-    X509_set_version(x509, 2);
-    ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
-    X509_gmtime_adj(X509_get_notBefore(x509), 0);
-    X509_gmtime_adj(X509_get_notAfter(x509), 365 * 24 * 3600);
-    X509_set_pubkey(x509, pkey);
-
-    X509_NAME* name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char*)"localhost", -1, -1, 0);
-    X509_set_issuer_name(x509, name);
-
-    /* SAN required by OpenSSL 3.x for hostname verification. */
-    X509_EXTENSION* san = X509V3_EXT_nconf_nid(
-        NULL, NULL, NID_subject_alt_name, "DNS:localhost,IP:127.0.0.1");
-    if (san) {
-        X509_add_ext(x509, san, -1);
-        X509_EXTENSION_free(san);
-    }
-
-    X509_sign(x509, pkey, EVP_sha256());
-
-    int rc = 0;
-    if (_write_pem_to_file(cert_path, _write_cert_pem, x509) != 0) {
-        rc = -1;
-    }
-    if (rc == 0 && _write_pem_to_file(key_path, _write_key_pem, pkey) != 0) {
-        rc = -1;
-    }
-
-    X509_free(x509);
-    EVP_PKEY_free(pkey);
-    return rc;
-}
-
-
-/* ------------------------------------------------------------------ */
-/* 1. test_ctx_create_destroy                                         */
-/* ------------------------------------------------------------------ */
+/* test_ctx_create_destroy. */
 
 static void test_ctx_create_destroy(void) {
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
@@ -152,14 +49,12 @@ static void test_ctx_create_destroy(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 2. test_load_cert_valid                                            */
-/* ------------------------------------------------------------------ */
+/* test_load_cert_valid. */
 
 static void test_load_cert_valid(void) {
     const char* cert = "test_dtls_cert.pem";
     const char* key  = "test_dtls_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* ctx = xylem_dtls_ctx_create();
     ASSERT(ctx != NULL);
@@ -170,9 +65,7 @@ static void test_load_cert_valid(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 3. test_handshake_and_echo                                         */
-/* ------------------------------------------------------------------ */
+/* test_handshake_and_echo. */
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -218,7 +111,7 @@ static void _echo_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_echo_cert.pem";
     const char* key  = "test_dtls_echo_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -238,7 +131,7 @@ static void _echo_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -258,9 +151,7 @@ static void test_handshake_and_echo(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 4. test_alpn_negotiation                                           */
-/* ------------------------------------------------------------------ */
+/* test_alpn_negotiation. */
 
 static void _alpn_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -300,8 +191,10 @@ static void _alpn_client(void* arg) {
     ASSERT(alpn != NULL);
     ASSERT(strcmp(alpn, "h2") == 0);
 
-    /* Round-trip exchange ensures the server has completed its
-     * handshake before we tear down the connection. */
+    /**
+     * Round-trip exchange ensures the server has completed its
+     * handshake before we tear down the connection.
+     */
     ASSERT(xylem_dtls_write(conn, "ok", 2) == 0);
     char buf[8];
     xylem_dtls_read(conn, buf, sizeof(buf));
@@ -314,7 +207,7 @@ static void _alpn_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_alpn_cert.pem";
     const char* key  = "test_dtls_alpn_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     const char* protos[] = {"h2", "http/1.1"};
 
@@ -338,7 +231,7 @@ static void _alpn_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_alpn_server, &ctx);
     xylem_spawn(_alpn_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -358,11 +251,11 @@ static void test_alpn_negotiation(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 5. test_close_idempotent                                           */
-/*    Verifies that closing a connection does not crash and that      */
-/*    the close_listener call after conn close also works cleanly.    */
-/* ------------------------------------------------------------------ */
+/**
+ * test_close_idempotent.
+ * Verifies that closing a connection does not crash and that
+ * the close_listener call after conn close also works cleanly.
+ */
 
 static void _ci_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -401,7 +294,7 @@ static void _ci_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_ci_cert.pem";
     const char* key  = "test_dtls_ci_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -421,7 +314,7 @@ static void _ci_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_ci_server, &ctx);
     xylem_spawn(_ci_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -441,9 +334,7 @@ static void test_close_idempotent(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 6. test_recv_deadline                                              */
-/* ------------------------------------------------------------------ */
+/* test_recv_deadline. */
 
 static void _dl_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -485,7 +376,7 @@ static void _dl_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_dl_cert.pem";
     const char* key  = "test_dtls_dl_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -505,7 +396,7 @@ static void _dl_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_dl_server, &ctx);
     xylem_spawn(_dl_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -525,12 +416,12 @@ static void test_recv_deadline(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 7. test_close_wakes_recv                                           */
-/*    Tests that close_listener unblocks a pending accept call,       */
-/*    returning NULL. This verifies that shutdown signals propagate   */
-/*    correctly to blocked coroutines.                                */
-/* ------------------------------------------------------------------ */
+/**
+ * test_close_wakes_recv.
+ * Tests that close_listener unblocks a pending accept call,
+ * returning NULL. This verifies that shutdown signals propagate
+ * correctly to blocked coroutines.
+ */
 
 static void _cw_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -559,7 +450,7 @@ static void _cw_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_cw_cert.pem";
     const char* key  = "test_dtls_cw_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -575,7 +466,7 @@ static void _cw_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_cw_server, &ctx);
     xylem_spawn(_cw_closer, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -594,12 +485,12 @@ static void test_close_wakes_recv(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 8. test_concurrent_sessions                                        */
-/*    Tests multiple sequential DTLS sessions on the same listener.   */
-/*    Each client connects, sends a unique message, receives the      */
-/*    echo, and disconnects before the next one starts.               */
-/* ------------------------------------------------------------------ */
+/**
+ * test_concurrent_sessions.
+ * Tests multiple sequential DTLS sessions on the same listener.
+ * Each client connects, sends a unique message, receives the
+ * echo, and disconnects before the next one starts.
+ */
 
 #define CONC_COUNT 4
 
@@ -663,7 +554,7 @@ static void _conc_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_conc_cert.pem";
     const char* key  = "test_dtls_conc_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -684,7 +575,7 @@ static void _conc_main(void* arg) {
 
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_conc_server, &ctx);
     xylem_spawn(_conc_client_seq, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -704,19 +595,21 @@ static void test_concurrent_sessions(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* 9. test_full_duplex                                                */
-/*    One client connection is read by one coroutine and written by   */
-/*    another at the same time. With the client still on a socket BIO */
-/*    a direction-flip inside SSL parked a second coroutine on the    */
-/*    same iowait direction and aborted the process; the memory-BIO   */
-/*    client pump path makes concurrent read+write safe. Each write   */
-/*    is one datagram, echoed back verbatim by the server.            */
-/* ------------------------------------------------------------------ */
+/**
+ * test_full_duplex.
+ * One client connection is read by one coroutine and written by
+ * another at the same time. With the client still on a socket BIO
+ * a direction-flip inside SSL parked a second coroutine on the
+ * same iowait direction and aborted the process; the memory-BIO
+ * client pump path makes concurrent read+write safe. Each write
+ * is one datagram, echoed back verbatim by the server.
+ */
 
-/* Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
+/**
+ * Kept below DTLS_INBOX_CAP (64) so that even if the writer bursts the
  * whole batch before the server drains its session inbox, no datagram
- * is dropped -- the reader can then assert an exact echo count. */
+ * is dropped -- the reader can then assert an exact echo count.
+ */
 #define FDX_MSG_COUNT 50
 #define FDX_MSG_SIZE  300
 
@@ -736,8 +629,10 @@ static void _fdx_server(void* arg) {
     xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
     ASSERT(conn != NULL);
 
-    /* Echo each datagram back until all messages have been seen or the
-     * peer goes away (read returns <= 0). */
+    /**
+     * Echo each datagram back until all messages have been seen or the
+     * peer goes away (read returns <= 0).
+     */
     char buf[1024];
     for (int i = 0; i < FDX_MSG_COUNT; i++) {
         int n = xylem_dtls_read(conn, buf, sizeof(buf));
@@ -797,8 +692,10 @@ static void _fdx_client(void* arg) {
         DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    /* Reader and writer drive the same connection concurrently; their
-     * own waitgroup lets us join before closing the connection once. */
+    /**
+     * Reader and writer drive the same connection concurrently; their
+     * own waitgroup lets us join before closing the connection once.
+     */
     xylem_waitgroup_t* io_wg = xylem_waitgroup_create();
     _fdx_share_t sh = { .conn = conn, .wg = io_wg, .ok = 1 };
     xylem_waitgroup_add(io_wg, 2);
@@ -816,7 +713,7 @@ static void _fdx_main(void* arg) {
     (void)arg;
     const char* cert = "test_dtls_fdx_cert.pem";
     const char* key  = "test_dtls_fdx_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_utils_cert_gen(cert, key) == 0);
 
     xylem_dtls_ctx_t* srv_ctx = xylem_dtls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -836,7 +733,7 @@ static void _fdx_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_fdx_server, &ctx);
     xylem_spawn(_fdx_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -856,9 +753,7 @@ static void test_full_duplex(void) {
 }
 
 
-/* ------------------------------------------------------------------ */
-/* main                                                               */
-/* ------------------------------------------------------------------ */
+/* main. */
 
 int main(void) {
     test_ctx_create_destroy();

@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -34,12 +35,6 @@ typedef struct {
     xylem_waitgroup_t* wg;
     uint16_t           port;
 } _ctx_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -87,7 +82,7 @@ static void _echo_main(void* arg) {
         .port  = TCP_PORT,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_echo_server, &ctx);
     xylem_spawn(_echo_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -147,7 +142,7 @@ static void _reader_main(void* arg) {
         .port  = TCP_PORT + 1,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_reader_server, &ctx);
     xylem_spawn(_reader_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -213,7 +208,7 @@ static void _writer_main(void* arg) {
         .port  = TCP_PORT + 2,
     };
     xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_writer_server, &ctx);
     xylem_spawn(_writer_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -239,7 +234,7 @@ static void _timeout_main(void* arg) {
     (void)arg;
     _ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(_timeout_client, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(wd);

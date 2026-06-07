@@ -23,8 +23,8 @@
 #include "assert.h"
 
 static int _int_cmp_dd(const void* a, const void* b) {
-    int va = *(const int*)a;
-    int vb = *(const int*)b;
+    int32_t va = *(const int32_t*)a;
+    int32_t vb = *(const int32_t*)b;
     if (va < vb) {
         return -1;
     }
@@ -35,8 +35,8 @@ static int _int_cmp_dd(const void* a, const void* b) {
 }
 
 static int _int_cmp_kd(const void* key, const void* data) {
-    int vk = *(const int*)key;
-    int vd = *(const int*)data;
+    int32_t vk = *(const int32_t*)key;
+    int32_t vd = *(const int32_t*)data;
     if (vk < vd) {
         return -1;
     }
@@ -58,18 +58,18 @@ static void test_init(void) {
 static void test_insert_find(void) {
     xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
 
-    int vals[] = {50, 30, 70, 20, 40};
+    int32_t vals[] = {50, 30, 70, 20, 40};
     for (int i = 0; i < 5; i++) {
         ASSERT(xylem_rbtree_insert(tree, &vals[i]) == 0);
     }
 
     for (int i = 0; i < 5; i++) {
-        int* found = (int*)xylem_rbtree_find(tree, &vals[i]);
+        int32_t* found = (int32_t*)xylem_rbtree_find(tree, &vals[i]);
         ASSERT(found != NULL);
         ASSERT(*found == vals[i]);
     }
 
-    int missing = 99;
+    int32_t missing = 99;
     ASSERT(xylem_rbtree_find(tree, &missing) == NULL);
 
     xylem_rbtree_destroy(tree);
@@ -78,7 +78,7 @@ static void test_insert_find(void) {
 static void test_duplicate(void) {
     xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
 
-    int v = 42;
+    int32_t v = 42;
     ASSERT(xylem_rbtree_insert(tree, &v) == 0);
     ASSERT(xylem_rbtree_insert(tree, &v) == -1);
 
@@ -88,7 +88,7 @@ static void test_duplicate(void) {
 static void test_erase(void) {
     xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
 
-    int vals[20];
+    int32_t vals[20];
     for (int i = 0; i < 20; i++) {
         vals[i] = i;
         xylem_rbtree_insert(tree, &vals[i]);
@@ -99,7 +99,7 @@ static void test_erase(void) {
     }
 
     for (int i = 0; i < 20; i++) {
-        int* found = (int*)xylem_rbtree_find(tree, &vals[i]);
+        int32_t* found = (int32_t*)xylem_rbtree_find(tree, &vals[i]);
         if (i % 2 == 0) {
             ASSERT(found == NULL);
         } else {
@@ -107,7 +107,7 @@ static void test_erase(void) {
         }
     }
 
-    int missing = 100;
+    int32_t missing = 100;
     ASSERT(xylem_rbtree_erase(tree, &missing) == -1);
 
     xylem_rbtree_destroy(tree);
@@ -116,13 +116,13 @@ static void test_erase(void) {
 static void test_first_last(void) {
     xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
 
-    int vals[] = {50, 10, 90, 30, 70};
+    int32_t vals[] = {50, 10, 90, 30, 70};
     for (int i = 0; i < 5; i++) {
         xylem_rbtree_insert(tree, &vals[i]);
     }
 
-    ASSERT(*(int*)xylem_rbtree_first(tree) == 10);
-    ASSERT(*(int*)xylem_rbtree_last(tree) == 90);
+    ASSERT(*(int32_t*)xylem_rbtree_first(tree) == 10);
+    ASSERT(*(int32_t*)xylem_rbtree_last(tree) == 90);
 
     xylem_rbtree_destroy(tree);
 }
@@ -130,7 +130,7 @@ static void test_first_last(void) {
 static void test_clear(void) {
     xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
 
-    int vals[100];
+    int32_t vals[100];
     for (int i = 0; i < 100; i++) {
         vals[i] = i;
         xylem_rbtree_insert(tree, &vals[i]);

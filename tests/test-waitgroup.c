@@ -20,9 +20,8 @@
  */
 
 #include "xylem.h"
-#include "runtime/runtime.h"
-#include "runtime/scheduler.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -30,18 +29,6 @@
 #define SAFETY_TIMEOUT_MS 5000
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
-
-static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
-    (void)ud;
-    sched_timer_destroy(timer);
-    xylem_shutdown();
-    ASSERT(0 && "test timed out");
-}
-
-static void _start_safety_timer(void) {
-    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
-    sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-}
 
 #define WG_WORKERS 50
 
@@ -67,7 +54,7 @@ static void _wg_waiter(void* arg) {
 
 static void _test_wg_main(void* arg) {
     _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    _start_safety_timer();
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     xylem_spawn(_wg_waiter, ctx);
@@ -76,8 +63,8 @@ static void _test_wg_main(void* arg) {
     }
 }
 
-static void test_waitgroup_concurrent(void) {
-    fprintf(stderr, "=== test_waitgroup_concurrent\n");
+static void test_concurrent(void) {
+    fprintf(stderr, "=== test_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _wg_ctx_t ctx = {0};
         xylem_run(_test_wg_main, &ctx, &_rt_opts);
@@ -86,10 +73,12 @@ static void test_waitgroup_concurrent(void) {
     }
 }
 
-/* Multi-waiter broadcast: every waiter must be released by the
+/**
+ * Multi-waiter broadcast: every waiter must be released by the
  * done() that drops the counter to zero. Exercises the new
  * queue-based waiters list introduced to replace the single-slot
- * design. */
+ * design.
+ */
 
 #define WG_MULTI_WAITERS 16
 
@@ -119,7 +108,7 @@ static void _wg_multi_waiter(void* arg) {
 
 static void _test_wg_multi_main(void* arg) {
     _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
-    _start_safety_timer();
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     for (int i = 0; i < WG_MULTI_WAITERS; i++) {
@@ -130,8 +119,8 @@ static void _test_wg_multi_main(void* arg) {
     }
 }
 
-static void test_waitgroup_multi_waiter(void) {
-    fprintf(stderr, "=== test_waitgroup_multi_waiter\n");
+static void test_multi_waiter(void) {
+    fprintf(stderr, "=== test_multi_waiter\n");
     for (int round = 0; round < 20; round++) {
         _wg_multi_ctx_t ctx = {0};
         xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
@@ -142,7 +131,7 @@ static void test_waitgroup_multi_waiter(void) {
 }
 
 int main(void) {
-    test_waitgroup_concurrent();
-    test_waitgroup_multi_waiter();
+    test_concurrent();
+    test_multi_waiter();
     return 0;
 }

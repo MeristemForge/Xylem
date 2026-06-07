@@ -33,12 +33,14 @@
 
 #define STKGROW_FRAME_BYTES   (8 * 1024)
 #define STKGROW_BASIC_DEPTH   4
-/* Deep-recursion depth is bounded by the smallest usable coroutine stack
+/**
+ * Deep-recursion depth is bounded by the smallest usable coroutine stack
  * across platforms. The 128 KiB coroutine stack is inclusive of metadata
  * and a guard page, so the writable region shrinks as the OS page size
  * grows: on 16 KiB-page targets (Apple Silicon) only ~88 KiB is usable.
  * 8 frames * 8 KiB ~= 72 KiB keeps a margin below that worst case while
- * still faulting across several pages on the way down. */
+ * still faulting across several pages on the way down.
+ */
 #define STKGROW_RECURSE_DEPTH 8
 #define STKGROW_CONC_COUNT    32
 #define STKGROW_CONC_DEPTH    6
@@ -277,8 +279,10 @@ static void test_sleep_ordering(void) {
     atomic_init(&ctx.idx, 0);
     xylem_run(_sleepord_main, &ctx, &_rt_opts);
     ASSERT(atomic_load(&ctx.idx) == SLEEP_ORDER_COUNT);
-    /* Allow a small clock-rounding slack: getnow truncates to ms and the
-     * two reads straddle the sleep, so a true 30ms sleep can measure 29. */
+    /**
+     * Allow a small clock-rounding slack: getnow truncates to ms and the
+     * two reads straddle the sleep, so a true 30ms sleep can measure 29.
+     */
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
         uint64_t requested = (uint64_t)((i + 1) * 30);
         ASSERT(ctx.elapsed[i] + 2 >= requested);
@@ -409,7 +413,7 @@ static void test_submit_result(void) {
     }
 }
 
-/*
+/**
  * Exception-driven stack growth tests.
  *
  * The runtime reserves virtual address space per coroutine and commits
@@ -465,8 +469,10 @@ static void test_coro_stack_grow(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* Deep recursion: many consecutive page faults in one coroutine.
- * Validates earlier frames on unwind to detect cross-frame corruption. */
+/**
+ * Deep recursion: many consecutive page faults in one coroutine.
+ * Validates earlier frames on unwind to detect cross-frame corruption.
+ */
 
 typedef struct {
     int tested;
@@ -492,8 +498,10 @@ static void test_coro_stack_grow_deep_recursion(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* Concurrent growth across all workers. Catches per-coroutine state
- * bugs that could let one coroutine's growth disturb another's stack. */
+/**
+ * Concurrent growth across all workers. Catches per-coroutine state
+ * bugs that could let one coroutine's growth disturb another's stack.
+ */
 
 typedef struct {
     atomic_int done;
@@ -540,8 +548,10 @@ static void test_coro_stack_grow_concurrent(void) {
     ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
 }
 
-/* Pool slot reuse: coroutine exits → slot returned → next coroutine
- * reuses the same slot and grows again. Catches stale commit state. */
+/**
+ * Pool slot reuse: coroutine exits -> slot returned -> next coroutine
+ * reuses the same slot and grows again. Catches stale commit state.
+ */
 
 typedef struct {
     int counter;
@@ -584,8 +594,10 @@ static void test_coro_stack_grow_pool_reuse(void) {
     ASSERT(ctx.counter == STKGROW_REUSE_COUNT);
 }
 
-/* Single large frame: one function allocates far more than page_size,
- * triggering multiple sequential page faults without recursion. */
+/**
+ * Single large frame: one function allocates far more than page_size,
+ * triggering multiple sequential page faults without recursion.
+ */
 
 typedef struct {
     int tested;

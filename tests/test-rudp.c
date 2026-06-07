@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <string.h>
 
@@ -34,15 +35,7 @@ typedef struct {
     uint16_t           port;
 } _ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
-/* ------------------------------------------------------------------ */
-/* test_echo_stream                                                    */
-/* ------------------------------------------------------------------ */
+/* test_echo_stream */
 
 static void _srv_echo_stream(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -96,7 +89,7 @@ static void _echo_stream_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_echo_stream, &ctx);
     xylem_spawn(_cli_echo_stream, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -111,9 +104,7 @@ static void test_echo_stream(void) {
     xylem_run(_echo_stream_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_echo_message                                                   */
-/* ------------------------------------------------------------------ */
+/* test_echo_message */
 
 static void _srv_echo_msg(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -167,7 +158,7 @@ static void _echo_msg_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_echo_msg, &ctx);
     xylem_spawn(_cli_echo_msg, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -182,9 +173,7 @@ static void test_echo_message(void) {
     xylem_run(_echo_msg_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_handshake_timeout                                              */
-/* ------------------------------------------------------------------ */
+/* test_handshake_timeout */
 
 static void _cli_timeout(void* arg) {
     (void)arg;
@@ -204,9 +193,7 @@ static void test_handshake_timeout(void) {
     xylem_run(_cli_timeout, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_close_while_reading                                            */
-/* ------------------------------------------------------------------ */
+/* test_close_while_reading */
 
 static void _srv_close_early(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -254,7 +241,7 @@ static void _close_reading_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_close_early, &ctx);
     xylem_spawn(_cli_read_after_close, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -269,9 +256,7 @@ static void test_close_while_reading(void) {
     xylem_run(_close_reading_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_multi_session                                                  */
-/* ------------------------------------------------------------------ */
+/* test_multi_session */
 
 static void _srv_multi(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -331,7 +316,7 @@ static void _multi_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_multi, &ctx);
     xylem_spawn(_cli_multi, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -346,9 +331,7 @@ static void test_multi_session(void) {
     xylem_run(_multi_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* main                                                                */
-/* ------------------------------------------------------------------ */
+/* main */
 
 int main(void) {
     test_echo_stream();

@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -36,18 +37,12 @@ typedef struct {
     xylem_waitgroup_t* wg;
 } _consume_ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
 static void _tick_main(void* arg) {
     (void)arg;
     xylem_ticker_t* tk = xylem_ticker_create(TICK_INTERVAL_MS);
     ASSERT(tk != NULL);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 
     uint64_t prev = 0;
     for (int i = 0; i < TICK_TARGET; i++) {
@@ -99,16 +94,18 @@ static void _destroy_main(void* arg) {
     ASSERT(ctx.tk != NULL);
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _watchdog_cb, NULL);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 
     xylem_spawn(_consumer, &ctx);
 
-    /* Wait until the consumer has actually drained at least one tick,
+    /**
+     * Wait until the consumer has actually drained at least one tick,
      * then tear down: the parked recv must wake and return 0 so the
      * consumer loop exits. A fixed sleep here would be racy -- OS timer
      * coalescing (macOS kqueue, loaded CI runners) can stretch the first
      * tick past any fixed deadline. The safety watchdog bounds the wait
-     * if ticks somehow never arrive. */
+     * if ticks somehow never arrive.
+     */
     while (atomic_load(&ctx.ticks) < 1) {
         xylem_sleep(TICK_INTERVAL_MS);
     }
