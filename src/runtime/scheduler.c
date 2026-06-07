@@ -81,6 +81,17 @@
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
 
+/*
+ * A coroutine handed to a worker's runnext slot is normally consumed by that
+ * worker on its very next schedule, so it almost never ages. If the owner is
+ * stuck (blocked syscall, long CPU loop) the runnext coro would otherwise be
+ * unreachable since steals only touch the deque. Once a runnext entry has sat
+ * for at least this many milliseconds, idle workers are allowed to steal it as
+ * a last resort. Kept small so rescue is prompt, but non-zero so the common
+ * case never pays a locality cost.
+ */
+#define SCHED_RUNNEXT_STEAL_MS   1
+
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
 
 typedef struct _coro_pool_s {
@@ -102,6 +113,7 @@ typedef struct _sched_worker_s {
     void*                park_arg;
     _Atomic bool         parked;
     _Atomic(mco_coro*)   runnext;
+    _Atomic uint64_t     runnext_ts; /* ms timestamp set when runnext is filled. */
     uint32_t             sched_tick;
     heap_t               timers;
     mtx_t                timer_lock;
@@ -343,6 +355,44 @@ static mco_coro* _sched_worker_steal_coro(scheduler_t* sched, _sched_worker_t* w
     return NULL;
 }
 
+/*
+ * Last-resort rescue: steal a stale runnext entry from another worker.
+ *
+ * runnext is normally single-owner (only its worker pops it), which makes it
+ * the one runnable slot that becomes unreachable if the owner stalls. This is
+ * called only after the local deque and every victim deque came up empty, and
+ * only steals entries that have aged past SCHED_RUNNEXT_STEAL_MS, so the hot
+ * path (owner consumes its own runnext immediately) never loses locality.
+ *
+ * The atomic_exchange races the owner's own pop; the hardware guarantees only
+ * one side observes the non-NULL coro, so a coro is never double-scheduled.
+ */
+static mco_coro* _sched_worker_steal_runnext(
+    scheduler_t* sched, _sched_worker_t* w) {
+    if (sched->nworkers <= 1) {
+        return NULL;
+    }
+    uint64_t now   = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint32_t start = w->index + 1;
+    for (int32_t i = 0; i < sched->nworkers - 1; i++) {
+        uint32_t         idx = (start + (uint32_t)i) % (uint32_t)sched->nworkers;
+        _sched_worker_t* v   = &sched->workers[idx];
+
+        if (atomic_load_explicit(&v->runnext, memory_order_acquire) == NULL) {
+            continue;
+        }
+        uint64_t ts = atomic_load_explicit(&v->runnext_ts, memory_order_relaxed);
+        if (now - ts < SCHED_RUNNEXT_STEAL_MS) {
+            continue;
+        }
+        mco_coro* co = atomic_exchange(&v->runnext, NULL);
+        if (co) {
+            return co;
+        }
+    }
+    return NULL;
+}
+
 static int _sched_timeout_locked(_sched_worker_t* w, uint64_t now) {
     heap_node_t* root = heap_peek(&w->timers);
     if (!root) {
@@ -561,6 +611,11 @@ static mco_coro* _sched_worker_find_coro(
         return co;
     }
 
+    co = _sched_worker_steal_runnext(sched, w);
+    if (co) {
+        return co;
+    }
+
     {
         bool expected = false;
         if (!atomic_compare_exchange_strong_explicit(
@@ -581,6 +636,9 @@ static mco_coro* _sched_worker_find_coro(
         co = _sched_worker_pop_coro(sched, w);
         if (!co) {
             co = _sched_worker_steal_coro(sched, w);
+        }
+        if (!co) {
+            co = _sched_worker_steal_runnext(sched, w);
         }
         if (co) {
             atomic_store_explicit(
@@ -914,6 +972,13 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     if (!_tls_worker || _tls_worker->sched != sched) {
         runq_push(sched->runq, &ctx->runq_node);
     } else {
+        /* Stamp before publishing so a stealer that sees the coro also sees
+         * a valid timestamp (relaxed is fine: the runnext store is the
+         * release that orders this). */
+        atomic_store_explicit(
+            &_tls_worker->runnext_ts,
+            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
+            memory_order_relaxed);
         mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
         if (old && wsdeque_push(_tls_worker->deque, old) != 0) {
             mco_coro* batch[(SCHED_DEQUE_CAP / 2) + 1];
