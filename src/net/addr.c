@@ -67,9 +67,8 @@ static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
     free(ctx);
 }
 
-static void _addr_resolve_work(void* arg) {
-    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
-
+/* Run the blocking lookup and record the outcome into ctx. */
+static void _addr_do_lookup(_addr_resolve_ctx_t* ctx) {
     struct addrinfo  hints;
     struct addrinfo* res = NULL;
 
@@ -77,63 +76,64 @@ static void _addr_resolve_work(void* arg) {
     hints.ai_family = AF_UNSPEC;
 
     if (getaddrinfo(ctx->host, NULL, &hints, &res) != 0 || !res) {
-        goto done;
+        return;
     }
 
-    {
-        size_t n = 0;
-        for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
-            if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6) {
-                n++;
-            }
+    size_t n = 0;
+    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+        if (rp->ai_family == AF_INET || rp->ai_family == AF_INET6) {
+            n++;
         }
-        if (n == 0) {
-            freeaddrinfo(res);
-            goto done;
-        }
-
-        addr_t* arr = (addr_t*)calloc(n, sizeof(addr_t));
-        if (!arr) {
-            freeaddrinfo(res);
-            goto done;
-        }
-
-        size_t i = 0;
-        for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
-            if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
-                continue;
-            }
-            memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
-            if (rp->ai_family == AF_INET) {
-                ((struct sockaddr_in*)&arr[i].storage)->sin_port =
-                    htons(ctx->port);
-            } else {
-                ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
-                    htons(ctx->port);
-            }
-            i++;
-        }
+    }
+    if (n == 0) {
         freeaddrinfo(res);
-
-        ctx->result       = arr;
-        ctx->result_count = i;
-        ctx->status       = 0;
+        return;
     }
 
-done:
-    {
-        /**
-         * Single-winner wake: if the timeout already claimed the
-         * waiter, co is NULL and the result we just built is discarded
-         * (freed by the last unref). Otherwise wake the coroutine.
-         */
-        mco_coro* co = atomic_exchange_explicit(
-            &ctx->waiter, NULL, memory_order_acq_rel);
-        if (co) {
-            scheduler_schedule(runtime_get_scheduler(), co);
+    addr_t* arr = (addr_t*)calloc(n, sizeof(addr_t));
+    if (!arr) {
+        freeaddrinfo(res);
+        return;
+    }
+
+    size_t i = 0;
+    for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
+        if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
+            continue;
         }
-        _addr_ctx_unref(ctx);
+        memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
+        if (rp->ai_family == AF_INET) {
+            ((struct sockaddr_in*)&arr[i].storage)->sin_port =
+                htons(ctx->port);
+        } else {
+            ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
+                htons(ctx->port);
+        }
+        i++;
     }
+    freeaddrinfo(res);
+
+    ctx->result       = arr;
+    ctx->result_count = i;
+    ctx->status       = 0;
+}
+
+static void _addr_resolve_work(void* arg) {
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
+
+    _addr_do_lookup(ctx);
+
+    /**
+     * Single-winner wake: if the timeout already claimed the waiter, co
+     * is NULL and the result we just built is discarded (freed by the
+     * last unref). Otherwise wake the coroutine.
+     */
+    mco_coro* co = atomic_exchange_explicit(
+        &ctx->waiter, NULL, memory_order_acq_rel);
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
+    }
+    _addr_ctx_unref(ctx);
 }
 
 int addr_pton(const char* src, uint16_t port, addr_t* dst) {
