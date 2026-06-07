@@ -103,9 +103,15 @@ static void _destroy_main(void* arg) {
 
     xylem_spawn(_consumer, &ctx);
 
-    /* Let a few ticks reach the consumer, then tear down: the parked
-     * recv must wake and return 0 so the consumer loop exits. */
-    xylem_sleep(TICK_INTERVAL_MS * 3);
+    /* Wait until the consumer has actually drained at least one tick,
+     * then tear down: the parked recv must wake and return 0 so the
+     * consumer loop exits. A fixed sleep here would be racy -- OS timer
+     * coalescing (macOS kqueue, loaded CI runners) can stretch the first
+     * tick past any fixed deadline. The safety watchdog bounds the wait
+     * if ticks somehow never arrive. */
+    while (atomic_load(&ctx.ticks) < 1) {
+        xylem_sleep(TICK_INTERVAL_MS);
+    }
     xylem_ticker_destroy(ctx.tk);
 
     xylem_waitgroup_wait(ctx.wg);

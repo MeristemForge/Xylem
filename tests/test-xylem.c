@@ -223,7 +223,7 @@ static void test_sleep_zero(void) {
 }
 
 typedef struct {
-    int        order[SLEEP_ORDER_COUNT];
+    uint64_t   elapsed[SLEEP_ORDER_COUNT];
     atomic_int idx;
 } _sleepord_ctx_t;
 
@@ -232,12 +232,23 @@ typedef struct {
     int              id;
 } _sleepord_arg_t;
 
+/**
+ * Each coroutine records how long its own sleep actually took. We assert
+ * the one guarantee xylem_sleep makes -- a sleep returns no earlier than
+ * the requested duration -- rather than the relative wake order across
+ * coroutines. Cross-coroutine ordering is not a contract: OS timer
+ * coalescing (e.g. macOS kqueue, busy CI runners) can stretch a poll
+ * timeout well past its request, collapsing two nearby deadlines into a
+ * single service window where the ready coroutines race for their slot.
+ */
 static void _sleepord_coro(void* arg) {
     _sleepord_arg_t* a  = (_sleepord_arg_t*)arg;
     uint64_t         ms = (uint64_t)((a->id + 1) * 30);
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     xylem_sleep(ms);
-    a->ctx->order[atomic_fetch_add(&a->ctx->idx, 1)] = a->id;
-    if (atomic_load(&a->ctx->idx) == SLEEP_ORDER_COUNT) {
+    uint64_t end = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    a->ctx->elapsed[a->id] = end - start;
+    if (atomic_fetch_add(&a->ctx->idx, 1) + 1 == SLEEP_ORDER_COUNT) {
         xylem_shutdown();
     }
 }
@@ -259,8 +270,12 @@ static void test_sleep_ordering(void) {
     _sleepord_ctx_t ctx = {0};
     atomic_init(&ctx.idx, 0);
     xylem_run(_sleepord_main, &ctx, &_rt_opts);
+    ASSERT(atomic_load(&ctx.idx) == SLEEP_ORDER_COUNT);
+    /* Allow a small clock-rounding slack: getnow truncates to ms and the
+     * two reads straddle the sleep, so a true 30ms sleep can measure 29. */
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
-        ASSERT(ctx.order[i] == i);
+        uint64_t requested = (uint64_t)((i + 1) * 30);
+        ASSERT(ctx.elapsed[i] + 2 >= requested);
     }
 }
 
