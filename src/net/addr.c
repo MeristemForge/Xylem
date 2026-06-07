@@ -54,6 +54,10 @@ typedef struct _addr_resolve_ctx_s {
     _Atomic int32_t    refcnt;
 } _addr_resolve_ctx_t;
 
+static void _addr_ctx_ref(_addr_resolve_ctx_t* ctx) {
+    atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+}
+
 static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
     if (atomic_fetch_sub_explicit(&ctx->refcnt, 1, memory_order_acq_rel)
         != 1) {
@@ -228,7 +232,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     atomic_store_explicit(&ctx->waiter, co, memory_order_release);
 
     /* Reference for the pool job. */
-    atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+    _addr_ctx_ref(ctx);
     if (dynpool_submit(
             runtime_get_dynpool(), _addr_resolve_work, ctx) != 0) {
         /**
@@ -236,7 +240,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
          * waiter, and decline the park so the coroutine resumes inline
          * with status == -1. Not declining would orphan it forever.
          */
-        atomic_fetch_sub_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+        _addr_ctx_unref(ctx);
         atomic_store_explicit(&ctx->waiter, NULL, memory_order_relaxed);
         ctx->status = -1;
         return false;
@@ -244,7 +248,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
 
     /* Arm the deadline timer; one reference for the armed timer. */
     if (ctx->timer) {
-        atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+        _addr_ctx_ref(ctx);
         sched_timer_start(
             ctx->timer, _addr_resolve_timeout_cb, ctx, ctx->timeout_ms, 0);
     }
