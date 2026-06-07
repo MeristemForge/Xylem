@@ -222,15 +222,15 @@ static void _race_recv_coro(void* arg) {
     } else {
         ctx->got_timeout = 1;
     }
-}
 
-/* Drain any late-delivered message and destroy the channel from
- * inside the runtime (see teardown note above). The sender may still
- * be parked in xylem_sleep when recv timed out; this coroutine waits
- * it out, then drains so the channel is empty before destroy. */
-static void _race_reaper_coro(void* arg) {
-    _race_ctx_t* ctx = (_race_ctx_t*)arg;
-    /* Give a timed-out-but-pending send time to land. */
+    /* Single-receiver contract (see xylem-channel.h: concurrent recv
+     * aborts). The receiver coroutine itself drains any late-delivered
+     * message and tears the channel down -- a separate reaper calling
+     * recv would be a second concurrent consumer and race q->head.
+     * The send is aimed at the deadline, so on a timeout it may land
+     * just afterward; wait it out, then drain so the channel is empty
+     * before destroy. A late message left in the queue is still a
+     * timeout from the outside, so got_message is not set here. */
     xylem_sleep(40);
     void* leftover;
     while ((leftover = xylem_channel_recv_timeout(ctx->ch, 1)) != NULL) {
@@ -249,7 +249,6 @@ static void _race_main(void* arg) {
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 15;
     xylem_spawn(_race_recv_coro, ctx);
     xylem_spawn(_race_sender_coro, ctx);
-    xylem_spawn(_race_reaper_coro, ctx);
 }
 
 static void test_channel_timeout_race(void) {
