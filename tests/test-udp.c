@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <string.h>
 
@@ -35,12 +36,6 @@ typedef struct {
     uint16_t           port_a;
     uint16_t           port_b;
 } _ctx_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
 
 /* --- test_echo: dial client sends, listen server recvs and replies --- */
 

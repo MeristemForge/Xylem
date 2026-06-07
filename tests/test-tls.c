@@ -22,7 +22,7 @@
 #include "xylem.h"
 #include "xylem/net/xylem-tls.h"
 #include "assert.h"
-#include "test-cert.h"
+#include "utils.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -42,14 +42,6 @@ typedef struct {
     uint16_t              port;
 } _ctx_t;
 
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
-
-
 static void test_ctx_create_destroy(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -60,7 +52,7 @@ static void test_ctx_create_destroy(void) {
 static void test_load_cert_valid(void) {
     const char* cert = "test_tls_cert.pem";
     const char* key  = "test_tls_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -82,7 +74,7 @@ static void test_load_cert_invalid(void) {
 static void test_load_ca(void) {
     const char* cert = "test_tls_ca.pem";
     const char* key  = "test_tls_ca_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -110,7 +102,7 @@ static void test_load_system_ca(void) {
      */
     const char* ca  = "test_tls_sysca_fallback.pem";
     const char* key = "test_tls_sysca_fallback_key.pem";
-    ASSERT(_gen_self_signed(ca, key) == 0);
+    ASSERT(_cert_gen(ca, key) == 0);
 
     xylem_tls_ctx_t* ctx2 = xylem_tls_ctx_create();
     ASSERT(ctx2 != NULL);
@@ -173,7 +165,7 @@ static char* _read_file(const char* path, size_t* out_len) {
 static void test_load_cert_mem(void) {
     const char* cert = "test_tls_mem_cert.pem";
     const char* key  = "test_tls_mem_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     size_t cert_len = 0, key_len = 0;
     char*  cert_buf = _read_file(cert, &cert_len);
@@ -244,7 +236,7 @@ static void _echo_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_echo_cert.pem";
     const char* key  = "test_tls_echo_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -354,8 +346,8 @@ static void _fail_main(void* arg) {
     const char* key   = "test_tls_fail_key.pem";
     const char* cert2 = "test_tls_fail_cert2.pem";
     const char* key2  = "test_tls_fail_key2.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
-    ASSERT(_gen_self_signed(cert2, key2) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
+    ASSERT(_cert_gen(cert2, key2) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -462,7 +454,7 @@ static void _alpn_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_alpn_cert.pem";
     const char* key  = "test_tls_alpn_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     const char* protos[] = {"h2", "http/1.1"};
 
@@ -548,7 +540,7 @@ static void _deadline_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_dl_cert.pem";
     const char* key  = "test_tls_dl_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -626,7 +618,7 @@ static void _sac_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_sac_cert.pem";
     const char* key  = "test_tls_sac_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -692,7 +684,7 @@ static void _cl_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_cl_cert.pem";
     const char* key  = "test_tls_cl_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -762,7 +754,7 @@ static void _kl_main(void* arg) {
     const char* cert   = "test_tls_kl_cert.pem";
     const char* key    = "test_tls_kl_key.pem";
     const char* keylog = "test_keylog.txt";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -857,7 +849,7 @@ static void _sni_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_sni_cert.pem";
     const char* key  = "test_tls_sni_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -972,8 +964,8 @@ static void _sni_sel_main(void* arg) {
     const char* def_key   = "test_tls_snisel_def_key.pem";
     const char* host_cert = "test_tls_snisel_host_cert.pem";
     const char* host_key  = "test_tls_snisel_host_key.pem";
-    ASSERT(_gen_self_signed(def_cert, def_key) == 0);
-    ASSERT(_gen_self_signed_ex(host_cert, host_key,
+    ASSERT(_cert_gen(def_cert, def_key) == 0);
+    ASSERT(_cert_gen_ex(host_cert, host_key,
                                "sni.example", "DNS:sni.example") == 0);
 
     /* Server: default cert plus an SNI-selected per-host cert. */
@@ -1082,7 +1074,7 @@ static void _addr_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_addr_cert.pem";
     const char* key  = "test_tls_addr_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1164,7 +1156,7 @@ static void _conc_close_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_cc_cert.pem";
     const char* key  = "test_tls_cc_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1256,7 +1248,7 @@ static void _clac_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_clac_cert.pem";
     const char* key  = "test_tls_clac_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
@@ -1404,7 +1396,7 @@ static void _fdx_main(void* arg) {
     (void)arg;
     const char* cert = "test_tls_fdx_cert.pem";
     const char* key  = "test_tls_fdx_key.pem";
-    ASSERT(_gen_self_signed(cert, key) == 0);
+    ASSERT(_cert_gen(cert, key) == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);

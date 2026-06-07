@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -39,12 +40,6 @@ typedef struct {
     xylem_channel_t*   ready;
     xylem_waitgroup_t* wg;
 } _ctx_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;

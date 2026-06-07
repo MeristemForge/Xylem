@@ -20,9 +20,8 @@
  */
 
 #include "xylem.h"
-#include "runtime/runtime.h"
-#include "runtime/scheduler.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -30,18 +29,6 @@
 #define SAFETY_TIMEOUT_MS 5000
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
-
-static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
-    (void)ud;
-    sched_timer_destroy(timer);
-    xylem_shutdown();
-    ASSERT(0 && "test timed out");
-}
-
-static void _start_safety_timer(void) {
-    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
-    sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-}
 
 #define MTX_WORKERS    20
 #define MTX_INCREMENTS 100
@@ -70,7 +57,7 @@ static void _mtx_worker(void* arg) {
 
 static void _test_mtx_main(void* arg) {
     _mtx_ctx_t* ctx = (_mtx_ctx_t*)arg;
-    _start_safety_timer();
+    _watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx = xylem_mutex_create();
     for (int i = 0; i < MTX_WORKERS; i++) {
         xylem_spawn(_mtx_worker, ctx);
@@ -128,7 +115,7 @@ static void _mtx_pong(void* arg) {
 
 static void _test_mtx_pp_main(void* arg) {
     _mtx_pp_ctx_t* ctx = (_mtx_pp_ctx_t*)arg;
-    _start_safety_timer();
+    _watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx = xylem_mutex_create();
     xylem_spawn(_mtx_ping, ctx);
     xylem_spawn(_mtx_pong, ctx);

@@ -20,9 +20,8 @@
  */
 
 #include "xylem.h"
-#include "runtime/runtime.h"
-#include "runtime/scheduler.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -30,18 +29,6 @@
 #define SAFETY_TIMEOUT_MS 5000
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
-
-static void _safety_timeout_cb(sched_timer_t* timer, void* ud) {
-    (void)ud;
-    sched_timer_destroy(timer);
-    xylem_shutdown();
-    ASSERT(0 && "test timed out");
-}
-
-static void _start_safety_timer(void) {
-    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
-    sched_timer_start(t, _safety_timeout_cb, NULL, SAFETY_TIMEOUT_MS, 0);
-}
 
 #define WG_WORKERS 50
 
@@ -67,7 +54,7 @@ static void _wg_waiter(void* arg) {
 
 static void _test_wg_main(void* arg) {
     _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    _start_safety_timer();
+    _watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     xylem_spawn(_wg_waiter, ctx);
@@ -121,7 +108,7 @@ static void _wg_multi_waiter(void* arg) {
 
 static void _test_wg_multi_main(void* arg) {
     _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
-    _start_safety_timer();
+    _watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     for (int i = 0; i < WG_MULTI_WAITERS; i++) {

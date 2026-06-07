@@ -22,11 +22,53 @@
 _Pragma("once")
 
 /**
- * Shared self-signed certificate generation for the TLS/DTLS/HTTPS/WSS
- * tests. Generates an in-memory RSA-2048 key and a SHA-256 self-signed
- * X.509 cert and writes both as PEM files. Helpers are static inline so
- * each test translation unit gets its own copy with no link conflicts.
+ * Shared helpers for the test suite. Provides test watchdogs (abort the
+ * process if a test hangs) and, when TLS is enabled, self-signed
+ * certificate generation. All helpers are static inline so each test
+ * translation unit gets its own copy with no link conflicts.
  */
+
+#include "xylem.h"
+#include "assert.h"
+
+#include "runtime/runtime.h"
+#include "runtime/scheduler.h"
+
+#include <stdint.h>
+
+/**
+ * Watchdog for the public coroutine timer (xylem_timer_after). Pass this
+ * as the callback; it aborts the test if the deadline is reached. The
+ * caller keeps the returned handle and cancels it on the success path.
+ */
+static inline void _watchdog_cb(xylem_timer_t* timer, void* userdata) {
+    (void)timer;
+    (void)userdata;
+    ASSERT(0 && "test timed out");
+}
+
+/**
+ * Watchdog for the internal scheduler timer, used by tests that need to
+ * arm the deadline from inside the root coroutine. Self-destroys and
+ * signals shutdown before aborting.
+ */
+static inline void _watchdog_sched_cb(sched_timer_t* timer, void* userdata) {
+    (void)userdata;
+    sched_timer_destroy(timer);
+    xylem_shutdown();
+    ASSERT(0 && "test timed out");
+}
+
+/**
+ * Arm a scheduler-timer watchdog that aborts the test after timeout_ms.
+ * Must be called from inside a coroutine on a scheduler worker.
+ */
+static inline void _watchdog_start(uint64_t timeout_ms) {
+    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
+    sched_timer_start(t, _watchdog_sched_cb, NULL, timeout_ms, 0);
+}
+
+#ifdef XYLEM_ENABLE_TLS
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -43,9 +85,9 @@ _Pragma("once")
  * triggers the OPENSSL_Applink error. Routing all FILE* operations
  * through the application's own CRT via a memory BIO avoids it entirely.
  */
-static inline int _write_pem_to_file(const char* path,
-                                     int (*write_fn)(BIO*, void*),
-                                     void* obj) {
+static inline int _cert_write_pem(const char* path,
+                                  int (*write_fn)(BIO*, void*),
+                                  void* obj) {
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         return -1;
@@ -67,11 +109,11 @@ static inline int _write_pem_to_file(const char* path,
     return 0;
 }
 
-static inline int _write_cert_pem(BIO* bio, void* obj) {
+static inline int _cert_write_x509(BIO* bio, void* obj) {
     return PEM_write_bio_X509(bio, (X509*)obj);
 }
 
-static inline int _write_key_pem(BIO* bio, void* obj) {
+static inline int _cert_write_key(BIO* bio, void* obj) {
     return PEM_write_bio_PrivateKey(bio, (EVP_PKEY*)obj,
                                     NULL, NULL, 0, NULL, NULL);
 }
@@ -81,9 +123,8 @@ static inline int _write_key_pem(BIO* bio, void* obj) {
  * and subjectAltName (e.g. "DNS:localhost,IP:127.0.0.1"). Returns 0 on
  * success, -1 on failure.
  */
-static inline int _gen_self_signed_ex(const char* cert_path,
-                                      const char* key_path,
-                                      const char* cn, const char* san) {
+static inline int _cert_gen_ex(const char* cert_path, const char* key_path,
+                               const char* cn, const char* san) {
     EVP_PKEY* pkey = EVP_PKEY_new();
     if (!pkey) {
         return -1;
@@ -121,10 +162,10 @@ static inline int _gen_self_signed_ex(const char* cert_path,
     X509_sign(x509, pkey, EVP_sha256());
 
     int rc = 0;
-    if (_write_pem_to_file(cert_path, _write_cert_pem, x509) != 0) {
+    if (_cert_write_pem(cert_path, _cert_write_x509, x509) != 0) {
         rc = -1;
     }
-    if (rc == 0 && _write_pem_to_file(key_path, _write_key_pem, pkey) != 0) {
+    if (rc == 0 && _cert_write_pem(key_path, _cert_write_key, pkey) != 0) {
         rc = -1;
     }
 
@@ -137,8 +178,9 @@ static inline int _gen_self_signed_ex(const char* cert_path,
  * Generate a self-signed cert/key valid for localhost / 127.0.0.1.
  * Returns 0 on success, -1 on failure.
  */
-static inline int _gen_self_signed(const char* cert_path,
-                                   const char* key_path) {
-    return _gen_self_signed_ex(cert_path, key_path, "localhost",
-                               "DNS:localhost,IP:127.0.0.1");
+static inline int _cert_gen(const char* cert_path, const char* key_path) {
+    return _cert_gen_ex(cert_path, key_path, "localhost",
+                        "DNS:localhost,IP:127.0.0.1");
 }
+
+#endif /* XYLEM_ENABLE_TLS */

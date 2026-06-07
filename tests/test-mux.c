@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <string.h>
 
@@ -38,13 +39,6 @@ typedef struct {
     xylem_mux_stream_t* stream;
     xylem_waitgroup_t*  wg;
 } _stream_arg_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
-
 
 static void _srv_echo_stream(void* arg) {
     xylem_mux_stream_t* s = (xylem_mux_stream_t*)arg;

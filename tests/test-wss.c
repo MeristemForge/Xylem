@@ -29,7 +29,7 @@
 #include "xylem.h"
 #include "xylem/net/xylem-ws.h"
 #include "assert.h"
-#include "test-cert.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +57,7 @@ static void _srv_echo_handler(xylem_ws_conn_t* ws, void* ud) {
 
 static void test_wss_text_echo(void* arg) {
     (void)arg;
-    ASSERT(_gen_self_signed(WSS_CERT, WSS_KEY) == 0);
+    ASSERT(_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
@@ -94,7 +94,7 @@ static void test_wss_text_echo(void* arg) {
 
 static void test_wss_large_message(void* arg) {
     (void)arg;
-    ASSERT(_gen_self_signed(WSS_CERT, WSS_KEY) == 0);
+    ASSERT(_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = { .fragment_threshold = 1024, .tls = &_srv_tls };
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
@@ -136,7 +136,7 @@ static void test_wss_large_message(void* arg) {
 
 static void test_wss_deflate(void* arg) {
     (void)arg;
-    ASSERT(_gen_self_signed(WSS_CERT, WSS_KEY) == 0);
+    ASSERT(_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = {
         .permessage_deflate = true,
