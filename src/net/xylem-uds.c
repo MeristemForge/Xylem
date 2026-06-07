@@ -60,6 +60,14 @@ static void _uds_conn_unref(xylem_uds_conn_t* uds) {
         return;
     }
     if (uds->waiter) {
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference -- without this the waiter (slab slot)
+         * would linger until a stale deadline set by the caller fires.
+         */
+        iowait_set_rd_deadline(uds->waiter, 0);
+        iowait_set_wr_deadline(uds->waiter, 0);
         iowait_destroy(uds->waiter);
     }
     if (uds->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
