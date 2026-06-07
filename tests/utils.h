@@ -23,9 +23,10 @@ _Pragma("once")
 
 /**
  * Shared helpers for the test suite. Provides test watchdogs (abort the
- * process if a test hangs) and, when TLS is enabled, self-signed
- * certificate generation. All helpers are static inline so each test
- * translation unit gets its own copy with no link conflicts.
+ * process if a test hangs) and, for tests that define TEST_WITH_TLS before
+ * including this header, self-signed certificate generation. All helpers
+ * are static inline so each test translation unit gets its own copy with
+ * no link conflicts.
  */
 
 #include "xylem.h"
@@ -68,7 +69,7 @@ static inline void _watchdog_start(uint64_t timeout_ms) {
     sched_timer_start(t, _watchdog_sched_cb, NULL, timeout_ms, 0);
 }
 
-#ifdef XYLEM_ENABLE_TLS
+#ifdef TEST_WITH_TLS
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -183,4 +184,4 @@ static inline int _cert_gen(const char* cert_path, const char* key_path) {
                         "DNS:localhost,IP:127.0.0.1");
 }
 
-#endif /* XYLEM_ENABLE_TLS */
+#endif /* TEST_WITH_TLS */

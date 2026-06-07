@@ -22,6 +22,7 @@
 #include "xylem.h"
 #include "xylem/net/xylem-dtls.h"
 #include "assert.h"
+#define TEST_WITH_TLS
 #include "utils.h"
 
 #include <stdio.h>

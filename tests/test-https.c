@@ -30,6 +30,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#define TEST_WITH_TLS
 #include "utils.h"
 
 #include <stdio.h>
