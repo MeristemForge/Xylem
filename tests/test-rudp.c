@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <string.h>
 
@@ -33,12 +34,6 @@ typedef struct {
     xylem_waitgroup_t* wg;
     uint16_t           port;
 } _ctx_t;
-
-static void _watchdog_cb(xylem_timer_t* t, void* ud) {
-    (void)t;
-    (void)ud;
-    ASSERT(0 && "test timed out");
-}
 
 /* test_echo_stream */
 
@@ -94,7 +89,7 @@ static void _echo_stream_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_echo_stream, &ctx);
     xylem_spawn(_cli_echo_stream, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -163,7 +158,7 @@ static void _echo_msg_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_echo_msg, &ctx);
     xylem_spawn(_cli_echo_msg, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -246,7 +241,7 @@ static void _close_reading_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_close_early, &ctx);
     xylem_spawn(_cli_read_after_close, &ctx);
     xylem_waitgroup_wait(ctx.wg);
@@ -321,7 +316,7 @@ static void _multi_main(void* arg) {
     };
     xylem_waitgroup_add(ctx.wg, 2);
     xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _watchdog_cb, NULL);
+                                          _utils_watchdog_cb, NULL);
     xylem_spawn(_srv_multi, &ctx);
     xylem_spawn(_cli_multi, &ctx);
     xylem_waitgroup_wait(ctx.wg);
