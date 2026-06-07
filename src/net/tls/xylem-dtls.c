@@ -226,6 +226,16 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
         tls_backend_conn_destroy(dtls->be);
     }
     if (dtls->waiter) {
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference -- without this the waiter (slab slot)
+         * would linger until a stale deadline set by the caller fires.
+         * Server sessions share the listener waiter and store deadlines
+         * as fields, so dtls->waiter is the client's own socket here.
+         */
+        iowait_set_rd_deadline(dtls->waiter, 0);
+        iowait_set_wr_deadline(dtls->waiter, 0);
         iowait_destroy(dtls->waiter);
     }
     if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {

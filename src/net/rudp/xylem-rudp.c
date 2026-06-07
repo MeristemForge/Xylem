@@ -496,6 +496,16 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
 
     if (!conn->listener) {
         /* Client owns its socket, waiter and AES context. */
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference -- without this the waiter (slab slot)
+         * would linger until a stale deadline set by the caller fires.
+         */
+        if (conn->waiter) {
+            iowait_set_rd_deadline(conn->waiter, 0);
+            iowait_set_wr_deadline(conn->waiter, 0);
+        }
         iowait_destroy(conn->waiter);
         platform_socket_close(conn->fd);
         xylem_aes256_destroy(conn->aes);
