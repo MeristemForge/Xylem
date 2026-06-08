@@ -85,6 +85,10 @@ Rationale:
   of the write direction. Because they are separate locks, read and write
   proceed concurrently.
 
+A fourth lock, `hs_mu`, is unrelated to duplex I/O: it elects the single driver
+of the lazy server handshake and is described in §8. It is taken on its own,
+never nested inside the three locks above.
+
 Note that `_tls_pump_out` is called from the read path too (to flush a TLS 1.3
 KeyUpdate or renegotiation message surfaced as `WANT_WRITE` during `SSL_read`),
 and `_tls_pump_in` from the write path, so both pumps are reachable from either
@@ -201,11 +205,39 @@ drive handshake) -> cache ALPN. A single deadline derived from
 `handshake_timeout_ms` bounds connect + handshake together.
 
 **Accept (server):** `_tls_accept_fd` parks on the listener's read direction and
-backs off on transient accept errors -> `_tls_server_handshake` per connection
-(set accept state, apply verify, arm handshake deadline, drive handshake).
-**Per-connection handshake failures are absorbed**: the bad connection is
-dropped and accept keeps looping, so one bad client cannot tear down the accept
-loop. `xylem_tls_accept` returns NULL only when the listener is closed.
+backs off on transient accept errors, then `xylem_tls_accept` returns the
+connection **without running its handshake** -- it only records the peer
+address and the handshake timeout and marks the connection `HS_PENDING`. The
+handshake is driven lazily on the first `tls_read`/`tls_write`, or eagerly via
+`tls_handshake`, inside the per-connection handler coroutine. This is the key
+scalability change: handshakes (a multi-round-trip, CPU-heavy exchange) run in
+the handler and parallelize across the scheduler instead of serializing every
+client behind the single acceptor.
+
+Consequences of deferring:
+
+- `xylem_tls_accept` returns NULL **only** when the listener is closed; it no
+  longer signals a handshake failure. A failure (bad cert, protocol mismatch,
+  timeout) surfaces as `-1` from the first `tls_read`/`tls_write`/`tls_handshake`,
+  so a handler treats a read error as "drop this connection and keep accepting"
+  -- one bad client still cannot tear down the accept loop.
+- `handshake_timeout_ms` is measured from when the handshake begins (first I/O),
+  not from accept. A handler that accepts but never reads is not bounded by it;
+  rely on prompt handler reads plus fd/backlog limits.
+- The negotiated ALPN (`tls_get_alpn`) and the peer certificate are empty until
+  the handshake completes, so call `tls_handshake` first if you need them before
+  any read/write.
+
+Exactly one coroutine drives the lazy handshake. Because the handshake is a
+single state machine pumping both socket directions and `iowait` permits only
+one parker per direction, two concurrent drivers would double-step the backend.
+A per-connection `hs_mu` elects the driver: the first caller into
+`_tls_ensure_handshake` runs the handshake while a second (xylem permits one
+reader + one writer per connection) blocks on `hs_mu` until the result is
+published, then reads it. `hs_mu` is taken alone, never nested inside
+`ssl_mu`/`rd_mu`/`wr_mu`, so there is no lock-order inversion. An `HS_DONE`
+fast path skips the lock entirely once handshaked, so every client connection
+and every already-handshaked server connection pays no extra cost.
 
 **Proxy / upgrade:** `tls_client_handshake_fd` (internal, in `tls.h`)
 wraps an already-connected fd -- e.g. after an HTTP CONNECT tunnel -- and runs
@@ -456,9 +488,11 @@ struct tls_ctx_s {
 struct tls_conn_s {
     tls_backend_conn_t* be;          /* replaces SSL*/rbio/wbio */
     char* rbuf; char* wbuf;          /* pump scratch (unchanged) */
-    xylem_mutex_t *ssl_mu, *rd_mu, *wr_mu;
+    xylem_mutex_t *ssl_mu, *rd_mu, *wr_mu, *hs_mu;
     iowait_t* waiter; platform_sock_t fd; tls_ctx_t* ctx;
     addr_t peer_addr; char alpn[32];
+    uint64_t hs_timeout_ms;          /* copied from listener opts at accept */
+    _Atomic int hs_state;            /* HS_DONE / HS_PENDING / HS_FAILED */
     _Atomic int32_t refcnt; _Atomic bool closed;
 };
 ```
