@@ -11,7 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
@@ -59,16 +61,18 @@ static int _ensure_cert(void) {
 
     fprintf(stderr, "generating self-signed certificate...\n");
 
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) return -1;
-
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!pctx) { EVP_PKEY_free(pkey); return -1; }
+    /* ECDSA P-256 to match the go/rust bench servers (rcgen / ecdsa
+     * default), so connrate compares like-for-like server signing cost
+     * instead of RSA-2048 vs EC. */
+    EVP_PKEY*     pkey = NULL;
+    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (!pctx) return -1;
 
     EVP_PKEY_keygen_init(pctx);
-    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
+    EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx, NID_X9_62_prime256v1);
     EVP_PKEY_keygen(pctx, &pkey);
     EVP_PKEY_CTX_free(pctx);
+    if (!pkey) return -1;
 
     X509* x509 = X509_new();
     X509_set_version(x509, 2);

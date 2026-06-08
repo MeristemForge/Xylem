@@ -423,6 +423,12 @@ tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {
     } else {
         SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
     }
+
+    /**
+     * Default to classic curves over OpenSSL's post-quantum hybrid for
+     * faster handshakes; see tls_backend_ctx_set_kx_groups.
+     */
+    tls_backend_ctx_set_kx_groups(ctx, "X25519:P-256:P-384:P-521");
     return ctx;
 }
 
@@ -601,6 +607,17 @@ int tls_backend_ctx_set_alpn(
     SSL_CTX_set_alpn_protos(ctx->ssl_ctx, wire, (unsigned int)total);
     SSL_CTX_set_alpn_select_cb(ctx->ssl_ctx, _tlsb_alpn_select_cb, ctx);
 
+    return 0;
+}
+
+int tls_backend_ctx_set_kx_groups(tls_backend_ctx_t* ctx, const char* groups) {
+    if (!ctx || !groups || groups[0] == '\0') {
+        return -1;
+    }
+    if (SSL_CTX_set1_groups_list(ctx->ssl_ctx, groups) != 1) {
+        xylem_loge("<tls> set kx groups failed list=%s", groups);
+        return -1;
+    }
     return 0;
 }
 

@@ -269,6 +269,15 @@ the client handshake, verifying `server_name` rather than the proxy address.
   identity verification accepts any trusted-CA cert and is a MITM risk.
 - **TLS 1.2 is the floor.** `SSL_CTX_set_min_proto_version(TLS1_2_VERSION)` is
   set at ctx creation; there is no public knob to lower it.
+- **Classic key exchange by default.** At ctx creation the backend pins the
+  key-exchange groups to `X25519:P-256:P-384:P-521` (via
+  `tls_backend_ctx_set_kx_groups`) rather than inheriting OpenSSL 3.5's
+  default, which prefers a post-quantum hybrid (`X25519MLKEM768`). The hybrid
+  adds KEM keygen/encapsulation work and a larger key_share to every
+  handshake; choosing classic curves keeps handshakes light (higher
+  handshakes/sec) at the cost of post-quantum protection. There is no public
+  knob to change this; the internal backend setter exists for builds that want
+  a different set (e.g. the hybrid first to retain post-quantum security).
 - **Keylog is a debugging aid.** `xylem_tls_ctx_set_keylog` writes NSS keylog
   lines for Wireshark; it exposes session secrets and must not be enabled in
   production.
@@ -404,6 +413,7 @@ int tls_backend_ctx_load_system_ca(tls_backend_ctx_t* ctx,
                                    const char* fallback_ca_file);
 int tls_backend_ctx_set_alpn      (tls_backend_ctx_t* ctx,
                                    const char** protocols, size_t count);
+int tls_backend_ctx_set_kx_groups (tls_backend_ctx_t* ctx, const char* groups);
 int tls_backend_ctx_set_keylog    (tls_backend_ctx_t* ctx, const char* path);
 
 /* ---- connection: one SSL state machine over memory buffers ---- */
