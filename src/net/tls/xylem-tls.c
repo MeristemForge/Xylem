@@ -230,3 +230,7 @@ int xylem_tls_listener_addr(
 const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls) {
     return tls ? tls_get_alpn(&tls->internal) : NULL;
 }
+
+int xylem_tls_handshake(xylem_tls_conn_t* tls) {
+    return tls ? tls_handshake(&tls->internal) : -1;
+}

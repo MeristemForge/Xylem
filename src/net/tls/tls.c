@@ -54,6 +54,13 @@
  */
 #define TLS_CLOSE_NOTIFY_TIMEOUT_MS 1000
 
+/* Lazy server-handshake state; calloc 0-value HS_DONE = no handshake needed. */
+typedef enum _tls_hs_state_e {
+    HS_DONE    = 0,
+    HS_PENDING = 1,
+    HS_FAILED  = 2
+} _tls_hs_state_t;
+
 static void _tls_conn_ref(tls_conn_t* tls) {
     atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
 }
@@ -69,16 +76,18 @@ static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
     tls->ssl_mu = xylem_mutex_create();
     tls->rd_mu  = xylem_mutex_create();
     tls->wr_mu  = xylem_mutex_create();
+    tls->hs_mu  = xylem_mutex_create();
     tls->rbuf   = (char*)malloc(TLS_IO_CHUNK);
     tls->wbuf   = (char*)malloc(TLS_IO_CHUNK);
     if (!tls->waiter || !tls->ssl_mu || !tls->rd_mu || !tls->wr_mu
-        || !tls->rbuf || !tls->wbuf) {
+        || !tls->hs_mu || !tls->rbuf || !tls->wbuf) {
         if (tls->waiter) {
             iowait_destroy(tls->waiter);
         }
         xylem_mutex_destroy(tls->ssl_mu);
         xylem_mutex_destroy(tls->rd_mu);
         xylem_mutex_destroy(tls->wr_mu);
+        xylem_mutex_destroy(tls->hs_mu);
         free(tls->rbuf);
         free(tls->wbuf);
         free(tls);
@@ -130,6 +139,7 @@ static void _tls_conn_free(tls_conn_t* tls) {
     xylem_mutex_destroy(tls->ssl_mu);
     xylem_mutex_destroy(tls->rd_mu);
     xylem_mutex_destroy(tls->wr_mu);
+    xylem_mutex_destroy(tls->hs_mu);
     free(tls->rbuf);
     free(tls->wbuf);
     free(tls);
@@ -513,42 +523,80 @@ static platform_sock_t _tls_accept_fd(tls_listener_t* ln) {
 }
 
 /**
- * Drive the server-side handshake on an accepted connection. Takes
- * ownership of tls and returns the ready connection, or NULL on a
- * per-connection failure (tls is destroyed). A NULL return is never a
- * listener-level error -- the caller keeps accepting.
+ * Drive the server-side TLS handshake on an accepted connection's fd.
+ * Unlike the eager path, this does NOT tear the connection down on
+ * failure: it runs under a ref held by tls_read/tls_write/tls_handshake,
+ * and the owning handler's tls_close performs teardown. Returns 0 on a
+ * completed handshake, -1 on failure (bad cert, protocol mismatch, peer
+ * disconnect, or handshake timeout).
  */
-static tls_conn_t* _tls_server_handshake(
-    tls_listener_t* ln,
-    tls_conn_t*     tls) {
-    tls->ctx = ln->ctx;
-
-    socklen_t peer_len = sizeof(tls->peer_addr.storage);
-    getpeername(tls->fd, (struct sockaddr*)&tls->peer_addr.storage,
-                &peer_len);
-
-    tls->be = tls_backend_conn_create(ln->ctx->be, true);
+static int _tls_server_handshake(tls_conn_t* tls) {
+    tls->be = tls_backend_conn_create(tls->ctx->be, true);
     if (!tls->be) {
         xylem_loge("<tls> accept ssl init failed");
-        _tls_conn_destroy(tls);
-        return NULL;
+        return -1;
     }
     tls_backend_handshake_cfg_t cfg = {0};
-    cfg.verify = ln->ctx->verify_client ? TLS_BACKEND_VERIFY_REQUIRE
-                                        : TLS_BACKEND_VERIFY_NONE;
+    cfg.verify = tls->ctx->verify_client ? TLS_BACKEND_VERIFY_REQUIRE
+                                         : TLS_BACKEND_VERIFY_NONE;
     tls_backend_conn_configure(tls->be, &cfg);
 
-    /* Arm the handshake deadline; disarm on success. */
-    _tls_set_deadline(tls, _tls_make_deadline(ln->opts.handshake_timeout_ms));
+    /* Arm the handshake deadline; disarm regardless of outcome. */
+    _tls_set_deadline(tls, _tls_make_deadline(tls->hs_timeout_ms));
+    int rc = _tls_do_handshake(tls);
+    _tls_set_deadline(tls, 0);
 
-    if (_tls_do_handshake(tls) != 0) {
-        _tls_conn_destroy(tls);
-        return NULL;
+    if (rc == 0) {
+        tls_backend_conn_get_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
+    }
+    return rc;
+}
+
+/**
+ * Ensure the (lazy server) handshake has completed before app I/O.
+ *
+ * Fast path: HS_DONE (every client conn, and any server conn already
+ * handshaked) returns immediately without locking.
+ *
+ * Otherwise exactly one coroutine must drive the handshake: it is a
+ * single state machine pumping BOTH socket directions, and iowait allows
+ * only one parker per direction, so two drivers would double-step the
+ * backend and double-park a direction. hs_mu elects that driver; a
+ * second coroutine (xylem permits one reader + one writer on a conn) just
+ * blocks on the lock until the driver publishes the result, then reads
+ * it. hs_mu is a coroutine mutex (a contended lock yields), and the
+ * non-driver takes only hs_mu -- never nested inside ssl_mu/rd_mu/wr_mu
+ * -- so there is no lock-order inversion against the driver's inner
+ * locks. Holding hs_mu across the handshake's iowait parks is therefore
+ * fine. Returns 0 once handshaked, -1 on failure.
+ */
+static int _tls_ensure_handshake(tls_conn_t* tls) {
+    /* Lock-free fast path: avoid locking once handshaked. */
+    int st = atomic_load_explicit(&tls->hs_state, memory_order_acquire);
+    if (st == HS_DONE) {
+        return 0;
+    }
+    if (st == HS_FAILED) {
+        return -1;
     }
 
-    _tls_set_deadline(tls, 0);
-    tls_backend_conn_get_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
-    return tls;
+    /* Re-check under hs_mu: a concurrent driver may have finished meanwhile. */
+    xylem_mutex_lock(tls->hs_mu);
+    st = atomic_load_explicit(&tls->hs_state, memory_order_acquire);
+    if (st == HS_DONE) {
+        xylem_mutex_unlock(tls->hs_mu);
+        return 0;
+    }
+    if (st == HS_FAILED) {
+        xylem_mutex_unlock(tls->hs_mu);
+        return -1;
+    }
+
+    int rc = _tls_server_handshake(tls);
+    atomic_store_explicit(&tls->hs_state, rc == 0 ? HS_DONE : HS_FAILED,
+                          memory_order_release);
+    xylem_mutex_unlock(tls->hs_mu);
+    return rc;
 }
 
 tls_ctx_t* tls_ctx_create(void) {
@@ -785,25 +833,28 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
             break;
         }
 
-        tls_conn_t* pending = _tls_conn_create(fd);
-        if (!pending) {
+        tls_conn_t* conn = _tls_conn_create(fd);
+        if (!conn) {
             platform_socket_close(fd);
             break;
         }
 
+        conn->ctx = ln->ctx;
+
+        socklen_t peer_len = sizeof(conn->peer_addr.storage);
+        getpeername(fd, (struct sockaddr*)&conn->peer_addr.storage,
+                    &peer_len);
+
         /**
-         * A failed handshake (bad cert, protocol mismatch, peer
-         * disconnect, or handshake timeout) is per-connection and must
-         * NOT tear down the listener: callers such as the HTTPS accept
-         * coroutine treat a NULL return as "listener dead" and stop
-         * accepting, so a single bad client would otherwise DoS the
-         * whole server. Drop it and keep accepting; _tls_accept_fd's
-         * closed check breaks the loop on real shutdown.
+         * Defer the handshake to first I/O so it runs in the handler
+         * coroutine and parallelizes, instead of serializing every
+         * client's multi-round-trip handshake behind this acceptor.
          */
-        ready = _tls_server_handshake(ln, pending);
-        if (ready) {
-            break;
-        }
+        conn->hs_timeout_ms = ln->opts.handshake_timeout_ms;
+        atomic_store_explicit(&conn->hs_state, HS_PENDING,
+                              memory_order_release);
+        ready = conn;
+        break;
     }
 
     _tls_listener_unref(ln);
@@ -829,7 +880,8 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
      */
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+        && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_read_loop(tls, buf, len);
     }
     _tls_conn_unref(tls);
@@ -839,8 +891,19 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
 int tls_write(tls_conn_t* tls, const void* data, int len) {
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+        && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_write_loop(tls, data, len);
+    }
+    _tls_conn_unref(tls);
+    return ret;
+}
+
+int tls_handshake(tls_conn_t* tls) {
+    _tls_conn_ref(tls);
+    int ret = -1;
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        ret = _tls_ensure_handshake(tls);
     }
     _tls_conn_unref(tls);
     return ret;

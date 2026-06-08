@@ -72,11 +72,14 @@ struct tls_conn_s {
     xylem_mutex_t*      ssl_mu;
     xylem_mutex_t*      rd_mu;
     xylem_mutex_t*      wr_mu;
+    xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
     iowait_t*           waiter;
     platform_sock_t     fd;
     tls_ctx_t*          ctx;
     addr_t              peer_addr;
     char                alpn[32];
+    uint64_t            hs_timeout_ms;  /* copied from ln->opts at accept */
+    _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
     _Atomic int32_t     refcnt;
     _Atomic bool        closed;
 };
@@ -245,10 +248,23 @@ extern tls_listener_t* tls_listen(
     xylem_tls_opts_t* opts);
 
 /**
- * @brief Accept and handshake the next connection.
+ * @brief Accept the next connection (handshake deferred).
  *
- * Per-connection handshake failures are absorbed; NULL is returned only
- * once the listener is closed.
+ * Returns as soon as a connection is accepted, WITHOUT running its TLS
+ * handshake. The handshake is driven lazily on the first
+ * tls_read/tls_write, or eagerly via tls_handshake(), inside the
+ * per-connection handler coroutine -- so handshakes parallelize across
+ * the scheduler instead of serializing behind this acceptor.
+ *
+ * Consequences:
+ *  - NULL is returned only when the listener is closed; it no longer
+ *    signals a handshake failure.
+ *  - A handshake failure (bad cert, protocol mismatch, timeout) surfaces
+ *    as -1 from the first tls_read/tls_write/tls_handshake, not here.
+ *  - handshake_timeout_ms is measured from when the handshake begins
+ *    (first I/O), not from accept. A handler that never reads is not
+ *    bounded by it until then; rely on prompt handler reads plus
+ *    fd/backlog limits.
  *
  * Must be called from a single coroutine per listener: the accept parks
  * on the listener's iowait read direction, which permits only one parker
@@ -364,6 +380,27 @@ extern int tls_listener_addr(
  * @return Protocol string, or NULL if none negotiated.
  */
 extern const char* tls_get_alpn(tls_conn_t* tls);
+
+/**
+ * @brief Force the (lazy server) handshake to complete.
+ *
+ * A server connection returned by tls_accept is handed back before its
+ * TLS handshake runs; the handshake is otherwise driven lazily on the
+ * first tls_read/tls_write. Call this to drive it explicitly -- e.g.
+ * before reading the negotiated ALPN (tls_get_alpn) or the peer
+ * certificate. No-op (returns 0) for client connections and for server
+ * connections already handshaked.
+ *
+ * Drives both socket directions, so exactly one coroutine owns it; a
+ * second concurrent caller blocks until the driver finishes, then sees
+ * the same result. Must be called under no rd_mu/wr_mu/ssl_mu hold.
+ *
+ * @param tls  Connection handle.
+ *
+ * @return 0 once the handshake has completed, -1 on handshake failure,
+ *         timeout, or a closed connection.
+ */
+extern int tls_handshake(tls_conn_t* tls);
 
 /**
  * @brief Perform a client-side TLS handshake on an already-connected fd.

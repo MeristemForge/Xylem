@@ -322,21 +322,31 @@ static void _fail_server(void* arg) {
 
     /**
      * Regression: a first client whose handshake fails must NOT tear
-     * down the accept loop. accept() must drop the bad connection
-     * internally and go on to return the subsequent good client.
-     * Before the fix, accept() returned NULL on the failed handshake,
-     * which stops real HTTPS/WSS servers dead on a single bad
+     * down the accept loop. With the lazy-handshake model accept()
+     * returns every connection and the handshake runs on first I/O, so
+     * a failed handshake surfaces here as a read error on that one
+     * connection -- the loop drops it and keeps accepting, eventually
+     * serving the good client. accept() returns NULL only on listener
+     * close. Before lazy handshake the failure showed up as a NULL from
+     * accept(), which stopped real HTTPS/WSS servers on a bad
      * ClientHello.
      */
-    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
-    ASSERT(conn != NULL);
+    for (;;) {
+        xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+        ASSERT(conn != NULL);
 
-    char buf[64];
-    int n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n > 0);
-    ASSERT(xylem_tls_write(conn, buf, n) == 0);
+        char buf[64];
+        int  n = xylem_tls_read(conn, buf, sizeof(buf));
+        if (n <= 0) {
+            /* Handshake failed (bad client) or peer closed: drop it. */
+            xylem_tls_close(conn);
+            continue;
+        }
+        ASSERT(xylem_tls_write(conn, buf, n) == 0);
+        xylem_tls_close(conn);
+        break;
+    }
 
-    xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -410,6 +420,9 @@ static void _alpn_server(void* arg) {
 
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
+
+    /* Accept defers the handshake; force it before reading ALPN. */
+    ASSERT(xylem_tls_handshake(conn) == 0);
 
     const char* alpn = xylem_tls_get_alpn(conn);
     ASSERT(alpn != NULL);
@@ -510,6 +523,9 @@ static void _deadline_server(void* arg) {
 
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
+
+    /* Drive the (now lazy) handshake so the dialing client completes. */
+    ASSERT(xylem_tls_handshake(conn) == 0);
 
     /* Hold connection open, send nothing. */
     xylem_sleep(2000);
@@ -1124,6 +1140,9 @@ static void _conc_close_server(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
 
+    /* Drive the (now lazy) handshake so the dialing client completes. */
+    ASSERT(xylem_tls_handshake(conn) == 0);
+
     xylem_sleep(2000);
     xylem_tls_close(conn);
     xylem_tls_close_listener(ln);
@@ -1436,6 +1455,136 @@ static void test_full_duplex(void) {
     xylem_run(_fdx_main, NULL, NULL);
 }
 
+/**
+ * Lazy-handshake coverage. Exercises three properties the deferred
+ * server handshake introduces:
+ *
+ *  1. Explicit + idempotent drive: the server calls xylem_tls_handshake
+ *     twice; the first drives the handshake, the second is a no-op that
+ *     still returns 0 (HS_DONE fast path).
+ *  2. Split reader + writer pre-handshake: the server spawns a reader
+ *     and a writer on the freshly accepted (HS_PENDING) connection
+ *     before any handshake. Both enter _tls_ensure_handshake; exactly
+ *     one becomes the hs_mu driver while the other blocks on hs_mu,
+ *     then both proceed once the result is published. This is the path
+ *     the single-coroutine echo servers never hit.
+ */
+typedef struct {
+    xylem_tls_conn_t*  conn;
+    xylem_waitgroup_t* wg;
+    int                ok;
+} _lazy_share_t;
+
+static void _lazy_reader(void* arg) {
+    _lazy_share_t* sh = (_lazy_share_t*)arg;
+    char buf[64];
+    int  n = xylem_tls_read(sh->conn, buf, sizeof(buf));
+    /* Reader may win or lose the hs_mu race; either way it must read. */
+    if (n != 2 || memcmp(buf, "hi", 2) != 0) {
+        sh->ok = 0;
+    }
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _lazy_writer(void* arg) {
+    _lazy_share_t* sh = (_lazy_share_t*)arg;
+    if (xylem_tls_write(sh->conn, "yo", 2) != 0) {
+        sh->ok = 0;
+    }
+    xylem_waitgroup_done(sh->wg);
+}
+
+static void _lazy_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln = xylem_tls_listen(
+        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+
+    /* Reader + writer both race into the handshake on a pending conn. */
+    xylem_waitgroup_t* io_wg = xylem_waitgroup_create();
+    _lazy_share_t sh = { .conn = conn, .wg = io_wg, .ok = 1 };
+    xylem_waitgroup_add(io_wg, 2);
+    xylem_spawn(_lazy_reader, &sh);
+    xylem_spawn(_lazy_writer, &sh);
+    xylem_waitgroup_wait(io_wg);
+    xylem_waitgroup_destroy(io_wg);
+    ASSERT(sh.ok == 1);
+
+    xylem_tls_close(conn);
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _lazy_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn = xylem_tls_dial(
+        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    /* Client handshake is eager; explicit handshake is an idempotent no-op. */
+    ASSERT(xylem_tls_handshake(conn) == 0);
+    ASSERT(xylem_tls_handshake(conn) == 0);
+
+    /* Feed the server's reader, then drain the server's writer. */
+    ASSERT(xylem_tls_write(conn, "hi", 2) == 0);
+    char buf[64];
+    int  n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == 2);
+    ASSERT(memcmp(buf, "yo", 2) == 0);
+
+    xylem_tls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _lazy_main(void* arg) {
+    (void)arg;
+    const char* cert = "test_tls_lazy_cert.pem";
+    const char* key  = "test_tls_lazy_key.pem";
+    ASSERT(_utils_cert_gen(cert, key) == 0);
+
+    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
+    ASSERT(srv_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_tls_ctx_verify_client(srv_ctx, false);
+
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    xylem_tls_ctx_verify_server(cli_ctx, false);
+
+    _ctx_t ctx = {
+        .ready   = xylem_channel_create(),
+        .wg      = xylem_waitgroup_create(),
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 14,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _utils_watchdog_cb, NULL);
+    xylem_spawn(_lazy_server, &ctx);
+    xylem_spawn(_lazy_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    remove(cert);
+    remove(key);
+    xylem_shutdown();
+}
+
+static void test_lazy_handshake(void) {
+    xylem_run(_lazy_main, NULL, NULL);
+}
+
 int main(void) {
     test_ctx_create_destroy();
     test_load_cert_valid();
@@ -1458,5 +1607,6 @@ int main(void) {
     test_concurrent_close();
     test_close_listener_with_active_conn();
     test_full_duplex();
+    test_lazy_handshake();
     return 0;
 }

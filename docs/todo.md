@@ -193,3 +193,38 @@ per session). Can mirror this model later.
 3. Re-run the TLS benchmark matrix: expect xylem established connections to rise
    from ~170 toward 1k/10k and connrate to climb; then compare throughput/memory
    against go/rust at equal connection counts.
+
+### Status — option A implemented (server lazy handshake)
+
+Done:
+- `tls.h`: added `hs_mu`, `hs_timeout_ms`, `hs_state` to `tls_conn_t`; declared
+  `tls_handshake`. Updated `tls_accept` doc for deferred-handshake semantics.
+- `tls.c`: `HS_DONE/HS_PENDING/HS_FAILED` enum; `hs_mu` create/destroy;
+  `_tls_server_handshake_drive` (no teardown on failure) + `_tls_ensure_handshake`
+  (single driver via `hs_mu`, non-driver blocks then reads result); `tls_accept`
+  now accept-only → `HS_PENDING`; `tls_read`/`tls_write` ensure handshake first;
+  new `tls_handshake`.
+- Public API: `xylem_tls_handshake` declared in `xylem-tls.h`, shim in
+  `xylem-tls.c`; accept doc updated. Stub unchanged (only read/write referenced).
+- `http-transport-tls.c`: no change needed — server is HTTP/1.1-only (no ALPN
+  h2/http1.1 dispatch), so the handshake runs lazily on the connection
+  coroutine's first `_transport_read`, already concurrent and per-connection.
+- Tests: server cases that accept-then-don't-read now drive the handshake
+  explicitly (`_alpn_server`, `_deadline_server`, `_conc_close_server`);
+  `_fail_server` rewritten to the accept-loop-and-handle model (handshake
+  failure surfaces as a read error, loop drops + keeps accepting). New
+  `test_lazy_handshake`: explicit + idempotent `xylem_tls_handshake`, and the
+  split reader+writer `hs_mu` race on a pending server conn.
+
+Verified: full suite 40/40 pass; tls dropped 119s (hung) → ~5s; tls run x5 with
+the nondeterministic hs_mu race all pass; https + wss pass.
+
+Deliberately NOT done (decided to defer):
+- rbuf/wbuf lazy allocation. Buffer lifetime is unchanged (still allocated in
+  `_tls_conn_create` at accept). Revisit only after the benchmark shows buffer
+  is the RSS driver at high connection counts; pooling/shared-scratch likely
+  beats per-conn lazy.
+
+Remaining:
+- Re-run the TLS benchmark matrix (validation step 3) to confirm established
+  connections rise from ~170 toward 1k/10k and connrate climbs.

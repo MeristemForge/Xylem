@@ -257,21 +257,28 @@ extern xylem_tls_listener_t* xylem_tls_listen(
     xylem_tls_opts_t* opts);
 
 /**
- * @brief Accept a connection from the listener.
+ * @brief Accept a connection from the listener (handshake deferred).
  *
- * Suspends the calling coroutine until a client connects and the TLS
- * handshake completes. Per-connection handshake failures are absorbed
- * internally and do not stop the listener, so NULL is returned only
- * once the listener is closed -- callers can treat NULL as "stop
- * accepting".
+ * Suspends the calling coroutine until a client connects, then returns
+ * the connection WITHOUT completing the TLS handshake. The handshake is
+ * driven lazily on the first xylem_tls_read/xylem_tls_write, or eagerly
+ * via xylem_tls_handshake(), so handshakes run in the per-connection
+ * handler and parallelize across cores rather than serializing behind
+ * the acceptor.
+ *
+ * NULL is returned only once the listener is closed -- callers can treat
+ * NULL as "stop accepting". A handshake failure is no longer reported
+ * here; it surfaces as -1 from the first read/write or from
+ * xylem_tls_handshake(). Call xylem_tls_handshake() before reading the
+ * negotiated ALPN or the peer certificate.
  *
  * Call from a single coroutine per listener (a second concurrent accept
- * on the same listener is not allowed). To spread accept/handshake
- * across cores, give each worker its own listener on the same port: the
- * listen socket enables SO_REUSEPORT so the kernel load-balances new
- * connections. This works on Linux and macOS only; on Windows
- * SO_REUSEPORT is unavailable, so use a single acceptor that spawns a
- * handler coroutine per accepted connection.
+ * on the same listener is not allowed). To spread accept across cores,
+ * give each worker its own listener on the same port: the listen socket
+ * enables SO_REUSEPORT so the kernel load-balances new connections. This
+ * works on Linux and macOS only; on Windows SO_REUSEPORT is unavailable,
+ * so use a single acceptor that spawns a handler coroutine per accepted
+ * connection.
  *
  * @param ln  Listener handle.
  *
@@ -409,3 +416,19 @@ extern int xylem_tls_listener_addr(
  * @return Protocol string, or NULL if none negotiated.
  */
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Force the TLS handshake to complete.
+ *
+ * Since xylem_tls_accept defers the server handshake to the first I/O,
+ * call this to drive it explicitly -- e.g. before reading the negotiated
+ * ALPN (xylem_tls_get_alpn) or the peer certificate, which are empty
+ * until the handshake completes. No-op (returns 0) for dialed client
+ * connections and for server connections already handshaked.
+ *
+ * @param tls  Connection handle.
+ *
+ * @return 0 once the handshake has completed, -1 on handshake failure,
+ *         timeout, or a closed connection.
+ */
+extern int xylem_tls_handshake(xylem_tls_conn_t* tls);
