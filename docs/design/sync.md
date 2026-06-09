@@ -37,7 +37,7 @@ All four public primitives share one shape:
 | `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
 | `xylem_channel` | `recv` / `recv_timeout` | `send`, `close`, c/d | MPSC message passing |
-| `xylem_sem` | `wait` (any context) | `post`, `trywait`, c/d | cross-context counting semaphore |
+| `xylem_sem` | `wait` / `timedwait` (any context) | `post`, c/d | cross-context counting semaphore |
 
 ## 2. Mutex
 
@@ -157,9 +157,12 @@ coroutine, without going through the runtime's coroutine-only contract.
   **context-adaptive**: on a coroutine it parks (the worker thread stays free);
   on any other thread it blocks that OS thread. Both waiter kinds share one FIFO
   queue and one count.
+- `timedwait(ms)` is `wait()` with a deadline: it returns `true` once a token is
+  acquired, or `false` if `ms` elapses first. `timedwait(0)` is a non-blocking
+  try (acquire-or-fail, never parks) and replaces the old `trywait`.
 - `post()` wakes the FIFO-oldest waiter, or increments the count if none is
-  parked. `trywait()` decrements without ever blocking. `post`, `trywait`,
-  `create`, `destroy` are callable from any thread or context and never park.
+  parked. `post`, `create`, `destroy` are callable from any thread or context
+  and never park.
 
 ### Who waits decides how it wakes
 
@@ -190,9 +193,35 @@ Each thread waiter gets its *own* OS semaphore rather than sharing one, so
 `post()` releases exactly the head-of-queue thread and FIFO order is preserved
 with no thundering herd.
 
+### Timeout and waiter lifetime
+
+Most waiters live on the blocked party's stack: an infinite coroutine wait stays
+valid because the coroutine is suspended, and every thread wait (timed or not)
+stays valid because the thread is blocked inside `platform_sem_(timed)wait`.
+`post()` copies the wake target out under the guard and never touches the record
+again, so a stack waiter is always safe.
+
+A **timed coroutine wait** is the exception. It arms a scheduler timer that can
+pull the waiter out of the FIFO from another worker, and that timer callback may
+run concurrently with the resumed coroutine — so a stack record would be a
+use-after-free. The timed coroutine waiter is therefore a small refcounted heap
+object (one reference for the waiting coroutine, one for the armed timer), freed
+by whichever side drops the last reference, exactly as `iowait` does for I/O
+deadlines. The timer is armed *under the guard* inside the park callback so a
+racing `post()` cannot dequeue and resume the coroutine before the timer is
+live; on resume the waiter cancels the timer and reports timeout-vs-token from a
+flag the timeout callback set while holding the guard.
+
+The thread-side timeout needs no timer: `platform_sem_timedwait` does the
+blocking, and on wakeup the thread resolves the race with a concurrent `post()`
+under the guard — if it is still queued it removes itself and reports timeout;
+if a `post()` already dequeued it, it consumes the handed-off token (so the
+token is not lost) and reports success.
+
 Unlike the other primitives, `xylem_sem` does **not** abort off-coroutine — that
 is the whole point. A coroutine waiter does require a running scheduler (that is
-how it is woken); a thread waiter needs no runtime at all.
+how it is woken, and a timed wait needs the scheduler's timer); a thread waiter
+needs no runtime at all.
 
 ## 7. Internal spinlock (`spin_t`)
 

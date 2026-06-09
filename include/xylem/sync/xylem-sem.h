@@ -22,6 +22,7 @@
 _Pragma("once")
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct xylem_sem_s xylem_sem_t;
 
@@ -48,9 +49,9 @@ typedef struct xylem_sem_s xylem_sem_t;
  *   - wait() adapts to its caller. On a coroutine it parks the
  *     coroutine (the worker thread stays free); on any other thread it
  *     blocks that OS thread. Both kinds of waiter share one FIFO queue
- *     and one count.
- *   - post(), trywait(), create(), destroy() are all callable from any
- *     thread and any context (coroutine or not). They never park.
+ *     and one count. timedwait() is the same with a deadline.
+ *   - post(), timedwait(0), create(), destroy() are all callable from
+ *     any thread and any context (coroutine or not). They never park.
  *   - How a waiter is woken is decided by what the waiter is, not by
  *     who posts: a coroutine waiter is rescheduled, a thread waiter is
  *     released on an OS semaphore. The poster may be either.
@@ -96,15 +97,24 @@ extern void xylem_sem_destroy(xylem_sem_t* sem);
 extern void xylem_sem_wait(xylem_sem_t* sem);
 
 /**
- * @brief Try to acquire a token without blocking.
+ * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
  *
- * Callable from any thread or context; never blocks.
+ * Like xylem_sem_wait, but gives up after the timeout elapses. A
+ * timeout of 0 makes this a non-blocking attempt: it acquires a token
+ * if one is immediately available, otherwise returns false at once
+ * (never blocks, never parks).
  *
- * @param sem  Semaphore handle.
+ * Context-adaptive: a coroutine caller parks with a scheduler timer; an
+ * external thread blocks on its per-thread OS semaphore with the same
+ * timeout. Both share the one FIFO queue and count.
  *
- * @return true if a token was acquired, false if the count was zero.
+ * @param sem         Semaphore handle.
+ * @param timeout_ms  Maximum time to wait, in milliseconds. 0 means a
+ *                    non-blocking try.
+ *
+ * @return true if a token was acquired, false if the timeout elapsed.
  */
-extern bool xylem_sem_trywait(xylem_sem_t* sem);
+extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
 
 /**
  * @brief Release a token.
