@@ -74,6 +74,7 @@ set(SRCS
 	src/container/queue.c
 	src/container/rbtree.c
 	src/container/lifo.c
+	src/container/spsc.c
 	src/container/xylem-ringbuf.c
 	src/container/xylem-heap.c
 	src/container/xylem-list.c
