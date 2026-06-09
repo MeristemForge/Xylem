@@ -29,6 +29,7 @@
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
@@ -676,6 +677,8 @@ tls_conn_t* tls_dial(
     uint16_t          port,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_dial");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -733,15 +736,17 @@ tls_conn_t* tls_dial(
 
 /**
  * Best-effort close_notify so the peer can tell a clean close from a
- * truncation. Bounded park (not unbounded) so a stalled peer can never
- * pin teardown; own send loop because `closed` is already set and would
- * otherwise abort _tls_send_all mid-flush.
+ * truncation. The caller must hold wr_mu (so this is the sole parker on
+ * the write direction) and must not yet have closed the waiter (the
+ * bounded park below relies on the iowait still being live). Bounded
+ * park, not unbounded, so a stalled peer can never pin teardown; own
+ * send loop because `closed` is already set and would otherwise abort
+ * _tls_send_all mid-flush.
  */
 static void _tls_flush_close_notify(tls_conn_t* tls) {
     if (!tls->be) {
         return;
     }
-    xylem_mutex_lock(tls->wr_mu);
     xylem_mutex_lock(tls->ssl_mu);
     tls_backend_conn_shutdown(tls->be);
     int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_IO_CHUNK);
@@ -766,16 +771,31 @@ static void _tls_flush_close_notify(tls_conn_t* tls) {
         }
     }
     iowait_set_wr_deadline(tls->waiter, 0);
-    xylem_mutex_unlock(tls->wr_mu);
 }
 
 void tls_close(tls_conn_t* tls) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_close");
+
     if (atomic_exchange(&tls->closed, true)) {
         return;
     }
 
-    /* Best-effort close_notify before the waiter dies (bounded park). */
-    _tls_flush_close_notify(tls);
+    /**
+     * Graceful close_notify parks on the write direction and needs
+     * exclusive ownership of wr_mu. Acquire wr_mu with trylock, never a
+     * blocking lock: another coroutine (possibly on a different worker)
+     * parked in tls_write holds wr_mu across its (possibly unbounded)
+     * park, and a blocking lock here would wait behind the very
+     * coroutine that iowait_close must wake -- a teardown deadlock. A
+     * busy wr_mu means a writer is active, so skip the notify and go
+     * straight to the hard close, whose iowait_close wakes any parked
+     * reader/writer. This mirrors Go's tls.Conn.Close, which skips
+     * close_notify when a Write is in flight.
+     */
+    if (xylem_mutex_trylock(tls->wr_mu)) {
+        _tls_flush_close_notify(tls);
+        xylem_mutex_unlock(tls->wr_mu);
+    }
 
     iowait_close(tls->waiter);
     _tls_conn_unref(tls);
@@ -824,6 +844,8 @@ tls_listener_t* tls_listen(
 }
 
 tls_conn_t* tls_accept(tls_listener_t* ln) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_accept");
+
     _tls_listener_ref(ln);
 
     tls_conn_t* ready = NULL;
@@ -871,6 +893,8 @@ void tls_close_listener(tls_listener_t* ln) {
 }
 
 int tls_read(tls_conn_t* tls, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_read");
+
     /**
      * Take the reference before testing `closed`: a concurrent
      * tls_close() on another thread may drop the last reference
@@ -889,6 +913,8 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
 }
 
 int tls_write(tls_conn_t* tls, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_write");
+
     _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
@@ -900,6 +926,8 @@ int tls_write(tls_conn_t* tls, const void* data, int len) {
 }
 
 int tls_handshake(tls_conn_t* tls) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_handshake");
+
     _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
@@ -959,6 +987,8 @@ tls_conn_t* tls_client_handshake_fd(
     platform_sock_t   fd,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("tls", "tls_client_handshake_fd");
+
     tls_conn_t* tls = _tls_conn_create(fd);
     if (!tls) {
         platform_socket_close(fd);

@@ -26,6 +26,7 @@
 #include "net/addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -68,6 +69,8 @@ static void _udp_chan_unref(xylem_udp_chan_t* udp) {
 }
 
 xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_listen");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -98,6 +101,8 @@ xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
 }
 
 xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_dial");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -154,6 +159,8 @@ int xylem_udp_recv(
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_recv");
+
     _udp_chan_ref(udp);
 
     int ret = -1;
@@ -212,6 +219,8 @@ int xylem_udp_send(
     int          len,
     const char*  host,
     uint16_t     port) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_send");
+
     _udp_chan_ref(udp);
 
     int ret = -1;
@@ -262,14 +271,20 @@ int xylem_udp_send(
 }
 
 void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_read_deadline");
+
     iowait_set_rd_deadline(udp->waiter, deadline_ms);
 }
 
 void xylem_udp_set_write_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_write_deadline");
+
     iowait_set_wr_deadline(udp->waiter, deadline_ms);
 }
 
 void xylem_udp_close(xylem_udp_chan_t* udp) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_close");
+
     if (atomic_exchange(&udp->closed, true)) {
         return;
     }
@@ -282,6 +297,8 @@ int xylem_udp_local_addr(
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_local_addr");
+
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(udp->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
@@ -298,5 +315,7 @@ int xylem_udp_remote_addr(
     if (!udp->connected) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_remote_addr");
+
     return addr_ntop(&udp->peer_addr, host, host_len, port);
 }

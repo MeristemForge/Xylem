@@ -21,6 +21,7 @@
 
 #include "addr.h"
 
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
@@ -261,6 +262,8 @@ int addr_resolve(
     uint64_t timeout_ms,
     addr_t** addrs,
     size_t* count) {
+    RUNTIME_REQUIRE_COROUTINE("addr", "addr_resolve");
+
     if (!domain || !addrs || !count) {
         return -1;
     }

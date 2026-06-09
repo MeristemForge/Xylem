@@ -26,6 +26,7 @@
 
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
@@ -119,6 +120,7 @@ xylem_uds_listener_t* xylem_uds_listen(const char* path) {
         xylem_loge("<uds> listen bad path len_max=%d", UDS_MAX_PATH - 1);
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_listen");
 
     platform_sock_t fd = platform_socket_listen_unix(path, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
@@ -148,6 +150,8 @@ xylem_uds_listener_t* xylem_uds_listen(const char* path) {
 }
 
 xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_accept");
+
     _uds_listener_ref(listener);
 
     xylem_uds_conn_t* result = NULL;
@@ -204,6 +208,8 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
 }
 
 void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_close_listener");
+
     if (atomic_exchange(&listener->closed, true)) {
         return;
     }
@@ -220,6 +226,8 @@ void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
 xylem_uds_conn_t* xylem_uds_dial(
     const char* path,
     uint64_t    connect_timeout_ms) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_dial");
+
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("<uds> dial bad path len_max=%d", UDS_MAX_PATH - 1);
         return NULL;
@@ -273,15 +281,21 @@ xylem_uds_conn_t* xylem_uds_dial(
 
 void xylem_uds_set_read_deadline(
     xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_read_deadline");
+
     iowait_set_rd_deadline(uds->waiter, deadline_ms);
 }
 
 void xylem_uds_set_write_deadline(
     xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_write_deadline");
+
     iowait_set_wr_deadline(uds->waiter, deadline_ms);
 }
 
 int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_read");
+
     _uds_conn_ref(uds);
     int ret = -1;
 
@@ -315,6 +329,8 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
 }
 
 int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_write");
+
     _uds_conn_ref(uds);
     int ret = -1;
 
@@ -355,6 +371,8 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
 }
 
 void xylem_uds_close(xylem_uds_conn_t* uds) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_close");
+
     if (atomic_exchange(&uds->closed, true)) {
         return;
     }
@@ -363,9 +381,13 @@ void xylem_uds_close(xylem_uds_conn_t* uds) {
 }
 
 int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_wr");
+
     return shutdown(uds->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
 }
 
 int xylem_uds_shutdown_rd(xylem_uds_conn_t* uds) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_rd");
+
     return shutdown(uds->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
 }

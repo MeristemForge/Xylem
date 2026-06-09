@@ -27,6 +27,8 @@
 #include "xylem/net/xylem-rudp.h"
 #include "xylem/net/xylem-mux.h"
 
+#include "runtime/precond.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,6 +67,7 @@ xylem_writer_t* xylem_writer_create(
     if (!fn) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_create");
 
     xylem_writer_t* wr = (xylem_writer_t*)calloc(
         1, sizeof(xylem_writer_t) + (size_t)size);
@@ -79,11 +82,15 @@ xylem_writer_t* xylem_writer_create(
 }
 
 void xylem_writer_destroy(xylem_writer_t* wr) {
+    RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_destroy");
+
     xylem_writer_flush(wr);
     free(wr);
 }
 
 int xylem_writer_flush(xylem_writer_t* wr) {
+    RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_flush");
+
     if (wr->w == 0) {
         return 0;
     }
@@ -93,6 +100,8 @@ int xylem_writer_flush(xylem_writer_t* wr) {
 }
 
 int xylem_writer_write(xylem_writer_t* wr, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_write");
+
     if (len >= wr->buflen) {
         if (xylem_writer_flush(wr) != 0) {
             return -1;

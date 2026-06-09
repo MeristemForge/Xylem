@@ -19,7 +19,10 @@ All four public primitives share one shape:
 
 - **Blocking ops are coroutine-only.** `mutex_lock`, `cond_wait`,
   `waitgroup_wait`, `channel_recv` may suspend, so they must run inside a
-  coroutine on a scheduler worker. Calling them off-coroutine aborts.
+  coroutine on a scheduler worker. Calling them off-coroutine aborts. The one
+  exception is `xylem_sem` (§6), whose `wait()` is *context-adaptive*: it parks
+  a coroutine but blocks an OS thread, by design, so a coroutine and an
+  external thread can notify each other across the boundary.
 - **Wakeup/non-blocking ops are any-thread.** `unlock`, `signal`/`broadcast`,
   `add`/`done`, `send`/`close`, and all `create`/`destroy` are safe from any
   thread — a cross-thread wake is just a `scheduler_schedule()`.
@@ -34,6 +37,7 @@ All four public primitives share one shape:
 | `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
 | `xylem_channel` | `recv` / `recv_timeout` | `send`, `close`, c/d | MPSC message passing |
+| `xylem_sem` | `wait` (any context) | `post`, `trywait`, c/d | cross-context counting semaphore |
 
 ## 2. Mutex
 
@@ -142,7 +146,55 @@ Close/lifecycle semantics are strict and abort-on-misuse:
 Payload ownership is always the caller's; the channel only manages its node
 wrappers. `destroy()` should follow a drain.
 
-## 6. Internal spinlock (`spin_t`)
+## 6. Semaphore (`xylem_sem`)
+
+A counting semaphore that **bridges coroutines and OS threads** — the one sync
+object whose blocking op is callable from either context. It exists precisely so
+a coroutine can notify an external thread, or an external thread can notify a
+coroutine, without going through the runtime's coroutine-only contract.
+
+- `wait()` decrements the count, or blocks if it is zero. It is
+  **context-adaptive**: on a coroutine it parks (the worker thread stays free);
+  on any other thread it blocks that OS thread. Both waiter kinds share one FIFO
+  queue and one count.
+- `post()` wakes the FIFO-oldest waiter, or increments the count if none is
+  parked. `trywait()` decrements without ever blocking. `post`, `trywait`,
+  `create`, `destroy` are callable from any thread or context and never park.
+
+### Who waits decides how it wakes
+
+The poster does not care what it is waking — each waiter records its own wake
+mechanism when it enqueues:
+
+- a **coroutine waiter** stores its `mco_coro*` and the scheduler it parked
+  under, and is woken with `scheduler_schedule()` (thread-safe from any caller);
+- a **thread waiter** stores a per-thread OS semaphore (a `platform_sem`,
+  created lazily on the thread's first wait and cached in thread-local storage,
+  reclaimed by the TLS destructor), blocks on it, and is released with
+  `platform_sem_post()`.
+
+So "thread posts → coroutine waits" reschedules the coroutine, and "coroutine
+posts → thread waits" releases the thread's OS semaphore — the branch is on the
+*waiter's* kind, not the poster's.
+
+### Direct hand-off, no lost wakeups
+
+A short spin `guard` serialises every count/queue mutation. When a waiter is
+queued, `post()` transfers the token straight to the FIFO-oldest waiter and
+never touches the count; the woken waiter returns from `wait()` without
+re-decrementing. The coroutine fast path re-checks the count inside the park
+callback under the guard, so a `post()` racing the park either hands over the
+count (park declines) or finds the waiter already queued.
+
+Each thread waiter gets its *own* OS semaphore rather than sharing one, so
+`post()` releases exactly the head-of-queue thread and FIFO order is preserved
+with no thundering herd.
+
+Unlike the other primitives, `xylem_sem` does **not** abort off-coroutine — that
+is the whole point. A coroutine waiter does require a running scheduler (that is
+how it is woken); a thread waiter needs no runtime at all.
+
+## 7. Internal spinlock (`spin_t`)
 
 `src/sync/spin.{h,c}` is a plain test-and-set spinlock used **internally** for
 very short critical sections where parking would cost more than spinning — e.g.
@@ -154,20 +206,23 @@ The coroutine primitives above use it (or a `mtx_t`) internally to guard their
 own waiter lists; the *waiters* park, but the list bookkeeping is protected by a
 short spin/lock.
 
-## 7. Choosing a primitive
+## 8. Choosing a primitive
 
 - **Mutual exclusion across coroutines:** `xylem_mutex`.
 - **Wait for a condition on shared state:** `xylem_cond` + a mutex + a predicate
   loop.
 - **Fan-out then join N tasks:** `xylem_waitgroup`.
 - **Stream values from producers to one consumer:** `xylem_channel`.
+- **Signal across the coroutine/OS-thread boundary (either direction):**
+  `xylem_sem`.
 - **Guard a tiny, non-blocking critical section in internal code:** `spin_t`.
 
-Note these are *coroutine* primitives. For raw OS-thread synchronization the
-code uses C11 `<threads.h>` (`mtx_t`, `cnd_t`) directly via `src/thrds.h`; don't
-mix a coroutine mutex with an OS-thread-only context.
+Note these are *coroutine* primitives (except `xylem_sem`, which spans both
+worlds). For raw OS-thread synchronization the code uses C11 `<threads.h>`
+(`mtx_t`, `cnd_t`) directly via `src/thrds.h`; don't mix a coroutine mutex with
+an OS-thread-only context.
 
-## 8. Related docs
+## 9. Related docs
 
 - Parking / scheduling model: [`runtime.md`](runtime.md)
 - Conventions (threading annotations, abort policy): [`../conventions.md`](../conventions.md)

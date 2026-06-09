@@ -344,8 +344,11 @@ extern int xylem_tls_write(
 /**
  * @brief Close a connection. Idempotent.
  *
- * Wakes any coroutine blocked in read/write. Read any needed state
- * (xylem_tls_remote_addr) before closing.
+ * Must be called from a coroutine on a scheduler worker (it may send a
+ * best-effort close_notify, which parks); calling it off a coroutine
+ * aborts. To cancel a connection whose reader/writer is parked, close
+ * it from another coroutine -- that wakes the parked coroutine. Read any
+ * needed state (xylem_tls_remote_addr) before closing.
  *
  * @param tls  Connection handle.
  */

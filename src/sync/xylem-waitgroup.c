@@ -24,6 +24,7 @@
 #include "xylem/xylem-logger.h"
 
 #include "container/queue.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
@@ -89,6 +90,8 @@ static bool _wg_park_cb(mco_coro* co, void* arg) {
 }
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_create");
+
     xylem_waitgroup_t* wg =
         (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
     if (!wg) {
@@ -104,14 +107,31 @@ void xylem_waitgroup_destroy(xylem_waitgroup_t* wg) {
     if (!wg) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_destroy");
+
     free(wg);
 }
 
 void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
+    /**
+     * add() is any-thread / any-context (see sync.md §1, §4): it is a
+     * lock-free atomic bump that neither parks nor wakes. Producers
+     * registering pending work may run on any thread, so it must stay
+     * off-coroutine callable.
+     */
     atomic_fetch_add(&wg->cnt, delta);
 }
 
 void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
+    /**
+     * done() is any-thread / any-context (see sync.md §1, §4): it is
+     * the wakeup side of the latch -- when the counter hits zero it
+     * reschedules every parked waiter via scheduler_schedule, which is
+     * thread-safe, and never parks itself. Workers finishing on an
+     * external thread must be able to call it, so no
+     * RUNTIME_REQUIRE_COROUTINE here.
+     */
+
     size_t prev = atomic_fetch_sub(&wg->cnt, 1);
     if (prev == 0) {
         /* Counter underflowed: done() called more times than add()
@@ -146,6 +166,8 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
+    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_wait");
+
     if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
         return;
     }

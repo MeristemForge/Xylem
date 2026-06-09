@@ -29,7 +29,11 @@ typedef struct xylem_channel_s xylem_channel_t;
  * MPSC channel: many senders, single receiver.
  *
  * Threading:
- *   - send(), close(), destroy() are safe from any thread.
+ *   - send() is the one operation callable from any thread (it never
+ *     parks: lock-free push + scheduler wake). It is the sanctioned way
+ *     for an external thread to hand work to a coroutine.
+ *   - create(), close(), destroy() must be called from inside a
+ *     coroutine (coroutine-only; they abort otherwise).
  *   - recv() must be called from a coroutine. Only one coroutine
  *     may recv on a given channel; concurrent recv aborts.
  */

@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/http/xylem-http-form.h"
+#include "xylem.h"
 #include "assert.h"
 
 #include <string.h>
@@ -92,7 +93,8 @@ static void test_get(void) {
     ASSERT(xylem_http_form_get(pairs, n, "missing") == NULL);
 }
 
-int main(void) {
+static void _run_all(void* arg) {
+    (void)arg;
     test_count_basic();
     test_parse_simple();
     test_parse_encoded();
@@ -100,5 +102,10 @@ int main(void) {
     test_parse_no_equals();
     test_parse_max_pairs();
     test_get();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_run_all, NULL, NULL);
     return 0;
 }

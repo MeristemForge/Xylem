@@ -755,9 +755,15 @@ static void test_full_duplex(void) {
 
 /* main. */
 
-int main(void) {
+static void _run_cfg_tests(void* arg) {
+    (void)arg;
     test_ctx_create_destroy();
     test_load_cert_valid();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_run_cfg_tests, NULL, NULL);
     test_handshake_and_echo();
     test_alpn_negotiation();
     test_close_idempotent();

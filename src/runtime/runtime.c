@@ -25,6 +25,7 @@
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-vmem.h"
+#include "runtime/precond.h"
 
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
@@ -105,6 +106,8 @@ void runtime_spawn(void (*fn)(void*), void* arg) {
 }
 
 void runtime_sleep(uint64_t ms) {
+    RUNTIME_REQUIRE_COROUTINE("runtime", "runtime_sleep");
+
     sched_timer_t* timer = sched_timer_create(g_sched);
     if (!timer) {
         return;
@@ -114,6 +117,8 @@ void runtime_sleep(uint64_t ms) {
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {
+    RUNTIME_REQUIRE_COROUTINE("runtime", "runtime_submit");
+
     _submit_ctx_t* ctx = (_submit_ctx_t*)calloc(1, sizeof(_submit_ctx_t));
     if (!ctx) {
         return -1;

@@ -36,6 +36,7 @@
 #include "http-utils.h"
 #include "http-transport-tcp.h"
 #include "http-transport-tls.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stddef.h>
@@ -72,11 +73,21 @@ _Static_assert(offsetof(struct xylem_http_res_s, internal) == 0,
  * ===================================================================== */
 
 const char* xylem_http_req_method(const xylem_http_req_t* req) {
-    return req ? req->internal.method : NULL;
+    if (!req) {
+        return NULL;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_method");
+
+    return req->internal.method;
 }
 
 const char* xylem_http_req_url(const xylem_http_req_t* req) {
-    return req ? req->internal.url : NULL;
+    if (!req) {
+        return NULL;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_url");
+
+    return req->internal.url;
 }
 
 const char* xylem_http_req_header(const xylem_http_req_t* req,
@@ -84,6 +95,8 @@ const char* xylem_http_req_header(const xylem_http_req_t* req,
     if (!req || !name) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_header");
+
     return http_header_find(req->internal.headers, req->internal.header_count,
                             name);
 }
@@ -94,17 +107,29 @@ int xylem_http_req_headers(const xylem_http_req_t* req,
     if (!req || !headers || !count) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_headers");
+
     *headers = (const xylem_http_hdr_t*)req->internal.headers;
     *count   = req->internal.header_count;
     return 0;
 }
 
 const void* xylem_http_req_body(const xylem_http_req_t* req) {
-    return req ? (const void*)req->internal.body : NULL;
+    if (!req) {
+        return NULL;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_body");
+
+    return (const void*)req->internal.body;
 }
 
 size_t xylem_http_req_body_len(const xylem_http_req_t* req) {
-    return req ? req->internal.body_len : 0;
+    if (!req) {
+        return 0;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_body_len");
+
+    return req->internal.body_len;
 }
 
 int xylem_http_req_remote_addr(const xylem_http_req_t* req,
@@ -113,6 +138,7 @@ int xylem_http_req_remote_addr(const xylem_http_req_t* req,
     if (!req) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_req_remote_addr");
     if (host && host_len > 0) {
         snprintf(host, host_len, "%s", req->internal.remote_host);
     }
@@ -127,7 +153,12 @@ int xylem_http_req_remote_addr(const xylem_http_req_t* req,
  * ===================================================================== */
 
 int xylem_http_res_status(const xylem_http_res_t* res) {
-    return res ? res->internal.status_code : 0;
+    if (!res) {
+        return 0;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_status");
+
+    return res->internal.status_code;
 }
 
 const char* xylem_http_res_header(const xylem_http_res_t* res,
@@ -135,22 +166,36 @@ const char* xylem_http_res_header(const xylem_http_res_t* res,
     if (!res || !name) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_header");
+
     return http_header_find(res->internal.headers, res->internal.header_count,
                             name);
 }
 
 const void* xylem_http_res_body(const xylem_http_res_t* res) {
-    return res ? (const void*)res->internal.body : NULL;
+    if (!res) {
+        return NULL;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_body");
+
+    return (const void*)res->internal.body;
 }
 
 size_t xylem_http_res_body_len(const xylem_http_res_t* res) {
-    return res ? res->internal.body_len : 0;
+    if (!res) {
+        return 0;
+    }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_body_len");
+
+    return res->internal.body_len;
 }
 
 void xylem_http_res_destroy(xylem_http_res_t* res) {
     if (!res) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_destroy");
+
     http_headers_free(res->internal.headers, res->internal.header_count);
     free(res->internal.body);
     free(res);
@@ -160,6 +205,8 @@ int xylem_http_res_set_status(xylem_http_res_t* res, int code) {
     if (!res || res->internal._headers_sent) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_set_status");
+
     res->internal.status_code = code;
     return 0;
 }
@@ -169,6 +216,8 @@ int xylem_http_res_set_header(xylem_http_res_t* res,
     if (!res || !name || !value) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_set_header");
+
     http_res_t* internal = &res->internal;
     if (internal->_headers_sent) {
         return -1;
@@ -183,6 +232,8 @@ int xylem_http_res_write(xylem_http_res_t* res,
     if (!res) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_write");
+
     return http_res_write(&res->internal, data, len);
 }
 
@@ -190,6 +241,8 @@ int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport) {
     if (!res || !transport) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_upgrade");
+
     return http_res_upgrade(&res->internal, transport);
 }
 
@@ -197,6 +250,8 @@ int xylem_http_res_hijack(xylem_http_res_t* res, void** transport) {
     if (!res || !transport) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_res_hijack");
+
     return http_res_hijack(&res->internal, transport);
 }
 
@@ -216,6 +271,7 @@ void xylem_http_serve_content(xylem_http_res_t* res,
         }
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_serve_content");
 
     const uint8_t* bytes = (const uint8_t*)data;
 
@@ -314,6 +370,8 @@ xylem_http_srv_t* xylem_http_listen(
     if (!handler && !(opts && opts->on_upgrade)) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_listen");
+
     if (opts && opts->tls) {
         return http_tls_listen(host, port, handler, userdata, opts);
     }
@@ -324,6 +382,8 @@ void xylem_http_close(xylem_http_srv_t* srv) {
     if (!srv) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_close");
+
     http_srv_t* s = (http_srv_t*)srv;
     s->close_listener(s->listener);
     free(s);
@@ -333,6 +393,8 @@ int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
     if (!srv) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_shutdown");
+
     http_srv_t* s = (http_srv_t*)srv;
     s->closing = true;
     s->close_listener(s->listener);
@@ -362,6 +424,8 @@ int xylem_http_srv_addr(xylem_http_srv_t* srv,
     if (!srv) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_srv_addr");
+
     http_srv_t* s = (http_srv_t*)srv;
     if (host && host_len > 0) {
         snprintf(host, host_len, "%s", s->host);
@@ -400,6 +464,8 @@ xylem_http_res_t* xylem_http_request(
     size_t                       header_count,
     const xylem_http_cli_opts_t* opts,
     xylem_http_cookie_jar_t*     jar) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_request");
+
     (void)jar;
     return _do_request(method, url, body, body_len, content_type,
                        headers, header_count, opts);
@@ -409,6 +475,8 @@ xylem_http_res_t* xylem_http_get(const char* url,
                                  const xylem_http_hdr_t* headers,
                                  size_t header_count,
                                  const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_get");
+
     return _do_request("GET", url, NULL, 0, NULL, headers, header_count, opts);
 }
 
@@ -416,6 +484,8 @@ xylem_http_res_t* xylem_http_head(const char* url,
                                   const xylem_http_hdr_t* headers,
                                   size_t header_count,
                                   const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_head");
+
     return _do_request("HEAD", url, NULL, 0, NULL, headers, header_count, opts);
 }
 
@@ -425,6 +495,8 @@ xylem_http_res_t* xylem_http_post(const char* url,
                                   const xylem_http_hdr_t* headers,
                                   size_t header_count,
                                   const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_post");
+
     return _do_request("POST", url, body, body_len, content_type,
                        headers, header_count, opts);
 }
@@ -435,6 +507,8 @@ xylem_http_res_t* xylem_http_put(const char* url,
                                  const xylem_http_hdr_t* headers,
                                  size_t header_count,
                                  const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_put");
+
     return _do_request("PUT", url, body, body_len, content_type,
                        headers, header_count, opts);
 }
@@ -443,6 +517,8 @@ xylem_http_res_t* xylem_http_delete(const char* url,
                                     const xylem_http_hdr_t* headers,
                                     size_t header_count,
                                     const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_delete");
+
     return _do_request("DELETE", url, NULL, 0, NULL,
                        headers, header_count, opts);
 }
@@ -453,6 +529,8 @@ xylem_http_res_t* xylem_http_patch(const char* url,
                                    const xylem_http_hdr_t* headers,
                                    size_t header_count,
                                    const xylem_http_cli_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_patch");
+
     return _do_request("PATCH", url, body, body_len, content_type,
                        headers, header_count, opts);
 }

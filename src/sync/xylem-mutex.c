@@ -21,8 +21,7 @@
 
 #include "xylem/sync/xylem-mutex.h"
 
-#include "xylem/xylem-logger.h"
-
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/queue.h"
@@ -67,6 +66,8 @@ static bool _mutex_park_cb(mco_coro* co, void* arg) {
 }
 
 xylem_mutex_t* xylem_mutex_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("mutex", "xylem_mutex_create");
+
     xylem_mutex_t* mtx =
         (xylem_mutex_t*)calloc(1, sizeof(xylem_mutex_t));
     if (!mtx) {
@@ -82,6 +83,8 @@ void xylem_mutex_destroy(xylem_mutex_t* mtx) {
     if (!mtx) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("mutex", "xylem_mutex_destroy");
+
     free(mtx);
 }
 
@@ -94,14 +97,7 @@ void xylem_mutex_lock(xylem_mutex_t* mtx) {
      * a coroutine context anyway. Catching it here keeps the abort
      * at the misuse site instead of at the first future contender.
      */
-    if (!mco_running()) {
-        xylem_loge(
-            "<mutex> lock called without coroutine context mtx=%p; "
-            "mutex is coroutine-owned and must be locked from inside "
-            "a coroutine on a scheduler worker; aborting",
-            (void*)mtx);
-        abort();
-    }
+    RUNTIME_REQUIRE_COROUTINE("mutex", "xylem_mutex_lock");
 
     uint32_t expected = 0;
     if (atomic_compare_exchange_strong(&mtx->state, &expected, 1)) {
@@ -113,7 +109,24 @@ void xylem_mutex_lock(xylem_mutex_t* mtx) {
     scheduler_park(runtime_get_scheduler(), _mutex_park_cb, &ctx);
 }
 
+bool xylem_mutex_trylock(xylem_mutex_t* mtx) {
+    RUNTIME_REQUIRE_COROUTINE("mutex", "xylem_mutex_trylock");
+
+    uint32_t expected = 0;
+    return atomic_compare_exchange_strong(&mtx->state, &expected, 1);
+}
+
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
+    /**
+     * unlock() is intentionally any-thread / any-context (see
+     * sync.md §2): it only wakes the next waiter via
+     * scheduler_schedule, which is itself thread-safe, and never
+     * parks. It must stay callable off-coroutine because
+     * xylem_cond_wait releases the user mutex from inside its park
+     * callback, which runs on the worker thread *after* the
+     * coroutine has yielded -- i.e. with mco_running() == false.
+     * A RUNTIME_REQUIRE_COROUTINE here would abort that path.
+     */
     spin_lock(&mtx->guard);
     queue_node_t* node = queue_dequeue(&mtx->waiters);
     if (!node) {

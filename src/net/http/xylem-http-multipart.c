@@ -21,6 +21,8 @@
 
 #include "xylem/net/http/xylem-http-multipart.h"
 
+#include "runtime/precond.h"
+
 #include <string.h>
 
 static const char* _memmem(const char* hay, size_t hay_len,
@@ -115,6 +117,8 @@ const char* xylem_http_multipart_boundary(
     if (!content_type || !len) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_multipart_boundary");
+
     const char* key = "boundary=";
     const char* p = strstr(content_type, key);
     if (!p) {
@@ -149,6 +153,7 @@ int xylem_http_multipart_parse(
     if (!data || !boundary || !parts || max_parts <= 0) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_multipart_parse");
 
     size_t blen = strlen(boundary);
     if (blen == 0 || blen + 4 > data_len) {
@@ -228,6 +233,8 @@ int xylem_http_multipart_parse_request(
     if (!req || !parts || max_parts <= 0) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_multipart_parse_request");
+
     const char* ct = xylem_http_req_header(req, "Content-Type");
     if (!ct) {
         return -1;

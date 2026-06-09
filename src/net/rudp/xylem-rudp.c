@@ -29,6 +29,7 @@
 #include "container/rbtree.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "thrds.h"
@@ -834,6 +835,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     const char*        host,
     uint16_t           port,
     xylem_rudp_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_dial");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1023,6 +1026,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
 }
 
 int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_read");
+
     if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
         return -1;
     }
@@ -1040,6 +1045,8 @@ int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
 }
 
 int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_write");
+
     if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
         return -1;
     }
@@ -1133,6 +1140,8 @@ xylem_rudp_listener_t* xylem_rudp_listen(
 }
 
 xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_accept");
+
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)xylem_channel_recv(ln->accept_ch);
     return c;
 }

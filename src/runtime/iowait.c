@@ -331,9 +331,21 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
     iowait_t*      w = d->w;
 
-    /* Single-occupancy: exchange detects illegal concurrent park. */
+    /**
+     * Publish the park record, then re-check close/deadline. This is a
+     * Dekker handshake against a concurrent waker (iowait_close /
+     * deadline timer), which stores its cause then exchanges park->NULL.
+     * It only works if the publish (store) and the re-check (load) are
+     * ordered StoreLoad, which release/acquire does NOT provide -- both
+     * sides must participate in the single total order, so the publish
+     * and the re-check loads below are seq_cst (matching the seq_cst
+     * `closed` store in iowait_close and the seq_cst park exchanges done
+     * by every waker). Without this a waker could miss the not-yet-
+     * visible park while the parker misses the not-yet-visible cause,
+     * stranding the coroutine forever.
+     */
     mco_coro* prev = atomic_exchange_explicit(
-        &d->park, co, memory_order_release);
+        &d->park, co, memory_order_seq_cst);
     if (prev != NULL) {
         xylem_loge(
             "<iowait> double park dir=%s w=%p prev=%p new=%p",
@@ -345,11 +357,11 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
     _iowait_arm(w);
 
     /* Re-check after publish: close or deadline may have raced in. */
-    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+    if (atomic_load_explicit(&w->closed, memory_order_seq_cst)) {
         _iowait_wake(atomic_exchange(&d->park, NULL));
     } else {
         uint64_t dl = atomic_load_explicit(
-            &d->deadline, memory_order_acquire);
+            &d->deadline, memory_order_seq_cst);
         if (dl > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= dl) {
             _iowait_wake(atomic_exchange(&d->park, NULL));
         }
@@ -492,7 +504,7 @@ void iowait_close(iowait_t* w) {
             &w->closed,
             &expected,
             true,
-            memory_order_acq_rel,
+            memory_order_seq_cst,
             memory_order_acquire)) {
         return;
     }

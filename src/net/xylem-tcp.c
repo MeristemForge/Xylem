@@ -27,6 +27,7 @@
 #include "net/addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
@@ -118,6 +119,8 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     uint16_t          port,
     uint64_t          connect_timeout_ms,
     xylem_tcp_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_dial");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -205,15 +208,21 @@ xylem_tcp_conn_t* xylem_tcp_dial(
 
 void xylem_tcp_set_read_deadline(
     xylem_tcp_conn_t* tcp, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_set_read_deadline");
+
     iowait_set_rd_deadline(tcp->waiter, deadline_ms);
 }
 
 void xylem_tcp_set_write_deadline(
     xylem_tcp_conn_t* tcp, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_set_write_deadline");
+
     iowait_set_wr_deadline(tcp->waiter, deadline_ms);
 }
 
 int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_read");
+
     _tcp_conn_ref(tcp);
     int ret = -1;
 
@@ -247,6 +256,8 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
 }
 
 int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_write");
+
     _tcp_conn_ref(tcp);
     int ret = -1;
 
@@ -288,6 +299,8 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
 
 xylem_tcp_listener_t* xylem_tcp_listen(
     const char* host, uint16_t port, xylem_tcp_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_listen");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -322,6 +335,8 @@ xylem_tcp_listener_t* xylem_tcp_listen(
 }
 
 xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_accept");
+
     _tcp_listener_ref(listener);
 
     xylem_tcp_conn_t* result = NULL;
@@ -380,6 +395,8 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
 }
 
 void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_close_listener");
+
     if (atomic_exchange(&listener->closed, true)) {
         return;
     }
@@ -393,6 +410,8 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_close");
+
     if (atomic_exchange(&tcp->closed, true)) {
         return;
     }
@@ -405,6 +424,8 @@ int xylem_tcp_remote_addr(
     char*             host,
     size_t            host_len,
     uint16_t*         port) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_remote_addr");
+
     return addr_ntop(&tcp->peer_addr, host, host_len, port);
 }
 
@@ -413,6 +434,8 @@ int xylem_tcp_local_addr(
     char*             host,
     size_t            host_len,
     uint16_t*         port) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_local_addr");
+
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(tcp->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
@@ -426,6 +449,8 @@ int xylem_tcp_listener_addr(
     char*                 host,
     size_t                host_len,
     uint16_t*             port) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_listener_addr");
+
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
@@ -435,9 +460,13 @@ int xylem_tcp_listener_addr(
 }
 
 int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_shutdown_wr");
+
     return shutdown(tcp->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
 }
 
 int xylem_tcp_shutdown_rd(xylem_tcp_conn_t* tcp) {
+    RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_shutdown_rd");
+
     return shutdown(tcp->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
 }

@@ -25,11 +25,15 @@
 
 #include "xylem/encoding/xylem-base64.h"
 
+#include "runtime/precond.h"
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
 int xylem_http_basic_auth_size(int ulen, int plen) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_basic_auth_size");
+
     return 6 + xylem_base64_encode_size(ulen + 1 + plen) + 1;
 }
 
@@ -41,6 +45,8 @@ int xylem_http_basic_auth(
     if (!user || !pass || !buf) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_basic_auth");
+
     int ulen     = (int)strlen(user);
     int plen     = (int)strlen(pass);
     int cred_len = ulen + 1 + plen;
@@ -104,6 +110,8 @@ static bool _basic_auth_ok(const xylem_http_basic_auth_cfg_t* cfg,
 void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
                                      xylem_http_req_t* req,
                                      void*             userdata) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_basic_auth_middleware");
+
     const xylem_http_basic_auth_cfg_t* cfg =
         (const xylem_http_basic_auth_cfg_t*)userdata;
     const char* realm = cfg->realm ? cfg->realm : "Restricted";

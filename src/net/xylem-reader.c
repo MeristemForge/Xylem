@@ -27,6 +27,8 @@
 #include "xylem/net/xylem-rudp.h"
 #include "xylem/net/xylem-mux.h"
 
+#include "runtime/precond.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -93,6 +95,7 @@ xylem_reader_t* xylem_reader_create(
     if (!fn) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_create");
 
     xylem_reader_t* rd = (xylem_reader_t*)calloc(
         1, sizeof(xylem_reader_t) + (size_t)size);
@@ -107,10 +110,14 @@ xylem_reader_t* xylem_reader_create(
 }
 
 void xylem_reader_destroy(xylem_reader_t* rd) {
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_destroy");
+
     free(rd);
 }
 
 int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read");
+
     int n = _reader_drain(rd, buf, len);
     if (n > 0) {
         return n;
@@ -129,6 +136,8 @@ int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
 }
 
 int xylem_reader_read_full(xylem_reader_t* rd, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read_full");
+
     uint8_t* dst = (uint8_t*)buf;
     int      rem = len;
 
@@ -152,6 +161,8 @@ int xylem_reader_read_until(
     uint8_t         delim,
     void*           buf,
     int             len) {
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read_until");
+
     uint8_t* dst = (uint8_t*)buf;
     int      pos = 0;
 
@@ -189,6 +200,7 @@ int xylem_reader_peek(xylem_reader_t* rd, void* buf, int len) {
     if (len > rd->buflen) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_peek");
 
     while (rd->w - rd->r < len) {
         int rc = _reader_fill(rd);

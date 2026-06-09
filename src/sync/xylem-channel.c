@@ -24,6 +24,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/mpsc.h"
@@ -204,6 +205,8 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
 }
 
 xylem_channel_t* xylem_channel_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_create");
+
     xylem_channel_t* ch =
         (xylem_channel_t*)calloc(1, sizeof(xylem_channel_t));
     if (!ch) {
@@ -221,6 +224,13 @@ void xylem_channel_close(xylem_channel_t* ch) {
         xylem_loge("<channel> close on NULL channel; aborting");
         abort();
     }
+    /**
+     * close() is any-thread / any-context (see sync.md §1, §5): it
+     * only flips the closed flag and wakes the parked receiver via
+     * scheduler_schedule, never parks. A producer on an external
+     * thread must be able to close the channel, so no
+     * RUNTIME_REQUIRE_COROUTINE here.
+     */
 
     if (atomic_exchange(&ch->closed, true)) {
         xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
@@ -237,6 +247,7 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
     if (!ch) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_destroy");
 
     /* Idempotent -- close() may have set this already. */
     atomic_store(&ch->closed, true);
@@ -250,6 +261,15 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
 }
 
 int xylem_channel_send(xylem_channel_t* ch, void* msg) {
+    /**
+     * Deliberately NOT guarded with RUNTIME_REQUIRE_COROUTINE: send is
+     * the one sync operation allowed from any thread. It only pushes to
+     * the lock-free MPSC queue and wakes the parked receiver via
+     * scheduler_schedule (itself thread-safe), so it never parks. This
+     * is the sole sanctioned channel for an external (non-coroutine)
+     * thread to hand work to a coroutine; every other sync and net API
+     * is coroutine-only.
+     */
     if (!ch || !msg) {
         xylem_loge("<channel> send NULL argument ch=%p msg=%p",
                    (void*)ch, msg);
@@ -282,10 +302,12 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
 }
 
 void* xylem_channel_recv(xylem_channel_t* ch) {
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv");
     return _channel_recv_impl(ch, 0);
 }
 
 void* xylem_channel_recv_timeout(
     xylem_channel_t* ch, uint64_t timeout_ms) {
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv_timeout");
     return _channel_recv_impl(ch, timeout_ms);
 }

@@ -28,6 +28,7 @@
 
 #include "mux-frame.h"
 #include "mux-stream.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
@@ -137,6 +138,31 @@ static int _mux_write_frame(
     mux_frame_encode(hdr, buf);
 
     xylem_mutex_lock(mux->write_mu);
+    int rc = mux->write_fn(mux->transport_ctx, buf, MUX_FRAME_HDR_SIZE);
+    if (rc == 0 && data && hdr->length > 0) {
+        rc = mux->write_fn(mux->transport_ctx, data, hdr->length);
+    }
+    xylem_mutex_unlock(mux->write_mu);
+    return rc;
+}
+
+/**
+ * Best-effort frame write for the close path. Acquires write_mu with
+ * trylock, never a blocking lock: a writer parked in xylem_mux_write
+ * holds write_mu across its (possibly unbounded) transport-write park,
+ * and a blocking lock here would wait behind the very coroutine that
+ * close must cancel -- a teardown deadlock (the same hazard fixed in
+ * tls_close). If write_mu is busy a writer is active, so skip the frame
+ * (GO_AWAY / FIN is advisory; the peer also learns of the close from the
+ * transport tearing down). Returns 0 if sent, -1 if skipped or failed.
+ */
+static int _mux_write_frame_try(
+    xylem_mux_t* mux, _mux_frame_hdr_t* hdr, const void* data) {
+    if (!xylem_mutex_trylock(mux->write_mu)) {
+        return -1;
+    }
+    uint8_t buf[MUX_FRAME_HDR_SIZE];
+    mux_frame_encode(hdr, buf);
     int rc = mux->write_fn(mux->transport_ctx, buf, MUX_FRAME_HDR_SIZE);
     if (rc == 0 && data && hdr->length > 0) {
         rc = mux->write_fn(mux->transport_ctx, data, hdr->length);
@@ -346,6 +372,8 @@ xylem_mux_t* xylem_mux_create(
     xylem_mux_transport_t transport,
     xylem_mux_role_t role,
     xylem_mux_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_create");
+
     _mux_read_fn_t  read_fn;
     _mux_write_fn_t write_fn;
     if (_mux_resolve_transport(transport, &read_fn, &write_fn) != 0) {
@@ -392,19 +420,18 @@ xylem_mux_t* xylem_mux_create(
 }
 
 void xylem_mux_destroy(xylem_mux_t* mux) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_destroy");
+
     if (atomic_exchange(&mux->closed, true)) {
         return;
     }
 
-    _mux_frame_hdr_t hdr = {
-        .version   = MUX_PROTO_VERSION,
-        .type      = MUX_TYPE_GO_AWAY,
-        .flags     = 0,
-        .stream_id = 0,
-        .length    = 0
-    };
-    _mux_write_frame(mux, &hdr, NULL);
-
+    /**
+     * Reset every stream FIRST so any parked reader/writer is woken
+     * unconditionally -- this is the cancellation that must always
+     * happen. mux_stream_notify_reset wakes via scheduler_schedule and
+     * never touches write_mu, so it cannot block.
+     */
     spin_lock(&mux->streams_lock);
     size_t n = mux->stream_count;
     spin_unlock(&mux->streams_lock);
@@ -416,10 +443,27 @@ void xylem_mux_destroy(xylem_mux_t* mux) {
             mux_stream_notify_reset(s);
         }
     }
+
+    /**
+     * GO_AWAY is advisory and best-effort: send it only if write_mu is
+     * free. A blocking lock could deadlock behind a writer parked in the
+     * transport write (see _mux_write_frame_try).
+     */
+    _mux_frame_hdr_t hdr = {
+        .version   = MUX_PROTO_VERSION,
+        .type      = MUX_TYPE_GO_AWAY,
+        .flags     = 0,
+        .stream_id = 0,
+        .length    = 0
+    };
+    _mux_write_frame_try(mux, &hdr, NULL);
+
     _mux_unref(mux);
 }
 
 xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_open_stream");
+
     if (atomic_load_explicit(&mux->closed, memory_order_acquire)) {
         return NULL;
     }
@@ -456,6 +500,8 @@ xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
 }
 
 xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_accept_stream");
+
     if (atomic_load_explicit(&mux->closed, memory_order_acquire)) {
         return NULL;
     }
@@ -488,6 +534,8 @@ static bool _mux_send_park_cb(mco_coro* co, void* arg) {
 }
 
 int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_read");
+
     mux_stream_ref(s);
 
     for (;;) {
@@ -532,6 +580,8 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
 }
 
 int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_write");
+
     mux_stream_ref(s);
     const uint8_t* ptr = (const uint8_t*)data;
     int            rem = len;
@@ -586,6 +636,8 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
 }
 
 void xylem_mux_close_stream(xylem_mux_stream_t* s) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_close_stream");
+
     if (atomic_exchange(&s->closed, true)) {
         return;
     }
@@ -598,6 +650,13 @@ void xylem_mux_close_stream(xylem_mux_stream_t* s) {
     }
     spin_unlock(&s->lock);
 
+    /**
+     * FIN is advisory and best-effort: a blocking write_mu acquire could
+     * deadlock behind a writer parked in the transport write (see
+     * _mux_write_frame_try). The local state change above already closes
+     * the stream for the caller; the peer also learns of the close from
+     * a later frame or the transport teardown.
+     */
     _mux_frame_hdr_t hdr = {
         .version   = MUX_PROTO_VERSION,
         .type      = MUX_TYPE_DATA,
@@ -605,14 +664,18 @@ void xylem_mux_close_stream(xylem_mux_stream_t* s) {
         .stream_id = s->id,
         .length    = 0
     };
-    _mux_write_frame(s->mux, &hdr, NULL);
+    _mux_write_frame_try(s->mux, &hdr, NULL);
     mux_stream_unref(s);
 }
 
 void xylem_mux_set_read_deadline(xylem_mux_stream_t* s, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_set_read_deadline");
+
     s->rd_deadline = deadline_ms;
 }
 
 void xylem_mux_set_write_deadline(xylem_mux_stream_t* s, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_set_write_deadline");
+
     s->wr_deadline = deadline_ms;
 }

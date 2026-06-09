@@ -135,7 +135,16 @@ mco_coro* wsdeque_pop(wsdeque_t* dq) {
     int64_t b = atomic_load_explicit(&dq->bottom, memory_order_relaxed) - 1;
     atomic_store_explicit(&dq->bottom, b, memory_order_seq_cst);
 
-    int64_t t = atomic_load_explicit(&dq->top, memory_order_acquire);
+    /**
+     * Chase-Lev take(): the bottom store and this top load form a
+     * StoreLoad pair that must not reorder, or this pop and a concurrent
+     * steal could both claim the last element (the same coroutine would
+     * then run on two workers). release/acquire never orders
+     * Store-before-Load; both ends must participate in the single total
+     * order, so the load is seq_cst (matching the seq_cst bottom store
+     * above and the seq_cst top access on the steal side).
+     */
+    int64_t t = atomic_load_explicit(&dq->top, memory_order_seq_cst);
 
     if (t > b) {
         atomic_store_explicit(&dq->bottom, t, memory_order_relaxed);

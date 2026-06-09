@@ -23,6 +23,8 @@
 
 #include "xylem/encoding/xylem-url.h"
 
+#include "runtime/precond.h"
+
 #include <string.h>
 
 static void _form_decode_inplace(char* s, size_t len, size_t* out_len) {
@@ -40,6 +42,8 @@ int xylem_http_form_count(const char* body, size_t body_len) {
     if (!body || body_len == 0) {
         return 0;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_form_count");
+
     int count = 1;
     for (size_t i = 0; i < body_len; i++) {
         if (body[i] == '&') {
@@ -60,6 +64,7 @@ int xylem_http_form_parse(
     if (buf_len == 0) {
         return 0;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_form_parse");
 
     int    count = 0;
     char*  pos   = buf;
@@ -99,6 +104,8 @@ const char* xylem_http_form_get(
     if (!pairs || !key) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_form_get");
+
     for (int i = 0; i < count; i++) {
         if (strcmp(pairs[i].name, key) == 0) {
             return pairs[i].value;

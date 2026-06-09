@@ -22,9 +22,9 @@
 #include "xylem/sync/xylem-cond.h"
 
 #include "xylem/sync/xylem-mutex.h"
-#include "xylem/xylem-logger.h"
 
 #include "container/queue.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
@@ -100,6 +100,8 @@ static bool _cond_park_cb(mco_coro* co, void* arg) {
 }
 
 xylem_cond_t* xylem_cond_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("cond", "xylem_cond_create");
+
     xylem_cond_t* c = (xylem_cond_t*)calloc(1, sizeof(xylem_cond_t));
     if (!c) {
         return NULL;
@@ -113,6 +115,8 @@ void xylem_cond_destroy(xylem_cond_t* c) {
     if (!c) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("cond", "xylem_cond_destroy");
+
     free(c);
 }
 
@@ -122,14 +126,7 @@ void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx) {
      * context scheduler_park would abort on its own; catch it here
      * for a diagnostic that names the misused API.
      */
-    if (!mco_running()) {
-        xylem_loge(
-            "<cond> wait called without coroutine context cond=%p; "
-            "cond wait is coroutine-owned and must be called from "
-            "inside a coroutine on a scheduler worker; aborting",
-            (void*)cond);
-        abort();
-    }
+    RUNTIME_REQUIRE_COROUTINE("cond", "xylem_cond_wait");
 
     _cond_park_ctx_t ctx;
     ctx.cond = cond;
@@ -146,6 +143,15 @@ void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx) {
 }
 
 void xylem_cond_signal(xylem_cond_t* cond) {
+    /**
+     * signal() is intentionally any-thread / any-context (see
+     * sync.md §1, §3): it only wakes one waiter via
+     * scheduler_schedule, which is thread-safe, and never parks.
+     * Keeping it off-coroutine callable is what lets an external
+     * thread notify a coroutine waiter (set an atomic predicate,
+     * then signal), so a RUNTIME_REQUIRE_COROUTINE here would break
+     * the documented cross-thread wakeup pattern.
+     */
     spin_lock(&cond->guard);
     queue_node_t* n = queue_dequeue(&cond->waiters);
     spin_unlock(&cond->guard);
@@ -157,6 +163,12 @@ void xylem_cond_signal(xylem_cond_t* cond) {
 }
 
 void xylem_cond_broadcast(xylem_cond_t* cond) {
+    /**
+     * broadcast() is any-thread / any-context for the same reason as
+     * signal(): it only reschedules the parked waiters and never
+     * parks itself. Must stay off-coroutine callable for the
+     * cross-thread wakeup pattern.
+     */
     queue_t to_wake;
     queue_init(&to_wake);
 

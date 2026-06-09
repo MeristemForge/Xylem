@@ -20,6 +20,7 @@
  */
 
 #include "xylem/net/http/xylem-http-multipart.h"
+#include "xylem.h"
 #include "assert.h"
 
 #include <string.h>
@@ -103,11 +104,17 @@ static void test_parse_no_parts(void) {
     ASSERT(n == 0);
 }
 
-int main(void) {
+static void _run_all(void* arg) {
+    (void)arg;
     test_parse_basic();
     test_parse_max_parts();
     test_boundary_extract();
     test_parse_empty();
     test_parse_no_parts();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_run_all, NULL, NULL);
     return 0;
 }

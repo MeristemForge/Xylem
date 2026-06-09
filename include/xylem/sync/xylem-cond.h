@@ -34,8 +34,9 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * bursts.
  *
  * Threading:
- *   - create(), destroy(), signal(), broadcast() are safe from any
- *     thread.
+ *   - All operations (create, destroy, signal, broadcast, wait) must be
+ *     called from inside a coroutine on a scheduler worker; calling any
+ *     of them outside a coroutine context aborts the process.
  *   - wait() must be called from inside a coroutine on a scheduler
  *     worker (it parks). The caller MUST currently hold `mtx`.
  *
@@ -61,13 +62,12 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     xylem_cond_signal(c);        // or xylem_cond_broadcast(c)
  *     xylem_mutex_unlock(m);
  *
- * External threads that cannot take the coroutine-owned mutex must
- * coordinate lost-wakeup avoidance by other means -- typically by
- * having the waiter's predicate read an atomic flag that the
- * external thread writes *before* calling signal/broadcast.
+ * signal/broadcast are coroutine-only like the rest of the API, so a
+ * signaler is itself a coroutine and normally holds the same mutex as
+ * the waiter, giving the standard lost-wakeup-free ordering.
  *
  * Misuse that aborts the process:
- *   - Calling wait() outside a coroutine context.
+ *   - Calling any cond operation outside a coroutine context.
  */
 
 /**
@@ -103,7 +103,7 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
 /**
  * @brief Wake one waiter, if any.
  *
- * Thread-safe. If no coroutine is currently parked on the cond the
+ * Coroutine-only. If no coroutine is currently parked on the cond the
  * call is a no-op (no permit is stored).
  *
  * @param cond  Pointer to the cond.
@@ -113,7 +113,7 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
 /**
  * @brief Wake every waiter currently parked on the cond.
  *
- * Thread-safe. Waiters observed at the moment broadcast() acquires
+ * Coroutine-only. Waiters observed at the moment broadcast() acquires
  * its internal guard are all rescheduled; waiters that park after
  * that point are not affected.
  *

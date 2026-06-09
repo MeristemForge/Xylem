@@ -35,7 +35,10 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  * broadcast.
  *
  * Threading:
- *   - add(), done(), destroy() are safe from any thread.
+ *   - All operations (create, destroy, add, done, wait) must be called
+ *     from inside a coroutine on a scheduler worker; calling any of them
+ *     outside a coroutine context aborts the process. wait() parks;
+ *     add()/done() never park but are coroutine-only by contract.
  *   - wait() must be called from inside a coroutine on a scheduler
  *     worker (it parks). Multiple coroutines may wait() on the same
  *     waitgroup concurrently; they are all released together when
@@ -57,9 +60,10 @@ extern xylem_waitgroup_t* xylem_waitgroup_create(void);
 /**
  * @brief Increment the waitgroup counter.
  *
- * Thread-safe. Typically called before spawning the work units whose
- * completion the counter tracks; calling add() after a wait() may
- * already be in progress is a logic error and is not supported.
+ * Thread-safe within the runtime. Typically called before spawning the
+ * work units whose completion the counter tracks; calling add() after a
+ * wait() may already be in progress is a logic error and is not
+ * supported. Must be called from inside a coroutine (coroutine-only).
  *
  * @param waitgroup  Pointer to the waitgroup.
  * @param delta      Number of work items to add.
@@ -69,7 +73,7 @@ extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
 /**
  * @brief Decrement the waitgroup counter by one.
  *
- * Thread-safe. When the counter reaches zero, every coroutine parked
+ * When the counter reaches zero, every coroutine parked
  * in xylem_waitgroup_wait() is resumed in FIFO order. Calling done()
  * more times than add() has promised aborts the process with a
  * diagnostic log.

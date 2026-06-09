@@ -249,14 +249,24 @@ static void _race_recv_coro(void* arg) {
         void* leftover = xylem_channel_recv(ctx->ch);
         ASSERT(leftover == &ctx->payload);
     }
+    /**
+     * The sender has signalled done() (so the send is fully complete)
+     * and waitgroup_wait() has returned: nothing else touches the
+     * channel or the waitgroup now, so both can be torn down here,
+     * inside the coroutine, before shutdown.
+     */
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
+    xylem_waitgroup_destroy(ctx->wg);
+    ctx->wg = NULL;
     xylem_shutdown();
 }
 
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->ch = xylem_channel_create();
+    ctx->wg = xylem_waitgroup_create();
     ctx->timeout_ms = 5;
     ctx->send_at_ms =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 5;
@@ -269,13 +279,10 @@ static void test_timeout_race(void) {
     fprintf(stderr, "=== test_timeout_race\n");
     for (int round = 0; round < TO_RACE_ROUNDS; round++) {
         _race_ctx_t ctx = {0};
-        ctx.ch      = xylem_channel_create();
-        ctx.wg      = xylem_waitgroup_create();
         ctx.payload = round;
         xylem_run(_race_main, &ctx, &_rt_opts);
 
         ASSERT(ctx.got_message ^ ctx.got_timeout);
-        xylem_waitgroup_destroy(ctx.wg);
     }
 }
 

@@ -21,6 +21,8 @@
 
 #include "xylem/net/http/xylem-http-fileserver.h"
 
+#include "runtime/precond.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,6 +190,7 @@ int xylem_http_fileserver(
     if (!router || !url_prefix || !root_dir) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_fileserver");
 
     _fileserver_ctx_t* ctx =
         (_fileserver_ctx_t*)calloc(1, sizeof(_fileserver_ctx_t));

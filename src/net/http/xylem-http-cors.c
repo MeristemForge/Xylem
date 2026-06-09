@@ -23,6 +23,8 @@
 
 #include "xylem/net/http/xylem-http-router.h"
 
+#include "runtime/precond.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -84,6 +86,8 @@ static void _set_common_headers(xylem_http_res_t* res,
 void xylem_http_cors_middleware(xylem_http_res_t* res,
                                xylem_http_req_t* req,
                                void*             userdata) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cors_middleware");
+
     const xylem_http_cors_t* cfg = (const xylem_http_cors_t*)userdata;
     const char* origin = xylem_http_req_header(req, "Origin");
 

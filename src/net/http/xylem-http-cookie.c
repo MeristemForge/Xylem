@@ -21,6 +21,8 @@
 
 #include "xylem/net/http/xylem-http-cookie.h"
 
+#include "runtime/precond.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,6 +42,8 @@ struct xylem_http_cookie_jar_s {
 };
 
 xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cookie_jar_create");
+
     xylem_http_cookie_jar_t* jar =
         (xylem_http_cookie_jar_t*)calloc(1, sizeof(xylem_http_cookie_jar_t));
     return jar;
@@ -70,6 +74,8 @@ void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar) {
     if (!jar) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cookie_jar_destroy");
+
     _cookie_jar_clear(jar);
     free(jar);
 }
@@ -111,6 +117,7 @@ int xylem_http_cookie_jar_set(
     if (!jar || !url || !name || !value) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cookie_jar_set");
 
     char* domain = NULL;
     char* path   = NULL;
@@ -156,6 +163,7 @@ const char* xylem_http_cookie_jar_get(
     if (!jar || !url || !name) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cookie_jar_get");
 
     char* domain = NULL;
     char* path   = NULL;

@@ -51,6 +51,8 @@ static void _mtx_worker(void* arg) {
     if (prev == MTX_WORKERS - 1) {
         ASSERT(ctx->counter == MTX_WORKERS * MTX_INCREMENTS);
         ctx->tested = 1;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
         xylem_shutdown();
     }
 }
@@ -70,7 +72,6 @@ static void test_concurrent(void) {
         _mtx_ctx_t ctx = {0};
         xylem_run(_test_mtx_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -94,6 +95,8 @@ static void _mtx_ping(void* arg) {
     if (prev == 1) {
         ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
         ctx->tested = 1;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
         xylem_shutdown();
     }
 }
@@ -109,6 +112,8 @@ static void _mtx_pong(void* arg) {
     if (prev == 1) {
         ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
         ctx->tested = 1;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
         xylem_shutdown();
     }
 }
@@ -127,12 +132,49 @@ static void test_ping_pong(void) {
         _mtx_pp_ctx_t ctx = {0};
         xylem_run(_test_mtx_pp_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_mutex_destroy(ctx.mtx);
     }
+}
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    int            tested;
+} _mtx_try_ctx_t;
+
+static void _mtx_trylock_coro(void* arg) {
+    _mtx_try_ctx_t* ctx = (_mtx_try_ctx_t*)arg;
+
+    /* Free mutex: trylock succeeds. */
+    ASSERT(xylem_mutex_trylock(ctx->mtx) == true);
+    /* Already held: a second trylock fails without parking. */
+    ASSERT(xylem_mutex_trylock(ctx->mtx) == false);
+    xylem_mutex_unlock(ctx->mtx);
+    /* Released: trylock succeeds again. */
+    ASSERT(xylem_mutex_trylock(ctx->mtx) == true);
+    xylem_mutex_unlock(ctx->mtx);
+
+    ctx->tested = 1;
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
+    xylem_shutdown();
+}
+
+static void _test_mtx_try_main(void* arg) {
+    _mtx_try_ctx_t* ctx = (_mtx_try_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx = xylem_mutex_create();
+    xylem_spawn(_mtx_trylock_coro, ctx);
+}
+
+static void test_trylock(void) {
+    fprintf(stderr, "=== test_trylock\n");
+    _mtx_try_ctx_t ctx = {0};
+    xylem_run(_test_mtx_try_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
 }
 
 int main(void) {
     test_ping_pong();
     test_concurrent();
+    test_trylock();
     return 0;
 }

@@ -22,6 +22,7 @@
 #include "xylem/net/http/xylem-http-router.h"
 
 #include "http.h"
+#include "runtime/precond.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -57,6 +58,8 @@ struct xylem_http_router_s {
 };
 
 xylem_http_router_t* xylem_http_router_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_create");
+
     return (xylem_http_router_t*)calloc(1, sizeof(xylem_http_router_t));
 }
 
@@ -64,6 +67,7 @@ void xylem_http_router_destroy(xylem_http_router_t* router) {
     if (!router) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_destroy");
     for (size_t i = 0; i < router->route_count; i++) {
         free(router->routes[i].method);
         free(router->routes[i].pattern);
@@ -87,6 +91,7 @@ int xylem_http_router_handle(
     if (!router || !method || !pattern || !handler) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_handle");
 
     if (router->route_count >= router->route_cap) {
         size_t new_cap = router->route_cap ? router->route_cap * 2 : 8;
@@ -144,6 +149,7 @@ int xylem_http_router_use(
     if (!router || !middleware) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_use");
 
     if (router->mw_count >= router->mw_cap) {
         size_t new_cap = router->mw_cap ? router->mw_cap * 2 : 4;
@@ -168,6 +174,7 @@ xylem_http_router_t* xylem_http_router_group(
     if (!parent || !prefix) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_group");
 
     xylem_http_router_t* group =
         (xylem_http_router_t*)calloc(1, sizeof(xylem_http_router_t));
@@ -298,6 +305,8 @@ typedef struct _mw_chain_s {
 } _mw_chain_t;
 
 void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req_pub) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_next");
+
     http_req_t* req = (http_req_t*)req_pub;
     _mw_chain_t* chain = (_mw_chain_t*)req->_mw_chain;
     if (!chain) {
@@ -380,6 +389,8 @@ const char* xylem_http_router_param(
     if (!req || !name || !req->router_params) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_param");
+
     for (size_t i = 0; i < req->router_param_count; i++) {
         if (strcmp(req->router_params[i].key, name) == 0) {
             return req->router_params[i].value;
@@ -390,12 +401,16 @@ const char* xylem_http_router_param(
 
 xylem_http_handler_fn_t xylem_http_router_handler(
     xylem_http_router_t* router) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_handler");
+
     (void)router;
     return _router_dispatch;
 }
 
 void* xylem_http_router_handler_userdata(
     xylem_http_router_t* router) {
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_handler_userdata");
+
     return (void*)router;
 }
 
@@ -406,6 +421,8 @@ void xylem_http_router_set_not_found(
     if (!router) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_set_not_found");
+
     router->not_found_handler  = handler;
     router->not_found_userdata = userdata;
 }

@@ -27,6 +27,8 @@
 #include "ws-handshake.h"
 #include "ws-utf8.h"
 
+#include "runtime/precond.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -132,6 +134,7 @@ int xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
     if (opcode != XYLEM_WS_TEXT && opcode != XYLEM_WS_BINARY) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_send");
 
     const uint8_t* p = (const uint8_t*)data;
     size_t         send_len = len;
@@ -189,6 +192,8 @@ int xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len) {
     if (len > 125) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_ping");
+
     return _ws_write_frame(conn, true, 0x9, data, len, false);
 }
 
@@ -262,6 +267,8 @@ int xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg) {
     if (!conn || !msg) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_recv");
+
     if (conn->close_received) {
         return -1;
     }
@@ -456,6 +463,7 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
     if (!conn) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_close");
 
     if (!conn->close_sent) {
         if (code && ws_frame_close_validate_send(code) != 0) {
@@ -737,7 +745,12 @@ xylem_ws_conn_t* ws_dial_impl(http_transport_t transport,
 
 
 void xylem_ws_msg_free(xylem_ws_msg_t* msg) {
-    if (msg && msg->data) {
+    if (!msg) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_msg_free");
+
+    if (msg->data) {
         free(msg->data);
         msg->data = NULL;
         msg->len = 0;
@@ -745,14 +758,26 @@ void xylem_ws_msg_free(xylem_ws_msg_t* msg) {
 }
 
 uint16_t xylem_ws_close_code(xylem_ws_conn_t* conn) {
-    return conn ? conn->close_code : 0;
+    if (!conn) {
+        return 0;
+    }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_close_code");
+
+    return conn->close_code;
 }
 
 void* xylem_ws_get_userdata(xylem_ws_conn_t* conn) {
-    return conn ? conn->userdata : NULL;
+    if (!conn) {
+        return NULL;
+    }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_get_userdata");
+
+    return conn->userdata;
 }
 
 void xylem_ws_set_userdata(xylem_ws_conn_t* conn, void* ud) {
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_set_userdata");
+
     if (conn) {
         conn->userdata = ud;
     }

@@ -26,6 +26,7 @@
 #include "ws.h"
 #include "ws-tcp.h"
 #include "ws-tls.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>
@@ -98,6 +99,7 @@ xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
                       &port, path, sizeof(path)) != 0) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_dial");
 
     /* Dispatch on scheme to the matching dial factory: wss -> ws_tls_dial
      * (ws-tls.c, NULL stub when TLS is off), ws -> ws_tcp_dial (ws-tcp.c). */
@@ -111,6 +113,8 @@ xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
 xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
                                   struct xylem_http_req_s* req,
                                   const xylem_ws_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_accept");
+
     return ws_accept_impl(res, req, opts);
 }
 
@@ -165,6 +169,7 @@ xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
     if (!handler) {
         return NULL;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_listen");
 
     ws_listener_t* l = (ws_listener_t*)calloc(1, sizeof(*l));
     if (!l) {
@@ -203,6 +208,8 @@ void xylem_ws_close_listener(xylem_ws_listener_t* listener) {
     if (!listener) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_close_listener");
+
     ws_listener_t* l = (ws_listener_t*)listener;
     xylem_http_close(l->http_srv);
     free(l);
@@ -212,6 +219,8 @@ uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener) {
     if (!listener) {
         return 0;
     }
+    RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_listener_port");
+
     ws_listener_t* l = (ws_listener_t*)listener;
     uint16_t port = 0;
     xylem_http_srv_addr(l->http_srv, NULL, 0, &port);

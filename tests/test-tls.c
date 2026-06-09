@@ -1585,7 +1585,127 @@ static void test_lazy_handshake(void) {
     xylem_run(_lazy_main, NULL, NULL);
 }
 
-int main(void) {
+/**
+ * Regression: closing a connection whose writer is parked in tls_write
+ * (the peer never reads, so the kernel send buffer fills and the writer
+ * parks holding wr_mu) must not deadlock. close acquires wr_mu with
+ * trylock, not a blocking lock, so a busy wr_mu makes it skip the
+ * close_notify and go straight to iowait_close, which wakes the parked
+ * writer. The watchdog aborts the run if close ever waits behind the
+ * writer's wr_mu (the pre-fix deadlock).
+ */
+static void _wrclose_closer(void* arg) {
+    xylem_tls_conn_t* conn = (xylem_tls_conn_t*)arg;
+    /* Give the writer time to fill the buffer and park in tls_write. */
+    xylem_sleep(500);
+    xylem_tls_close(conn);
+}
+
+static void _wrclose_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn = xylem_tls_dial(
+        TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_spawn(_wrclose_closer, conn);
+
+    /**
+     * Write until the peer-that-never-reads backs up the send path and
+     * the write parks holding wr_mu; the concurrent close must wake it
+     * and make the write fail rather than deadlock. Bounded so the test
+     * cannot loop forever even if close were a no-op.
+     */
+    static char big[64 * 1024];
+    memset(big, 'x', sizeof(big));
+    int rc = 0;
+    for (int i = 0; i < 4096 && rc == 0; i++) {
+        rc = xylem_tls_write(conn, big, (int)sizeof(big));
+    }
+    ASSERT(rc == -1);
+
+    /**
+     * Only now release the server. If the local close above had
+     * deadlocked (pre-fix: blocking wr_mu acquire behind the parked
+     * writer), this signal never fires and the server never closes, so
+     * the only wakeup path for the writer was the local iowait_close --
+     * exactly what this test exercises. The watchdog aborts on deadlock.
+     */
+    xylem_channel_send(ctx->gate, ctx);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _wrclose_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln = xylem_tls_listen(
+        TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tls_handshake(conn) == 0);
+
+    /**
+     * Never read, and do not close until the client signals: closing
+     * here would error the client's socket and wake the parked writer
+     * via the poller, masking the deadlock. Waiting for the gate makes
+     * the local close the only possible wakeup for the parked writer.
+     */
+    xylem_channel_recv(ctx->gate);
+    xylem_tls_close(conn);
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _wrclose_main(void* arg) {
+    (void)arg;
+    const char* cert = "test_tls_wc_cert.pem";
+    const char* key  = "test_tls_wc_key.pem";
+    ASSERT(_utils_cert_gen(cert, key) == 0);
+
+    xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
+    ASSERT(srv_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, cert, key) == 0);
+    xylem_tls_ctx_verify_client(srv_ctx, false);
+
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    xylem_tls_ctx_verify_server(cli_ctx, false);
+
+    _ctx_t ctx = {
+        .ready   = xylem_channel_create(),
+        .gate    = xylem_channel_create(),
+        .wg      = xylem_waitgroup_create(),
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 16,
+    };
+    xylem_waitgroup_add(ctx.wg, 2);
+    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
+                                          _utils_watchdog_cb, NULL);
+    xylem_spawn(_wrclose_server, &ctx);
+    xylem_spawn(_wrclose_client, &ctx);
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_cancel(wd);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_channel_destroy(ctx.ready);
+    xylem_channel_destroy(ctx.gate);
+    remove(cert);
+    remove(key);
+    xylem_shutdown();
+}
+
+static void test_close_with_parked_writer(void) {
+    xylem_run(_wrclose_main, NULL, NULL);
+}
+
+static void _run_cfg_tests(void* arg) {
+    (void)arg;
     test_ctx_create_destroy();
     test_load_cert_valid();
     test_load_cert_invalid();
@@ -1594,6 +1714,11 @@ int main(void) {
     test_set_verify();
     test_set_alpn();
     test_load_cert_mem();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_run_cfg_tests, NULL, NULL);
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();
@@ -1608,5 +1733,6 @@ int main(void) {
     test_close_listener_with_active_conn();
     test_full_duplex();
     test_lazy_handshake();
+    test_close_with_parked_writer();
     return 0;
 }

@@ -36,13 +36,25 @@ static xylem_opts_t _rt_opts = { .workers = 4 };
  */
 
 typedef struct {
-    xylem_mutex_t*     mtx;
-    xylem_cond_t*      cond;
-    xylem_waitgroup_t* wg;
-    int                flag;         /* protected by mtx */
-    int                waiter_done;  /* protected by mtx */
-    int                tested;
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    int            flag;         /* protected by mtx */
+    atomic_int     finished;     /* coroutines that have finished all sync ops */
+    int            tested;
 } _c_one_ctx_t;
+
+/* Last coroutine to finish all mutex/cond work tears them down. Gating
+ * teardown on an atomic that is bumped only after every mtx/cond call has
+ * returned guarantees no other coroutine still references the objects. */
+static void _c_one_finish(_c_one_ctx_t* ctx) {
+    if (atomic_fetch_add(&ctx->finished, 1) == 1) {
+        xylem_cond_destroy(ctx->cond);
+        ctx->cond = NULL;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
+        xylem_shutdown();
+    }
+}
 
 static void _c_one_waiter(void* arg) {
     _c_one_ctx_t* ctx = (_c_one_ctx_t*)arg;
@@ -50,10 +62,10 @@ static void _c_one_waiter(void* arg) {
     while (!ctx->flag) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
-    /* predicate holds and we are holding mtx */
-    ctx->waiter_done = 1;
+    /* Woken with the predicate true and the mutex held: signal worked. */
+    ctx->tested = 1;
     xylem_mutex_unlock(ctx->mtx);
-    xylem_waitgroup_done(ctx->wg);
+    _c_one_finish(ctx);
 }
 
 static void _c_one_signaler(void* arg) {
@@ -62,18 +74,7 @@ static void _c_one_signaler(void* arg) {
     ctx->flag = 1;
     xylem_cond_signal(ctx->cond);
     xylem_mutex_unlock(ctx->mtx);
-
-    /**
-     * Deterministic: block until the waiter has observed the flag and
-     * finished, rather than polling with a sleep.
-     */
-    xylem_waitgroup_wait(ctx->wg);
-
-    xylem_mutex_lock(ctx->mtx);
-    ASSERT(ctx->waiter_done == 1);
-    ctx->tested = 1;
-    xylem_mutex_unlock(ctx->mtx);
-    xylem_shutdown();
+    _c_one_finish(ctx);
 }
 
 static void _test_c_one_main(void* arg) {
@@ -89,13 +90,8 @@ static void test_signal_one(void) {
     fprintf(stderr, "=== test_signal_one\n");
     for (int round = 0; round < 20; round++) {
         _c_one_ctx_t ctx = {0};
-        ctx.wg = xylem_waitgroup_create();
-        xylem_waitgroup_add(ctx.wg, 1);
         xylem_run(_test_c_one_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_waitgroup_destroy(ctx.wg);
-        xylem_cond_destroy(ctx.cond);
-        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -134,6 +130,19 @@ static void _c_bcast_waiter(void* arg) {
     int r = atomic_fetch_add(&ctx->released, 1) + 1;
     if (r == BCAST_WAITERS) {
         ctx->tested = 1;
+        /**
+         * This is the last waiter to wake: every other waiter has
+         * already unlocked the mutex and incremented `released`, and
+         * the signaler finished after its broadcast/unlock. Nothing
+         * touches mtx/cond/all_parked anymore, so destroy them here
+         * inside the coroutine before shutdown.
+         */
+        xylem_cond_destroy(ctx->all_parked);
+        ctx->all_parked = NULL;
+        xylem_cond_destroy(ctx->cond);
+        ctx->cond = NULL;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
         xylem_shutdown();
     }
 }
@@ -168,9 +177,6 @@ static void test_broadcast(void) {
         xylem_run(_test_c_bcast_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.released) == BCAST_WAITERS);
-        xylem_cond_destroy(ctx.all_parked);
-        xylem_cond_destroy(ctx.cond);
-        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -255,6 +261,19 @@ static void _c_bq_consumer(void* arg) {
     if (c == BQ_CONSUMERS) {
         ASSERT(atomic_load(&ctx->sum) == BQ_PRODUCERS * BQ_PER_PROD);
         ctx->tested = 1;
+        /**
+         * Last consumer: the queue is drained and closed, so every
+         * producer has finished its pushes (and the closing producer
+         * has done its broadcast+unlock) and every other consumer has
+         * unlocked the mutex. Nothing touches the mutex/conds now, so
+         * destroy them here inside the coroutine before shutdown.
+         */
+        xylem_cond_destroy(ctx->not_full);
+        ctx->not_full = NULL;
+        xylem_cond_destroy(ctx->not_empty);
+        ctx->not_empty = NULL;
+        xylem_mutex_destroy(ctx->mtx);
+        ctx->mtx = NULL;
         xylem_shutdown();
     }
 }
@@ -279,9 +298,6 @@ static void test_bounded_queue(void) {
         _c_bq_ctx_t ctx = {0};
         xylem_run(_test_c_bq_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_cond_destroy(ctx.not_full);
-        xylem_cond_destroy(ctx.not_empty);
-        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -304,12 +320,12 @@ typedef struct {
 static void _c_ext_external(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
     /**
-     * Runs on a dynpool thread. Write the atomic predicate first,
-     * then broadcast so any already-parked waiter wakes up and
-     * re-checks.
+     * Runs on a dynpool thread (no coroutine context), so it may only
+     * touch the any-thread-safe atomic predicate -- never a cond op,
+     * which is coroutine-only. The submitter coroutine performs the
+     * actual broadcast once this blocking work has completed.
      */
     atomic_store(&ctx->ready, 1);
-    xylem_cond_broadcast(ctx->cond);
 }
 
 static void _c_ext_waiter(void* arg) {
@@ -322,22 +338,43 @@ static void _c_ext_waiter(void* arg) {
     }
     xylem_mutex_unlock(ctx->mtx);
     ctx->tested = 1;
+    /**
+     * This coroutine only ran past cond_wait because the submitter
+     * broadcast woke it, and the submitter touches none of these
+     * objects after that broadcast. The parked_cond hand-off with the
+     * submitter is likewise complete. Destroy here, inside the
+     * coroutine, before shutdown.
+     */
+    xylem_cond_destroy(ctx->parked_cond);
+    ctx->parked_cond = NULL;
+    xylem_cond_destroy(ctx->cond);
+    ctx->cond = NULL;
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
     xylem_shutdown();
 }
 
 static void _c_ext_submitter(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
     /**
-     * Block until the waiter is parked, so the external signal exercises
-     * the wake path rather than racing the waiter's first predicate check.
+     * Block until the waiter is parked, so the wake exercises the
+     * wake path rather than racing the waiter's first predicate check.
      */
     xylem_mutex_lock(ctx->mtx);
     while (!ctx->parked) {
         xylem_cond_wait(ctx->parked_cond, ctx->mtx);
     }
     xylem_mutex_unlock(ctx->mtx);
+    /**
+     * Offload the predicate write to a dynpool thread (the external
+     * work). xylem_submit parks this coroutine until that work
+     * returns, so ctx->ready is set by the time it resumes. The
+     * broadcast itself is coroutine-only, so it is issued here from
+     * the coroutine rather than from the dynpool thread.
+     */
     int rc = xylem_submit(_c_ext_external, ctx);
     ASSERT(rc == 0);
+    xylem_cond_broadcast(ctx->cond);
 }
 
 static void _test_c_ext_main(void* arg) {
@@ -356,9 +393,6 @@ static void test_external_signal(void) {
         _c_ext_ctx_t ctx = {0};
         xylem_run(_test_c_ext_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_cond_destroy(ctx.parked_cond);
-        xylem_cond_destroy(ctx.cond);
-        xylem_mutex_destroy(ctx.mtx);
     }
 }
 

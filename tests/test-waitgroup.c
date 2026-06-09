@@ -49,6 +49,13 @@ static void _wg_waiter(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
     ctx->tested = 1;
+    /**
+     * wait() returned, so every worker's done() has fired and no
+     * coroutine touches the waitgroup anymore: destroy it here, inside
+     * the coroutine, right before shutdown.
+     */
+    xylem_waitgroup_destroy(ctx->wg);
+    ctx->wg = NULL;
     xylem_shutdown();
 }
 
@@ -69,7 +76,6 @@ static void test_concurrent(void) {
         _wg_ctx_t ctx = {0};
         xylem_run(_test_wg_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
-        xylem_waitgroup_destroy(ctx.wg);
     }
 }
 
@@ -102,6 +108,13 @@ static void _wg_multi_waiter(void* arg) {
     int released = atomic_fetch_add(&ctx->waiters_released, 1) + 1;
     if (released == WG_MULTI_WAITERS) {
         ctx->tested = 1;
+        /**
+         * Every waiter has returned from wait() (so all workers' done()
+         * calls have fired) and this is the last one: nothing else
+         * touches the waitgroup, so destroy it here before shutdown.
+         */
+        xylem_waitgroup_destroy(ctx->wg);
+        ctx->wg = NULL;
         xylem_shutdown();
     }
 }
@@ -126,7 +139,6 @@ static void test_multi_waiter(void) {
         xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.waiters_released) == WG_MULTI_WAITERS);
-        xylem_waitgroup_destroy(ctx.wg);
     }
 }
 

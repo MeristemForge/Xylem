@@ -31,6 +31,7 @@
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
@@ -137,6 +138,8 @@ struct xylem_dtls_listener_s {
 };
 
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_create");
+
     xylem_dtls_ctx_t* ctx = (xylem_dtls_ctx_t*)calloc(1, sizeof(*ctx));
     if (!ctx) {
         return NULL;
@@ -155,6 +158,8 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_destroy");
+
     tls_backend_ctx_destroy(ctx->be);
     free(ctx);
 }
@@ -163,6 +168,8 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     if (!ctx) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_keylog");
+
     return tls_backend_ctx_set_keylog(ctx->be, path);
 }
 
@@ -171,6 +178,8 @@ int xylem_dtls_ctx_load_cert(
     const char*       hostname,
     const char*       cert,
     const char*       key) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert");
+
     return tls_backend_ctx_load_cert_file(ctx->be, hostname, cert, key);
 }
 
@@ -184,25 +193,35 @@ int xylem_dtls_ctx_load_cert_mem(
     if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
         return -1;
     }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert_mem");
+
     return tls_backend_ctx_load_cert_mem(ctx->be, hostname, cert_pem, cert_len,
                                          key_pem, key_len);
 }
 
 int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_ca");
+
     return tls_backend_ctx_load_ca_file(ctx->be, ca_file);
 }
 
 int xylem_dtls_ctx_load_system_ca(
     xylem_dtls_ctx_t* ctx,
     const char*       fallback_ca_file) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_system_ca");
+
     return tls_backend_ctx_load_system_ca(ctx->be, fallback_ca_file);
 }
 
 void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_server");
+
     ctx->verify_server = enable;
 }
 
 void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_client");
+
     ctx->verify_client = enable;
 }
 
@@ -210,6 +229,8 @@ int xylem_dtls_ctx_set_alpn(
     xylem_dtls_ctx_t* ctx,
     const char**      protocols,
     size_t            count) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_alpn");
+
     return tls_backend_ctx_set_alpn(ctx->be, protocols, count);
 }
 
@@ -1046,6 +1067,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     uint16_t           port,
     xylem_dtls_ctx_t*  ctx,
     xylem_dtls_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_dial");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1137,6 +1160,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     uint16_t           port,
     xylem_dtls_ctx_t*  ctx,
     xylem_dtls_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listen");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1199,6 +1224,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
 }
 
 xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_accept");
+
     _dtls_listener_ref(ln);
     xylem_dtls_conn_t* conn =
         (xylem_dtls_conn_t*)xylem_channel_recv(ln->accept_ch);
@@ -1207,6 +1234,8 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
 }
 
 int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_read");
+
     if (dtls->listener) {
         return _dtls_server_recv(dtls, buf, len);
     }
@@ -1217,6 +1246,8 @@ int xylem_dtls_write(
     xylem_dtls_conn_t* dtls,
     const void*        data,
     int                len) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_write");
+
     if (dtls->listener) {
         return _dtls_server_send(dtls, data, len);
     }
@@ -1224,6 +1255,8 @@ int xylem_dtls_write(
 }
 
 void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_close");
+
     if (dtls->listener) {
         _dtls_server_close(dtls);
     } else {
@@ -1232,6 +1265,8 @@ void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
 }
 
 void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_close_listener");
+
     if (atomic_exchange(&ln->closed, true)) {
         return;
     }
@@ -1255,6 +1290,8 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
 void xylem_dtls_set_read_deadline(
     xylem_dtls_conn_t* dtls,
     uint64_t           deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_set_read_deadline");
+
     if (dtls->listener) {
         dtls->rd_deadline_ms = deadline_ms;
     } else {
@@ -1265,6 +1302,8 @@ void xylem_dtls_set_read_deadline(
 void xylem_dtls_set_write_deadline(
     xylem_dtls_conn_t* dtls,
     uint64_t           deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_set_write_deadline");
+
     if (dtls->listener) {
         dtls->wr_deadline_ms = deadline_ms;
     } else {
@@ -1273,6 +1312,8 @@ void xylem_dtls_set_write_deadline(
 }
 
 const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_get_alpn");
+
     return dtls->alpn[0] ? dtls->alpn : NULL;
 }
 
@@ -1281,6 +1322,8 @@ int xylem_dtls_remote_addr(
     char*              host,
     size_t             host_len,
     uint16_t*          port) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_remote_addr");
+
     return addr_ntop(&dtls->peer_addr, host, host_len, port);
 }
 
@@ -1289,6 +1332,8 @@ int xylem_dtls_local_addr(
     char*              host,
     size_t             host_len,
     uint16_t*          port) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_local_addr");
+
     platform_sock_t fd = dtls->listener ? dtls->listener->fd : dtls->fd;
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
@@ -1303,6 +1348,8 @@ int xylem_dtls_listener_addr(
     char*                  host,
     size_t                 host_len,
     uint16_t*              port) {
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listener_addr");
+
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
