@@ -105,11 +105,13 @@ Rules:
 - **Read before close.** For connections, query any state you need (e.g.
   `xylem_tcp_remote_addr`) *before* calling `close`; close may free backing
   state and wakes any coroutine blocked on the handle.
-- **Cross-thread lifetime uses reference counting.** Where a handle can be
-  touched from more than one thread (connections, `iowait`), an internal atomic
-  refcount (`ref`/`unref`) keeps it alive until the last user drops it;
-  `iowait` adds a generation tag so stale events are rejected rather than
-  dereferenced. See [`design/runtime.md`](design/runtime.md).
+- **Cross-coroutine lifetime uses reference counting.** A connection can be
+  closed from one coroutine while another is parked in `read`/`write` on it
+  (and the close wakeup itself crosses threads via `scheduler_schedule()`), so
+  an internal atomic refcount (`ref`/`unref`) keeps the handle alive until the
+  last user drops it; `iowait` adds a generation tag so stale events are
+  rejected rather than dereferenced. See
+  [`design/runtime.md`](design/runtime.md).
 
 ## 6. Initialization order
 
@@ -206,18 +208,29 @@ Every public function's doc comment states its threading contract. The
 recurring categories:
 
 - **Any-thread.** Safe to call from any thread, including outside the runtime.
-  `close` on connections (even while a coroutine is parked in `read`/`write` on
-  the same connection), `xylem_spawn`, `xylem_shutdown`, timer
-  arm/cancel/reset. (Thread-safe does not always mean concurrency-safe on
+  `xylem_spawn`, `xylem_shutdown`, timer arm/cancel/reset, and the
+  wakeup/non-blocking sync ops (`unlock`, `signal`/`broadcast`, `add`/`done`,
+  channel `send`/`close`). (Thread-safe does not always mean concurrency-safe on
   one object: `xylem_timer_cancel`/`reset` are each callable from any thread but
   must not run concurrently with each other on the *same* handle — see
   [`design/core.md`](design/core.md) §2.)
-- **Coroutine-only.** Must be called from inside a coroutine on the runtime
-  because it may suspend the caller: `xylem_tcp_read`/`write`/`accept`/`dial`
-  (and the UDP/UDS/TLS equivalents), `xylem_sleep`, `xylem_submit`, and the
-  blocking sync ops (`mutex_lock`, `cond_wait`, `waitgroup_wait`,
-  `channel_recv`). These are **not** any-thread — `write`/`send` park when the
-  socket would block, so calling them off a coroutine is a bug.
+- **Coroutine-only.** Must be called from inside a coroutine on the runtime.
+  The **entire connection API** is coroutine-only — not just `read`/`write`/
+  `accept`/`dial` (which may park), but also `close`, the read/write deadline
+  setters, and the address getters (TCP/UDP/UDS/RUDP/TLS/DTLS). `close` is
+  coroutine-only because its teardown may touch other coroutine-only primitives
+  (e.g. draining an inbox channel); to cancel a connection whose reader/writer
+  is parked, close it from *another* coroutine. Also coroutine-only:
+  `xylem_submit` and the blocking sync ops (`mutex_lock`, `cond_wait`,
+  `waitgroup_wait`, `channel_recv`). Calling any of these off a coroutine
+  aborts.
+- **Context-adaptive.** Safe from either a coroutine or a plain OS thread; the
+  call inspects its context and does the right thing. On a coroutine it parks
+  (the worker stays free); on a thread it blocks the OS thread. The observable
+  semantics are identical in both contexts. This covers `xylem_sleep`, the
+  `xylem_sem` blocking ops (`wait`/`timedwait`), and `xylem_ticker_recv`. These
+  deliberately do **not** abort off-coroutine — bridging the coroutine/OS-thread
+  boundary is the point.
 - **Single-owner.** One logical owner at a time, stated explicitly — e.g. one
   reader and one writer per `iowait` direction; a single deadline driver per
   direction.

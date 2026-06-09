@@ -21,8 +21,7 @@
 
 #include "xylem/xylem-ticker.h"
 
-#include "xylem/sync/xylem-channel.h"
-#include "xylem/xylem-logger.h"
+#include "xylem/sync/xylem-sem.h"
 #include "xylem/xylem-utils.h"
 
 #include "runtime/runtime.h"
@@ -31,21 +30,23 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+/**
+ * Tick delivery rides on an xylem_sem rather than a channel: the
+ * semaphore's wait() is context-adaptive (parks a coroutine, blocks an
+ * OS thread), so xylem_ticker_recv works from either context -- the
+ * ticker matches the underlying timer, which is usable from coroutine
+ * and thread alike. The sem also avoids a per-tick heap allocation (no
+ * message node) and fits the ticker's single-producer/single-consumer,
+ * coalesce-to-one model: count stays in {0,1}, gated by `pending`.
+ */
 struct xylem_ticker_s {
     sched_timer_t*   timer;     /* repeating, run inline (spawn == false) */
-    xylem_channel_t* ch;
+    xylem_sem_t*     sem;
     _Atomic bool     closed;
     _Atomic int32_t  pending;   /* 0/1 coalescing cap: drop ticks when behind */
     _Atomic uint64_t last_tick;
     _Atomic int32_t  refcnt;
 };
-
-/**
- * A fixed non-NULL token. The channel only carries "a tick happened";
- * the actual tick time is read from t->last_tick after recv. Using a
- * static address avoids a heap allocation per tick.
- */
-static char _ticker_tick;
 
 static void _ticker_ref(xylem_ticker_t* t) {
     atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
@@ -62,12 +63,8 @@ static void _ticker_unref(xylem_ticker_t* t) {
     if (t->timer) {
         sched_timer_destroy(t->timer);
     }
-    if (t->ch) {
-        /**
-         * Channel was never closed while alive, so any sentinel still
-         * queued is just dropped here (the token is static, not heap).
-         */
-        xylem_channel_destroy(t->ch);
+    if (t->sem) {
+        xylem_sem_destroy(t->sem);
     }
     free(t);
 }
@@ -76,7 +73,7 @@ static void _ticker_unref(xylem_ticker_t* t) {
  * Runs inline on the timer's owner worker (spawn == false), so it is
  * serialized against itself: ticks can never overlap or re-enter. It
  * does no blocking work and never yields -- just a coalescing,
- * non-blocking hand-off to the channel.
+ * non-blocking hand-off via xylem_sem_post (any-context, never parks).
  */
 static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
@@ -86,7 +83,7 @@ static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
      * Hold a reference across the whole callback. sched_timer_stop() does
      * not drain an in-flight fire, so a concurrent xylem_ticker_destroy()
      * on another worker could otherwise drop the last reference and free
-     * t (and its channel) while we are still touching them below. The
+     * t (and its sem) while we are still touching them below. The
      * scheduler keeps the underlying timer object alive for the duration
      * of the fire, so the sched_timer_destroy() reached through a last
      * _ticker_unref() here stays safe.
@@ -106,21 +103,14 @@ static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
     /**
      * Deliver only if the previous tick has been drained. Otherwise the
      * consumer is behind and we coalesce (drop) this tick, exactly like
-     * Go's buffered-by-one Ticker channel.
+     * Go's buffered-by-one Ticker channel. post() never fails or
+     * allocates, so the slot transitions 0 -> 1 -> (recv) -> 0 cleanly.
      */
     int32_t expected = 0;
     if (atomic_compare_exchange_strong_explicit(
             &t->pending, &expected, 1,
             memory_order_acq_rel, memory_order_relaxed)) {
-        /**
-         * On send failure (channel OOM) no token is enqueued, so leaving
-         * pending == 1 would wedge the ticker forever: recv blocks with
-         * nothing to drain and every later tick coalesces. Reopen the slot
-         * so a subsequent tick can retry the delivery.
-         */
-        if (xylem_channel_send(t->ch, &_ticker_tick) != 0) {
-            atomic_store_explicit(&t->pending, 0, memory_order_release);
-        }
+        xylem_sem_post(t->sem);
     }
 
     _ticker_unref(t);
@@ -137,11 +127,11 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
         return NULL;
     }
 
-    t->ch    = xylem_channel_create();
+    t->sem   = xylem_sem_create(0);
     t->timer = sched_timer_create(sched);
-    if (!t->ch || !t->timer) {
-        if (t->ch) {
-            xylem_channel_destroy(t->ch);
+    if (!t->sem || !t->timer) {
+        if (t->sem) {
+            xylem_sem_destroy(t->sem);
         }
         if (t->timer) {
             sched_timer_destroy(t->timer);
@@ -164,15 +154,16 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
     }
 
     /**
-     * Hold a reference across the (parking) recv so a concurrent
+     * Hold a reference across the (blocking) wait so a concurrent
      * xylem_ticker_destroy cannot free the ticker out from under us.
+     * xylem_sem_wait adapts to the caller: it parks a coroutine or
+     * blocks an OS thread, so recv works from either context.
      */
     _ticker_ref(ticker);
 
     uint64_t tick = 0;
-    void*    msg  = xylem_channel_recv(ticker->ch);
-    if (msg != NULL &&
-        !atomic_load_explicit(&ticker->closed, memory_order_acquire)) {
+    xylem_sem_wait(ticker->sem);
+    if (!atomic_load_explicit(&ticker->closed, memory_order_acquire)) {
         /* Allow the next tick through; re-opens the coalescing slot. */
         atomic_store_explicit(&ticker->pending, 0, memory_order_release);
         tick = atomic_load_explicit(&ticker->last_tick, memory_order_relaxed);
@@ -193,14 +184,13 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
     sched_timer_stop(ticker->timer);
 
     /**
-     * Wake a consumer blocked in recv. We never close the channel here:
-     * a racing in-flight cb send would then abort on a closed channel.
+     * Wake a consumer blocked in recv; it sees `closed` and returns 0.
+     * post() is any-context and idempotent enough here: an extra token
+     * just makes the next (already-closed) wait return immediately. We
+     * set `closed` before posting so the woken consumer cannot mistake
+     * this wake for a real tick.
      */
-    if (xylem_channel_send(ticker->ch, &_ticker_tick) != 0) {
-        xylem_loge("<ticker> wake send failed on destroy ticker=%p; "
-                   "a parked recv may not wake",
-                   (void*)ticker);
-    }
+    xylem_sem_post(ticker->sem);
 
     /* Drop the creator's reference. */
     _ticker_unref(ticker);

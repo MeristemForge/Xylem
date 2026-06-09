@@ -25,11 +25,28 @@
  * keeping the bodies trivial lets us evolve the internal API
  * (runtime_*, scheduler_*, iowait_*) without breaking consumers
  * of xylem.h.
+ *
+ * The one deliberate exception is xylem_sleep, which is
+ * context-adaptive: it parks the coroutine via runtime_sleep when
+ * called on a scheduler worker, and falls back to thrd_sleep on a
+ * plain OS thread. The branch lives here, in the facade, so the
+ * runtime layer stays purely coroutine-scoped and never depends on
+ * the OS-thread sleep primitive.
+ *
+ * xylem_submit, by contrast, is coroutine-only: its sole purpose is to
+ * keep a scheduler worker free while blocking work runs, which only
+ * makes sense on a worker. runtime_submit aborts if called off a
+ * coroutine.
  */
 
 #include "xylem.h"
 
 #include "runtime/runtime.h"
+#include "thrds.h"
+
+#include "runtime/minicoro/minicoro.h"
+
+#include <time.h>
 
 void xylem_run(
     void (*main_fn)(void*), void* arg, xylem_opts_t* opts) {
@@ -49,7 +66,22 @@ void xylem_spawn(void (*fn)(void*), void* arg) {
 }
 
 void xylem_sleep(uint64_t ms) {
-    runtime_sleep(ms);
+    if (mco_running()) {
+        runtime_sleep(ms);
+        return;
+    }
+
+    /* Plain OS thread: block the thread for the requested duration.
+     * nanosleep/thrd_sleep may return early on a signal (EINTR); keep
+     * sleeping for the remainder so the full duration is observed. */
+    struct timespec req = {
+        .tv_sec  = (time_t)(ms / 1000u),
+        .tv_nsec = (long)((ms % 1000u) * 1000000u),
+    };
+    struct timespec rem;
+    while (thrd_sleep(&req, &rem) == -1) {
+        req = rem;
+    }
 }
 
 int xylem_submit(void (*fn)(void*), void* arg) {

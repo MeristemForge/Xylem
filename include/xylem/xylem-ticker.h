@@ -34,14 +34,18 @@ _Pragma("once")
  *     non-blocking delivery of the tick time, coalescing (dropping)
  *     a tick when the previous one has not been consumed yet. It
  *     never runs user code, so ticks can never overlap or re-enter.
- *   - The consumer drains ticks one at a time from a single coroutine
- *     via xylem_ticker_recv(), so user logic is naturally serialized.
+ *   - The consumer drains ticks one at a time via xylem_ticker_recv(),
+ *     so user logic is naturally serialized.
  *
  * Threading:
- *   - xylem_ticker_recv() must run in a coroutine, and only one
- *     coroutine may receive on a given ticker (single-consumer).
- *   - xylem_ticker_destroy() is best called from a coroutine; it is
- *     idempotent and safe to call once from the consumer side.
+ *   - xylem_ticker_recv() is context-adaptive, like the underlying
+ *     timer: call it from a coroutine (it parks) or from a plain OS
+ *     thread (it blocks the thread). Either way, only one consumer may
+ *     receive on a given ticker (single-consumer). A thread consumer
+ *     still requires the runtime to be running, since the ticks are
+ *     produced by a scheduler timer.
+ *   - xylem_ticker_destroy() is callable from any thread or context;
+ *     it is idempotent and safe to call once from the consumer side.
  */
 typedef struct xylem_ticker_s xylem_ticker_t;
 
@@ -55,10 +59,12 @@ typedef struct xylem_ticker_s xylem_ticker_t;
 extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 
 /**
- * @brief Block until the next tick. Must run in a coroutine.
+ * @brief Block until the next tick. Context-adaptive.
  *
- * At most one tick is buffered: if the consumer falls behind, the
- * intervening ticks are dropped (coalesced) rather than queued.
+ * Parks the calling coroutine, or blocks the calling OS thread, until
+ * the next tick. At most one tick is buffered: if the consumer falls
+ * behind, the intervening ticks are dropped (coalesced) rather than
+ * queued.
  *
  * @param ticker  Ticker handle.
  *

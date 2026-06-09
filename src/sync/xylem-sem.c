@@ -286,6 +286,13 @@ void xylem_sem_wait(xylem_sem_t* s) {
     _sem_waiter_t w;
     w.kind = SEM_WAITER_THR;
     w.tsem = _sem_thread_sem();
+    if (!w.tsem) {
+        /* No wake sem means we could never be woken and post() would
+         * deref a NULL tsem; do not enqueue. Fail open over a wait we
+         * cannot satisfy (OOM only). */
+        spin_unlock(&s->guard);
+        return;
+    }
     list_insert_tail(&s->waiters, &w.node);
     spin_unlock(&s->guard);
 
@@ -347,6 +354,13 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
     _sem_waiter_t w;
     w.kind = SEM_WAITER_THR;
     w.tsem = _sem_thread_sem();
+    if (!w.tsem) {
+        /* No wake sem means we could never be woken and post() would
+         * deref a NULL tsem; do not enqueue. Fail closed over a wait we
+         * cannot satisfy (OOM only). */
+        spin_unlock(&s->guard);
+        return false;
+    }
     list_insert_tail(&s->waiters, &w.node);
     spin_unlock(&s->guard);
 

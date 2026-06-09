@@ -120,11 +120,13 @@ with a distinct result (`IOWAIT_TIMEOUT` / `IOWAIT_CLOSED`).
   the calling coroutine (when the socket would block), so they must run on a
   scheduler worker, and only one coroutine may drive each direction of a
   connection at a time.
-- **`close` is any-thread.** It is safe to close a connection from any thread —
-  even while another coroutine is parked in `read`/`write` on it. The cross-
-  thread wakeup goes through `scheduler_schedule()`, which pushes to the global
-  run queue and wakes a worker (or the poll driver); the closer never needs to
-  run on a worker's thread.
+- **`close` is coroutine-only, like the rest of the connection API.** It must
+  run on a scheduler worker (its teardown may itself touch coroutine-only
+  primitives, e.g. draining an inbox channel), so calling it off a coroutine
+  aborts. To cancel a connection whose reader/writer is parked, close it from
+  *another* coroutine: the cross-direction wakeup goes through
+  `scheduler_schedule()`, which pushes to the global run queue and wakes a
+  worker, so the closer and the parked coroutine need not be the same one.
 - **Reference counting everywhere lifetimes cross threads.** Connections and
   `iowait` handles carry refcounts; `iowait` additionally uses a generation tag
   so a completion event for a recycled slot is rejected instead of waking the

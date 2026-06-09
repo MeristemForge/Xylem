@@ -380,6 +380,8 @@ static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
 }
 
 static void _rudp_schedule_update(xylem_rudp_conn_t* c);
+static void _rudp_deferred_close(void* arg);
+static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 
 static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
@@ -394,7 +396,16 @@ static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
     /* Detect dead link. */
     if (c->kcp->state == (IUINT32)-1) {
         xylem_logw("rudp conv=%u dead link", c->conv);
-        xylem_rudp_close(c);
+        /**
+         * This timer callback runs inline on a worker thread (spawn ==
+         * false), not on a coroutine, but xylem_rudp_close is
+         * coroutine-only (its teardown may drain the inbox channel via
+         * xylem_channel_recv). Hand the close off to a short-lived
+         * coroutine; the extra reference keeps the conn alive until it
+         * runs.
+         */
+        _rudp_conn_ref(c);
+        runtime_spawn(_rudp_deferred_close, c);
         return;
     }
 
@@ -518,6 +529,18 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
     }
 
     free(conn);
+}
+
+/**
+ * Coroutine entry that performs a deferred xylem_rudp_close. Used by
+ * the update timer's dead-link path, which runs inline on a worker
+ * (not a coroutine) and so cannot call the coroutine-only close
+ * directly. Drops the reference taken when the close was scheduled.
+ */
+static void _rudp_deferred_close(void* arg) {
+    xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)arg;
+    xylem_rudp_close(conn);
+    _rudp_conn_unref(conn);
 }
 
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
@@ -1072,6 +1095,8 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     const char*        host,
     uint16_t           port,
     xylem_rudp_opts_t* opts) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_listen");
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -1150,6 +1175,8 @@ void xylem_rudp_close(xylem_rudp_conn_t* conn) {
     if (!conn) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_close");
+
     if (atomic_exchange(&conn->closed, true)) {
         return;
     }
@@ -1191,6 +1218,8 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     if (!ln) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_close_listener");
+
     if (atomic_exchange(&ln->closed, true)) {
         return;
     }
@@ -1230,6 +1259,8 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
 
 void xylem_rudp_set_read_deadline(
     xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_set_read_deadline");
+
     conn->rd_deadline_ms = deadline_ms;
     if (!conn->listener && conn->waiter) {
         iowait_set_rd_deadline(conn->waiter, deadline_ms);
@@ -1238,11 +1269,15 @@ void xylem_rudp_set_read_deadline(
 
 void xylem_rudp_set_write_deadline(
     xylem_rudp_conn_t* conn, uint64_t deadline_ms) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_set_write_deadline");
+
     (void)conn;
     (void)deadline_ms;
 }
 
 int xylem_rudp_remote_addr(
     xylem_rudp_conn_t* conn, char* host, int hostlen, uint16_t* port) {
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_remote_addr");
+
     return addr_ntop(&conn->peer_addr, host, (size_t)hostlen, port);
 }

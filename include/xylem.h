@@ -116,18 +116,23 @@ extern void xylem_shutdown(void);
 extern void xylem_spawn(void (*fn)(void*), void* arg);
 
 /**
- * @brief Suspend the current coroutine for @p ms milliseconds.
+ * @brief Suspend the caller for @p ms milliseconds. Context-adaptive.
  *
- * Must be called from inside a coroutine running on the runtime.
+ * On a coroutine running on the runtime, this parks the coroutine (the
+ * worker thread stays free for other work). On a plain OS thread, it
+ * blocks that thread for the duration. Either context is valid.
  */
 extern void xylem_sleep(uint64_t ms);
 
 /**
  * @brief Run a blocking function on the runtime's thread pool.
+ * Coroutine-only.
  *
  * Submits @p fn to the blocking pool and suspends the calling
- * coroutine until it returns. The coroutine resumes on a scheduler
- * worker thread.
+ * coroutine until it returns; the coroutine then resumes on a
+ * scheduler worker. This keeps the worker free to run other coroutines
+ * while @p fn blocks. Must be called from a coroutine on the runtime --
+ * calling it off a coroutine aborts.
  *
  * @return 0 on success, -1 on failure.
  */

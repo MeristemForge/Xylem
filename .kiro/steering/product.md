@@ -33,7 +33,7 @@ The scheduler drives I/O through a thin platform poller abstraction (`src/platfo
 ### Thread Safety Model
 
 - `read`/`write` (and `accept`/`dial`) are **coroutine operations**: they may park the calling coroutine, so they must run on a scheduler worker, and at most one coroutine drives each direction of a connection.
-- `close` on connections is safe from **any thread**, even while a coroutine is parked in `read`/`write` on the same connection. Cross-thread wakeups go through `scheduler_schedule()`, which routes to the global runq and wakes a worker.
+- `close` on connections is **coroutine-only**, like the rest of the connection API: it must run on a scheduler worker, so calling it off a coroutine aborts. To cancel a connection whose reader/writer is parked, close it from another coroutine; the cross-direction wakeup goes through `scheduler_schedule()`, which routes to the global runq and wakes a worker.
 - Connections and `iowait` handles use reference counting (`ref`/`unref`, generation tags) to prevent use-after-free across threads.
 - `iowait` is one-reader / one-writer per direction: at most one coroutine may park on read and one on write of the same handle at a time.
 

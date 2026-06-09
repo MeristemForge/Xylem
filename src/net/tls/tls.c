@@ -897,10 +897,11 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
 
     /**
      * Take the reference before testing `closed`: a concurrent
-     * tls_close() on another thread may drop the last reference
-     * and free tls in the window between the test and the ref,
-     * otherwise. Holding a ref first caps a racing close at refcnt 2->1
-     * (no free); our own unref does the final teardown.
+     * tls_close() from another coroutine (possibly on another worker)
+     * may drop the last reference and free tls in the window between
+     * the test and the ref, otherwise. Holding a ref first caps a
+     * racing close at refcnt 2->1 (no free); our own unref does the
+     * final teardown.
      */
     _tls_conn_ref(tls);
     int ret = -1;
