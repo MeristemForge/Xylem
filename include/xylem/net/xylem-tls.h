@@ -52,6 +52,8 @@ typedef struct xylem_tls_opts_s {
 /**
  * @brief Create a TLS context.
  *
+ * Coroutine-only.
+ *
  * Defaults: as a client, the server certificate is verified; as a
  * server, no client certificate is requested; TLS 1.2 minimum, no
  * maximum. See xylem_tls_ctx_verify_server / verify_client to change
@@ -64,12 +66,16 @@ extern xylem_tls_ctx_t* xylem_tls_ctx_create(void);
 /**
  * @brief Destroy a TLS context. NULL-safe.
  *
+ * Coroutine-only.
+ *
  * @param ctx  Context handle.
  */
 extern void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx);
 
 /**
  * @brief Load a PEM certificate chain and private key.
+ *
+ * Coroutine-only.
  *
  * When hostname is NULL the certificate becomes the default (used when
  * no SNI matches). When hostname is non-NULL, the certificate is bound
@@ -90,6 +96,8 @@ extern int xylem_tls_ctx_load_cert(
 
 /**
  * @brief Load a PEM certificate chain and private key from memory.
+ *
+ * Coroutine-only.
  *
  * Same semantics as xylem_tls_ctx_load_cert but reads the PEM data from
  * in-memory buffers instead of files, for certificates sourced from a
@@ -116,6 +124,8 @@ extern int xylem_tls_ctx_load_cert_mem(
 /**
  * @brief Add a CA certificate file to the trust store.
  *
+ * Coroutine-only.
+ *
  * The CAs become trust anchors for verifying the peer certificate (the
  * server on a client, or the client on an mTLS server). Only these CAs
  * are trusted unless xylem_tls_ctx_load_system_ca is also called, which
@@ -130,6 +140,8 @@ extern int xylem_tls_ctx_load_ca(xylem_tls_ctx_t* ctx, const char* ca_file);
 
 /**
  * @brief Trust public-CA roots: the system store plus an optional bundle.
+ *
+ * Coroutine-only.
  *
  * Lets a client verify servers using certificates from public CAs. Loads
  * trust anchors additively from two sources:
@@ -159,6 +171,8 @@ extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx,
 /**
  * @brief Set whether a client verifies the server certificate.
  *
+ * Coroutine-only.
+ *
  * Applies to the client role (xylem_tls_dial). When enabled (the
  * default) the server certificate chain is validated and, if
  * opts.server_name is set, its identity is checked. Disabling it makes
@@ -175,6 +189,8 @@ extern void xylem_tls_ctx_verify_server(xylem_tls_ctx_t* ctx, bool enable);
 
 /**
  * @brief Set whether a server requires a client certificate (mTLS).
+ *
+ * Coroutine-only.
  *
  * Applies to the server role (xylem_tls_listen). When enabled the
  * server requests a client certificate during the handshake and fails
@@ -194,6 +210,8 @@ extern void xylem_tls_ctx_verify_client(xylem_tls_ctx_t* ctx, bool enable);
 /**
  * @brief Set the ALPN protocol list.
  *
+ * Coroutine-only.
+ *
  * @param ctx        Context handle.
  * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
  * @param count      Number of protocols.
@@ -208,6 +226,8 @@ extern int xylem_tls_ctx_set_alpn(
 /**
  * @brief Enable NSS Key Log output for Wireshark decryption.
  *
+ * Coroutine-only.
+ *
  * @param ctx   Context handle.
  * @param path  Output file path, or NULL to disable.
  *
@@ -217,6 +237,8 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
 
 /**
  * @brief Connect to a remote TLS endpoint.
+ *
+ * Coroutine-only.
  *
  * Suspends the calling coroutine until the TCP connection is established
  * and the TLS handshake completes, or handshake_timeout_ms elapses.
@@ -243,6 +265,8 @@ extern xylem_tls_conn_t* xylem_tls_dial(
 /**
  * @brief Create a TLS listener bound to the given address.
  *
+ * Coroutine-only.
+ *
  * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
  * @param port  Bind port.
  * @param ctx   TLS context with cert+key loaded.
@@ -258,6 +282,8 @@ extern xylem_tls_listener_t* xylem_tls_listen(
 
 /**
  * @brief Accept a connection from the listener (handshake deferred).
+ *
+ * Coroutine-only.
  *
  * Suspends the calling coroutine until a client connects, then returns
  * the connection WITHOUT completing the TLS handshake. The handshake is
@@ -289,6 +315,8 @@ extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
 /**
  * @brief Set the read deadline for the connection.
  *
+ * Coroutine-only.
+ *
  * @param tls          Connection handle.
  * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
  */
@@ -299,6 +327,8 @@ extern void xylem_tls_set_read_deadline(
 /**
  * @brief Set the write deadline for the connection.
  *
+ * Coroutine-only.
+ *
  * @param tls          Connection handle.
  * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
  */
@@ -308,6 +338,8 @@ extern void xylem_tls_set_write_deadline(
 
 /**
  * @brief Read data from the connection (read-some semantics).
+ *
+ * Coroutine-only.
  *
  * Returns available plaintext data. Suspends the calling coroutine
  * if no data is immediately available. At most len bytes are
@@ -327,6 +359,8 @@ extern int xylem_tls_read(
 /**
  * @brief Write all data to the connection.
  *
+ * Coroutine-only.
+ *
  * Encrypts and loops internally until all len bytes are sent or
  * an error occurs. Suspends the calling coroutine as needed.
  *
@@ -344,6 +378,8 @@ extern int xylem_tls_write(
 /**
  * @brief Close a connection. Idempotent.
  *
+ * Coroutine-only.
+ *
  * Must be called from a coroutine on a scheduler worker (it may send a
  * best-effort close_notify, which parks); calling it off a coroutine
  * aborts. To cancel a connection whose reader/writer is parked, close
@@ -357,6 +393,8 @@ extern void xylem_tls_close(xylem_tls_conn_t* tls);
 /**
  * @brief Close and destroy a listener. Idempotent.
  *
+ * Coroutine-only.
+ *
  * Wakes any coroutine blocked in xylem_tls_accept().
  *
  * @param ln  Listener handle.
@@ -365,6 +403,8 @@ extern void xylem_tls_close_listener(xylem_tls_listener_t* ln);
 
 /**
  * @brief Get the remote address of the connection.
+ *
+ * Coroutine-only.
  *
  * @param tls       Connection handle.
  * @param host      Buffer to receive the address string.
@@ -382,6 +422,8 @@ extern int xylem_tls_remote_addr(
 /**
  * @brief Get the local address of the connection.
  *
+ * Coroutine-only.
+ *
  * @param tls       Connection handle.
  * @param host      Buffer to receive the address string.
  * @param host_len  Size of host buffer (46 bytes recommended).
@@ -397,6 +439,8 @@ extern int xylem_tls_local_addr(
 
 /**
  * @brief Get the local address of the listener.
+ *
+ * Coroutine-only.
  *
  * @param ln        Listener handle.
  * @param host      Buffer to receive the address string.
@@ -414,6 +458,8 @@ extern int xylem_tls_listener_addr(
 /**
  * @brief Get the negotiated ALPN protocol.
  *
+ * Coroutine-only.
+ *
  * @param tls  Connection handle.
  *
  * @return Protocol string, or NULL if none negotiated.
@@ -422,6 +468,8 @@ extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 
 /**
  * @brief Force the TLS handshake to complete.
+ *
+ * Coroutine-only.
  *
  * Since xylem_tls_accept defers the server handshake to the first I/O,
  * call this to drive it explicitly -- e.g. before reading the negotiated

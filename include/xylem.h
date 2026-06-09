@@ -116,7 +116,9 @@ extern void xylem_shutdown(void);
 extern void xylem_spawn(void (*fn)(void*), void* arg);
 
 /**
- * @brief Suspend the caller for @p ms milliseconds. Context-adaptive.
+ * @brief Suspend the caller for @p ms milliseconds.
+ *
+ * Context-adaptive.
  *
  * On a coroutine running on the runtime, this parks the coroutine (the
  * worker thread stays free for other work). On a plain OS thread, it

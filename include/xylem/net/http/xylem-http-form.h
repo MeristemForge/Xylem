@@ -28,6 +28,8 @@ _Pragma("once")
 /**
  * @brief Compute the maximum number of key-value pairs in a form body.
  *
+ * Coroutine-only.
+ *
  * @param body      Form body string.
  * @param body_len  Length of body.
  *
@@ -37,6 +39,8 @@ extern int xylem_http_form_count(const char* body, size_t body_len);
 
 /**
  * @brief Parse application/x-www-form-urlencoded body in-place.
+ *
+ * Coroutine-only.
  *
  * Modifies buf by inserting '\0' terminators and decoding %XX sequences.
  * Output pairs point directly into buf. Handles '+' as space.
@@ -56,6 +60,8 @@ extern int xylem_http_form_parse(
 
 /**
  * @brief Find a value by key in parsed form pairs.
+ *
+ * Coroutine-only.
  *
  * @param pairs  Parsed key-value pairs array.
  * @param count  Number of pairs.

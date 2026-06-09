@@ -39,6 +39,8 @@ typedef struct xylem_http_multipart_part_s {
 /**
  * @brief Parse multipart/form-data body.
  *
+ * Coroutine-only.
+ *
  * All returned pointers point into the original data buffer (zero-copy).
  *
  * @param data       Multipart body bytes.
@@ -59,6 +61,8 @@ extern int xylem_http_multipart_parse(
 /**
  * @brief Parse multipart body directly from an HTTP request.
  *
+ * Coroutine-only.
+ *
  * Extracts boundary from Content-Type header automatically.
  *
  * @param req        Request handle.
@@ -74,6 +78,8 @@ extern int xylem_http_multipart_parse_request(
 
 /**
  * @brief Extract boundary from a Content-Type header value.
+ *
+ * Coroutine-only.
  *
  * @param content_type  Content-Type header value string.
  * @param len           Output: length of boundary string.

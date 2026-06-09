@@ -59,7 +59,9 @@ typedef struct xylem_ticker_s xylem_ticker_t;
 extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 
 /**
- * @brief Block until the next tick. Context-adaptive.
+ * @brief Block until the next tick.
+ *
+ * Context-adaptive.
  *
  * Parks the calling coroutine, or blocks the calling OS thread, until
  * the next tick. At most one tick is buffered: if the consumer falls

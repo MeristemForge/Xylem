@@ -51,6 +51,8 @@ typedef struct xylem_mux_opts_s {
 /**
  * @brief Create a mux session over a reliable byte stream.
  *
+ * Coroutine-only.
+ *
  * Spawns a background reader coroutine that demultiplexes incoming
  * frames and dispatches them to the appropriate streams.
  *
@@ -70,6 +72,8 @@ extern xylem_mux_t* xylem_mux_create(
 /**
  * @brief Destroy the mux session.
  *
+ * Coroutine-only.
+ *
  * Sends GoAway, resets all streams, and releases resources.
  *
  * @param mux  Session handle.
@@ -78,6 +82,8 @@ extern void xylem_mux_destroy(xylem_mux_t* mux);
 
 /**
  * @brief Open a new stream on the session.
+ *
+ * Coroutine-only.
  *
  * Sends a SYN frame to the peer. The stream is immediately usable.
  *
@@ -90,6 +96,8 @@ extern xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux);
 /**
  * @brief Accept an incoming stream opened by the peer.
  *
+ * Coroutine-only.
+ *
  * Suspends the calling coroutine until a new stream arrives or
  * the session closes.
  *
@@ -101,6 +109,8 @@ extern xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux);
 
 /**
  * @brief Receive data from a stream.
+ *
+ * Coroutine-only.
  *
  * Suspends until data is available, the remote end closes, or
  * the deadline expires.
@@ -117,6 +127,8 @@ extern int xylem_mux_read(
 /**
  * @brief Send data on a stream.
  *
+ * Coroutine-only.
+ *
  * Suspends if the peer's receive window is full. All bytes are
  * written before returning.
  *
@@ -132,12 +144,16 @@ extern int xylem_mux_write(
 /**
  * @brief Close a stream. Sends FIN to the peer.
  *
+ * Coroutine-only.
+ *
  * @param s  Stream handle.
  */
 extern void xylem_mux_close_stream(xylem_mux_stream_t* s);
 
 /**
  * @brief Set the read deadline for a stream.
+ *
+ * Coroutine-only.
  *
  * @param s            Stream handle.
  * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
@@ -147,6 +163,8 @@ extern void xylem_mux_set_read_deadline(
 
 /**
  * @brief Set the write deadline for a stream.
+ *
+ * Coroutine-only.
  *
  * @param s            Stream handle.
  * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.

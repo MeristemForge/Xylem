@@ -33,6 +33,8 @@ typedef struct xylem_http_fileserver_opts_s {
 /**
  * @brief Register a static file server on a router.
  *
+ * Coroutine-only.
+ *
  * Serves files from root_dir under url_prefix. Includes MIME type detection,
  * ETag/Range support via xylem_http_serve_content, and path traversal protection.
  *

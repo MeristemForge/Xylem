@@ -30,6 +30,8 @@ _Pragma("once")
 /**
  * @brief Compute the buffer size needed for xylem_http_basic_auth().
  *
+ * Coroutine-only.
+ *
  * @param ulen  Length of the username.
  * @param plen  Length of the password.
  *
@@ -39,6 +41,8 @@ extern int xylem_http_basic_auth_size(int ulen, int plen);
 
 /**
  * @brief Build a Basic Authorization header value into caller-provided buffer.
+ *
+ * Coroutine-only.
  *
  * @param user    Username (null-terminated).
  * @param pass    Password (null-terminated).
@@ -67,6 +71,8 @@ typedef struct {
 
 /**
  * @brief Basic Auth middleware.
+ *
+ * Coroutine-only.
  *
  * Pass a pointer to xylem_http_basic_auth_cfg_t as userdata:
  *   xylem_http_router_use(router, xylem_http_basic_auth_middleware, &cfg);

@@ -35,6 +35,8 @@ typedef struct xylem_tcp_opts_s {
 /**
  * @brief Create a TCP listener bound to the given address.
  *
+ * Coroutine-only.
+ *
  * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
  * @param port  Bind port.
  * @param opts  Options, NULL for defaults.
@@ -49,6 +51,8 @@ extern xylem_tcp_listener_t* xylem_tcp_listen(
 /**
  * @brief Accept a connection from the listener.
  *
+ * Coroutine-only.
+ *
  * Suspends the calling coroutine until a client connects.
  *
  * @param ln  Listener handle.
@@ -60,6 +64,8 @@ extern xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* ln);
 /**
  * @brief Close and destroy a listener. Idempotent.
  *
+ * Coroutine-only.
+ *
  * Wakes any coroutine blocked in xylem_tcp_accept().
  *
  * @param ln  Listener handle.
@@ -68,6 +74,8 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
 
 /**
  * @brief Connect to a remote TCP endpoint.
+ *
+ * Coroutine-only.
  *
  * Suspends the calling coroutine until the connection is established
  * or connect_timeout_ms elapses.
@@ -88,6 +96,8 @@ extern xylem_tcp_conn_t* xylem_tcp_dial(
 /**
  * @brief Set the read deadline for the connection.
  *
+ * Coroutine-only.
+ *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_tcp_read() calls return -1.
  *
@@ -102,6 +112,8 @@ extern void xylem_tcp_set_read_deadline(
 /**
  * @brief Set the write deadline for the connection.
  *
+ * Coroutine-only.
+ *
  * Mirror of xylem_tcp_set_read_deadline for the write direction.
  *
  * @param tcp          Connection handle.
@@ -113,6 +125,8 @@ extern void xylem_tcp_set_write_deadline(
 
 /**
  * @brief Read data from the connection (read-some semantics).
+ *
+ * Coroutine-only.
  *
  * Returns available data from the socket. Suspends the calling
  * coroutine if no data is immediately available. At most len
@@ -132,6 +146,8 @@ extern int xylem_tcp_read(
 /**
  * @brief Write all data to the connection.
  *
+ * Coroutine-only.
+ *
  * Loops internally until all len bytes are sent or an error
  * occurs. Suspends the calling coroutine as needed.
  *
@@ -149,6 +165,8 @@ extern int xylem_tcp_write(
 /**
  * @brief Close a connection. Idempotent.
  *
+ * Coroutine-only.
+ *
  * Wakes any coroutine blocked in read/write. Read any needed state
  * (xylem_tcp_remote_addr) before closing.
  *
@@ -158,6 +176,8 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Get the remote address of the connection.
+ *
+ * Coroutine-only.
  *
  * @param tcp       Connection handle.
  * @param host      Buffer to receive the address string.
@@ -175,6 +195,8 @@ extern int xylem_tcp_remote_addr(
 /**
  * @brief Get the local address of the connection.
  *
+ * Coroutine-only.
+ *
  * @param tcp       Connection handle.
  * @param host      Buffer to receive the address string.
  * @param host_len  Size of host buffer (46 bytes recommended).
@@ -190,6 +212,8 @@ extern int xylem_tcp_local_addr(
 
 /**
  * @brief Get the local address of the listener.
+ *
+ * Coroutine-only.
  *
  * Useful after binding to port 0 to discover the assigned port.
  *
@@ -209,6 +233,8 @@ extern int xylem_tcp_listener_addr(
 /**
  * @brief Shut down the write side of the connection.
  *
+ * Coroutine-only.
+ *
  * Sends a FIN to the peer, signalling that no more data will be
  * written. The connection remains readable; the peer sees EOF on
  * their next read. Use this for graceful half-close protocols.
@@ -221,6 +247,8 @@ extern int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp);
 
 /**
  * @brief Shut down the read side of the connection.
+ *
+ * Coroutine-only.
  *
  * Discards further incoming data. Subsequent read calls return -1.
  *

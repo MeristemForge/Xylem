@@ -74,6 +74,8 @@ typedef struct xylem_http_cli_opts_s {
 /**
  * @brief Start an HTTP server.
  *
+ * Coroutine-only.
+ *
  * @param host      Bind address, or NULL for any.
  * @param port      Bind port. 0 for OS-assigned.
  * @param handler   Request handler.
@@ -92,12 +94,16 @@ extern xylem_http_srv_t* xylem_http_listen(
 /**
  * @brief Stop the server and free resources.
  *
+ * Coroutine-only.
+ *
  * @param srv  Server handle, or NULL (no-op).
  */
 extern void xylem_http_close(xylem_http_srv_t* srv);
 
 /**
  * @brief Gracefully shut down the server.
+ *
+ * Coroutine-only.
  *
  * @param srv         Server handle.
  * @param timeout_ms  Maximum wait time, 0 = immediate close.
@@ -108,6 +114,8 @@ extern int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms);
 
 /**
  * @brief Get the server listening address.
+ *
+ * Coroutine-only.
  *
  * @param srv       Server handle.
  * @param host      Output buffer for host string, or NULL to skip.
@@ -125,6 +133,8 @@ extern int xylem_http_srv_addr(
 /**
  * @brief Get the request method.
  *
+ * Coroutine-only.
+ *
  * @param req  Request handle.
  *
  * @return Method string (e.g. "GET"), or NULL.
@@ -134,6 +144,8 @@ extern const char* xylem_http_req_method(const xylem_http_req_t* req);
 /**
  * @brief Get the request URL path.
  *
+ * Coroutine-only.
+ *
  * @param req  Request handle.
  *
  * @return URL path string, or NULL.
@@ -142,6 +154,8 @@ extern const char* xylem_http_req_url(const xylem_http_req_t* req);
 
 /**
  * @brief Get a request header value by name (case-insensitive).
+ *
+ * Coroutine-only.
  *
  * @param req   Request handle.
  * @param name  Header name.
@@ -153,6 +167,8 @@ extern const char* xylem_http_req_header(const xylem_http_req_t* req,
 
 /**
  * @brief Get all request headers.
+ *
+ * Coroutine-only.
  *
  * @param req      Request handle.
  * @param headers  Output: pointer to header array.
@@ -168,6 +184,8 @@ extern int xylem_http_req_headers(
 /**
  * @brief Get the request body.
  *
+ * Coroutine-only.
+ *
  * @param req  Request handle.
  *
  * @return Body bytes, or NULL if no body.
@@ -177,6 +195,8 @@ extern const void* xylem_http_req_body(const xylem_http_req_t* req);
 /**
  * @brief Get the request body length.
  *
+ * Coroutine-only.
+ *
  * @param req  Request handle.
  *
  * @return Body length in bytes.
@@ -185,6 +205,8 @@ extern size_t xylem_http_req_body_len(const xylem_http_req_t* req);
 
 /**
  * @brief Get the remote address of the client.
+ *
+ * Coroutine-only.
  *
  * @param req       Request handle.
  * @param host      Output buffer for IP string, or NULL to skip.
@@ -202,6 +224,8 @@ extern int xylem_http_req_remote_addr(
 /**
  * @brief Set the response status code.
  *
+ * Coroutine-only.
+ *
  * @param res   Response handle.
  * @param code  HTTP status code.
  *
@@ -211,6 +235,8 @@ extern int xylem_http_res_set_status(xylem_http_res_t* res, int code);
 
 /**
  * @brief Buffer a response header.
+ *
+ * Coroutine-only.
  *
  * @param res    Response handle.
  * @param name   Header name.
@@ -224,6 +250,8 @@ extern int xylem_http_res_set_header(xylem_http_res_t* res,
 /**
  * @brief Write response body data.
  *
+ * Coroutine-only.
+ *
  * @param res   Response handle.
  * @param data  Body data.
  * @param len   Data length in bytes.
@@ -236,6 +264,8 @@ extern int xylem_http_res_write(xylem_http_res_t* res,
 /**
  * @brief Accept an HTTP Upgrade request.
  *
+ * Coroutine-only.
+ *
  * @param res        Response handle.
  * @param transport  Output: underlying connection handle.
  *
@@ -245,6 +275,8 @@ extern int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport);
 
 /**
  * @brief Detach the underlying connection without sending any response.
+ *
+ * Coroutine-only.
  *
  * Unlike xylem_http_res_upgrade(), this writes no status line or headers:
  * the engine simply relinquishes the connection and the caller owns every
@@ -266,6 +298,8 @@ extern int xylem_http_res_hijack(xylem_http_res_t* res, void** transport);
 /**
  * @brief Get the response status code.
  *
+ * Coroutine-only.
+ *
  * @param res  Response handle.
  *
  * @return HTTP status code, or 0 if res is NULL.
@@ -274,6 +308,8 @@ extern int xylem_http_res_status(const xylem_http_res_t* res);
 
 /**
  * @brief Get a response header value by name (case-insensitive).
+ *
+ * Coroutine-only.
  *
  * @param res   Response handle.
  * @param name  Header name.
@@ -286,6 +322,8 @@ extern const char* xylem_http_res_header(const xylem_http_res_t* res,
 /**
  * @brief Get the response body.
  *
+ * Coroutine-only.
+ *
  * @param res  Response handle.
  *
  * @return Body bytes, or NULL if no body.
@@ -294,6 +332,8 @@ extern const void* xylem_http_res_body(const xylem_http_res_t* res);
 
 /**
  * @brief Get the response body length.
+ *
+ * Coroutine-only.
  *
  * @param res  Response handle.
  *
@@ -304,12 +344,16 @@ extern size_t xylem_http_res_body_len(const xylem_http_res_t* res);
 /**
  * @brief Free a response object.
  *
+ * Coroutine-only.
+ *
  * @param res  Response handle, or NULL (no-op).
  */
 extern void xylem_http_res_destroy(xylem_http_res_t* res);
 
 /**
  * @brief Send an HTTP request with an arbitrary method.
+ *
+ * Coroutine-only.
  *
  * @param method        HTTP method string (e.g. "OPTIONS", "PROPFIND").
  * @param url           Full URL.
@@ -337,6 +381,8 @@ extern xylem_http_res_t* xylem_http_request(
 /**
  * @brief Send an HTTP GET request.
  *
+ * Coroutine-only.
+ *
  * @param url           Full URL.
  * @param headers       Custom request headers, or NULL.
  * @param header_count  Number of custom headers.
@@ -352,6 +398,8 @@ extern xylem_http_res_t* xylem_http_get(const char* url,
 /**
  * @brief Send an HTTP HEAD request.
  *
+ * Coroutine-only.
+ *
  * @param url           Full URL.
  * @param headers       Custom request headers, or NULL.
  * @param header_count  Number of custom headers.
@@ -366,6 +414,8 @@ extern xylem_http_res_t* xylem_http_head(const char* url,
 
 /**
  * @brief Send an HTTP POST request.
+ *
+ * Coroutine-only.
  *
  * @param url           Full URL.
  * @param body          Request body, or NULL.
@@ -387,6 +437,8 @@ extern xylem_http_res_t* xylem_http_post(const char* url,
 /**
  * @brief Send an HTTP PUT request.
  *
+ * Coroutine-only.
+ *
  * @param url           Full URL.
  * @param body          Request body, or NULL.
  * @param body_len      Body length in bytes.
@@ -407,6 +459,8 @@ extern xylem_http_res_t* xylem_http_put(const char* url,
 /**
  * @brief Send an HTTP DELETE request.
  *
+ * Coroutine-only.
+ *
  * @param url           Full URL.
  * @param headers       Custom request headers, or NULL.
  * @param header_count  Number of custom headers.
@@ -421,6 +475,8 @@ extern xylem_http_res_t* xylem_http_delete(const char* url,
 
 /**
  * @brief Send an HTTP PATCH request.
+ *
+ * Coroutine-only.
  *
  * @param url           Full URL.
  * @param body          Request body, or NULL.
@@ -441,6 +497,8 @@ extern xylem_http_res_t* xylem_http_patch(const char* url,
 
 /**
  * @brief Serve in-memory content with automatic ETag, If-None-Match, and Range.
+ *
+ * Coroutine-only.
  *
  * @param res           Response writer.
  * @param req           Request (for Range/If-None-Match headers).

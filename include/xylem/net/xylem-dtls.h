@@ -63,6 +63,8 @@ typedef struct xylem_dtls_opts_s {
 /**
  * @brief Create a DTLS context.
  *
+ * Coroutine-only.
+ *
  * Defaults: as a client, the server certificate is verified; as a
  * server, no client certificate is requested; DTLS 1.2 minimum; cookie
  * exchange enabled for server-side anti-amplification. See
@@ -76,12 +78,16 @@ extern xylem_dtls_ctx_t* xylem_dtls_ctx_create(void);
 /**
  * @brief Destroy a DTLS context. NULL-safe.
  *
+ * Coroutine-only.
+ *
  * @param ctx  Context handle.
  */
 extern void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx);
 
 /**
  * @brief Load a PEM certificate chain and private key.
+ *
+ * Coroutine-only.
  *
  * When hostname is NULL the certificate becomes the default (used when
  * no SNI matches). When hostname is non-NULL, the certificate is bound
@@ -100,6 +106,8 @@ extern int xylem_dtls_ctx_load_cert(xylem_dtls_ctx_t* ctx,
 
 /**
  * @brief Load a PEM certificate chain and private key from memory.
+ *
+ * Coroutine-only.
  *
  * Same semantics as xylem_dtls_ctx_load_cert but reads the PEM data
  * from in-memory buffers instead of files, for certificates sourced
@@ -125,6 +133,8 @@ extern int xylem_dtls_ctx_load_cert_mem(xylem_dtls_ctx_t* ctx,
 /**
  * @brief Add a CA certificate file to the trust store.
  *
+ * Coroutine-only.
+ *
  * The CAs become trust anchors for verifying the peer certificate (the
  * server on a client, or the client on an mTLS server). Only these CAs
  * are trusted unless xylem_dtls_ctx_load_system_ca is also called,
@@ -140,6 +150,8 @@ extern int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx,
 
 /**
  * @brief Trust public-CA roots: the system store plus an optional bundle.
+ *
+ * Coroutine-only.
  *
  * Lets a client verify servers using certificates from public CAs. Loads
  * trust anchors additively from two sources:
@@ -169,6 +181,8 @@ extern int xylem_dtls_ctx_load_system_ca(xylem_dtls_ctx_t* ctx,
 /**
  * @brief Set whether a client verifies the server certificate.
  *
+ * Coroutine-only.
+ *
  * Applies to the client role (xylem_dtls_dial). When enabled (the
  * default) the server certificate chain is validated and, if
  * opts.server_name is set, its identity is checked. Disabling it makes
@@ -185,6 +199,8 @@ extern void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable);
 
 /**
  * @brief Set whether a server requires a client certificate (mTLS).
+ *
+ * Coroutine-only.
  *
  * Applies to the server role (xylem_dtls_listen). When enabled the
  * server requests a client certificate during the handshake and fails
@@ -204,6 +220,8 @@ extern void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable);
 /**
  * @brief Set the ALPN protocol list.
  *
+ * Coroutine-only.
+ *
  * @param ctx        Context handle.
  * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
  * @param count      Number of protocols.
@@ -216,6 +234,8 @@ extern int xylem_dtls_ctx_set_alpn(xylem_dtls_ctx_t* ctx,
 /**
  * @brief Enable NSS Key Log output for Wireshark decryption.
  *
+ * Coroutine-only.
+ *
  * @param ctx   Context handle.
  * @param path  Output file path, or NULL to disable.
  *
@@ -226,6 +246,8 @@ extern int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx,
 
 /**
  * @brief Connect to a remote DTLS endpoint.
+ *
+ * Coroutine-only.
  *
  * Suspends the calling coroutine until the handshake completes or
  * handshake_timeout_ms elapses (default 30s).
@@ -249,6 +271,8 @@ extern xylem_dtls_conn_t* xylem_dtls_dial(
 /**
  * @brief Create a DTLS listener bound to the given address.
  *
+ * Coroutine-only.
+ *
  * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
  * @param port  Bind port.
  * @param ctx   DTLS context with cert+key loaded.
@@ -265,6 +289,8 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
 /**
  * @brief Accept a connection from the listener.
  *
+ * Coroutine-only.
+ *
  * Suspends until a client completes the handshake.
  *
  * @param ln  Listener handle.
@@ -275,6 +301,8 @@ extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
 
 /**
  * @brief Read a datagram from the connection.
+ *
+ * Coroutine-only.
  *
  * Suspends until data arrives, the read deadline passes, or
  * the connection is closed.
@@ -293,6 +321,8 @@ extern int xylem_dtls_read(
 /**
  * @brief Write a datagram to the connection.
  *
+ * Coroutine-only.
+ *
  * @param dtls  Connection handle.
  * @param data  Source buffer.
  * @param len   Number of bytes to send.
@@ -306,6 +336,8 @@ extern int xylem_dtls_write(
 
 /**
  * @brief Set the read deadline for the connection.
+ *
+ * Coroutine-only.
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_dtls_read() calls return -1.
@@ -321,6 +353,8 @@ extern void xylem_dtls_set_read_deadline(
 /**
  * @brief Set the write deadline for the connection.
  *
+ * Coroutine-only.
+ *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_dtls_write() calls return -1.
  *
@@ -335,6 +369,8 @@ extern void xylem_dtls_set_write_deadline(
 /**
  * @brief Close a connection. Idempotent.
  *
+ * Coroutine-only.
+ *
  * Wakes any coroutine blocked in recv/send.
  *
  * @param dtls  Connection handle.
@@ -343,6 +379,8 @@ extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Close and destroy a listener. Idempotent.
+ *
+ * Coroutine-only.
  *
  * Closes all active sessions, stops the dispatcher coroutine,
  * and frees all resources.
@@ -354,6 +392,8 @@ extern void xylem_dtls_close_listener(xylem_dtls_listener_t* ln);
 /**
  * @brief Get the negotiated ALPN protocol.
  *
+ * Coroutine-only.
+ *
  * @param dtls  Connection handle.
  *
  * @return Protocol string, or NULL if none negotiated.
@@ -362,6 +402,8 @@ extern const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls);
 
 /**
  * @brief Get the remote address of the connection.
+ *
+ * Coroutine-only.
  *
  * @param dtls      Connection handle.
  * @param host      Buffer to receive the address string.
@@ -379,6 +421,8 @@ extern int xylem_dtls_remote_addr(
 /**
  * @brief Get the local address of the connection.
  *
+ * Coroutine-only.
+ *
  * @param dtls      Connection handle.
  * @param host      Buffer to receive the address string.
  * @param host_len  Size of host buffer (46 bytes recommended).
@@ -394,6 +438,8 @@ extern int xylem_dtls_local_addr(
 
 /**
  * @brief Get the local address of the listener.
+ *
+ * Coroutine-only.
  *
  * @param ln        Listener handle.
  * @param host      Buffer to receive the address string.

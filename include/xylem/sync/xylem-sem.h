@@ -84,13 +84,14 @@ extern void xylem_sem_destroy(xylem_sem_t* sem);
 /**
  * @brief Acquire a token, blocking if none is available.
  *
+ * Context-adaptive.
+ *
  * If the count is positive it is decremented and the call returns
  * immediately. Otherwise the caller blocks until a post() hands it a
  * token, in FIFO order with all other waiters.
  *
- * Context-adaptive: parks the calling coroutine when invoked from a
- * coroutine, or blocks the OS thread when invoked from any other
- * thread.
+ * Parks the calling coroutine when invoked from a coroutine, or blocks
+ * the OS thread when invoked from any other thread.
  *
  * @param sem  Semaphore handle.
  */
@@ -99,14 +100,16 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
 /**
  * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
  *
+ * Context-adaptive.
+ *
  * Like xylem_sem_wait, but gives up after the timeout elapses. A
  * timeout of 0 makes this a non-blocking attempt: it acquires a token
  * if one is immediately available, otherwise returns false at once
  * (never blocks, never parks).
  *
- * Context-adaptive: a coroutine caller parks with a scheduler timer; an
- * external thread blocks on its per-thread OS semaphore with the same
- * timeout. Both share the one FIFO queue and count.
+ * A coroutine caller parks with a scheduler timer; an external thread
+ * blocks on its per-thread OS semaphore with the same timeout. Both
+ * share the one FIFO queue and count.
  *
  * @param sem         Semaphore handle.
  * @param timeout_ms  Maximum time to wait, in milliseconds. 0 means a

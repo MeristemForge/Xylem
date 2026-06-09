@@ -26,6 +26,8 @@ _Pragma("once")
 /**
  * @brief Create a cookie jar.
  *
+ * Coroutine-only.
+ *
  * @return Cookie jar handle, or NULL on failure.
  */
 extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
@@ -33,12 +35,16 @@ extern xylem_http_cookie_jar_t* xylem_http_cookie_jar_create(void);
 /**
  * @brief Destroy a cookie jar. NULL-safe.
  *
+ * Coroutine-only.
+ *
  * @param jar  Cookie jar handle.
  */
 extern void xylem_http_cookie_jar_destroy(xylem_http_cookie_jar_t* jar);
 
 /**
  * @brief Manually set a cookie in the jar.
+ *
+ * Coroutine-only.
  *
  * @param jar    Cookie jar handle.
  * @param url    URL to associate the cookie with (for domain/path matching).
@@ -55,6 +61,8 @@ extern int xylem_http_cookie_jar_set(
 
 /**
  * @brief Get a cookie value from the jar.
+ *
+ * Coroutine-only.
  *
  * @param jar   Cookie jar handle.
  * @param url   URL to match against (domain/path).

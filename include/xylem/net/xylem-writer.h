@@ -41,6 +41,8 @@ typedef struct xylem_writer_s xylem_writer_t;
 /**
  * @brief Create a buffered writer.
  *
+ * Coroutine-only.
+ *
  * @param conn       Transport connection handle.
  * @param transport  Transport type (determines write function).
  * @param size   Internal buffer size in bytes. Must be > 0.
@@ -55,6 +57,8 @@ extern xylem_writer_t* xylem_writer_create(
 /**
  * @brief Destroy a buffered writer.
  *
+ * Coroutine-only.
+ *
  * Flushes pending data before releasing resources.
  *
  * @param wr  Writer to destroy.
@@ -63,6 +67,8 @@ extern void xylem_writer_destroy(xylem_writer_t* wr);
 
 /**
  * @brief Write data through the buffer.
+ *
+ * Coroutine-only.
  *
  * Small writes are buffered. When the buffer is full it is
  * flushed automatically. Writes larger than the buffer
@@ -81,6 +87,8 @@ extern int xylem_writer_write(
 
 /**
  * @brief Flush buffered data to the transport.
+ *
+ * Coroutine-only.
  *
  * No-op if the buffer is empty.
  *
