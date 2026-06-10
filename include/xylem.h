@@ -127,15 +127,15 @@ extern void xylem_spawn(void (*fn)(void*), void* arg);
 extern void xylem_sleep(uint64_t ms);
 
 /**
- * @brief Run a blocking function on the runtime's thread pool.
+ * @brief Await a blocking function run on the runtime's thread pool.
  * Coroutine-only.
  *
- * Submits @p fn to the blocking pool and suspends the calling
- * coroutine until it returns; the coroutine then resumes on a
- * scheduler worker. This keeps the worker free to run other coroutines
- * while @p fn blocks. Must be called from a coroutine on the runtime --
- * calling it off a coroutine aborts.
+ * Hands @p fn to the blocking pool and suspends the calling coroutine
+ * until it returns; the coroutine then resumes on a scheduler worker.
+ * This keeps the worker free to run other coroutines while @p fn
+ * blocks. Must be called from a coroutine on the runtime -- calling it
+ * off a coroutine aborts.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_submit(void (*fn)(void*), void* arg);
+extern int xylem_await(void (*fn)(void*), void* arg);

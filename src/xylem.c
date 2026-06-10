@@ -33,7 +33,7 @@
  * runtime layer stays purely coroutine-scoped and never depends on
  * the OS-thread sleep primitive.
  *
- * xylem_submit, by contrast, is coroutine-only: its sole purpose is to
+ * xylem_await, by contrast, is coroutine-only: its sole purpose is to
  * keep a scheduler worker free while blocking work runs, which only
  * makes sense on a worker. runtime_submit aborts if called off a
  * coroutine.
@@ -84,6 +84,6 @@ void xylem_sleep(uint64_t ms) {
     }
 }
 
-int xylem_submit(void (*fn)(void*), void* arg) {
+int xylem_await(void (*fn)(void*), void* arg) {
     return runtime_submit(fn, arg);
 }
