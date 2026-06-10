@@ -35,7 +35,11 @@
  * via CAS on poller_running: it owns the blocking poll that services
  * IO, timers and deferred posts. All other idle workers park on a
  * per-worker semaphore; scheduler_schedule and scheduler_post wake
- * at most one parked worker per push.
+ * at most one parked worker per push. A hand-off into an empty local
+ * runnext slot wakes nobody -- the scheduling worker consumes that coro
+ * itself, and a fresh runnext is not stealable yet, so waking a sibling
+ * would only make it spin and re-park (this keeps single-coroutine
+ * hand-offs such as a mutex/channel wake entirely on the local worker).
  *
  * Coroutine parking flows through scheduler_park: the park callback
  * runs *after* mco_yield returns, so a wakeup source can never
@@ -971,18 +975,22 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
 
     if (!_tls_worker || _tls_worker->sched != sched) {
         runq_push(sched->runq, &ctx->runq_node);
-    } else {
-        /**
-         * Stamp before publishing so a stealer that sees the coro also sees
-         * a valid timestamp (relaxed is fine: the runnext store is the
-         * release that orders this).
-         */
-        atomic_store_explicit(
-            &_tls_worker->runnext_ts,
-            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
-            memory_order_relaxed);
-        mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
-        if (old && wsdeque_push(_tls_worker->deque, old) != 0) {
+        _sched_wake_worker(sched);
+        return;
+    }
+
+    /**
+     * Stamp before publishing so a stealer that sees the coro also sees
+     * a valid timestamp (relaxed is fine: the runnext store is the
+     * release that orders this).
+     */
+    atomic_store_explicit(
+        &_tls_worker->runnext_ts,
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
+        memory_order_relaxed);
+    mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
+    if (old) {
+        if (wsdeque_push(_tls_worker->deque, old) != 0) {
             mco_coro* batch[(SCHED_DEQUE_CAP / 2) + 1];
             int32_t n = wsdeque_pop_half(
                 _tls_worker->deque, batch, (SCHED_DEQUE_CAP / 2));
@@ -996,9 +1004,20 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
             }
             runq_push_batch(sched->runq, nodes, n);
         }
+        /* The displaced `old` is now stealable (deque/global), so wake a
+         * parked worker to pick it up. */
+        _sched_wake_worker(sched);
     }
 
-    _sched_wake_worker(sched);
+    /**
+     * `co` went into an empty local runnext: this worker consumes it on
+     * its next schedule (it always pops runnext before parking), and a
+     * fresh runnext is not stealable until SCHED_RUNNEXT_STEAL_MS, so
+     * waking another worker would only make it spin and re-park. Skipping
+     * that wake keeps a single coroutine hand-off (mutex/sem/cond/channel
+     * wake, IO completion) entirely on this worker -- no wasted kernel
+     * wakeup of a sibling that has nothing it can take.
+     */
 }
 
 void scheduler_schedule_batch(
