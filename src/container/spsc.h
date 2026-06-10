@@ -24,10 +24,9 @@ _Pragma("once")
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 
 /**
- * Bounded, lock-free single-producer / single-consumer ring buffer.
+ * Bounded, lock-free single-producer / single-consumer ring of pointers.
  *
  * Exactly one producer thread/coroutine calls push and exactly one
  * consumer thread/coroutine calls pop; concurrent producers or
@@ -38,38 +37,40 @@ _Pragma("once")
  *
  * Unlike the MPSC queue there is no "temporarily inconsistent" state: a
  * single producer publishes each slot atomically, so a pop either sees
- * a fully written element or sees the ring as empty -- never a false
+ * a fully written pointer or sees the ring as empty -- never a false
  * empty.
  *
- * Elements are stored by value (memcpy of a fixed esz bytes) in a slot
- * array allocated once at init, so the queue performs no per-element
- * allocation. Capacity is fixed at init; a full ring pushes back (push
- * fails) rather than growing. The caller owns the spsc_t itself (it may
- * be embedded or stack-allocated); init allocates the backing slots and
- * deinit frees them.
+ * Each slot holds one pointer (the caller's element). Because pop
+ * returns the pointer value by copy -- never a pointer into the ring's
+ * own storage -- the returned element stays valid after its slot is
+ * recycled. NULL is reserved as the "empty" pop result, so spsc_push
+ * rejects a NULL element rather than letting it masquerade as empty.
+ *
+ * The slot array is allocated once at init, so the queue performs no
+ * per-element allocation. Capacity is fixed at init; a full ring pushes
+ * back (push fails) rather than growing. The caller owns the spsc_t
+ * itself (it may be embedded or stack-allocated); init allocates the
+ * backing slots and deinit frees them.
  */
 typedef struct spsc_s {
-    uint8_t*           slots; /* cap * esz bytes, owned by the ring */
-    size_t             esz;   /* element size in bytes */
-    size_t             mask;  /* cap - 1 (cap is a power of two) */
-    _Atomic size_t     wpos;  /* producer-owned write index (free running) */
-    _Atomic size_t     rpos;  /* consumer-owned read index (free running) */
+    void**         slots; /* cap pointers, owned by the ring */
+    size_t         mask;  /* cap - 1 (cap is a power of two) */
+    _Atomic size_t wpos;  /* producer-owned write index (free running) */
+    _Atomic size_t rpos;  /* consumer-owned read index (free running) */
 } spsc_t;
 
 /**
  * @brief Initialize an SPSC ring, allocating its backing storage.
  *
- * Allocates cap * esz bytes of slot storage owned by the ring; release
- * it with spsc_deinit. cap must be a power of two and non-zero, esz
- * must be non-zero.
+ * Allocates cap pointer slots owned by the ring; release them with
+ * spsc_deinit. cap must be a power of two and non-zero.
  *
  * @param q    Pointer to the ring structure to initialize.
- * @param cap  Number of element slots; must be a power of two.
- * @param esz  Element size in bytes; must be non-zero.
+ * @param cap  Number of pointer slots; must be a power of two.
  *
  * @return 0 on success, -1 on invalid arguments or allocation failure.
  */
-extern int spsc_init(spsc_t* q, size_t cap, size_t esz);
+extern int spsc_init(spsc_t* q, size_t cap);
 
 /**
  * @brief Release the ring's backing storage.
@@ -82,28 +83,23 @@ extern int spsc_init(spsc_t* q, size_t cap, size_t esz);
 extern void spsc_deinit(spsc_t* q);
 
 /**
- * @brief Push one element by value (producer side only).
- *
- * Copies esz bytes from elem into the next free slot.
+ * @brief Push one element pointer (producer side only).
  *
  * @param q     Pointer to the ring.
- * @param elem  Element to copy in; must be non-NULL.
+ * @param elem  Element pointer to enqueue; NULL is rejected.
  *
- * @return 0 on success, -1 if the ring is full.
+ * @return 0 on success, -1 if the ring is full or elem is NULL.
  */
-extern int spsc_push(spsc_t* q, const void* elem);
+extern int spsc_push(spsc_t* q, void* elem);
 
 /**
- * @brief Pop one element by value (consumer side only).
+ * @brief Pop the oldest element pointer (consumer side only).
  *
- * Copies esz bytes of the oldest element into out.
+ * @param q  Pointer to the ring.
  *
- * @param q    Pointer to the ring.
- * @param out  Destination of at least esz bytes; must be non-NULL.
- *
- * @return 0 on success, -1 if the ring is empty.
+ * @return The oldest element pointer, or NULL if the ring is empty.
  */
-extern int spsc_pop(spsc_t* q, void* out);
+extern void* spsc_pop(spsc_t* q);
 
 /**
  * @brief Number of elements currently queued (best-effort snapshot).
