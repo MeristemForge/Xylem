@@ -302,7 +302,7 @@ static void _submit_blocking(void* arg) {
 
 static void _submit_coro(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
-    int            rc  = xylem_submit(_submit_blocking, ctx);
+    int            rc  = xylem_await(_submit_blocking, ctx);
     ASSERT(rc == 0);
     ASSERT(ctx->output == 84);
     ctx->tested = 1;
@@ -337,7 +337,7 @@ static void _submit_conc_blocking(void* arg) {
 
 static void _submit_conc_coro(void* arg) {
     _submit_conc_ctx_t* ctx = (_submit_conc_ctx_t*)arg;
-    int                 rc  = xylem_submit(_submit_conc_blocking, NULL);
+    int                 rc  = xylem_await(_submit_conc_blocking, NULL);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&ctx->done, 1);
     if (prev == SUBMIT_CONC_COUNT - 1) {
@@ -381,7 +381,7 @@ static void _submit_res_blocking(void* arg) {
 
 static void _submit_res_coro(void* arg) {
     _submit_res_arg_t* a  = (_submit_res_arg_t*)arg;
-    int                rc = xylem_submit(_submit_res_blocking, a);
+    int                rc = xylem_await(_submit_res_blocking, a);
     ASSERT(rc == 0);
     int prev = atomic_fetch_add(&a->ctx->done, 1);
     if (prev == 3) {

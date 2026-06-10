@@ -23,6 +23,8 @@
 #include "assert.h"
 #include "utils.h"
 
+#include "thrds.h"
+
 #include <stdatomic.h>
 #include <stdio.h>
 
@@ -286,10 +288,138 @@ static void test_timeout_race(void) {
     }
 }
 
+/**
+ * recv from a real OS thread (not a coroutine). Coroutine producers
+ * send; an external thread blocks in recv via the cross-context
+ * semaphore. Verifies the headline route-B capability: a coroutine
+ * hands work to a plain thread. The coordinator coroutine closes the
+ * channel after all sends, joins the receiver thread, then tears down.
+ */
+#define TR_SENDERS  8
+#define TR_MESSAGES 50
+
+typedef struct {
+    xylem_channel_t*   ch;
+    xylem_waitgroup_t* wg;
+    int                payload;
+    atomic_int         recv_count;
+    thrd_t             thr;
+    int                tested;
+} _tr_ctx_t;
+
+static int _tr_recv_thread(void* arg) {
+    _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
+    for (;;) {
+        void* msg = xylem_channel_recv(ctx->ch); /* thread-side blocking recv */
+        if (!msg) {
+            break; /* closed and drained */
+        }
+        ASSERT(msg == &ctx->payload);
+        atomic_fetch_add(&ctx->recv_count, 1);
+    }
+    return 0;
+}
+
+static void _tr_sender(void* arg) {
+    _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
+    for (int i = 0; i < TR_MESSAGES; i++) {
+        xylem_channel_send(ctx->ch, &ctx->payload);
+    }
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _tr_coordinator(void* arg) {
+    _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg); /* all sends enqueued */
+    xylem_channel_close(ctx->ch);  /* signal end-of-stream to the thread */
+    thrd_join(ctx->thr, NULL);     /* thread drains the rest, then exits */
+    ASSERT(atomic_load(&ctx->recv_count) == TR_SENDERS * TR_MESSAGES);
+    ctx->tested = 1;
+    xylem_channel_destroy(ctx->ch);
+    ctx->ch = NULL;
+    xylem_waitgroup_destroy(ctx->wg);
+    ctx->wg = NULL;
+    xylem_shutdown();
+}
+
+static void _tr_main(void* arg) {
+    _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->ch = xylem_channel_create();
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, TR_SENDERS);
+    /* Start the OS-thread receiver before producers (ch is set). */
+    ASSERT(thrd_create(&ctx->thr, _tr_recv_thread, ctx) == thrd_success);
+    for (int i = 0; i < TR_SENDERS; i++) {
+        xylem_spawn(_tr_sender, ctx);
+    }
+    xylem_spawn(_tr_coordinator, ctx);
+}
+
+static void test_thread_recv(void) {
+    fprintf(stderr, "=== test_thread_recv\n");
+    for (int round = 0; round < 10; round++) {
+        _tr_ctx_t ctx = {0};
+        xylem_run(_tr_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
+/**
+ * Bounded channel non-blocking paths: full reports XYLEM_CHANNEL_FULL
+ * (both send and a timed send_timeout), len/cap report correctly, and
+ * recv_timeout(0) is a non-blocking try.
+ */
+typedef struct {
+    int tested;
+} _bt_ctx_t;
+
+static void _bt_coro(void* arg) {
+    _bt_ctx_t* ctx = (_bt_ctx_t*)arg;
+    xylem_channel_t* ch = xylem_channel_create_bounded(2);
+    ASSERT(ch != NULL);
+    ASSERT(xylem_channel_cap(ch) == 2);
+
+    int a = 1, b = 2, c = 3;
+    ASSERT(xylem_channel_send(ch, &a) == 0);
+    ASSERT(xylem_channel_send(ch, &b) == 0);
+    ASSERT(xylem_channel_len(ch) == 2);
+
+    /* Full: non-blocking send reports full. */
+    ASSERT(xylem_channel_send(ch, &c) == XYLEM_CHANNEL_FULL);
+
+    /* Non-blocking try recv frees a slot, then send fits. */
+    ASSERT(xylem_channel_recv_timeout(ch, 0) == &a);
+    ASSERT(xylem_channel_len(ch) == 1);
+    ASSERT(xylem_channel_send(ch, &c) == 0);
+
+    ASSERT(xylem_channel_recv_timeout(ch, 0) == &b);
+    ASSERT(xylem_channel_recv_timeout(ch, 0) == &c);
+    ASSERT(xylem_channel_recv_timeout(ch, 0) == NULL); /* empty try */
+
+    ctx->tested = 1;
+    xylem_channel_destroy(ch);
+    xylem_shutdown();
+}
+
+static void _bt_main(void* arg) {
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    xylem_spawn(_bt_coro, arg);
+}
+
+static void test_bounded_try(void) {
+    fprintf(stderr, "=== test_bounded_try\n");
+    _bt_ctx_t ctx = {0};
+    xylem_run(_bt_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
 int main(void) {
     test_concurrent();
     test_timeout_empty();
     test_timeout_deliver();
     test_timeout_race();
+    test_thread_recv();
+    test_bounded_try();
     return 0;
 }

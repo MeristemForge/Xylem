@@ -367,12 +367,12 @@ static void _c_ext_submitter(void* arg) {
     xylem_mutex_unlock(ctx->mtx);
     /**
      * Offload the predicate write to a dynpool thread (the external
-     * work). xylem_submit parks this coroutine until that work
+     * work). xylem_await parks this coroutine until that work
      * returns, so ctx->ready is set by the time it resumes. The
      * broadcast itself is coroutine-only, so it is issued here from
      * the coroutine rather than from the dynpool thread.
      */
-    int rc = xylem_submit(_c_ext_external, ctx);
+    int rc = xylem_await(_c_ext_external, ctx);
     ASSERT(rc == 0);
     xylem_cond_broadcast(ctx->cond);
 }
