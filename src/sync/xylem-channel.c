@@ -51,6 +51,8 @@ struct xylem_channel_s {
     _Atomic int32_t    refcnt;
     sched_timer_t*     deadline_timer; /* lazily created, reused */
     _Atomic bool       timed_out;
+    size_t             cap;   /* 0 = unbounded; immutable after create */
+    _Atomic size_t     count; /* in-flight messages: pushed, not yet popped */
 };
 
 typedef struct _channel_park_ctx_s {
@@ -132,14 +134,38 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     _channel_ref(ch);
 
+    /**
+     * timeout_ms == 0: non-blocking try. One pop, never park. A NULL
+     * return just means "nothing right now" (empty or closed); the
+     * caller does not distinguish.
+     */
+    if (timeout_ms == 0) {
+        void* payload = NULL;
+        mpsc_node_t* node = mpsc_pop(&ch->queue);
+        if (node) {
+            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
+            payload = m->payload;
+            free(m);
+            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+        }
+        _channel_unref(ch);
+        return payload;
+    }
+
+    /**
+     * (uint64_t)-1 blocks forever (no deadline); any other value is a
+     * finite relative timeout that needs the deadline timer.
+     */
+    bool infinite = (timeout_ms == (uint64_t)-1);
+
     /* Lazily create; reused across calls (hot path in DTLS/RUDP). */
-    if (timeout_ms > 0 && !ch->deadline_timer) {
+    if (!infinite && !ch->deadline_timer) {
         ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
     }
 
-    uint64_t deadline_ms = (timeout_ms > 0)
-        ? xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms
-        : 0;
+    uint64_t deadline_ms = infinite
+        ? 0
+        : xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
 
     atomic_store_explicit(&ch->timed_out, false, memory_order_release);
 
@@ -150,6 +176,7 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
             _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
             payload = m->payload;
             free(m);
+            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
             break;
         }
 
@@ -193,6 +220,7 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
             _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
             payload = m->payload;
             free(m);
+            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
             break;
         }
         if (atomic_load_explicit(&ch->timed_out, memory_order_acquire)) {
@@ -204,9 +232,7 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
     return payload;
 }
 
-xylem_channel_t* xylem_channel_create(void) {
-    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_create");
-
+static xylem_channel_t* _channel_create(size_t cap) {
     xylem_channel_t* ch =
         (xylem_channel_t*)calloc(1, sizeof(xylem_channel_t));
     if (!ch) {
@@ -216,7 +242,23 @@ xylem_channel_t* xylem_channel_create(void) {
     atomic_init(&ch->wait_coro, NULL);
     atomic_init(&ch->closed, false);
     atomic_init(&ch->refcnt, 1);
+    ch->cap = cap;
+    atomic_init(&ch->count, 0);
     return ch;
+}
+
+xylem_channel_t* xylem_channel_create(void) {
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_create");
+    return _channel_create(0);
+}
+
+xylem_channel_t* xylem_channel_create_bounded(size_t cap) {
+    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_create_bounded");
+    if (cap == 0) {
+        xylem_loge("<channel> create_bounded requires cap > 0");
+        return NULL;
+    }
+    return _channel_create(cap);
 }
 
 void xylem_channel_close(xylem_channel_t* ch) {
@@ -284,6 +326,22 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         abort();
     }
 
+    /**
+     * Bounded channel: reserve a slot before allocating/pushing. The
+     * fetch_add is the slot claim; if we overshoot cap, back it out and
+     * report full. This keeps the in-flight count <= cap under
+     * multiple producers without a check-then-act race. cap == 0 is
+     * unbounded: the count is still maintained (for xylem_channel_len)
+     * but never gates.
+     */
+    size_t prev = atomic_fetch_add_explicit(
+        &ch->count, 1, memory_order_acq_rel);
+    if (ch->cap != 0 && prev >= ch->cap) {
+        atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+        _channel_unref(ch);
+        return XYLEM_CHANNEL_FULL;
+    }
+
     int rc = -1;
     _channel_msg_t* m = (_channel_msg_t*)calloc(1, sizeof(_channel_msg_t));
     if (m) {
@@ -295,6 +353,9 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
             scheduler_schedule(runtime_get_scheduler(), co);
         }
         rc = 0;
+    } else {
+        /* Allocation failed: release the slot we reserved above. */
+        atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
     }
 
     _channel_unref(ch);
@@ -303,11 +364,25 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
 
 void* xylem_channel_recv(xylem_channel_t* ch) {
     RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv");
-    return _channel_recv_impl(ch, 0);
+    return _channel_recv_impl(ch, (uint64_t)-1);
 }
 
 void* xylem_channel_recv_timeout(
     xylem_channel_t* ch, uint64_t timeout_ms) {
     RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv_timeout");
     return _channel_recv_impl(ch, timeout_ms);
+}
+
+size_t xylem_channel_len(xylem_channel_t* ch) {
+    if (!ch) {
+        return 0;
+    }
+    return atomic_load_explicit(&ch->count, memory_order_relaxed);
+}
+
+size_t xylem_channel_cap(xylem_channel_t* ch) {
+    if (!ch) {
+        return 0;
+    }
+    return ch->cap;
 }

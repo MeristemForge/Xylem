@@ -125,14 +125,46 @@ front.
 
 An **MPSC** message queue: many senders, exactly one receiving coroutine.
 
-- `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL; returns
-  `0`/`-1` (invalid input or allocation failure). **Unbounded**: there is no
-  backpressure, send never blocks.
+- `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL. Returns
+  `0` on success, `XYLEM_CHANNEL_FULL` when a bounded channel is at capacity,
+  or `-1` (invalid input or allocation failure). **Never blocks the sender**
+  in either mode.
 - `recv()` — parks the calling coroutine until a message arrives or the channel
-  is closed-and-drained (then returns NULL). `recv_timeout(ms)` adds a relative
-  timeout; a NULL return does **not** distinguish "timed out" from "closed and
-  empty" — track the reason out of band if you need it.
+  is closed-and-drained (then returns NULL). `recv_timeout(ms)` is the general
+  form with a three-state wait policy:
+  - `0` — non-blocking try: pop if a message is immediately available, else
+    return NULL at once without parking. Use this to drain (e.g. drop-oldest
+    down to the newest frame) without risking a park.
+  - `(uint64_t)-1` — block forever, identical to `recv()`.
+  - any other `n` — block up to `n` ms.
+  A NULL return does **not** distinguish "nothing available" / "timed out" /
+  "closed and empty" — track the reason out of band if you need it.
+- `len()` / `cap()` — best-effort in-flight count and the configured capacity
+  (`cap()` is 0 for an unbounded channel). Safe from any thread; useful for
+  drop/backpressure decisions.
 - **Single receiver.** Concurrent `recv()` from two coroutines aborts.
+
+### Capacity
+
+- `create()` — **unbounded**: `send` always queues (barring OOM), no
+  backpressure.
+- `create_bounded(cap)` — caps the **in-flight** message count (sent but not
+  yet received) at `cap`. When full, `send` returns `XYLEM_CHANNEL_FULL` so the
+  caller can drop or retry; it does **not** park the producer. This is
+  non-blocking ("try") send: a deliberate choice so an external capture thread
+  is never stalled by a slow consumer (drop a frame instead). Blocking
+  backpressure (parking the producer until space frees) is intentionally not
+  provided — it would force `send` to wait, breaking its any-thread /
+  never-park contract.
+
+Implementation: a single `_Atomic size_t count` tracks in-flight messages.
+`send` reserves a slot with `fetch_add` before allocating; on overshoot it
+backs the slot out and returns full, so the count never exceeds `cap` under
+concurrent producers (no check-then-act race). `recv` decrements after a
+successful pop. The count is maintained for unbounded channels too, purely so
+`len()` works. Note this bounds the **count**, not allocation: each message is
+still a per-node `malloc`. A bounded, zero-allocation MPSC would need a
+preallocated MPMC ring, which this is not.
 
 Close/lifecycle semantics are strict and abort-on-misuse:
 

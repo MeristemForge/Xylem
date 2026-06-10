@@ -21,9 +21,17 @@
 
 _Pragma("once")
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct xylem_channel_s xylem_channel_t;
+
+/**
+ * Return code from xylem_channel_send when a bounded channel is at
+ * capacity. Distinct from -1 (invalid input / allocation failure) so
+ * callers can tell "full" (retry / drop a frame) from a hard error.
+ */
+#define XYLEM_CHANNEL_FULL (-2)
 
 /**
  * MPSC channel: many senders, single receiver.
@@ -32,10 +40,18 @@ typedef struct xylem_channel_s xylem_channel_t;
  *   - send() is the one operation callable from any thread (it never
  *     parks: lock-free push + scheduler wake). It is the sanctioned way
  *     for an external thread to hand work to a coroutine.
- *   - create(), close(), destroy() must be called from inside a
- *     coroutine (coroutine-only; they abort otherwise).
+ *   - create(), create_bounded(), close(), destroy() must be called
+ *     from inside a coroutine (coroutine-only; they abort otherwise).
  *   - recv() must be called from a coroutine. Only one coroutine
  *     may recv on a given channel; concurrent recv aborts.
+ *
+ * Capacity:
+ *   - create() makes an unbounded channel: send never reports full.
+ *   - create_bounded(cap) caps the in-flight message count at cap;
+ *     send returns XYLEM_CHANNEL_FULL instead of queueing when full.
+ *     send still never blocks in either mode (no producer backpressure
+ *     by parking); a full bounded channel rejects so the caller can
+ *     drop or retry. This is the non-blocking ("try") send semantics.
  */
 
 /**
@@ -44,6 +60,19 @@ typedef struct xylem_channel_s xylem_channel_t;
  * @return Channel handle, or NULL on allocation failure.
  */
 extern xylem_channel_t* xylem_channel_create(void);
+
+/**
+ * @brief Create a bounded channel.
+ *
+ * The channel holds at most @p cap in-flight messages (sent but not
+ * yet received). When full, xylem_channel_send returns
+ * XYLEM_CHANNEL_FULL instead of queueing; it never blocks the sender.
+ *
+ * @param cap  Maximum in-flight messages; must be > 0.
+ *
+ * @return Channel handle, or NULL on allocation failure or cap == 0.
+ */
+extern xylem_channel_t* xylem_channel_create_bounded(size_t cap);
 
 /**
  * @brief Destroy the channel, releasing its memory.
@@ -77,13 +106,17 @@ extern void xylem_channel_close(xylem_channel_t* ch);
  * @param ch   Channel handle.
  * @param msg  Opaque message pointer (must be non-NULL).
  *
- * @return 0 on success, -1 on invalid input or allocation failure.
+ * @return 0 on success, XYLEM_CHANNEL_FULL if the channel is bounded
+ *         and at capacity, or -1 on invalid input or allocation
+ *         failure.
  */
 extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 
 /**
- * @brief Receive the next message. Blocks the calling coroutine.
+ * @brief Receive the next message, blocking the calling coroutine
+ *        forever until a message arrives or the channel closes.
  *
+ * Equivalent to xylem_channel_recv_timeout(ch, (uint64_t)-1).
  * Concurrent recv from multiple coroutines aborts.
  *
  * @param ch  Channel handle.
@@ -93,21 +126,49 @@ extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 extern void* xylem_channel_recv(xylem_channel_t* ch);
 
 /**
- * @brief Receive the next message with a timeout. Blocks the
- *        calling coroutine until a message arrives, the channel
- *        closes, or the timeout elapses.
+ * @brief Receive the next message with a timeout.
  *
  * Concurrent recv from multiple coroutines aborts (same single-
  * receiver contract as recv).
  *
  * @param ch          Channel handle.
- * @param timeout_ms  Relative timeout in milliseconds. 0 means no
- *                    timeout, identical to recv().
+ * @param timeout_ms  Wait policy, three cases:
+ *                      - 0           : non-blocking try. Pops a queued
+ *                                      message if one is immediately
+ *                                      available, otherwise returns
+ *                                      NULL at once without parking.
+ *                      - (uint64_t)-1: block forever (identical to
+ *                                      xylem_channel_recv).
+ *                      - any other n : block up to n milliseconds.
  *
- * @return Message pointer, or NULL if the timeout elapsed, or the
- *         channel is closed and empty. The NULL cases are not
- *         distinguished; callers needing the reason should track it
- *         out of band.
+ * @return Message pointer, or NULL. NULL means, depending on the wait
+ *         policy: nothing was immediately available (try), the timeout
+ *         elapsed, or the channel is closed and empty. The NULL cases
+ *         are not distinguished; callers needing the reason should
+ *         track it out of band.
  */
 extern void* xylem_channel_recv_timeout(
     xylem_channel_t* ch, uint64_t timeout_ms);
+
+/**
+ * @brief Current number of in-flight messages (sent but not received).
+ *
+ * Best-effort snapshot, safe to call from any thread. Useful for
+ * drop/backpressure decisions on a bounded channel. Maintained for
+ * unbounded channels too.
+ *
+ * @param ch  Channel handle (NULL returns 0).
+ *
+ * @return Message count at the moment of the call.
+ */
+extern size_t xylem_channel_len(xylem_channel_t* ch);
+
+/**
+ * @brief Capacity of the channel.
+ *
+ * @param ch  Channel handle (NULL returns 0).
+ *
+ * @return The cap passed to create_bounded, or 0 for an unbounded
+ *         channel created with create().
+ */
+extern size_t xylem_channel_cap(xylem_channel_t* ch);
