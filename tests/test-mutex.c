@@ -22,6 +22,7 @@
 #include "xylem.h"
 #include "assert.h"
 #include "utils.h"
+#include "thrds.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -172,9 +173,117 @@ static void test_trylock(void) {
     ASSERT(ctx.tested == 1);
 }
 
+/* External OS threads contending the mutex (the futex/barging path), with
+ * no runtime running. The counter is plain (non-atomic) and guarded only
+ * by the mutex, so any mutual-exclusion failure shows up as a final count
+ * below the expected total. */
+
+#define MTX_THREADS        8
+#define MTX_THR_INCREMENTS 20000
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    long long      counter;
+} _mtx_thr_ctx_t;
+
+static int _mtx_thr_worker(void* arg) {
+    _mtx_thr_ctx_t* ctx = (_mtx_thr_ctx_t*)arg;
+    for (int i = 0; i < MTX_THR_INCREMENTS; i++) {
+        xylem_mutex_lock(ctx->mtx);
+        ctx->counter++;
+        xylem_mutex_unlock(ctx->mtx);
+    }
+    return 0;
+}
+
+static void test_threads(void) {
+    fprintf(stderr, "=== test_threads\n");
+    _mtx_thr_ctx_t ctx = {0};
+    ctx.mtx = xylem_mutex_create();
+
+    thrd_t th[MTX_THREADS];
+    for (int i = 0; i < MTX_THREADS; i++) {
+        ASSERT(thrd_create(&th[i], _mtx_thr_worker, &ctx) == thrd_success);
+    }
+    for (int i = 0; i < MTX_THREADS; i++) {
+        thrd_join(th[i], NULL);
+    }
+
+    ASSERT(ctx.counter == (long long)MTX_THREADS * MTX_THR_INCREMENTS);
+    xylem_mutex_destroy(ctx.mtx);
+}
+
+/* Coroutines and external OS threads contending the SAME mutex at the same
+ * time -- the mixed path, where unlock must coordinate a coroutine hand-off
+ * against a barging thread release. Threads start before the runtime so
+ * they overlap the coroutine phase. */
+
+#define MTX_MIX_COROS      8
+#define MTX_MIX_THREADS    8
+#define MTX_MIX_INCREMENTS 5000
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    long long      counter;
+    atomic_int     coros_done;
+} _mtx_mixed_ctx_t;
+
+static int _mtx_mixed_thr(void* arg) {
+    _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
+    for (int i = 0; i < MTX_MIX_INCREMENTS; i++) {
+        xylem_mutex_lock(ctx->mtx);
+        ctx->counter++;
+        xylem_mutex_unlock(ctx->mtx);
+    }
+    return 0;
+}
+
+static void _mtx_mixed_coro(void* arg) {
+    _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
+    for (int i = 0; i < MTX_MIX_INCREMENTS; i++) {
+        xylem_mutex_lock(ctx->mtx);
+        ctx->counter++;
+        xylem_mutex_unlock(ctx->mtx);
+    }
+    if (atomic_fetch_add(&ctx->coros_done, 1) == MTX_MIX_COROS - 1) {
+        xylem_shutdown();
+    }
+}
+
+static void _test_mtx_mixed_main(void* arg) {
+    _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    for (int i = 0; i < MTX_MIX_COROS; i++) {
+        xylem_spawn(_mtx_mixed_coro, ctx);
+    }
+}
+
+static void test_mixed(void) {
+    fprintf(stderr, "=== test_mixed\n");
+    _mtx_mixed_ctx_t ctx = {0};
+    ctx.mtx = xylem_mutex_create();
+
+    thrd_t th[MTX_MIX_THREADS];
+    for (int i = 0; i < MTX_MIX_THREADS; i++) {
+        ASSERT(thrd_create(&th[i], _mtx_mixed_thr, &ctx) == thrd_success);
+    }
+
+    xylem_run(_test_mtx_mixed_main, &ctx, &_rt_opts);
+
+    for (int i = 0; i < MTX_MIX_THREADS; i++) {
+        thrd_join(th[i], NULL);
+    }
+
+    ASSERT(ctx.counter ==
+           (long long)(MTX_MIX_COROS + MTX_MIX_THREADS) * MTX_MIX_INCREMENTS);
+    xylem_mutex_destroy(ctx.mtx);
+}
+
 int main(void) {
     test_ping_pong();
     test_concurrent();
     test_trylock();
+    test_threads();
+    test_mixed();
     return 0;
 }

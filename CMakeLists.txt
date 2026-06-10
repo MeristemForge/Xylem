@@ -130,6 +130,7 @@ if(WIN32)
 		src/platform/win/platform-poller.c
 		src/platform/win/platform-socket.c
 		src/platform/win/platform-sem.c
+		src/platform/win/platform-futex.c
 		src/platform/win/platform-serial.c
 		src/platform/win/platform-vmem.c
 		src/platform/win/wepoll/wepoll.c
@@ -143,6 +144,7 @@ if(UNIX)
 		src/platform/unix/platform-poller.c
 		src/platform/unix/platform-socket.c
 		src/platform/unix/platform-sem.c
+		src/platform/unix/platform-futex.c
 		src/platform/unix/platform-serial.c
 		src/platform/unix/platform-vmem.c
 	)
@@ -182,6 +184,12 @@ target_include_directories(xylem
 )
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
+
+if(WIN32)
+	# WaitOnAddress / WakeByAddress* (platform-futex) live in the
+	# api-ms-win-core-synch-l1-2-0 set; Synchronization.lib is its import lib.
+	target_link_libraries(xylem PRIVATE Synchronization)
+endif()
 
 if(XYLEM_ENABLE_TLS)
 	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)

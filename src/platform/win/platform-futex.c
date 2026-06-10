@@ -19,14 +19,27 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-futex.h"
 
-#include "platform-cpu.h"
-#include "platform-futex.h"
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-vmem.h"
+/* WaitOnAddress / WakeByAddress* live in api-ms-win-core-synch-l1-2-0,
+ * whose import library is Synchronization.lib (linked in CMakeLists).
+ * Available since Windows 8 / Server 2012. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
+    /* WaitOnAddress compares *addr against the value pointed to by its
+     * second argument, so pass the address of a local copy. A FALSE
+     * return (timeout/spurious) is fine: the caller re-checks in a loop. */
+    WaitOnAddress((volatile void*)addr, &expected, sizeof(expected), INFINITE);
+}
+
+void platform_futex_wake_one(_Atomic uint32_t* addr) {
+    WakeByAddressSingle((PVOID)addr);
+}
+
+void platform_futex_wake_all(_Atomic uint32_t* addr) {
+    WakeByAddressAll((PVOID)addr);
+}
