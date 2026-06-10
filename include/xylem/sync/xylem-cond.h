@@ -27,21 +27,21 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * Condition variable concurrency model
  *
- * A xylem_cond is a coroutine condition variable paired with
- * xylem_mutex. Semantics mirror pthread_cond: edge-triggered,
- * no accumulation of missed signals; callers must check the
- * predicate in a while-loop to handle spurious wakeups and
- * bursts.
+ * A xylem_cond is a condition variable paired with xylem_mutex.
+ * Semantics mirror pthread_cond: edge-triggered, no accumulation of
+ * missed signals; callers must check the predicate in a while-loop to
+ * handle spurious wakeups and bursts.
  *
  * Threading:
- *   - All operations (create, destroy, signal, broadcast, wait) must be
- *     called from inside a coroutine on a scheduler worker; calling any
- *     of them outside a coroutine context aborts the process.
- *   - wait() must be called from inside a coroutine on a scheduler
- *     worker (it parks). The caller MUST currently hold `mtx`.
+ *   - All operations work from any context: a coroutine on a scheduler
+ *     worker, or an external OS thread. wait() blocks the caller in the
+ *     way that fits its context (a coroutine parks, an OS thread blocks
+ *     on a per-thread semaphore) and re-acquires `mtx` on wake; the
+ *     caller MUST currently hold `mtx`. signal()/broadcast() never
+ *     block.
  *
  * wait() atomically enqueues the caller on the cond's waiter list
- * and releases `mtx`, then parks. On wake it re-acquires `mtx`
+ * and releases `mtx`, then blocks. On wake it re-acquires `mtx`
  * before returning. The "enqueue before unlock" order is what makes
  * the atomic release + sleep correct: any signaler serialised
  * through `mtx` cannot observe the released mutex until the waiter
@@ -62,12 +62,10 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     xylem_cond_signal(c);        // or xylem_cond_broadcast(c)
  *     xylem_mutex_unlock(m);
  *
- * signal/broadcast are coroutine-only like the rest of the API, so a
- * signaler is itself a coroutine and normally holds the same mutex as
- * the waiter, giving the standard lost-wakeup-free ordering.
- *
- * Misuse that aborts the process:
- *   - Calling any cond operation outside a coroutine context.
+ * A signaler normally holds the same mutex as the waiter, giving the
+ * standard lost-wakeup-free ordering. An external thread that cannot
+ * take the mutex must avoid lost wakeups out of band: set an atomic
+ * predicate flag *before* calling signal()/broadcast().
  */
 
 /**
@@ -91,9 +89,10 @@ extern void xylem_cond_destroy(xylem_cond_t* cond);
  * @brief Atomically release `mtx` and suspend the caller until
  *        the cond is signalled.
  *
- * Must be called from inside a coroutine on a scheduler worker,
- * holding `mtx`. On return, `mtx` is held again. Callers must
- * re-check the predicate in a while-loop.
+ * Callable from any context, holding `mtx`: a coroutine parks, an
+ * external OS thread blocks on a per-thread semaphore. On return,
+ * `mtx` is held again. Callers must re-check the predicate in a
+ * while-loop.
  *
  * @param cond  Pointer to the cond.
  * @param mtx   Mutex currently held by the caller.
@@ -103,8 +102,8 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
 /**
  * @brief Wake one waiter, if any.
  *
- * Coroutine-only. If no coroutine is currently parked on the cond the
- * call is a no-op (no permit is stored).
+ * Callable from any context; never blocks. If no one is currently
+ * parked on the cond the call is a no-op (no permit is stored).
  *
  * @param cond  Pointer to the cond.
  */
@@ -113,9 +112,9 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
 /**
  * @brief Wake every waiter currently parked on the cond.
  *
- * Coroutine-only. Waiters observed at the moment broadcast() acquires
- * its internal guard are all rescheduled; waiters that park after
- * that point are not affected.
+ * Callable from any context; never blocks. Waiters observed at the
+ * moment broadcast() acquires its internal guard are all resumed;
+ * waiters that block after that point are not affected.
  *
  * @param cond  Pointer to the cond.
  */

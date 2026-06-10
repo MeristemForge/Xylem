@@ -36,22 +36,28 @@ typedef struct xylem_channel_s xylem_channel_t;
 /**
  * MPSC channel: many senders, single receiver.
  *
+ * Lock-free data path (intrusive MPSC queue) with a single-receiver
+ * wakeup slot, so recv works from either a coroutine or a plain OS
+ * thread: a coroutine producer can hand work to an OS-thread consumer
+ * and vice versa.
+ *
  * Threading:
- *   - send() is the one operation callable from any thread (it never
- *     parks: lock-free push + scheduler wake). It is the sanctioned way
- *     for an external thread to hand work to a coroutine.
- *   - create(), create_bounded(), close(), destroy() must be called
- *     from inside a coroutine (coroutine-only; they abort otherwise).
- *   - recv() must be called from a coroutine. Only one coroutine
- *     may recv on a given channel; concurrent recv aborts.
+ *   - send(): callable from any thread or coroutine; never parks. A
+ *     full bounded channel returns XYLEM_CHANNEL_FULL (drop/retry is
+ *     the caller's choice -- there is no blocking backpressure).
+ *   - recv() / recv_timeout(): callable from a coroutine OR an OS
+ *     thread. Only one receiver may operate on a channel at a time;
+ *     concurrent recv aborts (single-consumer MPSC contract).
+ *   - create(), create_bounded(), destroy() must be called from inside
+ *     a coroutine (coroutine-only; they abort otherwise). close() is
+ *     any-context.
  *
  * Capacity:
  *   - create() makes an unbounded channel: send never reports full.
  *   - create_bounded(cap) caps the in-flight message count at cap;
- *     send returns XYLEM_CHANNEL_FULL instead of queueing when full.
- *     send still never blocks in either mode (no producer backpressure
- *     by parking); a full bounded channel rejects so the caller can
- *     drop or retry. This is the non-blocking ("try") send semantics.
+ *     send returns XYLEM_CHANNEL_FULL when full. For backpressure the
+ *     receiver can watch len()/cap() and drop once over a threshold
+ *     (recv_timeout(ch, 0) drains without blocking).
  */
 
 /**

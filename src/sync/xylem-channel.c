@@ -24,10 +24,14 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
+#include "platform/platform-sem.h"
 #include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/mpsc.h"
+#include "sync/waiter.h"
+
+#include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -39,26 +43,37 @@ typedef struct _channel_msg_s {
 } _channel_msg_t;
 
 /**
- * refcnt: 1(creator) + 1(in-flight call) + 1(armed deadline timer).
- * Timer ref lets the callback safely touch ch even if recv already
- * returned and the creator destroyed the channel concurrently.
- * Channel must not outlive xylem_run (deadline_timer is scheduler-owned).
+ * MPSC channel, lock-free data path.
+ *
+ * Messages live in an intrusive MPSC queue (multi-producer, single
+ * consumer). The single receiver -- a coroutine or an OS thread --
+ * publishes itself into one atomic `waiter` slot when it has to block;
+ * a sender, close(), or the deadline timer arbitrate the wakeup with a
+ * single atomic_exchange on that slot, so exactly one of them resumes
+ * the receiver and none double-wakes. The shared `waiter` module
+ * supplies the cross-context waiter representation, the per-thread wake
+ * semaphore, and the wake dispatch.
+ *
+ * refcnt keeps the channel alive across a concurrent destroy: the
+ * creator holds one ref, every in-flight send/recv holds one, and an
+ * armed deadline timer holds one (so its callback can touch the channel
+ * even if recv already returned). Channel must not outlive xylem_run
+ * (the deadline timer is scheduler-owned).
+ *
+ * count is maintained for xylem_channel_len; the capacity gate is the
+ * atomic fetch_add reservation in send.
  */
 struct xylem_channel_s {
     mpsc_t             queue;
-    _Atomic(mco_coro*) wait_coro;
+    _Atomic(waiter_t*) waiter;         /* single receiver, NULL if none  */
     _Atomic bool       closed;
+    _Atomic bool       recv_active;    /* single-receiver enforcement     */
+    _Atomic bool       timed_out;      /* current timed coroutine recv    */
     _Atomic int32_t    refcnt;
-    sched_timer_t*     deadline_timer; /* lazily created, reused */
-    _Atomic bool       timed_out;
-    size_t             cap;   /* 0 = unbounded; immutable after create */
-    _Atomic size_t     count; /* in-flight messages: pushed, not yet popped */
+    sched_timer_t*     deadline_timer; /* lazily created, reused          */
+    size_t             cap;            /* 0 = unbounded; immutable         */
+    _Atomic size_t     count;          /* queued messages, for len()       */
 };
-
-typedef struct _channel_park_ctx_s {
-    xylem_channel_t* ch;
-    uint64_t         deadline_ms; /* 0 = no deadline */
-} _channel_park_ctx_t;
 
 static inline void _channel_ref(xylem_channel_t* ch) {
     atomic_fetch_add_explicit(&ch->refcnt, 1, memory_order_relaxed);
@@ -80,50 +95,198 @@ static void _channel_unref(xylem_channel_t* ch) {
     free(ch);
 }
 
-static bool _channel_recv_park_cb(mco_coro* co, void* arg) {
+/* Wake the parked receiver, if any. Used by send, close, and the timer.
+ * The atomic_exchange gives the caller exclusive ownership of the
+ * wakeup: the loser sees NULL and the woken party's stack waiter stays
+ * valid until it is resumed exactly once. */
+static void _channel_wake_receiver(xylem_channel_t* ch) {
+    waiter_t* w = atomic_exchange(&ch->waiter, NULL);
+    if (w) {
+        waiter_wake(*w);
+    }
+}
+
+/* Coroutine receiver: park on a stack waiter, lock-free. */
+
+typedef struct _channel_park_ctx_s {
+    xylem_channel_t* ch;
+    waiter_t*        w;
+} _channel_park_ctx_t;
+
+static bool _channel_park_cb(mco_coro* co, void* arg) {
     _channel_park_ctx_t* ctx = (_channel_park_ctx_t*)arg;
     xylem_channel_t*     ch  = ctx->ch;
 
-    /* Detects single-receiver violation. */
-    mco_coro* prev = atomic_exchange(&ch->wait_coro, co);
-    if (prev != NULL) {
-        xylem_loge(
-            "<channel> concurrent recv violates single-receiver "
-            "contract ch=%p prev=%p new=%p; aborting",
-            (void*)ch,
-            (void*)prev,
-            (void*)co);
-        abort();
-    }
+    ctx->w->co = co;
+    atomic_store_explicit(&ch->waiter, ctx->w, memory_order_release);
 
     /**
-     * A sender/close/timer may have raced between the emptiness test
-     * and publishing co. Decline park so the recv loop retries.
-     * Peek only -- pop+re-push would break FIFO.
+     * A sender / close / timer may have raced between the emptiness
+     * test and publishing the waiter. Decline park so the recv loop
+     * retries. Peek only -- pop+re-push would break FIFO.
      */
-    if (atomic_load(&ch->closed)
+    if (atomic_load_explicit(&ch->closed, memory_order_acquire)
         || atomic_load_explicit(&ch->timed_out, memory_order_acquire)
         || !mpsc_empty(&ch->queue)) {
-        mco_coro* expected = co;
+        waiter_t* expected = ctx->w;
         if (atomic_compare_exchange_strong(
-                &ch->wait_coro, &expected, NULL)) {
+                &ch->waiter, &expected, NULL)) {
             return false;
         }
     }
-
     return true;
 }
 
-static void _channel_deadline_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _channel_timeout_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     xylem_channel_t* ch = (xylem_channel_t*)ud;
     atomic_store_explicit(&ch->timed_out, true, memory_order_release);
-    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
+    _channel_wake_receiver(ch);
     /* Balance the ref recv handed us when arming the timer. */
     _channel_unref(ch);
+}
+
+static void* _channel_take(xylem_channel_t* ch, mpsc_node_t* node) {
+    _channel_msg_t* m       = mpsc_entry(node, _channel_msg_t, node);
+    void*           payload = m->payload;
+    free(m);
+    atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+    return payload;
+}
+
+static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
+    bool infinite = (timeout_ms == (uint64_t)-1);
+
+    /* Lazily create; reused across calls (hot path in DTLS/RUDP). */
+    if (!infinite && !ch->deadline_timer) {
+        ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
+    }
+    uint64_t deadline_ms = infinite
+        ? 0
+        : xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
+
+    atomic_store_explicit(&ch->timed_out, false, memory_order_release);
+
+    waiter_t w;
+    waiter_init(&w);
+
+    void* payload = NULL;
+    for (;;) {
+        mpsc_node_t* node = mpsc_pop(&ch->queue);
+        if (node) {
+            payload = _channel_take(ch, node);
+            break;
+        }
+        if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
+            break;
+        }
+
+        if (deadline_ms > 0) {
+            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (now >= deadline_ms) {
+                break;
+            }
+            if (ch->deadline_timer) {
+                /* Ref for the timer callback -- balanced by the callback
+                 * itself, or by us if stop() cancels it. */
+                _channel_ref(ch);
+                sched_timer_start(ch->deadline_timer, _channel_timeout_cb,
+                                  ch, deadline_ms - now, 0);
+            }
+        }
+
+        _channel_park_ctx_t ctx = { ch, &w };
+        scheduler_park(runtime_get_scheduler(), _channel_park_cb, &ctx);
+
+        if (deadline_ms > 0 && ch->deadline_timer) {
+            /* stop() true => callback will not run, we own its ref. */
+            if (sched_timer_stop(ch->deadline_timer)) {
+                _channel_unref(ch);
+            }
+        }
+
+        /* Data wins over timeout -- avoid stranding a message that
+         * arrived in the same window the deadline fired. */
+        node = mpsc_pop(&ch->queue);
+        if (node) {
+            payload = _channel_take(ch, node);
+            break;
+        }
+        if (atomic_load_explicit(&ch->timed_out, memory_order_acquire)) {
+            break;
+        }
+    }
+    return payload;
+}
+
+/* OS-thread receiver: block on the per-thread sem, lock-free. */
+
+static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
+    bool infinite = (timeout_ms == (uint64_t)-1);
+    uint64_t deadline_ms = infinite
+        ? 0
+        : xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
+
+    waiter_t w;
+    waiter_init(&w);
+    if (!w.tsem) {
+        /* No wake sem (OOM): best-effort single pop, never block. */
+        mpsc_node_t* node = mpsc_pop(&ch->queue);
+        return node ? _channel_take(ch, node) : NULL;
+    }
+
+    void* payload = NULL;
+    for (;;) {
+        mpsc_node_t* node = mpsc_pop(&ch->queue);
+        if (node) {
+            payload = _channel_take(ch, node);
+            break;
+        }
+        if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
+            break;
+        }
+
+        uint64_t remaining = 0;
+        if (deadline_ms > 0) {
+            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (now >= deadline_ms) {
+                break;
+            }
+            remaining = deadline_ms - now;
+        }
+
+        /* Publish self, then re-check: a sender/close may have raced
+         * between the pop above and publishing. */
+        atomic_store_explicit(&ch->waiter, &w, memory_order_release);
+        if (atomic_load_explicit(&ch->closed, memory_order_acquire)
+            || !mpsc_empty(&ch->queue)) {
+            waiter_t* expected = &w;
+            if (atomic_compare_exchange_strong(
+                    &ch->waiter, &expected, NULL)) {
+                continue; /* undid our publish: retry the pop */
+            }
+            /* A waker already claimed us; it will post our tsem -- fall
+             * through and consume it below so it is not lost. */
+        }
+
+        if (infinite) {
+            platform_sem_wait(w.tsem);
+            continue; /* woken: retry pop */
+        }
+
+        if (platform_sem_timedwait(w.tsem, remaining) == 0) {
+            continue; /* a waker handed us a token: retry pop */
+        }
+
+        /* Timed out: arbitrate with a waker that may have claimed us. */
+        waiter_t* expected = &w;
+        if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
+            break; /* removed ourselves cleanly -> timeout */
+        }
+        /* A waker claimed us and will post tsem; consume it, retry pop. */
+        platform_sem_wait(w.tsem);
+    }
+    return payload;
 }
 
 static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
@@ -134,100 +297,26 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     _channel_ref(ch);
 
-    /**
-     * timeout_ms == 0: non-blocking try. One pop, never park. A NULL
-     * return just means "nothing right now" (empty or closed); the
-     * caller does not distinguish.
-     */
+    if (atomic_exchange_explicit(&ch->recv_active, true,
+                                 memory_order_acq_rel)) {
+        xylem_loge("<channel> concurrent recv violates single-receiver "
+                   "contract ch=%p; aborting",
+                   (void*)ch);
+        abort();
+    }
+
+    void* payload;
     if (timeout_ms == 0) {
-        void* payload = NULL;
+        /* Non-blocking try: one pop, never block. */
         mpsc_node_t* node = mpsc_pop(&ch->queue);
-        if (node) {
-            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
-            payload = m->payload;
-            free(m);
-            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
-        }
-        _channel_unref(ch);
-        return payload;
+        payload = node ? _channel_take(ch, node) : NULL;
+    } else if (mco_running()) {
+        payload = _channel_recv_coro(ch, timeout_ms);
+    } else {
+        payload = _channel_recv_thread(ch, timeout_ms);
     }
 
-    /**
-     * (uint64_t)-1 blocks forever (no deadline); any other value is a
-     * finite relative timeout that needs the deadline timer.
-     */
-    bool infinite = (timeout_ms == (uint64_t)-1);
-
-    /* Lazily create; reused across calls (hot path in DTLS/RUDP). */
-    if (!infinite && !ch->deadline_timer) {
-        ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
-    }
-
-    uint64_t deadline_ms = infinite
-        ? 0
-        : xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
-
-    atomic_store_explicit(&ch->timed_out, false, memory_order_release);
-
-    void* payload = NULL;
-    for (;;) {
-        mpsc_node_t* node = mpsc_pop(&ch->queue);
-        if (node) {
-            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
-            payload = m->payload;
-            free(m);
-            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
-            break;
-        }
-
-        if (atomic_load(&ch->closed)) {
-            break;
-        }
-
-        if (deadline_ms > 0) {
-            uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-            if (now >= deadline_ms) {
-                break;
-            }
-            if (ch->deadline_timer) {
-                /**
-                 * Ref for the timer callback -- balanced by the
-                 * callback itself or by us if stop() cancels it.
-                 */
-                _channel_ref(ch);
-                sched_timer_start(ch->deadline_timer,
-                                  _channel_deadline_timeout_cb, ch,
-                                  deadline_ms - now, 0);
-            }
-        }
-
-        _channel_park_ctx_t ctx = { .ch = ch, .deadline_ms = deadline_ms };
-        scheduler_park(runtime_get_scheduler(), _channel_recv_park_cb, &ctx);
-
-        if (deadline_ms > 0 && ch->deadline_timer) {
-            /* stop() true => callback will not run, we own its ref. */
-            if (sched_timer_stop(ch->deadline_timer)) {
-                _channel_unref(ch);
-            }
-        }
-
-        /**
-         * Data wins over timeout -- avoids stranding a message that
-         * arrived in the same window the deadline fired.
-         */
-        node = mpsc_pop(&ch->queue);
-        if (node) {
-            _channel_msg_t* m = mpsc_entry(node, _channel_msg_t, node);
-            payload = m->payload;
-            free(m);
-            atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
-            break;
-        }
-        if (atomic_load_explicit(&ch->timed_out, memory_order_acquire)) {
-            break;
-        }
-    }
-
+    atomic_store_explicit(&ch->recv_active, false, memory_order_release);
     _channel_unref(ch);
     return payload;
 }
@@ -239,8 +328,10 @@ static xylem_channel_t* _channel_create(size_t cap) {
         return NULL;
     }
     mpsc_init(&ch->queue);
-    atomic_init(&ch->wait_coro, NULL);
+    atomic_init(&ch->waiter, NULL);
     atomic_init(&ch->closed, false);
+    atomic_init(&ch->recv_active, false);
+    atomic_init(&ch->timed_out, false);
     atomic_init(&ch->refcnt, 1);
     ch->cap = cap;
     atomic_init(&ch->count, 0);
@@ -266,23 +357,13 @@ void xylem_channel_close(xylem_channel_t* ch) {
         xylem_loge("<channel> close on NULL channel; aborting");
         abort();
     }
-    /**
-     * close() is any-thread / any-context (see sync.md §1, §5): it
-     * only flips the closed flag and wakes the parked receiver via
-     * scheduler_schedule, never parks. A producer on an external
-     * thread must be able to close the channel, so no
-     * RUNTIME_REQUIRE_COROUTINE here.
-     */
-
+    /* Any-thread / any-context: only flips the flag and wakes the
+     * parked receiver; never parks. */
     if (atomic_exchange(&ch->closed, true)) {
         xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
         abort();
     }
-
-    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
+    _channel_wake_receiver(ch);
 }
 
 void xylem_channel_destroy(xylem_channel_t* ch) {
@@ -293,25 +374,14 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
 
     /* Idempotent -- close() may have set this already. */
     atomic_store(&ch->closed, true);
-
-    mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
+    _channel_wake_receiver(ch);
 
     _channel_unref(ch);
 }
 
 int xylem_channel_send(xylem_channel_t* ch, void* msg) {
-    /**
-     * Deliberately NOT guarded with RUNTIME_REQUIRE_COROUTINE: send is
-     * the one sync operation allowed from any thread. It only pushes to
-     * the lock-free MPSC queue and wakes the parked receiver via
-     * scheduler_schedule (itself thread-safe), so it never parks. This
-     * is the sole sanctioned channel for an external (non-coroutine)
-     * thread to hand work to a coroutine; every other sync and net API
-     * is coroutine-only.
-     */
+    /* The one sync op allowed from any thread: lock-free push + a single
+     * atomic_exchange to wake the receiver. Never parks. */
     if (!ch || !msg) {
         xylem_loge("<channel> send NULL argument ch=%p msg=%p",
                    (void*)ch, msg);
@@ -327,12 +397,10 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     }
 
     /**
-     * Bounded channel: reserve a slot before allocating/pushing. The
-     * fetch_add is the slot claim; if we overshoot cap, back it out and
-     * report full. This keeps the in-flight count <= cap under
-     * multiple producers without a check-then-act race. cap == 0 is
-     * unbounded: the count is still maintained (for xylem_channel_len)
-     * but never gates.
+     * Bounded: reserve a slot with fetch_add before pushing; back it out
+     * on overshoot. Keeps in-flight count <= cap under many producers
+     * with no check-then-act race. cap == 0 is unbounded; count is still
+     * maintained for xylem_channel_len.
      */
     size_t prev = atomic_fetch_add_explicit(
         &ch->count, 1, memory_order_acq_rel);
@@ -347,11 +415,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     if (m) {
         m->payload = msg;
         mpsc_push(&ch->queue, &m->node);
-
-        mco_coro* co = atomic_exchange(&ch->wait_coro, NULL);
-        if (co) {
-            scheduler_schedule(runtime_get_scheduler(), co);
-        }
+        _channel_wake_receiver(ch);
         rc = 0;
     } else {
         /* Allocation failed: release the slot we reserved above. */
@@ -363,13 +427,11 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
 }
 
 void* xylem_channel_recv(xylem_channel_t* ch) {
-    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv");
     return _channel_recv_impl(ch, (uint64_t)-1);
 }
 
 void* xylem_channel_recv_timeout(
     xylem_channel_t* ch, uint64_t timeout_ms) {
-    RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_recv_timeout");
     return _channel_recv_impl(ch, timeout_ms);
 }
 

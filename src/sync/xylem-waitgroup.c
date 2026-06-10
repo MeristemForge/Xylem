@@ -23,75 +23,69 @@
 
 #include "xylem/xylem-logger.h"
 
-#include "container/queue.h"
-#include "runtime/precond.h"
-#include "runtime/runtime.h"
+#include "container/list.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
+#include "sync/waiter.h"
+
+#include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
 
 /**
- * Waitgroup concurrency design
+ * Cross-context countdown latch (Go's sync.WaitGroup shape).
  *
- * Counter and waiters list are decoupled:
+ * Counter and waiter queue are decoupled:
+ *   - `cnt` is a lock-free atomic bumped by add()/done().
+ *   - `waiters` is a FIFO of parked coroutines / blocked OS threads,
+ *     guarded by a short spin.
  *
- *   - `cnt` is a lock-free atomic, manipulated by add/done.
- *   - `waiters` is a FIFO of parked coroutines, protected by a
- *     tiny spin `guard`. One spin section serialises every waiters
- *     mutation so there is no ABA / missed-wakeup window.
+ * wait() parks the caller (coroutine) or blocks it (OS thread). The
+ * block decision re-checks `cnt == 0` under the guard, so a done() that
+ * drained the list between the fast-path load and the block makes the
+ * caller run inline instead of stranding.
  *
- * wait() parks the caller under the guard. Inside the park callback
- * we re-check `cnt == 0`: if done() already drained the list between
- * the fast-path check and the park, we bail out without enqueueing
- * and let the caller run inline.
- *
- * done() fetch-subs cnt. When the previous value was 1, the counter
- * just went to zero and we own the broadcast: swap the waiters list
- * out under the guard and schedule every coroutine in it. When the
- * previous value was 0, the caller called done() more times than
- * add() ever promised -- a hard bug. We log and abort, matching the
- * "negative WaitGroup counter" panic in Go's sync.WaitGroup.
+ * done() fetch-subs cnt; on the 1 -> 0 transition it owns the broadcast
+ * and wakes every waiter. cnt is written before done() takes the guard
+ * to drain, and wait() reads cnt under that same guard, so the two
+ * cannot miss each other:
+ *   - wait() takes the guard first -> sees cnt > 0, enqueues; done()
+ *     then drains and wakes it.
+ *   - done() takes the guard first -> wakes nothing; wait() then sees
+ *     cnt == 0 and declines to block.
  */
-
-typedef struct _wg_waiter_s {
-    queue_node_t node;
-    mco_coro*    co;
-} _wg_waiter_t;
-
 struct xylem_waitgroup_s {
     atomic_size_t cnt;
     spin_t        guard;
-    queue_t       waiters;
+    list_t        waiters;
 };
 
+/* Park callback (runs after the coroutine has suspended): re-check the
+ * latch under the guard, enqueue only if still closed. */
 typedef struct _wg_park_ctx_s {
     xylem_waitgroup_t* wg;
-    _wg_waiter_t       waiter;
+    waiter_t*          w;
 } _wg_park_ctx_t;
 
 static bool _wg_park_cb(mco_coro* co, void* arg) {
     _wg_park_ctx_t*    ctx = (_wg_park_ctx_t*)arg;
     xylem_waitgroup_t* wg  = ctx->wg;
 
-    ctx->waiter.co = co;
+    ctx->w->co = co;
 
     spin_lock(&wg->guard);
-    /* Re-check under the guard: a done() between the fast-path load
-     * and here may have already drained everyone. */
     if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
+        /* Latch already open: decline the park, run inline. */
         spin_unlock(&wg->guard);
         return false;
     }
-    queue_enqueue(&wg->waiters, &ctx->waiter.node);
+    list_insert_tail(&wg->waiters, &ctx->w->node);
     spin_unlock(&wg->guard);
     return true;
 }
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
-    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_create");
-
     xylem_waitgroup_t* wg =
         (xylem_waitgroup_t*)calloc(1, sizeof(xylem_waitgroup_t));
     if (!wg) {
@@ -99,7 +93,7 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
     }
     atomic_init(&wg->cnt, 0);
     spin_init(&wg->guard);
-    queue_init(&wg->waiters);
+    list_init(&wg->waiters);
     return wg;
 }
 
@@ -107,36 +101,19 @@ void xylem_waitgroup_destroy(xylem_waitgroup_t* wg) {
     if (!wg) {
         return;
     }
-    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_destroy");
-
     free(wg);
 }
 
 void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
-    /**
-     * add() is any-thread / any-context (see sync.md §1, §4): it is a
-     * lock-free atomic bump that neither parks nor wakes. Producers
-     * registering pending work may run on any thread, so it must stay
-     * off-coroutine callable.
-     */
+    /* Lock-free bump; neither parks nor wakes, so any-thread/any-context. */
     atomic_fetch_add(&wg->cnt, delta);
 }
 
 void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
-    /**
-     * done() is any-thread / any-context (see sync.md §1, §4): it is
-     * the wakeup side of the latch -- when the counter hits zero it
-     * reschedules every parked waiter via scheduler_schedule, which is
-     * thread-safe, and never parks itself. Workers finishing on an
-     * external thread must be able to call it, so no
-     * RUNTIME_REQUIRE_COROUTINE here.
-     */
-
     size_t prev = atomic_fetch_sub(&wg->cnt, 1);
     if (prev == 0) {
-        /* Counter underflowed: done() called more times than add()
-         * ever promised. Matches Go's "negative WaitGroup counter"
-         * panic. Log first so the diagnostic survives the abort. */
+        /* Underflow: done() called more than add() ever promised. Matches
+         * Go's "negative WaitGroup counter" panic. Log before aborting. */
         xylem_loge(
             "<waitgroup> done called with zero counter wg=%p; aborting",
             (void*)wg);
@@ -146,33 +123,58 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
         return;
     }
 
-    /* Counter just hit zero. Snapshot-and-drain the waiters list
-     * under the guard so a racing wait() either enqueues before we
-     * take the list (gets woken here) or sees cnt == 0 under the
-     * guard and bails without enqueueing. */
-    queue_t to_wake;
-    queue_init(&to_wake);
+    /* Counter just hit zero: release everyone, FIFO. Drain under the
+     * guard, then wake outside it. Read each waiter's successor before
+     * waking it, so a woken thread waiter freeing its stack record
+     * cannot strand the drain. */
+    list_t drained;
+    list_init(&drained);
 
     spin_lock(&wg->guard);
-    queue_swap(&to_wake, &wg->waiters);
+    list_swap(&drained, &wg->waiters);
     spin_unlock(&wg->guard);
 
-    scheduler_t* sched = runtime_get_scheduler();
-    queue_node_t* n;
-    while ((n = queue_dequeue(&to_wake)) != NULL) {
-        _wg_waiter_t* w = queue_entry(n, _wg_waiter_t, node);
-        scheduler_schedule(sched, w->co);
+    list_node_t* sentinel = list_sentinel(&drained);
+    list_node_t* n        = list_head(&drained);
+    while (n) {
+        list_node_t* next = list_next(n);
+        if (next == sentinel) {
+            next = NULL;
+        }
+        waiter_wake(*list_entry(n, waiter_t, node));
+        n = next;
     }
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
-    RUNTIME_REQUIRE_COROUTINE("waitgroup", "xylem_waitgroup_wait");
-
+    /* Fast path: already open, no block. */
     if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
         return;
     }
 
-    _wg_park_ctx_t ctx;
-    ctx.wg = wg;
-    scheduler_park(runtime_get_scheduler(), _wg_park_cb, &ctx);
+    waiter_t w;
+
+    waiter_init(&w);
+    if (w.kind == WAITER_CO) {
+        /* Coroutine: park. The park callback re-checks the counter under
+         * the guard after the yield, closing the race with done(). */
+        _wg_park_ctx_t ctx = { wg, &w };
+        scheduler_park(w.sched, _wg_park_cb, &ctx);
+        return;
+    }
+
+    /* External OS thread: block on the per-thread wake sem. */
+    spin_lock(&wg->guard);
+    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
+        spin_unlock(&wg->guard);
+        return;
+    }
+    if (!w.tsem) {
+        /* No wake sem (OOM): cannot block; do not enqueue. */
+        spin_unlock(&wg->guard);
+        return;
+    }
+    list_insert_tail(&wg->waiters, &w.node);
+    spin_unlock(&wg->guard);
+    platform_sem_wait(w.tsem);
 }

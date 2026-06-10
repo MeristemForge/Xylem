@@ -35,14 +35,13 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  * broadcast.
  *
  * Threading:
- *   - All operations (create, destroy, add, done, wait) must be called
- *     from inside a coroutine on a scheduler worker; calling any of them
- *     outside a coroutine context aborts the process. wait() parks;
- *     add()/done() never park but are coroutine-only by contract.
- *   - wait() must be called from inside a coroutine on a scheduler
- *     worker (it parks). Multiple coroutines may wait() on the same
- *     waitgroup concurrently; they are all released together when
- *     the counter reaches zero.
+ *   - All operations work from any context: a coroutine on a scheduler
+ *     worker, or an external OS thread. wait() blocks the caller in the
+ *     way that fits its context (a coroutine parks, an OS thread blocks
+ *     on a per-thread semaphore) until the counter hits zero;
+ *     add()/done() never block. Multiple waiters (coroutines, threads,
+ *     or a mix) may wait() on the same waitgroup concurrently; they are
+ *     all released together when the counter reaches zero.
  *
  * Misuse that aborts the process:
  *   - done() called more times than add() has ever promised
@@ -60,10 +59,10 @@ extern xylem_waitgroup_t* xylem_waitgroup_create(void);
 /**
  * @brief Increment the waitgroup counter.
  *
- * Thread-safe within the runtime. Typically called before spawning the
- * work units whose completion the counter tracks; calling add() after a
- * wait() may already be in progress is a logic error and is not
- * supported. Must be called from inside a coroutine (coroutine-only).
+ * Thread-safe and callable from any context. Typically called before
+ * spawning the work units whose completion the counter tracks; calling
+ * add() after a wait() may already be in progress is a logic error and
+ * is not supported.
  *
  * @param waitgroup  Pointer to the waitgroup.
  * @param delta      Number of work items to add.
@@ -73,21 +72,23 @@ extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
 /**
  * @brief Decrement the waitgroup counter by one.
  *
- * When the counter reaches zero, every coroutine parked
+ * When the counter reaches zero, every waiter parked
  * in xylem_waitgroup_wait() is resumed in FIFO order. Calling done()
  * more times than add() has promised aborts the process with a
- * diagnostic log.
+ * diagnostic log. Callable from any context.
  *
  * @param waitgroup  Pointer to the waitgroup.
  */
 extern void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup);
 
 /**
- * @brief Suspend the current coroutine until the counter reaches zero.
+ * @brief Suspend the current coroutine, or block the current OS thread,
+ *        until the counter reaches zero.
  *
  * Returns immediately if the counter is already zero. Any number of
- * coroutines may wait() on the same waitgroup; they are all released
- * together by the done() that drops the counter to zero.
+ * waiters (coroutines, threads, or a mix) may wait() on the same
+ * waitgroup; they are all released together by the done() that drops
+ * the counter to zero.
  *
  * @param waitgroup  Pointer to the waitgroup.
  */

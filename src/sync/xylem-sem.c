@@ -23,10 +23,9 @@
 
 #include "container/list.h"
 #include "platform/platform-sem.h"
-#include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
-#include "thrds.h"
+#include "sync/waiter.h"
 
 #include "runtime/minicoro/minicoro.h"
 
@@ -47,11 +46,10 @@
  *   - `count`   token count.
  *   - `waiters` one FIFO list mixing every waiter kind.
  *
- * Each queued waiter records how it is woken, decided by *what it is*,
- * not by who posts:
- *   - SEM_WAITER_CO  : a parked coroutine; woken via scheduler_schedule.
- *   - SEM_WAITER_THR : a blocked OS thread; woken by posting the thread's
- *                      own platform_sem (one per thread, cached in TLS).
+ * The waiter representation, wake dispatch (coroutine vs thread) and
+ * the per-thread wake semaphore come from the shared `waiter` module;
+ * this file owns the queue, the lock, the count condition, and -- since
+ * it is the only user -- the timed coroutine waiter below.
  *
  * Direct hand-off: when a waiter is queued, post() pulls the FIFO head
  * and wakes it without touching `count`; the woken waiter returns from
@@ -59,33 +57,13 @@
  *
  * Waiter lifetime:
  *   - Infinite coroutine wait and every thread wait keep the waiter on
- *     the blocked party's stack (the coroutine is suspended, the thread
- *     is in platform_sem_(timed)wait). post() copies the wake target
- *     out under the guard and never dereferences the record afterwards.
- *   - A *timed* coroutine wait needs a scheduler timer that can pull
- *     the waiter out of the queue from another worker. That timer
- *     callback may run concurrently with the resumed coroutine, so a
- *     stack record would be unsafe: the timed coroutine waiter is a
- *     refcounted heap object (wait ref + timer ref), freed by whoever
- *     drops the last reference -- the pattern iowait/channel use.
+ *     the blocked party's stack; post() snapshots the wake target under
+ *     the guard and never dereferences the record afterwards.
+ *   - A *timed* coroutine wait needs a scheduler timer that can pull the
+ *     waiter out of the queue from another worker, racing the resumed
+ *     coroutine. So it is a refcounted heap object (wait ref + timer
+ *     ref), freed by whoever drops the last reference.
  */
-
-typedef enum _sem_waiter_kind_e {
-    SEM_WAITER_CO,
-    SEM_WAITER_THR,
-} _sem_waiter_kind_t;
-
-/**
- * Stack waiter: infinite coroutine wait and all thread waits. The timed
- * coroutine waiter embeds this as its first member.
- */
-typedef struct _sem_waiter_s {
-    list_node_t        node;
-    _sem_waiter_kind_t kind;
-    mco_coro*          co;    /* SEM_WAITER_CO  */
-    scheduler_t*       sched; /* SEM_WAITER_CO  */
-    platform_sem_t*    tsem;  /* SEM_WAITER_THR */
-} _sem_waiter_t;
 
 struct xylem_sem_s {
     spin_t   guard;
@@ -102,42 +80,14 @@ static inline bool _sem_node_linked(const list_node_t* n) {
     return n->next != NULL;
 }
 
-/* Per-thread wake semaphore (TLS, reused for the thread's lifetime). */
-
-static tss_t     _sem_tls_key;
-static once_flag _sem_tls_once = ONCE_FLAG_INIT;
-
-static void _sem_tls_dtor(void* p) {
-    if (p) {
-        platform_sem_destroy((platform_sem_t*)p);
-    }
-}
-
-static void _sem_tls_init(void) {
-    tss_create(&_sem_tls_key, _sem_tls_dtor);
-}
-
-static platform_sem_t* _sem_thread_sem(void) {
-    call_once(&_sem_tls_once, _sem_tls_init);
-
-    platform_sem_t* sem = (platform_sem_t*)tss_get(_sem_tls_key);
-    if (!sem) {
-        sem = platform_sem_create(0);
-        if (sem) {
-            tss_set(_sem_tls_key, sem);
-        }
-    }
-    return sem;
-}
-
-/* Timed coroutine waiter: refcounted heap object. */
+/* Timed coroutine waiter: refcounted heap object (sem is its only user). */
 
 typedef struct _sem_co_timed_s {
-    _sem_waiter_t   base;
+    waiter_t        base;
     xylem_sem_t*    sem;
-    sched_timer_t*  timer;      /* NULL if creation failed */
+    sched_timer_t*  timer;  /* NULL if creation failed */
     uint64_t        timeout_ms;
-    _Atomic int32_t refcnt;     /* wait ref + timer ref while armed */
+    _Atomic int32_t refcnt; /* wait ref + timer ref while armed */
     _Atomic bool    timed_out;
 } _sem_co_timed_t;
 
@@ -167,20 +117,25 @@ static void _sem_co_timeout_cb(sched_timer_t* timer, void* ud) {
         list_remove(&s->waiters, &w->base.node);
         atomic_store_explicit(&w->timed_out, true, memory_order_relaxed);
     }
-    scheduler_t* sched = w->base.sched;
-    mco_coro*    co    = w->base.co;
+    waiter_t target = w->base;
     spin_unlock(&s->guard);
 
-    /* Last touch of co: it may drop its wait ref and free w on resume. */
+    /* Last touch of the coroutine: it may drop its ref and free w. */
     if (linked) {
-        scheduler_schedule(sched, co);
+        waiter_wake(target);
     }
     _sem_co_unref(w);
 }
 
-static bool _sem_co_timed_park_cb(mco_coro* co, void* arg) {
-    _sem_co_timed_t* w = (_sem_co_timed_t*)arg;
-    xylem_sem_t*     s = w->sem;
+typedef struct _sem_timed_ctx_s {
+    xylem_sem_t*     sem;
+    _sem_co_timed_t* w;
+} _sem_timed_ctx_t;
+
+static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
+    _sem_timed_ctx_t* ctx = (_sem_timed_ctx_t*)arg;
+    xylem_sem_t*      s   = ctx->sem;
+    _sem_co_timed_t*  w   = ctx->w;
 
     w->base.co = co;
 
@@ -208,8 +163,8 @@ static bool _sem_co_timed_park_cb(mco_coro* co, void* arg) {
 /* Infinite coroutine waiter: stack record, parked via the scheduler. */
 
 typedef struct _sem_inf_ctx_s {
-    xylem_sem_t*   sem;
-    _sem_waiter_t* w;
+    xylem_sem_t* sem;
+    waiter_t*    w;
 } _sem_inf_ctx_t;
 
 static bool _sem_inf_park_cb(mco_coro* co, void* arg) {
@@ -267,9 +222,8 @@ void xylem_sem_wait(xylem_sem_t* s) {
             return;
         }
 
-        _sem_waiter_t w;
-        w.kind  = SEM_WAITER_CO;
-        w.sched = runtime_get_scheduler();
+        waiter_t w;
+        waiter_init(&w);
 
         _sem_inf_ctx_t ctx = { s, &w };
         scheduler_park(w.sched, _sem_inf_park_cb, &ctx);
@@ -283,11 +237,10 @@ void xylem_sem_wait(xylem_sem_t* s) {
         spin_unlock(&s->guard);
         return;
     }
-    _sem_waiter_t w;
-    w.kind = SEM_WAITER_THR;
-    w.tsem = _sem_thread_sem();
+    waiter_t w;
+    waiter_init(&w);
     if (!w.tsem) {
-        /* No wake sem means we could never be woken and post() would
+        /* No wake sem means we could never be woken and a waker would
          * deref a NULL tsem; do not enqueue. Fail open over a wait we
          * cannot satisfy (OOM only). */
         spin_unlock(&s->guard);
@@ -316,8 +269,7 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
             /* Cannot honour a timeout we cannot arm; fail closed. */
             return false;
         }
-        w->base.kind  = SEM_WAITER_CO;
-        w->base.sched = runtime_get_scheduler();
+        waiter_init(&w->base);
         w->sem        = s;
         w->timeout_ms = timeout_ms;
         w->timer      = sched_timer_create(w->base.sched);
@@ -329,12 +281,13 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
         atomic_init(&w->refcnt, 1);
         atomic_init(&w->timed_out, false);
 
-        scheduler_park(w->base.sched, _sem_co_timed_park_cb, w);
+        _sem_timed_ctx_t ctx = { s, w };
+        scheduler_park(w->base.sched, _sem_timed_park_cb, &ctx);
 
         /**
-         * Woken by post() (timed_out false) or the timer (true). Cancel
-         * a still-pending timer; a true from stop() means we caught it
-         * before it fired and own its ref.
+         * Woken by a post() (not timed out) or the timer (timed out).
+         * Cancel a still-pending timer; a true from stop() means we
+         * caught it before it fired and own its ref.
          */
         if (sched_timer_stop(w->timer)) {
             _sem_co_unref(w);
@@ -351,11 +304,10 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
         spin_unlock(&s->guard);
         return true;
     }
-    _sem_waiter_t w;
-    w.kind = SEM_WAITER_THR;
-    w.tsem = _sem_thread_sem();
+    waiter_t w;
+    waiter_init(&w);
     if (!w.tsem) {
-        /* No wake sem means we could never be woken and post() would
+        /* No wake sem means we could never be woken and a waker would
          * deref a NULL tsem; do not enqueue. Fail closed over a wait we
          * cannot satisfy (OOM only). */
         spin_unlock(&s->guard);
@@ -401,16 +353,8 @@ void xylem_sem_post(xylem_sem_t* s) {
      * waiter may resume on another worker and free the record once the
      * guard is released, so the record must not be touched after.
      */
-    _sem_waiter_t*     w     = list_entry(n, _sem_waiter_t, node);
-    _sem_waiter_kind_t kind  = w->kind;
-    mco_coro*          co    = w->co;
-    scheduler_t*       sched = w->sched;
-    platform_sem_t*    tsem  = w->tsem;
+    waiter_t target = *list_entry(n, waiter_t, node);
     spin_unlock(&s->guard);
 
-    if (kind == SEM_WAITER_CO) {
-        scheduler_schedule(sched, co);
-    } else {
-        platform_sem_post(tsem);
-    }
+    waiter_wake(target);
 }

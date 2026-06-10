@@ -28,17 +28,22 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * Mutex concurrency model
  *
- * A xylem_mutex is a coroutine-owned lock: ownership is held by a
- * coroutine (not an OS thread) between lock() and unlock(), and a
- * contending lock() parks the caller instead of spinning the worker.
+ * A xylem_mutex is a cross-context lock: ownership is held between
+ * lock() and unlock() by whoever acquired it -- a coroutine or a plain
+ * OS thread. A contended lock() parks the calling coroutine on the
+ * scheduler, or blocks the calling OS thread on a per-thread wake
+ * semaphore, instead of spinning the worker. Ownership is not tied to
+ * any thread: unlock() hands the lock straight to the FIFO-oldest
+ * waiter, so a coroutine may unlock a lock another coroutine or thread
+ * acquired.
  *
  * Threading:
- *   - All operations (create, destroy, lock, trylock, unlock) must be
- *     called from inside a coroutine on a scheduler worker; calling any
- *     of them outside a coroutine context aborts the process. lock() and
- *     a contended path may park the caller; the others never park but are
- *     still coroutine-only by contract, so the whole primitive is usable
- *     only from within the runtime.
+ *   - All operations work from any context: a coroutine on a scheduler
+ *     worker, or an external OS thread. lock() blocks the caller in the
+ *     way that fits its context (park vs OS-thread block); the others
+ *     never block. A coroutine waiter is woken by the scheduler; a
+ *     thread waiter by its OS semaphore. Coroutine and thread waiters
+ *     may queue on the same mutex and notify each other.
  */
 
 /**
@@ -51,8 +56,9 @@ extern xylem_mutex_t* xylem_mutex_create(void);
 /**
  * @brief Acquire the mutex.
  *
- * If the mutex is already held, the calling coroutine is suspended
- * until the holder calls xylem_mutex_unlock().
+ * If the mutex is already held, the caller blocks until the holder
+ * calls xylem_mutex_unlock(): a coroutine is suspended (parked) on the
+ * scheduler, an external OS thread blocks on a per-thread semaphore.
  *
  * @param mutex  Pointer to the mutex.
  */
@@ -63,9 +69,8 @@ extern void xylem_mutex_lock(xylem_mutex_t* mutex);
  *
  * Attempts the uncontended fast path only: if the mutex is free it is
  * acquired and true is returned; if it is already held this returns
- * false immediately without parking the caller. It never suspends, but
- * is coroutine-only by contract (like the rest of the mutex API) and
- * aborts if called outside a coroutine context.
+ * false immediately without blocking. A lock-free CAS, callable from
+ * any context (coroutine or OS thread).
  *
  * @param mutex  Pointer to the mutex.
  * @return true if the mutex was acquired, false if it was already held.
@@ -75,7 +80,8 @@ extern bool xylem_mutex_trylock(xylem_mutex_t* mutex);
 /**
  * @brief Release the mutex.
  *
- * If other coroutines are waiting, the next one in FIFO order is resumed.
+ * If anyone is waiting, the FIFO-oldest waiter (coroutine or thread) is
+ * handed the lock directly. Callable from any context.
  *
  * @param mutex  Pointer to the mutex.
  */
