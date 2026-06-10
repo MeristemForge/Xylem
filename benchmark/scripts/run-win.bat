@@ -102,9 +102,27 @@ REM per-protocol config: sets PORT_BASE / HAS_MT / HAS_CONNRATE / IS_TLS
 REM ============================================================================
 :proto_config
 set "_p=%~1"
-if /I "%_p%"=="tcp" ( set "PORT_BASE=9000" & set "HAS_MT=true"  & set "HAS_CONNRATE=true"  & set "IS_TLS=false" & goto :eof )
-if /I "%_p%"=="udp" ( set "PORT_BASE=9001" & set "HAS_MT=false" & set "HAS_CONNRATE=false" & set "IS_TLS=false" & goto :eof )
-if /I "%_p%"=="tls" ( set "PORT_BASE=9443" & set "HAS_MT=true"  & set "HAS_CONNRATE=true"  & set "IS_TLS=true"  & goto :eof )
+if /I "%_p%"=="tcp" (
+    set "PORT_BASE=9000"
+    set "HAS_MT=true"
+    set "HAS_CONNRATE=true"
+    set "IS_TLS=false"
+    exit /b 0
+)
+if /I "%_p%"=="udp" (
+    set "PORT_BASE=9001"
+    set "HAS_MT=false"
+    set "HAS_CONNRATE=false"
+    set "IS_TLS=false"
+    exit /b 0
+)
+if /I "%_p%"=="tls" (
+    set "PORT_BASE=9443"
+    set "HAS_MT=true"
+    set "HAS_CONNRATE=true"
+    set "IS_TLS=true"
+    exit /b 0
+)
 call :err "unknown protocol: %_p% (must be tcp|udp|tls)"
 exit /b 1
 
@@ -174,10 +192,10 @@ if not exist "%XYLEM_LIB%" (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /O2 /DNDEBUG /MT /W3"
+set "CL_FLAGS=/nologo /O2 /DNDEBUG /MD /W3"
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
-for %%P in (%PROTO:,= %) do call :build_proto %%P
+for %%P in (%PROTO:,= %) do call :build_proto "%%P"
 echo.
 dir /a-d "%BIN_DIR%"
 goto :eof
@@ -185,7 +203,11 @@ goto :eof
 REM build_proto <proto>
 :build_proto
 set "CUR_PROTO=%~1"
-call :proto_config "%CUR_PROTO%" || exit /b 1
+call :proto_config "%CUR_PROTO%"
+if errorlevel 1 (
+    call :err "proto_config failed for %CUR_PROTO%"
+    goto :eof
+)
 
 set "EXTRA_LIBS="
 if "%IS_TLS%"=="true" set "EXTRA_LIBS=libssl.lib libcrypto.lib"
@@ -547,6 +569,11 @@ REM ============================================================================
 :parse_bench_opts
 if "%~1"=="" goto :eof
 set "_opt=%~1"
+REM skip a leading command word (passed via %* which is unaffected by shift)
+if /I "%_opt%"=="install" (shift & goto :parse_bench_opts)
+if /I "%_opt%"=="build"   (shift & goto :parse_bench_opts)
+if /I "%_opt%"=="bench"   (shift & goto :parse_bench_opts)
+if /I "%_opt%"=="all"     (shift & goto :parse_bench_opts)
 if /I "%_opt%"=="--proto"   (set "PROTO=%~2" & shift & shift & goto :parse_bench_opts)
 if /I "%_opt%"=="-P"        (set "PROTO=%~2" & shift & shift & goto :parse_bench_opts)
 if /I "%_opt%"=="--servers" (set "SERVERS=%~2" & shift & shift & goto :parse_bench_opts)
