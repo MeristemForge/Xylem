@@ -9,7 +9,7 @@ Sources: `src/runtime/` — `runtime.c`, `scheduler.{h,c}`, `iowait.{h,c}`,
 `wsdeque.{h,c}`, `runq.{h,c}`, `dynpool.{h,c}`, and bundled `minicoro/`.
 
 Public API: `include/xylem.h` (`xylem_run`, `xylem_spawn`, `xylem_sleep`,
-`xylem_submit`, `xylem_shutdown`).
+`xylem_await`, `xylem_shutdown`).
 
 ## 1. Goals and model
 
@@ -30,7 +30,7 @@ cannot make progress *parks* (yields to its worker); a wake source later
 ## 2. Component overview
 
 ```
-            xylem_run / xylem_spawn / xylem_sleep / xylem_submit
+            xylem_run / xylem_spawn / xylem_sleep / xylem_await
                                   |
                                   v
    +-----------------------------------------------------------+
@@ -382,7 +382,7 @@ Some work genuinely blocks (DNS via `getaddrinfo`, file I/O, third-party calls).
 Running it on a worker would stall every coroutine pinned to that worker, so it
 is offloaded to the **dynamic thread pool**.
 
-`xylem_submit(fn, arg)` → `runtime_submit()`:
+`xylem_await(fn, arg)` → `runtime_submit()`:
 
 1. Allocate a context capturing `fn`, `arg`, the scheduler, and (filled in at
    park time) the calling coroutine.
@@ -399,7 +399,7 @@ The cross-thread handoff (top to bottom is time):
  Coroutine        runtime_submit /        dynpool            worker that
  (on worker A)    park callback           thread             picks it up
      |                 |                    |                     |
-     | xylem_submit()  |                    |                     |
+     | xylem_await()   |                    |                     |
      |---------------->|                    |                     |
      |                 | scheduler_park():  |                     |
      | (suspended) ... | publish co into    |                     |

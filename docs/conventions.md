@@ -221,7 +221,7 @@ recurring categories:
   coroutine-only because its teardown may touch other coroutine-only primitives
   (e.g. draining an inbox channel); to cancel a connection whose reader/writer
   is parked, close it from *another* coroutine. Also coroutine-only:
-  `xylem_submit` and the blocking sync ops (`mutex_lock`, `cond_wait`,
+  `xylem_await` and the blocking sync ops (`mutex_lock`, `cond_wait`,
   `waitgroup_wait`, `channel_recv`). Calling any of these off a coroutine
   aborts.
 - **Context-adaptive.** Safe from either a coroutine or a plain OS thread; the

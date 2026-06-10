@@ -92,7 +92,7 @@ the rest park on a semaphore. Coroutines that wait on a socket suspend through
 **`iowait`**, which arms the fd on the poller and resumes the coroutine when it
 becomes ready, its deadline passes, or it is closed. Blocking work (anything
 that can't be made non-blocking) is offloaded to the **dynpool** via
-`xylem_submit()`. The full design is in
+`xylem_await()`. The full design is in
 [`docs/design/runtime.md`](design/runtime.md).
 
 ## 5. How a network call flows

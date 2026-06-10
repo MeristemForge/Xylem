@@ -125,7 +125,7 @@ xylem_serial_close(s);
   closing.
 
 Because serial I/O blocks, calling it from a coroutine stalls that worker;
-offload it via `xylem_submit()` ([`runtime.md`](runtime.md) §10) if you need to
+offload it via `xylem_await()` ([`runtime.md`](runtime.md) §10) if you need to
 combine serial with coroutine networking.
 
 ## 5. Related docs

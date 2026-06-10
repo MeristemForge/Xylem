@@ -1,57 +1,90 @@
 # Synchronization Primitives Design
 
 Xylem's public synchronization primitives — mutex, condition variable,
-wait-group, and channel — are **coroutine-aware**: a contended operation parks
-the calling coroutine on the scheduler instead of blocking the OS worker
-thread. This document covers their semantics, threading contracts, and the
-ordering rules that make them correct. The internal `spin_t` is also described
-because it backs the others.
+wait-group, and channel — are **cross-context**: a contended operation blocks
+the caller in the way that fits its context. A coroutine parks on the scheduler
+(the OS worker thread stays free); an external OS thread blocks on a per-thread
+wake semaphore. The two kinds queue together and notify each other, so a
+coroutine can hand off to an OS thread and vice versa. This document covers
+their semantics, threading contracts, and the ordering rules that make them
+correct. The internal `spin_t` and the shared `waiter` core are also
+described because they back the others.
 
 Sources: public headers in `include/xylem/sync/`, implementations in
-`src/sync/`. Internal spinlock in `src/sync/spin.{h,c}`.
+`src/sync/`. Shared waiter core in `src/sync/waiter.{h,c}`, internal spinlock
+in `src/sync/spin.{h,c}`.
 
 Prerequisite: the parking model in [`runtime.md`](runtime.md) (`scheduler_park`,
 `scheduler_schedule`).
 
 ## 1. The common model
 
-All four public primitives share one shape:
+All five public primitives share one shape:
 
-- **Blocking ops are coroutine-only.** `mutex_lock`, `cond_wait`,
-  `waitgroup_wait`, `channel_recv` may suspend, so they must run inside a
-  coroutine on a scheduler worker. Calling them off-coroutine aborts. The one
-  exception is `xylem_sem` (§6), whose `wait()` is *context-adaptive*: it parks
-  a coroutine but blocks an OS thread, by design, so a coroutine and an
-  external thread can notify each other across the boundary.
-- **Wakeup/non-blocking ops are any-thread.** `unlock`, `signal`/`broadcast`,
-  `add`/`done`, `send`/`close`, and all `create`/`destroy` are safe from any
-  thread — a cross-thread wake is just a `scheduler_schedule()`.
+- **Blocking ops are context-adaptive.** `mutex_lock`, `cond_wait`,
+  `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
+  they park (the worker thread stays free); on any other thread they block that
+  OS thread. Both waiter kinds share one FIFO queue, so a coroutine and an
+  external thread can notify each other across the boundary. None of them
+  requires a coroutine context.
+- **Wakeup/non-blocking ops never block.** `unlock`, `signal`/`broadcast`,
+  `add`/`done`, `send`/`close`, `post`, and all `create`/`destroy` are safe from
+  any thread — a cross-context wake is dispatched by the *waiter's* kind
+  (`scheduler_schedule()` for a coroutine, `platform_sem_post()` for a thread).
 - **FIFO wakeups.** Waiters are resumed in arrival order.
-- **Abort on contract violation.** These are coroutine-grade invariants
-  (off-coroutine blocking, counter underflow, double-close, multi-receiver),
-  so misuse aborts with a diagnostic rather than corrupting state silently.
+- **Abort on contract violation.** Counter underflow, double-close, and
+  multi-receiver are logic bugs, so misuse aborts with a diagnostic rather than
+  corrupting state silently. (None of the primitives aborts merely for being
+  called off-coroutine anymore — that is the point of cross-context.)
 
-| Primitive | Blocking op (coroutine-only) | Any-thread ops | Pattern |
-|-----------|------------------------------|----------------|---------|
-| `xylem_mutex` | `lock` | `unlock`, create/destroy | coroutine-owned lock |
+| Primitive | Blocking op (any context) | Non-blocking ops | Pattern |
+|-----------|---------------------------|------------------|---------|
+| `xylem_mutex` | `lock` | `unlock`, `trylock`, create/destroy | hand-off lock |
 | `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
 | `xylem_channel` | `recv` / `recv_timeout` | `send`, `close`, c/d | MPSC message passing |
-| `xylem_sem` | `wait` / `timedwait` (any context) | `post`, c/d | cross-context counting semaphore |
+| `xylem_sem` | `wait` / `timedwait` | `post`, c/d | counting semaphore |
+
+### The shared waiter core (`waiter`)
+
+`src/sync/waiter.{h,c}` owns the parts that are identical across primitives:
+
+- `waiter_t` — one blocked party, tagged `WAITER_CO` (a parked coroutine, woken
+  via `scheduler_schedule`) or `WAITER_THR` (a blocked OS thread, woken via its
+  per-thread `platform_sem`). The thread's wake sem is created lazily on first
+  block and cached in TLS for the thread's lifetime.
+- `waiter_wake` — a waker copies the wake target out (a by-value `waiter_t`)
+  under the lock, releases the lock, then wakes; the waiter's storage (often a
+  stack frame) may vanish the instant it resumes, so it is never touched
+  afterward.
+
+The FIFO primitives (mutex, cond, waitgroup) each keep their **own** guarded
+list of `waiter_t` — a `spin_t` guard plus an intrusive `list_t` embedded in the
+primitive — and inline the same small block/wake mechanics directly:
+`mco_running()` decides park vs. OS-thread block, the acquire/visibility step is
+done under the guard so a racing waker is never lost, and a drain reads each
+node's successor before waking so a vanishing stack waiter cannot strand it. The
+channel and sem skip the list entirely, keeping their own specialised machinery
+(a lock-free single-slot fast path, a timed-wait timer); all of them share only
+the `waiter` representation and wake dispatch.
 
 ## 2. Mutex
 
-A coroutine-owned lock. Ownership is held by a *coroutine* (not an OS thread)
-between `lock()` and `unlock()`; a contended `lock()` parks the caller and is
-resumed FIFO when the holder unlocks.
+A hand-off lock. Ownership is held between `lock()` and `unlock()` by whoever
+acquired it — a coroutine or an OS thread — not by the OS thread identity. A
+contended `lock()` blocks the caller (park or OS-thread block) and is resumed
+FIFO when the holder unlocks.
 
-- **`lock()` is coroutine-only even on the uncontended fast path.** An acquire
-  from a non-coroutine thread cannot be parked if contention shows up later,
-  which would leave the mutex in a state that only fails on the next contended
-  acquire. The contract forbids it up front: off-coroutine `lock()` aborts.
-- **`unlock()` is any-thread on purpose.** It lets a coroutine hand the lock
-  off to another, and the wakeup only needs a `scheduler_schedule()`. So lock
-  ownership is not tied to the unlocking thread.
+- **`lock()` works from any context.** The uncontended fast path is a single
+  lock-free CAS. On contention a coroutine parks and a thread blocks on its
+  per-thread sem; the acquire predicate (the same CAS) is re-checked under the
+  primitive's own guard, so an `unlock()` racing the block either hands the lock
+  over or queues the caller for a later hand-off.
+- **`unlock()` hands the lock off directly.** It pops the FIFO-oldest waiter and
+  wakes it *without* clearing the owned flag, so the woken party returns from
+  `lock()` already owning the mutex. Only an unlock that finds no waiter clears
+  the flag. This is why ownership is independent of the unlocking thread.
+  `trylock()` is a lock-free CAS, callable from any context.
 
 ## 3. Condition variable
 
@@ -97,9 +130,10 @@ mutex until the waiter is already linked on `c` and therefore visible to
 dropped (edge-triggered) — which is exactly why the predicate `while`-loop is
 mandatory.
 
-External threads that can't take the coroutine-owned mutex must avoid lost
-wakeups out of band: have the waiter's predicate read an atomic flag that the
-external thread sets *before* calling `signal`/`broadcast`.
+A signaler that does **not** take `m` (for instance an external thread that
+only flips an atomic flag) must avoid lost wakeups out of band: set the
+predicate flag *before* calling `signal`/`broadcast`, so a waiter that has not
+yet parked sees the flag on its next predicate check.
 
 - `signal()` wakes one waiter; `broadcast()` wakes everyone parked at the moment
   it takes its internal guard (later arrivals are unaffected).
@@ -123,18 +157,24 @@ front.
 
 ## 5. Channel
 
-An **MPSC** message queue: many senders, exactly one receiving coroutine.
+An **MPSC** message queue: many senders, exactly one receiver. The receiver
+may be **either a coroutine or a plain OS thread** — the data path is
+lock-free (intrusive MPSC queue) and the single receiver, when it must block,
+publishes itself into one atomic wakeup slot that a sender / `close` / the
+deadline timer arbitrate with a single `atomic_exchange`. This lets a
+coroutine producer hand work to an OS-thread consumer (and vice versa). The
+cross-context waiter representation, per-thread wake semaphore, and wake
+dispatch come from the shared `waiter` module (also used by `xylem_sem`).
 
 - `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL. Returns
   `0` on success, `XYLEM_CHANNEL_FULL` when a bounded channel is at capacity,
-  or `-1` (invalid input or allocation failure). **Never blocks the sender**
-  in either mode.
-- `recv()` — parks the calling coroutine until a message arrives or the channel
-  is closed-and-drained (then returns NULL). `recv_timeout(ms)` is the general
-  form with a three-state wait policy:
+  or `-1` (invalid input or allocation failure). **Never parks.**
+- `recv()` — blocks the calling coroutine **or thread** until a message
+  arrives or the channel is closed-and-drained (then returns NULL).
+  `recv_timeout(ms)` is the general form with a three-state wait policy:
   - `0` — non-blocking try: pop if a message is immediately available, else
-    return NULL at once without parking. Use this to drain (e.g. drop-oldest
-    down to the newest frame) without risking a park.
+    return NULL at once without blocking. Use this to drain (e.g. drop down to
+    the newest frame) without risking a block.
   - `(uint64_t)-1` — block forever, identical to `recv()`.
   - any other `n` — block up to `n` ms.
   A NULL return does **not** distinguish "nothing available" / "timed out" /
@@ -142,29 +182,31 @@ An **MPSC** message queue: many senders, exactly one receiving coroutine.
 - `len()` / `cap()` — best-effort in-flight count and the configured capacity
   (`cap()` is 0 for an unbounded channel). Safe from any thread; useful for
   drop/backpressure decisions.
-- **Single receiver.** Concurrent `recv()` from two coroutines aborts.
+- **Single receiver.** Concurrent `recv()` (from two coroutines, two threads,
+  or one of each) aborts.
 
-### Capacity
+### Capacity and backpressure
 
-- `create()` — **unbounded**: `send` always queues (barring OOM), no
-  backpressure.
+- `create()` — **unbounded**: `send` always queues (barring OOM).
 - `create_bounded(cap)` — caps the **in-flight** message count (sent but not
   yet received) at `cap`. When full, `send` returns `XYLEM_CHANNEL_FULL` so the
-  caller can drop or retry; it does **not** park the producer. This is
-  non-blocking ("try") send: a deliberate choice so an external capture thread
-  is never stalled by a slow consumer (drop a frame instead). Blocking
-  backpressure (parking the producer until space frees) is intentionally not
-  provided — it would force `send` to wait, breaking its any-thread /
-  never-park contract.
+  caller can drop or retry; it does **not** park the producer. This is the only
+  send mode: a deliberate choice so an external capture thread is never stalled
+  by a slow consumer (drop a frame instead). **Blocking backpressure (parking
+  the producer until space frees) is intentionally not provided** — it would
+  force `send` to park/block and would need a multi-waiter set, breaking the
+  lock-free, never-park contract. Backpressure is instead a receiver-side
+  policy: watch `len()`/`cap()` and, once over a threshold, drain with
+  `recv_timeout(ch, 0)` to drop the backlog (dropping oldest, keeping newest).
 
 Implementation: a single `_Atomic size_t count` tracks in-flight messages.
-`send` reserves a slot with `fetch_add` before allocating; on overshoot it
-backs the slot out and returns full, so the count never exceeds `cap` under
+`send` reserves a slot with `fetch_add` before pushing; on overshoot it backs
+the slot out and returns full, so the count never exceeds `cap` under
 concurrent producers (no check-then-act race). `recv` decrements after a
 successful pop. The count is maintained for unbounded channels too, purely so
-`len()` works. Note this bounds the **count**, not allocation: each message is
-still a per-node `malloc`. A bounded, zero-allocation MPSC would need a
-preallocated MPMC ring, which this is not.
+`len()` works. This bounds the **count**, not allocation: each message is still
+a per-node `malloc`. A bounded, zero-allocation MPSC would need a preallocated
+MPMC ring, which this is not.
 
 Close/lifecycle semantics are strict and abort-on-misuse:
 
@@ -173,6 +215,7 @@ Close/lifecycle semantics are strict and abort-on-misuse:
 | `recv()` | drains remaining messages, then returns NULL |
 | `send()` | **aborts** |
 | `close()` again, or `close(NULL)` | **aborts** |
+
 | `destroy()` | frees node wrappers (not payloads); accepts NULL |
 
 Payload ownership is always the caller's; the channel only manages its node
@@ -180,10 +223,12 @@ wrappers. `destroy()` should follow a drain.
 
 ## 6. Semaphore (`xylem_sem`)
 
-A counting semaphore that **bridges coroutines and OS threads** — the one sync
-object whose blocking op is callable from either context. It exists precisely so
-a coroutine can notify an external thread, or an external thread can notify a
-coroutine, without going through the runtime's coroutine-only contract.
+A counting semaphore. Like the other primitives it bridges coroutines and OS
+threads, and it adds two things they don't have: a **count** (so a `post()` with
+no waiter is remembered) and a **timed wait**. Its `wait()` is the same
+context-adaptive block as the rest; what makes it distinct is the count and the
+deadline support, which is why it keeps its own machinery like the FIFO
+primitives rather than sharing a list type.
 
 - `wait()` decrements the count, or blocks if it is zero. It is
   **context-adaptive**: on a coroutine it parks (the worker thread stays free);
@@ -250,38 +295,38 @@ under the guard — if it is still queued it removes itself and reports timeout;
 if a `post()` already dequeued it, it consumes the handed-off token (so the
 token is not lost) and reports success.
 
-Unlike the other primitives, `xylem_sem` does **not** abort off-coroutine — that
-is the whole point. A coroutine waiter does require a running scheduler (that is
-how it is woken, and a timed wait needs the scheduler's timer); a thread waiter
-needs no runtime at all.
+Like the other primitives, `xylem_sem` works from any context. A coroutine
+waiter does require a running scheduler (that is how it is woken, and a timed
+wait needs the scheduler's timer); a thread waiter needs no runtime at all.
 
 ## 7. Internal spinlock (`spin_t`)
 
 `src/sync/spin.{h,c}` is a plain test-and-set spinlock used **internally** for
 very short critical sections where parking would cost more than spinning — e.g.
-the scheduler's coroutine-pool free list and registry. It does not interact with
-the scheduler (no parking), so it must only guard sections that are short and
-non-blocking. It is not part of the public API and carries no `xylem_` prefix.
+the scheduler's coroutine-pool free list and registry, and the per-primitive
+guard that serialises each FIFO primitive's waiter list. It does not interact
+with the scheduler (no parking), so it must only guard sections that are short
+and non-blocking. It is not part of the public API and carries no `xylem_` prefix.
 
-The coroutine primitives above use it (or a `mtx_t`) internally to guard their
-own waiter lists; the *waiters* park, but the list bookkeeping is protected by a
-short spin/lock.
+The FIFO primitives (mutex, cond, waitgroup) use it internally to guard their
+waiter lists; the *waiters* block, but the list bookkeeping is protected by a short
+spin.
 
 ## 8. Choosing a primitive
 
-- **Mutual exclusion across coroutines:** `xylem_mutex`.
+- **Mutual exclusion (coroutines, threads, or a mix):** `xylem_mutex`.
 - **Wait for a condition on shared state:** `xylem_cond` + a mutex + a predicate
   loop.
 - **Fan-out then join N tasks:** `xylem_waitgroup`.
 - **Stream values from producers to one consumer:** `xylem_channel`.
-- **Signal across the coroutine/OS-thread boundary (either direction):**
+- **Signal with a count or a deadline across the coroutine/OS-thread boundary:**
   `xylem_sem`.
 - **Guard a tiny, non-blocking critical section in internal code:** `spin_t`.
 
-Note these are *coroutine* primitives (except `xylem_sem`, which spans both
-worlds). For raw OS-thread synchronization the code uses C11 `<threads.h>`
-(`mtx_t`, `cnd_t`) directly via `src/thrds.h`; don't mix a coroutine mutex with
-an OS-thread-only context.
+All five public primitives span both the coroutine and OS-thread worlds. For raw
+OS-thread-only synchronization the code can still use C11 `<threads.h>`
+(`mtx_t`, `cnd_t`) directly via `src/thrds.h`; these primitives are preferred
+when a coroutine is (or may be) involved.
 
 ## 9. Related docs
 
