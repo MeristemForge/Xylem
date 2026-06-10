@@ -19,20 +19,23 @@
  *  IN THE SOFTWARE.
  */
 
-#include "spin.h"
+_Pragma("once")
 
-#include "platform/platform-cpu.h"
+/**
+ * platform_cpu_relax(): CPU pause/yield hint for busy-wait loops.
+ *
+ * Kept header-only and inline because it sits in the innermost iteration
+ * of tight spin loops (spin_lock, the xylem_mutex adaptive spin); an
+ * out-of-line call would cost more than the single pause instruction it
+ * emits. The hint does not yield the OS thread, it only tells the core we
+ * are spinning so it can save power and release shared SMT resources.
+ * Per-platform backends provide the actual definition.
+ */
+#if defined(_WIN32)
+#include "platform/win/platform-cpu.h"
+#endif
 
-void spin_init(spin_t* s) {
-    atomic_flag_clear(&s->flag);
-}
+#if defined(__linux__) || defined(__APPLE__)
+#include "platform/unix/platform-cpu.h"
+#endif
 
-void spin_lock(spin_t* s) {
-    while (atomic_flag_test_and_set_explicit(&s->flag, memory_order_acquire)) {
-        platform_cpu_relax();
-    }
-}
-
-void spin_unlock(spin_t* s) {
-    atomic_flag_clear_explicit(&s->flag, memory_order_release);
-}

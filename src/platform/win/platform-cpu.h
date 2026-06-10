@@ -19,20 +19,21 @@
  *  IN THE SOFTWARE.
  */
 
-#include "spin.h"
+_Pragma("once")
 
-#include "platform/platform-cpu.h"
+/* Windows backend for platform_cpu_relax(); included only by platform-cpu.h. */
 
-void spin_init(spin_t* s) {
-    atomic_flag_clear(&s->flag);
-}
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
 
-void spin_lock(spin_t* s) {
-    while (atomic_flag_test_and_set_explicit(&s->flag, memory_order_acquire)) {
-        platform_cpu_relax();
-    }
-}
-
-void spin_unlock(spin_t* s) {
-    atomic_flag_clear_explicit(&s->flag, memory_order_release);
+/**
+ * Windows backend for platform_cpu_relax().
+ *
+ * YieldProcessor() is the SDK's cross-architecture pause macro (PAUSE on
+ * x86, YIELD on ARM), so no per-architecture dispatch is needed here.
+ */
+static inline void platform_cpu_relax(void) {
+    YieldProcessor();
 }

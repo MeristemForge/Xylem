@@ -19,20 +19,20 @@
  *  IN THE SOFTWARE.
  */
 
-#include "spin.h"
+_Pragma("once")
 
-#include "platform/platform-cpu.h"
-
-void spin_init(spin_t* s) {
-    atomic_flag_clear(&s->flag);
-}
-
-void spin_lock(spin_t* s) {
-    while (atomic_flag_test_and_set_explicit(&s->flag, memory_order_acquire)) {
-        platform_cpu_relax();
-    }
-}
-
-void spin_unlock(spin_t* s) {
-    atomic_flag_clear_explicit(&s->flag, memory_order_release);
+/**
+ * POSIX backend for platform_cpu_relax(); included only by
+ * platform/platform-cpu.h on non-Windows.
+ *
+ * There is no OS-level pause wrapper here, so dispatch is by CPU
+ * architecture: the same ISA emits the same pause instruction on every
+ * POSIX system. Unknown architectures fall through to a no-op.
+ */
+static inline void platform_cpu_relax(void) {
+#if defined(__i386__) || defined(__x86_64__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
+#endif
 }

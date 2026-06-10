@@ -67,9 +67,10 @@ extern void spin_init(spin_t* s);
 /**
  * @brief Acquire the spin lock, busy-waiting until granted.
  *
- * Wait is unbounded and performs no back-off; keep critical sections
- * short and bounded. The caller must not park the coroutine while
- * holding the lock (see file-level note).
+ * Wait is unbounded; each spin iteration emits a CPU pause hint but
+ * there is no exponential back-off, so keep critical sections short
+ * and bounded. The caller must not park the coroutine while holding
+ * the lock (see file-level note).
  *
  * @param s  Spin lock, previously initialised by spin_init().
  */
