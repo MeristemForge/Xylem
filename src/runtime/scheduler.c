@@ -148,13 +148,43 @@ struct scheduler_s {
     _coro_pool_t          coro_pool;
 };
 
+/**
+ * Park handshake state, per coroutine. Closes the window where a waker
+ * could resume a coroutine while its park callback is still running on
+ * the parking worker (and thus still dereferencing the object it parked
+ * on -- the classic park_cb-touches-freed-channel race).
+ *
+ *   IDLE     - running, or sitting in a normal run queue.
+ *   ARMING   - between mco_yield and the end of the park callback.
+ *   PARKED   - park callback returned true; suspended awaiting a wake.
+ *   NOTIFIED - a waker has claimed the coroutine; it is (or will be)
+ *              requeued exactly once.
+ *
+ * At most one waker reaches the claim path per park, because the sync
+ * primitive (or iowait) hands off a single one-shot waiter. A waker that
+ * observes ARMING only marks NOTIFIED and does NOT enqueue: the park
+ * callback, on return, sees NOTIFIED and requeues the coroutine itself,
+ * so resume can never overlap the tail of the callback.
+ */
+enum {
+    PARK_IDLE     = 0,
+    PARK_ARMING   = 1,
+    PARK_PARKED   = 2,
+    PARK_NOTIFIED = 3,
+};
+
 typedef struct _coro_ctx_s {
     void (*fn)(void*);
     void*        arg;
     queue_node_t runq_node;
     list_node_t  registry_node;
     mco_coro*    co;
+    _Atomic int  park_state;
 } _coro_ctx_t;
+
+static void _sched_enqueue(scheduler_t* sched, mco_coro* co);
+static bool _sched_claim_for_wake(mco_coro* co);
+static void _sched_requeue_local(_sched_worker_t* w, mco_coro* co);
 
 typedef struct _sched_post_s {
     mpsc_node_t          node;
@@ -547,13 +577,27 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     void* arg = w->park_arg;
     w->park_fn  = NULL;
     w->park_arg = NULL;
-    if (!fn(co, arg)) {
-        if (wsdeque_push(w->deque, co) != 0) {
-            _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-            runq_push(w->sched->runq, &ctx->runq_node);
-            _sched_wake_worker(w->sched);
+
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    atomic_store_explicit(&ctx->park_state, PARK_ARMING, memory_order_release);
+
+    if (fn(co, arg)) {
+        /* Park callback wants to park. Commit ARMING->PARKED unless a
+         * waker raced in during the callback. */
+        int expected = PARK_ARMING;
+        if (atomic_compare_exchange_strong_explicit(
+                &ctx->park_state, &expected, PARK_PARKED,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return; /* cleanly parked; a waker will requeue us */
         }
+        /* expected == PARK_NOTIFIED: a waker claimed us while the callback
+         * was still running and deliberately did not enqueue, so the
+         * requeue is ours. */
     }
+
+    /* Declined, or notified during arming: requeue on this worker. */
+    atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
+    _sched_requeue_local(w, co);
 }
 
 static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
@@ -970,7 +1014,7 @@ void scheduler_stop(scheduler_t* sched) {
     sched->joined = true;
 }
 
-void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
     if (!_tls_worker || _tls_worker->sched != sched) {
@@ -1020,6 +1064,56 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
      */
 }
 
+/**
+ * Transition a coroutine that a waker wants to run. Returns true if the
+ * caller should enqueue it now, false if it must not (either the park
+ * callback is still arming and will requeue on return, or another claim
+ * already won). A coroutine not in a park handshake (PARK_IDLE) is a
+ * normal schedule and is always enqueued.
+ */
+static bool _sched_claim_for_wake(mco_coro* co) {
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    int st = atomic_load_explicit(&ctx->park_state, memory_order_acquire);
+    if (st == PARK_IDLE) {
+        return true;
+    }
+    for (;;) {
+        if (st == PARK_PARKED) {
+            if (atomic_compare_exchange_weak_explicit(
+                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return true; /* park callback already returned; we requeue */
+            }
+            /* st reloaded; re-evaluate. */
+        } else if (st == PARK_ARMING) {
+            if (atomic_compare_exchange_weak_explicit(
+                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return false; /* park callback will see NOTIFIED and requeue */
+            }
+            /* st reloaded (handle_yield may have advanced ARMING->PARKED). */
+        } else {
+            /* PARK_NOTIFIED or PARK_IDLE: nothing for this caller to do. */
+            return false;
+        }
+    }
+}
+
+void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+    if (_sched_claim_for_wake(co)) {
+        _sched_enqueue(sched, co);
+    }
+}
+
+/* Requeue on the parking worker after a declined or notified park. */
+static void _sched_requeue_local(_sched_worker_t* w, mco_coro* co) {
+    if (wsdeque_push(w->deque, co) != 0) {
+        _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+        runq_push(w->sched->runq, &ctx->runq_node);
+        _sched_wake_worker(w->sched);
+    }
+}
+
 void scheduler_schedule_batch(
     scheduler_t* sched, mco_coro** cos, int32_t n) {
     if (n <= 0) {
@@ -1038,16 +1132,26 @@ void scheduler_schedule_batch(
             return;
         }
     }
+    int32_t m = 0;
     for (int32_t i = 0; i < n; i++) {
+        /* A coro still arming its park must not be enqueued here; its park
+         * callback owns the requeue. Drop it from the batch. */
+        if (!_sched_claim_for_wake(cos[i])) {
+            continue;
+        }
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(cos[i]);
-        nodes[i] = &ctx->runq_node;
+        nodes[m++] = &ctx->runq_node;
     }
-    runq_push_batch(sched->runq, nodes, n);
+    if (m > 0) {
+        runq_push_batch(sched->runq, nodes, m);
+    }
     if (nodes != inline_nodes) {
         free(nodes);
     }
 
-    _sched_wake_worker(sched);
+    if (m > 0) {
+        _sched_wake_worker(sched);
+    }
 }
 
 int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
@@ -1096,6 +1200,10 @@ void scheduler_park(
     _tls_worker->park_fn  = fn;
     _tls_worker->park_arg = arg;
     mco_yield(mco_running());
+
+    /* Resumed: clear park bookkeeping so the coro runs as PARK_IDLE. */
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(mco_running());
+    atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {
