@@ -133,8 +133,8 @@ typedef struct http_srv_s {
     uint64_t                idle_timeout_ms;
     uint64_t                read_header_timeout_ms;
     uint64_t                write_timeout_ms;
-    _Atomic int32_t         active_conns;
-    bool                    closing;
+    _Atomic int32_t         active_conns; /* refcount: owner + accept + conns */
+    _Atomic bool            closing;
 } http_srv_t;
 
 typedef struct http_srv_conn_ctx_s {
@@ -204,6 +204,21 @@ extern void http_srv_init(http_srv_t* srv, const xylem_http_srv_opts_t* opts);
  * @param arg  Heap-allocated http_srv_conn_ctx_t (freed inside).
  */
 extern void http_srv_conn_coroutine(void* arg);
+
+/**
+ * @brief Drop one reference to a server, freeing it on the last release.
+ *
+ * `active_conns` is a reference count, not just a gauge: the owner handle
+ * holds one ref (released by xylem_http_close / xylem_http_shutdown), the
+ * accept coroutine holds one, and every in-flight connection coroutine
+ * holds one. Whichever party releases the final ref frees the server, so
+ * a closing owner never frees `srv` out from under a coroutine still
+ * reading its fields (data race / use-after-free).
+ *
+ * @param s  Server whose reference is being released. Must not be touched
+ *           by the caller after this returns.
+ */
+extern void http_srv_unref(http_srv_t* s);
 
 /**
  * @brief Perform an HTTP client request over a caller-provided transport.
