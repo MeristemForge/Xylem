@@ -382,6 +382,7 @@ static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
 static void _rudp_schedule_update(xylem_rudp_conn_t* c);
 static void _rudp_deferred_close(void* arg);
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
+static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
 
 static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
@@ -532,15 +533,32 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
 }
 
 /**
- * Coroutine entry that performs a deferred xylem_rudp_close. Used by
- * the update timer's dead-link path, which runs inline on a worker
- * (not a coroutine) and so cannot call the coroutine-only close
- * directly. Drops the reference taken when the close was scheduled.
+ * Coroutine entry that performs a deferred dead-link teardown. Used by
+ * the update timer's dead-link path, which runs inline on a worker (not a
+ * coroutine) and so cannot tear the session down directly. Drops the
+ * reference taken when the teardown was scheduled.
+ *
+ * For a client connection the application still owns its handle and is
+ * required to call xylem_rudp_close() on it, so this dead-link teardown
+ * must NOT drop that owner reference -- doing so (via xylem_rudp_close)
+ * frees the conn while the application still holds the pointer, and its
+ * later close touches freed memory (heap-use-after-free). We only shut the
+ * session down here (which wakes the parked reader); the owner reference is
+ * left for the application's close.
+ *
+ * A listener session, by contrast, is removed from the listener's session
+ * tree by the shutdown, so xylem_rudp_close_listener can no longer reach
+ * it; its owner reference must therefore be dropped here, preserving the
+ * existing listener teardown path.
  */
 static void _rudp_deferred_close(void* arg) {
     xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)arg;
-    xylem_rudp_close(conn);
-    _rudp_conn_unref(conn);
+    if (conn->listener) {
+        xylem_rudp_close(conn); /* drops the listener-session owner ref */
+    } else {
+        _rudp_conn_shutdown(conn); /* wake the reader; leave the owner ref */
+    }
+    _rudp_conn_unref(conn); /* drop the ref taken by the timer callback */
 }
 
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
@@ -1171,12 +1189,14 @@ xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
     return c;
 }
 
-void xylem_rudp_close(xylem_rudp_conn_t* conn) {
-    if (!conn) {
-        return;
-    }
-    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_close");
-
+/**
+ * Tear a session down exactly once (guarded by the `closed` exchange):
+ * stop the update timer and wake any parked reader. Does NOT drop the
+ * owner reference -- callers decide who owns that drop (see
+ * xylem_rudp_close and _rudp_deferred_close). Idempotent: a second caller
+ * loses the exchange and returns immediately.
+ */
+static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
     if (atomic_exchange(&conn->closed, true)) {
         return;
     }
@@ -1209,6 +1229,15 @@ void xylem_rudp_close(xylem_rudp_conn_t* conn) {
     } else {
         iowait_close(conn->waiter);
     }
+}
+
+void xylem_rudp_close(xylem_rudp_conn_t* conn) {
+    if (!conn) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_close");
+
+    _rudp_conn_shutdown(conn);
 
     /* Drop the owner reference; the last reference out frees the conn. */
     _rudp_conn_unref(conn);
