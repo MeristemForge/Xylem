@@ -23,11 +23,13 @@
 
 #include "xylem/xylem-threads.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 struct runq_s {
-    queue_t q;
-    mtx_t   lock;
+    queue_t          q;
+    mtx_t            lock;
+    _Atomic int32_t  len; /* lock-free length hint for spin/peek fast paths */
 };
 
 runq_t* runq_create(void) {
@@ -51,6 +53,7 @@ void runq_destroy(runq_t* rq) {
 void runq_push(runq_t* rq, queue_node_t* node) {
     mtx_lock(&rq->lock);
     queue_enqueue(&rq->q, node);
+    atomic_fetch_add_explicit(&rq->len, 1, memory_order_relaxed);
     mtx_unlock(&rq->lock);
 }
 
@@ -62,14 +65,22 @@ void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count) {
     for (int32_t i = 0; i < count; i++) {
         queue_enqueue(&rq->q, nodes[i]);
     }
+    atomic_fetch_add_explicit(&rq->len, count, memory_order_relaxed);
     mtx_unlock(&rq->lock);
 }
 
 queue_node_t* runq_pop(runq_t* rq) {
     mtx_lock(&rq->lock);
     queue_node_t* node = queue_dequeue(&rq->q);
+    if (node) {
+        atomic_fetch_sub_explicit(&rq->len, 1, memory_order_relaxed);
+    }
     mtx_unlock(&rq->lock);
     return node;
+}
+
+int32_t runq_len_approx(runq_t* rq) {
+    return atomic_load_explicit(&rq->len, memory_order_relaxed);
 }
 
 
@@ -94,6 +105,9 @@ int32_t runq_pop_fair(
             break;
         }
         out[n++] = node;
+    }
+    if (n > 0) {
+        atomic_fetch_sub_explicit(&rq->len, n, memory_order_relaxed);
     }
     mtx_unlock(&rq->lock);
     return n;

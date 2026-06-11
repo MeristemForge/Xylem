@@ -63,6 +63,7 @@
 #include "platform/platform-socket.h"
 #include "platform/platform-vmem.h"
 #include "platform/platform-info.h"
+#include "platform/platform-cpu.h"
 #include "sync/spin.h"
 #include "xylem/xylem-threads.h"
 
@@ -97,6 +98,17 @@
 #define SCHED_RUNNEXT_STEAL_MS   1
 
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
+
+/**
+ * Keep-warm spin before an idle worker deep-parks. At most one worker
+ * (capped via sched->spinning) polls the global run queue for this many
+ * rounds, pausing SCHED_SPIN_PAUSE times between cheap length peeks, so a
+ * coroutine injected by a foreign thread (the costly thread->coro wake) is
+ * picked up in userspace with no semaphore syscall or OS wakeup latency.
+ * The window is short and bounded so a truly idle process still parks.
+ */
+#define SCHED_SPIN_ROUNDS 64
+#define SCHED_SPIN_PAUSE  64
 
 typedef struct _coro_pool_s {
     spin_t    lock;
@@ -139,6 +151,7 @@ struct scheduler_s {
     _Atomic bool          running;
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
+    _Atomic int32_t       spinning; /* 1 if a worker is in its keep-warm spin */
     bool                  joined;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
@@ -321,6 +334,23 @@ static void _sched_wake_poller(scheduler_t* sched) {
 }
 
 static void _sched_wake_worker(scheduler_t* sched) {
+    /**
+     * Order the work the caller just published (its runq/deque push)
+     * before the reads below. Pairs with the seq_cst store + fence the
+     * spinner uses around clearing `spinning` and its final re-check: a
+     * producer that skips the wake here cannot strand a coroutine, because
+     * either it observes spinning==1 (and the spinner, still polling or in
+     * its post-clear re-check, sees the push) or it observes spinning==0
+     * (and falls through to a real wake below).
+     */
+    atomic_thread_fence(memory_order_seq_cst);
+
+    /* A worker is keep-warm spinning: it will pick the work up from the
+     * run queue in userspace, so no kernel wake is needed. */
+    if (atomic_load_explicit(&sched->spinning, memory_order_seq_cst) != 0) {
+        return;
+    }
+
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
             platform_sem_post(sched->workers[i].sem);
@@ -770,6 +800,55 @@ static int _sched_worker_entry(void* arg) {
         if (co) {
             _sched_run_coro(w, co);
             continue;
+        }
+
+        /**
+         * Keep-warm spin before deep-parking. Become the single scheduler
+         * spinner (capped at one so idle cores are not all lit up), then
+         * poll the global run queue: a foreign-thread inject is then picked
+         * up in userspace, dodging the semaphore wake + OS thread-wakeup
+         * latency that dominates the thread->coro path. Producers see
+         * `spinning` and skip the wake (_sched_wake_worker); the seq_cst
+         * store + fence around the clear and the authoritative final pop
+         * close the lost-wakeup race.
+         */
+        {
+            int32_t expected = 0;
+            if (atomic_compare_exchange_strong_explicit(
+                    &sched->spinning, &expected, 1,
+                    memory_order_seq_cst, memory_order_relaxed)) {
+                for (int32_t r = 0; r < SCHED_SPIN_ROUNDS && !co; r++) {
+                    if (runq_len_approx(sched->runq) > 0) {
+                        queue_node_t* node = runq_pop(sched->runq);
+                        if (node) {
+                            co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+                            break;
+                        }
+                    }
+                    for (int32_t p = 0; p < SCHED_SPIN_PAUSE; p++) {
+                        platform_cpu_relax();
+                    }
+                }
+                atomic_store_explicit(
+                    &sched->spinning, 0, memory_order_seq_cst);
+                /**
+                 * Authoritative re-check after clearing `spinning`: a
+                 * producer may have pushed and skipped its wake while it
+                 * saw spinning==1. The seq_cst store above + this fence +
+                 * the locking runq_pop guarantee we observe that push.
+                 */
+                atomic_thread_fence(memory_order_seq_cst);
+                if (!co) {
+                    queue_node_t* node = runq_pop(sched->runq);
+                    if (node) {
+                        co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+                    }
+                }
+                if (co) {
+                    _sched_run_coro(w, co);
+                    continue;
+                }
+            }
         }
 
         atomic_store(&w->parked, true);
