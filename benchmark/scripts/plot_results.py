@@ -2,13 +2,13 @@
 """
 Render charts from a benchmark results directory.
 
-Reads the JSON files written by run-unix.sh / run-win.bat and produces
+Reads the JSON files written by run-net.sh / run-net.bat and produces
 grouped bar charts (PNG) for throughput, tail latency and connection rate.
 
 Usage:
     python3 plot_results.py [RESULTS_DIR]
 
-If RESULTS_DIR is omitted, the most recent benchmark/results/<timestamp>/
+If RESULTS_DIR is omitted, the most recent benchmark/out/results/<timestamp>/
 directory is used. Charts are written into <RESULTS_DIR>/charts/.
 
 Filename conventions produced by the runners (the <proto>- prefix is
@@ -31,11 +31,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-SERVERS = ["xylem", "libuv", "boost", "go", "rust"]
+SERVERS = ["xylem", "go", "rust"]
 COLORS = {
     "xylem": "#2563eb",   # blue
-    "libuv": "#16a34a",   # green
-    "boost": "#9333ea",   # purple
     "go":    "#0891b2",   # cyan
     "rust":  "#ea580c",   # orange
 }
@@ -58,7 +56,7 @@ def find_results_dir():
     if len(sys.argv) > 1:
         return os.path.abspath(sys.argv[1])
     here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.normpath(os.path.join(here, "..", "results"))
+    root = os.path.normpath(os.path.join(here, "..", "out", "results"))
     dirs = sorted(
         d for d in glob.glob(os.path.join(root, "*")) if os.path.isdir(d)
     )

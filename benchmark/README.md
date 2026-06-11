@@ -4,11 +4,13 @@ Echo server benchmark comparing Xylem against popular networking libraries acros
 
 ## Competitors
 
-| Protocol | Xylem | libuv | Boost.Asio | Go | Rust (Tokio) | Modes |
-|----------|:-----:|:-----:|:----------:|:--:|:------------:|:-----:|
-| TCP      | x     | x     | x          | x  | x            | ST + MT |
-| UDP      | x     | x     | x          | x  | x            | ST only |
-| TLS      | x     | x     | x          | x  | x            | ST + MT |
+| Protocol | Xylem | Go | Rust (Tokio) | Modes |
+|----------|:-----:|:--:|:------------:|:-----:|
+| TCP      | x     | x  | x            | ST + MT |
+| UDP      | x     | x  | x            | ST only |
+| TLS      | x     | x  | x            | ST + MT |
+
+All protocols compare Xylem against Go and Rust (Tokio).
 
 UDP is **ST only**: the public UDP API exposes no `SO_REUSEPORT`, so a single
 bound port cannot be fanned across worker threads the way the TCP/TLS MT
@@ -21,8 +23,8 @@ Two platform-specific drivers live in `benchmark/scripts/`:
 
 | Script | Platform | Toolchain |
 |--------|----------|-----------|
-| `run-unix.sh` | Linux + macOS | GCC/Clang, auto-detected via `uname` |
-| `run-win.bat` | Windows | MSVC (`cl.exe`), run from a VS Developer Command Prompt |
+| `run-net.sh` | Linux + macOS | GCC/Clang, auto-detected via `uname` |
+| `run-net.bat` | Windows | MSVC (`cl.exe`), auto-initialized via `vcvars64.bat` |
 
 Each script exposes the same subcommands: `install`, `build`, `bench`, `all`
 (default), and the same options. The protocol(s) under test are selected with
@@ -30,8 +32,8 @@ Each script exposes the same subcommands: `install`, `build`, `bench`, `all`
 the comma-separated list.
 
 ```bash
-./run-unix.sh build --proto tcp,udp,tls   # build all three suites
-./run-unix.sh bench --proto tls           # bench just TLS
+./run-net.sh build --proto tcp,udp,tls   # build all three suites
+./run-net.sh bench --proto tls           # bench just TLS
 ```
 
 When `tls` is among the protocols, xylem is built with
@@ -45,43 +47,44 @@ When `tls` is among the protocols, xylem is built with
 cd benchmark/scripts
 
 # One command to install deps + build + run all benchmarks:
-./run-unix.sh
+./run-net.sh
 
 # Or step by step:
-./run-unix.sh install   # install dependencies (Linux: apt + source; macOS: brew)
-./run-unix.sh build     # compile all binaries (Release, stripped)
-./run-unix.sh bench     # run benchmarks, write results/<timestamp>/
+./run-net.sh install   # install dependencies (Linux: apt + source; macOS: brew)
+./run-net.sh build     # compile all binaries (Release, stripped)
+./run-net.sh bench     # run benchmarks, write out/results/<timestamp>/
 ```
 
 ### Windows
 
-Launch a "Developer Command Prompt for VS 2022" (so `cl.exe` and `cmake` are
-on `PATH` — see `docs/build.md`), then:
+From any terminal (`cmake` and `ninja` on `PATH` — install via winget). The
+build step auto-detects Visual Studio and initializes MSVC (`vcvars64.bat`),
+so no "Developer Command Prompt" is required:
 
 ```bat
 cd benchmark\scripts
 
-run-win.bat install    :: print winget/vcpkg setup guidance, verify cl.exe
-run-win.bat build --proto tcp,udp,tls   :: build servers + native Win32 (IOCP) clients
-run-win.bat bench --proto tcp           :: run benchmarks, write results\<timestamp>\
+run-net.bat install    :: print winget/vcpkg setup guidance, verify cl.exe
+run-net.bat build --proto tcp,udp,tls   :: build servers + native Win32 (IOCP) clients
+run-net.bat bench --proto tcp           :: run benchmarks, write out\results\<timestamp>\
 ```
 
-(TLS on Windows needs OpenSSL via vcpkg; libuv/boost servers are off by
-default and also require vcpkg.)
+(TLS on Windows needs OpenSSL via vcpkg. The Windows driver builds only the
+xylem/go/rust families.)
 
 ## Usage
 
 ```bash
 # Custom parameters (same options on both scripts):
-./run-unix.sh bench --proto tcp,udp,tls --conns 10000 --duration 60
-./run-unix.sh bench --proto tls --servers xylem,go,rust --payload 64,4096 --mode st
-./run-unix.sh bench -P udp -s xylem,rust -c 1000,5000 -d 15 --repeat 3
+./run-net.sh bench --proto tcp,udp,tls --conns 10000 --duration 60
+./run-net.sh bench --proto tls --servers xylem,go,rust --payload 64,4096 --mode st
+./run-net.sh bench -P udp -s xylem,rust -c 1000,5000 -d 15 --repeat 3
 
 # Environment variables seed defaults (CLI overrides them):
-PROTO=tls REPEAT=5 DURATION=5 CONNS=1000 ./run-unix.sh bench
+PROTO=tls REPEAT=5 DURATION=5 CONNS=1000 ./run-net.sh bench
 ```
 
-Bench options: `--proto` (tcp,udp,tls), `--servers` (xylem,libuv,boost,go,rust),
+Bench options: `--proto` (tcp,udp,tls), `--servers` (xylem,go,rust),
 `--conns`, `--payload`, `--duration`, `--mode` (st|mt|both), `--repeat`,
 `--no-connrate`. UDP ignores `--mode mt` (no MT row) and connrate (it is
 connectionless); TLS connrate measures full TLS handshakes per second.
@@ -89,9 +92,9 @@ connectionless); TLS connrate measures full TLS handshakes per second.
 ### Platform notes
 
 - **macOS** uses kqueue and lacks `SO_REUSEPORT` / `/proc`; per-CPU usage
-  sampling is Linux-only. The default server set narrows to `xylem,go,rust`.
-- **Windows** uses wepoll (IOCP-backed); same omissions apply. libuv/boost
-  servers require vcpkg and are off by default.
+  sampling is Linux-only.
+- **Windows** uses wepoll (IOCP-backed); same omissions apply. The driver
+  builds only the xylem/go/rust families.
 - Numbers are only comparable within the same platform, not across platforms.
 
 ## Methodology
@@ -99,19 +102,21 @@ connectionless); TLS connrate measures full TLS handshakes per second.
 - **Test pattern**: Ping-pong echo with 64-byte payloads
 - **Metrics**: Throughput (msg/sec), latency (P50/P99/max), memory (RSS)
 - **Fairness**:
-  - All C libraries built from latest source with `-O3 -DNDEBUG -flto`
+  - Xylem built from source with `-O3 -DNDEBUG -flto`
   - All binaries stripped
   - Single-threaded event loops (Go: `GOMAXPROCS=1`, Rust: `current_thread`)
   - TLS servers auto-generate self-signed certificates at startup
   - No logging in hot path for any implementation
 - **Client**: Raw C load generator independent of any server library —
-  epoll (Linux) / kqueue (macOS) in `<proto>-bench-unix.c`, IOCP in
-  `<proto>-bench-win.c`. Modes: `throughput`, `memory`, and `connrate`
+  epoll (Linux) / kqueue (macOS) readiness model, IOCP completion model on
+  Windows. Each protocol uses a single cross-platform `client.c` split behind
+  `#ifdef _WIN32`. Modes:
+  `throughput`, `memory`, and `connrate`
   (TCP/TLS only; TLS connrate = full handshakes/sec).
 
 ## Output Format
 
-Each run produces JSON files in `results/<timestamp>/`:
+Each run produces JSON files in `out/results/<timestamp>/`:
 
 ```json
 {
@@ -131,17 +136,30 @@ Each run produces JSON files in `results/<timestamp>/`:
 
 ```
 benchmark/
-  tcp/udp/tls/                protocol directories
-    server/                   echo servers: <family>-echo.c[pp] (ST) and
-                              <family>-echo-mt.c[pp] (MT, TCP/TLS only)
-    client/                   load generator: <proto>-bench-unix.c (epoll/
-                              kqueue) and <proto>-bench-win.c (IOCP)
+  net/                        network protocol suites
+    tcp/udp/tls/              protocol directories
+      server/                 echo servers, one directory per family:
+        xylem-echo/           server.c (ST) + server-mt.c (MT, tcp/tls)
+        go-echo/              one module: echo/server.go (ST) + echo-mt/server.go (MT)
+        rust-echo/            one crate: src/server.rs (ST) + src/server_mt.rs (MT)
+      client/                 load generator: client.c, one cross-platform
+                              file per protocol (epoll/kqueue readiness on
+                              POSIX, IOCP completion on Windows)
+  sync/                       sync-primitive microbenchmarks (separate suite)
   scripts/
-    run-unix.sh               Linux/macOS driver (install/build/bench)
-    run-win.bat               Windows driver (install/build/bench)
-  results/                    benchmark outputs (prefixed <proto>-...)
-  bin/                        compiled binaries (gitignored), <proto>-<family>-echo[-mt]
+    run-net.sh                Linux/macOS net driver (install/build/bench)
+    run-net.bat               Windows net driver (install/build/bench)
+    run-sync.sh               Linux/macOS sync driver
+    run-sync.bat              Windows sync driver
+    plot_results.py           render charts from an out/results/<ts>/ directory
+  out/                        all build output (gitignored)
+    <proto>-<family>-echo[-mt], <proto>-bench   compiled binaries
+    build/                    xylem CMake build tree
+    results/<ts>/             per-run JSON (prefixed <proto>-...)
 ```
 
+The xylem/go/rust families each live in a single per-family directory that
+yields both the ST and MT binaries; udp is ST only.
+
 Binaries and result files are namespaced by protocol: e.g. `tcp-xylem-echo`,
-`tls-xylem-echo-mt`, `udp-bench`, and `results/<ts>/tls-throughput-st-...json`.
+`tls-xylem-echo-mt`, `udp-bench`, and `out/results/<ts>/tls-throughput-st-...json`.

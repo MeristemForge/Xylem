@@ -1,7 +1,4 @@
-bin/
-build/
-results/*/
-!results/sample/
+out/
 bench-cert.pem
 bench-key.pem
 **/target/

@@ -1,0 +1,15 @@
+[package]
+name = "bench-sync-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
+
+[[bin]]
+name = "sync-rust"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true

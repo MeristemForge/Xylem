@@ -1,0 +1,19 @@
+[package]
+name = "bench-tcp-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros"] }
+
+[[bin]]
+name = "tcp-rust-echo"
+path = "src/server.rs"
+
+[[bin]]
+name = "tcp-rust-echo-mt"
+path = "src/server_mt.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
