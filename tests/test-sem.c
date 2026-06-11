@@ -337,6 +337,7 @@ typedef struct {
     xylem_sem_t* sem;
     atomic_int   acquired;
     atomic_int   done;
+    atomic_int   posters_done;
     int          tested;
 } _stress_ctx_t;
 
@@ -349,6 +350,16 @@ static void _stress_waiter(void* arg) {
     if (atomic_fetch_add(&ctx->done, 1) + 1 == STRESS_WAITERS) {
         ASSERT(atomic_load(&ctx->acquired) == STRESS_WAITERS * STRESS_ROUNDS);
         ctx->tested = 1;
+        /**
+         * All tokens are accounted for, but a poster whose token arrived
+         * via the banked count may still be inside xylem_sem_post (its
+         * trailing spin_unlock on the guard). Destroying now would free
+         * the sem out from under that post. Wait for every poster to
+         * fully return before tearing the sem down.
+         */
+        while (atomic_load(&ctx->posters_done) < STRESS_WAITERS) {
+            xylem_sleep(1);
+        }
         xylem_sem_destroy(ctx->sem);
         xylem_shutdown();
     }
@@ -362,6 +373,7 @@ static void _stress_poster(void* arg) {
             xylem_sleep(1);
         }
     }
+    atomic_fetch_add(&ctx->posters_done, 1);
 }
 
 static void _stress_main(void* arg) {
@@ -381,6 +393,7 @@ static void test_stress(void) {
     _stress_ctx_t ctx = {0};
     atomic_init(&ctx.acquired, 0);
     atomic_init(&ctx.done, 0);
+    atomic_init(&ctx.posters_done, 0);
     xylem_run(_stress_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
