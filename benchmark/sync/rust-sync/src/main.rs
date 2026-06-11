@@ -101,6 +101,23 @@ fn main() {
         cfg.permits = 1;
     }
 
+    // handoff: a round-trip wake-latency probe. The mode selects the
+    // context pair: coro = task<->task, thread = thread<->thread,
+    // mixed = external thread <-> async task (the video-capture pattern).
+    if cfg.prim == "handoff" {
+        let (total_ops, elapsed) = match cfg.mode.as_str() {
+            "coro" => handoff_cc(&cfg),
+            "thread" => handoff_tt(&cfg),
+            "mixed" => handoff_ct(&cfg),
+            other => {
+                eprintln!("rust: unknown mode {:?}", other);
+                std::process::exit(2);
+            }
+        };
+        print_result(&cfg, total_ops, elapsed);
+        return;
+    }
+
     let (total_ops, elapsed) = match cfg.mode.as_str() {
         "coro" => run_coro(&cfg),
         "thread" => run_thread(&cfg),
@@ -490,6 +507,101 @@ fn thread_channel(cfg: &Config) -> (u64, Duration) {
 // ==========================================================================
 // output
 // ==========================================================================
+
+// External OS thread <-> async task ping-pong: the "video capture" pattern
+// where a capture thread hands frames to an async task that does the network
+// send. Measures the round-trip thread<->task wake latency. thread->task uses
+// a Tokio unbounded channel (its send is callable from any thread, no async
+// context needed); task->thread uses a std mpsc (blocks the OS thread).
+fn handoff_ct(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if cfg.workers > 0 {
+        builder.worker_threads(cfg.workers);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
+
+    let (t2a_tx, mut t2a_rx) = mpsc::unbounded_channel::<()>();
+    let (a2t_tx, a2t_rx) = stdmpsc::channel::<()>();
+
+    let handle = rt.spawn(async move {
+        for _ in 0..n {
+            if t2a_rx.recv().await.is_none() {
+                break; // wait for the external thread (thread -> task wake)
+            }
+            let _ = a2t_tx.send(()); // wake the external thread
+        }
+    });
+
+    // This function runs on `main` -- a plain OS thread, external to Tokio,
+    // exactly like a video-capture thread feeding an async network sender.
+    let t0 = Instant::now();
+    for _ in 0..n {
+        let _ = t2a_tx.send(()); // thread -> task wake (the costly direction)
+        let _ = a2t_rx.recv(); // wait for the task's reply (task -> thread)
+    }
+    let elapsed = t0.elapsed();
+
+    let _ = rt.block_on(handle);
+    (n as u64, elapsed)
+}
+
+// Two async tasks ping-pong over a pair of Tokio channels (task<->task wake).
+fn handoff_cc(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if cfg.workers > 0 {
+        builder.worker_threads(cfg.workers);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
+    rt.block_on(async move {
+        let (ab_tx, mut ab_rx) = mpsc::unbounded_channel::<()>();
+        let (ba_tx, mut ba_rx) = mpsc::unbounded_channel::<()>();
+        let b = tokio::spawn(async move {
+            for _ in 0..n {
+                if ab_rx.recv().await.is_none() {
+                    break;
+                }
+                let _ = ba_tx.send(());
+            }
+        });
+        let t0 = Instant::now();
+        for _ in 0..n {
+            let _ = ab_tx.send(());
+            if ba_rx.recv().await.is_none() {
+                break;
+            }
+        }
+        let elapsed = t0.elapsed();
+        let _ = b.await;
+        (n as u64, elapsed)
+    })
+}
+
+// Two OS threads ping-pong over a pair of std mpsc channels (thread<->thread).
+fn handoff_tt(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let (ab_tx, ab_rx) = stdmpsc::channel::<()>();
+    let (ba_tx, ba_rx) = stdmpsc::channel::<()>();
+    let b = thread::spawn(move || {
+        for _ in 0..n {
+            if ab_rx.recv().is_err() {
+                break;
+            }
+            let _ = ba_tx.send(());
+        }
+    });
+    let t0 = Instant::now();
+    for _ in 0..n {
+        let _ = ab_tx.send(());
+        if ba_rx.recv().is_err() {
+            break;
+        }
+    }
+    let elapsed = t0.elapsed();
+    let _ = b.join();
+    (n as u64, elapsed)
+}
 
 fn print_result(cfg: &Config, total_ops: u64, elapsed: Duration) {
     let sec = elapsed.as_secs_f64();

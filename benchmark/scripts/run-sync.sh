@@ -34,28 +34,32 @@ if [ "$(uname -s)" = "Darwin" ]; then ncpu() { sysctl -n hw.ncpu; }
 else ncpu() { nproc; }; fi
 
 # ---- defaults (env seeds; CLI overrides) -----------------------------------
-IFS=',' read -ra PRIMS <<< "${PRIMS:-mutex,cond,waitgroup,sem,channel}"
+IFS=',' read -ra PRIMS <<< "${PRIMS:-mutex,cond,waitgroup,sem,channel,handoff}"
 IFS=',' read -ra LANGS <<< "${LANGS:-xylem,go,rust}"
 IFS=',' read -ra MODES <<< "${MODES:-coro,thread,mixed}"
 WORKERS="${WORKERS:-0}"          # 0 = each runtime's default (CPU count)
 REPEAT="${REPEAT:-3}"
 
 # per-primitive workload (tasks/iters/permits); sized for ~1-2s per cell
-declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [sem]=8 [channel]=4 )
-declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=50000 [sem]=1000000 [channel]=1000000 )
+declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [sem]=8 [channel]=4 [handoff]=2 )
+declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=50000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 # Spawning an OS thread per unit is far costlier than a coroutine, so the
 # thread/mixed modes use lighter per-primitive iteration counts.
-declare -A PT_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 )
+declare -A PT_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 P_PERMITS="${PERMITS:-4}"
 
 # Support matrix: which (lang, mode) cells are valid. The binaries also reject
 # unsupported combinations (non-zero exit), so this is just to avoid noise.
 #   go   -> coro only;  rust -> coro,thread;  xylem -> coro,thread,mixed
+# Exception: the handoff probe is cross-context by design, so rust supports
+# all three modes for it (coro=task<->task, thread=thread<->thread,
+# mixed=external thread<->async task).
 supported() {
-    local lang="$1" mode="$2"
+    local lang="$1" mode="$2" prim="$3"
     case "$lang" in
         go)    [ "$mode" = "coro" ] ;;
-        rust)  [ "$mode" = "coro" ] || [ "$mode" = "thread" ] ;;
+        rust)  if [ "$prim" = "handoff" ]; then return 0; fi
+               [ "$mode" = "coro" ] || [ "$mode" = "thread" ] ;;
         xylem) : ;;   # all modes
         *)     return 1 ;;
     esac
@@ -169,7 +173,7 @@ cmd_bench() {
             [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
             for mode in "${MODES[@]}"; do
-                supported "$lang" "$mode" || continue
+                supported "$lang" "$mode" "$prim" || continue
 
                 local iters; iters="$(iters_for "$prim" "$mode")"
                 local args=(--mode "$mode" --workers "$WORKERS" --tasks "$tasks" --iters "$iters")

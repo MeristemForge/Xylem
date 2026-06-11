@@ -13,6 +13,7 @@
 //	waitgroup  : N rounds over a pre-spawned pool of T goroutines -> ops = T*N
 //	sem        : T goroutines each do N acquire/release, K slots -> ops = T*N
 //	channel    : T senders each send N msgs, 1 receiver        -> ops = T*N
+//	handoff    : goroutine<->goroutine round-trip ping-pong    -> ops = N
 package main
 
 import (
@@ -112,6 +113,8 @@ func main() {
 		totalOps, elapsed = runSem(cfg)
 	case "channel":
 		totalOps, elapsed = runChannel(cfg)
+	case "handoff":
+		totalOps, elapsed = runHandoff(cfg)
 	default:
 		usage()
 		os.Exit(2)
@@ -302,6 +305,31 @@ func runChannel(cfg config) (uint64, time.Duration) {
 	return total, elapsed
 }
 
+// ---------------------------------------------------------------- handoff
+
+// Round-trip ping-pong between two goroutines over unbuffered channels.
+// Go has no external OS threads (user code is always a goroutine), so this
+// is the goroutine<->goroutine wake -- the analog of the coro<->coro (cc)
+// case; there is no thread<->coro cell for Go.
+func runHandoff(cfg config) (uint64, time.Duration) {
+	n := cfg.iters
+	ab := make(chan struct{})
+	ba := make(chan struct{})
+	go func() {
+		for i := 0; i < n; i++ {
+			<-ab
+			ba <- struct{}{}
+		}
+	}()
+	t0 := time.Now()
+	for i := 0; i < n; i++ {
+		ab <- struct{}{}
+		<-ba
+	}
+	elapsed := time.Since(t0)
+	return uint64(n), elapsed
+}
+
 // ---------------------------------------------------------------- output
 
 func printResult(cfg config, totalOps uint64, elapsed time.Duration) {
@@ -334,7 +362,7 @@ func printResult(cfg config, totalOps uint64, elapsed time.Duration) {
 
 func usage() {
 	fmt.Fprintf(os.Stderr,
-		"usage: %s <mutex|cond|waitgroup|sem|channel> "+
+		"usage: %s <mutex|cond|waitgroup|sem|channel|handoff> "+
 			"[--mode coro] [--workers W] [--tasks T] [--iters N] [--permits K]\n", os.Args[0])
 }
 

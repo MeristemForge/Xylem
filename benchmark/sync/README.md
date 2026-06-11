@@ -11,9 +11,9 @@ the equivalent constructs in Go (goroutines) and Rust (Tokio tasks).
 | sem       | `xylem_sem`   | buffered `chan` (token bucket) | `tokio::sync::Semaphore` |
 | channel   | `xylem_channel` (MPSC) | buffered `chan` | `tokio::sync::mpsc` (unbounded) |
 
-A sixth, xylem-only probe, `handoff`, measures the raw cross-context wake
-latency (see "Cross-context direction" below) and has no Go/Rust column --
-goroutines and Tokio tasks cannot block on the same object as an OS thread.
+A sixth probe, `handoff`, measures the raw cross-context wake latency (see
+"Cross-context direction" below). All three languages run it, but only xylem
+and Rust have a thread↔coro cell -- Go has just goroutine↔goroutine.
 
 Unlike the protocol suites (`tcp/`, `udp/`, `tls/`), there is no client/server
 or network I/O here: each binary runs one primitive entirely in-process and
@@ -45,6 +45,13 @@ The runner skips unsupported `(lang, mode)` cells automatically (the binaries
 also reject them with a non-zero exit). Thread/mixed modes use lighter
 per-primitive iteration counts since spawning an OS thread costs far more than
 a coroutine (notably `waitgroup`, which spawns workers every round).
+
+For the `handoff` probe the mode axis is reused to select the *context pair*
+instead of the worker kind: `coro` = coro↔coro, `thread` = thread↔thread,
+`mixed` = thread↔coro. Here Rust **does** support all three (`mixed` is an
+external `std::thread` handing off to a Tokio task over a channel -- the
+video-capture pattern), while Go has only the `coro` (goroutine↔goroutine)
+cell.
 
 ## Cross-context direction
 
@@ -132,7 +139,7 @@ Same on both drivers (env vars seed defaults; CLI overrides):
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--prims`, `-p`   | `mutex,cond,waitgroup,sem,channel` | primitives to run |
+| `--prims`, `-p`   | `mutex,cond,waitgroup,sem,channel,handoff` | primitives to run |
 | `--langs`, `-l`   | `xylem,go,rust` | languages to compare |
 | `--modes`, `-m`   | `coro,thread,mixed` | concurrency models (unsupported cells skipped) |
 | `--workers`, `-w` | `0` | runtime worker threads (`0` = each runtime's default = CPU count) |
