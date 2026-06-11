@@ -16,11 +16,12 @@
 // Workload model (identical across languages and modes):
 //   mutex      : T workers each do N lock/inc/unlock          -> ops = T*N
 //   cond       : 1 producer + 1 consumer, N hand-offs          -> ops = N
-//   waitgroup  : N rounds, each spawns T workers then joins     -> ops = T*N
+//   waitgroup  : N rounds over a pre-spawned pool of T workers  -> ops = T*N
 //   sem        : T workers each do N acquire/release, K permits -> ops = T*N
 //   channel    : T senders each send N msgs, 1 receiver         -> ops = T*N
 //
-// Tokio analogs (coro mode): cond -> Notify ping-pong; waitgroup -> JoinSet;
+// Tokio analogs (coro mode): cond -> Notify ping-pong; waitgroup -> a
+// gate/fin handoff built from Semaphores (Tokio has no WaitGroup);
 // channel -> mpsc::unbounded_channel.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -194,16 +195,43 @@ async fn coro_cond(cfg: &Config) -> (u64, Duration) {
 }
 
 async fn coro_waitgroup(cfg: &Config) -> (u64, Duration) {
+    // Tokio has no WaitGroup, so the same gate/fin handoff is built from
+    // Semaphores (the idiomatic Tokio building block). A fixed pool of T
+    // tasks is spawned once, OUTSIDE the timed region, and loops over the
+    // rounds. Each round uses a fresh pair of single-use semaphores:
+    // gate[r] (main releases the pool) and fin[r] (the pool signals
+    // completion). Task creation never enters the measurement.
     let rounds = cfg.iters;
-    let t0 = Instant::now();
-    for _ in 0..rounds {
-        let mut set = JoinSet::new();
-        for _ in 0..cfg.tasks {
-            set.spawn(async {});
-        }
-        while set.join_next().await.is_some() {}
+    let t = cfg.tasks;
+
+    let gate: Arc<Vec<Semaphore>> =
+        Arc::new((0..rounds).map(|_| Semaphore::new(0)).collect());
+    let fin: Arc<Vec<Semaphore>> =
+        Arc::new((0..rounds).map(|_| Semaphore::new(0)).collect());
+
+    let mut handles = Vec::with_capacity(t);
+    for _ in 0..t {
+        let gate = gate.clone();
+        let fin = fin.clone();
+        handles.push(tokio::spawn(async move {
+            for r in 0..rounds {
+                gate[r].acquire().await.unwrap().forget(); // wait for open
+                fin[r].add_permits(1); // signal this worker is done
+            }
+        }));
     }
-    (rounds as u64 * cfg.tasks as u64, t0.elapsed())
+
+    let t0 = Instant::now();
+    for r in 0..rounds {
+        gate[r].add_permits(t); // release the pool
+        fin[r].acquire_many(t as u32).await.unwrap().forget(); // join
+    }
+    let elapsed = t0.elapsed();
+
+    for h in handles {
+        let _ = h.await;
+    }
+    (rounds as u64 * cfg.tasks as u64, elapsed)
 }
 
 async fn coro_sem(cfg: &Config) -> (u64, Duration) {
@@ -341,18 +369,42 @@ fn thread_cond(cfg: &Config) -> (u64, Duration) {
 }
 
 fn thread_waitgroup(cfg: &Config) -> (u64, Duration) {
+    // Persistent OS-thread pool + gate/fin built from the std Sem
+    // (Mutex+Condvar) below. Threads are spawned once, OUTSIDE the timed
+    // region; the measurement captures only the per-round release/join.
     let rounds = cfg.iters;
+    let t = cfg.tasks;
+
+    let gate: Arc<Vec<Sem>> = Arc::new((0..rounds).map(|_| Sem::new(0)).collect());
+    let fin: Arc<Vec<Sem>> = Arc::new((0..rounds).map(|_| Sem::new(0)).collect());
+
+    let mut hs = Vec::with_capacity(t);
+    for _ in 0..t {
+        let gate = gate.clone();
+        let fin = fin.clone();
+        hs.push(thread::spawn(move || {
+            for r in 0..rounds {
+                gate[r].acquire(); // wait for round r to open
+                fin[r].release(); // signal this worker is done
+            }
+        }));
+    }
+
     let t0 = Instant::now();
-    for _ in 0..rounds {
-        let mut hs = Vec::with_capacity(cfg.tasks);
-        for _ in 0..cfg.tasks {
-            hs.push(thread::spawn(|| {}));
+    for r in 0..rounds {
+        for _ in 0..t {
+            gate[r].release(); // release the pool
         }
-        for h in hs {
-            h.join().unwrap();
+        for _ in 0..t {
+            fin[r].acquire(); // join the pool
         }
     }
-    (rounds as u64 * cfg.tasks as u64, t0.elapsed())
+    let elapsed = t0.elapsed();
+
+    for h in hs {
+        h.join().unwrap();
+    }
+    (rounds as u64 * cfg.tasks as u64, elapsed)
 }
 
 // std has no counting semaphore; a Mutex<count> + Condvar is the textbook one.

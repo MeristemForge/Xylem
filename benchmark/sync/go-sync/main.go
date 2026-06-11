@@ -10,7 +10,7 @@
 //
 //	mutex      : T goroutines each do N lock/inc/unlock        -> ops = T*N
 //	cond       : 1 producer + 1 consumer, N hand-offs          -> ops = N
-//	waitgroup  : N rounds, each spawns T goroutines that Done() -> ops = T*N
+//	waitgroup  : N rounds over a pre-spawned pool of T goroutines -> ops = T*N
 //	sem        : T goroutines each do N acquire/release, K slots -> ops = T*N
 //	channel    : T senders each send N msgs, 1 receiver        -> ops = T*N
 package main
@@ -194,17 +194,42 @@ func runCond(cfg config) (uint64, time.Duration) {
 // ------------------------------------------------------------- waitgroup
 
 func runWaitgroup(cfg config) (uint64, time.Duration) {
+	// Isolated waitgroup benchmark: a fixed pool of T goroutines is spawned
+	// once, OUTSIDE the timed region, and loops over the rounds. Each round
+	// uses a fresh pair of single-use WaitGroups -- gate[r] (main opens it
+	// to release the pool) and fin[r] (the pool signals completion). The
+	// timed loop measures only the WaitGroup add/done/wait handoff, never
+	// goroutine creation.
 	rounds := cfg.iters
+	T := cfg.tasks
+
+	gate := make([]sync.WaitGroup, rounds)
+	fin := make([]sync.WaitGroup, rounds)
+	for r := 0; r < rounds; r++ {
+		gate[r].Add(1) // gate starts closed
+	}
+
+	var workers sync.WaitGroup
+	workers.Add(T)
+	for t := 0; t < T; t++ {
+		go func() {
+			defer workers.Done()
+			for r := 0; r < rounds; r++ {
+				gate[r].Wait() // wait for round r to open
+				fin[r].Done()  // signal this worker is done
+			}
+		}()
+	}
+
 	t0 := time.Now()
 	for r := 0; r < rounds; r++ {
-		var wg sync.WaitGroup
-		wg.Add(cfg.tasks)
-		for t := 0; t < cfg.tasks; t++ {
-			go wg.Done()
-		}
-		wg.Wait()
+		fin[r].Add(T)  // expect T workers
+		gate[r].Done() // open: release the pool
+		fin[r].Wait()  // join the pool
 	}
 	elapsed := time.Since(t0)
+
+	workers.Wait()
 	return uint64(rounds) * uint64(cfg.tasks), elapsed
 }
 

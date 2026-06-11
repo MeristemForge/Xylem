@@ -42,7 +42,7 @@ REPEAT="${REPEAT:-3}"
 
 # per-primitive workload (tasks/iters/permits); sized for ~1-2s per cell
 declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [sem]=8 [channel]=4 )
-declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=200000 [sem]=1000000 [channel]=1000000 )
+declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=50000 [sem]=1000000 [channel]=1000000 )
 # Spawning an OS thread per unit is far costlier than a coroutine, so the
 # thread/mixed modes use lighter per-primitive iteration counts.
 declare -A PT_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 )

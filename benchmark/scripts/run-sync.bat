@@ -217,7 +217,7 @@ set "ITERS=1000000"
 set "ITERS_T=1000000"
 if /I "%~1"=="mutex"     (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="cond"      (set "TASKS=2" & set "ITERS=2000000" & set "ITERS_T=2000000")
-if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=200000"  & set "ITERS_T=2000")
+if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=50000"  & set "ITERS_T=2000")
 if /I "%~1"=="sem"       (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="channel"   (set "TASKS=4" & set "ITERS=1000000" & set "ITERS_T=1000000")
 goto :eof

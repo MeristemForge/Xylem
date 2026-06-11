@@ -58,13 +58,13 @@ static bench_thread_t thread_spawn(void (*fn)(void*), void* arg) {
 }
 static void thread_join(bench_thread_t th) { thrd_join(th, NULL); }
 
-typedef enum { M_CORO, M_THREAD, M_MIXED } mode_t;
+typedef enum { M_CORO, M_THREAD, M_MIXED } runmode_t;
 typedef enum { P_MUTEX, P_COND, P_WAITGROUP, P_SEM, P_CHANNEL, P_HANDOFF } prim_t;
 
 static struct {
     prim_t      prim;
     const char* name;
-    mode_t      mode;
+    runmode_t   mode;
     const char* mode_name;
     int         workers;
     long        tasks;
