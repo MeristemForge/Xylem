@@ -21,12 +21,10 @@
 
 #include "platform/platform-futex.h"
 
-/* WaitOnAddress / WakeByAddress* live in api-ms-win-core-synch-l1-2-0,
- * whose import library is Synchronization.lib. The pragma below embeds that
- * dependency into the object (and thus into xylem.lib), so MSVC consumers
- * linking the static library resolve it automatically -- mirroring the
- * ws2_32.lib pragma in platform-socket.h. Available since Windows 8 /
- * Server 2012. */
+/**
+ * Embed Synchronization.lib so consumers of the static xylem.lib auto-link
+ * it, mirroring the ws2_32.lib pragma in platform-socket.h.
+ */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -35,16 +33,17 @@
 #pragma comment(lib, "Synchronization.lib")
 
 void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
-    /* WaitOnAddress compares *addr against the value pointed to by its
-     * second argument, so pass the address of a local copy. A FALSE
-     * return (timeout/spurious) is fine: the caller re-checks in a loop. */
+    /**
+     * WaitOnAddress dereferences its compare arg, so pass a local copy's
+     * address. Spurious/timeout wakeups are fine; the caller re-checks.
+     */
     WaitOnAddress((volatile void*)addr, &expected, sizeof(expected), INFINITE);
 }
 
-void platform_futex_wake_one(_Atomic uint32_t* addr) {
+void platform_futex_signal(_Atomic uint32_t* addr) {
     WakeByAddressSingle((PVOID)addr);
 }
 
-void platform_futex_wake_all(_Atomic uint32_t* addr) {
+void platform_futex_broadcast(_Atomic uint32_t* addr) {
     WakeByAddressAll((PVOID)addr);
 }

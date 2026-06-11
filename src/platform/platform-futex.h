@@ -27,18 +27,12 @@ _Pragma("once")
 /**
  * Address-based wait/wake (a "futex").
  *
- * Lets a thread sleep on a 32-bit word and be woken when another thread
- * changes it -- the kernel keeps no per-object handle, so an uncontended
- * wake costs nothing and the word itself is the wait queue key. Backends:
- * Linux futex(2), Windows WaitOnAddress, macOS os_sync_wait_on_address.
- *
  * The word is caller-owned (typically a lock state embedded in another
- * struct); this module adds no type or allocation. Only OS threads may
- * use it -- a coroutine must never block a worker on a futex.
+ * struct); this module adds no type or allocation. Only OS threads may use
+ * it -- a coroutine must never block a worker on a futex.
  *
- * These are raw building blocks with no fairness or ordering guarantee:
- * spurious wakeups are possible, so every wait MUST sit in a loop that
- * re-checks the predicate on the word.
+ * Raw building blocks: no fairness or ordering, spurious wakeups possible.
+ * Every wait MUST sit in a loop that re-checks the predicate on the word.
  */
 
 /**
@@ -68,14 +62,14 @@ extern void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected);
  *
  * @param addr  Word other threads may be waiting on.
  */
-extern void platform_futex_wake_one(_Atomic uint32_t* addr);
+extern void platform_futex_signal(_Atomic uint32_t* addr);
 
 /**
  * @brief Wake all threads waiting on @p addr.
  *
- * Same store-before-wake rule as platform_futex_wake_one. Used when more
+ * Same store-before-wake rule as platform_futex_signal. Used when more
  * than one waiter can make progress (e.g. a broadcast).
  *
  * @param addr  Word other threads may be waiting on.
  */
-extern void platform_futex_wake_all(_Atomic uint32_t* addr);
+extern void platform_futex_broadcast(_Atomic uint32_t* addr);

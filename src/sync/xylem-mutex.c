@@ -227,7 +227,7 @@ void xylem_mutex_unlock(xylem_mutex_t* mtx) {
     spin_unlock(&mtx->guard);
 
     if (thr) {
-        platform_futex_wake_one(&mtx->state);
+        platform_futex_signal(&mtx->state);
     }
     if (co) {
         scheduler_schedule(sched, co);
