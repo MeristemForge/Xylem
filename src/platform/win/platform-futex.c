@@ -22,12 +22,17 @@
 #include "platform/platform-futex.h"
 
 /* WaitOnAddress / WakeByAddress* live in api-ms-win-core-synch-l1-2-0,
- * whose import library is Synchronization.lib (linked in CMakeLists).
- * Available since Windows 8 / Server 2012. */
+ * whose import library is Synchronization.lib. The pragma below embeds that
+ * dependency into the object (and thus into xylem.lib), so MSVC consumers
+ * linking the static library resolve it automatically -- mirroring the
+ * ws2_32.lib pragma in platform-socket.h. Available since Windows 8 /
+ * Server 2012. */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+
+#pragma comment(lib, "Synchronization.lib")
 
 void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
     /* WaitOnAddress compares *addr against the value pointed to by its
