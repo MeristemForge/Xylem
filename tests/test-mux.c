@@ -115,7 +115,7 @@ static void _cli_worker(void* arg) {
 static void _echo_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = MUX_PORT,
     };
@@ -211,7 +211,7 @@ static void _multi_cli_worker(void* arg) {
 static void _multi_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = MUX_PORT,
     };

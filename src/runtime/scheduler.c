@@ -64,7 +64,7 @@
 #include "platform/platform-vmem.h"
 #include "platform/platform-info.h"
 #include "sync/spin.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "minicoro/minicoro.h"
 

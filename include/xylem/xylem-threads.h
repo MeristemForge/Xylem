@@ -21,6 +21,24 @@
 
 _Pragma("once")
 
+/**
+ * C11 <threads.h> portability shim.
+ *
+ * Exposes the standard C11 threads API (thrd_t / mtx_t / cnd_t / tss_t /
+ * once_flag and their operations) on every supported platform. Linux and
+ * Windows forward to the toolchain's native <threads.h>; macOS, whose libc
+ * still ships no <threads.h>, gets an equivalent implementation built on
+ * pthreads.
+ *
+ * This is the raw OS-thread layer: these primitives block the calling OS
+ * thread and know nothing about coroutines. When a coroutine is (or may be)
+ * involved, prefer the context-adaptive xylem primitives (xylem_mutex,
+ * xylem_cond, xylem_sem, ...) instead.
+ *
+ * Requires a C11 toolchain (the native <threads.h> uses _Noreturn); build
+ * translation units that include this header in C11 mode or later.
+ */
+
 #include <stdlib.h>
 #include <time.h>
 

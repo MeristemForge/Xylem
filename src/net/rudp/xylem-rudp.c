@@ -32,7 +32,7 @@
 #include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "rudp-fec.h"
 #include "kcp/ikcp.h"
@@ -662,7 +662,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
-    sess->inbox = xylem_channel_create();
+    sess->inbox = xylem_channel_create(0);
     if (!sess->inbox) {
         ikcp_release(sess->kcp);
         rudp_fec_enc_destroy(sess->fec_enc);
@@ -1147,7 +1147,7 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     mtx_init(&ln->sessions_mtx, mtx_plain);
 
     /* Accept queue: a channel carrying accepted session pointers. */
-    ln->accept_ch = xylem_channel_create();
+    ln->accept_ch = xylem_channel_create(0);
     if (!ln->accept_ch) {
         mtx_destroy(&ln->sessions_mtx);
         xylem_aes256_destroy(ln->aes);

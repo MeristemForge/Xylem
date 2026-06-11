@@ -67,7 +67,7 @@ iters_for() {
     if [ "$mode" = "coro" ]; then echo "${P_ITERS[$prim]}"; else echo "${PT_ITERS[$prim]}"; fi
 }
 
-CFLAGS="-O3 -DNDEBUG -flto -Wall -Wextra"
+CFLAGS="-std=gnu11 -O3 -DNDEBUG -flto -Wall -Wextra"
 LDFLAGS="-s -flto"
 
 # =============================================================================

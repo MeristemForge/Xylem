@@ -26,7 +26,7 @@
 
 #include "runtime.h"
 #include "scheduler.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "minicoro/minicoro.h"
 

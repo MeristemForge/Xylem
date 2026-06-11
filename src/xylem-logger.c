@@ -22,7 +22,7 @@
 #include "xylem/xylem-logger.h"
 #include "thrdpool.h"
 
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "platform/platform.h"
 

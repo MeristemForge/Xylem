@@ -38,38 +38,25 @@
 
 /* ----------------------------- OS-thread shim ----------------------------- */
 /* Used by the thread / mixed modes. Workers call the same xylem primitives;
- * only the execution vehicle (coroutine vs OS thread) changes. */
-#ifdef _WIN32
-#include <windows.h>
-typedef HANDLE bench_thread_t;
+ * only the execution vehicle (coroutine vs OS thread) changes. Threads come
+ * from xylem's public C11 <threads.h> wrapper, the same one the unit tests
+ * use, so there is no per-OS thread code here. */
+#include "xylem/xylem-threads.h"
+
+typedef thrd_t bench_thread_t;
 typedef struct { void (*fn)(void*); void* arg; } thunk_t;
-static DWORD WINAPI _thread_tramp(LPVOID p) {
+
+/* Adapt a void(*)(void*) worker to the int(*)(void*) thrd_start_t signature. */
+static int _thread_tramp(void* p) {
     thunk_t* t = (thunk_t*)p;
     void (*fn)(void*) = t->fn; void* a = t->arg; free(t);
     fn(a); return 0;
 }
 static bench_thread_t thread_spawn(void (*fn)(void*), void* arg) {
     thunk_t* t = (thunk_t*)malloc(sizeof(*t)); t->fn = fn; t->arg = arg;
-    return CreateThread(NULL, 0, _thread_tramp, t, 0, NULL);
+    thrd_t th; thrd_create(&th, _thread_tramp, t); return th;
 }
-static void thread_join(bench_thread_t h) {
-    WaitForSingleObject(h, INFINITE); CloseHandle(h);
-}
-#else
-#include <pthread.h>
-typedef pthread_t bench_thread_t;
-typedef struct { void (*fn)(void*); void* arg; } thunk_t;
-static void* _thread_tramp(void* p) {
-    thunk_t* t = (thunk_t*)p;
-    void (*fn)(void*) = t->fn; void* a = t->arg; free(t);
-    fn(a); return NULL;
-}
-static bench_thread_t thread_spawn(void (*fn)(void*), void* arg) {
-    thunk_t* t = (thunk_t*)malloc(sizeof(*t)); t->fn = fn; t->arg = arg;
-    pthread_t th; pthread_create(&th, NULL, _thread_tramp, t); return th;
-}
-static void thread_join(bench_thread_t th) { pthread_join(th, NULL); }
-#endif
+static void thread_join(bench_thread_t th) { thrd_join(th, NULL); }
 
 typedef enum { M_CORO, M_THREAD, M_MIXED } mode_t;
 typedef enum { P_MUTEX, P_COND, P_WAITGROUP, P_SEM, P_CHANNEL } prim_t;
@@ -316,8 +303,10 @@ static void chan_receiver(void* arg) {
 
 static void run_channel(void) {
     /* create() is coroutine-only -- run_channel executes in the root
-     * coroutine, so this is valid even in thread/mixed mode. */
-    G.ch      = xylem_channel_create();
+     * coroutine, so this is valid even in thread/mixed mode. Unbounded
+     * (cap 0): send never reports full, an MPSC matching the Go/Rust
+     * channels this benchmark compares against. */
+    G.ch      = xylem_channel_create(0);
     G.wg      = xylem_waitgroup_create();
     G.recv_wg = xylem_waitgroup_create();
     G.counter = 0;

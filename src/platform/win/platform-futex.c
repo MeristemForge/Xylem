@@ -40,6 +40,21 @@ void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
     WaitOnAddress((volatile void*)addr, &expected, sizeof(expected), INFINITE);
 }
 
+bool platform_futex_timedwait(
+    _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms) {
+    /**
+     * Returns FALSE on timeout (GetLastError == ERROR_TIMEOUT) or a value
+     * mismatch caught at arm time; only a real deadline elapse is reported
+     * as a timeout to the caller, everything else is "possible progress".
+     */
+    BOOL ok = WaitOnAddress(
+        (volatile void*)addr, &expected, sizeof(expected), (DWORD)timeout_ms);
+    if (ok) {
+        return true;
+    }
+    return GetLastError() != ERROR_TIMEOUT;
+}
+
 void platform_futex_signal(_Atomic uint32_t* addr) {
     WakeByAddressSingle((PVOID)addr);
 }

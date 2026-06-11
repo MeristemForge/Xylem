@@ -42,7 +42,7 @@
 #include "xylem.h"
 
 #include "runtime/runtime.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "runtime/minicoro/minicoro.h"
 

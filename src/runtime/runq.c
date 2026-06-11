@@ -21,7 +21,7 @@
 
 #include "runq.h"
 
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdlib.h>
 

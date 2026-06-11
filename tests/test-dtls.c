@@ -123,7 +123,7 @@ static void _echo_main(void* arg) {
     xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
@@ -223,7 +223,7 @@ static void _alpn_main(void* arg) {
     ASSERT(xylem_dtls_ctx_set_alpn(cli_ctx, protos, 2) == 0);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
@@ -306,7 +306,7 @@ static void _ci_main(void* arg) {
     xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
@@ -388,7 +388,7 @@ static void _dl_main(void* arg) {
     xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
@@ -458,7 +458,7 @@ static void _cw_main(void* arg) {
     xylem_dtls_ctx_verify_client(srv_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = NULL,
@@ -566,7 +566,7 @@ static void _conc_main(void* arg) {
     xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
@@ -725,7 +725,7 @@ static void _fdx_main(void* arg) {
     xylem_dtls_ctx_verify_server(cli_ctx, false);
 
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,

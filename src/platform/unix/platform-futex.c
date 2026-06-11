@@ -23,8 +23,10 @@
 
 #if defined(__linux__)
 
+#include <errno.h>
 #include <linux/futex.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
@@ -33,6 +35,20 @@ void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
      * Any return (EAGAIN/EINTR) just falls through to the caller's re-check.
      */
     syscall(SYS_futex, (uint32_t*)addr, FUTEX_WAIT_PRIVATE, expected, NULL, NULL, 0);
+}
+
+bool platform_futex_timedwait(
+    _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms) {
+    /* FUTEX_WAIT takes a *relative* timeout; ETIMEDOUT means the deadline hit. */
+    struct timespec ts;
+    ts.tv_sec  = (time_t)(timeout_ms / 1000);
+    ts.tv_nsec = (long)(timeout_ms % 1000) * 1000000L;
+    long r = syscall(
+        SYS_futex, (uint32_t*)addr, FUTEX_WAIT_PRIVATE, expected, &ts, NULL, 0);
+    if (r == -1 && errno == ETIMEDOUT) {
+        return false;
+    }
+    return true;
 }
 
 void platform_futex_signal(_Atomic uint32_t* addr) {
@@ -47,6 +63,7 @@ void platform_futex_broadcast(_Atomic uint32_t* addr) {
 
 #if defined(__APPLE__)
 
+#include <errno.h>
 #include <os/os_sync_wait_on_address.h>
 
 /* os_sync_wait_on_address is the public address-wait API (macOS 14.4+). */
@@ -58,6 +75,23 @@ void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
         sizeof(uint32_t),
         OS_SYNC_WAIT_ON_ADDRESS_NONE
     );
+}
+
+bool platform_futex_timedwait(
+    _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms) {
+    /* Relative timeout in ns against the mach absolute clock; ETIMEDOUT = deadline. */
+    int r = os_sync_wait_on_address_with_timeout(
+        (void*)addr,
+        (uint64_t)expected,
+        sizeof(uint32_t),
+        OS_SYNC_WAIT_ON_ADDRESS_NONE,
+        OS_CLOCK_MACH_ABSOLUTE_TIME,
+        timeout_ms * 1000000ULL
+    );
+    if (r == -1 && errno == ETIMEDOUT) {
+        return false;
+    }
+    return true;
 }
 
 void platform_futex_signal(_Atomic uint32_t* addr) {

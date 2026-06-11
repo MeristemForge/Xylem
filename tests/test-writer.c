@@ -85,7 +85,7 @@ static void _cli_write(void* arg) {
 static void _write_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = TEST_PORT,
     };
@@ -158,7 +158,7 @@ static void _cli_write_large(void* arg) {
 static void _write_large_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = TEST_PORT,
     };

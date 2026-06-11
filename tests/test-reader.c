@@ -81,7 +81,7 @@ static void _cli_read(void* arg) {
 static void _read_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = TEST_PORT,
     };
@@ -153,7 +153,7 @@ static void _cli_read_until(void* arg) {
 static void _read_until_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = TEST_PORT,
     };
@@ -217,7 +217,7 @@ static void _cli_read_full(void* arg) {
 static void _read_full_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = TEST_PORT,
     };

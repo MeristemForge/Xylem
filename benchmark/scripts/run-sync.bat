@@ -131,7 +131,7 @@ if not defined XYLEM_LIB (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /O2 /DNDEBUG /MD /W3"
+set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3"
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 echo %LANGS% | findstr /I "xylem" >nul && (

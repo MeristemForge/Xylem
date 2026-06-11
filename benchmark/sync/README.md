@@ -145,9 +145,9 @@ The driver also prints a per-primitive comparison table (avg ops/sec, ns/op).
     "wait for a group of tasks". Go uses `sync.WaitGroup`.
   - **sem** — Go has no semaphore in the standard library, so it uses the
     idiomatic buffered-channel token bucket. Rust uses `tokio::sync::Semaphore`.
-  - **channel** — xylem's channel is an unbounded MPSC; Rust matches it with
-    `mpsc::unbounded_channel`. Go has no unbounded channel, so it uses a
-    buffered channel (cap 1024) and senders block on a full buffer (backpressure
-    that the other two do not apply).
+  - **channel** — xylem's channel is an unbounded MPSC (`create(0)`); Rust
+    matches it with `mpsc::unbounded_channel`. Go has no unbounded channel, so
+    it uses a buffered channel (cap 1024) and senders block on a full buffer
+    (backpressure that the other two do not apply).
 - Numbers are only comparable **within the same platform and run**, never
   across machines or OSes.

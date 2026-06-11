@@ -81,7 +81,7 @@ static void _echo_client(void* arg) {
 static void _echo_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready  = xylem_channel_create(),
+        .ready  = xylem_channel_create(0),
         .wg     = xylem_waitgroup_create(),
         .port_a = UDP_PORT_A,
     };
@@ -133,7 +133,7 @@ static void _addr_receiver(void* arg) {
 static void _addr_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready  = xylem_channel_create(),
+        .ready  = xylem_channel_create(0),
         .wg     = xylem_waitgroup_create(),
         .port_a = UDP_PORT_A + 2,
         .port_b = UDP_PORT_B + 2,
@@ -217,7 +217,7 @@ static void _close_closer_coro(void* arg) {
 static void _close_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready  = xylem_channel_create(),
+        .ready  = xylem_channel_create(0),
         .wg     = xylem_waitgroup_create(),
         .port_a = UDP_PORT_A + 6,
     };
@@ -278,7 +278,7 @@ static void _boundary_receiver(void* arg) {
 static void _boundary_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready  = xylem_channel_create(),
+        .ready  = xylem_channel_create(0),
         .wg     = xylem_waitgroup_create(),
         .port_a = UDP_PORT_A + 8,
     };

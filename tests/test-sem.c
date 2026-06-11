@@ -22,7 +22,7 @@
 #include "xylem.h"
 #include "xylem/sync/xylem-sem.h"
 #include "assert.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 #include "utils.h"
 
 #include <stdatomic.h>

@@ -44,41 +44,35 @@ typedef struct xylem_channel_s xylem_channel_t;
  * Threading:
  *   - send(): callable from any thread or coroutine; never parks. A
  *     full bounded channel returns XYLEM_CHANNEL_FULL (drop/retry is
- *     the caller's choice -- there is no blocking backpressure).
+ *     the caller's choice -- there is no blocking backpressure). An
+ *     unbounded channel never reports full.
  *   - recv() / recv_timeout(): callable from a coroutine OR an OS
  *     thread. Only one receiver may operate on a channel at a time;
  *     concurrent recv aborts (single-consumer MPSC contract).
- *   - create(), create_bounded(), destroy() must be called from inside
- *     a coroutine (coroutine-only; they abort otherwise). close() is
- *     any-context.
+ *   - create(), destroy() must be called from inside a coroutine
+ *     (coroutine-only; they abort otherwise). close() is any-context.
  *
  * Capacity:
- *   - create() makes an unbounded channel: send never reports full.
- *   - create_bounded(cap) caps the in-flight message count at cap;
+ *   - create(0) makes an unbounded channel: send never reports full
+ *     (it always queues, barring OOM).
+ *   - create(cap) with cap > 0 caps the in-flight message count at cap;
  *     send returns XYLEM_CHANNEL_FULL when full. For backpressure the
  *     receiver can watch len()/cap() and drop once over a threshold
  *     (recv_timeout(ch, 0) drains without blocking).
  */
 
 /**
- * @brief Create a new channel.
+ * @brief Create a channel.
+ *
+ * @param cap  Maximum in-flight messages (sent but not yet received).
+ *             0 makes the channel unbounded (send never reports full);
+ *             a value > 0 caps the in-flight count, and send returns
+ *             XYLEM_CHANNEL_FULL instead of queueing when full. send
+ *             never blocks either way.
  *
  * @return Channel handle, or NULL on allocation failure.
  */
-extern xylem_channel_t* xylem_channel_create(void);
-
-/**
- * @brief Create a bounded channel.
- *
- * The channel holds at most @p cap in-flight messages (sent but not
- * yet received). When full, xylem_channel_send returns
- * XYLEM_CHANNEL_FULL instead of queueing; it never blocks the sender.
- *
- * @param cap  Maximum in-flight messages; must be > 0.
- *
- * @return Channel handle, or NULL on allocation failure or cap == 0.
- */
-extern xylem_channel_t* xylem_channel_create_bounded(size_t cap);
+extern xylem_channel_t* xylem_channel_create(size_t cap);
 
 /**
  * @brief Destroy the channel, releasing its memory.
@@ -160,8 +154,7 @@ extern void* xylem_channel_recv_timeout(
  * @brief Current number of in-flight messages (sent but not received).
  *
  * Best-effort snapshot, safe to call from any thread. Useful for
- * drop/backpressure decisions on a bounded channel. Maintained for
- * unbounded channels too.
+ * drop/backpressure decisions against cap().
  *
  * @param ch  Channel handle (NULL returns 0).
  *
@@ -174,7 +167,6 @@ extern size_t xylem_channel_len(xylem_channel_t* ch);
  *
  * @param ch  Channel handle (NULL returns 0).
  *
- * @return The cap passed to create_bounded, or 0 for an unbounded
- *         channel created with create().
+ * @return The cap passed to create(), or 0 for an unbounded channel.
  */
 extern size_t xylem_channel_cap(xylem_channel_t* ch);

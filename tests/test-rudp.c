@@ -81,7 +81,7 @@ static void _echo_client(void* arg) {
 static void _echo_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = 19300,
     };
@@ -139,7 +139,7 @@ static void _addr_client(void* arg) {
 static void _addr_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = 19302,
     };
@@ -203,7 +203,7 @@ static void _deadline_client(void* arg) {
 static void _deadline_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = 19304,
     };
@@ -268,8 +268,8 @@ static void _wake_client(void* arg) {
 static void _wake_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready   = xylem_channel_create(),
-        .handoff = xylem_channel_create(),
+        .ready   = xylem_channel_create(0),
+        .handoff = xylem_channel_create(0),
         .wg      = xylem_waitgroup_create(),
         .port    = 19306,
     };
@@ -341,7 +341,7 @@ static void _dead_client(void* arg) {
 static void _dead_main(void* arg) {
     (void)arg;
     _ctx_t ctx = {
-        .ready = xylem_channel_create(),
+        .ready = xylem_channel_create(0),
         .wg    = xylem_waitgroup_create(),
         .port  = 19308,
     };

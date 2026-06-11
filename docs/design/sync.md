@@ -187,15 +187,16 @@ dispatch come from the shared `waiter` module (also used by `xylem_sem`).
 
 ### Capacity and backpressure
 
-- `create()` — **unbounded**: `send` always queues (barring OOM).
-- `create_bounded(cap)` — caps the **in-flight** message count (sent but not
-  yet received) at `cap`. When full, `send` returns `XYLEM_CHANNEL_FULL` so the
-  caller can drop or retry; it does **not** park the producer. This is the only
-  send mode: a deliberate choice so an external capture thread is never stalled
-  by a slow consumer (drop a frame instead). **Blocking backpressure (parking
-  the producer until space frees) is intentionally not provided** — it would
-  force `send` to park/block and would need a multi-waiter set, breaking the
-  lock-free, never-park contract. Backpressure is instead a receiver-side
+- `create(0)` — **unbounded**: `send` always queues (barring OOM), never
+  reports full.
+- `create(cap)` with `cap > 0` — caps the **in-flight** message count (sent but
+  not yet received) at `cap`. When full, `send` returns `XYLEM_CHANNEL_FULL` so
+  the caller can drop or retry; it does **not** park the producer. This is the
+  only send mode: a deliberate choice so an external capture thread is never
+  stalled by a slow consumer (drop a frame instead). **Blocking backpressure
+  (parking the producer until space frees) is intentionally not provided** — it
+  would force `send` to park/block and would need a multi-waiter set, breaking
+  the lock-free, never-park contract. Backpressure is instead a receiver-side
   policy: watch `len()`/`cap()` and, once over a threshold, drain with
   `recv_timeout(ch, 0)` to drop the backlog (dropping oldest, keeping newest).
 
@@ -325,8 +326,8 @@ spin.
 
 All five public primitives span both the coroutine and OS-thread worlds. For raw
 OS-thread-only synchronization the code can still use C11 `<threads.h>`
-(`mtx_t`, `cnd_t`) directly via `src/thrds.h`; these primitives are preferred
-when a coroutine is (or may be) involved.
+(`mtx_t`, `cnd_t`) directly via `xylem/xylem-threads.h`; these primitives are
+preferred when a coroutine is (or may be) involved.
 
 ## 9. Related docs
 

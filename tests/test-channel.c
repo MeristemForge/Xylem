@@ -23,7 +23,7 @@
 #include "assert.h"
 #include "utils.h"
 
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -69,7 +69,7 @@ static void _ch_receiver(void* arg) {
 static void _test_ch_main(void* arg) {
     _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create();
+    ctx->ch = xylem_channel_create(0);
     xylem_spawn(_ch_receiver, ctx);
     for (int i = 0; i < CH_SENDERS; i++) {
         xylem_spawn(_ch_sender, ctx);
@@ -124,7 +124,7 @@ static void _to_basic_coro(void* arg) {
 static void _to_basic_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create();
+    ctx->ch = xylem_channel_create(0);
     xylem_spawn(_to_basic_coro, ctx);
 }
 
@@ -158,7 +158,7 @@ static void _to_recv_coro(void* arg) {
 static void _to_deliver_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create();
+    ctx->ch = xylem_channel_create(0);
     xylem_spawn(_to_recv_coro, ctx);
     xylem_spawn(_to_sender_coro, ctx);
 }
@@ -267,7 +267,7 @@ static void _race_recv_coro(void* arg) {
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create();
+    ctx->ch = xylem_channel_create(0);
     ctx->wg = xylem_waitgroup_create();
     ctx->timeout_ms = 5;
     ctx->send_at_ms =
@@ -345,7 +345,7 @@ static void _tr_coordinator(void* arg) {
 static void _tr_main(void* arg) {
     _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create();
+    ctx->ch = xylem_channel_create(0);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, TR_SENDERS);
     /* Start the OS-thread receiver before producers (ch is set). */
@@ -376,7 +376,7 @@ typedef struct {
 
 static void _bt_coro(void* arg) {
     _bt_ctx_t* ctx = (_bt_ctx_t*)arg;
-    xylem_channel_t* ch = xylem_channel_create_bounded(2);
+    xylem_channel_t* ch = xylem_channel_create(2);
     ASSERT(ch != NULL);
     ASSERT(xylem_channel_cap(ch) == 2);
 
