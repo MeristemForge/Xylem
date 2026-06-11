@@ -73,6 +73,7 @@ static struct {
     int         chan_c2t;   /* channel mixed: 0 = thread->coro, 1 = coro->thread */
     int         ho_a_thr;   /* handoff: party A on an OS thread? */
     int         ho_b_thr;   /* handoff: party B on an OS thread? */
+    int         ho_dir_set; /* handoff: --ho-dir given (overrides --mode)? */
 
     xylem_mutex_t*     mtx;
     xylem_cond_t*      cond;
@@ -570,6 +571,7 @@ int main(int argc, char** argv) {
             else if (!strcmp(d, "ct")) { G.ho_a_thr = 0; G.ho_b_thr = 1; }
             else if (!strcmp(d, "tt")) { G.ho_a_thr = 1; G.ho_b_thr = 1; }
             else { usage(argv[0]); return 2; }
+            G.ho_dir_set = 1;
         } else {
             usage(argv[0]);
             return 2;
@@ -587,6 +589,14 @@ int main(int argc, char** argv) {
     }
     /* handoff ignores --mode; report its context pair as the `mode`. */
     if (G.prim == P_HANDOFF) {
+        /* Direction follows --mode (coro=cc, thread=tt, mixed=ct) unless an
+         * explicit --ho-dir overrode it, so the driver's mode sweep maps
+         * straight onto the context pairs. */
+        if (!G.ho_dir_set) {
+            if (G.mode == M_THREAD)     { G.ho_a_thr = 1; G.ho_b_thr = 1; }
+            else if (G.mode == M_MIXED) { G.ho_a_thr = 0; G.ho_b_thr = 1; }
+            else                        { G.ho_a_thr = 0; G.ho_b_thr = 0; }
+        }
         G.mode_name = G.ho_a_thr ? "tt" : (G.ho_b_thr ? "ct" : "cc");
     }
 
