@@ -124,6 +124,8 @@ typedef struct http_res_s {
 typedef struct http_srv_s {
     void*                   listener;
     void                    (*close_listener)(void* listener);
+    void*                   transport_ctx;        /* transport-owned, e.g. TLS ctx. */
+    void                    (*transport_ctx_free)(void* ctx); /* NULL if none. */
     xylem_http_handler_fn_t handler;
     void*                   userdata;
     char                    host[INET6_ADDRSTRLEN];

@@ -174,6 +174,8 @@ xylem_http_srv_t* http_tls_listen(
     }
     srv->listener       = ln;
     srv->close_listener = (void (*)(void*))tls_close_listener;
+    srv->transport_ctx  = tls_ctx;
+    srv->transport_ctx_free = (void (*)(void*))tls_ctx_destroy;
     srv->handler        = handler;
     srv->userdata       = userdata;
     http_srv_init(srv, opts);
