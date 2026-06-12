@@ -36,13 +36,32 @@ static const xylem_ws_tls_t _srv_tls = {.cert = WSS_CERT, .key = WSS_KEY};
 static const xylem_ws_tls_t _cli_tls = {.skip_verify = true};
 
 static void _srv_echo_handler(xylem_ws_conn_t* ws, void* ud) {
-    (void)ud;
     xylem_ws_msg_t msg;
     while (xylem_ws_recv(ws, &msg) == 0) {
         xylem_ws_send(ws, msg.opcode, msg.data, msg.len);
         xylem_ws_msg_free(&msg);
     }
     xylem_ws_close(ws, 1000, NULL, 0);
+    xylem_waitgroup_done((xylem_waitgroup_t*)ud);
+}
+
+static xylem_ws_listener_t* _listen(const xylem_ws_opts_t* opts,
+                                    xylem_waitgroup_t* wg) {
+    xylem_waitgroup_add(wg, 1);
+    xylem_ws_listener_t* l =
+        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, wg, opts);
+    ASSERT(l != NULL);
+    return l;
+}
+
+static void _drain(xylem_ws_conn_t* c, xylem_ws_listener_t* l,
+                   xylem_waitgroup_t* wg) {
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_waitgroup_wait(wg);
+    xylem_ws_close_listener(l);
+    xylem_waitgroup_destroy(wg);
+    remove(WSS_CERT);
+    remove(WSS_KEY);
 }
 
 static xylem_ws_conn_t* _connect(xylem_ws_listener_t* l,
@@ -75,9 +94,8 @@ static void test_wss_text_echo(void* arg) {
     ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = {.tls = &_srv_tls};
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
     xylem_ws_opts_t  cli_opts = {.tls = &_cli_tls};
     xylem_ws_conn_t* c        = _connect(l, &cli_opts);
@@ -85,10 +103,7 @@ static void test_wss_text_echo(void* arg) {
     const char* text = "hello secure websocket";
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
@@ -97,9 +112,8 @@ static void test_wss_large_message(void* arg) {
     ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = {.fragment_threshold = 1024, .tls = &_srv_tls};
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
     xylem_ws_opts_t  cli_opts = {.fragment_threshold = 1024, .tls = &_cli_tls};
     xylem_ws_conn_t* c        = _connect(l, &cli_opts);
@@ -114,10 +128,7 @@ static void test_wss_large_message(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_BINARY, big, big_len);
 
     free(big);
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
@@ -129,9 +140,8 @@ static void test_wss_deflate(void* arg) {
         .permessage_deflate = true,
         .tls                = &_srv_tls,
     };
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
     xylem_ws_opts_t cli_opts = {
         .permessage_deflate = true,
@@ -142,10 +152,7 @@ static void test_wss_deflate(void* arg) {
     const char* text = "compressed payload over a TLS websocket connection!";
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
