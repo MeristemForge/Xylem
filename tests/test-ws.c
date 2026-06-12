@@ -27,13 +27,31 @@
 #include <string.h>
 
 static void _srv_echo_handler(xylem_ws_conn_t* ws, void* ud) {
-    (void)ud;
     xylem_ws_msg_t msg;
     while (xylem_ws_recv(ws, &msg) == 0) {
         xylem_ws_send(ws, msg.opcode, msg.data, msg.len);
         xylem_ws_msg_free(&msg);
     }
     xylem_ws_close(ws, 1000, NULL, 0);
+    xylem_waitgroup_done((xylem_waitgroup_t*)ud);
+}
+
+static xylem_ws_listener_t* _listen(xylem_ws_handler_fn_t handler,
+                                    const xylem_ws_opts_t* opts,
+                                    xylem_waitgroup_t* wg) {
+    xylem_waitgroup_add(wg, 1);
+    xylem_ws_listener_t* l =
+        xylem_ws_listen("127.0.0.1", 0, handler, wg, opts);
+    ASSERT(l != NULL);
+    return l;
+}
+
+static void _drain(xylem_ws_conn_t* c, xylem_ws_listener_t* l,
+                   xylem_waitgroup_t* wg) {
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_waitgroup_wait(wg);
+    xylem_ws_close_listener(l);
+    xylem_waitgroup_destroy(wg);
 }
 
 static xylem_ws_conn_t* _connect(xylem_ws_listener_t* l,
@@ -63,39 +81,34 @@ static void _echo_roundtrip(xylem_ws_conn_t* c, xylem_ws_opcode_t opcode,
 
 static void test_text_echo(void* arg) {
     (void)arg;
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, NULL);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, NULL, wg);
 
     xylem_ws_conn_t* c = _connect(l, NULL);
     const char*      text = "hello websocket";
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
 static void test_binary_echo(void* arg) {
     (void)arg;
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, NULL);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, NULL, wg);
 
     xylem_ws_conn_t* c    = _connect(l, NULL);
     uint8_t          data[] = {0x00, 0x01, 0x02, 0xFF, 0xFE};
     _echo_roundtrip(c, XYLEM_WS_BINARY, data, sizeof(data));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
 static void test_multiple_messages(void* arg) {
     (void)arg;
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, NULL);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, NULL, wg);
 
     xylem_ws_conn_t* c = _connect(l, NULL);
     for (int i = 0; i < 10; i++) {
@@ -104,17 +117,15 @@ static void test_multiple_messages(void* arg) {
         _echo_roundtrip(c, XYLEM_WS_TEXT, buf, (size_t)len);
     }
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
 static void test_large_message(void* arg) {
     (void)arg;
-    xylem_ws_opts_t opts = {.fragment_threshold = 1024};
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &opts);
-    ASSERT(l != NULL);
+    xylem_ws_opts_t      opts = {.fragment_threshold = 1024};
+    xylem_waitgroup_t*   wg   = xylem_waitgroup_create();
+    xylem_ws_listener_t* l    = _listen(_srv_echo_handler, &opts, wg);
 
     xylem_ws_conn_t* c = _connect(l, &opts);
 
@@ -128,25 +139,23 @@ static void test_large_message(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_BINARY, big, big_len);
 
     free(big);
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
 static void _srv_close_handler(xylem_ws_conn_t* ws, void* ud) {
-    (void)ud;
     xylem_ws_msg_t msg;
     if (xylem_ws_recv(ws, &msg) == 0) {
         xylem_ws_msg_free(&msg);
     }
     xylem_ws_close(ws, 1000, "bye", 3);
+    xylem_waitgroup_done((xylem_waitgroup_t*)ud);
 }
 
 static void test_server_close(void* arg) {
     (void)arg;
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_close_handler, NULL, NULL);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_close_handler, NULL, wg);
 
     xylem_ws_conn_t* c = _connect(l, NULL);
     ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, "trigger", 7) == 0);
@@ -155,8 +164,7 @@ static void test_server_close(void* arg) {
     ASSERT(xylem_ws_recv(c, &msg) == -1);
     ASSERT(xylem_ws_close_code(c) == 1000);
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
@@ -179,17 +187,15 @@ static void test_null_guards(void* arg) {
 
 static void test_deflate_text_echo(void* arg) {
     (void)arg;
-    xylem_ws_opts_t opts = {.permessage_deflate = true};
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &opts);
-    ASSERT(l != NULL);
+    xylem_ws_opts_t      opts = {.permessage_deflate = true};
+    xylem_waitgroup_t*   wg   = xylem_waitgroup_create();
+    xylem_ws_listener_t* l    = _listen(_srv_echo_handler, &opts, wg);
 
     xylem_ws_conn_t* c = _connect(l, &opts);
     const char* text = "hello permessage-deflate compression test!";
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
@@ -199,9 +205,8 @@ static void test_deflate_context_takeover(void* arg) {
         .permessage_deflate       = true,
         .deflate_context_takeover = true,
     };
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &opts);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, &opts, wg);
 
     xylem_ws_conn_t* c = _connect(l, &opts);
     for (int i = 0; i < 10; i++) {
@@ -212,8 +217,7 @@ static void test_deflate_context_takeover(void* arg) {
         _echo_roundtrip(c, XYLEM_WS_TEXT, buf, (size_t)len);
     }
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
@@ -223,9 +227,8 @@ static void test_deflate_large_binary(void* arg) {
         .permessage_deflate = true,
         .fragment_threshold = 4096,
     };
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, &opts);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, &opts, wg);
 
     xylem_ws_conn_t* c = _connect(l, &opts);
 
@@ -237,16 +240,14 @@ static void test_deflate_large_binary(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_BINARY, big, big_len);
 
     free(big);
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
 static void test_deflate_disabled_fallback(void* arg) {
     (void)arg;
-    xylem_ws_listener_t* l =
-        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, NULL, NULL);
-    ASSERT(l != NULL);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(_srv_echo_handler, NULL, wg);
 
     xylem_ws_opts_t  client_opts = {.permessage_deflate = true};
     xylem_ws_conn_t* c           = _connect(l, &client_opts);
@@ -254,8 +255,7 @@ static void test_deflate_disabled_fallback(void* arg) {
     const char* text = "no compression here";
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
 
