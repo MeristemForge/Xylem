@@ -44,8 +44,13 @@ typedef struct {
 
 static void _serve_main(void* arg) {
     _plan_t* p = (_plan_t*)arg;
+
+    xylem_http_srv_opts_t opts =
+        p->opts ? *p->opts : (xylem_http_srv_opts_t){0};
+    opts.idle_timeout_ms = 100;
+
     xylem_http_srv_t* srv =
-        xylem_http_listen("127.0.0.1", 0, p->handler, NULL, p->opts);
+        xylem_http_listen("127.0.0.1", 0, p->handler, NULL, &opts);
     ASSERT(srv != NULL);
 
     uint16_t port = _srv_port(srv);
@@ -53,7 +58,7 @@ static void _serve_main(void* arg) {
 
     p->body(port);
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     xylem_shutdown();
 }
 
