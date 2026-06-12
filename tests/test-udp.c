@@ -30,14 +30,36 @@
 #define UDP_PORT_B        19101
 #define SAFETY_TIMEOUT_MS 5000
 
+typedef void (*_coro_t)(void*);
+
 typedef struct {
     xylem_channel_t*   ready;
     xylem_waitgroup_t* wg;
     uint16_t           port_a;
     uint16_t           port_b;
+    _coro_t            server;
+    _coro_t            client;
 } _ctx_t;
 
-/* --- test_echo: dial client sends, listen server recvs and replies --- */
+static void _pair_main(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ctx->ready  = xylem_channel_create(0);
+    ctx->wg     = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, 2);
+    xylem_timer_t* wd =
+        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_spawn(ctx->server, ctx);
+    xylem_spawn(ctx->client, ctx);
+    xylem_waitgroup_wait(ctx->wg);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx->wg);
+    xylem_channel_destroy(ctx->ready);
+    xylem_shutdown();
+}
+
+static void _run_pair(_ctx_t ctx) {
+    xylem_run(_pair_main, &ctx, NULL);
+}
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -48,13 +70,12 @@ static void _echo_server(void* arg) {
     char     buf[64];
     char     sender_host[46];
     uint16_t sender_port = 0;
-    int  n = xylem_udp_recv(
+    int      n           = xylem_udp_recv(
         udp, buf, sizeof(buf), sender_host, sizeof(sender_host), &sender_port);
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "hello", 5) == 0);
 
-    ASSERT(xylem_udp_send(
-        udp, "world", 5, sender_host, sender_port) == 0);
+    ASSERT(xylem_udp_send(udp, "world", 5, sender_host, sender_port) == 0);
 
     xylem_udp_close(udp);
     xylem_waitgroup_done(ctx->wg);
@@ -69,8 +90,8 @@ static void _echo_client(void* arg) {
 
     ASSERT(xylem_udp_send(udp, "hello", 5, NULL, 0) == 0);
 
-    char    buf[64];
-    int n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
+    char buf[64];
+    int  n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "world", 5) == 0);
 
@@ -78,29 +99,13 @@ static void _echo_client(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _echo_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready  = xylem_channel_create(0),
-        .wg     = xylem_waitgroup_create(),
-        .port_a = UDP_PORT_A,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_echo_server, &ctx);
-    xylem_spawn(_echo_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_echo(void) {
-    xylem_run(_echo_main, NULL, NULL);
+    _run_pair((_ctx_t){
+        .port_a = UDP_PORT_A,
+        .server = _echo_server,
+        .client = _echo_client,
+    });
 }
-
-/* --- test_recvfrom_addr: verify sender address is correct --- */
 
 static void _addr_sender(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -122,7 +127,7 @@ static void _addr_receiver(void* arg) {
     char     buf[64];
     char     host[46];
     uint16_t port = 0;
-    int  n = xylem_udp_recv(udp, buf, sizeof(buf), host, sizeof(host), &port);
+    int      n = xylem_udp_recv(udp, buf, sizeof(buf), host, sizeof(host), &port);
     ASSERT(n == 4);
     ASSERT(port == ctx->port_b);
 
@@ -130,30 +135,14 @@ static void _addr_receiver(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _addr_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready  = xylem_channel_create(0),
-        .wg     = xylem_waitgroup_create(),
+static void test_recvfrom_addr(void) {
+    _run_pair((_ctx_t){
         .port_a = UDP_PORT_A + 2,
         .port_b = UDP_PORT_B + 2,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_addr_receiver, &ctx);
-    xylem_spawn(_addr_sender, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
+        .server = _addr_receiver,
+        .client = _addr_sender,
+    });
 }
-
-static void test_recvfrom_addr(void) {
-    xylem_run(_addr_main, NULL, NULL);
-}
-
-/* --- test_deadline_timeout: read deadline fires when no data --- */
 
 static void _timeout_coro(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -163,8 +152,8 @@ static void _timeout_coro(void* arg) {
     uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 100;
     xylem_udp_set_read_deadline(udp, deadline);
 
-    char    buf[64];
-    int n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
+    char buf[64];
+    int  n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
 
     xylem_udp_close(udp);
@@ -172,25 +161,22 @@ static void _timeout_coro(void* arg) {
 }
 
 static void _timeout_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .wg     = xylem_waitgroup_create(),
-        .port_a = UDP_PORT_A + 4,
-    };
-    xylem_waitgroup_add(ctx.wg, 1);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_timeout_coro, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ctx->wg     = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, 1);
+    xylem_timer_t* wd =
+        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_spawn(ctx->client, ctx);
+    xylem_waitgroup_wait(ctx->wg);
     xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
+    xylem_waitgroup_destroy(ctx->wg);
     xylem_shutdown();
 }
 
 static void test_deadline_timeout(void) {
-    xylem_run(_timeout_main, NULL, NULL);
+    _ctx_t ctx = {.port_a = UDP_PORT_A + 4, .client = _timeout_coro};
+    xylem_run(_timeout_main, &ctx, NULL);
 }
-
-/* --- test_close_wakes_recv: close from another coro wakes blocked recv --- */
 
 static void _close_recv_coro(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -198,8 +184,8 @@ static void _close_recv_coro(void* arg) {
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, udp);
 
-    char    buf[64];
-    int n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
+    char buf[64];
+    int  n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
 
     xylem_waitgroup_done(ctx->wg);
@@ -214,29 +200,13 @@ static void _close_closer_coro(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _close_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready  = xylem_channel_create(0),
-        .wg     = xylem_waitgroup_create(),
-        .port_a = UDP_PORT_A + 6,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_close_recv_coro, &ctx);
-    xylem_spawn(_close_closer_coro, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_close_wakes_recv(void) {
-    xylem_run(_close_main, NULL, NULL);
+    _run_pair((_ctx_t){
+        .port_a = UDP_PORT_A + 6,
+        .server = _close_recv_coro,
+        .client = _close_closer_coro,
+    });
 }
-
-/* --- test_datagram_boundary: 3 sends = 3 separate recvs --- */
 
 static void _boundary_sender(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -259,7 +229,7 @@ static void _boundary_receiver(void* arg) {
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
-    char buf[64];
+    char    buf[64];
     int64_t n;
 
     n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
@@ -275,26 +245,12 @@ static void _boundary_receiver(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _boundary_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready  = xylem_channel_create(0),
-        .wg     = xylem_waitgroup_create(),
-        .port_a = UDP_PORT_A + 8,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_boundary_receiver, &ctx);
-    xylem_spawn(_boundary_sender, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_datagram_boundary(void) {
-    xylem_run(_boundary_main, NULL, NULL);
+    _run_pair((_ctx_t){
+        .port_a = UDP_PORT_A + 8,
+        .server = _boundary_receiver,
+        .client = _boundary_sender,
+    });
 }
 
 int main(void) {

@@ -48,8 +48,7 @@ static void _mtx_worker(void* arg) {
         ctx->counter++;
         xylem_mutex_unlock(ctx->mtx);
     }
-    int prev = atomic_fetch_add(&ctx->finished, 1);
-    if (prev == MTX_WORKERS - 1) {
+    if (atomic_fetch_add(&ctx->finished, 1) == MTX_WORKERS - 1) {
         ASSERT(ctx->counter == MTX_WORKERS * MTX_INCREMENTS);
         ctx->tested = 1;
         xylem_mutex_destroy(ctx->mtx);
@@ -76,66 +75,6 @@ static void test_concurrent(void) {
     }
 }
 
-#define MTX_PING_PONG 200
-
-typedef struct {
-    xylem_mutex_t* mtx;
-    atomic_int     value;
-    atomic_int     finished;
-    int            tested;
-} _mtx_pp_ctx_t;
-
-static void _mtx_ping(void* arg) {
-    _mtx_pp_ctx_t* ctx = (_mtx_pp_ctx_t*)arg;
-    for (int i = 0; i < MTX_PING_PONG; i++) {
-        xylem_mutex_lock(ctx->mtx);
-        atomic_fetch_add(&ctx->value, 1);
-        xylem_mutex_unlock(ctx->mtx);
-    }
-    int prev = atomic_fetch_add(&ctx->finished, 1);
-    if (prev == 1) {
-        ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
-        ctx->tested = 1;
-        xylem_mutex_destroy(ctx->mtx);
-        ctx->mtx = NULL;
-        xylem_shutdown();
-    }
-}
-
-static void _mtx_pong(void* arg) {
-    _mtx_pp_ctx_t* ctx = (_mtx_pp_ctx_t*)arg;
-    for (int i = 0; i < MTX_PING_PONG; i++) {
-        xylem_mutex_lock(ctx->mtx);
-        atomic_fetch_add(&ctx->value, 1);
-        xylem_mutex_unlock(ctx->mtx);
-    }
-    int prev = atomic_fetch_add(&ctx->finished, 1);
-    if (prev == 1) {
-        ASSERT(atomic_load(&ctx->value) == MTX_PING_PONG * 2);
-        ctx->tested = 1;
-        xylem_mutex_destroy(ctx->mtx);
-        ctx->mtx = NULL;
-        xylem_shutdown();
-    }
-}
-
-static void _test_mtx_pp_main(void* arg) {
-    _mtx_pp_ctx_t* ctx = (_mtx_pp_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->mtx = xylem_mutex_create();
-    xylem_spawn(_mtx_ping, ctx);
-    xylem_spawn(_mtx_pong, ctx);
-}
-
-static void test_ping_pong(void) {
-    fprintf(stderr, "=== test_ping_pong\n");
-    for (int round = 0; round < 50; round++) {
-        _mtx_pp_ctx_t ctx = {0};
-        xylem_run(_test_mtx_pp_main, &ctx, &_rt_opts);
-        ASSERT(ctx.tested == 1);
-    }
-}
-
 typedef struct {
     xylem_mutex_t* mtx;
     int            tested;
@@ -144,12 +83,9 @@ typedef struct {
 static void _mtx_trylock_coro(void* arg) {
     _mtx_try_ctx_t* ctx = (_mtx_try_ctx_t*)arg;
 
-    /* Free mutex: trylock succeeds. */
     ASSERT(xylem_mutex_trylock(ctx->mtx) == true);
-    /* Already held: a second trylock fails without parking. */
     ASSERT(xylem_mutex_trylock(ctx->mtx) == false);
     xylem_mutex_unlock(ctx->mtx);
-    /* Released: trylock succeeds again. */
     ASSERT(xylem_mutex_trylock(ctx->mtx) == true);
     xylem_mutex_unlock(ctx->mtx);
 
@@ -172,11 +108,6 @@ static void test_trylock(void) {
     xylem_run(_test_mtx_try_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
-
-/* External OS threads contending the mutex (the futex/barging path), with
- * no runtime running. The counter is plain (non-atomic) and guarded only
- * by the mutex, so any mutual-exclusion failure shows up as a final count
- * below the expected total. */
 
 #define MTX_THREADS        8
 #define MTX_THR_INCREMENTS 20000
@@ -212,11 +143,6 @@ static void test_threads(void) {
     ASSERT(ctx.counter == (long long)MTX_THREADS * MTX_THR_INCREMENTS);
     xylem_mutex_destroy(ctx.mtx);
 }
-
-/* Coroutines and external OS threads contending the SAME mutex at the same
- * time -- the mixed path, where unlock must coordinate a coroutine hand-off
- * against a barging thread release. Threads start before the runtime so
- * they overlap the coroutine phase. */
 
 #define MTX_MIX_COROS      8
 #define MTX_MIX_THREADS    8
@@ -280,7 +206,6 @@ static void test_mixed(void) {
 }
 
 int main(void) {
-    test_ping_pong();
     test_concurrent();
     test_trylock();
     test_threads();

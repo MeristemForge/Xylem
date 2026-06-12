@@ -22,15 +22,18 @@
 #include "xylem.h"
 #include "assert.h"
 
-static void test_open_null_opts(void) {
-    xylem_serial_t* s = xylem_serial_open(NULL);
+static void _assert_open_fails(xylem_serial_opts_t* opts) {
+    xylem_serial_t* s = xylem_serial_open(opts);
     ASSERT(s == NULL);
+}
+
+static void test_open_null_opts(void) {
+    _assert_open_fails(NULL);
 }
 
 static void test_open_null_device(void) {
     xylem_serial_opts_t opts = {.device = NULL};
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_open_invalid_baudrate(void) {
@@ -38,8 +41,7 @@ static void test_open_invalid_baudrate(void) {
         .device   = "/dev/null",
         .baudrate = (xylem_serial_baudrate_t)99,
     };
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_open_invalid_parity(void) {
@@ -47,8 +49,7 @@ static void test_open_invalid_parity(void) {
         .device = "/dev/null",
         .parity = (xylem_serial_parity_t)99,
     };
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_open_invalid_databits(void) {
@@ -56,8 +57,7 @@ static void test_open_invalid_databits(void) {
         .device   = "/dev/null",
         .databits = (xylem_serial_databits_t)99,
     };
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_open_invalid_stopbits(void) {
@@ -65,8 +65,7 @@ static void test_open_invalid_stopbits(void) {
         .device   = "/dev/null",
         .stopbits = (xylem_serial_stopbits_t)99,
     };
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_open_invalid_flowcontrol(void) {
@@ -74,8 +73,7 @@ static void test_open_invalid_flowcontrol(void) {
         .device      = "/dev/null",
         .flowcontrol = (xylem_serial_flowcontrol_t)99,
     };
-    xylem_serial_t* s = xylem_serial_open(&opts);
-    ASSERT(s == NULL);
+    _assert_open_fails(&opts);
 }
 
 static void test_close_null(void) {
@@ -84,17 +82,14 @@ static void test_close_null(void) {
 
 static void test_read_null(void) {
     char buf[16];
-    int rc = xylem_serial_read(NULL, buf, sizeof(buf));
-    ASSERT(rc == -1);
+    ASSERT(xylem_serial_read(NULL, buf, sizeof(buf)) == -1);
 }
 
 static void test_write_null(void) {
-    int rc = xylem_serial_write(NULL, "x", 1);
-    ASSERT(rc == -1);
+    ASSERT(xylem_serial_write(NULL, "x", 1) == -1);
 }
 
 int main(void) {
-
     test_open_null_opts();
     test_open_null_device();
     test_open_invalid_baudrate();
@@ -105,6 +100,5 @@ int main(void) {
     test_close_null();
     test_read_null();
     test_write_null();
-
     return 0;
 }

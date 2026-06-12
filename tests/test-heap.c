@@ -34,6 +34,14 @@ static int _int_cmp(const void* a, const void* b) {
     return 0;
 }
 
+static void _drain_check(xylem_heap_t* heap, const int32_t* expected, int n) {
+    for (int i = 0; i < n; i++) {
+        ASSERT(*(int32_t*)xylem_heap_root(heap) == expected[i]);
+        xylem_heap_dequeue(heap);
+    }
+    ASSERT(xylem_heap_empty(heap));
+}
+
 static void test_init(void) {
     xylem_heap_t* heap = xylem_heap_create(_int_cmp);
     ASSERT(heap != NULL);
@@ -50,15 +58,10 @@ static void test_insert_dequeue(void) {
     for (int i = 0; i < 5; i++) {
         ASSERT(xylem_heap_insert(heap, &vals[i]) == 0);
     }
-
     ASSERT(xylem_heap_len(heap) == 5);
 
     int32_t expected[] = {5, 10, 20, 25, 30};
-    for (int i = 0; i < 5; i++) {
-        ASSERT(*(int32_t*)xylem_heap_root(heap) == expected[i]);
-        xylem_heap_dequeue(heap);
-    }
-    ASSERT(xylem_heap_empty(heap));
+    _drain_check(heap, expected, 5);
     xylem_heap_destroy(heap);
 }
 
@@ -86,11 +89,11 @@ static void test_descending_insert(void) {
         xylem_heap_insert(heap, &vals[i]);
     }
 
+    int32_t expected[50];
     for (int i = 0; i < 50; i++) {
-        ASSERT(*(int32_t*)xylem_heap_root(heap) == i);
-        xylem_heap_dequeue(heap);
+        expected[i] = i;
     }
-    ASSERT(xylem_heap_empty(heap));
+    _drain_check(heap, expected, 50);
     xylem_heap_destroy(heap);
 }
 

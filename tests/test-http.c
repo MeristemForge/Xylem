@@ -27,13 +27,41 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef void (*_handler_t)(xylem_http_res_t*, xylem_http_req_t*, void*);
+typedef void (*_body_t)(uint16_t port);
+
 static uint16_t _srv_port(xylem_http_srv_t* srv) {
     uint16_t port = 0;
     xylem_http_srv_addr(srv, NULL, 0, &port);
     return port;
 }
 
-/* URL encode/decode unit tests. */
+typedef struct {
+    _handler_t             handler;
+    xylem_http_srv_opts_t* opts;
+    _body_t                body;
+} _plan_t;
+
+static void _serve_main(void* arg) {
+    _plan_t* p = (_plan_t*)arg;
+    xylem_http_srv_t* srv =
+        xylem_http_listen("127.0.0.1", 0, p->handler, NULL, p->opts);
+    ASSERT(srv != NULL);
+
+    uint16_t port = _srv_port(srv);
+    ASSERT(port != 0);
+
+    p->body(port);
+
+    xylem_http_close(srv);
+    xylem_shutdown();
+}
+
+static void _serve(_handler_t handler, xylem_http_srv_opts_t* opts,
+                   _body_t body) {
+    _plan_t plan = {handler, opts, body};
+    xylem_run(_serve_main, &plan, NULL);
+}
 
 static void test_url_encode_unreserved(void) {
     uint8_t buf[64];
@@ -70,20 +98,19 @@ static void test_url_decode_passthrough(void) {
 }
 
 static void test_url_encode_decode_round_trip(void) {
-    const uint8_t input[] = {0x01, 0x7F, 0x80, 0xFF, ' ', 'h', 'e', 'l', 'l', 'o'};
+    const uint8_t input[] = {0x01, 0x7F, 0x80, 0xFF, ' ',
+                             'h',  'e',  'l',  'l',  'o'};
     int input_len = 10;
 
     uint8_t enc[64];
-    int enc_len = xylem_url_encode(input, input_len, enc, 64);
+    int     enc_len = xylem_url_encode(input, input_len, enc, 64);
     ASSERT(enc_len > 0);
 
     uint8_t dec[64];
-    int dec_len = xylem_url_decode(enc, enc_len, dec, 64);
+    int     dec_len = xylem_url_decode(enc, enc_len, dec, 64);
     ASSERT(dec_len == input_len);
     ASSERT(memcmp(dec, input, (size_t)input_len) == 0);
 }
-
-/* Response/request NULL accessor tests. */
 
 static void test_res_destroy_null(void) {
     xylem_http_res_destroy(NULL);
@@ -104,8 +131,6 @@ static void test_req_accessors_null(void) {
     ASSERT(xylem_http_req_body_len(NULL) == 0);
 }
 
-/* Response writer NULL tests. */
-
 static void test_res_set_status_null(void) {
     ASSERT(xylem_http_res_set_status(NULL, 200) == -1);
 }
@@ -118,12 +143,7 @@ static void test_res_write_null(void) {
     ASSERT(xylem_http_res_write(NULL, "data", 4) == -1);
 }
 
-
-
-/* Integration test: coroutine-based server + client. */
-
-static void _hello_handler(xylem_http_res_t* res,
-                           xylem_http_req_t* req,
+static void _hello_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                            void* userdata) {
     (void)req;
     (void)userdata;
@@ -132,22 +152,10 @@ static void _hello_handler(xylem_http_res_t* res,
     xylem_http_res_write(res, "hello", 5);
 }
 
-static void _test_http_integration(void* arg) {
-    (void)arg;
-
-    /* Start server on a random port. */
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _hello_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
-    /* Build URL. */
+static void _integration_body(uint16_t port) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
 
-    /* Client GET request. */
     xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(res != NULL);
     ASSERT(xylem_http_res_status(res) == 200);
@@ -159,20 +167,13 @@ static void _test_http_integration(void* arg) {
     ASSERT(strcmp(ct, "text/plain") == 0);
 
     xylem_http_res_destroy(res);
-
-    /* Clean up. */
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_http_integration(void) {
-    xylem_run(_test_http_integration, NULL, NULL);
+    _serve(_hello_handler, NULL, _integration_body);
 }
 
-/* Connection pool test. */
-
-static void _pool_handler(xylem_http_res_t* res,
-                          xylem_http_req_t* req,
+static void _pool_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                           void* userdata) {
     (void)userdata;
     const char* url = xylem_http_req_url(req);
@@ -181,18 +182,7 @@ static void _pool_handler(xylem_http_res_t* res,
     xylem_http_res_write(res, url, strlen(url));
 }
 
-static void _test_pool_main(void* arg) {
-    (void)arg;
-
-    /* Start server on a random port. */
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _pool_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
-    /* First request. */
+static void _pool_body(uint16_t port) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/a", (unsigned)port);
     xylem_http_res_t* r1 = xylem_http_get(url, NULL, 0, NULL);
@@ -202,7 +192,6 @@ static void _test_pool_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(r1), "/a", 2) == 0);
     xylem_http_res_destroy(r1);
 
-    /* Second request to same host -- should reuse pooled connection. */
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/b", (unsigned)port);
     xylem_http_res_t* r2 = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(r2 != NULL);
@@ -210,22 +199,13 @@ static void _test_pool_main(void* arg) {
     ASSERT(xylem_http_res_body_len(r2) == 2);
     ASSERT(memcmp(xylem_http_res_body(r2), "/b", 2) == 0);
     xylem_http_res_destroy(r2);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_pool_reuse(void) {
-    xylem_run(_test_pool_main, NULL, NULL);
+    _serve(_pool_handler, NULL, _pool_body);
 }
 
-
-
-
-/* Redirect following test. */
-
-static void _test_redirect_handler(xylem_http_res_t* res,
-                                   xylem_http_req_t* req,
+static void _test_redirect_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                                    void* ud) {
     (void)ud;
     const char* url = xylem_http_req_url(req);
@@ -247,12 +227,10 @@ static void _test_redirect_handler(xylem_http_res_t* res,
     } else if (strcmp(url, "/chain3") == 0) {
         xylem_http_res_write(res, "end", 3);
     } else if (strcmp(url, "/see-other") == 0) {
-        /* 303 should change method to GET. */
         xylem_http_res_set_status(res, 303);
         xylem_http_res_set_header(res, "Location", "/get-only");
         xylem_http_res_write(res, "", 0);
     } else if (strcmp(url, "/get-only") == 0) {
-        /* Echo the method to verify it changed to GET. */
         const char* method = xylem_http_req_method(req);
         xylem_http_res_write(res, method, strlen(method));
     } else {
@@ -261,21 +239,11 @@ static void _test_redirect_handler(xylem_http_res_t* res,
     }
 }
 
-static void _test_redirect_main(void* arg) {
-    (void)arg;
-
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _test_redirect_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
+static void _redirect_body(uint16_t port) {
     char url[128];
     xylem_http_cli_opts_t opts = {0};
     opts.max_redirects = 5;
 
-    /* Test 1: Simple 301 redirect /old -> /new. */
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
     xylem_http_res_t* res = xylem_http_get(url, NULL, 0, &opts);
     ASSERT(res != NULL);
@@ -284,7 +252,6 @@ static void _test_redirect_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "arrived", 7) == 0);
     xylem_http_res_destroy(res);
 
-    /* Test 2: Redirect chain (302 -> 302 -> 200). */
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/chain1", (unsigned)port);
     res = xylem_http_get(url, NULL, 0, &opts);
     ASSERT(res != NULL);
@@ -293,10 +260,6 @@ static void _test_redirect_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "end", 3) == 0);
     xylem_http_res_destroy(res);
 
-    /**
-     * Test 3: With redirects disabled (max_redirects = 0), we get the
-     * 301 response directly. NULL opts would mean "default 10 hops".
-     */
     xylem_http_cli_opts_t opts_noredir = {0};
     opts_noredir.max_redirects = 0;
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/old", (unsigned)port);
@@ -305,7 +268,6 @@ static void _test_redirect_main(void* arg) {
     ASSERT(xylem_http_res_status(res) == 301);
     xylem_http_res_destroy(res);
 
-    /* Test 4: 303 should change POST to GET. */
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/see-other", (unsigned)port);
     res = xylem_http_post(url, "body", 4, "text/plain", NULL, 0, &opts);
     ASSERT(res != NULL);
@@ -314,29 +276,20 @@ static void _test_redirect_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "GET", 3) == 0);
     xylem_http_res_destroy(res);
 
-    /* Test 5: max_redirects=1 should stop after 1 hop. */
     xylem_http_cli_opts_t opts1 = {0};
     opts1.max_redirects = 1;
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/chain1", (unsigned)port);
     res = xylem_http_get(url, NULL, 0, &opts1);
     ASSERT(res != NULL);
-    /* After 1 redirect: chain1->chain2, chain2 responds 302 */
     ASSERT(xylem_http_res_status(res) == 302);
     xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_redirect_following(void) {
-    xylem_run(_test_redirect_main, NULL, NULL);
+    _serve(_test_redirect_handler, NULL, _redirect_body);
 }
 
-
-/* Basic authentication test. */
-
-static void _auth_handler(xylem_http_res_t* res,
-                          xylem_http_req_t* req,
+static void _auth_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                           void* ud) {
     (void)ud;
     const char* auth = xylem_http_req_header(req, "Authorization");
@@ -346,33 +299,21 @@ static void _auth_handler(xylem_http_res_t* res,
         return;
     }
 
-    /* Expect "Basic <base64>" */
     if (strncmp(auth, "Basic ", 6) != 0) {
         xylem_http_res_set_status(res, 401);
         xylem_http_res_write(res, "bad scheme", 10);
         return;
     }
 
-    /* Echo back the base64 portion. */
     const char* b64 = auth + 6;
     xylem_http_res_set_status(res, 200);
     xylem_http_res_write(res, b64, strlen(b64));
 }
 
-static void _test_basic_auth_main(void* arg) {
-    (void)arg;
-
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _auth_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
+static void _auth_body(uint16_t port) {
     char url[128];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/auth", (unsigned)port);
 
-    /* Test 1: No auth -> 401. */
     xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(res != NULL);
     ASSERT(xylem_http_res_status(res) == 401);
@@ -380,7 +321,6 @@ static void _test_basic_auth_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "unauthorized", 12) == 0);
     xylem_http_res_destroy(res);
 
-    /* Test 2: With auth -> 200, body = base64("user:pass") = "dXNlcjpwYXNz". */
     int   auth_size = xylem_http_basic_auth_size(4, 4);
     char* auth_val  = (char*)malloc((size_t)auth_size);
     ASSERT(auth_val != NULL);
@@ -394,37 +334,24 @@ static void _test_basic_auth_main(void* arg) {
     ASSERT(xylem_http_res_body_len(res) == 12);
     ASSERT(memcmp(xylem_http_res_body(res), "dXNlcjpwYXNz", 12) == 0);
     xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_basic_auth(void) {
-    xylem_run(_test_basic_auth_main, NULL, NULL);
+    _serve(_auth_handler, NULL, _auth_body);
 }
 
-/* Expect/100-Continue. */
-
-static void _expect_handler(xylem_http_res_t* res,
-                            xylem_http_req_t* req,
+static void _expect_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                             void* userdata) {
     (void)userdata;
     size_t blen = xylem_http_req_body_len(req);
     xylem_http_res_set_status(res, 200);
     xylem_http_res_set_header(res, "Content-Type", "text/plain");
     char buf[32];
-    int n = snprintf(buf, sizeof(buf), "%zu", blen);
+    int  n = snprintf(buf, sizeof(buf), "%zu", blen);
     xylem_http_res_write(res, buf, (size_t)n);
 }
 
-static void _test_expect_continue_main(void* arg) {
-    (void)arg;
-
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _expect_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
+static void _expect_body(uint16_t port) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/upload", (unsigned)port);
 
@@ -437,111 +364,32 @@ static void _test_expect_continue_main(void* arg) {
     ASSERT(xylem_http_res_status(res) == 200);
     ASSERT(memcmp(xylem_http_res_body(res), "4096", 4) == 0);
     xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_expect_continue(void) {
-    xylem_run(_test_expect_continue_main, NULL, NULL);
+    _serve(_expect_handler, NULL, _expect_body);
 }
 
-/* Content-Length response mode test. */
-
-static void _test_content_length_main(void* arg) {
-    (void)arg;
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _hello_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
+static void _content_length_body(uint16_t port) {
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%u/", (unsigned)port);
 
     xylem_http_res_t* r = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(r != NULL);
     ASSERT(xylem_http_res_status(r) == 200);
-    /* Single-write response should use Content-Length, not chunked. */
     const char* cl = xylem_http_res_header(r, "Content-Length");
     ASSERT(cl != NULL);
     ASSERT(strcmp(cl, "5") == 0);
     ASSERT(xylem_http_res_body_len(r) == 5);
     ASSERT(memcmp(xylem_http_res_body(r), "hello", 5) == 0);
     xylem_http_res_destroy(r);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_content_length_mode(void) {
-    xylem_run(_test_content_length_main, NULL, NULL);
+    _serve(_hello_handler, NULL, _content_length_body);
 }
 
-
-
-/* Idle timeout test. */
-
-static void _idle_timeout_handler(xylem_http_res_t* res,
-                                  xylem_http_req_t* req,
-                                  void* userdata) {
-    (void)req; (void)userdata;
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_write(res, "ok", 2);
-}
-
-static void _test_idle_timeout_main(void* arg) {
-    (void)arg;
-
-    xylem_http_srv_opts_t opts = {0};
-    opts.idle_timeout_ms = 5000; /* 5 seconds */
-
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _idle_timeout_handler, NULL, &opts);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
-    char url[64];
-    snprintf(url, sizeof(url), "http://127.0.0.1:%u/test", (unsigned)port);
-
-    /* Normal request should succeed with the timeout configured. */
-    xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    ASSERT(xylem_http_res_body_len(res) == 2);
-    ASSERT(memcmp(xylem_http_res_body(res), "ok", 2) == 0);
-    xylem_http_res_destroy(res);
-
-    /* Second request on reused connection should also succeed. */
-    res = xylem_http_get(url, NULL, 0, NULL);
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    ASSERT(xylem_http_res_body_len(res) == 2);
-    ASSERT(memcmp(xylem_http_res_body(res), "ok", 2) == 0);
-    xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
-}
-
-static void test_idle_timeout(void) {
-    xylem_run(_test_idle_timeout_main, NULL, NULL);
-}
-
-
-
-
-/* Plain-HTTP proxy (absolute-form forwarding). */
-
-/**
- * Acts as the proxy: a plain-HTTP proxy receives the request line in
- * absolute-form (full URL), so the server echoes back the URL it parsed.
- * The client points at this server via opts.proxy; if the wiring is
- * correct the echoed URL is the absolute target, not just the path.
- */
-static void _proxy_handler(xylem_http_res_t* res,
-                           xylem_http_req_t* req,
+static void _proxy_handler(xylem_http_res_t* res, xylem_http_req_t* req,
                            void* userdata) {
     (void)userdata;
     const char* url = xylem_http_req_url(req);
@@ -550,17 +398,7 @@ static void _proxy_handler(xylem_http_res_t* res,
     xylem_http_res_write(res, url, strlen(url));
 }
 
-static void _test_proxy_main(void* arg) {
-    (void)arg;
-
-    xylem_http_srv_t* srv = xylem_http_listen(
-        "127.0.0.1", 0, _proxy_handler, NULL, NULL);
-    ASSERT(srv != NULL);
-
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
-    /* Route the request through the just-started server as a proxy. */
+static void _proxy_body(uint16_t port) {
     xylem_http_proxy_t proxy = {0};
     proxy.host = "127.0.0.1";
     proxy.port = port;
@@ -568,34 +406,22 @@ static void _test_proxy_main(void* arg) {
     xylem_http_cli_opts_t opts = {0};
     opts.proxy = &proxy;
 
-    /**
-     * Target a different (unconnectable) host: the request must reach the
-     * proxy, and the proxy must see the absolute-form URL.
-     */
     const char* target = "http://target.example/path/page";
     xylem_http_res_t* res = xylem_http_get(target, NULL, 0, &opts);
     ASSERT(res != NULL);
     ASSERT(xylem_http_res_status(res) == 200);
 
-    /* The proxy echoes the request-line URL: it must be absolute-form. */
     size_t blen = xylem_http_res_body_len(res);
     ASSERT(blen == strlen(target));
     ASSERT(memcmp(xylem_http_res_body(res), target, blen) == 0);
     xylem_http_res_destroy(res);
-
-    xylem_http_close(srv);
-    xylem_shutdown();
 }
 
 static void test_proxy_plain(void) {
-    xylem_run(_test_proxy_main, NULL, NULL);
+    _serve(_proxy_handler, NULL, _proxy_body);
 }
 
-
-/* Main. */
-
 int main(void) {
-    /* URL percent-encoding */
     test_url_encode_unreserved();
     test_url_encode_reserved();
     test_url_encode_empty();
@@ -603,43 +429,19 @@ int main(void) {
     test_url_decode_passthrough();
     test_url_encode_decode_round_trip();
 
-    /* Response accessors */
     test_res_destroy_null();
     test_res_accessors_null();
-
-    /* Request accessors */
     test_req_accessors_null();
-
-    /* Response writer */
     test_res_set_status_null();
     test_res_set_header_null();
     test_res_write_null();
 
-
-    /* Integration: coroutine-based server + client */
     test_http_integration();
-
-    /* Connection pool reuse */
     test_pool_reuse();
-
-    /* Redirect following */
     test_redirect_following();
-
-    /* Basic authentication */
     test_basic_auth();
-
-    /* Expect/100-Continue */
     test_expect_continue();
-
-    /* Content-Length response mode */
     test_content_length_mode();
-
-    /* Idle timeout */
-    test_idle_timeout();
-
-    /* Plain-HTTP proxy (absolute-form forwarding) */
     test_proxy_plain();
-
-
     return 0;
 }

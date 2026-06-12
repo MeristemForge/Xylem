@@ -25,6 +25,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void _has(xylem_json_t* j, const char* needle) {
+    char* out = xylem_json_print(j);
+    ASSERT(out != NULL);
+    ASSERT(strstr(out, needle) != NULL);
+    free(out);
+}
+
 static void test_parse_and_read(void) {
     const char* json = "{\"name\":\"xylem\",\"version\":3,\"active\":true}";
     xylem_json_t* j = xylem_json_parse(json);
@@ -34,14 +41,9 @@ static void test_parse_and_read(void) {
     const char* name = xylem_json_str(j, "name");
     ASSERT(name != NULL);
     ASSERT(strcmp(name, "xylem") == 0);
+    ASSERT(xylem_json_i32(j, "version") == 3);
+    ASSERT(xylem_json_bool(j, "active") == true);
 
-    int32_t ver = xylem_json_i32(j, "version");
-    ASSERT(ver == 3);
-
-    bool active = xylem_json_bool(j, "active");
-    ASSERT(active == true);
-
-    /* missing key returns default */
     ASSERT(xylem_json_str(j, "missing") == NULL);
     ASSERT(xylem_json_i32(j, "missing") == 0);
     ASSERT(xylem_json_bool(j, "missing") == false);
@@ -62,7 +64,6 @@ static void test_parse_numbers(void) {
 
     ASSERT(xylem_json_i32(j, "i32") == 42);
     ASSERT(xylem_json_i64(j, "i64") == 9876543210LL);
-
     double f = xylem_json_f64(j, "f64");
     ASSERT(f > 3.13 && f < 3.15);
 
@@ -83,7 +84,6 @@ static void test_parse_nested_obj(void) {
     ASSERT(strcmp(city, "shanghai") == 0);
     ASSERT(xylem_json_i32(info, "code") == 200);
 
-    /* info is borrowed, only destroy root */
     xylem_json_destroy(j);
 }
 
@@ -100,8 +100,6 @@ static void test_parse_array(void) {
     xylem_json_t* elem = xylem_json_arr_get(arr, 1);
     ASSERT(elem != NULL);
     ASSERT(xylem_json_type(elem) == XYLEM_JSON_TYPE_NUM);
-
-    /* out of bounds */
     ASSERT(xylem_json_arr_get(arr, 99) == NULL);
 
     xylem_json_destroy(j);
@@ -129,7 +127,6 @@ static void test_print(void) {
 
     char* pretty = xylem_json_print_pretty(j);
     ASSERT(pretty != NULL);
-    /* pretty output should contain newlines */
     ASSERT(strstr(pretty, "\n") != NULL);
     free(pretty);
 
@@ -148,13 +145,10 @@ static void test_build_obj(void) {
     ASSERT(xylem_json_set_bool(j, "ok", true) == 0);
     ASSERT(xylem_json_set_null(j, "empty") == 0);
 
-    char* out = xylem_json_print(j);
-    ASSERT(out != NULL);
-    ASSERT(strstr(out, "\"name\":\"xylem\"") != NULL);
-    ASSERT(strstr(out, "\"major\":1") != NULL);
-    ASSERT(strstr(out, "\"ok\":true") != NULL);
-    ASSERT(strstr(out, "\"empty\":null") != NULL);
-    free(out);
+    _has(j, "\"name\":\"xylem\"");
+    _has(j, "\"major\":1");
+    _has(j, "\"ok\":true");
+    _has(j, "\"empty\":null");
 
     xylem_json_destroy(j);
 }
@@ -169,12 +163,9 @@ static void test_build_arr(void) {
     ASSERT(xylem_json_arr_push_f64(arr, 2.5) == 0);
     ASSERT(xylem_json_arr_push_bool(arr, false) == 0);
 
-    char* out = xylem_json_print(arr);
-    ASSERT(out != NULL);
-    ASSERT(strstr(out, "\"hello\"") != NULL);
-    ASSERT(strstr(out, "42") != NULL);
-    ASSERT(strstr(out, "false") != NULL);
-    free(out);
+    _has(arr, "\"hello\"");
+    _has(arr, "42");
+    _has(arr, "false");
 
     xylem_json_destroy(arr);
 }
@@ -193,11 +184,8 @@ static void test_build_nested(void) {
     ASSERT(xylem_json_arr_push_i64(arr, 1) == 0);
     ASSERT(xylem_json_set_arr(root, "list", arr) == 0);
 
-    char* out = xylem_json_print(root);
-    ASSERT(out != NULL);
-    ASSERT(strstr(out, "\"nested\":{\"k\":\"v\"}") != NULL);
-    ASSERT(strstr(out, "\"list\":[1]") != NULL);
-    free(out);
+    _has(root, "\"nested\":{\"k\":\"v\"}");
+    _has(root, "\"list\":[1]");
 
     xylem_json_destroy(root);
 }
@@ -210,13 +198,9 @@ static void test_build_arr_push_obj(void) {
     ASSERT(item != NULL);
     ASSERT(xylem_json_set_i32(item, "id", 1) == 0);
     ASSERT(xylem_json_arr_push(arr, item) == 0);
-
     ASSERT(xylem_json_arr_len(arr) == 1);
 
-    char* out = xylem_json_print(arr);
-    ASSERT(out != NULL);
-    ASSERT(strstr(out, "{\"id\":1}") != NULL);
-    free(out);
+    _has(arr, "{\"id\":1}");
 
     xylem_json_destroy(arr);
 }
@@ -235,10 +219,8 @@ static void test_null_safety(void) {
     ASSERT(xylem_json_print(NULL) == NULL);
     ASSERT(xylem_json_print_pretty(NULL) == NULL);
 
-    /* destroy NULL is a no-op */
     xylem_json_destroy(NULL);
 
-    /* setters on NULL return -1 */
     ASSERT(xylem_json_set_str(NULL, "k", "v") == -1);
     ASSERT(xylem_json_set_i32(NULL, "k", 0) == -1);
     ASSERT(xylem_json_arr_push_str(NULL, "v") == -1);

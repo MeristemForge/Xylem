@@ -85,32 +85,12 @@ static void test_concurrent(void) {
     }
 }
 
-/**
- * recv_timeout coverage.
- *
- * Teardown rule (library-wide, not channel-specific): every xylem_
- * runtime object embeds scheduler-owned resources -- tcp/udp/uds/
- * dtls conns hold an iowait_t, dtls also holds sched_timer_t's, and
- * a timed channel caches a deadline sched_timer_t. Such objects must
- * be closed/destroyed while the runtime is still alive; touching one
- * after xylem_run() returns is undefined (the scheduler that owns
- * those resources is already freed). These tests therefore destroy
- * the channel from inside the owning coroutine before xylem_shutdown.
- * (A plain channel that never armed a timer happens to be
- * destroyable afterwards, which is why test_channel_concurrent does
- * so, but the timed variants follow the general rule.)
- */
-
 typedef struct {
     xylem_channel_t* ch;
     int              payload;
     int              tested;
 } _to_ctx_t;
 
-/**
- * An empty channel with an elapsed deadline must report a timeout
- * (NULL) rather than blocking forever.
- */
 static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
@@ -135,10 +115,6 @@ static void test_timeout_empty(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/**
- * A message that arrives before the deadline must be delivered, not
- * swallowed by the timeout.
- */
 static void _to_sender_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     xylem_sleep(20);
@@ -170,29 +146,6 @@ static void test_timeout_deliver(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/**
- * Stress the send/deadline overlap: drive send to land at roughly
- * the same instant as the deadline, many times. This exercises the
- * exact window where the "false timeout strands a delivered message"
- * race lived. Invariants checked here:
- *   - recv_timeout returns either the correct payload pointer or
- *     NULL, never garbage;
- *   - exactly one of message/timeout is observed per round;
- *   - no crash, no use-after-free, no leak (run under ASAN to make
- *     the timer-callback refcount fix observable).
- * Note: a legitimate late send (landing after the deadline) also
- * yields a timeout with the message left in the queue, freed at
- * destroy; that is correct and indistinguishable from the outside,
- * so this is a robustness stress test rather than a deterministic
- * regression.
- *
- * Teardown is synchronized deterministically with a waitgroup rather
- * than a fixed sleep: the sender done()s after send() returns and the
- * receiver wait()s before draining/destroying. This guarantees the
- * send has fully completed before the channel is freed (no race with
- * a late send touching a destroyed channel) and keeps the test fast
- * regardless of how late the send lands.
- */
 #define TO_RACE_ROUNDS 200
 
 typedef struct {
@@ -207,19 +160,11 @@ typedef struct {
 
 static void _race_sender_coro(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
-    /**
-     * Aim the send at the deadline itself so the send wakeup and the
-     * deadline timer fire in the same window.
-     */
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     if (ctx->send_at_ms > now) {
         xylem_sleep(ctx->send_at_ms - now);
     }
     xylem_channel_send(ctx->ch, &ctx->payload);
-    /**
-     * Signal completion: the send has fully returned, so the receiver
-     * may now safely drain and destroy the channel.
-     */
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -233,30 +178,11 @@ static void _race_recv_coro(void* arg) {
         ctx->got_timeout = 1;
     }
 
-    /**
-     * Single-receiver contract (see xylem-channel.h: concurrent recv
-     * aborts). The receiver coroutine itself drains any late-delivered
-     * message and tears the channel down -- a separate reaper calling
-     * recv would be a second concurrent consumer and race q->head.
-     * Wait for the sender to finish (deterministic, no timing guess):
-     * once done() has fired the send has returned and the node is
-     * enqueued. On a timeout the message is therefore now sitting in
-     * the queue -- drain exactly that one (a plain recv returns it
-     * immediately, it is already present). A late message left in the
-     * queue is still a timeout from the outside, so got_message is not
-     * set here.
-     */
     xylem_waitgroup_wait(ctx->wg);
     if (ctx->got_timeout) {
         void* leftover = xylem_channel_recv(ctx->ch);
         ASSERT(leftover == &ctx->payload);
     }
-    /**
-     * The sender has signalled done() (so the send is fully complete)
-     * and waitgroup_wait() has returned: nothing else touches the
-     * channel or the waitgroup now, so both can be torn down here,
-     * inside the coroutine, before shutdown.
-     */
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
     xylem_waitgroup_destroy(ctx->wg);
@@ -288,13 +214,6 @@ static void test_timeout_race(void) {
     }
 }
 
-/**
- * recv from a real OS thread (not a coroutine). Coroutine producers
- * send; an external thread blocks in recv via the cross-context
- * semaphore. Verifies the headline route-B capability: a coroutine
- * hands work to a plain thread. The coordinator coroutine closes the
- * channel after all sends, joins the receiver thread, then tears down.
- */
 #define TR_SENDERS  8
 #define TR_MESSAGES 50
 
@@ -310,9 +229,9 @@ typedef struct {
 static int _tr_recv_thread(void* arg) {
     _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
     for (;;) {
-        void* msg = xylem_channel_recv(ctx->ch); /* thread-side blocking recv */
+        void* msg = xylem_channel_recv(ctx->ch);
         if (!msg) {
-            break; /* closed and drained */
+            break;
         }
         ASSERT(msg == &ctx->payload);
         atomic_fetch_add(&ctx->recv_count, 1);
@@ -330,9 +249,9 @@ static void _tr_sender(void* arg) {
 
 static void _tr_coordinator(void* arg) {
     _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
-    xylem_waitgroup_wait(ctx->wg); /* all sends enqueued */
-    xylem_channel_close(ctx->ch);  /* signal end-of-stream to the thread */
-    thrd_join(ctx->thr, NULL);     /* thread drains the rest, then exits */
+    xylem_waitgroup_wait(ctx->wg);
+    xylem_channel_close(ctx->ch);
+    thrd_join(ctx->thr, NULL);
     ASSERT(atomic_load(&ctx->recv_count) == TR_SENDERS * TR_MESSAGES);
     ctx->tested = 1;
     xylem_channel_destroy(ctx->ch);
@@ -348,7 +267,6 @@ static void _tr_main(void* arg) {
     ctx->ch = xylem_channel_create(0);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, TR_SENDERS);
-    /* Start the OS-thread receiver before producers (ch is set). */
     ASSERT(thrd_create(&ctx->thr, _tr_recv_thread, ctx) == thrd_success);
     for (int i = 0; i < TR_SENDERS; i++) {
         xylem_spawn(_tr_sender, ctx);
@@ -365,11 +283,6 @@ static void test_thread_recv(void) {
     }
 }
 
-/**
- * Bounded channel non-blocking paths: full reports XYLEM_CHANNEL_FULL
- * (both send and a timed send_timeout), len/cap report correctly, and
- * recv_timeout(0) is a non-blocking try.
- */
 typedef struct {
     int tested;
 } _bt_ctx_t;
@@ -385,17 +298,15 @@ static void _bt_coro(void* arg) {
     ASSERT(xylem_channel_send(ch, &b) == 0);
     ASSERT(xylem_channel_len(ch) == 2);
 
-    /* Full: non-blocking send reports full. */
     ASSERT(xylem_channel_send(ch, &c) == XYLEM_CHANNEL_FULL);
 
-    /* Non-blocking try recv frees a slot, then send fits. */
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &a);
     ASSERT(xylem_channel_len(ch) == 1);
     ASSERT(xylem_channel_send(ch, &c) == 0);
 
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &b);
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &c);
-    ASSERT(xylem_channel_recv_timeout(ch, 0) == NULL); /* empty try */
+    ASSERT(xylem_channel_recv_timeout(ch, 0) == NULL);
 
     ctx->tested = 1;
     xylem_channel_destroy(ch);

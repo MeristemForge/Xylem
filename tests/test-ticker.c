@@ -38,12 +38,16 @@ typedef struct {
     xylem_waitgroup_t* wg;
 } _consume_ctx_t;
 
+static xylem_timer_t* _arm_watchdog(void) {
+    return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+}
+
 static void _tick_main(void* arg) {
     (void)arg;
     xylem_ticker_t* tk = xylem_ticker_create(TICK_INTERVAL_MS);
     ASSERT(tk != NULL);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
 
     uint64_t prev = 0;
     for (int i = 0; i < TICK_TARGET; i++) {
@@ -64,7 +68,6 @@ static void test_tick(void) {
 
 static void _invalid_main(void* arg) {
     (void)arg;
-    /* Zero interval and NULL handles are rejected without aborting. */
     ASSERT(xylem_ticker_create(0) == NULL);
     ASSERT(xylem_ticker_recv(NULL) == 0);
     xylem_ticker_destroy(NULL);
@@ -95,18 +98,10 @@ static void _destroy_main(void* arg) {
     ASSERT(ctx.tk != NULL);
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
 
     xylem_spawn(_consumer, &ctx);
 
-    /**
-     * Wait until the consumer has actually drained at least one tick,
-     * then tear down: the parked recv must wake and return 0 so the
-     * consumer loop exits. A fixed sleep here would be racy -- OS timer
-     * coalescing (macOS kqueue, loaded CI runners) can stretch the first
-     * tick past any fixed deadline. The safety watchdog bounds the wait
-     * if ticks somehow never arrive.
-     */
     while (atomic_load(&ctx.ticks) < 1) {
         xylem_sleep(TICK_INTERVAL_MS);
     }
@@ -125,18 +120,11 @@ static void test_destroy_wakes_recv(void) {
     xylem_run(_destroy_main, NULL, NULL);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_thread_consumer: an external OS thread drives xylem_ticker_recv */
-/* directly. The recv must block the thread (not park a coroutine) and  */
-/* return real tick times, proving the ticker is usable from a thread   */
-/* just like the underlying timer.                                      */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_ticker_t* tk;
     atomic_int      ticks;
     atomic_bool     ended;
-    atomic_bool     ordered; /* ticks observed monotonically by the thread */
+    atomic_bool     ordered;
 } _thr_consume_ctx_t;
 
 static int _thread_consumer_fn(void* arg) {
@@ -144,7 +132,6 @@ static int _thread_consumer_fn(void* arg) {
     uint64_t prev = 0;
     bool     ordered = true;
     for (;;) {
-        /* Blocks the OS thread (context-adaptive recv) until a tick. */
         uint64_t now = xylem_ticker_recv(c->tk);
         if (now == 0) {
             atomic_store(&c->ended, true);
@@ -166,15 +153,11 @@ static void _thread_consumer_main(void* arg) {
     ctx->tk = xylem_ticker_create(TICK_INTERVAL_MS);
     ASSERT(ctx->tk != NULL);
 
-    xylem_timer_t* wd =
-        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
 
-    /* Consumer is a plain OS thread, not a coroutine. */
     thrd_t th;
     ASSERT(thrd_create(&th, _thread_consumer_fn, ctx) == thrd_success);
 
-    /* Wait (in coroutine time) until the thread has drained enough
-     * ticks, then tear down so its blocked recv wakes and returns 0. */
     while (atomic_load(&ctx->ticks) < TICK_TARGET) {
         xylem_sleep(TICK_INTERVAL_MS);
     }

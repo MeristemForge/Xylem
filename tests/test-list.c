@@ -22,6 +22,14 @@
 #include "xylem.h"
 #include "assert.h"
 
+static int32_t _head(xylem_list_t* list) {
+    return *(int32_t*)xylem_list_head(list);
+}
+
+static int32_t _tail(xylem_list_t* list) {
+    return *(int32_t*)xylem_list_tail(list);
+}
+
 static void test_init(void) {
     xylem_list_t* list = xylem_list_create();
     ASSERT(list != NULL);
@@ -40,10 +48,9 @@ static void test_insert_head_tail(void) {
     ASSERT(xylem_list_insert_tail(list, &b) == 0);
     ASSERT(xylem_list_insert_head(list, &c) == 0);
 
-    /* order: &c, &a, &b -> 30, 10, 20 */
     ASSERT(xylem_list_len(list) == 3);
-    ASSERT(*(int32_t*)xylem_list_head(list) == 30);
-    ASSERT(*(int32_t*)xylem_list_tail(list) == 20);
+    ASSERT(_head(list) == 30);
+    ASSERT(_tail(list) == 20);
 
     xylem_list_clear(list);
     ASSERT(xylem_list_empty(list));
@@ -59,14 +66,14 @@ static void test_remove(void) {
     }
 
     xylem_list_remove(list, &vals[0]);
-    ASSERT(*(int32_t*)xylem_list_head(list) == 2);
+    ASSERT(_head(list) == 2);
 
     xylem_list_remove(list, &vals[3]);
-    ASSERT(*(int32_t*)xylem_list_tail(list) == 3);
+    ASSERT(_tail(list) == 3);
 
     xylem_list_remove(list, &vals[1]);
     ASSERT(xylem_list_len(list) == 1);
-    ASSERT(*(int32_t*)xylem_list_head(list) == 3);
+    ASSERT(_head(list) == 3);
 
     int32_t x = 999;
     xylem_list_remove(list, &x);
@@ -87,10 +94,10 @@ static void test_swap(void) {
     xylem_list_swap(a, b);
 
     ASSERT(xylem_list_len(a) == 1);
-    ASSERT(*(int32_t*)xylem_list_head(a) == 3);
+    ASSERT(_head(a) == 3);
     ASSERT(xylem_list_len(b) == 2);
-    ASSERT(*(int32_t*)xylem_list_head(b) == 1);
-    ASSERT(*(int32_t*)xylem_list_tail(b) == 2);
+    ASSERT(_head(b) == 1);
+    ASSERT(_tail(b) == 2);
 
     xylem_list_destroy(a);
     xylem_list_destroy(b);

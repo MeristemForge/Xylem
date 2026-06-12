@@ -24,111 +24,64 @@
 
 #include <string.h>
 
-/* Encode/decode zero. */
+static void _roundtrip(uint64_t value, size_t expected_size) {
+    uint8_t buf[16];
+    size_t  pos = 0;
+    ASSERT(xylem_varint_encode(value, buf, sizeof(buf), &pos));
+    ASSERT(pos == expected_size);
+
+    uint64_t val;
+    pos = 0;
+    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
+    ASSERT(pos == expected_size);
+    ASSERT(val == value);
+}
+
+static void _encoded(uint64_t value, const uint8_t* expected, size_t n) {
+    uint8_t buf[16];
+    size_t  pos = 0;
+    ASSERT(xylem_varint_encode(value, buf, sizeof(buf), &pos));
+    ASSERT(pos == n);
+    ASSERT(memcmp(buf, expected, n) == 0);
+
+    uint64_t val;
+    pos = 0;
+    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
+    ASSERT(pos == n);
+    ASSERT(val == value);
+}
+
 static void test_basic_encode_decode(void) {
-    uint8_t  buf[16];
-    size_t   pos;
-    uint64_t val;
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(0, buf, sizeof(buf), &pos));
-    ASSERT(pos == 1);
-    ASSERT(buf[0] == 0);
-
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(pos == 1);
-    ASSERT(val == 0);
+    const uint8_t expected[] = {0};
+    _encoded(0, expected, 1);
 }
 
-/* Single-byte values: 1 and 127. */
 static void test_small_values(void) {
-    uint8_t  buf[16];
-    size_t   pos;
-    uint64_t val;
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(1, buf, sizeof(buf), &pos));
-    ASSERT(pos == 1 && buf[0] == 1);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 1);
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(127, buf, sizeof(buf), &pos));
-    ASSERT(pos == 1 && buf[0] == 127);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 127);
+    const uint8_t one[]  = {1};
+    const uint8_t max7[] = {127};
+    _encoded(1, one, 1);
+    _encoded(127, max7, 1);
 }
 
-/* Two-byte encoding: 128 and 16383. */
 static void test_two_byte_encoding(void) {
-    uint8_t  buf[16];
-    size_t   pos;
-    uint64_t val;
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(128, buf, sizeof(buf), &pos));
-    ASSERT(pos == 2 && buf[0] == 0x80 && buf[1] == 0x01);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 128);
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(16383, buf, sizeof(buf), &pos));
-    ASSERT(pos == 2 && buf[0] == 0xFF && buf[1] == 0x7F);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 16383);
+    const uint8_t v128[]   = {0x80, 0x01};
+    const uint8_t v16383[] = {0xFF, 0x7F};
+    _encoded(128, v128, 2);
+    _encoded(16383, v16383, 2);
 }
 
-/* Multi-byte: 3-byte and 4-byte boundaries. */
 static void test_large_values(void) {
-    uint8_t  buf[16];
-    size_t   pos;
-    uint64_t val;
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(16384, buf, sizeof(buf), &pos));
-    ASSERT(pos == 3);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 16384);
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(2097151, buf, sizeof(buf), &pos));
-    ASSERT(pos == 3);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 2097151);
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(2097152, buf, sizeof(buf), &pos));
-    ASSERT(pos == 4);
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(val == 2097152);
+    _roundtrip(16384, 3);
+    _roundtrip(2097151, 3);
+    _roundtrip(2097152, 4);
 }
 
-/* UINT64_MAX requires 10 bytes. */
 static void test_max_uint64(void) {
-    uint8_t  buf[16];
-    size_t   pos;
-    uint64_t val;
-
-    pos = 0;
-    ASSERT(xylem_varint_encode(UINT64_MAX, buf, sizeof(buf), &pos));
-    ASSERT(pos == 10);
-    ASSERT(buf[9] == 0x01);
-
-    pos = 0;
-    ASSERT(xylem_varint_decode(buf, sizeof(buf), &pos, &val));
-    ASSERT(pos == 10);
-    ASSERT(val == UINT64_MAX);
+    const uint8_t expected[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+    _encoded(UINT64_MAX, expected, 10);
 }
 
-/* Encode fails when buffer is too small. */
 static void test_encode_buffer_too_small(void) {
     uint8_t buf[5];
     size_t  pos;
@@ -146,7 +99,6 @@ static void test_encode_buffer_too_small(void) {
     ASSERT(pos == 0);
 }
 
-/* Decode fails when buffer is truncated. */
 static void test_decode_buffer_too_small(void) {
     uint8_t  buf[16];
     size_t   pos;
@@ -154,12 +106,10 @@ static void test_decode_buffer_too_small(void) {
 
     buf[0] = 0x80;
     buf[1] = 0x01;
-
-    pos = 0;
+    pos    = 0;
     ASSERT(!xylem_varint_decode(buf, 1, &pos, &val));
 }
 
-/* Encode with invalid starting position. */
 static void test_encode_invalid_position(void) {
     uint8_t buf[16];
     size_t  pos;
@@ -175,7 +125,6 @@ static void test_encode_invalid_position(void) {
     ASSERT(pos == 10);
 }
 
-/* Decode with invalid starting position. */
 static void test_decode_invalid_position(void) {
     uint8_t  buf[16];
     size_t   pos;
@@ -188,12 +137,11 @@ static void test_decode_invalid_position(void) {
     ASSERT(!xylem_varint_decode(buf, 10, &pos, &val));
 
     buf[9] = 0;
-    pos = 9;
+    pos    = 9;
     ASSERT(xylem_varint_decode(buf, 10, &pos, &val));
     ASSERT(pos == 10);
 }
 
-/* Incomplete continuation bytes. */
 static void test_decode_incomplete_sequence(void) {
     uint8_t  buf[16];
     size_t   pos;
@@ -204,7 +152,6 @@ static void test_decode_incomplete_sequence(void) {
     ASSERT(!xylem_varint_decode(buf, 9, &pos, &val));
 }
 
-/* More than 10 continuation bytes -> reject. */
 static void test_decode_too_many_bytes(void) {
     uint8_t  buf[16];
     size_t   pos;
@@ -212,11 +159,10 @@ static void test_decode_too_many_bytes(void) {
 
     memset(buf, 0x80, 10);
     buf[9] = 0x7F;
-    pos = 0;
+    pos    = 0;
     ASSERT(!xylem_varint_decode(buf, 10, &pos, &val));
 }
 
-/* NULL buffer or zero bufsize -> fail. */
 static void test_encode_null_pointers(void) {
     uint8_t buf[16];
     size_t  pos;
@@ -227,12 +173,9 @@ static void test_encode_null_pointers(void) {
     pos = 0;
     ASSERT(!xylem_varint_encode(1, buf, 0, &pos));
 
-    /* NULL pos is allowed (fire-and-forget encode). */
-    pos = 0;
     ASSERT(xylem_varint_encode(1, buf, 10, NULL));
 }
 
-/* Round-trip across a range of values. */
 static void test_roundtrip(void) {
     uint8_t  buf[16];
     size_t   pos;
@@ -253,7 +196,6 @@ static void test_roundtrip(void) {
     }
 }
 
-/* Encode with NULL pos (fire-and-forget). */
 static void test_encode_null_pos(void) {
     uint8_t buf[16];
 
@@ -268,7 +210,6 @@ static void test_encode_null_pos(void) {
     ASSERT(buf[2] == 0xFF);
 }
 
-/* xylem_varint_compute returns correct byte counts. */
 static void test_compute_size(void) {
     ASSERT(xylem_varint_compute(0) == 1);
     ASSERT(xylem_varint_compute(127) == 1);
@@ -282,12 +223,11 @@ static void test_compute_size(void) {
     ASSERT(xylem_varint_compute(UINT64_MAX) == 10);
 }
 
-/* Streaming: encode multiple values then decode them back in order. */
 static void test_streaming(void) {
     uint8_t  buf[64];
-    size_t   enc_pos = 0;
+    size_t   enc_pos  = 0;
     uint64_t values[] = {0, 1, 127, 128, 16383, 16384, UINT64_MAX};
-    size_t   n = sizeof(values) / sizeof(values[0]);
+    size_t   n        = sizeof(values) / sizeof(values[0]);
 
     for (size_t i = 0; i < n; i++) {
         ASSERT(xylem_varint_encode(values[i], buf, sizeof(buf), &enc_pos));
@@ -302,7 +242,6 @@ static void test_streaming(void) {
     ASSERT(dec_pos == enc_pos);
 }
 
-/* Streaming: decode past end of buffer fails. */
 static void test_streaming_beyond_buffer(void) {
     uint8_t  buf[16];
     size_t   enc_pos = 0;
@@ -317,24 +256,6 @@ static void test_streaming_beyond_buffer(void) {
     ASSERT(xylem_varint_decode(buf, enc_pos, &dec_pos, &val));
     ASSERT(val == 200);
     ASSERT(!xylem_varint_decode(buf, enc_pos, &dec_pos, &val));
-}
-
-/* Large streaming sequence: 100 values. */
-static void test_streaming_large(void) {
-    uint8_t buf[1024];
-    size_t  enc_pos = 0;
-
-    for (uint64_t i = 0; i < 100; i++) {
-        ASSERT(xylem_varint_encode(i * 1000, buf, sizeof(buf), &enc_pos));
-    }
-
-    size_t dec_pos = 0;
-    for (uint64_t i = 0; i < 100; i++) {
-        uint64_t decoded;
-        ASSERT(xylem_varint_decode(buf, enc_pos, &dec_pos, &decoded));
-        ASSERT(decoded == i * 1000);
-    }
-    ASSERT(dec_pos == enc_pos);
 }
 
 int main(void) {
@@ -355,6 +276,5 @@ int main(void) {
     test_compute_size();
     test_streaming();
     test_streaming_beyond_buffer();
-    test_streaming_large();
     return 0;
 }

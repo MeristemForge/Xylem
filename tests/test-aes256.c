@@ -31,74 +31,60 @@ static const uint8_t _test_key[32] = {
     0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4,
 };
 
+static void _ctr_roundtrip(xylem_aes256_t* ctx, const uint8_t* pt,
+                           size_t len) {
+    size_t  enc_size = xylem_aes256_ctr_encrypt_size(len);
+    uint8_t enc[256];
+    int enc_len = xylem_aes256_ctr_encrypt(ctx, pt, len, enc, enc_size);
+    ASSERT(enc_len == (int)enc_size);
+
+    uint8_t dec[256];
+    size_t  dec_size = xylem_aes256_ctr_decrypt_size((size_t)enc_len);
+    int dec_len = xylem_aes256_ctr_decrypt(ctx, enc, (size_t)enc_len, dec,
+                                           dec_size);
+    ASSERT(dec_len == (int)len);
+    ASSERT(memcmp(dec, pt, len) == 0);
+}
+
+static void _cbc_roundtrip(xylem_aes256_t* ctx, const uint8_t* pt,
+                           size_t len) {
+    size_t  enc_size = xylem_aes256_cbc_encrypt_size(len);
+    uint8_t enc[256];
+    int enc_len = xylem_aes256_cbc_encrypt(ctx, pt, len, enc, enc_size);
+    ASSERT(enc_len == (int)enc_size);
+
+    uint8_t dec[256];
+    size_t  dec_size = xylem_aes256_cbc_decrypt_size((size_t)enc_len);
+    int dec_len = xylem_aes256_cbc_decrypt(ctx, enc, (size_t)enc_len, dec,
+                                           dec_size);
+    ASSERT(dec_len == (int)len);
+    ASSERT(memcmp(dec, pt, len) == 0);
+}
+
 static void test_ctr_round_trip(void) {
     xylem_aes256_t* ctx = xylem_aes256_create(_test_key);
     ASSERT(ctx != NULL);
-
-    const char* plaintext = "Hello, AES-256-CTR!";
-    size_t pt_len = strlen(plaintext);
-    size_t enc_size = xylem_aes256_ctr_encrypt_size(pt_len);
-
-    uint8_t encrypted[256];
-    int enc_len = xylem_aes256_ctr_encrypt(ctx, (const uint8_t*)plaintext,
-                                           pt_len, encrypted, enc_size);
-    ASSERT(enc_len == (int)enc_size);
-
-    uint8_t decrypted[256];
-    size_t dec_size = xylem_aes256_ctr_decrypt_size((size_t)enc_len);
-    int dec_len = xylem_aes256_ctr_decrypt(ctx, encrypted, (size_t)enc_len,
-                                           decrypted, dec_size);
-    ASSERT(dec_len == (int)pt_len);
-    ASSERT(memcmp(decrypted, plaintext, pt_len) == 0);
-
+    const char* pt = "Hello, AES-256-CTR!";
+    _ctr_roundtrip(ctx, (const uint8_t*)pt, strlen(pt));
     xylem_aes256_destroy(ctx);
 }
 
 static void test_cbc_round_trip(void) {
     xylem_aes256_t* ctx = xylem_aes256_create(_test_key);
     ASSERT(ctx != NULL);
-
-    const char* plaintext = "Hello, AES-256-CBC!";
-    size_t pt_len = strlen(plaintext);
-    size_t enc_size = xylem_aes256_cbc_encrypt_size(pt_len);
-
-    uint8_t encrypted[256];
-    int enc_len = xylem_aes256_cbc_encrypt(ctx, (const uint8_t*)plaintext,
-                                           pt_len, encrypted, enc_size);
-    ASSERT(enc_len == (int)enc_size);
-
-    uint8_t decrypted[256];
-    size_t dec_size = xylem_aes256_cbc_decrypt_size((size_t)enc_len);
-    int dec_len = xylem_aes256_cbc_decrypt(ctx, encrypted, (size_t)enc_len,
-                                           decrypted, dec_size);
-    ASSERT(dec_len == (int)pt_len);
-    ASSERT(memcmp(decrypted, plaintext, pt_len) == 0);
-
+    const char* pt = "Hello, AES-256-CBC!";
+    _cbc_roundtrip(ctx, (const uint8_t*)pt, strlen(pt));
     xylem_aes256_destroy(ctx);
 }
 
 static void test_cbc_block_aligned(void) {
     xylem_aes256_t* ctx = xylem_aes256_create(_test_key);
     ASSERT(ctx != NULL);
-
-    const uint8_t plaintext[16] = {
+    const uint8_t pt[16] = {
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
         0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
     };
-    size_t enc_size = xylem_aes256_cbc_encrypt_size(16);
-
-    uint8_t encrypted[256];
-    int enc_len = xylem_aes256_cbc_encrypt(ctx, plaintext, 16,
-                                           encrypted, enc_size);
-    ASSERT(enc_len == (int)enc_size);
-
-    uint8_t decrypted[256];
-    size_t dec_size = xylem_aes256_cbc_decrypt_size((size_t)enc_len);
-    int dec_len = xylem_aes256_cbc_decrypt(ctx, encrypted, (size_t)enc_len,
-                                           decrypted, dec_size);
-    ASSERT(dec_len == 16);
-    ASSERT(memcmp(decrypted, plaintext, 16) == 0);
-
+    _cbc_roundtrip(ctx, pt, 16);
     xylem_aes256_destroy(ctx);
 }
 
@@ -106,15 +92,13 @@ static void test_ctr_empty(void) {
     xylem_aes256_t* ctx = xylem_aes256_create(_test_key);
     ASSERT(ctx != NULL);
 
-    size_t enc_size = xylem_aes256_ctr_encrypt_size(0);
-    uint8_t encrypted[256];
-    int enc_len = xylem_aes256_ctr_encrypt(ctx, NULL, 0,
-                                           encrypted, enc_size);
+    size_t  enc_size = xylem_aes256_ctr_encrypt_size(0);
+    uint8_t enc[256];
+    int enc_len = xylem_aes256_ctr_encrypt(ctx, NULL, 0, enc, enc_size);
     ASSERT(enc_len == (int)enc_size);
 
-    uint8_t decrypted[256];
-    int dec_len = xylem_aes256_ctr_decrypt(ctx, encrypted, (size_t)enc_len,
-                                           decrypted, 256);
+    uint8_t dec[256];
+    int dec_len = xylem_aes256_ctr_decrypt(ctx, enc, (size_t)enc_len, dec, 256);
     ASSERT(dec_len == 0);
 
     xylem_aes256_destroy(ctx);
@@ -126,10 +110,8 @@ static void test_cbc_invalid_padding(void) {
 
     uint8_t fake[32];
     memset(fake, 0x41, sizeof(fake));
-
     uint8_t out[256];
-    int rc = xylem_aes256_cbc_decrypt(ctx, fake, sizeof(fake), out, 256);
-    ASSERT(rc == -1);
+    ASSERT(xylem_aes256_cbc_decrypt(ctx, fake, sizeof(fake), out, 256) == -1);
 
     xylem_aes256_destroy(ctx);
 }
@@ -140,9 +122,7 @@ static void test_ctr_insufficient_buffer(void) {
 
     const uint8_t msg[] = "test";
     uint8_t out[4];
-    /* Buffer too small: need 20 bytes (16 IV + 4 data), only 4. */
-    int rc = xylem_aes256_ctr_encrypt(ctx, msg, 4, out, 4);
-    ASSERT(rc == -1);
+    ASSERT(xylem_aes256_ctr_encrypt(ctx, msg, 4, out, 4) == -1);
 
     xylem_aes256_destroy(ctx);
 }
@@ -152,13 +132,10 @@ static void test_ctr_different_iv_each_time(void) {
     ASSERT(ctx != NULL);
 
     const uint8_t msg[] = "same message";
-    size_t enc_size = xylem_aes256_ctr_encrypt_size(sizeof(msg));
+    size_t  enc_size = xylem_aes256_ctr_encrypt_size(sizeof(msg));
     uint8_t enc1[256], enc2[256];
-
     xylem_aes256_ctr_encrypt(ctx, msg, sizeof(msg), enc1, enc_size);
     xylem_aes256_ctr_encrypt(ctx, msg, sizeof(msg), enc2, enc_size);
-
-    /* IVs (first 16 bytes) should differ. */
     ASSERT(memcmp(enc1, enc2, 16) != 0);
 
     xylem_aes256_destroy(ctx);

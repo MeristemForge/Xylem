@@ -24,21 +24,7 @@
 
 #include <string.h>
 
-#define LOG_FILE "test-logger-output.log"
-
-/**
- * The logger always dispatches to its internal worker thread, so the
- * callback fires from a different thread than the one that called
- * xylem_logger_log. Tests take advantage of the fact that
- * xylem_logger_deinit() drains the queue (thrdpool_destroy joins the
- * worker), which establishes a happens-before edge and makes every
- * callback-side write visible to the reader.
- *
- * Pattern: log everything for the case, call deinit, then assert.
- * The ctx records the level and message of every callback invocation
- * so multi-event cases can still verify the full sequence.
- */
-
+#define LOG_FILE   "test-logger-output.log"
 #define MAX_EVENTS 8
 
 typedef struct {
@@ -48,8 +34,8 @@ typedef struct {
 } _logger_ctx_t;
 
 static void _test_callback(xylem_logger_level_t level,
-                            const char* restrict msg,
-                            void* ud) {
+                           const char* restrict msg,
+                           void* ud) {
     _logger_ctx_t* ctx = (_logger_ctx_t*)ud;
     if (ctx->count < MAX_EVENTS) {
         ctx->levels[ctx->count] = level;
@@ -59,28 +45,25 @@ static void _test_callback(xylem_logger_level_t level,
     ctx->count++;
 }
 
-static void _reset_ctx(_logger_ctx_t* ctx) {
+static void _capture_start(_logger_ctx_t* ctx, xylem_logger_level_t level) {
     memset(ctx, 0, sizeof(*ctx));
+    xylem_logger_opts_t opts = { .level = level };
+    xylem_logger_init(NULL, &opts);
+    xylem_logger_set_callback(_test_callback, ctx);
 }
 
-/* init/deinit without logging. */
 static void test_init_destroy(void) {
     xylem_logger_init(NULL, NULL);
     xylem_logger_deinit();
 }
 
-/* log before init should not crash. */
 static void test_log_before_init(void) {
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 1, "should be ignored");
 }
 
-/* callback receives correct level and message content. */
 static void test_callback_receives_message(void) {
     _logger_ctx_t ctx;
-    _reset_ctx(&ctx);
-    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
-    xylem_logger_init(NULL, &opts);
-    xylem_logger_set_callback(_test_callback, &ctx);
+    _capture_start(&ctx, XYLEM_LOGGER_LEVEL_DEBUG);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 42, "hello %d", 123);
 
@@ -92,13 +75,9 @@ static void test_callback_receives_message(void) {
     ASSERT(strstr(ctx.last_msg, "test.c:42") != NULL);
 }
 
-/* level filtering: messages below threshold are suppressed. */
 static void test_level_filtering(void) {
     _logger_ctx_t ctx;
-    _reset_ctx(&ctx);
-    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_WARN };
-    xylem_logger_init(NULL, &opts);
-    xylem_logger_set_callback(_test_callback, &ctx);
+    _capture_start(&ctx, XYLEM_LOGGER_LEVEL_WARN);
 
     xylem_logger_log(XYLEM_LOGGER_LEVEL_DEBUG, "test.c", 1, "debug");
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO,  "test.c", 2, "info");
@@ -107,19 +86,14 @@ static void test_level_filtering(void) {
 
     xylem_logger_deinit();
 
-    /* DEBUG and INFO are below the WARN threshold and must not fire. */
     ASSERT(ctx.count == 2);
     ASSERT(ctx.levels[0] == XYLEM_LOGGER_LEVEL_WARN);
     ASSERT(ctx.levels[1] == XYLEM_LOGGER_LEVEL_ERROR);
 }
 
-/* log macros produce correct levels. */
 static void test_log_macros(void) {
     _logger_ctx_t ctx;
-    _reset_ctx(&ctx);
-    xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
-    xylem_logger_init(NULL, &opts);
-    xylem_logger_set_callback(_test_callback, &ctx);
+    _capture_start(&ctx, XYLEM_LOGGER_LEVEL_DEBUG);
 
     xylem_logd("debug msg");
     xylem_logi("info msg");
@@ -135,7 +109,6 @@ static void test_log_macros(void) {
     ASSERT(ctx.levels[3] == XYLEM_LOGGER_LEVEL_ERROR);
 }
 
-/* file output: write to file and verify content. */
 static void test_file_output(void) {
     remove(LOG_FILE);
     xylem_logger_opts_t opts = { .level = XYLEM_LOGGER_LEVEL_DEBUG };
@@ -157,11 +130,9 @@ static void test_file_output(void) {
     remove(LOG_FILE);
 }
 
-/* file rollover: file is truncated when exceeding max_file_size. */
 static void test_file_rollover(void) {
     remove(LOG_FILE);
 
-    /* set a small threshold so a few log lines will exceed it */
     size_t max_size = 200;
     xylem_logger_opts_t opts = {
         .level         = XYLEM_LOGGER_LEVEL_DEBUG,
@@ -169,23 +140,19 @@ static void test_file_rollover(void) {
     };
     xylem_logger_init(LOG_FILE, &opts);
 
-    /* write enough lines to exceed the threshold */
     for (int32_t i = 0; i < 10; i++) {
-        xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", i, "rollover line %d padding padding padding", i);
+        xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", i,
+                         "rollover line %d padding padding padding", i);
     }
     xylem_logger_deinit();
 
-    /* after rollover the file should be smaller than max_size + one log line */
     FILE* f = fopen(LOG_FILE, "rb");
     ASSERT(f != NULL);
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fclose(f);
-
-    /* file must have been truncated -- should be well under 2x threshold */
     ASSERT(size < (long)(max_size * 2));
 
-    /* file should contain the last written line, not the first */
     f = fopen(LOG_FILE, "r");
     ASSERT(f != NULL);
     char buf[4096] = {0};
@@ -193,8 +160,6 @@ static void test_file_rollover(void) {
     ASSERT(rd > 0);
     buf[rd] = '\0';
     fclose(f);
-
-    /* after rollover, early lines are gone; later lines should be present */
     ASSERT(strstr(buf, "rollover line 9") != NULL);
 
     remove(LOG_FILE);

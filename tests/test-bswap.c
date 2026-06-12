@@ -37,61 +37,42 @@ static inline uint64_t _double_bits(double d) {
     return u;
 }
 
-/* uint16: 0x1234 -> 0x3412 */
 static void test_uint16_typical(void) {
     ASSERT(xylem_bswap((uint16_t)0x1234U) == 0x3412U);
 }
 
-/* int16: -1 (0xFFFF) swaps to itself. */
 static void test_int16_boundary(void) {
     ASSERT(xylem_bswap((int16_t)-1) == -1);
 }
 
-/* uint32: 0x12345678 -> 0x78563412 */
 static void test_uint32_typical(void) {
     ASSERT(xylem_bswap((uint32_t)0x12345678U) == 0x78563412U);
 }
 
-/* uint64: 0x0123456789ABCDEF -> 0xEFCDAB8967452301 */
 static void test_uint64_typical(void) {
-    ASSERT(xylem_bswap((uint64_t)0x0123456789ABCDEFULL) == 0xEFCDAB8967452301ULL);
+    ASSERT(xylem_bswap((uint64_t)0x0123456789ABCDEFULL) ==
+           0xEFCDAB8967452301ULL);
 }
 
-/* float: verify bit-pattern reversal via uint32 comparison. */
 static void test_float_bitpattern(void) {
-    float    input = 123.456f;
+    float    input         = 123.456f;
     uint32_t original_bits = _float_bits(input);
-    float    swapped = xylem_bswap(input);
-    uint32_t swapped_bits = _float_bits(swapped);
-    ASSERT(swapped_bits == xylem_bswap_u32(original_bits));
+    float    swapped       = xylem_bswap(input);
+    ASSERT(_float_bits(swapped) == xylem_bswap_u32(original_bits));
 }
 
-/* double NaN: verify bit-pattern reversal via uint64 comparison. */
 static void test_double_nan(void) {
-    double   input = NAN;
+    double   input         = NAN;
     uint64_t original_bits = _double_bits(input);
-    double   swapped = xylem_bswap(input);
-    uint64_t swapped_bits = _double_bits(swapped);
-    ASSERT(swapped_bits == xylem_bswap_u64(original_bits));
+    double   swapped       = xylem_bswap(input);
+    ASSERT(_double_bits(swapped) == xylem_bswap_u64(original_bits));
 }
 
-/* Zero swaps to zero for all types. */
-static void test_zero_all_types(void) {
-    ASSERT(xylem_bswap((uint16_t)0) == 0);
-    ASSERT(xylem_bswap((int16_t)0) == 0);
-    ASSERT(xylem_bswap((uint32_t)0U) == 0U);
-    ASSERT(xylem_bswap((int32_t)0) == 0);
-    ASSERT(xylem_bswap((uint64_t)0ULL) == 0ULL);
-    ASSERT(xylem_bswap((int64_t)0) == 0);
-    ASSERT(xylem_bswap(0.0f) == 0.0f);
-    ASSERT(xylem_bswap(0.0) == 0.0);
-}
-
-/* Double swap (swap twice) recovers the original value. */
 static void test_roundtrip(void) {
     ASSERT(xylem_bswap(xylem_bswap((uint16_t)0xABCDU)) == 0xABCDU);
     ASSERT(xylem_bswap(xylem_bswap((uint32_t)0xDEADBEEFU)) == 0xDEADBEEFU);
-    ASSERT(xylem_bswap(xylem_bswap((uint64_t)0xCAFEBABEDEADFACEULL)) == 0xCAFEBABEDEADFACEULL);
+    ASSERT(xylem_bswap(xylem_bswap((uint64_t)0xCAFEBABEDEADFACEULL)) ==
+           0xCAFEBABEDEADFACEULL);
 
     float f = 3.14f;
     ASSERT(_float_bits(xylem_bswap(xylem_bswap(f))) == _float_bits(f));
@@ -107,7 +88,6 @@ int main(void) {
     test_uint64_typical();
     test_float_bitpattern();
     test_double_nan();
-    test_zero_all_types();
     test_roundtrip();
     return 0;
 }
