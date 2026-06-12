@@ -70,7 +70,8 @@ static xylem_http_srv_t* _listen_tls(xylem_http_handler_fn_t handler) {
         .key  = HTTPS_KEY,
     };
     xylem_http_srv_opts_t opts = {0};
-    opts.tls = &tls;
+    opts.tls             = &tls;
+    opts.idle_timeout_ms = 100;
     return xylem_http_listen("127.0.0.1", 0, handler, NULL, &opts);
 }
 
@@ -101,7 +102,7 @@ static void _test_get_main(void* arg) {
     ASSERT(strcmp(ct, "text/plain") == 0);
     xylem_http_res_destroy(res);
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
     xylem_shutdown();
@@ -132,7 +133,7 @@ static void _test_pinned_ca_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), "hello", 5) == 0);
     xylem_http_res_destroy(res);
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
     xylem_shutdown();
@@ -156,7 +157,7 @@ static void _test_verify_fail_main(void* arg) {
     xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
     ASSERT(res == NULL);
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
     xylem_shutdown();
@@ -192,7 +193,7 @@ static void _test_post_main(void* arg) {
     ASSERT(memcmp(xylem_http_res_body(res), body, sizeof(body)) == 0);
     xylem_http_res_destroy(res);
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
     xylem_shutdown();
@@ -227,7 +228,7 @@ static void _test_pool_main(void* arg) {
         xylem_http_res_destroy(res);
     }
 
-    xylem_http_close(srv);
+    xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
     xylem_shutdown();
