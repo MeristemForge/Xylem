@@ -68,6 +68,38 @@ channel and sem skip the list entirely, keeping their own specialised machinery
 (a lock-free single-slot fast path, a timed-wait timer); all of them share only
 the `waiter` representation and wake dispatch.
 
+### Cross-context wake cost
+
+Because the wake path is chosen by the *waiter's* kind, the three context
+pairings of a blocking hand-off are not equally cheap. The `handoff` probe in
+`benchmark/sync` isolates the bare wake latency — a two-party ping-pong over a
+pair of semaphores, no mutex and no predicate, so each round-trip forces exactly
+one wake in each direction. Indicative figures from one local run (Windows x64,
+MSVC release, 15 repeats; the **relative ordering is the portable takeaway** —
+absolute nanoseconds vary by machine and OS):
+
+| Pairing | What gets woken each direction | ns / round-trip |
+|---------|--------------------------------|----------------:|
+| coro ↔ coro (`cc`)   | scheduler reschedule (pure userspace)      | ~430  |
+| thread ↔ thread (`tt`) | each thread's `platform_sem` (futex)     | ~1050 |
+| coro ↔ thread (`ct`) | one reschedule + one OS-sem wake, both ways crossing the boundary | ~2030 |
+
+The pure-coroutine reschedule is the cheapest hand-off. Crossing the
+coroutine/OS-thread boundary (`ct`) is the most expensive — and notably costs
+*more* than the same-context thread case, not less: a cross-context wake carries
+extra dispatch work beyond the bare `platform_sem_post`/reschedule. Waking a
+coroutine *from* an OS thread routes through `scheduler_schedule()` to the global
+runq and may have to rouse a parked worker; waking a thread *from* a coroutine
+posts that thread's sem from off-scheduler. So `ct` pays a boundary tax on
+*both* legs rather than averaging `cc` and `tt`.
+
+Design consequence: keep a hot, tight hand-off inside a single context when you
+can, and treat each boundary crossing as a real cost on the path. When a
+producer/consumer pair must straddle the boundary, prefer **batching across it**
+over a per-item ping-pong — which is exactly why `xylem_channel` is built to
+never park the producer (drop or `XYLEM_CHANNEL_FULL` instead of a blocking
+back-and-forth; see §5) and why a per-item `ct` ping-pong is the shape to avoid.
+
 ## 2. Mutex
 
 A hand-off lock. Ownership is held between `lock()` and `unlock()` by whoever
