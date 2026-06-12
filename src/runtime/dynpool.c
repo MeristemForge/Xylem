@@ -23,7 +23,7 @@
 
 #include "container/mpsc.h"
 #include "platform/platform-sem.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>

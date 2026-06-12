@@ -126,8 +126,13 @@ static void _https_accept_coroutine(void* arg) {
             ctx->transport.conn, ctx->remote_host,
             sizeof(ctx->remote_host), &ctx->remote_port);
 
+        /* Count the connection before spawning it (see the TCP transport). */
+        atomic_fetch_add(&srv->active_conns, 1);
         runtime_spawn(http_srv_conn_coroutine, ctx);
     }
+
+    /* Drop the accept coroutine's own reference (taken in http_tls_listen). */
+    http_srv_unref(srv);
 }
 
 xylem_http_srv_t* http_tls_listen(
@@ -169,11 +174,17 @@ xylem_http_srv_t* http_tls_listen(
     }
     srv->listener       = ln;
     srv->close_listener = (void (*)(void*))tls_close_listener;
+    srv->transport_ctx  = tls_ctx;
+    srv->transport_ctx_free = (void (*)(void*))tls_ctx_destroy;
     srv->handler        = handler;
     srv->userdata       = userdata;
     http_srv_init(srv, opts);
 
     tls_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
+
+    /* Reference count starts at two: owner handle + accept coroutine
+     * (see the TCP transport). Each connection coroutine adds its own. */
+    atomic_store_explicit(&srv->active_conns, 2, memory_order_relaxed);
     runtime_spawn(_https_accept_coroutine, srv);
     return (xylem_http_srv_t*)srv;
 }

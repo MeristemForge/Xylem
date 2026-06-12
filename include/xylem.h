@@ -56,6 +56,7 @@ _Pragma("once")
 #include "xylem/xylem-serial.h"
 #include "xylem/xylem-timer.h"
 #include "xylem/xylem-ticker.h"
+#include "xylem/xylem-threads.h"
 
 /* net */
 #include "xylem/net/xylem-tcp.h"

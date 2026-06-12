@@ -25,7 +25,7 @@ set "BIN_DIR=%OUT_DIR%"
 set "BUILD_DIR=%OUT_DIR%\build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
 
-if not defined PRIMS   set "PRIMS=mutex,cond,waitgroup,sem,channel"
+if not defined PRIMS   set "PRIMS=mutex,cond,waitgroup,sem,channel,handoff"
 if not defined LANGS   set "LANGS=xylem,go,rust"
 if not defined MODES   set "MODES=coro,thread,mixed"
 if not defined WORKERS set "WORKERS=0"
@@ -131,7 +131,7 @@ if not defined XYLEM_LIB (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /O2 /DNDEBUG /MD /W3"
+set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3"
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 echo %LANGS% | findstr /I "xylem" >nul && (
@@ -217,17 +217,19 @@ set "ITERS=1000000"
 set "ITERS_T=1000000"
 if /I "%~1"=="mutex"     (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="cond"      (set "TASKS=2" & set "ITERS=2000000" & set "ITERS_T=2000000")
-if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=200000"  & set "ITERS_T=2000")
+if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=50000"  & set "ITERS_T=2000")
 if /I "%~1"=="sem"       (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="channel"   (set "TASKS=4" & set "ITERS=1000000" & set "ITERS_T=1000000")
+if /I "%~1"=="handoff"   (set "TASKS=2" & set "ITERS=500000"  & set "ITERS_T=500000")
 goto :eof
 
-REM supported <lang> <mode> -> _SUP=1/0
+REM supported <lang> <mode> <prim> -> _SUP=1/0
 :supported
 set "_SUP=0"
 if /I "%~1"=="go"    ( if /I "%~2"=="coro" set "_SUP=1" )
 if /I "%~1"=="rust"  ( if /I "%~2"=="coro" set "_SUP=1"
-                       if /I "%~2"=="thread" set "_SUP=1" )
+                       if /I "%~2"=="thread" set "_SUP=1"
+                       if /I "%~3"=="handoff" set "_SUP=1" )
 if /I "%~1"=="xylem" set "_SUP=1"
 goto :eof
 
@@ -251,7 +253,7 @@ for %%L in (%LANGS:,= %) do (
     ) else (
         for %%M in (%MODES:,= %) do (
             set "mode=%%M"
-            call :supported !lang! !mode!
+            call :supported !lang! !mode! %PRIM%
             if "!_SUP!"=="1" (
                 set "ITERS_USE=%ITERS%"
                 if /I not "!mode!"=="coro" set "ITERS_USE=%ITERS_T%"

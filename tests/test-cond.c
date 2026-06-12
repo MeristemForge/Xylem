@@ -30,22 +30,14 @@
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
-/**
- * test_signal_one: one signaler wakes one waiter, wait() returns
- * holding the mutex.
- */
-
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
-    int            flag;         /* protected by mtx */
-    atomic_int     finished;     /* coroutines that have finished all sync ops */
+    int            flag;
+    atomic_int     finished;
     int            tested;
 } _c_one_ctx_t;
 
-/* Last coroutine to finish all mutex/cond work tears them down. Gating
- * teardown on an atomic that is bumped only after every mtx/cond call has
- * returned guarantees no other coroutine still references the objects. */
 static void _c_one_finish(_c_one_ctx_t* ctx) {
     if (atomic_fetch_add(&ctx->finished, 1) == 1) {
         xylem_cond_destroy(ctx->cond);
@@ -62,7 +54,6 @@ static void _c_one_waiter(void* arg) {
     while (!ctx->flag) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
-    /* Woken with the predicate true and the mutex held: signal worked. */
     ctx->tested = 1;
     xylem_mutex_unlock(ctx->mtx);
     _c_one_finish(ctx);
@@ -95,18 +86,14 @@ static void test_signal_one(void) {
     }
 }
 
-/**
- * test_broadcast: many waiters, one broadcast wakes them all.
- */
-
 #define BCAST_WAITERS 32
 
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
     xylem_cond_t*  all_parked;
-    int            flag;         /* protected by mtx */
-    int            parked;       /* protected by mtx */
+    int            flag;
+    int            parked;
     atomic_int     released;
     int            tested;
 } _c_bcast_ctx_t;
@@ -114,11 +101,6 @@ typedef struct {
 static void _c_bcast_waiter(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
     xylem_mutex_lock(ctx->mtx);
-    /**
-     * Announce arrival, then park. The last waiter to park wakes the
-     * signaler; the mutex hand-off guarantees all waiters are parked on
-     * cond before the broadcast fires.
-     */
     if (++ctx->parked == BCAST_WAITERS) {
         xylem_cond_signal(ctx->all_parked);
     }
@@ -127,16 +109,8 @@ static void _c_bcast_waiter(void* arg) {
     }
     xylem_mutex_unlock(ctx->mtx);
 
-    int r = atomic_fetch_add(&ctx->released, 1) + 1;
-    if (r == BCAST_WAITERS) {
+    if (atomic_fetch_add(&ctx->released, 1) + 1 == BCAST_WAITERS) {
         ctx->tested = 1;
-        /**
-         * This is the last waiter to wake: every other waiter has
-         * already unlocked the mutex and incremented `released`, and
-         * the signaler finished after its broadcast/unlock. Nothing
-         * touches mtx/cond/all_parked anymore, so destroy them here
-         * inside the coroutine before shutdown.
-         */
         xylem_cond_destroy(ctx->all_parked);
         ctx->all_parked = NULL;
         xylem_cond_destroy(ctx->cond);
@@ -180,12 +154,6 @@ static void test_broadcast(void) {
     }
 }
 
-/**
- * test_bounded_queue: the canonical use case. Producers and consumers
- * on a fixed-size ring, coordinated by two conds (not_full, not_empty)
- * and one mutex.
- */
-
 #define BQ_CAP       8
 #define BQ_PRODUCERS 4
 #define BQ_CONSUMERS 4
@@ -196,8 +164,8 @@ typedef struct {
     xylem_cond_t*  not_empty;
     xylem_cond_t*  not_full;
     int            buf[BQ_CAP];
-    int            head;       /* pop index */
-    int            tail;       /* push index */
+    int            head;
+    int            tail;
     int            count;
     int            closed;
     atomic_int     produced;
@@ -225,7 +193,7 @@ static int _c_bq_pop(_c_bq_ctx_t* ctx, int* out) {
     }
     if (ctx->count == 0 && ctx->closed) {
         xylem_mutex_unlock(ctx->mtx);
-        return 0; /* drained + closed */
+        return 0;
     }
     *out = ctx->buf[ctx->head];
     ctx->head = (ctx->head + 1) % BQ_CAP;
@@ -240,8 +208,7 @@ static void _c_bq_producer(void* arg) {
     for (int i = 0; i < BQ_PER_PROD; i++) {
         _c_bq_push(ctx, 1);
     }
-    int p = atomic_fetch_add(&ctx->produced, 1) + 1;
-    if (p == BQ_PRODUCERS) {
+    if (atomic_fetch_add(&ctx->produced, 1) + 1 == BQ_PRODUCERS) {
         xylem_mutex_lock(ctx->mtx);
         ctx->closed = 1;
         xylem_cond_broadcast(ctx->not_empty);
@@ -257,17 +224,9 @@ static void _c_bq_consumer(void* arg) {
         local += v;
     }
     atomic_fetch_add(&ctx->sum, local);
-    int c = atomic_fetch_add(&ctx->consumed, 1) + 1;
-    if (c == BQ_CONSUMERS) {
+    if (atomic_fetch_add(&ctx->consumed, 1) + 1 == BQ_CONSUMERS) {
         ASSERT(atomic_load(&ctx->sum) == BQ_PRODUCERS * BQ_PER_PROD);
         ctx->tested = 1;
-        /**
-         * Last consumer: the queue is drained and closed, so every
-         * producer has finished its pushes (and the closing producer
-         * has done its broadcast+unlock) and every other consumer has
-         * unlocked the mutex. Nothing touches the mutex/conds now, so
-         * destroy them here inside the coroutine before shutdown.
-         */
         xylem_cond_destroy(ctx->not_full);
         ctx->not_full = NULL;
         xylem_cond_destroy(ctx->not_empty);
@@ -301,30 +260,17 @@ static void test_bounded_queue(void) {
     }
 }
 
-/**
- * test_external_signal: signal() called from a dynpool thread
- * (non-worker) must wake a coroutine waiter. The predicate uses an
- * atomic flag so the external path does not need to take the
- * coroutine-owned mutex.
- */
-
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
     xylem_cond_t*  parked_cond;
-    int            parked;       /* protected by mtx */
+    int            parked;
     atomic_int     ready;
     int            tested;
 } _c_ext_ctx_t;
 
 static void _c_ext_external(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    /**
-     * Runs on a dynpool thread (no coroutine context), so it may only
-     * touch the any-thread-safe atomic predicate -- never a cond op,
-     * which is coroutine-only. The submitter coroutine performs the
-     * actual broadcast once this blocking work has completed.
-     */
     atomic_store(&ctx->ready, 1);
 }
 
@@ -338,13 +284,6 @@ static void _c_ext_waiter(void* arg) {
     }
     xylem_mutex_unlock(ctx->mtx);
     ctx->tested = 1;
-    /**
-     * This coroutine only ran past cond_wait because the submitter
-     * broadcast woke it, and the submitter touches none of these
-     * objects after that broadcast. The parked_cond hand-off with the
-     * submitter is likewise complete. Destroy here, inside the
-     * coroutine, before shutdown.
-     */
     xylem_cond_destroy(ctx->parked_cond);
     ctx->parked_cond = NULL;
     xylem_cond_destroy(ctx->cond);
@@ -356,22 +295,11 @@ static void _c_ext_waiter(void* arg) {
 
 static void _c_ext_submitter(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    /**
-     * Block until the waiter is parked, so the wake exercises the
-     * wake path rather than racing the waiter's first predicate check.
-     */
     xylem_mutex_lock(ctx->mtx);
     while (!ctx->parked) {
         xylem_cond_wait(ctx->parked_cond, ctx->mtx);
     }
     xylem_mutex_unlock(ctx->mtx);
-    /**
-     * Offload the predicate write to a dynpool thread (the external
-     * work). xylem_await parks this coroutine until that work
-     * returns, so ctx->ready is set by the time it resumes. The
-     * broadcast itself is coroutine-only, so it is issued here from
-     * the coroutine rather than from the dynpool thread.
-     */
     int rc = xylem_await(_c_ext_external, ctx);
     ASSERT(rc == 0);
     xylem_cond_broadcast(ctx->cond);

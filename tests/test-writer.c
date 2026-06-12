@@ -25,19 +25,55 @@
 
 #include <string.h>
 
-#define TEST_HOST          "127.0.0.1"
-#define TEST_PORT          14800
-#define SAFETY_TIMEOUT_MS  10000
+#define TEST_HOST         "127.0.0.1"
+#define TEST_PORT         14800
+#define SAFETY_TIMEOUT_MS 10000
+
+typedef void (*_coro_t)(void*);
 
 typedef struct {
     xylem_channel_t*   ready;
     xylem_waitgroup_t* wg;
     uint16_t           port;
+    _coro_t            server;
+    _coro_t            client;
 } _ctx_t;
+
+static void _pair_main(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ctx->ready  = xylem_channel_create(0);
+    ctx->wg     = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, 2);
+    xylem_timer_t* wd =
+        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_spawn(ctx->server, ctx);
+    xylem_spawn(ctx->client, ctx);
+    xylem_waitgroup_wait(ctx->wg);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx->wg);
+    xylem_channel_destroy(ctx->ready);
+    xylem_shutdown();
+}
+
+static void _run_pair(uint16_t port, _coro_t server, _coro_t client) {
+    _ctx_t ctx = {.port = port, .server = server, .client = client};
+    xylem_run(_pair_main, &ctx, NULL);
+}
+
+static int _drain(xylem_tcp_conn_t* conn, char* buf, int cap) {
+    int total = 0;
+    for (;;) {
+        int n = xylem_tcp_read(conn, buf + total, cap - total);
+        if (n <= 0) {
+            break;
+        }
+        total += n;
+    }
+    return total;
+}
 
 static void _srv_recv(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-
     xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
@@ -46,15 +82,7 @@ static void _srv_recv(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int total = 0;
-    for (;;) {
-        int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
-        if (n <= 0) {
-            break;
-        }
-        total += n;
-    }
-
+    int  total = _drain(conn, buf, (int)sizeof(buf));
     ASSERT(total == 9);
     ASSERT(memcmp(buf, "aaabbbccc", 9) == 0);
 
@@ -82,35 +110,13 @@ static void _cli_write(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _write_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready = xylem_channel_create(),
-        .wg    = xylem_waitgroup_create(),
-        .port  = TEST_PORT,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _utils_watchdog_cb, NULL);
-    xylem_spawn(_srv_recv, &ctx);
-    xylem_spawn(_cli_write, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_writer_batched(void) {
-    xylem_run(_write_main, NULL, NULL);
+    _run_pair(TEST_PORT, _srv_recv, _cli_write);
 }
 
 static void _srv_recv_large(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-
-    xylem_tcp_listener_t* ln = xylem_tcp_listen(
-        TEST_HOST, (uint16_t)(ctx->port + 1), NULL);
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -118,16 +124,7 @@ static void _srv_recv_large(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int total = 0;
-    for (;;) {
-        int n = xylem_tcp_read(conn, buf + total, (int)sizeof(buf) - total);
-        if (n <= 0) {
-            break;
-        }
-        total += n;
-    }
-
-    /* "ab" + "LARGE-DATA!!" = 14 bytes */
+    int  total = _drain(conn, buf, (int)sizeof(buf));
     ASSERT(total == 14);
     ASSERT(memcmp(buf, "abLARGE-DATA!!", 14) == 0);
 
@@ -140,8 +137,7 @@ static void _cli_write_large(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(
-        TEST_HOST, (uint16_t)(ctx->port + 1), 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
     ASSERT(conn != NULL);
 
     xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 8);
@@ -155,28 +151,8 @@ static void _cli_write_large(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _write_large_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready = xylem_channel_create(),
-        .wg    = xylem_waitgroup_create(),
-        .port  = TEST_PORT,
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS,
-                                          _utils_watchdog_cb, NULL);
-    xylem_spawn(_srv_recv_large, &ctx);
-    xylem_spawn(_cli_write_large, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_writer_large_bypass(void) {
-    xylem_run(_write_large_main, NULL, NULL);
+    _run_pair(TEST_PORT + 1, _srv_recv_large, _cli_write_large);
 }
 
 int main(void) {

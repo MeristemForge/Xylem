@@ -300,7 +300,7 @@ struct mco_coro {
   unsigned char* storage;
   size_t bytes_stored;
   size_t storage_size;
-  void* asan_prev_stack; /* Used by address sanitizer. */
+  void* asan_fake_stack_save; /* Used by address sanitizer. */
   void* tsan_prev_fiber; /* Used by thread sanitizer. */
   void* tsan_fiber; /* Used by thread sanitizer. */
   size_t magic_number; /* Used to check stack overflow. */
@@ -546,6 +546,48 @@ extern "C" {
 #ifdef _MCO_USE_ASAN
 void __sanitizer_start_switch_fiber(void** fake_stack_save, const void *bottom, size_t size);
 void __sanitizer_finish_switch_fiber(void* fake_stack_save, const void **bottom_old, size_t *size_old);
+
+/* store the stack info of main thread for ASAN */
+struct mco_asan_stack_main {
+  void* fake_stack_save;
+  const void* stack_base;
+  size_t stack_size;
+};
+static MCO_THREAD_LOCAL struct mco_asan_stack_main mco_asan_stack_main = {0};
+
+static MCO_FORCE_INLINE void _mco_fiber_before_switch(mco_coro *from, mco_coro* to) {
+  if (from == NULL) {
+    /* from main to coro */
+    __sanitizer_start_switch_fiber(&mco_asan_stack_main.fake_stack_save, to->stack_base, to->stack_size);
+  } else {
+    void **fake_stack_save = (from->state == MCO_DEAD) ? NULL : &from->asan_fake_stack_save;
+    if (to == NULL) {
+      /* from coro to main */
+      __sanitizer_start_switch_fiber(fake_stack_save, mco_asan_stack_main.stack_base, mco_asan_stack_main.stack_size);
+    } else {
+      /* from coro to coro */
+      __sanitizer_start_switch_fiber(fake_stack_save, to->stack_base, to->stack_size);
+    }
+  }
+}
+
+static MCO_FORCE_INLINE void _mco_fiber_after_switch(mco_coro *from, mco_coro* to) {
+  if (from == NULL) {
+    /* from main to coro */
+    __sanitizer_finish_switch_fiber(to->asan_fake_stack_save, &mco_asan_stack_main.stack_base, &mco_asan_stack_main.stack_size);
+  } else {
+    if (to == NULL) {
+      /* from coro to main */
+      __sanitizer_finish_switch_fiber(mco_asan_stack_main.fake_stack_save, NULL, NULL);
+    } else {
+      /* from coro to coro */
+      __sanitizer_finish_switch_fiber(to->asan_fake_stack_save, NULL, NULL);
+    }
+  }
+}
+#else
+#define _mco_fiber_before_switch(from, to)
+#define _mco_fiber_after_switch(from, to)
 #endif
 #ifdef _MCO_USE_TSAN
 void* __tsan_get_current_fiber(void);
@@ -574,15 +616,6 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpin(mco_coro* co) {
     prev_co->state = MCO_NORMAL;
   }
   mco_current_co = co;
-#ifdef _MCO_USE_ASAN
-  if(prev_co) {
-    void* bottom_old = NULL;
-    size_t size_old = 0;
-    __sanitizer_finish_switch_fiber(prev_co->asan_prev_stack, (const void**)&bottom_old, &size_old);
-    prev_co->asan_prev_stack = NULL;
-  }
-  __sanitizer_start_switch_fiber(&co->asan_prev_stack, co->stack_base, co->stack_size);
-#endif
 #ifdef _MCO_USE_TSAN
   co->tsan_prev_fiber = __tsan_get_current_fiber();
   __tsan_switch_to_fiber(co->tsan_fiber, 0);
@@ -599,15 +632,6 @@ static MCO_FORCE_INLINE void _mco_prepare_jumpout(mco_coro* co) {
     prev_co->state = MCO_RUNNING;
   }
   mco_current_co = prev_co;
-#ifdef _MCO_USE_ASAN
-  void* bottom_old = NULL;
-  size_t size_old = 0;
-  __sanitizer_finish_switch_fiber(co->asan_prev_stack, (const void**)&bottom_old, &size_old);
-  co->asan_prev_stack = NULL;
-  if(prev_co) {
-    __sanitizer_start_switch_fiber(&prev_co->asan_prev_stack, bottom_old, size_old);
-  }
-#endif
 #ifdef _MCO_USE_TSAN
   void* tsan_prev_fiber = co->tsan_prev_fiber;
   co->tsan_prev_fiber = NULL;
@@ -619,8 +643,10 @@ static void _mco_jumpin(mco_coro* co);
 static void _mco_jumpout(mco_coro* co);
 
 static MCO_NO_INLINE void _mco_main(mco_coro* co) {
+  _mco_fiber_after_switch(co->prev_co, co);
   co->func(co); /* Run the coroutine function. */
   co->state = MCO_DEAD; /* Coroutine finished successfully, set state to dead. */
+  _mco_fiber_before_switch(co, co->prev_co);
   _mco_jumpout(co); /* Jump back to the old context .*/
 }
 
@@ -1808,7 +1834,9 @@ mco_result mco_resume(mco_coro* co) {
     return MCO_NOT_SUSPENDED;
   }
   co->state = MCO_RUNNING; /* The coroutine is now running. */
+  _mco_fiber_before_switch(mco_running(), co);
   _mco_jumpin(co);
+  _mco_fiber_after_switch(co, mco_running());
   return MCO_SUCCESS;
 }
 
@@ -1817,8 +1845,11 @@ mco_result mco_yield(mco_coro* co) {
     MCO_LOG("attempt to yield an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   }
-#ifdef MCO_USE_ASYNCIFY
-  /* Asyncify already checks for stack overflow. */
+#if defined(MCO_USE_ASYNCIFY) || defined(_MCO_USE_ASAN)
+  /* Asyncify already checks for stack overflow.
+     Under ASAN, locals may live on the use-after-return fake-stack heap, so
+     comparing &local against co->stack_base/size would spuriously fire;
+     ASAN's own red-zones already detect real overflow. */
 #else
   /* This check happens when the stack overflow already happened, but better later than never. */
   volatile size_t dummy;
@@ -1835,7 +1866,9 @@ mco_result mco_yield(mco_coro* co) {
     return MCO_NOT_RUNNING;
   }
   co->state = MCO_SUSPENDED; /* The coroutine is now suspended. */
+  _mco_fiber_before_switch(co, co->prev_co);
   _mco_jumpout(co);
+  _mco_fiber_after_switch(co->prev_co, co);
   return MCO_SUCCESS;
 }
 

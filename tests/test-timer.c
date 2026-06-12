@@ -32,12 +32,7 @@
 typedef struct {
     atomic_int         fires;
     xylem_waitgroup_t* wg;
-} _after_ctx_t;
-
-typedef struct {
-    atomic_int         fires;
-    xylem_waitgroup_t* wg;
-} _repeat_ctx_t;
+} _fire_ctx_t;
 
 typedef struct {
     atomic_uint_least64_t fired_at_ms;
@@ -45,24 +40,23 @@ typedef struct {
     xylem_waitgroup_t*    wg;
 } _reset_ctx_t;
 
-typedef struct {
-    atomic_int         fires;
-    xylem_waitgroup_t* wg;
-} _reset_repeat_ctx_t;
+static xylem_timer_t* _arm_watchdog(void) {
+    return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+}
 
 static void _after_cb(xylem_timer_t* t, void* ud) {
     (void)t;
-    _after_ctx_t* ctx = (_after_ctx_t*)ud;
+    _fire_ctx_t* ctx = (_fire_ctx_t*)ud;
     atomic_fetch_add(&ctx->fires, 1);
     xylem_waitgroup_done(ctx->wg);
 }
 
 static void _after_main(void* arg) {
     (void)arg;
-    _after_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(30, _after_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);
@@ -86,7 +80,7 @@ static void _cancel_cb(xylem_timer_t* t, void* ud) {
 
 static void _cancel_main(void* arg) {
     (void)arg;
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(1000, _cancel_cb, NULL);
     ASSERT(xylem_timer_cancel(t));
     xylem_sleep(50);
@@ -100,9 +94,8 @@ static void test_cancel(void) {
 }
 
 static void _repeat_cb(xylem_timer_t* t, void* ud) {
-    _repeat_ctx_t* ctx = (_repeat_ctx_t*)ud;
-    int prev = atomic_fetch_add(&ctx->fires, 1);
-    if (prev + 1 == FIRE_TARGET) {
+    _fire_ctx_t* ctx = (_fire_ctx_t*)ud;
+    if (atomic_fetch_add(&ctx->fires, 1) + 1 == FIRE_TARGET) {
         xylem_waitgroup_done(ctx->wg);
     } else {
         xylem_timer_reset(t, 10);
@@ -111,10 +104,10 @@ static void _repeat_cb(xylem_timer_t* t, void* ud) {
 
 static void _repeat_main(void* arg) {
     (void)arg;
-    _repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(10, _repeat_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);
@@ -147,7 +140,7 @@ static void _reset_main(void* arg) {
     _reset_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
 
     ctx.armed_at_ms  = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     xylem_timer_t* t = xylem_timer_after(100, _reset_cb, &ctx);
@@ -170,9 +163,8 @@ static void test_reset(void) {
 }
 
 static void _reset_repeat_cb(xylem_timer_t* t, void* ud) {
-    _reset_repeat_ctx_t* ctx = (_reset_repeat_ctx_t*)ud;
-    int prev = atomic_fetch_add(&ctx->fires, 1);
-    if (prev + 1 == FIRE_TARGET) {
+    _fire_ctx_t* ctx = (_fire_ctx_t*)ud;
+    if (atomic_fetch_add(&ctx->fires, 1) + 1 == FIRE_TARGET) {
         xylem_waitgroup_done(ctx->wg);
     } else {
         xylem_timer_reset(t, 30);
@@ -181,10 +173,10 @@ static void _reset_repeat_cb(xylem_timer_t* t, void* ud) {
 
 static void _reset_repeat_main(void* arg) {
     (void)arg;
-    _reset_repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
 
     xylem_timer_t* t = xylem_timer_after(500, _reset_repeat_cb, &ctx);
 
@@ -211,7 +203,7 @@ static void test_reset_repeat(void) {
 
 static void _blocking_cb(xylem_timer_t* t, void* ud) {
     (void)t;
-    _after_ctx_t* ctx = (_after_ctx_t*)ud;
+    _fire_ctx_t* ctx = (_fire_ctx_t*)ud;
     xylem_sleep(20);
     atomic_fetch_add(&ctx->fires, 1);
     xylem_waitgroup_done(ctx->wg);
@@ -219,10 +211,10 @@ static void _blocking_cb(xylem_timer_t* t, void* ud) {
 
 static void _blocking_main(void* arg) {
     (void)arg;
-    _after_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(10, _blocking_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
     xylem_timer_cancel(t);

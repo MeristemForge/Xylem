@@ -21,7 +21,7 @@
 
 #include "xylem.h"
 #include "assert.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -33,14 +33,6 @@
 
 #define STKGROW_FRAME_BYTES   (8 * 1024)
 #define STKGROW_BASIC_DEPTH   4
-/**
- * Deep-recursion depth is bounded by the smallest usable coroutine stack
- * across platforms. The 128 KiB coroutine stack is inclusive of metadata
- * and a guard page, so the writable region shrinks as the OS page size
- * grows: on 16 KiB-page targets (Apple Silicon) only ~88 KiB is usable.
- * 8 frames * 8 KiB ~= 72 KiB keeps a margin below that worst case while
- * still faulting across several pages on the way down.
- */
 #define STKGROW_RECURSE_DEPTH 8
 #define STKGROW_CONC_COUNT    32
 #define STKGROW_CONC_DEPTH    6
@@ -105,8 +97,7 @@ typedef struct {
 
 static void _ext_coro(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
-    int prev = atomic_fetch_add(&ctx->count, 1);
-    if (prev == ctx->target - 1) {
+    if (atomic_fetch_add(&ctx->count, 1) == ctx->target - 1) {
         xylem_shutdown();
     }
 }
@@ -170,8 +161,7 @@ typedef struct {
 
 static void _many_coro(void* arg) {
     _many_ctx_t* ctx = (_many_ctx_t*)arg;
-    int prev = atomic_fetch_add(&ctx->done, 1);
-    if (prev == SPAWN_MANY_COUNT - 1) {
+    if (atomic_fetch_add(&ctx->done, 1) == SPAWN_MANY_COUNT - 1) {
         xylem_shutdown();
     }
 }
@@ -240,15 +230,6 @@ typedef struct {
     int              id;
 } _sleepord_arg_t;
 
-/**
- * Each coroutine records how long its own sleep actually took. We assert
- * the one guarantee xylem_sleep makes -- a sleep returns no earlier than
- * the requested duration -- rather than the relative wake order across
- * coroutines. Cross-coroutine ordering is not a contract: OS timer
- * coalescing (e.g. macOS kqueue, busy CI runners) can stretch a poll
- * timeout well past its request, collapsing two nearby deadlines into a
- * single service window where the ready coroutines race for their slot.
- */
 static void _sleepord_coro(void* arg) {
     _sleepord_arg_t* a  = (_sleepord_arg_t*)arg;
     uint64_t         ms = (uint64_t)((a->id + 1) * 30);
@@ -279,10 +260,6 @@ static void test_sleep_ordering(void) {
     atomic_init(&ctx.idx, 0);
     xylem_run(_sleepord_main, &ctx, &_rt_opts);
     ASSERT(atomic_load(&ctx.idx) == SLEEP_ORDER_COUNT);
-    /**
-     * Allow a small clock-rounding slack: getnow truncates to ms and the
-     * two reads straddle the sleep, so a true 30ms sleep can measure 29.
-     */
     for (int i = 0; i < SLEEP_ORDER_COUNT; i++) {
         uint64_t requested = (uint64_t)((i + 1) * 30);
         ASSERT(ctx.elapsed[i] + 2 >= requested);
@@ -339,8 +316,7 @@ static void _submit_conc_coro(void* arg) {
     _submit_conc_ctx_t* ctx = (_submit_conc_ctx_t*)arg;
     int                 rc  = xylem_await(_submit_conc_blocking, NULL);
     ASSERT(rc == 0);
-    int prev = atomic_fetch_add(&ctx->done, 1);
-    if (prev == SUBMIT_CONC_COUNT - 1) {
+    if (atomic_fetch_add(&ctx->done, 1) == SUBMIT_CONC_COUNT - 1) {
         ctx->tested = 1;
         xylem_shutdown();
     }
@@ -383,8 +359,7 @@ static void _submit_res_coro(void* arg) {
     _submit_res_arg_t* a  = (_submit_res_arg_t*)arg;
     int                rc = xylem_await(_submit_res_blocking, a);
     ASSERT(rc == 0);
-    int prev = atomic_fetch_add(&a->ctx->done, 1);
-    if (prev == 3) {
+    if (atomic_fetch_add(&a->ctx->done, 1) == 3) {
         a->ctx->tested = 1;
         xylem_shutdown();
     }
@@ -413,21 +388,6 @@ static void test_submit_result(void) {
     }
 }
 
-/**
- * Exception-driven stack growth tests.
- *
- * The runtime reserves virtual address space per coroutine and commits
- * only one page initially.  Further pages are committed on demand via
- * a fault handler (VEH on Windows, SIGSEGV+sigaltstack on Unix).
- *
- * volatile + per-byte read-back prevents the compiler from eliding
- * stack writes that would otherwise not touch uncommitted pages.
- */
-
-typedef struct {
-    int tested;
-} _stkgrow_basic_ctx_t;
-
 static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
     volatile uint8_t frame[STKGROW_FRAME_BYTES];
     for (size_t i = 0; i < sizeof(frame); i++) {
@@ -449,6 +409,10 @@ static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
     return sum + deeper;
 }
 
+typedef struct {
+    int tested;
+} _stkgrow_basic_ctx_t;
+
 static void _stkgrow_basic_coro(void* arg) {
     _stkgrow_basic_ctx_t* ctx = (_stkgrow_basic_ctx_t*)arg;
     uint64_t sum = _stkgrow_recurse(STKGROW_BASIC_DEPTH, 0xa5);
@@ -468,11 +432,6 @@ static void test_coro_stack_grow(void) {
     xylem_run(_stkgrow_basic_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
-
-/**
- * Deep recursion: many consecutive page faults in one coroutine.
- * Validates earlier frames on unwind to detect cross-frame corruption.
- */
 
 typedef struct {
     int tested;
@@ -498,11 +457,6 @@ static void test_coro_stack_grow_deep_recursion(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/**
- * Concurrent growth across all workers. Catches per-coroutine state
- * bugs that could let one coroutine's growth disturb another's stack.
- */
-
 typedef struct {
     atomic_int done;
     int        tested;
@@ -522,8 +476,7 @@ static void _stkgrow_conc_coro(void* arg) {
     uint64_t sum = _stkgrow_recurse(STKGROW_CONC_DEPTH, seed);
     ASSERT(sum > 0);
 
-    int prev = atomic_fetch_add(&a->ctx->done, 1);
-    if (prev == STKGROW_CONC_COUNT - 1) {
+    if (atomic_fetch_add(&a->ctx->done, 1) == STKGROW_CONC_COUNT - 1) {
         a->ctx->tested = 1;
         xylem_shutdown();
     }
@@ -548,18 +501,11 @@ static void test_coro_stack_grow_concurrent(void) {
     ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
 }
 
-/**
- * Pool slot reuse: coroutine exits -> slot returned -> next coroutine
- * reuses the same slot and grows again. Catches stale commit state.
- */
-
 typedef struct {
     int counter;
     int target;
     int tested;
 } _stkgrow_reuse_ctx_t;
-
-static void _stkgrow_reuse_coro(void* arg);
 
 static void _stkgrow_reuse_coro(void* arg) {
     _stkgrow_reuse_ctx_t* ctx = (_stkgrow_reuse_ctx_t*)arg;
@@ -587,17 +533,11 @@ static void test_coro_stack_grow_pool_reuse(void) {
     _stkgrow_reuse_ctx_t ctx = { .counter = 0,
                                  .target  = STKGROW_REUSE_COUNT,
                                  .tested  = 0 };
-    /* Single worker so all coroutines hit the same pool slot. */
     xylem_opts_t opts = { .workers = 1 };
     xylem_run(_stkgrow_reuse_main, &ctx, &opts);
     ASSERT(ctx.tested == 1);
     ASSERT(ctx.counter == STKGROW_REUSE_COUNT);
 }
-
-/**
- * Single large frame: one function allocates far more than page_size,
- * triggering multiple sequential page faults without recursion.
- */
 
 typedef struct {
     int tested;

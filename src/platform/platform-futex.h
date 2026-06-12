@@ -22,23 +22,18 @@
 _Pragma("once")
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 /**
  * Address-based wait/wake (a "futex").
  *
- * Lets a thread sleep on a 32-bit word and be woken when another thread
- * changes it -- the kernel keeps no per-object handle, so an uncontended
- * wake costs nothing and the word itself is the wait queue key. Backends:
- * Linux futex(2), Windows WaitOnAddress, macOS os_sync_wait_on_address.
- *
  * The word is caller-owned (typically a lock state embedded in another
- * struct); this module adds no type or allocation. Only OS threads may
- * use it -- a coroutine must never block a worker on a futex.
+ * struct); this module adds no type or allocation. Only OS threads may use
+ * it -- a coroutine must never block a worker on a futex.
  *
- * These are raw building blocks with no fairness or ordering guarantee:
- * spurious wakeups are possible, so every wait MUST sit in a loop that
- * re-checks the predicate on the word.
+ * Raw building blocks: no fairness or ordering, spurious wakeups possible.
+ * Every wait MUST sit in a loop that re-checks the predicate on the word.
  */
 
 /**
@@ -60,6 +55,28 @@ _Pragma("once")
 extern void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected);
 
 /**
+ * @brief Block until woken or @p timeout_ms elapses, if the word still
+ *        holds @p expected.
+ *
+ * Same arming rule as platform_futex_wait: atomically checks *@p addr
+ * against @p expected and sleeps only while they match, returning at once
+ * if they already differ. Wakes on a futex signal, the deadline, or
+ * spuriously.
+ *
+ * @param addr        Word to wait on.
+ * @param expected    Value the caller last observed; wait is armed only
+ *                    while *addr still equals it.
+ * @param timeout_ms  Maximum time to block, in milliseconds (relative).
+ *
+ * @return false if the wait ended because the deadline elapsed, true
+ *         otherwise (woken, value already differed, or spurious). The
+ *         caller MUST still re-test the predicate on *addr in a loop; the
+ *         return only distinguishes a timeout from a possible progress.
+ */
+extern bool platform_futex_timedwait(
+    _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms);
+
+/**
  * @brief Wake at most one thread waiting on @p addr.
  *
  * The store that changes *@p addr must happen before this call so a
@@ -68,14 +85,14 @@ extern void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected);
  *
  * @param addr  Word other threads may be waiting on.
  */
-extern void platform_futex_wake_one(_Atomic uint32_t* addr);
+extern void platform_futex_signal(_Atomic uint32_t* addr);
 
 /**
  * @brief Wake all threads waiting on @p addr.
  *
- * Same store-before-wake rule as platform_futex_wake_one. Used when more
+ * Same store-before-wake rule as platform_futex_signal. Used when more
  * than one waiter can make progress (e.g. a broadcast).
  *
  * @param addr  Word other threads may be waiting on.
  */
-extern void platform_futex_wake_all(_Atomic uint32_t* addr);
+extern void platform_futex_broadcast(_Atomic uint32_t* addr);

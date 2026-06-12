@@ -23,7 +23,7 @@
  *  Workload model (identical across languages and modes):
  *    mutex      : T workers each do N lock/inc/unlock  -> ops = T*N
  *    cond       : 1 producer + 1 consumer, N hand-offs -> ops = N
- *    waitgroup  : N rounds, each spawns T workers that done() -> ops = T*N
+ *    waitgroup  : N rounds over a pre-spawned pool of T workers -> ops = T*N
  *    sem        : T workers each do N wait/post, K permits -> ops = T*N
  *    channel    : T senders each send N msgs, 1 receiver -> ops = T*N
  */
@@ -38,51 +38,42 @@
 
 /* ----------------------------- OS-thread shim ----------------------------- */
 /* Used by the thread / mixed modes. Workers call the same xylem primitives;
- * only the execution vehicle (coroutine vs OS thread) changes. */
-#ifdef _WIN32
-#include <windows.h>
-typedef HANDLE bench_thread_t;
+ * only the execution vehicle (coroutine vs OS thread) changes. Threads come
+ * from xylem's public C11 <threads.h> wrapper, the same one the unit tests
+ * use, so there is no per-OS thread code here. */
+#include "xylem/xylem-threads.h"
+
+typedef thrd_t bench_thread_t;
 typedef struct { void (*fn)(void*); void* arg; } thunk_t;
-static DWORD WINAPI _thread_tramp(LPVOID p) {
+
+/* Adapt a void(*)(void*) worker to the int(*)(void*) thrd_start_t signature. */
+static int _thread_tramp(void* p) {
     thunk_t* t = (thunk_t*)p;
     void (*fn)(void*) = t->fn; void* a = t->arg; free(t);
     fn(a); return 0;
 }
 static bench_thread_t thread_spawn(void (*fn)(void*), void* arg) {
     thunk_t* t = (thunk_t*)malloc(sizeof(*t)); t->fn = fn; t->arg = arg;
-    return CreateThread(NULL, 0, _thread_tramp, t, 0, NULL);
+    thrd_t th; thrd_create(&th, _thread_tramp, t); return th;
 }
-static void thread_join(bench_thread_t h) {
-    WaitForSingleObject(h, INFINITE); CloseHandle(h);
-}
-#else
-#include <pthread.h>
-typedef pthread_t bench_thread_t;
-typedef struct { void (*fn)(void*); void* arg; } thunk_t;
-static void* _thread_tramp(void* p) {
-    thunk_t* t = (thunk_t*)p;
-    void (*fn)(void*) = t->fn; void* a = t->arg; free(t);
-    fn(a); return NULL;
-}
-static bench_thread_t thread_spawn(void (*fn)(void*), void* arg) {
-    thunk_t* t = (thunk_t*)malloc(sizeof(*t)); t->fn = fn; t->arg = arg;
-    pthread_t th; pthread_create(&th, NULL, _thread_tramp, t); return th;
-}
-static void thread_join(bench_thread_t th) { pthread_join(th, NULL); }
-#endif
+static void thread_join(bench_thread_t th) { thrd_join(th, NULL); }
 
-typedef enum { M_CORO, M_THREAD, M_MIXED } mode_t;
-typedef enum { P_MUTEX, P_COND, P_WAITGROUP, P_SEM, P_CHANNEL } prim_t;
+typedef enum { M_CORO, M_THREAD, M_MIXED } runmode_t;
+typedef enum { P_MUTEX, P_COND, P_WAITGROUP, P_SEM, P_CHANNEL, P_HANDOFF } prim_t;
 
 static struct {
     prim_t      prim;
     const char* name;
-    mode_t      mode;
+    runmode_t   mode;
     const char* mode_name;
     int         workers;
     long        tasks;
     long        iters;
     long        permits;
+    int         chan_c2t;   /* channel mixed: 0 = thread->coro, 1 = coro->thread */
+    int         ho_a_thr;   /* handoff: party A on an OS thread? */
+    int         ho_b_thr;   /* handoff: party B on an OS thread? */
+    int         ho_dir_set; /* handoff: --ho-dir given (overrides --mode)? */
 
     xylem_mutex_t*     mtx;
     xylem_cond_t*      cond;
@@ -123,6 +114,15 @@ static int idx_uses_thread(long idx) {
 static void spawn_one(void (*fn)(void*), void* arg, long idx, thr_set_t* ts) {
     if (idx_uses_thread(idx)) ts->h[ts->n++] = thread_spawn(fn, arg);
     else                      xylem_spawn(fn, arg);
+}
+
+/* Spawn with an explicit execution vehicle, bypassing the idx-parity rule.
+ * The channel mixed mode uses this to pin a clean cross-context direction
+ * (all senders one context, the receiver the other). */
+static void spawn_forced(void (*fn)(void*), void* arg, int use_thread,
+                         thr_set_t* ts) {
+    if (use_thread) ts->h[ts->n++] = thread_spawn(fn, arg);
+    else            xylem_spawn(fn, arg);
 }
 
 static void join_set(thr_set_t* ts) {
@@ -231,30 +231,74 @@ static void run_cond(void) {
 }
 
 /* -------------------------------------------------------------- waitgroup */
+/*
+ * Isolated waitgroup benchmark: measures ONLY the waitgroup primitive
+ * (add/done/wait + the park/wake handoff), never task creation. A fixed
+ * pool of T workers is spawned once, outside the timed region, and loops
+ * over the rounds. Each round uses a fresh pair of single-use waitgroups
+ * -- `gate[r]` (main opens it to release the pool) and `fin[r]` (the pool
+ * signals completion, main joins) -- so there is no reuse-contract hazard
+ * and no allocation inside the measured loop. The timed loop is purely:
+ *   main:    fin.Add(T); gate.Done();         fin.Wait()
+ *   worker:               gate.Wait(); fin.Done()
+ */
+typedef struct {
+    xylem_waitgroup_t** gate;
+    xylem_waitgroup_t** fin;
+    long                rounds;
+} wg_pool_ctx_t;
 
-static void wg_worker(void* arg) {
-    xylem_waitgroup_done((xylem_waitgroup_t*)arg);
+static void wg_pool_worker(void* arg) {
+    wg_pool_ctx_t* c = (wg_pool_ctx_t*)arg;
+    for (long r = 0; r < c->rounds; r++) {
+        xylem_waitgroup_wait(c->gate[r]);   /* wait for round r to open */
+        xylem_waitgroup_done(c->fin[r]);    /* signal this worker is done */
+    }
 }
 
 static void run_waitgroup(void) {
-    long rounds = G.iters;
-    thr_set_t ts = thr_alloc(G.tasks);
+    long      rounds = G.iters;
+    long      T      = G.tasks;
+    thr_set_t ts     = thr_alloc(T);
+
+    /* Pre-allocate the per-round gate + fin waitgroups and pre-arm the
+     * gates (closed). Each instance is used exactly once, so reuse is never
+     * an issue. All of this -- and the worker spawn below -- is OUTSIDE the
+     * timed region, so task-creation cost never enters the measurement. */
+    xylem_waitgroup_t** gate =
+        (xylem_waitgroup_t**)malloc(sizeof(*gate) * (size_t)rounds);
+    xylem_waitgroup_t** fin =
+        (xylem_waitgroup_t**)malloc(sizeof(*fin) * (size_t)rounds);
+    for (long r = 0; r < rounds; r++) {
+        gate[r] = xylem_waitgroup_create();
+        fin[r]  = xylem_waitgroup_create();
+        xylem_waitgroup_add(gate[r], 1); /* gate starts closed */
+    }
+
+    wg_pool_ctx_t ctx = { gate, fin, rounds };
+    ts.n = 0;
+    for (long t = 0; t < T; t++) spawn_one(wg_pool_worker, &ctx, t, &ts);
 
     uint64_t t0 = now_ns();
     for (long r = 0; r < rounds; r++) {
-        xylem_waitgroup_t* w = xylem_waitgroup_create();
-        xylem_waitgroup_add(w, (size_t)G.tasks);
-        ts.n = 0;
-        for (long t = 0; t < G.tasks; t++) spawn_one(wg_worker, w, t, &ts);
-        xylem_waitgroup_wait(w);
-        join_set(&ts);
-        xylem_waitgroup_destroy(w);
+        xylem_waitgroup_add(fin[r], (size_t)T); /* expect T workers   */
+        xylem_waitgroup_done(gate[r]);          /* open: release pool */
+        xylem_waitgroup_wait(fin[r]);           /* join the pool      */
     }
     uint64_t t1 = now_ns();
 
-    G.elapsed_ns = t1 - t0;
-    G.total_ops  = (uint64_t)rounds * (uint64_t)G.tasks;
+    join_set(&ts); /* workers have finished the last round; reap threads */
+
+    for (long r = 0; r < rounds; r++) {
+        xylem_waitgroup_destroy(gate[r]);
+        xylem_waitgroup_destroy(fin[r]);
+    }
+    free(gate);
+    free(fin);
     free(ts.h);
+
+    G.elapsed_ns = t1 - t0;
+    G.total_ops  = (uint64_t)rounds * (uint64_t)T;
 }
 
 /* -------------------------------------------------------------------- sem */
@@ -316,8 +360,10 @@ static void chan_receiver(void* arg) {
 
 static void run_channel(void) {
     /* create() is coroutine-only -- run_channel executes in the root
-     * coroutine, so this is valid even in thread/mixed mode. */
-    G.ch      = xylem_channel_create();
+     * coroutine, so this is valid even in thread/mixed mode. Unbounded
+     * (cap 0): send never reports full, an MPSC matching the Go/Rust
+     * channels this benchmark compares against. */
+    G.ch      = xylem_channel_create(0);
     G.wg      = xylem_waitgroup_create();
     G.recv_wg = xylem_waitgroup_create();
     G.counter = 0;
@@ -327,8 +373,21 @@ static void run_channel(void) {
     xylem_waitgroup_add(G.wg, (size_t)G.tasks);
 
     uint64_t t0 = now_ns();
-    spawn_one(chan_receiver, NULL, G.tasks, &ts);   /* receiver idx = tasks */
-    for (long i = 0; i < G.tasks; i++) spawn_one(chan_sender, NULL, i, &ts);
+    if (G.mode == M_MIXED) {
+        /* Pure single-direction cross-context test. The channel is
+         * unbounded, so only the receiver ever blocks and the wake is
+         * always sender-context -> receiver-context. Pin every sender to
+         * one context and the receiver to the other so the handoff is
+         * exclusively thread->coro (t2c) or coro->thread (c2t). */
+        int recv_thread = G.chan_c2t ? 1 : 0; /* c2t: receiver is a thread */
+        int send_thread = G.chan_c2t ? 0 : 1; /* opposite context          */
+        spawn_forced(chan_receiver, NULL, recv_thread, &ts);
+        for (long i = 0; i < G.tasks; i++)
+            spawn_forced(chan_sender, NULL, send_thread, &ts);
+    } else {
+        spawn_one(chan_receiver, NULL, G.tasks, &ts); /* receiver idx = tasks */
+        for (long i = 0; i < G.tasks; i++) spawn_one(chan_sender, NULL, i, &ts);
+    }
     xylem_waitgroup_wait(G.wg);          /* all senders done */
     xylem_channel_close(G.ch);           /* let the receiver finish */
     xylem_waitgroup_wait(G.recv_wg);     /* receiver drained */
@@ -347,6 +406,72 @@ static void run_channel(void) {
     xylem_waitgroup_destroy(G.recv_wg);
     xylem_waitgroup_destroy(G.wg);
     xylem_channel_destroy(G.ch);
+}
+
+/* --------------------------------------------------------------- handoff */
+/*
+ * Cross-context wake-latency probe. Two parties ping-pong through a pair
+ * of binary semaphores (no mutex, no predicate -- the lightest blocking
+ * handoff there is), so each round-trip forces exactly one wake in each
+ * direction and the ns/op is the bare A<->B wake latency. The two parties'
+ * execution vehicles are pinned independently (--ho-dir), so the same code
+ * measures every context pair:
+ *
+ *   cc : coroutine  <-> coroutine   (pure userspace reschedule)
+ *   ct : coroutine  <-> OS thread   (the cross-context case; the costly
+ *                                    thread->coro wake is on the hot path)
+ *   tt : OS thread  <-> OS thread   (futex both ways)
+ *
+ * Comparing the three rows shows which end-to-end handoff is expensive and
+ * by how much -- the decision table for "which side should block where".
+ */
+typedef struct {
+    xylem_sem_t* fwd; /* A -> B */
+    xylem_sem_t* bwd; /* B -> A */
+    long         n;
+} ho_ctx_t;
+
+static void ho_party_a(void* arg) {
+    ho_ctx_t* c = (ho_ctx_t*)arg;
+    for (long i = 0; i < c->n; i++) {
+        xylem_sem_post(c->fwd); /* wake B */
+        xylem_sem_wait(c->bwd); /* wait for B */
+    }
+    xylem_waitgroup_done(G.wg);
+}
+
+static void ho_party_b(void* arg) {
+    ho_ctx_t* c = (ho_ctx_t*)arg;
+    for (long i = 0; i < c->n; i++) {
+        xylem_sem_wait(c->fwd); /* wait for A */
+        xylem_sem_post(c->bwd); /* wake A */
+    }
+    xylem_waitgroup_done(G.wg);
+}
+
+static void run_handoff(void) {
+    xylem_sem_t* fwd = xylem_sem_create(0);
+    xylem_sem_t* bwd = xylem_sem_create(0);
+    G.wg             = xylem_waitgroup_create();
+    xylem_waitgroup_add(G.wg, 2);
+
+    ho_ctx_t  ctx = { fwd, bwd, G.iters };
+    thr_set_t ts  = thr_alloc(2);
+
+    uint64_t t0 = now_ns();
+    spawn_forced(ho_party_b, &ctx, G.ho_b_thr, &ts);
+    spawn_forced(ho_party_a, &ctx, G.ho_a_thr, &ts);
+    xylem_waitgroup_wait(G.wg);
+    uint64_t t1 = now_ns();
+    join_set(&ts);
+
+    G.elapsed_ns = t1 - t0;
+    G.total_ops  = (uint64_t)G.iters;
+
+    free(ts.h);
+    xylem_waitgroup_destroy(G.wg);
+    xylem_sem_destroy(fwd);
+    xylem_sem_destroy(bwd);
 }
 
 /* ----------------------------------------------------------------- output */
@@ -382,6 +507,7 @@ static void bench_main(void* arg) {
         case P_WAITGROUP: run_waitgroup(); break;
         case P_SEM:       run_sem();       break;
         case P_CHANNEL:   run_channel();   break;
+        case P_HANDOFF:   run_handoff();   break;
     }
     print_result();
 }
@@ -392,6 +518,7 @@ static int parse_prim(const char* s) {
     if (!strcmp(s, "waitgroup")) { G.prim = P_WAITGROUP; G.name = "waitgroup"; return 0; }
     if (!strcmp(s, "sem"))       { G.prim = P_SEM;       G.name = "sem";       return 0; }
     if (!strcmp(s, "channel"))   { G.prim = P_CHANNEL;   G.name = "channel";   return 0; }
+    if (!strcmp(s, "handoff"))   { G.prim = P_HANDOFF;   G.name = "handoff";   return 0; }
     return -1;
 }
 
@@ -404,9 +531,10 @@ static int parse_mode(const char* s) {
 
 static void usage(const char* prog) {
     fprintf(stderr,
-        "usage: %s <mutex|cond|waitgroup|sem|channel> "
+        "usage: %s <mutex|cond|waitgroup|sem|channel|handoff> "
         "[--mode coro|thread|mixed] "
-        "[--workers W] [--tasks T] [--iters N] [--permits K]\n", prog);
+        "[--workers W] [--tasks T] [--iters N] [--permits K] "
+        "[--chan-dir t2c|c2t] [--ho-dir cc|ct|tt]\n", prog);
 }
 
 int main(int argc, char** argv) {
@@ -432,6 +560,18 @@ int main(int argc, char** argv) {
             G.iters = atol(argv[++i]);
         } else if (!strcmp(argv[i], "--permits") && i + 1 < argc) {
             G.permits = atol(argv[++i]);
+        } else if (!strcmp(argv[i], "--chan-dir") && i + 1 < argc) {
+            const char* d = argv[++i];
+            if (!strcmp(d, "t2c"))      G.chan_c2t = 0;
+            else if (!strcmp(d, "c2t")) G.chan_c2t = 1;
+            else { usage(argv[0]); return 2; }
+        } else if (!strcmp(argv[i], "--ho-dir") && i + 1 < argc) {
+            const char* d = argv[++i];
+            if (!strcmp(d, "cc"))      { G.ho_a_thr = 0; G.ho_b_thr = 0; }
+            else if (!strcmp(d, "ct")) { G.ho_a_thr = 0; G.ho_b_thr = 1; }
+            else if (!strcmp(d, "tt")) { G.ho_a_thr = 1; G.ho_b_thr = 1; }
+            else { usage(argv[0]); return 2; }
+            G.ho_dir_set = 1;
         } else {
             usage(argv[0]);
             return 2;
@@ -441,6 +581,24 @@ int main(int argc, char** argv) {
     if (G.tasks < 1)   G.tasks = 1;
     if (G.iters < 1)   G.iters = 1;
     if (G.permits < 1) G.permits = 1;
+
+    /* Make the channel mixed direction visible in the JSON `mode` field so
+     * the two directions land in distinct result rows. */
+    if (G.prim == P_CHANNEL && G.mode == M_MIXED) {
+        G.mode_name = G.chan_c2t ? "mixed-c2t" : "mixed-t2c";
+    }
+    /* handoff ignores --mode; report its context pair as the `mode`. */
+    if (G.prim == P_HANDOFF) {
+        /* Direction follows --mode (coro=cc, thread=tt, mixed=ct) unless an
+         * explicit --ho-dir overrode it, so the driver's mode sweep maps
+         * straight onto the context pairs. */
+        if (!G.ho_dir_set) {
+            if (G.mode == M_THREAD)     { G.ho_a_thr = 1; G.ho_b_thr = 1; }
+            else if (G.mode == M_MIXED) { G.ho_a_thr = 0; G.ho_b_thr = 1; }
+            else                        { G.ho_a_thr = 0; G.ho_b_thr = 0; }
+        }
+        G.mode_name = G.ho_a_thr ? "tt" : (G.ho_b_thr ? "ct" : "cc");
+    }
 
     xylem_opts_t rt = {0};
     rt.workers = G.workers;

@@ -49,11 +49,6 @@ static void _wg_waiter(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
     ctx->tested = 1;
-    /**
-     * wait() returned, so every worker's done() has fired and no
-     * coroutine touches the waitgroup anymore: destroy it here, inside
-     * the coroutine, right before shutdown.
-     */
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
     xylem_shutdown();
@@ -79,13 +74,6 @@ static void test_concurrent(void) {
     }
 }
 
-/**
- * Multi-waiter broadcast: every waiter must be released by the
- * done() that drops the counter to zero. Exercises the new
- * queue-based waiters list introduced to replace the single-slot
- * design.
- */
-
 #define WG_MULTI_WAITERS 16
 
 typedef struct {
@@ -105,14 +93,8 @@ static void _wg_multi_waiter(void* arg) {
     _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
-    int released = atomic_fetch_add(&ctx->waiters_released, 1) + 1;
-    if (released == WG_MULTI_WAITERS) {
+    if (atomic_fetch_add(&ctx->waiters_released, 1) + 1 == WG_MULTI_WAITERS) {
         ctx->tested = 1;
-        /**
-         * Every waiter has returned from wait() (so all workers' done()
-         * calls have fired) and this is the last one: nothing else
-         * touches the waitgroup, so destroy it here before shutdown.
-         */
         xylem_waitgroup_destroy(ctx->wg);
         ctx->wg = NULL;
         xylem_shutdown();

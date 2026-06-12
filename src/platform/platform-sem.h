@@ -36,10 +36,12 @@ typedef sem_t platform_sem_t;
 #endif
 
 #if defined(_WIN32)
-/* WIN32_LEAN_AND_MEAN keeps <windows.h> from auto-including the legacy
+/**
+ * WIN32_LEAN_AND_MEAN keeps <windows.h> from auto-including the legacy
  * <winsock.h>, which would clash with the <winsock2.h> a socket-aware
  * TU pulls in elsewhere. Defining it here makes this header self-
- * contained and order-independent regardless of include sequence. */
+ * contained and order-independent regardless of include sequence.
+ */
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

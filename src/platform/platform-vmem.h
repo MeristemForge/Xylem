@@ -23,6 +23,28 @@ _Pragma("once")
 
 #include <stddef.h>
 
+/**
+ * The pooled allocator recycles virtual addresses without going through
+ * ASan's interceptors, so a freshly committed region may still carry stale
+ * shadow poison from its previous occupant, causing false errors on the
+ * next user's in-bounds writes. VMEM_ASAN_RESET re-validates the region;
+ * it compiles to nothing in non-ASan builds.
+ */
+#if defined(__SANITIZE_ADDRESS__)
+#define VMEM_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define VMEM_ASAN 1
+#endif
+#endif
+
+#ifdef VMEM_ASAN
+#include <sanitizer/asan_interface.h>
+#define VMEM_ASAN_RESET(ptr, size) __asan_unpoison_memory_region((ptr), (size))
+#else
+#define VMEM_ASAN_RESET(ptr, size) ((void)0)
+#endif
+
 
 /* Virtual memory protection flags. */
 typedef enum platform_vmem_prot_e {

@@ -27,19 +27,39 @@
 #include <string.h>
 #include <stdio.h>
 
-/**
- * Relative path: valid for AF_UNIX on both Windows and Unix, created in
- * the test's working directory and removed after each case. Avoids a
- * platform conditional here (see style guide platform-layer rule).
- */
-#define UDS_PATH "xylem-test-uds.sock"
-
+#define UDS_PATH          "xylem-test-uds.sock"
 #define SAFETY_TIMEOUT_MS 10000
+
+typedef void (*_coro_t)(void*);
 
 typedef struct {
     xylem_channel_t*   ready;
     xylem_waitgroup_t* wg;
+    _coro_t            server;
+    _coro_t            client;
 } _ctx_t;
+
+static void _pair_main(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ctx->ready  = xylem_channel_create(0);
+    ctx->wg     = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, 2);
+    xylem_timer_t* wd =
+        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_spawn(ctx->server, ctx);
+    xylem_spawn(ctx->client, ctx);
+    xylem_waitgroup_wait(ctx->wg);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx->wg);
+    xylem_channel_destroy(ctx->ready);
+    xylem_shutdown();
+}
+
+static void _run_pair(_coro_t server, _coro_t client) {
+    _ctx_t ctx = {.server = server, .client = client};
+    xylem_run(_pair_main, &ctx, NULL);
+    remove(UDS_PATH);
+}
 
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -51,7 +71,7 @@ static void _echo_server(void* arg) {
     ASSERT(uds != NULL);
 
     char buf[256];
-    int n = xylem_uds_read(uds, buf, sizeof(buf));
+    int  n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n > 0);
     ASSERT(xylem_uds_write(uds, buf, n) == 0);
 
@@ -71,7 +91,7 @@ static void _echo_client(void* arg) {
     ASSERT(xylem_uds_write(uds, msg, (int)strlen(msg)) == 0);
 
     char buf[64];
-    int n = xylem_uds_read(uds, buf, sizeof(buf));
+    int  n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
@@ -79,27 +99,8 @@ static void _echo_client(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _echo_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready = xylem_channel_create(),
-        .wg    = xylem_waitgroup_create(),
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_echo_server, &ctx);
-    xylem_spawn(_echo_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_echo(void) {
-    xylem_run(_echo_main, NULL, NULL);
-    remove(UDS_PATH);
+    _run_pair(_echo_server, _echo_client);
 }
 
 static void _reader_server(void* arg) {
@@ -138,27 +139,8 @@ static void _reader_client(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _reader_main(void* arg) {
-    (void)arg;
-    _ctx_t ctx = {
-        .ready = xylem_channel_create(),
-        .wg    = xylem_waitgroup_create(),
-    };
-    xylem_waitgroup_add(ctx.wg, 2);
-    xylem_timer_t* wd = xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
-    xylem_spawn(_reader_server, &ctx);
-    xylem_spawn(_reader_client, &ctx);
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(wd);
-
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_channel_destroy(ctx.ready);
-    xylem_shutdown();
-}
-
 static void test_reader_full(void) {
-    xylem_run(_reader_main, NULL, NULL);
-    remove(UDS_PATH);
+    _run_pair(_reader_server, _reader_client);
 }
 
 int main(void) {

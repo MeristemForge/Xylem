@@ -16,11 +16,12 @@
 // Workload model (identical across languages and modes):
 //   mutex      : T workers each do N lock/inc/unlock          -> ops = T*N
 //   cond       : 1 producer + 1 consumer, N hand-offs          -> ops = N
-//   waitgroup  : N rounds, each spawns T workers then joins     -> ops = T*N
+//   waitgroup  : N rounds over a pre-spawned pool of T workers  -> ops = T*N
 //   sem        : T workers each do N acquire/release, K permits -> ops = T*N
 //   channel    : T senders each send N msgs, 1 receiver         -> ops = T*N
 //
-// Tokio analogs (coro mode): cond -> Notify ping-pong; waitgroup -> JoinSet;
+// Tokio analogs (coro mode): cond -> Notify ping-pong; waitgroup -> a
+// gate/fin handoff built from Semaphores (Tokio has no WaitGroup);
 // channel -> mpsc::unbounded_channel.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -98,6 +99,23 @@ fn main() {
     }
     if cfg.permits < 1 {
         cfg.permits = 1;
+    }
+
+    // handoff: a round-trip wake-latency probe. The mode selects the
+    // context pair: coro = task<->task, thread = thread<->thread,
+    // mixed = external thread <-> async task (the video-capture pattern).
+    if cfg.prim == "handoff" {
+        let (total_ops, elapsed) = match cfg.mode.as_str() {
+            "coro" => handoff_cc(&cfg),
+            "thread" => handoff_tt(&cfg),
+            "mixed" => handoff_ct(&cfg),
+            other => {
+                eprintln!("rust: unknown mode {:?}", other);
+                std::process::exit(2);
+            }
+        };
+        print_result(&cfg, total_ops, elapsed);
+        return;
     }
 
     let (total_ops, elapsed) = match cfg.mode.as_str() {
@@ -194,16 +212,43 @@ async fn coro_cond(cfg: &Config) -> (u64, Duration) {
 }
 
 async fn coro_waitgroup(cfg: &Config) -> (u64, Duration) {
+    // Tokio has no WaitGroup, so the same gate/fin handoff is built from
+    // Semaphores (the idiomatic Tokio building block). A fixed pool of T
+    // tasks is spawned once, OUTSIDE the timed region, and loops over the
+    // rounds. Each round uses a fresh pair of single-use semaphores:
+    // gate[r] (main releases the pool) and fin[r] (the pool signals
+    // completion). Task creation never enters the measurement.
     let rounds = cfg.iters;
-    let t0 = Instant::now();
-    for _ in 0..rounds {
-        let mut set = JoinSet::new();
-        for _ in 0..cfg.tasks {
-            set.spawn(async {});
-        }
-        while set.join_next().await.is_some() {}
+    let t = cfg.tasks;
+
+    let gate: Arc<Vec<Semaphore>> =
+        Arc::new((0..rounds).map(|_| Semaphore::new(0)).collect());
+    let fin: Arc<Vec<Semaphore>> =
+        Arc::new((0..rounds).map(|_| Semaphore::new(0)).collect());
+
+    let mut handles = Vec::with_capacity(t);
+    for _ in 0..t {
+        let gate = gate.clone();
+        let fin = fin.clone();
+        handles.push(tokio::spawn(async move {
+            for r in 0..rounds {
+                gate[r].acquire().await.unwrap().forget(); // wait for open
+                fin[r].add_permits(1); // signal this worker is done
+            }
+        }));
     }
-    (rounds as u64 * cfg.tasks as u64, t0.elapsed())
+
+    let t0 = Instant::now();
+    for r in 0..rounds {
+        gate[r].add_permits(t); // release the pool
+        fin[r].acquire_many(t as u32).await.unwrap().forget(); // join
+    }
+    let elapsed = t0.elapsed();
+
+    for h in handles {
+        let _ = h.await;
+    }
+    (rounds as u64 * cfg.tasks as u64, elapsed)
 }
 
 async fn coro_sem(cfg: &Config) -> (u64, Duration) {
@@ -341,18 +386,42 @@ fn thread_cond(cfg: &Config) -> (u64, Duration) {
 }
 
 fn thread_waitgroup(cfg: &Config) -> (u64, Duration) {
+    // Persistent OS-thread pool + gate/fin built from the std Sem
+    // (Mutex+Condvar) below. Threads are spawned once, OUTSIDE the timed
+    // region; the measurement captures only the per-round release/join.
     let rounds = cfg.iters;
+    let t = cfg.tasks;
+
+    let gate: Arc<Vec<Sem>> = Arc::new((0..rounds).map(|_| Sem::new(0)).collect());
+    let fin: Arc<Vec<Sem>> = Arc::new((0..rounds).map(|_| Sem::new(0)).collect());
+
+    let mut hs = Vec::with_capacity(t);
+    for _ in 0..t {
+        let gate = gate.clone();
+        let fin = fin.clone();
+        hs.push(thread::spawn(move || {
+            for r in 0..rounds {
+                gate[r].acquire(); // wait for round r to open
+                fin[r].release(); // signal this worker is done
+            }
+        }));
+    }
+
     let t0 = Instant::now();
-    for _ in 0..rounds {
-        let mut hs = Vec::with_capacity(cfg.tasks);
-        for _ in 0..cfg.tasks {
-            hs.push(thread::spawn(|| {}));
+    for r in 0..rounds {
+        for _ in 0..t {
+            gate[r].release(); // release the pool
         }
-        for h in hs {
-            h.join().unwrap();
+        for _ in 0..t {
+            fin[r].acquire(); // join the pool
         }
     }
-    (rounds as u64 * cfg.tasks as u64, t0.elapsed())
+    let elapsed = t0.elapsed();
+
+    for h in hs {
+        h.join().unwrap();
+    }
+    (rounds as u64 * cfg.tasks as u64, elapsed)
 }
 
 // std has no counting semaphore; a Mutex<count> + Condvar is the textbook one.
@@ -438,6 +507,101 @@ fn thread_channel(cfg: &Config) -> (u64, Duration) {
 // ==========================================================================
 // output
 // ==========================================================================
+
+// External OS thread <-> async task ping-pong: the "video capture" pattern
+// where a capture thread hands frames to an async task that does the network
+// send. Measures the round-trip thread<->task wake latency. thread->task uses
+// a Tokio unbounded channel (its send is callable from any thread, no async
+// context needed); task->thread uses a std mpsc (blocks the OS thread).
+fn handoff_ct(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if cfg.workers > 0 {
+        builder.worker_threads(cfg.workers);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
+
+    let (t2a_tx, mut t2a_rx) = mpsc::unbounded_channel::<()>();
+    let (a2t_tx, a2t_rx) = stdmpsc::channel::<()>();
+
+    let handle = rt.spawn(async move {
+        for _ in 0..n {
+            if t2a_rx.recv().await.is_none() {
+                break; // wait for the external thread (thread -> task wake)
+            }
+            let _ = a2t_tx.send(()); // wake the external thread
+        }
+    });
+
+    // This function runs on `main` -- a plain OS thread, external to Tokio,
+    // exactly like a video-capture thread feeding an async network sender.
+    let t0 = Instant::now();
+    for _ in 0..n {
+        let _ = t2a_tx.send(()); // thread -> task wake (the costly direction)
+        let _ = a2t_rx.recv(); // wait for the task's reply (task -> thread)
+    }
+    let elapsed = t0.elapsed();
+
+    let _ = rt.block_on(handle);
+    (n as u64, elapsed)
+}
+
+// Two async tasks ping-pong over a pair of Tokio channels (task<->task wake).
+fn handoff_cc(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if cfg.workers > 0 {
+        builder.worker_threads(cfg.workers);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
+    rt.block_on(async move {
+        let (ab_tx, mut ab_rx) = mpsc::unbounded_channel::<()>();
+        let (ba_tx, mut ba_rx) = mpsc::unbounded_channel::<()>();
+        let b = tokio::spawn(async move {
+            for _ in 0..n {
+                if ab_rx.recv().await.is_none() {
+                    break;
+                }
+                let _ = ba_tx.send(());
+            }
+        });
+        let t0 = Instant::now();
+        for _ in 0..n {
+            let _ = ab_tx.send(());
+            if ba_rx.recv().await.is_none() {
+                break;
+            }
+        }
+        let elapsed = t0.elapsed();
+        let _ = b.await;
+        (n as u64, elapsed)
+    })
+}
+
+// Two OS threads ping-pong over a pair of std mpsc channels (thread<->thread).
+fn handoff_tt(cfg: &Config) -> (u64, Duration) {
+    let n = cfg.iters;
+    let (ab_tx, ab_rx) = stdmpsc::channel::<()>();
+    let (ba_tx, ba_rx) = stdmpsc::channel::<()>();
+    let b = thread::spawn(move || {
+        for _ in 0..n {
+            if ab_rx.recv().is_err() {
+                break;
+            }
+            let _ = ba_tx.send(());
+        }
+    });
+    let t0 = Instant::now();
+    for _ in 0..n {
+        let _ = ab_tx.send(());
+        if ba_rx.recv().is_err() {
+            break;
+        }
+    }
+    let elapsed = t0.elapsed();
+    let _ = b.join();
+    (n as u64, elapsed)
+}
 
 fn print_result(cfg: &Config, total_ops: u64, elapsed: Duration) {
     let sec = elapsed.as_secs_f64();

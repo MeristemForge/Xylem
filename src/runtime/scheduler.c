@@ -63,8 +63,9 @@
 #include "platform/platform-socket.h"
 #include "platform/platform-vmem.h"
 #include "platform/platform-info.h"
+#include "platform/platform-cpu.h"
 #include "sync/spin.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "minicoro/minicoro.h"
 
@@ -98,6 +99,17 @@
 
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
 
+/**
+ * Keep-warm spin before an idle worker deep-parks. At most one worker
+ * (capped via sched->spinning) polls the global run queue for this many
+ * rounds, pausing SCHED_SPIN_PAUSE times between cheap length peeks, so a
+ * coroutine injected by a foreign thread (the costly thread->coro wake) is
+ * picked up in userspace with no semaphore syscall or OS wakeup latency.
+ * The window is short and bounded so a truly idle process still parks.
+ */
+#define SCHED_SPIN_ROUNDS 64
+#define SCHED_SPIN_PAUSE  64
+
 typedef struct _coro_pool_s {
     spin_t    lock;
     void**    slots;
@@ -118,9 +130,11 @@ typedef struct _sched_worker_s {
     _Atomic bool         parked;
     _Atomic(mco_coro*)   runnext;
     _Atomic uint64_t     runnext_ts; /* ms timestamp set when runnext is filled. */
+    uint64_t             now_ms;     /* worker's per-loop cached clock (ms).      */
     uint32_t             sched_tick;
     heap_t               timers;
     mtx_t                timer_lock;
+    _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -139,6 +153,7 @@ struct scheduler_s {
     _Atomic bool          running;
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
+    _Atomic int32_t       spinning; /* 1 if a worker is in its keep-warm spin */
     bool                  joined;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
@@ -148,12 +163,38 @@ struct scheduler_s {
     _coro_pool_t          coro_pool;
 };
 
+/**
+ * Park handshake state, per coroutine. Closes the window where a waker
+ * could resume a coroutine while its park callback is still running on
+ * the parking worker (and thus still dereferencing the object it parked
+ * on -- the classic park_cb-touches-freed-channel race).
+ *
+ *   IDLE     - running, or sitting in a normal run queue.
+ *   ARMING   - between mco_yield and the end of the park callback.
+ *   PARKED   - park callback returned true; suspended awaiting a wake.
+ *   NOTIFIED - a waker has claimed the coroutine; it is (or will be)
+ *              requeued exactly once.
+ *
+ * At most one waker reaches the claim path per park, because the sync
+ * primitive (or iowait) hands off a single one-shot waiter. A waker that
+ * observes ARMING only marks NOTIFIED and does NOT enqueue: the park
+ * callback, on return, sees NOTIFIED and requeues the coroutine itself,
+ * so resume can never overlap the tail of the callback.
+ */
+typedef enum _park_state_e {
+    PARK_IDLE     = 0,
+    PARK_ARMING   = 1,
+    PARK_PARKED   = 2,
+    PARK_NOTIFIED = 3,
+} _park_state_t;
+
 typedef struct _coro_ctx_s {
     void (*fn)(void*);
-    void*        arg;
-    queue_node_t runq_node;
-    list_node_t  registry_node;
-    mco_coro*    co;
+    void*                  arg;
+    queue_node_t           runq_node;
+    list_node_t            registry_node;
+    mco_coro*              co;
+    _Atomic _park_state_t  park_state;
 } _coro_ctx_t;
 
 typedef struct _sched_post_s {
@@ -291,6 +332,23 @@ static void _sched_wake_poller(scheduler_t* sched) {
 }
 
 static void _sched_wake_worker(scheduler_t* sched) {
+    /**
+     * Order the work the caller just published (its runq/deque push)
+     * before the reads below. Pairs with the seq_cst store + fence the
+     * spinner uses around clearing `spinning` and its final re-check: a
+     * producer that skips the wake here cannot strand a coroutine, because
+     * either it observes spinning==1 (and the spinner, still polling or in
+     * its post-clear re-check, sees the push) or it observes spinning==0
+     * (and falls through to a real wake below).
+     */
+    atomic_thread_fence(memory_order_seq_cst);
+
+    /* A worker is keep-warm spinning: it will pick the work up from the
+     * run queue in userspace, so no kernel wake is needed. */
+    if (atomic_load_explicit(&sched->spinning, memory_order_seq_cst) != 0) {
+        return;
+    }
+
     for (int32_t i = 0; i < sched->nworkers; i++) {
         if (atomic_load(&sched->workers[i].parked)) {
             platform_sem_post(sched->workers[i].sem);
@@ -410,13 +468,32 @@ static int _sched_timeout_locked(_sched_worker_t* w, uint64_t now) {
     return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
-static int _sched_timer_next_timeout(_sched_worker_t* w) {
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+/**
+ * Republish the earliest timer deadline so the lock-free guards in
+ * _sched_process_timers / _sched_timer_next_timeout can skip the lock when
+ * nothing is due. Caller MUST hold w->timer_lock. Release-ordered to pair
+ * with the acquire loads on the worker's hot path.
+ */
+static inline void _sched_publish_deadline(_sched_worker_t* w) {
+    heap_node_t* root = heap_peek(&w->timers);
+    uint64_t nd = root
+        ? heap_entry(root, sched_timer_t, heap_node)->timeout
+        : UINT64_MAX;
+    atomic_store_explicit(&w->next_deadline_ms, nd, memory_order_release);
+}
 
-    mtx_lock(&w->timer_lock);
-    int timeout = _sched_timeout_locked(w, now);
-    mtx_unlock(&w->timer_lock);
-    return timeout;
+static int _sched_timer_next_timeout(_sched_worker_t* w) {
+    uint64_t nd = atomic_load_explicit(
+        &w->next_deadline_ms, memory_order_acquire);
+    if (nd == UINT64_MAX) {
+        return -1;
+    }
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (nd <= now) {
+        return 0;
+    }
+    uint64_t diff = nd - now;
+    return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
 static void _sched_timer_spawn_entry(void* arg) {
@@ -426,6 +503,18 @@ static void _sched_timer_spawn_entry(void* arg) {
 }
 
 static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
+    /**
+     * Lock-free fast path: skip the lock entirely when no timer is due.
+     * next_deadline_ms is republished under the lock on every heap mutation,
+     * so an acquire load here pairs with those release stores; a concurrent
+     * arm that lands just after this check is caught next iteration (within
+     * one tick) or by the wake the arm itself issues.
+     */
+    if (now_ms < atomic_load_explicit(
+            &w->next_deadline_ms, memory_order_acquire)) {
+        return -1;
+    }
+
     for (;;) {
         sched_timer_t* timer = NULL;
 
@@ -465,6 +554,7 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
 
     mtx_lock(&w->timer_lock);
     int timeout = _sched_timeout_locked(w, now_ms);
+    _sched_publish_deadline(w);
     mtx_unlock(&w->timer_lock);
     return timeout;
 }
@@ -520,6 +610,15 @@ static mco_coro* _sched_process_io(
     return first;
 }
 
+/* Requeue on the parking worker after a declined or notified park. */
+static void _sched_enqueue_local(_sched_worker_t* w, mco_coro* co) {
+    if (wsdeque_push(w->deque, co) != 0) {
+        _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+        runq_push(w->sched->runq, &ctx->runq_node);
+        _sched_wake_worker(w->sched);
+    }
+}
+
 static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (mco_status(co) == MCO_DEAD) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
@@ -547,13 +646,34 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     void* arg = w->park_arg;
     w->park_fn  = NULL;
     w->park_arg = NULL;
-    if (!fn(co, arg)) {
-        if (wsdeque_push(w->deque, co) != 0) {
-            _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
-            runq_push(w->sched->runq, &ctx->runq_node);
-            _sched_wake_worker(w->sched);
+
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    atomic_store_explicit(&ctx->park_state, PARK_ARMING, memory_order_release);
+
+    if (fn(co, arg)) {
+        /**
+         * Commit the park with a CAS, not a plain store: a waker may have
+         * raced in during the callback and set NOTIFIED. A blind store
+         * would clobber that and strand the coroutine forever -- the waker
+         * deliberately did not enqueue, expecting us to (lost wakeup). The
+         * CAS parks only if we are still ARMING, i.e. untouched by a waker.
+         */
+        _park_state_t expected = PARK_ARMING;
+        if (atomic_compare_exchange_strong_explicit(
+                &ctx->park_state, &expected, PARK_PARKED,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return; /* cleanly parked; a waker will requeue us */
         }
+        /**
+         * CAS failed, so expected == PARK_NOTIFIED: a waker claimed us
+         * mid-callback and deliberately did not enqueue, so the requeue
+         * is ours.
+         */
     }
+
+    /* Declined, or notified during arming: requeue on this worker. */
+    atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
+    _sched_enqueue_local(w, co);
 }
 
 static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
@@ -576,6 +696,7 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
 
 static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    w->now_ms = now;
     _sched_process_timers(w, now);
 
     uint64_t last = atomic_load_explicit(
@@ -676,6 +797,7 @@ static mco_coro* _sched_worker_find_coro(
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        w->now_ms = now;
         _sched_process_timers(w, now);
 
         bool expected = false;
@@ -726,6 +848,55 @@ static int _sched_worker_entry(void* arg) {
         if (co) {
             _sched_run_coro(w, co);
             continue;
+        }
+
+        /**
+         * Keep-warm spin before deep-parking. Become the single scheduler
+         * spinner (capped at one so idle cores are not all lit up), then
+         * poll the global run queue: a foreign-thread inject is then picked
+         * up in userspace, dodging the semaphore wake + OS thread-wakeup
+         * latency that dominates the thread->coro path. Producers see
+         * `spinning` and skip the wake (_sched_wake_worker); the seq_cst
+         * store + fence around the clear and the authoritative final pop
+         * close the lost-wakeup race.
+         */
+        {
+            int32_t expected = 0;
+            if (atomic_compare_exchange_strong_explicit(
+                    &sched->spinning, &expected, 1,
+                    memory_order_seq_cst, memory_order_relaxed)) {
+                for (int32_t r = 0; r < SCHED_SPIN_ROUNDS && !co; r++) {
+                    if (runq_len_approx(sched->runq) > 0) {
+                        queue_node_t* node = runq_pop(sched->runq);
+                        if (node) {
+                            co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+                            break;
+                        }
+                    }
+                    for (int32_t p = 0; p < SCHED_SPIN_PAUSE; p++) {
+                        platform_cpu_relax();
+                    }
+                }
+                atomic_store_explicit(
+                    &sched->spinning, 0, memory_order_seq_cst);
+                /**
+                 * Authoritative re-check after clearing `spinning`: a
+                 * producer may have pushed and skipped its wake while it
+                 * saw spinning==1. The seq_cst store above + this fence +
+                 * the locking runq_pop guarantee we observe that push.
+                 */
+                atomic_thread_fence(memory_order_seq_cst);
+                if (!co) {
+                    queue_node_t* node = runq_pop(sched->runq);
+                    if (node) {
+                        co = queue_entry(node, _coro_ctx_t, runq_node)->co;
+                    }
+                }
+                if (co) {
+                    _sched_run_coro(w, co);
+                    continue;
+                }
+            }
         }
 
         atomic_store(&w->parked, true);
@@ -911,6 +1082,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         w->index = (uint32_t)i;
         heap_init(&w->timers, _sched_timer_cmp);
         mtx_init(&w->timer_lock, mtx_plain);
+        atomic_init(&w->next_deadline_ms, UINT64_MAX);
 
         if (!w->deque || !w->sem) {
             _sched_cleanup(sched, 0);
@@ -970,7 +1142,7 @@ void scheduler_stop(scheduler_t* sched) {
     sched->joined = true;
 }
 
-void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
 
     if (!_tls_worker || _tls_worker->sched != sched) {
@@ -980,13 +1152,16 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     }
 
     /**
-     * Stamp before publishing so a stealer that sees the coro also sees
-     * a valid timestamp (relaxed is fine: the runnext store is the
-     * release that orders this).
+     * Stamp before publishing so a stealer that sees the coro also sees a
+     * valid timestamp. Use the worker's cached loop clock (now_ms), not a
+     * fresh getnow: this is the hottest hand-off path, and the only reader
+     * is the coarse 1ms runnext-steal aging, so loop-granularity time is
+     * plenty. Relaxed is fine -- the runnext store below is the release
+     * that orders this.
      */
     atomic_store_explicit(
         &_tls_worker->runnext_ts,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
+        _tls_worker->now_ms,
         memory_order_relaxed);
     mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
     if (old) {
@@ -1020,6 +1195,51 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
      */
 }
 
+/**
+ * Transition a coroutine that a waker wants to run. Returns true if the
+ * caller should enqueue it now, false if it must not (either the park
+ * callback is still arming and will requeue on return, or another claim
+ * already won). A coroutine not in a park handshake (PARK_IDLE) is a
+ * normal schedule and is always enqueued.
+ */
+static bool _sched_claim_for_wake(mco_coro* co) {
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
+    _park_state_t st =
+        atomic_load_explicit(&ctx->park_state, memory_order_acquire);
+    for (;;) {
+        switch (st) {
+        case PARK_IDLE:
+            /* Not in a park handshake: a normal schedule, always enqueue. */
+            return true;
+        case PARK_PARKED:
+            /* Park callback already returned; claim it, we requeue. */
+            if (atomic_compare_exchange_weak_explicit(
+                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return true;
+            }
+            break; /* st reloaded by the CAS; re-evaluate */
+        case PARK_ARMING:
+            /* Park callback still arming; it sees NOTIFIED and requeues. */
+            if (atomic_compare_exchange_weak_explicit(
+                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return false;
+            }
+            break; /* st reloaded (ARMING may have advanced to PARKED) */
+        case PARK_NOTIFIED:
+            /* Another waker already claimed it; nothing for us to do. */
+            return false;
+        }
+    }
+}
+
+void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+    if (_sched_claim_for_wake(co)) {
+        _sched_enqueue(sched, co);
+    }
+}
+
 void scheduler_schedule_batch(
     scheduler_t* sched, mco_coro** cos, int32_t n) {
     if (n <= 0) {
@@ -1038,16 +1258,26 @@ void scheduler_schedule_batch(
             return;
         }
     }
+    int32_t m = 0;
     for (int32_t i = 0; i < n; i++) {
+        /* A coro still arming its park must not be enqueued here; its park
+         * callback owns the requeue. Drop it from the batch. */
+        if (!_sched_claim_for_wake(cos[i])) {
+            continue;
+        }
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(cos[i]);
-        nodes[i] = &ctx->runq_node;
+        nodes[m++] = &ctx->runq_node;
     }
-    runq_push_batch(sched->runq, nodes, n);
+    if (m > 0) {
+        runq_push_batch(sched->runq, nodes, m);
+    }
     if (nodes != inline_nodes) {
         free(nodes);
     }
 
-    _sched_wake_worker(sched);
+    if (m > 0) {
+        _sched_wake_worker(sched);
+    }
 }
 
 int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
@@ -1096,6 +1326,10 @@ void scheduler_park(
     _tls_worker->park_fn  = fn;
     _tls_worker->park_arg = arg;
     mco_yield(mco_running());
+
+    /* Resumed: clear park bookkeeping so the coro runs as PARK_IDLE. */
+    _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(mco_running());
+    atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {
@@ -1168,6 +1402,7 @@ void sched_timer_start(
     timer->repeat  = repeat_ms;
     timer->active  = true;
     heap_insert(&ow->timers, &timer->heap_node);
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
 
     if (atomic_load(&ow->parked)) {
@@ -1189,6 +1424,7 @@ bool sched_timer_stop(sched_timer_t* timer) {
         timer->active = false;
         cancelled = true;
     }
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
     return cancelled;
 }
@@ -1209,6 +1445,7 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     }
     timer->active = true;
     heap_insert(&ow->timers, &timer->heap_node);
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
 
     if (atomic_load(&ow->parked)) {

@@ -922,7 +922,7 @@ static void _dtls_dispatcher(void* arg) {
         dtls->fd               = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
-        dtls->inbox            = xylem_channel_create();
+        dtls->inbox            = xylem_channel_create(0);
         dtls->handshake_timer  = sched_timer_create(ln->sched);
 
         if (!dtls->inbox
@@ -1212,7 +1212,7 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         return NULL;
     }
 
-    ln->accept_ch = xylem_channel_create();
+    ln->accept_ch = xylem_channel_create(0);
     if (!ln->accept_ch) {
         _dtls_listener_unref(ln);
         return NULL;

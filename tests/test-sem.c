@@ -22,7 +22,7 @@
 #include "xylem.h"
 #include "xylem/sync/xylem-sem.h"
 #include "assert.h"
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 #include "utils.h"
 
 #include <stdatomic.h>
@@ -31,10 +31,6 @@
 #define SAFETY_TIMEOUT_MS 10000
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
-
-/* ------------------------------------------------------------------ */
-/* test_count: initial count grants tokens without blocking.           */
-/* ------------------------------------------------------------------ */
 
 typedef struct {
     xylem_sem_t* sem;
@@ -46,12 +42,9 @@ static void _count_main(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     ctx->sem = xylem_sem_create(2);
-    /* Two tokens available: two waits return immediately. */
     xylem_sem_wait(ctx->sem);
     xylem_sem_wait(ctx->sem);
-    /* Third would block; timedwait(0) must report empty. */
     ASSERT(xylem_sem_timedwait(ctx->sem, 0) == false);
-    /* Post then grab. */
     xylem_sem_post(ctx->sem);
     ASSERT(xylem_sem_timedwait(ctx->sem, 0) == true);
 
@@ -66,10 +59,6 @@ static void test_count(void) {
     xylem_run(_count_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
-
-/* ------------------------------------------------------------------ */
-/* test_coro_pair: one coroutine blocks on wait, another posts.        */
-/* ------------------------------------------------------------------ */
 
 typedef struct {
     xylem_sem_t* sem;
@@ -88,7 +77,6 @@ static void _pair_waiter(void* arg) {
 
 static void _pair_poster(void* arg) {
     _pair_ctx_t* ctx = (_pair_ctx_t*)arg;
-    /* Give the waiter time to park first. */
     xylem_sleep(50);
     ASSERT(atomic_load(&ctx->woke) == 0);
     xylem_sem_post(ctx->sem);
@@ -110,10 +98,6 @@ static void test_coro_pair(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_coro_posts_thread: coroutine posts, external thread waits.     */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_sem_t* sem;
     atomic_int   thread_done;
@@ -122,7 +106,6 @@ typedef struct {
 
 static int _ct_thread_fn(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
-    /* Blocks on the OS path until the coroutine posts. */
     xylem_sem_wait(ctx->sem);
     atomic_store(&ctx->thread_done, 1);
     return 0;
@@ -132,7 +115,6 @@ static void _ct_poster(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
     xylem_sleep(50);
     xylem_sem_post(ctx->sem);
-    /* Spin-wait (in coroutine time) for the thread to observe the wake. */
     while (atomic_load(&ctx->thread_done) == 0) {
         xylem_sleep(5);
     }
@@ -159,10 +141,6 @@ static void test_coro_posts_thread(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_thread_posts_coro: external thread posts, coroutine waits.     */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_sem_t* sem;
     int          tested;
@@ -170,8 +148,6 @@ typedef struct {
 
 static int _tc_thread_fn(void* arg) {
     _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
-    /* Sleep a bit so the coroutine parks first, then post across the
-     * boundary -- this reschedules the parked coroutine. */
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
     thrd_sleep(&ts, NULL);
     xylem_sem_post(ctx->sem);
@@ -184,7 +160,7 @@ static void _tc_waiter(void* arg) {
     thrd_create(&th, _tc_thread_fn, ctx);
     thrd_detach(th);
 
-    xylem_sem_wait(ctx->sem); /* parks until the external thread posts */
+    xylem_sem_wait(ctx->sem);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
     xylem_shutdown();
@@ -204,10 +180,6 @@ static void test_thread_posts_coro(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_coro_timeout: timedwait on an empty sem times out.             */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     int tested;
 } _coto_ctx_t;
@@ -222,10 +194,9 @@ static void _coto_main(void* arg) {
     bool ok = xylem_sem_timedwait(sem, 100);
     uint64_t t1 = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    ASSERT(ok == false);          /* timed out */
-    ASSERT((t1 - t0) >= 90);      /* actually waited ~100ms */
+    ASSERT(ok == false);
+    ASSERT((t1 - t0) >= 90);
 
-    /* Sem still usable after a timeout: post + grab. */
     xylem_sem_post(sem);
     ASSERT(xylem_sem_timedwait(sem, 100) == true);
 
@@ -241,10 +212,6 @@ static void test_coro_timeout(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_coro_timedwait_wins: post arrives before the deadline.         */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_sem_t* sem;
     int          tested;
@@ -253,7 +220,7 @@ typedef struct {
 static void _win_waiter(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
     bool ok = xylem_sem_timedwait(ctx->sem, 5000);
-    ASSERT(ok == true); /* posted well before the 5s deadline */
+    ASSERT(ok == true);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
     xylem_shutdown();
@@ -280,13 +247,9 @@ static void test_coro_timedwait_wins(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_thread_timeout: external-thread timedwait times out.           */
-/* ------------------------------------------------------------------ */
-
 typedef struct {
     xylem_sem_t* sem;
-    atomic_int   thread_result; /* 0 unset, 1 timed-out as expected     */
+    atomic_int   thread_result;
     int          tested;
 } _tto_ctx_t;
 
@@ -302,7 +265,7 @@ static void _tto_driver(void* arg) {
     while (atomic_load(&ctx->thread_result) == 0) {
         xylem_sleep(5);
     }
-    ASSERT(atomic_load(&ctx->thread_result) == 1); /* timed out */
+    ASSERT(atomic_load(&ctx->thread_result) == 1);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
     xylem_shutdown();
@@ -326,10 +289,6 @@ static void test_thread_timeout(void) {
     ASSERT(ctx.tested == 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* test_stress: N posters, N coroutine waiters, every token accounted. */
-/* ------------------------------------------------------------------ */
-
 #define STRESS_WAITERS 16
 #define STRESS_ROUNDS  100
 
@@ -337,6 +296,7 @@ typedef struct {
     xylem_sem_t* sem;
     atomic_int   acquired;
     atomic_int   done;
+    atomic_int   posters_done;
     int          tested;
 } _stress_ctx_t;
 
@@ -349,6 +309,9 @@ static void _stress_waiter(void* arg) {
     if (atomic_fetch_add(&ctx->done, 1) + 1 == STRESS_WAITERS) {
         ASSERT(atomic_load(&ctx->acquired) == STRESS_WAITERS * STRESS_ROUNDS);
         ctx->tested = 1;
+        while (atomic_load(&ctx->posters_done) < STRESS_WAITERS) {
+            xylem_sleep(1);
+        }
         xylem_sem_destroy(ctx->sem);
         xylem_shutdown();
     }
@@ -362,6 +325,7 @@ static void _stress_poster(void* arg) {
             xylem_sleep(1);
         }
     }
+    atomic_fetch_add(&ctx->posters_done, 1);
 }
 
 static void _stress_main(void* arg) {
@@ -381,6 +345,7 @@ static void test_stress(void) {
     _stress_ctx_t ctx = {0};
     atomic_init(&ctx.acquired, 0);
     atomic_init(&ctx.done, 0);
+    atomic_init(&ctx.posters_done, 0);
     xylem_run(_stress_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }

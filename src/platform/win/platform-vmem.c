@@ -37,7 +37,11 @@ void* platform_vmem_reserve(size_t size) {
 }
 
 int platform_vmem_commit(void* ptr, size_t size) {
-    return VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE) ? 0 : -1;
+    if (!VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE)) {
+        return -1;
+    }
+    VMEM_ASAN_RESET(ptr, size);
+    return 0;
 }
 
 void platform_vmem_decommit(void* ptr, size_t size) {

@@ -587,25 +587,40 @@ static void _srv_parser_reset(_srv_parser_t* sp) {
     llhttp_reset(&sp->parser);
 }
 
+void http_srv_unref(http_srv_t* s) {
+    if (atomic_fetch_sub_explicit(&s->active_conns, 1,
+                                  memory_order_acq_rel) == 1) {
+        if (s->transport_ctx_free) {
+            s->transport_ctx_free(s->transport_ctx);
+        }
+        free(s);
+    }
+}
+
 void http_srv_conn_coroutine(void* arg) {
     http_srv_conn_ctx_t* ctx = (http_srv_conn_ctx_t*)arg;
+    http_srv_t* srv = ctx->srv;
     _srv_parser_t sp;
     _srv_parser_init(&sp);
     sp.transport = &ctx->transport;
 
-    atomic_fetch_add(&ctx->srv->active_conns, 1);
-
+    /* This coroutine holds one reference on `srv` (taken by the accept loop
+     * BEFORE spawning, closing the spawn-vs-count window). It drops that
+     * reference via http_srv_unref() on every exit path; the party that
+     * releases the final reference frees `srv`, so a closing owner never
+     * frees it out from under a coroutine still reading its fields. After
+     * the unref this coroutine must not touch `srv` again. */
     char* readbuf = (char*)malloc(HTTP_IO_BUF_SIZE);
     if (!readbuf) {
-        atomic_fetch_sub(&ctx->srv->active_conns, 1);
         _transport_close(&ctx->transport);
         free(ctx);
+        http_srv_unref(srv);
         return;
     }
     bool keep_alive = true;
 
     while (keep_alive) {
-        if (ctx->srv->closing) {
+        if (atomic_load_explicit(&ctx->srv->closing, memory_order_acquire)) {
             break;
         }
 
@@ -698,9 +713,9 @@ void http_srv_conn_coroutine(void* arg) {
             if (res._transport) {
                 _transport_close(&ctx->transport);
             }
-            atomic_fetch_sub(&ctx->srv->active_conns, 1);
             free(readbuf);
             free(ctx);
+            http_srv_unref(srv);
             return;
         }
 
@@ -716,11 +731,11 @@ void http_srv_conn_coroutine(void* arg) {
         _srv_parser_reset(&sp);
     }
 
-    atomic_fetch_sub(&ctx->srv->active_conns, 1);
     _srv_parser_destroy(&sp);
     free(readbuf);
     _transport_close(&ctx->transport);
     free(ctx);
+    http_srv_unref(srv);
 }
 
 void http_srv_init(http_srv_t* srv, const xylem_http_srv_opts_t* opts) {

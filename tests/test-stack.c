@@ -22,6 +22,10 @@
 #include "xylem.h"
 #include "assert.h"
 
+static int32_t _peek(xylem_stack_t* stack) {
+    return *(int32_t*)xylem_stack_peek(stack);
+}
+
 static void test_init(void) {
     xylem_stack_t* stack = xylem_stack_create();
     ASSERT(stack != NULL);
@@ -40,13 +44,13 @@ static void test_push_pop(void) {
     ASSERT(xylem_stack_push(stack, &c) == 0);
 
     ASSERT(xylem_stack_len(stack) == 3);
-    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 30);
+    ASSERT(_peek(stack) == 30);
 
     xylem_stack_pop(stack);
-    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 20);
+    ASSERT(_peek(stack) == 20);
 
     xylem_stack_pop(stack);
-    ASSERT(*(int32_t*)xylem_stack_peek(stack) == 10);
+    ASSERT(_peek(stack) == 10);
 
     xylem_stack_pop(stack);
     ASSERT(xylem_stack_empty(stack));

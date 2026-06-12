@@ -23,7 +23,7 @@
 
 #include "xylem/xylem-logger.h"
 
-#include "thrds.h"
+#include "xylem/xylem-threads.h"
 
 #include "encoding/fec/reedsolomon-c/rs.h"
 

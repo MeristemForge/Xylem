@@ -24,14 +24,19 @@
 
 #include <string.h>
 
-/* Create with invalid params returns NULL. */
-static void test_create_invalid(void) {
-    ASSERT(xylem_ringbuf_create(0, 16) == NULL);   /* esize=0 */
-    ASSERT(xylem_ringbuf_create(8, 4) == NULL);     /* bufsize < esize */
-    ASSERT(xylem_ringbuf_create(1, 0) == NULL);     /* bufsize=0 */
+static void _check_cap(size_t esize, size_t bufsize, size_t expected) {
+    xylem_ringbuf_t* ring = xylem_ringbuf_create(esize, bufsize);
+    ASSERT(ring != NULL);
+    ASSERT(xylem_ringbuf_cap(ring) == expected);
+    xylem_ringbuf_destroy(ring);
 }
 
-/* Create and destroy, check initial state. */
+static void test_create_invalid(void) {
+    ASSERT(xylem_ringbuf_create(0, 16) == NULL);
+    ASSERT(xylem_ringbuf_create(8, 4) == NULL);
+    ASSERT(xylem_ringbuf_create(1, 0) == NULL);
+}
+
 static void test_create_destroy(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 16);
     ASSERT(ring != NULL);
@@ -43,28 +48,12 @@ static void test_create_destroy(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Capacity is rounded down to power of two. */
 static void test_capacity_power_of_two(void) {
-    /* 10 bytes / 1-byte entries -> rounded to 8 */
-    xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 10);
-    ASSERT(ring != NULL);
-    ASSERT(xylem_ringbuf_cap(ring) == 8);
-    xylem_ringbuf_destroy(ring);
-
-    /* 32 bytes / 4-byte entries = 8 entries (already pow2) */
-    ring = xylem_ringbuf_create(4, 32);
-    ASSERT(ring != NULL);
-    ASSERT(xylem_ringbuf_cap(ring) == 8);
-    xylem_ringbuf_destroy(ring);
-
-    /* 20 bytes / 4-byte entries = 5 -> rounded to 4 */
-    ring = xylem_ringbuf_create(4, 20);
-    ASSERT(ring != NULL);
-    ASSERT(xylem_ringbuf_cap(ring) == 4);
-    xylem_ringbuf_destroy(ring);
+    _check_cap(1, 10, 8);
+    _check_cap(4, 32, 8);
+    _check_cap(4, 20, 4);
 }
 
-/* Basic write and read of single bytes. */
 static void test_write_read_bytes(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 8);
     ASSERT(ring != NULL);
@@ -84,7 +73,6 @@ static void test_write_read_bytes(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Write fills buffer completely. */
 static void test_write_until_full(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 4);
     ASSERT(ring != NULL);
@@ -96,7 +84,6 @@ static void test_write_until_full(void) {
     ASSERT(xylem_ringbuf_full(ring));
     ASSERT(xylem_ringbuf_avail(ring) == 0);
 
-    /* Write when full returns 0. */
     uint8_t extra = 50;
     written = xylem_ringbuf_write(ring, &extra, 1);
     ASSERT(written == 0);
@@ -109,7 +96,6 @@ static void test_write_until_full(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Read from empty returns 0. */
 static void test_read_empty(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 8);
     ASSERT(ring != NULL);
@@ -121,7 +107,6 @@ static void test_read_empty(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Partial read: request more than available. */
 static void test_partial_read(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 8);
     ASSERT(ring != NULL);
@@ -137,29 +122,24 @@ static void test_partial_read(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Wrap-around: write, read some, write more to wrap. */
 static void test_wraparound(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 4);
     ASSERT(ring != NULL);
     ASSERT(xylem_ringbuf_cap(ring) == 4);
 
-    /* Fill 3 of 4 slots */
     uint8_t w1[] = {1, 2, 3};
     xylem_ringbuf_write(ring, w1, 3);
 
-    /* Read 2 -> frees slots at front */
     uint8_t r1[2];
     xylem_ringbuf_read(ring, r1, 2);
     ASSERT(r1[0] == 1 && r1[1] == 2);
 
-    /* Write 3 more -> wraps around */
     uint8_t w2[] = {4, 5, 6};
     size_t  written = xylem_ringbuf_write(ring, w2, 3);
     ASSERT(written == 3);
     ASSERT(xylem_ringbuf_len(ring) == 4);
     ASSERT(xylem_ringbuf_full(ring));
 
-    /* Read all 4: should be 3, 4, 5, 6 */
     uint8_t r2[4];
     size_t  nread = xylem_ringbuf_read(ring, r2, 4);
     ASSERT(nread == 4);
@@ -168,11 +148,9 @@ static void test_wraparound(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Multibyte wrap-around. */
 static void test_multibyte_wraparound(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(sizeof(uint32_t), 16);
     ASSERT(ring != NULL);
-    /* 16 / 4 = 4 entries */
     ASSERT(xylem_ringbuf_cap(ring) == 4);
 
     uint32_t w1[] = {10, 20, 30};
@@ -195,7 +173,6 @@ static void test_multibyte_wraparound(void) {
     xylem_ringbuf_destroy(ring);
 }
 
-/* Repeated write/read cycles. */
 static void test_repeated_cycles(void) {
     xylem_ringbuf_t* ring = xylem_ringbuf_create(1, 4);
     ASSERT(ring != NULL);

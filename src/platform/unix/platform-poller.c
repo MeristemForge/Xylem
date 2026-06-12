@@ -180,7 +180,7 @@ int platform_poller_wait(
         return -1;
     }
 
-    /*
+    /**
      * kqueue returns separate events for READ and WRITE on the same fd.
      * Merge them into a single cqe entry keyed by udata to match epoll
      * behavior.

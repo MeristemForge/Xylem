@@ -134,6 +134,60 @@ Pushes a whole array to the global runq under one lock acquisition and performs
 **one** wake, amortizing lock + signal cost. Used by the I/O path when a single
 poll pass makes many coroutines runnable.
 
+### Park-state handshake (no resume mid-callback)
+
+`scheduler_park()` runs the park callback *after* `mco_yield()` (see §7), but
+the callback itself still touches the object it parks on — a channel's waiter
+list, a sem's queue. A waker that fires while the callback is mid-flight must
+not resume the coroutine yet, or the resumed coroutine could race the tail of
+its own park callback (the classic "park_cb touches a freed channel" bug). A
+per-coroutine `park_state` closes that window:
+
+| State | Meaning |
+|-------|---------|
+| `IDLE` | running, or sitting in a normal run queue |
+| `ARMING` | between `mco_yield()` and the end of the park callback |
+| `PARKED` | callback returned true; suspended, awaiting a wake |
+| `NOTIFIED` | a waker has claimed it; it is (or will be) requeued exactly once |
+
+The parking worker (`_sched_handle_yield`) and the waker (`scheduler_schedule`
+-> `_sched_claim_for_wake`) cooperate through a CAS on `park_state`:
+
+- **Parking worker:** store `ARMING`, run the callback. If the callback wants to
+  park, CAS `ARMING -> PARKED`. A clean CAS means it is parked and some waker
+  will requeue it later. If the CAS instead finds `NOTIFIED`, a waker raced in
+  during the callback and deliberately did *not* enqueue, so the requeue is the
+  worker's — done now via `_sched_requeue_local`.
+- **Waker:** inspect `park_state` and act on its kind:
+  - `IDLE` — not in a park handshake; a normal schedule, always enqueue.
+  - `PARKED` — CAS to `NOTIFIED` and enqueue (the callback already returned; the
+    waker owns the requeue).
+  - `ARMING` — CAS to `NOTIFIED` but do **not** enqueue (the callback, on
+    return, sees `NOTIFIED` and requeues itself).
+  - `NOTIFIED` — another waker already claimed it; nothing to do.
+
+Only one waker reaches the claim path per park, because the sync primitive (or
+`iowait`) hands off a single one-shot waiter. The net guarantee: the coroutine
+is requeued exactly once, and a resume never overlaps the tail of its park
+callback. The delicate case is a waker arriving mid-callback:
+
+```
+ Parking worker (_sched_handle_yield)      Waker (scheduler_schedule)
+        |                                          |
+   park_state = ARMING                             |
+   run park callback (still touching               |
+   the parked-on object) ...                       |
+        |                                  claim: sees ARMING
+        |                                  CAS ARMING -> NOTIFIED
+        |                                  return false -> does NOT enqueue
+   callback returns true                           |
+   CAS ARMING -> PARKED  FAILS (NOTIFIED) <--------+
+        |
+   park_state = IDLE
+   _sched_requeue_local(co)   (the worker requeues, exactly once)
+        v
+```
+
 ## 5. Worker loop (`_sched_worker_entry`)
 
 Each worker thread loops while the scheduler is running:
@@ -428,8 +482,11 @@ lock-free on the caller side.
 
 ## 11. Concurrency invariants
 
-- **Park happens before any wake can see the coroutine.** Guaranteed by
-  `scheduler_park()` running its callback after `mco_yield()`.
+- **A parked coroutine is requeued exactly once, never mid-callback.**
+  `scheduler_park()` runs its callback after `mco_yield()`, and the per-coroutine
+  `park_state` handshake (`ARMING`/`PARKED`/`NOTIFIED`, §4) ensures a waker that
+  races the still-running callback marks it `NOTIFIED` without enqueuing — the
+  callback then owns the requeue, so a resume never overlaps the callback tail.
 - **At most one reader and one writer per `iowait` direction.** Enforced by the
   exchange-on-publish check; violations `abort()`.
 - **Stale completion events are rejected**, not tolerated — via generation tags.

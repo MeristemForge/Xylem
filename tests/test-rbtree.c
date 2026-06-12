@@ -22,7 +22,7 @@
 #include "xylem.h"
 #include "assert.h"
 
-static int _int_cmp_dd(const void* a, const void* b) {
+static int _int_cmp(const void* a, const void* b) {
     int32_t va = *(const int32_t*)a;
     int32_t vb = *(const int32_t*)b;
     if (va < vb) {
@@ -34,21 +34,14 @@ static int _int_cmp_dd(const void* a, const void* b) {
     return 0;
 }
 
-static int _int_cmp_kd(const void* key, const void* data) {
-    int32_t vk = *(const int32_t*)key;
-    int32_t vd = *(const int32_t*)data;
-    if (vk < vd) {
-        return -1;
-    }
-    if (vk > vd) {
-        return 1;
-    }
-    return 0;
+static xylem_rbtree_t* _make(void) {
+    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp, _int_cmp);
+    ASSERT(tree != NULL);
+    return tree;
 }
 
 static void test_init(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
-    ASSERT(tree != NULL);
+    xylem_rbtree_t* tree = _make();
     ASSERT(xylem_rbtree_empty(tree));
     ASSERT(xylem_rbtree_first(tree) == NULL);
     ASSERT(xylem_rbtree_last(tree) == NULL);
@@ -56,7 +49,7 @@ static void test_init(void) {
 }
 
 static void test_insert_find(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
+    xylem_rbtree_t* tree = _make();
 
     int32_t vals[] = {50, 30, 70, 20, 40};
     for (int i = 0; i < 5; i++) {
@@ -76,7 +69,7 @@ static void test_insert_find(void) {
 }
 
 static void test_duplicate(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
+    xylem_rbtree_t* tree = _make();
 
     int32_t v = 42;
     ASSERT(xylem_rbtree_insert(tree, &v) == 0);
@@ -86,7 +79,7 @@ static void test_duplicate(void) {
 }
 
 static void test_erase(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
+    xylem_rbtree_t* tree = _make();
 
     int32_t vals[20];
     for (int i = 0; i < 20; i++) {
@@ -114,7 +107,7 @@ static void test_erase(void) {
 }
 
 static void test_first_last(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
+    xylem_rbtree_t* tree = _make();
 
     int32_t vals[] = {50, 10, 90, 30, 70};
     for (int i = 0; i < 5; i++) {
@@ -128,7 +121,7 @@ static void test_first_last(void) {
 }
 
 static void test_clear(void) {
-    xylem_rbtree_t* tree = xylem_rbtree_create(_int_cmp_dd, _int_cmp_kd);
+    xylem_rbtree_t* tree = _make();
 
     int32_t vals[100];
     for (int i = 0; i < 100; i++) {

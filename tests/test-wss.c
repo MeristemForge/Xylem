@@ -19,13 +19,6 @@
  *  IN THE SOFTWARE.
  */
 
-/**
- * WSS (WebSocket over TLS) integration tests. test-ws.c covers plain ws://
- * and test-tls.c covers the raw TLS engine; this file covers the wss path:
- * a TLS-backed WebSocket listener, wss:// scheme dispatch in xylem_ws_dial,
- * and frame exchange (text/binary/large/permessage-deflate) over TLS.
- */
-
 #include "xylem.h"
 #include "xylem/net/xylem-ws.h"
 #include "assert.h"
@@ -36,104 +29,108 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Helpers. */
-
 #define WSS_CERT "test_wss_cert.pem"
 #define WSS_KEY  "test_wss_key.pem"
 
-static const xylem_ws_tls_t _srv_tls = { .cert = WSS_CERT, .key = WSS_KEY };
-static const xylem_ws_tls_t _cli_tls = { .skip_verify = true };
+static const xylem_ws_tls_t _srv_tls = {.cert = WSS_CERT, .key = WSS_KEY};
+static const xylem_ws_tls_t _cli_tls = {.skip_verify = true};
 
 static void _srv_echo_handler(xylem_ws_conn_t* ws, void* ud) {
-    (void)ud;
     xylem_ws_msg_t msg;
     while (xylem_ws_recv(ws, &msg) == 0) {
         xylem_ws_send(ws, msg.opcode, msg.data, msg.len);
         xylem_ws_msg_free(&msg);
     }
     xylem_ws_close(ws, 1000, NULL, 0);
+    xylem_waitgroup_done((xylem_waitgroup_t*)ud);
 }
 
-/* Test: wss text echo. */
-
-static void test_wss_text_echo(void* arg) {
-    (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-
-    xylem_ws_opts_t srv_opts = { .tls = &_srv_tls };
-    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             _srv_echo_handler, NULL, &srv_opts);
+static xylem_ws_listener_t* _listen(const xylem_ws_opts_t* opts,
+                                    xylem_waitgroup_t* wg) {
+    xylem_waitgroup_add(wg, 1);
+    xylem_ws_listener_t* l =
+        xylem_ws_listen("127.0.0.1", 0, _srv_echo_handler, wg, opts);
     ASSERT(l != NULL);
+    return l;
+}
+
+static void _drain(xylem_ws_conn_t* c, xylem_ws_listener_t* l,
+                   xylem_waitgroup_t* wg) {
+    xylem_ws_close(c, 1000, NULL, 0);
+    xylem_waitgroup_wait(wg);
+    xylem_ws_close_listener(l);
+    xylem_waitgroup_destroy(wg);
+    remove(WSS_CERT);
+    remove(WSS_KEY);
+}
+
+static xylem_ws_conn_t* _connect(xylem_ws_listener_t* l,
+                                 const xylem_ws_opts_t* cli_opts) {
     uint16_t port = xylem_ws_listener_port(l);
     ASSERT(port != 0);
 
     char url[64];
     snprintf(url, sizeof(url), "wss://127.0.0.1:%u/", port);
 
-    xylem_ws_opts_t cli_opts = { .tls = &_cli_tls };
-    xylem_ws_conn_t* c = xylem_ws_dial(url, &cli_opts);
+    xylem_ws_conn_t* c = xylem_ws_dial(url, cli_opts);
     ASSERT(c != NULL);
+    return c;
+}
 
-    const char* text = "hello secure websocket";
-    ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, text, strlen(text)) == 0);
+static void _echo_roundtrip(xylem_ws_conn_t* c, xylem_ws_opcode_t opcode,
+                            const void* data, size_t len) {
+    ASSERT(xylem_ws_send(c, opcode, data, len) == 0);
 
     xylem_ws_msg_t msg;
     ASSERT(xylem_ws_recv(c, &msg) == 0);
-    ASSERT(msg.opcode == XYLEM_WS_TEXT);
-    ASSERT(msg.len == strlen(text));
-    ASSERT(memcmp(msg.data, text, msg.len) == 0);
+    ASSERT(msg.opcode == opcode);
+    ASSERT(msg.len == len);
+    ASSERT(memcmp(msg.data, data, len) == 0);
     xylem_ws_msg_free(&msg);
-
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
-    xylem_shutdown();
 }
 
-/* Test: wss large fragmented message. */
+static void test_wss_text_echo(void* arg) {
+    (void)arg;
+    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
+
+    xylem_ws_opts_t srv_opts = {.tls = &_srv_tls};
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
+
+    xylem_ws_opts_t  cli_opts = {.tls = &_cli_tls};
+    xylem_ws_conn_t* c        = _connect(l, &cli_opts);
+
+    const char* text = "hello secure websocket";
+    _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
+
+    _drain(c, l, wg);
+    xylem_shutdown();
+}
 
 static void test_wss_large_message(void* arg) {
     (void)arg;
     ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
-    xylem_ws_opts_t srv_opts = { .fragment_threshold = 1024, .tls = &_srv_tls };
-    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
-    uint16_t port = xylem_ws_listener_port(l);
+    xylem_ws_opts_t srv_opts = {.fragment_threshold = 1024, .tls = &_srv_tls};
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
-    char url[64];
-    snprintf(url, sizeof(url), "wss://127.0.0.1:%u/", port);
-    xylem_ws_opts_t cli_opts = { .fragment_threshold = 1024, .tls = &_cli_tls };
-    xylem_ws_conn_t* c = xylem_ws_dial(url, &cli_opts);
-    ASSERT(c != NULL);
+    xylem_ws_opts_t  cli_opts = {.fragment_threshold = 1024, .tls = &_cli_tls};
+    xylem_ws_conn_t* c        = _connect(l, &cli_opts);
 
-    size_t big_len = 8192;
-    uint8_t* big = (uint8_t*)malloc(big_len);
+    size_t   big_len = 8192;
+    uint8_t* big     = (uint8_t*)malloc(big_len);
     ASSERT(big != NULL);
     for (size_t i = 0; i < big_len; i++) {
         big[i] = (uint8_t)(i & 0xFF);
     }
 
-    ASSERT(xylem_ws_send(c, XYLEM_WS_BINARY, big, big_len) == 0);
-
-    xylem_ws_msg_t msg;
-    ASSERT(xylem_ws_recv(c, &msg) == 0);
-    ASSERT(msg.opcode == XYLEM_WS_BINARY);
-    ASSERT(msg.len == big_len);
-    ASSERT(memcmp(msg.data, big, big_len) == 0);
-    xylem_ws_msg_free(&msg);
+    _echo_roundtrip(c, XYLEM_WS_BINARY, big, big_len);
 
     free(big);
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
-
-/* Test: wss with permessage-deflate. */
 
 static void test_wss_deflate(void* arg) {
     (void)arg;
@@ -143,38 +140,21 @@ static void test_wss_deflate(void* arg) {
         .permessage_deflate = true,
         .tls                = &_srv_tls,
     };
-    xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0,
-                                             _srv_echo_handler, NULL, &srv_opts);
-    ASSERT(l != NULL);
-    uint16_t port = xylem_ws_listener_port(l);
+    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
+    xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
-    char url[64];
-    snprintf(url, sizeof(url), "wss://127.0.0.1:%u/", port);
     xylem_ws_opts_t cli_opts = {
         .permessage_deflate = true,
         .tls                = &_cli_tls,
     };
-    xylem_ws_conn_t* c = xylem_ws_dial(url, &cli_opts);
-    ASSERT(c != NULL);
+    xylem_ws_conn_t* c = _connect(l, &cli_opts);
 
     const char* text = "compressed payload over a TLS websocket connection!";
-    ASSERT(xylem_ws_send(c, XYLEM_WS_TEXT, text, strlen(text)) == 0);
+    _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
-    xylem_ws_msg_t msg;
-    ASSERT(xylem_ws_recv(c, &msg) == 0);
-    ASSERT(msg.opcode == XYLEM_WS_TEXT);
-    ASSERT(msg.len == strlen(text));
-    ASSERT(memcmp(msg.data, text, msg.len) == 0);
-    xylem_ws_msg_free(&msg);
-
-    xylem_ws_close(c, 1000, NULL, 0);
-    xylem_ws_close_listener(l);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
+    _drain(c, l, wg);
     xylem_shutdown();
 }
-
-/* Runner. */
 
 typedef void (*test_fn_t)(void*);
 

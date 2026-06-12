@@ -79,6 +79,20 @@ extern void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count);
  */
 extern queue_node_t* runq_pop(runq_t* rq);
 
+/**
+ * @brief Approximate queue length, read without taking the lock.
+ *
+ * For spin/peek fast paths only: a lock-free hint that may be momentarily
+ * stale. A return of 0 does not guarantee a concurrent push has not just
+ * landed, and vice-versa -- callers must still handle a racing runq_pop()
+ * returning NULL (or a node). Never use it for a correctness decision that
+ * a missed/extra item would break.
+ *
+ * @param rq  Run queue.
+ * @return    Approximate number of queued nodes.
+ */
+extern int32_t runq_len_approx(runq_t* rq);
+
 
 /**
  * @brief Pop up to min(size/nprocs + 1, cap) nodes from the queue.

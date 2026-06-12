@@ -385,8 +385,14 @@ void xylem_http_close(xylem_http_srv_t* srv) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_close");
 
     http_srv_t* s = (http_srv_t*)srv;
+    /* Stop accepting and signal in-flight connections to wind down, then
+     * drop the owner reference. The accept coroutine and any live
+     * connection coroutines each hold their own reference; whichever party
+     * releases the last one frees `s`, so this never frees the server out
+     * from under a coroutine still touching it. Returns without blocking. */
+    atomic_store_explicit(&s->closing, true, memory_order_release);
     s->close_listener(s->listener);
-    free(s);
+    http_srv_unref(s);
 }
 
 int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
@@ -396,26 +402,31 @@ int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_shutdown");
 
     http_srv_t* s = (http_srv_t*)srv;
-    s->closing = true;
+    atomic_store_explicit(&s->closing, true, memory_order_release);
     s->close_listener(s->listener);
 
     if (timeout_ms == 0) {
-        free(s);
+        http_srv_unref(s);
         return 0;
     }
 
+    /* Wait until only the owner reference remains (every connection and the
+     * accept coroutine have released theirs), bounded by the deadline. On
+     * timeout we still drop the owner reference: any straggler coroutine
+     * frees `s` when it finally exits, so there is no race either way. */
     uint64_t deadline =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
-    while (atomic_load(&s->active_conns) > 0) {
+    int rc = 0;
+    while (atomic_load_explicit(&s->active_conns, memory_order_acquire) > 1) {
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
         if (now >= deadline) {
-            free(s);
-            return -1;
+            rc = -1;
+            break;
         }
         runtime_sleep(1);
     }
-    free(s);
-    return 0;
+    http_srv_unref(s);
+    return rc;
 }
 
 int xylem_http_srv_addr(xylem_http_srv_t* srv,
