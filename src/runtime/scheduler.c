@@ -130,9 +130,11 @@ typedef struct _sched_worker_s {
     _Atomic bool         parked;
     _Atomic(mco_coro*)   runnext;
     _Atomic uint64_t     runnext_ts; /* ms timestamp set when runnext is filled. */
+    uint64_t             now_ms;     /* worker's per-loop cached clock (ms).      */
     uint32_t             sched_tick;
     heap_t               timers;
     mtx_t                timer_lock;
+    _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -466,13 +468,32 @@ static int _sched_timeout_locked(_sched_worker_t* w, uint64_t now) {
     return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
-static int _sched_timer_next_timeout(_sched_worker_t* w) {
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+/**
+ * Republish the earliest timer deadline so the lock-free guards in
+ * _sched_process_timers / _sched_timer_next_timeout can skip the lock when
+ * nothing is due. Caller MUST hold w->timer_lock. Release-ordered to pair
+ * with the acquire loads on the worker's hot path.
+ */
+static inline void _sched_publish_deadline(_sched_worker_t* w) {
+    heap_node_t* root = heap_peek(&w->timers);
+    uint64_t nd = root
+        ? heap_entry(root, sched_timer_t, heap_node)->timeout
+        : UINT64_MAX;
+    atomic_store_explicit(&w->next_deadline_ms, nd, memory_order_release);
+}
 
-    mtx_lock(&w->timer_lock);
-    int timeout = _sched_timeout_locked(w, now);
-    mtx_unlock(&w->timer_lock);
-    return timeout;
+static int _sched_timer_next_timeout(_sched_worker_t* w) {
+    uint64_t nd = atomic_load_explicit(
+        &w->next_deadline_ms, memory_order_acquire);
+    if (nd == UINT64_MAX) {
+        return -1;
+    }
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (nd <= now) {
+        return 0;
+    }
+    uint64_t diff = nd - now;
+    return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
 static void _sched_timer_spawn_entry(void* arg) {
@@ -482,6 +503,18 @@ static void _sched_timer_spawn_entry(void* arg) {
 }
 
 static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
+    /**
+     * Lock-free fast path: skip the lock entirely when no timer is due.
+     * next_deadline_ms is republished under the lock on every heap mutation,
+     * so an acquire load here pairs with those release stores; a concurrent
+     * arm that lands just after this check is caught next iteration (within
+     * one tick) or by the wake the arm itself issues.
+     */
+    if (now_ms < atomic_load_explicit(
+            &w->next_deadline_ms, memory_order_acquire)) {
+        return -1;
+    }
+
     for (;;) {
         sched_timer_t* timer = NULL;
 
@@ -521,6 +554,7 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
 
     mtx_lock(&w->timer_lock);
     int timeout = _sched_timeout_locked(w, now_ms);
+    _sched_publish_deadline(w);
     mtx_unlock(&w->timer_lock);
     return timeout;
 }
@@ -662,6 +696,7 @@ static void _sched_drain(_sched_worker_t* w, scheduler_t* sched) {
 
 static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    w->now_ms = now;
     _sched_process_timers(w, now);
 
     uint64_t last = atomic_load_explicit(
@@ -762,6 +797,7 @@ static mco_coro* _sched_worker_find_coro(
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        w->now_ms = now;
         _sched_process_timers(w, now);
 
         bool expected = false;
@@ -1046,6 +1082,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         w->index = (uint32_t)i;
         heap_init(&w->timers, _sched_timer_cmp);
         mtx_init(&w->timer_lock, mtx_plain);
+        atomic_init(&w->next_deadline_ms, UINT64_MAX);
 
         if (!w->deque || !w->sem) {
             _sched_cleanup(sched, 0);
@@ -1115,13 +1152,16 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
     }
 
     /**
-     * Stamp before publishing so a stealer that sees the coro also sees
-     * a valid timestamp (relaxed is fine: the runnext store is the
-     * release that orders this).
+     * Stamp before publishing so a stealer that sees the coro also sees a
+     * valid timestamp. Use the worker's cached loop clock (now_ms), not a
+     * fresh getnow: this is the hottest hand-off path, and the only reader
+     * is the coarse 1ms runnext-steal aging, so loop-granularity time is
+     * plenty. Relaxed is fine -- the runnext store below is the release
+     * that orders this.
      */
     atomic_store_explicit(
         &_tls_worker->runnext_ts,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
+        _tls_worker->now_ms,
         memory_order_relaxed);
     mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
     if (old) {
@@ -1362,6 +1402,7 @@ void sched_timer_start(
     timer->repeat  = repeat_ms;
     timer->active  = true;
     heap_insert(&ow->timers, &timer->heap_node);
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
 
     if (atomic_load(&ow->parked)) {
@@ -1383,6 +1424,7 @@ bool sched_timer_stop(sched_timer_t* timer) {
         timer->active = false;
         cancelled = true;
     }
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
     return cancelled;
 }
@@ -1403,6 +1445,7 @@ bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms) {
     }
     timer->active = true;
     heap_insert(&ow->timers, &timer->heap_node);
+    _sched_publish_deadline(ow);
     mtx_unlock(&ow->timer_lock);
 
     if (atomic_load(&ow->parked)) {
