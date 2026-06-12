@@ -53,13 +53,13 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     while (!predicate()) {
  *         xylem_cond_wait(c, m);
  *     }
- *     // predicate holds, still under m
  *     xylem_mutex_unlock(m);
  *
- *     // signaler
+ * And on the signalling side, holding the same mutex:
+ *
  *     xylem_mutex_lock(m);
  *     modify_state();
- *     xylem_cond_signal(c);        // or xylem_cond_broadcast(c)
+ *     xylem_cond_signal(c);
  *     xylem_mutex_unlock(m);
  *
  * A signaler normally holds the same mutex as the waiter, giving the

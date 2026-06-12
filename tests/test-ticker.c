@@ -26,6 +26,7 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #define SAFETY_TIMEOUT_MS 10000
 #define TICK_INTERVAL_MS  20
@@ -180,10 +181,101 @@ static void test_thread_consumer(void) {
     xylem_run(_thread_consumer_main, &ctx, NULL);
 }
 
+/**
+ * Concurrent destroy-while-ticking soak.
+ *
+ * Targets the window in _ticker_tick_cb(): the scheduler dequeues the
+ * timer on its owner worker and is about to call the callback, but has
+ * not yet run the callback's own _ticker_ref(). If a concurrent
+ * xylem_ticker_destroy() from another thread drops the last reference
+ * in that gap, the ticker is freed and the callback's first access is a
+ * use-after-free.
+ *
+ * Crucially, no consumer ever parks in xylem_ticker_recv() here, so
+ * nothing holds a protective reference across destroy. The other tests
+ * always keep a consumer blocked in recv (which refs the ticker), which
+ * masks this window -- that is why they never trip it.
+ *
+ * This is a probabilistic race: the window is a few instructions wide,
+ * so the test deliberately oversubscribes CPUs (few workers, many
+ * destroyer threads) to widen it via preemption, and hammers
+ * create/destroy with no per-iteration heavy work. It is wall-clock
+ * bounded so it does not balloon the suite. Set XYLEM_TICKER_SOAK_MS to
+ * run it longer (e.g. under ASan/TSan) for a real chance of catching
+ * the bug. With the bug present and a sanitizer attached, a long enough
+ * run aborts the process; otherwise the run simply completes "clean".
+ */
+#define RACE_DESTROYERS  8
+#define RACE_INTERVAL_MS 1
+#define RACE_DEFAULT_MS  1000
+
+typedef struct {
+    atomic_bool stop;
+    atomic_int  destroys;
+} _race_ctx_t;
+
+static int _race_destroyer_fn(void* arg) {
+    _race_ctx_t* c = (_race_ctx_t*)arg;
+    int n = 0;
+    while (!atomic_load_explicit(&c->stop, memory_order_relaxed)) {
+        xylem_ticker_t* tk = xylem_ticker_create(RACE_INTERVAL_MS);
+        if (!tk) {
+            continue;
+        }
+        /**
+         * Let the timer arm and start firing so a fire can be in flight
+         * on the owner worker at the moment we tear the ticker down.
+         */
+        xylem_sleep(RACE_INTERVAL_MS * 2);
+        xylem_ticker_destroy(tk);
+        n++;
+    }
+    atomic_fetch_add(&c->destroys, n);
+    return 0;
+}
+
+static void _race_main(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(60000);
+
+    uint64_t budget_ms = RACE_DEFAULT_MS;
+    const char* env = getenv("XYLEM_TICKER_SOAK_MS");
+    if (env) {
+        budget_ms = strtoull(env, NULL, 10);
+    }
+
+    _race_ctx_t ctx;
+    atomic_init(&ctx.stop, false);
+    atomic_init(&ctx.destroys, 0);
+
+    thrd_t th[RACE_DESTROYERS];
+    for (int i = 0; i < RACE_DESTROYERS; i++) {
+        ASSERT(thrd_create(&th[i], _race_destroyer_fn, &ctx) == thrd_success);
+    }
+
+    xylem_sleep(budget_ms);
+    atomic_store(&ctx.stop, true);
+
+    for (int i = 0; i < RACE_DESTROYERS; i++) {
+        ASSERT(thrd_join(th[i], NULL) == thrd_success);
+    }
+    ASSERT(atomic_load(&ctx.destroys) > 0);
+
+    xylem_shutdown();
+}
+
+static void test_destroy_race(void) {
+    /* Few workers vs many destroyer threads => oversubscription, which
+     * widens the fire-dispatch window the race depends on. */
+    xylem_opts_t opts = { .workers = 2, .coro_stack_size = 0 };
+    xylem_run(_race_main, NULL, &opts);
+}
+
 int main(void) {
     test_tick();
     test_invalid();
     test_destroy_wakes_recv();
     test_thread_consumer();
+    test_destroy_race();
     return 0;
 }

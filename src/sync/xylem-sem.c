@@ -244,9 +244,6 @@ void xylem_sem_destroy(xylem_sem_t* s) {
  * post() banked a token between the load and the sleep. thr_waiters is
  * published with seq_cst so post() cannot skip our wake (the store pairs
  * with post()'s seq_cst count bump + thr_waiters read).
- *
- * @return true if a token was taken, false only when @p deadline_ms is
- *         non-zero and the deadline elapsed first.
  */
 static bool _sem_wait_thread(xylem_sem_t* s, bool timed, uint64_t timeout_ms) {
     uint64_t deadline = timed ? _sem_now_ms() + timeout_ms : 0;
