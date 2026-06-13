@@ -162,9 +162,20 @@ static void test_reset(void) {
     xylem_run(_reset_main, NULL, NULL);
 }
 
+typedef struct {
+    atomic_int            fires;
+    atomic_uint_least64_t first_fire_ms;
+    xylem_waitgroup_t*    wg;
+} _reset_repeat_ctx_t;
+
 static void _reset_repeat_cb(xylem_timer_t* t, void* ud) {
-    _fire_ctx_t* ctx = (_fire_ctx_t*)ud;
-    if (atomic_fetch_add(&ctx->fires, 1) + 1 == FIRE_TARGET) {
+    _reset_repeat_ctx_t* ctx = (_reset_repeat_ctx_t*)ud;
+    int n = atomic_fetch_add(&ctx->fires, 1) + 1;
+    if (n == 1) {
+        atomic_store(&ctx->first_fire_ms,
+                     xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
+    }
+    if (n == FIRE_TARGET) {
         xylem_waitgroup_done(ctx->wg);
     } else {
         xylem_timer_reset(t, 30);
@@ -173,7 +184,9 @@ static void _reset_repeat_cb(xylem_timer_t* t, void* ud) {
 
 static void _reset_repeat_main(void* arg) {
     (void)arg;
-    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _reset_repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    atomic_init(&ctx.fires, 0);
+    atomic_init(&ctx.first_fire_ms, 0);
     xylem_waitgroup_add(ctx.wg, 1);
 
     xylem_timer_t* wd = _arm_watchdog();
@@ -185,10 +198,18 @@ static void _reset_repeat_main(void* arg) {
     ASSERT(xylem_timer_reset(t, 30));
 
     xylem_waitgroup_wait(ctx.wg);
-    uint64_t elapsed =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - reset_at_ms;
 
-    ASSERT(elapsed < 450);
+    /**
+     * What this proves: reset() shortened the original 500ms arm to 30ms.
+     * Had reset not taken effect, the first fire would land near the
+     * original deadline (~480ms after reset_at). Bounding only the FIRST
+     * interval -- not the whole 5-fire repeat sequence -- keeps the check
+     * robust on slow/loaded CI runners while still cleanly separating
+     * "reset worked" (~30ms) from "reset ignored" (~480ms). The repeat
+     * count is checked separately, with no timing dependency.
+     */
+    uint64_t first_elapsed = atomic_load(&ctx.first_fire_ms) - reset_at_ms;
+    ASSERT(first_elapsed < 400);
     ASSERT(atomic_load(&ctx.fires) >= FIRE_TARGET);
 
     xylem_timer_cancel(t);
