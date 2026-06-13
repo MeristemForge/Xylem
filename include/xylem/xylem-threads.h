@@ -42,12 +42,33 @@ _Pragma("once")
 #include <stdlib.h>
 #include <time.h>
 
+/*
+ * Detect a ThreadSanitizer build. On glibc < 2.36, the native <threads.h>
+ * `thrd_create` reaches `pthread_create` through an internal direct call that
+ * TSAN cannot intercept, so worker threads start with no TSAN thread state and
+ * crash in `__tsan_func_entry`. Routing Linux through the pthread-based
+ * polyfill (already used on macOS) keeps thread creation on the intercepted
+ * `pthread_create`, which TSAN handles correctly.
+ */
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define XYLEM_THREADS_TSAN 1
+#endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+#define XYLEM_THREADS_TSAN 1
+#endif
+#ifndef XYLEM_THREADS_TSAN
+#define XYLEM_THREADS_TSAN 0
+#endif
+
 #if defined(__linux__) || defined(__APPLE__)
-#if defined(__APPLE__)
+#if defined(__APPLE__) || (defined(__linux__) && XYLEM_THREADS_TSAN)
 
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdint.h>
 
 #define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
 #define thread_local __thread
@@ -264,7 +285,7 @@ static inline void call_once(once_flag* flag, void (*func)(void)) {
 }
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) && !XYLEM_THREADS_TSAN
 #include <threads.h>
 #endif
 #endif
