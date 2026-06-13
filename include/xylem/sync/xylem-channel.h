@@ -21,17 +21,11 @@
 
 _Pragma("once")
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct xylem_channel_s xylem_channel_t;
-
-/**
- * Return code from xylem_channel_send when a bounded channel is at
- * capacity. Distinct from -1 (invalid input / allocation failure) so
- * callers can tell "full" (retry / drop a frame) from a hard error.
- */
-#define XYLEM_CHANNEL_FULL (-2)
 
 /**
  * MPSC channel: many senders, single receiver.
@@ -43,7 +37,7 @@ typedef struct xylem_channel_s xylem_channel_t;
  *
  * Threading:
  *   - send(): callable from any thread or coroutine; never parks. A
- *     full bounded channel returns XYLEM_CHANNEL_FULL (drop/retry is
+ *     full bounded channel returns INT_MAX (drop/retry is
  *     the caller's choice -- there is no blocking backpressure). An
  *     unbounded channel never reports full.
  *   - recv() / recv_timeout(): callable from a coroutine OR an OS
@@ -56,7 +50,7 @@ typedef struct xylem_channel_s xylem_channel_t;
  *   - create(0) makes an unbounded channel: send never reports full
  *     (it always queues, barring OOM).
  *   - create(cap) with cap > 0 caps the in-flight message count at cap;
- *     send returns XYLEM_CHANNEL_FULL when full. For backpressure the
+ *     send returns INT_MAX when full. For backpressure the
  *     receiver can watch len()/cap() and drop once over a threshold
  *     (recv_timeout(ch, 0) drains without blocking).
  */
@@ -69,7 +63,7 @@ typedef struct xylem_channel_s xylem_channel_t;
  * @param cap  Maximum in-flight messages (sent but not yet received).
  *             0 makes the channel unbounded (send never reports full);
  *             a value > 0 caps the in-flight count, and send returns
- *             XYLEM_CHANNEL_FULL instead of queueing when full. send
+ *             INT_MAX instead of queueing when full. send
  *             never blocks either way.
  *
  * @return Channel handle, or NULL on allocation failure.
@@ -114,7 +108,7 @@ extern void xylem_channel_close(xylem_channel_t* ch);
  * @param ch   Channel handle.
  * @param msg  Opaque message pointer (must be non-NULL).
  *
- * @return 0 on success, XYLEM_CHANNEL_FULL if the channel is bounded
+ * @return 0 on success, INT_MAX if the channel is bounded
  *         and at capacity, or -1 on invalid input or allocation
  *         failure.
  */

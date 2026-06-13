@@ -25,6 +25,7 @@
 
 #include "xylem/xylem-threads.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdio.h>
 
@@ -342,7 +343,7 @@ static void _bt_coro(void* arg) {
     ASSERT(xylem_channel_send(ch, &b) == 0);
     ASSERT(xylem_channel_len(ch) == 2);
 
-    ASSERT(xylem_channel_send(ch, &c) == XYLEM_CHANNEL_FULL);
+    ASSERT(xylem_channel_send(ch, &c) == INT_MAX);
 
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &a);
     ASSERT(xylem_channel_len(ch) == 1);

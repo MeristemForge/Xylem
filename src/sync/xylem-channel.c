@@ -32,6 +32,7 @@
 
 #include "runtime/minicoro/minicoro.h"
 
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -426,7 +427,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     if (ch->cap != 0 && prev >= ch->cap) {
         atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
         _channel_unref(ch);
-        return XYLEM_CHANNEL_FULL;
+        return INT_MAX;
     }
 
     int rc = -1;
