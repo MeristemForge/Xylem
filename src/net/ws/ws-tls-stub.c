@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Stub wss dial factory for builds without TLS support. Returns NULL so a
  * wss:// dial degrades to "not available" with no TLS symbols linked.
  */

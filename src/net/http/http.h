@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Core header for the HTTP module.
  *
  * Collects the types the HTTP translation units share: the transport
@@ -68,8 +68,10 @@ typedef struct http_transport_s {
 typedef http_transport_t (*http_dial_fn_t)(const char* host, uint16_t port,
                                            uint64_t timeout_ms, void* ctx);
 
-/* URL / header value types shared across the HTTP module. The stateless
- * helpers that operate on them are declared in http-utils.h. */
+/**
+ * URL / header value types shared across the HTTP module. The stateless
+ * helpers that operate on them are declared in http-utils.h.
+ */
 
 typedef struct http_url_s {
     char     scheme[8];

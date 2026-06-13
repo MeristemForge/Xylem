@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * HTTP CONNECT tunnel (transport-agnostic).
  *
  * Establishes a TCP tunnel to a target host through an HTTP proxy via the

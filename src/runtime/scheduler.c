@@ -346,8 +346,10 @@ static void _sched_wake_worker(scheduler_t* sched) {
      */
     atomic_thread_fence(memory_order_seq_cst);
 
-    /* A worker is keep-warm spinning: it will pick the work up from the
-     * run queue in userspace, so no kernel wake is needed. */
+    /**
+     * A worker is keep-warm spinning: it will pick the work up from the
+     * run queue in userspace, so no kernel wake is needed.
+     */
     if (atomic_load_explicit(&sched->spinning, memory_order_seq_cst) != 0) {
         return;
     }
@@ -837,9 +839,11 @@ static mco_coro* _sched_worker_find_coro(
                     if (!first) {
                         first = extra_co;
                     } else {
-                        /* Already claimed by _sched_process_io; enqueue
+                        /**
+                         * Already claimed by _sched_process_io; enqueue
                          * directly so we do not re-claim (which would
-                         * observe CLAIMED and drop it). */
+                         * observe CLAIMED and drop it).
+                         */
                         _sched_enqueue(sched, extra_co);
                     }
                 }
@@ -1229,8 +1233,10 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
             }
             runq_push_batch(sched->runq, nodes, n);
         }
-        /* The displaced `old` is now stealable (deque/global), so wake a
-         * parked worker to pick it up. */
+        /**
+         * The displaced `old` is now stealable (deque/global), so wake a
+         * parked worker to pick it up.
+         */
         _sched_wake_worker(sched);
     }
 
@@ -1310,8 +1316,10 @@ void scheduler_schedule_batch(
     }
     int32_t m = 0;
     for (int32_t i = 0; i < n; i++) {
-        /* A coro still arming its park must not be enqueued here; its park
-         * callback owns the requeue. Drop it from the batch. */
+        /**
+         * A coro still arming its park must not be enqueued here; its park
+         * callback owns the requeue. Drop it from the batch.
+         */
         if (!_sched_claim_for_wake(cos[i])) {
             continue;
         }

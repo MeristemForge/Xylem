@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Plain WebSocket (ws) dial factory.
  *
  * Establishes a plain-TCP client connection and runs the WebSocket

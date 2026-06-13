@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * HTTP public API + scheme dispatch.
  *
  * Defines the opaque public request/response wrappers and the accessor
@@ -44,7 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
+/**
  * The public xylem_http_req_t / xylem_http_res_t are opaque wrappers
  * whose single member is the internal struct used by the engine.
  */
@@ -56,7 +56,7 @@ struct xylem_http_res_s {
     http_res_t internal;
 };
 
-/*
+/**
  * The engine (http.c) hands user callbacks a public handle by casting
  * (xylem_http_res_t*)&res where res is an internal http_res_t, relying on
  * the wrapper's internal member sharing the struct's address. Enforce that
@@ -67,10 +67,6 @@ _Static_assert(offsetof(struct xylem_http_req_s, internal) == 0,
                "http_req_t must remain the first member of xylem_http_req_s");
 _Static_assert(offsetof(struct xylem_http_res_s, internal) == 0,
                "http_res_t must remain the first member of xylem_http_res_s");
-
-/* ===================================================================== *
- *  Request accessors
- * ===================================================================== */
 
 const char* xylem_http_req_method(const xylem_http_req_t* req) {
     if (!req) {
@@ -147,10 +143,6 @@ int xylem_http_req_remote_addr(const xylem_http_req_t* req,
     }
     return 0;
 }
-
-/* ===================================================================== *
- *  Response accessors and writers
- * ===================================================================== */
 
 int xylem_http_res_status(const xylem_http_res_t* res) {
     if (!res) {
@@ -255,10 +247,6 @@ int xylem_http_res_hijack(xylem_http_res_t* res, void** transport) {
     return http_res_hijack(&res->internal, transport);
 }
 
-/* ===================================================================== *
- *  Static content helper
- * ===================================================================== */
-
 void xylem_http_serve_content(xylem_http_res_t* res,
                               xylem_http_req_t* req,
                               const void* data,
@@ -352,10 +340,6 @@ void xylem_http_serve_content(xylem_http_res_t* res,
     }
 }
 
-/* ===================================================================== *
- *  Server lifecycle + scheme dispatch
- * ===================================================================== */
-
 static bool _is_https(const char* url) {
     return url && url[0] == 'h' && url[1] == 't' && url[2] == 't'
         && url[3] == 'p' && url[4] == 's' && url[5] == ':';
@@ -385,11 +369,13 @@ void xylem_http_close(xylem_http_srv_t* srv) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_close");
 
     http_srv_t* s = (http_srv_t*)srv;
-    /* Stop accepting and signal in-flight connections to wind down, then
+    /**
+     * Stop accepting and signal in-flight connections to wind down, then
      * drop the owner reference. The accept coroutine and any live
      * connection coroutines each hold their own reference; whichever party
      * releases the last one frees `s`, so this never frees the server out
-     * from under a coroutine still touching it. Returns without blocking. */
+     * from under a coroutine still touching it. Returns without blocking.
+     */
     atomic_store_explicit(&s->closing, true, memory_order_release);
     s->close_listener(s->listener);
     http_srv_unref(s);
@@ -410,10 +396,12 @@ int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
         return 0;
     }
 
-    /* Wait until only the owner reference remains (every connection and the
+    /**
+     * Wait until only the owner reference remains (every connection and the
      * accept coroutine have released theirs), bounded by the deadline. On
      * timeout we still drop the owner reference: any straggler coroutine
-     * frees `s` when it finally exits, so there is no race either way. */
+     * frees `s` when it finally exits, so there is no race either way.
+     */
     uint64_t deadline =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
     int rc = 0;
@@ -446,10 +434,6 @@ int xylem_http_srv_addr(xylem_http_srv_t* srv,
     }
     return 0;
 }
-
-/* ===================================================================== *
- *  Client verb helpers
- * ===================================================================== */
 
 static xylem_http_res_t* _do_request(const char* method, const char* url,
                                      const void* body, size_t body_len,

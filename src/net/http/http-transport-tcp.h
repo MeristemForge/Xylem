@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Plain-TCP HTTP transport factory (http-transport-tcp.c, always built).
  *
  * Builds an http_transport_t over a raw TCP connection for the server

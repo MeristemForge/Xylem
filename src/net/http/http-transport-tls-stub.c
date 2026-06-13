@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Stub TLS transport factory for builds without TLS support. Both
  * factories return failure so the dispatch layer degrades to "HTTPS not
  * available" with no macros leaking into the engine.

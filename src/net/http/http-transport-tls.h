@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * TLS HTTP transport factory.
  *
  * Builds an http_transport_t over a TLS connection for the server
