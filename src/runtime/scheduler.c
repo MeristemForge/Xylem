@@ -209,6 +209,9 @@ static inline _sched_worker_t* _sched_timer_owner(sched_timer_t* t) {
     return &t->sched->workers[t->owner];
 }
 
+static bool _sched_claim_for_wake(mco_coro* co);
+static void _sched_enqueue(scheduler_t* sched, mco_coro* co);
+
 static void _sched_coro_entry(mco_coro* co) {
     _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
     ctx->fn(ctx->arg);
@@ -625,11 +628,24 @@ static mco_coro* _sched_process_io(
         return NULL;
     }
 
-    mco_coro* first = batch.coros[0];
+    /**
+     * Hand the first woken coroutine back for a direct run on this
+     * worker and inject the rest into the run queue so idle workers can
+     * pick them up in parallel -- mirrors Go's netpoll integration
+     * (pop one to run now, injectglist the rest). The first coro MUST
+     * still pass through the wake claim: returning it unclaimed left its
+     * park_state at PARKED, which let a second waker re-claim and
+     * re-enqueue the same coro and resume it twice, tripping the iowait
+     * single-waiter assertion. A coro still arming its park is dropped
+     * here -- its park callback owns the requeue.
+     */
     if (batch.n > 1) {
         scheduler_schedule_batch(sched, &batch.coros[1], batch.n - 1);
     }
-    return first;
+    if (!_sched_claim_for_wake(batch.coros[0])) {
+        return NULL;
+    }
+    return batch.coros[0];
 }
 
 /* Requeue on the parking worker after a declined or notified park. */
@@ -812,7 +828,10 @@ static mco_coro* _sched_worker_find_coro(
                     if (!first) {
                         first = extra_co;
                     } else {
-                        scheduler_schedule(sched, extra_co);
+                        /* Already claimed by _sched_process_io; enqueue
+                         * directly so we do not re-claim (which would
+                         * observe NOTIFIED and drop it). */
+                        _sched_enqueue(sched, extra_co);
                     }
                 }
             }
