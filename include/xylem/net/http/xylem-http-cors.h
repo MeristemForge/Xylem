@@ -37,7 +37,7 @@ typedef struct {
 /**
  * @brief CORS middleware handler.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Pass a pointer to xylem_http_cors_t as userdata when registering:
  *   xylem_http_router_use(router, xylem_http_cors_middleware, &cors_cfg);

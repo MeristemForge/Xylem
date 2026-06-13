@@ -29,7 +29,7 @@ typedef struct xylem_udp_chan_s xylem_udp_chan_t;
 /**
  * @brief Create a bound UDP socket.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param host  Bind address (e.g. "0.0.0.0"), or NULL for any.
  * @param port  Bind port.
@@ -41,7 +41,7 @@ extern xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port);
 /**
  * @brief Create a connected UDP socket.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Calls connect() so subsequent send/recv use the default peer.
  *
@@ -59,7 +59,7 @@ extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
 /**
  * @brief Receive a datagram.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until a datagram arrives, the
  * deadline passes, or the handle is closed.
@@ -87,7 +87,7 @@ extern int xylem_udp_recv(
 /**
  * @brief Send a datagram.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine if the socket buffer is full until
  * writable, the deadline passes, or the handle is closed.
@@ -116,7 +116,7 @@ extern int xylem_udp_send(
 /**
  * @brief Set the read deadline.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_udp_recv() calls return -1.
@@ -131,7 +131,7 @@ extern void xylem_udp_set_read_deadline(
 /**
  * @brief Set the write deadline.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_udp_send() calls return -1.
@@ -146,7 +146,7 @@ extern void xylem_udp_set_write_deadline(
 /**
  * @brief Close the UDP handle.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in recv/send. Idempotent.
  *
@@ -157,7 +157,7 @@ extern void xylem_udp_close(xylem_udp_chan_t* udp);
 /**
  * @brief Get the local bound address.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param udp       UDP handle.
  * @param host      Buffer for address string.
@@ -175,7 +175,7 @@ extern int xylem_udp_local_addr(
 /**
  * @brief Get the remote address (connected mode only).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param udp       UDP handle.
  * @param host      Buffer for address string.

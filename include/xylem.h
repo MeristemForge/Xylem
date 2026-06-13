@@ -31,6 +31,7 @@ _Pragma("once")
 #include "xylem/encoding/xylem-base64.h"
 #include "xylem/encoding/xylem-bswap.h"
 #include "xylem/encoding/xylem-varint.h"
+#include "xylem/encoding/xylem-url.h"
 #include "xylem/encoding/xylem-json.h"
 #include "xylem/encoding/xylem-gzip.h"
 #include "xylem/encoding/xylem-fec.h"
@@ -74,6 +75,7 @@ _Pragma("once")
 #include "xylem/net/http/xylem-http-form.h"
 #include "xylem/net/http/xylem-http-multipart.h"
 #include "xylem/net/http/xylem-http-router.h"
+#include "xylem/net/http/xylem-http-cors.h"
 #include "xylem/net/http/xylem-http-fileserver.h"
 #include "xylem/net/xylem-ws.h"
 
@@ -103,13 +105,17 @@ extern void xylem_run(
 /**
  * @brief Signal the runtime to shut down.
  *
- * Thread-safe. Unblocks xylem_run() without waiting for coroutines
+ * @note [THREAD-SAFE]
+ *
+ * Unblocks xylem_run() without waiting for coroutines
  * to finish naturally.
  */
 extern void xylem_shutdown(void);
 
 /**
- * @brief Spawn a new coroutine on the runtime. Thread-safe.
+ * @brief Spawn a new coroutine on the runtime.
+ *
+ * @note [THREAD-SAFE]
  *
  * @param fn   Coroutine entry function.
  * @param arg  Opaque argument.
@@ -119,7 +125,7 @@ extern void xylem_spawn(void (*fn)(void*), void* arg);
 /**
  * @brief Suspend the caller for @p ms milliseconds.
  *
- * Context-adaptive.
+ * @note [CONTEXT-ADAPTIVE]
  *
  * On a coroutine running on the runtime, this parks the coroutine (the
  * worker thread stays free for other work). On a plain OS thread, it
@@ -129,7 +135,8 @@ extern void xylem_sleep(uint64_t ms);
 
 /**
  * @brief Await a blocking function run on the runtime's thread pool.
- * Coroutine-only.
+ *
+ * @note [COROUTINE-ONLY]
  *
  * Hands @p fn to the blocking pool and suspends the calling coroutine
  * until it returns; the coroutine then resumes on a scheduler worker.

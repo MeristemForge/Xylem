@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Secure WebSocket (wss) dial factory. Establishes a TLS client
  * connection and runs the WebSocket handshake over it. Compiled only when
  * XYLEM_ENABLE_TLS is set; ws-tls-stub.c provides a NULL-returning stub

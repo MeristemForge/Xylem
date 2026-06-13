@@ -79,7 +79,7 @@ struct xylem_http_req_s;
 /**
  * @brief Upgrade an HTTP request to a WebSocket connection (server side).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param res   HTTP response handle.
  * @param req   HTTP request handle.
@@ -94,7 +94,7 @@ extern xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
 /**
  * @brief Start a standalone WebSocket server (ws or wss).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Plain ws by default; set opts->tls (cert + key) to serve wss over TLS.
  *
@@ -114,7 +114,7 @@ extern xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
 /**
  * @brief Close a WebSocket listener and stop accepting connections.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param listener  Listener handle.
  */
@@ -123,7 +123,7 @@ extern void     xylem_ws_close_listener(xylem_ws_listener_t* listener);
 /**
  * @brief Return the port the listener is bound to.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param listener  Listener handle.
  *
@@ -134,7 +134,7 @@ extern uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener);
 /**
  * @brief Connect to a WebSocket server (ws or wss).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * The URL scheme selects transport: ws:// dials plain TCP, wss:// dials
  * over TLS using opts->tls (NULL = default system trust).
@@ -150,7 +150,7 @@ extern xylem_ws_conn_t* xylem_ws_dial(const char* url,
 /**
  * @brief Send a message on the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn    Connection handle.
  * @param opcode  Message type (text or binary).
@@ -165,7 +165,7 @@ extern int  xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
 /**
  * @brief Receive the next message (blocks until available).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  * @param msg   Output message structure.
@@ -177,7 +177,7 @@ extern int  xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg);
 /**
  * @brief Send a ping frame.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  * @param data  Optional ping payload.
@@ -190,7 +190,7 @@ extern int  xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len);
 /**
  * @brief Initiate a close handshake.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn        Connection handle.
  * @param code        Close status code (RFC 6455).
@@ -205,7 +205,7 @@ extern int  xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
 /**
  * @brief Free resources owned by a received message.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param msg  Message to free.
  */
@@ -214,7 +214,7 @@ extern void xylem_ws_msg_free(xylem_ws_msg_t* msg);
 /**
  * @brief Return the close code received from the peer.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  *
@@ -225,7 +225,7 @@ extern uint16_t xylem_ws_close_code(xylem_ws_conn_t* conn);
 /**
  * @brief Get the user data pointer attached to the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  *
@@ -236,7 +236,7 @@ extern void*    xylem_ws_get_userdata(xylem_ws_conn_t* conn);
 /**
  * @brief Set the user data pointer attached to the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  * @param ud    User data pointer.

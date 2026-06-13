@@ -64,6 +64,8 @@ typedef struct xylem_channel_s xylem_channel_t;
 /**
  * @brief Create a channel.
  *
+ * @note [COROUTINE-ONLY]
+ *
  * @param cap  Maximum in-flight messages (sent but not yet received).
  *             0 makes the channel unbounded (send never reports full);
  *             a value > 0 caps the in-flight count, and send returns
@@ -77,6 +79,8 @@ extern xylem_channel_t* xylem_channel_create(size_t cap);
 /**
  * @brief Destroy the channel, releasing its memory.
  *
+ * @note [COROUTINE-ONLY]
+ *
  * Any messages still queued are freed (node wrapper only -- payload
  * lifetime is the caller's responsibility). Accepts NULL.
  *
@@ -86,6 +90,8 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
 
 /**
  * @brief Close the channel, signalling no more sends.
+ *
+ * @note [THREAD-SAFE]
  *
  * After close:
  *   - recv() continues to return queued messages, then NULL.
@@ -100,6 +106,8 @@ extern void xylem_channel_close(xylem_channel_t* ch);
 
 /**
  * @brief Send a message. Non-blocking, thread-safe.
+ *
+ * @note [THREAD-SAFE]
  *
  * Aborts if the channel is closed.
  *
@@ -116,6 +124,8 @@ extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
  * @brief Receive the next message, blocking the calling coroutine
  *        forever until a message arrives or the channel closes.
  *
+ * @note [CONTEXT-ADAPTIVE]
+ *
  * Equivalent to xylem_channel_recv_timeout(ch, (uint64_t)-1).
  * Concurrent recv from multiple coroutines aborts.
  *
@@ -127,6 +137,8 @@ extern void* xylem_channel_recv(xylem_channel_t* ch);
 
 /**
  * @brief Receive the next message with a timeout.
+ *
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Concurrent recv from multiple coroutines aborts (same single-
  * receiver contract as recv).
@@ -153,6 +165,8 @@ extern void* xylem_channel_recv_timeout(
 /**
  * @brief Current number of in-flight messages (sent but not received).
  *
+ * @note [THREAD-SAFE]
+ *
  * Best-effort snapshot, safe to call from any thread. Useful for
  * drop/backpressure decisions against cap().
  *
@@ -164,6 +178,8 @@ extern size_t xylem_channel_len(xylem_channel_t* ch);
 
 /**
  * @brief Capacity of the channel.
+ *
+ * @note [THREAD-SAFE]
  *
  * @param ch  Channel handle (NULL returns 0).
  *

@@ -45,7 +45,7 @@ typedef struct xylem_rudp_opts_s {
 /**
  * @brief Dial a reliable UDP connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until the handshake completes
  * or times out.
@@ -64,7 +64,7 @@ extern xylem_rudp_conn_t* xylem_rudp_dial(
 /**
  * @brief Start listening for reliable UDP connections.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Spawns a background dispatcher coroutine.
  *
@@ -82,7 +82,7 @@ extern xylem_rudp_listener_t* xylem_rudp_listen(
 /**
  * @brief Accept an incoming RUDP connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until a new session arrives
  * or the listener closes.
@@ -96,7 +96,7 @@ extern xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln);
 /**
  * @brief Close a RUDP listener.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Resets all active sessions and wakes any parked accept caller.
  *
@@ -107,7 +107,7 @@ extern void xylem_rudp_close_listener(xylem_rudp_listener_t* ln);
 /**
  * @brief Read data from a stream-mode connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends until data is available, the connection closes, or
  * the read deadline expires.
@@ -126,7 +126,7 @@ extern int xylem_rudp_read(
 /**
  * @brief Write data on a stream-mode connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  * @param data  Source buffer.
@@ -142,7 +142,7 @@ extern int xylem_rudp_write(
 /**
  * @brief Close a RUDP connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn  Connection handle.
  */
@@ -151,7 +151,7 @@ extern void xylem_rudp_close(xylem_rudp_conn_t* conn);
 /**
  * @brief Set the read deadline for a connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn         Connection handle.
  * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
@@ -163,7 +163,7 @@ extern void xylem_rudp_set_read_deadline(
 /**
  * @brief Set the write deadline for a connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn         Connection handle.
  * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
@@ -175,7 +175,7 @@ extern void xylem_rudp_set_write_deadline(
 /**
  * @brief Get the peer address of a connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn     Connection handle.
  * @param host     Output buffer (at least 46 bytes).

@@ -253,11 +253,37 @@ static void test_datagram_boundary(void) {
     });
 }
 
+static void _connaddr_coro(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+
+    char     host[46];
+    uint16_t port = 0;
+    ASSERT(xylem_udp_remote_addr(udp, host, sizeof(host), &port) == 0);
+    ASSERT(strcmp(host, UDP_HOST) == 0);
+    ASSERT(port == ctx->port_a);
+
+    char     lhost[46];
+    uint16_t lport = 0;
+    ASSERT(xylem_udp_local_addr(udp, lhost, sizeof(lhost), &lport) == 0);
+    ASSERT(lport != 0);
+
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_connected_addr(void) {
+    _ctx_t ctx = {.port_a = UDP_PORT_A + 10, .client = _connaddr_coro};
+    xylem_run(_timeout_main, &ctx, NULL);
+}
+
 int main(void) {
     test_echo();
     test_recvfrom_addr();
     test_deadline_timeout();
     test_close_wakes_recv();
     test_datagram_boundary();
+    test_connected_addr();
     return 0;
 }

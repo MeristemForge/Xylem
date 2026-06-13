@@ -230,8 +230,10 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
         abort();
     }
     if (prev != 1) {
-        /* Counter climbed back above 1 between the peek and the guard (a
-         * reuse add()); we decremented a value > 1, so we are not last. */
+        /**
+         * Counter climbed back above 1 between the peek and the guard (a
+         * reuse add()); we decremented a value > 1, so we are not last.
+         */
         spin_unlock(&wg->guard);
         return;
     }

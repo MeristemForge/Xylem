@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Secure WebSocket (wss) dial factory.
  *
  * Establishes a TLS client connection and runs the WebSocket handshake

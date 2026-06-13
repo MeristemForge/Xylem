@@ -229,6 +229,7 @@ set "_SUP=0"
 if /I "%~1"=="go"    ( if /I "%~2"=="coro" set "_SUP=1" )
 if /I "%~1"=="rust"  ( if /I "%~2"=="coro" set "_SUP=1"
                        if /I "%~2"=="thread" set "_SUP=1"
+                       if /I "%~2"=="mixed" ( if /I "%~3"=="channel" set "_SUP=1" )
                        if /I "%~3"=="handoff" set "_SUP=1" )
 if /I "%~1"=="xylem" set "_SUP=1"
 goto :eof
@@ -320,12 +321,12 @@ set "_opt=%~1"
 if /I "%_opt%"=="build" (shift & goto :parse_opts)
 if /I "%_opt%"=="bench" (shift & goto :parse_opts)
 if /I "%_opt%"=="all"   (shift & goto :parse_opts)
-if /I "%_opt%"=="--prims"   (set "PRIMS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="-p"        (set "PRIMS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="--langs"   (set "LANGS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="-l"        (set "LANGS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="--modes"   (set "MODES=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="-m"        (set "MODES=%~2" & shift & shift & goto :parse_opts)
+if /I "%_opt%"=="--prims"   (set "PRIMS=" & shift & set "_LV=PRIMS" & goto :collect_list)
+if /I "%_opt%"=="-p"        (set "PRIMS=" & shift & set "_LV=PRIMS" & goto :collect_list)
+if /I "%_opt%"=="--langs"   (set "LANGS=" & shift & set "_LV=LANGS" & goto :collect_list)
+if /I "%_opt%"=="-l"        (set "LANGS=" & shift & set "_LV=LANGS" & goto :collect_list)
+if /I "%_opt%"=="--modes"   (set "MODES=" & shift & set "_LV=MODES" & goto :collect_list)
+if /I "%_opt%"=="-m"        (set "MODES=" & shift & set "_LV=MODES" & goto :collect_list)
 if /I "%_opt%"=="--workers" (set "WORKERS=%~2" & shift & shift & goto :parse_opts)
 if /I "%_opt%"=="-w"        (set "WORKERS=%~2" & shift & shift & goto :parse_opts)
 if /I "%_opt%"=="--repeat"  (set "REPEAT=%~2" & shift & shift & goto :parse_opts)
@@ -333,6 +334,20 @@ if /I "%_opt%"=="-r"        (set "REPEAT=%~2" & shift & shift & goto :parse_opts
 if /I "%_opt%"=="--permits" (set "PERMITS=%~2" & shift & shift & goto :parse_opts)
 call :err "unknown option: %_opt%"
 exit /b 1
+
+REM Collect a comma/space-separated list into the variable named by _LV,
+REM consuming value tokens until the next option (starts with '-') or end of
+REM args. cmd splits an unquoted `xylem,rust` into separate tokens on the
+REM comma, so we rejoin them here -- this makes `--langs xylem,rust`,
+REM `--langs xylem rust`, and a quoted "xylem,rust" all work.
+:collect_list
+if "%~1"=="" goto :parse_opts
+set "_lt=%~1"
+if "%_lt:~0,1%"=="-" goto :parse_opts
+call set "_cur=%%%_LV%%%"
+if defined _cur (call set "%_LV%=%%%_LV%%%,%_lt%") else (set "%_LV%=%_lt%")
+shift
+goto :collect_list
 
 :usage
 echo usage: %~nx0 [build^|bench^|all] [options]
@@ -348,7 +363,7 @@ echo Options:
 echo   --prims, -p    mutex,cond,waitgroup,sem,channel   primitives to run
 echo   --langs, -l    xylem,go,rust                       languages to compare
 echo   --modes, -m    coro,thread,mixed                   concurrency models
-echo                                                      (go: coro; rust: coro,thread)
+echo                                                      (go: coro; rust: coro,thread,+channel/handoff mixed)
 echo   --workers, -w  0                                   runtime worker threads
 echo   --repeat, -r   3                                   repeat each cell N times
 echo   --permits      4                                   semaphore permits (sem)

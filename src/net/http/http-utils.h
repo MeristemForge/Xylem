@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * Stateless HTTP helpers: URL parsing/serialization, request
  * serialization, header array utilities, status reason phrases, and
  * proxy support. Implemented in http-utils.c (proxy tunnel dialing in

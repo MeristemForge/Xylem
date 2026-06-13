@@ -42,7 +42,7 @@ typedef struct xylem_reader_s xylem_reader_t;
 /**
  * @brief Create a buffered reader.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param conn       Transport connection handle.
  * @param transport  Transport type (determines read function).
@@ -58,7 +58,7 @@ extern xylem_reader_t* xylem_reader_create(
 /**
  * @brief Destroy a buffered reader.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param rd  Reader to destroy.
  */
@@ -67,7 +67,7 @@ extern void xylem_reader_destroy(xylem_reader_t* rd);
 /**
  * @brief Read up to len bytes (read-some semantics).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Returns available buffered data first. If the buffer is empty,
  * performs one read from the underlying transport.
@@ -86,7 +86,7 @@ extern int xylem_reader_read(
 /**
  * @brief Read exactly len bytes.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Drains internal buffer first, then calls read_fn repeatedly
  * until len bytes are filled, EOF, or error.
@@ -106,7 +106,7 @@ extern int xylem_reader_read_full(
 /**
  * @brief Read until delimiter is found.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Scans for delim in the stream. The output includes the
  * delimiter byte. Returns -1 if len bytes are consumed
@@ -131,7 +131,7 @@ extern int xylem_reader_read_until(
 /**
  * @brief Peek at the next len bytes without consuming them.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Ensures the internal buffer contains at least len bytes
  * (reading from transport if needed). The peeked bytes

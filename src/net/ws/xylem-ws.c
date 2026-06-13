@@ -101,8 +101,10 @@ xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
     }
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_dial");
 
-    /* Dispatch on scheme to the matching dial factory: wss -> ws_tls_dial
-     * (ws-tls.c, NULL stub when TLS is off), ws -> ws_tcp_dial (ws-tcp.c). */
+    /**
+     * Dispatch on scheme to the matching dial factory: wss -> ws_tls_dial
+     * (ws-tls.c, NULL stub when TLS is off), ws -> ws_tcp_dial (ws-tcp.c).
+     */
     if (is_tls) {
         return ws_tls_dial(host, port, path, opts ? opts->tls : NULL, opts);
     }
@@ -185,10 +187,12 @@ xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
     srv_opts.on_upgrade      = _ws_upgrade_handler;
     srv_opts.upgrade_userdata = l;
 
-    /* wss: translate the ws TLS config to the http server's cert config so
+    /**
+     * wss: translate the ws TLS config to the http server's cert config so
      * xylem_http_listen builds an HTTPS (TLS) listener. Plain ws leaves
      * srv_opts.tls NULL. The struct is kept alive for the listen call only;
-     * http copies what it needs (paths are caller-owned strings). */
+     * http copies what it needs (paths are caller-owned strings).
+     */
     xylem_http_tls_t http_tls;
     if (opts && opts->tls) {
         http_tls.cert        = opts->tls->cert;

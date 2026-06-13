@@ -22,10 +22,9 @@
 #include "sync/tls-wake.h"
 
 #include "xylem/xylem-utils.h"
+#include "xylem/xylem-threads.h"
 
 #include "platform/platform-futex.h"
-
-#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -79,8 +78,10 @@ void tls_wake_wait(tls_wake_t* w) {
         if (_tls_wake_try(w)) {
             return;
         }
-        /* count == 0: sleep. A post racing the load is caught by the
-         * value-compare (the word is no longer 0), so no wake is lost. */
+        /**
+         * count == 0: sleep. A post racing the load is caught by the
+         * value-compare (the word is no longer 0), so no wake is lost.
+         */
         platform_futex_wait(&w->count, 0);
     }
 }

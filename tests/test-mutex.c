@@ -31,6 +31,26 @@
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
+typedef struct {
+    atomic_int stop;
+    uint64_t   timeout_ms;
+} _thr_wd_t;
+
+static int _thr_wd_fn(void* arg) {
+    _thr_wd_t* wd = (_thr_wd_t*)arg;
+    uint64_t waited = 0;
+    while (atomic_load(&wd->stop) == 0) {
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+        thrd_sleep(&ts, NULL);
+        waited += 10;
+        if (waited >= wd->timeout_ms) {
+            fprintf(stderr, "thread-section watchdog: timed out\n");
+            abort();
+        }
+    }
+    return 0;
+}
+
 #define MTX_WORKERS    20
 #define MTX_INCREMENTS 100
 
@@ -132,6 +152,11 @@ static void test_threads(void) {
     _mtx_thr_ctx_t ctx = {0};
     ctx.mtx = xylem_mutex_create();
 
+    _thr_wd_t wd = { .timeout_ms = SAFETY_TIMEOUT_MS };
+    atomic_init(&wd.stop, 0);
+    thrd_t wd_th;
+    ASSERT(thrd_create(&wd_th, _thr_wd_fn, &wd) == thrd_success);
+
     thrd_t th[MTX_THREADS];
     for (int i = 0; i < MTX_THREADS; i++) {
         ASSERT(thrd_create(&th[i], _mtx_thr_worker, &ctx) == thrd_success);
@@ -139,6 +164,9 @@ static void test_threads(void) {
     for (int i = 0; i < MTX_THREADS; i++) {
         thrd_join(th[i], NULL);
     }
+
+    atomic_store(&wd.stop, 1);
+    thrd_join(wd_th, NULL);
 
     ASSERT(ctx.counter == (long long)MTX_THREADS * MTX_THR_INCREMENTS);
     xylem_mutex_destroy(ctx.mtx);
@@ -189,6 +217,11 @@ static void test_mixed(void) {
     _mtx_mixed_ctx_t ctx = {0};
     ctx.mtx = xylem_mutex_create();
 
+    _thr_wd_t wd = { .timeout_ms = SAFETY_TIMEOUT_MS };
+    atomic_init(&wd.stop, 0);
+    thrd_t wd_th;
+    ASSERT(thrd_create(&wd_th, _thr_wd_fn, &wd) == thrd_success);
+
     thrd_t th[MTX_MIX_THREADS];
     for (int i = 0; i < MTX_MIX_THREADS; i++) {
         ASSERT(thrd_create(&th[i], _mtx_mixed_thr, &ctx) == thrd_success);
@@ -199,6 +232,9 @@ static void test_mixed(void) {
     for (int i = 0; i < MTX_MIX_THREADS; i++) {
         thrd_join(th[i], NULL);
     }
+
+    atomic_store(&wd.stop, 1);
+    thrd_join(wd_th, NULL);
 
     ASSERT(ctx.counter ==
            (long long)(MTX_MIX_COROS + MTX_MIX_THREADS) * MTX_MIX_INCREMENTS);

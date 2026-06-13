@@ -71,12 +71,16 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * @brief Create a new condition variable.
  *
+ * @note [THREAD-SAFE]
+ *
  * @return Pointer to the new cond, or NULL on allocation failure.
  */
 extern xylem_cond_t* xylem_cond_create(void);
 
 /**
  * @brief Destroy the cond and free its resources.
+ *
+ * @note [THREAD-SAFE]
  *
  * It is a caller bug to destroy a cond that still has waiters on
  * it. Matches the pthread_cond_destroy contract.
@@ -88,6 +92,8 @@ extern void xylem_cond_destroy(xylem_cond_t* cond);
 /**
  * @brief Atomically release `mtx` and suspend the caller until
  *        the cond is signalled.
+ *
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any context, holding `mtx`: a coroutine parks, an
  * external OS thread blocks on a per-thread semaphore. On return,
@@ -102,6 +108,8 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
 /**
  * @brief Wake one waiter, if any.
  *
+ * @note [THREAD-SAFE]
+ *
  * Callable from any context; never blocks. If no one is currently
  * parked on the cond the call is a no-op (no permit is stored).
  *
@@ -111,6 +119,8 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
 
 /**
  * @brief Wake every waiter currently parked on the cond.
+ *
+ * @note [THREAD-SAFE]
  *
  * Callable from any context; never blocks. Waiters observed at the
  * moment broadcast() acquires its internal guard are all resumed;

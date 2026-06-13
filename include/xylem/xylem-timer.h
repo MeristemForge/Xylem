@@ -30,7 +30,9 @@ typedef struct xylem_timer_s xylem_timer_t;
 typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
 
 /**
- * @brief Arm a one-shot timer. Thread-safe.
+ * @brief Arm a one-shot timer.
+ *
+ * @note [THREAD-SAFE]
  *
  * The handle must be released with xylem_timer_cancel(), even after
  * the callback has fired.
@@ -45,7 +47,9 @@ extern xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud);
 
 /**
- * @brief Cancel the timer and release the handle. Thread-safe.
+ * @brief Cancel the timer and release the handle.
+ *
+ * @note [THREAD-SAFE]
  *
  * A callback already in flight may still run to completion.
  * Must not be called concurrently with xylem_timer_reset() on
@@ -59,7 +63,9 @@ extern xylem_timer_t* xylem_timer_after(
 extern bool xylem_timer_cancel(xylem_timer_t* timer);
 
 /**
- * @brief Re-arm a timer with a new delay. Thread-safe.
+ * @brief Re-arm a timer with a new delay.
+ *
+ * @note [THREAD-SAFE]
  *
  * Preserves callback and user data. Restarts the countdown from now.
  * Safe with @p timer == NULL (no-op, returns false).

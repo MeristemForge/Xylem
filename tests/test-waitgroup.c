@@ -22,6 +22,7 @@
 #include "xylem.h"
 #include "assert.h"
 #include "utils.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -124,8 +125,69 @@ static void test_multi_waiter(void) {
     }
 }
 
+#define WGT_WORKERS 8
+
+typedef struct {
+    xylem_waitgroup_t* wg;
+    atomic_int         done_count;
+    atomic_int         thread_released;
+    int                tested;
+} _wgt_ctx_t;
+
+static int _wgt_thread_waiter(void* arg) {
+    _wgt_ctx_t* ctx = (_wgt_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WGT_WORKERS);
+    atomic_store(&ctx->thread_released, 1);
+    return 0;
+}
+
+static void _wgt_worker(void* arg) {
+    _wgt_ctx_t* ctx = (_wgt_ctx_t*)arg;
+    xylem_sleep(5);
+    atomic_fetch_add(&ctx->done_count, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _wgt_driver(void* arg) {
+    _wgt_ctx_t* ctx = (_wgt_ctx_t*)arg;
+    while (atomic_load(&ctx->thread_released) == 0) {
+        xylem_sleep(2);
+    }
+    ctx->tested = 1;
+    xylem_waitgroup_destroy(ctx->wg);
+    ctx->wg = NULL;
+    xylem_shutdown();
+}
+
+static void _test_wgt_main(void* arg) {
+    _wgt_ctx_t* ctx = (_wgt_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, WGT_WORKERS);
+    thrd_t th;
+    ASSERT(thrd_create(&th, _wgt_thread_waiter, ctx) == thrd_success);
+    thrd_detach(th);
+    for (int i = 0; i < WGT_WORKERS; i++) {
+        xylem_spawn(_wgt_worker, ctx);
+    }
+    xylem_spawn(_wgt_driver, ctx);
+}
+
+static void test_thread_waiter(void) {
+    fprintf(stderr, "=== test_thread_waiter\n");
+    for (int round = 0; round < 20; round++) {
+        _wgt_ctx_t ctx = {0};
+        atomic_init(&ctx.done_count, 0);
+        atomic_init(&ctx.thread_released, 0);
+        xylem_run(_test_wgt_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
 int main(void) {
     test_concurrent();
     test_multi_waiter();
+    test_thread_waiter();
     return 0;
 }

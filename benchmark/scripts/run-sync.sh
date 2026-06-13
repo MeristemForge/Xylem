@@ -51,14 +51,19 @@ P_PERMITS="${PERMITS:-4}"
 # Support matrix: which (lang, mode) cells are valid. The binaries also reject
 # unsupported combinations (non-zero exit), so this is just to avoid noise.
 #   go   -> coro only;  rust -> coro,thread;  xylem -> coro,thread,mixed
-# Exception: the handoff probe is cross-context by design, so rust supports
-# all three modes for it (coro=task<->task, thread=thread<->thread,
-# mixed=external thread<->async task).
+# Exceptions for rust:
+#   - handoff is cross-context by design, so rust supports all three modes
+#     (coro=task<->task, thread=thread<->thread, mixed=external thread<->task).
+#   - channel mixed works too: a channel's producer end is callable across the
+#     coro/thread boundary, so senders in one context feed a receiver in the
+#     other over one shared MPSC (lock-style primitives still can't, so
+#     mutex/cond/sem/waitgroup remain coro,thread only).
 supported() {
     local lang="$1" mode="$2" prim="$3"
     case "$lang" in
         go)    [ "$mode" = "coro" ] ;;
         rust)  if [ "$prim" = "handoff" ]; then return 0; fi
+               if [ "$prim" = "channel" ] && [ "$mode" = "mixed" ]; then return 0; fi
                [ "$mode" = "coro" ] || [ "$mode" = "thread" ] ;;
         xylem) : ;;   # all modes
         *)     return 1 ;;
@@ -246,7 +251,8 @@ Options:
   --prims, -p    mutex,cond,waitgroup,sem,channel   primitives to run
   --langs, -l    xylem,go,rust                       languages to compare
   --modes, -m    coro,thread,mixed                   concurrency models
-                                                     (go: coro; rust: coro,thread;
+                                                     (go: coro; rust: coro,thread,
+                                                      + channel/handoff mixed;
                                                       xylem: all three)
   --workers, -w  0                                   runtime worker threads
                                                      (0 = each runtime default)

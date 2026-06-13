@@ -200,9 +200,11 @@ static struct xylem_mux_stream_s* _mux_accept_syn(
     }
     spin_unlock(&mux->streams_lock);
 
-    /* Hand the new stream to a parked accept coroutine outside the
+    /**
+     * Hand the new stream to a parked accept coroutine outside the
      * spin: xylem_channel_send may touch scheduler state and must not
-     * run under a spin lock. */
+     * run under a spin lock.
+     */
     if (created) {
         xylem_channel_send(mux->accept_ch, s);
     }

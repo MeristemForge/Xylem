@@ -9,9 +9,14 @@
 // Modes:
 //   coro    -> Tokio tasks on a multi-threaded runtime, tokio::sync primitives
 //   thread  -> std::thread + std::sync primitives (std::sync::mpsc for channel)
-//   mixed   -> unsupported: Rust cannot mix async tasks and OS threads on one
-//              primitive (async Mutex/Notify aren't usable from a blocking
-//              thread, and vice-versa). The runner skips it.
+//   mixed   -> only the `channel` primitive: senders in one context feed a
+//              receiver in the other over ONE shared MPSC. Works because a
+//              channel's producer end is callable across the boundary
+//              (tokio UnboundedSender::send and std mpsc Sender::send are both
+//              plain sync calls), unlike the lock-style primitives (async
+//              Mutex/Notify/Semaphore can't be used from a blocking thread, so
+//              mutex/cond/sem/waitgroup stay unsupported in mixed and the
+//              runner skips them).
 //
 // Workload model (identical across languages and modes):
 //   mutex      : T workers each do N lock/inc/unlock          -> ops = T*N
@@ -40,6 +45,7 @@ struct Config {
     tasks: usize,
     iters: usize,
     permits: usize,
+    chan_c2t: bool, // channel mixed: false = thread->coro (t2c), true = coro->thread (c2t)
 }
 
 fn main() {
@@ -50,6 +56,7 @@ fn main() {
         tasks: 8,
         iters: 100_000,
         permits: 4,
+        chan_c2t: false,
     };
 
     let args: Vec<String> = std::env::args().collect();
@@ -81,6 +88,17 @@ fn main() {
             }
             "--permits" if has_val => {
                 cfg.permits = args[i + 1].parse().unwrap_or(4);
+                i += 1;
+            }
+            "--chan-dir" if has_val => {
+                match args[i + 1].as_str() {
+                    "t2c" => cfg.chan_c2t = false,
+                    "c2t" => cfg.chan_c2t = true,
+                    other => {
+                        eprintln!("rust: unknown --chan-dir {:?} (want t2c|c2t)", other);
+                        std::process::exit(2);
+                    }
+                }
                 i += 1;
             }
             _ => {
@@ -122,8 +140,12 @@ fn main() {
         "coro" => run_coro(&cfg),
         "thread" => run_thread(&cfg),
         "mixed" => {
-            eprintln!("rust: mode \"mixed\" unsupported (async tasks and OS threads cannot share one primitive)");
-            std::process::exit(3);
+            if cfg.prim == "channel" {
+                mixed_channel(&cfg)
+            } else {
+                eprintln!("rust: mode \"mixed\" supported only for channel (async tasks and OS threads cannot share a lock-style primitive)");
+                std::process::exit(3);
+            }
         }
         other => {
             eprintln!("rust: unknown mode {:?}", other);
@@ -505,6 +527,99 @@ fn thread_channel(cfg: &Config) -> (u64, Duration) {
 }
 
 // ==========================================================================
+// mixed mode (channel only): cross-context senders -> receiver
+// ==========================================================================
+
+// One shared unbounded MPSC bridges a coroutine and an OS thread, mirroring
+// xylem's channel `mixed` cell. The producer end of a channel is callable from
+// either world (tokio UnboundedSender::send and std mpsc Sender::send are both
+// non-blocking sync calls), so a clean single-direction handoff is expressible
+// even though Rust cannot share a lock-style primitive across the boundary.
+//
+//   t2c (default): T OS-thread senders -> one async receiver task
+//                  (thread -> coro, the video-capture direction)
+//   c2t          : T async-task senders -> one blocking receiver thread
+//                  (coro -> thread)
+//
+// The channel is unbounded, so only the receiver ever blocks and every wake
+// runs in the pinned direction -- the same single-direction probe xylem runs.
+fn mixed_channel(cfg: &Config) -> (u64, Duration) {
+    let total = cfg.tasks as u64 * cfg.iters as u64;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if cfg.workers > 0 {
+        builder.worker_threads(cfg.workers);
+    }
+    let rt = builder.build().expect("failed to build tokio runtime");
+
+    if !cfg.chan_c2t {
+        // t2c: OS-thread senders feed an async receiver task (thread -> coro).
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        let got = Arc::new(AtomicU64::new(0));
+        let recv_got = got.clone();
+        let t0 = Instant::now();
+        let receiver = rt.spawn(async move {
+            let mut n: u64 = 0;
+            while rx.recv().await.is_some() {
+                n += 1;
+            }
+            recv_got.store(n, Ordering::Relaxed);
+        });
+        let mut hs = Vec::with_capacity(cfg.tasks);
+        for _ in 0..cfg.tasks {
+            let tx = tx.clone();
+            let iters = cfg.iters;
+            hs.push(thread::spawn(move || {
+                for _ in 0..iters {
+                    let _ = tx.send(()); // OS thread -> async task (sync send)
+                }
+            }));
+        }
+        drop(tx); // close once every thread sender is gone -> receiver ends
+        for h in hs {
+            h.join().unwrap();
+        }
+        let _ = rt.block_on(receiver);
+        let elapsed = t0.elapsed();
+        let n = got.load(Ordering::Relaxed);
+        if n != total {
+            eprintln!("channel: recv mismatch {} != {}", n, total);
+        }
+        (total, elapsed)
+    } else {
+        // c2t: async-task senders feed a blocking receiver thread (coro -> thread).
+        let (tx, rx) = stdmpsc::channel::<()>();
+        let t0 = Instant::now();
+        let receiver = thread::spawn(move || {
+            let mut got: u64 = 0;
+            while rx.recv().is_ok() {
+                got += 1;
+            }
+            got
+        });
+        rt.block_on(async {
+            let mut set = JoinSet::new();
+            for _ in 0..cfg.tasks {
+                let tx = tx.clone();
+                let iters = cfg.iters;
+                set.spawn(async move {
+                    for _ in 0..iters {
+                        let _ = tx.send(()); // async task -> OS thread (sync send)
+                    }
+                });
+            }
+            drop(tx); // close once every task sender is gone -> receiver ends
+            while set.join_next().await.is_some() {}
+        });
+        let got = receiver.join().unwrap();
+        let elapsed = t0.elapsed();
+        if got != total {
+            eprintln!("channel: recv mismatch {} != {}", got, total);
+        }
+        (total, elapsed)
+    }
+}
+
+// ==========================================================================
 // output
 // ==========================================================================
 
@@ -635,8 +750,9 @@ fn print_result(cfg: &Config, total_ops: u64, elapsed: Duration) {
 
 fn usage(prog: &str) {
     eprintln!(
-        "usage: {} <mutex|cond|waitgroup|sem|channel> \
-         [--mode coro|thread] [--workers W] [--tasks T] [--iters N] [--permits K]",
+        "usage: {} <mutex|cond|waitgroup|sem|channel|handoff> \
+         [--mode coro|thread|mixed] [--workers W] [--tasks T] [--iters N] \
+         [--permits K] [--chan-dir t2c|c2t]",
         prog
     );
 }

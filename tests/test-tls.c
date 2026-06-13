@@ -828,7 +828,7 @@ static void _addr_client(void* arg) {
 
 static void test_remote_addr(void) {
     _run_default((_plan_t){"test_tls_addr_cert.pem", "test_tls_addr_key.pem",
-                           TLS_PORT + 9, 2, _addr_server, _addr_client});
+                           TLS_PORT + 10, 2, _addr_server, _addr_client});
 }
 
 static void _conc_close_server(void* arg) {

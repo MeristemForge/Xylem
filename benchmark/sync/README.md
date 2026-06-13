@@ -31,15 +31,22 @@ code runs in every mode — only how workers are launched changes.
 |----------|-------------------------|:-----:|:--:|:----:|
 | `coro`   | coroutines / async tasks | ✓ (`xylem_spawn`) | ✓ (goroutines) | ✓ (Tokio) |
 | `thread` | plain OS threads         | ✓ | – | ✓ (`std::thread` + `std::sync`) |
-| `mixed`  | half coroutines, half OS threads on one primitive | ✓ | – | – |
+| `mixed`  | half coroutines, half OS threads on one primitive | ✓ | – | channel only |
 
 - **Go** has only goroutines, so a pure-thread or mixed model isn't expressible
   (user code always runs on a goroutine) — `go` runs `coro` only.
 - **Rust** offers `coro` (Tokio + `tokio::sync`) and `thread` (`std::thread` +
-  `std::sync`), but the two can't share one primitive (an async `Mutex`/`Notify`
-  isn't usable from a blocking thread, and vice-versa) — no `mixed`.
-- **xylem** is the only one that covers `mixed`: e.g. a coroutine producer
-  handing off to an OS-thread consumer through the same `xylem_cond`.
+  `std::sync`). The two can't share a *lock-style* primitive (an async
+  `Mutex`/`Notify`/`Semaphore` isn't usable from a blocking thread, and
+  vice-versa), so `mutex`/`cond`/`sem`/`waitgroup` have no `mixed`. The
+  **`channel`** primitive is the exception: a channel's producer end is a plain
+  sync call usable from either world (`tokio::mpsc::UnboundedSender::send` from
+  an OS thread, `std::mpsc::Sender::send` from an async task), so Rust *does*
+  run `channel` in `mixed` -- senders in one context feed a receiver in the
+  other over one shared MPSC (`--chan-dir t2c|c2t` pins the direction).
+- **xylem** is the only one that covers `mixed` for *every* primitive: e.g. a
+  coroutine producer handing off to an OS-thread consumer through the same
+  `xylem_cond`.
 
 The runner skips unsupported `(lang, mode)` cells automatically (the binaries
 also reject them with a non-zero exit). Thread/mixed modes use lighter

@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * HTTP protocol engine.
  *
  * Request/response parsing, the server connection coroutine, the client
@@ -64,10 +64,6 @@ static inline int _transport_write(http_transport_t* t, const void* data,
 static inline void _transport_close(http_transport_t* t) {
     t->close(t->conn);
 }
-
-/* ===================================================================== *
- *  Client connection pool
- * ===================================================================== */
 
 typedef struct _pool_idle_conn_s {
     http_transport_t transport;
@@ -192,10 +188,6 @@ static void _pool_release(const http_url_t* url, http_transport_t* t) {
     entry->count++;
     xylem_mutex_unlock(_pool_mu);
 }
-
-/* ===================================================================== *
- *  Response assembly
- * ===================================================================== */
 
 static int _emit_response_head(http_res_t* res, const char* extra_hdr) {
     if (!res->_transport) {
@@ -367,9 +359,11 @@ int http_res_hijack(http_res_t* res, void** transport) {
         return -1;
     }
 
-    /* Detach: caller now owns the connection. The engine writes nothing;
+    /**
+     * Detach: caller now owns the connection. The engine writes nothing;
      * the caller controls every byte from here on (status line, framing,
-     * raw tunnel, etc.). */
+     * raw tunnel, etc.).
+     */
     *transport = res->_transport;
     res->_transport = NULL;
     res->_headers_sent = true;
@@ -405,14 +399,12 @@ int http_res_upgrade(http_res_t* res, void** transport) {
 
     res->_transport->write(res->_transport->conn, "\r\n", 2);
 
-    /* 101 + headers are on the wire; hand the live connection to the
-     * caller via the shared detach primitive. */
+    /**
+     * 101 + headers are on the wire; hand the live connection to the
+     * caller via the shared detach primitive.
+     */
     return http_res_hijack(res, transport);
 }
-
-/* ===================================================================== *
- *  Header / body accumulation helpers
- * ===================================================================== */
 
 static int _hdr_field_append(char** name, size_t* name_len, size_t* name_cap,
                              const char* at, size_t len) {
@@ -454,10 +446,6 @@ static int _body_append(uint8_t** body, size_t* body_len, size_t* body_cap,
     *body_len += len;
     return 0;
 }
-
-/* ===================================================================== *
- *  Server request parser + connection coroutine
- * ===================================================================== */
 
 typedef struct _srv_parser_s {
     llhttp_t          parser;
@@ -604,12 +592,14 @@ void http_srv_conn_coroutine(void* arg) {
     _srv_parser_init(&sp);
     sp.transport = &ctx->transport;
 
-    /* This coroutine holds one reference on `srv` (taken by the accept loop
+    /**
+     * This coroutine holds one reference on `srv` (taken by the accept loop
      * BEFORE spawning, closing the spawn-vs-count window). It drops that
      * reference via http_srv_unref() on every exit path; the party that
      * releases the final reference frees `srv`, so a closing owner never
      * frees it out from under a coroutine still reading its fields. After
-     * the unref this coroutine must not touch `srv` again. */
+     * the unref this coroutine must not touch `srv` again.
+     */
     char* readbuf = (char*)malloc(HTTP_IO_BUF_SIZE);
     if (!readbuf) {
         _transport_close(&ctx->transport);
@@ -758,10 +748,6 @@ void http_srv_init(http_srv_t* srv, const xylem_http_srv_opts_t* opts) {
     }
 }
 
-/* ===================================================================== *
- *  Client response parser + request loop
- * ===================================================================== */
-
 typedef struct _cli_parser_s {
     llhttp_t          parser;
     llhttp_settings_t settings;
@@ -832,9 +818,11 @@ static void _cli_parser_destroy(_cli_parser_t* cp) {
     free(cp->cur_hdr_name);
 }
 
-/* Frees an internally-allocated response (mirrors xylem_http_res_destroy
+/**
+ * Frees an internally-allocated response (mirrors xylem_http_res_destroy
  * but operates on the engine's http_res_t, which is layout-compatible
- * with the public wrapper allocated here). */
+ * with the public wrapper allocated here).
+ */
 static void _cli_res_destroy(http_res_t* res) {
     if (!res) {
         return;

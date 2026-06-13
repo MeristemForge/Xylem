@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-/*
+/**
  * TLS transport factory for the HTTP engine. Builds an http_transport_t
  * over the internal TLS engine and drives accept/dial. Compiled only
  * when TLS is enabled; the stub (http-transport-tls-stub.c) replaces it
@@ -182,8 +182,10 @@ xylem_http_srv_t* http_tls_listen(
 
     tls_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
 
-    /* Reference count starts at two: owner handle + accept coroutine
-     * (see the TCP transport). Each connection coroutine adds its own. */
+    /**
+     * Reference count starts at two: owner handle + accept coroutine
+     * (see the TCP transport). Each connection coroutine adds its own.
+     */
     atomic_store_explicit(&srv->active_conns, 2, memory_order_relaxed);
     runtime_spawn(_https_accept_coroutine, srv);
     return (xylem_http_srv_t*)srv;

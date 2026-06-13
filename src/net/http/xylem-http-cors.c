@@ -132,7 +132,7 @@ void xylem_http_cors_middleware(xylem_http_res_t* res,
 
         xylem_http_res_set_status(res, 204);
         xylem_http_res_write(res, NULL, 0);
-        /* no next() — short-circuit */
+        /* no next() -- short-circuit */
         return;
     }
 
