@@ -61,6 +61,24 @@ static void _run_pair(_coro_t server, _coro_t client) {
     remove(UDS_PATH);
 }
 
+static void _solo_main(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, 1);
+    xylem_timer_t* wd =
+        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
+    xylem_spawn(ctx->client, ctx);
+    xylem_waitgroup_wait(ctx->wg);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx->wg);
+    xylem_shutdown();
+}
+
+static void _run_solo(_coro_t client) {
+    _ctx_t ctx = {.client = client};
+    xylem_run(_solo_main, &ctx, NULL);
+}
+
 static void _echo_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
@@ -143,8 +161,59 @@ static void test_reader_full(void) {
     _run_pair(_reader_server, _reader_client);
 }
 
+static void _dial_fail_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_conn_t* uds = xylem_uds_dial("xylem-test-uds-missing.sock", 100);
+    ASSERT(uds == NULL);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_dial_nonexistent(void) {
+    _run_solo(_dial_fail_client);
+}
+
+static void _eof_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_uds_conn_t* uds = xylem_uds_accept(ln);
+    ASSERT(uds != NULL);
+
+    ASSERT(xylem_uds_write(uds, "bye", 3) == 0);
+    xylem_uds_close(uds);
+    xylem_uds_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _eof_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    char buf[16];
+    int  n = xylem_uds_read(uds, buf, sizeof(buf));
+    ASSERT(n == 3);
+    ASSERT(memcmp(buf, "bye", 3) == 0);
+
+    n = xylem_uds_read(uds, buf, sizeof(buf));
+    ASSERT(n == 0);
+
+    xylem_uds_close(uds);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_peer_close_eof(void) {
+    _run_pair(_eof_server, _eof_client);
+}
+
 int main(void) {
     test_echo();
     test_reader_full();
+    test_dial_nonexistent();
+    test_peer_close_eof();
     return 0;
 }

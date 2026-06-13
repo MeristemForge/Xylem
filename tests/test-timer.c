@@ -251,6 +251,19 @@ static void test_blocking_cb(void) {
     xylem_run(_blocking_main, NULL, NULL);
 }
 
+static void _null_main(void* arg) {
+    (void)arg;
+    xylem_timer_t* wd = _arm_watchdog();
+    ASSERT(xylem_timer_cancel(NULL) == false);
+    ASSERT(xylem_timer_reset(NULL, 10) == false);
+    xylem_timer_cancel(wd);
+    xylem_shutdown();
+}
+
+static void test_null(void) {
+    xylem_run(_null_main, NULL, NULL);
+}
+
 int main(void) {
     test_after();
     test_cancel();
@@ -258,5 +271,6 @@ int main(void) {
     test_reset();
     test_reset_repeat();
     test_blocking_cb();
+    test_null();
     return 0;
 }

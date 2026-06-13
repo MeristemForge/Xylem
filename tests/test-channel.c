@@ -284,6 +284,50 @@ static void test_thread_recv(void) {
 }
 
 typedef struct {
+    xylem_channel_t* ch;
+    int              payload;
+    thrd_t           thr;
+    int              tested;
+} _ts_ctx_t;
+
+static int _ts_send_thread(void* arg) {
+    _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 30 * 1000 * 1000 };
+    thrd_sleep(&ts, NULL);
+    xylem_channel_send(ctx->ch, &ctx->payload);
+    return 0;
+}
+
+static void _ts_recv_coro(void* arg) {
+    _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
+    void* msg = xylem_channel_recv(ctx->ch);
+    ASSERT(msg == &ctx->payload);
+    thrd_join(ctx->thr, NULL);
+    ctx->tested = 1;
+    xylem_channel_destroy(ctx->ch);
+    ctx->ch = NULL;
+    xylem_shutdown();
+}
+
+static void _ts_main(void* arg) {
+    _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->ch = xylem_channel_create(0);
+    ASSERT(thrd_create(&ctx->thr, _ts_send_thread, ctx) == thrd_success);
+    xylem_spawn(_ts_recv_coro, ctx);
+}
+
+static void test_thread_send(void) {
+    fprintf(stderr, "=== test_thread_send\n");
+    for (int round = 0; round < 20; round++) {
+        _ts_ctx_t ctx = {0};
+        ctx.payload = round;
+        xylem_run(_ts_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
+typedef struct {
     int tested;
 } _bt_ctx_t;
 
@@ -331,6 +375,7 @@ int main(void) {
     test_timeout_deliver();
     test_timeout_race();
     test_thread_recv();
+    test_thread_send();
     test_bounded_try();
     return 0;
 }

@@ -350,6 +350,112 @@ static void test_stress(void) {
     ASSERT(ctx.tested == 1);
 }
 
+#define MIX_CORO_W     8
+#define MIX_THREAD_W   4
+#define MIX_POSTER_C   2
+#define MIX_POSTER_T   2
+#define MIX_ROUNDS     50
+#define MIX_WAITERS    (MIX_CORO_W + MIX_THREAD_W)
+#define MIX_POSTERS    (MIX_POSTER_C + MIX_POSTER_T)
+#define MIX_TOTAL      (MIX_WAITERS * MIX_ROUNDS)
+#define MIX_PER_POSTER (MIX_TOTAL / MIX_POSTERS)
+
+typedef struct {
+    xylem_sem_t* sem;
+    atomic_int   acquired;
+    atomic_int   waiters_done;
+    atomic_int   posters_done;
+    int          tested;
+} _mix_ctx_t;
+
+static void _mix_acquire_loop(_mix_ctx_t* ctx) {
+    for (int i = 0; i < MIX_ROUNDS; i++) {
+        xylem_sem_wait(ctx->sem);
+        atomic_fetch_add(&ctx->acquired, 1);
+    }
+    atomic_fetch_add(&ctx->waiters_done, 1);
+}
+
+static int _mix_thread_waiter(void* arg) {
+    _mix_acquire_loop((_mix_ctx_t*)arg);
+    return 0;
+}
+
+static void _mix_coro_waiter(void* arg) {
+    _mix_acquire_loop((_mix_ctx_t*)arg);
+}
+
+static int _mix_thread_poster(void* arg) {
+    _mix_ctx_t* ctx = (_mix_ctx_t*)arg;
+    for (int i = 0; i < MIX_PER_POSTER; i++) {
+        xylem_sem_post(ctx->sem);
+        if ((i & 7) == 0) {
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 * 1000 };
+            thrd_sleep(&ts, NULL);
+        }
+    }
+    atomic_fetch_add(&ctx->posters_done, 1);
+    return 0;
+}
+
+static void _mix_coro_poster(void* arg) {
+    _mix_ctx_t* ctx = (_mix_ctx_t*)arg;
+    for (int i = 0; i < MIX_PER_POSTER; i++) {
+        xylem_sem_post(ctx->sem);
+        if ((i & 7) == 0) {
+            xylem_sleep(1);
+        }
+    }
+    atomic_fetch_add(&ctx->posters_done, 1);
+}
+
+static void _mix_driver(void* arg) {
+    _mix_ctx_t* ctx = (_mix_ctx_t*)arg;
+    while (atomic_load(&ctx->waiters_done) < MIX_WAITERS ||
+           atomic_load(&ctx->posters_done) < MIX_POSTERS) {
+        xylem_sleep(2);
+    }
+    ASSERT(atomic_load(&ctx->acquired) == MIX_TOTAL);
+    ctx->tested = 1;
+    xylem_sem_destroy(ctx->sem);
+    xylem_shutdown();
+}
+
+static void _mix_main(void* arg) {
+    _mix_ctx_t* ctx = (_mix_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->sem = xylem_sem_create(0);
+    for (int i = 0; i < MIX_THREAD_W; i++) {
+        thrd_t th;
+        ASSERT(thrd_create(&th, _mix_thread_waiter, ctx) == thrd_success);
+        thrd_detach(th);
+    }
+    for (int i = 0; i < MIX_CORO_W; i++) {
+        xylem_spawn(_mix_coro_waiter, ctx);
+    }
+    for (int i = 0; i < MIX_POSTER_T; i++) {
+        thrd_t th;
+        ASSERT(thrd_create(&th, _mix_thread_poster, ctx) == thrd_success);
+        thrd_detach(th);
+    }
+    for (int i = 0; i < MIX_POSTER_C; i++) {
+        xylem_spawn(_mix_coro_poster, ctx);
+    }
+    xylem_spawn(_mix_driver, ctx);
+}
+
+static void test_mixed_waiters(void) {
+    fprintf(stderr, "=== test_mixed_waiters\n");
+    for (int round = 0; round < 20; round++) {
+        _mix_ctx_t ctx = {0};
+        atomic_init(&ctx.acquired, 0);
+        atomic_init(&ctx.waiters_done, 0);
+        atomic_init(&ctx.posters_done, 0);
+        xylem_run(_mix_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
 int main(void) {
     test_count();
     test_coro_pair();
@@ -359,5 +465,6 @@ int main(void) {
     test_coro_timedwait_wins();
     test_thread_timeout();
     test_stress();
+    test_mixed_waiters();
     return 0;
 }

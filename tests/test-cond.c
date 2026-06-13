@@ -22,6 +22,7 @@
 #include "xylem.h"
 #include "assert.h"
 #include "utils.h"
+#include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -324,10 +325,155 @@ static void test_external_signal(void) {
     }
 }
 
+typedef struct {
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    int            flag;
+    atomic_int     thread_released;
+    int            tested;
+} _ctw_ctx_t;
+
+static int _ctw_thread_waiter(void* arg) {
+    _ctw_ctx_t* ctx = (_ctw_ctx_t*)arg;
+    xylem_mutex_lock(ctx->mtx);
+    while (!ctx->flag) {
+        xylem_cond_wait(ctx->cond, ctx->mtx);
+    }
+    xylem_mutex_unlock(ctx->mtx);
+    atomic_store(&ctx->thread_released, 1);
+    return 0;
+}
+
+static void _ctw_signaler(void* arg) {
+    _ctw_ctx_t* ctx = (_ctw_ctx_t*)arg;
+    xylem_sleep(30);
+    xylem_mutex_lock(ctx->mtx);
+    ctx->flag = 1;
+    xylem_cond_signal(ctx->cond);
+    xylem_mutex_unlock(ctx->mtx);
+    while (atomic_load(&ctx->thread_released) == 0) {
+        xylem_sleep(2);
+    }
+    ctx->tested = 1;
+    xylem_cond_destroy(ctx->cond);
+    ctx->cond = NULL;
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
+    xylem_shutdown();
+}
+
+static void _test_ctw_main(void* arg) {
+    _ctw_ctx_t* ctx = (_ctw_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx  = xylem_mutex_create();
+    ctx->cond = xylem_cond_create();
+    thrd_t th;
+    ASSERT(thrd_create(&th, _ctw_thread_waiter, ctx) == thrd_success);
+    thrd_detach(th);
+    xylem_spawn(_ctw_signaler, ctx);
+}
+
+static void test_thread_waiter(void) {
+    fprintf(stderr, "=== test_thread_waiter\n");
+    for (int round = 0; round < 10; round++) {
+        _ctw_ctx_t ctx = {0};
+        atomic_init(&ctx.thread_released, 0);
+        xylem_run(_test_ctw_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
+#define MIXB_CORO_WAITERS 16
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    int            flag;
+    atomic_int     coro_parked;
+    atomic_int     thread_parked;
+    atomic_int     coro_released;
+    atomic_int     thread_released;
+    int            tested;
+} _mixb_ctx_t;
+
+static int _mixb_thread_waiter(void* arg) {
+    _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
+    xylem_mutex_lock(ctx->mtx);
+    atomic_fetch_add(&ctx->thread_parked, 1);
+    while (!ctx->flag) {
+        xylem_cond_wait(ctx->cond, ctx->mtx);
+    }
+    xylem_mutex_unlock(ctx->mtx);
+    atomic_fetch_add(&ctx->thread_released, 1);
+    return 0;
+}
+
+static void _mixb_coro_waiter(void* arg) {
+    _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
+    xylem_mutex_lock(ctx->mtx);
+    atomic_fetch_add(&ctx->coro_parked, 1);
+    while (!ctx->flag) {
+        xylem_cond_wait(ctx->cond, ctx->mtx);
+    }
+    xylem_mutex_unlock(ctx->mtx);
+    atomic_fetch_add(&ctx->coro_released, 1);
+}
+
+static void _mixb_driver(void* arg) {
+    _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
+    while (atomic_load(&ctx->coro_parked) < MIXB_CORO_WAITERS ||
+           atomic_load(&ctx->thread_parked) < 1) {
+        xylem_sleep(2);
+    }
+    xylem_mutex_lock(ctx->mtx);
+    ctx->flag = 1;
+    xylem_cond_broadcast(ctx->cond);
+    xylem_mutex_unlock(ctx->mtx);
+    while (atomic_load(&ctx->coro_released) < MIXB_CORO_WAITERS ||
+           atomic_load(&ctx->thread_released) < 1) {
+        xylem_sleep(2);
+    }
+    ctx->tested = 1;
+    xylem_cond_destroy(ctx->cond);
+    ctx->cond = NULL;
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
+    xylem_shutdown();
+}
+
+static void _test_mixb_main(void* arg) {
+    _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx  = xylem_mutex_create();
+    ctx->cond = xylem_cond_create();
+    thrd_t th;
+    ASSERT(thrd_create(&th, _mixb_thread_waiter, ctx) == thrd_success);
+    thrd_detach(th);
+    for (int i = 0; i < MIXB_CORO_WAITERS; i++) {
+        xylem_spawn(_mixb_coro_waiter, ctx);
+    }
+    xylem_spawn(_mixb_driver, ctx);
+}
+
+static void test_mixed_broadcast(void) {
+    fprintf(stderr, "=== test_mixed_broadcast\n");
+    for (int round = 0; round < 10; round++) {
+        _mixb_ctx_t ctx = {0};
+        atomic_init(&ctx.coro_parked, 0);
+        atomic_init(&ctx.thread_parked, 0);
+        atomic_init(&ctx.coro_released, 0);
+        atomic_init(&ctx.thread_released, 0);
+        xylem_run(_test_mixb_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+    }
+}
+
 int main(void) {
     test_signal_one();
     test_broadcast();
     test_bounded_queue();
     test_external_signal();
+    test_thread_waiter();
+    test_mixed_broadcast();
     return 0;
 }

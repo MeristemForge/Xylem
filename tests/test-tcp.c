@@ -214,10 +214,96 @@ static void test_dial_timeout(void) {
     xylem_run(_timeout_main, &ctx, NULL);
 }
 
+static void _eof_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_write(conn, "bye", 3) == 0);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _eof_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    char buf[16];
+    int  n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 3);
+    ASSERT(memcmp(buf, "bye", 3) == 0);
+
+    n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 0);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_peer_close_eof(void) {
+    _run_pair(TCP_PORT + 3, _eof_server, _eof_client);
+}
+
+static void _half_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    char buf[16];
+    int  n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 4);
+    ASSERT(memcmp(buf, "ping", 4) == 0);
+
+    n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 0);
+
+    ASSERT(xylem_tcp_write(conn, "pong", 4) == 0);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _half_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_write(conn, "ping", 4) == 0);
+    ASSERT(xylem_tcp_shutdown_wr(conn) == 0);
+
+    char buf[16];
+    int  n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 4);
+    ASSERT(memcmp(buf, "pong", 4) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_half_close(void) {
+    _run_pair(TCP_PORT + 4, _half_server, _half_client);
+}
+
 int main(void) {
     test_echo();
     test_reader_full();
     test_writer_buffered();
     test_dial_timeout();
+    test_peer_close_eof();
+    test_half_close();
     return 0;
 }
