@@ -172,20 +172,20 @@ struct scheduler_s {
  *   IDLE     - running, or sitting in a normal run queue.
  *   ARMING   - between mco_yield and the end of the park callback.
  *   PARKED   - park callback returned true; suspended awaiting a wake.
- *   NOTIFIED - a waker has claimed the coroutine; it is (or will be)
+ *   CLAIMED  - a waker has claimed the coroutine; it is (or will be)
  *              requeued exactly once.
  *
  * At most one waker reaches the claim path per park, because the sync
  * primitive (or iowait) hands off a single one-shot waiter. A waker that
- * observes ARMING only marks NOTIFIED and does NOT enqueue: the park
- * callback, on return, sees NOTIFIED and requeues the coroutine itself,
+ * observes ARMING only marks CLAIMED and does NOT enqueue: the park
+ * callback, on return, sees CLAIMED and requeues the coroutine itself,
  * so resume can never overlap the tail of the callback.
  */
 typedef enum _park_state_e {
-    PARK_IDLE     = 0,
-    PARK_ARMING   = 1,
-    PARK_PARKED   = 2,
-    PARK_NOTIFIED = 3,
+    PARK_IDLE    = 0,
+    PARK_ARMING  = 1,
+    PARK_PARKED  = 2,
+    PARK_CLAIMED = 3,
 } _park_state_t;
 
 typedef struct _coro_ctx_s {
@@ -648,7 +648,7 @@ static mco_coro* _sched_process_io(
     return batch.coros[0];
 }
 
-/* Requeue on the parking worker after a declined or notified park. */
+/* Requeue on the parking worker after a declined or claimed park. */
 static void _sched_enqueue_local(_sched_worker_t* w, mco_coro* co) {
     if (wsdeque_push(w->deque, co) != 0) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
@@ -691,7 +691,7 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (fn(co, arg)) {
         /**
          * Commit the park with a CAS, not a plain store: a waker may have
-         * raced in during the callback and set NOTIFIED. A blind store
+         * raced in during the callback and set CLAIMED. A blind store
          * would clobber that and strand the coroutine forever -- the waker
          * deliberately did not enqueue, expecting us to (lost wakeup). The
          * CAS parks only if we are still ARMING, i.e. untouched by a waker.
@@ -703,14 +703,23 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
             return; /* cleanly parked; a waker will requeue us */
         }
         /**
-         * CAS failed, so expected == PARK_NOTIFIED: a waker claimed us
+         * CAS failed, so expected == PARK_CLAIMED: a waker claimed us
          * mid-callback and deliberately did not enqueue, so the requeue
          * is ours.
          */
     }
 
-    /* Declined, or notified during arming: requeue on this worker. */
+    /* Declined, or claimed during arming: requeue on this worker. */
     atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
+    /**
+     * Enqueue raw, without _sched_claim_for_wake: we are not a waker. The
+     * coro is not on any wait structure (either the park callback declined
+     * to park, or the lone waker that set CLAIMED already removed it and
+     * left the requeue to us), so no other waker can reference it -- there
+     * is nothing to dedup against. Routing this through the claim would be
+     * wrong anyway: park_state is now IDLE, which the claim treats as a
+     * normal always-enqueue, so it would add no protection.
+     */
     _sched_enqueue_local(w, co);
 }
 
@@ -830,7 +839,7 @@ static mco_coro* _sched_worker_find_coro(
                     } else {
                         /* Already claimed by _sched_process_io; enqueue
                          * directly so we do not re-claim (which would
-                         * observe NOTIFIED and drop it). */
+                         * observe CLAIMED and drop it). */
                         _sched_enqueue(sched, extra_co);
                     }
                 }
@@ -1255,20 +1264,20 @@ static bool _sched_claim_for_wake(mco_coro* co) {
         case PARK_PARKED:
             /* Park callback already returned; claim it, we requeue. */
             if (atomic_compare_exchange_weak_explicit(
-                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    &ctx->park_state, &st, PARK_CLAIMED,
                     memory_order_acq_rel, memory_order_acquire)) {
                 return true;
             }
             break; /* st reloaded by the CAS; re-evaluate */
         case PARK_ARMING:
-            /* Park callback still arming; it sees NOTIFIED and requeues. */
+            /* Park callback still arming; it sees CLAIMED and requeues. */
             if (atomic_compare_exchange_weak_explicit(
-                    &ctx->park_state, &st, PARK_NOTIFIED,
+                    &ctx->park_state, &st, PARK_CLAIMED,
                     memory_order_acq_rel, memory_order_acquire)) {
                 return false;
             }
             break; /* st reloaded (ARMING may have advanced to PARKED) */
-        case PARK_NOTIFIED:
+        case PARK_CLAIMED:
             /* Another waker already claimed it; nothing for us to do. */
             return false;
         }
