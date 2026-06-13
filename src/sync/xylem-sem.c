@@ -127,6 +127,10 @@ typedef struct _sem_co_timed_s {
     _Atomic bool     timed_out;
 } _sem_co_timed_t;
 
+static void _sem_co_ref(_sem_co_timed_t* w) {
+    atomic_fetch_add_explicit(&w->refcnt, 1, memory_order_relaxed);
+}
+
 static void _sem_co_unref(_sem_co_timed_t* w) {
     if (atomic_fetch_sub_explicit(&w->refcnt, 1, memory_order_acq_rel) != 1) {
         return;
@@ -189,7 +193,7 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
      * coroutine before the timer is live. sched_timer_start only
      * touches the timer heap, so holding the spin across it is safe.
      */
-    atomic_fetch_add_explicit(&w->refcnt, 1, memory_order_relaxed);
+    _sem_co_ref(w); /* timer ref: released by the cb, or by us on stop() */
     sched_timer_start(w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0);
     spin_unlock(&s->guard);
     return true;
@@ -322,7 +326,7 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
             free(w);
             return false;
         }
-        atomic_init(&w->refcnt, 1);
+        atomic_init(&w->refcnt, 1); /* initial wait ref */
         atomic_init(&w->timed_out, false);
 
         _sem_timed_ctx_t ctx = { s, w };
