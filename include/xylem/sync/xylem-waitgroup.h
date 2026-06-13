@@ -52,6 +52,8 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
 /**
  * @brief Create a new waitgroup.
  *
+ * @note [THREAD-SAFE]
+ *
  * @return Pointer to the new waitgroup, or NULL on allocation failure.
  */
 extern xylem_waitgroup_t* xylem_waitgroup_create(void);
@@ -59,9 +61,11 @@ extern xylem_waitgroup_t* xylem_waitgroup_create(void);
 /**
  * @brief Increment the waitgroup counter.
  *
- * Thread-safe and callable from any context. Typically called before
+ * @note [THREAD-SAFE]
+ *
+ * Typically called before
  * spawning the work units whose completion the counter tracks; calling
- * add() after a wait() may already be in progress is a logic error and
+ * add() once a wait() may already be in progress is a logic error and
  * is not supported.
  *
  * @param waitgroup  Pointer to the waitgroup.
@@ -71,6 +75,8 @@ extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
 
 /**
  * @brief Decrement the waitgroup counter by one.
+ *
+ * @note [THREAD-SAFE]
  *
  * When the counter reaches zero, every waiter parked
  * in xylem_waitgroup_wait() is resumed in FIFO order. Calling done()
@@ -85,6 +91,8 @@ extern void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup);
  * @brief Suspend the current coroutine, or block the current OS thread,
  *        until the counter reaches zero.
  *
+ * @note [CONTEXT-ADAPTIVE]
+ *
  * Returns immediately if the counter is already zero. Any number of
  * waiters (coroutines, threads, or a mix) may wait() on the same
  * waitgroup; they are all released together by the done() that drops
@@ -96,6 +104,8 @@ extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
 
 /**
  * @brief Destroy the waitgroup and free its resources.
+ *
+ * @note [THREAD-SAFE]
  *
  * @param waitgroup  Pointer to the waitgroup, NULL is safe.
  */

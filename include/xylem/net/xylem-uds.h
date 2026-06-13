@@ -30,7 +30,7 @@ typedef struct xylem_uds_listener_s xylem_uds_listener_t;
 /**
  * @brief Create a UDS listener bound to the given path.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Binds to the specified filesystem path, sets non-blocking mode,
  * and registers with the event loop. Unlinks the path first if it
@@ -45,7 +45,7 @@ extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
 /**
  * @brief Accept a connection from the listener.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until a client connects.
  *
@@ -58,7 +58,7 @@ extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
 /**
  * @brief Close and destroy a listener. Idempotent.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in xylem_uds_accept().
  * Unlinks the socket path from the filesystem.
@@ -70,7 +70,7 @@ extern void xylem_uds_close_listener(xylem_uds_listener_t* ln);
 /**
  * @brief Connect to a Unix domain socket.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until the connection is established
  * or connect_timeout_ms elapses.
@@ -87,7 +87,7 @@ extern xylem_uds_conn_t* xylem_uds_dial(
 /**
  * @brief Set the read deadline for the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_uds_read() calls return -1.
@@ -103,7 +103,7 @@ extern void xylem_uds_set_read_deadline(
 /**
  * @brief Set the write deadline for the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Mirror of xylem_uds_set_read_deadline for the write direction.
  *
@@ -117,7 +117,7 @@ extern void xylem_uds_set_write_deadline(
 /**
  * @brief Read data from the connection (read-some semantics).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Returns available data from the socket. Suspends the calling
  * coroutine if no data is immediately available. At most len
@@ -137,7 +137,7 @@ extern int xylem_uds_read(
 /**
  * @brief Write all data to the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Loops internally until all len bytes are sent or an error
  * occurs. Suspends the calling coroutine as needed.
@@ -156,7 +156,7 @@ extern int xylem_uds_write(
 /**
  * @brief Close a connection. Idempotent.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in read/write.
  *
@@ -167,7 +167,7 @@ extern void xylem_uds_close(xylem_uds_conn_t* uds);
 /**
  * @brief Shut down the write side of the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Sends a FIN to the peer, signalling that no more data will be
  * written. The connection remains readable; the peer sees EOF on
@@ -182,7 +182,7 @@ extern int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds);
 /**
  * @brief Shut down the read side of the connection.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Discards further incoming data. Subsequent read calls return -1.
  *

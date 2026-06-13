@@ -50,7 +50,9 @@ _Pragma("once")
 typedef struct xylem_ticker_s xylem_ticker_t;
 
 /**
- * @brief Create and arm a periodic ticker. Thread-safe.
+ * @brief Create and arm a periodic ticker.
+ *
+ * @note [THREAD-SAFE]
  *
  * @param interval_ms  Tick period in milliseconds (must be > 0).
  *
@@ -61,7 +63,7 @@ extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 /**
  * @brief Block until the next tick.
  *
- * Context-adaptive.
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Parks the calling coroutine, or blocks the calling OS thread, until
  * the next tick. At most one tick is buffered: if the consumer falls
@@ -76,7 +78,11 @@ extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
 
 /**
- * @brief Stop ticking and destroy the ticker. Thread-safe, idempotent.
+ * @brief Stop ticking and destroy the ticker.
+ *
+ * @note [THREAD-SAFE]
+ *
+ * Idempotent.
  *
  * Wakes a consumer blocked in xylem_ticker_recv() (which then returns
  * 0). The underlying memory is freed once the last reference is gone,

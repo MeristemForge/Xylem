@@ -28,7 +28,7 @@ typedef struct xylem_http_router_s xylem_http_router_t;
 /**
  * @brief Create a new router.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @return Router handle, or NULL on failure.
  */
@@ -37,7 +37,7 @@ extern xylem_http_router_t* xylem_http_router_create(void);
 /**
  * @brief Destroy a router and all registered routes. NULL-safe.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param router  Router handle.
  */
@@ -46,7 +46,7 @@ extern void xylem_http_router_destroy(xylem_http_router_t* router);
 /**
  * @brief Register a route handler.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param router    Router handle.
  * @param method    HTTP method (e.g. "GET", "POST").
@@ -67,7 +67,7 @@ extern int xylem_http_router_handle(
 /**
  * @brief Register a global middleware (onion model).
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Middleware executes in registration order. Call xylem_http_router_next() to
  * pass control to the next middleware / route handler. Code after
@@ -88,7 +88,7 @@ extern int xylem_http_router_use(
 /**
  * @brief Create a route group with a shared prefix.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * The group shares the parent's middleware and prepends prefix to all routes.
  * The returned group is owned by the parent and freed with it.
@@ -105,7 +105,7 @@ extern xylem_http_router_t* xylem_http_router_group(
 /**
  * @brief Advance to the next middleware or the final route handler.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * Call this inside a middleware to pass control inward. Code after this
  * call executes on the way back out (post-handler phase, onion model).
@@ -119,7 +119,7 @@ extern void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req)
 /**
  * @brief Get a path parameter value from a matched route.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param req   Request handle (must be inside a router handler).
  * @param name  Parameter name (e.g. "id" for pattern ":id").
@@ -133,7 +133,7 @@ extern const char* xylem_http_router_param(
 /**
  * @brief Get the router dispatch function for use with xylem_http_listen.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param router  Router handle.
  *
@@ -145,7 +145,7 @@ extern xylem_http_handler_fn_t xylem_http_router_handler(
 /**
  * @brief Get the router userdata for use with xylem_http_listen.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param router  Router handle.
  *
@@ -157,7 +157,7 @@ extern void* xylem_http_router_handler_userdata(
 /**
  * @brief Set a custom 404 Not Found handler.
  *
- * Coroutine-only.
+ * @note [COROUTINE-ONLY]
  *
  * @param router   Router handle.
  * @param handler  Handler for unmatched routes.

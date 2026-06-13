@@ -63,6 +63,8 @@ typedef struct xylem_sem_s xylem_sem_t;
 /**
  * @brief Create a counting semaphore.
  *
+ * @note [THREAD-SAFE]
+ *
  * Callable from any thread or context.
  *
  * @param value  Initial token count.
@@ -74,6 +76,8 @@ extern xylem_sem_t* xylem_sem_create(unsigned int value);
 /**
  * @brief Destroy the semaphore and free its resources.
  *
+ * @note [THREAD-SAFE]
+ *
  * Callable from any thread or context. The caller must ensure no
  * coroutine or thread is still blocked in wait() on this semaphore.
  *
@@ -84,7 +88,7 @@ extern void xylem_sem_destroy(xylem_sem_t* sem);
 /**
  * @brief Acquire a token, blocking if none is available.
  *
- * Context-adaptive.
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If the count is positive it is decremented and the call returns
  * immediately. Otherwise the caller blocks until a post() hands it a
@@ -100,7 +104,7 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
 /**
  * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
  *
- * Context-adaptive.
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Like xylem_sem_wait, but gives up after the timeout elapses. A
  * timeout of 0 makes this a non-blocking attempt: it acquires a token
@@ -121,6 +125,8 @@ extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
 
 /**
  * @brief Release a token.
+ *
+ * @note [THREAD-SAFE]
  *
  * If a waiter is queued, the FIFO-oldest one is handed the token and
  * woken (a coroutine waiter is rescheduled, a thread waiter is

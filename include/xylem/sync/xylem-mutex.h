@@ -49,12 +49,16 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * @brief Create a new coroutine mutex.
  *
+ * @note [THREAD-SAFE]
+ *
  * @return Pointer to the new mutex, or NULL on allocation failure.
  */
 extern xylem_mutex_t* xylem_mutex_create(void);
 
 /**
  * @brief Acquire the mutex.
+ *
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If the mutex is already held, the caller blocks until the holder
  * calls xylem_mutex_unlock(): a coroutine is suspended (parked) on the
@@ -66,6 +70,8 @@ extern void xylem_mutex_lock(xylem_mutex_t* mutex);
 
 /**
  * @brief Try to acquire the mutex without blocking.
+ *
+ * @note [THREAD-SAFE]
  *
  * Attempts the uncontended fast path only: if the mutex is free it is
  * acquired and true is returned; if it is already held this returns
@@ -80,6 +86,8 @@ extern bool xylem_mutex_trylock(xylem_mutex_t* mutex);
 /**
  * @brief Release the mutex.
  *
+ * @note [THREAD-SAFE]
+ *
  * If anyone is waiting, the FIFO-oldest waiter (coroutine or thread) is
  * handed the lock directly. Callable from any context.
  *
@@ -89,6 +97,8 @@ extern void xylem_mutex_unlock(xylem_mutex_t* mutex);
 
 /**
  * @brief Destroy the mutex and free its resources.
+ *
+ * @note [THREAD-SAFE]
  *
  * @param mutex  Pointer to the mutex, NULL is safe.
  */
