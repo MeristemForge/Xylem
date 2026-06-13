@@ -70,6 +70,25 @@ typedef void (*scheduler_post_fn_t)(void* ud);
 typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
 
 /**
+ * Optional reference-count hooks for the timer's user data (ud).
+ *
+ * When installed via sched_timer_set_ud_guard(), the scheduler invokes
+ * ud_ref the instant it commits to dispatching a fire -- inside the
+ * owner worker's timer_lock, the same critical section that pulls the
+ * timer out of the heap -- and ud_unref once the callback has returned
+ * (or once a spawn that would have run it has failed). This pins ud
+ * across the gap between dispatch and callback execution, closing the
+ * use-after-free window where a concurrent teardown on another thread
+ * could free ud after dispatch but before the callback first touches it.
+ *
+ * The hooks run on the scheduler's hot path, and ud_ref additionally
+ * runs under timer_lock. They MUST be trivial and non-reentrant -- a
+ * plain atomic refcount bump/drop. They must not take locks, arm or stop
+ * timers, or otherwise re-enter the scheduler.
+ */
+typedef void (*sched_timer_ud_fn_t)(void* ud);
+
+/**
  * Scheduler timer.
  *
  * heap_node must remain embedded by value (the per-worker timer heap
@@ -77,16 +96,18 @@ typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
  * worker; see scheduler.c for the access/locking rules.
  */
 struct sched_timer_s {
-    heap_node_t      heap_node;
-    scheduler_t*     sched;
-    sched_timer_fn_t cb;
-    void*            ud;
-    uint64_t         timeout;
-    uint64_t         repeat;
-    bool             active;
-    bool             spawn;
-    _Atomic int32_t  refcnt;
-    uint32_t         owner;
+    heap_node_t         heap_node;
+    scheduler_t*        sched;
+    sched_timer_fn_t    cb;
+    void*               ud;
+    sched_timer_ud_fn_t ud_ref;
+    sched_timer_ud_fn_t ud_unref;
+    uint64_t            timeout;
+    uint64_t            repeat;
+    bool                active;
+    bool                spawn;
+    _Atomic int32_t     refcnt;
+    uint32_t            owner;
 };
 
 /* Configuration for scheduler_create. */
@@ -259,6 +280,22 @@ extern sched_timer_t* sched_timer_create(scheduler_t* sched);
 
 /** @brief Set whether the timer callback runs in a spawned coroutine. */
 extern void sched_timer_set_spawn(sched_timer_t* timer, bool spawn);
+
+/**
+ * @brief Install reference-count hooks for the timer's user data (ud).
+ *
+ * Must be called before sched_timer_start(), while the timer is inert.
+ * Pass NULL for both to disable (the default). See sched_timer_ud_fn_t
+ * for the contract the hooks must satisfy and the race they close.
+ *
+ * @param timer  Timer handle.
+ * @param ref    Invoked under timer_lock at dispatch to pin ud.
+ * @param unref  Invoked after the callback returns to release ud.
+ */
+extern void sched_timer_set_ud_guard(
+    sched_timer_t*      timer,
+    sched_timer_ud_fn_t ref,
+    sched_timer_ud_fn_t unref);
 
 /**
  * @brief Destroy a timer. Stops it first if active.

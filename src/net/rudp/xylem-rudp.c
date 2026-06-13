@@ -532,6 +532,18 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
     free(conn);
 }
 
+/* ud-guard adapters: pin the connection across an in-flight update-timer
+ * fire, the same way the ticker does. Closes the window where a
+ * concurrent last _rudp_conn_unref (e.g. a woken reader on another
+ * worker) frees the conn between dispatch and callback execution. */
+static void _rudp_conn_ud_ref(void* ud) {
+    _rudp_conn_ref((xylem_rudp_conn_t*)ud);
+}
+
+static void _rudp_conn_ud_unref(void* ud) {
+    _rudp_conn_unref((xylem_rudp_conn_t*)ud);
+}
+
 /**
  * Coroutine entry that performs a deferred dead-link teardown. Used by
  * the update timer's dead-link path, which runs inline on a worker (not a
@@ -699,6 +711,8 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
+    sched_timer_set_ud_guard(
+        sess->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
     sched_timer_start(sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
     _rudp_schedule_update(sess);
 
@@ -1058,6 +1072,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     iowait_set_rd_deadline(c->waiter, 0);
 
     /* Start the KCP update timer. */
+    sched_timer_set_ud_guard(
+        c->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
     sched_timer_start(
         c->update_timer, _rudp_update_timer_cb, c, 10, 0);
     _rudp_schedule_update(c);

@@ -69,29 +69,37 @@ static void _ticker_unref(xylem_ticker_t* t) {
     free(t);
 }
 
+/* ud-guard adapters: the scheduler pins the ticker across a fire via
+ * these, see _ticker_tick_cb and xylem_ticker_create. */
+static void _ticker_ud_ref(void* ud) {
+    _ticker_ref((xylem_ticker_t*)ud);
+}
+
+static void _ticker_ud_unref(void* ud) {
+    _ticker_unref((xylem_ticker_t*)ud);
+}
+
 /**
  * Runs inline on the timer's owner worker (spawn == false), so it is
  * serialized against itself: ticks can never overlap or re-enter. It
  * does no blocking work and never yields -- just a coalescing,
  * non-blocking hand-off via xylem_sem_post (any-context, never parks).
+ *
+ * The scheduler holds a reference on the ticker for the whole duration
+ * of this callback: it calls the ud_ref hook (installed in
+ * xylem_ticker_create) under its timer_lock, atomically with pulling
+ * this fire off the heap, and the matching ud_unref only after we
+ * return. A concurrent xylem_ticker_destroy() on another thread can
+ * therefore drop the creator's reference at any moment without freeing
+ * the ticker out from under us -- the last unref happens here, after the
+ * callback, never mid-flight. That is why no _ticker_ref is needed in
+ * the body below.
  */
 static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
     (void)timer;
     xylem_ticker_t* t = (xylem_ticker_t*)ud;
 
-    /**
-     * Hold a reference across the whole callback. sched_timer_stop() does
-     * not drain an in-flight fire, so a concurrent xylem_ticker_destroy()
-     * on another worker could otherwise drop the last reference and free
-     * t (and its sem) while we are still touching them below. The
-     * scheduler keeps the underlying timer object alive for the duration
-     * of the fire, so the sched_timer_destroy() reached through a last
-     * _ticker_unref() here stays safe.
-     */
-    _ticker_ref(t);
-
     if (atomic_load_explicit(&t->closed, memory_order_acquire)) {
-        _ticker_unref(t);
         return;
     }
 
@@ -112,8 +120,6 @@ static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
             memory_order_acq_rel, memory_order_relaxed)) {
         xylem_sem_post(t->sem);
     }
-
-    _ticker_unref(t);
 }
 
 xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
@@ -143,6 +149,7 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
     atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
 
     /* Native repeat on the inline path; repeat+spawn could overlap cbs. */
+    sched_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
     sched_timer_start(t->timer, _ticker_tick_cb, t, interval_ms, interval_ms);
 
     return t;

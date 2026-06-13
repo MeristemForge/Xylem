@@ -499,6 +499,9 @@ static int _sched_timer_next_timeout(_sched_worker_t* w) {
 static void _sched_timer_spawn_entry(void* arg) {
     sched_timer_t* t = (sched_timer_t*)arg;
     t->cb(t, t->ud);
+    if (t->ud_unref) {
+        t->ud_unref(t->ud);
+    }
     _sched_timer_unref(t);
 }
 
@@ -531,6 +534,19 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
                     t->active = false;
                 }
                 _sched_timer_ref(t);
+                /**
+                 * Pin ud while still holding timer_lock, atomically with
+                 * pulling this fire off the heap. A concurrent teardown
+                 * that frees ud only after dropping its own reference
+                 * therefore cannot win the race: either it takes the lock
+                 * first and we never dispatch (ud already gone, timer not
+                 * found here), or we ref ud here and its free is held off
+                 * until the matching ud_unref below. Released after the
+                 * callback returns (inline) or in the spawn entry.
+                 */
+                if (t->ud_ref) {
+                    t->ud_ref(t->ud);
+                }
                 timer = t;
             }
         }
@@ -544,10 +560,16 @@ static int _sched_process_timers(_sched_worker_t* w, uint64_t now_ms) {
             if (scheduler_spawn(
                     w->sched, _sched_timer_spawn_entry, timer) != 0) {
                 xylem_loge("<sched> timer spawn failed");
+                if (timer->ud_unref) {
+                    timer->ud_unref(timer->ud);
+                }
                 _sched_timer_unref(timer);
             }
         } else {
             timer->cb(timer, timer->ud);
+            if (timer->ud_unref) {
+                timer->ud_unref(timer->ud);
+            }
             _sched_timer_unref(timer);
         }
     }
@@ -1372,6 +1394,14 @@ sched_timer_t* sched_timer_create(scheduler_t* sched) {
 
 void sched_timer_set_spawn(sched_timer_t* timer, bool spawn) {
     timer->spawn = spawn;
+}
+
+void sched_timer_set_ud_guard(
+    sched_timer_t*      timer,
+    sched_timer_ud_fn_t ref,
+    sched_timer_ud_fn_t unref) {
+    timer->ud_ref   = ref;
+    timer->ud_unref = unref;
 }
 
 void sched_timer_destroy(sched_timer_t* timer) {
