@@ -13,6 +13,19 @@ option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
 option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
 
+# TLS backend selection. "openssl" (default) builds tls-backend-openssl.c
+# against OpenSSL 3.5+. "aws-lc" builds tls-backend-awslc.c against an aws-lc
+# (or BoringSSL) prefix given in AWSLC_ROOT; it supports both TLS and DTLS
+# (aws-lc/BoringSSL do no HelloVerifyRequest cookie exchange, so DTLS
+# anti-spoofing relies on the engine's per-peer datagram demux). "wolfssl"
+# builds tls-backend-wolfssl.c against a wolfSSL install located by
+# find_package(wolfssl CONFIG); it supports both TLS and DTLS, and requires a
+# wolfSSL built with the OpenSSL compatibility layer (see the file header of
+# src/net/tls/tls-backend-wolfssl.c for the full --enable-* flag list).
+set(XYLEM_TLS_BACKEND "openssl" CACHE STRING "TLS backend: openssl, aws-lc, or wolfssl")
+set_property(CACHE XYLEM_TLS_BACKEND PROPERTY STRINGS openssl aws-lc wolfssl)
+set(AWSLC_ROOT "" CACHE PATH "aws-lc/BoringSSL install or build prefix (XYLEM_TLS_BACKEND=aws-lc)")
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -152,13 +165,31 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	find_package(OpenSSL 3.5 REQUIRED)
+	if(XYLEM_TLS_BACKEND STREQUAL "aws-lc")
+		if(NOT AWSLC_ROOT)
+			message(FATAL_ERROR
+				"XYLEM_TLS_BACKEND=aws-lc requires -DAWSLC_ROOT=<aws-lc prefix>")
+		endif()
+		find_library(AWSLC_CRYPTO_LIB NAMES crypto
+			PATHS "${AWSLC_ROOT}/lib" "${AWSLC_ROOT}/lib64"
+			NO_DEFAULT_PATH REQUIRED)
+		find_library(AWSLC_SSL_LIB NAMES ssl
+			PATHS "${AWSLC_ROOT}/lib" "${AWSLC_ROOT}/lib64"
+			NO_DEFAULT_PATH REQUIRED)
+		list(APPEND SRCS src/net/tls/tls-backend-awslc.c)
+	elseif(XYLEM_TLS_BACKEND STREQUAL "wolfssl")
+		find_package(wolfssl CONFIG REQUIRED)
+		list(APPEND SRCS src/net/tls/tls-backend-wolfssl.c)
+	else()
+		find_package(OpenSSL 3.5 REQUIRED)
 
-	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
-	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
+		set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
+		set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
+
+		list(APPEND SRCS src/net/tls/tls-backend-openssl.c)
+	endif()
 
 	list(APPEND SRCS
-		src/net/tls/tls-backend-openssl.c
 		src/net/tls/tls.c
 		src/net/tls/xylem-tls.c
 		src/net/tls/xylem-dtls.c
@@ -193,7 +224,14 @@ if(WIN32)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+	if(XYLEM_TLS_BACKEND STREQUAL "aws-lc")
+		target_include_directories(xylem PRIVATE "${AWSLC_ROOT}/include")
+		target_link_libraries(xylem PRIVATE ${AWSLC_SSL_LIB} ${AWSLC_CRYPTO_LIB})
+	elseif(XYLEM_TLS_BACKEND STREQUAL "wolfssl")
+		target_link_libraries(xylem PRIVATE wolfssl::wolfssl)
+	else()
+		target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+	endif()
 endif()
 
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_ASAN address)

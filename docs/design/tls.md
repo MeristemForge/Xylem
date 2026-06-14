@@ -474,6 +474,13 @@ backend's DTLS `ctx_create`: the backend generates the secret (OpenSSL:
 computing the cookie with `xylem_hmac256` — a non-OpenSSL primitive a future
 backend can reuse verbatim.
 
+Backends without a cookie API skip this entirely. aws-lc/BoringSSL expose no
+cookie callbacks and their DTLS server sends no HelloVerifyRequest, so the
+aws-lc backend registers nothing and `set_peer_addr` is a no-op; wolfSSL
+computes the cookie internally from the peer bound via `wolfSSL_dtls_set_peer`.
+In both cases anti-spoofing leans on the engine's per-peer datagram demux
+(`xylem-dtls.c`) rather than an in-stack cookie round-trip.
+
 ### 11.5 Concurrency contract
 
 The backend does **no locking of its own**. The engine continues to hold
