@@ -44,6 +44,15 @@
 
 #define TLSB_COOKIE_SIZE 32
 
+/**
+ * The engine (tls.c) chunks plaintext writes to a backend-neutral 16 KiB
+ * (TLS_MAX_PLAINTEXT) so the backend holds at most one record of
+ * ciphertext at a time. Assert that constant matches OpenSSL's own
+ * per-record plaintext cap, so a chunk never spills into a second record.
+ */
+_Static_assert(SSL3_RT_MAX_PLAIN_LENGTH == 16 * 1024,
+               "TLS_MAX_PLAINTEXT must match OpenSSL record plaintext cap");
+
 typedef struct _tlsb_sni_entry_s {
     char            hostname[256];
     X509*           cert;
@@ -746,6 +755,15 @@ static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
             xylem_loge("<tls> ssl op failed ssl_err=%d reason=%s", err,
                        ERR_reason_error_string(e)
                            ? ERR_reason_error_string(e) : "unknown");
+            /**
+             * Drain the queue on the error path so it is empty again for
+             * the next op. This is what lets the hot read/write paths skip
+             * the per-call ERR_clear_error: a successful SSL_read/SSL_write
+             * adds nothing to the queue, and WANT_READ/WANT_WRITE are
+             * decided from the SSL rwstate (not the queue), so the only way
+             * to leave a stale entry is a real error -- cleared right here.
+             */
+            ERR_clear_error();
             return TLS_BACKEND_ERROR;
         }
     }
@@ -762,7 +780,9 @@ tls_backend_state_t tls_backend_conn_read(
     void*               buf,
     int                 len,
     int*                out_n) {
-    ERR_clear_error();
+    /* No ERR_clear_error here: _tlsb_state drains the queue on the error
+     * path, so it is already empty on entry (see _tlsb_state). Skipping the
+     * per-call clear is a large win on small-record workloads. */
     int n = SSL_read(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;
@@ -777,7 +797,8 @@ tls_backend_state_t tls_backend_conn_write(
     const void*         buf,
     int                 len,
     int*                out_n) {
-    ERR_clear_error();
+    /* See tls_backend_conn_read: the error queue is kept empty by the error
+     * path, so the hot write path skips the per-call ERR_clear_error. */
     int n = SSL_write(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;

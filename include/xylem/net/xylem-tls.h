@@ -30,7 +30,8 @@ typedef struct xylem_tls_ctx_s      xylem_tls_ctx_t;
 typedef struct xylem_tls_listener_s xylem_tls_listener_t;
 
 typedef struct xylem_tls_opts_s {
-    bool        disable_mss_clamp; /* Disable socket MSS clamping. */
+    bool        enable_mss_clamp; /* Clamp socket MSS to the minimum; default
+                                     off, so the socket uses the path MTU. */
     /**
      * Timeout in milliseconds for completing the connection.
      *

@@ -367,7 +367,6 @@ platform_sock_t platform_socket_listen(
                 platform_socket_close(sock);
                 continue;
             }
-            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
@@ -407,7 +406,6 @@ platform_sock_t platform_socket_dial(
         platform_socket_enable_nonblocking(sock, nonblocking);
 
         if (socktype == SOCK_STREAM) {
-            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
             /* See platform_socket_accept() for sndbuf rationale. */

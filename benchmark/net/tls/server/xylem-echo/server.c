@@ -208,7 +208,9 @@ static void _acceptor(void* arg) {
     }
     xylem_tls_ctx_verify_client(ctx, false);
 
-    xylem_tls_listener_t* server = xylem_tls_listen("0.0.0.0", port, ctx, NULL);
+    xylem_tls_opts_t opts = {0}; /* default: MSS unclamped, use path MTU */
+    xylem_tls_listener_t* server =
+        xylem_tls_listen("0.0.0.0", port, ctx, &opts);
     if (!server) {
         fprintf(stderr, "tls echo: listen failed port=%" PRIu16 "\n", port);
         xylem_tls_ctx_destroy(ctx);

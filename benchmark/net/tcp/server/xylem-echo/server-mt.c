@@ -77,7 +77,7 @@ static void _handle_conn(void* arg) {
 static void _acceptor(void* arg) {
     uint16_t port = *(uint16_t*)arg;
 
-    xylem_tcp_opts_t opts = {.disable_mss_clamp = true};
+    xylem_tcp_opts_t opts = {0}; /* default: MSS unclamped, use path MTU */
 
     xylem_tcp_listener_t* server = xylem_tcp_listen("0.0.0.0", port, &opts);
     if (!server) {

@@ -40,12 +40,42 @@
 #include <string.h>
 
 /**
- * Per-connection scratch (rbuf/wbuf) for moving ciphertext between the
- * backend state machine and the socket. Sized to the 16 KiB TLS record
- * cap so a full record moves per pump; the backend reassembles records
- * that span chunks.
+ * TLS protocol invariant: the maximum ciphertext record on the wire, and
+ * the size of the per-connection ciphertext scratch buffers (rbuf, wbuf).
+ *
+ * 16 KiB plaintext (2^14, mandated by every TLS version) plus framing and
+ * AEAD overhead. RFC 5246 6.2.3 caps TLS 1.2 ciphertext at 2^14 + 2048;
+ * TLS 1.3's 2^14 + 256 fits under it, so this bounds one record for any
+ * version. Backend-neutral: every conforming backend (OpenSSL, mbedTLS,
+ * ...) is held to the same limit, so no SSL-library header leaks into the
+ * engine.
+ *
+ * Both scratch buffers are exactly one record: a full record fits per pump,
+ * so it never splits across two sends (sizing to the 16 KiB plaintext cap
+ * left the overhead tail for a second tiny send and doubled write syscalls).
+ * rbuf recvs one record's worth of ciphertext at a time -- the buffer holds
+ * no state between pumps (feed copies it straight into the backend), so a
+ * fixed one-record size keeps per-connection memory bounded regardless of
+ * connection count, the way Go's crypto/tls caps rawInput at a single record.
  */
-#define TLS_IO_CHUNK (16 * 1024)
+#define TLS_MAX_RECORD (16 * 1024 + 2048)
+
+/**
+ * TLS protocol invariant: the maximum *plaintext* a single record can
+ * carry (2^14, mandated by every TLS version; OpenSSL spells it
+ * SSL3_RT_MAX_PLAIN_LENGTH, mbedTLS MBEDTLS_SSL_IN_CONTENT_LEN -- the
+ * value is the same backend-neutral constant, so no SSL header leaks
+ * into the engine).
+ *
+ * The write path feeds the backend at most this many plaintext bytes per
+ * step. A larger buffer (e.g. a 64 KiB app write) would make the backend
+ * encrypt every record up front and buffer the whole message's
+ * ciphertext in its scratch BIO before _tls_pump_out drains the first
+ * record -- memory scaling with the message size times the connection
+ * count. Chunking to one record bounds that to a single record of
+ * in-flight ciphertext and pipelines encrypt-then-send.
+ */
+#define TLS_MAX_PLAINTEXT (16 * 1024)
 
 /**
  * Bound for the best-effort close_notify flush. Long enough to ride out
@@ -78,8 +108,8 @@ static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
     tls->rd_mu  = xylem_mutex_create();
     tls->wr_mu  = xylem_mutex_create();
     tls->hs_mu  = xylem_mutex_create();
-    tls->rbuf   = (char*)malloc(TLS_IO_CHUNK);
-    tls->wbuf   = (char*)malloc(TLS_IO_CHUNK);
+    tls->rbuf   = (char*)malloc(TLS_MAX_RECORD);
+    tls->wbuf   = (char*)malloc(TLS_MAX_RECORD);
     if (!tls->waiter || !tls->ssl_mu || !tls->rd_mu || !tls->wr_mu
         || !tls->hs_mu || !tls->rbuf || !tls->wbuf) {
         if (tls->waiter) {
@@ -203,7 +233,7 @@ static int _tls_pump_out(tls_conn_t* tls) {
     xylem_mutex_lock(tls->wr_mu);
     for (;;) {
         xylem_mutex_lock(tls->ssl_mu);
-        int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_IO_CHUNK);
+        int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_MAX_RECORD);
         xylem_mutex_unlock(tls->ssl_mu);
         if (n <= 0) {
             break;
@@ -228,7 +258,7 @@ static int _tls_pump_in(tls_conn_t* tls) {
 
     xylem_mutex_lock(tls->rd_mu);
     for (;;) {
-        ssize_t n = platform_socket_recv(tls->fd, tls->rbuf, TLS_IO_CHUNK);
+        ssize_t n = platform_socket_recv(tls->fd, tls->rbuf, TLS_MAX_RECORD);
         if (n > 0) {
             xylem_mutex_lock(tls->ssl_mu);
             int fed = tls_backend_conn_feed(tls->be, tls->rbuf, (int)n);
@@ -449,9 +479,15 @@ static int _tls_write_loop(
     int         rem = len;
 
     while (rem > 0) {
-        int n = 0;
+        /**
+         * Feed at most one record's worth of plaintext per step so the
+         * backend only ever holds a single record of ciphertext, which
+         * _tls_pump_out flushes below before the next chunk is encrypted.
+         */
+        int chunk = rem < TLS_MAX_PLAINTEXT ? rem : TLS_MAX_PLAINTEXT;
+        int n     = 0;
         xylem_mutex_lock(tls->ssl_mu);
-        tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, rem, &n);
+        tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, chunk, &n);
         xylem_mutex_unlock(tls->ssl_mu);
 
         /**
@@ -700,8 +736,8 @@ tls_conn_t* tls_dial(
         return NULL;
     }
 
-    if (opts && opts->disable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, false);
+    if (opts && opts->enable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, true);
     }
 
     tls_conn_t* tls = _tls_conn_create(fd);
@@ -749,7 +785,7 @@ static void _tls_flush_close_notify(tls_conn_t* tls) {
     }
     xylem_mutex_lock(tls->ssl_mu);
     tls_backend_conn_shutdown(tls->be);
-    int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_IO_CHUNK);
+    int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_MAX_RECORD);
     xylem_mutex_unlock(tls->ssl_mu);
 
     iowait_set_wr_deadline(tls->waiter,
@@ -816,8 +852,8 @@ tls_listener_t* tls_listen(
         return NULL;
     }
 
-    if (opts && opts->disable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, false);
+    if (opts && opts->enable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, true);
     }
 
     tls_listener_t* ln = (tls_listener_t*)calloc(1, sizeof(tls_listener_t));

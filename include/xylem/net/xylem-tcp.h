@@ -29,7 +29,8 @@ typedef struct xylem_tcp_conn_s     xylem_tcp_conn_t;
 typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;
 
 typedef struct xylem_tcp_opts_s {
-    bool disable_mss_clamp; /* Disable MSS clamping on the socket. */
+    bool enable_mss_clamp; /* Clamp socket MSS to the minimum; default off,
+                              so the socket uses the path MTU. */
 } xylem_tcp_opts_t;
 
 /**

@@ -152,8 +152,8 @@ xylem_tcp_conn_t* xylem_tcp_dial(
         return NULL;
     }
 
-    if (opts && opts->disable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, false);
+    if (opts && opts->enable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, true);
     }
 
     xylem_tcp_conn_t* tcp = _tcp_conn_create(fd);
@@ -311,8 +311,8 @@ xylem_tcp_listener_t* xylem_tcp_listen(
         return NULL;
     }
 
-    if (opts && opts->disable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, false);
+    if (opts && opts->enable_mss_clamp) {
+        platform_socket_enable_mss_clamp(fd, true);
     }
 
     xylem_tcp_listener_t* listener = (xylem_tcp_listener_t*)calloc(

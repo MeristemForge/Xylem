@@ -164,8 +164,6 @@ platform_sock_t platform_socket_listen(
                 platform_socket_close(sock);
                 continue;
             }
-            platform_socket_enable_mss_clamp(sock, true);
-            /* macOS TCP_NOOPT blocks NODELAY; must follow mss_clamp. */
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }
@@ -214,7 +212,6 @@ platform_sock_t platform_socket_dial(
         platform_socket_enable_nonblocking(sock, nonblocking);
 
         if (socktype == SOCK_STREAM) {
-            platform_socket_enable_mss_clamp(sock, true);
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
             /* See platform_socket_accept() for sndbuf rationale. */
@@ -434,6 +431,16 @@ void platform_socket_enable_keepalive(platform_sock_t sock, bool on) {
 void platform_socket_enable_mss_clamp(platform_sock_t sock, bool on) {
     int val = on ? 1 : 0;
     setsockopt(sock, IPPROTO_TCP, TCP_NOOPT, (const void*)&val, sizeof(int));
+    /**
+     * On Darwin TCP_NOOPT suppresses a TCP_NODELAY set before it, so a caller
+     * that enables clamping after the socket was already put in no-delay mode
+     * (the opt-in path in tls/tcp) would silently lose NODELAY. Re-assert it
+     * here so the ordering invariant lives with the macOS-specific knob rather
+     * than every call site. Only meaningful when turning the clamp on.
+     */
+    if (on) {
+        platform_socket_enable_nodelay(sock, true);
+    }
 }
 
 static int _socket_try_rcvbuf(platform_sock_t sock, int val) {

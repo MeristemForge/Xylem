@@ -67,8 +67,8 @@ struct tls_ctx_s {
 
 struct tls_conn_s {
     tls_backend_conn_t* be;
-    char*               rbuf;
-    char*               wbuf;
+    char*               rbuf;       /* recv staging, one TLS record */
+    char*               wbuf;       /* drain staging, one TLS record */
     xylem_mutex_t*      ssl_mu;
     xylem_mutex_t*      rd_mu;
     xylem_mutex_t*      wr_mu;
