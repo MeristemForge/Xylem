@@ -107,10 +107,10 @@ connectionless); TLS connrate measures full TLS handshakes per second.
   - Single-threaded event loops (Go: `GOMAXPROCS=1`, Rust: `current_thread`)
   - TLS servers auto-generate self-signed certificates at startup
   - No logging in hot path for any implementation
-- **Client**: Raw C load generator independent of any server library —
+- **Client**: independent Go load generator (goroutine-per-connection, multi-core, never caps client-side load), one per protocol under `net/<proto>/client/`; the Go runtime netpoller maps onto
   epoll (Linux) / kqueue (macOS) readiness model, IOCP completion model on
-  Windows. Each protocol uses a single cross-platform `client.c` split behind
-  `#ifdef _WIN32`. Modes:
+  Windows. Each protocol's client is a small Go module (`client-mt.go`); TLS
+  uses the standard `crypto/tls` (no OpenSSL). Modes:
   `throughput`, `memory`, and `connrate`
   (TCP/TLS only; TLS connrate = full handshakes/sec).
 
@@ -142,7 +142,7 @@ benchmark/
         xylem-echo/           server.c (ST) + server-mt.c (MT, tcp/tls)
         go-echo/              one module: echo/server.go (ST) + echo-mt/server.go (MT)
         rust-echo/            one crate: src/server.rs (ST) + src/server_mt.rs (MT)
-      client/                 load generator: client.c, one cross-platform
+      client/                 load generator: Go module (client-mt.go),
                               file per protocol (epoll/kqueue readiness on
                               POSIX, IOCP completion on Windows)
   sync/                       sync-primitive microbenchmarks (separate suite)

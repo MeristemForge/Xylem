@@ -6,6 +6,11 @@ out/
 compile_commands.json
 out-ninja/
 out-linux/
+out-*/
 .DS_Store
 build.log
 .dev-build.bat
+
+# Benchmark build artifacts
+*.obj
+*.exe

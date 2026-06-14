@@ -24,8 +24,8 @@ REM Compared servers: xylem, go, rust. The Windows driver builds only these
 REM three families for every protocol; missing binaries are skipped
 REM automatically. UDP has no MT row.
 REM
-REM NOTE: the Windows bench client uses IOCP (the _WIN32 branch of
-REM client.c). Windows lacks
+REM NOTE: the bench clients are Go programs (net/<proto>/client); the Go
+REM runtime netpoller uses IOCP on Windows. Windows lacks
 REM SO_REUSEPORT / /proc; per-CPU usage sampling is unavailable and numbers are
 REM NOT comparable to the Linux or macOS suites. Server peak working-set is
 REM reported via PowerShell Get-Process.
@@ -53,6 +53,28 @@ set "RUN_CONNRATE=true"
 
 if not defined NUMBER_OF_PROCESSORS set "NUMBER_OF_PROCESSORS=4"
 set "NCPU=%NUMBER_OF_PROCESSORS%"
+
+REM ---- core pinning (single-host fairness) -----------------------------------
+REM Ping-pong echo is symmetric, so split cores 50/50: the server runs on the
+REM low cores, the client on the high cores, via start /affinity. Auto-on with
+REM >=4 cores; PIN=off disables, PIN=on forces.
+if not defined PIN set "PIN=auto"
+set "PIN_ENABLE=false"
+if /I not "%PIN%"=="off" if %NCPU% GEQ 4 set "PIN_ENABLE=true"
+if /I "%PIN%"=="on" set "PIN_ENABLE=true"
+set "SERVER_NCPU=%NCPU%"
+set "CLIENT_NCPU=%NCPU%"
+set "SRV_MASK="
+set "CLI_MASK="
+set "SRV_ST_MASK=1"
+if "%PIN_ENABLE%"=="true" (
+    for /f "tokens=1-4" %%a in ('powershell -NoProfile -Command "$n=%NCPU%; $s=[int]($n/2); if($s -lt 1){$s=1}; $c=$n-$s; $sm=([int64]1 -shl $s)-1; $full=([int64]1 -shl $n)-1; $cm=$full -band (-bnot $sm); '{0:X} {1:X} {2} {3}' -f $sm,$cm,$s,$c"') do (
+        set "SRV_MASK=%%a"
+        set "CLI_MASK=%%b"
+        set "SERVER_NCPU=%%c"
+        set "CLIENT_NCPU=%%d"
+    )
+)
 
 REM ---- dispatch --------------------------------------------------------------
 set "CMD=%~1"
@@ -271,10 +293,14 @@ if not errorlevel 1 (
     call :warn "cargo not found; skipping rust servers"
 )
 
-REM ---- bench client (one cross-platform client.c, IOCP on Windows) ---------
+REM ---- bench client (all protocols: Go multi-core load generator) ----------
 call :info "building %CUR_PROTO%-bench client..."
-cl %CL_FLAGS% "%NET_DIR%\%CUR_PROTO%\client\client.c" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%BIN_DIR%\%CUR_PROTO%-bench.exe" >nul 2>&1
-if errorlevel 1 (
+if exist "%BIN_DIR%\%CUR_PROTO%-bench.exe" del /q "%BIN_DIR%\%CUR_PROTO%-bench.exe" >nul 2>&1
+set "CGO_ENABLED=0"
+pushd "%NET_DIR%\%CUR_PROTO%\client"
+go build -ldflags="-s -w" -o "%BIN_DIR%\%CUR_PROTO%-bench.exe" .
+popd
+if not exist "%BIN_DIR%\%CUR_PROTO%-bench.exe" (
     call :err "failed to build %CUR_PROTO%-bench client"
     exit /b 1
 )
@@ -339,8 +365,13 @@ set "TS=%_DT:~0,8%-%_DT:~8,6%"
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 
-call :info "results -> %RUN_DIR%   (MT workers = %NCPU%)"
+call :info "results -> %RUN_DIR%   (MT workers = %SERVER_NCPU%)"
 call :info "protocols: %PROTO%"
+if "%PIN_ENABLE%"=="true" (
+    call :info "core-pinning: server mask %SRV_MASK% / %SERVER_NCPU% cores, client mask %CLI_MASK% / %CLIENT_NCPU% cores (GOMAXPROCS), of %NCPU%"
+) else (
+    call :info "core-pinning: off (set PIN=on to enable; needs >=4 cores)"
+)
 echo.
 
 for %%P in (%PROTO:,= %) do call :bench_proto %%P
@@ -392,12 +423,12 @@ if "%_DO_ST%"=="true" (
 if "%_DO_MT%"=="true" (
     for %%Y in (%PAYLOADS:,= %) do (
         for %%C in (%CONNS:,= %) do (
-            call :bench_throughput MT -echo-mt %NCPU% %%C %%Y
+            call :bench_throughput MT -echo-mt %SERVER_NCPU% %%C %%Y
         )
     )
     if "%RUN_CONNRATE%"=="true" if "%HAS_CONNRATE%"=="true" (
         for %%C in (%CONNS:,= %) do (
-            call :bench_connrate MT -echo-mt %NCPU% %%C
+            call :bench_connrate MT -echo-mt %SERVER_NCPU% %%C
         )
     )
 )
@@ -474,7 +505,13 @@ for %%N in (%SERVERS:,= %) do (
 
         for /l %%R in (1,1,%REPEAT%) do (
             set "out=%RUN_DIR%\%CUR_PROTO%-throughput-%ROW%-c!CONNS_LBL!-!SIZE_LBL!-!name!-r%%R.json"
-            "%BIN_DIR%\%CUR_PROTO%-bench.exe" throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port! > "!out!" 2>nul
+            set "_climask="
+            set "_gmp=0"
+            if "%PIN_ENABLE%"=="true" set "_climask=!CLI_MASK!" & set "_gmp=!CLIENT_NCPU!"
+            set "_srvn=%SERVER_NCPU%"
+            if "%PIN_ENABLE%"=="true" if /I "%ROW%"=="ST" set "_srvn=1"
+            set "srv_cpu_line="
+            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn!') do set "srv_cpu_line=%%L"
 
             for %%F in ("!out!") do set "_sz=%%~zF"
             if defined _sz if !_sz! GTR 0 (
@@ -513,6 +550,7 @@ for %%N in (%SERVERS:,= %) do (
                 echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!
             )
             if defined srv_peak (echo              srv: peak_rss=!srv_peak!MB) else (echo              srv: peak_rss=n/a)
+            if defined srv_cpu_line if not "!srv_cpu_line!"=="" echo              cpu: !srv_cpu_line!
         ) else (
             call :warn "!name!: no valid output from %REPEAT% runs"
         )
@@ -549,7 +587,10 @@ for %%N in (%SERVERS:,= %) do (
         ping -n 3 127.0.0.1 >nul
 
         set "out=%RUN_DIR%\%CUR_PROTO%-connrate-%ROW%-!CONC_LBL!-!name!.json"
-        "%BIN_DIR%\%CUR_PROTO%-bench.exe" connrate -c !CONC_V! -d %DURATION% -p !port! > "!out!" 2>nul
+        set "_climask="
+        set "_gmp=0"
+        if "%PIN_ENABLE%"=="true" set "_climask=!CLI_MASK!" & set "_gmp=!CLIENT_NCPU!"
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "connrate -c !CONC_V! -d %DURATION% -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu 0 >nul 2>&1
 
         call :stop_server
         ping -n 2 127.0.0.1 >nul
@@ -583,10 +624,14 @@ REM start_server <bin> <port> <workers>  -- launches server in background
 set "_bin=%~1"
 set "_port=%~2"
 set "_workers=%~3"
+set "_aff="
+if "%PIN_ENABLE%"=="true" (
+    if "%_workers%"=="" (set "_aff=/affinity %SRV_ST_MASK%") else (set "_aff=/affinity %SRV_MASK%")
+)
 if "%_workers%"=="" (
-    start "xylem-bench-srv" /b "%_bin%" %_port% >nul 2>&1
+    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% >nul 2>&1
 ) else (
-    start "xylem-bench-srv" /b "%_bin%" %_port% %_workers% >nul 2>&1
+    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% %_workers% >nul 2>&1
 )
 goto :eof
 

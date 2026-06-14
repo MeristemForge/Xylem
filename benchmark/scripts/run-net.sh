@@ -56,6 +56,56 @@ else
 fi
 
 # =============================================================================
+# core pinning (single-host fairness)
+# =============================================================================
+# On one box the client and server compete for cores; a busy load generator
+# then steals CPU from the server and distorts its numbers. Pin them to
+# DISJOINT core sets sized from the actual core count: the high-numbered cores
+# drive load, the low-numbered cores run the server.
+#
+#   PIN=auto|on|off  (default auto: on when >=4 cores and taskset exists)
+#   CLIENT_NCPU=<n>  override the load-generator core count
+#
+# Layout for N cores with C client cores (S = N - C server cores):
+#   client : cores [S .. N-1]
+#   server : cores [0 .. S-1]   (MT uses S workers)   |   core 0 only (ST)
+PIN_REQUEST="${PIN:-auto}"
+PIN_ENABLE=false
+NCPU_TOTAL="$(ncpu)"
+if [ "$PIN_REQUEST" != off ] \
+   && command -v taskset >/dev/null 2>&1 \
+   && [ "$NCPU_TOTAL" -ge 4 ]; then
+    PIN_ENABLE=true
+fi
+[ "$PIN_REQUEST" = on ] && PIN_ENABLE=true
+
+if [ "$PIN_ENABLE" = true ]; then
+    # Ping-pong echo is symmetric: the client does as much work as the server
+    # (same read/write/syscalls, and for TLS the same crypto). Split the cores
+    # 50/50 so the load generator can never cap the server. Server measured on
+    # N/2 cores; compare servers against each other on that same set.
+    CLIENT_NCPU="${CLIENT_NCPU:-$(( NCPU_TOTAL / 2 ))}"
+    [ "$CLIENT_NCPU" -lt 1 ] && CLIENT_NCPU=1
+    [ "$CLIENT_NCPU" -gt $(( NCPU_TOTAL - 1 )) ] && CLIENT_NCPU=$(( NCPU_TOTAL - 1 ))
+    SERVER_NCPU=$(( NCPU_TOTAL - CLIENT_NCPU ))
+    SERVER_CORES="0-$(( SERVER_NCPU - 1 ))"
+    SERVER_CORE_ST="0"
+    CLIENT_CORES="${SERVER_NCPU}-$(( NCPU_TOTAL - 1 ))"
+else
+    SERVER_NCPU="$NCPU_TOTAL"   # MT worker count when not pinning
+fi
+
+# Wrap the bench client so it runs on the client core set (and, for the Go
+# tcp client, with a matching GOMAXPROCS). A no-op when pinning is disabled.
+run_client() {
+    if [ "$PIN_ENABLE" = true ]; then
+        GOMAXPROCS="$CLIENT_NCPU" taskset -c "$CLIENT_CORES" "$@"
+    else
+        "$@"
+    fi
+}
+
+# =============================================================================
 # per-protocol configuration
 # =============================================================================
 # Sets PROTO_PORT_BASE / PROTO_HAS_MT / PROTO_HAS_CONNRATE / PROTO_TLS for the
@@ -148,11 +198,32 @@ LDFLAGS_COMMON="-s -flto"
 # OpenSSL location for the TLS suite. Set OPENSSL_ROOT to a custom OpenSSL
 # install/build tree (e.g. one built from source when the distro's libssl is
 # older than the version CMakeLists requires); empty uses the system OpenSSL.
+#
+# The shared objects live in different places depending on how OpenSSL was
+# produced: an installed prefix puts them under lib64/ or lib/, while an
+# in-place source build leaves them at the tree root. Probe all three and add
+# -L/-rpath for whichever actually holds libssl, so linking and run time both
+# resolve the custom build instead of falling back to the system copy.
 OSSL_INC=""
 OSSL_LIB="-lssl -lcrypto"
 if [ -n "${OPENSSL_ROOT:-}" ]; then
     OSSL_INC="-I${OPENSSL_ROOT}/include"
-    OSSL_LIB="-L${OPENSSL_ROOT} -Wl,-rpath,${OPENSSL_ROOT} -lssl -lcrypto"
+    OSSL_LIB=""
+    for d in "${OPENSSL_ROOT}/lib64" "${OPENSSL_ROOT}/lib" "${OPENSSL_ROOT}"; do
+        for f in "$d"/libssl.so* "$d"/libssl.dylib "$d"/libssl.a; do
+            # Unmatched globs stay literal, so test each candidate with -e
+            # rather than letting one missing form fail the whole check.
+            if [ -e "$f" ]; then
+                OSSL_LIB="${OSSL_LIB} -L${d} -Wl,-rpath,${d}"
+                break
+            fi
+        done
+    done
+    if [ -z "$OSSL_LIB" ]; then
+        warn "no libssl found under ${OPENSSL_ROOT}{/lib64,/lib,}; using -L${OPENSSL_ROOT}"
+        OSSL_LIB="-L${OPENSSL_ROOT} -Wl,-rpath,${OPENSSL_ROOT}"
+    fi
+    OSSL_LIB="${OSSL_LIB} -lssl -lcrypto"
 fi
 
 # Build all servers + client for a single protocol $1 against $XYLEM_LIB.
@@ -208,10 +279,12 @@ build_proto() {
     done
 
     info "building ${proto}-bench client..."
-    # shellcheck disable=SC2086
-    gcc $CFLAGS_COMMON $inc_extra "$NET_DIR/${proto}/client/client.c" \
-        $client_extra $LDFLAGS_COMMON -o "$BIN_DIR/${proto}-bench" \
-        || { err "failed to build ${proto}-bench client"; return 1; }
+    # All bench clients are Go programs (multi-core load generators). The old
+    # C epoll/IOCP clients were single-threaded and capped client-side load;
+    # the tls client also dropped its OpenSSL dependency (uses crypto/tls).
+    ( cd "$NET_DIR/${proto}/client" && \
+      CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_DIR/${proto}-bench" . ) \
+      || { err "failed to build ${proto}-bench (go) client"; return 1; }
     ok "${proto}-bench built"
 }
 
@@ -286,10 +359,17 @@ extract_json() {
 
 start_server() {
     local bin="$1" port="$2" workers="${3:-}"
+    local pin=""
+    if [ "$PIN_ENABLE" = true ]; then
+        # MT (workers set) gets the server core block; ST gets a single core.
+        local cores="$SERVER_CORES"
+        [ -z "$workers" ] && cores="$SERVER_CORE_ST"
+        pin="taskset -c $cores"
+    fi
     if [ -n "$workers" ]; then
-        "$bin" "$port" "$workers" >/dev/null 2>&1 &
+        $pin "$bin" "$port" "$workers" >/dev/null 2>&1 &
     else
-        "$bin" "$port" >/dev/null 2>&1 &
+        $pin "$bin" "$port" >/dev/null 2>&1 &
     fi
     echo $!
 }
@@ -330,6 +410,85 @@ calc_cpu_usage() {
         result="${result:+$result }cpu${cpunum}:${pct}%"
     done < "$after"
     echo "${result:-n/a}"
+}
+
+# Average busy% across a core spec ("0-7" or single "0") between two
+# /proc/stat snapshots. With pinning on, the spec is the server's core set, so
+# this reads as "how saturated is the server on its own cores".
+calc_cores_avg() {
+    local before="$1" after="$2" spec="$3"
+    if [ ! -s "$before" ] || [ ! -s "$after" ]; then
+        echo "n/a"
+        return
+    fi
+    local lo hi
+    if [[ "$spec" == *-* ]]; then
+        lo="${spec%-*}"; hi="${spec#*-}"
+    else
+        lo="$spec"; hi="$spec"
+    fi
+    local sum_busy=0 sum_total=0 i
+    for (( i = lo; i <= hi; i++ )); do
+        local lb la
+        lb="$(grep "^cpu${i} " "$before")"
+        la="$(grep "^cpu${i} " "$after")"
+        [ -n "$lb" ] && [ -n "$la" ] || continue
+        local idle1 total1 idle2 total2
+        idle1=$(awk '{print $5}' <<< "$lb")
+        total1=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$lb")
+        idle2=$(awk '{print $5}' <<< "$la")
+        total2=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$la")
+        sum_busy=$(( sum_busy + (total2 - total1) - (idle2 - idle1) ))
+        sum_total=$(( sum_total + (total2 - total1) ))
+    done
+    if [ "$sum_total" -gt 0 ]; then
+        echo "$(( sum_busy * 100 / sum_total ))%"
+    else
+        echo "n/a"
+    fi
+}
+
+# Per-core busy% for the cores in a spec ("0-7" or single "0"), formatted like
+# the old all-core line but limited to the server's cores: "cpu0:95% cpu1:..".
+calc_cores_percpu() {
+    local before="$1" after="$2" spec="$3"
+    if [ ! -s "$before" ] || [ ! -s "$after" ]; then
+        echo "n/a"
+        return
+    fi
+    local lo hi
+    if [[ "$spec" == *-* ]]; then
+        lo="${spec%-*}"; hi="${spec#*-}"
+    else
+        lo="$spec"; hi="$spec"
+    fi
+    local result="" i
+    for (( i = lo; i <= hi; i++ )); do
+        local lb la
+        lb="$(grep "^cpu${i} " "$before")"
+        la="$(grep "^cpu${i} " "$after")"
+        [ -n "$lb" ] && [ -n "$la" ] || continue
+        local idle1 total1 idle2 total2
+        idle1=$(awk '{print $5}' <<< "$lb")
+        total1=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$lb")
+        idle2=$(awk '{print $5}' <<< "$la")
+        total2=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$la")
+        local idle_d=$((idle2 - idle1)) total_d=$((total2 - total1)) pct=0
+        [ "$total_d" -gt 0 ] && pct=$(( (total_d - idle_d) * 100 / total_d ))
+        result="${result:+$result }cpu${i}:${pct}%"
+    done
+    echo "${result:-n/a}"
+}
+
+# Core spec the server is (or would be) running on, for the given row.
+server_core_spec() {
+    local row_label="$1"
+    if [ "$PIN_ENABLE" = true ]; then
+        [ "$row_label" = "ST" ] && { echo "$SERVER_CORE_ST"; return; }
+        echo "$SERVER_CORES"
+    else
+        echo "0-$(( NCPU_TOTAL - 1 ))"
+    fi
 }
 
 # Peak resident set size (KB) of a server PID, including child threads.
@@ -383,6 +542,7 @@ bench_throughput() {
         local tp_sum=0 p50_sum=0 p99_sum=0 max_sum=0 valid_runs=0
         local tp_vals=""
         local cpu_usage_last=""
+        local srv_cpu_last=""
 
         for run in $(seq 1 "$REPEAT"); do
             local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
@@ -392,12 +552,15 @@ bench_throughput() {
 
             snapshot_cpu "$cpu_before"
 
-            "$BIN_DIR/${CUR_PROTO}-bench" throughput \
+            run_client "$BIN_DIR/${CUR_PROTO}-bench" throughput \
                 -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
                 > "$out" 2>/dev/null || true
 
             snapshot_cpu "$cpu_after"
-            cpu_usage_last="$(calc_cpu_usage "$cpu_before" "$cpu_after")"
+            cpu_usage_last="$(calc_cores_percpu "$cpu_before" "$cpu_after" \
+                              "$(server_core_spec "$row_label")")"
+            srv_cpu_last="$(calc_cores_avg "$cpu_before" "$cpu_after" \
+                            "$(server_core_spec "$row_label")")"
             rm -f "$cpu_before" "$cpu_after"
             if [ -s "$out" ]; then
                 local tp p50 p99 lat_max
@@ -438,8 +601,9 @@ bench_throughput() {
                 printf "  %-10s %12s %8s %10s %10s %10s\n" \
                     "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             fi
-            printf "  %10s srv: peak_rss=%s\n" "" \
-                "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)"
+            printf "  %10s srv: peak_rss=%s  cpu=%s (cores %s)\n" "" \
+                "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)" \
+                "$srv_cpu_last" "$(server_core_spec "$row_label")"
             if [ "$CPU_SAMPLING" = true ]; then
                 printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
             fi
@@ -481,7 +645,7 @@ bench_connrate() {
 
         local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
         local out="$RUN_DIR/${CUR_PROTO}-connrate-${row_lc}-${conc_lbl}-${name}.json"
-        "$BIN_DIR/${CUR_PROTO}-bench" connrate \
+        run_client "$BIN_DIR/${CUR_PROTO}-bench" connrate \
             -c "$concurrency" -d "$DURATION" -p "$port" \
             > "$out" 2>/dev/null || true
 
@@ -535,12 +699,12 @@ bench_proto() {
     if [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = true ]; then
         for payload in "${PAYLOADS[@]}"; do
             for conns in "${CONNS[@]}"; do
-                bench_throughput MT -echo-mt "$nproc_val" "$conns" "$payload"
+                bench_throughput MT -echo-mt "$SERVER_NCPU" "$conns" "$payload"
             done
         done
         if [ "$RUN_CONNRATE" = true ] && [ "$PROTO_HAS_CONNRATE" = true ]; then
             for conns in "${CONNS[@]}"; do
-                bench_connrate MT -echo-mt "$nproc_val" "$conns"
+                bench_connrate MT -echo-mt "$SERVER_NCPU" "$conns"
             done
         fi
     elif [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = false ]; then
@@ -559,8 +723,13 @@ cmd_bench() {
     mkdir -p "$RUN_DIR"
 
     local nproc_val; nproc_val="$(ncpu)"
-    info "results -> $RUN_DIR   (MT workers = ${nproc_val})"
+    info "results -> $RUN_DIR   (MT workers = ${SERVER_NCPU})"
     info "protocols: ${PROTOS[*]}"
+    if [ "$PIN_ENABLE" = true ]; then
+        info "core-pinning: server cores ${SERVER_CORES} (ST: ${SERVER_CORE_ST}), client cores ${CLIENT_CORES} (GOMAXPROCS=${CLIENT_NCPU}) of ${NCPU_TOTAL}"
+    else
+        info "core-pinning: off (set PIN=on to enable; needs taskset and >=4 cores)"
+    fi
     echo ""
 
     local proto

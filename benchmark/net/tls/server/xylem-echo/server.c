@@ -242,6 +242,12 @@ int main(int argc, char** argv) {
     }
 
     xylem_opts_t rt_opts = {.workers = 1};
+    /* Experiment knob: override coroutine stack size (bytes) to probe the
+     * per-connection memory / cache-footprint effect at high conn counts. */
+    const char* cs = getenv("XYLEM_CORO_STACK");
+    if (cs) {
+        rt_opts.coro_stack_size = (size_t)strtoul(cs, NULL, 10);
+    }
     xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }
