@@ -24,9 +24,10 @@
  *
  * N worker threads cooperate through a three-tier runnable pool:
  *   1. per-worker `runnext` slot   - single LIFO hand-off, cache-hot
- *   2. per-worker work-stealing    - owner pushes/pops the tail, other
- *      deque (wsdeque)               workers steal from the head
- *   3. global runq (mutex)         - overflow from full deques, and
+ *   2. per-worker work-stealing    - owner pushes the tail and pops the head
+ *      FIFO queue (wsq)              (arrival order); other workers steal from
+ *                                    the head. FIFO bounds per-coroutine wait.
+ *   3. global runq (mutex)         - overflow from full queues, and
  *                                    injection point for cross-thread
  *                                    scheduler_schedule() callers
  *
@@ -53,7 +54,7 @@
 #include "xylem/xylem-utils.h"
 
 #include "iowait.h"
-#include "wsdeque.h"
+#include "wsq.h"
 #include "runq.h"
 #include "container/heap.h"
 #include "container/list.h"
@@ -100,6 +101,17 @@
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
 
 /**
+ * Per-worker coroutine-slot cache. Each worker keeps up to
+ * SCHED_CORO_CACHE_CAP free slots it can pop/push with no lock; only when
+ * the local cache underflows or overflows does it exchange a batch of
+ * SCHED_CORO_CACHE_BATCH slots with the shared pool under a single lock.
+ * Mirrors the per-P gFree/stackcache design in the Go runtime: the hot
+ * spawn/death path stays lock-free and the shared-pool lock is amortized.
+ */
+#define SCHED_CORO_CACHE_CAP   64
+#define SCHED_CORO_CACHE_BATCH 32
+
+/**
  * Keep-warm spin before an idle worker deep-parks. At most one worker
  * (capped via sched->spinning) polls the global run queue for this many
  * rounds, pausing SCHED_SPIN_PAUSE times between cheap length peeks, so a
@@ -121,7 +133,7 @@ typedef struct _coro_pool_s {
 
 typedef struct _sched_worker_s {
     thrd_t               thread;
-    wsdeque_t*           deque;
+    wsq_t*               deque;
     platform_sem_t*      sem;
     scheduler_t*         sched;
     uint32_t             index;
@@ -135,6 +147,8 @@ typedef struct _sched_worker_s {
     heap_t               timers;
     mtx_t                timer_lock;
     _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
+    void**               coro_cache;       /* per-worker free coroutine slots. */
+    int32_t              coro_cache_count; /* slots currently held locally.    */
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -231,17 +245,8 @@ static size_t _coro_metadata_size(size_t coro_size, size_t stack_size) {
     return (meta + page_size - 1) & ~(page_size - 1);
 }
 
-static void* _coro_pool_alloc(size_t size, void* allocator_data) {
-    _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
-
-    spin_lock(&pool->lock);
-    if (pool->count > 0) {
-        void* ptr = pool->slots[--pool->count];
-        spin_unlock(&pool->lock);
-        return ptr;
-    }
-    spin_unlock(&pool->lock);
-
+/* Reserve, commit, and guard-page one coroutine slot (mco_coro + stack). */
+static void* _coro_slot_reserve(_coro_pool_t* pool, size_t size) {
     if (STACK_EXTERNAL) {
         return calloc(1, size);
     }
@@ -278,12 +283,31 @@ static void _coro_stack_reset(_coro_pool_t* pool, void* ptr, size_t size) {
     }
 }
 
-static void _coro_pool_dealloc(
-    void* ptr, size_t size, void* allocator_data) {
-    _coro_pool_t* pool = (_coro_pool_t*)allocator_data;
+/* Return one coroutine slot's address space to the OS. */
+static void _coro_slot_release(_coro_pool_t* pool, void* ptr) {
+    if (STACK_EXTERNAL) {
+        free(ptr);
+        return;
+    }
 
-    _coro_stack_reset(pool, ptr, size);
+    size_t page_size = _vmem_page_size();
+    size_t total     = (pool->slot_size + page_size - 1) & ~(page_size - 1);
+    platform_vmem_release(ptr, total);
+}
 
+/* Pop one slot from the shared pool; NULL when empty. Takes the pool lock. */
+static void* _coro_pool_global_pop(_coro_pool_t* pool) {
+    void* ptr = NULL;
+    spin_lock(&pool->lock);
+    if (pool->count > 0) {
+        ptr = pool->slots[--pool->count];
+    }
+    spin_unlock(&pool->lock);
+    return ptr;
+}
+
+/* Push one slot into the shared pool; release it when the pool is full. */
+static void _coro_pool_global_push(_coro_pool_t* pool, void* ptr) {
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
         pool->slots[pool->count++] = ptr;
@@ -291,15 +315,88 @@ static void _coro_pool_dealloc(
         return;
     }
     spin_unlock(&pool->lock);
+    _coro_slot_release(pool, ptr);
+}
 
-    if (STACK_EXTERNAL) {
-        free(ptr);
+/**
+ * The current worker's local slot cache, or NULL when the caller is not a
+ * worker of this scheduler (e.g. the initial spawn on the main thread).
+ */
+static _sched_worker_t* _coro_pool_local(_coro_pool_t* pool) {
+    _sched_worker_t* w = _tls_worker;
+    if (w && &w->sched->coro_pool == pool && w->coro_cache) {
+        return w;
+    }
+    return NULL;
+}
+
+static void* _coro_pool_alloc(size_t size, void* allocator_data) {
+    _coro_pool_t*    pool = (_coro_pool_t*)allocator_data;
+    _sched_worker_t* w    = _coro_pool_local(pool);
+
+    if (!w) {
+        /* Non-worker caller: go straight to the shared pool. */
+        void* ptr = _coro_pool_global_pop(pool);
+        return ptr ? ptr : _coro_slot_reserve(pool, size);
+    }
+
+    /* Fast path: local cache hit, no lock. */
+    if (w->coro_cache_count > 0) {
+        return w->coro_cache[--w->coro_cache_count];
+    }
+
+    /* Local cache empty: refill a batch from the shared pool under one lock. */
+    spin_lock(&pool->lock);
+    int32_t n = (pool->count < SCHED_CORO_CACHE_BATCH)
+                    ? pool->count
+                    : SCHED_CORO_CACHE_BATCH;
+    for (int32_t i = 0; i < n; i++) {
+        w->coro_cache[i] = pool->slots[--pool->count];
+    }
+    spin_unlock(&pool->lock);
+
+    if (n > 0) {
+        w->coro_cache_count = n - 1;
+        return w->coro_cache[n - 1];
+    }
+
+    /* Shared pool empty too: reserve a fresh slot. */
+    return _coro_slot_reserve(pool, size);
+}
+
+static void _coro_pool_dealloc(
+    void* ptr, size_t size, void* allocator_data) {
+    _coro_pool_t*    pool = (_coro_pool_t*)allocator_data;
+    _sched_worker_t* w    = _coro_pool_local(pool);
+
+    /* Drop the physical stack pages regardless of where the slot lands. */
+    _coro_stack_reset(pool, ptr, size);
+
+    if (!w) {
+        _coro_pool_global_push(pool, ptr);
         return;
     }
 
-    size_t page_size = _vmem_page_size();
-    size_t total     = (size + page_size - 1) & ~(page_size - 1);
-    platform_vmem_release(ptr, total);
+    /* Fast path: room in the local cache, no lock. */
+    if (w->coro_cache_count < SCHED_CORO_CACHE_CAP) {
+        w->coro_cache[w->coro_cache_count++] = ptr;
+        return;
+    }
+
+    /**
+     * Local cache full: spill a batch down to the shared pool under one
+     * lock, release whatever the pool refuses, then store the new slot.
+     */
+    int32_t keep = SCHED_CORO_CACHE_CAP - SCHED_CORO_CACHE_BATCH;
+    spin_lock(&pool->lock);
+    while (w->coro_cache_count > keep && pool->count < pool->cap) {
+        pool->slots[pool->count++] = w->coro_cache[--w->coro_cache_count];
+    }
+    spin_unlock(&pool->lock);
+    while (w->coro_cache_count > keep) {
+        _coro_slot_release(pool, w->coro_cache[--w->coro_cache_count]);
+    }
+    w->coro_cache[w->coro_cache_count++] = ptr;
 }
 
 
@@ -366,8 +463,8 @@ static void _sched_wake_worker(scheduler_t* sched) {
     }
 }
 
-static inline int32_t _sched_worker_grab_cap(wsdeque_t* dq) {
-    int32_t rem = wsdeque_remaining(dq);
+static inline int32_t _sched_worker_grab_cap(wsq_t* dq) {
+    int32_t rem = wsq_remaining(dq);
     int32_t half = SCHED_DEQUE_CAP / 2;
     return rem < half ? rem : half;
 }
@@ -378,7 +475,7 @@ static mco_coro* _sched_worker_pop_coro(scheduler_t* sched, _sched_worker_t* w) 
         return co;
     }
 
-    co = wsdeque_pop(w->deque);
+    co = (mco_coro*)wsq_pop(w->deque);
     if (co) {
         return co;
     }
@@ -391,7 +488,7 @@ static mco_coro* _sched_worker_pop_coro(scheduler_t* sched, _sched_worker_t* w) 
         if (n > 0) {
             for (int32_t i = 1; i < n; i++) {
                 _coro_ctx_t* c = queue_entry(nodes[i], _coro_ctx_t, runq_node);
-                wsdeque_push(w->deque, c->co);
+                wsq_push(w->deque, c->co);
             }
             _coro_ctx_t* ctx = queue_entry(nodes[0], _coro_ctx_t, runq_node);
             return ctx->co;
@@ -409,14 +506,14 @@ static mco_coro* _sched_worker_steal_coro(scheduler_t* sched, _sched_worker_t* w
     uint32_t start = w->index + 1;
     for (int32_t i = 0; i < sched->nworkers - 1; i++) {
         uint32_t idx = (start + (uint32_t)i) % (uint32_t)sched->nworkers;
-        mco_coro* batch[(SCHED_DEQUE_CAP / 2)];
-        int32_t n = wsdeque_steal_half(
+        void* batch[(SCHED_DEQUE_CAP / 2)];
+        int32_t n = wsq_steal_half(
             sched->workers[idx].deque, batch, cap);
         if (n > 0) {
             for (int32_t j = 1; j < n; j++) {
-                wsdeque_push(w->deque, batch[j]);
+                wsq_push(w->deque, batch[j]);
             }
-            return batch[0];
+            return (mco_coro*)batch[0];
         }
     }
     return NULL;
@@ -652,7 +749,7 @@ static mco_coro* _sched_process_io(
 
 /* Requeue on the parking worker after a declined or claimed park. */
 static void _sched_enqueue_local(_sched_worker_t* w, mco_coro* co) {
-    if (wsdeque_push(w->deque, co) != 0) {
+    if (wsq_push(w->deque, co) != 0) {
         _coro_ctx_t* ctx = (_coro_ctx_t*)mco_get_user_data(co);
         runq_push(w->sched->runq, &ctx->runq_node);
         _sched_wake_worker(w->sched);
@@ -989,7 +1086,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
         for (int32_t i = 0; i < sched->nworkers; i++) {
             _sched_worker_t* w = &sched->workers[i];
             if (w->deque) {
-                wsdeque_destroy(w->deque);
+                wsq_destroy(w->deque);
             }
             if (w->sem) {
                 platform_sem_destroy(w->sem);
@@ -1004,6 +1101,12 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
                 }
             }
             mtx_destroy(&w->timer_lock);
+            if (w->coro_cache) {
+                for (int32_t j = 0; j < w->coro_cache_count; j++) {
+                    _coro_slot_release(&sched->coro_pool, w->coro_cache[j]);
+                }
+                free(w->coro_cache);
+            }
         }
         free(sched->workers);
     }
@@ -1026,14 +1129,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t nstarted) {
     }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
-        if (STACK_EXTERNAL) {
-            free(sched->coro_pool.slots[i]);
-        } else {
-            size_t page_size = _vmem_page_size();
-            size_t total = (sched->coro_pool.slot_size + page_size - 1) &
-                           ~(page_size - 1);
-            platform_vmem_release(sched->coro_pool.slots[i], total);
-        }
+        _coro_slot_release(&sched->coro_pool, sched->coro_pool.slots[i]);
     }
     free(sched->coro_pool.slots);
 
@@ -1130,15 +1226,18 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     for (int32_t i = 0; i < nworkers; i++) {
         _sched_worker_t* w = &sched->workers[i];
-        w->deque = wsdeque_create(deque_cap);
+        w->deque = wsq_create(deque_cap);
         w->sem = platform_sem_create(0);
         w->sched = sched;
         w->index = (uint32_t)i;
         heap_init(&w->timers, _sched_timer_cmp);
         mtx_init(&w->timer_lock, mtx_plain);
         atomic_init(&w->next_deadline_ms, UINT64_MAX);
+        w->coro_cache = (void**)calloc(
+            SCHED_CORO_CACHE_CAP, sizeof(void*));
+        w->coro_cache_count = 0;
 
-        if (!w->deque || !w->sem) {
+        if (!w->deque || !w->sem || !w->coro_cache) {
             _sched_cleanup(sched, 0);
             return NULL;
         }
@@ -1219,9 +1318,9 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
         memory_order_relaxed);
     mco_coro* old = atomic_exchange(&_tls_worker->runnext, co);
     if (old) {
-        if (wsdeque_push(_tls_worker->deque, old) != 0) {
-            mco_coro* batch[(SCHED_DEQUE_CAP / 2) + 1];
-            int32_t n = wsdeque_pop_half(
+        if (wsq_push(_tls_worker->deque, old) != 0) {
+            void* batch[(SCHED_DEQUE_CAP / 2) + 1];
+            int32_t n = wsq_pop_half(
                 _tls_worker->deque, batch, (SCHED_DEQUE_CAP / 2));
             batch[n++] = old;
 
@@ -1234,7 +1333,7 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
             runq_push_batch(sched->runq, nodes, n);
         }
         /**
-         * The displaced `old` is now stealable (deque/global), so wake a
+         * The displaced `old` is now stealable (queue/global), so wake a
          * parked worker to pick it up.
          */
         _sched_wake_worker(sched);

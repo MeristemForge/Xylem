@@ -61,7 +61,7 @@ set(SRCS
 	src/xylem-ticker.c
 	src/container/mpsc.c
 	src/thrdpool.c
-	src/runtime/wsdeque.c
+	src/runtime/wsq.c
 	src/runtime/runq.c
 	src/runtime/dynpool.c
 	src/runtime/scheduler.c
