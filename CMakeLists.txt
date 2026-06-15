@@ -23,7 +23,6 @@ option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" O
 # wolfSSL built with the OpenSSL compatibility layer (see the file header of
 # src/net/tls/tls-backend-wolfssl.c for the full --enable-* flag list).
 set(XYLEM_TLS_BACKEND "openssl" CACHE STRING "TLS backend: openssl, aws-lc, or wolfssl")
-set_property(CACHE XYLEM_TLS_BACKEND PROPERTY STRINGS openssl aws-lc wolfssl)
 set(AWSLC_ROOT "" CACHE PATH "aws-lc/BoringSSL install or build prefix (XYLEM_TLS_BACKEND=aws-lc)")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -165,6 +164,8 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
+	# Each backend resolves its dependency and records one source file plus the
+	# libraries/includes to apply to the target once it exists (below).
 	if(XYLEM_TLS_BACKEND STREQUAL "aws-lc")
 		if(NOT AWSLC_ROOT)
 			message(FATAL_ERROR
@@ -177,16 +178,18 @@ if(XYLEM_ENABLE_TLS)
 			PATHS "${AWSLC_ROOT}/lib" "${AWSLC_ROOT}/lib64"
 			NO_DEFAULT_PATH REQUIRED)
 		list(APPEND SRCS src/net/tls/tls-backend-awslc.c)
+		set(XYLEM_TLS_LIBS ${AWSLC_SSL_LIB} ${AWSLC_CRYPTO_LIB})
+		set(XYLEM_TLS_INCLUDES "${AWSLC_ROOT}/include")
 	elseif(XYLEM_TLS_BACKEND STREQUAL "wolfssl")
 		find_package(wolfssl CONFIG REQUIRED)
 		list(APPEND SRCS src/net/tls/tls-backend-wolfssl.c)
+		set(XYLEM_TLS_LIBS wolfssl::wolfssl)
 	else()
 		find_package(OpenSSL 3.5 REQUIRED)
-
 		set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
 		set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
-
 		list(APPEND SRCS src/net/tls/tls-backend-openssl.c)
+		set(XYLEM_TLS_LIBS OpenSSL::SSL OpenSSL::Crypto)
 	endif()
 
 	list(APPEND SRCS
@@ -224,13 +227,9 @@ if(WIN32)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	if(XYLEM_TLS_BACKEND STREQUAL "aws-lc")
-		target_include_directories(xylem PRIVATE "${AWSLC_ROOT}/include")
-		target_link_libraries(xylem PRIVATE ${AWSLC_SSL_LIB} ${AWSLC_CRYPTO_LIB})
-	elseif(XYLEM_TLS_BACKEND STREQUAL "wolfssl")
-		target_link_libraries(xylem PRIVATE wolfssl::wolfssl)
-	else()
-		target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+	target_link_libraries(xylem PRIVATE ${XYLEM_TLS_LIBS})
+	if(XYLEM_TLS_INCLUDES)
+		target_include_directories(xylem PRIVATE ${XYLEM_TLS_INCLUDES})
 	endif()
 endif()
 
