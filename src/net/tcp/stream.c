@@ -237,33 +237,72 @@ void stream_set_write_deadline(
     iowait_set_wr_deadline(stream->waiter, deadline_ms);
 }
 
+static bool _stream_is_again(int err) {
+    return err == PLATFORM_SO_ERROR_EAGAIN
+           || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
+}
+
+int stream_try_read(
+    stream_t* stream,
+    void*     buf,
+    int       len,
+    bool*     again) {
+    _stream_ref(stream);
+    int ret = -1;
+    *again  = false;
+
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        iowait_ready_event_t ev = iowait_read_ready_event(stream->waiter);
+        ssize_t n = platform_socket_recv(stream->fd, buf, len);
+        if (n >= 0) {
+            ret = (int)n;
+        } else {
+            int err = platform_socket_get_lasterror();
+            if (_stream_is_again(err)) {
+                *again = true;
+                iowait_clear_read_ready(stream->waiter, ev);
+            } else {
+                xylem_loge(
+                    "<stream> read failed fd=%d err=%s",
+                    (int)stream->fd,
+                    platform_socket_tostring(err));
+            }
+        }
+    }
+
+    _stream_unref(stream);
+    return ret;
+}
+
+int stream_wait_read(stream_t* stream) {
+    _stream_ref(stream);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        iowait_result_t r = iowait_read(stream->waiter);
+        if (r == IOWAIT_READY
+            && !atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+            ret = 0;
+        }
+    }
+
+    _stream_unref(stream);
+    return ret;
+}
+
 int stream_read(stream_t* stream, void* buf, int len) {
     _stream_ref(stream);
     int ret = -1;
 
     if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
         for (;;) {
-            iowait_ready_event_t ev = iowait_read_ready_event(stream->waiter);
-            ssize_t n = platform_socket_recv(stream->fd, buf, len);
+            bool again = false;
+            int  n     = stream_try_read(stream, buf, len, &again);
             if (n >= 0) {
-                ret = (int)n;
+                ret = n;
                 break;
             }
-
-            int err = platform_socket_get_lasterror();
-            if (err != PLATFORM_SO_ERROR_EAGAIN
-                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge(
-                    "<stream> read failed fd=%d err=%s",
-                    (int)stream->fd,
-                    platform_socket_tostring(err));
-                break;
-            }
-
-            iowait_clear_read_ready(stream->waiter, ev);
-            iowait_result_t r = iowait_read(stream->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+            if (!again || stream_wait_read(stream) != 0) {
                 break;
             }
         }
@@ -312,6 +351,56 @@ int stream_write(stream_t* stream, const void* data, int len) {
             ret = 0;
         }
         iowait_set_write_active(stream->waiter, false);
+    }
+
+    _stream_unref(stream);
+    return ret;
+}
+
+int stream_try_write(
+    stream_t*   stream,
+    const void* data,
+    int         len,
+    bool*       again) {
+    _stream_ref(stream);
+    int ret = -1;
+    *again  = false;
+
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        iowait_ready_event_t ev = iowait_write_ready_event(stream->waiter);
+        ssize_t n = platform_socket_send(stream->fd, data, len);
+        if (n > 0) {
+            ret = (int)n;
+        } else {
+            int err = platform_socket_get_lasterror();
+            if (_stream_is_again(err)) {
+                *again = true;
+                iowait_clear_write_ready(stream->waiter, ev);
+            } else {
+                xylem_loge(
+                    "<stream> write failed fd=%d err=%s",
+                    (int)stream->fd,
+                    platform_socket_tostring(err));
+            }
+        }
+    }
+
+    _stream_unref(stream);
+    return ret;
+}
+
+int stream_wait_write(stream_t* stream) {
+    _stream_ref(stream);
+    int ret = -1;
+
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        iowait_set_write_active(stream->waiter, true);
+        iowait_result_t r = iowait_write(stream->waiter);
+        iowait_set_write_active(stream->waiter, false);
+        if (r == IOWAIT_READY
+            && !atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+            ret = 0;
+        }
     }
 
     _stream_unref(stream);

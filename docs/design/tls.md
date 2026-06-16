@@ -286,10 +286,9 @@ the client handshake, verifying `server_name` rather than the proxy address.
 
 This is a pure internal refactor: the public `xylem_tls_*` and `xylem_dtls_*`
 API, ABI, and runtime behavior are unchanged. The goal is to isolate every
-OpenSSL dependency behind one backend-neutral internal interface so an
-alternative SSL library (wolfSSL via its OpenSSL-compatibility layer, or
-mbedTLS with a native implementation) can be added later by writing a single
-new backend source file, with zero edits to the engine or the layers above it.
+OpenSSL dependency behind one backend-neutral internal interface. OpenSSL is
+the current supported backend; another SSL library would require a dedicated
+backend source file with the same engine contract.
 
 ### 11.1 Motivation and scope
 
@@ -321,10 +320,9 @@ OpenSSL.
 ### 11.2 The boundary: what stays, what moves
 
 The key enabler is that both engines already drive OpenSSL through a pair of
-in-memory BIOs and pump the socket separately (see §2). That "feed ciphertext
-in / drain ciphertext out" model maps cleanly onto every candidate backend
-(OpenSSL memory BIOs, mbedTLS `mbedtls_ssl_set_bio` callbacks, wolfSSL I/O
-callbacks). So the cut is:
+backend I/O callbacks and pump the socket separately (see §2). That "advance
+the SSL state machine / park on WANT_READ or WANT_WRITE" model is the contract
+any future backend must preserve. So the cut is:
 
 | Concern | Owner after refactor |
 |---|---|
@@ -345,8 +343,7 @@ typedef struct tls_backend_ctx_s  tls_backend_ctx_t;   /* opaque */
 typedef struct tls_backend_conn_s tls_backend_conn_t;  /* opaque */
 
 /* Result of a handshake/read/write step. Maps from SSL_get_error on
- * OpenSSL; maps from MBEDTLS_ERR_SSL_WANT_READ/WRITE on a future mbedTLS
- * backend. */
+ * OpenSSL; other backends must map their equivalent states here. */
 typedef enum {
     TLS_BACKEND_OK,
     TLS_BACKEND_WANT_READ,
@@ -474,13 +471,6 @@ backend's DTLS `ctx_create`: the backend generates the secret (OpenSSL:
 computing the cookie with `xylem_hmac256` — a non-OpenSSL primitive a future
 backend can reuse verbatim.
 
-Backends without a cookie API skip this entirely. aws-lc/BoringSSL expose no
-cookie callbacks and their DTLS server sends no HelloVerifyRequest, so the
-aws-lc backend registers nothing and `set_peer_addr` is a no-op; wolfSSL
-computes the cookie internally from the peer bound via `wolfSSL_dtls_set_peer`.
-In both cases anti-spoofing leans on the engine's per-peer datagram demux
-(`xylem-dtls.c`) rather than an in-stack cookie round-trip.
-
 ### 11.5 Concurrency contract
 
 The backend does **no locking of its own**. The engine continues to hold
@@ -573,16 +563,11 @@ existing suites with no assertion changes:
 
 ### 11.9 Adding a backend later
 
-- **wolfSSL:** built with `--enable-opensslextra`, its OpenSSL-compat layer
-  satisfies most of the surface; a `tls-backend-wolfssl.c` is largely the
-  OpenSSL file with header/init differences.
-- **mbedTLS:** native API; `tls-backend-mbedtls.c` reimplements each
-  `tls_backend_*`/`dtls_backend_*` op against `mbedtls_ssl_*`, reusing the
-  engine's socket pumping, locking, and DTLS session machinery as-is, plus
-  `xylem_hmac256` for cookies. System-CA loading uses an mbedTLS-native
-  strategy (there is no one-call system trust store), which is precisely why
-  that concern is a backend responsibility rather than a leaked `SSL_CTX*`
-  platform shim.
+A future backend must implement each `tls_backend_*` / `dtls_backend_*` op
+against its native API, reusing the engine's socket pumping, locking, and DTLS
+session machinery as-is, plus `xylem_hmac256` for cookies where applicable.
+System-CA loading remains a backend responsibility rather than a leaked
+`SSL_CTX*` platform shim.
 
 ## 12. Related docs
 

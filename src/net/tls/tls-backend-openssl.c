@@ -42,7 +42,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TLSB_COOKIE_SIZE 32
+#define TLSB_COOKIE_SIZE        32
+#define TLSB_DEFAULT_DGRAM_MTU  1500
 
 /**
  * The engine (tls.c) chunks plaintext writes to a backend-neutral 16 KiB
@@ -73,9 +74,11 @@ struct tls_backend_ctx_s {
 };
 
 struct tls_backend_conn_s {
-    SSL*  ssl;
-    BIO*  rbio;   /* inbound ciphertext: feed() -> SSL */
-    BIO*  wbio;   /* outbound ciphertext: SSL -> drain() */
+    SSL*             ssl;
+    BIO*             rbio;
+    BIO*             wbio;
+    tls_backend_io_t io;
+    uint16_t         mtu;
     struct sockaddr_storage peer;     /* DTLS server cookie binding */
     size_t                  peer_len;
 };
@@ -83,10 +86,132 @@ struct tls_backend_conn_s {
 static int _tlsb_ctx_ex_idx  = -1;  /* SSL_CTX -> tls_backend_ctx_t* */
 static int _tlsb_conn_ex_idx = -1;  /* SSL     -> tls_backend_conn_t* (DTLS) */
 static once_flag _tlsb_ex_once = ONCE_FLAG_INIT;
+static BIO_METHOD* _tlsb_stream_bio_method;
+static BIO_METHOD* _tlsb_dgram_bio_method;
+
+static int _tlsb_io_bio_create(BIO* bio) {
+    BIO_set_init(bio, 1);
+    BIO_set_data(bio, NULL);
+    return 1;
+}
+
+static int _tlsb_io_bio_destroy(BIO* bio) {
+    if (!bio) {
+        return 0;
+    }
+    BIO_set_data(bio, NULL);
+    BIO_set_init(bio, 0);
+    return 1;
+}
+
+static int _tlsb_io_bio_read(BIO* bio, char* out, int len) {
+    tls_backend_conn_t* c = (tls_backend_conn_t*)BIO_get_data(bio);
+    if (!c || !out || len <= 0) {
+        return 0;
+    }
+
+    BIO_clear_retry_flags(bio);
+    bool again = false;
+    int  n     = c->io.read(c->io.user, out, len, &again);
+    if (n < 0 && again) {
+        BIO_set_retry_read(bio);
+    }
+    return n;
+}
+
+static int _tlsb_io_bio_write(BIO* bio, const char* in, int len) {
+    tls_backend_conn_t* c = (tls_backend_conn_t*)BIO_get_data(bio);
+    if (!c || !in || len <= 0) {
+        return 0;
+    }
+
+    BIO_clear_retry_flags(bio);
+    bool again = false;
+    int  n     = c->io.write(c->io.user, in, len, &again);
+    if (n < 0 && again) {
+        BIO_set_retry_write(bio);
+    }
+    return n;
+}
+
+static long _tlsb_stream_bio_ctrl(
+    BIO* bio,
+    int  cmd,
+    long num,
+    void* ptr) {
+    (void)bio;
+    (void)num;
+    (void)ptr;
+    return cmd == BIO_CTRL_FLUSH ? 1 : 0;
+}
+
+static long _tlsb_dgram_bio_ctrl(
+    BIO*  bio,
+    int   cmd,
+    long  num,
+    void* ptr) {
+    (void)ptr;
+    tls_backend_conn_t* c = (tls_backend_conn_t*)BIO_get_data(bio);
+    uint16_t mtu = (c && c->mtu > 0) ? c->mtu : TLSB_DEFAULT_DGRAM_MTU;
+
+    switch (cmd) {
+        case BIO_CTRL_FLUSH:
+        case BIO_CTRL_DGRAM_SET_CONNECTED:
+        case BIO_CTRL_DGRAM_SET_PEER:
+        case BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT:
+        case BIO_CTRL_DGRAM_MTU_DISCOVER:
+        case BIO_CTRL_DGRAM_SET_DONT_FRAG:
+            return 1;
+        case BIO_CTRL_DGRAM_SET_MTU:
+            if (c && num > 0) {
+                c->mtu = (uint16_t)num;
+                return 1;
+            }
+            return 0;
+        case BIO_CTRL_DGRAM_QUERY_MTU:
+        case BIO_CTRL_DGRAM_GET_MTU:
+        case BIO_CTRL_DGRAM_GET_FALLBACK_MTU:
+            return (long)mtu;
+        case BIO_CTRL_DGRAM_MTU_EXCEEDED:
+        case BIO_CTRL_DGRAM_GET_RECV_TIMER_EXP:
+        case BIO_CTRL_DGRAM_GET_SEND_TIMER_EXP:
+            return 0;
+        case BIO_CTRL_DGRAM_GET_MTU_OVERHEAD:
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+static bool _tlsb_conn_uses_callback_io(tls_backend_conn_t* c) {
+    return c->io.read && c->io.write;
+}
 
 static void _tlsb_init_ex(void) {
     _tlsb_ctx_ex_idx  = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, NULL);
     _tlsb_conn_ex_idx = SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL);
+    _tlsb_stream_bio_method = BIO_meth_new(
+        BIO_TYPE_SOURCE_SINK,
+        "xylem-stream");
+    if (_tlsb_stream_bio_method) {
+        BIO_meth_set_create(_tlsb_stream_bio_method,
+                            _tlsb_io_bio_create);
+        BIO_meth_set_destroy(_tlsb_stream_bio_method,
+                             _tlsb_io_bio_destroy);
+        BIO_meth_set_read(_tlsb_stream_bio_method, _tlsb_io_bio_read);
+        BIO_meth_set_write(_tlsb_stream_bio_method, _tlsb_io_bio_write);
+        BIO_meth_set_ctrl(_tlsb_stream_bio_method, _tlsb_stream_bio_ctrl);
+    }
+    _tlsb_dgram_bio_method = BIO_meth_new(BIO_TYPE_DGRAM, "xylem-dgram");
+    if (_tlsb_dgram_bio_method) {
+        BIO_meth_set_create(_tlsb_dgram_bio_method,
+                            _tlsb_io_bio_create);
+        BIO_meth_set_destroy(_tlsb_dgram_bio_method,
+                             _tlsb_io_bio_destroy);
+        BIO_meth_set_read(_tlsb_dgram_bio_method, _tlsb_io_bio_read);
+        BIO_meth_set_write(_tlsb_dgram_bio_method, _tlsb_io_bio_write);
+        BIO_meth_set_ctrl(_tlsb_dgram_bio_method, _tlsb_dgram_bio_ctrl);
+    }
 }
 
 /**
@@ -652,7 +777,8 @@ int tls_backend_ctx_set_keylog(tls_backend_ctx_t* ctx, const char* path) {
 
 tls_backend_conn_t* tls_backend_conn_create(
     tls_backend_ctx_t* ctx,
-    bool               is_server) {
+    bool               is_server,
+    const tls_backend_io_t* io) {
     tls_backend_conn_t* c = (tls_backend_conn_t*)calloc(1, sizeof(*c));
     if (!c) {
         return NULL;
@@ -662,11 +788,35 @@ tls_backend_conn_t* tls_backend_conn_create(
         free(c);
         return NULL;
     }
-    c->rbio = BIO_new(BIO_s_mem());
-    c->wbio = BIO_new(BIO_s_mem());
+    bool use_callback_io = io && io->read && io->write;
+    if (use_callback_io) {
+        BIO_METHOD* method = (ctx->proto == TLS_BACKEND_PROTO_DTLS)
+            ? _tlsb_dgram_bio_method
+            : _tlsb_stream_bio_method;
+        if (!method) {
+            SSL_free(c->ssl);
+            free(c);
+            return NULL;
+        }
+        c->io   = *io;
+        c->rbio = BIO_new(method);
+        if (!c->rbio || BIO_up_ref(c->rbio) != 1) {
+            BIO_free(c->rbio);
+            SSL_free(c->ssl);
+            free(c);
+            return NULL;
+        }
+        BIO_set_data(c->rbio, c);
+        c->wbio = c->rbio;
+    } else {
+        c->rbio = BIO_new(BIO_s_mem());
+        c->wbio = BIO_new(BIO_s_mem());
+    }
     if (!c->rbio || !c->wbio) {
         BIO_free(c->rbio);
-        BIO_free(c->wbio);
+        if (c->wbio != c->rbio) {
+            BIO_free(c->wbio);
+        }
         SSL_free(c->ssl);
         free(c);
         return NULL;
@@ -720,10 +870,16 @@ void tls_backend_conn_configure(
 }
 
 int tls_backend_conn_feed(tls_backend_conn_t* c, const void* buf, int len) {
+    if (_tlsb_conn_uses_callback_io(c)) {
+        return -1;
+    }
     return BIO_write(c->rbio, buf, len) == len ? 0 : -1;
 }
 
 int tls_backend_conn_drain(tls_backend_conn_t* c, void* buf, int cap) {
+    if (_tlsb_conn_uses_callback_io(c)) {
+        return 0;
+    }
     int n = BIO_read(c->wbio, buf, cap);
     if (n > 0) {
         return n;
@@ -833,6 +989,7 @@ void dtls_backend_conn_set_mtu(tls_backend_conn_t* c, uint16_t mtu) {
     if (mtu == 0) {
         return;
     }
+    c->mtu = mtu;
     SSL_set_options(c->ssl, SSL_OP_NO_QUERY_MTU);
     DTLS_set_link_mtu(c->ssl, mtu);
 }

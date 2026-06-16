@@ -58,6 +58,14 @@ static long _parse_int(const char* s, long min, long max, long fallback) {
     return v;
 }
 
+static size_t _read_buf_size(void) {
+    const char* s = getenv("XYLEM_TLS_ECHO_READ_BUF");
+    if (!s) {
+        return READ_BUF_SIZE;
+    }
+    return (size_t)_parse_int(s, 1024, READ_BUF_SIZE, READ_BUF_SIZE);
+}
+
 static int
 _write_pem_to_file(const char* path, int (*write_fn)(BIO*, void*), void* obj) {
     BIO* bio = BIO_new(BIO_s_mem());
@@ -157,16 +165,17 @@ static int _ensure_cert(void) {
 
 static void _handle_conn(void* arg) {
     xylem_tls_conn_t* conn = (xylem_tls_conn_t*)arg;
+    size_t            buf_size = _read_buf_size();
 
     /* Heap buffer: 64 KiB would consume half the 128 KiB coroutine stack. */
-    char* buf = (char*)malloc(READ_BUF_SIZE);
+    char* buf = (char*)malloc(buf_size);
     if (!buf) {
         xylem_tls_close(conn);
         return;
     }
 
     for (;;) {
-        int n = xylem_tls_read(conn, buf, READ_BUF_SIZE);
+        int n = xylem_tls_read(conn, buf, (int)buf_size);
         if (n <= 0) {
             break;
         }

@@ -13,18 +13,6 @@ option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
 option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
 
-# TLS backend selection. "openssl" (default) builds tls-backend-openssl.c
-# against OpenSSL 3.5+. "aws-lc" builds tls-backend-awslc.c against an aws-lc
-# (or BoringSSL) prefix given in AWSLC_ROOT; it supports both TLS and DTLS
-# (aws-lc/BoringSSL do no HelloVerifyRequest cookie exchange, so DTLS
-# anti-spoofing relies on the engine's per-peer datagram demux). "wolfssl"
-# builds tls-backend-wolfssl.c against a wolfSSL install located by
-# find_package(wolfssl CONFIG); it supports both TLS and DTLS, and requires a
-# wolfSSL built with the OpenSSL compatibility layer (see the file header of
-# src/net/tls/tls-backend-wolfssl.c for the full --enable-* flag list).
-set(XYLEM_TLS_BACKEND "openssl" CACHE STRING "TLS backend: openssl, aws-lc, or wolfssl")
-set(AWSLC_ROOT "" CACHE PATH "aws-lc/BoringSSL install or build prefix (XYLEM_TLS_BACKEND=aws-lc)")
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -165,33 +153,10 @@ if(UNIX)
 endif()
 
 if(XYLEM_ENABLE_TLS)
-	# Each backend resolves its dependency and records one source file plus the
-	# libraries/includes to apply to the target once it exists (below).
-	if(XYLEM_TLS_BACKEND STREQUAL "aws-lc")
-		if(NOT AWSLC_ROOT)
-			message(FATAL_ERROR
-				"XYLEM_TLS_BACKEND=aws-lc requires -DAWSLC_ROOT=<aws-lc prefix>")
-		endif()
-		find_library(AWSLC_CRYPTO_LIB NAMES crypto
-			PATHS "${AWSLC_ROOT}/lib" "${AWSLC_ROOT}/lib64"
-			NO_DEFAULT_PATH REQUIRED)
-		find_library(AWSLC_SSL_LIB NAMES ssl
-			PATHS "${AWSLC_ROOT}/lib" "${AWSLC_ROOT}/lib64"
-			NO_DEFAULT_PATH REQUIRED)
-		list(APPEND SRCS src/net/tls/tls-backend-awslc.c)
-		set(XYLEM_TLS_LIBS ${AWSLC_SSL_LIB} ${AWSLC_CRYPTO_LIB})
-		set(XYLEM_TLS_INCLUDES "${AWSLC_ROOT}/include")
-	elseif(XYLEM_TLS_BACKEND STREQUAL "wolfssl")
-		find_package(wolfssl CONFIG REQUIRED)
-		list(APPEND SRCS src/net/tls/tls-backend-wolfssl.c)
-		set(XYLEM_TLS_LIBS wolfssl::wolfssl)
-	else()
-		find_package(OpenSSL 3.5 REQUIRED)
-		set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
-		set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
-		list(APPEND SRCS src/net/tls/tls-backend-openssl.c)
-		set(XYLEM_TLS_LIBS OpenSSL::SSL OpenSSL::Crypto)
-	endif()
+	find_package(OpenSSL 3.5 REQUIRED)
+	set_target_properties(OpenSSL::SSL PROPERTIES SYSTEM OFF)
+	set_target_properties(OpenSSL::Crypto PROPERTIES SYSTEM OFF)
+	list(APPEND SRCS src/net/tls/tls-backend-openssl.c)
 
 	list(APPEND SRCS
 		src/net/tls/tls.c
@@ -221,17 +186,8 @@ target_include_directories(xylem
 
 target_link_libraries(xylem PRIVATE ${CMAKE_DL_LIBS})
 
-if(WIN32)
-	# WaitOnAddress / WakeByAddress* (platform-futex) live in the
-	# api-ms-win-core-synch-l1-2-0 set; Synchronization.lib is its import lib.
-	target_link_libraries(xylem PRIVATE Synchronization)
-endif()
-
 if(XYLEM_ENABLE_TLS)
-	target_link_libraries(xylem PRIVATE ${XYLEM_TLS_LIBS})
-	if(XYLEM_TLS_INCLUDES)
-		target_include_directories(xylem PRIVATE ${XYLEM_TLS_INCLUDES})
-	endif()
+	target_link_libraries(xylem PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 xylem_apply_sanitizer(xylem XYLEM_ENABLE_ASAN address)

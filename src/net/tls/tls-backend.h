@@ -31,20 +31,39 @@ _Pragma("once")
  * The engine (tls.c / dtls.c) owns sockets, iowait parking, locking,
  * refcounting, and the DTLS session machinery; it drives an SSL state
  * machine exclusively through this interface and includes no SSL-library
- * header. Each backend (tls-backend-openssl.c, and future wolfssl/mbedtls
- * variants) implements every function below. Backend selection is made at
- * compile time by the build; exactly one backend .c is compiled per build.
+ * header. tls-backend-openssl.c implements every function below. Backend
+ * selection is compile-time only; the current build supports OpenSSL.
  *
  * CONCURRENCY CONTRACT (precondition every backend may assume): the engine
  * holds a per-connection mutex across every conn op that touches the state
  * machine, exactly as it serializes the underlying library calls today.
  * Backends therefore use a plain, non-thread-safe state-machine object and
- * perform NO internal locking. feed/drain are the only ops the engine may
- * call from a pump path; they must never block (memory-buffer transfers).
+ * perform NO internal locking. feed/drain are only for a memory-BIO pump
+ * path; they must never block. Transport callbacks must also be
+ * non-blocking: they report EAGAIN through `again`, and the engine owns
+ * coroutine parking.
  */
 
 typedef struct tls_backend_ctx_s  tls_backend_ctx_t;
 typedef struct tls_backend_conn_s tls_backend_conn_t;
+
+typedef int (*tls_backend_io_read_fn_t)(
+    void* user,
+    void* buf,
+    int   len,
+    bool* again);
+
+typedef int (*tls_backend_io_write_fn_t)(
+    void*       user,
+    const void* buf,
+    int         len,
+    bool*       again);
+
+typedef struct tls_backend_io_s {
+    void*                     user;
+    tls_backend_io_read_fn_t  read;
+    tls_backend_io_write_fn_t write;
+} tls_backend_io_t;
 
 /* Result of a handshake/read/write step. */
 typedef enum {
@@ -218,12 +237,14 @@ extern int tls_backend_ctx_set_keylog(
  *
  * @param ctx        Context handle.
  * @param is_server  true for the accept (server) role, false for connect.
+ * @param io         Transport I/O callbacks, or NULL for memory BIO.
  *
  * @return Connection handle, or NULL on failure.
  */
 extern tls_backend_conn_t* tls_backend_conn_create(
     tls_backend_ctx_t* ctx,
-    bool               is_server);
+    bool               is_server,
+    const tls_backend_io_t* io);
 
 /**
  * @brief Destroy a connection state machine. NULL-safe.
@@ -246,7 +267,7 @@ extern void tls_backend_conn_configure(
     const tls_backend_handshake_cfg_t* cfg);
 
 /**
- * @brief Hand inbound ciphertext to the state machine.
+ * @brief Hand inbound ciphertext to a memory-BIO state machine.
  *
  * @param c    Connection handle.
  * @param buf  Ciphertext bytes.
@@ -260,7 +281,7 @@ extern int tls_backend_conn_feed(
     int                 len);
 
 /**
- * @brief Take pending outbound ciphertext from the state machine.
+ * @brief Take pending outbound ciphertext from a memory-BIO state machine.
  *
  * @param c    Connection handle.
  * @param buf  Destination buffer.

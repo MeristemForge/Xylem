@@ -77,6 +77,7 @@ xylem/go/rust families.)
 ```bash
 # Custom parameters (same options on both scripts):
 ./run-net.sh bench --proto tcp,udp,tls --conns 10000 --duration 60
+./run-net.sh bench --proto tcp --servers xylem,go,rust,java --payload 64,4096 --mode st
 ./run-net.sh bench --proto tls --servers xylem,go,rust --payload 64,4096 --mode st
 ./run-net.sh bench -P udp -s xylem,rust -c 1000,5000 -d 15 --repeat 3
 
@@ -84,10 +85,11 @@ xylem/go/rust families.)
 PROTO=tls REPEAT=5 DURATION=5 CONNS=1000 ./run-net.sh bench
 ```
 
-Bench options: `--proto` (tcp,udp,tls), `--servers` (xylem,go,rust),
+Bench options: `--proto` (tcp,udp,tls), `--servers` (xylem,go,rust,java),
 `--conns`, `--payload`, `--duration`, `--mode` (st|mt|both), `--repeat`,
 `--no-connrate`. UDP ignores `--mode mt` (no MT row) and connrate (it is
-connectionless); TLS connrate measures full TLS handshakes per second.
+connectionless); TLS connrate measures full TLS handshakes per second. Java is
+currently a TCP virtual-thread server in the Linux/macOS driver.
 
 ### Platform notes
 
@@ -142,6 +144,7 @@ benchmark/
         xylem-echo/           server.c (ST) + server-mt.c (MT, tcp/tls)
         go-echo/              one module: echo/server.go (ST) + echo-mt/server.go (MT)
         rust-echo/            one crate: src/server.rs (ST) + src/server_mt.rs (MT)
+        java-echo/            TcpEchoServer.java (JDK 21 virtual threads, TCP)
       client/                 load generator: Go module (client-mt.go),
                               file per protocol (epoll/kqueue readiness on
                               POSIX, IOCP completion on Windows)
@@ -159,7 +162,8 @@ benchmark/
 ```
 
 The xylem/go/rust families each live in a single per-family directory that
-yields both the ST and MT binaries; udp is ST only.
+yields both the ST and MT binaries where the protocol supports it; Java is
+currently TCP-only and uses one virtual-thread server source for both rows.
 
 Binaries and result files are namespaced by protocol: e.g. `tcp-xylem-echo`,
 `tls-xylem-echo-mt`, `udp-bench`, and `out/results/<ts>/tls-throughput-st-...json`.

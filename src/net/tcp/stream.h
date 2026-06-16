@@ -104,6 +104,31 @@ extern void stream_set_write_deadline(
 extern int stream_read(stream_t* stream, void* buf, int len);
 
 /**
+ * @brief Try one non-blocking stream read.
+ *
+ * @param stream  Stream handle.
+ * @param buf     Destination buffer.
+ * @param len     Maximum bytes to read.
+ * @param again   Receives true when the caller should wait for read readiness.
+ *
+ * @return Bytes read, 0 on peer close, or -1 on error/EAGAIN.
+ */
+extern int stream_try_read(
+    stream_t* stream,
+    void*     buf,
+    int       len,
+    bool*     again);
+
+/**
+ * @brief Wait until the stream becomes readable.
+ *
+ * @param stream  Stream handle.
+ *
+ * @return 0 when ready, -1 on close or timeout.
+ */
+extern int stream_wait_read(stream_t* stream);
+
+/**
  * @brief Write the full buffer to the stream.
  *
  * @param stream  Stream handle.
@@ -116,6 +141,31 @@ extern int stream_write(
     stream_t* stream,
     const void* data,
     int         len);
+
+/**
+ * @brief Try one non-blocking stream write.
+ *
+ * @param stream  Stream handle.
+ * @param data    Source buffer.
+ * @param len     Maximum bytes to write.
+ * @param again   Receives true when the caller should wait for write readiness.
+ *
+ * @return Bytes written (>0), or -1 on error/EAGAIN.
+ */
+extern int stream_try_write(
+    stream_t*   stream,
+    const void* data,
+    int         len,
+    bool*       again);
+
+/**
+ * @brief Wait until the stream becomes writable.
+ *
+ * @param stream  Stream handle.
+ *
+ * @return 0 when ready, -1 on close or timeout.
+ */
+extern int stream_wait_write(stream_t* stream);
 
 /**
  * @brief Get the stream's remote address.
