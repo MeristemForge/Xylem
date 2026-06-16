@@ -28,56 +28,49 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct tcp_stream_s   tcp_stream_t;
-typedef struct tcp_listener_s tcp_listener_t;
+typedef struct stream_s   stream_t;
+typedef struct listener_s listener_t;
 
 /**
- * @brief Wrap an already connected TCP fd in the coroutine stream core.
+ * @brief Wrap an already connected fd in the coroutine stream core.
  *
  * The stream takes ownership of fd on success.
  *
- * @param fd  Connected TCP socket.
+ * @param fd  Connected socket.
  *
  * @return Stream handle, or NULL on allocation failure.
  */
-extern tcp_stream_t* tcp_stream_from_fd(platform_sock_t fd);
+extern stream_t* stream_from_fd(platform_sock_t fd);
 
 /**
- * @brief Dial a TCP peer and return a coroutine stream.
+ * @brief Dial a peer and return a coroutine stream.
  *
  * @param host                Remote hostname or address.
  * @param port                Remote port.
  * @param connect_timeout_ms  Connect timeout in ms, 0 for none.
- * @param enable_mss_clamp    Whether to clamp TCP MSS on the socket.
+ * @param enable_mss_clamp    Whether to clamp MSS on the socket.
  *
  * @return Stream handle, or NULL on failure.
  */
-extern tcp_stream_t* tcp_stream_dial(
+extern stream_t* stream_dial(
     const char* host,
     uint16_t    port,
     uint64_t    connect_timeout_ms,
     bool        enable_mss_clamp);
 
 /**
- * @brief Close a stream and wake blocked readers or writers.
+ * @brief Interrupt blocked stream operations without releasing ownership.
  *
  * @param stream  Stream handle.
  */
-extern void tcp_stream_close(tcp_stream_t* stream);
-
-/**
- * @brief Wake blocked stream operations without releasing ownership.
- *
- * @param stream  Stream handle.
- */
-extern void tcp_stream_signal_close(tcp_stream_t* stream);
+extern void stream_interrupt(stream_t* stream);
 
 /**
  * @brief Release one stream ownership reference.
  *
  * @param stream  Stream handle.
  */
-extern void tcp_stream_release(tcp_stream_t* stream);
+extern void stream_release(stream_t* stream);
 
 /**
  * @brief Set the stream read deadline.
@@ -85,9 +78,9 @@ extern void tcp_stream_release(tcp_stream_t* stream);
  * @param stream       Stream handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
  */
-extern void tcp_stream_set_read_deadline(
-    tcp_stream_t* stream,
-    uint64_t      deadline_ms);
+extern void stream_set_read_deadline(
+    stream_t* stream,
+    uint64_t  deadline_ms);
 
 /**
  * @brief Set the stream write deadline.
@@ -95,9 +88,9 @@ extern void tcp_stream_set_read_deadline(
  * @param stream       Stream handle.
  * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
  */
-extern void tcp_stream_set_write_deadline(
-    tcp_stream_t* stream,
-    uint64_t      deadline_ms);
+extern void stream_set_write_deadline(
+    stream_t* stream,
+    uint64_t  deadline_ms);
 
 /**
  * @brief Read available bytes from the stream.
@@ -108,7 +101,7 @@ extern void tcp_stream_set_write_deadline(
  *
  * @return Bytes read, 0 on peer close, or -1 on error/timeout.
  */
-extern int tcp_stream_read(tcp_stream_t* stream, void* buf, int len);
+extern int stream_read(stream_t* stream, void* buf, int len);
 
 /**
  * @brief Write the full buffer to the stream.
@@ -119,10 +112,10 @@ extern int tcp_stream_read(tcp_stream_t* stream, void* buf, int len);
  *
  * @return 0 on success, -1 on error/timeout.
  */
-extern int tcp_stream_write(
-    tcp_stream_t* stream,
-    const void*   data,
-    int           len);
+extern int stream_write(
+    stream_t* stream,
+    const void* data,
+    int         len);
 
 /**
  * @brief Get the stream's remote address.
@@ -134,11 +127,11 @@ extern int tcp_stream_write(
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tcp_stream_remote_addr(
-    tcp_stream_t* stream,
-    char*         host,
-    size_t        host_len,
-    uint16_t*     port);
+extern int stream_remote_addr(
+    stream_t* stream,
+    char*     host,
+    size_t    host_len,
+    uint16_t* port);
 
 /**
  * @brief Get the stream's local address.
@@ -150,11 +143,11 @@ extern int tcp_stream_remote_addr(
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tcp_stream_local_addr(
-    tcp_stream_t* stream,
-    char*         host,
-    size_t        host_len,
-    uint16_t*     port);
+extern int stream_local_addr(
+    stream_t* stream,
+    char*     host,
+    size_t    host_len,
+    uint16_t* port);
 
 /**
  * @brief Shut down the stream write direction.
@@ -163,7 +156,7 @@ extern int tcp_stream_local_addr(
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tcp_stream_shutdown_wr(tcp_stream_t* stream);
+extern int stream_shutdown_wr(stream_t* stream);
 
 /**
  * @brief Shut down the stream read direction.
@@ -172,7 +165,7 @@ extern int tcp_stream_shutdown_wr(tcp_stream_t* stream);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tcp_stream_shutdown_rd(tcp_stream_t* stream);
+extern int stream_shutdown_rd(stream_t* stream);
 
 /**
  * @brief Return the platform socket owned by the stream.
@@ -181,51 +174,44 @@ extern int tcp_stream_shutdown_rd(tcp_stream_t* stream);
  *
  * @return Platform socket handle.
  */
-extern platform_sock_t tcp_stream_fd(tcp_stream_t* stream);
+extern platform_sock_t stream_fd(stream_t* stream);
 
 /**
- * @brief Create a TCP listener.
+ * @brief Create a listener.
  *
  * @param host              Bind address, or NULL for any.
  * @param port              Bind port.
- * @param enable_mss_clamp  Whether to clamp TCP MSS on accepted sockets.
+ * @param enable_mss_clamp  Whether to clamp MSS on accepted sockets.
  *
  * @return Listener handle, or NULL on failure.
  */
-extern tcp_listener_t* tcp_listener_listen(
+extern listener_t* listener_listen(
     const char* host,
     uint16_t    port,
     bool        enable_mss_clamp);
 
 /**
- * @brief Accept a TCP stream from a listener.
+ * @brief Accept a stream from a listener.
  *
  * @param listener  Listener handle.
  *
  * @return Accepted stream, or NULL if the listener is closed.
  */
-extern tcp_stream_t* tcp_listener_accept(tcp_listener_t* listener);
+extern stream_t* listener_accept(listener_t* listener);
 
 /**
- * @brief Close a listener and wake blocked acceptors.
+ * @brief Interrupt blocked listener operations without releasing ownership.
  *
  * @param listener  Listener handle.
  */
-extern void tcp_listener_close(tcp_listener_t* listener);
-
-/**
- * @brief Wake blocked listener operations without releasing ownership.
- *
- * @param listener  Listener handle.
- */
-extern void tcp_listener_signal_close(tcp_listener_t* listener);
+extern void listener_interrupt(listener_t* listener);
 
 /**
  * @brief Release one listener ownership reference.
  *
  * @param listener  Listener handle.
  */
-extern void tcp_listener_release(tcp_listener_t* listener);
+extern void listener_release(listener_t* listener);
 
 /**
  * @brief Get the listener's local address.
@@ -237,8 +223,8 @@ extern void tcp_listener_release(tcp_listener_t* listener);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int tcp_listener_addr(
-    tcp_listener_t* listener,
-    char*           host,
-    size_t          host_len,
-    uint16_t*       port);
+extern int listener_addr(
+    listener_t* listener,
+    char*       host,
+    size_t      host_len,
+    uint16_t*   port);

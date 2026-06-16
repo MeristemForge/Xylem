@@ -31,7 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct tcp_stream_s {
+struct stream_s {
     iowait_t*       waiter;
     platform_sock_t fd;
     addr_t          peer_addr;
@@ -40,18 +40,18 @@ struct tcp_stream_s {
     _Atomic bool    closed;
 };
 
-struct tcp_listener_s {
+struct listener_s {
     iowait_t*       waiter;
     platform_sock_t fd;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
 
-static void _stream_ref(tcp_stream_t* stream) {
+static void _stream_ref(stream_t* stream) {
     atomic_fetch_add_explicit(&stream->refcnt, 1, memory_order_relaxed);
 }
 
-static void _stream_unref(tcp_stream_t* stream) {
+static void _stream_unref(stream_t* stream) {
     if (atomic_fetch_sub_explicit(&stream->refcnt, 1, memory_order_acq_rel)
         != 1) {
         return;
@@ -74,11 +74,11 @@ static void _stream_unref(tcp_stream_t* stream) {
     free(stream);
 }
 
-static void _listener_ref(tcp_listener_t* listener) {
+static void _listener_ref(listener_t* listener) {
     atomic_fetch_add_explicit(&listener->refcnt, 1, memory_order_relaxed);
 }
 
-static void _listener_unref(tcp_listener_t* listener) {
+static void _listener_unref(listener_t* listener) {
     if (atomic_fetch_sub_explicit(&listener->refcnt, 1, memory_order_acq_rel)
         != 1) {
         return;
@@ -93,8 +93,8 @@ static void _listener_unref(tcp_listener_t* listener) {
     free(listener);
 }
 
-tcp_stream_t* tcp_stream_from_fd(platform_sock_t fd) {
-    tcp_stream_t* stream = (tcp_stream_t*)calloc(1, sizeof(tcp_stream_t));
+stream_t* stream_from_fd(platform_sock_t fd) {
+    stream_t* stream = (stream_t*)calloc(1, sizeof(stream_t));
     if (!stream) {
         return NULL;
     }
@@ -111,7 +111,7 @@ tcp_stream_t* tcp_stream_from_fd(platform_sock_t fd) {
     return stream;
 }
 
-tcp_stream_t* tcp_stream_dial(
+stream_t* stream_dial(
     const char* host,
     uint16_t    port,
     uint64_t    connect_timeout_ms,
@@ -128,7 +128,7 @@ tcp_stream_t* tcp_stream_dial(
         size_t  count = 0;
         if (addr_resolve(host, port, connect_timeout_ms, &addrs, &count) != 0
             || count == 0) {
-            xylem_loge("<tcp> dial dns failed host=%s", host);
+            xylem_loge("<stream> dial dns failed host=%s", host);
             return NULL;
         }
         resolved_addr = addrs[0];
@@ -147,7 +147,7 @@ tcp_stream_t* tcp_stream_dial(
         true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge(
-            "<tcp> dial socket failed host=%s port=%s",
+            "<stream> dial socket failed host=%s port=%s",
             host,
             port_str);
         return NULL;
@@ -157,7 +157,7 @@ tcp_stream_t* tcp_stream_dial(
         platform_socket_enable_mss_clamp(fd, true);
     }
 
-    tcp_stream_t* stream = tcp_stream_from_fd(fd);
+    stream_t* stream = stream_from_fd(fd);
     if (!stream) {
         platform_socket_close(fd);
         return NULL;
@@ -182,12 +182,17 @@ tcp_stream_t* tcp_stream_dial(
         iowait_set_wr_deadline(stream->waiter, 0);
 
         if (r == IOWAIT_TIMEOUT) {
-            xylem_loge("<tcp> dial connect timeout host=%s port=%u", host, port);
-            tcp_stream_close(stream);
+            xylem_loge(
+                "<stream> dial connect timeout host=%s port=%u",
+                host,
+                port);
+            stream_interrupt(stream);
+            stream_release(stream);
             return NULL;
         }
         if (r == IOWAIT_CLOSED) {
-            tcp_stream_close(stream);
+            stream_interrupt(stream);
+            stream_release(stream);
             return NULL;
         }
 
@@ -196,11 +201,12 @@ tcp_stream_t* tcp_stream_dial(
         getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
         if (err != 0) {
             xylem_loge(
-                "<tcp> dial connect failed fd=%d err=%d (%s)",
+                "<stream> dial connect failed fd=%d err=%d (%s)",
                 (int)fd,
                 err,
                 platform_socket_tostring(err));
-            tcp_stream_close(stream);
+            stream_interrupt(stream);
+            stream_release(stream);
             return NULL;
         }
     }
@@ -208,35 +214,30 @@ tcp_stream_t* tcp_stream_dial(
     return stream;
 }
 
-void tcp_stream_signal_close(tcp_stream_t* stream) {
+void stream_interrupt(stream_t* stream) {
     if (atomic_exchange(&stream->closed, true)) {
         return;
     }
     iowait_close(stream->waiter);
 }
 
-void tcp_stream_release(tcp_stream_t* stream) {
+void stream_release(stream_t* stream) {
     _stream_unref(stream);
 }
 
-void tcp_stream_close(tcp_stream_t* stream) {
-    tcp_stream_signal_close(stream);
-    tcp_stream_release(stream);
-}
-
-void tcp_stream_set_read_deadline(
-    tcp_stream_t* stream,
-    uint64_t      deadline_ms) {
+void stream_set_read_deadline(
+    stream_t* stream,
+    uint64_t  deadline_ms) {
     iowait_set_rd_deadline(stream->waiter, deadline_ms);
 }
 
-void tcp_stream_set_write_deadline(
-    tcp_stream_t* stream,
-    uint64_t      deadline_ms) {
+void stream_set_write_deadline(
+    stream_t* stream,
+    uint64_t  deadline_ms) {
     iowait_set_wr_deadline(stream->waiter, deadline_ms);
 }
 
-int tcp_stream_read(tcp_stream_t* stream, void* buf, int len) {
+int stream_read(stream_t* stream, void* buf, int len) {
     _stream_ref(stream);
     int ret = -1;
 
@@ -253,7 +254,7 @@ int tcp_stream_read(tcp_stream_t* stream, void* buf, int len) {
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 xylem_loge(
-                    "<tcp> read failed fd=%d err=%s",
+                    "<stream> read failed fd=%d err=%s",
                     (int)stream->fd,
                     platform_socket_tostring(err));
                 break;
@@ -272,7 +273,7 @@ int tcp_stream_read(tcp_stream_t* stream, void* buf, int len) {
     return ret;
 }
 
-int tcp_stream_write(tcp_stream_t* stream, const void* data, int len) {
+int stream_write(stream_t* stream, const void* data, int len) {
     _stream_ref(stream);
     int ret = -1;
 
@@ -294,7 +295,7 @@ int tcp_stream_write(tcp_stream_t* stream, const void* data, int len) {
             if (err != PLATFORM_SO_ERROR_EAGAIN
                 && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 xylem_loge(
-                    "<tcp> write failed fd=%d err=%s",
+                    "<stream> write failed fd=%d err=%s",
                     (int)stream->fd,
                     platform_socket_tostring(err));
                 break;
@@ -317,11 +318,11 @@ int tcp_stream_write(tcp_stream_t* stream, const void* data, int len) {
     return ret;
 }
 
-int tcp_stream_remote_addr(
-    tcp_stream_t* stream,
-    char*         host,
-    size_t        host_len,
-    uint16_t*     port) {
+int stream_remote_addr(
+    stream_t* stream,
+    char*     host,
+    size_t    host_len,
+    uint16_t* port) {
     if (!stream->peer_addr_valid) {
         socklen_t peer_len = sizeof(stream->peer_addr.storage);
         if (getpeername(
@@ -337,11 +338,11 @@ int tcp_stream_remote_addr(
     return addr_ntop(&stream->peer_addr, host, host_len, port);
 }
 
-int tcp_stream_local_addr(
-    tcp_stream_t* stream,
-    char*         host,
-    size_t        host_len,
-    uint16_t*     port) {
+int stream_local_addr(
+    stream_t* stream,
+    char*     host,
+    size_t    host_len,
+    uint16_t* port) {
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(stream->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
@@ -350,19 +351,19 @@ int tcp_stream_local_addr(
     return addr_ntop(&addr, host, host_len, port);
 }
 
-int tcp_stream_shutdown_wr(tcp_stream_t* stream) {
+int stream_shutdown_wr(stream_t* stream) {
     return shutdown(stream->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
 }
 
-int tcp_stream_shutdown_rd(tcp_stream_t* stream) {
+int stream_shutdown_rd(stream_t* stream) {
     return shutdown(stream->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
 }
 
-platform_sock_t tcp_stream_fd(tcp_stream_t* stream) {
+platform_sock_t stream_fd(stream_t* stream) {
     return stream->fd;
 }
 
-tcp_listener_t* tcp_listener_listen(
+listener_t* listener_listen(
     const char* host,
     uint16_t    port,
     bool        enable_mss_clamp) {
@@ -372,7 +373,7 @@ tcp_listener_t* tcp_listener_listen(
     platform_sock_t fd
         = platform_socket_listen(host, port_str, SOCK_STREAM, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<tcp> listen failed host=%s port=%s", host, port_str);
+        xylem_loge("<stream> listen failed host=%s port=%s", host, port_str);
         return NULL;
     }
 
@@ -380,8 +381,8 @@ tcp_listener_t* tcp_listener_listen(
         platform_socket_enable_mss_clamp(fd, true);
     }
 
-    tcp_listener_t* listener
-        = (tcp_listener_t*)calloc(1, sizeof(tcp_listener_t));
+    listener_t* listener
+        = (listener_t*)calloc(1, sizeof(listener_t));
     if (!listener) {
         platform_socket_close(fd);
         return NULL;
@@ -399,12 +400,12 @@ tcp_listener_t* tcp_listener_listen(
     return listener;
 }
 
-tcp_stream_t* tcp_listener_accept(tcp_listener_t* listener) {
+stream_t* listener_accept(listener_t* listener) {
     _listener_ref(listener);
 
-    tcp_stream_t* result     = NULL;
-    uint64_t      backoff_ms = 5;
-    int           retries    = 0;
+    stream_t* result     = NULL;
+    uint64_t  backoff_ms = 5;
+    int       retries    = 0;
 
     for (;;) {
         if (atomic_load_explicit(&listener->closed, memory_order_acquire)) {
@@ -423,7 +424,7 @@ tcp_stream_t* tcp_listener_accept(tcp_listener_t* listener) {
             }
 
             xylem_loge(
-                "<tcp> accept failed fd=%d err=%d (%s)",
+                "<stream> accept failed fd=%d err=%d (%s)",
                 (int)listener->fd,
                 err,
                 platform_socket_tostring(err));
@@ -440,7 +441,7 @@ tcp_stream_t* tcp_listener_accept(tcp_listener_t* listener) {
         backoff_ms = 5;
         retries    = 0;
 
-        tcp_stream_t* stream = tcp_stream_from_fd(fd);
+        stream_t* stream = stream_from_fd(fd);
         if (!stream) {
             platform_socket_close(fd);
             break;
@@ -454,7 +455,7 @@ tcp_stream_t* tcp_listener_accept(tcp_listener_t* listener) {
     return result;
 }
 
-void tcp_listener_signal_close(tcp_listener_t* listener) {
+void listener_interrupt(listener_t* listener) {
     if (atomic_exchange(&listener->closed, true)) {
         return;
     }
@@ -462,20 +463,15 @@ void tcp_listener_signal_close(tcp_listener_t* listener) {
     iowait_close(listener->waiter);
 }
 
-void tcp_listener_release(tcp_listener_t* listener) {
+void listener_release(listener_t* listener) {
     _listener_unref(listener);
 }
 
-void tcp_listener_close(tcp_listener_t* listener) {
-    tcp_listener_signal_close(listener);
-    tcp_listener_release(listener);
-}
-
-int tcp_listener_addr(
-    tcp_listener_t* listener,
-    char*           host,
-    size_t          host_len,
-    uint16_t*       port) {
+int listener_addr(
+    listener_t* listener,
+    char*       host,
+    size_t      host_len,
+    uint16_t*   port) {
     addr_t addr;
     socklen_t len = sizeof(addr.storage);
     if (getsockname(listener->fd, (struct sockaddr*)&addr.storage, &len) != 0) {

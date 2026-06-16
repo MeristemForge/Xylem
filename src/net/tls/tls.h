@@ -38,10 +38,8 @@ _Pragma("once")
 #include "xylem/net/xylem-tls.h"
 #include "xylem/sync/xylem-mutex.h"
 
-#include "net/addr.h"
+#include "net/tcp/stream.h"
 #include "net/tls/tls-backend.h"
-#include "platform/platform-socket.h"
-#include "runtime/iowait.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -73,10 +71,8 @@ struct tls_conn_s {
     xylem_mutex_t*      rd_mu;
     xylem_mutex_t*      wr_mu;
     xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
-    iowait_t*           waiter;
-    platform_sock_t     fd;
+    stream_t*           stream;
     tls_ctx_t*          ctx;
-    addr_t              peer_addr;
     char                alpn[32];
     uint64_t            hs_timeout_ms;  /* copied from ln->opts at accept */
     _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
@@ -85,8 +81,7 @@ struct tls_conn_s {
 };
 
 struct tls_listener_s {
-    iowait_t*        waiter;
-    platform_sock_t  fd;
+    listener_t*      listener;
     tls_ctx_t*       ctx;
     xylem_tls_opts_t opts;
     _Atomic int32_t  refcnt;
@@ -264,12 +259,12 @@ extern tls_listener_t* tls_listen(
  *  - handshake_timeout_ms is measured from when the handshake begins
  *    (first I/O), not from accept. A handler that never reads is not
  *    bounded by it until then; rely on prompt handler reads plus
- *    fd/backlog limits.
+ *    transport/backlog limits.
  *
  * Must be called from a single coroutine per listener: the accept parks
- * on the listener's iowait read direction, which permits only one parker
- * (a second concurrent accept aborts). To accept in parallel across
- * cores, give each worker its own listener on the same port and rely on
+ * on the listener stream core, which permits only one accept parker (a
+ * second concurrent accept aborts). To accept in parallel across cores,
+ * give each worker its own listener on the same port and rely on
  * SO_REUSEPORT load balancing -- effective on Linux/macOS only; on
  * Windows reuseport is a no-op, so use a single acceptor there.
  *
@@ -391,7 +386,7 @@ extern const char* tls_get_alpn(tls_conn_t* tls);
  * certificate. No-op (returns 0) for client connections and for server
  * connections already handshaked.
  *
- * Drives both socket directions, so exactly one coroutine owns it; a
+ * Drives both stream directions, so exactly one coroutine owns it; a
  * second concurrent caller blocks until the driver finishes, then sees
  * the same result. Must be called under no rd_mu/wr_mu/ssl_mu hold.
  *

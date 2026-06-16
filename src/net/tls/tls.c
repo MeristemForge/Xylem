@@ -26,11 +26,10 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "net/addr.h"
+#include "net/tcp/stream.h"
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
-#include "runtime/iowait.h"
 #include "runtime/precond.h"
-#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -96,25 +95,21 @@ static void _tls_conn_ref(tls_conn_t* tls) {
     atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
 }
 
-static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
+static tls_conn_t* _tls_conn_create(stream_t* stream) {
     tls_conn_t* tls = (tls_conn_t*)calloc(1, sizeof(tls_conn_t));
     if (!tls) {
         return NULL;
     }
 
-    tls->fd     = fd;
-    tls->waiter = iowait_create(fd);
+    tls->stream = stream;
     tls->ssl_mu = xylem_mutex_create();
     tls->rd_mu  = xylem_mutex_create();
     tls->wr_mu  = xylem_mutex_create();
     tls->hs_mu  = xylem_mutex_create();
     tls->rbuf   = (char*)malloc(TLS_MAX_RECORD);
     tls->wbuf   = (char*)malloc(TLS_MAX_RECORD);
-    if (!tls->waiter || !tls->ssl_mu || !tls->rd_mu || !tls->wr_mu
-        || !tls->hs_mu || !tls->rbuf || !tls->wbuf) {
-        if (tls->waiter) {
-            iowait_destroy(tls->waiter);
-        }
+    if (!tls->ssl_mu || !tls->rd_mu || !tls->wr_mu || !tls->hs_mu
+        || !tls->rbuf || !tls->wbuf) {
         xylem_mutex_destroy(tls->ssl_mu);
         xylem_mutex_destroy(tls->rd_mu);
         xylem_mutex_destroy(tls->wr_mu);
@@ -131,7 +126,7 @@ static tls_conn_t* _tls_conn_create(platform_sock_t fd) {
 
 /**
  * Convert a timeout in milliseconds to an absolute deadline. Returns 0
- * (no deadline) when timeout_ms is 0, matching the iowait convention.
+ * (no deadline) when timeout_ms is 0, matching the stream convention.
  */
 static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
     if (timeout_ms == 0) {
@@ -140,10 +135,10 @@ static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
     return xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
 }
 
-/* Apply the same deadline to both iowait directions (0 clears it). */
+/* Apply the same deadline to both stream directions (0 clears it). */
 static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
-    iowait_set_rd_deadline(tls->waiter, deadline);
-    iowait_set_wr_deadline(tls->waiter, deadline);
+    stream_set_read_deadline(tls->stream, deadline);
+    stream_set_write_deadline(tls->stream, deadline);
 }
 
 /**
@@ -152,20 +147,9 @@ static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
  * before delegating here. Frees tls itself.
  */
 static void _tls_conn_free(tls_conn_t* tls) {
-    if (tls->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference -- without this the waiter would linger
-         * until the timer fires (e.g. a failed handshake would keep the
-         * connection alive for the whole handshake timeout).
-         */
+    if (tls->stream) {
         _tls_set_deadline(tls, 0);
-        iowait_destroy(tls->waiter);
-    }
-    if (tls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        shutdown(tls->fd, PLATFORM_SHUT_WR);
-        platform_socket_close(tls->fd);
+        stream_release(tls->stream);
     }
     xylem_mutex_destroy(tls->ssl_mu);
     xylem_mutex_destroy(tls->rd_mu);
@@ -192,40 +176,22 @@ static void _tls_conn_unref(tls_conn_t* tls) {
 }
 
 /**
- * Send exactly len bytes to the socket, parking on the iowait write
- * direction when the kernel buffer is full. Caller must hold wr_mu so
- * this is the sole parker on that direction. Returns 0 on success, -1
- * on socket error or close.
+ * Send exactly len bytes to the stream. Caller must hold wr_mu so this
+ * is the sole TLS writer. Returns 0 on success, -1 on error or close.
  */
 static int _tls_send_all(tls_conn_t* tls, const char* buf, int len) {
-    int sent = 0;
-    while (sent < len) {
-        ssize_t n = platform_socket_send(tls->fd, buf + sent, len - sent);
-        if (n > 0) {
-            sent += (int)n;
-            continue;
-        }
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("<tls> send failed fd=%d err=%s",
-                       (int)tls->fd, platform_socket_tostring(err));
-            return -1;
-        }
-        if (iowait_write(tls->waiter) != IOWAIT_READY
-            || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-            return -1;
-        }
+    if (atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        return -1;
     }
-    return 0;
+    return stream_write(tls->stream, buf, len);
 }
 
 /**
- * Drain pending outbound ciphertext from the backend to the socket.
- * Holds wr_mu so it is the sole parker on the iowait write direction,
- * and takes ssl_mu only for the drain itself -- never across a socket
- * park -- so a concurrent reader can still touch the backend state.
- * Returns 0 once the backend is empty, -1 on socket error or close.
+ * Drain pending outbound ciphertext from the backend to the stream.
+ * Holds wr_mu so it is the sole TLS writer, and takes ssl_mu only for
+ * the drain itself -- never across a stream park -- so a concurrent
+ * reader can still touch the backend state. Returns 0 once the backend
+ * is empty, -1 on stream error or close.
  */
 static int _tls_pump_out(tls_conn_t* tls) {
     int ret = 0;
@@ -248,46 +214,25 @@ static int _tls_pump_out(tls_conn_t* tls) {
 }
 
 /**
- * Read one chunk of inbound ciphertext from the socket into the backend.
- * Holds rd_mu so it is the sole parker on the iowait read direction, and
- * takes ssl_mu only for the feed -- never across a socket park. Returns
- * the byte count fed (>0), 0 on peer EOF, -1 on socket error or close.
+ * Read one chunk of inbound ciphertext from the stream into the backend.
+ * Holds rd_mu so it is the sole TLS reader, and takes ssl_mu only for
+ * the feed -- never across a stream park. Returns the byte count fed
+ * (>0), 0 on peer EOF, -1 on stream error or close.
  */
 static int _tls_pump_in(tls_conn_t* tls) {
     int ret = -1;
 
     xylem_mutex_lock(tls->rd_mu);
-    for (;;) {
-        ssize_t n = platform_socket_recv(tls->fd, tls->rbuf, TLS_MAX_RECORD);
-        if (n > 0) {
-            xylem_mutex_lock(tls->ssl_mu);
-            int fed = tls_backend_conn_feed(tls->be, tls->rbuf, (int)n);
-            xylem_mutex_unlock(tls->ssl_mu);
-            if (fed != 0) {
-                ret = -1;
-                break;
-            }
-            ret = (int)n;
-            break;
+    int n = stream_read(tls->stream, tls->rbuf, TLS_MAX_RECORD);
+    if (n > 0) {
+        xylem_mutex_lock(tls->ssl_mu);
+        int fed = tls_backend_conn_feed(tls->be, tls->rbuf, n);
+        xylem_mutex_unlock(tls->ssl_mu);
+        if (fed == 0) {
+            ret = n;
         }
-        if (n == 0) {
-            ret = 0;
-            break;
-        }
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("<tls> recv failed fd=%d err=%s",
-                       (int)tls->fd, platform_socket_tostring(err));
-            ret = -1;
-            break;
-        }
-        iowait_result_t r = iowait_read(tls->waiter);
-        if (r != IOWAIT_READY
-            || atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-            ret = -1;
-            break;
-        }
+    } else if (n == 0) {
+        ret = 0;
     }
     xylem_mutex_unlock(tls->rd_mu);
     return ret;
@@ -364,77 +309,15 @@ static void _tls_listener_unref(tls_listener_t* ln) {
         != 1) {
         return;
     }
-    if (ln->waiter) {
-        iowait_destroy(ln->waiter);
-    }
-    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(ln->fd);
+    if (ln->listener) {
+        listener_release(ln->listener);
     }
     free(ln);
 }
 
 /**
- * Resolve host to a numeric dial target. A numeric literal is used
- * as-is; otherwise the name is resolved via DNS and the first result is
- * written to ip_buf. On return dial_host points at host or ip_buf, and
- * out_addr holds the chosen peer address. Returns 0 on success, -1 on
- * resolution failure.
- */
-static int _tls_resolve(
-    const char*  host,
-    uint16_t     port,
-    uint64_t     timeout_ms,
-    char*        ip_buf,
-    size_t       ip_buf_len,
-    const char** dial_host,
-    addr_t*      out_addr) {
-    if (addr_pton(host, port, out_addr) == 0) {
-        *dial_host = host;
-        return 0;
-    }
-
-    addr_t* addrs = NULL;
-    size_t  count = 0;
-    if (addr_resolve(host, port, timeout_ms, &addrs, &count) != 0
-        || count == 0) {
-        xylem_loge("<tls> dial dns failed host=%s", host);
-        return -1;
-    }
-
-    *out_addr = addrs[0];
-    free(addrs);
-
-    uint16_t rport;
-    addr_ntop(out_addr, ip_buf, ip_buf_len, &rport);
-    *dial_host = ip_buf;
-    return 0;
-}
-
-/**
- * Wait for a non-blocking connect to finish and surface any pending
- * socket error. The caller arms the deadline before calling. Returns 0
- * once the socket is writable with no error, -1 on timeout or connect
- * failure.
- */
-static int _tls_wait_connect(tls_conn_t* tls) {
-    if (iowait_write(tls->waiter) != IOWAIT_READY) {
-        return -1;
-    }
-
-    int32_t   err    = 0;
-    socklen_t errlen = sizeof(err);
-    getsockopt(tls->fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
-    if (err != 0) {
-        xylem_loge("<tls> dial connect failed fd=%d err=%d (%s)",
-                   (int)tls->fd, err, platform_socket_tostring(err));
-        return -1;
-    }
-    return 0;
-}
-
-/**
  * Drive the backend read to completion, pumping ciphertext to/from the
- * socket as the backend state machine demands. Returns bytes read (>0),
+ * stream as the backend state machine demands. Returns bytes read (>0),
  * 0 on clean peer shutdown, or -1 on error/close.
  */
 static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
@@ -522,45 +405,7 @@ static int _tls_write_loop(
 }
 
 /**
- * Pull one connection off the listen socket, parking on the iowait read
- * direction while none is pending and backing off on transient accept
- * errors. Returns a connected fd, or PLATFORM_SO_ERROR_INVALID_SOCKET
- * when the listener is closing or accept keeps failing.
- */
-static platform_sock_t _tls_accept_fd(tls_listener_t* ln) {
-    uint64_t backoff_ms = 5;
-    int      retries    = 0;
-
-    while (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
-        platform_sock_t fd = platform_socket_accept(ln->fd, true);
-        if (fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            return fd;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err == PLATFORM_SO_ERROR_EAGAIN
-            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            if (iowait_read(ln->waiter) != IOWAIT_READY) {
-                break;
-            }
-            continue;
-        }
-
-        xylem_loge("<tls> accept failed fd=%d err=%d (%s)",
-                   (int)ln->fd, err, platform_socket_tostring(err));
-        if (++retries > 8) {
-            break;
-        }
-        runtime_sleep(backoff_ms);
-        if (backoff_ms < 1000) {
-            backoff_ms *= 2;
-        }
-    }
-    return PLATFORM_SO_ERROR_INVALID_SOCKET;
-}
-
-/**
- * Drive the server-side TLS handshake on an accepted connection's fd.
+ * Drive the server-side TLS handshake on an accepted stream.
  * Unlike the eager path, this does NOT tear the connection down on
  * failure: it runs under a ref held by tls_read/tls_write/tls_handshake,
  * and the owning handler's tls_close performs teardown. Returns 0 on a
@@ -596,7 +441,7 @@ static int _tls_server_handshake(tls_conn_t* tls) {
  * handshaked) returns immediately without locking.
  *
  * Otherwise exactly one coroutine must drive the handshake: it is a
- * single state machine pumping BOTH socket directions, and iowait allows
+ * single state machine pumping BOTH stream directions, and stream parks allow
  * only one parker per direction, so two drivers would double-step the
  * backend and double-park a direction. hs_mu elects that driver; a
  * second coroutine (xylem permits one reader + one writer on a conn) just
@@ -604,7 +449,7 @@ static int _tls_server_handshake(tls_conn_t* tls) {
  * it. hs_mu is a coroutine mutex (a contended lock yields), and the
  * non-driver takes only hs_mu -- never nested inside ssl_mu/rd_mu/wr_mu
  * -- so there is no lock-order inversion against the driver's inner
- * locks. Holding hs_mu across the handshake's iowait parks is therefore
+ * locks. Holding hs_mu across the handshake's stream parks is therefore
  * fine. Returns 0 once handshaked, -1 on failure.
  */
 static int _tls_ensure_handshake(tls_conn_t* tls) {
@@ -634,6 +479,30 @@ static int _tls_ensure_handshake(tls_conn_t* tls) {
                           memory_order_release);
     xylem_mutex_unlock(tls->hs_mu);
     return rc;
+}
+
+/**
+ * Best-effort close_notify so the peer can tell a clean close from a
+ * truncation. The caller must hold wr_mu (so this is the sole parker on
+ * the write direction) and must not yet have interrupted the stream.
+ * Bounded park, not unbounded, so a stalled peer can never pin teardown.
+ */
+static void _tls_flush_close_notify(tls_conn_t* tls) {
+    if (!tls->be) {
+        return;
+    }
+    xylem_mutex_lock(tls->ssl_mu);
+    tls_backend_conn_shutdown(tls->be);
+    int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_MAX_RECORD);
+    xylem_mutex_unlock(tls->ssl_mu);
+
+    stream_set_write_deadline(
+        tls->stream,
+        _tls_make_deadline(TLS_CLOSE_NOTIFY_TIMEOUT_MS));
+    if (n > 0) {
+        stream_write(tls->stream, tls->wbuf, n);
+    }
+    stream_set_write_deadline(tls->stream, 0);
 }
 
 tls_ctx_t* tls_ctx_create(void) {
@@ -715,98 +584,32 @@ tls_conn_t* tls_dial(
     xylem_tls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("tls", "tls_dial");
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    const char* dial_host = NULL;
-    char        resolved_ip[INET6_ADDRSTRLEN];
-    addr_t      resolved_addr;
-    if (_tls_resolve(host, port, opts ? opts->handshake_timeout_ms : 0,
-                     resolved_ip, sizeof(resolved_ip),
-                     &dial_host, &resolved_addr) != 0) {
+    uint64_t timeout_ms = opts ? opts->handshake_timeout_ms : 0;
+    uint64_t deadline   = _tls_make_deadline(timeout_ms);
+    stream_t* stream
+        = stream_dial(host, port, timeout_ms, opts && opts->enable_mss_clamp);
+    if (!stream) {
         return NULL;
     }
 
-    bool            connected = false;
-    platform_sock_t fd        = platform_socket_dial(
-        dial_host, port_str, SOCK_STREAM, &connected, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<tls> dial socket failed host=%s port=%s",
-                   host, port_str);
-        return NULL;
-    }
-
-    if (opts && opts->enable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, true);
-    }
-
-    tls_conn_t* tls = _tls_conn_create(fd);
+    tls_conn_t* tls = _tls_conn_create(stream);
     if (!tls) {
-        platform_socket_close(fd);
+        stream_release(stream);
         return NULL;
     }
 
-    tls->ctx       = ctx;
-    tls->peer_addr = resolved_addr;
+    tls->ctx = ctx;
 
-    uint64_t connect_ms = opts ? opts->handshake_timeout_ms : 0;
-
-    /* Arm the deadline once; it bounds both connect and handshake. */
-    _tls_set_deadline(tls, _tls_make_deadline(connect_ms));
-
-    if (!connected && _tls_wait_connect(tls) != 0) {
-        _tls_conn_destroy(tls);
-        return NULL;
-    }
-
+    /* The same absolute deadline bounds connect plus handshake. */
+    _tls_set_deadline(tls, deadline);
     if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("<tls> dial handshake failed host=%s port=%s", host,
-                   port_str);
+        xylem_loge("<tls> dial handshake failed host=%s port=%u", host, port);
         _tls_conn_destroy(tls);
         return NULL;
     }
 
     _tls_set_deadline(tls, 0);
     return tls;
-}
-
-/**
- * Best-effort close_notify so the peer can tell a clean close from a
- * truncation. The caller must hold wr_mu (so this is the sole parker on
- * the write direction) and must not yet have closed the waiter (the
- * bounded park below relies on the iowait still being live). Bounded
- * park, not unbounded, so a stalled peer can never pin teardown; own
- * send loop because `closed` is already set and would otherwise abort
- * _tls_send_all mid-flush.
- */
-static void _tls_flush_close_notify(tls_conn_t* tls) {
-    if (!tls->be) {
-        return;
-    }
-    xylem_mutex_lock(tls->ssl_mu);
-    tls_backend_conn_shutdown(tls->be);
-    int n = tls_backend_conn_drain(tls->be, tls->wbuf, TLS_MAX_RECORD);
-    xylem_mutex_unlock(tls->ssl_mu);
-
-    iowait_set_wr_deadline(tls->waiter,
-                           _tls_make_deadline(TLS_CLOSE_NOTIFY_TIMEOUT_MS));
-    int sent = 0;
-    while (n > 0 && sent < n) {
-        ssize_t w = platform_socket_send(tls->fd, tls->wbuf + sent, n - sent);
-        if (w > 0) {
-            sent += (int)w;
-            continue;
-        }
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            break;
-        }
-        if (iowait_write(tls->waiter) != IOWAIT_READY) {
-            break;
-        }
-    }
-    iowait_set_wr_deadline(tls->waiter, 0);
 }
 
 void tls_close(tls_conn_t* tls) {
@@ -822,9 +625,9 @@ void tls_close(tls_conn_t* tls) {
      * blocking lock: another coroutine (possibly on a different worker)
      * parked in tls_write holds wr_mu across its (possibly unbounded)
      * park, and a blocking lock here would wait behind the very
-     * coroutine that iowait_close must wake -- a teardown deadlock. A
+     * coroutine that stream_interrupt must wake -- a teardown deadlock. A
      * busy wr_mu means a writer is active, so skip the notify and go
-     * straight to the hard close, whose iowait_close wakes any parked
+     * straight to the hard close, whose stream interrupt wakes any parked
      * reader/writer. This mirrors Go's tls.Conn.Close, which skips
      * close_notify when a Write is in flight.
      */
@@ -833,7 +636,7 @@ void tls_close(tls_conn_t* tls) {
         xylem_mutex_unlock(tls->wr_mu);
     }
 
-    iowait_close(tls->waiter);
+    stream_interrupt(tls->stream);
     _tls_conn_unref(tls);
 }
 
@@ -842,37 +645,22 @@ tls_listener_t* tls_listen(
     uint16_t          port,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    platform_sock_t fd
-        = platform_socket_listen(host, port_str, SOCK_STREAM, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<tls> listen failed host=%s port=%s", host, port_str);
+    listener_t* listener
+        = listener_listen(host, port, opts && opts->enable_mss_clamp);
+    if (!listener) {
         return NULL;
-    }
-
-    if (opts && opts->enable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, true);
     }
 
     tls_listener_t* ln = (tls_listener_t*)calloc(1, sizeof(tls_listener_t));
     if (!ln) {
-        platform_socket_close(fd);
+        listener_release(listener);
         return NULL;
     }
 
-    ln->fd  = fd;
-    ln->ctx = ctx;
+    ln->listener = listener;
+    ln->ctx      = ctx;
     if (opts) {
         ln->opts = *opts;
-    }
-
-    ln->waiter = iowait_create(fd);
-    if (!ln->waiter) {
-        platform_socket_close(fd);
-        free(ln);
-        return NULL;
     }
 
     _tls_listener_ref(ln);
@@ -886,22 +674,22 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
 
     tls_conn_t* ready = NULL;
     for (;;) {
-        platform_sock_t fd = _tls_accept_fd(ln);
-        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
             break;
         }
 
-        tls_conn_t* conn = _tls_conn_create(fd);
+        stream_t* stream = listener_accept(ln->listener);
+        if (!stream) {
+            break;
+        }
+
+        tls_conn_t* conn = _tls_conn_create(stream);
         if (!conn) {
-            platform_socket_close(fd);
+            stream_release(stream);
             break;
         }
 
         conn->ctx = ln->ctx;
-
-        socklen_t peer_len = sizeof(conn->peer_addr.storage);
-        getpeername(fd, (struct sockaddr*)&conn->peer_addr.storage,
-                    &peer_len);
 
         /**
          * Defer the handshake to first I/O so it runs in the handler
@@ -924,7 +712,7 @@ void tls_close_listener(tls_listener_t* ln) {
         return;
     }
 
-    iowait_close(ln->waiter);
+    listener_interrupt(ln->listener);
     _tls_listener_unref(ln);
 }
 
@@ -975,11 +763,11 @@ int tls_handshake(tls_conn_t* tls) {
 }
 
 void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    iowait_set_rd_deadline(tls->waiter, deadline_ms);
+    stream_set_read_deadline(tls->stream, deadline_ms);
 }
 
 void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    iowait_set_wr_deadline(tls->waiter, deadline_ms);
+    stream_set_write_deadline(tls->stream, deadline_ms);
 }
 
 int tls_remote_addr(
@@ -987,7 +775,7 @@ int tls_remote_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    return addr_ntop(&tls->peer_addr, host, host_len, port);
+    return stream_remote_addr(tls->stream, host, host_len, port);
 }
 
 int tls_local_addr(
@@ -995,12 +783,7 @@ int tls_local_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    addr_t addr;
-    socklen_t alen = sizeof(addr.storage);
-    if (getsockname(tls->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
-        return -1;
-    }
-    return addr_ntop(&addr, host, host_len, port);
+    return stream_local_addr(tls->stream, host, host_len, port);
 }
 
 int tls_listener_addr(
@@ -1008,12 +791,7 @@ int tls_listener_addr(
     char*           host,
     size_t          host_len,
     uint16_t*       port) {
-    addr_t addr;
-    socklen_t alen = sizeof(addr.storage);
-    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &alen) != 0) {
-        return -1;
-    }
-    return addr_ntop(&addr, host, host_len, port);
+    return listener_addr(ln->listener, host, host_len, port);
 }
 
 const char* tls_get_alpn(tls_conn_t* tls) {
@@ -1026,9 +804,15 @@ tls_conn_t* tls_client_handshake_fd(
     xylem_tls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("tls", "tls_client_handshake_fd");
 
-    tls_conn_t* tls = _tls_conn_create(fd);
-    if (!tls) {
+    stream_t* stream = stream_from_fd(fd);
+    if (!stream) {
         platform_socket_close(fd);
+        return NULL;
+    }
+
+    tls_conn_t* tls = _tls_conn_create(stream);
+    if (!tls) {
+        stream_release(stream);
         return NULL;
     }
     tls->ctx = ctx;

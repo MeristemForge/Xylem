@@ -303,7 +303,7 @@ static bool _sem_wait_thread(xylem_sem_t* s, bool timed, uint64_t timeout_ms) {
         if (c > 0) {
             if (atomic_compare_exchange_weak_explicit(
                     &s->count, &c, c - 1,
-                    memory_order_acquire, memory_order_seq_cst)) {
+                    memory_order_seq_cst, memory_order_seq_cst)) {
                 got = true;
                 break;
             }
