@@ -30,9 +30,8 @@ typedef struct wsq_s wsq_t;
  * @brief Create a FIFO work-stealing queue of pointers.
  *
  * Single-producer (the owner pushes at the tail) / multi-consumer (the owner
- * and any number of thieves pop from the head). Unlike a LIFO work-stealing
- * deque, the owner consumes in arrival order, which bounds how long any one
- * item waits and matches the Go/Tokio per-worker run queue design.
+ * and thieves claim from the head with CAS). This mirrors Go's per-P runq:
+ * a fixed FIFO ring, an owner tail, and an atomic head shared by stealers.
  *
  * Stores opaque element pointers; NULL is reserved as the empty result, so
  * callers must not push NULL.
@@ -88,8 +87,8 @@ extern void* wsq_pop(wsq_t* q);
 /**
  * @brief Move up to half of the queued elements off the head (owner thread).
  *
- * Takes from the oldest end so that overflow spilled to the global run queue
- * is the longest-waiting work. Used when the queue is full.
+ * Takes roughly half from the oldest end. Used by the owner when overflowing
+ * to the global queue, matching Go's runqputslow shape.
  *
  * @param q    Queue to drain.
  * @param out  Output buffer to receive elements.
@@ -102,8 +101,8 @@ extern int32_t wsq_pop_half(wsq_t* q, void** out, int32_t cap);
 /**
  * @brief Steal up to half of the queued elements from the head (any thread).
  *
- * Atomically takes up to half of the available items from the oldest end and
- * writes them into the output buffer.
+ * Atomically claims roughly half of the available items from the oldest end
+ * and writes them into the output buffer.
  *
  * @param q    Queue to steal from.
  * @param out  Output buffer to receive stolen elements.

@@ -40,7 +40,7 @@
  * coalesce-to-one model: count stays in {0,1}, gated by `pending`.
  */
 struct xylem_ticker_s {
-    sched_timer_t*   timer;     /* repeating, run inline (spawn == false) */
+    scheduler_timer_t*   timer;     /* repeating, run inline (spawn == false) */
     xylem_sem_t*     sem;
     _Atomic bool     closed;
     _Atomic int32_t  pending;   /* 0/1 coalescing cap: drop ticks when behind */
@@ -61,7 +61,7 @@ static void _ticker_unref(xylem_ticker_t* t) {
      * touch us any more, so it is safe to tear everything down.
      */
     if (t->timer) {
-        sched_timer_destroy(t->timer);
+        scheduler_timer_destroy(t->timer);
     }
     if (t->sem) {
         xylem_sem_destroy(t->sem);
@@ -95,7 +95,7 @@ static void _ticker_ud_unref(void* ud) {
  * callback, never mid-flight. That is why no _ticker_ref is needed in
  * the body below.
  */
-static void _ticker_tick_cb(sched_timer_t* timer, void* ud) {
+static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     xylem_ticker_t* t = (xylem_ticker_t*)ud;
 
@@ -134,13 +134,13 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
     }
 
     t->sem   = xylem_sem_create(0);
-    t->timer = sched_timer_create(sched);
+    t->timer = scheduler_timer_create(sched);
     if (!t->sem || !t->timer) {
         if (t->sem) {
             xylem_sem_destroy(t->sem);
         }
         if (t->timer) {
-            sched_timer_destroy(t->timer);
+            scheduler_timer_destroy(t->timer);
         }
         free(t);
         return NULL;
@@ -149,8 +149,8 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
     atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
 
     /* Native repeat on the inline path; repeat+spawn could overlap cbs. */
-    sched_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
-    sched_timer_start(t->timer, _ticker_tick_cb, t, interval_ms, interval_ms);
+    scheduler_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
+    scheduler_timer_start(t->timer, _ticker_tick_cb, t, interval_ms, interval_ms);
 
     return t;
 }
@@ -188,7 +188,7 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
         return; /* already stopped */
     }
 
-    sched_timer_stop(ticker->timer);
+    scheduler_timer_stop(ticker->timer);
 
     /**
      * Wake a consumer blocked in recv; it sees `closed` and returns 0.

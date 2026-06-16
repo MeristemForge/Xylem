@@ -70,6 +70,18 @@ typedef enum iowait_result_e {
 } iowait_result_t;
 
 /**
+ * A cached readiness observation.
+ *
+ * `tick` identifies the readiness generation. Callers pass the event back to
+ * iowait_clear_*_ready() after EAGAIN so an old EAGAIN cannot clear a newer
+ * readiness event that arrived concurrently.
+ */
+typedef struct iowait_ready_event_s {
+    uint32_t tick;
+    bool     ready;
+} iowait_ready_event_t;
+
+/**
  * @brief Create an IO wait handle bound to a file descriptor.
  *
  * The handle defers poller registration to the first park call; the
@@ -83,6 +95,61 @@ typedef enum iowait_result_e {
  * @return IO wait handle, or NULL on failure.
  */
 extern iowait_t* iowait_create(platform_sock_t fd);
+
+/**
+ * @brief Enable edge-triggered readiness caching for this handle.
+ *
+ * On Linux/macOS this registers the fd for read+write readiness once and
+ * keeps readiness in userspace bits. Callers must clear the corresponding
+ * bit after a real EAGAIN/EWOULDBLOCK. On LT/oneshot platforms this is a
+ * no-op and iowait keeps the normal park/re-arm behavior.
+ *
+ * Intended for TCP streams where avoiding per-wait epoll_ctl churn matters.
+ *
+ * @param w  IO wait handle.
+ */
+extern void iowait_enable_readiness_cache(iowait_t* w);
+
+/**
+ * @brief Query cached read readiness.
+ *
+ * Only meaningful after iowait_enable_readiness_cache(). False is
+ * conservative: the fd may still be readable, and the caller can try the
+ * syscall. True means a previous poll event reported readiness.
+ */
+extern iowait_ready_event_t iowait_read_ready_event(iowait_t* w);
+
+/**
+ * @brief Query cached write readiness.
+ *
+ * See iowait_read_ready_event() for semantics.
+ */
+extern iowait_ready_event_t iowait_write_ready_event(iowait_t* w);
+
+/**
+ * @brief Clear cached read readiness after recv/read returned EAGAIN.
+ *
+ * The cached bit is cleared only if its generation still matches `ev`.
+ */
+extern void iowait_clear_read_ready(
+    iowait_t* w, iowait_ready_event_t ev);
+
+/**
+ * @brief Clear cached write readiness after send/write returned EAGAIN.
+ *
+ * The cached bit is cleared only if its generation still matches `ev`.
+ */
+extern void iowait_clear_write_ready(
+    iowait_t* w, iowait_ready_event_t ev);
+
+/**
+ * @brief Mark whether user code is actively trying write syscalls.
+ *
+ * Readiness-cache mode uses this to preserve tick updates for write events
+ * that race with an active writer before it has parked, while avoiding
+ * redundant tick churn for idle sockets that are already cached writable.
+ */
+extern void iowait_set_write_active(iowait_t* w, bool active);
 
 /**
  * @brief Set the read deadline, in absolute monotonic milliseconds.

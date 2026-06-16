@@ -137,7 +137,7 @@ typedef struct _sem_co_waiter_s {
 typedef struct _sem_co_timed_s {
     _sem_co_waiter_t base;
     xylem_sem_t*     sem;
-    sched_timer_t*   timer;  /* NULL if creation failed */
+    scheduler_timer_t*   timer;  /* NULL if creation failed */
     uint64_t         timeout_ms;
     bool             armed;   /* timer started once; guarded by sem->guard  */
     _Atomic int32_t  refcnt; /* wait ref + timer ref while armed */
@@ -154,12 +154,12 @@ static void _sem_co_unref(_sem_co_timed_t* w) {
     }
     /* The last ref owns the timer; destroy is safe even mid-callback. */
     if (w->timer) {
-        sched_timer_destroy(w->timer);
+        scheduler_timer_destroy(w->timer);
     }
     free(w);
 }
 
-static void _sem_co_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _sem_co_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _sem_co_timed_t* w = (_sem_co_timed_t*)ud;
     xylem_sem_t*     s = w->sem;
@@ -230,13 +230,13 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
      * Arm under the guard so a post() blocked on it cannot resume this
      * coroutine before the timer is live, and only once across the
      * re-contend loop -- the original deadline is preserved on re-park, so
-     * the timer is never restarted. sched_timer_start only touches the
+     * the timer is never restarted. scheduler_timer_start only touches the
      * timer heap, so holding the spin across it is safe.
      */
     if (!w->armed) {
         w->armed = true;
         _sem_co_ref(w); /* timer ref: released by the cb, or by us on stop() */
-        sched_timer_start(w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0);
+        scheduler_timer_start(w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0);
     }
     spin_unlock(&s->guard);
     return true;
@@ -379,7 +379,7 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
         w->base.sched = runtime_get_scheduler();
         w->sem        = s;
         w->timeout_ms = timeout_ms;
-        w->timer      = sched_timer_create(w->base.sched);
+        w->timer      = scheduler_timer_create(w->base.sched);
         if (!w->timer) {
             /* No timer means no deadline; fail closed over an unbounded wait. */
             free(w);
@@ -421,7 +421,7 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
          * Cancel a still-pending timer; a true from stop() means we
          * caught it before it fired and own its ref.
          */
-        if (sched_timer_stop(w->timer)) {
+        if (scheduler_timer_stop(w->timer)) {
             _sem_co_unref(w);
         }
         _sem_co_unref(w);

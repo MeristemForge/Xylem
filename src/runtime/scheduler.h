@@ -34,8 +34,8 @@ typedef struct mco_coro mco_coro;
 /* Opaque coroutine scheduler handle. */
 typedef struct scheduler_s scheduler_t;
 
-/* Scheduler timer handle. Defined below once sched_timer_fn_t exists. */
-typedef struct sched_timer_s sched_timer_t;
+/* Scheduler timer handle. Defined below once scheduler_timer_fn_t exists. */
+typedef struct scheduler_timer_s scheduler_timer_t;
 
 /* Opaque iowait slab allocator handle. */
 typedef struct iowait_slab_s iowait_slab_t;
@@ -65,14 +65,14 @@ typedef void (*scheduler_post_fn_t)(void* ud);
  * Timer expiry callback.
  *
  * timer  The timer that fired.
- * ud     User data from sched_timer_start().
+ * ud     User data from scheduler_timer_start().
  */
-typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
+typedef void (*scheduler_timer_fn_t)(scheduler_timer_t* timer, void* ud);
 
 /**
  * Optional reference-count hooks for the timer's user data (ud).
  *
- * When installed via sched_timer_set_ud_guard(), the scheduler invokes
+ * When installed via scheduler_timer_set_ud_guard(), the scheduler invokes
  * ud_ref the instant it commits to dispatching a fire -- inside the
  * owner worker's timer_lock, the same critical section that pulls the
  * timer out of the heap -- and ud_unref once the callback has returned
@@ -86,7 +86,7 @@ typedef void (*sched_timer_fn_t)(sched_timer_t* timer, void* ud);
  * plain atomic refcount bump/drop. They must not take locks, arm or stop
  * timers, or otherwise re-enter the scheduler.
  */
-typedef void (*sched_timer_ud_fn_t)(void* ud);
+typedef void (*scheduler_timer_ud_fn_t)(void* ud);
 
 /**
  * Scheduler timer.
@@ -95,13 +95,13 @@ typedef void (*sched_timer_ud_fn_t)(void* ud);
  * recovers the timer via heap_entry). Fields are owned by the timer's
  * worker; see scheduler.c for the access/locking rules.
  */
-struct sched_timer_s {
+struct scheduler_timer_s {
     heap_node_t         heap_node;
     scheduler_t*        sched;
-    sched_timer_fn_t    cb;
+    scheduler_timer_fn_t    cb;
     void*               ud;
-    sched_timer_ud_fn_t ud_ref;
-    sched_timer_ud_fn_t ud_unref;
+    scheduler_timer_ud_fn_t ud_ref;
+    scheduler_timer_ud_fn_t ud_unref;
     uint64_t            timeout;
     uint64_t            repeat;
     bool                active;
@@ -112,9 +112,9 @@ struct sched_timer_s {
 
 /* Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {
-    int32_t  nworkers;       /* 0 = use CPU count. */
-    uint32_t deque_cap;      /* 0 = use default (256). Must be power of 2. */
-    uint32_t coro_pool_cap;  /* 0 = use default (nworkers * 64). */
+    int32_t  worker_count;       /* 0 = use CPU count. */
+    uint32_t deque_capacity;      /* 0 = use default (256). Must be power of 2. */
+    uint32_t coro_pool_capacity;  /* 0 = use default (worker_count * 64). */
     size_t   coro_stack_size;/* 0 = use default (128 KB). */
 } scheduler_opts_t;
 
@@ -269,33 +269,33 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
 /**
  * @brief Create a timer attached to a scheduler.
  *
- * Thread-safe. The returned timer is inert until sched_timer_start()
+ * Thread-safe. The returned timer is inert until scheduler_timer_start()
  * arms it.
  *
  * @param sched  Scheduler handle.
  *
  * @return Timer handle, or NULL on failure.
  */
-extern sched_timer_t* sched_timer_create(scheduler_t* sched);
+extern scheduler_timer_t* scheduler_timer_create(scheduler_t* sched);
 
 /** @brief Set whether the timer callback runs in a spawned coroutine. */
-extern void sched_timer_set_spawn(sched_timer_t* timer, bool spawn);
+extern void scheduler_timer_set_spawn(scheduler_timer_t* timer, bool spawn);
 
 /**
  * @brief Install reference-count hooks for the timer's user data (ud).
  *
- * Must be called before sched_timer_start(), while the timer is inert.
- * Pass NULL for both to disable (the default). See sched_timer_ud_fn_t
+ * Must be called before scheduler_timer_start(), while the timer is inert.
+ * Pass NULL for both to disable (the default). See scheduler_timer_ud_fn_t
  * for the contract the hooks must satisfy and the race they close.
  *
  * @param timer  Timer handle.
  * @param ref    Invoked under timer_lock at dispatch to pin ud.
  * @param unref  Invoked after the callback returns to release ud.
  */
-extern void sched_timer_set_ud_guard(
-    sched_timer_t*      timer,
-    sched_timer_ud_fn_t ref,
-    sched_timer_ud_fn_t unref);
+extern void scheduler_timer_set_ud_guard(
+    scheduler_timer_t*      timer,
+    scheduler_timer_ud_fn_t ref,
+    scheduler_timer_ud_fn_t unref);
 
 /**
  * @brief Destroy a timer. Stops it first if active.
@@ -308,7 +308,7 @@ extern void sched_timer_set_ud_guard(
  *
  * @param timer  Timer handle, or NULL (no-op).
  */
-extern void sched_timer_destroy(sched_timer_t* timer);
+extern void scheduler_timer_destroy(scheduler_timer_t* timer);
 
 /**
  * @brief Start or restart a timer. Thread-safe.
@@ -319,9 +319,9 @@ extern void sched_timer_destroy(sched_timer_t* timer);
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
  */
-extern void sched_timer_start(
-    sched_timer_t*   timer,
-    sched_timer_fn_t cb,
+extern void scheduler_timer_start(
+    scheduler_timer_t*   timer,
+    scheduler_timer_fn_t cb,
     void*            ud,
     uint64_t         timeout_ms,
     uint64_t         repeat_ms);
@@ -340,12 +340,12 @@ extern void sched_timer_start(
  *
  * @return true if a pending fire was cancelled.
  */
-extern bool sched_timer_stop(sched_timer_t* timer);
+extern bool scheduler_timer_stop(scheduler_timer_t* timer);
 
 /**
  * @brief Re-arm a timer with a new delay. Thread-safe.
  *
- * Preserves the cb and ud that sched_timer_start() last configured,
+ * Preserves the cb and ud that scheduler_timer_start() last configured,
  * and restarts the timer's clock from now:
  *   - one-shot timers (repeat == 0) fire once, timeout_ms from now.
  *   - periodic timers (repeat != 0) fire next in timeout_ms and
@@ -356,13 +356,13 @@ extern bool sched_timer_stop(sched_timer_t* timer);
  * it was inactive (never armed, callback already dispatched), it is
  * armed fresh.
  *
- * @param timer       Timer handle, previously armed with sched_timer_start().
+ * @param timer       Timer handle, previously armed with scheduler_timer_start().
  * @param timeout_ms  New delay in milliseconds. Also becomes the new
  *                    repeat interval for periodic timers.
  *
  * @return true if a pending fire was cancelled before it ran.
  */
-extern bool sched_timer_reset(sched_timer_t* timer, uint64_t timeout_ms);
+extern bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms);
 
 /**
  * Callback invoked when all coroutines have exited.

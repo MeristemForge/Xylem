@@ -185,11 +185,8 @@ extern const char* platform_socket_tostring(int error);
 /**
  * @brief Accept an incoming connection on a TCP listening socket.
  *
- * Applies TCP data-connection tuning to the accepted socket
- * (SO_SNDBUF raised from the Linux default ~16KB to 256KB so a 64KB
- * send can settle in one syscall instead of looping through EAGAIN +
- * coroutine park + poller re-arm). For AF_UNIX listeners use
- * platform_socket_accept_unix() instead, which skips this tuning.
+ * Applies TCP-only data-connection tuning to the accepted socket. For AF_UNIX
+ * listeners use platform_socket_accept_unix() instead.
  *
  * @param sock         Listening socket.
  * @param nonblocking  If true, set the accepted socket to non-blocking mode.
@@ -392,11 +389,8 @@ extern platform_sock_t platform_socket_listen_unix(const char* path,
 /**
  * @brief Accept an incoming connection on a Unix domain listening socket.
  *
- * Separate from platform_socket_accept() because the latter applies TCP
- * data-connection tuning (SO_SNDBUF) that is either ineffective or has
- * undesirable side effects on AF_UNIX sockets (kernel clamps SO_SNDBUF
- * to wmem_default on Linux; the effective buffer is a per-peer kernel
- * page queue, not a TCP send window).
+ * Separate from platform_socket_accept() because the latter applies TCP-only
+ * data-connection tuning.
  *
  * @param sock         Listening UDS socket.
  * @param nonblocking  If true, set the accepted socket to non-blocking mode.

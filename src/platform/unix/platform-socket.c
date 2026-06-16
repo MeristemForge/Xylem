@@ -53,6 +53,19 @@ void platform_socket_close(platform_sock_t sock) {
 
 static platform_sock_t _socket_accept(platform_sock_t sock, bool nonblocking) {
     platform_sock_t cli;
+#if defined(__linux__)
+    int flags = nonblocking ? SOCK_NONBLOCK : 0;
+    do {
+        cli = (platform_sock_t)syscall(SYS_accept4, sock, NULL, NULL, flags);
+    } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
+             && (errno == EINTR || errno == ECONNABORTED));
+    if (cli != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        return cli;
+    }
+    if (errno != ENOSYS && errno != EINVAL) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+#endif
     do {
         cli = accept(sock, NULL, NULL);
     } while (cli == PLATFORM_SO_ERROR_INVALID_SOCKET
@@ -68,12 +81,7 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
     if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
-    /**
-     * Linux default sndbuf (~16KB) forces EAGAIN on every large send,
-     * causing excessive coroutine park/re-arm cycles. rcvbuf left to
-     * kernel autotuning (tcp_rmem) to avoid hurting high-BDP paths.
-     */
-    platform_socket_set_sndbuf(cli, 256 * 1024);
+    platform_socket_enable_nodelay(cli, true);
     return cli;
 }
 
@@ -214,8 +222,6 @@ platform_sock_t platform_socket_dial(
         if (socktype == SOCK_STREAM) {
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
-            /* See platform_socket_accept() for sndbuf rationale. */
-            platform_socket_set_sndbuf(sock, 256 * 1024);
         }
         do {
             ret = connect(sock, rp->ai_addr, rp->ai_addrlen);

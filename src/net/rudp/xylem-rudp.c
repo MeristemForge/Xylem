@@ -69,7 +69,7 @@ struct xylem_rudp_conn_s {
     _Atomic bool           closed;
     _Atomic int32_t        refcnt;
 
-    sched_timer_t*         update_timer;
+    scheduler_timer_t*         update_timer;
 
     rudp_fec_enc_t*        fec_enc;
     rudp_fec_dec_t*        fec_dec;
@@ -384,7 +384,7 @@ static void _rudp_deferred_close(void* arg);
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
 
-static void _rudp_update_timer_cb(sched_timer_t* timer, void* ud) {
+static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)ud;
     if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
@@ -420,7 +420,7 @@ static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
     uint32_t now  = _rudp_clock_ms();
     uint32_t next = ikcp_check(c->kcp, now);
     uint64_t delay = (next <= now) ? 1 : (uint64_t)(next - now);
-    sched_timer_reset(c->update_timer, delay);
+    scheduler_timer_reset(c->update_timer, delay);
 }
 
 /**
@@ -493,7 +493,7 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
     }
 
     if (conn->update_timer) {
-        sched_timer_destroy(conn->update_timer);
+        scheduler_timer_destroy(conn->update_timer);
         conn->update_timer = NULL;
     }
 
@@ -707,7 +707,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
-    sess->update_timer = sched_timer_create(ln->sched);
+    sess->update_timer = scheduler_timer_create(ln->sched);
     if (!sess->update_timer) {
         xylem_channel_destroy(sess->inbox);
         ikcp_release(sess->kcp);
@@ -717,9 +717,9 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
-    sched_timer_set_ud_guard(
+    scheduler_timer_set_ud_guard(
         sess->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
-    sched_timer_start(sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
+    scheduler_timer_start(sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
     _rudp_schedule_update(sess);
 
     mtx_lock(&ln->sessions_mtx);
@@ -994,7 +994,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     }
 
     /* Update timer. */
-    c->update_timer = sched_timer_create(sched);
+    c->update_timer = scheduler_timer_create(sched);
     if (!c->update_timer) {
         ikcp_release(c->kcp);
         rudp_fec_enc_destroy(c->fec_enc);
@@ -1079,9 +1079,9 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     iowait_set_rd_deadline(c->waiter, 0);
 
     /* Start the KCP update timer. */
-    sched_timer_set_ud_guard(
+    scheduler_timer_set_ud_guard(
         c->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
-    sched_timer_start(
+    scheduler_timer_start(
         c->update_timer, _rudp_update_timer_cb, c, 10, 0);
     _rudp_schedule_update(c);
 
@@ -1229,7 +1229,7 @@ static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
      * object is destroyed by the last _rudp_conn_unref.
      */
     if (conn->update_timer) {
-        sched_timer_stop(conn->update_timer);
+        scheduler_timer_stop(conn->update_timer);
     }
 
     if (conn->listener) {

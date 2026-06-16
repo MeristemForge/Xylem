@@ -22,7 +22,6 @@
 #include "platform/platform-poller.h"
 
 #include <errno.h>
-#include <string.h>
 #include <unistd.h>
 
 void platform_poller_deinit(platform_poller_sq_t* sq) {
@@ -68,8 +67,7 @@ int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
 
 int platform_poller_wait(
     platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout) {
-    struct epoll_event events[PLATFORM_POLLER_CQE_NUM] = {0};
-    memset(cqe, 0, sizeof(platform_poller_cqe_t) * PLATFORM_POLLER_CQE_NUM);
+    struct epoll_event events[PLATFORM_POLLER_CQE_NUM];
 
     int n = 0;
     do {
@@ -79,6 +77,7 @@ int platform_poller_wait(
         return -1;
     }
     for (int i = 0; i < n; i++) {
+        cqe[i].op = PLATFORM_POLLER_NO_OP;
         cqe[i].ud = events[i].data.ptr;
         if (events[i].events & (EPOLLIN | EPOLLHUP | EPOLLERR)) {
             cqe[i].op |= PLATFORM_POLLER_RD_OP;
@@ -162,7 +161,6 @@ int platform_poller_del(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
 int platform_poller_wait(
     platform_poller_sq_t* sq, platform_poller_cqe_t* cqe, int timeout) {
     struct kevent events[PLATFORM_POLLER_CQE_NUM];
-    memset(cqe, 0, sizeof(platform_poller_cqe_t) * PLATFORM_POLLER_CQE_NUM);
 
     struct timespec  ts  = {0, 0};
     struct timespec* tsp = NULL;

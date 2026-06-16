@@ -29,6 +29,7 @@ _Pragma("once")
     do {                                                                       \
         if (!(expr)) {                                                         \
             fprintf(stderr, "Test failed at %s:%d\n", __FILE__, __LINE__);     \
+            fflush(stderr);                                                    \
             abort();                                                           \
         }                                                                      \
     } while (0)

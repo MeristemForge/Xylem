@@ -46,6 +46,8 @@
 #define IOWAIT_FREE_END   UINT32_MAX
 #define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 4096)
 
+#define IOWAIT_READY_BIT 1u
+
 _Static_assert(
     (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
         ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
@@ -56,7 +58,9 @@ typedef struct _iowait_dir_s _iowait_dir_t;
 struct _iowait_dir_s {
     iowait_t*          w;
     _Atomic(mco_coro*) park;
-    sched_timer_t*     timer;
+    _Atomic uint32_t   state; /* bit0=ready, bits1..31=tick */
+    _Atomic bool       active;
+    scheduler_timer_t*     timer;
     _Atomic uint64_t   deadline;
 };
 
@@ -73,6 +77,8 @@ struct iowait_s {
     _Atomic int32_t       refcnt;
     _Atomic uint16_t      gen;
     _Atomic bool          registered;
+    _Atomic int           interest;
+    _Atomic bool          ready_cache;
     _Atomic bool          closed;
 
     iowait_slab_t*        slab;
@@ -242,15 +248,107 @@ static iowait_t* _iowait_tryref(iowait_t* w, uint16_t expected_tag) {
     return w;
 }
 
-/* ET: register once with RD+WR. LT+oneshot: re-arm with parked directions under lock. */
+static inline bool _iowait_state_ready(uint32_t state) {
+    return (state & IOWAIT_READY_BIT) != 0;
+}
+
+static inline uint32_t _iowait_state_tick(uint32_t state) {
+    return state >> 1;
+}
+
+static inline uint32_t _iowait_state_pack(uint32_t tick, bool ready) {
+    return (tick << 1) | (ready ? IOWAIT_READY_BIT : 0);
+}
+
+static iowait_ready_event_t _iowait_ready_event(_iowait_dir_t* d) {
+    uint32_t state = atomic_load_explicit(&d->state, memory_order_acquire);
+    return (iowait_ready_event_t){
+        .tick = _iowait_state_tick(state),
+        .ready = _iowait_state_ready(state),
+    };
+}
+
+static void _iowait_set_ready(_iowait_dir_t* d) {
+    uint32_t state = atomic_load_explicit(&d->state, memory_order_acquire);
+    for (;;) {
+        uint32_t tick = _iowait_state_tick(state) + 1;
+        uint32_t next = _iowait_state_pack(tick, true);
+        if (atomic_compare_exchange_weak_explicit(
+                &d->state, &state, next,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return;
+        }
+    }
+}
+
+static void _iowait_set_ready_if_needed(_iowait_dir_t* d, bool force_tick) {
+    uint32_t state = atomic_load_explicit(&d->state, memory_order_acquire);
+    if (!force_tick && _iowait_state_ready(state)) {
+        return;
+    }
+    for (;;) {
+        uint32_t tick = _iowait_state_tick(state) + 1;
+        uint32_t next = _iowait_state_pack(tick, true);
+        if (atomic_compare_exchange_weak_explicit(
+                &d->state, &state, next,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return;
+        }
+        if (!force_tick && _iowait_state_ready(state)) {
+            return;
+        }
+    }
+}
+
+static bool _iowait_clear_ready(
+    _iowait_dir_t* d, iowait_ready_event_t ev) {
+    uint32_t state = atomic_load_explicit(&d->state, memory_order_acquire);
+    for (;;) {
+        if (_iowait_state_tick(state) != ev.tick
+            || !_iowait_state_ready(state)) {
+            return false;
+        }
+        uint32_t next = _iowait_state_pack(ev.tick, false);
+        if (atomic_compare_exchange_weak_explicit(
+                &d->state, &state, next,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
+static inline bool _iowait_use_ready_cache(iowait_t* w) {
+    return PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET
+        && atomic_load_explicit(&w->ready_cache, memory_order_acquire);
+}
+
+/* Register parked directions; readiness-cache handles stay registered RD|WR. */
 static void _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return;
     }
 
-    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        /* Fast path: already registered, no need to touch the lock. */
-        if (atomic_load_explicit(&w->registered, memory_order_acquire)) {
+    if (_iowait_use_ready_cache(w)) {
+        if ((platform_poller_op_t)atomic_load_explicit(
+                &w->interest, memory_order_acquire)
+            == PLATFORM_POLLER_RW_OP) {
+            return;
+        }
+    } else if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+        platform_poller_op_t parked = PLATFORM_POLLER_NO_OP;
+        if (atomic_load_explicit(&w->rd.park, memory_order_acquire)) {
+            parked |= PLATFORM_POLLER_RD_OP;
+        }
+        if (atomic_load_explicit(&w->wr.park, memory_order_acquire)) {
+            parked |= PLATFORM_POLLER_WR_OP;
+        }
+        platform_poller_op_t current = (platform_poller_op_t)
+            atomic_load_explicit(&w->interest, memory_order_acquire);
+        platform_poller_op_t op =
+            (current & PLATFORM_POLLER_RD_OP)
+          | (parked & PLATFORM_POLLER_RD_OP)
+          | (parked & PLATFORM_POLLER_WR_OP);
+        if (op == current) {
             return;
         }
     }
@@ -263,38 +361,79 @@ static void _iowait_arm(iowait_t* w) {
         return;
     }
 
-    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        if (!atomic_load_explicit(&w->registered, memory_order_relaxed)) {
-            w->sqe.op = PLATFORM_POLLER_RW_OP;
+    if (_iowait_use_ready_cache(w)) {
+        platform_poller_op_t current = (platform_poller_op_t)
+            atomic_load_explicit(&w->interest, memory_order_relaxed);
+        w->sqe.op = PLATFORM_POLLER_RW_OP;
+        if (current == PLATFORM_POLLER_NO_OP) {
             if (platform_poller_add(w->poller, &w->sqe) == 0) {
                 atomic_store_explicit(
                     &w->registered, true, memory_order_release);
+                atomic_store_explicit(
+                    &w->interest, PLATFORM_POLLER_RW_OP,
+                    memory_order_release);
+            }
+        } else if (current != PLATFORM_POLLER_RW_OP) {
+            if (platform_poller_mod(w->poller, &w->sqe) == 0) {
+                atomic_store_explicit(
+                    &w->interest, PLATFORM_POLLER_RW_OP,
+                    memory_order_release);
             }
         }
         mtx_unlock(&w->arm_lock);
         return;
     }
 
-    platform_poller_op_t op = PLATFORM_POLLER_NO_OP;
+    platform_poller_op_t parked = PLATFORM_POLLER_NO_OP;
     if (atomic_load_explicit(&w->rd.park, memory_order_acquire)) {
-        op |= PLATFORM_POLLER_RD_OP;
+        parked |= PLATFORM_POLLER_RD_OP;
     }
     if (atomic_load_explicit(&w->wr.park, memory_order_acquire)) {
-        op |= PLATFORM_POLLER_WR_OP;
+        parked |= PLATFORM_POLLER_WR_OP;
     }
+
+    platform_poller_op_t current = (platform_poller_op_t)
+        atomic_load_explicit(&w->interest, memory_order_relaxed);
+
+    platform_poller_op_t op = parked;
+    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+        /*
+         * Read readiness is edge-triggered and does not churn while idle, so
+         * keep it registered after the first read park. Write readiness is
+         * usually true for TCP sockets and can flood the poller when no writer
+         * is parked, so only keep WR while there is an active write waiter.
+         */
+        op = (current & PLATFORM_POLLER_RD_OP)
+           | (parked & PLATFORM_POLLER_RD_OP)
+           | (parked & PLATFORM_POLLER_WR_OP);
+    }
+
     if (op == PLATFORM_POLLER_NO_OP) {
+        if (current != PLATFORM_POLLER_NO_OP) {
+            platform_poller_del(w->poller, &w->sqe);
+            atomic_store_explicit(
+                &w->registered, false, memory_order_release);
+            atomic_store_explicit(
+                &w->interest, PLATFORM_POLLER_NO_OP, memory_order_release);
+        }
+        w->sqe.op = PLATFORM_POLLER_NO_OP;
         mtx_unlock(&w->arm_lock);
         return;
     }
 
-    w->sqe.op = op;
-    if (!atomic_load_explicit(&w->registered, memory_order_relaxed)) {
+    if (current == PLATFORM_POLLER_NO_OP) {
+        w->sqe.op = op;
         if (platform_poller_add(w->poller, &w->sqe) == 0) {
             atomic_store_explicit(
                 &w->registered, true, memory_order_release);
+            atomic_store_explicit(
+                &w->interest, op, memory_order_release);
         }
-    } else {
-        platform_poller_mod(w->poller, &w->sqe);
+    } else if (w->sqe.op != op) {
+        w->sqe.op = op;
+        if (platform_poller_mod(w->poller, &w->sqe) == 0) {
+            atomic_store_explicit(&w->interest, op, memory_order_release);
+        }
     }
 
     mtx_unlock(&w->arm_lock);
@@ -318,7 +457,7 @@ static void _iowait_wake_batch(
     batch->coros[batch->n++] = co;
 }
 
-static void _iowait_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
@@ -356,8 +495,10 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
 
     _iowait_arm(w);
 
-    /* Re-check after publish: close or deadline may have raced in. */
-    if (atomic_load_explicit(&w->closed, memory_order_seq_cst)) {
+    /* Re-check after publish: readiness, close or deadline may have raced in. */
+    if (_iowait_use_ready_cache(w) && _iowait_ready_event(d).ready) {
+        _iowait_wake(atomic_exchange(&d->park, NULL));
+    } else if (atomic_load_explicit(&w->closed, memory_order_seq_cst)) {
         _iowait_wake(atomic_exchange(&d->park, NULL));
     } else {
         uint64_t dl = atomic_load_explicit(
@@ -377,7 +518,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
      * Cancel any timer arm still in flight; if we actually caught it
      * before it fired, return the reference that arm owned.
      */
-    if (d->timer && sched_timer_stop(d->timer)) {
+    if (d->timer && scheduler_timer_stop(d->timer)) {
         _iowait_unref(d->w);
     }
 
@@ -386,7 +527,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     }
 
     if (!d->timer) {
-        d->timer = sched_timer_create(runtime_get_scheduler());
+        d->timer = scheduler_timer_create(runtime_get_scheduler());
         if (!d->timer) {
             return;
         }
@@ -396,14 +537,24 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
 
     _iowait_ref(d->w);
-    sched_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
+    scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
+    if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
+        return IOWAIT_CLOSED;
+    }
+    if (_iowait_use_ready_cache(w) && _iowait_ready_event(d).ready) {
+        return IOWAIT_READY;
+    }
+
     scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
 
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
+    }
+    if (_iowait_use_ready_cache(w) && _iowait_ready_event(d).ready) {
+        return IOWAIT_READY;
     }
     uint64_t dl = atomic_load_explicit(&d->deadline, memory_order_acquire);
     if (dl > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= dl) {
@@ -436,10 +587,10 @@ void iowait_slab_destroy(iowait_slab_t* slab) {
             atomic_load_explicit(&slab->pages[p], memory_order_relaxed);
         for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
             if (page[i].rd.timer) {
-                sched_timer_destroy(page[i].rd.timer);
+                scheduler_timer_destroy(page[i].rd.timer);
             }
             if (page[i].wr.timer) {
-                sched_timer_destroy(page[i].wr.timer);
+                scheduler_timer_destroy(page[i].wr.timer);
             }
             mtx_destroy(&page[i].arm_lock);
         }
@@ -460,10 +611,16 @@ iowait_t* iowait_create(platform_sock_t fd) {
 
     atomic_store_explicit(&w->rd.park, NULL, memory_order_relaxed);
     atomic_store_explicit(&w->wr.park, NULL, memory_order_relaxed);
+    atomic_store_explicit(&w->rd.state, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->wr.state, 0, memory_order_relaxed);
+    atomic_store_explicit(&w->rd.active, false, memory_order_relaxed);
+    atomic_store_explicit(&w->wr.active, false, memory_order_relaxed);
     atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->closed, false, memory_order_relaxed);
     atomic_store_explicit(&w->registered, false, memory_order_relaxed);
+    atomic_store_explicit(&w->interest, PLATFORM_POLLER_NO_OP, memory_order_relaxed);
+    atomic_store_explicit(&w->ready_cache, false, memory_order_relaxed);
 
     w->slab = slab;
 
@@ -480,6 +637,34 @@ iowait_t* iowait_create(platform_sock_t fd) {
 
     _iowait_ref(w);
     return w;
+}
+
+void iowait_enable_readiness_cache(iowait_t* w) {
+    if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+        return;
+    }
+    atomic_store_explicit(&w->ready_cache, true, memory_order_release);
+    _iowait_arm(w);
+}
+
+iowait_ready_event_t iowait_read_ready_event(iowait_t* w) {
+    return _iowait_ready_event(&w->rd);
+}
+
+iowait_ready_event_t iowait_write_ready_event(iowait_t* w) {
+    return _iowait_ready_event(&w->wr);
+}
+
+void iowait_clear_read_ready(iowait_t* w, iowait_ready_event_t ev) {
+    (void)_iowait_clear_ready(&w->rd, ev);
+}
+
+void iowait_clear_write_ready(iowait_t* w, iowait_ready_event_t ev) {
+    (void)_iowait_clear_ready(&w->wr, ev);
+}
+
+void iowait_set_write_active(iowait_t* w, bool active) {
+    atomic_store_explicit(&w->wr.active, active, memory_order_release);
 }
 
 void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms) {
@@ -514,6 +699,8 @@ void iowait_close(iowait_t* w) {
     if (atomic_load_explicit(&w->registered, memory_order_relaxed)) {
         platform_poller_del(w->poller, &w->sqe);
         atomic_store_explicit(&w->registered, false, memory_order_relaxed);
+        atomic_store_explicit(
+            &w->interest, PLATFORM_POLLER_NO_OP, memory_order_release);
     }
     mtx_unlock(&w->arm_lock);
 
@@ -548,15 +735,56 @@ void iowait_on_event(
         return;
     }
 
+    bool woke = false;
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_wake_batch(sched, batch, atomic_exchange(&w->rd.park, NULL));
+        if (_iowait_use_ready_cache(w)) {
+            _iowait_set_ready(&w->rd);
+            mco_coro* co = atomic_load_explicit(
+                &w->rd.park, memory_order_acquire);
+            if (co) {
+                co = atomic_exchange(&w->rd.park, NULL);
+            }
+            woke = woke || (co != NULL);
+            _iowait_wake_batch(sched, batch, co);
+        } else {
+            mco_coro* co = atomic_exchange(&w->rd.park, NULL);
+            woke = woke || (co != NULL);
+            _iowait_wake_batch(sched, batch, co);
+        }
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_wake_batch(sched, batch, atomic_exchange(&w->wr.park, NULL));
+        if (_iowait_use_ready_cache(w)) {
+            mco_coro* co = atomic_load_explicit(
+                &w->wr.park, memory_order_acquire);
+            bool active = atomic_load_explicit(
+                &w->wr.active, memory_order_acquire);
+            if (!co && !active
+                && _iowait_ready_event(&w->wr).ready) {
+                /* Cached EPOLLOUT with no waiter: no scheduling or RMW. */
+            } else {
+                if (co) {
+                    co = atomic_exchange(&w->wr.park, NULL);
+                }
+                _iowait_set_ready_if_needed(&w->wr, co != NULL || active);
+                woke = woke || (co != NULL);
+                _iowait_wake_batch(sched, batch, co);
+            }
+        } else {
+            mco_coro* co = atomic_exchange(&w->wr.park, NULL);
+            woke = woke || (co != NULL);
+            _iowait_wake_batch(sched, batch, co);
+        }
     }
 
-    /* LT+oneshot: re-arm for still-parked directions. */
-    if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+    /*
+     * LT+oneshot must re-arm immediately. ET can defer cleanup after a real
+     * wake: the resumed coroutine will re-arm when it parks again, moving the
+     * WR-off epoll_ctl out of the poll batch. If no waiter was woken, clean up
+     * stale interest now to avoid empty writable-event churn.
+     */
+    if (!_iowait_use_ready_cache(w)
+        && (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET
+            || !woke)) {
         _iowait_arm(w);
     }
 

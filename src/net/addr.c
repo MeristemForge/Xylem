@@ -51,7 +51,7 @@ typedef struct _addr_resolve_ctx_s {
     size_t             result_count;
     int                status;     /* worker outcome: 0 ok, -1 fail */
     _Atomic bool       timed_out;  /* set only by the winning timer */
-    sched_timer_t*     timer;
+    scheduler_timer_t*     timer;
     _Atomic int32_t    refcnt;
 } _addr_resolve_ctx_t;
 
@@ -65,7 +65,7 @@ static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
         return;
     }
     if (ctx->timer) {
-        sched_timer_destroy(ctx->timer);
+        scheduler_timer_destroy(ctx->timer);
     }
     free(ctx->result); /* NULL on success (ownership transferred to caller). */
     free(ctx->host);
@@ -212,7 +212,7 @@ int addr_ntop(
     return 0;
 }
 
-static void _addr_resolve_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _addr_resolve_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
 
@@ -250,7 +250,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     /* Arm the deadline timer; one reference for the armed timer. */
     if (ctx->timer) {
         _addr_ctx_ref(ctx);
-        sched_timer_start(
+        scheduler_timer_start(
             ctx->timer, _addr_resolve_timeout_cb, ctx, ctx->timeout_ms, 0);
     }
     return true;
@@ -294,7 +294,7 @@ int addr_resolve(
 
     /* Best-effort: if the timer cannot be created, fall back to no timeout. */
     if (timeout_ms > 0) {
-        ctx->timer = sched_timer_create(runtime_get_scheduler());
+        ctx->timer = scheduler_timer_create(runtime_get_scheduler());
     }
 
     scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
@@ -315,7 +315,7 @@ int addr_resolve(
          * We won the race (or never armed): cancel a still-pending
          * timer and drop its reference if we caught it before it fired.
          */
-        if (ctx->timer && sched_timer_stop(ctx->timer)) {
+        if (ctx->timer && scheduler_timer_stop(ctx->timer)) {
             _addr_ctx_unref(ctx);
         }
     }

@@ -31,6 +31,7 @@
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,7 @@ struct xylem_tcp_conn_s {
     iowait_t*       waiter;
     platform_sock_t fd;
     addr_t          peer_addr;
+    bool            peer_addr_valid;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
@@ -49,7 +51,6 @@ struct xylem_tcp_listener_s {
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
-
 
 static void _tcp_conn_ref(xylem_tcp_conn_t* tcp) {
     atomic_fetch_add_explicit(&tcp->refcnt, 1, memory_order_relaxed);
@@ -109,6 +110,7 @@ static xylem_tcp_conn_t* _tcp_conn_create(platform_sock_t fd) {
         free(tcp);
         return NULL;
     }
+    iowait_enable_readiness_cache(tcp->waiter);
 
     _tcp_conn_ref(tcp);
     return tcp;
@@ -163,6 +165,7 @@ xylem_tcp_conn_t* xylem_tcp_dial(
     }
 
     tcp->peer_addr = resolved_addr;
+    tcp->peer_addr_valid = true;
 
     if (!connected) {
         /**
@@ -228,6 +231,8 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
 
     if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
         for (;;) {
+            iowait_ready_event_t ev =
+                iowait_read_ready_event(tcp->waiter);
             ssize_t n = platform_socket_recv(tcp->fd, buf, len);
             if (n >= 0) {
                 ret = (int)n;
@@ -242,6 +247,7 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
                 break;
             }
 
+            iowait_clear_read_ready(tcp->waiter, ev);
             iowait_result_t r = iowait_read(tcp->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(
@@ -265,7 +271,10 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
         const char* ptr = (const char*)data;
         int         rem = len;
 
+        iowait_set_write_active(tcp->waiter, true);
         while (rem > 0) {
+            iowait_ready_event_t ev =
+                iowait_write_ready_event(tcp->waiter);
             ssize_t n = platform_socket_send(tcp->fd, ptr, rem);
             if (n > 0) {
                 ptr += n;
@@ -281,6 +290,7 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
                 break;
             }
 
+            iowait_clear_write_ready(tcp->waiter, ev);
             iowait_result_t r = iowait_write(tcp->waiter);
             if (r != IOWAIT_READY
                 || atomic_load_explicit(
@@ -291,6 +301,7 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
         if (rem == 0) {
             ret = 0;
         }
+        iowait_set_write_active(tcp->waiter, false);
     }
 
     _tcp_conn_unref(tcp);
@@ -382,10 +393,6 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
             break;
         }
 
-        socklen_t peer_len = sizeof(tcp->peer_addr.storage);
-        getpeername(
-            fd, (struct sockaddr*)&tcp->peer_addr.storage, &peer_len);
-
         result = tcp;
         break;
     }
@@ -425,6 +432,16 @@ int xylem_tcp_remote_addr(
     size_t            host_len,
     uint16_t*         port) {
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_remote_addr");
+
+    if (!tcp->peer_addr_valid) {
+        socklen_t peer_len = sizeof(tcp->peer_addr.storage);
+        if (getpeername(
+                tcp->fd, (struct sockaddr*)&tcp->peer_addr.storage, &peer_len)
+            != 0) {
+            return -1;
+        }
+        tcp->peer_addr_valid = true;
+    }
 
     return addr_ntop(&tcp->peer_addr, host, host_len, port);
 }

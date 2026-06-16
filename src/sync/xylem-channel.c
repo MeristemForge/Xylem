@@ -88,7 +88,7 @@ struct xylem_channel_s {
     _Atomic bool                recv_active; /* single-receiver enforcement */
     _Atomic bool                timed_out;   /* current timed coroutine recv */
     _Atomic int32_t             refcnt;
-    sched_timer_t*              deadline_timer; /* lazily created, reused    */
+    scheduler_timer_t*          deadline_timer; /* lazily created, reused    */
     size_t                      cap;   /* 0 = unbounded; immutable          */
     _Atomic size_t              count; /* queued messages, for len()        */
 };
@@ -112,7 +112,7 @@ static void _channel_unref(xylem_channel_t* ch) {
         return;
     }
     if (ch->deadline_timer) {
-        sched_timer_destroy(ch->deadline_timer);
+        scheduler_timer_destroy(ch->deadline_timer);
     }
     mpsc_node_t* node;
     while ((node = mpsc_pop(&ch->queue)) != NULL) {
@@ -150,6 +150,18 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     atomic_store_explicit(&ch->waiter, ctx->w, memory_order_release);
 
     /**
+     * StoreLoad barrier: pair the waiter publish above with the queue
+     * re-check below against a sender's seq_cst push+exchange. Without it
+     * the release store does not order before the mpsc_empty() load, so the
+     * load may float ahead of the publish and a sender can: push, exchange
+     * waiter -> NULL (missing our not-yet-visible publish, so it does not
+     * wake us), while we see an empty queue and park -- a lost wakeup with
+     * the message stranded in the queue. The sender's exchange is seq_cst,
+     * so this fence closes the race.
+     */
+    atomic_thread_fence(memory_order_seq_cst);
+
+    /**
      * A sender / close / timer may have raced between the emptiness
      * test and publishing the waiter. Decline park so the recv loop
      * retries. Peek only -- pop+re-push would break FIFO.
@@ -166,7 +178,7 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
-static void _channel_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _channel_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     xylem_channel_t* ch = (xylem_channel_t*)ud;
     atomic_store_explicit(&ch->timed_out, true, memory_order_release);
@@ -194,7 +206,7 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     /* Lazily create; reused across calls (hot path in DTLS/RUDP). */
     if (!infinite && !ch->deadline_timer) {
-        ch->deadline_timer = sched_timer_create(runtime_get_scheduler());
+        ch->deadline_timer = scheduler_timer_create(runtime_get_scheduler());
     }
     uint64_t deadline_ms = infinite
         ? 0
@@ -226,7 +238,7 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
             if (ch->deadline_timer) {
                 /* Ref for the timer cb; balanced by it, or by us on stop(). */
                 _channel_ref(ch);
-                sched_timer_start(ch->deadline_timer, _channel_timeout_cb,
+                scheduler_timer_start(ch->deadline_timer, _channel_timeout_cb,
                                   ch, deadline_ms - now, 0);
             }
         }
@@ -236,7 +248,7 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
 
         if (deadline_ms > 0 && ch->deadline_timer) {
             /* stop() true => callback will not run, we own its ref. */
-            if (sched_timer_stop(ch->deadline_timer)) {
+            if (scheduler_timer_stop(ch->deadline_timer)) {
                 _channel_unref(ch);
             }
         }
@@ -292,6 +304,9 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
 
         /* Publish self, then re-check for a send/close racing the pop. */
         atomic_store_explicit(&ch->waiter, &w, memory_order_release);
+        /* StoreLoad barrier vs a sender's seq_cst push+exchange; see the
+         * matching fence in _channel_park_cb for the lost-wakeup it closes. */
+        atomic_thread_fence(memory_order_seq_cst);
         if (atomic_load_explicit(&ch->closed, memory_order_acquire)
             || !mpsc_empty(&ch->queue)) {
             _channel_waiter_t* expected = &w;

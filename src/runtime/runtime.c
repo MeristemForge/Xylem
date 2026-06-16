@@ -51,7 +51,7 @@ static void _runtime_idle_cb(void* ud) {
 }
 
 typedef struct _sleep_park_s {
-    sched_timer_t* timer;
+    scheduler_timer_t* timer;
     uint64_t       ms;
 } _sleep_park_t;
 
@@ -60,15 +60,15 @@ typedef struct _submit_park_s {
     bool           ok;
 } _submit_park_t;
 
-static void _runtime_sleep_timeout_cb(sched_timer_t* timer, void* ud) {
+static void _runtime_sleep_timeout_cb(scheduler_timer_t* timer, void* ud) {
     mco_coro* co = (mco_coro*)ud;
-    sched_timer_destroy(timer);
+    scheduler_timer_destroy(timer);
     scheduler_schedule(g_sched, co);
 }
 
 static bool _runtime_sleep_park_cb(mco_coro* co, void* arg) {
     _sleep_park_t* p = (_sleep_park_t*)arg;
-    sched_timer_start(p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
+    scheduler_timer_start(p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
     return true;
 }
 
@@ -108,7 +108,7 @@ void runtime_spawn(void (*fn)(void*), void* arg) {
 void runtime_sleep(uint64_t ms) {
     RUNTIME_REQUIRE_COROUTINE("runtime", "runtime_sleep");
 
-    sched_timer_t* timer = sched_timer_create(g_sched);
+    scheduler_timer_t* timer = scheduler_timer_create(g_sched);
     if (!timer) {
         return;
     }
@@ -153,7 +153,7 @@ void runtime_run(
     atomic_store(&g_shutdown, false);
     platform_socket_startup();
 
-    scheduler_opts_t sched_opts = { .nworkers = workers, .deque_cap = 0 };
+    scheduler_opts_t sched_opts = { .worker_count = workers, .deque_capacity = 0 };
     if (opts && opts->coro_stack_size > 0) {
         sched_opts.coro_stack_size = opts->coro_stack_size;
     }

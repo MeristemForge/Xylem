@@ -104,7 +104,7 @@ struct xylem_dtls_conn_s {
     /* server-side only */
     xylem_channel_t*         inbox;
     _Atomic int32_t          inbox_len;
-    sched_timer_t*           handshake_timer;
+    scheduler_timer_t*           handshake_timer;
     xylem_dtls_listener_t*   listener;
     rbtree_node_t            server_node;
     uint64_t                 rd_deadline_ms;
@@ -267,7 +267,7 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     xylem_mutex_destroy(dtls->wr_mu);
     free(dtls->rd_buf);
     free(dtls->wr_buf);
-    sched_timer_destroy(dtls->handshake_timer);
+    scheduler_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
         /**
          * Drain residual datagrams (freeing their payloads, which the
@@ -838,7 +838,7 @@ static void _dtls_handshake_coro(void* arg) {
         break;
     }
 
-    sched_timer_destroy(dtls->handshake_timer);
+    scheduler_timer_destroy(dtls->handshake_timer);
     dtls->handshake_timer  = NULL;
 
     if (!success) {
@@ -923,11 +923,11 @@ static void _dtls_dispatcher(void* arg) {
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
         dtls->inbox            = xylem_channel_create(0);
-        dtls->handshake_timer  = sched_timer_create(ln->sched);
+        dtls->handshake_timer  = scheduler_timer_create(ln->sched);
 
         if (!dtls->inbox
             || !dtls->handshake_timer) {
-            sched_timer_destroy(dtls->handshake_timer);
+            scheduler_timer_destroy(dtls->handshake_timer);
             if (dtls->inbox) {
                 xylem_channel_destroy(dtls->inbox);
             }
@@ -1026,7 +1026,7 @@ static void _dtls_server_close(xylem_dtls_conn_t* dtls) {
         return;
     }
     if (dtls->handshake_timer) {
-        sched_timer_stop(dtls->handshake_timer);
+        scheduler_timer_stop(dtls->handshake_timer);
     }
 
     /**

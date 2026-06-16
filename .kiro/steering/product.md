@@ -21,7 +21,7 @@ Public entry points (in `include/xylem.h`):
 - `xylem_shutdown()` — signal the runtime to stop (thread-safe).
 
 Internally (`src/runtime/`):
-- `scheduler` — N worker threads, three-tier runnable pool (per-worker `runnext` slot, per-worker work-stealing deque `wsdeque`, global `runq`), plus per-worker timer heaps. One idle worker becomes the poll "driver" via CAS; the rest park on a semaphore.
+- `scheduler` — N worker threads, three-tier runnable pool (per-worker `runnext` slot, per-worker work-stealing FIFO queue `wsq`, global `runq`), plus per-worker timer heaps. One idle worker becomes the poll "driver" via CAS; the rest park on a semaphore.
 - `iowait` — per-fd / per-direction coroutine parking on top of the platform poller, with a generation-tagged slab allocator to reject stale completion events.
 - `dynpool` — dynamic thread pool that backs `xylem_await` for blocking work.
 - `minicoro` (bundled) — stackful coroutine primitive.

@@ -6,7 +6,7 @@ connections over a small pool of OS threads. This document describes the
 scheduler, coroutine model, I/O parking, timers, and the blocking-task pool.
 
 Sources: `src/runtime/` — `runtime.c`, `scheduler.{h,c}`, `iowait.{h,c}`,
-`wsdeque.{h,c}`, `runq.{h,c}`, `dynpool.{h,c}`, and bundled `minicoro/`.
+`wsq.{h,c}`, `runq.{h,c}`, `dynpool.{h,c}`, and bundled `minicoro/`.
 
 Public API: `include/xylem.h` (`xylem_run`, `xylem_spawn`, `xylem_sleep`,
 `xylem_await`, `xylem_shutdown`).
@@ -38,7 +38,7 @@ cannot make progress *parks* (yields to its worker); a wake source later
    |                                                           |
    |   worker[0]      worker[1]      ...      worker[N-1]       |
    |   runnext        runnext                 runnext          |
-   |   wsdeque  <---- steal ---->  wsdeque    wsdeque          |
+   |   wsq      <---- steal ---->  wsq        wsq              |
    |   timers         timers                  timers           |
    |        \            |            /                        |
    |         \           v           /                         |
@@ -57,7 +57,7 @@ cannot make progress *parks* (yields to its worker); a wake source later
 |-----------|------|------|
 | Runtime facade | `runtime.c` | Global singletons; maps `xylem_*` onto scheduler + dynpool. |
 | Scheduler | `scheduler.c` | Workers, runnable pool, poll driver, timers, coroutine pool. |
-| Work-stealing deque | `wsdeque.c` | Per-worker lock-free deque (Chase–Lev style). |
+| Work-stealing queue | `wsq.c` | Per-worker lock-free FIFO run queue. |
 | Global run queue | `runq.c` | Mutex-protected MPMC overflow / injection queue. |
 | I/O wait | `iowait.c` | Per-fd, per-direction coroutine parking on the poller. |
 | Blocking pool | `dynpool.c` | Elastic thread pool for blocking work. |
@@ -102,16 +102,17 @@ from cheapest to most contended:
 
 1. **`runnext` (per-worker, single slot).** A LIFO hand-off used when a worker
    schedules a coroutine onto itself. Cache-hot; checked first on pop. Pushing
-   a new coroutine here evicts the previous occupant down to the deque. Only
+   a new coroutine here evicts the previous occupant down to the queue. Only
    the owning worker pops its `runnext`, so a stalled owner (blocked syscall,
-   long CPU loop) would normally strand the slot — steals touch only the deque.
-   As a last resort, after the local deque and every victim deque come up
+   long CPU loop) would normally strand the slot — steals touch only the queue.
+   As a last resort, after the local queue and every victim queue come up
    empty, an idle worker may steal a `runnext` entry that has aged past
    `SCHED_RUNNEXT_STEAL_MS`; the race with the owner's own pop is settled by an
    atomic exchange, so a coroutine is never run twice.
-2. **Work-stealing deque (`wsdeque`, per-worker).** The owner pushes/pops the
-   tail (LIFO, locality-friendly); other workers steal from the head (FIFO,
-   oldest first). Lock-free Chase–Lev style. Default capacity 256 (power of 2).
+2. **Work-stealing queue (`wsq`, per-worker).** The owner pushes at the tail
+   and pops from the head (FIFO, arrival order); other workers steal from the
+   head too. Lock-free, single-producer / multi-consumer. FIFO bounds how long
+   any one coroutine waits. Default capacity 256 (power of 2).
 3. **Global run queue (`runq`).** A mutex-protected MPMC queue. Two roles:
    overflow when a deque is full, and the **injection point** for any
    cross-thread `scheduler_schedule()` caller.
@@ -221,10 +222,13 @@ Exactly one worker at a time owns the blocking poll, selected by a CAS on
 - Publishes `poller_waiting = true` (seq-cst) *before* re-checking for work, so
   a concurrent producer either sees the flag (and pokes the wakeup fd) or the
   driver sees the new work — no lost wakeup.
-- Computes the poll timeout from the nearest local timer.
+- Computes the poll timeout from the nearest timer deadline across **all**
+  workers (`_sched_timeout_all`), not just its own, so it wakes in time to
+  service a timer owned by a worker that is busy in a long coroutine.
 - After waking, greedily drains additional ready events with zero-timeout
-  polls, processes timers and posts, then runs the first ready coroutine and
-  schedules the rest.
+  polls, fires due timers for **every** worker (timer stealing,
+  `_sched_process_timers_all`, see §8) and drains posts, then runs the first
+  ready coroutine and schedules the rest.
 
 This "one driver, many parkers" design means there is no dedicated I/O thread:
 whichever worker happens to go idle takes over polling, and it relinquishes the
@@ -267,7 +271,7 @@ at once. No interleaving leaves the driver asleep with work pending.
 Coroutines are stackful, provided by the bundled `minicoro` library. Each has a
 fixed 128 KiB stack.
 
-`scheduler_spawn()` allocates a `_coro_ctx_t` (entry fn, arg, intrusive runq and
+`scheduler_spawn()` allocates a `_sched_coro_ctx_t` (entry fn, arg, intrusive runq and
 registry nodes), creates the coroutine, links it into the scheduler's
 **registry** (so leaked-but-alive coroutines can be destroyed at teardown),
 bumps the `alive` counter, and routes it through `scheduler_schedule()`. When a
@@ -278,9 +282,9 @@ idle callback that shuts the runtime down.
 ### Stack allocation and the coroutine pool
 
 To avoid hammering the allocator on every spawn, the scheduler keeps a
-**coroutine pool** (default capacity `nworkers * 64`) of recycled stacks:
+**coroutine pool** (default capacity `worker_count * 64`) of recycled stacks:
 
-- **Stack-based platforms.** `_coro_pool_alloc()` reserves virtual memory,
+- **Stack-based platforms.** `_sched_coro_pool_alloc()` reserves virtual memory,
   commits it, and marks one page `PROT_NONE` as a **guard page** below the
   stack to turn overflow into an immediate fault. On free, the stack region is
   decommitted (returned to the OS) but the reservation is retained in the pool
@@ -406,20 +410,50 @@ poller callbacks) are dropped, so closing while a waiter is parked is safe.
 
 Each worker owns a binary **min-heap** of timers keyed by absolute expiry
 (`xylem_utils_getnow(MSEC)`), guarded by a per-worker mutex. A timer is created
-against the scheduler (`sched_timer_create`), assigned to an owner worker, and
-armed with `sched_timer_start(cb, ud, timeout_ms, repeat_ms)`.
+against the scheduler (`scheduler_timer_create`), assigned to an owner worker, and
+armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
 
-- The owning worker pops due timers in `_sched_process_timers()` and either runs
-  the callback inline or, if `spawn` is set, runs it in a fresh coroutine.
+- Due timers are popped in `_sched_process_timers()`, which either runs the
+  callback **inline on the firing thread** or, if `spawn` is set, runs it in a
+  fresh coroutine.
 - Periodic timers (`repeat > 0`) reinsert themselves with the next expiry.
-- Timers are reference counted so `sched_timer_destroy()` is safe to call
-  concurrently with an in-flight fire. `sched_timer_stop()`/`reset()` return
+- Timers are reference counted so `scheduler_timer_destroy()` is safe to call
+  concurrently with an in-flight fire. `scheduler_timer_stop()`/`reset()` return
   whether they cancelled a still-pending fire, which lets callers (e.g. the
   iowait deadline path) know whether to release a reference the callback would
   otherwise drop.
 
 `xylem_sleep(ms)` is built directly on this: it creates a one-shot timer whose
 callback reschedules the sleeping coroutine, then parks.
+
+### Timer stealing — who fires whose timers, and where they run
+
+A worker normally drains its own heap on the maintenance path
+(`_sched_maintenance` → `_sched_process_timers`, local worker only). But a
+worker stuck running a long coroutine never reaches that path, which would
+delay its timers. To bound that, the **idle poll driver also fires due timers
+for every worker** via `_sched_process_timers_all()` after each poll wake. This
+is why the driver derives its poll timeout from the nearest deadline across all
+workers (§5) — it must wake in time to cover a busy worker's timers.
+
+Each worker's heap is still processed under **its own** `timer_lock`, and a
+fast-path acquire-load of the republished `next_deadline_ms` makes a
+not-yet-due worker a single atomic with no lock taken. Concurrent firing by the
+owner and the driver is safe: both contend the same lock, and `heap_dequeue`
+hands each due timer to exactly one of them.
+
+The key consequence is **where a stolen timer runs**: ownership only locates the
+heap, never routes execution back to the owner. The timer fires on **whichever
+thread pulled it off the heap** — in the steal case that is the idle poll
+driver, not the owner:
+
+- **Inline timer (`spawn == false`):** `timer->cb` runs synchronously on the
+  driver thread.
+- **Spawn timer (`spawn == true`):** `scheduler_spawn()` builds a coroutine and
+  routes it through `_sched_enqueue`, which keys off the *running* worker
+  (`_tls_worker` = the driver), so the coroutine lands in the driver's own
+  `runnext`/deque and is then free to be work-stolen by any worker, including
+  the original owner.
 
 ## 9. Deferred posts
 
@@ -502,8 +536,8 @@ lock-free on the caller side.
 | Option | Where | Default | Meaning |
 |--------|-------|---------|---------|
 | `workers` | `xylem_opts_t` / `runtime_opts_t` | CPU count | Scheduler worker threads. |
-| `deque_cap` | `scheduler_opts_t` | 256 | Per-worker deque capacity (power of 2). |
-| `coro_pool_cap` | `scheduler_opts_t` | `workers * 64` | Recycled coroutine stacks. |
+| `deque_capacity` | `scheduler_opts_t` | 256 | Per-worker deque capacity (power of 2). |
+| `coro_pool_capacity` | `scheduler_opts_t` | `workers * 64` | Recycled coroutine stacks. |
 | `max_threads` | `dynpool_opts_t` | 512 | Max blocking-pool threads. |
 | `idle_timeout` | `dynpool_opts_t` | 10000 ms | Blocking-pool idle thread lifetime. |
 | Coroutine stack | compile-time | 128 KiB | Per-coroutine stack size. |

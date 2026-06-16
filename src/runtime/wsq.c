@@ -24,54 +24,48 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-/**
- * FIFO ring with monotonically increasing head/tail counters; the slot index
- * is the counter masked to the (power-of-two) capacity. tail is advanced only
- * by the owner's push (single producer); head is advanced by the owner's pop
- * and by thieves, both via compare-and-swap. A slot at index h is never
- * overwritten until head passes it, because push refuses to advance tail past
- * head + cap, so the read-then-CAS on the consumer side is safe.
- */
 struct wsq_s {
-    _Atomic uint64_t head;
-    _Atomic uint64_t tail;
+    _Atomic uint32_t head;
+    _Atomic uint32_t tail;
     void**           slots;
-    uint64_t         mask;
+    uint32_t         mask;
 };
 
-/**
- * Take up to half of the queued items from the head into out (CAS on head).
- * Shared by the owner overflow drain and by thieves; both contend on head.
- */
+static inline uint32_t _wsq_len(uint32_t head, uint32_t tail) {
+    return tail - head;
+}
+
+static inline uint32_t _wsq_cap(wsq_t* q) {
+    return q->mask + 1;
+}
+
 static int32_t _wsq_grab_half(wsq_t* q, void** out, int32_t cap) {
     if (cap <= 0) {
         return 0;
     }
 
     for (;;) {
-        uint64_t h = atomic_load_explicit(&q->head, memory_order_acquire);
-        uint64_t t = atomic_load_explicit(&q->tail, memory_order_acquire);
+        uint32_t h = atomic_load_explicit(&q->head, memory_order_acquire);
+        uint32_t t = atomic_load_explicit(&q->tail, memory_order_acquire);
 
-        if (t <= h) {
+        uint32_t n = _wsq_len(h, t);
+        n = n - n / 2;
+        if (n == 0) {
             return 0;
         }
-
-        uint64_t size = t - h;
-        uint64_t n    = (size + 1) / 2;
-        if (n > (uint64_t)cap) {
-            n = (uint64_t)cap;
+        if (n > (uint32_t)cap) {
+            n = (uint32_t)cap;
         }
 
-        for (uint64_t i = 0; i < n; i++) {
+        for (uint32_t i = 0; i < n; i++) {
             out[i] = q->slots[(h + i) & q->mask];
         }
 
         if (atomic_compare_exchange_weak_explicit(
                 &q->head, &h, h + n,
-                memory_order_seq_cst, memory_order_relaxed)) {
+                memory_order_acq_rel, memory_order_acquire)) {
             return (int32_t)n;
         }
-        /* A concurrent consumer advanced the head; reload and retry. */
     }
 }
 
@@ -91,7 +85,7 @@ wsq_t* wsq_create(uint32_t cap) {
         return NULL;
     }
 
-    q->mask = (uint64_t)cap - 1;
+    q->mask = cap - 1;
     atomic_store_explicit(&q->head, 0, memory_order_relaxed);
     atomic_store_explicit(&q->tail, 0, memory_order_relaxed);
     return q;
@@ -106,18 +100,18 @@ void wsq_destroy(wsq_t* q) {
 }
 
 int32_t wsq_remaining(wsq_t* q) {
-    uint64_t t   = atomic_load_explicit(&q->tail, memory_order_relaxed);
-    uint64_t h   = atomic_load_explicit(&q->head, memory_order_acquire);
-    uint64_t cap = q->mask + 1;
-    uint64_t used = t - h;
+    uint32_t h    = atomic_load_explicit(&q->head, memory_order_acquire);
+    uint32_t t    = atomic_load_explicit(&q->tail, memory_order_acquire);
+    uint32_t cap  = _wsq_cap(q);
+    uint32_t used = _wsq_len(h, t);
     return (int32_t)(used < cap ? cap - used : 0);
 }
 
 int wsq_push(wsq_t* q, void* elem) {
-    uint64_t t = atomic_load_explicit(&q->tail, memory_order_relaxed);
-    uint64_t h = atomic_load_explicit(&q->head, memory_order_acquire);
+    uint32_t t = atomic_load_explicit(&q->tail, memory_order_relaxed);
+    uint32_t h = atomic_load_explicit(&q->head, memory_order_acquire);
 
-    if (t - h >= q->mask + 1) {
+    if (_wsq_len(h, t) >= _wsq_cap(q)) {
         return -1;
     }
 
@@ -128,24 +122,18 @@ int wsq_push(wsq_t* q, void* elem) {
 
 void* wsq_pop(wsq_t* q) {
     for (;;) {
-        uint64_t h = atomic_load_explicit(&q->head, memory_order_acquire);
-        uint64_t t = atomic_load_explicit(&q->tail, memory_order_acquire);
+        uint32_t head = atomic_load_explicit(&q->head, memory_order_acquire);
+        uint32_t tail  = atomic_load_explicit(&q->tail, memory_order_acquire);
 
-        if (h == t) {
+        if (head == tail) {
             return NULL;
         }
 
-        void* elem = q->slots[h & q->mask];
+        void* elem = q->slots[head & q->mask];
 
-        /**
-         * Read the slot before claiming it. The CAS both publishes the
-         * claim and rejects the attempt if a thief took this item first;
-         * on failure h is reloaded by the CAS, so the retry sees the new
-         * head. seq_cst matches the thief-side head CAS.
-         */
         if (atomic_compare_exchange_weak_explicit(
-                &q->head, &h, h + 1,
-                memory_order_seq_cst, memory_order_relaxed)) {
+                &q->head, &head, head + 1,
+                memory_order_acq_rel, memory_order_acquire)) {
             return elem;
         }
     }

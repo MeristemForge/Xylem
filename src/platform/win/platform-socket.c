@@ -313,11 +313,7 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
     if (cli == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
-    /**
-     * Default sndbuf (~8KB on Windows) forces EWOULDBLOCK on every large
-     * send, causing excessive coroutine park/re-arm cycles.
-     */
-    platform_socket_set_sndbuf(cli, 256 * 1024);
+    platform_socket_enable_nodelay(cli, true);
     return cli;
 }
 
@@ -408,8 +404,6 @@ platform_sock_t platform_socket_dial(
         if (socktype == SOCK_STREAM) {
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
-            /* See platform_socket_accept() for sndbuf rationale. */
-            platform_socket_set_sndbuf(sock, 256 * 1024);
         }
         if (socktype == SOCK_DGRAM) {
             _socket_disable_udp_connreset(sock);

@@ -53,10 +53,10 @@ static inline void _utils_watchdog_cb(xylem_timer_t* timer, void* userdata) {
  * arm the deadline from inside the root coroutine. Self-destroys and
  * signals shutdown before aborting.
  */
-static inline void _utils_watchdog_sched_cb(sched_timer_t* timer,
+static inline void _utils_watchdog_sched_cb(scheduler_timer_t* timer,
                                             void* userdata) {
     (void)userdata;
-    sched_timer_destroy(timer);
+    scheduler_timer_destroy(timer);
     xylem_shutdown();
     ASSERT(0 && "test timed out");
 }
@@ -66,8 +66,8 @@ static inline void _utils_watchdog_sched_cb(sched_timer_t* timer,
  * Must be called from inside a coroutine on a scheduler worker.
  */
 static inline void _utils_watchdog_start(uint64_t timeout_ms) {
-    sched_timer_t* t = sched_timer_create(runtime_get_scheduler());
-    sched_timer_start(t, _utils_watchdog_sched_cb, NULL, timeout_ms, 0);
+    scheduler_timer_t* t = scheduler_timer_create(runtime_get_scheduler());
+    scheduler_timer_start(t, _utils_watchdog_sched_cb, NULL, timeout_ms, 0);
 }
 
 #ifdef TEST_WITH_TLS
