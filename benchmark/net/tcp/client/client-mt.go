@@ -36,12 +36,13 @@ import (
 // keep a uniform random sample of the whole run via reservoir sampling
 // (Algorithm R) so percentiles reflect steady state rather than warmup.
 const latCapPerConn = 8192
+const warmupRounds = 1
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: tcp-bench <mode> [options]")
 		fmt.Fprintln(os.Stderr, "modes:")
-		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port")
+		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port [-strict]")
 		fmt.Fprintln(os.Stderr, "  connrate    -c concurrency -d sec -h host -p port")
 		fmt.Fprintln(os.Stderr, "  memory      -n conns -w hold_sec -h host -p port")
 		os.Exit(1)
@@ -71,6 +72,7 @@ type opts struct {
 	hold     int
 	host     string
 	port     int
+	strict   bool
 }
 
 func parseOpts(args []string) opts {
@@ -101,6 +103,8 @@ func parseOpts(args []string) opts {
 			o.host = next()
 		case "-p":
 			o.port = atoiDef(next(), o.port)
+		case "-strict":
+			o.strict = true
 		}
 	}
 	if o.payload < 1 {
@@ -187,6 +191,15 @@ func runThroughput(args []string) {
 			established++
 		}
 	}
+	// Strict mode: a run is only comparable when every requested connection is
+	// established. Differing connection counts change the parallelism and thus
+	// the aggregate throughput, so we refuse to report a misleading number.
+	if o.strict && established != o.conns {
+		fmt.Fprintf(os.Stderr,
+			"strict: established %d / %d connections, aborting run\n",
+			established, o.conns)
+		os.Exit(2)
+	}
 	fmt.Fprintf(os.Stderr, "connected %d / %d, running %ds...\n",
 		established, o.conns, o.duration)
 
@@ -197,11 +210,15 @@ func runThroughput(args []string) {
 	var deadlineNanos int64
 
 	var rwg sync.WaitGroup
+	var warmwg sync.WaitGroup
 	for i := 0; i < o.conns; i++ {
 		if !slots[i].ok {
 			continue
 		}
 		rwg.Add(1)
+		if warmupRounds > 0 {
+			warmwg.Add(1)
+		}
 		go func(idx int) {
 			defer rwg.Done()
 			c := slots[idx].c
@@ -215,6 +232,23 @@ func runThroughput(args []string) {
 			res.lats = make([]int64, 0, latCapPerConn)
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(idx)))
 			var latCount int64
+			if warmupRounds > 0 {
+				ok := true
+				for r := 0; r < warmupRounds; r++ {
+					if _, err := c.Write(out); err != nil {
+						ok = false
+						break
+					}
+					if _, err := io.ReadFull(c, in); err != nil {
+						ok = false
+						break
+					}
+				}
+				warmwg.Done()
+				if !ok {
+					return
+				}
+			}
 			<-start
 			deadline := time.Unix(0, atomic.LoadInt64(&deadlineNanos))
 			_ = c.SetDeadline(deadline) // unblock pending I/O when the run ends
@@ -240,6 +274,7 @@ func runThroughput(args []string) {
 		}(i)
 	}
 
+	warmwg.Wait()
 	realStart := time.Now()
 	atomic.StoreInt64(&deadlineNanos,
 		realStart.Add(time.Duration(o.duration)*time.Second).UnixNano())
@@ -260,13 +295,21 @@ func runThroughput(args []string) {
 	if elapsed > 0 {
 		thr = float64(totalRecv) / elapsed
 	}
+	// Per-connection throughput normalizes out differences in the established
+	// connection count, giving a fair single-stream comparison across servers.
+	thrPerConn := 0.0
+	if established > 0 {
+		thrPerConn = thr / float64(established)
+	}
 
 	fmt.Printf("{\n")
 	fmt.Printf("  \"connections\": %d,\n", established)
+	fmt.Printf("  \"target_connections\": %d,\n", o.conns)
 	fmt.Printf("  \"duration_sec\": %.2f,\n", elapsed)
 	fmt.Printf("  \"messages_sent\": %d,\n", totalSent)
 	fmt.Printf("  \"messages_recv\": %d,\n", totalRecv)
 	fmt.Printf("  \"throughput_msg_per_sec\": %.0f,\n", thr)
+	fmt.Printf("  \"throughput_msg_per_sec_per_conn\": %.2f,\n", thrPerConn)
 	fmt.Printf("  \"latency_p50_us\": %d,\n", pctile(allLats, 0.50))
 	fmt.Printf("  \"latency_p99_us\": %d,\n", pctile(allLats, 0.99))
 	fmt.Printf("  \"latency_max_us\": %d,\n", pctile(allLats, 1.0))

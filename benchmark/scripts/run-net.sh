@@ -552,8 +552,10 @@ bench_throughput() {
 
             snapshot_cpu "$cpu_before"
 
+            local strict_flag=""
+            [ "$STRICT" = true ] && strict_flag="-strict"
             run_client "$BIN_DIR/${CUR_PROTO}-bench" throughput \
-                -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
+                -n "$conns" -d "$DURATION" -s "$payload" -p "$port" $strict_flag \
                 > "$out" 2>/dev/null || true
 
             snapshot_cpu "$cpu_after"
@@ -753,6 +755,11 @@ DURATION="${DURATION:-10}"
 MODE="${MODE:-both}"
 REPEAT="${REPEAT:-1}"
 RUN_CONNRATE=true
+# STRICT: when true, a throughput run is aborted (and reported as no valid
+# output) unless every requested connection is established. Keeps the
+# established-connection count identical across servers so the aggregate
+# throughput comparison is apples-to-apples.
+STRICT="${STRICT:-false}"
 
 parse_bench_opts() {
     while [ $# -gt 0 ]; do
@@ -791,6 +798,9 @@ parse_bench_opts() {
                 ;;
             --no-connrate)
                 RUN_CONNRATE=false
+                ;;
+            --strict)
+                STRICT=true
                 ;;
             *)
                 err "unknown bench option: $1"
@@ -834,6 +844,10 @@ Options (pass after the command; env vars seed defaults):
   --mode, -m     st|mt|both         single-thread / multi-thread / both
   --repeat, -r   3                  repeat each test N times (avg results)
   --no-connrate                     skip connection-rate tests
+  --strict                          abort a throughput run unless every
+                                    requested connection is established
+                                    (keeps connection counts equal across
+                                    servers; also via STRICT=true env var)
 
 Notes:
   TLS requires OpenSSL; xylem is built with -DXYLEM_ENABLE_TLS=ON when tls is

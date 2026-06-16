@@ -50,6 +50,7 @@ if not defined DURATION set "DURATION=10"
 if not defined MODE     set "MODE=both"
 if not defined REPEAT   set "REPEAT=1"
 set "RUN_CONNRATE=true"
+if not defined STRICT   set "STRICT=false"
 
 if not defined NUMBER_OF_PROCESSORS set "NUMBER_OF_PROCESSORS=4"
 set "NCPU=%NUMBER_OF_PROCESSORS%"
@@ -507,11 +508,13 @@ for %%N in (%SERVERS:,= %) do (
             set "out=%RUN_DIR%\%CUR_PROTO%-throughput-%ROW%-c!CONNS_LBL!-!SIZE_LBL!-!name!-r%%R.json"
             set "_climask="
             set "_gmp=0"
+            set "_strict="
+            if /I "%STRICT%"=="true" set "_strict= -strict"
             if "%PIN_ENABLE%"=="true" set "_climask=!CLI_MASK!" & set "_gmp=!CLIENT_NCPU!"
             set "_srvn=%SERVER_NCPU%"
             if "%PIN_ENABLE%"=="true" if /I "%ROW%"=="ST" set "_srvn=1"
             set "srv_cpu_line="
-            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn!') do set "srv_cpu_line=%%L"
+            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn!') do set "srv_cpu_line=%%L"
 
             for %%F in ("!out!") do set "_sz=%%~zF"
             if defined _sz if !_sz! GTR 0 (
@@ -671,6 +674,7 @@ if /I "%_opt%"=="-m"        (call :set_mode "%~2" & shift & shift & goto :parse_
 if /I "%_opt%"=="--repeat"  (set "REPEAT=%~2" & shift & shift & goto :parse_bench_opts)
 if /I "%_opt%"=="-r"        (set "REPEAT=%~2" & shift & shift & goto :parse_bench_opts)
 if /I "%_opt%"=="--no-connrate" (set "RUN_CONNRATE=false" & shift & goto :parse_bench_opts)
+if /I "%_opt%"=="--strict"  (set "STRICT=true" & shift & goto :parse_bench_opts)
 call :err "unknown option: %_opt%"
 exit /b 1
 
@@ -705,6 +709,10 @@ echo   --duration, -d 10                 test duration in seconds
 echo   --mode, -m     st^|mt^|both         single-thread / multi-thread / both
 echo   --repeat, -r   3                  repeat each test N times (avg results)
 echo   --no-connrate                     skip connection-rate tests
+echo   --strict                          abort a throughput run unless all
+echo                                     requested connections are established
+echo                                     (equal connection counts across servers;
+echo                                     also via STRICT=true env var)
 echo.
 echo Notes:
 echo   TLS needs OpenSSL (vcpkg); xylem is built with -DXYLEM_ENABLE_TLS=ON when

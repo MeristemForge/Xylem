@@ -34,6 +34,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DEFAULT_PORT  9000
 #define READ_BUF_SIZE 65536
@@ -57,6 +58,7 @@ static void _handle_conn(void* arg) {
         xylem_tcp_close(conn);
         return;
     }
+    memset(buf, 0, READ_BUF_SIZE);
 
     for (;;) {
         int n = xylem_tcp_read(conn, buf, READ_BUF_SIZE);
@@ -106,7 +108,10 @@ int main(int argc, char** argv) {
         port = (uint16_t)_parse_int(argv[1], 1, 65535, DEFAULT_PORT);
     }
 
-    xylem_opts_t rt_opts = {.workers = 1};
+    xylem_opts_t rt_opts = {
+        .workers = 1,
+        .coro_stack_size = 32 * 1024,
+    };
     xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }

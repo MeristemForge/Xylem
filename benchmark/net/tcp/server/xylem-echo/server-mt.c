@@ -35,6 +35,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DEFAULT_PORT    9000
 #define DEFAULT_WORKERS 4
@@ -59,6 +60,7 @@ static void _handle_conn(void* arg) {
         xylem_tcp_close(conn);
         return;
     }
+    memset(buf, 0, READ_BUF_SIZE);
 
     for (;;) {
         int n = xylem_tcp_read(conn, buf, READ_BUF_SIZE);
@@ -112,7 +114,10 @@ int main(int argc, char** argv) {
         workers = (int32_t)_parse_int(argv[2], 1, 1024, DEFAULT_WORKERS);
     }
 
-    xylem_opts_t rt_opts = {.workers = workers};
+    xylem_opts_t rt_opts = {
+        .workers = workers,
+        .coro_stack_size = 32 * 1024,
+    };
     xylem_run(_acceptor, &port, &rt_opts);
     return 0;
 }
