@@ -21,7 +21,7 @@
 
 #include "xylem/net/xylem-tcp.h"
 
-#include "net/tcp/stream.h"
+#include "net/stream.h"
 #include "runtime/precond.h"
 
 #include <stdatomic.h>

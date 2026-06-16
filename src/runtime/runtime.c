@@ -116,6 +116,14 @@ void runtime_sleep(uint64_t ms) {
     scheduler_park(g_sched, _runtime_sleep_park_cb, &park);
 }
 
+bool runtime_consume_credit(uint32_t cost) {
+    return scheduler_consume_credit(cost);
+}
+
+void runtime_yield_credit(void) {
+    scheduler_yield_credit();
+}
+
 int runtime_submit(void (*fn)(void*), void* arg) {
     RUNTIME_REQUIRE_COROUTINE("runtime", "runtime_submit");
 

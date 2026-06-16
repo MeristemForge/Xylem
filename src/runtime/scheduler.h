@@ -232,6 +232,25 @@ extern void scheduler_park(
     scheduler_t* sched, scheduler_park_fn_t fn, void* arg);
 
 /**
+ * @brief Consume cooperative scheduler credit for the current coroutine.
+ *
+ * Credit is refilled each time a coroutine is resumed. Long loops call this
+ * after cooperative operations and yield when it returns true.
+ *
+ * @param cost  Operation cost to charge.
+ *
+ * @return true when the caller should yield, false otherwise.
+ */
+extern bool scheduler_consume_credit(uint32_t cost);
+
+/**
+ * @brief Yield the current coroutine after exhausting cooperative credit.
+ *
+ * No-op outside a scheduler coroutine.
+ */
+extern void scheduler_yield_credit(void);
+
+/**
  * @brief Post a deferred callback to the scheduler.
  *
  * Thread-safe. The callback runs on whichever worker next drains
@@ -383,4 +402,3 @@ typedef void (*scheduler_idle_fn_t)(void* ud);
  */
 extern void scheduler_set_idle_cb(
     scheduler_t* sched, scheduler_idle_fn_t cb, void* ud);
-

@@ -28,9 +28,8 @@
 
 #include "container/rbtree.h"
 #include "net/addr.h"
+#include "net/datagram.h"
 #include "net/tls/tls-backend.h"
-#include "platform/platform-socket.h"
-#include "runtime/iowait.h"
 #include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
@@ -38,7 +37,6 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -80,11 +78,10 @@ struct xylem_dtls_conn_s {
     _dtls_dgram_t*          pending_dgram;
 
     /* client-side only */
-    iowait_t*               waiter;
-    platform_sock_t          fd;
+    datagram_t*             datagram;
     xylem_mutex_t*           ssl_mu;   /* serializes all backend access.  */
-    xylem_mutex_t*           rd_mu;    /* sole parker on iowait read dir.  */
-    xylem_mutex_t*           wr_mu;    /* sole parker on iowait write dir. */
+    xylem_mutex_t*           rd_mu;    /* sole parker on read readiness.   */
+    xylem_mutex_t*           wr_mu;    /* sole parker on write readiness.  */
 
     /* server-side only */
     xylem_channel_t*         inbox;
@@ -97,8 +94,7 @@ struct xylem_dtls_conn_s {
 };
 
 struct xylem_dtls_listener_s {
-    platform_sock_t       fd;
-    iowait_t*             waiter;
+    datagram_t*           datagram;
     xylem_dtls_ctx_t*     ctx;
     xylem_dtls_opts_t     opts;
     rbtree_t              sessions;
@@ -225,21 +221,10 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
     if (dtls->be) {
         tls_backend_conn_destroy(dtls->be);
     }
-    if (dtls->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference -- without this the waiter (slab slot)
-         * would linger until a stale deadline set by the caller fires.
-         * Server sessions share the listener waiter and store deadlines
-         * as fields, so dtls->waiter is the client's own socket here.
-         */
-        iowait_set_rd_deadline(dtls->waiter, 0);
-        iowait_set_wr_deadline(dtls->waiter, 0);
-        iowait_destroy(dtls->waiter);
-    }
-    if (dtls->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(dtls->fd);
+    if (dtls->datagram) {
+        datagram_set_read_deadline(dtls->datagram, 0);
+        datagram_set_write_deadline(dtls->datagram, 0);
+        datagram_release(dtls->datagram);
     }
     xylem_mutex_destroy(dtls->ssl_mu);
     xylem_mutex_destroy(dtls->rd_mu);
@@ -272,8 +257,7 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
         != 1) {
         return;
     }
-    iowait_destroy(ln->waiter);
-    platform_socket_close(ln->fd);
+    datagram_release(ln->datagram);
     xylem_mutex_destroy(ln->sessions_mu);
     xylem_mutex_destroy(ln->write_mu);
     _dtls_dgram_t* dgram = ln->dgram_pool;
@@ -404,12 +388,6 @@ static xylem_dtls_conn_t* _dtls_find_session(
     return rbtree_entry(node, xylem_dtls_conn_t, server_node);
 }
 
-static socklen_t _dtls_addr_len(addr_t* addr) {
-    return (addr->storage.ss_family == AF_INET6)
-        ? (socklen_t)sizeof(struct sockaddr_in6)
-        : (socklen_t)sizeof(struct sockaddr_in);
-}
-
 static int _dtls_copy_dgram(
     xylem_dtls_conn_t* dtls,
     _dtls_dgram_t*     dgram,
@@ -468,18 +446,7 @@ static int _dtls_server_io_write(
     bool*       again) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
     xylem_dtls_listener_t* ln = dtls->listener;
-    ssize_t sent = platform_socket_sendto(
-        ln->fd, buf, len, &dtls->peer_addr.storage,
-        _dtls_addr_len(&dtls->peer_addr));
-    if (sent >= 0) {
-        return (int)sent;
-    }
-    int err = platform_socket_get_lasterror();
-    if (err == PLATFORM_SO_ERROR_EAGAIN
-        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-        *again = true;
-    }
-    return -1;
+    return datagram_try_send(ln->datagram, buf, len, &dtls->peer_addr, again);
 }
 
 static int _dtls_client_io_read(
@@ -488,16 +455,7 @@ static int _dtls_client_io_read(
     int   len,
     bool* again) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    ssize_t n = platform_socket_recv(dtls->fd, buf, len);
-    if (n >= 0) {
-        return (int)n;
-    }
-    int err = platform_socket_get_lasterror();
-    if (err == PLATFORM_SO_ERROR_EAGAIN
-        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-        *again = true;
-    }
-    return -1;
+    return datagram_try_recv(dtls->datagram, buf, len, NULL, again);
 }
 
 static int _dtls_client_io_write(
@@ -506,16 +464,7 @@ static int _dtls_client_io_write(
     int         len,
     bool*       again) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    ssize_t n = platform_socket_send(dtls->fd, buf, len);
-    if (n >= 0) {
-        return (int)n;
-    }
-    int err = platform_socket_get_lasterror();
-    if (err == PLATFORM_SO_ERROR_EAGAIN
-        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-        *again = true;
-    }
-    return -1;
+    return datagram_try_send(dtls->datagram, buf, len, NULL, again);
 }
 
 /**
@@ -528,10 +477,10 @@ static int _dtls_client_wait_read(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->rd_mu);
-    iowait_result_t r = iowait_read(dtls->waiter);
-    if (r == IOWAIT_READY) {
+    datagram_wait_t r = datagram_wait_read_result(dtls->datagram);
+    if (r == DATAGRAM_WAIT_READY) {
         ret = 0;
-    } else if (r == IOWAIT_TIMEOUT) {
+    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -545,10 +494,10 @@ static int _dtls_client_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->wr_mu);
-    iowait_result_t r = iowait_write(dtls->waiter);
-    if (r == IOWAIT_READY) {
+    datagram_wait_t r = datagram_wait_write_result(dtls->datagram);
+    if (r == DATAGRAM_WAIT_READY) {
         ret = 0;
-    } else if (r == IOWAIT_TIMEOUT) {
+    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -578,10 +527,10 @@ static int _dtls_server_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->listener->write_mu);
-    iowait_result_t r = iowait_write(dtls->listener->waiter);
-    if (r == IOWAIT_READY) {
+    datagram_wait_t r = datagram_wait_write_result(dtls->listener->datagram);
+    if (r == DATAGRAM_WAIT_READY) {
         ret = 0;
-    } else if (r == IOWAIT_TIMEOUT) {
+    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     xylem_mutex_unlock(dtls->listener->write_mu);
@@ -600,8 +549,7 @@ static int _dtls_server_send_record(
             case TLS_BACKEND_OK:
                 return 0;
             case TLS_BACKEND_WANT_WRITE: {
-                iowait_result_t r = iowait_write(dtls->listener->waiter);
-                if (r != IOWAIT_READY) {
+                if (datagram_wait_write(dtls->listener->datagram) != 0) {
                     return -1;
                 }
                 continue;
@@ -642,7 +590,7 @@ static int _dtls_client_do_handshake(
                         rd_dl = rt_dl;
                     }
                 }
-                iowait_set_rd_deadline(dtls->waiter, rd_dl);
+                datagram_set_read_deadline(dtls->datagram, rd_dl);
 
                 int rc = _dtls_client_wait_read(dtls);
                 if (rc == DTLS_WAIT_TIMEOUT) {
@@ -768,13 +716,13 @@ static void _dtls_client_close(xylem_dtls_conn_t* dtls) {
     /**
      * Do not touch the backend object here: a concurrent recv/send may
      * be inside a backend read/write under ssl_mu. Flipping closed +
-     * waking both iowait directions makes those calls return -1 and drop
+     * waking both readiness directions makes those calls return -1 and drop
      * their ref; the backend is destroyed once at the final unref, with
      * no parker left. (Unlike the TLS close path, which flushes a
      * best-effort close_notify, we skip it here: it is best-effort on a
      * datagram socket and not worth the backend access.)
      */
-    iowait_close(dtls->waiter);
+    datagram_interrupt(dtls->datagram);
     _dtls_conn_unref(dtls);
 }
 
@@ -907,23 +855,12 @@ static void _dtls_dispatcher(void* arg) {
         }
 
         addr_t from_addr;
-        socklen_t from_len = sizeof(from_addr.storage);
-        ssize_t n = platform_socket_recvfrom(
-            ln->fd, dgram->data, (int)ln->dgram_bufsz,
-            &from_addr.storage, &from_len);
+        int n = datagram_recv(
+            ln->datagram, dgram->data, (int)ln->dgram_bufsz, &from_addr);
 
         if (n < 0) {
             _dtls_dgram_release(ln, dgram);
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                iowait_result_t r = iowait_read(ln->waiter);
-                if (r != IOWAIT_READY) {
-                    break;
-                }
-                continue;
-            }
-            continue;
+            break;
         }
         dgram->len = (size_t)n;
 
@@ -948,7 +885,6 @@ static void _dtls_dispatcher(void* arg) {
             continue;
         }
         atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
-        dtls->fd               = PLATFORM_SO_ERROR_INVALID_SOCKET;
         dtls->peer_addr        = from_addr;
         dtls->listener         = ln;
         dtls->inbox            = xylem_channel_create(0);
@@ -1027,12 +963,12 @@ static int _dtls_server_send(
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
         xylem_mutex_lock(dtls->listener->write_mu);
         if (dtls->wr_deadline_ms > 0) {
-            iowait_set_wr_deadline(
-                dtls->listener->waiter, dtls->wr_deadline_ms);
+            datagram_set_write_deadline(
+                dtls->listener->datagram, dtls->wr_deadline_ms);
         }
         ret = _dtls_server_send_record(dtls, data, len);
         if (dtls->wr_deadline_ms > 0) {
-            iowait_set_wr_deadline(dtls->listener->waiter, 0);
+            datagram_set_write_deadline(dtls->listener->datagram, 0);
         }
         xylem_mutex_unlock(dtls->listener->write_mu);
     }
@@ -1089,33 +1025,26 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_dial");
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    bool            connected = false;
-    platform_sock_t fd = platform_socket_dial(
-        host, port_str, SOCK_DGRAM, &connected, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<dtls> dial socket failed host=%s port=%u", host, port);
+    datagram_t* datagram = datagram_dial(host, port);
+    if (!datagram) {
+        xylem_loge("<dtls> dial failed host=%s port=%u", host, port);
         return NULL;
     }
 
     xylem_dtls_conn_t* dtls =
         (xylem_dtls_conn_t*)calloc(1, sizeof(xylem_dtls_conn_t));
     if (!dtls) {
-        platform_socket_close(fd);
+        datagram_release(datagram);
         return NULL;
     }
 
     atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
-    dtls->fd  = fd;
-    addr_pton(host, port, &dtls->peer_addr);
+    dtls->datagram = datagram;
 
-    dtls->waiter = iowait_create(fd);
     dtls->ssl_mu = xylem_mutex_create();
     dtls->rd_mu  = xylem_mutex_create();
     dtls->wr_mu  = xylem_mutex_create();
-    if (!dtls->waiter || !dtls->ssl_mu || !dtls->rd_mu || !dtls->wr_mu) {
+    if (!dtls->ssl_mu || !dtls->rd_mu || !dtls->wr_mu) {
         _dtls_conn_unref(dtls);
         return NULL;
     }
@@ -1124,8 +1053,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         ? opts->handshake_timeout_ms : DTLS_DEFAULT_TIMEOUT_MS;
     uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
                         + timeout;
-    iowait_set_rd_deadline(dtls->waiter, deadline);
-    iowait_set_wr_deadline(dtls->waiter, deadline);
+    datagram_set_read_deadline(dtls->datagram, deadline);
+    datagram_set_write_deadline(dtls->datagram, deadline);
 
     tls_backend_io_t io = {
         .user  = dtls,
@@ -1162,8 +1091,8 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
 
-    iowait_set_rd_deadline(dtls->waiter, 0);
-    iowait_set_wr_deadline(dtls->waiter, 0);
+    datagram_set_read_deadline(dtls->datagram, 0);
+    datagram_set_write_deadline(dtls->datagram, 0);
 
     _dtls_cache_alpn(dtls);
     return dtls;
@@ -1176,12 +1105,8 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listen");
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    platform_sock_t fd =
-        platform_socket_listen(host, port_str, SOCK_DGRAM, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+    datagram_t* datagram = datagram_listen(host, port);
+    if (!datagram) {
         xylem_loge("<dtls> listen failed host=%s port=%u", host, port);
         return NULL;
     }
@@ -1189,25 +1114,18 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     xylem_dtls_listener_t* ln =
         (xylem_dtls_listener_t*)calloc(1, sizeof(xylem_dtls_listener_t));
     if (!ln) {
-        platform_socket_close(fd);
+        datagram_release(datagram);
         return NULL;
     }
 
-    ln->fd    = fd;
-    ln->ctx   = ctx;
-    ln->sched = runtime_get_scheduler();
+    ln->datagram = datagram;
+    ln->ctx      = ctx;
+    ln->sched    = runtime_get_scheduler();
     if (opts) {
         ln->opts = *opts;
     }
 
     ln->dgram_bufsz = _dtls_record_bufsz(ln->opts.mtu);
-
-    ln->waiter = iowait_create(fd);
-    if (!ln->waiter) {
-        platform_socket_close(fd);
-        free(ln);
-        return NULL;
-    }
 
     _dtls_listener_ref(ln); /* caller's reference (released by close) */
 
@@ -1290,7 +1208,7 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
     }
     xylem_mutex_unlock(ln->sessions_mu);
 
-    iowait_close(ln->waiter);
+    datagram_interrupt(ln->datagram);
     xylem_channel_close(ln->accept_ch);
     _dtls_listener_unref(ln);
 }
@@ -1303,7 +1221,7 @@ void xylem_dtls_set_read_deadline(
     if (dtls->listener) {
         dtls->rd_deadline_ms = deadline_ms;
     } else {
-        iowait_set_rd_deadline(dtls->waiter, deadline_ms);
+        datagram_set_read_deadline(dtls->datagram, deadline_ms);
     }
 }
 
@@ -1315,7 +1233,7 @@ void xylem_dtls_set_write_deadline(
     if (dtls->listener) {
         dtls->wr_deadline_ms = deadline_ms;
     } else {
-        iowait_set_wr_deadline(dtls->waiter, deadline_ms);
+        datagram_set_write_deadline(dtls->datagram, deadline_ms);
     }
 }
 
@@ -1332,6 +1250,9 @@ int xylem_dtls_remote_addr(
     uint16_t*          port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_remote_addr");
 
+    if (!dtls->listener) {
+        return datagram_remote_addr(dtls->datagram, host, host_len, port);
+    }
     return addr_ntop(&dtls->peer_addr, host, host_len, port);
 }
 
@@ -1342,13 +1263,11 @@ int xylem_dtls_local_addr(
     uint16_t*          port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_local_addr");
 
-    platform_sock_t fd = dtls->listener ? dtls->listener->fd : dtls->fd;
-    addr_t addr;
-    socklen_t len = sizeof(addr.storage);
-    if (getsockname(fd, (struct sockaddr*)&addr.storage, &len) != 0) {
-        return -1;
+    if (dtls->listener) {
+        return datagram_local_addr(
+            dtls->listener->datagram, host, host_len, port);
     }
-    return addr_ntop(&addr, host, host_len, port);
+    return datagram_local_addr(dtls->datagram, host, host_len, port);
 }
 
 int xylem_dtls_listener_addr(
@@ -1358,10 +1277,5 @@ int xylem_dtls_listener_addr(
     uint16_t*              port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listener_addr");
 
-    addr_t addr;
-    socklen_t len = sizeof(addr.storage);
-    if (getsockname(ln->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
-        return -1;
-    }
-    return addr_ntop(&addr, host, host_len, port);
+    return datagram_local_addr(ln->datagram, host, host_len, port);
 }

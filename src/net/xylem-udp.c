@@ -24,19 +24,14 @@
 #include "xylem/xylem-logger.h"
 
 #include "net/addr.h"
-#include "platform/platform-socket.h"
-#include "runtime/iowait.h"
+#include "net/datagram.h"
 #include "runtime/precond.h"
 
 #include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 struct xylem_udp_chan_s {
-    iowait_t*       waiter;
-    platform_sock_t fd;
-    addr_t          peer_addr;
+    datagram_t*     datagram;
     bool            connected;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
@@ -51,51 +46,26 @@ static void _udp_chan_unref(xylem_udp_chan_t* udp) {
         != 1) {
         return;
     }
-    if (udp->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference -- without this the waiter (slab slot)
-         * would linger until a stale deadline set by the caller fires.
-         */
-        iowait_set_rd_deadline(udp->waiter, 0);
-        iowait_set_wr_deadline(udp->waiter, 0);
-        iowait_destroy(udp->waiter);
-    }
-    if (udp->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(udp->fd);
-    }
+    datagram_release(udp->datagram);
     free(udp);
 }
 
 xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_listen");
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    platform_sock_t fd =
-        platform_socket_listen(host, port_str, SOCK_DGRAM, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<udp> listen failed host=%s port=%s", host, port_str);
+    datagram_t* datagram = datagram_listen(host, port);
+    if (!datagram) {
         return NULL;
     }
 
-    xylem_udp_chan_t* udp = (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
+    xylem_udp_chan_t* udp =
+        (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
     if (!udp) {
-        platform_socket_close(fd);
+        datagram_release(datagram);
         return NULL;
     }
 
-    udp->fd        = fd;
-    udp->connected = false;
-    udp->waiter    = iowait_create(fd);
-    if (!udp->waiter) {
-        platform_socket_close(fd);
-        free(udp);
-        return NULL;
-    }
-
+    udp->datagram = datagram;
     _udp_chan_ref(udp);
     return udp;
 }
@@ -103,51 +73,20 @@ xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
 xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_dial");
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
-    const char* dial_host = host;
-    char        resolved_ip[INET6_ADDRSTRLEN];
-    addr_t      resolved_addr;
-
-    if (addr_pton(host, port, &resolved_addr) != 0) {
-        addr_t* addrs = NULL;
-        size_t  count = 0;
-        if (addr_resolve(host, port, 0, &addrs, &count) != 0 || count == 0) {
-            xylem_loge("<udp> dial dns failed host=%s", host);
-            return NULL;
-        }
-        resolved_addr = addrs[0];
-        free(addrs);
-        uint16_t rport;
-        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
-        dial_host = resolved_ip;
-    }
-
-    bool connected = false;
-    platform_sock_t fd = platform_socket_dial(
-        dial_host, port_str, SOCK_DGRAM, &connected, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<udp> dial failed host=%s port=%s", host, port_str);
+    datagram_t* datagram = datagram_dial(host, port);
+    if (!datagram) {
         return NULL;
     }
 
-    xylem_udp_chan_t* udp = (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
+    xylem_udp_chan_t* udp =
+        (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
     if (!udp) {
-        platform_socket_close(fd);
+        datagram_release(datagram);
         return NULL;
     }
 
-    udp->fd        = fd;
+    udp->datagram  = datagram;
     udp->connected = true;
-    udp->peer_addr = resolved_addr;
-    udp->waiter    = iowait_create(fd);
-    if (!udp->waiter) {
-        platform_socket_close(fd);
-        free(udp);
-        return NULL;
-    }
-
     _udp_chan_ref(udp);
     return udp;
 }
@@ -164,48 +103,12 @@ int xylem_udp_recv(
     _udp_chan_ref(udp);
 
     int ret = -1;
-    for (;;) {
-        if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            break;
-        }
-
-        ssize_t n;
-        struct sockaddr_storage sender;
-        socklen_t sender_len = sizeof(sender);
-
-        if (udp->connected) {
-            n = platform_socket_recv(udp->fd, buf, len);
-        } else {
-            n = platform_socket_recvfrom(
-                udp->fd, buf, len, &sender, &sender_len);
-        }
-
-        if (n >= 0) {
-            if (host || port) {
-                addr_t addr;
-                if (udp->connected) {
-                    addr = udp->peer_addr;
-                } else {
-                    memcpy(&addr.storage, &sender, sizeof(sender));
-                }
-                addr_ntop(&addr, host, host_len, port);
-            }
-            ret = (int)n;
-            break;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("<udp> recv failed fd=%d err=%s",
-                (int)udp->fd, platform_socket_tostring(err));
-            break;
-        }
-
-        iowait_result_t r = iowait_read(udp->waiter);
-        if (r != IOWAIT_READY
-            || atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            break;
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+        addr_t from;
+        addr_t* from_ptr = (host || port) ? &from : NULL;
+        ret = datagram_recv(udp->datagram, buf, len, from_ptr);
+        if (ret >= 0 && from_ptr) {
+            (void)addr_ntop(from_ptr, host, host_len, port);
         }
     }
 
@@ -224,46 +127,19 @@ int xylem_udp_send(
     _udp_chan_ref(udp);
 
     int ret = -1;
-    for (;;) {
-        if (atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            break;
-        }
-
-        ssize_t n;
-        if (!host || udp->connected) {
-            n = platform_socket_send(udp->fd, data, len);
-        } else {
-            addr_t dest;
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+        const addr_t* to = NULL;
+        addr_t        dest;
+        if (host && !udp->connected) {
             if (addr_pton(host, port, &dest) != 0) {
                 xylem_loge("<udp> send needs numeric ip host=%s", host);
-                break;
+                _udp_chan_unref(udp);
+                return -1;
+            } else {
+                to = &dest;
             }
-            socklen_t addrlen =
-                (dest.storage.ss_family == AF_INET6)
-                    ? (socklen_t)sizeof(struct sockaddr_in6)
-                    : (socklen_t)sizeof(struct sockaddr_in);
-            n = platform_socket_sendto(
-                udp->fd, data, len, &dest.storage, addrlen);
         }
-
-        if (n >= 0) {
-            ret = 0;
-            break;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err != PLATFORM_SO_ERROR_EAGAIN
-            && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            xylem_loge("<udp> send failed fd=%d err=%s",
-                (int)udp->fd, platform_socket_tostring(err));
-            break;
-        }
-
-        iowait_result_t r = iowait_write(udp->waiter);
-        if (r != IOWAIT_READY
-            || atomic_load_explicit(&udp->closed, memory_order_acquire)) {
-            break;
-        }
+        ret = datagram_send(udp->datagram, data, len, to);
     }
 
     _udp_chan_unref(udp);
@@ -273,13 +149,13 @@ int xylem_udp_send(
 void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_read_deadline");
 
-    iowait_set_rd_deadline(udp->waiter, deadline_ms);
+    datagram_set_read_deadline(udp->datagram, deadline_ms);
 }
 
 void xylem_udp_set_write_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_write_deadline");
 
-    iowait_set_wr_deadline(udp->waiter, deadline_ms);
+    datagram_set_write_deadline(udp->datagram, deadline_ms);
 }
 
 void xylem_udp_close(xylem_udp_chan_t* udp) {
@@ -288,7 +164,7 @@ void xylem_udp_close(xylem_udp_chan_t* udp) {
     if (atomic_exchange(&udp->closed, true)) {
         return;
     }
-    iowait_close(udp->waiter);
+    datagram_interrupt(udp->datagram);
     _udp_chan_unref(udp);
 }
 
@@ -299,12 +175,7 @@ int xylem_udp_local_addr(
     uint16_t*    port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_local_addr");
 
-    addr_t addr;
-    socklen_t len = sizeof(addr.storage);
-    if (getsockname(udp->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
-        return -1;
-    }
-    return addr_ntop(&addr, host, host_len, port);
+    return datagram_local_addr(udp->datagram, host, host_len, port);
 }
 
 int xylem_udp_remote_addr(
@@ -317,5 +188,5 @@ int xylem_udp_remote_addr(
     }
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_remote_addr");
 
-    return addr_ntop(&udp->peer_addr, host, host_len, port);
+    return datagram_remote_addr(udp->datagram, host, host_len, port);
 }

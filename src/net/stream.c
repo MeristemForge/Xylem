@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "net/tcp/stream.h"
+#include "net/stream.h"
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
@@ -242,6 +242,12 @@ static bool _stream_is_again(int err) {
            || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
 }
 
+void stream_consume_credit(uint32_t cost) {
+    if (runtime_consume_credit(cost)) {
+        runtime_yield_credit();
+    }
+}
+
 int stream_try_read(
     stream_t* stream,
     void*     buf,
@@ -256,6 +262,9 @@ int stream_try_read(
         ssize_t n = platform_socket_recv(stream->fd, buf, len);
         if (n >= 0) {
             ret = (int)n;
+            if (n > 0) {
+                stream_consume_credit(1);
+            }
         } else {
             int err = platform_socket_get_lasterror();
             if (_stream_is_again(err)) {
@@ -327,6 +336,7 @@ int stream_write(stream_t* stream, const void* data, int len) {
             if (n > 0) {
                 ptr += n;
                 rem -= (int)n;
+                stream_consume_credit(1);
                 continue;
             }
 
@@ -371,6 +381,7 @@ int stream_try_write(
         ssize_t n = platform_socket_send(stream->fd, data, len);
         if (n > 0) {
             ret = (int)n;
+            stream_consume_credit(1);
         } else {
             int err = platform_socket_get_lasterror();
             if (_stream_is_again(err)) {

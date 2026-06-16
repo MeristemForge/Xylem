@@ -86,6 +86,7 @@
 #define SCHED_DEQUE_CAP          256
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
+#define SCHED_CREDIT_DEFAULT     256
 
 #define SCHED_CORO_STACK_SIZE (128 * 1024)
 
@@ -122,6 +123,7 @@ typedef struct _sched_worker_s {
     _Atomic(mco_coro*)   runnext;
     uint32_t             rng;        /* per-worker xorshift state for steal order */
     uint32_t             sched_tick;
+    uint32_t             credit;
     heap_t               timers;
     mtx_t                timer_lock;
     _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
@@ -976,7 +978,14 @@ static void _sched_handle_yield(_sched_worker_t* w, mco_coro* co) {
     _sched_enqueue_local(w, co);
 }
 
+static bool _sched_credit_park_cb(mco_coro* co, void* arg) {
+    (void)co;
+    (void)arg;
+    return false;
+}
+
 static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
+    w->credit = SCHED_CREDIT_DEFAULT;
     mco_resume(co);
     _sched_handle_yield(w, co);
 }
@@ -1566,6 +1575,25 @@ void scheduler_park(
     /* Resumed: clear park bookkeeping so the coro runs as PARK_IDLE. */
     _sched_coro_ctx_t* ctx = _sched_coro_ctx(mco_running());
     atomic_store_explicit(&ctx->park_state, PARK_IDLE, memory_order_relaxed);
+}
+
+bool scheduler_consume_credit(uint32_t cost) {
+    if (cost == 0 || !_tls_worker || !mco_running()) {
+        return false;
+    }
+    if (_tls_worker->credit > cost) {
+        _tls_worker->credit -= cost;
+        return false;
+    }
+    _tls_worker->credit = 0;
+    return true;
+}
+
+void scheduler_yield_credit(void) {
+    if (!_tls_worker || !mco_running()) {
+        return;
+    }
+    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {

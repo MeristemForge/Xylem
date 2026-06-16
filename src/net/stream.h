@@ -93,6 +93,13 @@ extern void stream_set_write_deadline(
     uint64_t  deadline_ms);
 
 /**
+ * @brief Consume one or more stream I/O operation credits.
+ *
+ * @param cost  Operation cost to charge.
+ */
+extern void stream_consume_credit(uint32_t cost);
+
+/**
  * @brief Read available bytes from the stream.
  *
  * @param stream  Stream handle.

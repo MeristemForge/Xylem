@@ -38,7 +38,7 @@ _Pragma("once")
 #include "xylem/net/xylem-tls.h"
 #include "xylem/sync/xylem-mutex.h"
 
-#include "net/tcp/stream.h"
+#include "net/stream.h"
 #include "net/tls/tls-backend.h"
 
 #include <stdatomic.h>

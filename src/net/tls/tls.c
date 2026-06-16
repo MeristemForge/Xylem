@@ -26,7 +26,7 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "net/addr.h"
-#include "net/tcp/stream.h"
+#include "net/stream.h"
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
 #include "runtime/precond.h"

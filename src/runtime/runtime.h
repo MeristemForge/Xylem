@@ -24,6 +24,7 @@ _Pragma("once")
 #include "runtime/scheduler.h"
 #include "runtime/dynpool.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Runtime configuration options. */
@@ -69,6 +70,22 @@ extern void runtime_spawn(void (*fn)(void*), void* arg);
  * @param ms  Milliseconds to sleep.
  */
 extern void runtime_sleep(uint64_t ms);
+
+/**
+ * @brief Consume cooperative runtime credit for the current coroutine.
+ *
+ * @param cost  Operation cost to charge.
+ *
+ * @return true when the caller should yield, false otherwise.
+ */
+extern bool runtime_consume_credit(uint32_t cost);
+
+/**
+ * @brief Yield the current coroutine after exhausting cooperative credit.
+ *
+ * No-op outside a runtime coroutine.
+ */
+extern void runtime_yield_credit(void);
 
 /**
  * @brief Execute a blocking function on the thread pool.
