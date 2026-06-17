@@ -122,6 +122,12 @@ static void _channel_unref(xylem_channel_t* ch) {
     free(ch);
 }
 
+static void _channel_consume_credit(uint32_t cost) {
+    if (runtime_consume_credit(cost)) {
+        runtime_yield_credit();
+    }
+}
+
 /**
  * Wake the parked receiver, if any (used by send, close, and the timer).
  * The atomic_exchange grants one caller exclusive ownership of the wake:
@@ -364,6 +370,9 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     atomic_store_explicit(&ch->recv_active, false, memory_order_release);
     _channel_unref(ch);
+    if (payload) {
+        _channel_consume_credit(1);
+    }
     return payload;
 }
 
@@ -458,6 +467,9 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     }
 
     _channel_unref(ch);
+    if (rc == 0) {
+        _channel_consume_credit(1);
+    }
     return rc;
 }
 
