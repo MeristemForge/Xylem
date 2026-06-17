@@ -30,32 +30,56 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int _http_tunnel_write_all(iowait_t* w, platform_sock_t fd,
-                                 const void* data, int len) {
+static bool _http_tunnel_is_again(int err) {
+    return err == PLATFORM_SO_ERROR_EAGAIN
+           || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
+}
+
+static int _http_tunnel_write_all(
+    iowait_t*       w,
+    platform_sock_t fd,
+    const void*     data,
+    int             len) {
     const char* ptr = (const char*)data;
     int         rem = len;
     while (rem > 0) {
-        iowait_result_t r = iowait_write(w);
-        if (r != IOWAIT_READY) {
-            return -1;
-        }
         int n = platform_socket_send(fd, ptr, rem);
-        if (n <= 0) {
+        if (n > 0) {
+            ptr += n;
+            rem -= n;
+            continue;
+        }
+
+        int err = platform_socket_get_lasterror();
+        if (!_http_tunnel_is_again(err)) {
             return -1;
         }
-        ptr += n;
-        rem -= n;
+        if (iowait_write(w) != IOWAIT_READY) {
+            return -1;
+        }
     }
     return 0;
 }
 
-static int _http_tunnel_read_some(iowait_t* w, platform_sock_t fd,
-                                 void* buf, int len) {
-    iowait_result_t r = iowait_read(w);
-    if (r != IOWAIT_READY) {
-        return -1;
+static int _http_tunnel_read_some(
+    iowait_t*       w,
+    platform_sock_t fd,
+    void*           buf,
+    int             len) {
+    for (;;) {
+        int n = platform_socket_recv(fd, buf, len);
+        if (n >= 0) {
+            return n;
+        }
+
+        int err = platform_socket_get_lasterror();
+        if (!_http_tunnel_is_again(err)) {
+            return -1;
+        }
+        if (iowait_read(w) != IOWAIT_READY) {
+            return -1;
+        }
     }
-    return platform_socket_recv(fd, buf, len);
 }
 
 static int _http_tunnel_handshake(iowait_t* w, platform_sock_t fd,

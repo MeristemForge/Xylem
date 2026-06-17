@@ -539,7 +539,11 @@ bench_throughput() {
     conns_lbl="$(format_conns "$conns")"
     size_lbl="$(format_size "$payload")"
 
-    info "=== [${CUR_PROTO}] ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT} ==="
+    local warmup_label=""
+    if [ "$BENCH_WARMUP_RUNS" -gt 0 ]; then
+        warmup_label=" (+${BENCH_WARMUP_RUNS} warmup)"
+    fi
+    info "=== [${CUR_PROTO}] ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT}${warmup_label} ==="
 
     if [ "$REPEAT" -gt 1 ]; then
         printf "  %-10s %12s %8s %10s %10s %10s  %s\n" \
@@ -570,11 +574,17 @@ bench_throughput() {
         local cpu_usage_last=""
         local srv_cpu_last=""
 
-        for run in $(seq 1 "$REPEAT"); do
+        local total_runs=$((REPEAT + BENCH_WARMUP_RUNS))
+        for run in $(seq 1 "$total_runs"); do
             local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
-            local out="$RUN_DIR/${CUR_PROTO}-throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-r${run}.json"
-            local cpu_before="$RUN_DIR/.cpu-before-${name}-r${run}"
-            local cpu_after="$RUN_DIR/.cpu-after-${name}-r${run}"
+            local measured_run=$((run - BENCH_WARMUP_RUNS))
+            local run_name="r${measured_run}"
+            if [ "$measured_run" -le 0 ]; then
+                run_name="warmup$run"
+            fi
+            local out="$RUN_DIR/${CUR_PROTO}-throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-${run_name}.json"
+            local cpu_before="$RUN_DIR/.cpu-before-${name}-${run_name}"
+            local cpu_after="$RUN_DIR/.cpu-after-${name}-${run_name}"
 
             snapshot_cpu "$cpu_before"
 
@@ -590,6 +600,10 @@ bench_throughput() {
             srv_cpu_last="$(calc_cores_avg "$cpu_before" "$cpu_after" \
                             "$(server_core_spec "$row_label")")"
             rm -f "$cpu_before" "$cpu_after"
+            if [ "$measured_run" -le 0 ]; then
+                [ "$run" -lt "$total_runs" ] && sleep 1
+                continue
+            fi
             if [ -s "$out" ]; then
                 local tp p50 p99 lat_max
                 tp=$(extract_json "$out" throughput_msg_per_sec)
@@ -607,7 +621,7 @@ bench_throughput() {
                 fi
             fi
 
-            [ "$run" -lt "$REPEAT" ] && sleep 1
+            [ "$run" -lt "$total_runs" ] && sleep 1
         done
 
         local srv_peak_rss; srv_peak_rss="$(proc_peak_rss_kb "$pid")"
@@ -780,6 +794,7 @@ IFS=',' read -ra PAYLOADS  <<< "${PAYLOADS:-64,4096,65536}"
 DURATION="${DURATION:-10}"
 MODE="${MODE:-both}"
 REPEAT="${REPEAT:-1}"
+BENCH_WARMUP_RUNS="${BENCH_WARMUP_RUNS:-1}"
 RUN_CONNRATE=true
 # STRICT: when true, a throughput run is aborted (and reported as no valid
 # output) unless every requested connection is established. Keeps the
@@ -878,6 +893,8 @@ Options (pass after the command; env vars seed defaults):
 Notes:
   TLS requires OpenSSL; xylem is built with -DXYLEM_ENABLE_TLS=ON when tls is
   among the protocols. UDP has no MT row.
+  Throughput runs one uncounted warmup pass by default; set
+  BENCH_WARMUP_RUNS=0 to disable or another value to change it.
   macOS uses kqueue and lacks SO_REUSEPORT / /proc; numbers are NOT comparable
   to the Linux suite.
 

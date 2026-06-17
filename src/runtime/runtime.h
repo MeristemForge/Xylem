@@ -24,6 +24,7 @@ _Pragma("once")
 #include "runtime/scheduler.h"
 #include "runtime/dynpool.h"
 
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -79,6 +80,15 @@ extern void runtime_sleep(uint64_t ms);
  * @return true when the caller should yield, false otherwise.
  */
 extern bool runtime_consume_credit(uint32_t cost);
+
+/**
+ * @brief Consume cooperative runtime I/O credit.
+ *
+ * @param bytes  Bytes moved by the successful I/O operation.
+ *
+ * @return true when the caller should yield, false otherwise.
+ */
+extern bool runtime_consume_io_credit(size_t bytes);
 
 /**
  * @brief Yield the current coroutine after exhausting cooperative credit.

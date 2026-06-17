@@ -30,7 +30,8 @@ import (
 // keep a uniform random sample of the whole run via reservoir sampling
 // (Algorithm R) so percentiles reflect steady state rather than warmup.
 const latCapPerConn = 8192
-const warmupRounds = 1
+const warmupRounds = 5
+const warmupTimeout = 30 * time.Second
 
 var tlsConf = &tls.Config{InsecureSkipVerify: true} // bench servers: self-signed
 
@@ -233,6 +234,7 @@ func runThroughput(args []string) {
 			var latCount int64
 			if warmupRounds > 0 {
 				ok := true
+				_ = c.SetDeadline(time.Now().Add(warmupTimeout))
 				for r := 0; r < warmupRounds; r++ {
 					if _, err := c.Write(out); err != nil {
 						ok = false
@@ -243,6 +245,7 @@ func runThroughput(args []string) {
 						break
 					}
 				}
+				_ = c.SetDeadline(time.Time{})
 				warmwg.Done()
 				if !ok {
 					return

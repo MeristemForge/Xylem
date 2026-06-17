@@ -120,6 +120,10 @@ bool runtime_consume_credit(uint32_t cost) {
     return scheduler_consume_credit(cost);
 }
 
+bool runtime_consume_io_credit(size_t bytes) {
+    return scheduler_consume_io_credit(bytes);
+}
+
 void runtime_yield_credit(void) {
     scheduler_yield_credit();
 }

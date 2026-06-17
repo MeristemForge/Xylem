@@ -24,6 +24,7 @@ _Pragma("once")
 #include "platform/platform-poller.h"
 #include "container/heap.h"
 
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -242,6 +243,18 @@ extern void scheduler_park(
  * @return true when the caller should yield, false otherwise.
  */
 extern bool scheduler_consume_credit(uint32_t cost);
+
+/**
+ * @brief Consume cooperative I/O credit for the current coroutine.
+ *
+ * I/O credit is refilled each time a coroutine is resumed. Long I/O loops
+ * call this after successful operations and yield when it returns true.
+ *
+ * @param bytes  Bytes moved by the successful I/O operation.
+ *
+ * @return true when the caller should yield, false otherwise.
+ */
+extern bool scheduler_consume_io_credit(size_t bytes);
 
 /**
  * @brief Yield the current coroutine after exhausting cooperative credit.

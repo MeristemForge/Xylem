@@ -78,8 +78,12 @@ static socklen_t _datagram_addr_len(const addr_t* addr) {
         : (socklen_t)sizeof(struct sockaddr_in);
 }
 
-static void _datagram_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
+static void _datagram_consume_io_budget(size_t bytes) {
+    bool should_yield = runtime_consume_credit(1);
+    if (runtime_consume_io_credit(bytes)) {
+        should_yield = true;
+    }
+    if (should_yield) {
         runtime_yield_credit();
     }
 }
@@ -263,7 +267,7 @@ int datagram_try_recv(
                 }
             }
             if (n > 0) {
-                _datagram_consume_credit(1);
+                _datagram_consume_io_budget((size_t)n);
             }
         } else {
             int err = platform_socket_get_lasterror();
@@ -343,7 +347,7 @@ int datagram_try_send(
         if (n >= 0) {
             ret = (int)n;
             if (n > 0) {
-                _datagram_consume_credit(1);
+                _datagram_consume_io_budget((size_t)n);
             }
         } else {
             int err = platform_socket_get_lasterror();

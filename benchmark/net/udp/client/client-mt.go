@@ -30,6 +30,8 @@ const (
 	// keep a uniform random sample of the whole run via reservoir sampling
 	// (Algorithm R) so percentiles reflect steady state rather than warmup.
 	latCapPerConn = 8192
+	warmupRounds  = 5
+	warmupTimeout = 30 * time.Second
 	maxDatagram   = 65507 // max UDP payload
 )
 
@@ -165,11 +167,15 @@ func runThroughput(args []string) {
 	var deadlineNanos int64
 
 	var wg sync.WaitGroup
+	var warmwg sync.WaitGroup
 	for i := 0; i < o.conns; i++ {
 		if !slots[i].ok {
 			continue
 		}
 		wg.Add(1)
+		if warmupRounds > 0 {
+			warmwg.Add(1)
+		}
 		go func(idx int) {
 			defer wg.Done()
 			c := slots[idx].c
@@ -183,6 +189,25 @@ func runThroughput(args []string) {
 			res.lats = make([]int64, 0, latCapPerConn)
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(idx)))
 			var latCount int64
+			if warmupRounds > 0 {
+				ok := true
+				_ = c.SetDeadline(time.Now().Add(warmupTimeout))
+				for r := 0; r < warmupRounds; r++ {
+					if _, err := c.Write(out); err != nil {
+						ok = false
+						break
+					}
+					if _, err := c.Read(buf); err != nil {
+						ok = false
+						break
+					}
+				}
+				_ = c.SetDeadline(time.Time{})
+				warmwg.Done()
+				if !ok {
+					return
+				}
+			}
 			<-start
 			deadline := time.Unix(0, atomic.LoadInt64(&deadlineNanos))
 			_ = c.SetDeadline(deadline)
@@ -208,6 +233,7 @@ func runThroughput(args []string) {
 		}(i)
 	}
 
+	warmwg.Wait()
 	realStart := time.Now()
 	atomic.StoreInt64(&deadlineNanos,
 		realStart.Add(time.Duration(o.duration)*time.Second).UnixNano())
