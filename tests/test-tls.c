@@ -25,6 +25,9 @@
 #define TEST_WITH_TLS
 #include "utils.h"
 
+#include <openssl/err.h>
+#include <openssl/sslerr.h>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -488,6 +491,93 @@ static void _deadline_client(void* arg) {
 static void test_read_deadline(void) {
     _run_default((_plan_t){"test_tls_dl_cert.pem", "test_tls_dl_key.pem",
                            TLS_PORT + 4, 2, _deadline_server, _deadline_client});
+}
+
+static void _stale_errq_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln =
+        xylem_tls_listen(TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tls_handshake(conn) == 0);
+
+    xylem_sleep(200);
+    xylem_tls_close(conn);
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _stale_errq_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    ERR_put_error(ERR_LIB_SSL, 0, SSL_R_BAD_LENGTH, __FILE__, __LINE__);
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 100;
+    xylem_tls_set_read_deadline(conn, deadline);
+
+    char     buf[64];
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    int      n     = xylem_tls_read(conn, buf, sizeof(buf));
+    uint64_t end   = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    ASSERT(n == -1);
+    ASSERT(end - start >= 80);
+
+    xylem_tls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_stale_error_queue_before_read(void) {
+    _run_default((_plan_t){"test_tls_eq_cert.pem", "test_tls_eq_key.pem",
+                           TLS_PORT + 5, 2, _stale_errq_server,
+                           _stale_errq_client});
+}
+
+static void _expired_read_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln =
+        xylem_tls_listen(TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tls_write(conn, "late", 4) == 0);
+    xylem_sleep(100);
+    xylem_tls_close(conn);
+    xylem_tls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _expired_read_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(50);
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
+    xylem_tls_set_read_deadline(conn, deadline);
+
+    char buf[64];
+    ASSERT(xylem_tls_read(conn, buf, sizeof(buf)) == -1);
+
+    xylem_tls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_expired_read_deadline_blocks_ready_tls_data(void) {
+    _run_default((_plan_t){"test_tls_exp_cert.pem", "test_tls_exp_key.pem",
+                           TLS_PORT + 6, 2, _expired_read_server,
+                           _expired_read_client});
 }
 
 static void _sac_server(void* arg) {
@@ -1168,6 +1258,8 @@ int main(void) {
     test_handshake_failure();
     test_alpn_negotiation();
     test_read_deadline();
+    test_stale_error_queue_before_read();
+    test_expired_read_deadline_blocks_ready_tls_data();
     test_close();
     test_close_listener();
     test_keylog();

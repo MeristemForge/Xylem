@@ -240,6 +240,11 @@ int datagram_try_recv(
     *again  = false;
 
     if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+        if (iowait_read_deadline_expired(datagram->waiter)) {
+            _datagram_unref(datagram);
+            return ret;
+        }
+
         ssize_t n;
         struct sockaddr_storage sender;
         socklen_t sender_len = sizeof(sender);
@@ -327,6 +332,11 @@ int datagram_try_send(
     *again  = false;
 
     if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+        if (iowait_write_deadline_expired(datagram->waiter)) {
+            _datagram_unref(datagram);
+            return ret;
+        }
+
         ssize_t n;
         if (!to || datagram->connected) {
             n = platform_socket_send(datagram->fd, data, len);

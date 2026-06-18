@@ -4,8 +4,8 @@ Xylem's public synchronization primitives — mutex, condition variable,
 wait-group, and channel — are **cross-context**: a contended operation blocks
 the caller in the way that fits its context. A coroutine parks on the scheduler
 (the OS worker thread stays free); an external OS thread blocks on a per-thread
-wake semaphore. The two kinds queue together and notify each other, so a
-coroutine can hand off to an OS thread and vice versa. This document covers
+wake semaphore. The two kinds can notify each other, so a coroutine can hand
+off to an OS thread and vice versa. This document covers
 their semantics, threading contracts, and the ordering rules that make them
 correct. The internal `spin_t` and the shared `waiter` core are also
 described because they back the others.
@@ -24,14 +24,18 @@ All five public primitives share one shape:
 - **Blocking ops are context-adaptive.** `mutex_lock`, `cond_wait`,
   `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
   they park (the worker thread stays free); on any other thread they block that
-  OS thread. Both waiter kinds share one FIFO queue, so a coroutine and an
-  external thread can notify each other across the boundary. None of them
-  requires a coroutine context.
+  OS thread. Mutex, cond, and waitgroup preserve FIFO waiter order. `xylem_sem`
+  preserves FIFO among coroutine waiters, but OS-thread waiters contend on the
+  count word and may barge. None of them requires a coroutine context.
 - **Wakeup/non-blocking ops never block.** `unlock`, `signal`/`broadcast`,
   `add`/`done`, `send`/`close`, `post`, and all `create`/`destroy` are safe from
-  any thread — a cross-context wake is dispatched by the *waiter's* kind
-  (`scheduler_schedule()` for a coroutine, `platform_sem_post()` for a thread).
-- **FIFO wakeups.** Waiters are resumed in arrival order.
+  any thread. Cross-context coroutine wakeups go through
+  `scheduler_schedule()`; OS-thread wakeups use the primitive's platform
+  blocking path.
+- **FIFO wakeups where the primitive owns a waiter list.** Mutex, cond, and
+  waitgroup resume waiters in arrival order. `xylem_sem` is FIFO only for its
+  coroutine queue; OS-thread waiters use the platform futex/semaphore path and
+  are not globally FIFO.
 - **Abort on contract violation.** Counter underflow, double-close, and
   multi-receiver are logic bugs, so misuse aborts with a diagnostic rather than
   corrupting state silently. (None of the primitives aborts merely for being
@@ -59,8 +63,8 @@ All five public primitives share one shape:
   afterward.
 
 The FIFO primitives (mutex, cond, waitgroup) each keep their **own** guarded
-list of `waiter_t` — a `spin_t` guard plus an intrusive `list_t` embedded in the
-primitive — and inline the same small block/wake mechanics directly:
+list of `waiter_t` -- a `spin_t` guard plus an intrusive `list_t` embedded in the
+primitive -- and inline the same small block/wake mechanics directly:
 `mco_running()` decides park vs. OS-thread block, the acquire/visibility step is
 done under the guard so a racing waker is never lost, and a drain reads each
 node's successor before waking so a vanishing stack waiter cannot strand it. The
@@ -258,58 +262,58 @@ wrappers. `destroy()` should follow a drain.
 
 A counting semaphore. Like the other primitives it bridges coroutines and OS
 threads, and it adds two things they don't have: a **count** (so a `post()` with
-no waiter is remembered) and a **timed wait**. Its `wait()` is the same
-context-adaptive block as the rest; what makes it distinct is the count and the
-deadline support, which is why it keeps its own machinery like the FIFO
-primitives rather than sharing a list type.
+no waiter is remembered) and a **timed wait**. Its coroutine wait path keeps a
+FIFO list, while OS-thread waiters contend on the count word through the
+platform futex/semaphore path. That split is intentional: it avoids a syscall
+for coroutine-only hand-off while still preventing OS-thread starvation.
 
 - `wait()` decrements the count, or blocks if it is zero. It is
   **context-adaptive**: on a coroutine it parks (the worker thread stays free);
-  on any other thread it blocks that OS thread. Both waiter kinds share one FIFO
-  queue and one count.
+  on any other thread it blocks that OS thread. Coroutine waiters are FIFO among
+  themselves; OS-thread waiters are not globally ordered with them.
 - `timedwait(ms)` is `wait()` with a deadline: it returns `true` once a token is
   acquired, or `false` if `ms` elapses first. `timedwait(0)` is a non-blocking
   try (acquire-or-fail, never parks) and replaces the old `trywait`.
-- `post()` wakes the FIFO-oldest waiter, or increments the count if none is
-  parked. `post`, `create`, `destroy` are callable from any thread or context
-  and never park.
+- `post()` hands the token directly to the FIFO-oldest coroutine only when no
+  OS thread is blocked. If an OS thread is blocked, `post()` banks the token and
+  wakes contenders; a thread may acquire it before an older coroutine. `post`,
+  `create`, `destroy` are callable from any thread or context and never park.
 
 ### Who waits decides how it wakes
 
-The poster does not care what it is waking — each waiter records its own wake
-mechanism when it enqueues:
+The poster chooses the wake path from the blocked party's kind:
 
 - a **coroutine waiter** stores its `mco_coro*` and the scheduler it parked
   under, and is woken with `scheduler_schedule()` (thread-safe from any caller);
-- a **thread waiter** stores a per-thread OS semaphore (a `platform_sem`,
-  created lazily on the thread's first wait and cached in thread-local storage,
-  reclaimed by the TLS destructor), blocks on it, and is released with
-  `platform_sem_post()`.
+- a **thread waiter** increments `thr_waiters`, blocks on the count word through
+  the platform futex/semaphore path, and competes for a banked token when woken.
 
-So "thread posts → coroutine waits" reschedules the coroutine, and "coroutine
-posts → thread waits" releases the thread's OS semaphore — the branch is on the
-*waiter's* kind, not the poster's.
+So "thread posts -> coroutine waits" reschedules the coroutine, and "coroutine
+posts -> thread waits" signals the platform futex/semaphore path. The branch is
+on the blocked party's kind, not the poster's.
 
 ### Direct hand-off, no lost wakeups
 
-A short spin `guard` serialises every count/queue mutation. When a waiter is
-queued, `post()` transfers the token straight to the FIFO-oldest waiter and
-never touches the count; the woken waiter returns from `wait()` without
-re-decrementing. The coroutine fast path re-checks the count inside the park
-callback under the guard, so a `post()` racing the park either hands over the
-count (park declines) or finds the waiter already queued.
+A short spin `guard` serialises coroutine queue mutations and count banking.
+When only coroutine waiters exist, `post()` transfers the token straight to the
+FIFO-oldest coroutine and never touches the count; the woken coroutine returns
+from `wait()` without re-decrementing. The coroutine fast path re-checks the
+count inside the park callback under the guard, so a `post()` racing the park
+either hands over the count (park declines) or finds the waiter already queued.
 
-Each thread waiter gets its *own* OS semaphore rather than sharing one, so
-`post()` releases exactly the head-of-queue thread and FIFO order is preserved
-with no thundering herd.
+Once an OS thread is blocked, direct coroutine hand-off stops. `post()` banks a
+token in `count`, wakes one OS-thread waiter through the platform path, and wakes
+the FIFO-oldest coroutine to re-contend if one exists. Whichever side
+CAS-decrements the banked count first owns the token. This admits barging, but
+it prevents a steady coroutine queue from starving OS threads forever.
 
 ### Timeout and waiter lifetime
 
-Most waiters live on the blocked party's stack: an infinite coroutine wait stays
-valid because the coroutine is suspended, and every thread wait (timed or not)
-stays valid because the thread is blocked inside `platform_sem_(timed)wait`.
-`post()` copies the wake target out under the guard and never touches the record
-again, so a stack waiter is always safe.
+Most coroutine waiters live on the blocked coroutine's stack: an infinite wait
+stays valid because the coroutine is suspended. `post()` copies the wake target
+out under the guard and never touches the record again, so a stack waiter is
+safe. OS-thread waiters do not have queue records in `xylem_sem`; they sleep on
+the platform path and contend on `count`.
 
 A **timed coroutine wait** is the exception. It arms a scheduler timer that can
 pull the waiter out of the FIFO from another worker, and that timer callback may

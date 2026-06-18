@@ -1382,6 +1382,10 @@ void scheduler_destroy(scheduler_t* sched) {
     if (!sched) {
         return;
     }
+    if (_tls_worker && _tls_worker->sched == sched) {
+        xylem_loge("<sched> destroy from worker sched=%p", (void*)sched);
+        abort();
+    }
 
     scheduler_stop(sched);
 
@@ -1711,7 +1715,7 @@ scheduler_timer_t* scheduler_timer_create(scheduler_t* sched) {
         return NULL;
     }
     t->sched = sched;
-    if (_tls_worker) {
+    if (_tls_worker && _tls_worker->sched == sched) {
         t->owner = _tls_worker->index;
     } else {
         uint32_t rr = atomic_fetch_add_explicit(

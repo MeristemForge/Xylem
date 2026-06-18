@@ -722,6 +722,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
 
     scheduler_timer_set_ud_guard(
         sess->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
+    scheduler_timer_set_spawn(sess->update_timer, true);
     if (scheduler_timer_start(
             sess->update_timer, _rudp_update_timer_cb, sess, 10, 0) != 0) {
         scheduler_timer_destroy(sess->update_timer);
@@ -1097,6 +1098,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     /* Start the KCP update timer. */
     scheduler_timer_set_ud_guard(
         c->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
+    scheduler_timer_set_spawn(c->update_timer, true);
     if (scheduler_timer_start(
             c->update_timer, _rudp_update_timer_cb, c, 10, 0) != 0) {
         _rudp_conn_unref(c);

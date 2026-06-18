@@ -24,20 +24,34 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
-#include <stddef.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 
-/**
- * The public xylem_timer_t is an opaque wrapper whose single member is the
- * scheduler's scheduler_timer_t. The handle converts to the engine timer via
- * first-member address equivalence (C 6.7.2.1), i.e. the static assert
- * below guarantees (scheduler_timer_t*)pub == &pub->internal.
- */
 struct xylem_timer_s {
-    scheduler_timer_t internal;
+    scheduler_timer_t* internal;
+    xylem_timer_fn_t   cb;
+    void*              ud;
+    _Atomic int32_t    refcnt;
 };
 
-_Static_assert(offsetof(struct xylem_timer_s, internal) == 0,
-               "scheduler_timer_t must remain the first member of xylem_timer_s");
+static void _timer_ref(void* ud) {
+    xylem_timer_t* timer = (xylem_timer_t*)ud;
+    atomic_fetch_add_explicit(&timer->refcnt, 1, memory_order_relaxed);
+}
+
+static void _timer_unref(void* ud) {
+    xylem_timer_t* timer = (xylem_timer_t*)ud;
+    if (atomic_fetch_sub_explicit(&timer->refcnt, 1, memory_order_acq_rel)
+        == 1) {
+        free(timer);
+    }
+}
+
+static void _timer_fire_cb(scheduler_timer_t* internal, void* ud) {
+    (void)internal;
+    xylem_timer_t* timer = (xylem_timer_t*)ud;
+    timer->cb(timer, timer->ud);
+}
 
 xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
@@ -45,26 +59,41 @@ xylem_timer_t* xylem_timer_after(
     if (!sched || !cb) {
         return NULL;
     }
+    xylem_timer_t* timer =
+        (xylem_timer_t*)calloc(1, sizeof(xylem_timer_t));
+    if (!timer) {
+        return NULL;
+    }
+
     scheduler_timer_t* t = scheduler_timer_create(sched);
     if (!t) {
+        free(timer);
         return NULL;
     }
+
+    timer->internal = t;
+    timer->cb       = cb;
+    timer->ud       = ud;
+    atomic_init(&timer->refcnt, 1);
+
     scheduler_timer_set_spawn(t, true);
-    if (scheduler_timer_start(
-            t, (scheduler_timer_fn_t)cb, ud, delay_ms, 0) != 0) {
+    scheduler_timer_set_ud_guard(t, _timer_ref, _timer_unref);
+    if (scheduler_timer_start(t, _timer_fire_cb, timer, delay_ms, 0) != 0) {
         scheduler_timer_destroy(t);
+        free(timer);
         return NULL;
     }
-    return (xylem_timer_t*)t;
+    return timer;
 }
 
 bool xylem_timer_cancel(xylem_timer_t* timer) {
     if (!timer) {
         return false;
     }
-    scheduler_timer_t* t = &timer->internal;
+    scheduler_timer_t* t = timer->internal;
     bool stopped = scheduler_timer_stop(t);
     scheduler_timer_destroy(t);
+    _timer_unref(timer);
     return stopped;
 }
 
@@ -72,5 +101,5 @@ bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
     if (!timer) {
         return false;
     }
-    return scheduler_timer_reset(&timer->internal, delay_ms);
+    return scheduler_timer_reset(timer->internal, delay_ms);
 }

@@ -298,6 +298,115 @@ static void test_half_close(void) {
     _run_pair(TCP_PORT + 4, _half_server, _half_client);
 }
 
+static void _shutdown_rd_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(50);
+    ASSERT(xylem_tcp_write(conn, "data", 4) == 0);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _shutdown_rd_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_shutdown_rd(conn) == 0);
+
+    char buf[16];
+    int  n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == -1);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_shutdown_rd_read_fails(void) {
+    _run_pair(TCP_PORT + 5, _shutdown_rd_server, _shutdown_rd_client);
+}
+
+static void _expired_read_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_write(conn, "late", 4) == 0);
+    xylem_sleep(100);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _expired_read_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(50);
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
+    xylem_tcp_set_read_deadline(conn, deadline);
+
+    char buf[16];
+    ASSERT(xylem_tcp_read(conn, buf, sizeof(buf)) == -1);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_expired_read_deadline_blocks_ready_data(void) {
+    _run_pair(TCP_PORT + 6, _expired_read_server, _expired_read_client);
+}
+
+static void _expired_write_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(100);
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _expired_write_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
+    xylem_tcp_set_write_deadline(conn, deadline);
+    ASSERT(xylem_tcp_write(conn, "late", 4) == -1);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_expired_write_deadline_blocks_ready_socket(void) {
+    _run_pair(TCP_PORT + 7, _expired_write_server, _expired_write_client);
+}
+
 int main(void) {
     test_echo();
     test_reader_full();
@@ -305,5 +414,8 @@ int main(void) {
     test_dial_timeout();
     test_peer_close_eof();
     test_half_close();
+    test_shutdown_rd_read_fails();
+    test_expired_read_deadline_blocks_ready_data();
+    test_expired_write_deadline_blocks_ready_socket();
     return 0;
 }

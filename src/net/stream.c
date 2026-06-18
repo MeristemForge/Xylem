@@ -37,6 +37,7 @@ struct stream_s {
     addr_t          peer_addr;
     bool            peer_addr_valid;
     _Atomic int32_t refcnt;
+    _Atomic bool    rd_shutdown;
     _Atomic bool    closed;
 };
 
@@ -257,7 +258,10 @@ static iowait_result_t _stream_wait_result(
     _stream_ref(stream);
     iowait_result_t ret = IOWAIT_CLOSED;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (!write
+        && atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
+        ret = IOWAIT_CLOSED;
+    } else if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
         iowait_result_t r = write ? iowait_write(stream->waiter)
                                   : iowait_read(stream->waiter);
         if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
@@ -284,7 +288,12 @@ int stream_try_read(
     int ret = -1;
     *again  = false;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)
+        && !atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
+        if (iowait_read_deadline_expired(stream->waiter)) {
+            _stream_unref(stream);
+            return ret;
+        }
         ssize_t n = platform_socket_recv(stream->fd, buf, len);
         if (n >= 0) {
             ret = (int)n;
@@ -347,6 +356,9 @@ int stream_write(stream_t* stream, const void* data, int len) {
         int         rem = len;
 
         while (rem > 0) {
+            if (iowait_write_deadline_expired(stream->waiter)) {
+                break;
+            }
             ssize_t n = platform_socket_send(stream->fd, ptr, rem);
             if (n > 0) {
                 ptr += n;
@@ -390,6 +402,10 @@ int stream_try_write(
     *again  = false;
 
     if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        if (iowait_write_deadline_expired(stream->waiter)) {
+            _stream_unref(stream);
+            return ret;
+        }
         ssize_t n = platform_socket_send(stream->fd, data, len);
         if (n > 0) {
             ret = (int)n;
@@ -457,7 +473,11 @@ int stream_shutdown_wr(stream_t* stream) {
 }
 
 int stream_shutdown_rd(stream_t* stream) {
-    return shutdown(stream->fd, PLATFORM_SHUT_RD) == 0 ? 0 : -1;
+    if (shutdown(stream->fd, PLATFORM_SHUT_RD) != 0) {
+        return -1;
+    }
+    atomic_store_explicit(&stream->rd_shutdown, true, memory_order_release);
+    return 0;
 }
 
 platform_sock_t stream_fd(stream_t* stream) {

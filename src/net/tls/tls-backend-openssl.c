@@ -911,11 +911,9 @@ static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
                            ? ERR_reason_error_string(e) : "unknown");
             /**
              * Drain the queue on the error path so it is empty again for
-             * the next op. This is what lets the hot read/write paths skip
-             * the per-call ERR_clear_error: a successful SSL_read/SSL_write
-             * adds nothing to the queue, and WANT_READ/WANT_WRITE are
-             * decided from the SSL rwstate (not the queue), so the only way
-             * to leave a stale entry is a real error -- cleared right here.
+             * the next op. Read/write still clear before entry because the
+             * thread-local queue may contain errors from unrelated OpenSSL
+             * calls made on the same thread.
              */
             ERR_clear_error();
             return TLS_BACKEND_ERROR;
@@ -934,11 +932,7 @@ tls_backend_state_t tls_backend_conn_read(
     void*               buf,
     int                 len,
     int*                out_n) {
-    /**
-     * No ERR_clear_error here: _tlsb_state drains the queue on the error
-     * path, so it is already empty on entry (see _tlsb_state). Skipping the
-     * per-call clear is a large win on small-record workloads.
-     */
+    ERR_clear_error();
     int n = SSL_read(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;
@@ -953,10 +947,7 @@ tls_backend_state_t tls_backend_conn_write(
     const void*         buf,
     int                 len,
     int*                out_n) {
-    /**
-     * See tls_backend_conn_read: the error queue is kept empty by the error
-     * path, so the hot write path skips the per-call ERR_clear_error.
-     */
+    ERR_clear_error();
     int n = SSL_write(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;

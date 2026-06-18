@@ -73,6 +73,8 @@ struct tls_conn_s {
     tls_ctx_t*          ctx;
     char                alpn[32];
     uint64_t            hs_timeout_ms;  /* copied from ln->opts at accept */
+    _Atomic uint64_t    rd_deadline;
+    _Atomic uint64_t    wr_deadline;
     _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
     _Atomic int32_t     refcnt;
     _Atomic bool        closed;

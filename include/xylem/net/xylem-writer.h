@@ -73,6 +73,8 @@ extern void xylem_writer_destroy(xylem_writer_t* wr);
  * Small writes are buffered. When the buffer is full it is
  * flushed automatically. Writes larger than the buffer
  * bypass it entirely (after flushing pending data).
+ * A writer has a single logical owner; concurrent calls on the same
+ * writer are not supported.
  *
  * @param wr    Writer handle.
  * @param data  Source buffer.
@@ -91,6 +93,8 @@ extern int xylem_writer_write(
  * @note [COROUTINE-ONLY]
  *
  * No-op if the buffer is empty.
+ * A writer has a single logical owner; concurrent calls on the same
+ * writer are not supported.
  *
  * @param wr  Writer handle.
  *

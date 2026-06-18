@@ -117,6 +117,29 @@ extern void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms);
 extern void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms);
 
 /**
+ * @brief Check whether the read deadline has expired.
+ *
+ * This is for non-blocking transport fast paths that attempt a socket
+ * operation before parking in iowait_read().
+ *
+ * @param w  IO wait handle.
+ *
+ * @return true when the read deadline is set and already expired.
+ */
+extern bool iowait_read_deadline_expired(iowait_t* w);
+
+/**
+ * @brief Check whether the write deadline has expired.
+ *
+ * Mirror of iowait_read_deadline_expired for write fast paths.
+ *
+ * @param w  IO wait handle.
+ *
+ * @return true when the write deadline is set and already expired.
+ */
+extern bool iowait_write_deadline_expired(iowait_t* w);
+
+/**
  * @brief Suspend the calling coroutine until the fd is readable.
  *
  * Arms the fd on the scheduler's poller and yields. The coroutine

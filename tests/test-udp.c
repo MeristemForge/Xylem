@@ -278,6 +278,75 @@ static void test_connected_addr(void) {
     xylem_run(_timeout_main, &ctx, NULL);
 }
 
+static void _expired_recv_sender(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+    ASSERT(xylem_udp_send(udp, "late", 4, NULL, 0) == 0);
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _expired_recv_receiver(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_sleep(50);
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
+    xylem_udp_set_read_deadline(udp, deadline);
+
+    char buf[64];
+    ASSERT(xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL) == -1);
+
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_expired_read_deadline_blocks_ready_datagram(void) {
+    _run_pair((_ctx_t){
+        .port_a = UDP_PORT_A + 12,
+        .server = _expired_recv_receiver,
+        .client = _expired_recv_sender,
+    });
+}
+
+static void _expired_send_peer(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+    xylem_sleep(100);
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _expired_send_coro(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
+    xylem_udp_set_write_deadline(udp, deadline);
+    ASSERT(xylem_udp_send(udp, "late", 4, NULL, 0) == -1);
+
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_expired_write_deadline_blocks_ready_datagram(void) {
+    _run_pair((_ctx_t){
+        .port_a = UDP_PORT_A + 14,
+        .server = _expired_send_peer,
+        .client = _expired_send_coro,
+    });
+}
+
 int main(void) {
     test_echo();
     test_recvfrom_addr();
@@ -285,5 +354,7 @@ int main(void) {
     test_close_wakes_recv();
     test_datagram_boundary();
     test_connected_addr();
+    test_expired_read_deadline_blocks_ready_datagram();
+    test_expired_write_deadline_blocks_ready_datagram();
     return 0;
 }

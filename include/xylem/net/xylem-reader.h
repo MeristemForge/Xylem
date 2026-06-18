@@ -71,6 +71,8 @@ extern void xylem_reader_destroy(xylem_reader_t* rd);
  *
  * Returns available buffered data first. If the buffer is empty,
  * performs one read from the underlying transport.
+ * A reader has a single logical owner; concurrent calls on the same
+ * reader are not supported.
  *
  * @param rd   Reader handle.
  * @param buf  Destination buffer.
@@ -90,6 +92,8 @@ extern int xylem_reader_read(
  *
  * Drains internal buffer first, then calls read_fn repeatedly
  * until len bytes are filled, EOF, or error.
+ * A reader has a single logical owner; concurrent calls on the same
+ * reader are not supported.
  *
  * @param rd   Reader handle.
  * @param buf  Destination buffer.
@@ -111,6 +115,8 @@ extern int xylem_reader_read_full(
  * Scans for delim in the stream. The output includes the
  * delimiter byte. Returns -1 if len bytes are consumed
  * without finding the delimiter.
+ * A reader has a single logical owner; concurrent calls on the same
+ * reader are not supported.
  *
  * @param rd     Reader handle.
  * @param delim  Delimiter byte to search for.
@@ -136,6 +142,8 @@ extern int xylem_reader_read_until(
  * Ensures the internal buffer contains at least len bytes
  * (reading from transport if needed). The peeked bytes
  * remain available for subsequent read calls.
+ * A reader has a single logical owner; concurrent calls on the same
+ * reader are not supported.
  *
  * @param rd   Reader handle.
  * @param buf  Destination buffer.

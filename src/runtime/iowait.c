@@ -593,6 +593,9 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     if (_iowait_deadline_error(d, memory_order_acquire)) {
         return IOWAIT_ERROR;
     }
+    if (_iowait_deadline_expired(d, memory_order_acquire)) {
+        return IOWAIT_TIMEOUT;
+    }
 
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         atomic_store_explicit(
@@ -604,14 +607,14 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     }
 
     for (;;) {
-        if (_iowait_take_ready(d)) {
-            return IOWAIT_READY;
+        if (_iowait_deadline_error(d, memory_order_acquire)) {
+            return IOWAIT_ERROR;
         }
         if (_iowait_deadline_expired(d, memory_order_acquire)) {
             return IOWAIT_TIMEOUT;
         }
-        if (_iowait_deadline_error(d, memory_order_acquire)) {
-            return IOWAIT_ERROR;
+        if (_iowait_take_ready(d)) {
+            return IOWAIT_READY;
         }
 
         atomic_store_explicit(
@@ -714,6 +717,14 @@ void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms) {
 
 void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms) {
     _iowait_set_deadline(&w->wr, deadline_ms);
+}
+
+bool iowait_read_deadline_expired(iowait_t* w) {
+    return _iowait_deadline_expired(&w->rd, memory_order_acquire);
+}
+
+bool iowait_write_deadline_expired(iowait_t* w) {
+    return _iowait_deadline_expired(&w->wr, memory_order_acquire);
 }
 
 iowait_result_t iowait_read(iowait_t* w) {

@@ -345,6 +345,8 @@ extern void xylem_tls_set_write_deadline(
  * Returns available plaintext data. Suspends the calling coroutine
  * if no data is immediately available. At most len bytes are
  * returned; the actual count may be less.
+ * At most one coroutine may be blocked in read on a connection
+ * at a time; a concurrent second reader aborts.
  *
  * @param tls  Connection handle.
  * @param buf  Destination buffer.
@@ -364,6 +366,8 @@ extern int xylem_tls_read(
  *
  * Encrypts and loops internally until all len bytes are sent or
  * an error occurs. Suspends the calling coroutine as needed.
+ * At most one coroutine may be blocked in write on a connection
+ * at a time; a concurrent second writer aborts.
  *
  * @param tls   Connection handle.
  * @param data  Source buffer.

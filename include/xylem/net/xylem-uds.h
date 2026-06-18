@@ -48,6 +48,9 @@ extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
  * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until a client connects.
+ * Call from a single coroutine per listener; a concurrent second
+ * accept on the same listener violates the underlying iowait
+ * single-waiter contract and aborts.
  *
  * @param ln  Listener handle.
  *
@@ -122,6 +125,8 @@ extern void xylem_uds_set_write_deadline(
  * Returns available data from the socket. Suspends the calling
  * coroutine if no data is immediately available. At most len
  * bytes are returned; the actual count may be less.
+ * At most one coroutine may be blocked in read on a connection
+ * at a time; a concurrent second reader aborts.
  *
  * @param uds  Connection handle.
  * @param buf  Destination buffer.
@@ -141,6 +146,8 @@ extern int xylem_uds_read(
  *
  * Loops internally until all len bytes are sent or an error
  * occurs. Suspends the calling coroutine as needed.
+ * At most one coroutine may be blocked in write on a connection
+ * at a time; a concurrent second writer aborts.
  *
  * @param uds   Connection handle.
  * @param data  Source buffer.

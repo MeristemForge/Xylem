@@ -115,8 +115,15 @@ static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
 
 /* Apply the same deadline to both stream directions (0 clears it). */
 static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
+    atomic_store_explicit(&tls->rd_deadline, deadline, memory_order_release);
+    atomic_store_explicit(&tls->wr_deadline, deadline, memory_order_release);
     stream_set_read_deadline(tls->stream, deadline);
     stream_set_write_deadline(tls->stream, deadline);
+}
+
+static bool _tls_deadline_expired(_Atomic uint64_t* deadline) {
+    uint64_t d = atomic_load_explicit(deadline, memory_order_acquire);
+    return d > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= d;
 }
 
 /**
@@ -253,6 +260,10 @@ static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
     int ret = -1;
 
     for (;;) {
+        if (_tls_deadline_expired(&tls->rd_deadline)) {
+            goto done;
+        }
+
         int n = 0;
         xylem_mutex_lock(tls->ssl_mu);
         tls_backend_state_t st = tls_backend_conn_read(tls->be, buf, len, &n);
@@ -299,6 +310,10 @@ static int _tls_write_loop(
 
     xylem_mutex_lock(tls->wr_mu);
     while (rem > 0) {
+        if (_tls_deadline_expired(&tls->wr_deadline)) {
+            goto done;
+        }
+
         int chunk = rem < TLS_MAX_PLAINTEXT ? rem : TLS_MAX_PLAINTEXT;
         int n     = 0;
         xylem_mutex_lock(tls->ssl_mu);
@@ -688,6 +703,8 @@ int tls_handshake(tls_conn_t* tls) {
 void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     _tls_conn_ref(tls);
     if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        atomic_store_explicit(
+            &tls->rd_deadline, deadline_ms, memory_order_release);
         stream_set_read_deadline(tls->stream, deadline_ms);
     }
     _tls_conn_unref(tls);
@@ -696,6 +713,8 @@ void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
 void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     _tls_conn_ref(tls);
     if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        atomic_store_explicit(
+            &tls->wr_deadline, deadline_ms, memory_order_release);
         stream_set_write_deadline(tls->stream, deadline_ms);
     }
     _tls_conn_unref(tls);
