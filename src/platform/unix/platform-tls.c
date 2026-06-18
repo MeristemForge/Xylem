@@ -19,15 +19,16 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-tls.h"
 
-#include "platform-cpu.h"
-#include "platform-futex.h"
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-tls.h"
-#include "platform-vmem.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+platform_tls_ca_store_t platform_tls_ca_store(void) {
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+    return PLATFORM_TLS_CA_STORE_NONE;
+#else
+    return PLATFORM_TLS_CA_STORE_DEFAULT_PATHS;
+#endif
+}

@@ -317,8 +317,10 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
 
         /* Publish self, then re-check for a send/close racing the pop. */
         atomic_store_explicit(&ch->waiter, &w, memory_order_release);
-        /* StoreLoad barrier vs a sender's seq_cst push+exchange; see the
-         * matching fence in _channel_park_cb for the lost-wakeup it closes. */
+        /**
+         * StoreLoad barrier vs a sender's seq_cst push+exchange; see the
+         * matching fence in _channel_park_cb for the lost-wakeup it closes.
+         */
         atomic_thread_fence(memory_order_seq_cst);
         if (atomic_load_explicit(&ch->closed, memory_order_acquire)
             || !mpsc_empty(&ch->queue)) {

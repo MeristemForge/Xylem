@@ -51,8 +51,10 @@ void spsc_deinit(spsc_t* q) {
 }
 
 int spsc_push(spsc_t* q, void* elem) {
-    /* NULL is the "empty" marker returned by pop; reject it so a queued
-     * element is never mistaken for an empty ring. */
+    /**
+     * NULL is the "empty" marker returned by pop; reject it so a queued
+     * element is never mistaken for an empty ring.
+     */
     if (elem == NULL) {
         return -1;
     }

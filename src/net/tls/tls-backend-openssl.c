@@ -27,6 +27,7 @@
 #include "platform/platform-io.h"
 #include "platform/platform-socket.h"
 #include "platform/platform-string.h"
+#include "platform/platform-tls.h"
 #include "xylem/xylem-threads.h"
 
 #include <openssl/bio.h>
@@ -641,22 +642,19 @@ int tls_backend_ctx_load_ca_file(tls_backend_ctx_t* ctx, const char* ca_file) {
  *   - Android / iOS: the CAs live behind the Java KeyStore /
  *     Security.framework, not on a path OpenSSL can load -> false.
  *
- * Order matters: __ANDROID__ implies __linux__ under the NDK, so the
- * mobile branch must precede the generic Unix branch.
+ * Platform conditionals live behind platform_tls_ca_store.
  */
 static bool _tlsb_load_native_system_ca(tls_backend_ctx_t* ctx) {
-#if defined(__APPLE__)
-#include <TargetConditionals.h>
-#endif
-#if defined(_WIN32)
-    return SSL_CTX_load_verify_store(ctx->ssl_ctx,
-                                     "org.openssl.winstore://") == 1;
-#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
-    (void)ctx;
-    return false;
-#else
-    return SSL_CTX_set_default_verify_paths(ctx->ssl_ctx) == 1;
-#endif
+    switch (platform_tls_ca_store()) {
+    case PLATFORM_TLS_CA_STORE_NATIVE_WINDOWS:
+        return SSL_CTX_load_verify_store(ctx->ssl_ctx,
+                                         "org.openssl.winstore://") == 1;
+    case PLATFORM_TLS_CA_STORE_DEFAULT_PATHS:
+        return SSL_CTX_set_default_verify_paths(ctx->ssl_ctx) == 1;
+    case PLATFORM_TLS_CA_STORE_NONE:
+    default:
+        return false;
+    }
 }
 
 /**
@@ -936,9 +934,11 @@ tls_backend_state_t tls_backend_conn_read(
     void*               buf,
     int                 len,
     int*                out_n) {
-    /* No ERR_clear_error here: _tlsb_state drains the queue on the error
+    /**
+     * No ERR_clear_error here: _tlsb_state drains the queue on the error
      * path, so it is already empty on entry (see _tlsb_state). Skipping the
-     * per-call clear is a large win on small-record workloads. */
+     * per-call clear is a large win on small-record workloads.
+     */
     int n = SSL_read(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;
@@ -953,8 +953,10 @@ tls_backend_state_t tls_backend_conn_write(
     const void*         buf,
     int                 len,
     int*                out_n) {
-    /* See tls_backend_conn_read: the error queue is kept empty by the error
-     * path, so the hot write path skips the per-call ERR_clear_error. */
+    /**
+     * See tls_backend_conn_read: the error queue is kept empty by the error
+     * path, so the hot write path skips the per-call ERR_clear_error.
+     */
     int n = SSL_write(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;

@@ -21,13 +21,15 @@
 
 _Pragma("once")
 
-#include "platform-cpu.h"
-#include "platform-futex.h"
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-tls.h"
-#include "platform-vmem.h"
+typedef enum platform_tls_ca_store_e {
+    PLATFORM_TLS_CA_STORE_NONE,
+    PLATFORM_TLS_CA_STORE_DEFAULT_PATHS,
+    PLATFORM_TLS_CA_STORE_NATIVE_WINDOWS,
+} platform_tls_ca_store_t;
+
+/**
+ * @brief Get the platform system CA store kind.
+ *
+ * @return System CA store kind supported by this platform.
+ */
+extern platform_tls_ca_store_t platform_tls_ca_store(void);

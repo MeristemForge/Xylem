@@ -71,9 +71,11 @@ void xylem_sleep(uint64_t ms) {
         return;
     }
 
-    /* Plain OS thread: block the thread for the requested duration.
+    /**
+     * Plain OS thread: block the thread for the requested duration.
      * nanosleep/thrd_sleep may return early on a signal (EINTR); keep
-     * sleeping for the remainder so the full duration is observed. */
+     * sleeping for the remainder so the full duration is observed.
+     */
     struct timespec req = {
         .tv_sec  = (time_t)(ms / 1000u),
         .tv_nsec = (long)((ms % 1000u) * 1000000u),

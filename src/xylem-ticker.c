@@ -69,8 +69,10 @@ static void _ticker_unref(xylem_ticker_t* t) {
     free(t);
 }
 
-/* ud-guard adapters: the scheduler pins the ticker across a fire via
- * these, see _ticker_tick_cb and xylem_ticker_create. */
+/**
+ * ud-guard adapters: the scheduler pins the ticker across a fire via
+ * these, see _ticker_tick_cb and xylem_ticker_create.
+ */
 static void _ticker_ud_ref(void* ud) {
     _ticker_ref((xylem_ticker_t*)ud);
 }

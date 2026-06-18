@@ -111,11 +111,23 @@ extern void runtime_yield_credit(void);
  */
 extern int runtime_submit(void (*fn)(void*), void* arg);
 
-/** @brief Get the global scheduler instance. */
+/**
+ * @brief Get the global scheduler instance.
+ *
+ * @return Global scheduler handle.
+ */
 extern scheduler_t* runtime_get_scheduler(void);
 
-/** @brief Get the global I/O poller instance. */
+/**
+ * @brief Get the global I/O poller instance.
+ *
+ * @return Global poller handle.
+ */
 extern platform_poller_sq_t* runtime_get_poller(void);
 
-/** @brief Get the global dynamic thread pool instance. */
+/**
+ * @brief Get the global dynamic thread pool instance.
+ *
+ * @return Global dynamic thread pool handle.
+ */
 extern dynpool_t* runtime_get_dynpool(void);

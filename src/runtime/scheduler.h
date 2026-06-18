@@ -310,7 +310,12 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
  */
 extern scheduler_timer_t* scheduler_timer_create(scheduler_t* sched);
 
-/** @brief Set whether the timer callback runs in a spawned coroutine. */
+/**
+ * @brief Set whether the timer callback runs in a spawned coroutine.
+ *
+ * @param timer  Timer handle.
+ * @param spawn  true to run the callback in a coroutine, false to run inline.
+ */
 extern void scheduler_timer_set_spawn(scheduler_timer_t* timer, bool spawn);
 
 /**
