@@ -35,7 +35,8 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  * @note [THREAD-SAFE]
  *
  * The handle must be released with xylem_timer_cancel(), even after
- * the callback has fired.
+ * the callback has fired. Timer APIs must not be called from external
+ * OS threads after xylem_shutdown() has been called.
  *
  * @param delay_ms  Delay in milliseconds.
  * @param cb        Callback to invoke on expiry.

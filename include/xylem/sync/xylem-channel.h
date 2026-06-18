@@ -46,6 +46,13 @@ typedef struct xylem_channel_s xylem_channel_t;
  *   - create(), destroy() must be called from inside a coroutine
  *     (coroutine-only; they abort otherwise). close() is any-context.
  *
+ * Lifetime:
+ *   - This object may wake coroutine waiters through the runtime
+ *     scheduler. External OS threads must not call channel APIs after
+ *     xylem_shutdown() has been called. Stop and join those threads
+ *     before shutdown, or make sure they touch no channel once shutdown
+ *     begins.
+ *
  * Capacity:
  *   - create(0) makes an unbounded channel: send never reports full
  *     (it always queues, barring OOM).

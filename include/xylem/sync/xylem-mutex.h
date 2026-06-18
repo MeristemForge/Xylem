@@ -44,6 +44,13 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     never block. A coroutine waiter is woken by the scheduler; a
  *     thread waiter by its OS semaphore. Coroutine and thread waiters
  *     may queue on the same mutex and notify each other.
+ *
+ * Lifetime:
+ *   - This object may wake coroutine waiters through the runtime
+ *     scheduler. External OS threads must not call mutex APIs after
+ *     xylem_shutdown() has been called. Stop and join those threads
+ *     before shutdown, or make sure they touch no mutex once shutdown
+ *     begins.
  */
 
 /**

@@ -109,6 +109,12 @@ extern void xylem_run(
  *
  * Unblocks xylem_run() without waiting for coroutines
  * to finish naturally.
+ *
+ * After shutdown is requested, external OS threads must not keep using
+ * runtime-backed objects such as channels, mutexes, conds, semaphores,
+ * waitgroups, timers, or tickers. Stop and join those threads before
+ * calling xylem_shutdown(), or make sure they return without touching
+ * Xylem objects once shutdown begins.
  */
 extern void xylem_shutdown(void);
 

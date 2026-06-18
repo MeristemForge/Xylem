@@ -58,6 +58,13 @@ typedef struct xylem_sem_s xylem_sem_t;
  *
  * A coroutine waiter requires a running scheduler (it is woken via the
  * scheduler it was parked on); a thread waiter needs no runtime.
+ *
+ * Lifetime:
+ *   - This object may wake coroutine waiters through the runtime
+ *     scheduler. External OS threads must not call semaphore APIs after
+ *     xylem_shutdown() has been called. Stop and join those threads
+ *     before shutdown, or make sure they touch no semaphore once
+ *     shutdown begins.
  */
 
 /**

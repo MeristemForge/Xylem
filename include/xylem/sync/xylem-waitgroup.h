@@ -47,6 +47,13 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  *   - done() called more times than add() has ever promised
  *     (counter underflow). Matches Go's "negative WaitGroup counter"
  *     panic.
+ *
+ * Lifetime:
+ *   - This object may wake coroutine waiters through the runtime
+ *     scheduler. External OS threads must not call waitgroup APIs after
+ *     xylem_shutdown() has been called. Stop and join those threads
+ *     before shutdown, or make sure they touch no waitgroup once
+ *     shutdown begins.
  */
 
 /**

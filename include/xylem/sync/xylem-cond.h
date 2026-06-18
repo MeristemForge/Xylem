@@ -66,6 +66,13 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * standard lost-wakeup-free ordering. An external thread that cannot
  * take the mutex must avoid lost wakeups out of band: set an atomic
  * predicate flag *before* calling signal()/broadcast().
+ *
+ * Lifetime:
+ *   - This object may wake coroutine waiters through the runtime
+ *     scheduler. External OS threads must not call cond APIs after
+ *     xylem_shutdown() has been called. Stop and join those threads
+ *     before shutdown, or make sure they touch no cond once shutdown
+ *     begins.
  */
 
 /**

@@ -46,6 +46,12 @@ _Pragma("once")
  *     produced by a scheduler timer.
  *   - xylem_ticker_destroy() is callable from any thread or context;
  *     it is idempotent and safe to call once from the consumer side.
+ *
+ * Lifetime:
+ *   - The ticker is driven by the runtime scheduler. External OS
+ *     threads must not call ticker APIs after xylem_shutdown() has
+ *     been called. Stop and join those threads before shutdown, or
+ *     make sure they touch no ticker once shutdown begins.
  */
 typedef struct xylem_ticker_s xylem_ticker_t;
 
