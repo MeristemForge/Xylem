@@ -50,7 +50,11 @@ xylem_timer_t* xylem_timer_after(
         return NULL;
     }
     scheduler_timer_set_spawn(t, true);
-    scheduler_timer_start(t, (scheduler_timer_fn_t)cb, ud, delay_ms, 0);
+    if (scheduler_timer_start(
+            t, (scheduler_timer_fn_t)cb, ud, delay_ms, 0) != 0) {
+        scheduler_timer_destroy(t);
+        return NULL;
+    }
     return (xylem_timer_t*)t;
 }
 

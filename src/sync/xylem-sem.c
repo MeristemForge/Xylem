@@ -236,7 +236,15 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
     if (!w->armed) {
         w->armed = true;
         _sem_co_ref(w); /* timer ref: released by the cb, or by us on stop() */
-        scheduler_timer_start(w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0);
+        if (scheduler_timer_start(
+                w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0) != 0) {
+            list_remove(&s->co_waiters, &w->base.node);
+            w->armed = false;
+            atomic_store_explicit(&w->timed_out, true, memory_order_release);
+            _sem_co_unref(w);
+            spin_unlock(&s->guard);
+            return false;
+        }
     }
     spin_unlock(&s->guard);
     return true;

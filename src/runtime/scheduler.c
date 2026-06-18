@@ -210,6 +210,11 @@ static inline _sched_worker_t* _sched_timer_owner_worker(
     return &timer->sched->workers[timer->owner];
 }
 
+static inline bool _sched_is_running(scheduler_t* sched) {
+    return sched
+        && atomic_load_explicit(&sched->running, memory_order_acquire);
+}
+
 static bool _sched_claim_for_wake(mco_coro* co);
 static void _sched_enqueue(scheduler_t* sched, mco_coro* co);
 
@@ -1024,19 +1029,6 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
     _sched_coro_handle_yield(w, co);
 }
 
-static void _sched_worker_drain(_sched_worker_t* w, scheduler_t* sched) {
-    for (;;) {
-        mco_coro* co = _sched_worker_pop_coro(sched, w);
-        if (!co) {
-            co = _sched_worker_steal_coro(sched, w);
-        }
-        if (!co) {
-            break;
-        }
-        _sched_run_coro(w, co);
-    }
-}
-
 static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     _sched_timer_process(w, now);
@@ -1077,6 +1069,9 @@ static mco_coro* _sched_worker_drive_poller(
         _sched_search_stop(sched, w, false);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         _sched_poller_set_waiting(sched, false);
+        if (!atomic_load(&sched->running)) {
+            break;
+        }
         co = n > 0 ? _sched_io_process_events(sched, w, cqes, n) : NULL;
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -1182,7 +1177,6 @@ static int _sched_worker_entry_cb(void* arg) {
         }
     }
 
-    _sched_worker_drain(w, sched);
     return 0;
 }
 
@@ -1200,6 +1194,8 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
             }
             sched->joined = true;
         }
+
+        _sched_posts_drain(sched);
 
         /* iowait timers call scheduler_timer_stop which takes timer_lock. */
         iowait_slab_destroy(sched->iowait_slab);
@@ -1237,8 +1233,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     if (sched->runq) {
         runq_destroy(sched->runq);
     }
-
-    _sched_posts_drain(sched);
 
     if (_sched_wakeup_is_valid(sched)) {
         platform_poller_del(&sched->poller, &sched->wakeup_sqe);
@@ -1419,6 +1413,11 @@ void scheduler_stop(scheduler_t* sched) {
         platform_sem_post(sched->workers[i].sem);
         _sched_poller_wake(sched);
     }
+
+    if (_tls_worker && _tls_worker->sched == sched) {
+        return;
+    }
+
     for (int32_t i = 0; i < sched->worker_count; i++) {
         thrd_join(sched->workers[i].thread, NULL);
     }
@@ -1509,6 +1508,9 @@ static bool _sched_claim_for_wake(mco_coro* co) {
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
+    if (!_sched_is_running(sched)) {
+        return;
+    }
     if (_sched_claim_for_wake(co)) {
         _sched_enqueue(sched, co);
     }
@@ -1516,7 +1518,7 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
 
 void scheduler_schedule_batch(
     scheduler_t* sched, mco_coro** cos, int32_t n) {
-    if (n <= 0) {
+    if (n <= 0 || !_sched_is_running(sched)) {
         return;
     }
 
@@ -1571,6 +1573,10 @@ void scheduler_schedule_batch(
 }
 
 int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
+    if (!_sched_is_running(sched)) {
+        return -1;
+    }
+
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)calloc(1, sizeof(_sched_coro_ctx_t));
     if (!ctx) {
         return -1;
@@ -1588,6 +1594,12 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 
     mco_coro* co = NULL;
     if (mco_create(&co, &desc) != MCO_SUCCESS) {
+        free(ctx);
+        return -1;
+    }
+
+    if (!_sched_is_running(sched)) {
+        mco_destroy(co);
         free(ctx);
         return -1;
     }
@@ -1674,12 +1686,20 @@ iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched) {
 
 int scheduler_post(
     scheduler_t* sched, scheduler_post_fn_t cb, void* ud) {
+    if (!_sched_is_running(sched)) {
+        return -1;
+    }
+
     _sched_post_t* req = (_sched_post_t*)calloc(1, sizeof(*req));
     if (!req) {
         return -1;
     }
     req->cb = cb;
     req->ud = ud;
+    if (!_sched_is_running(sched)) {
+        free(req);
+        return -1;
+    }
     mpsc_push(&sched->posts, &req->node);
     _sched_wake_worker(sched);
     return 0;
@@ -1722,12 +1742,19 @@ void scheduler_timer_destroy(scheduler_timer_t* timer) {
     _sched_timer_unref(timer);
 }
 
-void scheduler_timer_start(
+int scheduler_timer_start(
     scheduler_timer_t*   timer,
     scheduler_timer_fn_t cb,
     void*            ud,
     uint64_t         timeout_ms,
     uint64_t         repeat_ms) {
+    if (!timer || !_sched_is_running(timer->sched)) {
+        return -1;
+    }
+    if (timer->spawn && repeat_ms > 0) {
+        return -1;
+    }
+
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = _sched_timer_owner_worker(timer);
@@ -1752,6 +1779,7 @@ void scheduler_timer_start(
             &timer->sched->poller_waiting, memory_order_seq_cst)) {
         _sched_poller_wake(timer->sched);
     }
+    return 0;
 }
 
 bool scheduler_timer_stop(scheduler_timer_t* timer) {
@@ -1770,6 +1798,13 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
 }
 
 bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
+    if (!timer || !_sched_is_running(timer->sched)) {
+        return false;
+    }
+    if (timer->spawn && timer->repeat != 0) {
+        return false;
+    }
+
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = _sched_timer_owner_worker(timer);

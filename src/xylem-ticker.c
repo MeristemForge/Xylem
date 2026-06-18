@@ -150,7 +150,13 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
 
     /* Native repeat on the inline path; repeat+spawn could overlap cbs. */
     scheduler_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
-    scheduler_timer_start(t->timer, _ticker_tick_cb, t, interval_ms, interval_ms);
+    if (scheduler_timer_start(
+            t->timer, _ticker_tick_cb, t, interval_ms, interval_ms) != 0) {
+        scheduler_timer_destroy(t->timer);
+        xylem_sem_destroy(t->sem);
+        free(t);
+        return NULL;
+    }
 
     return t;
 }

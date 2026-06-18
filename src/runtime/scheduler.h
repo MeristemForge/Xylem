@@ -133,8 +133,8 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
 /**
  * @brief Destroy the scheduler, joining all workers.
  *
- * Signals shutdown, wakes all workers, waits for them to drain
- * their queues, then frees all resources.
+ * Signals shutdown, wakes all workers, waits for them to stop,
+ * then frees all resources.
  *
  * @param sched  Scheduler to destroy, or NULL (no-op).
  */
@@ -343,15 +343,23 @@ extern void scheduler_timer_set_ud_guard(
 extern void scheduler_timer_destroy(scheduler_timer_t* timer);
 
 /**
- * @brief Start or restart a timer. Thread-safe.
+ * @brief Start an inactive timer. Thread-safe.
+ *
+ * The timer must not already be active. Use scheduler_timer_reset()
+ * to move an active timer to a new deadline while preserving cb/ud.
+ * Spawned callbacks are supported only for one-shot timers; repeat
+ * timers must run inline to avoid overlapping callback executions.
  *
  * @param timer       Timer handle.
  * @param cb          Callback to invoke on expiry.
  * @param ud          User data for callback.
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
+ *
+ * @return 0 on success, -1 if the scheduler is stopping, stopped,
+ *         or the timer requests repeat + spawn.
  */
-extern void scheduler_timer_start(
+extern int scheduler_timer_start(
     scheduler_timer_t*   timer,
     scheduler_timer_fn_t cb,
     void*            ud,

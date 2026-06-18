@@ -530,7 +530,9 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
 
     _iowait_ref(d->w);
-    scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
+    if (scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0) != 0) {
+        _iowait_unref(d->w);
+    }
 }
 
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {

@@ -244,8 +244,15 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
             if (ch->deadline_timer) {
                 /* Ref for the timer cb; balanced by it, or by us on stop(). */
                 _channel_ref(ch);
-                scheduler_timer_start(ch->deadline_timer, _channel_timeout_cb,
-                                  ch, deadline_ms - now, 0);
+                if (scheduler_timer_start(
+                        ch->deadline_timer,
+                        _channel_timeout_cb,
+                        ch,
+                        deadline_ms - now,
+                        0) != 0) {
+                    _channel_unref(ch);
+                    break;
+                }
             }
         }
 
