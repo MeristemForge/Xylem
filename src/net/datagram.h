@@ -23,18 +23,13 @@ _Pragma("once")
 
 #include "net/addr.h"
 #include "platform/platform-socket.h"
+#include "runtime/iowait.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct datagram_s datagram_t;
-
-typedef enum datagram_wait_e {
-    DATAGRAM_WAIT_READY,
-    DATAGRAM_WAIT_TIMEOUT,
-    DATAGRAM_WAIT_CLOSED,
-} datagram_wait_t;
 
 /**
  * @brief Wrap an already opened datagram fd.
@@ -145,18 +140,18 @@ extern int datagram_try_recv(
  *
  * @param datagram  Datagram handle.
  *
- * @return 0 when ready, -1 on close or timeout.
+ * @return 0 when ready, -1 on close, timeout, or poller error.
  */
 extern int datagram_wait_read(datagram_t* datagram);
 
 /**
- * @brief Wait for read readiness and report timeout separately.
+ * @brief Wait for read readiness and report the reason separately.
  *
  * @param datagram  Datagram handle.
  *
  * @return Readiness result.
  */
-extern datagram_wait_t datagram_wait_read_result(datagram_t* datagram);
+extern iowait_result_t datagram_wait_read_result(datagram_t* datagram);
 
 /**
  * @brief Send one datagram.
@@ -200,18 +195,18 @@ extern int datagram_try_send(
  *
  * @param datagram  Datagram handle.
  *
- * @return 0 when ready, -1 on close or timeout.
+ * @return 0 when ready, -1 on close, timeout, or poller error.
  */
 extern int datagram_wait_write(datagram_t* datagram);
 
 /**
- * @brief Wait for write readiness and report timeout separately.
+ * @brief Wait for write readiness and report the reason separately.
  *
  * @param datagram  Datagram handle.
  *
  * @return Readiness result.
  */
-extern datagram_wait_t datagram_wait_write_result(datagram_t* datagram);
+extern iowait_result_t datagram_wait_write_result(datagram_t* datagram);
 
 /**
  * @brief Get the datagram endpoint's local address.

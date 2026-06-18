@@ -56,11 +56,19 @@ _Static_assert(
 
 typedef struct _iowait_dir_s _iowait_dir_t;
 
+typedef enum _iowait_arm_status_e {
+    IOWAIT_ARM_OK,
+    IOWAIT_ARM_CLOSED,
+    IOWAIT_ARM_ERROR,
+} _iowait_arm_status_t;
+
 struct _iowait_dir_s {
     iowait_t*          w;
     _Atomic uintptr_t  state;
     scheduler_timer_t* timer;
     _Atomic uint64_t   deadline;
+    _Atomic bool       deadline_error;
+    _Atomic int        result;
 };
 
 struct iowait_s {
@@ -321,7 +329,7 @@ static bool _iowait_et_registered_rw(iowait_t* w) {
         == PLATFORM_POLLER_RW_OP;
 }
 
-static void _iowait_sync_interest_locked(
+static int _iowait_sync_interest_locked(
     iowait_t*            w,
     platform_poller_op_t op) {
     platform_poller_op_t current = (platform_poller_op_t)
@@ -331,7 +339,7 @@ static void _iowait_sync_interest_locked(
 
     if (current == op) {
         w->sqe.op = op;
-        return;
+        return 0;
     }
 
     w->sqe.op = op;
@@ -343,32 +351,33 @@ static void _iowait_sync_interest_locked(
         atomic_store_explicit(&w->registered, false, memory_order_release);
         atomic_store_explicit(
             &w->interest, PLATFORM_POLLER_NO_OP, memory_order_release);
-        return;
+        return 0;
     }
 
     if (!registered) {
         if (platform_poller_add(w->poller, &w->sqe) != 0) {
-            return;
+            return -1;
         }
         atomic_store_explicit(&w->registered, true, memory_order_release);
         atomic_store_explicit(&w->interest, op, memory_order_release);
-        return;
+        return 0;
     }
 
     if (platform_poller_mod(w->poller, &w->sqe) != 0) {
-        return;
+        return -1;
     }
     atomic_store_explicit(&w->interest, op, memory_order_release);
+    return 0;
 }
 
 /* ET pollers stay registered RD|WR; one-shot pollers arm parked directions. */
-static void _iowait_arm(iowait_t* w) {
+static _iowait_arm_status_t _iowait_arm(iowait_t* w) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-        return;
+        return IOWAIT_ARM_CLOSED;
     }
 
     if (_iowait_et_registered_rw(w)) {
-        return;
+        return IOWAIT_ARM_OK;
     }
 
     mtx_lock(&w->arm_lock);
@@ -376,22 +385,34 @@ static void _iowait_arm(iowait_t* w) {
     /* Re-check under the lock: iowait_close may have raced in. */
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         mtx_unlock(&w->arm_lock);
-        return;
+        return IOWAIT_ARM_CLOSED;
     }
 
     platform_poller_op_t op = PLATFORM_POLLER_RW_OP;
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
         op = _iowait_waiter_ops(w);
     }
-    _iowait_sync_interest_locked(w, op);
+    int ret = _iowait_sync_interest_locked(w, op);
 
     mtx_unlock(&w->arm_lock);
+    return ret == 0 ? IOWAIT_ARM_OK : IOWAIT_ARM_ERROR;
 }
 
 static void _iowait_wake(mco_coro* co) {
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
+}
+
+static void _iowait_wake_waiter(
+    _iowait_dir_t* d,
+    iowait_result_t result) {
+    mco_coro* co = _iowait_take_waiter(d);
+    if (!co) {
+        return;
+    }
+    atomic_store_explicit(&d->result, (int)result, memory_order_release);
+    _iowait_wake(co);
 }
 
 static void _iowait_queue_wake(
@@ -406,6 +427,16 @@ static void _iowait_queue_wake(
     batch->coros[batch->n++] = co;
 }
 
+static bool _iowait_deadline_expired(_iowait_dir_t* d, memory_order order) {
+    uint64_t deadline = atomic_load_explicit(&d->deadline, order);
+    return deadline > 0
+        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline;
+}
+
+static bool _iowait_deadline_error(_iowait_dir_t* d, memory_order order) {
+    return atomic_load_explicit(&d->deadline_error, order);
+}
+
 static void _iowait_handle_dir_event(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
     mco_coro* co = NULL;
@@ -414,6 +445,10 @@ static void _iowait_handle_dir_event(
     } else {
         co = _iowait_take_waiter(d);
     }
+    if (co) {
+        atomic_store_explicit(
+            &d->result, (int)IOWAIT_READY, memory_order_release);
+    }
     _iowait_queue_wake(sched, batch, co);
 }
 
@@ -421,7 +456,9 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
-    _iowait_wake(_iowait_take_waiter(d));
+    if (_iowait_deadline_expired(d, memory_order_acquire)) {
+        _iowait_wake_waiter(d, IOWAIT_TIMEOUT);
+    }
     _iowait_unref(w);
 }
 
@@ -463,12 +500,6 @@ static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
     return false;
 }
 
-static bool _iowait_deadline_expired(_iowait_dir_t* d, memory_order order) {
-    uint64_t deadline = atomic_load_explicit(&d->deadline, order);
-    return deadline > 0
-        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline;
-}
-
 static bool _iowait_park_cb(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
     iowait_t*      w = d->w;
@@ -476,7 +507,8 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
     /**
      * Publish the park record, then re-check close/deadline. This is a
      * Dekker handshake against a concurrent waker (iowait_close /
-     * deadline timer), which stores its cause then takes the waiter.
+     * deadline timer), which claims the waiter and stamps its cause
+     * before scheduling it.
      * It only works if the publish (store) and the re-check (load) are
      * ordered StoreLoad, which release/acquire does NOT provide -- both
      * sides must participate in the single total order, so the publish
@@ -490,22 +522,35 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
         return false;
     }
 
-    _iowait_arm(w);
+    _iowait_arm_status_t arm_status = _iowait_arm(w);
+    if (arm_status == IOWAIT_ARM_CLOSED) {
+        _iowait_wake_waiter(d, IOWAIT_CLOSED);
+        return true;
+    }
+    if (arm_status == IOWAIT_ARM_ERROR) {
+        _iowait_wake_waiter(d, IOWAIT_ERROR);
+        return true;
+    }
 
     /* Re-check after publish: close or deadline may have raced in. */
     if (atomic_load_explicit(&w->closed, memory_order_seq_cst)) {
-        _iowait_wake(_iowait_take_waiter(d));
+        _iowait_wake_waiter(d, IOWAIT_CLOSED);
+        return true;
+    }
+    if (_iowait_deadline_error(d, memory_order_seq_cst)) {
+        _iowait_wake_waiter(d, IOWAIT_ERROR);
         return true;
     }
     if (_iowait_deadline_expired(d, memory_order_seq_cst)) {
-        _iowait_wake(_iowait_take_waiter(d));
+        _iowait_wake_waiter(d, IOWAIT_TIMEOUT);
     }
     return true;
 }
 
-/* Each timer arm owns one iowait ref, released in the timeout cb or on rearm cancel. */
+/* Each timer arm owns one iowait ref, released on timeout or rearm cancel. */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     atomic_store_explicit(&d->deadline, deadline_ms, memory_order_release);
+    atomic_store_explicit(&d->deadline_error, false, memory_order_release);
 
     /**
      * Cancel any timer arm still in flight; if we actually caught it
@@ -522,6 +567,9 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     if (!d->timer) {
         d->timer = scheduler_timer_create(runtime_get_scheduler());
         if (!d->timer) {
+            atomic_store_explicit(
+                &d->deadline_error, true, memory_order_release);
+            _iowait_wake_waiter(d, IOWAIT_ERROR);
             return;
         }
     }
@@ -531,6 +579,9 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 
     _iowait_ref(d->w);
     if (scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0) != 0) {
+        atomic_store_explicit(
+            &d->deadline_error, true, memory_order_release);
+        _iowait_wake_waiter(d, IOWAIT_ERROR);
         _iowait_unref(d->w);
     }
 }
@@ -539,17 +590,17 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
         return IOWAIT_CLOSED;
     }
+    if (_iowait_deadline_error(d, memory_order_acquire)) {
+        return IOWAIT_ERROR;
+    }
 
     if (PLATFORM_POLLER_TRIGGER_MODE != PLATFORM_POLLER_TRIGGER_ET) {
+        atomic_store_explicit(
+            &d->result, (int)IOWAIT_READY, memory_order_relaxed);
         scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
 
-        if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-            return IOWAIT_CLOSED;
-        }
-        if (_iowait_deadline_expired(d, memory_order_acquire)) {
-            return IOWAIT_TIMEOUT;
-        }
-        return IOWAIT_READY;
+        return (iowait_result_t)atomic_load_explicit(
+            &d->result, memory_order_acquire);
     }
 
     for (;;) {
@@ -559,10 +610,18 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
         if (_iowait_deadline_expired(d, memory_order_acquire)) {
             return IOWAIT_TIMEOUT;
         }
+        if (_iowait_deadline_error(d, memory_order_acquire)) {
+            return IOWAIT_ERROR;
+        }
 
+        atomic_store_explicit(
+            &d->result, (int)IOWAIT_READY, memory_order_relaxed);
         scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
-        if (atomic_load_explicit(&w->closed, memory_order_acquire)) {
-            return IOWAIT_CLOSED;
+        iowait_result_t result =
+            (iowait_result_t)atomic_load_explicit(
+                &d->result, memory_order_acquire);
+        if (result != IOWAIT_READY) {
+            return result;
         }
     }
 }
@@ -617,6 +676,14 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store_explicit(&w->wr.state, IOWAIT_DIR_EMPTY, memory_order_relaxed);
     atomic_store_explicit(&w->rd.deadline, 0, memory_order_relaxed);
     atomic_store_explicit(&w->wr.deadline, 0, memory_order_relaxed);
+    atomic_store_explicit(
+        &w->rd.deadline_error, false, memory_order_relaxed);
+    atomic_store_explicit(
+        &w->wr.deadline_error, false, memory_order_relaxed);
+    atomic_store_explicit(
+        &w->rd.result, (int)IOWAIT_READY, memory_order_relaxed);
+    atomic_store_explicit(
+        &w->wr.result, (int)IOWAIT_READY, memory_order_relaxed);
     atomic_store_explicit(&w->closed, false, memory_order_relaxed);
     atomic_store_explicit(&w->registered, false, memory_order_relaxed);
     atomic_store_explicit(&w->interest, PLATFORM_POLLER_NO_OP, memory_order_relaxed);
@@ -634,7 +701,10 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->wr.w = w;
 
     _iowait_ref(w);
-    _iowait_arm(w);
+    if (_iowait_arm(w) != IOWAIT_ARM_OK) {
+        _iowait_unref(w);
+        return NULL;
+    }
     return w;
 }
 
@@ -675,8 +745,8 @@ void iowait_close(iowait_t* w) {
     }
     mtx_unlock(&w->arm_lock);
 
-    _iowait_wake(_iowait_take_waiter(&w->rd));
-    _iowait_wake(_iowait_take_waiter(&w->wr));
+    _iowait_wake_waiter(&w->rd, IOWAIT_CLOSED);
+    _iowait_wake_waiter(&w->wr, IOWAIT_CLOSED);
 }
 
 void iowait_destroy(iowait_t* w) {
@@ -713,7 +783,10 @@ void iowait_on_event(
         _iowait_handle_dir_event(sched, batch, &w->wr);
     }
 
-    _iowait_arm(w);
+    if (_iowait_arm(w) == IOWAIT_ARM_ERROR) {
+        _iowait_wake_waiter(&w->rd, IOWAIT_ERROR);
+        _iowait_wake_waiter(&w->wr, IOWAIT_ERROR);
+    }
 
     _iowait_unref(w);
 }

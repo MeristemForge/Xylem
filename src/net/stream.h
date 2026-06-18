@@ -23,6 +23,7 @@ _Pragma("once")
 
 #include "net/addr.h"
 #include "platform/platform-socket.h"
+#include "runtime/iowait.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -131,9 +132,18 @@ extern int stream_try_read(
  *
  * @param stream  Stream handle.
  *
- * @return 0 when ready, -1 on close or timeout.
+ * @return 0 when ready, -1 on close, timeout, or poller error.
  */
 extern int stream_wait_read(stream_t* stream);
+
+/**
+ * @brief Wait for read readiness and report the reason separately.
+ *
+ * @param stream  Stream handle.
+ *
+ * @return Readiness result.
+ */
+extern iowait_result_t stream_wait_read_result(stream_t* stream);
 
 /**
  * @brief Write the full buffer to the stream.
@@ -170,9 +180,18 @@ extern int stream_try_write(
  *
  * @param stream  Stream handle.
  *
- * @return 0 when ready, -1 on close or timeout.
+ * @return 0 when ready, -1 on close, timeout, or poller error.
  */
 extern int stream_wait_write(stream_t* stream);
+
+/**
+ * @brief Wait for write readiness and report the reason separately.
+ *
+ * @param stream  Stream handle.
+ *
+ * @return Readiness result.
+ */
+extern iowait_result_t stream_wait_write_result(stream_t* stream);
 
 /**
  * @brief Get the stream's remote address.

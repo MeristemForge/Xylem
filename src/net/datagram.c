@@ -88,21 +88,17 @@ static void _datagram_consume_io_budget(size_t bytes) {
     }
 }
 
-static datagram_wait_t _datagram_wait_result(
+static iowait_result_t _datagram_wait_result(
     datagram_t* datagram,
     bool        write) {
     _datagram_ref(datagram);
-    datagram_wait_t ret = DATAGRAM_WAIT_CLOSED;
+    iowait_result_t ret = IOWAIT_CLOSED;
 
     if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
         iowait_result_t r = write ? iowait_write(datagram->waiter)
                                   : iowait_read(datagram->waiter);
         if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
-            if (r == IOWAIT_READY) {
-                ret = DATAGRAM_WAIT_READY;
-            } else if (r == IOWAIT_TIMEOUT) {
-                ret = DATAGRAM_WAIT_TIMEOUT;
-            }
+            ret = r;
         }
     }
 
@@ -287,10 +283,10 @@ int datagram_try_recv(
 }
 
 int datagram_wait_read(datagram_t* datagram) {
-    return datagram_wait_read_result(datagram) == DATAGRAM_WAIT_READY ? 0 : -1;
+    return datagram_wait_read_result(datagram) == IOWAIT_READY ? 0 : -1;
 }
 
-datagram_wait_t datagram_wait_read_result(datagram_t* datagram) {
+iowait_result_t datagram_wait_read_result(datagram_t* datagram) {
     return _datagram_wait_result(datagram, false);
 }
 
@@ -367,11 +363,10 @@ int datagram_try_send(
 }
 
 int datagram_wait_write(datagram_t* datagram) {
-    return datagram_wait_write_result(datagram) == DATAGRAM_WAIT_READY ? 0
-                                                                       : -1;
+    return datagram_wait_write_result(datagram) == IOWAIT_READY ? 0 : -1;
 }
 
-datagram_wait_t datagram_wait_write_result(datagram_t* datagram) {
+iowait_result_t datagram_wait_write_result(datagram_t* datagram) {
     return _datagram_wait_result(datagram, true);
 }
 

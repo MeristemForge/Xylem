@@ -477,10 +477,10 @@ static int _dtls_client_wait_read(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->rd_mu);
-    datagram_wait_t r = datagram_wait_read_result(dtls->datagram);
-    if (r == DATAGRAM_WAIT_READY) {
+    iowait_result_t r = datagram_wait_read_result(dtls->datagram);
+    if (r == IOWAIT_READY) {
         ret = 0;
-    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
+    } else if (r == IOWAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -494,10 +494,10 @@ static int _dtls_client_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->wr_mu);
-    datagram_wait_t r = datagram_wait_write_result(dtls->datagram);
-    if (r == DATAGRAM_WAIT_READY) {
+    iowait_result_t r = datagram_wait_write_result(dtls->datagram);
+    if (r == IOWAIT_READY) {
         ret = 0;
-    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
+    } else if (r == IOWAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -527,10 +527,10 @@ static int _dtls_server_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->listener->write_mu);
-    datagram_wait_t r = datagram_wait_write_result(dtls->listener->datagram);
-    if (r == DATAGRAM_WAIT_READY) {
+    iowait_result_t r = datagram_wait_write_result(dtls->listener->datagram);
+    if (r == IOWAIT_READY) {
         ret = 0;
-    } else if (r == DATAGRAM_WAIT_TIMEOUT) {
+    } else if (r == IOWAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
     xylem_mutex_unlock(dtls->listener->write_mu);

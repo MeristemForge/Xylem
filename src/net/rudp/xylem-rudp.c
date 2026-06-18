@@ -604,6 +604,9 @@ static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
             _rudp_schedule_update(c);
             return -1;
         }
+        if (r != IOWAIT_READY) {
+            return -1;
+        }
 
         /* ET poller: drain all queued datagrams until EAGAIN. */
         for (;;) {
@@ -1053,6 +1056,10 @@ xylem_rudp_conn_t* xylem_rudp_dial(
         if (r == IOWAIT_TIMEOUT) {
             /* Retransmit SYN on next iteration. */
             continue;
+        }
+        if (r != IOWAIT_READY) {
+            _rudp_conn_unref(c);
+            return NULL;
         }
 
         /* IOWAIT_READY: read the response. */

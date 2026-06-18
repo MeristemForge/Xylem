@@ -686,11 +686,19 @@ int tls_handshake(tls_conn_t* tls) {
 }
 
 void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    stream_set_read_deadline(tls->stream, deadline_ms);
+    _tls_conn_ref(tls);
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        stream_set_read_deadline(tls->stream, deadline_ms);
+    }
+    _tls_conn_unref(tls);
 }
 
 void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    stream_set_write_deadline(tls->stream, deadline_ms);
+    _tls_conn_ref(tls);
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        stream_set_write_deadline(tls->stream, deadline_ms);
+    }
+    _tls_conn_unref(tls);
 }
 
 int tls_remote_addr(
@@ -698,7 +706,13 @@ int tls_remote_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    return stream_remote_addr(tls->stream, host, host_len, port);
+    _tls_conn_ref(tls);
+    int ret = -1;
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        ret = stream_remote_addr(tls->stream, host, host_len, port);
+    }
+    _tls_conn_unref(tls);
+    return ret;
 }
 
 int tls_local_addr(
@@ -706,7 +720,13 @@ int tls_local_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    return stream_local_addr(tls->stream, host, host_len, port);
+    _tls_conn_ref(tls);
+    int ret = -1;
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+        ret = stream_local_addr(tls->stream, host, host_len, port);
+    }
+    _tls_conn_unref(tls);
+    return ret;
 }
 
 int tls_listener_addr(
@@ -714,11 +734,26 @@ int tls_listener_addr(
     char*           host,
     size_t          host_len,
     uint16_t*       port) {
-    return listener_addr(ln->listener, host, host_len, port);
+    _tls_listener_ref(ln);
+    int ret = -1;
+    if (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+        ret = listener_addr(ln->listener, host, host_len, port);
+    }
+    _tls_listener_unref(ln);
+    return ret;
 }
 
 const char* tls_get_alpn(tls_conn_t* tls) {
-    return tls->alpn[0] ? tls->alpn : NULL;
+    _tls_conn_ref(tls);
+    static _Thread_local char alpn[sizeof(tls->alpn)];
+    const char* ret = NULL;
+    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+        && tls->alpn[0]) {
+        memcpy(alpn, tls->alpn, sizeof(alpn));
+        ret = alpn;
+    }
+    _tls_conn_unref(tls);
+    return ret;
 }
 
 tls_conn_t* tls_client_handshake_fd(

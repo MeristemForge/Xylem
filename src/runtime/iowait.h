@@ -60,13 +60,14 @@ typedef struct iowait_s iowait_t;
 /**
  * Result of iowait_read / iowait_write.
  *
- * Distinguishes the three ways a parked coroutine can wake up, each
+ * Distinguishes the ways a parked coroutine can wake up, each
  * mapping to a different error semantic at the protocol layer.
  */
 typedef enum iowait_result_e {
     IOWAIT_READY   = 0, /* fd became readable / writable. */
     IOWAIT_TIMEOUT = 1, /* deadline reached. */
     IOWAIT_CLOSED  = 2, /* iowait_close() was invoked. */
+    IOWAIT_ERROR   = 3, /* Poller arm failed. */
 } iowait_result_t;
 
 /**
@@ -130,7 +131,7 @@ extern void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms);
  *
  * @param w  IO wait handle.
  *
- * @return IOWAIT_READY, IOWAIT_TIMEOUT, or IOWAIT_CLOSED.
+ * @return IOWAIT_READY, IOWAIT_TIMEOUT, IOWAIT_CLOSED, or IOWAIT_ERROR.
  */
 extern iowait_result_t iowait_read(iowait_t* w);
 
@@ -141,7 +142,7 @@ extern iowait_result_t iowait_read(iowait_t* w);
  *
  * @param w  IO wait handle.
  *
- * @return IOWAIT_READY, IOWAIT_TIMEOUT, or IOWAIT_CLOSED.
+ * @return IOWAIT_READY, IOWAIT_TIMEOUT, IOWAIT_CLOSED, or IOWAIT_ERROR.
  */
 extern iowait_result_t iowait_write(iowait_t* w);
 

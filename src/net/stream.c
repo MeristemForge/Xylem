@@ -189,7 +189,7 @@ stream_t* stream_dial(
             stream_release(stream);
             return NULL;
         }
-        if (r == IOWAIT_CLOSED) {
+        if (r != IOWAIT_READY) {
             stream_interrupt(stream);
             stream_release(stream);
             return NULL;
@@ -251,6 +251,24 @@ static void _stream_consume_io_budget(size_t bytes) {
     }
 }
 
+static iowait_result_t _stream_wait_result(
+    stream_t* stream,
+    bool      write) {
+    _stream_ref(stream);
+    iowait_result_t ret = IOWAIT_CLOSED;
+
+    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        iowait_result_t r = write ? iowait_write(stream->waiter)
+                                  : iowait_read(stream->waiter);
+        if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+            ret = r;
+        }
+    }
+
+    _stream_unref(stream);
+    return ret;
+}
+
 void stream_consume_credit(uint32_t cost) {
     if (runtime_consume_credit(cost)) {
         runtime_yield_credit();
@@ -291,19 +309,11 @@ int stream_try_read(
 }
 
 int stream_wait_read(stream_t* stream) {
-    _stream_ref(stream);
-    int ret = -1;
+    return stream_wait_read_result(stream) == IOWAIT_READY ? 0 : -1;
+}
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-        iowait_result_t r = iowait_read(stream->waiter);
-        if (r == IOWAIT_READY
-            && !atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-            ret = 0;
-        }
-    }
-
-    _stream_unref(stream);
-    return ret;
+iowait_result_t stream_wait_read_result(stream_t* stream) {
+    return _stream_wait_result(stream, false);
 }
 
 int stream_read(stream_t* stream, void* buf, int len) {
@@ -402,19 +412,11 @@ int stream_try_write(
 }
 
 int stream_wait_write(stream_t* stream) {
-    _stream_ref(stream);
-    int ret = -1;
+    return stream_wait_write_result(stream) == IOWAIT_READY ? 0 : -1;
+}
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-        iowait_result_t r = iowait_write(stream->waiter);
-        if (r == IOWAIT_READY
-            && !atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-            ret = 0;
-        }
-    }
-
-    _stream_unref(stream);
-    return ret;
+iowait_result_t stream_wait_write_result(stream_t* stream) {
+    return _stream_wait_result(stream, true);
 }
 
 int stream_remote_addr(

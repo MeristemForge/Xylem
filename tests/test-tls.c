@@ -177,6 +177,12 @@ static void test_set_alpn(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
+static void test_null_handles(void) {
+    ASSERT(xylem_tls_dial(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
+    ASSERT(xylem_tls_listen(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
+    ASSERT(xylem_tls_accept(NULL) == NULL);
+}
+
 static char* _read_file(const char* path, size_t* out_len) {
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -1151,6 +1157,7 @@ static void _run_cfg_tests(void* arg) {
     test_load_ca();
     test_load_system_ca();
     test_set_alpn();
+    test_null_handles();
     test_load_cert_mem();
     xylem_shutdown();
 }

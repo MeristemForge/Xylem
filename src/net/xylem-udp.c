@@ -149,13 +149,21 @@ int xylem_udp_send(
 void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_read_deadline");
 
-    datagram_set_read_deadline(udp->datagram, deadline_ms);
+    _udp_chan_ref(udp);
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+        datagram_set_read_deadline(udp->datagram, deadline_ms);
+    }
+    _udp_chan_unref(udp);
 }
 
 void xylem_udp_set_write_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_write_deadline");
 
-    datagram_set_write_deadline(udp->datagram, deadline_ms);
+    _udp_chan_ref(udp);
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+        datagram_set_write_deadline(udp->datagram, deadline_ms);
+    }
+    _udp_chan_unref(udp);
 }
 
 void xylem_udp_close(xylem_udp_chan_t* udp) {
@@ -175,7 +183,13 @@ int xylem_udp_local_addr(
     uint16_t*    port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_local_addr");
 
-    return datagram_local_addr(udp->datagram, host, host_len, port);
+    _udp_chan_ref(udp);
+    int ret = -1;
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+        ret = datagram_local_addr(udp->datagram, host, host_len, port);
+    }
+    _udp_chan_unref(udp);
+    return ret;
 }
 
 int xylem_udp_remote_addr(
@@ -183,10 +197,14 @@ int xylem_udp_remote_addr(
     char*        host,
     size_t       host_len,
     uint16_t*    port) {
-    if (!udp->connected) {
-        return -1;
-    }
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_remote_addr");
 
-    return datagram_remote_addr(udp->datagram, host, host_len, port);
+    _udp_chan_ref(udp);
+    int ret = -1;
+    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)
+        && udp->connected) {
+        ret = datagram_remote_addr(udp->datagram, host, host_len, port);
+    }
+    _udp_chan_unref(udp);
+    return ret;
 }

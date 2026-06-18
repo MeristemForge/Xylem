@@ -161,10 +161,12 @@ xylem_tls_conn_t* xylem_tls_dial(
     uint16_t          port,
     xylem_tls_ctx_t*  ctx,
     xylem_tls_opts_t* opts) {
+    if (!ctx) {
+        return NULL;
+    }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_dial");
 
-    return (xylem_tls_conn_t*)tls_dial(host, port,
-                                       ctx ? &ctx->internal : NULL, opts);
+    return (xylem_tls_conn_t*)tls_dial(host, port, &ctx->internal, opts);
 }
 
 void xylem_tls_close(xylem_tls_conn_t* tls) {
@@ -180,16 +182,21 @@ xylem_tls_listener_t* xylem_tls_listen(
     uint16_t          port,
     xylem_tls_ctx_t*  ctx,
     xylem_tls_opts_t* opts) {
+    if (!ctx) {
+        return NULL;
+    }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_listen");
 
-    return (xylem_tls_listener_t*)tls_listen(host, port,
-                                             ctx ? &ctx->internal : NULL, opts);
+    return (xylem_tls_listener_t*)tls_listen(host, port, &ctx->internal, opts);
 }
 
 xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln) {
+    if (!ln) {
+        return NULL;
+    }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_accept");
 
-    return (xylem_tls_conn_t*)tls_accept(ln ? &ln->internal : NULL);
+    return (xylem_tls_conn_t*)tls_accept(&ln->internal);
 }
 
 void xylem_tls_close_listener(xylem_tls_listener_t* ln) {

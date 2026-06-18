@@ -268,14 +268,22 @@ void xylem_uds_set_read_deadline(
     xylem_uds_conn_t* uds, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_read_deadline");
 
-    stream_set_read_deadline(uds->stream, deadline_ms);
+    _uds_conn_ref(uds);
+    if (!atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        stream_set_read_deadline(uds->stream, deadline_ms);
+    }
+    _uds_conn_unref(uds);
 }
 
 void xylem_uds_set_write_deadline(
     xylem_uds_conn_t* uds, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_write_deadline");
 
-    stream_set_write_deadline(uds->stream, deadline_ms);
+    _uds_conn_ref(uds);
+    if (!atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        stream_set_write_deadline(uds->stream, deadline_ms);
+    }
+    _uds_conn_unref(uds);
 }
 
 int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
@@ -319,11 +327,23 @@ void xylem_uds_close(xylem_uds_conn_t* uds) {
 int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_wr");
 
-    return stream_shutdown_wr(uds->stream);
+    _uds_conn_ref(uds);
+    int ret = -1;
+    if (!atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        ret = stream_shutdown_wr(uds->stream);
+    }
+    _uds_conn_unref(uds);
+    return ret;
 }
 
 int xylem_uds_shutdown_rd(xylem_uds_conn_t* uds) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_rd");
 
-    return stream_shutdown_rd(uds->stream);
+    _uds_conn_ref(uds);
+    int ret = -1;
+    if (!atomic_load_explicit(&uds->closed, memory_order_acquire)) {
+        ret = stream_shutdown_rd(uds->stream);
+    }
+    _uds_conn_unref(uds);
+    return ret;
 }
