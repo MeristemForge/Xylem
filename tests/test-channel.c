@@ -92,6 +92,13 @@ typedef struct {
     int              tested;
 } _to_ctx_t;
 
+typedef struct {
+    xylem_channel_t*   ch;
+    xylem_waitgroup_t* wg;
+    int*               payload;
+    uint64_t           delay_ms;
+} _stale_send_req_t;
+
 static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
@@ -144,6 +151,69 @@ static void test_timeout_deliver(void) {
     fprintf(stderr, "=== test_timeout_deliver\n");
     _to_ctx_t ctx = {0};
     xylem_run(_to_deliver_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
+#define STALE_TIMER_ROUNDS 500
+
+typedef struct {
+    int tested;
+} _stale_ctx_t;
+
+static void _stale_send_after_coro(void* arg) {
+    _stale_send_req_t* req = (_stale_send_req_t*)arg;
+    if (req->delay_ms > 0) {
+        xylem_sleep(req->delay_ms);
+    }
+    xylem_channel_send(req->ch, req->payload);
+    xylem_waitgroup_done(req->wg);
+}
+
+static void _stale_recv_coro(void* arg) {
+    _stale_ctx_t* ctx = (_stale_ctx_t*)arg;
+    xylem_channel_t* ch = xylem_channel_create(0);
+    xylem_waitgroup_t* wg = xylem_waitgroup_create();
+
+    for (int round = 0; round < STALE_TIMER_ROUNDS; round++) {
+        int first = round * 2;
+        _stale_send_req_t first_req = {
+            .ch = ch, .wg = wg, .payload = &first, .delay_ms = 1
+        };
+        xylem_waitgroup_add(wg, 1);
+        xylem_spawn(_stale_send_after_coro, &first_req);
+        void* first_msg = xylem_channel_recv_timeout(ch, 1);
+        xylem_waitgroup_wait(wg);
+        if (!first_msg) {
+            first_msg = xylem_channel_recv_timeout(ch, 0);
+        }
+        ASSERT(first_msg == &first);
+
+        int second = round * 2 + 1;
+        _stale_send_req_t second_req = {
+            .ch = ch, .wg = wg, .payload = &second, .delay_ms = 5
+        };
+        xylem_waitgroup_add(wg, 1);
+        xylem_spawn(_stale_send_after_coro, &second_req);
+        void* second_msg = xylem_channel_recv_timeout(ch, 1000);
+        xylem_waitgroup_wait(wg);
+        ASSERT(second_msg == &second);
+    }
+
+    ctx->tested = 1;
+    xylem_waitgroup_destroy(wg);
+    xylem_channel_destroy(ch);
+    xylem_shutdown();
+}
+
+static void _stale_main(void* arg) {
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    xylem_spawn(_stale_recv_coro, arg);
+}
+
+static void test_timeout_stale_timer_does_not_end_next_recv(void) {
+    fprintf(stderr, "=== test_timeout_stale_timer_does_not_end_next_recv\n");
+    _stale_ctx_t ctx = {0};
+    xylem_run(_stale_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -374,6 +444,7 @@ int main(void) {
     test_concurrent();
     test_timeout_empty();
     test_timeout_deliver();
+    test_timeout_stale_timer_does_not_end_next_recv();
     test_timeout_race();
     test_thread_recv();
     test_thread_send();
