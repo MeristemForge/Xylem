@@ -367,23 +367,25 @@ extern void xylem_dtls_set_write_deadline(
     uint64_t           deadline_ms);
 
 /**
- * @brief Close a connection. Idempotent.
+ * @brief Close a connection and release its handle.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in recv/send.
+ * The connection handle is invalid after this function returns.
  *
  * @param dtls  Connection handle.
  */
 extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 
 /**
- * @brief Close and destroy a listener. Idempotent.
+ * @brief Close and destroy a listener.
  *
  * @note [COROUTINE-ONLY]
  *
  * Closes all active sessions, stops the dispatcher coroutine,
  * and frees all resources.
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */

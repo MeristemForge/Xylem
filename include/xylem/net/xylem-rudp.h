@@ -99,6 +99,7 @@ extern xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * Resets all active sessions and wakes any parked accept caller.
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */
@@ -143,6 +144,8 @@ extern int xylem_rudp_write(
  * @brief Close a RUDP connection.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * The connection handle is invalid after this function returns.
  *
  * @param conn  Connection handle.
  */

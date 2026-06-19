@@ -118,11 +118,9 @@ xylem_serial_close(s);
   stop bits / flow control / read timeout); `device` is required.
 - `read` blocks until ≥1 byte, the `timeout_ms` expires (returns `0`), or error
   (`-1`). `write` blocks until all bytes are sent.
-- **`close` is NOT idempotent** — unlike most Xylem destroy functions, calling
-  it twice on the same non-NULL handle double-frees. `close(NULL)` is safe. This
-  is the one notable deviation from the library-wide idempotent-destroy rule
-  ([`../conventions.md`](../conventions.md) §5), so null out your handle after
-  closing.
+- `xylem_serial_close` consumes the serial handle. `close(NULL)` is safe, but a
+  non-NULL handle is invalid after `close` returns; do not close or use the same
+  handle again.
 
 Because serial I/O blocks, calling it from a coroutine stalls that worker;
 offload it via `xylem_await()` ([`runtime.md`](runtime.md) §10) if you need to

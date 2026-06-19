@@ -220,7 +220,9 @@ extern tls_conn_t* tls_dial(
     xylem_tls_opts_t* opts);
 
 /**
- * @brief Close a connection and release it. Idempotent.
+ * @brief Close a connection and release it.
+ *
+ * The connection handle is invalid after this function returns.
  *
  * @param tls  Connection handle.
  */
@@ -275,7 +277,9 @@ extern tls_listener_t* tls_listen(
 extern tls_conn_t*     tls_accept(tls_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener. Idempotent.
+ * @brief Close and destroy a listener.
+ *
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */

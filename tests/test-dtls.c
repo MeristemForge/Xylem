@@ -267,7 +267,7 @@ static void _ci_client(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void test_close_idempotent(void) {
+static void test_close_wakes_peer(void) {
     _run_default((_plan_t){"test_dtls_ci_cert.pem", "test_dtls_ci_key.pem",
                            DTLS_PORT + 2, _ci_server, _ci_client});
 }
@@ -521,7 +521,7 @@ int main(void) {
     xylem_run(_run_cfg_tests, NULL, NULL);
     test_handshake_and_echo();
     test_alpn_negotiation();
-    test_close_idempotent();
+    test_close_wakes_peer();
     test_recv_deadline();
     test_close_wakes_recv();
     test_concurrent_sessions();

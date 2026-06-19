@@ -148,7 +148,8 @@ extern void xylem_udp_set_write_deadline(
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in recv/send. Idempotent.
+ * Wakes any coroutine blocked in recv/send.
+ * The UDP handle is invalid after this function returns.
  *
  * @param udp  UDP handle.
  */

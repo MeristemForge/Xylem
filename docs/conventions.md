@@ -66,10 +66,9 @@ Conventions:
   violations such as an illegal second parker on an `iowait` direction, which
   abort with a diagnostic rather than corrupt state silently.)
 - Diagnostics go through the logger (`xylem_loge(...)`), not `stderr` directly.
-- Destroy/close functions return `void` where possible and accept `NULL`. Most
-  are also **idempotent** (see §5); the notable exception is
-  `xylem_serial_close`, which must not be called twice — per-module docs flag
-  any such deviation.
+- Destroy functions return `void` where possible, accept `NULL`, and are
+  idempotent unless a module documents otherwise. Close functions that release
+  their handle consume it; the handle is invalid after the call returns.
 
 ## 4. Options structs and the NULL-means-default rule
 
@@ -97,11 +96,11 @@ Two pairing styles, by allocation ownership:
   `xylem_<m>_deinit()` (e.g. the logger).
 
 Rules:
-- **`destroy`/`close` accept `NULL`, and are idempotent unless a module says
-  otherwise.** Connection `close` (TCP/UDP/UDS/DTLS) guards on an atomic
-  `closed` flag so a second call is a no-op. The one documented exception is
-  `xylem_serial_close` ([`design/core.md`](design/core.md) §4): calling it twice
-  double-frees, so null out the handle after closing.
+- **`destroy` accepts `NULL` and is idempotent unless a module says
+  otherwise.** A `close` function that releases the handle consumes that
+  handle; callers must not use or close the same handle again after `close`
+  returns. Atomic `closed` flags only coordinate concurrent close/read/write
+  paths while another reference keeps the object alive.
 - **Read before close.** For connections, query any state you need (e.g.
   `xylem_tcp_remote_addr`) *before* calling `close`; close may free backing
   state and wakes any coroutine blocked on the handle.

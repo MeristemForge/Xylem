@@ -124,7 +124,7 @@ void xylem_serial_close(xylem_serial_t* serial) {
     if (!serial) {
         return;
     }
-    /* atomic_exchange makes close idempotent and safe from any thread. */
+    /* The exchange serializes concurrent close attempts while refs exist. */
     if (atomic_exchange(&serial->closed, true)) {
         return;
     }

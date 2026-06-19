@@ -116,6 +116,8 @@ extern xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
  *
  * @note [COROUTINE-ONLY]
  *
+ * The listener handle is invalid after this function returns.
+ *
  * @param listener  Listener handle.
  */
 extern void     xylem_ws_close_listener(xylem_ws_listener_t* listener);

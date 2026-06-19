@@ -96,6 +96,8 @@ extern xylem_http_srv_t* xylem_http_listen(
  *
  * @note [COROUTINE-ONLY]
  *
+ * A non-NULL server handle is invalid after this function returns.
+ *
  * @param srv  Server handle, or NULL (no-op).
  */
 extern void xylem_http_close(xylem_http_srv_t* srv);
@@ -104,6 +106,8 @@ extern void xylem_http_close(xylem_http_srv_t* srv);
  * @brief Gracefully shut down the server.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * The server handle is invalid after this function returns.
  *
  * @param srv         Server handle.
  * @param timeout_ms  Maximum wait time, 0 = immediate close.

@@ -66,11 +66,12 @@ extern xylem_tcp_listener_t* xylem_tcp_listen(
 extern xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener. Idempotent.
+ * @brief Close and destroy a listener.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in xylem_tcp_accept().
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */
@@ -171,12 +172,13 @@ extern int xylem_tcp_write(
     int               len);
 
 /**
- * @brief Close a connection. Idempotent.
+ * @brief Close a connection and release its handle.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in read/write. Read any needed state
  * (xylem_tcp_remote_addr) before closing.
+ * The connection handle is invalid after this function returns.
  *
  * @param tcp  Connection handle.
  */

@@ -245,9 +245,10 @@ the client handshake, verifying `server_name` rather than the proxy address.
 
 ## 9. Shutdown and teardown safety
 
-- `xylem_tls_close` and `xylem_tls_close_listener` are idempotent via an atomic
-  `closed` flag (`atomic_exchange`), and call `iowait_close` to wake any parked
-  coroutine.
+- `xylem_tls_close` and `xylem_tls_close_listener` consume their handles: after
+  either function returns, the passed handle is invalid. The atomic `closed`
+  flag (`atomic_exchange`) only protects concurrent close attempts while another
+  reference still keeps the object alive.
 - Connections are reference counted. `xylem_tls_read` / `write` take a reference
   **before** testing `closed`, closing the race where a concurrent `close` on
   another thread could free the connection between the test and use; the final

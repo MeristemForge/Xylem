@@ -381,7 +381,7 @@ extern int xylem_tls_write(
     int               len);
 
 /**
- * @brief Close a connection. Idempotent.
+ * @brief Close a connection and release its handle.
  *
  * @note [COROUTINE-ONLY]
  *
@@ -390,17 +390,19 @@ extern int xylem_tls_write(
  * aborts. To cancel a connection whose reader/writer is parked, close
  * it from another coroutine -- that wakes the parked coroutine. Read any
  * needed state (xylem_tls_remote_addr) before closing.
+ * The connection handle is invalid after this function returns.
  *
  * @param tls  Connection handle.
  */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
 
 /**
- * @brief Close and destroy a listener. Idempotent.
+ * @brief Close and destroy a listener.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in xylem_tls_accept().
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */

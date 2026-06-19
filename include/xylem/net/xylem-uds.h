@@ -59,12 +59,13 @@ extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
 extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener. Idempotent.
+ * @brief Close and destroy a listener.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in xylem_uds_accept().
  * Unlinks the socket path from the filesystem.
+ * The listener handle is invalid after this function returns.
  *
  * @param ln  Listener handle.
  */
@@ -161,11 +162,12 @@ extern int xylem_uds_write(
     int               len);
 
 /**
- * @brief Close a connection. Idempotent.
+ * @brief Close a connection and release its handle.
  *
  * @note [COROUTINE-ONLY]
  *
  * Wakes any coroutine blocked in read/write.
+ * The connection handle is invalid after this function returns.
  *
  * @param uds  Connection handle.
  */

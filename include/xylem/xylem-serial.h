@@ -94,7 +94,8 @@ extern xylem_serial_t* xylem_serial_open(xylem_serial_opts_t* opts);
  * Marks the handle closed and drops the caller's reference; the
  * underlying OS handle and the object are released once the last
  * in-flight read/write also releases its reference. Safe to call
- * with NULL. Idempotent and safe to call from any thread.
+ * with NULL and safe to call from any thread. A non-NULL handle is
+ * invalid after this function returns.
  *
  * @param serial  Serial handle, or NULL.
  *
