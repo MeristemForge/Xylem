@@ -23,8 +23,6 @@
 #include "assert.h"
 #include "xylem/xylem-threads.h"
 
-#include "runtime/scheduler.h"
-
 #include <stdatomic.h>
 #include <stdio.h>
 
@@ -40,7 +38,6 @@
 #define STKGROW_CONC_DEPTH    6
 #define STKGROW_REUSE_COUNT   50
 #define STKGROW_REUSE_DEPTH   3
-#define CROSS_TIMER_COUNT     64
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
@@ -574,45 +571,6 @@ static void test_coro_stack_grow_large_frame(void) {
     ASSERT(ctx.tested == 1);
 }
 
-typedef struct {
-    atomic_int done;
-    int        tested;
-} _cross_timer_ctx_t;
-
-static void _cross_timer_coro(void* arg) {
-    _cross_timer_ctx_t* ctx = (_cross_timer_ctx_t*)arg;
-    scheduler_opts_t    opts = { .worker_count = 1 };
-    scheduler_t*        child = scheduler_create(&opts);
-    ASSERT(child != NULL);
-
-    scheduler_timer_t* timer = scheduler_timer_create(child);
-    ASSERT(timer != NULL);
-    ASSERT(timer->owner == 0);
-    scheduler_timer_destroy(timer);
-    scheduler_destroy(child);
-
-    if (atomic_fetch_add(&ctx->done, 1) == CROSS_TIMER_COUNT - 1) {
-        ctx->tested = 1;
-        xylem_shutdown();
-    }
-}
-
-static void _cross_timer_main(void* arg) {
-    _start_safety_timer();
-    for (int i = 0; i < CROSS_TIMER_COUNT; i++) {
-        xylem_spawn(_cross_timer_coro, arg);
-    }
-}
-
-static void test_timer_create_for_other_scheduler(void) {
-    fprintf(stderr, "=== test_timer_create_for_other_scheduler\n");
-    _cross_timer_ctx_t ctx = {0};
-    atomic_init(&ctx.done, 0);
-    xylem_run(_cross_timer_main, &ctx, &_rt_opts);
-    ASSERT(ctx.tested == 1);
-    ASSERT(atomic_load(&ctx.done) == CROSS_TIMER_COUNT);
-}
-
 int main(void) {
     test_start_stop_cycle();
     test_stop_from_spawned();
@@ -629,6 +587,5 @@ int main(void) {
     test_coro_stack_grow_concurrent();
     test_coro_stack_grow_pool_reuse();
     test_coro_stack_grow_large_frame();
-    test_timer_create_for_other_scheduler();
     return 0;
 }

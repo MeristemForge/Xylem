@@ -20,7 +20,6 @@
  */
 
 #include "xylem.h"
-#include "xylem/xylem-threads.h"
 
 #include "assert.h"
 #include "utils.h"
@@ -43,21 +42,20 @@ typedef struct {
 } _reset_ctx_t;
 
 typedef struct {
-    scheduler_timer_t* timer;
-    atomic_int         dispatched;
-    atomic_int         old_fires;
-    atomic_int         new_fires;
-    xylem_waitgroup_t* wg;
-} _snapshot_ctx_t;
-
-typedef struct {
-    scheduler_timer_t* timer;
+    xylem_timer_t*     timer;
     atomic_int         fires;
     atomic_int         in_cb;
     atomic_int         reentered;
     atomic_int         done;
     xylem_waitgroup_t* wg;
-} _sched_repeat_ctx_t;
+} _every_overlap_ctx_t;
+
+typedef struct {
+    atomic_int            fires;
+    atomic_uint_least64_t first_fire_ms;
+    atomic_uint_least64_t second_fire_ms;
+    xylem_waitgroup_t*    wg;
+} _every_reset_ctx_t;
 
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
@@ -304,84 +302,13 @@ static void test_blocking_cb(void) {
     xylem_run(_blocking_main, NULL, NULL);
 }
 
-static void _snapshot_ud_ref(void* ud) {
-    _snapshot_ctx_t* ctx = (_snapshot_ctx_t*)ud;
-    atomic_store_explicit(&ctx->dispatched, 1, memory_order_release);
-}
-
-static void _snapshot_ud_unref(void* ud) {
-    (void)ud;
-}
-
-static void _snapshot_old_cb(scheduler_timer_t* t, void* ud) {
-    (void)t;
-    _snapshot_ctx_t* ctx = (_snapshot_ctx_t*)ud;
-    atomic_fetch_add(&ctx->old_fires, 1);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _snapshot_new_cb(scheduler_timer_t* t, void* ud) {
-    (void)t;
-    _snapshot_ctx_t* ctx = (_snapshot_ctx_t*)ud;
-    atomic_fetch_add(&ctx->new_fires, 1);
-}
-
-static int _snapshot_rearm_thread(void* arg) {
-    _snapshot_ctx_t* ctx = (_snapshot_ctx_t*)arg;
-    while (!atomic_load_explicit(&ctx->dispatched, memory_order_acquire)) {
-        thrd_yield();
-    }
-    ASSERT(scheduler_timer_start(
-               ctx->timer, _snapshot_new_cb, ctx, SAFETY_TIMEOUT_MS, 0)
-           == 0);
-    return 0;
-}
-
-static void _snapshot_main(void* arg) {
-    (void)arg;
-    _snapshot_ctx_t ctx = { .wg = xylem_waitgroup_create() };
-    xylem_waitgroup_add(ctx.wg, 1);
-
-    xylem_timer_t* wd = _arm_watchdog();
-    ctx.timer         = scheduler_timer_create(runtime_get_scheduler());
-    ASSERT(ctx.timer != NULL);
-    scheduler_timer_set_spawn(ctx.timer, true);
-    scheduler_timer_set_ud_guard(
-        ctx.timer, _snapshot_ud_ref, _snapshot_ud_unref);
-
-    thrd_t thr;
-    ASSERT(thrd_create(&thr, _snapshot_rearm_thread, &ctx) == thrd_success);
-    ASSERT(scheduler_timer_start(
-               ctx.timer, _snapshot_old_cb, &ctx, 1, 0)
-           == 0);
-
-    xylem_waitgroup_wait(ctx.wg);
-    thrd_join(thr, NULL);
-
-    ASSERT(atomic_load(&ctx.old_fires) == 1);
-    ASSERT(atomic_load(&ctx.new_fires) == 0);
-
-    scheduler_timer_destroy(ctx.timer);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
-}
-
-static void test_fire_snapshots_callback(void) {
-    for (int round = 0; round < 100; round++) {
-        xylem_opts_t opts = { .workers = 1 };
-        xylem_run(_snapshot_main, NULL, &opts);
-    }
-}
-
-static void _repeat_spawn_cb(scheduler_timer_t* timer, void* ud) {
-    _sched_repeat_ctx_t* ctx = (_sched_repeat_ctx_t*)ud;
+static void _every_overlap_cb(xylem_timer_t* timer, void* ud) {
+    _every_overlap_ctx_t* ctx = (_every_overlap_ctx_t*)ud;
     ASSERT(timer == ctx->timer);
 
     if (atomic_fetch_add(&ctx->in_cb, 1) != 0) {
         atomic_store(&ctx->reentered, 1);
         if (atomic_exchange(&ctx->done, 1) == 0) {
-            scheduler_timer_stop(ctx->timer);
             xylem_waitgroup_done(ctx->wg);
         }
     }
@@ -390,27 +317,21 @@ static void _repeat_spawn_cb(scheduler_timer_t* timer, void* ud) {
     xylem_sleep(20);
 
     if (n >= 3 && atomic_exchange(&ctx->done, 1) == 0) {
-        scheduler_timer_stop(ctx->timer);
         xylem_waitgroup_done(ctx->wg);
     }
     atomic_fetch_sub(&ctx->in_cb, 1);
 }
 
-static void _repeat_spawn_main(void* arg) {
+static void _every_overlap_main(void* arg) {
     (void)arg;
-    _sched_repeat_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    _every_overlap_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
     xylem_timer_t* wd = _arm_watchdog();
-    ctx.timer         = scheduler_timer_create(runtime_get_scheduler());
+    ctx.timer         = xylem_timer_every(1, _every_overlap_cb, &ctx);
     ASSERT(ctx.timer != NULL);
-    scheduler_timer_set_spawn(ctx.timer, true);
-    ASSERT(scheduler_timer_start(
-               ctx.timer, _repeat_spawn_cb, &ctx, 1, 1)
-           == 0);
 
     xylem_waitgroup_wait(ctx.wg);
-    scheduler_timer_stop(ctx.timer);
     while (atomic_load(&ctx.in_cb) != 0) {
         xylem_sleep(1);
     }
@@ -418,15 +339,57 @@ static void _repeat_spawn_main(void* arg) {
     ASSERT(atomic_load(&ctx.reentered) == 0);
     ASSERT(atomic_load(&ctx.fires) >= 3);
 
-    scheduler_timer_destroy(ctx.timer);
+    xylem_timer_cancel(ctx.timer);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
     xylem_shutdown();
 }
 
-static void test_spawn_repeat_callbacks_do_not_overlap(void) {
+static void test_every_callbacks_do_not_overlap(void) {
     xylem_opts_t opts = { .workers = 2 };
-    xylem_run(_repeat_spawn_main, NULL, &opts);
+    xylem_run(_every_overlap_main, NULL, &opts);
+}
+
+static void _every_reset_cb(xylem_timer_t* timer, void* ud) {
+    _every_reset_ctx_t* ctx = (_every_reset_ctx_t*)ud;
+    int n = atomic_fetch_add(&ctx->fires, 1) + 1;
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (n == 1) {
+        atomic_store(&ctx->first_fire_ms, now);
+        ASSERT(xylem_timer_reset(timer, 30) == false);
+    } else if (n == 2) {
+        atomic_store(&ctx->second_fire_ms, now);
+    } else if (n == 3) {
+        ASSERT(xylem_timer_cancel(timer) == false);
+        xylem_waitgroup_done(ctx->wg);
+    }
+}
+
+static void _every_reset_main(void* arg) {
+    (void)arg;
+    _every_reset_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = _arm_watchdog();
+    xylem_timer_t* t  = xylem_timer_every(10, _every_reset_cb, &ctx);
+    ASSERT(t != NULL);
+
+    xylem_waitgroup_wait(ctx.wg);
+
+    uint64_t first  = atomic_load(&ctx.first_fire_ms);
+    uint64_t second = atomic_load(&ctx.second_fire_ms);
+    ASSERT(first > 0);
+    ASSERT(second >= first);
+    ASSERT(second - first >= 25);
+    ASSERT(atomic_load(&ctx.fires) == 3);
+
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_shutdown();
+}
+
+static void test_every_reset_and_cancel_from_callback(void) {
+    xylem_run(_every_reset_main, NULL, NULL);
 }
 
 static void _null_main(void* arg) {
@@ -451,8 +414,8 @@ int main(void) {
     test_reset();
     test_reset_repeat();
     test_blocking_cb();
-    test_fire_snapshots_callback();
-    test_spawn_repeat_callbacks_do_not_overlap();
+    test_every_callbacks_do_not_overlap();
+    test_every_reset_and_cancel_from_callback();
     test_null();
     return 0;
 }

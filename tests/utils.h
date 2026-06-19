@@ -32,9 +32,6 @@ _Pragma("once")
 #include "xylem.h"
 #include "assert.h"
 
-#include "runtime/runtime.h"
-#include "runtime/scheduler.h"
-
 #include <stdint.h>
 
 /**
@@ -48,26 +45,15 @@ static inline void _utils_watchdog_cb(xylem_timer_t* timer, void* userdata) {
     ASSERT(0 && "test timed out");
 }
 
-/**
- * Watchdog for the internal scheduler timer, used by tests that need to
- * arm the deadline from inside the root coroutine. Self-destroys and
- * signals shutdown before aborting.
- */
-static inline void _utils_watchdog_sched_cb(scheduler_timer_t* timer,
-                                            void* userdata) {
-    (void)userdata;
-    scheduler_timer_destroy(timer);
+static inline void _utils_watchdog_coro(void* arg) {
+    uint64_t timeout_ms = (uint64_t)(uintptr_t)arg;
+    xylem_sleep(timeout_ms);
     xylem_shutdown();
     ASSERT(0 && "test timed out");
 }
 
-/**
- * Arm a scheduler-timer watchdog that aborts the test after timeout_ms.
- * Must be called from inside a coroutine on a scheduler worker.
- */
 static inline void _utils_watchdog_start(uint64_t timeout_ms) {
-    scheduler_timer_t* t = scheduler_timer_create(runtime_get_scheduler());
-    scheduler_timer_start(t, _utils_watchdog_sched_cb, NULL, timeout_ms, 0);
+    xylem_spawn(_utils_watchdog_coro, (void*)(uintptr_t)timeout_ms);
 }
 
 #ifdef TEST_WITH_TLS
