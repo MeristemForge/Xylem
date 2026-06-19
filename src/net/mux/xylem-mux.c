@@ -538,6 +538,10 @@ static bool _mux_send_park_cb(mco_coro* co, void* arg) {
 int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     mux_stream_ref(s);
 
     for (;;) {
@@ -583,6 +587,16 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
 
 int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     mux_stream_ref(s);
     const uint8_t* ptr = (const uint8_t*)data;

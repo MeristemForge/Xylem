@@ -205,10 +205,20 @@ int platform_socket_get_socktype(platform_sock_t sock) {
 }
 
 ssize_t platform_socket_recv(platform_sock_t sock, void* buf, int size) {
+    if (size < 0) {
+        WSASetLastError(WSAEINVAL);
+        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    }
+
     return recv(sock, buf, size, 0);
 }
 
 ssize_t platform_socket_send(platform_sock_t sock, const void* buf, int size) {
+    if (size < 0) {
+        WSASetLastError(WSAEINVAL);
+        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    }
+
     return send(sock, buf, size, 0);
 }
 
@@ -218,6 +228,11 @@ ssize_t platform_socket_recvfrom(
     int                      size,
     struct sockaddr_storage* ss,
     socklen_t*               sslen) {
+    if (size < 0) {
+        WSASetLastError(WSAEINVAL);
+        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    }
+
     return recvfrom(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
 }
 
@@ -227,6 +242,11 @@ ssize_t platform_socket_sendto(
     int                      size,
     struct sockaddr_storage* ss,
     socklen_t                sslen) {
+    if (size < 0) {
+        WSASetLastError(WSAEINVAL);
+        return PLATFORM_SO_ERROR_SOCKET_ERROR;
+    }
+
     return sendto(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
 }
 

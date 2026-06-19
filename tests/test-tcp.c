@@ -407,6 +407,56 @@ static void test_expired_write_deadline_blocks_ready_socket(void) {
     _run_pair(TCP_PORT + 7, _expired_write_server, _expired_write_client);
 }
 
+static void _invalid_io_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    ASSERT(xylem_tcp_write(conn, "go", 2) == 0);
+
+    char buf[16];
+    int  n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 2);
+    ASSERT(memcmp(buf, "ok", 2) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _invalid_io_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    char buf[16];
+    ASSERT(xylem_tcp_read(conn, buf, 0) == -1);
+    ASSERT(xylem_tcp_read(conn, NULL, 1) == -1);
+    ASSERT(xylem_tcp_read(conn, buf, -1) == -1);
+    ASSERT(xylem_tcp_write(conn, NULL, 0) == 0);
+    ASSERT(xylem_tcp_write(conn, NULL, 1) == -1);
+    ASSERT(xylem_tcp_write(conn, "x", -1) == -1);
+
+    int n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 2);
+    ASSERT(memcmp(buf, "go", 2) == 0);
+
+    ASSERT(xylem_tcp_write(conn, "ok", 2) == 0);
+
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_invalid_io_args(void) {
+    _run_pair(TCP_PORT + 8, _invalid_io_server, _invalid_io_client);
+}
+
 int main(void) {
     test_echo();
     test_reader_full();
@@ -417,5 +467,6 @@ int main(void) {
     test_shutdown_rd_read_fails();
     test_expired_read_deadline_blocks_ready_data();
     test_expired_write_deadline_blocks_ready_socket();
+    test_invalid_io_args();
     return 0;
 }

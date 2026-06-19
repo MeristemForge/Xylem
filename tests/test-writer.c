@@ -155,8 +155,50 @@ static void test_writer_large_bypass(void) {
     _run_pair(TEST_PORT + 1, _srv_recv_large, _cli_write_large);
 }
 
+static void _srv_recv_empty(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
+
+    char buf[16];
+    int  total = _drain(conn, buf, (int)sizeof(buf));
+    ASSERT(total == 0);
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _cli_write_invalid(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 8);
+    ASSERT(wr != NULL);
+
+    ASSERT(xylem_writer_write(wr, NULL, 0) == 0);
+    ASSERT(xylem_writer_write(wr, NULL, 1) == -1);
+    ASSERT(xylem_writer_write(wr, "x", -1) == -1);
+
+    xylem_writer_destroy(wr);
+    xylem_tcp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_writer_invalid_args(void) {
+    _run_pair(TEST_PORT + 2, _srv_recv_empty, _cli_write_invalid);
+}
+
 int main(void) {
     test_writer_batched();
     test_writer_large_bypass();
+    test_writer_invalid_args();
     return 0;
 }

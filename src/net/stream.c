@@ -256,17 +256,23 @@ static iowait_result_t _stream_wait_result(
     stream_t* stream,
     bool      write) {
     _stream_ref(stream);
-    iowait_result_t ret = IOWAIT_CLOSED;
 
-    if (!write
-        && atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
-        ret = IOWAIT_CLOSED;
-    } else if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-        iowait_result_t r = write ? iowait_write(stream->waiter)
-                                  : iowait_read(stream->waiter);
-        if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
-            ret = r;
+    if (!write) {
+        if (atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
+            _stream_unref(stream);
+            return IOWAIT_CLOSED;
         }
+    }
+
+    if (atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        _stream_unref(stream);
+        return IOWAIT_CLOSED;
+    }
+
+    iowait_result_t ret = write ? iowait_write(stream->waiter)
+                                : iowait_read(stream->waiter);
+    if (atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+        ret = IOWAIT_CLOSED;
     }
 
     _stream_unref(stream);
@@ -284,6 +290,11 @@ int stream_try_read(
     void*     buf,
     int       len,
     bool*     again) {
+    if (!buf || len <= 0) {
+        *again = false;
+        return -1;
+    }
+
     _stream_ref(stream);
     int ret = -1;
     *again  = false;
@@ -326,6 +337,10 @@ iowait_result_t stream_wait_read_result(stream_t* stream) {
 }
 
 int stream_read(stream_t* stream, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _stream_ref(stream);
     int ret = -1;
 
@@ -348,6 +363,16 @@ int stream_read(stream_t* stream, void* buf, int len) {
 }
 
 int stream_write(stream_t* stream, const void* data, int len) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     _stream_ref(stream);
     int ret = -1;
 
@@ -397,6 +422,19 @@ int stream_try_write(
     const void* data,
     int         len,
     bool*       again) {
+    if (len < 0) {
+        *again = false;
+        return -1;
+    }
+    if (len == 0) {
+        *again = false;
+        return 0;
+    }
+    if (!data) {
+        *again = false;
+        return -1;
+    }
+
     _stream_ref(stream);
     int ret = -1;
     *again  = false;

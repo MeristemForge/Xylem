@@ -45,7 +45,7 @@ declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [sem]=8 [channel]=4 [hando
 declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=50000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 # Spawning an OS thread per unit is far costlier than a coroutine, so the
 # thread/mixed modes use lighter per-primitive iteration counts.
-declare -A PT_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
+declare -A PT_ITERS=( [mutex]=1000000 [cond]=50000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 P_PERMITS="${PERMITS:-4}"
 
 # Support matrix: which (lang, mode) cells are valid. The binaries also reject

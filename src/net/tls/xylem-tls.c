@@ -213,6 +213,10 @@ int xylem_tls_read(xylem_tls_conn_t* tls, void* buf, int len) {
     }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     return tls_read(&tls->internal, buf, len);
 }
 
@@ -221,6 +225,16 @@ int xylem_tls_write(xylem_tls_conn_t* tls, const void* data, int len) {
         return -1;
     }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     return tls_write(&tls->internal, data, len);
 }

@@ -100,6 +100,10 @@ int xylem_udp_recv(
     uint16_t*    port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_recv");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _udp_chan_ref(udp);
 
     int ret = -1;
@@ -123,6 +127,16 @@ int xylem_udp_send(
     const char*  host,
     uint16_t     port) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_send");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     _udp_chan_ref(udp);
 

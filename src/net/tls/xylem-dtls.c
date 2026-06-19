@@ -629,6 +629,10 @@ static void _dtls_cache_alpn(xylem_dtls_conn_t* dtls) {
 }
 
 static int _dtls_client_recv_loop(xylem_dtls_conn_t* dtls, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     for (;;) {
         int n = 0;
         xylem_mutex_lock(dtls->ssl_mu);
@@ -657,6 +661,10 @@ static int _dtls_client_recv_loop(xylem_dtls_conn_t* dtls, void* buf, int len) {
 }
 
 static int _dtls_client_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _dtls_conn_ref(dtls);
     int ret = -1;
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -670,6 +678,16 @@ static int _dtls_client_send_loop(
     xylem_dtls_conn_t* dtls,
     const void*        data,
     int                len) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     for (;;) {
         int n = 0;
         xylem_mutex_lock(dtls->ssl_mu);
@@ -700,6 +718,16 @@ static int _dtls_client_send(
     xylem_dtls_conn_t* dtls,
     const void*        data,
     int                len) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     _dtls_conn_ref(dtls);
     int ret = -1;
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -914,6 +942,10 @@ static void _dtls_dispatcher(void* arg) {
 }
 
 static int _dtls_server_recv_loop(xylem_dtls_conn_t* dtls, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     for (;;) {
         int n = 0;
         tls_backend_state_t st = tls_backend_conn_read(dtls->be, buf, len, &n);
@@ -944,6 +976,10 @@ static int _dtls_server_recv_loop(xylem_dtls_conn_t* dtls, void* buf, int len) {
 }
 
 static int _dtls_server_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _dtls_conn_ref(dtls);
     int ret = -1;
     if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
@@ -957,6 +993,16 @@ static int _dtls_server_send(
     xylem_dtls_conn_t* dtls,
     const void*        data,
     int                len) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     _dtls_conn_ref(dtls);
     int ret = -1;
 
@@ -1162,6 +1208,10 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
 int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     if (dtls->listener) {
         return _dtls_server_recv(dtls, buf, len);
     }
@@ -1173,6 +1223,16 @@ int xylem_dtls_write(
     const void*        data,
     int                len) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     if (dtls->listener) {
         return _dtls_server_send(dtls, data, len);

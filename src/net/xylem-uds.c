@@ -289,6 +289,10 @@ void xylem_uds_set_write_deadline(
 int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _uds_conn_ref(uds);
     int ret = -1;
 
@@ -302,6 +306,16 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
 
 int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     _uds_conn_ref(uds);
     int ret = -1;

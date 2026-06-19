@@ -118,6 +118,10 @@ void xylem_reader_destroy(xylem_reader_t* rd) {
 int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     int n = _reader_drain(rd, buf, len);
     if (n > 0) {
         return n;
@@ -137,6 +141,10 @@ int xylem_reader_read(xylem_reader_t* rd, void* buf, int len) {
 
 int xylem_reader_read_full(xylem_reader_t* rd, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read_full");
+
+    if (!buf || len <= 0) {
+        return -1;
+    }
 
     uint8_t* dst = (uint8_t*)buf;
     int      rem = len;
@@ -162,6 +170,10 @@ int xylem_reader_read_until(
     void*           buf,
     int             len) {
     RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_read_until");
+
+    if (!buf || len <= 0) {
+        return -1;
+    }
 
     uint8_t* dst = (uint8_t*)buf;
     int      pos = 0;
@@ -197,6 +209,9 @@ int xylem_reader_read_until(
 }
 
 int xylem_reader_peek(xylem_reader_t* rd, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
     if (len > rd->buflen) {
         return -1;
     }

@@ -235,6 +235,11 @@ int datagram_try_recv(
     int         len,
     addr_t*     from,
     bool*       again) {
+    if (!buf || len <= 0) {
+        *again = false;
+        return -1;
+    }
+
     _datagram_ref(datagram);
     int ret = -1;
     *again  = false;
@@ -300,6 +305,10 @@ int datagram_recv(
     void*       buf,
     int         len,
     addr_t*     from) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _datagram_ref(datagram);
     int ret = -1;
 
@@ -327,6 +336,19 @@ int datagram_try_send(
     int          len,
     const addr_t* to,
     bool*        again) {
+    if (len < 0) {
+        *again = false;
+        return -1;
+    }
+    if (len == 0) {
+        *again = false;
+        return 0;
+    }
+    if (!data) {
+        *again = false;
+        return -1;
+    }
+
     _datagram_ref(datagram);
     int ret = -1;
     *again  = false;
@@ -385,6 +407,16 @@ int datagram_send(
     const void* data,
     int         len,
     const addr_t* to) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     _datagram_ref(datagram);
     int ret = -1;
 

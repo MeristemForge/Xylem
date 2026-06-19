@@ -578,6 +578,10 @@ static void _rudp_deferred_close(void* arg) {
 }
 
 static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     char recv_buf[RUDP_RECV_BUF_SIZE];
     for (;;) {
         /* Try reading from KCP first. */
@@ -634,6 +638,10 @@ static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
 }
 
 static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     for (;;) {
         /* Try KCP recv first. */
         int n = ikcp_recv(c->kcp, (char*)buf, len);
@@ -1112,6 +1120,10 @@ xylem_rudp_conn_t* xylem_rudp_dial(
 int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
         return -1;
     }
@@ -1133,11 +1145,18 @@ int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
 int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_write");
 
-    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+    if (len < 0) {
         return -1;
     }
-    if (!data || len <= 0) {
+    if (len == 0) {
         return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
+    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+        return -1;
     }
 
     _rudp_conn_ref(conn);

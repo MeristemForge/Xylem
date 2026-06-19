@@ -102,6 +102,16 @@ int xylem_writer_flush(xylem_writer_t* wr) {
 int xylem_writer_write(xylem_writer_t* wr, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_write");
 
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     if (len >= wr->buflen) {
         if (xylem_writer_flush(wr) != 0) {
             return -1;

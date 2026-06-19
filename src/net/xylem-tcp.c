@@ -179,6 +179,10 @@ void xylem_tcp_set_write_deadline(
 int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     _tcp_conn_ref(tcp);
     int ret = -1;
     if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
@@ -190,6 +194,16 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
 
 int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     _tcp_conn_ref(tcp);
     int ret = -1;

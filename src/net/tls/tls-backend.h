@@ -38,10 +38,8 @@ _Pragma("once")
  * holds a per-connection mutex across every conn op that touches the state
  * machine, exactly as it serializes the underlying library calls today.
  * Backends therefore use a plain, non-thread-safe state-machine object and
- * perform NO internal locking. feed/drain are only for a memory-BIO pump
- * path; they must never block. Transport callbacks must also be
- * non-blocking: they report EAGAIN through `again`, and the engine owns
- * coroutine parking.
+ * perform NO internal locking. Transport callbacks must be non-blocking:
+ * they report EAGAIN through `again`, and the engine owns coroutine parking.
  */
 
 typedef struct tls_backend_ctx_s  tls_backend_ctx_t;
@@ -237,7 +235,7 @@ extern int tls_backend_ctx_set_keylog(
  *
  * @param ctx        Context handle.
  * @param is_server  true for the accept (server) role, false for connect.
- * @param io         Transport I/O callbacks, or NULL for memory BIO.
+ * @param io         Non-blocking transport I/O callbacks.
  *
  * @return Connection handle, or NULL on failure.
  */
@@ -265,34 +263,6 @@ extern void tls_backend_conn_destroy(tls_backend_conn_t* c);
 extern void tls_backend_conn_configure(
     tls_backend_conn_t*                c,
     const tls_backend_handshake_cfg_t* cfg);
-
-/**
- * @brief Hand inbound ciphertext to a memory-BIO state machine.
- *
- * @param c    Connection handle.
- * @param buf  Ciphertext bytes.
- * @param len  Number of bytes in buf.
- *
- * @return 0 on success, -1 on error.
- */
-extern int tls_backend_conn_feed(
-    tls_backend_conn_t* c,
-    const void*         buf,
-    int                 len);
-
-/**
- * @brief Take pending outbound ciphertext from a memory-BIO state machine.
- *
- * @param c    Connection handle.
- * @param buf  Destination buffer.
- * @param cap  Capacity of buf in bytes.
- *
- * @return Byte count (>0), 0 when empty, -1 on error.
- */
-extern int tls_backend_conn_drain(
-    tls_backend_conn_t* c,
-    void*               buf,
-    int                 cap);
 
 /**
  * @brief Advance the handshake state machine one step.
@@ -339,9 +309,7 @@ extern tls_backend_state_t tls_backend_conn_write(
     int*                out_n);
 
 /**
- * @brief Queue a close-notify into the outbound buffer.
- *
- * The caller drains the resulting ciphertext to the peer.
+ * @brief Send a best-effort close-notify through the transport BIO.
  *
  * @param c  Connection handle.
  */

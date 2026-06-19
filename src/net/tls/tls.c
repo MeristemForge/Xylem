@@ -257,11 +257,13 @@ static void _tls_listener_unref(tls_listener_t* ln) {
  * Returns bytes read (>0), 0 on clean peer shutdown, or -1 on error/close.
  */
 static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
-    int ret = -1;
+    if (!buf || len <= 0) {
+        return -1;
+    }
 
     for (;;) {
         if (_tls_deadline_expired(&tls->rd_deadline)) {
-            goto done;
+            return -1;
         }
 
         int n = 0;
@@ -271,47 +273,61 @@ static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
 
         switch (st) {
             case TLS_BACKEND_OK:
-                ret = n;
-                goto done;
+                return n;
             case TLS_BACKEND_CLOSED:
-                ret = 0;
-                goto done;
+                return 0;
             case TLS_BACKEND_WANT_READ:
                 if (_tls_wait_read(tls) != 0) {
-                    goto done;
+                    return -1;
                 }
                 continue;
             case TLS_BACKEND_WANT_WRITE:
                 if (_tls_wait_write(tls) != 0) {
-                    goto done;
+                    return -1;
                 }
                 continue;
             default:
-                goto done;
+                return -1;
         }
     }
-
-done:
-    return ret;
 }
 
 /**
- * Drive the backend write of the whole buffer to completion, flushing
- * the ciphertext produced after each accepted chunk. Returns 0 once all
- * len bytes are written and flushed, -1 on error/close.
+ * Drive the backend write of the whole buffer to completion. The backend
+ * writes ciphertext through its transport BIO during each accepted chunk.
+ * Returns 0 once all len bytes are written, -1 on error/close.
  */
 static int _tls_write_loop(
     tls_conn_t* tls,
     const void* data,
     int         len) {
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
+
     const char* ptr = (const char*)data;
     int         rem = len;
     int         ret = -1;
+    bool        done = false;
 
+    /**
+     * One public write owns the TLS write side until its whole buffer is
+     * accepted. Otherwise two coroutines can interleave plaintext chunks
+     * into the same TLS record stream. WANT_WRITE waits below keep this
+     * lock held, so that path waits on stream_wait_write() directly instead
+     * of calling _tls_wait_write(), which would lock wr_mu again.
+     */
     xylem_mutex_lock(tls->wr_mu);
-    while (rem > 0) {
+    while (rem > 0 && !done) {
         if (_tls_deadline_expired(&tls->wr_deadline)) {
-            goto done;
+            done = true;
+            continue;
         }
 
         int chunk = rem < TLS_MAX_PLAINTEXT ? rem : TLS_MAX_PLAINTEXT;
@@ -327,21 +343,23 @@ static int _tls_write_loop(
                 continue;
             case TLS_BACKEND_WANT_WRITE:
                 if (stream_wait_write(tls->stream) != 0) {
-                    goto done;
+                    done = true;
                 }
                 continue;
             case TLS_BACKEND_WANT_READ:
                 if (_tls_wait_read(tls) != 0) {
-                    goto done;
+                    done = true;
                 }
                 continue;
             default:
-                goto done;
+                done = true;
+                continue;
         }
     }
-    ret = 0;
+    if (!done) {
+        ret = 0;
+    }
 
-done:
     xylem_mutex_unlock(tls->wr_mu);
     return ret;
 }
@@ -657,6 +675,10 @@ void tls_close_listener(tls_listener_t* ln) {
 int tls_read(tls_conn_t* tls, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("tls", "tls_read");
 
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
     /**
      * Take the reference before testing `closed`: a concurrent
      * tls_close() from another coroutine (possibly on another worker)
@@ -677,6 +699,16 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
 
 int tls_write(tls_conn_t* tls, const void* data, int len) {
     RUNTIME_REQUIRE_COROUTINE("tls", "tls_write");
+
+    if (len < 0) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+    if (!data) {
+        return -1;
+    }
 
     _tls_conn_ref(tls);
     int ret = -1;
