@@ -150,7 +150,7 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
 
     atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
 
-    /* Native repeat on the inline path; repeat+spawn could overlap cbs. */
+    /* Native repeat on the inline path; the callback is small and ordered. */
     scheduler_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
     if (scheduler_timer_start(
             t->timer, _ticker_tick_cb, t, interval_ms, interval_ms) != 0) {

@@ -398,12 +398,11 @@ static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
     if (c->kcp->state == (IUINT32)-1) {
         xylem_loge("<rudp> dead link conv=%u", c->conv);
         /**
-         * This timer callback runs inline on a worker thread (spawn ==
-         * false), not on a coroutine, but xylem_rudp_close is
-         * coroutine-only (its teardown may drain the inbox channel via
-         * xylem_channel_recv). Hand the close off to a short-lived
-         * coroutine; the extra reference keeps the conn alive until it
-         * runs.
+         * The update timer callback itself is spawned. Defer teardown one
+         * more scheduler turn so this timer fire can return and release its
+         * ud guard before close/shutdown drops owner references or destroys
+         * timer-owned resources. The extra reference keeps the conn alive
+         * until the deferred coroutine runs.
          */
         _rudp_conn_ref(c);
         runtime_spawn(_rudp_deferred_close, c);
@@ -550,9 +549,8 @@ static void _rudp_conn_ud_unref(void* ud) {
 
 /**
  * Coroutine entry that performs a deferred dead-link teardown. Used by
- * the update timer's dead-link path, which runs inline on a worker (not a
- * coroutine) and so cannot tear the session down directly. Drops the
- * reference taken when the teardown was scheduled.
+ * the update timer's dead-link path to keep teardown out of the timer
+ * callback frame. Drops the reference taken when the teardown was scheduled.
  *
  * For a client connection the application still owns its handle and is
  * required to call xylem_rudp_close() on it, so this dead-link teardown

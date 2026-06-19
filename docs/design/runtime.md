@@ -416,7 +416,10 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
 - Due timers are popped in `_sched_process_timers()`, which either runs the
   callback **inline on the firing thread** or, if `spawn` is set, runs it in a
   fresh coroutine.
-- Periodic timers (`repeat > 0`) reinsert themselves with the next expiry.
+- Periodic timers (`repeat > 0`) are reinserted only after the fired callback
+  completes. A timer in `FIRING` state records stop/reset/start requests as
+  pending state and applies them in the completion path, so callbacks for the
+  same timer never overlap.
 - Timers are reference counted so `scheduler_timer_destroy()` is safe to call
   concurrently with an in-flight fire. `scheduler_timer_stop()`/`reset()` return
   whether they cancelled a still-pending fire, which lets callers (e.g. the

@@ -89,6 +89,12 @@ typedef void (*scheduler_timer_fn_t)(scheduler_timer_t* timer, void* ud);
  */
 typedef void (*scheduler_timer_ud_fn_t)(void* ud);
 
+typedef enum scheduler_timer_state_e {
+    SCHED_TIMER_IDLE = 0,
+    SCHED_TIMER_QUEUED,
+    SCHED_TIMER_FIRING,
+} scheduler_timer_state_t;
+
 /**
  * Scheduler timer.
  *
@@ -105,7 +111,11 @@ struct scheduler_timer_s {
     scheduler_timer_ud_fn_t ud_unref;
     uint64_t            timeout;
     uint64_t            repeat;
-    bool                active;
+    uint64_t            reset_timeout;
+    uint64_t            reset_repeat;
+    scheduler_timer_state_t state;
+    bool                stop_pending;
+    bool                reset_pending;
     bool                spawn;
     _Atomic int32_t     refcnt;
     uint32_t            owner;
@@ -335,7 +345,7 @@ extern void scheduler_timer_set_ud_guard(
     scheduler_timer_ud_fn_t unref);
 
 /**
- * @brief Destroy a timer. Stops it first if active.
+ * @brief Destroy a timer. Stops it first if armed.
  *
  * Safe to call concurrently with an in-flight fire: the scheduler
  * keeps the timer object alive internally while a callback is
@@ -348,12 +358,14 @@ extern void scheduler_timer_set_ud_guard(
 extern void scheduler_timer_destroy(scheduler_timer_t* timer);
 
 /**
- * @brief Start an inactive timer. Thread-safe.
+ * @brief Start or reconfigure a timer. Thread-safe.
  *
- * The timer must not already be active. Use scheduler_timer_reset()
- * to move an active timer to a new deadline while preserving cb/ud.
- * Spawned callbacks are supported only for one-shot timers; repeat
- * timers must run inline to avoid overlapping callback executions.
+ * The timer must not already be queued. If a previous fire is currently
+ * running, start schedules the next generation after that callback returns.
+ * Use scheduler_timer_reset() to move an armed timer to a new deadline
+ * while preserving cb/ud.
+ * Repeat timers are re-queued only after the previous callback returns,
+ * so callbacks for the same timer never overlap.
  *
  * @param timer       Timer handle.
  * @param cb          Callback to invoke on expiry.
@@ -361,8 +373,7 @@ extern void scheduler_timer_destroy(scheduler_timer_t* timer);
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
  *
- * @return 0 on success, -1 if the scheduler is stopping, stopped,
- *         or the timer requests repeat + spawn.
+ * @return 0 on success, -1 if the scheduler is stopping or stopped.
  */
 extern int scheduler_timer_start(
     scheduler_timer_t*   timer,
@@ -376,10 +387,9 @@ extern int scheduler_timer_start(
  *
  * Returns true if a pending fire was cancelled (the timer was still
  * in the heap), false if the timer was already inactive, its callback
- * already dispatched, or the timer never started. Callers that pair
- * an arm with work on `ud`'s side can use the return value to decide
- * whether the callback will eventually run, for example to release a
- * reference that would otherwise only be released in the callback.
+ * already dispatched, or the timer never started. If a repeat callback
+ * is currently running, stop prevents the callback completion path from
+ * re-queueing the timer.
  *
  * @param timer  Timer handle.
  *
@@ -397,9 +407,10 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  *     adopt timeout_ms as the new repeat interval for subsequent
  *     fires.
  *
- * If the timer was still pending, its queued fire is cancelled; if
- * it was inactive (never armed, callback already dispatched), it is
- * armed fresh.
+ * If the timer was still pending, its queued fire is cancelled. If the
+ * callback is currently running, reset is applied after that callback
+ * returns. If it was inactive (never armed, callback already dispatched),
+ * it is armed fresh.
  *
  * @param timer       Timer handle, previously armed with scheduler_timer_start().
  * @param timeout_ms  New delay in milliseconds. Also becomes the new
