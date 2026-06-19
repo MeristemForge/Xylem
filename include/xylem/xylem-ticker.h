@@ -25,9 +25,9 @@ _Pragma("once")
 #include <stdint.h>
 
 /**
- * Periodic ticker -- the repeating counterpart of xylem_timer_after.
+ * Periodic ticker -- the pull-based counterpart of xylem_timer_every.
  *
- * Unlike a one-shot timer, the ticker decouples "timekeeping" from
+ * Unlike a callback timer, the ticker decouples "timekeeping" from
  * "running user code", exactly like Go's time.Ticker:
  *
  *   - The internal timer fires on a fixed period and only does a

@@ -56,6 +56,7 @@ worker.
 
 ```c
 xylem_timer_t* t = xylem_timer_after(500, on_fire, ud);  /* one-shot, 500 ms */
+xylem_timer_t* e = xylem_timer_every(1000, on_tick, ud); /* periodic callback */
 xylem_timer_reset(t, 1000);   /* re-arm 1000 ms from now, same cb/ud */
 xylem_timer_cancel(t);        /* cancel + release the handle */
 ```
@@ -63,6 +64,8 @@ xylem_timer_cancel(t);        /* cancel + release the handle */
 Semantics and the lifetime gotcha:
 
 - `after(delay_ms, cb, ud)` arms a **one-shot** timer and returns a handle.
+- `every(interval_ms, cb, ud)` arms a **periodic callback** timer. It is
+  fixed-delay: the next fire is scheduled after the previous callback returns.
 - **The handle must always be released with `cancel()`**, even after the
   callback has already fired. `cancel`/`reset` return `true` if they cancelled a
   *pending* fire before it ran — callers pairing the arm with reference-counted
@@ -71,9 +74,8 @@ Semantics and the lifetime gotcha:
 - `cancel`/`reset` are thread-safe but **must not run concurrently with each
   other** on the same handle. A callback already in flight may still complete
   after `cancel()`.
-- `after` exposes only one-shot timers; periodic behavior is built by re-arming
-  with `reset()` from inside the callback. (The internal `sched_timer` supports
-  native periodic repeat, but that is not surfaced publicly.)
+- `ticker` remains the pull-based periodic API: it produces coalesced ticks for
+  a consumer to receive, while `every` runs user callback code on each fire.
 
 ## 3. Utils (`xylem-utils`)
 

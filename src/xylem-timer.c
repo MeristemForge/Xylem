@@ -53,8 +53,11 @@ static void _timer_fire_cb(scheduler_timer_t* internal, void* ud) {
     timer->cb(timer, timer->ud);
 }
 
-xylem_timer_t* xylem_timer_after(
-    uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
+static xylem_timer_t* _timer_create(
+    uint64_t         delay_ms,
+    uint64_t         repeat_ms,
+    xylem_timer_fn_t cb,
+    void*            ud) {
     scheduler_t* sched = runtime_get_scheduler();
     if (!sched || !cb) {
         return NULL;
@@ -78,12 +81,26 @@ xylem_timer_t* xylem_timer_after(
 
     scheduler_timer_set_spawn(t, true);
     scheduler_timer_set_ud_guard(t, _timer_ref, _timer_unref);
-    if (scheduler_timer_start(t, _timer_fire_cb, timer, delay_ms, 0) != 0) {
+    if (scheduler_timer_start(
+            t, _timer_fire_cb, timer, delay_ms, repeat_ms) != 0) {
         scheduler_timer_destroy(t);
         free(timer);
         return NULL;
     }
     return timer;
+}
+
+xylem_timer_t* xylem_timer_after(
+    uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
+    return _timer_create(delay_ms, 0, cb, ud);
+}
+
+xylem_timer_t* xylem_timer_every(
+    uint64_t interval_ms, xylem_timer_fn_t cb, void* ud) {
+    if (interval_ms == 0) {
+        return NULL;
+    }
+    return _timer_create(interval_ms, interval_ms, cb, ud);
 }
 
 bool xylem_timer_cancel(xylem_timer_t* timer) {

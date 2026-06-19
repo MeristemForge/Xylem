@@ -48,6 +48,24 @@ extern xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud);
 
 /**
+ * @brief Arm a periodic timer.
+ *
+ * @note [THREAD-SAFE]
+ *
+ * The first fire occurs after interval_ms. Subsequent fires are scheduled
+ * only after the previous callback returns, so callbacks for the same timer
+ * never overlap. The handle must be released with xylem_timer_cancel().
+ *
+ * @param interval_ms  Delay between callback completions, in milliseconds.
+ * @param cb           Callback to invoke on each expiry.
+ * @param ud           Opaque user data passed to @p cb.
+ *
+ * @return Timer handle, or NULL on allocation failure or interval_ms == 0.
+ */
+extern xylem_timer_t* xylem_timer_every(
+    uint64_t interval_ms, xylem_timer_fn_t cb, void* ud);
+
+/**
  * @brief Cancel the timer and release the handle.
  *
  * @note [THREAD-SAFE]
@@ -69,6 +87,7 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * @note [THREAD-SAFE]
  *
  * Preserves callback and user data. Restarts the countdown from now.
+ * For periodic timers, delay_ms also becomes the new interval.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer     Timer handle, or NULL.
