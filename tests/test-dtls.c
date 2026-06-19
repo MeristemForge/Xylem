@@ -36,6 +36,7 @@ typedef void (*_coro_t)(void*);
 
 typedef struct {
     xylem_channel_t*   ready;
+    xylem_channel_t*   done;
     xylem_waitgroup_t* wg;
     xylem_dtls_ctx_t*  srv_ctx;
     xylem_dtls_ctx_t*  cli_ctx;
@@ -59,6 +60,7 @@ static xylem_dtls_ctx_t* _cli_ctx(void) {
 
 static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b) {
     ctx->ready = xylem_channel_create(0);
+    ctx->done  = xylem_channel_create(0);
     ctx->wg    = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, n);
     xylem_timer_t* wd =
@@ -68,6 +70,7 @@ static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b) {
     xylem_waitgroup_wait(ctx->wg);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
+    xylem_channel_destroy(ctx->done);
     xylem_channel_destroy(ctx->ready);
 }
 
@@ -355,6 +358,67 @@ static void test_close_wakes_recv(void) {
     xylem_run(_cw_main, NULL, NULL);
 }
 
+static void _lc_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_dtls_listener_t* ln =
+        xylem_dtls_listen(DTLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
+    ASSERT(conn != NULL);
+
+    xylem_dtls_close_listener(ln);
+    xylem_dtls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _lc_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_dtls_conn_t* conn =
+        xylem_dtls_dial(DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_dtls_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_listener_close_preserves_accepted_conn(void) {
+    _run_default((_plan_t){"test_dtls_lc_cert.pem", "test_dtls_lc_key.pem",
+                           DTLS_PORT + 5, _lc_server, _lc_client});
+}
+
+static void _lu_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_dtls_listener_t* ln =
+        xylem_dtls_listen(DTLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+    xylem_channel_recv(ctx->done);
+    xylem_dtls_close_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _lu_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_dtls_conn_t* conn =
+        xylem_dtls_dial(DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_dtls_close(conn);
+    xylem_channel_send(ctx->done, ctx);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_listener_close_drops_unaccepted_conn(void) {
+    _run_default((_plan_t){"test_dtls_lu_cert.pem", "test_dtls_lu_key.pem",
+                           DTLS_PORT + 6, _lu_server, _lu_client});
+}
+
 #define CONC_COUNT 4
 
 static void _conc_echo_handler(void* arg) {
@@ -413,7 +477,7 @@ static void _conc_client_seq(void* arg) {
 
 static void test_concurrent_sessions(void) {
     _run_default((_plan_t){"test_dtls_conc_cert.pem", "test_dtls_conc_key.pem",
-                           DTLS_PORT + 5, _conc_server, _conc_client_seq});
+                           DTLS_PORT + 7, _conc_server, _conc_client_seq});
 }
 
 #define FDX_MSG_COUNT 50
@@ -508,7 +572,7 @@ static void _fdx_client(void* arg) {
 
 static void test_full_duplex(void) {
     _run_default((_plan_t){"test_dtls_fdx_cert.pem", "test_dtls_fdx_key.pem",
-                           DTLS_PORT + 6, _fdx_server, _fdx_client});
+                           DTLS_PORT + 8, _fdx_server, _fdx_client});
 }
 
 static void _run_cfg_tests(void* arg) {
@@ -524,6 +588,8 @@ int main(void) {
     test_close_wakes_peer();
     test_recv_deadline();
     test_close_wakes_recv();
+    test_listener_close_preserves_accepted_conn();
+    test_listener_close_drops_unaccepted_conn();
     test_concurrent_sessions();
     test_full_duplex();
     return 0;

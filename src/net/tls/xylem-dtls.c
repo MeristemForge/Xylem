@@ -73,6 +73,7 @@ struct xylem_dtls_conn_s {
     addr_t                  peer_addr;
     char                    alpn[32];
     _Atomic bool            closed;
+    _Atomic bool            closing;
     _Atomic int32_t         refcnt;
     bool                    handshake_done;
     _dtls_dgram_t*          pending_dgram;
@@ -89,6 +90,7 @@ struct xylem_dtls_conn_s {
     scheduler_timer_t*      handshake_timer;
     xylem_dtls_listener_t*   listener;
     rbtree_node_t            server_node;
+    bool                     in_sessions;
     uint64_t                 rd_deadline_ms;
     uint64_t                 wr_deadline_ms;
 };
@@ -209,6 +211,31 @@ int xylem_dtls_ctx_set_alpn(
     return tls_backend_ctx_set_alpn(ctx->be, protocols, count);
 }
 
+static void _dtls_listener_ref(xylem_dtls_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
+
+static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+    datagram_release(ln->datagram);
+    xylem_mutex_destroy(ln->sessions_mu);
+    xylem_mutex_destroy(ln->write_mu);
+    _dtls_dgram_t* dgram = ln->dgram_pool;
+    while (dgram) {
+        _dtls_dgram_t* next = dgram->next;
+        free(dgram);
+        dgram = next;
+    }
+    xylem_mutex_destroy(ln->dgram_pool_mu);
+    if (ln->accept_ch) {
+        xylem_channel_destroy(ln->accept_ch);
+    }
+    free(ln);
+}
+
 static void _dtls_conn_ref(xylem_dtls_conn_t* dtls) {
     atomic_fetch_add_explicit(&dtls->refcnt, 1, memory_order_relaxed);
 }
@@ -218,6 +245,7 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
         != 1) {
         return;
     }
+    xylem_dtls_listener_t* ln = dtls->listener;
     if (dtls->be) {
         tls_backend_conn_destroy(dtls->be);
     }
@@ -246,31 +274,9 @@ static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
         xylem_channel_destroy(dtls->inbox);
     }
     free(dtls);
-}
-
-static void _dtls_listener_ref(xylem_dtls_listener_t* ln) {
-    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
-}
-
-static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
-    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
-        != 1) {
-        return;
+    if (ln) {
+        _dtls_listener_unref(ln);
     }
-    datagram_release(ln->datagram);
-    xylem_mutex_destroy(ln->sessions_mu);
-    xylem_mutex_destroy(ln->write_mu);
-    _dtls_dgram_t* dgram = ln->dgram_pool;
-    while (dgram) {
-        _dtls_dgram_t* next = dgram->next;
-        free(dgram);
-        dgram = next;
-    }
-    xylem_mutex_destroy(ln->dgram_pool_mu);
-    if (ln->accept_ch) {
-        xylem_channel_destroy(ln->accept_ch);
-    }
-    free(ln);
 }
 
 static _dtls_dgram_t* _dtls_dgram_alloc(xylem_dtls_listener_t* ln) {
@@ -386,6 +392,47 @@ static xylem_dtls_conn_t* _dtls_find_session(
         return NULL;
     }
     return rbtree_entry(node, xylem_dtls_conn_t, server_node);
+}
+
+static bool _dtls_server_unlink(xylem_dtls_conn_t* dtls) {
+    xylem_dtls_listener_t* ln = dtls->listener;
+    if (!ln) {
+        return false;
+    }
+
+    bool unlinked = false;
+    xylem_mutex_lock(ln->sessions_mu);
+    if (dtls->in_sessions) {
+        rbtree_remove(&ln->sessions, &dtls->server_node);
+        dtls->in_sessions = false;
+        unlinked = true;
+    }
+    xylem_mutex_unlock(ln->sessions_mu);
+    return unlinked;
+}
+
+static void _dtls_server_shutdown(xylem_dtls_conn_t* dtls) {
+    if (atomic_exchange(&dtls->closing, true)) {
+        return;
+    }
+    atomic_store_explicit(&dtls->closed, true, memory_order_release);
+    if (dtls->handshake_timer) {
+        scheduler_timer_stop(dtls->handshake_timer);
+    }
+
+    bool drop_session_ref = _dtls_server_unlink(dtls);
+
+    /**
+     * Close the inbox before dropping the session ref. A parked reader
+     * holds its own conn/channel refs and will release them after wakeup.
+     */
+    if (dtls->inbox) {
+        xylem_channel_close(dtls->inbox);
+    }
+
+    if (drop_session_ref) {
+        _dtls_conn_unref(dtls);
+    }
 }
 
 static int _dtls_copy_dgram(
@@ -767,10 +814,7 @@ static void _dtls_handshake_coro(void* arg) {
     };
     dtls->be = tls_backend_conn_create(ln->ctx->be, true, &io);
     if (!dtls->be) {
-        xylem_mutex_lock(ln->sessions_mu);
-        rbtree_remove(&ln->sessions, &dtls->server_node);
-        xylem_mutex_unlock(ln->sessions_mu);
-        _dtls_conn_unref(dtls);
+        _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
         return;
     }
@@ -858,16 +902,22 @@ static void _dtls_handshake_coro(void* arg) {
     dtls->handshake_timer  = NULL;
 
     if (!success) {
-        xylem_mutex_lock(ln->sessions_mu);
-        rbtree_remove(&ln->sessions, &dtls->server_node);
-        xylem_mutex_unlock(ln->sessions_mu);
-        _dtls_conn_unref(dtls);
+        _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
         return;
     }
 
     _dtls_cache_alpn(dtls);
+    xylem_mutex_lock(ln->sessions_mu);
+    if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+        xylem_mutex_unlock(ln->sessions_mu);
+        _dtls_server_shutdown(dtls);
+        _dtls_conn_unref(dtls);
+        return;
+    }
+    _dtls_conn_ref(dtls);
     xylem_channel_send(ln->accept_ch, dtls);
+    xylem_mutex_unlock(ln->sessions_mu);
     _dtls_conn_unref(dtls);
 }
 
@@ -914,7 +964,6 @@ static void _dtls_dispatcher(void* arg) {
         }
         atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
         dtls->peer_addr        = from_addr;
-        dtls->listener         = ln;
         dtls->inbox            = xylem_channel_create(0);
         dtls->handshake_timer  = scheduler_timer_create(ln->sched);
 
@@ -929,9 +978,12 @@ static void _dtls_dispatcher(void* arg) {
             continue;
         }
 
+        _dtls_listener_ref(ln);
+        dtls->listener = ln;
         _dtls_inbox_push(dtls, dgram);
 
         xylem_mutex_lock(ln->sessions_mu);
+        dtls->in_sessions = true;
         rbtree_insert(&ln->sessions, &dtls->server_node);
         xylem_mutex_unlock(ln->sessions_mu);
 
@@ -1024,13 +1076,6 @@ static int _dtls_server_send(
 }
 
 static void _dtls_server_close(xylem_dtls_conn_t* dtls) {
-    if (atomic_exchange(&dtls->closed, true)) {
-        return;
-    }
-    if (dtls->handshake_timer) {
-        scheduler_timer_stop(dtls->handshake_timer);
-    }
-
     /**
      * No close_notify: it is best-effort on a datagram transport and the
      * server session has no ssl_mu, so touching dtls->be here would race
@@ -1039,28 +1084,7 @@ static void _dtls_server_close(xylem_dtls_conn_t* dtls) {
      * no stream-truncation concern to guard against -- just drop it,
      * matching the client close path.
      */
-
-    /**
-     * Unlink from the session tree FIRST so the dispatcher can no
-     * longer find this session and therefore cannot xylem_channel_send
-     * into the inbox after we close it (send-on-closed aborts). The
-     * dispatcher does find+push under sessions_mu, so once the remove
-     * commits no further push can target this inbox.
-     */
-    xylem_dtls_listener_t* ln = dtls->listener;
-    xylem_mutex_lock(ln->sessions_mu);
-    rbtree_remove(&ln->sessions, &dtls->server_node);
-    xylem_mutex_unlock(ln->sessions_mu);
-
-    /**
-     * Now close the inbox to wake a parked reader; the reader's
-     * in-flight recv holds a channel reference, so the channel stays
-     * alive until _dtls_conn_unref drains and destroys it.
-     */
-    if (dtls->inbox) {
-        xylem_channel_close(dtls->inbox);
-    }
-
+    _dtls_server_shutdown(dtls);
     _dtls_conn_unref(dtls);
 }
 
@@ -1262,8 +1286,10 @@ void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
         rbtree_node_t* node = rbtree_min(&ln->sessions);
         xylem_dtls_conn_t* dtls =
             rbtree_entry(node, xylem_dtls_conn_t, server_node);
+        _dtls_conn_ref(dtls);
         xylem_mutex_unlock(ln->sessions_mu);
-        xylem_dtls_close(dtls);
+        _dtls_server_shutdown(dtls);
+        _dtls_conn_unref(dtls);
         xylem_mutex_lock(ln->sessions_mu);
     }
     xylem_mutex_unlock(ln->sessions_mu);
