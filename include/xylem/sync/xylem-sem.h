@@ -87,7 +87,7 @@ extern xylem_sem_t* xylem_sem_create(unsigned int value);
 /**
  * @brief Destroy the semaphore and free its resources.
  *
- * @note [THREAD-SAFE]
+ * @note [CALLER-SYNCHRONIZED]
  *
  * Callable from any thread or context. The caller must ensure no
  * coroutine or thread is still blocked in wait() on this semaphore.

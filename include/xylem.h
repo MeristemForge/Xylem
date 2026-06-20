@@ -107,8 +107,10 @@ extern void xylem_run(
  *
  * @note [THREAD-SAFE]
  *
- * Unblocks xylem_run() without waiting for coroutines
- * to finish naturally.
+ * Unblocks xylem_run() without waiting for coroutines to finish
+ * naturally. Already-running blocking jobs submitted by xylem_await()
+ * are not killed; they must return before the blocking pool can finish
+ * teardown.
  *
  * After shutdown is requested, external OS threads must not keep using
  * runtime-backed objects such as channels, mutexes, conds, semaphores,
@@ -149,6 +151,10 @@ extern void xylem_sleep(uint64_t ms);
  * This keeps the worker free to run other coroutines while @p fn
  * blocks. Must be called from a coroutine on the runtime -- calling it
  * off a coroutine aborts.
+ *
+ * xylem_shutdown() does not cancel @p fn once it has started running on
+ * a blocking-pool thread. The function must eventually return, or
+ * runtime teardown will wait for that thread.
  *
  * @return 0 on success, -1 on failure.
  */

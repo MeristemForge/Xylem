@@ -145,6 +145,8 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
  *
  * Signals shutdown, wakes all workers, waits for them to stop,
  * then frees all resources.
+ * Must not race with scheduler_stop() or scheduler_destroy() on the
+ * same scheduler; runtime teardown serializes those calls.
  *
  * @param sched  Scheduler to destroy, or NULL (no-op).
  */
@@ -160,8 +162,10 @@ extern void scheduler_destroy(scheduler_t* sched);
  * instance dynpool threads finishing a blocking task with
  * scheduler_schedule) can still touch the scheduler without UAF.
  * scheduler_destroy() must still be called afterwards to free the
- * memory. Idempotent: calling it a second time (or calling
- * scheduler_destroy without calling stop first) is safe.
+ * memory. Idempotent for sequential callers: calling it a second time
+ * (or calling scheduler_destroy without calling stop first) is safe.
+ * Must not race with another scheduler_stop() or scheduler_destroy()
+ * call on the same scheduler.
  *
  * @param sched  Scheduler to stop, or NULL (no-op).
  */

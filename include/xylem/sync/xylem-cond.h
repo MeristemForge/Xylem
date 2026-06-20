@@ -87,7 +87,7 @@ extern xylem_cond_t* xylem_cond_create(void);
 /**
  * @brief Destroy the cond and free its resources.
  *
- * @note [THREAD-SAFE]
+ * @note [CALLER-SYNCHRONIZED]
  *
  * It is a caller bug to destroy a cond that still has waiters on
  * it. Matches the pthread_cond_destroy contract.

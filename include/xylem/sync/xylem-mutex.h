@@ -105,7 +105,10 @@ extern void xylem_mutex_unlock(xylem_mutex_t* mutex);
 /**
  * @brief Destroy the mutex and free its resources.
  *
- * @note [THREAD-SAFE]
+ * @note [CALLER-SYNCHRONIZED]
+ *
+ * The caller must ensure no coroutine or thread is blocked in lock(),
+ * currently owns the mutex, or is otherwise using this mutex.
  *
  * @param mutex  Pointer to the mutex, NULL is safe.
  */
