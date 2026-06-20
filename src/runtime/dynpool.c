@@ -95,7 +95,10 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
     }
 
     mpsc_init(&pool->queue);
-    mtx_init(&pool->pop_mtx, mtx_plain);
+    if (mtx_init(&pool->pop_mtx, mtx_plain) != thrd_success) {
+        free(pool);
+        return NULL;
+    }
 
     pool->sem = platform_sem_create(0);
     if (!pool->sem) {

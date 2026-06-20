@@ -41,6 +41,11 @@
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
+static void test_null_entrypoints(void) {
+    xylem_shutdown();
+    xylem_run(NULL, NULL, &_rt_opts);
+}
+
 static void _timeout_coro(void* arg) {
     (void)arg;
     xylem_sleep(SAFETY_TIMEOUT_MS);
@@ -88,6 +93,20 @@ static void test_stop_from_spawned(void) {
     _stop_ctx_t ctx = {0};
     xylem_run(_stop_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
+}
+
+static void _spawn_null_main(void* arg) {
+    int* tested = (int*)arg;
+    _start_safety_timer();
+    xylem_spawn(NULL, NULL);
+    *tested = 1;
+    xylem_shutdown();
+}
+
+static void test_spawn_null(void) {
+    int tested = 0;
+    xylem_run(_spawn_null_main, &tested, &_rt_opts);
+    ASSERT(tested == 1);
 }
 
 typedef struct {
@@ -296,6 +315,24 @@ static void test_submit_basic(void) {
     _submit_ctx_t ctx = { .input = 42, .output = 0, .tested = 0 };
     xylem_run(_submit_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
+}
+
+static void _submit_null_coro(void* arg) {
+    int* tested = (int*)arg;
+    ASSERT(xylem_await(NULL, NULL) == -1);
+    *tested = 1;
+    xylem_shutdown();
+}
+
+static void _submit_null_main(void* arg) {
+    _start_safety_timer();
+    xylem_spawn(_submit_null_coro, arg);
+}
+
+static void test_submit_null(void) {
+    int tested = 0;
+    xylem_run(_submit_null_main, &tested, &_rt_opts);
+    ASSERT(tested == 1);
 }
 
 typedef struct {
@@ -572,14 +609,17 @@ static void test_coro_stack_grow_large_frame(void) {
 }
 
 int main(void) {
+    test_null_entrypoints();
     test_start_stop_cycle();
     test_stop_from_spawned();
+    test_spawn_null();
     test_spawn_from_external_thread();
     test_spawn_nested();
     test_spawn_many();
     test_sleep_zero();
     test_sleep_ordering();
     test_submit_basic();
+    test_submit_null();
     test_submit_concurrent();
     test_submit_result();
     test_coro_stack_grow();

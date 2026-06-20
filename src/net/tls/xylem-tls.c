@@ -65,9 +65,12 @@ xylem_tls_ctx_t* xylem_tls_ctx_create(void) {
 }
 
 void xylem_tls_ctx_destroy(xylem_tls_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
     RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_ctx_destroy");
 
-    tls_ctx_destroy(ctx ? &ctx->internal : NULL);
+    tls_ctx_destroy(&ctx->internal);
 }
 
 int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path) {

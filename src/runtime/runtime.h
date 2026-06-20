@@ -61,7 +61,7 @@ extern void runtime_shutdown(void);
  * @param fn   Coroutine entry function.
  * @param arg  Argument passed to fn.
  */
-extern void runtime_spawn(void (*fn)(void*), void* arg);
+extern int runtime_spawn(void (*fn)(void*), void* arg);
 
 /**
  * @brief Suspend the current coroutine for a duration.

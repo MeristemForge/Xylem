@@ -416,12 +416,19 @@ xylem_mux_t* xylem_mux_create(
     atomic_store_explicit(&mux->refcnt, 1, memory_order_relaxed);
 
     _mux_ref(mux);
-    runtime_spawn(_mux_reader_loop, mux);
+    if (runtime_spawn(_mux_reader_loop, mux) != 0) {
+        _mux_unref(mux);
+        _mux_unref(mux);
+        return NULL;
+    }
 
     return mux;
 }
 
 void xylem_mux_destroy(xylem_mux_t* mux) {
+    if (!mux) {
+        return;
+    }
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_destroy");
 
     if (atomic_exchange(&mux->closed, true)) {

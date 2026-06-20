@@ -21,6 +21,8 @@
 
 #include "xylem.h"
 #include "xylem/encoding/xylem-url.h"
+
+#include "net/http/http-utils.h"
 #include "assert.h"
 
 #include <stdio.h>
@@ -30,10 +32,51 @@
 typedef void (*_handler_t)(xylem_http_res_t*, xylem_http_req_t*, void*);
 typedef void (*_body_t)(uint16_t port);
 
+typedef struct {
+    char*  buf;
+    size_t len;
+    size_t cap;
+    int    max_write_len;
+    bool   oversized_write;
+    bool   closed;
+} _upgrade_transport_t;
+
 static uint16_t _srv_port(xylem_http_srv_t* srv) {
     uint16_t port = 0;
     xylem_http_srv_addr(srv, NULL, 0, &port);
     return port;
+}
+
+static int _upgrade_read(void* conn, void* buf, int len) {
+    (void)conn;
+    (void)buf;
+    (void)len;
+    return -1;
+}
+
+static int _upgrade_write(void* conn, const void* data, int len) {
+    _upgrade_transport_t* t = (_upgrade_transport_t*)conn;
+
+    if (len < 0) {
+        return -1;
+    }
+    if (t->max_write_len > 0 && len > t->max_write_len) {
+        t->oversized_write = true;
+        return -1;
+    }
+    if (t->len + (size_t)len + 1 > t->cap) {
+        return -1;
+    }
+
+    memcpy(t->buf + t->len, data, (size_t)len);
+    t->len += (size_t)len;
+    t->buf[t->len] = '\0';
+    return 0;
+}
+
+static void _upgrade_close(void* conn) {
+    _upgrade_transport_t* t = (_upgrade_transport_t*)conn;
+    t->closed = true;
 }
 
 typedef struct {
@@ -146,6 +189,43 @@ static void test_res_set_header_null(void) {
 
 static void test_res_write_null(void) {
     ASSERT(xylem_http_res_write(NULL, "data", 4) == -1);
+}
+
+static void test_upgrade_long_header(void) {
+    char out[2048] = {0};
+    _upgrade_transport_t fake = {
+        .buf = out,
+        .cap = sizeof(out),
+        .max_write_len = 512,
+    };
+    http_transport_t transport = {
+        .conn = &fake,
+        .read = _upgrade_read,
+        .write = _upgrade_write,
+        .close = _upgrade_close,
+    };
+    http_res_t res = {
+        ._transport = &transport,
+    };
+    char value[509];
+    memset(value, 'a', sizeof(value) - 1);
+    value[sizeof(value) - 1] = '\0';
+
+    ASSERT(http_header_add(&res.headers, &res.header_count,
+                           &res.header_cap, "X-Long", 6,
+                           value, strlen(value)) == 0);
+
+    void* detached = NULL;
+    ASSERT(http_res_upgrade(&res, &detached) == 0);
+    ASSERT(detached == &transport);
+    ASSERT(res._transport == NULL);
+    ASSERT(!fake.oversized_write);
+    ASSERT(strstr(out, "X-Long: ") != NULL);
+    ASSERT(strstr(out, value) != NULL);
+    ASSERT(strstr(out, "\r\n\r\n") != NULL);
+    ASSERT(!fake.closed);
+
+    http_headers_free(res.headers, res.header_count);
 }
 
 static void _hello_handler(xylem_http_res_t* res, xylem_http_req_t* req,
@@ -440,6 +520,7 @@ int main(void) {
     test_res_set_status_null();
     test_res_set_header_null();
     test_res_write_null();
+    test_upgrade_long_header();
 
     test_http_integration();
     test_pool_reuse();

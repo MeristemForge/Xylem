@@ -26,6 +26,7 @@
 
 #include "runtime/iowait.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,46 +83,151 @@ static int _http_tunnel_read_some(
     }
 }
 
+static bool _http_tunnel_size_add(size_t* total, size_t add) {
+    if (SIZE_MAX - *total < add) {
+        return false;
+    }
+    *total += add;
+    return true;
+}
+
+static char* _http_tunnel_append(char* p, const void* data, size_t len) {
+    memcpy(p, data, len);
+    return p + len;
+}
+
+static char* _http_tunnel_build_request(const char* target_host,
+                                        uint16_t target_port,
+                                        const char* username,
+                                        const char* password,
+                                        int* out_len) {
+    char target_port_str[8];
+    int  target_port_len = snprintf(
+        target_port_str, sizeof(target_port_str), "%u", target_port);
+    if (target_port_len < 0 || target_port_len >= (int)sizeof(target_port_str)) {
+        return NULL;
+    }
+
+    char*  auth       = NULL;
+    size_t auth_len   = 0;
+    size_t target_len = strlen(target_host);
+
+    if (username && password) {
+        size_t ulen = strlen(username);
+        size_t plen = strlen(password);
+        if (SIZE_MAX - ulen < 1 || SIZE_MAX - ulen - 1 < plen) {
+            return NULL;
+        }
+
+        size_t cred_len = ulen + 1 + plen;
+        if (cred_len > (size_t)INT_MAX) {
+            return NULL;
+        }
+
+        char* cred = (char*)malloc(cred_len);
+        if (!cred) {
+            return NULL;
+        }
+        memcpy(cred, username, ulen);
+        cred[ulen] = ':';
+        memcpy(cred + ulen + 1, password, plen);
+
+        int encoded_len = xylem_base64_encode_size((int)cred_len);
+        if (encoded_len < 0) {
+            free(cred);
+            return NULL;
+        }
+
+        auth = (char*)malloc((size_t)encoded_len + 1);
+        if (!auth) {
+            free(cred);
+            return NULL;
+        }
+
+        int n = xylem_base64_encode_std(
+            (const uint8_t*)cred, (int)cred_len,
+            (uint8_t*)auth, encoded_len);
+        free(cred);
+        if (n != encoded_len) {
+            free(auth);
+            return NULL;
+        }
+        auth[encoded_len] = '\0';
+        auth_len = (size_t)encoded_len;
+    }
+
+    size_t total = 0;
+    bool ok = _http_tunnel_size_add(&total, strlen("CONNECT "))
+              && _http_tunnel_size_add(&total, target_len)
+              && _http_tunnel_size_add(&total, strlen(":"))
+              && _http_tunnel_size_add(&total, (size_t)target_port_len)
+              && _http_tunnel_size_add(&total, strlen(" HTTP/1.1\r\n"))
+              && _http_tunnel_size_add(&total, strlen("Host: "))
+              && _http_tunnel_size_add(&total, target_len)
+              && _http_tunnel_size_add(&total, strlen(":"))
+              && _http_tunnel_size_add(&total, (size_t)target_port_len)
+              && _http_tunnel_size_add(&total, strlen("\r\n"));
+    if (ok && auth) {
+        ok = _http_tunnel_size_add(
+                 &total, strlen("Proxy-Authorization: Basic "))
+             && _http_tunnel_size_add(&total, auth_len)
+             && _http_tunnel_size_add(&total, strlen("\r\n"));
+    }
+    ok = ok && _http_tunnel_size_add(&total, strlen("\r\n"));
+    if (!ok || total > (size_t)INT_MAX) {
+        free(auth);
+        return NULL;
+    }
+
+    char* req = (char*)malloc(total + 1);
+    if (!req) {
+        free(auth);
+        return NULL;
+    }
+
+    char* p = req;
+    p = _http_tunnel_append(p, "CONNECT ", strlen("CONNECT "));
+    p = _http_tunnel_append(p, target_host, target_len);
+    p = _http_tunnel_append(p, ":", strlen(":"));
+    p = _http_tunnel_append(p, target_port_str, (size_t)target_port_len);
+    p = _http_tunnel_append(p, " HTTP/1.1\r\n", strlen(" HTTP/1.1\r\n"));
+    p = _http_tunnel_append(p, "Host: ", strlen("Host: "));
+    p = _http_tunnel_append(p, target_host, target_len);
+    p = _http_tunnel_append(p, ":", strlen(":"));
+    p = _http_tunnel_append(p, target_port_str, (size_t)target_port_len);
+    p = _http_tunnel_append(p, "\r\n", strlen("\r\n"));
+    if (auth) {
+        p = _http_tunnel_append(
+            p, "Proxy-Authorization: Basic ",
+            strlen("Proxy-Authorization: Basic "));
+        p = _http_tunnel_append(p, auth, auth_len);
+        p = _http_tunnel_append(p, "\r\n", strlen("\r\n"));
+    }
+    p = _http_tunnel_append(p, "\r\n", strlen("\r\n"));
+    *p = '\0';
+
+    free(auth);
+    *out_len = (int)total;
+    return req;
+}
+
 static int _http_tunnel_handshake(iowait_t* w, platform_sock_t fd,
                                   const char* target_host,
                                   uint16_t target_port,
                                   const char* username,
                                   const char* password) {
-    char req[512];
-    int off = snprintf(req, sizeof(req),
-                       "CONNECT %s:%u HTTP/1.1\r\n"
-                       "Host: %s:%u\r\n",
-                       target_host, (unsigned)target_port,
-                       target_host, (unsigned)target_port);
-
-    if (username && password) {
-        size_t ulen = strlen(username);
-        size_t plen = strlen(password);
-        size_t cred_len = ulen + 1 + plen;
-        char* cred = (char*)malloc(cred_len + 1);
-        if (!cred) {
-            return -1;
-        }
-        snprintf(cred, cred_len + 1, "%s:%s", username, password);
-
-        uint8_t b64[256];
-        int b64_len = xylem_base64_encode_std(
-            (const uint8_t*)cred, (int)cred_len, b64, (int)sizeof(b64));
-        free(cred);
-        if (b64_len < 0) {
-            return -1;
-        }
-        b64[b64_len] = '\0';
-
-        off += snprintf(req + off, sizeof(req) - (size_t)off,
-                        "Proxy-Authorization: Basic %s\r\n", (char*)b64);
-    }
-
-    off += snprintf(req + off, sizeof(req) - (size_t)off, "\r\n");
-
-    if (_http_tunnel_write_all(w, fd, req, off) != 0) {
+    int   req_len = 0;
+    char* req = _http_tunnel_build_request(
+        target_host, target_port, username, password, &req_len);
+    if (!req) {
         return -1;
     }
+
+    if (_http_tunnel_write_all(w, fd, req, req_len) != 0) {
+        free(req);
+        return -1;
+    }
+    free(req);
 
     char resp[1024];
     size_t resp_len = 0;

@@ -987,7 +987,10 @@ static void _dtls_dispatcher(void* arg) {
         rbtree_insert(&ln->sessions, &dtls->server_node);
         xylem_mutex_unlock(ln->sessions_mu);
 
-        runtime_spawn(_dtls_handshake_coro, dtls);
+        if (runtime_spawn(_dtls_handshake_coro, dtls) != 0) {
+            _dtls_server_shutdown(dtls);
+            _dtls_conn_unref(dtls);
+        }
     }
 
     _dtls_listener_unref(ln);
@@ -1215,7 +1218,11 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     }
 
     _dtls_listener_ref(ln); /* dispatcher's reference (released on exit) */
-    runtime_spawn(_dtls_dispatcher, ln);
+    if (runtime_spawn(_dtls_dispatcher, ln) != 0) {
+        _dtls_listener_unref(ln);
+        _dtls_listener_unref(ln);
+        return NULL;
+    }
     return ln;
 }
 

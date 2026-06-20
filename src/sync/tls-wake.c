@@ -37,17 +37,22 @@ struct tls_wake_s {
 
 static tss_t     _tls_wake_key;
 static once_flag _tls_wake_once = ONCE_FLAG_INIT;
+static bool      _tls_wake_ready;
 
 static void _tls_wake_dtor(void* p) {
     free(p);
 }
 
 static void _tls_wake_init(void) {
-    tss_create(&_tls_wake_key, _tls_wake_dtor);
+    _tls_wake_ready =
+        (tss_create(&_tls_wake_key, _tls_wake_dtor) == thrd_success);
 }
 
 tls_wake_t* tls_wake_self(void) {
     call_once(&_tls_wake_once, _tls_wake_init);
+    if (!_tls_wake_ready) {
+        return NULL;
+    }
 
     tls_wake_t* w = (tls_wake_t*)tss_get(_tls_wake_key);
     if (!w) {

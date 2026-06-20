@@ -205,7 +205,12 @@ static void test_multiple_streams(void) {
     _run_pair(MUX_PORT + 1, _multi_srv_worker, _multi_cli_worker);
 }
 
+static void test_destroy_null(void) {
+    xylem_mux_destroy(NULL);
+}
+
 int main(void) {
+    test_destroy_null();
     test_single_stream_echo();
     test_multiple_streams();
     return 0;

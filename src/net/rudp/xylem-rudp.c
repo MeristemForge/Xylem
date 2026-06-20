@@ -380,6 +380,7 @@ static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
 }
 
 static void _rudp_schedule_update(xylem_rudp_conn_t* c);
+static void _rudp_conn_unref(xylem_rudp_conn_t* conn);
 static void _rudp_deferred_close(void* arg);
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
@@ -405,7 +406,9 @@ static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
          * until the deferred coroutine runs.
          */
         _rudp_conn_ref(c);
-        runtime_spawn(_rudp_deferred_close, c);
+        if (runtime_spawn(_rudp_deferred_close, c) != 0) {
+            _rudp_conn_unref(c);
+        }
         return;
     }
 
@@ -1224,7 +1227,13 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     }
 
     rbtree_init(&ln->sessions, _rudp_session_cmp_nn, _rudp_session_cmp_kn);
-    mtx_init(&ln->sessions_mtx, mtx_plain);
+    if (mtx_init(&ln->sessions_mtx, mtx_plain) != thrd_success) {
+        xylem_aes256_destroy(ln->aes);
+        iowait_destroy(ln->waiter);
+        platform_socket_close(fd);
+        free(ln);
+        return NULL;
+    }
 
     /* Accept queue: a channel carrying accepted session pointers. */
     ln->accept_ch = xylem_channel_create(0);
@@ -1238,7 +1247,16 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     }
 
     /* Spawn the background dispatcher coroutine. */
-    runtime_spawn(_rudp_dispatcher, ln);
+    if (runtime_spawn(_rudp_dispatcher, ln) != 0) {
+        xylem_channel_destroy(ln->accept_ch);
+        xylem_aes256_destroy(ln->aes);
+        memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
+        iowait_destroy(ln->waiter);
+        platform_socket_close(fd);
+        mtx_destroy(&ln->sessions_mtx);
+        free(ln);
+        return NULL;
+    }
 
     return ln;
 }

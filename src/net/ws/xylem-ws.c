@@ -161,7 +161,10 @@ static void _ws_upgrade_handler(xylem_http_res_t* res, xylem_http_req_t* req,
     ctx->conn     = conn;
     ctx->handler  = l->handler;
     ctx->userdata = l->userdata;
-    runtime_spawn(_ws_conn_coroutine, ctx);
+    if (runtime_spawn(_ws_conn_coroutine, ctx) != 0) {
+        xylem_ws_close(conn, 1011, NULL, 0);
+        free(ctx);
+    }
 }
 
 xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,

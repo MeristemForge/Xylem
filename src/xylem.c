@@ -62,7 +62,7 @@ void xylem_shutdown(void) {
 }
 
 void xylem_spawn(void (*fn)(void*), void* arg) {
-    runtime_spawn(fn, arg);
+    (void)runtime_spawn(fn, arg);
 }
 
 void xylem_sleep(uint64_t ms) {

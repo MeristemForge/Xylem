@@ -43,6 +43,7 @@
 
 #include "net/http/llhttp/llhttp.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,20 @@ static inline int _transport_read(http_transport_t* t, void* buf, int len) {
 static inline int _transport_write(http_transport_t* t, const void* data,
                                    int len) {
     return t->write(t->conn, data, len);
+}
+
+static int _transport_write_bytes(http_transport_t* t, const void* data,
+                                  size_t len) {
+    const char* p = (const char*)data;
+    while (len > 0) {
+        int chunk = len > (size_t)INT_MAX ? INT_MAX : (int)len;
+        if (_transport_write(t, p, chunk) != 0) {
+            return -1;
+        }
+        p += chunk;
+        len -= (size_t)chunk;
+    }
+    return 0;
 }
 
 static inline void _transport_close(http_transport_t* t) {
@@ -382,22 +397,24 @@ int http_res_upgrade(http_res_t* res, void** transport) {
     const char* resp = "HTTP/1.1 101 Switching Protocols\r\n"
                        "Upgrade: websocket\r\n"
                        "Connection: Upgrade\r\n";
-    int n = res->_transport->write(res->_transport->conn,
-                                   resp, (int)strlen(resp));
-    if (n < 0) {
+    if (_transport_write_bytes(res->_transport, resp, strlen(resp)) != 0) {
         return -1;
     }
 
     for (size_t i = 0; i < res->header_count; i++) {
-        char hdr[512];
-        int hlen = snprintf(hdr, sizeof(hdr), "%s: %s\r\n",
-                            res->headers[i].name, res->headers[i].value);
-        if (hlen > 0) {
-            res->_transport->write(res->_transport->conn, hdr, hlen);
+        const char* name  = res->headers[i].name;
+        const char* value = res->headers[i].value;
+        if (_transport_write_bytes(res->_transport, name, strlen(name)) != 0
+            || _transport_write_bytes(res->_transport, ": ", 2) != 0
+            || _transport_write_bytes(res->_transport, value, strlen(value)) != 0
+            || _transport_write_bytes(res->_transport, "\r\n", 2) != 0) {
+            return -1;
         }
     }
 
-    res->_transport->write(res->_transport->conn, "\r\n", 2);
+    if (_transport_write_bytes(res->_transport, "\r\n", 2) != 0) {
+        return -1;
+    }
 
     /**
      * 101 + headers are on the wire; hand the live connection to the

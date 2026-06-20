@@ -572,12 +572,14 @@ xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
     http_transport_t* tp = (http_transport_t*)transport_ptr;
     xylem_ws_conn_t* conn = ws_conn_create(*tp, false, opts);
     if (!conn) {
+        tp->close(tp->conn);
         return NULL;
     }
 
     if (deflate_agreed) {
         bool no_takeover = deflate_offer.server_no_context_takeover;
         if (ws_deflate_init(&conn->deflate_ctx, no_takeover) != 0) {
+            conn->transport.close(conn->transport.conn);
             ws_conn_free(conn);
             return NULL;
         }

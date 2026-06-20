@@ -106,8 +106,8 @@ platform_poller_sq_t* runtime_get_poller(void) {
     return scheduler_get_poller(g_sched);
 }
 
-void runtime_spawn(void (*fn)(void*), void* arg) {
-    scheduler_spawn(g_sched, fn, arg);
+int runtime_spawn(void (*fn)(void*), void* arg) {
+    return scheduler_spawn(g_sched, fn, arg);
 }
 
 void runtime_sleep(uint64_t ms) {
@@ -134,6 +134,9 @@ void runtime_yield_credit(void) {
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {
+    if (!fn) {
+        return -1;
+    }
     RUNTIME_REQUIRE_COROUTINE("runtime", "runtime_submit");
 
     _submit_ctx_t* ctx = (_submit_ctx_t*)calloc(1, sizeof(_submit_ctx_t));
@@ -159,6 +162,10 @@ void runtime_run(
     void (*main_fn)(void*),
     void* arg,
     runtime_opts_t* opts) {
+    if (!main_fn) {
+        return;
+    }
+
     int32_t workers = (int32_t)platform_info_getcpus();
     if (workers < 1) {
         workers = 4;
@@ -225,8 +232,13 @@ void runtime_run(
 }
 
 void runtime_shutdown(void) {
+    platform_sem_t* stop_sem = g_stop_sem;
+    if (!stop_sem) {
+        return;
+    }
+
     bool expected = false;
     if (atomic_compare_exchange_strong(&g_shutdown, &expected, true)) {
-        platform_sem_post(g_stop_sem);
+        platform_sem_post(stop_sem);
     }
 }

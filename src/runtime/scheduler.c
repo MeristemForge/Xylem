@@ -153,6 +153,7 @@ struct scheduler_s {
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
     _Atomic int32_t       searching;
+    bool                  poller_ready;
     bool                  joined;
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
@@ -1304,7 +1305,9 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
         platform_socket_close(sched->wakeup_wr);
     }
 
-    platform_poller_deinit(&sched->poller);
+    if (sched->poller_ready) {
+        platform_poller_deinit(&sched->poller);
+    }
     if (sched->iowait_slab) {
         iowait_slab_destroy(sched->iowait_slab);
     }
@@ -1352,21 +1355,33 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     list_init(&sched->registry);
     spin_init(&sched->registry_lock);
 
-    platform_poller_init(&sched->poller);
+    if (platform_poller_init(&sched->poller) != 0) {
+        _sched_cleanup(sched, 0);
+        return NULL;
+    }
+    sched->poller_ready = true;
     {
         platform_sock_t pair[2];
-        if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) == 0) {
-            sched->wakeup_rd = pair[0];
-            sched->wakeup_wr = pair[1];
-            platform_socket_enable_nonblocking(sched->wakeup_rd, true);
-            platform_socket_enable_nonblocking(sched->wakeup_wr, true);
-
-            memset(&sched->wakeup_sqe, 0, sizeof(sched->wakeup_sqe));
-            sched->wakeup_sqe.fd = (platform_poller_fd_t)sched->wakeup_rd;
-            sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
-            sched->wakeup_sqe.ud = NULL;
-            platform_poller_add(&sched->poller, &sched->wakeup_sqe);
+        if (platform_socket_socketpair(0, SOCK_STREAM, 0, pair) != 0) {
+            _sched_cleanup(sched, 0);
+            return NULL;
         }
+
+        platform_socket_enable_nonblocking(pair[0], true);
+        platform_socket_enable_nonblocking(pair[1], true);
+
+        memset(&sched->wakeup_sqe, 0, sizeof(sched->wakeup_sqe));
+        sched->wakeup_sqe.fd = (platform_poller_fd_t)pair[0];
+        sched->wakeup_sqe.op = PLATFORM_POLLER_RD_OP;
+        sched->wakeup_sqe.ud = NULL;
+        if (platform_poller_add(&sched->poller, &sched->wakeup_sqe) != 0) {
+            platform_socket_close(pair[0]);
+            platform_socket_close(pair[1]);
+            _sched_cleanup(sched, 0);
+            return NULL;
+        }
+        sched->wakeup_rd = pair[0];
+        sched->wakeup_wr = pair[1];
     }
 
     atomic_store(&sched->running, true);
@@ -1400,25 +1415,30 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         }
     }
 
-    sched->worker_count = worker_count;
     sched->workers = (_sched_worker_t*)calloc(
         (size_t)worker_count, sizeof(_sched_worker_t));
     if (!sched->workers) {
         _sched_cleanup(sched, 0);
         return NULL;
     }
+    sched->worker_count = 0;
 
     for (int32_t i = 0; i < worker_count; i++) {
         _sched_worker_t* w = &sched->workers[i];
-        w->deque = wsq_create(deque_capacity);
-        w->sem = platform_sem_create(0);
         w->sched = sched;
         w->index = (uint32_t)i;
         w->rng = 2654435761u * (uint32_t)(i + 1); /* non-zero xorshift seed */
         atomic_store(&w->parked, false);
         atomic_store(&w->searching, false);
         heap_init(&w->timers, _sched_timer_compare_cb);
-        mtx_init(&w->timer_lock, mtx_plain);
+        if (mtx_init(&w->timer_lock, mtx_plain) != thrd_success) {
+            _sched_cleanup(sched, 0);
+            return NULL;
+        }
+        sched->worker_count = i + 1;
+
+        w->deque = wsq_create(deque_capacity);
+        w->sem = platform_sem_create(0);
         atomic_init(&w->next_deadline_ms, UINT64_MAX);
         w->coro_cache = (void**)calloc(
             SCHED_CORO_CACHE_CAP, sizeof(void*));
@@ -1641,7 +1661,7 @@ void scheduler_schedule_batch(
 }
 
 int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
-    if (!_sched_is_running(sched)) {
+    if (!fn || !_sched_is_running(sched)) {
         return -1;
     }
 

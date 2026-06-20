@@ -38,7 +38,10 @@ runq_t* runq_create(void) {
         return NULL;
     }
     queue_init(&rq->q);
-    mtx_init(&rq->lock, mtx_plain);
+    if (mtx_init(&rq->lock, mtx_plain) != thrd_success) {
+        free(rq);
+        return NULL;
+    }
     return rq;
 }
 

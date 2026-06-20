@@ -181,6 +181,7 @@ static void test_set_alpn(void) {
 }
 
 static void test_null_handles(void) {
+    xylem_tls_ctx_destroy(NULL);
     ASSERT(xylem_tls_dial(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
     ASSERT(xylem_tls_listen(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
     ASSERT(xylem_tls_accept(NULL) == NULL);
