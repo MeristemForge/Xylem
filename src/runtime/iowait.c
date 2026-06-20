@@ -44,11 +44,11 @@
 #define IOWAIT_PAGE_SHIFT 8
 #define IOWAIT_PAGE_SIZE  (1u << IOWAIT_PAGE_SHIFT)
 #define IOWAIT_FREE_END   UINT32_MAX
-#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 4096)
+#define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 255 : 4096)
 
 _Static_assert(
     (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
-        ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
+        IOWAIT_INDEX_MASK,
     "slab capacity exceeds addressable index range");
 
 typedef struct _iowait_dir_s _iowait_dir_t;
