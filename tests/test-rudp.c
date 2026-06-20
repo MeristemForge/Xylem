@@ -271,11 +271,40 @@ static void test_dead_link(void) {
     _run((_ctx_t){.port = 19308, .a = _dead_server, .b = _dead_client});
 }
 
+static void _close_listener_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    for (uint16_t i = 0; i < 32; i++) {
+        xylem_rudp_listener_t* ln =
+            xylem_rudp_listen(RUDP_HOST, (uint16_t)(ctx->port + i), NULL);
+        ASSERT(ln != NULL);
+        xylem_rudp_close_listener(ln);
+        xylem_sleep(1);
+    }
+
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _close_listener_peer(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_close_listener_wakes_dispatcher(void) {
+    _run((_ctx_t){
+        .port = 19310,
+        .a    = _close_listener_server,
+        .b    = _close_listener_peer,
+    });
+}
+
 int main(void) {
     test_echo();
     test_remote_addr();
     test_read_deadline();
     test_close_wakes_read();
     test_dead_link();
+    test_close_listener_wakes_dispatcher();
     return 0;
 }

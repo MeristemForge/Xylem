@@ -95,6 +95,7 @@ struct xylem_rudp_listener_s {
     xylem_aes256_t*        aes;
     uint8_t                aes_key_buf[32];
     _Atomic bool           closed;
+    _Atomic int32_t        refcnt;
 
     xylem_channel_t*       accept_ch;   /* delivers accepted sessions */
 };
@@ -384,6 +385,31 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn);
 static void _rudp_deferred_close(void* arg);
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
+
+static void _rudp_listener_ref(xylem_rudp_listener_t* ln) {
+    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+}
+
+static void _rudp_listener_unref(xylem_rudp_listener_t* ln) {
+    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+        != 1) {
+        return;
+    }
+
+    if (ln->accept_ch) {
+        xylem_channel_destroy(ln->accept_ch);
+    }
+    xylem_aes256_destroy(ln->aes);
+    memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
+    if (ln->waiter) {
+        iowait_destroy(ln->waiter);
+    }
+    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(ln->fd);
+    }
+    mtx_destroy(&ln->sessions_mtx);
+    free(ln);
+}
 
 static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
@@ -913,6 +939,8 @@ static void _rudp_dispatcher(void* arg) {
             free(plain);
         }
     }
+
+    _rudp_listener_unref(ln);
 }
 
 xylem_rudp_conn_t* xylem_rudp_dial(
@@ -1246,15 +1274,13 @@ xylem_rudp_listener_t* xylem_rudp_listen(
         return NULL;
     }
 
+    _rudp_listener_ref(ln); /* caller's reference */
+    _rudp_listener_ref(ln); /* dispatcher's reference */
+
     /* Spawn the background dispatcher coroutine. */
     if (runtime_spawn(_rudp_dispatcher, ln) != 0) {
-        xylem_channel_destroy(ln->accept_ch);
-        xylem_aes256_destroy(ln->aes);
-        memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
-        iowait_destroy(ln->waiter);
-        platform_socket_close(fd);
-        mtx_destroy(&ln->sessions_mtx);
-        free(ln);
+        _rudp_listener_unref(ln);
+        _rudp_listener_unref(ln);
         return NULL;
     }
 
@@ -1264,7 +1290,9 @@ xylem_rudp_listener_t* xylem_rudp_listen(
 xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
     RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_accept");
 
+    _rudp_listener_ref(ln);
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)xylem_channel_recv(ln->accept_ch);
+    _rudp_listener_unref(ln);
     return c;
 }
 
@@ -1354,20 +1382,8 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     }
     mtx_unlock(&ln->sessions_mtx);
 
-    /**
-     * Wake the accept waiter and release the accept channel. Any
-     * session still queued in the channel was already closed by the
-     * session-teardown loop above (it was in the rbtree), so destroy
-     * only frees the channel's node wrappers.
-     */
-    xylem_channel_destroy(ln->accept_ch);
-
-    xylem_aes256_destroy(ln->aes);
-    memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
-    iowait_destroy(ln->waiter);
-    platform_socket_close(ln->fd);
-    mtx_destroy(&ln->sessions_mtx);
-    free(ln);
+    xylem_channel_close(ln->accept_ch);
+    _rudp_listener_unref(ln);
 }
 
 void xylem_rudp_set_read_deadline(
