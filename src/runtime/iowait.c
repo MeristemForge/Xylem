@@ -212,8 +212,8 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
 static void _iowait_retire(iowait_t* w) {
     uint16_t prev = atomic_fetch_add(&w->gen, 1);
     if ((uint16_t)(prev + 1) == 0) {
-        /* Never reuse a slot with the same generation as stale CQEs. */
-        return;
+        /* Skip gen 0 so stale CQEs from the wrapped generation miss. */
+        atomic_fetch_add(&w->gen, 1);
     }
     _iowait_slab_free(w->slab, w->slot_index);
 }

@@ -91,7 +91,10 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * handle return IOWAIT_TIMEOUT as soon as the clock passes the
  * deadline. Passing 0 clears the deadline; any running timer is
  * stopped but may still fire once if its callback was already
- * dispatched at the moment of the stop.
+ * dispatched at the moment of the stop. If that wake reaches a parked
+ * coroutine after the deadline has been cleared or reset, the wake is
+ * treated as spurious and the wait retries instead of returning
+ * IOWAIT_TIMEOUT.
  *
  * Safe to call from any thread, including while a read is parked on
  * another thread, but concurrent setters on the read direction of

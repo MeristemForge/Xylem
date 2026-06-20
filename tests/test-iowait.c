@@ -125,6 +125,8 @@ static void _iowait_wrap_coro(void* arg) {
 
     ctx->active = iowait_create(ctx->socks[0]);
     ASSERT(ctx->active != NULL);
+    ASSERT(ctx->active->slot_index == 1);
+    ASSERT(atomic_load(&ctx->active->gen) == 1);
 
     xylem_spawn(_iowait_wait_coro, ctx);
     xylem_sleep(1);

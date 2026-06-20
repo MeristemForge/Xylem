@@ -315,8 +315,9 @@ parked. The steps:
 3. It arms the fd on the poller, then **re-checks** `closed` and the deadline,
    because either could have raced in between publish and arm. If so, it wakes
    itself immediately.
-4. On resume, the return value is decided by re-reading `closed`/`deadline`:
-   `IOWAIT_READY`, `IOWAIT_TIMEOUT`, or `IOWAIT_CLOSED`.
+4. On resume, the return value is decided from the current state by re-reading
+   `closed`, poll errors, and `deadline`: `IOWAIT_READY`, `IOWAIT_TIMEOUT`,
+   `IOWAIT_ERROR`, or `IOWAIT_CLOSED`.
 
 The same steps as a time-ordered diagram (top to bottom is time; `|` is each
 actor's timeline):
@@ -357,9 +358,16 @@ actor's timeline):
 ### Three wake sources, one winner
 
 A parked coroutine can be woken by an **I/O event**, a **deadline timer**, or
-**`iowait_close()`**. Each does an `atomic_exchange(&park, NULL)`; only the one
-that observes the non-NULL coroutine pointer actually reschedules it, so the
-coroutine wakes exactly once with the cause it can infer from `closed`/`deadline`.
+**`iowait_close()`**. Each tries to claim the parked coroutine from the
+per-direction state; only the claimant that observes the coroutine pointer
+actually reschedules it. I/O readiness may also be cached as `READY` on
+edge-triggered pollers. Deadline timeout is deliberately not latched as an
+unconditional result: the resumed coroutine reports timeout only if the
+deadline is still expired when it runs. If a deadline timer fires and wakes the
+coroutine, but the deadline is cleared or reset before the coroutine resumes,
+that wake is treated as a spurious wake and the wait retries. This matches the
+Go netpoll model: readiness is cached, timeout is checked against current
+deadline state.
 
 ```
    I/O event      deadline timer     iowait_close          rd.park (atomic)
@@ -374,8 +382,8 @@ coroutine wakes exactly once with the cause it can infer from `closed`/`deadline
        |                                                         |
        |  winner: schedule(co)  ----------------------------->  Coroutine
        |                                                         |
-       |  on resume, co re-reads closed/deadline to report       |
-       |  READY / TIMEOUT / CLOSED                               |
+       |  on resume, co re-reads current state to report         |
+       |  READY / TIMEOUT / ERROR / CLOSED, or retries           |
        v                                                         v
 ```
 
@@ -385,11 +393,14 @@ iowait handles are allocated from a per-scheduler **paged slab** with a
 free-list. The poller's user-data is a `(generation, slab-index)` pair packed
 into a `uintptr_t` (16 generation bits, the rest index; layout validated by a
 `_Static_assert` and works on 32- and 64-bit). When a handle is retired its
-generation is bumped and the slot returns to the free list. If a completion
-event arrives for a recycled slot, `_iowait_tryref()` compares the event's tag
-against the slot's current generation and **rejects the mismatch**, so a stale
-CQE can never wake the wrong coroutine. Index 0 is reserved as the NULL sentinel
-used by the scheduler's wakeup fd.
+generation is bumped and the slot returns to the free list. If that bump wraps
+to generation 0, iowait skips 0 before returning the slot; this keeps stale
+events tagged with the wrapped generation from matching the next occupant
+without leaking the slab slot. If a completion event arrives for a recycled
+slot, `_iowait_tryref()` compares the event's tag against the slot's current
+generation and **rejects the mismatch**, so a stale CQE can never wake the
+wrong coroutine. Index 0 is reserved as the NULL sentinel used by the
+scheduler's wakeup fd.
 
 ### Edge- vs level-triggered arming
 
@@ -424,7 +435,9 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
   concurrently with an in-flight fire. `scheduler_timer_stop()`/`reset()` return
   whether they cancelled a still-pending fire, which lets callers (e.g. the
   iowait deadline path) know whether to release a reference the callback would
-  otherwise drop.
+  otherwise drop. The iowait deadline callback re-checks the absolute deadline
+  before waking, so a callback that was already dispatched before a clear/reset
+  can become a harmless spurious wake.
 
 `xylem_sleep(ms)` is built directly on this: it creates a one-shot timer whose
 callback reschedules the sleeping coroutine, then parks.
