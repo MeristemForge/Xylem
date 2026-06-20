@@ -46,15 +46,17 @@
 #define IOWAIT_FREE_END   UINT32_MAX
 #define IOWAIT_PAGES_MAX  (sizeof(void*) <= 4 ? 256 : 4096)
 
-#define IOWAIT_DIR_EMPTY ((uintptr_t)0)
-#define IOWAIT_DIR_READY ((uintptr_t)1)
-
 _Static_assert(
     (uint64_t)IOWAIT_PAGES_MAX * IOWAIT_PAGE_SIZE <=
         ((uint64_t)1 << (sizeof(uintptr_t) * CHAR_BIT - 16)),
     "slab capacity exceeds addressable index range");
 
 typedef struct _iowait_dir_s _iowait_dir_t;
+
+enum {
+    IOWAIT_DIR_SLOT_EMPTY = 0,
+    IOWAIT_DIR_SLOT_READY = 1,
+};
 
 typedef enum _iowait_arm_status_e {
     IOWAIT_ARM_OK,
@@ -64,7 +66,7 @@ typedef enum _iowait_arm_status_e {
 
 struct _iowait_dir_s {
     iowait_t*          w;
-    _Atomic uintptr_t  state;
+    _Atomic uintptr_t  slot;
     scheduler_timer_t* timer;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
@@ -248,44 +250,55 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
     return w;
 }
 
-static inline mco_coro* _iowait_waiter_from_state(uintptr_t state) {
-    return state > IOWAIT_DIR_READY ? (mco_coro*)state : NULL;
+static inline mco_coro* _iowait_waiter_from_slot(uintptr_t slot) {
+    return slot > IOWAIT_DIR_SLOT_READY ? (mco_coro*)slot : NULL;
 }
 
 static bool _iowait_has_waiter(_iowait_dir_t* d) {
-    uintptr_t state = atomic_load(&d->state);
-    return _iowait_waiter_from_state(state) != NULL;
+    uintptr_t slot = atomic_load(&d->slot);
+    return _iowait_waiter_from_slot(slot) != NULL;
 }
 
 static bool _iowait_take_ready(_iowait_dir_t* d) {
-    uintptr_t expected = IOWAIT_DIR_READY;
-    return atomic_compare_exchange_strong(&d->state, &expected, IOWAIT_DIR_EMPTY);
+    uintptr_t expected = IOWAIT_DIR_SLOT_READY;
+    return atomic_compare_exchange_strong(
+        &d->slot,
+        &expected,
+        IOWAIT_DIR_SLOT_EMPTY);
 }
 
 static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
-    uintptr_t state = atomic_load(&d->state);
+    uintptr_t slot = atomic_load(&d->slot);
     for (;;) {
-        mco_coro* co = _iowait_waiter_from_state(state);
+        mco_coro* co = _iowait_waiter_from_slot(slot);
         if (!co) {
             return NULL;
         }
-        if (atomic_compare_exchange_weak(&d->state, &state, IOWAIT_DIR_EMPTY)) {
+        if (atomic_compare_exchange_weak(
+                &d->slot,
+                &slot,
+                IOWAIT_DIR_SLOT_EMPTY)) {
             return co;
         }
     }
 }
 
-static mco_coro* _iowait_mark_ready(_iowait_dir_t* d, bool save_if_empty) {
-    uintptr_t state = atomic_load(&d->state);
+static mco_coro* _iowait_publish_ready(
+    _iowait_dir_t* d,
+    bool           publish_if_empty) {
+    uintptr_t slot = atomic_load(&d->slot);
     for (;;) {
-        if (state == IOWAIT_DIR_READY) {
+        if (slot == IOWAIT_DIR_SLOT_READY) {
             return NULL;
         }
-        mco_coro* co = _iowait_waiter_from_state(state);
-        if (!co && !save_if_empty) {
+        mco_coro* co = _iowait_waiter_from_slot(slot);
+        if (!co && !publish_if_empty) {
             return NULL;
         }
-        if (atomic_compare_exchange_weak(&d->state, &state, IOWAIT_DIR_READY)) {
+        if (atomic_compare_exchange_weak(
+                &d->slot,
+                &slot,
+                IOWAIT_DIR_SLOT_READY)) {
             return co;
         }
     }
@@ -389,9 +402,9 @@ static void _iowait_handle_dir_event(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
     mco_coro* co = NULL;
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        co = _iowait_mark_ready(d, true);
+        co = _iowait_publish_ready(d, true);
     } else {
-        co = _iowait_mark_ready(d, false);
+        co = _iowait_publish_ready(d, false);
     }
     if (!co) {
         return;
@@ -414,17 +427,17 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
 }
 
 static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
-    uintptr_t state = IOWAIT_DIR_EMPTY;
-    if (atomic_compare_exchange_strong(&d->state, &state, (uintptr_t)co)) {
+    uintptr_t slot = IOWAIT_DIR_SLOT_EMPTY;
+    if (atomic_compare_exchange_strong(&d->slot, &slot, (uintptr_t)co)) {
         return true;
     }
 
-    if (state == IOWAIT_DIR_READY
+    if (slot == IOWAIT_DIR_SLOT_READY
         && PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
         return false;
     }
 
-    mco_coro* prev = _iowait_waiter_from_state(state);
+    mco_coro* prev = _iowait_waiter_from_slot(slot);
     if (!prev) {
         abort();
     }
@@ -449,7 +462,7 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
      * deadline timer), which claims the waiter and stamps its cause
      * before scheduling it.
      * The publish and re-check loads below use the default atomic order
-     * (matching the closed store in iowait_close and the state CAS done
+     * (matching the closed store in iowait_close and the slot CAS done
      * by every waker), so neither side can miss the other and strand the
      * coroutine forever.
      */
@@ -606,8 +619,8 @@ iowait_t* iowait_create(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_store(&w->rd.state, IOWAIT_DIR_EMPTY);
-    atomic_store(&w->wr.state, IOWAIT_DIR_EMPTY);
+    atomic_store(&w->rd.slot, IOWAIT_DIR_SLOT_EMPTY);
+    atomic_store(&w->wr.slot, IOWAIT_DIR_SLOT_EMPTY);
     atomic_store(&w->rd.deadline, 0);
     atomic_store(&w->wr.deadline, 0);
     atomic_store(&w->rd.deadline_error, false);
