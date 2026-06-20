@@ -49,6 +49,24 @@ struct dynpool_s {
     _Atomic bool     running;
 };
 
+static _dynpool_job_t* _dynpool_pop_job(dynpool_t* pool, bool wait_link) {
+    for (;;) {
+        mtx_lock(&pool->pop_mtx);
+        mpsc_node_t* node = mpsc_pop(&pool->queue);
+        mtx_unlock(&pool->pop_mtx);
+
+        if (node) {
+            return mpsc_entry(node, _dynpool_job_t, node);
+        }
+
+        if (!wait_link || !atomic_load(&pool->running)) {
+            return NULL;
+        }
+
+        thrd_yield();
+    }
+}
+
 static int _dynpool_thread_entry(void* arg) {
     dynpool_t* pool = (dynpool_t*)arg;
 
@@ -61,18 +79,12 @@ static int _dynpool_thread_entry(void* arg) {
             break;
         }
 
-        mtx_lock(&pool->pop_mtx);
-        mpsc_node_t* node = mpsc_pop(&pool->queue);
-        mtx_unlock(&pool->pop_mtx);
-
-        if (!node && rc != 0) {
-            break;
-        }
-
-        if (node) {
-            _dynpool_job_t* job = mpsc_entry(node, _dynpool_job_t, node);
+        _dynpool_job_t* job = _dynpool_pop_job(pool, rc == 0);
+        if (job) {
             job->routine(job->arg);
             free(job);
+        } else if (rc != 0) {
+            break;
         }
     }
 
@@ -80,11 +92,27 @@ static int _dynpool_thread_entry(void* arg) {
     return 0;
 }
 
+static bool _dynpool_reserve_thread(dynpool_t* pool) {
+    int32_t count = atomic_load(&pool->thread_count);
+    while (count < pool->max_threads) {
+        if (atomic_compare_exchange_weak(
+                &pool->thread_count, &count, count + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void _dynpool_spawn_thread(dynpool_t* pool) {
+    if (!_dynpool_reserve_thread(pool)) {
+        return;
+    }
+
     thrd_t thr;
     if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
-        atomic_fetch_add(&pool->thread_count, 1);
         thrd_detach(thr);
+    } else {
+        atomic_fetch_sub(&pool->thread_count, 1);
     }
 }
 
@@ -124,6 +152,10 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
 }
 
 int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
+    if (!pool || !routine || !atomic_load(&pool->running)) {
+        return -1;
+    }
+
     _dynpool_job_t* job = (_dynpool_job_t*)calloc(1, sizeof(_dynpool_job_t));
     if (!job) {
         return -1;
@@ -135,8 +167,7 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
     mpsc_push(&pool->queue, &job->node);
     platform_sem_post(pool->sem);
 
-    if (atomic_load(&pool->idle_count) == 0 &&
-        atomic_load(&pool->thread_count) < pool->max_threads) {
+    if (atomic_load(&pool->idle_count) == 0) {
         _dynpool_spawn_thread(pool);
     }
 
