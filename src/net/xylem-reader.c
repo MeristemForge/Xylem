@@ -110,6 +110,9 @@ xylem_reader_t* xylem_reader_create(
 }
 
 void xylem_reader_destroy(xylem_reader_t* rd) {
+    if (!rd) {
+        return;
+    }
     RUNTIME_REQUIRE_COROUTINE("reader", "xylem_reader_destroy");
 
     free(rd);

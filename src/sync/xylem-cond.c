@@ -175,6 +175,7 @@ void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx) {
         if (!w.wake) {
             /* No wake object (OOM): cannot block; do not enqueue. */
             spin_unlock(&cond->guard);
+            xylem_mutex_unlock(mtx);
         } else {
             list_insert_tail(&cond->waiters, &w.node);
             spin_unlock(&cond->guard);

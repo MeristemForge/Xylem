@@ -82,6 +82,9 @@ xylem_writer_t* xylem_writer_create(
 }
 
 void xylem_writer_destroy(xylem_writer_t* wr) {
+    if (!wr) {
+        return;
+    }
     RUNTIME_REQUIRE_COROUTINE("writer", "xylem_writer_destroy");
 
     xylem_writer_flush(wr);

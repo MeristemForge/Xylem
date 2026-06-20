@@ -195,7 +195,12 @@ static void test_reader_read_full(void) {
     _run_pair(TEST_PORT + 2, _srv_full, _cli_read_full);
 }
 
+static void test_destroy_null(void) {
+    xylem_reader_destroy(NULL);
+}
+
 int main(void) {
+    test_destroy_null();
     test_reader_read();
     test_reader_read_until();
     test_reader_read_full();

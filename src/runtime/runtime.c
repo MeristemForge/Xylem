@@ -175,12 +175,41 @@ void runtime_run(
         sched_opts.coro_stack_size = opts->coro_stack_size;
     }
     g_sched = scheduler_create(&sched_opts);
+    if (!g_sched) {
+        platform_socket_cleanup();
+        return;
+    }
 
     g_dynpool = dynpool_create(NULL);
+    if (!g_dynpool) {
+        scheduler_destroy(g_sched);
+        g_sched = NULL;
+        platform_socket_cleanup();
+        return;
+    }
+
     g_stop_sem = platform_sem_create(0);
+    if (!g_stop_sem) {
+        dynpool_destroy(g_dynpool);
+        g_dynpool = NULL;
+        scheduler_destroy(g_sched);
+        g_sched = NULL;
+        platform_socket_cleanup();
+        return;
+    }
 
     scheduler_set_idle_cb(g_sched, _runtime_idle_cb, NULL);
-    scheduler_spawn(g_sched, main_fn, arg);
+    if (scheduler_spawn(g_sched, main_fn, arg) != 0) {
+        scheduler_stop(g_sched);
+        dynpool_destroy(g_dynpool);
+        scheduler_destroy(g_sched);
+        platform_sem_destroy(g_stop_sem);
+        g_dynpool  = NULL;
+        g_sched    = NULL;
+        g_stop_sem = NULL;
+        platform_socket_cleanup();
+        return;
+    }
 
     platform_sem_wait(g_stop_sem);
 
@@ -189,6 +218,9 @@ void runtime_run(
     dynpool_destroy(g_dynpool);
     scheduler_destroy(g_sched);
     platform_sem_destroy(g_stop_sem);
+    g_dynpool  = NULL;
+    g_sched    = NULL;
+    g_stop_sem = NULL;
     platform_socket_cleanup();
 }
 

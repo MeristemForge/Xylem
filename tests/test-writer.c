@@ -196,7 +196,12 @@ static void test_writer_invalid_args(void) {
     _run_pair(TEST_PORT + 2, _srv_recv_empty, _cli_write_invalid);
 }
 
+static void test_destroy_null(void) {
+    xylem_writer_destroy(NULL);
+}
+
 int main(void) {
+    test_destroy_null();
     test_writer_batched();
     test_writer_large_bypass();
     test_writer_invalid_args();
