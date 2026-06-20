@@ -43,7 +43,7 @@ struct xylem_serial_s {
 };
 
 static void _serial_ref(xylem_serial_t* serial) {
-    atomic_fetch_add_explicit(&serial->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&serial->refcnt, 1);
 }
 
 /**
@@ -53,7 +53,7 @@ static void _serial_ref(xylem_serial_t* serial) {
  * the use-after-free and fd-reuse windows against close().
  */
 static void _serial_unref(xylem_serial_t* serial) {
-    if (atomic_fetch_sub_explicit(&serial->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&serial->refcnt, 1)
         != 1) {
         return;
     }
@@ -138,7 +138,7 @@ int xylem_serial_read(xylem_serial_t* serial, void* buf, size_t len) {
     _serial_ref(serial);
 
     int ret = -1;
-    if (!atomic_load_explicit(&serial->closed, memory_order_acquire)) {
+    if (!atomic_load(&serial->closed)) {
         ret = platform_serial_read(serial->fd, buf, len);
     }
 
@@ -154,7 +154,7 @@ int xylem_serial_write(xylem_serial_t* serial,
     _serial_ref(serial);
 
     int ret = -1;
-    if (!atomic_load_explicit(&serial->closed, memory_order_acquire)) {
+    if (!atomic_load(&serial->closed)) {
         ret = platform_serial_write(serial->fd, buf, len);
     }
 

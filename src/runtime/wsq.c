@@ -45,8 +45,8 @@ static int32_t _wsq_grab_half(wsq_t* q, void** out, int32_t cap) {
     }
 
     for (;;) {
-        uint32_t h = atomic_load_explicit(&q->head, memory_order_acquire);
-        uint32_t t = atomic_load_explicit(&q->tail, memory_order_acquire);
+        uint32_t h = atomic_load(&q->head);
+        uint32_t t = atomic_load(&q->tail);
 
         uint32_t n = _wsq_len(h, t);
         n = n - n / 2;
@@ -61,9 +61,7 @@ static int32_t _wsq_grab_half(wsq_t* q, void** out, int32_t cap) {
             out[i] = q->slots[(h + i) & q->mask];
         }
 
-        if (atomic_compare_exchange_weak_explicit(
-                &q->head, &h, h + n,
-                memory_order_acq_rel, memory_order_acquire)) {
+        if (atomic_compare_exchange_weak(&q->head, &h, h + n)) {
             return (int32_t)n;
         }
     }
@@ -86,8 +84,8 @@ wsq_t* wsq_create(uint32_t cap) {
     }
 
     q->mask = cap - 1;
-    atomic_store_explicit(&q->head, 0, memory_order_relaxed);
-    atomic_store_explicit(&q->tail, 0, memory_order_relaxed);
+    atomic_store(&q->head, 0);
+    atomic_store(&q->tail, 0);
     return q;
 }
 
@@ -100,30 +98,30 @@ void wsq_destroy(wsq_t* q) {
 }
 
 int32_t wsq_remaining(wsq_t* q) {
-    uint32_t h    = atomic_load_explicit(&q->head, memory_order_acquire);
-    uint32_t t    = atomic_load_explicit(&q->tail, memory_order_acquire);
+    uint32_t h    = atomic_load(&q->head);
+    uint32_t t    = atomic_load(&q->tail);
     uint32_t cap  = _wsq_cap(q);
     uint32_t used = _wsq_len(h, t);
     return (int32_t)(used < cap ? cap - used : 0);
 }
 
 int wsq_push(wsq_t* q, void* elem) {
-    uint32_t t = atomic_load_explicit(&q->tail, memory_order_relaxed);
-    uint32_t h = atomic_load_explicit(&q->head, memory_order_acquire);
+    uint32_t t = atomic_load(&q->tail);
+    uint32_t h = atomic_load(&q->head);
 
     if (_wsq_len(h, t) >= _wsq_cap(q)) {
         return -1;
     }
 
     q->slots[t & q->mask] = elem;
-    atomic_store_explicit(&q->tail, t + 1, memory_order_release);
+    atomic_store(&q->tail, t + 1);
     return 0;
 }
 
 void* wsq_pop(wsq_t* q) {
     for (;;) {
-        uint32_t head = atomic_load_explicit(&q->head, memory_order_acquire);
-        uint32_t tail  = atomic_load_explicit(&q->tail, memory_order_acquire);
+        uint32_t head = atomic_load(&q->head);
+        uint32_t tail  = atomic_load(&q->tail);
 
         if (head == tail) {
             return NULL;
@@ -131,9 +129,7 @@ void* wsq_pop(wsq_t* q) {
 
         void* elem = q->slots[head & q->mask];
 
-        if (atomic_compare_exchange_weak_explicit(
-                &q->head, &head, head + 1,
-                memory_order_acq_rel, memory_order_acquire)) {
+        if (atomic_compare_exchange_weak(&q->head, &head, head + 1)) {
             return elem;
         }
     }

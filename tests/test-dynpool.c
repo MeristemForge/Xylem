@@ -38,34 +38,28 @@ typedef struct {
 } _max_ctx_t;
 
 static void _max_update(atomic_int* max_value, int value) {
-    int cur = atomic_load_explicit(max_value, memory_order_relaxed);
+    int cur = atomic_load(max_value);
     while (value > cur &&
-           !atomic_compare_exchange_weak_explicit(
-               max_value,
-               &cur,
-               value,
-               memory_order_relaxed,
-               memory_order_relaxed)) {
+           !atomic_compare_exchange_weak(max_value, &cur, value)) {
     }
 }
 
 static void _max_job(void* arg) {
     _max_ctx_t* ctx = (_max_ctx_t*)arg;
-    int active = atomic_fetch_add_explicit(
-        &ctx->active, 1, memory_order_acq_rel) + 1;
+    int active = atomic_fetch_add(&ctx->active, 1) + 1;
     _max_update(&ctx->max_active, active);
 
-    while (!atomic_load_explicit(&ctx->release, memory_order_acquire)) {
+    while (!atomic_load(&ctx->release)) {
         thrd_yield();
     }
 
-    atomic_fetch_sub_explicit(&ctx->active, 1, memory_order_acq_rel);
-    atomic_fetch_add_explicit(&ctx->done, 1, memory_order_acq_rel);
+    atomic_fetch_sub(&ctx->active, 1);
+    atomic_fetch_add(&ctx->done, 1);
 }
 
 static int _max_submitter(void* arg) {
     _max_ctx_t* ctx = (_max_ctx_t*)arg;
-    while (!atomic_load_explicit(&ctx->start, memory_order_acquire)) {
+    while (!atomic_load(&ctx->start)) {
         thrd_yield();
     }
     ASSERT(dynpool_submit(ctx->pool, _max_job, ctx) == 0);
@@ -92,24 +86,24 @@ static void test_max_threads_is_enforced_under_concurrent_submit(void) {
         ASSERT(thrd_create(&threads[i], _max_submitter, &ctx) == thrd_success);
     }
 
-    atomic_store_explicit(&ctx.start, true, memory_order_release);
+    atomic_store(&ctx.start, true);
     for (int i = 0; i < SUBMITTERS; i++) {
         ASSERT(thrd_join(threads[i], NULL) == thrd_success);
     }
 
     for (int i = 0; i < 10000; i++) {
         thrd_yield();
-        if (atomic_load_explicit(&ctx.max_active, memory_order_acquire) > 1) {
+        if (atomic_load(&ctx.max_active) > 1) {
             break;
         }
     }
 
-    atomic_store_explicit(&ctx.release, true, memory_order_release);
-    while (atomic_load_explicit(&ctx.done, memory_order_acquire) < SUBMITTERS) {
+    atomic_store(&ctx.release, true);
+    while (atomic_load(&ctx.done) < SUBMITTERS) {
         thrd_yield();
     }
 
-    ASSERT(atomic_load_explicit(&ctx.max_active, memory_order_acquire) == 1);
+    ASSERT(atomic_load(&ctx.max_active) == 1);
 
     dynpool_destroy(ctx.pool);
 }

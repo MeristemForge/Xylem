@@ -49,11 +49,11 @@ struct xylem_ticker_s {
 };
 
 static void _ticker_ref(xylem_ticker_t* t) {
-    atomic_fetch_add_explicit(&t->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&t->refcnt, 1);
 }
 
 static void _ticker_unref(xylem_ticker_t* t) {
-    if (atomic_fetch_sub_explicit(&t->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&t->refcnt, 1) != 1) {
         return;
     }
     /**
@@ -101,14 +101,11 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     xylem_ticker_t* t = (xylem_ticker_t*)ud;
 
-    if (atomic_load_explicit(&t->closed, memory_order_acquire)) {
+    if (atomic_load(&t->closed)) {
         return;
     }
 
-    atomic_store_explicit(
-        &t->last_tick,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC),
-        memory_order_relaxed);
+    atomic_store(&t->last_tick, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
 
     /**
      * Deliver only if the previous tick has been drained. Otherwise the
@@ -117,9 +114,7 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
      * allocates, so the slot transitions 0 -> 1 -> (recv) -> 0 cleanly.
      */
     int32_t expected = 0;
-    if (atomic_compare_exchange_strong_explicit(
-            &t->pending, &expected, 1,
-            memory_order_acq_rel, memory_order_relaxed)) {
+    if (atomic_compare_exchange_strong(&t->pending, &expected, 1)) {
         xylem_sem_post(t->sem);
     }
 }
@@ -148,7 +143,7 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
         return NULL;
     }
 
-    atomic_store_explicit(&t->refcnt, 1, memory_order_relaxed);
+    atomic_store(&t->refcnt, 1);
 
     /* Native repeat on the inline path; the callback is small and ordered. */
     scheduler_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
@@ -178,10 +173,10 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
 
     uint64_t tick = 0;
     xylem_sem_wait(ticker->sem);
-    if (!atomic_load_explicit(&ticker->closed, memory_order_acquire)) {
+    if (!atomic_load(&ticker->closed)) {
         /* Allow the next tick through; re-opens the coalescing slot. */
-        atomic_store_explicit(&ticker->pending, 0, memory_order_release);
-        tick = atomic_load_explicit(&ticker->last_tick, memory_order_relaxed);
+        atomic_store(&ticker->pending, 0);
+        tick = atomic_load(&ticker->last_tick);
     }
 
     _ticker_unref(ticker);
@@ -192,7 +187,7 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
     if (!ticker) {
         return;
     }
-    if (atomic_exchange_explicit(&ticker->closed, true, memory_order_acq_rel)) {
+    if (atomic_exchange(&ticker->closed, true)) {
         return; /* already stopped */
     }
 

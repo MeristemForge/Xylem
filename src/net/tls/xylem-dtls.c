@@ -212,11 +212,11 @@ int xylem_dtls_ctx_set_alpn(
 }
 
 static void _dtls_listener_ref(xylem_dtls_listener_t* ln) {
-    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&ln->refcnt, 1);
 }
 
 static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
-    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&ln->refcnt, 1)
         != 1) {
         return;
     }
@@ -237,11 +237,11 @@ static void _dtls_listener_unref(xylem_dtls_listener_t* ln) {
 }
 
 static void _dtls_conn_ref(xylem_dtls_conn_t* dtls) {
-    atomic_fetch_add_explicit(&dtls->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&dtls->refcnt, 1);
 }
 
 static void _dtls_conn_unref(xylem_dtls_conn_t* dtls) {
-    if (atomic_fetch_sub_explicit(&dtls->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&dtls->refcnt, 1)
         != 1) {
         return;
     }
@@ -330,14 +330,14 @@ static void _dtls_dgram_release(
  * cannot be freed underneath this call.
  */
 static void _dtls_inbox_push(xylem_dtls_conn_t* dtls, _dtls_dgram_t* dgram) {
-    if (atomic_load_explicit(&dtls->inbox_len, memory_order_relaxed)
+    if (atomic_load(&dtls->inbox_len)
         >= (int32_t)DTLS_INBOX_CAP) {
         _dtls_dgram_release(dtls->listener, dgram);
         return;
     }
-    atomic_fetch_add_explicit(&dtls->inbox_len, 1, memory_order_relaxed);
+    atomic_fetch_add(&dtls->inbox_len, 1);
     if (xylem_channel_send(dtls->inbox, dgram) != 0) {
-        atomic_fetch_sub_explicit(&dtls->inbox_len, 1, memory_order_relaxed);
+        atomic_fetch_sub(&dtls->inbox_len, 1);
         _dtls_dgram_release(dtls->listener, dgram);
     }
 }
@@ -415,7 +415,7 @@ static void _dtls_server_shutdown(xylem_dtls_conn_t* dtls) {
     if (atomic_exchange(&dtls->closing, true)) {
         return;
     }
-    atomic_store_explicit(&dtls->closed, true, memory_order_release);
+    atomic_store(&dtls->closed, true);
     if (dtls->handshake_timer) {
         scheduler_timer_stop(dtls->handshake_timer);
     }
@@ -466,8 +466,7 @@ static _dtls_dgram_t* _dtls_take_dgram(xylem_dtls_conn_t* dtls) {
     _dtls_dgram_t* dgram =
         (_dtls_dgram_t*)xylem_channel_recv_timeout(dtls->inbox, 0);
     if (dgram) {
-        atomic_fetch_sub_explicit(&dtls->inbox_len, 1,
-                                  memory_order_relaxed);
+        atomic_fetch_sub(&dtls->inbox_len, 1);
     }
     return dgram;
 }
@@ -530,7 +529,7 @@ static int _dtls_client_wait_read(xylem_dtls_conn_t* dtls) {
     } else if (r == IOWAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (atomic_load(&dtls->closed)) {
         ret = -1;
     }
     xylem_mutex_unlock(dtls->rd_mu);
@@ -547,7 +546,7 @@ static int _dtls_client_wait_write(xylem_dtls_conn_t* dtls) {
     } else if (r == IOWAIT_TIMEOUT) {
         ret = DTLS_WAIT_TIMEOUT;
     }
-    if (atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (atomic_load(&dtls->closed)) {
         ret = -1;
     }
     xylem_mutex_unlock(dtls->wr_mu);
@@ -565,7 +564,7 @@ static int _dtls_server_wait_read(
     if (!dgram) {
         return timeout_ms == (uint64_t)-1 ? -1 : DTLS_WAIT_TIMEOUT;
     }
-    atomic_fetch_sub_explicit(&dtls->inbox_len, 1, memory_order_relaxed);
+    atomic_fetch_sub(&dtls->inbox_len, 1);
     dtls->pending_dgram = dgram;
     return 0;
 }
@@ -714,7 +713,7 @@ static int _dtls_client_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
 
     _dtls_conn_ref(dtls);
     int ret = -1;
-    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (!atomic_load(&dtls->closed)) {
         ret = _dtls_client_recv_loop(dtls, buf, len);
     }
     _dtls_conn_unref(dtls);
@@ -777,7 +776,7 @@ static int _dtls_client_send(
 
     _dtls_conn_ref(dtls);
     int ret = -1;
-    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (!atomic_load(&dtls->closed)) {
         ret = _dtls_client_send_loop(dtls, data, len);
     }
     _dtls_conn_unref(dtls);
@@ -909,7 +908,7 @@ static void _dtls_handshake_coro(void* arg) {
 
     _dtls_cache_alpn(dtls);
     xylem_mutex_lock(ln->sessions_mu);
-    if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+    if (atomic_load(&ln->closed)) {
         xylem_mutex_unlock(ln->sessions_mu);
         _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
@@ -924,7 +923,7 @@ static void _dtls_handshake_coro(void* arg) {
 static void _dtls_dispatcher(void* arg) {
     xylem_dtls_listener_t* ln = arg;
 
-    while (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+    while (!atomic_load(&ln->closed)) {
         _dtls_dgram_t* dgram = _dtls_dgram_alloc(ln);
         if (!dgram) {
             xylem_loge("<dtls> dispatcher dgram alloc failed size=%zu",
@@ -962,7 +961,7 @@ static void _dtls_dispatcher(void* arg) {
             _dtls_dgram_release(ln, dgram);
             continue;
         }
-        atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
+        atomic_store(&dtls->refcnt, 1);
         dtls->peer_addr        = from_addr;
         dtls->inbox            = xylem_channel_create(0);
         dtls->handshake_timer  = scheduler_timer_create(ln->sched);
@@ -1037,7 +1036,7 @@ static int _dtls_server_recv(xylem_dtls_conn_t* dtls, void* buf, int len) {
 
     _dtls_conn_ref(dtls);
     int ret = -1;
-    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (!atomic_load(&dtls->closed)) {
         ret = _dtls_server_recv_loop(dtls, buf, len);
     }
     _dtls_conn_unref(dtls);
@@ -1061,7 +1060,7 @@ static int _dtls_server_send(
     _dtls_conn_ref(dtls);
     int ret = -1;
 
-    if (!atomic_load_explicit(&dtls->closed, memory_order_acquire)) {
+    if (!atomic_load(&dtls->closed)) {
         xylem_mutex_lock(dtls->listener->write_mu);
         if (dtls->wr_deadline_ms > 0) {
             datagram_set_write_deadline(
@@ -1111,7 +1110,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
         return NULL;
     }
 
-    atomic_store_explicit(&dtls->refcnt, 1, memory_order_relaxed);
+    atomic_store(&dtls->refcnt, 1);
     dtls->datagram = datagram;
 
     dtls->ssl_mu = xylem_mutex_create();

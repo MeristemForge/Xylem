@@ -28,11 +28,11 @@ void spin_init(spin_t* s) {
 }
 
 void spin_lock(spin_t* s) {
-    while (atomic_flag_test_and_set_explicit(&s->flag, memory_order_acquire)) {
+    while (atomic_flag_test_and_set(&s->flag)) {
         platform_cpu_relax();
     }
 }
 
 void spin_unlock(spin_t* s) {
-    atomic_flag_clear_explicit(&s->flag, memory_order_release);
+    atomic_flag_clear(&s->flag);
 }

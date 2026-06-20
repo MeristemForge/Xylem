@@ -49,11 +49,11 @@ struct listener_s {
 };
 
 static void _stream_ref(stream_t* stream) {
-    atomic_fetch_add_explicit(&stream->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&stream->refcnt, 1);
 }
 
 static void _stream_unref(stream_t* stream) {
-    if (atomic_fetch_sub_explicit(&stream->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&stream->refcnt, 1)
         != 1) {
         return;
     }
@@ -76,11 +76,11 @@ static void _stream_unref(stream_t* stream) {
 }
 
 static void _listener_ref(listener_t* listener) {
-    atomic_fetch_add_explicit(&listener->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&listener->refcnt, 1);
 }
 
 static void _listener_unref(listener_t* listener) {
-    if (atomic_fetch_sub_explicit(&listener->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&listener->refcnt, 1)
         != 1) {
         return;
     }
@@ -258,20 +258,20 @@ static iowait_result_t _stream_wait_result(
     _stream_ref(stream);
 
     if (!write) {
-        if (atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
+        if (atomic_load(&stream->rd_shutdown)) {
             _stream_unref(stream);
             return IOWAIT_CLOSED;
         }
     }
 
-    if (atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (atomic_load(&stream->closed)) {
         _stream_unref(stream);
         return IOWAIT_CLOSED;
     }
 
     iowait_result_t ret = write ? iowait_write(stream->waiter)
                                 : iowait_read(stream->waiter);
-    if (atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (atomic_load(&stream->closed)) {
         ret = IOWAIT_CLOSED;
     }
 
@@ -299,8 +299,8 @@ int stream_try_read(
     int ret = -1;
     *again  = false;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)
-        && !atomic_load_explicit(&stream->rd_shutdown, memory_order_acquire)) {
+    if (!atomic_load(&stream->closed)
+        && !atomic_load(&stream->rd_shutdown)) {
         if (iowait_read_deadline_expired(stream->waiter)) {
             _stream_unref(stream);
             return ret;
@@ -344,7 +344,7 @@ int stream_read(stream_t* stream, void* buf, int len) {
     _stream_ref(stream);
     int ret = -1;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (!atomic_load(&stream->closed)) {
         for (;;) {
             bool again = false;
             int  n     = stream_try_read(stream, buf, len, &again);
@@ -376,7 +376,7 @@ int stream_write(stream_t* stream, const void* data, int len) {
     _stream_ref(stream);
     int ret = -1;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (!atomic_load(&stream->closed)) {
         const char* ptr = (const char*)data;
         int         rem = len;
 
@@ -404,7 +404,7 @@ int stream_write(stream_t* stream, const void* data, int len) {
 
             iowait_result_t r = iowait_write(stream->waiter);
             if (r != IOWAIT_READY
-                || atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+                || atomic_load(&stream->closed)) {
                 break;
             }
         }
@@ -439,7 +439,7 @@ int stream_try_write(
     int ret = -1;
     *again  = false;
 
-    if (!atomic_load_explicit(&stream->closed, memory_order_acquire)) {
+    if (!atomic_load(&stream->closed)) {
         if (iowait_write_deadline_expired(stream->waiter)) {
             _stream_unref(stream);
             return ret;
@@ -514,7 +514,7 @@ int stream_shutdown_rd(stream_t* stream) {
     if (shutdown(stream->fd, PLATFORM_SHUT_RD) != 0) {
         return -1;
     }
-    atomic_store_explicit(&stream->rd_shutdown, true, memory_order_release);
+    atomic_store(&stream->rd_shutdown, true);
     return 0;
 }
 
@@ -567,7 +567,7 @@ stream_t* listener_accept(listener_t* listener) {
     int       retries    = 0;
 
     for (;;) {
-        if (atomic_load_explicit(&listener->closed, memory_order_acquire)) {
+        if (atomic_load(&listener->closed)) {
             break;
         }
 

@@ -59,7 +59,7 @@ typedef enum _tls_hs_state_e {
 } _tls_hs_state_t;
 
 static void _tls_conn_ref(tls_conn_t* tls) {
-    atomic_fetch_add_explicit(&tls->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&tls->refcnt, 1);
 }
 
 static int _tls_stream_read(
@@ -125,14 +125,14 @@ static uint64_t _tls_min_deadline(uint64_t a, uint64_t b) {
 
 /* Apply the same deadline to both stream directions (0 clears it). */
 static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
-    atomic_store_explicit(&tls->rd_deadline, deadline, memory_order_release);
-    atomic_store_explicit(&tls->wr_deadline, deadline, memory_order_release);
+    atomic_store(&tls->rd_deadline, deadline);
+    atomic_store(&tls->wr_deadline, deadline);
     stream_set_read_deadline(tls->stream, deadline);
     stream_set_write_deadline(tls->stream, deadline);
 }
 
 static bool _tls_deadline_expired(_Atomic uint64_t* deadline) {
-    uint64_t d = atomic_load_explicit(deadline, memory_order_acquire);
+    uint64_t d = atomic_load(deadline);
     return d > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= d;
 }
 
@@ -140,8 +140,8 @@ static void _tls_set_handshake_deadline(
     tls_conn_t* tls,
     uint64_t    rd_deadline,
     uint64_t    wr_deadline) {
-    atomic_store_explicit(&tls->rd_deadline, rd_deadline, memory_order_release);
-    atomic_store_explicit(&tls->wr_deadline, wr_deadline, memory_order_release);
+    atomic_store(&tls->rd_deadline, rd_deadline);
+    atomic_store(&tls->wr_deadline, wr_deadline);
     stream_set_read_deadline(tls->stream, rd_deadline);
     stream_set_write_deadline(tls->stream, wr_deadline);
 }
@@ -152,15 +152,15 @@ static void _tls_restore_handshake_deadline(
     uint64_t    old_wr,
     uint64_t    hs_rd,
     uint64_t    hs_wr) {
-    uint64_t rd = atomic_load_explicit(&tls->rd_deadline, memory_order_acquire);
-    uint64_t wr = atomic_load_explicit(&tls->wr_deadline, memory_order_acquire);
+    uint64_t rd = atomic_load(&tls->rd_deadline);
+    uint64_t wr = atomic_load(&tls->wr_deadline);
     if (rd == hs_rd) {
         rd = old_rd;
-        atomic_store_explicit(&tls->rd_deadline, rd, memory_order_release);
+        atomic_store(&tls->rd_deadline, rd);
     }
     if (wr == hs_wr) {
         wr = old_wr;
-        atomic_store_explicit(&tls->wr_deadline, wr, memory_order_release);
+        atomic_store(&tls->wr_deadline, wr);
     }
     stream_set_read_deadline(tls->stream, rd);
     stream_set_write_deadline(tls->stream, wr);
@@ -192,7 +192,7 @@ static void _tls_conn_destroy(tls_conn_t* tls) {
 
 static void _tls_conn_unref(tls_conn_t* tls) {
     /* Graceful close_notify lives in tls_close; refcount drop only destroys. */
-    if (atomic_fetch_sub_explicit(&tls->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&tls->refcnt, 1)
         == 1) {
         _tls_conn_destroy(tls);
     }
@@ -277,11 +277,11 @@ static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
 }
 
 static void _tls_listener_ref(tls_listener_t* ln) {
-    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&ln->refcnt, 1);
 }
 
 static void _tls_listener_unref(tls_listener_t* ln) {
-    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&ln->refcnt, 1)
         != 1) {
         return;
     }
@@ -429,10 +429,8 @@ static int _tls_server_handshake(tls_conn_t* tls) {
                                          : TLS_BACKEND_VERIFY_NONE;
     tls_backend_conn_configure(tls->be, &cfg);
 
-    uint64_t old_rd = atomic_load_explicit(
-        &tls->rd_deadline, memory_order_acquire);
-    uint64_t old_wr = atomic_load_explicit(
-        &tls->wr_deadline, memory_order_acquire);
+    uint64_t old_rd = atomic_load(&tls->rd_deadline);
+    uint64_t old_wr = atomic_load(&tls->wr_deadline);
     uint64_t hs_deadline = _tls_make_deadline(tls->hs_timeout_ms);
     uint64_t hs_rd = _tls_min_deadline(old_rd, hs_deadline);
     uint64_t hs_wr = _tls_min_deadline(old_wr, hs_deadline);
@@ -467,7 +465,7 @@ static int _tls_server_handshake(tls_conn_t* tls) {
  */
 static int _tls_ensure_handshake(tls_conn_t* tls) {
     /* Lock-free fast path: avoid locking once handshaked. */
-    int st = atomic_load_explicit(&tls->hs_state, memory_order_acquire);
+    int st = atomic_load(&tls->hs_state);
     if (st == HS_DONE) {
         return 0;
     }
@@ -477,7 +475,7 @@ static int _tls_ensure_handshake(tls_conn_t* tls) {
 
     /* Re-check under hs_mu: a concurrent driver may have finished meanwhile. */
     xylem_mutex_lock(tls->hs_mu);
-    st = atomic_load_explicit(&tls->hs_state, memory_order_acquire);
+    st = atomic_load(&tls->hs_state);
     if (st == HS_DONE) {
         xylem_mutex_unlock(tls->hs_mu);
         return 0;
@@ -488,8 +486,7 @@ static int _tls_ensure_handshake(tls_conn_t* tls) {
     }
 
     int rc = _tls_server_handshake(tls);
-    atomic_store_explicit(&tls->hs_state, rc == 0 ? HS_DONE : HS_FAILED,
-                          memory_order_release);
+    atomic_store(&tls->hs_state, rc == 0 ? HS_DONE : HS_FAILED);
     xylem_mutex_unlock(tls->hs_mu);
     return rc;
 }
@@ -677,7 +674,7 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
 
     tls_conn_t* ready = NULL;
     for (;;) {
-        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+        if (atomic_load(&ln->closed)) {
             break;
         }
 
@@ -700,8 +697,7 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
          * client's multi-round-trip handshake behind this acceptor.
          */
         conn->hs_timeout_ms = ln->opts.handshake_timeout_ms;
-        atomic_store_explicit(&conn->hs_state, HS_PENDING,
-                              memory_order_release);
+        atomic_store(&conn->hs_state, HS_PENDING);
         ready = conn;
         break;
     }
@@ -736,7 +732,7 @@ int tls_read(tls_conn_t* tls, void* buf, int len) {
      */
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+    if (!atomic_load(&tls->closed)
         && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_read_loop(tls, buf, len);
     }
@@ -759,7 +755,7 @@ int tls_write(tls_conn_t* tls, const void* data, int len) {
 
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+    if (!atomic_load(&tls->closed)
         && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_write_loop(tls, data, len);
     }
@@ -772,7 +768,7 @@ int tls_handshake(tls_conn_t* tls) {
 
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+    if (!atomic_load(&tls->closed)) {
         ret = _tls_ensure_handshake(tls);
     }
     _tls_conn_unref(tls);
@@ -781,9 +777,8 @@ int tls_handshake(tls_conn_t* tls) {
 
 void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     _tls_conn_ref(tls);
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        atomic_store_explicit(
-            &tls->rd_deadline, deadline_ms, memory_order_release);
+    if (!atomic_load(&tls->closed)) {
+        atomic_store(&tls->rd_deadline, deadline_ms);
         stream_set_read_deadline(tls->stream, deadline_ms);
     }
     _tls_conn_unref(tls);
@@ -791,9 +786,8 @@ void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
 
 void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
     _tls_conn_ref(tls);
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
-        atomic_store_explicit(
-            &tls->wr_deadline, deadline_ms, memory_order_release);
+    if (!atomic_load(&tls->closed)) {
+        atomic_store(&tls->wr_deadline, deadline_ms);
         stream_set_write_deadline(tls->stream, deadline_ms);
     }
     _tls_conn_unref(tls);
@@ -806,7 +800,7 @@ int tls_remote_addr(
     uint16_t*   port) {
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+    if (!atomic_load(&tls->closed)) {
         ret = stream_remote_addr(tls->stream, host, host_len, port);
     }
     _tls_conn_unref(tls);
@@ -820,7 +814,7 @@ int tls_local_addr(
     uint16_t*   port) {
     _tls_conn_ref(tls);
     int ret = -1;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)) {
+    if (!atomic_load(&tls->closed)) {
         ret = stream_local_addr(tls->stream, host, host_len, port);
     }
     _tls_conn_unref(tls);
@@ -834,7 +828,7 @@ int tls_listener_addr(
     uint16_t*       port) {
     _tls_listener_ref(ln);
     int ret = -1;
-    if (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+    if (!atomic_load(&ln->closed)) {
         ret = listener_addr(ln->listener, host, host_len, port);
     }
     _tls_listener_unref(ln);
@@ -845,7 +839,7 @@ const char* tls_get_alpn(tls_conn_t* tls) {
     _tls_conn_ref(tls);
     static _Thread_local char alpn[sizeof(tls->alpn)];
     const char* ret = NULL;
-    if (!atomic_load_explicit(&tls->closed, memory_order_acquire)
+    if (!atomic_load(&tls->closed)
         && tls->alpn[0]) {
         memcpy(alpn, tls->alpn, sizeof(alpn));
         ret = alpn;

@@ -115,13 +115,12 @@ static uint32_t _rudp_clock_ms(void) {
 }
 
 static uint32_t _rudp_alloc_conv(void) {
-    uint32_t v = atomic_load_explicit(&_rudp_next_conv, memory_order_relaxed);
+    uint32_t v = atomic_load(&_rudp_next_conv);
     if (v == 0) {
         uint32_t seed = (uint32_t)xylem_utils_getprng(1, 0x7FFFFFFF);
         atomic_compare_exchange_strong(&_rudp_next_conv, &v, seed);
     }
-    return atomic_fetch_add_explicit(
-        &_rudp_next_conv, 1, memory_order_relaxed);
+    return atomic_fetch_add(&_rudp_next_conv, 1);
 }
 
 static void _rudp_encode_handshake(uint8_t* buf, uint8_t type,
@@ -278,7 +277,7 @@ static int _rudp_kcp_output_cb(const char* buf, int len,
                                ikcpcb* kcp, void* user) {
     (void)kcp;
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)user;
-    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+    if (atomic_load(&c->closed)) {
         return -1;
     }
 
@@ -389,7 +388,7 @@ static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
 
 static void _rudp_listener_ref(xylem_rudp_listener_t* ln) {
-    atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&ln->refcnt, 1);
 }
 
 static void _rudp_accept_ch_destroy(xylem_channel_t* ch) {
@@ -405,7 +404,7 @@ static void _rudp_accept_ch_destroy(xylem_channel_t* ch) {
 }
 
 static void _rudp_listener_unref(xylem_rudp_listener_t* ln) {
-    if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&ln->refcnt, 1)
         != 1) {
         return;
     }
@@ -428,7 +427,7 @@ static void _rudp_listener_unref(xylem_rudp_listener_t* ln) {
 static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)ud;
-    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+    if (atomic_load(&c->closed)) {
         return;
     }
 
@@ -456,7 +455,7 @@ static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
 }
 
 static void _rudp_schedule_update(xylem_rudp_conn_t* c) {
-    if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+    if (atomic_load(&c->closed)) {
         return;
     }
     uint32_t now  = _rudp_clock_ms();
@@ -495,7 +494,7 @@ static void _rudp_inbox_destroy(xylem_channel_t* ch) {
  */
 static void _rudp_inbox_push(xylem_rudp_conn_t* sess, const void* data,
                              size_t len) {
-    if (atomic_load_explicit(&sess->inbox_len, memory_order_relaxed)
+    if (atomic_load(&sess->inbox_len)
         >= (int32_t)RUDP_INBOX_CAP) {
         return; /* queue full: drop, KCP will retransmit */
     }
@@ -508,15 +507,15 @@ static void _rudp_inbox_push(xylem_rudp_conn_t* sess, const void* data,
     dgram->len = len;
     memcpy(dgram->data, data, len);
 
-    atomic_fetch_add_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+    atomic_fetch_add(&sess->inbox_len, 1);
     if (xylem_channel_send(sess->inbox, dgram) != 0) {
-        atomic_fetch_sub_explicit(&sess->inbox_len, 1, memory_order_relaxed);
+        atomic_fetch_sub(&sess->inbox_len, 1);
         free(dgram);
     }
 }
 
 static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
-    atomic_fetch_add_explicit(&conn->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&conn->refcnt, 1);
 }
 
 /**
@@ -529,7 +528,7 @@ static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
  * here. Mirrors the refcounting used by tcp/tls/dtls connections.
  */
 static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
-    if (atomic_fetch_sub_explicit(&conn->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&conn->refcnt, 1)
         != 1) {
         return;
     }
@@ -619,7 +618,7 @@ static int _rudp_client_read(xylem_rudp_conn_t* c, void* buf, int len) {
             return n;
         }
 
-        if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+        if (atomic_load(&c->closed)) {
             return -1;
         }
 
@@ -678,7 +677,7 @@ static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
             return n;
         }
 
-        if (atomic_load_explicit(&c->closed, memory_order_acquire)) {
+        if (atomic_load(&c->closed)) {
             return -1;
         }
 
@@ -691,7 +690,7 @@ static int _rudp_session_read(xylem_rudp_conn_t* c, void* buf, int len) {
         if (!dgram) {
             return -1;
         }
-        atomic_fetch_sub_explicit(&c->inbox_len, 1, memory_order_relaxed);
+        atomic_fetch_sub(&c->inbox_len, 1);
 
         /* Feed into FEC + KCP. */
         _rudp_recv_input(c, dgram->data, dgram->len);
@@ -714,7 +713,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
-    atomic_store_explicit(&sess->refcnt, 1, memory_order_relaxed);
+    atomic_store(&sess->refcnt, 1);
     sess->fd        = ln->fd;
     sess->conv      = hs_conv;
     sess->peer_addr = *peer_addr;
@@ -774,7 +773,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
 
     bool published = false;
     mtx_lock(&ln->sessions_mtx);
-    if (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+    if (!atomic_load(&ln->closed)) {
         rbtree_insert(&ln->sessions, &sess->listener_node);
         sess->in_listener = true;
         _rudp_conn_ref(sess); /* accept/user reference */
@@ -802,7 +801,7 @@ static void _rudp_dispatcher(void* arg) {
     char recv_buf[RUDP_RECV_BUF_SIZE];
 
     for (;;) {
-        if (atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+        if (atomic_load(&ln->closed)) {
             break;
         }
 
@@ -1012,7 +1011,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     scheduler_t* sched = runtime_get_scheduler();
     uint32_t conv = _rudp_alloc_conv();
 
-    atomic_store_explicit(&c->refcnt, 1, memory_order_relaxed);
+    atomic_store(&c->refcnt, 1);
     c->fd        = fd;
     c->conv      = conv;
     c->peer_addr = resolved_addr;
@@ -1172,7 +1171,7 @@ int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
         return -1;
     }
 
-    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+    if (atomic_load(&conn->closed)) {
         return -1;
     }
     /**
@@ -1203,13 +1202,13 @@ int xylem_rudp_write(xylem_rudp_conn_t* conn, const void* data, int len) {
         return -1;
     }
 
-    if (atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+    if (atomic_load(&conn->closed)) {
         return -1;
     }
 
     _rudp_conn_ref(conn);
     int ret = -1;
-    if (!atomic_load_explicit(&conn->closed, memory_order_acquire)) {
+    if (!atomic_load(&conn->closed)) {
         int rc = ikcp_send(conn->kcp, (const char*)data, len);
         if (rc >= 0) {
             ikcp_flush(conn->kcp);

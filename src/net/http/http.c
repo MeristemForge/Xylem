@@ -593,8 +593,7 @@ static void _srv_parser_reset(_srv_parser_t* sp) {
 }
 
 void http_srv_unref(http_srv_t* s) {
-    if (atomic_fetch_sub_explicit(&s->active_conns, 1,
-                                  memory_order_acq_rel) == 1) {
+    if (atomic_fetch_sub(&s->active_conns, 1) == 1) {
         if (s->transport_ctx_free) {
             s->transport_ctx_free(s->transport_ctx);
         }
@@ -627,7 +626,7 @@ void http_srv_conn_coroutine(void* arg) {
     bool keep_alive = true;
 
     while (keep_alive) {
-        if (atomic_load_explicit(&ctx->srv->closing, memory_order_acquire)) {
+        if (atomic_load(&ctx->srv->closing)) {
             break;
         }
 

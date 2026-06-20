@@ -69,11 +69,11 @@ struct xylem_mux_s {
 };
 
 static void _mux_ref(xylem_mux_t* mux) {
-    atomic_fetch_add_explicit(&mux->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&mux->refcnt, 1);
 }
 
 static void _mux_unref(xylem_mux_t* mux) {
-    if (atomic_fetch_sub_explicit(&mux->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&mux->refcnt, 1)
         != 1) {
         return;
     }
@@ -281,7 +281,7 @@ static void _mux_handle_ping(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
 }
 
 static void _mux_teardown(xylem_mux_t* mux) {
-    atomic_store_explicit(&mux->closed, true, memory_order_release);
+    atomic_store(&mux->closed, true);
 
     spin_lock(&mux->streams_lock);
     size_t n = mux->stream_count;
@@ -311,7 +311,7 @@ static int _mux_dispatch(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
         _mux_handle_ping(mux, hdr);
         return 0;
     case MUX_TYPE_GO_AWAY:
-        atomic_store_explicit(&mux->closed, true, memory_order_release);
+        atomic_store(&mux->closed, true);
         return 0;
     default:
         return 0;
@@ -322,7 +322,7 @@ static void _mux_reader_loop(void* arg) {
     xylem_mux_t* mux = (xylem_mux_t*)arg;
     uint8_t hdr_buf[MUX_FRAME_HDR_SIZE];
 
-    while (!atomic_load_explicit(&mux->closed, memory_order_acquire)) {
+    while (!atomic_load(&mux->closed)) {
         if (_mux_read_full(mux, hdr_buf, MUX_FRAME_HDR_SIZE) != 0) {
             break;
         }
@@ -413,7 +413,7 @@ xylem_mux_t* xylem_mux_create(
         return NULL;
     }
 
-    atomic_store_explicit(&mux->refcnt, 1, memory_order_relaxed);
+    atomic_store(&mux->refcnt, 1);
 
     _mux_ref(mux);
     if (runtime_spawn(_mux_reader_loop, mux) != 0) {
@@ -473,7 +473,7 @@ void xylem_mux_destroy(xylem_mux_t* mux) {
 xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_open_stream");
 
-    if (atomic_load_explicit(&mux->closed, memory_order_acquire)) {
+    if (atomic_load(&mux->closed)) {
         return NULL;
     }
 
@@ -511,7 +511,7 @@ xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
 xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_accept_stream");
 
-    if (atomic_load_explicit(&mux->closed, memory_order_acquire)) {
+    if (atomic_load(&mux->closed)) {
         return NULL;
     }
     if (!mux->accept_ch) {
@@ -523,9 +523,7 @@ xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux) {
 static bool _mux_recv_park_cb(mco_coro* co, void* arg) {
     struct xylem_mux_stream_s* s = (struct xylem_mux_stream_s*)arg;
     mco_coro* expected = NULL;
-    if (atomic_compare_exchange_strong_explicit(
-            &s->recv_park, &expected, co,
-            memory_order_acq_rel, memory_order_acquire)) {
+    if (atomic_compare_exchange_strong(&s->recv_park, &expected, co)) {
         return true;
     }
     return false;
@@ -534,9 +532,7 @@ static bool _mux_recv_park_cb(mco_coro* co, void* arg) {
 static bool _mux_send_park_cb(mco_coro* co, void* arg) {
     struct xylem_mux_stream_s* s = (struct xylem_mux_stream_s*)arg;
     mco_coro* expected = NULL;
-    if (atomic_compare_exchange_strong_explicit(
-            &s->send_park, &expected, co,
-            memory_order_acq_rel, memory_order_acquire)) {
+    if (atomic_compare_exchange_strong(&s->send_park, &expected, co)) {
         return true;
     }
     return false;
@@ -583,7 +579,7 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
 
         if (st == MUX_STREAM_REMOTE_CLOSE
             || st == MUX_STREAM_CLOSED
-            || atomic_load_explicit(&s->closed, memory_order_acquire)) {
+            || atomic_load(&s->closed)) {
             mux_stream_unref(s);
             return (st == MUX_STREAM_CLOSED) ? -1 : 0;
         }
@@ -611,7 +607,7 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
 
     while (rem > 0) {
         spin_lock(&s->lock);
-        if (atomic_load_explicit(&s->closed, memory_order_acquire)
+        if (atomic_load(&s->closed)
             || s->state == MUX_STREAM_CLOSED) {
             spin_unlock(&s->lock);
             mux_stream_unref(s);

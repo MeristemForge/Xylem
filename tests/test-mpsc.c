@@ -38,13 +38,13 @@ typedef struct {
 
 static int _link_after_pop_starts(void* arg) {
     _mpsc_link_ctx_t* ctx = (_mpsc_link_ctx_t*)arg;
-    while (!atomic_load_explicit(&ctx->start, memory_order_acquire)) {
+    while (!atomic_load(&ctx->start)) {
         thrd_yield();
     }
     for (int i = 0; i < 1000; i++) {
         thrd_yield();
     }
-    atomic_store_explicit(&ctx->prev->next, ctx->node, memory_order_release);
+    atomic_store(&ctx->prev->next, ctx->node);
     return 0;
 }
 
@@ -53,10 +53,9 @@ static void test_pop_waits_for_unlinked_push(void) {
     mpsc_init(&q);
 
     _mpsc_test_node_t item = { .value = 7 };
-    atomic_store_explicit(&item.node.next, NULL, memory_order_relaxed);
+    atomic_store(&item.node.next, NULL);
 
-    mpsc_node_t* prev = atomic_exchange_explicit(
-        &q.tail, &item.node, memory_order_acq_rel);
+    mpsc_node_t* prev = atomic_exchange(&q.tail, &item.node);
 
     _mpsc_link_ctx_t ctx = {
         .prev = prev,
@@ -67,7 +66,7 @@ static void test_pop_waits_for_unlinked_push(void) {
     thrd_t thr;
     ASSERT(thrd_create(&thr, _link_after_pop_starts, &ctx) == thrd_success);
 
-    atomic_store_explicit(&ctx.start, true, memory_order_release);
+    atomic_store(&ctx.start, true);
     mpsc_node_t* popped = mpsc_pop(&q);
     ASSERT(thrd_join(thr, NULL) == thrd_success);
     ASSERT(popped == &item.node);

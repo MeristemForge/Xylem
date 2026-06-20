@@ -217,7 +217,7 @@ typedef struct {
 static int _race_destroyer_fn(void* arg) {
     _race_ctx_t* c = (_race_ctx_t*)arg;
     int n = 0;
-    while (!atomic_load_explicit(&c->stop, memory_order_relaxed)) {
+    while (!atomic_load(&c->stop)) {
         xylem_ticker_t* tk = xylem_ticker_create(RACE_INTERVAL_MS);
         if (!tk) {
             continue;

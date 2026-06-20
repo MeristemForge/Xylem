@@ -118,7 +118,7 @@ static bool _wg_park_cb(mco_coro* co, void* arg) {
     ctx->w->co = co;
 
     spin_lock(&wg->guard);
-    if (atomic_load_explicit(&wg->cnt, memory_order_acquire) == 0) {
+    if (atomic_load(&wg->cnt) == 0) {
         spin_unlock(&wg->guard);
         return false; /* latch already open: decline the park, run inline */
     }
@@ -193,7 +193,7 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
      * is meant to close.)
      */
     for (;;) {
-        size_t c = atomic_load_explicit(&wg->cnt, memory_order_acquire);
+        size_t c = atomic_load(&wg->cnt);
         if (c == 0) {
             /* Underflow: more done() than add(); mirrors Go's panic. */
             xylem_loge("<waitgroup> done called with zero counter wg=%p",
@@ -203,9 +203,7 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
         if (c == 1) {
             break; /* potential last: take the guarded path */
         }
-        if (atomic_compare_exchange_weak_explicit(
-                &wg->cnt, &c, c - 1,
-                memory_order_acq_rel, memory_order_acquire)) {
+        if (atomic_compare_exchange_weak(&wg->cnt, &c, c - 1)) {
             return; /* decremented a value > 1: not last, lock-free */
         }
         /* lost the race; reload and retry */
@@ -218,11 +216,11 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
      * return, and free wg until we unlock; a thread woken by the broadcast
      * re-takes the guard before it can leave. Then do every remaining
      * access to wg -- drain, open a new generation, broadcast -- here.
-     * seq_cst pairs with a thread's armed generation so the wake is never
-     * skipped.
+     * The default atomic gate update pairs with a thread's armed generation
+     * so the wake is never skipped.
      */
     spin_lock(&wg->guard);
-    size_t prev = atomic_fetch_sub_explicit(&wg->cnt, 1, memory_order_acq_rel);
+    size_t prev = atomic_fetch_sub(&wg->cnt, 1);
     if (prev == 0) {
         spin_unlock(&wg->guard);
         xylem_loge("<waitgroup> done called with zero counter wg=%p",
@@ -239,8 +237,8 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     }
 
     list_swap(&drained, &wg->co_waiters);
-    atomic_fetch_add_explicit(&wg->gate, 1, memory_order_seq_cst);
-    if (atomic_load_explicit(&wg->thr_waiters, memory_order_seq_cst) > 0) {
+    atomic_fetch_add(&wg->gate, 1);
+    if (atomic_load(&wg->thr_waiters) > 0) {
         platform_futex_broadcast(&wg->gate);
     }
     spin_unlock(&wg->guard);
@@ -283,15 +281,15 @@ void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
      * so the value-compare returns the wait immediately.
      */
     spin_lock(&wg->guard);
-    while (atomic_load_explicit(&wg->cnt, memory_order_acquire) != 0) {
-        uint32_t g = atomic_load_explicit(&wg->gate, memory_order_relaxed);
-        atomic_fetch_add_explicit(&wg->thr_waiters, 1, memory_order_relaxed);
+    while (atomic_load(&wg->cnt) != 0) {
+        uint32_t g = atomic_load(&wg->gate);
+        atomic_fetch_add(&wg->thr_waiters, 1);
         spin_unlock(&wg->guard);
 
         platform_futex_wait(&wg->gate, g);
 
         spin_lock(&wg->guard);
-        atomic_fetch_sub_explicit(&wg->thr_waiters, 1, memory_order_relaxed);
+        atomic_fetch_sub(&wg->thr_waiters, 1);
     }
     spin_unlock(&wg->guard);
 }

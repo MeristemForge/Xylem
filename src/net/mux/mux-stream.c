@@ -47,16 +47,16 @@ struct xylem_mux_stream_s* mux_stream_create(
         return NULL;
     }
     spin_init(&s->lock);
-    atomic_store_explicit(&s->refcnt, 1, memory_order_relaxed);
+    atomic_store(&s->refcnt, 1);
     return s;
 }
 
 void mux_stream_ref(struct xylem_mux_stream_s* s) {
-    atomic_fetch_add_explicit(&s->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&s->refcnt, 1);
 }
 
 void mux_stream_unref(struct xylem_mux_stream_s* s) {
-    if (atomic_fetch_sub_explicit(&s->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&s->refcnt, 1) != 1) {
         return;
     }
     free(s->recv_buf);
@@ -64,16 +64,14 @@ void mux_stream_unref(struct xylem_mux_stream_s* s) {
 }
 
 static void _mux_stream_wake_recv(struct xylem_mux_stream_s* s) {
-    mco_coro* co = atomic_exchange_explicit(
-        &s->recv_park, NULL, memory_order_acq_rel);
+    mco_coro* co = atomic_exchange(&s->recv_park, NULL);
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
 }
 
 static void _mux_stream_wake_send(struct xylem_mux_stream_s* s) {
-    mco_coro* co = atomic_exchange_explicit(
-        &s->send_park, NULL, memory_order_acq_rel);
+    mco_coro* co = atomic_exchange(&s->send_park, NULL);
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
@@ -128,7 +126,7 @@ void mux_stream_notify_reset(struct xylem_mux_stream_s* s) {
     spin_lock(&s->lock);
     s->state = MUX_STREAM_CLOSED;
     spin_unlock(&s->lock);
-    atomic_store_explicit(&s->closed, true, memory_order_release);
+    atomic_store(&s->closed, true);
     _mux_stream_wake_recv(s);
     _mux_stream_wake_send(s);
 }

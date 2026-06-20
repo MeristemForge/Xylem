@@ -74,8 +74,9 @@
  * (count++) happens under the guard, so a coroutine racing post is either
  * seen in the list (woken) or observes the banked count in its park
  * callback (takes it) -- never stranded. Threads need no guard: a barge
- * that beats the bank just re-checks the word, and the seq_cst pair
- * between post's count++ and a thread's arm closes the lost-wakeup race.
+ * that beats the bank just re-checks the word, and the default atomic
+ * ordering between post's count++ and a thread's arm closes the
+ * lost-wakeup race.
  *
  * Waiter lifetime: infinite coroutine waits keep the record on the parked
  * coroutine's stack (post snapshots it under the guard, never derefs it
@@ -100,11 +101,9 @@ static uint64_t _sem_now_ms(void) {
  * in any context (coroutine fast path, thread barge, non-blocking try).
  */
 static bool _sem_try(xylem_sem_t* s) {
-    uint32_t c = atomic_load_explicit(&s->count, memory_order_acquire);
+    uint32_t c = atomic_load(&s->count);
     while (c > 0) {
-        if (atomic_compare_exchange_weak_explicit(
-                &s->count, &c, c - 1,
-                memory_order_acquire, memory_order_acquire)) {
+        if (atomic_compare_exchange_weak(&s->count, &c, c - 1)) {
             return true;
         }
     }
@@ -145,11 +144,11 @@ typedef struct _sem_co_timed_s {
 } _sem_co_timed_t;
 
 static void _sem_co_ref(_sem_co_timed_t* w) {
-    atomic_fetch_add_explicit(&w->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&w->refcnt, 1);
 }
 
 static void _sem_co_unref(_sem_co_timed_t* w) {
-    if (atomic_fetch_sub_explicit(&w->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&w->refcnt, 1) != 1) {
         return;
     }
     /* The last ref owns the timer; destroy is safe even mid-callback. */
@@ -182,13 +181,13 @@ static void _sem_co_timeout_cb(scheduler_timer_t* timer, void* ud) {
     if (linked) {
         list_remove(&s->co_waiters, &w->base.node);
     }
-    atomic_store_explicit(&w->timed_out, true, memory_order_relaxed);
+    atomic_store(&w->timed_out, true);
     _sem_co_waiter_t target = w->base;
     spin_unlock(&s->guard);
 
     /* Last touch of the coroutine: it may drop its ref and free w. */
     if (linked) {
-        atomic_store_explicit(&w->base.granted, 0, memory_order_release);
+        atomic_store(&w->base.granted, 0);
         scheduler_schedule(target.sched, target.co);
     }
     _sem_co_unref(w);
@@ -210,7 +209,7 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
     /* A post() may have banked a token since the fast path; take it. */
     if (_sem_try(s)) {
         spin_unlock(&s->guard);
-        atomic_store_explicit(&w->base.granted, 1, memory_order_release);
+        atomic_store(&w->base.granted, 1);
         return false;
     }
     /**
@@ -219,7 +218,7 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
      * in its loop instead of re-parking on a timer that will never fire
      * again.
      */
-    if (atomic_load_explicit(&w->timed_out, memory_order_acquire)) {
+    if (atomic_load(&w->timed_out)) {
         spin_unlock(&s->guard);
         return false;
     }
@@ -240,7 +239,7 @@ static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
                 w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0) != 0) {
             list_remove(&s->co_waiters, &w->base.node);
             w->armed = false;
-            atomic_store_explicit(&w->timed_out, true, memory_order_release);
+            atomic_store(&w->timed_out, true);
             _sem_co_unref(w);
             spin_unlock(&s->guard);
             return false;
@@ -267,7 +266,7 @@ static bool _sem_inf_park_cb(mco_coro* co, void* arg) {
     /* A post() may have banked a token since the fast path; take it. */
     if (_sem_try(s)) {
         spin_unlock(&s->guard);
-        atomic_store_explicit(&ctx->w->granted, 1, memory_order_release);
+        atomic_store(&ctx->w->granted, 1);
         return false;
     }
     list_insert_tail(&s->co_waiters, &ctx->w->node);
@@ -298,20 +297,18 @@ void xylem_sem_destroy(xylem_sem_t* s) {
  * Thread acquire: barge on the futex word. CAS-decrement a free token or
  * sleep while it is zero; `expected == 0` makes the wait a no-op if a
  * post() banked a token between the load and the sleep. thr_waiters is
- * published with seq_cst so post() cannot skip our wake (the store pairs
- * with post()'s seq_cst count bump + thr_waiters read).
+ * published atomically so post() cannot skip our wake (the store pairs
+ * with post()'s count bump + thr_waiters read).
  */
 static bool _sem_wait_thread(xylem_sem_t* s, bool timed, uint64_t timeout_ms) {
     uint64_t deadline = timed ? _sem_now_ms() + timeout_ms : 0;
 
-    atomic_fetch_add_explicit(&s->thr_waiters, 1, memory_order_seq_cst);
+    atomic_fetch_add(&s->thr_waiters, 1);
     bool got = false;
     for (;;) {
-        uint32_t c = atomic_load_explicit(&s->count, memory_order_seq_cst);
+        uint32_t c = atomic_load(&s->count);
         if (c > 0) {
-            if (atomic_compare_exchange_weak_explicit(
-                    &s->count, &c, c - 1,
-                    memory_order_seq_cst, memory_order_seq_cst)) {
+            if (atomic_compare_exchange_weak(&s->count, &c, c - 1)) {
                 got = true;
                 break;
             }
@@ -327,7 +324,7 @@ static bool _sem_wait_thread(xylem_sem_t* s, bool timed, uint64_t timeout_ms) {
         }
         platform_futex_timedwait(&s->count, 0, deadline - now);
     }
-    atomic_fetch_sub_explicit(&s->thr_waiters, 1, memory_order_relaxed);
+    atomic_fetch_sub(&s->thr_waiters, 1);
     return got;
 }
 
@@ -350,9 +347,9 @@ void xylem_sem_wait(xylem_sem_t* s) {
          */
         _sem_inf_ctx_t ctx = { s, &w };
         for (;;) {
-            atomic_store_explicit(&w.granted, 0, memory_order_relaxed);
+            atomic_store(&w.granted, 0);
             scheduler_park(w.sched, _sem_inf_park_cb, &ctx);
-            if (atomic_load_explicit(&w.granted, memory_order_acquire)) {
+            if (atomic_load(&w.granted)) {
                 return; /* token handed over (or taken in the callback) */
             }
             if (_sem_try(s)) {
@@ -408,9 +405,9 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
          */
         bool ok;
         for (;;) {
-            atomic_store_explicit(&w->base.granted, 0, memory_order_relaxed);
+            atomic_store(&w->base.granted, 0);
             scheduler_park(w->base.sched, _sem_timed_park_cb, &ctx);
-            if (atomic_load_explicit(&w->base.granted, memory_order_acquire)) {
+            if (atomic_load(&w->base.granted)) {
                 ok = true; /* token handed over (or taken in the callback) */
                 break;
             }
@@ -418,7 +415,7 @@ bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
                 ok = true; /* won the banked token */
                 break;
             }
-            if (atomic_load_explicit(&w->timed_out, memory_order_acquire)) {
+            if (atomic_load(&w->timed_out)) {
                 ok = false; /* deadline elapsed */
                 break;
             }
@@ -452,7 +449,7 @@ static mco_coro* _sem_take_waiter(
     _sem_co_waiter_t* w  = list_entry(n, _sem_co_waiter_t, node);
     mco_coro*         co = w->co;
     *sched               = w->sched;
-    atomic_store_explicit(&w->granted, granted, memory_order_release);
+    atomic_store(&w->granted, granted);
     return co;
 }
 
@@ -469,7 +466,7 @@ void xylem_sem_post(xylem_sem_t* s) {
      * nothing, so the racing thread simply blocks on a genuinely empty
      * count until the next post takes the release path below.
      */
-    if (n && atomic_load_explicit(&s->thr_waiters, memory_order_seq_cst)
+    if (n && atomic_load(&s->thr_waiters)
                 == 0) {
         scheduler_t* sched;
         mco_coro*    co = _sem_take_waiter(s, n, 1, &sched);
@@ -483,18 +480,18 @@ void xylem_sem_post(xylem_sem_t* s) {
      * in its park callback either is seen above or observes the banked
      * count), then wake one of each to contend for it -- the FIFO-oldest
      * coroutine to re-contend (granted == 0) and, when a thread is blocked,
-     * a futex signal. seq_cst on the bank pairs with a thread waiter's arm
-     * so the wake is never skipped while a thread sleeps on a zero word.
+     * a futex signal. The default atomic bank pairs with a thread waiter's
+     * arm so the wake is never skipped while a thread sleeps on a zero word.
      * Whoever CAS-takes the banked token first wins; the loser re-parks or
      * re-sleeps. This is what keeps threads from starving under a steady
      * stream of coroutine waiters.
      */
     scheduler_t* sched = NULL;
     mco_coro*    co    = n ? _sem_take_waiter(s, n, 0, &sched) : NULL;
-    atomic_fetch_add_explicit(&s->count, 1, memory_order_seq_cst);
+    atomic_fetch_add(&s->count, 1);
     spin_unlock(&s->guard);
 
-    if (atomic_load_explicit(&s->thr_waiters, memory_order_seq_cst) > 0) {
+    if (atomic_load(&s->thr_waiters) > 0) {
         platform_futex_signal(&s->count);
     }
     if (co) {

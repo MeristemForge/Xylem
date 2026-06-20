@@ -376,7 +376,7 @@ void xylem_http_close(xylem_http_srv_t* srv) {
      * releases the last one frees `s`, so this never frees the server out
      * from under a coroutine still touching it. Returns without blocking.
      */
-    atomic_store_explicit(&s->closing, true, memory_order_release);
+    atomic_store(&s->closing, true);
     s->close_listener(s->listener);
     http_srv_unref(s);
 }
@@ -388,7 +388,7 @@ int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_shutdown");
 
     http_srv_t* s = (http_srv_t*)srv;
-    atomic_store_explicit(&s->closing, true, memory_order_release);
+    atomic_store(&s->closing, true);
     s->close_listener(s->listener);
 
     if (timeout_ms == 0) {
@@ -405,7 +405,7 @@ int xylem_http_shutdown(xylem_http_srv_t* srv, uint64_t timeout_ms) {
     uint64_t deadline =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
     int rc = 0;
-    while (atomic_load_explicit(&s->active_conns, memory_order_acquire) > 1) {
+    while (atomic_load(&s->active_conns) > 1) {
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
         if (now >= deadline) {
             rc = -1;

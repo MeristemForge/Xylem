@@ -56,7 +56,7 @@ void runq_destroy(runq_t* rq) {
 void runq_push(runq_t* rq, queue_node_t* node) {
     mtx_lock(&rq->lock);
     queue_enqueue(&rq->q, node);
-    atomic_fetch_add_explicit(&rq->len, 1, memory_order_relaxed);
+    atomic_fetch_add(&rq->len, 1);
     mtx_unlock(&rq->lock);
 }
 
@@ -68,7 +68,7 @@ void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count) {
     for (int32_t i = 0; i < count; i++) {
         queue_enqueue(&rq->q, nodes[i]);
     }
-    atomic_fetch_add_explicit(&rq->len, count, memory_order_relaxed);
+    atomic_fetch_add(&rq->len, count);
     mtx_unlock(&rq->lock);
 }
 
@@ -76,14 +76,14 @@ queue_node_t* runq_pop(runq_t* rq) {
     mtx_lock(&rq->lock);
     queue_node_t* node = queue_dequeue(&rq->q);
     if (node) {
-        atomic_fetch_sub_explicit(&rq->len, 1, memory_order_relaxed);
+        atomic_fetch_sub(&rq->len, 1);
     }
     mtx_unlock(&rq->lock);
     return node;
 }
 
 int32_t runq_len_approx(runq_t* rq) {
-    return atomic_load_explicit(&rq->len, memory_order_relaxed);
+    return atomic_load(&rq->len);
 }
 
 
@@ -110,7 +110,7 @@ int32_t runq_pop_fair(
         out[n++] = node;
     }
     if (n > 0) {
-        atomic_fetch_sub_explicit(&rq->len, n, memory_order_relaxed);
+        atomic_fetch_sub(&rq->len, n);
     }
     mtx_unlock(&rq->lock);
     return n;

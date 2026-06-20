@@ -190,7 +190,7 @@ xylem_http_srv_t* http_tls_listen(
      * Reference count starts at two: owner handle + accept coroutine
      * (see the TCP transport). Each connection coroutine adds its own.
      */
-    atomic_store_explicit(&srv->active_conns, 2, memory_order_relaxed);
+    atomic_store(&srv->active_conns, 2);
     if (runtime_spawn(_https_accept_coroutine, srv) != 0) {
         tls_close_listener(ln);
         tls_ctx_destroy(tls_ctx);

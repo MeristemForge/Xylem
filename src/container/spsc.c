@@ -37,8 +37,8 @@ int spsc_init(spsc_t* q, size_t cap) {
     }
     q->slots = slots;
     q->mask  = cap - 1;
-    atomic_store_explicit(&q->wpos, 0, memory_order_relaxed);
-    atomic_store_explicit(&q->rpos, 0, memory_order_relaxed);
+    atomic_store(&q->wpos, 0);
+    atomic_store(&q->rpos, 0);
     return 0;
 }
 
@@ -60,13 +60,12 @@ int spsc_push(spsc_t* q, void* elem) {
     }
 
     /**
-     * Producer owns wpos, so a relaxed load of our own index is enough.
-     * rpos is published by the consumer; acquire it so the consumer's
-     * read of a slot happens-before we overwrite that slot. Full when
-     * the ring already holds cap elements.
+     * Producer owns wpos; rpos is published by the consumer so we do not
+     * overwrite a slot before the consumer has finished reading it. Full
+     * when the ring already holds cap elements.
      */
-    size_t w = atomic_load_explicit(&q->wpos, memory_order_relaxed);
-    size_t r = atomic_load_explicit(&q->rpos, memory_order_acquire);
+    size_t w = atomic_load(&q->wpos);
+    size_t r = atomic_load(&q->rpos);
     if (w - r > q->mask) {
         return -1;
     }
@@ -74,35 +73,34 @@ int spsc_push(spsc_t* q, void* elem) {
     q->slots[w & q->mask] = elem;
 
     /**
-     * Release so a consumer that acquires this wpos also sees the slot
-     * written above; this single store publishes the element, so pop
-     * never observes a stale slot (no false empty).
+     * This store publishes the element to the consumer, so pop never
+     * observes a stale slot (no false empty).
      */
-    atomic_store_explicit(&q->wpos, w + 1, memory_order_release);
+    atomic_store(&q->wpos, w + 1);
     return 0;
 }
 
 void* spsc_pop(spsc_t* q) {
     /**
-     * Consumer owns rpos (relaxed self-load). Acquire wpos to pair with
-     * the producer's release and observe the published slot.
+     * Consumer owns rpos; wpos is published by the producer and tells us
+     * whether a slot is ready to read.
      */
-    size_t r = atomic_load_explicit(&q->rpos, memory_order_relaxed);
-    size_t w = atomic_load_explicit(&q->wpos, memory_order_acquire);
+    size_t r = atomic_load(&q->rpos);
+    size_t w = atomic_load(&q->wpos);
     if (w == r) {
         return NULL;
     }
 
     void* elem = q->slots[r & q->mask];
 
-    /* Release so the producer's acquire of rpos sees the slot as free. */
-    atomic_store_explicit(&q->rpos, r + 1, memory_order_release);
+    /* Publish the freed slot back to the producer. */
+    atomic_store(&q->rpos, r + 1);
     return elem;
 }
 
 size_t spsc_len(const spsc_t* q) {
-    size_t w = atomic_load_explicit(&q->wpos, memory_order_acquire);
-    size_t r = atomic_load_explicit(&q->rpos, memory_order_acquire);
+    size_t w = atomic_load(&q->wpos);
+    size_t r = atomic_load(&q->rpos);
     return w - r;
 }
 

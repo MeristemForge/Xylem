@@ -32,8 +32,8 @@ _Pragma("once")
  * consumer thread/coroutine calls pop; concurrent producers or
  * concurrent consumers are undefined. Within that contract push and pop
  * never block and need no lock: the producer owns wpos, the consumer
- * owns rpos, and the lone shared edge is published with one release
- * store and observed with one acquire load.
+ * owns rpos, and the lone shared edge is published and observed through
+ * the default atomic operations.
  *
  * Unlike the MPSC queue there is no "temporarily inconsistent" state: a
  * single producer publishes each slot atomically, so a pop either sees

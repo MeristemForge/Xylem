@@ -56,11 +56,11 @@ typedef struct _addr_resolve_ctx_s {
 } _addr_resolve_ctx_t;
 
 static void _addr_ctx_ref(_addr_resolve_ctx_t* ctx) {
-    atomic_fetch_add_explicit(&ctx->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&ctx->refcnt, 1);
 }
 
 static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
-    if (atomic_fetch_sub_explicit(&ctx->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&ctx->refcnt, 1)
         != 1) {
         return;
     }
@@ -133,8 +133,7 @@ static void _addr_resolve_work(void* arg) {
      * is NULL and the result we just built is discarded (freed by the
      * last unref). Otherwise wake the coroutine.
      */
-    mco_coro* co = atomic_exchange_explicit(
-        &ctx->waiter, NULL, memory_order_acq_rel);
+    mco_coro* co = atomic_exchange(&ctx->waiter, NULL);
     if (co) {
         scheduler_schedule(runtime_get_scheduler(), co);
     }
@@ -217,10 +216,9 @@ static void _addr_resolve_timeout_cb(scheduler_timer_t* timer, void* ud) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
 
     /* Single-winner: only stamp timed_out and wake if we beat the worker. */
-    mco_coro* co = atomic_exchange_explicit(
-        &ctx->waiter, NULL, memory_order_acq_rel);
+    mco_coro* co = atomic_exchange(&ctx->waiter, NULL);
     if (co) {
-        atomic_store_explicit(&ctx->timed_out, true, memory_order_release);
+        atomic_store(&ctx->timed_out, true);
         scheduler_schedule(runtime_get_scheduler(), co);
     }
     _addr_ctx_unref(ctx);
@@ -230,7 +228,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
 
     /* Publish the waiter before submitting so a fast completion sees it. */
-    atomic_store_explicit(&ctx->waiter, co, memory_order_release);
+    atomic_store(&ctx->waiter, co);
 
     /* Reference for the pool job. */
     _addr_ctx_ref(ctx);
@@ -242,7 +240,7 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
          * with status == -1. Not declining would orphan it forever.
          */
         _addr_ctx_unref(ctx);
-        atomic_store_explicit(&ctx->waiter, NULL, memory_order_relaxed);
+        atomic_store(&ctx->waiter, NULL);
         ctx->status = -1;
         return false;
     }
@@ -306,7 +304,7 @@ int addr_resolve(
     scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
 
     int rc;
-    if (atomic_load_explicit(&ctx->timed_out, memory_order_acquire)) {
+    if (atomic_load(&ctx->timed_out)) {
         /* Timed out: the worker may still run, so do not touch result. */
         rc = -1;
     } else {

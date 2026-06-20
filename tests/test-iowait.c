@@ -41,7 +41,6 @@ typedef struct _test_iowait_dir_s {
     scheduler_timer_t* timer;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
-    _Atomic int        result;
 } _test_iowait_dir_t;
 
 struct iowait_s {
@@ -59,6 +58,7 @@ struct iowait_s {
     _Atomic bool          registered;
     _Atomic int           interest;
     _Atomic bool          closed;
+    _Atomic bool          poll_error;
 
     iowait_slab_t*        slab;
     uint32_t              slot_index;
@@ -88,6 +88,22 @@ static void _iowait_inject_stale_read(void) {
         runtime_get_scheduler(),
         PLATFORM_POLLER_RD_OP,
         (void*)1,
+        &batch);
+    scheduler_schedule_batch(runtime_get_scheduler(), coros, batch.n);
+}
+
+static void _iowait_inject_read(iowait_t* w) {
+    mco_coro* coros[4];
+    runnable_batch_t batch = {
+        .coros = coros,
+        .cap = (int32_t)(sizeof(coros) / sizeof(coros[0])),
+        .n = 0,
+    };
+
+    iowait_on_event(
+        runtime_get_scheduler(),
+        PLATFORM_POLLER_RD_OP,
+        w->sqe.ud,
         &batch);
     scheduler_schedule_batch(runtime_get_scheduler(), coros, batch.n);
 }
@@ -126,6 +142,36 @@ static void _iowait_wrap_coro(void* arg) {
     xylem_shutdown();
 }
 
+static void _iowait_closed_before_event_coro(void* arg) {
+    _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
+           == 0);
+    platform_socket_enable_nonblocking(ctx->socks[0], true);
+    platform_socket_enable_nonblocking(ctx->socks[1], true);
+
+    ctx->active = iowait_create(ctx->socks[0]);
+    ASSERT(ctx->active != NULL);
+
+    xylem_spawn(_iowait_wait_coro, ctx);
+    xylem_sleep(1);
+
+    atomic_store(&ctx->active->closed, true);
+    _iowait_inject_read(ctx->active);
+    xylem_sleep(1);
+
+    ASSERT(ctx->result == IOWAIT_CLOSED);
+    ctx->tested = 1;
+
+    atomic_store(&ctx->active->closed, false);
+    iowait_close(ctx->active);
+    iowait_destroy(ctx->active);
+    platform_socket_close(ctx->socks[0]);
+    platform_socket_close(ctx->socks[1]);
+    xylem_shutdown();
+}
+
 static void test_stale_event_after_generation_wrap_is_rejected(void) {
     fprintf(stderr, "=== test_stale_event_after_generation_wrap_is_rejected\n");
     _iowait_ctx_t ctx = {
@@ -139,7 +185,21 @@ static void test_stale_event_after_generation_wrap_is_rejected(void) {
     ASSERT(ctx.tested == 1);
 }
 
+static void test_closed_state_wins_over_late_event(void) {
+    fprintf(stderr, "=== test_closed_state_wins_over_late_event\n");
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+        .result = IOWAIT_ERROR,
+    };
+    xylem_run(_iowait_closed_before_event_coro, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
+
 int main(void) {
     test_stale_event_after_generation_wrap_is_rejected();
+    test_closed_state_wins_over_late_event();
     return 0;
 }

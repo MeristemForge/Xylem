@@ -36,12 +36,12 @@ struct xylem_timer_s {
 
 static void _timer_ref(void* ud) {
     xylem_timer_t* timer = (xylem_timer_t*)ud;
-    atomic_fetch_add_explicit(&timer->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&timer->refcnt, 1);
 }
 
 static void _timer_unref(void* ud) {
     xylem_timer_t* timer = (xylem_timer_t*)ud;
-    if (atomic_fetch_sub_explicit(&timer->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&timer->refcnt, 1)
         == 1) {
         free(timer);
     }

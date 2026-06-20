@@ -38,11 +38,11 @@ struct xylem_udp_chan_s {
 };
 
 static void _udp_chan_ref(xylem_udp_chan_t* udp) {
-    atomic_fetch_add_explicit(&udp->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&udp->refcnt, 1);
 }
 
 static void _udp_chan_unref(xylem_udp_chan_t* udp) {
-    if (atomic_fetch_sub_explicit(&udp->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&udp->refcnt, 1)
         != 1) {
         return;
     }
@@ -107,7 +107,7 @@ int xylem_udp_recv(
     _udp_chan_ref(udp);
 
     int ret = -1;
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+    if (!atomic_load(&udp->closed)) {
         addr_t from;
         addr_t* from_ptr = (host || port) ? &from : NULL;
         ret = datagram_recv(udp->datagram, buf, len, from_ptr);
@@ -141,7 +141,7 @@ int xylem_udp_send(
     _udp_chan_ref(udp);
 
     int ret = -1;
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+    if (!atomic_load(&udp->closed)) {
         const addr_t* to = NULL;
         addr_t        dest;
         if (host && !udp->connected) {
@@ -164,7 +164,7 @@ void xylem_udp_set_read_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_read_deadline");
 
     _udp_chan_ref(udp);
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+    if (!atomic_load(&udp->closed)) {
         datagram_set_read_deadline(udp->datagram, deadline_ms);
     }
     _udp_chan_unref(udp);
@@ -174,7 +174,7 @@ void xylem_udp_set_write_deadline(xylem_udp_chan_t* udp, uint64_t deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("udp", "xylem_udp_set_write_deadline");
 
     _udp_chan_ref(udp);
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+    if (!atomic_load(&udp->closed)) {
         datagram_set_write_deadline(udp->datagram, deadline_ms);
     }
     _udp_chan_unref(udp);
@@ -199,7 +199,7 @@ int xylem_udp_local_addr(
 
     _udp_chan_ref(udp);
     int ret = -1;
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)) {
+    if (!atomic_load(&udp->closed)) {
         ret = datagram_local_addr(udp->datagram, host, host_len, port);
     }
     _udp_chan_unref(udp);
@@ -215,7 +215,7 @@ int xylem_udp_remote_addr(
 
     _udp_chan_ref(udp);
     int ret = -1;
-    if (!atomic_load_explicit(&udp->closed, memory_order_acquire)
+    if (!atomic_load(&udp->closed)
         && udp->connected) {
         ret = datagram_remote_addr(udp->datagram, host, host_len, port);
     }

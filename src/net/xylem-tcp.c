@@ -40,11 +40,11 @@ struct xylem_tcp_listener_s {
 };
 
 static void _tcp_conn_ref(xylem_tcp_conn_t* tcp) {
-    atomic_fetch_add_explicit(&tcp->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&tcp->refcnt, 1);
 }
 
 static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
-    if (atomic_fetch_sub_explicit(&tcp->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&tcp->refcnt, 1)
         != 1) {
         return;
     }
@@ -66,11 +66,11 @@ static xylem_tcp_conn_t* _tcp_conn_create(stream_t* stream) {
 }
 
 static void _tcp_listener_ref(xylem_tcp_listener_t* listener) {
-    atomic_fetch_add_explicit(&listener->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&listener->refcnt, 1);
 }
 
 static void _tcp_listener_unref(xylem_tcp_listener_t* listener) {
-    if (atomic_fetch_sub_explicit(&listener->refcnt, 1, memory_order_acq_rel)
+    if (atomic_fetch_sub(&listener->refcnt, 1)
         != 1) {
         return;
     }
@@ -113,7 +113,7 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
     _tcp_listener_ref(listener);
 
     xylem_tcp_conn_t* result = NULL;
-    if (!atomic_load_explicit(&listener->closed, memory_order_acquire)) {
+    if (!atomic_load(&listener->closed)) {
         stream_t* stream = listener_accept(listener->listener);
         if (stream) {
             result = _tcp_conn_create(stream);
@@ -158,7 +158,7 @@ void xylem_tcp_set_read_deadline(
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_set_read_deadline");
 
     _tcp_conn_ref(tcp);
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         stream_set_read_deadline(tcp->stream, deadline_ms);
     }
     _tcp_conn_unref(tcp);
@@ -170,7 +170,7 @@ void xylem_tcp_set_write_deadline(
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_set_write_deadline");
 
     _tcp_conn_ref(tcp);
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         stream_set_write_deadline(tcp->stream, deadline_ms);
     }
     _tcp_conn_unref(tcp);
@@ -185,7 +185,7 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_read(tcp->stream, buf, len);
     }
     _tcp_conn_unref(tcp);
@@ -207,7 +207,7 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_write(tcp->stream, data, len);
     }
     _tcp_conn_unref(tcp);
@@ -233,7 +233,7 @@ int xylem_tcp_remote_addr(
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_remote_addr(tcp->stream, host, host_len, port);
     }
     _tcp_conn_unref(tcp);
@@ -249,7 +249,7 @@ int xylem_tcp_local_addr(
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_local_addr(tcp->stream, host, host_len, port);
     }
     _tcp_conn_unref(tcp);
@@ -265,7 +265,7 @@ int xylem_tcp_listener_addr(
 
     _tcp_listener_ref(listener);
     int ret = -1;
-    if (!atomic_load_explicit(&listener->closed, memory_order_acquire)) {
+    if (!atomic_load(&listener->closed)) {
         ret = listener_addr(listener->listener, host, host_len, port);
     }
     _tcp_listener_unref(listener);
@@ -277,7 +277,7 @@ int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp) {
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_shutdown_wr(tcp->stream);
     }
     _tcp_conn_unref(tcp);
@@ -289,7 +289,7 @@ int xylem_tcp_shutdown_rd(xylem_tcp_conn_t* tcp) {
 
     _tcp_conn_ref(tcp);
     int ret = -1;
-    if (!atomic_load_explicit(&tcp->closed, memory_order_acquire)) {
+    if (!atomic_load(&tcp->closed)) {
         ret = stream_shutdown_rd(tcp->stream);
     }
     _tcp_conn_unref(tcp);

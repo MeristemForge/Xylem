@@ -104,10 +104,7 @@ typedef struct _mutex_park_ctx_s {
 /* Acquire only from FREE: clean CAS FREE -> LOCKED, valid in any context. */
 static bool _mutex_try_acquire(xylem_mutex_t* mtx) {
     uint32_t expected = MTX_FREE;
-    return atomic_compare_exchange_strong_explicit(
-        &mtx->state, &expected, MTX_LOCKED,
-        memory_order_acquire, memory_order_relaxed
-    );
+    return atomic_compare_exchange_strong(&mtx->state, &expected, MTX_LOCKED);
 }
 
 /**
@@ -125,7 +122,7 @@ static bool _mutex_park_cb(mco_coro* co, void* arg) {
     spin_lock(&mtx->guard);
     if (_mutex_try_acquire(mtx)) {
         spin_unlock(&mtx->guard);
-        atomic_store_explicit(&w->granted, 1, memory_order_release);
+        atomic_store(&w->granted, 1);
         return false; /* acquired in-line: decline the park */
     }
     list_insert_tail(&mtx->co_waiters, &w->node);
@@ -146,9 +143,9 @@ static void _mutex_lock_co(xylem_mutex_t* mtx) {
 
     _mutex_park_ctx_t ctx = { mtx, &w };
     for (;;) {
-        atomic_store_explicit(&w.granted, 0, memory_order_relaxed);
+        atomic_store(&w.granted, 0);
         scheduler_park(w.sched, _mutex_park_cb, &ctx);
-        if (atomic_load_explicit(&w.granted, memory_order_acquire)) {
+        if (atomic_load(&w.granted)) {
             return; /* handed the lock (or acquired in the callback) */
         }
         if (_mutex_try_acquire(mtx)) {
@@ -167,19 +164,15 @@ static void _mutex_lock_co(xylem_mutex_t* mtx) {
  */
 static void _mutex_lock_thr(xylem_mutex_t* mtx) {
     uint32_t c = MTX_FREE;
-    if (atomic_compare_exchange_strong_explicit(
-            &mtx->state, &c, MTX_LOCKED,
-            memory_order_acquire, memory_order_relaxed)) {
+    if (atomic_compare_exchange_strong(&mtx->state, &c, MTX_LOCKED)) {
         return;
     }
     if (c != MTX_CONTENDED) {
-        c = atomic_exchange_explicit(
-            &mtx->state, MTX_CONTENDED, memory_order_acquire);
+        c = atomic_exchange(&mtx->state, MTX_CONTENDED);
     }
     while (c != MTX_FREE) {
         platform_futex_wait(&mtx->state, MTX_CONTENDED);
-        c = atomic_exchange_explicit(
-            &mtx->state, MTX_CONTENDED, memory_order_acquire);
+        c = atomic_exchange(&mtx->state, MTX_CONTENDED);
     }
 }
 
@@ -195,7 +188,7 @@ static mco_coro* _mutex_take_waiter(
     _mutex_co_waiter_t* w  = list_entry(n, _mutex_co_waiter_t, node);
     mco_coro*           co = w->co;
     *sched                 = w->sched;
-    atomic_store_explicit(&w->granted, granted, memory_order_release);
+    atomic_store(&w->granted, granted);
     return co;
 }
 
@@ -246,7 +239,7 @@ void xylem_mutex_unlock(xylem_mutex_t* mtx) {
      * that is safe, because we do not clear here, so the flag persists
      * and the handed coroutine's own unlock wakes the thread.
      */
-    if (n && atomic_load_explicit(&mtx->state, memory_order_acquire)
+    if (n && atomic_load(&mtx->state)
                 != MTX_CONTENDED) {
         scheduler_t* sched;
         mco_coro*    co = _mutex_take_waiter(mtx, n, 1, &sched);
@@ -265,8 +258,7 @@ void xylem_mutex_unlock(xylem_mutex_t* mtx) {
      */
     scheduler_t* sched = NULL;
     mco_coro*    co    = n ? _mutex_take_waiter(mtx, n, 0, &sched) : NULL;
-    uint32_t     prev  = atomic_exchange_explicit(
-        &mtx->state, MTX_FREE, memory_order_release);
+    uint32_t     prev  = atomic_exchange(&mtx->state, MTX_FREE);
     spin_unlock(&mtx->guard);
 
     if (prev == MTX_CONTENDED) {

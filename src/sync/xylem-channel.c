@@ -113,11 +113,11 @@ static void _channel_wake(_channel_waiter_t w) {
 }
 
 static inline void _channel_ref(xylem_channel_t* ch) {
-    atomic_fetch_add_explicit(&ch->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&ch->refcnt, 1);
 }
 
 static bool _channel_is_closed(xylem_channel_t* ch) {
-    return atomic_load_explicit(&ch->closed, memory_order_acquire);
+    return atomic_load(&ch->closed);
 }
 
 static void _channel_wait_link(void) {
@@ -129,8 +129,7 @@ static void _channel_wait_link(void) {
 }
 
 static void _channel_unref(xylem_channel_t* ch) {
-    if (atomic_fetch_sub_explicit(
-            &ch->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&ch->refcnt, 1) != 1) {
         return;
     }
     mpsc_node_t* node;
@@ -173,33 +172,20 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     xylem_channel_t*     ch  = ctx->ch;
 
     ctx->w->co = co;
-    atomic_store_explicit(&ch->waiter, ctx->w, memory_order_release);
-
-    /**
-     * StoreLoad barrier: pair the waiter publish above with the queue
-     * re-check below against a sender's seq_cst push+exchange. Without it
-     * the release store does not order before the ready-node peek, so the load
-     * may float ahead of the publish and a sender can: push, exchange
-     * waiter -> NULL (missing our not-yet-visible publish, so it does not
-     * wake us), while we see an empty queue and park -- a lost wakeup with
-     * the message stranded in the queue. The sender's exchange is seq_cst,
-     * so this fence closes the race.
-     */
-    atomic_thread_fence(memory_order_seq_cst);
+    atomic_store(&ch->waiter, ctx->w);
 
     /**
      * A sender / close / timer may have raced between the emptiness
-     * test and publishing the waiter. Decline park so the recv loop
+     * test and publishing the waiter. The default atomic publish above
+     * orders this re-check against sender wakeups. Decline park so the recv loop
      * retries. Peek only -- pop+re-push would break FIFO.
      */
     if (_channel_is_closed(ch)
         || (ctx->deadline_fired
-            && atomic_load_explicit(
-                ctx->deadline_fired, memory_order_acquire))
+            && atomic_load(ctx->deadline_fired))
         || mpsc_can_pop(&ch->queue)) {
         _channel_waiter_t* expected = ctx->w;
-        if (atomic_compare_exchange_strong(
-                &ch->waiter, &expected, NULL)) {
+        if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
             return false;
         }
     }
@@ -207,12 +193,11 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
 }
 
 static void _channel_recv_op_ref(_channel_recv_op_t* op) {
-    atomic_fetch_add_explicit(&op->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&op->refcnt, 1);
 }
 
 static void _channel_recv_op_unref(_channel_recv_op_t* op) {
-    if (atomic_fetch_sub_explicit(
-            &op->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&op->refcnt, 1) != 1) {
         return;
     }
     if (op->timer) {
@@ -245,12 +230,10 @@ static void _channel_recv_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _channel_recv_op_t* op = (_channel_recv_op_t*)ud;
     xylem_channel_t*    ch = op->ch;
-    atomic_store_explicit(&op->deadline_fired, true, memory_order_release);
+    atomic_store(&op->deadline_fired, true);
 
     _channel_waiter_t* expected = &op->waiter;
-    if (atomic_compare_exchange_strong_explicit(
-            &ch->waiter, &expected, NULL,
-            memory_order_acq_rel, memory_order_acquire)) {
+    if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
         _channel_wake(op->waiter);
     }
 
@@ -262,7 +245,7 @@ static void* _channel_take(xylem_channel_t* ch, mpsc_node_t* node) {
     _channel_msg_t* m       = mpsc_entry(node, _channel_msg_t, node);
     void*           payload = m->payload;
     free(m);
-    atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+    atomic_fetch_sub(&ch->count, 1);
     return payload;
 }
 
@@ -300,7 +283,7 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
             break;
         }
         if (_channel_is_closed(ch)) {
-            if (atomic_load_explicit(&ch->count, memory_order_acquire) == 0) {
+            if (atomic_load(&ch->count) == 0) {
                 break;
             }
             _channel_wait_link();
@@ -350,8 +333,7 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
             payload = _channel_take(ch, node);
             break;
         }
-        if (op && atomic_load_explicit(
-                &op->deadline_fired, memory_order_acquire)) {
+        if (op && atomic_load(&op->deadline_fired)) {
             break;
         }
     }
@@ -385,7 +367,7 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
             break;
         }
         if (_channel_is_closed(ch)) {
-            if (atomic_load_explicit(&ch->count, memory_order_acquire) == 0) {
+            if (atomic_load(&ch->count) == 0) {
                 break;
             }
             _channel_wait_link();
@@ -402,17 +384,11 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
         }
 
         /* Publish self, then re-check for a send/close racing the pop. */
-        atomic_store_explicit(&ch->waiter, &w, memory_order_release);
-        /**
-         * StoreLoad barrier vs a sender's seq_cst push+exchange; see the
-         * matching fence in _channel_park_cb for the lost-wakeup it closes.
-         */
-        atomic_thread_fence(memory_order_seq_cst);
+        atomic_store(&ch->waiter, &w);
         if (_channel_is_closed(ch)
             || mpsc_can_pop(&ch->queue)) {
             _channel_waiter_t* expected = &w;
-            if (atomic_compare_exchange_strong(
-                    &ch->waiter, &expected, NULL)) {
+            if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
                 continue; /* undid our publish: retry the pop */
             }
             /* A waker claimed us; fall through to consume its wake token. */
@@ -446,8 +422,7 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     _channel_ref(ch);
 
-    if (atomic_exchange_explicit(&ch->recv_in_progress, true,
-                                 memory_order_acq_rel)) {
+    if (atomic_exchange(&ch->recv_in_progress, true)) {
         xylem_loge("<channel> concurrent recv violates single-receiver "
                    "contract ch=%p; aborting",
                    (void*)ch);
@@ -463,7 +438,7 @@ static void* _channel_recv_impl(xylem_channel_t* ch, uint64_t timeout_ms) {
         payload = _channel_recv_thread(ch, timeout_ms);
     }
 
-    atomic_store_explicit(&ch->recv_in_progress, false, memory_order_release);
+    atomic_store(&ch->recv_in_progress, false);
     _channel_unref(ch);
     if (payload) {
         _channel_consume_credit(1);
@@ -498,7 +473,7 @@ void xylem_channel_close(xylem_channel_t* ch) {
         abort();
     }
     /* Any context: flip the flag and wake the receiver; never parks. */
-    if (atomic_exchange_explicit(&ch->closed, true, memory_order_acq_rel)) {
+    if (atomic_exchange(&ch->closed, true)) {
         xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
         abort();
     }
@@ -512,7 +487,7 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
     RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_destroy");
 
     /* Idempotent -- close() may have set this already. */
-    atomic_store_explicit(&ch->closed, true, memory_order_release);
+    atomic_store(&ch->closed, true);
     _channel_wake_receiver(ch);
 
     _channel_unref(ch);
@@ -540,10 +515,9 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
      * producers with no check-then-act race. cap == 0 is unbounded; the
      * count is still maintained so xylem_channel_len works.
      */
-    size_t prev = atomic_fetch_add_explicit(
-        &ch->count, 1, memory_order_acq_rel);
+    size_t prev = atomic_fetch_add(&ch->count, 1);
     if (ch->cap != 0 && prev >= ch->cap) {
-        atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+        atomic_fetch_sub(&ch->count, 1);
         _channel_unref(ch);
         return INT_MAX;
     }
@@ -557,7 +531,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         rc = 0;
     } else {
         /* Allocation failed: release the slot we reserved above. */
-        atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
+        atomic_fetch_sub(&ch->count, 1);
     }
 
     _channel_unref(ch);
@@ -580,7 +554,7 @@ size_t xylem_channel_len(xylem_channel_t* ch) {
     if (!ch) {
         return 0;
     }
-    return atomic_load_explicit(&ch->count, memory_order_relaxed);
+    return atomic_load(&ch->count);
 }
 
 size_t xylem_channel_cap(xylem_channel_t* ch) {

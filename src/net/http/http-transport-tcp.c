@@ -144,7 +144,7 @@ xylem_http_srv_t* http_tcp_listen(
      * xylem_http_close / xylem_http_shutdown) and the accept coroutine
      * (released when it returns). Each connection coroutine adds its own.
      */
-    atomic_store_explicit(&srv->active_conns, 2, memory_order_relaxed);
+    atomic_store(&srv->active_conns, 2);
     if (runtime_spawn(_http_accept_coroutine, srv) != 0) {
         xylem_tcp_close_listener(ln);
         free(srv);

@@ -42,12 +42,11 @@ struct datagram_s {
 };
 
 static void _datagram_ref(datagram_t* datagram) {
-    atomic_fetch_add_explicit(&datagram->refcnt, 1, memory_order_relaxed);
+    atomic_fetch_add(&datagram->refcnt, 1);
 }
 
 static void _datagram_unref(datagram_t* datagram) {
-    if (atomic_fetch_sub_explicit(
-            &datagram->refcnt, 1, memory_order_acq_rel) != 1) {
+    if (atomic_fetch_sub(&datagram->refcnt, 1) != 1) {
         return;
     }
 
@@ -94,10 +93,10 @@ static iowait_result_t _datagram_wait_result(
     _datagram_ref(datagram);
     iowait_result_t ret = IOWAIT_CLOSED;
 
-    if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+    if (!atomic_load(&datagram->closed)) {
         iowait_result_t r = write ? iowait_write(datagram->waiter)
                                   : iowait_read(datagram->waiter);
-        if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+        if (!atomic_load(&datagram->closed)) {
             ret = r;
         }
     }
@@ -244,7 +243,7 @@ int datagram_try_recv(
     int ret = -1;
     *again  = false;
 
-    if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+    if (!atomic_load(&datagram->closed)) {
         if (iowait_read_deadline_expired(datagram->waiter)) {
             _datagram_unref(datagram);
             return ret;
@@ -312,7 +311,7 @@ int datagram_recv(
     _datagram_ref(datagram);
     int ret = -1;
 
-    if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+    if (!atomic_load(&datagram->closed)) {
         for (;;) {
             bool again = false;
             int  n     = datagram_try_recv(datagram, buf, len, from, &again);
@@ -353,7 +352,7 @@ int datagram_try_send(
     int ret = -1;
     *again  = false;
 
-    if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+    if (!atomic_load(&datagram->closed)) {
         if (iowait_write_deadline_expired(datagram->waiter)) {
             _datagram_unref(datagram);
             return ret;
@@ -420,7 +419,7 @@ int datagram_send(
     _datagram_ref(datagram);
     int ret = -1;
 
-    if (!atomic_load_explicit(&datagram->closed, memory_order_acquire)) {
+    if (!atomic_load(&datagram->closed)) {
         for (;;) {
             bool again = false;
             int  n     = datagram_try_send(datagram, data, len, to, &again);

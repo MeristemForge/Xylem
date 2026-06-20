@@ -67,11 +67,9 @@ tls_wake_t* tls_wake_self(void) {
 
 /* Take a banked token if one is free: lock-free CAS-decrement. */
 static bool _tls_wake_try(tls_wake_t* w) {
-    uint32_t c = atomic_load_explicit(&w->count, memory_order_acquire);
+    uint32_t c = atomic_load(&w->count);
     while (c > 0) {
-        if (atomic_compare_exchange_weak_explicit(
-                &w->count, &c, c - 1,
-                memory_order_acquire, memory_order_acquire)) {
+        if (atomic_compare_exchange_weak(&w->count, &c, c - 1)) {
             return true;
         }
     }
@@ -107,6 +105,6 @@ bool tls_wake_timedwait(tls_wake_t* w, uint64_t timeout_ms) {
 }
 
 void tls_wake_signal(tls_wake_t* w) {
-    atomic_fetch_add_explicit(&w->count, 1, memory_order_release);
+    atomic_fetch_add(&w->count, 1);
     platform_futex_signal(&w->count);
 }
