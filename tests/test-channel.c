@@ -33,6 +33,7 @@
 #include <stdlib.h>
 
 #define SAFETY_TIMEOUT_MS 5000
+#define TEST_CHANNEL_SEND_GATE_CLOSED (1u << 31)
 
 static xylem_opts_t _rt_opts = { .workers = 4 };
 
@@ -410,11 +411,11 @@ typedef struct _test_channel_waiter_s _test_channel_waiter_t;
 struct xylem_channel_s {
     mpsc_t                        queue;
     _Atomic(_test_channel_waiter_t*) waiter;
-    _Atomic bool                  closed;
     _Atomic bool                  recv_in_progress;
     _Atomic int32_t               refcnt;
     size_t                        cap;
     _Atomic size_t                count;
+    _Atomic uint32_t              send_gate;
 };
 
 typedef struct {
@@ -430,6 +431,14 @@ typedef struct {
     bool                tail_claimed;
     int                 tested;
 } _closed_transient_ctx_t;
+
+typedef struct {
+    xylem_channel_t*     ch;
+    _test_channel_msg_t* msg;
+    int                  payload;
+    atomic_bool          close_returned;
+    int                  tested;
+} _close_wait_ctx_t;
 
 static void _bt_coro(void* arg) {
     _bt_ctx_t* ctx = (_bt_ctx_t*)arg;
@@ -504,7 +513,10 @@ static void _closed_transient_main(void* arg) {
     ctx->prev = atomic_exchange_explicit(
         &ctx->ch->queue.tail, &ctx->msg->node, memory_order_acq_rel);
     ctx->tail_claimed = true;
-    atomic_store_explicit(&ctx->ch->closed, true, memory_order_release);
+    atomic_store_explicit(
+        &ctx->ch->send_gate,
+        TEST_CHANNEL_SEND_GATE_CLOSED,
+        memory_order_release);
 
     xylem_spawn(_closed_transient_recv, ctx);
     xylem_spawn(_closed_transient_linker, ctx);
@@ -530,7 +542,10 @@ static void _closed_reserved_main(void* arg) {
     ctx->msg->payload = &ctx->payload;
     atomic_store_explicit(&ctx->msg->node.next, NULL, memory_order_relaxed);
     atomic_fetch_add_explicit(&ctx->ch->count, 1, memory_order_acq_rel);
-    atomic_store_explicit(&ctx->ch->closed, true, memory_order_release);
+    atomic_store_explicit(
+        &ctx->ch->send_gate,
+        TEST_CHANNEL_SEND_GATE_CLOSED,
+        memory_order_release);
 
     xylem_spawn(_closed_transient_recv, ctx);
     xylem_spawn(_closed_transient_linker, ctx);
@@ -541,6 +556,57 @@ static void test_closed_recv_waits_for_reserved_send_before_push(void) {
     _closed_transient_ctx_t ctx = { .payload = 43 };
     xylem_opts_t opts = { .workers = 2 };
     xylem_run(_closed_reserved_main, &ctx, &opts);
+    ASSERT(ctx.tested == 1);
+}
+
+static void _close_wait_closer(void* arg) {
+    _close_wait_ctx_t* ctx = (_close_wait_ctx_t*)arg;
+    xylem_channel_close(ctx->ch);
+    atomic_store_explicit(&ctx->close_returned, true, memory_order_release);
+}
+
+static void _close_wait_main(void* arg) {
+    _close_wait_ctx_t* ctx = (_close_wait_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    ctx->ch = xylem_channel_create(0);
+    ASSERT(ctx->ch != NULL);
+
+    atomic_fetch_add_explicit(
+        &ctx->ch->send_gate, 1, memory_order_acq_rel);
+    xylem_spawn(_close_wait_closer, ctx);
+
+    while ((atomic_load_explicit(&ctx->ch->send_gate, memory_order_acquire)
+            & TEST_CHANNEL_SEND_GATE_CLOSED) == 0) {
+        xylem_sleep(1);
+    }
+    xylem_sleep(20);
+    ASSERT(!atomic_load_explicit(
+        &ctx->close_returned, memory_order_acquire));
+
+    ctx->msg = (_test_channel_msg_t*)calloc(1, sizeof(_test_channel_msg_t));
+    ASSERT(ctx->msg != NULL);
+    ctx->msg->payload = &ctx->payload;
+    mpsc_push(&ctx->ch->queue, &ctx->msg->node);
+    atomic_fetch_add_explicit(&ctx->ch->count, 1, memory_order_acq_rel);
+    atomic_fetch_sub_explicit(
+        &ctx->ch->send_gate, 1, memory_order_acq_rel);
+
+    while (!atomic_load_explicit(&ctx->close_returned, memory_order_acquire)) {
+        xylem_sleep(1);
+    }
+    ASSERT(xylem_channel_recv_timeout(ctx->ch, 0) == &ctx->payload);
+
+    ctx->tested = 1;
+    xylem_channel_destroy(ctx->ch);
+    xylem_shutdown();
+}
+
+static void test_close_waits_for_active_sender(void) {
+    fprintf(stderr, "=== test_close_waits_for_active_sender\n");
+    _close_wait_ctx_t ctx = { .payload = 44 };
+    xylem_opts_t opts = { .workers = 2 };
+    xylem_run(_close_wait_main, &ctx, &opts);
     ASSERT(ctx.tested == 1);
 }
 
@@ -555,5 +621,6 @@ int main(void) {
     test_bounded_try();
     test_closed_recv_waits_for_in_flight_send_link();
     test_closed_recv_waits_for_reserved_send_before_push();
+    test_close_waits_for_active_sender();
     return 0;
 }
