@@ -213,7 +213,12 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
  * Timers are kept alive for reuse by the next occupant.
  */
 static void _iowait_retire(iowait_t* w) {
-    atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
+    uint16_t prev =
+        atomic_fetch_add_explicit(&w->gen, 1, memory_order_release);
+    if ((uint16_t)(prev + 1) == 0) {
+        /* Never reuse a slot with the same generation as stale CQEs. */
+        return;
+    }
     _iowait_slab_free(w->slab, w->slot_index);
 }
 
