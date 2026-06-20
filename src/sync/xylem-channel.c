@@ -22,6 +22,7 @@
 #include "xylem/sync/xylem-channel.h"
 
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-threads.h"
 #include "xylem/xylem-utils.h"
 
 #include "runtime/precond.h"
@@ -114,6 +115,14 @@ static inline void _channel_ref(xylem_channel_t* ch) {
     atomic_fetch_add_explicit(&ch->refcnt, 1, memory_order_relaxed);
 }
 
+static void _channel_wait_link(void) {
+    if (mco_running()) {
+        runtime_yield_credit();
+    } else {
+        thrd_yield();
+    }
+}
+
 static void _channel_unref(xylem_channel_t* ch) {
     if (atomic_fetch_sub_explicit(
             &ch->refcnt, 1, memory_order_acq_rel) != 1) {
@@ -164,8 +173,8 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
     /**
      * StoreLoad barrier: pair the waiter publish above with the queue
      * re-check below against a sender's seq_cst push+exchange. Without it
-     * the release store does not order before the mpsc_empty() load, so the
-     * load may float ahead of the publish and a sender can: push, exchange
+     * the release store does not order before the ready-node peek, so the load
+     * may float ahead of the publish and a sender can: push, exchange
      * waiter -> NULL (missing our not-yet-visible publish, so it does not
      * wake us), while we see an empty queue and park -- a lost wakeup with
      * the message stranded in the queue. The sender's exchange is seq_cst,
@@ -182,7 +191,7 @@ static bool _channel_park_cb(mco_coro* co, void* arg) {
         || (ctx->deadline_fired
             && atomic_load_explicit(
                 ctx->deadline_fired, memory_order_acquire))
-        || !mpsc_empty(&ch->queue)) {
+        || mpsc_can_pop(&ch->queue)) {
         _channel_waiter_t* expected = ctx->w;
         if (atomic_compare_exchange_strong(
                 &ch->waiter, &expected, NULL)) {
@@ -286,7 +295,11 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
             break;
         }
         if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
-            break;
+            if (atomic_load_explicit(&ch->count, memory_order_acquire) == 0) {
+                break;
+            }
+            _channel_wait_link();
+            continue;
         }
 
         if (deadline_ms > 0) {
@@ -367,7 +380,11 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
             break;
         }
         if (atomic_load_explicit(&ch->closed, memory_order_acquire)) {
-            break;
+            if (atomic_load_explicit(&ch->count, memory_order_acquire) == 0) {
+                break;
+            }
+            _channel_wait_link();
+            continue;
         }
 
         uint64_t remaining = 0;
@@ -387,7 +404,7 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
          */
         atomic_thread_fence(memory_order_seq_cst);
         if (atomic_load_explicit(&ch->closed, memory_order_acquire)
-            || !mpsc_empty(&ch->queue)) {
+            || mpsc_can_pop(&ch->queue)) {
             _channel_waiter_t* expected = &w;
             if (atomic_compare_exchange_strong(
                     &ch->waiter, &expected, NULL)) {

@@ -49,22 +49,15 @@ struct dynpool_s {
     _Atomic bool     running;
 };
 
-static _dynpool_job_t* _dynpool_pop_job(dynpool_t* pool, bool wait_link) {
-    for (;;) {
-        mtx_lock(&pool->pop_mtx);
-        mpsc_node_t* node = mpsc_pop(&pool->queue);
-        mtx_unlock(&pool->pop_mtx);
+static _dynpool_job_t* _dynpool_pop_job(dynpool_t* pool) {
+    mtx_lock(&pool->pop_mtx);
+    mpsc_node_t* node = mpsc_pop(&pool->queue);
+    mtx_unlock(&pool->pop_mtx);
 
-        if (node) {
-            return mpsc_entry(node, _dynpool_job_t, node);
-        }
-
-        if (!wait_link || !atomic_load(&pool->running)) {
-            return NULL;
-        }
-
-        thrd_yield();
+    if (node) {
+        return mpsc_entry(node, _dynpool_job_t, node);
     }
+    return NULL;
 }
 
 static int _dynpool_thread_entry(void* arg) {
@@ -79,7 +72,7 @@ static int _dynpool_thread_entry(void* arg) {
             break;
         }
 
-        _dynpool_job_t* job = _dynpool_pop_job(pool, rc == 0);
+        _dynpool_job_t* job = _dynpool_pop_job(pool);
         if (job) {
             job->routine(job->arg);
             free(job);
