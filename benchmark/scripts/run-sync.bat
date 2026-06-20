@@ -136,32 +136,37 @@ set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 echo %LANGS% | findstr /I "xylem" >nul && (
     call :info "building xylem sync-bench..."
+    if exist "%BIN_DIR%\sync-xylem.exe" del /q "%BIN_DIR%\sync-xylem.exe"
     cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" "%SYNC_DIR%\xylem-sync\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sync-xylem.exe" >nul 2>&1
-    if errorlevel 1 (call :err "sync-xylem build failed") else (call :ok "sync-xylem built")
+    if errorlevel 1 (call :err "sync-xylem build failed" & exit /b 1) else (call :ok "sync-xylem built")
 )
 
 echo %LANGS% | findstr /I "go" >nul && (
+    if exist "%BIN_DIR%\sync-go.exe" del /q "%BIN_DIR%\sync-go.exe"
     where go >nul 2>&1
     if not errorlevel 1 (
         call :info "building go sync-bench..."
         pushd "%SYNC_DIR%\go-sync"
         set "CGO_ENABLED=0"
-        go build -ldflags="-s -w" -o "%BIN_DIR%\sync-go.exe" . && (call :ok "sync-go built") || (call :warn "skip go (build failed)")
+        go build -ldflags="-s -w" -o "%BIN_DIR%\sync-go.exe" . && (call :ok "sync-go built") || (popd & call :err "sync-go build failed" & exit /b 1)
         popd
     ) else (
-        call :warn "go not found; skipping go"
+        call :err "go not found"
+        exit /b 1
     )
 )
 
 echo %LANGS% | findstr /I "rust" >nul && (
+    if exist "%BIN_DIR%\sync-rust.exe" del /q "%BIN_DIR%\sync-rust.exe"
     where cargo >nul 2>&1
     if not errorlevel 1 (
         call :info "building rust sync-bench..."
         pushd "%SYNC_DIR%\rust-sync"
-        cargo build --release -q && copy /Y "target\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (call :warn "skip rust (build failed)")
+        cargo build --release -q && copy /Y "target\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
         popd
     ) else (
-        call :warn "cargo not found; skipping rust"
+        call :err "cargo not found"
+        exit /b 1
     )
 )
 
@@ -261,9 +266,9 @@ for %%L in (%LANGS:,= %) do (
                 set "EXTRA="
                 if /I "%PRIM%"=="sem" set "EXTRA=--permits %PERMITS%"
 
-                set /a ops_sum=0, valid=0
+                set /a ops_sum=0, nspo_sum=0, valid=0
                 set "ops_vals="
-                set "nspo_last=0"
+                set "nspo_avg=0.00"
                 set "total_last=0"
 
                 for /l %%R in (1,1,%REPEAT%) do (
@@ -278,10 +283,18 @@ for %%L in (%LANGS:,= %) do (
                         set "nspo=!_JVAL!"
                         call :extract_json "!out!" total_ops
                         set "total=!_JVAL!"
+                        call :extract_json_string "!out!" mode
+                        set "reported_mode=!_JVAL!"
+                        if defined reported_mode if /I not "!reported_mode!"=="!mode!" (
+                            set "renamed=%RUN_DIR%\sync-%PRIM%-!lang!-!reported_mode!-r%%R.json"
+                            move /Y "!out!" "!renamed!" >nul
+                            set "out=!renamed!"
+                        )
                         for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
                         if defined ops if !ops! GTR 0 (
                             set /a ops_sum+=ops, valid+=1
-                            set "nspo_last=!nspo!"
+                            call :nspo_to_x100 "!nspo!"
+                            set /a nspo_sum+=_NSPO_X100
                             set "total_last=!total!"
                             if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
                         )
@@ -291,7 +304,11 @@ for %%L in (%LANGS:,= %) do (
 
                 if !valid! GTR 0 (
                     set /a ops_avg=ops_sum/valid
-                    echo   !lang!    !mode!    !ops_avg!    !nspo_last!    !total_last!  [!ops_vals!]
+                    set /a nspo_avg_x100=nspo_sum/valid
+                    set /a nspo_avg_i=nspo_avg_x100/100
+                    set /a nspo_avg_f=nspo_avg_x100%%100
+                    if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
+                    echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
                 ) else (
                     call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
                 )
@@ -312,6 +329,33 @@ if defined _raw (
     set "_JVAL=!_raw!"
 )
 set "_raw="
+goto :eof
+
+REM extract_json_string <file> <key> -> _JVAL
+:extract_json_string
+set "_JVAL="
+for /f "tokens=2 delims=:" %%A in ('findstr /C:"\"%~2\"" "%~1" 2^>nul') do set "_raw=%%A"
+if defined _raw (
+    set "_raw=!_raw: =!"
+    set "_raw=!_raw:,=!"
+    set "_raw=!_raw:"=!"
+    set "_JVAL=!_raw!"
+)
+set "_raw="
+goto :eof
+
+REM nspo_to_x100 <decimal> -> _NSPO_X100
+:nspo_to_x100
+set "_NSPO_X100=0"
+set "_nspo_i=0"
+set "_nspo_f=0"
+for /f "tokens=1,2 delims=." %%A in ("%~1") do (
+    set "_nspo_i=%%A"
+    set "_nspo_f=%%B"
+)
+set "_nspo_f=!_nspo_f!00"
+set "_nspo_f=!_nspo_f:~0,2!"
+set /a _NSPO_X100=_nspo_i*100+_nspo_f
 goto :eof
 
 REM ----------------------------------------------------------- option parse

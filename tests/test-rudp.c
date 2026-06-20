@@ -299,6 +299,40 @@ static void test_close_listener_wakes_dispatcher(void) {
     });
 }
 
+static void _listener_close_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_rudp_listener_t* ln = xylem_rudp_listen(RUDP_HOST, ctx->port, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_rudp_conn_t* conn = xylem_rudp_accept(ln);
+    ASSERT(conn != NULL);
+
+    xylem_rudp_close_listener(ln);
+    xylem_rudp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _listener_close_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_rudp_conn_t* conn = xylem_rudp_dial(RUDP_HOST, ctx->port, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(100);
+    xylem_rudp_close(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_listener_close_preserves_accepted_conn(void) {
+    _run((_ctx_t){
+        .port = 19350,
+        .a    = _listener_close_server,
+        .b    = _listener_close_client,
+    });
+}
+
 int main(void) {
     test_echo();
     test_remote_addr();
@@ -306,5 +340,6 @@ int main(void) {
     test_close_wakes_read();
     test_dead_link();
     test_close_listener_wakes_dispatcher();
+    test_listener_close_preserves_accepted_conn();
     return 0;
 }

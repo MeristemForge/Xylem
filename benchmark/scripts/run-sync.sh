@@ -45,7 +45,7 @@ declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [sem]=8 [channel]=4 [hando
 declare -A P_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=50000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 # Spawning an OS thread per unit is far costlier than a coroutine, so the
 # thread/mixed modes use lighter per-primitive iteration counts.
-declare -A PT_ITERS=( [mutex]=1000000 [cond]=50000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
+declare -A PT_ITERS=( [mutex]=1000000 [cond]=2000000 [waitgroup]=2000 [sem]=1000000 [channel]=1000000 [handoff]=500000 )
 P_PERMITS="${PERMITS:-4}"
 
 # Support matrix: which (lang, mode) cells are valid. The binaries also reject
@@ -101,34 +101,39 @@ cmd_build() {
 
     if [ "$want_xylem" = true ]; then
         info "building xylem sync-bench..."
+        rm -f "$BIN_DIR/sync-xylem"
         # shellcheck disable=SC2086
         gcc $CFLAGS -I"$PROJECT_ROOT/include" \
             "$SYNC_DIR/xylem-sync/main.c" "$xylem_lib" -lpthread $LDFLAGS \
             -o "$BIN_DIR/sync-xylem" \
-            && ok "sync-xylem built" || err "sync-xylem build failed"
+            && ok "sync-xylem built" || { err "sync-xylem build failed"; return 1; }
     fi
 
     if [ "$want_go" = true ]; then
+        rm -f "$BIN_DIR/sync-go"
         if command -v go >/dev/null 2>&1; then
             info "building go sync-bench..."
             ( cd "$SYNC_DIR/go-sync" && \
               CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_DIR/sync-go" . ) \
-              && ok "sync-go built" || warn "skip go (build failed)"
+              && ok "sync-go built" || { err "sync-go build failed"; return 1; }
         else
-            warn "go not found; skipping go"
+            err "go not found"
+            return 1
         fi
     fi
 
     if [ "$want_rust" = true ]; then
+        rm -f "$BIN_DIR/sync-rust"
         if command -v cargo >/dev/null 2>&1; then
             info "building rust sync-bench..."
             ( cd "$SYNC_DIR/rust-sync" && \
               cargo build --release -q && \
               cp "target/release/sync-rust" "$BIN_DIR/" && \
               strip "$BIN_DIR/sync-rust" ) \
-              && ok "sync-rust built" || warn "skip rust (build failed)"
+              && ok "sync-rust built" || { err "sync-rust build failed"; return 1; }
         else
-            warn "cargo not found; skipping rust"
+            err "cargo not found"
+            return 1
         fi
     fi
 
@@ -184,19 +189,26 @@ cmd_bench() {
                 local args=(--mode "$mode" --workers "$WORKERS" --tasks "$tasks" --iters "$iters")
                 [ "$prim" = "sem" ] && args+=(--permits "$P_PERMITS")
 
-                local ops_sum=0 nspo_last=0 total_last=0 valid=0 ops_vals=""
+                local ops_sum=0 nspo_sum=0 nspo_avg=0 total_last=0 valid=0 ops_vals=""
                 for run in $(seq 1 "$REPEAT"); do
                     local out="$run_dir/sync-${prim}-${lang}-${mode}-r${run}.json"
                     "$bin" "$prim" "${args[@]}" > "$out" 2>/dev/null || true
                     if [ -s "$out" ]; then
-                        local ops nspo total
+                        local ops nspo total reported_mode renamed
                         ops=$(extract_json "$out" ops_per_sec)
                         nspo=$(extract_json "$out" ns_per_op)
                         total=$(extract_json "$out" total_ops)
+                        reported_mode=$(grep '"mode"' "$out" 2>/dev/null | sed -E 's/.*"mode"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' | tail -1)
+                        if [ -n "$reported_mode" ] && [ "$reported_mode" != "$mode" ]; then
+                            renamed="$run_dir/sync-${prim}-${lang}-${reported_mode}-r${run}.json"
+                            mv -f "$out" "$renamed"
+                            out="$renamed"
+                        fi
                         ops=${ops%%.*}
                         if [ -n "$ops" ] && [ "$ops" -gt 0 ]; then
                             ops_sum=$((ops_sum + ops))
-                            nspo_last="$nspo"; total_last="$total"
+                            nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
+                            total_last="$total"
                             valid=$((valid + 1))
                             ops_vals="${ops_vals:+$ops_vals,}$ops"
                         fi
@@ -205,8 +217,9 @@ cmd_bench() {
 
                 if [ "$valid" -gt 0 ]; then
                     local ops_avg=$((ops_sum / valid))
+                    nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
                     printf "  %-7s %-7s %16s %12s %14s  [%s]\n" \
-                        "$lang" "$mode" "$ops_avg" "$nspo_last" "$total_last" "$ops_vals"
+                        "$lang" "$mode" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
                 else
                     warn "$lang/$mode: no valid output from $REPEAT runs"
                 fi

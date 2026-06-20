@@ -83,6 +83,8 @@ struct xylem_rudp_conn_s {
     xylem_channel_t*       inbox;        /* server session datagram queue */
     _Atomic int32_t        inbox_len;    /* bounded-queue guard */
     rbtree_node_t          listener_node;
+    bool                   in_listener;
+    bool                   accepted;
 };
 
 struct xylem_rudp_listener_s {
@@ -390,6 +392,18 @@ static void _rudp_listener_ref(xylem_rudp_listener_t* ln) {
     atomic_fetch_add_explicit(&ln->refcnt, 1, memory_order_relaxed);
 }
 
+static void _rudp_accept_ch_destroy(xylem_channel_t* ch) {
+    if (!ch) {
+        return;
+    }
+    xylem_rudp_conn_t* conn;
+    while ((conn = (xylem_rudp_conn_t*)xylem_channel_recv_timeout(ch, 0))
+           != NULL) {
+        _rudp_conn_unref(conn);
+    }
+    xylem_channel_destroy(ch);
+}
+
 static void _rudp_listener_unref(xylem_rudp_listener_t* ln) {
     if (atomic_fetch_sub_explicit(&ln->refcnt, 1, memory_order_acq_rel)
         != 1) {
@@ -397,7 +411,7 @@ static void _rudp_listener_unref(xylem_rudp_listener_t* ln) {
     }
 
     if (ln->accept_ch) {
-        xylem_channel_destroy(ln->accept_ch);
+        _rudp_accept_ch_destroy(ln->accept_ch);
     }
     xylem_aes256_destroy(ln->aes);
     memset(ln->aes_key_buf, 0, sizeof(ln->aes_key_buf));
@@ -551,12 +565,13 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
         platform_socket_close(conn->fd);
         xylem_aes256_destroy(conn->aes);
     } else {
-        /**
-         * Server session shares the listener's socket and AES; it
-         * only owns its inbox.
-         */
+        xylem_rudp_listener_t* ln = conn->listener;
+        bool accepted = conn->accepted;
         _rudp_inbox_destroy(conn->inbox);
         conn->inbox = NULL;
+        if (accepted) {
+            _rudp_listener_unref(ln);
+        }
     }
 
     free(conn);
@@ -581,26 +596,13 @@ static void _rudp_conn_ud_unref(void* ud) {
  * the update timer's dead-link path to keep teardown out of the timer
  * callback frame. Drops the reference taken when the teardown was scheduled.
  *
- * For a client connection the application still owns its handle and is
- * required to call xylem_rudp_close() on it, so this dead-link teardown
- * must NOT drop that owner reference -- doing so (via xylem_rudp_close)
- * frees the conn while the application still holds the pointer, and its
- * later close touches freed memory (heap-use-after-free). We only shut the
- * session down here (which wakes the parked reader); the owner reference is
- * left for the application's close.
- *
- * A listener session, by contrast, is removed from the listener's session
- * tree by the shutdown, so xylem_rudp_close_listener can no longer reach
- * it; its owner reference must therefore be dropped here, preserving the
- * existing listener teardown path.
+ * The timer must only perform shutdown. Application/accept references
+ * remain owned by their callers and are dropped by xylem_rudp_close().
+ * For listener sessions, shutdown removes the session tree reference.
  */
 static void _rudp_deferred_close(void* arg) {
     xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)arg;
-    if (conn->listener) {
-        xylem_rudp_close(conn); /* drops the listener-session owner ref */
-    } else {
-        _rudp_conn_shutdown(conn); /* wake the reader; leave the owner ref */
-    }
+    _rudp_conn_shutdown(conn); /* wake readers; owner refs close normally */
     _rudp_conn_unref(conn); /* drop the ref taken by the timer callback */
 }
 
@@ -770,10 +772,27 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
     }
     _rudp_schedule_update(sess);
 
+    bool published = false;
     mtx_lock(&ln->sessions_mtx);
-    rbtree_insert(&ln->sessions, &sess->listener_node);
+    if (!atomic_load_explicit(&ln->closed, memory_order_acquire)) {
+        rbtree_insert(&ln->sessions, &sess->listener_node);
+        sess->in_listener = true;
+        _rudp_conn_ref(sess); /* accept/user reference */
+        if (xylem_channel_send(ln->accept_ch, sess) == 0) {
+            published = true;
+        } else {
+            rbtree_remove(&ln->sessions, &sess->listener_node);
+            sess->in_listener = false;
+            _rudp_conn_unref(sess);
+        }
+    }
     mtx_unlock(&ln->sessions_mtx);
-    xylem_channel_send(ln->accept_ch, sess);
+
+    if (!published) {
+        _rudp_conn_shutdown(sess);
+        _rudp_conn_unref(sess);
+        return -1;
+    }
 
     return 0;
 }
@@ -1292,6 +1311,10 @@ xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
 
     _rudp_listener_ref(ln);
     xylem_rudp_conn_t* c = (xylem_rudp_conn_t*)xylem_channel_recv(ln->accept_ch);
+    if (c) {
+        _rudp_listener_ref(ln);
+        c->accepted = true;
+    }
     _rudp_listener_unref(ln);
     return c;
 }
@@ -1317,16 +1340,13 @@ static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
     }
 
     if (conn->listener) {
-        /**
-         * Unlink from the session tree FIRST, under the lock, so the
-         * dispatcher can no longer find this session and therefore
-         * cannot xylem_channel_send() into the inbox after we close
-         * it (send-on-closed aborts, Go-style). The dispatcher does
-         * find+send under the same sessions_mtx, so once the remove
-         * commits, no further send can target this inbox.
-         */
+        bool drop_session_ref = false;
         mtx_lock(&conn->listener->sessions_mtx);
-        rbtree_remove(&conn->listener->sessions, &conn->listener_node);
+        if (conn->in_listener) {
+            rbtree_remove(&conn->listener->sessions, &conn->listener_node);
+            conn->in_listener = false;
+            drop_session_ref = true;
+        }
         mtx_unlock(&conn->listener->sessions_mtx);
 
         /**
@@ -1337,6 +1357,9 @@ static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
          * so conn survives until it drops that reference.
          */
         xylem_channel_close(conn->inbox);
+        if (drop_session_ref) {
+            _rudp_conn_unref(conn);
+        }
     } else {
         iowait_close(conn->waiter);
     }
@@ -1376,13 +1399,15 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
         rbtree_node_t* node = rbtree_min(&ln->sessions);
         xylem_rudp_conn_t* sess =
             rbtree_entry(node, xylem_rudp_conn_t, listener_node);
+        _rudp_conn_ref(sess);
         mtx_unlock(&ln->sessions_mtx);
-        xylem_rudp_close(sess);
+        _rudp_conn_shutdown(sess);
+        _rudp_conn_unref(sess);
         mtx_lock(&ln->sessions_mtx);
     }
+    xylem_channel_close(ln->accept_ch);
     mtx_unlock(&ln->sessions_mtx);
 
-    xylem_channel_close(ln->accept_ch);
     _rudp_listener_unref(ln);
 }
 
