@@ -29,7 +29,6 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/mpsc.h"
-#include "platform/platform-futex.h"
 #include "sync/tls-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
@@ -39,9 +38,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-
-#define CHANNEL_SEND_GATE_CLOSED     (1u << 31)
-#define CHANNEL_SEND_GATE_COUNT_MASK (CHANNEL_SEND_GATE_CLOSED - 1u)
 
 typedef struct _channel_msg_s {
     mpsc_node_t node;
@@ -92,11 +88,11 @@ typedef struct _channel_waiter_s {
 struct xylem_channel_s {
     mpsc_t                      queue;
     _Atomic(_channel_waiter_t*) waiter; /* single receiver, NULL if none  */
+    _Atomic bool                closed;
     _Atomic bool                recv_in_progress; /* waiter only means parked */
     _Atomic int32_t             refcnt;
     size_t                      cap;   /* 0 = unbounded; immutable          */
     _Atomic size_t              count; /* queued messages, for len()        */
-    _Atomic uint32_t            send_gate; /* closed flag + active senders */
 };
 
 typedef struct _channel_recv_op_s {
@@ -121,44 +117,7 @@ static inline void _channel_ref(xylem_channel_t* ch) {
 }
 
 static bool _channel_is_closed(xylem_channel_t* ch) {
-    return (atomic_load_explicit(&ch->send_gate, memory_order_acquire)
-            & CHANNEL_SEND_GATE_CLOSED) != 0;
-}
-
-static bool _channel_begin_send(xylem_channel_t* ch) {
-    uint32_t state =
-        atomic_load_explicit(&ch->send_gate, memory_order_acquire);
-    for (;;) {
-        if (state & CHANNEL_SEND_GATE_CLOSED) {
-            return false;
-        }
-        if ((state & CHANNEL_SEND_GATE_COUNT_MASK)
-            == CHANNEL_SEND_GATE_COUNT_MASK) {
-            xylem_loge("<channel> too many active senders ch=%p", (void*)ch);
-            abort();
-        }
-        if (atomic_compare_exchange_weak_explicit(
-                &ch->send_gate,
-                &state,
-                state + 1,
-                memory_order_acq_rel,
-                memory_order_acquire)) {
-            return true;
-        }
-    }
-}
-
-static void _channel_end_send(xylem_channel_t* ch) {
-    uint32_t prev = atomic_fetch_sub_explicit(
-        &ch->send_gate, 1, memory_order_acq_rel);
-    if ((prev & CHANNEL_SEND_GATE_COUNT_MASK) == 0) {
-        xylem_loge("<channel> active sender underflow ch=%p", (void*)ch);
-        abort();
-    }
-    if ((prev & CHANNEL_SEND_GATE_CLOSED)
-        && (prev & CHANNEL_SEND_GATE_COUNT_MASK) == 1) {
-        platform_futex_broadcast(&ch->send_gate);
-    }
+    return atomic_load_explicit(&ch->closed, memory_order_acquire);
 }
 
 static void _channel_wait_link(void) {
@@ -166,21 +125,6 @@ static void _channel_wait_link(void) {
         runtime_yield_credit();
     } else {
         thrd_yield();
-    }
-}
-
-static void _channel_wait_senders(xylem_channel_t* ch) {
-    for (;;) {
-        uint32_t state =
-            atomic_load_explicit(&ch->send_gate, memory_order_acquire);
-        if ((state & CHANNEL_SEND_GATE_COUNT_MASK) == 0) {
-            return;
-        }
-        if (mco_running()) {
-            runtime_yield_credit();
-        } else {
-            platform_futex_wait(&ch->send_gate, state);
-        }
     }
 }
 
@@ -535,11 +479,11 @@ static xylem_channel_t* _channel_create(size_t cap) {
     }
     mpsc_init(&ch->queue);
     atomic_init(&ch->waiter, NULL);
+    atomic_init(&ch->closed, false);
     atomic_init(&ch->recv_in_progress, false);
     atomic_init(&ch->refcnt, 1);
     ch->cap = cap;
     atomic_init(&ch->count, 0);
-    atomic_init(&ch->send_gate, 0);
     return ch;
 }
 
@@ -554,13 +498,10 @@ void xylem_channel_close(xylem_channel_t* ch) {
         abort();
     }
     /* Any context: flip the flag and wake the receiver; never parks. */
-    uint32_t prev = atomic_fetch_or_explicit(
-        &ch->send_gate, CHANNEL_SEND_GATE_CLOSED, memory_order_acq_rel);
-    if (prev & CHANNEL_SEND_GATE_CLOSED) {
+    if (atomic_exchange_explicit(&ch->closed, true, memory_order_acq_rel)) {
         xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
         abort();
     }
-    _channel_wait_senders(ch);
     _channel_wake_receiver(ch);
 }
 
@@ -571,9 +512,7 @@ void xylem_channel_destroy(xylem_channel_t* ch) {
     RUNTIME_REQUIRE_COROUTINE("channel", "xylem_channel_destroy");
 
     /* Idempotent -- close() may have set this already. */
-    atomic_fetch_or_explicit(
-        &ch->send_gate, CHANNEL_SEND_GATE_CLOSED, memory_order_acq_rel);
-    _channel_wait_senders(ch);
+    atomic_store_explicit(&ch->closed, true, memory_order_release);
     _channel_wake_receiver(ch);
 
     _channel_unref(ch);
@@ -589,7 +528,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
 
     _channel_ref(ch);
 
-    if (!_channel_begin_send(ch)) {
+    if (_channel_is_closed(ch)) {
         xylem_loge("<channel> send on closed channel ch=%p; aborting",
                    (void*)ch);
         abort();
@@ -605,7 +544,6 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         &ch->count, 1, memory_order_acq_rel);
     if (ch->cap != 0 && prev >= ch->cap) {
         atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
-        _channel_end_send(ch);
         _channel_unref(ch);
         return INT_MAX;
     }
@@ -622,7 +560,6 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         atomic_fetch_sub_explicit(&ch->count, 1, memory_order_relaxed);
     }
 
-    _channel_end_send(ch);
     _channel_unref(ch);
     if (rc == 0) {
         _channel_consume_credit(1);

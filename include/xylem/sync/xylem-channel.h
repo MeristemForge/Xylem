@@ -39,7 +39,8 @@ typedef struct xylem_channel_s xylem_channel_t;
  *   - send(): callable from any thread or coroutine; never parks. A
  *     full bounded channel returns INT_MAX (drop/retry is
  *     the caller's choice -- there is no blocking backpressure). An
- *     unbounded channel never reports full.
+ *     unbounded channel never reports full. Like Go channels, send()
+ *     must not race with close() on the same channel.
  *   - recv() / recv_timeout(): callable from a coroutine OR an OS
  *     thread. Only one receiver may operate on a channel at a time;
  *     concurrent recv aborts (single-consumer MPSC contract).
@@ -94,6 +95,9 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
  *
  * @note [THREAD-SAFE]
  *
+ * Like Go channels, close must not race with send on the same channel:
+ * callers must stop all producers before closing.
+ *
  * After close:
  *   - recv() continues to return queued messages, then NULL.
  *   - send() aborts the process.
@@ -110,7 +114,8 @@ extern void xylem_channel_close(xylem_channel_t* ch);
  *
  * @note [THREAD-SAFE]
  *
- * Aborts if the channel is closed.
+ * Aborts if the channel is closed. Must not race with close on the same
+ * channel; callers must stop all producers before closing.
  *
  * @param ch   Channel handle.
  * @param msg  Opaque message pointer (must be non-NULL).

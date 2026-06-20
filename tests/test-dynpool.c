@@ -27,8 +27,6 @@
 #include <stdbool.h>
 
 #define SUBMITTERS 64
-#define DESTROY_RACE_SUBMITTERS 128
-#define DESTROY_RACE_ROUNDS     200
 
 typedef struct {
     dynpool_t*  pool;
@@ -116,75 +114,7 @@ static void test_max_threads_is_enforced_under_concurrent_submit(void) {
     dynpool_destroy(ctx.pool);
 }
 
-typedef struct {
-    dynpool_t*  pool;
-    atomic_bool start;
-    atomic_int  ready;
-    atomic_int  finished;
-    atomic_int  ran;
-} _destroy_race_ctx_t;
-
-static void _destroy_race_job(void* arg) {
-    _destroy_race_ctx_t* ctx = (_destroy_race_ctx_t*)arg;
-    atomic_fetch_add_explicit(&ctx->ran, 1, memory_order_acq_rel);
-}
-
-static int _destroy_race_submitter(void* arg) {
-    _destroy_race_ctx_t* ctx = (_destroy_race_ctx_t*)arg;
-    atomic_fetch_add_explicit(&ctx->ready, 1, memory_order_acq_rel);
-    while (!atomic_load_explicit(&ctx->start, memory_order_acquire)) {
-        thrd_yield();
-    }
-    (void)dynpool_submit(ctx->pool, _destroy_race_job, ctx);
-    atomic_fetch_add_explicit(&ctx->finished, 1, memory_order_acq_rel);
-    return 0;
-}
-
-static void test_destroy_serializes_concurrent_submit(void) {
-    dynpool_opts_t opts = {
-        .max_threads = 1,
-        .idle_timeout = 10000,
-    };
-
-    for (int round = 0; round < DESTROY_RACE_ROUNDS; round++) {
-        _destroy_race_ctx_t ctx = {0};
-        atomic_init(&ctx.start, false);
-        atomic_init(&ctx.ready, 0);
-        atomic_init(&ctx.finished, 0);
-        atomic_init(&ctx.ran, 0);
-
-        ctx.pool = dynpool_create(&opts);
-        ASSERT(ctx.pool != NULL);
-
-        thrd_t threads[DESTROY_RACE_SUBMITTERS];
-        for (int i = 0; i < DESTROY_RACE_SUBMITTERS; i++) {
-            ASSERT(thrd_create(
-                       &threads[i],
-                       _destroy_race_submitter,
-                       &ctx) == thrd_success);
-        }
-
-        while (atomic_load_explicit(&ctx.ready, memory_order_acquire)
-               < DESTROY_RACE_SUBMITTERS) {
-            thrd_yield();
-        }
-        atomic_store_explicit(&ctx.start, true, memory_order_release);
-        for (int i = 0; i < 8; i++) {
-            thrd_yield();
-        }
-
-        dynpool_destroy(ctx.pool);
-
-        for (int i = 0; i < DESTROY_RACE_SUBMITTERS; i++) {
-            ASSERT(thrd_join(threads[i], NULL) == thrd_success);
-        }
-        ASSERT(atomic_load_explicit(&ctx.finished, memory_order_acquire)
-               == DESTROY_RACE_SUBMITTERS);
-    }
-}
-
 int main(void) {
     test_max_threads_is_enforced_under_concurrent_submit();
-    test_destroy_serializes_concurrent_submit();
     return 0;
 }

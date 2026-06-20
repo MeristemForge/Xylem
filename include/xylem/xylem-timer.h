@@ -34,9 +34,9 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  *
  * @note [THREAD-SAFE]
  *
- * The handle must be released with xylem_timer_cancel(), even after
- * the callback has fired. Timer APIs must not be called from external
- * OS threads after xylem_shutdown() has been called.
+ * The handle must be consumed by xylem_timer_cancel(), even after the
+ * callback has fired. Timer APIs must not be called from external OS
+ * threads after xylem_shutdown() has been called.
  *
  * @param delay_ms  Delay in milliseconds.
  * @param cb        Callback to invoke on expiry.
@@ -54,7 +54,7 @@ extern xylem_timer_t* xylem_timer_after(
  *
  * The first fire occurs after interval_ms. Subsequent fires are scheduled
  * only after the previous callback returns, so callbacks for the same timer
- * never overlap. The handle must be released with xylem_timer_cancel().
+ * never overlap. The handle must be consumed by xylem_timer_cancel().
  *
  * @param interval_ms  Delay between callback completions, in milliseconds.
  * @param cb           Callback to invoke on each expiry.
@@ -70,9 +70,11 @@ extern xylem_timer_t* xylem_timer_every(
  *
  * @note [THREAD-SAFE]
  *
- * A callback already in flight may still run to completion.
- * Must not be called concurrently with xylem_timer_reset() on
- * the same handle.
+ * A callback already in flight may still run to completion. This call
+ * consumes @p timer; the handle must not be used again after it returns.
+ * Calls on different timer handles may run concurrently, but operations
+ * on the same handle, including cancel/cancel and cancel/reset, require
+ * external synchronization.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer  Timer handle, or NULL.
@@ -88,6 +90,9 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  *
  * Preserves callback and user data. Restarts the countdown from now.
  * For periodic timers, delay_ms also becomes the new interval.
+ * Calls on different timer handles may run concurrently, but operations
+ * on the same handle, including reset/reset and reset/cancel, require
+ * external synchronization.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer     Timer handle, or NULL.

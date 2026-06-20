@@ -47,6 +47,7 @@ extern dynpool_t* dynpool_create(dynpool_opts_t* opts);
  * @brief Submit a blocking task to the pool.
  *
  * The caller's push is lock-free. A pool thread will execute the task.
+ * Must not race with dynpool_destroy().
  *
  * @param pool     Pool handle.
  * @param routine  Function to execute.
@@ -61,7 +62,8 @@ extern int dynpool_submit(
  * @brief Destroy the pool, draining pending tasks.
  *
  * Signals all workers to exit, waits for running tasks to complete,
- * and frees resources.
+ * and frees resources. The caller must ensure no concurrent
+ * dynpool_submit() calls are in flight.
  *
  * @param pool  Pool handle.
  */

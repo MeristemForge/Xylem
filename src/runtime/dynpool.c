@@ -22,7 +22,6 @@
 #include "dynpool.h"
 
 #include "container/mpsc.h"
-#include "platform/platform-futex.h"
 #include "platform/platform-sem.h"
 #include "xylem/xylem-threads.h"
 
@@ -32,9 +31,6 @@
 
 #define DYNPOOL_DEFAULT_MAX_THREADS  512
 #define DYNPOOL_DEFAULT_IDLE_TIMEOUT 10000
-
-#define DYNPOOL_SUBMIT_GATE_CLOSED     0x80000000u
-#define DYNPOOL_SUBMIT_GATE_COUNT_MASK 0x7fffffffu
 
 typedef struct _dynpool_job_s {
     void (*routine)(void*);
@@ -51,66 +47,7 @@ struct dynpool_s {
     int32_t          max_threads;
     uint64_t         idle_timeout;
     _Atomic bool     running;
-    _Atomic uint32_t submit_gate;
 };
-
-static bool _dynpool_begin_submit(dynpool_t* pool) {
-    uint32_t gate =
-        atomic_load_explicit(&pool->submit_gate, memory_order_acquire);
-    for (;;) {
-        if ((gate & DYNPOOL_SUBMIT_GATE_CLOSED) != 0) {
-            return false;
-        }
-        if ((gate & DYNPOOL_SUBMIT_GATE_COUNT_MASK)
-            == DYNPOOL_SUBMIT_GATE_COUNT_MASK) {
-            return false;
-        }
-        if (atomic_compare_exchange_weak_explicit(
-                &pool->submit_gate,
-                &gate,
-                gate + 1,
-                memory_order_acq_rel,
-                memory_order_acquire)) {
-            return true;
-        }
-    }
-}
-
-static void _dynpool_end_submit(dynpool_t* pool) {
-    uint32_t prev =
-        atomic_fetch_sub_explicit(
-            &pool->submit_gate, 1, memory_order_acq_rel);
-    if ((prev & DYNPOOL_SUBMIT_GATE_CLOSED) != 0
-        && (prev & DYNPOOL_SUBMIT_GATE_COUNT_MASK) == 1) {
-        platform_futex_broadcast(&pool->submit_gate);
-    }
-}
-
-static void _dynpool_close_submit_gate(dynpool_t* pool) {
-    uint32_t gate =
-        atomic_load_explicit(&pool->submit_gate, memory_order_acquire);
-    for (;;) {
-        if ((gate & DYNPOOL_SUBMIT_GATE_CLOSED) != 0) {
-            break;
-        }
-        if (atomic_compare_exchange_weak_explicit(
-                &pool->submit_gate,
-                &gate,
-                gate | DYNPOOL_SUBMIT_GATE_CLOSED,
-                memory_order_acq_rel,
-                memory_order_acquire)) {
-            break;
-        }
-    }
-
-    for (;;) {
-        gate = atomic_load_explicit(&pool->submit_gate, memory_order_acquire);
-        if ((gate & DYNPOOL_SUBMIT_GATE_COUNT_MASK) == 0) {
-            return;
-        }
-        platform_futex_wait(&pool->submit_gate, gate);
-    }
-}
 
 static _dynpool_job_t* _dynpool_pop_job(dynpool_t* pool) {
     mtx_lock(&pool->pop_mtx);
@@ -204,25 +141,16 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
     }
 
     atomic_store(&pool->running, true);
-    atomic_init(&pool->submit_gate, 0);
     return pool;
 }
 
 int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
-    if (!pool || !routine) {
-        return -1;
-    }
-    if (!_dynpool_begin_submit(pool)) {
-        return -1;
-    }
-    if (!atomic_load(&pool->running)) {
-        _dynpool_end_submit(pool);
+    if (!pool || !routine || !atomic_load(&pool->running)) {
         return -1;
     }
 
     _dynpool_job_t* job = (_dynpool_job_t*)calloc(1, sizeof(_dynpool_job_t));
     if (!job) {
-        _dynpool_end_submit(pool);
         return -1;
     }
 
@@ -236,7 +164,6 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
         _dynpool_spawn_thread(pool);
     }
 
-    _dynpool_end_submit(pool);
     return 0;
 }
 
@@ -245,7 +172,6 @@ void dynpool_destroy(dynpool_t* pool) {
         return;
     }
 
-    _dynpool_close_submit_gate(pool);
     atomic_store(&pool->running, false);
 
     int32_t count = atomic_load(&pool->thread_count);
