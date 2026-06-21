@@ -205,16 +205,8 @@ static void _iowait_slab_free(iowait_slab_t* slab, uint32_t index) {
     mtx_unlock(&slab->lock);
 }
 
-/**
- * Last ref dropped: bump gen, return slot to slab freelist.
- * Timers are kept alive for reuse by the next occupant.
- */
 static void _iowait_retire(iowait_t* w) {
-    uint16_t prev = atomic_fetch_add(&w->gen, 1);
-    if ((uint16_t)(prev + 1) == 0) {
-        /* Skip gen 0 so stale CQEs from the wrapped generation miss. */
-        atomic_fetch_add(&w->gen, 1);
-    }
+    atomic_fetch_add(&w->gen, 1);
     _iowait_slab_free(w->slab, w->slot_index);
 }
 
