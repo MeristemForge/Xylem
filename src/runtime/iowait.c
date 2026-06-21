@@ -607,8 +607,8 @@ void iowait_on_event(
         w->sqe.op = PLATFORM_POLLER_RW_OP;
         mtx_lock(&w->arm_lock);
         if (!atomic_load(&w->closed)) {
-            if (platform_poller_add(w->poller, &w->sqe) != 0) {
-                xylem_loge("<iowait> re-arm add failed w=%p fd=%d",
+            if (platform_poller_mod(w->poller, &w->sqe) != 0) {
+                xylem_loge("<iowait> re-arm mod failed w=%p fd=%d",
                            (void*)w, (int)w->fd);
                 abort();
             }

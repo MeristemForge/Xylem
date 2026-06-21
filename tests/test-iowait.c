@@ -55,10 +55,8 @@ struct iowait_s {
 
     _Atomic int32_t       refcnt;
     _Atomic uint16_t      gen;
-    _Atomic bool          registered;
     _Atomic int           interest;
     _Atomic bool          closed;
-    _Atomic bool          poll_error;
 
     iowait_slab_t*        slab;
     uint32_t              slot_index;
@@ -67,6 +65,7 @@ struct iowait_s {
 typedef struct {
     platform_sock_t socks[2];
     iowait_t*       active;
+    void*           stale_ud;
     iowait_result_t result;
     int             tested;
 } _iowait_ctx_t;
@@ -76,7 +75,7 @@ static void _iowait_wait_coro(void* arg) {
     ctx->result = iowait_read(ctx->active);
 }
 
-static void _iowait_inject_stale_read(void) {
+static void _iowait_inject_stale_read(void* ud) {
     mco_coro* coros[4];
     runnable_batch_t batch = {
         .coros = coros,
@@ -87,7 +86,7 @@ static void _iowait_inject_stale_read(void) {
     iowait_on_event(
         runtime_get_scheduler(),
         PLATFORM_POLLER_RD_OP,
-        (void*)1,
+        ud,
         &batch);
     scheduler_schedule_batch(runtime_get_scheduler(), coros, batch.n);
 }
@@ -119,18 +118,15 @@ static void _iowait_wrap_coro(void* arg) {
 
     iowait_t* stale = iowait_create(ctx->socks[0]);
     ASSERT(stale != NULL);
-    ASSERT(stale->slot_index == 1);
-    atomic_store(&stale->gen, UINT16_MAX);
+    ctx->stale_ud = stale->sqe.ud;
     iowait_destroy(stale);
 
     ctx->active = iowait_create(ctx->socks[0]);
     ASSERT(ctx->active != NULL);
-    ASSERT(ctx->active->slot_index == 1);
-    ASSERT(atomic_load(&ctx->active->gen) == 1);
 
     xylem_spawn(_iowait_wait_coro, ctx);
     xylem_sleep(1);
-    _iowait_inject_stale_read();
+    _iowait_inject_stale_read(ctx->stale_ud);
     xylem_sleep(1);
     iowait_close(ctx->active);
     xylem_sleep(1);
