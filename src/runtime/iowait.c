@@ -85,7 +85,6 @@ struct iowait_s {
     _Atomic uint16_t      gen;
     _Atomic int           interest;    /* PLATFORM_POLLER_NO_OP when not subscribed */
     _Atomic bool          closed;
-    _Atomic bool          poll_error;
 
     iowait_slab_t*        slab;
     uint32_t              slot_index;
@@ -284,35 +283,6 @@ static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
     }
 }
 
-static int _iowait_update_interest(
-    iowait_t*            w,
-    platform_poller_op_t op) {
-    platform_poller_op_t prev = (platform_poller_op_t)
-        atomic_load(&w->interest);
-
-    if (prev == op) {
-        return 0;
-    }
-
-    w->sqe.op = op;
-
-    int rc;
-    if (op == PLATFORM_POLLER_NO_OP) {
-        platform_poller_del(w->poller, &w->sqe);
-        rc = 0;
-    } else if (prev == PLATFORM_POLLER_NO_OP) {
-        rc = platform_poller_add(w->poller, &w->sqe);
-    } else {
-        rc = platform_poller_mod(w->poller, &w->sqe);
-    }
-
-    if (rc != 0) {
-        return -1;
-    }
-    atomic_store(&w->interest, op);
-    return 0;
-}
-
 static void _iowait_wake_waiter(_iowait_dir_t* d) {
     mco_coro* co = _iowait_take_waiter(d);
     if (!co) {
@@ -394,7 +364,6 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
 
     /* Re-check after publish: close or deadline may have raced in. */
     if (atomic_load(&w->closed)
-        || atomic_load(&w->poll_error)
         || atomic_load(&d->deadline_error)
         || _iowait_deadline_expired(d)) {
         _iowait_wake_waiter(d);
@@ -449,9 +418,6 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 static iowait_result_t _iowait_check_result(iowait_t* w, _iowait_dir_t* d) {
     if (atomic_load(&w->closed)) {
         return IOWAIT_CLOSED;
-    }
-    if (atomic_load(&w->poll_error)) {
-        return IOWAIT_ERROR;
     }
     if (atomic_load(&d->deadline_error)) {
         return IOWAIT_ERROR;
@@ -528,7 +494,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store(&w->rd.deadline_error, false);
     atomic_store(&w->wr.deadline_error, false);
     atomic_store(&w->closed, false);
-    atomic_store(&w->poll_error, false);
     atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     w->slab = slab;
 
@@ -544,10 +509,12 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->wr.w = w;
 
     _iowait_ref(w);
-    if (_iowait_update_interest(w, PLATFORM_POLLER_RW_OP) != 0) {
+    w->sqe.op = PLATFORM_POLLER_RW_OP;
+    if (platform_poller_add(w->poller, &w->sqe) != 0) {
         _iowait_unref(w);
         return NULL;
     }
+    atomic_store(&w->interest, PLATFORM_POLLER_RW_OP);
     return w;
 }
 
@@ -637,13 +604,15 @@ void iowait_on_event(
      */
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_LT) {
         atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
+        w->sqe.op = PLATFORM_POLLER_RW_OP;
         mtx_lock(&w->arm_lock);
         if (!atomic_load(&w->closed)) {
-            if (_iowait_update_interest(w, PLATFORM_POLLER_RW_OP) != 0) {
-                atomic_store(&w->poll_error, true);
-                _iowait_wake_waiter(&w->rd);
-                _iowait_wake_waiter(&w->wr);
+            if (platform_poller_add(w->poller, &w->sqe) != 0) {
+                xylem_loge("<iowait> re-arm add failed w=%p fd=%d",
+                           (void*)w, (int)w->fd);
+                abort();
             }
+            atomic_store(&w->interest, PLATFORM_POLLER_RW_OP);
         }
         mtx_unlock(&w->arm_lock);
     }
