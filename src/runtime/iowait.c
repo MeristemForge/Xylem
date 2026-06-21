@@ -23,10 +23,10 @@
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
+#include "xylem/xylem-threads.h"
 
 #include "runtime.h"
 #include "scheduler.h"
-#include "xylem/xylem-threads.h"
 
 #include "minicoro/minicoro.h"
 
@@ -56,17 +56,16 @@ typedef struct _iowait_dir_s _iowait_dir_t;
 enum {
     IOWAIT_DIR_SLOT_EMPTY = 0,
     IOWAIT_DIR_SLOT_READY = 1,
+    /**
+     * Values above READY encode a parked coroutine pointer -- the PARKED state.
+     * A heap-allocated coroutine address is never 0 or 1, so EMPTY, READY and
+     * PARKED are disjoint by construction without a separate tag.
+     */
 };
-
-typedef enum _iowait_arm_status_e {
-    IOWAIT_ARM_OK,
-    IOWAIT_ARM_CLOSED,
-    IOWAIT_ARM_ERROR,
-} _iowait_arm_status_t;
 
 struct _iowait_dir_s {
     iowait_t*          w;
-    _Atomic uintptr_t  slot;
+    _Atomic uintptr_t  slot;    /* EMPTY | READY | PARKED(coro ptr > 1) */
     scheduler_timer_t* timer;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
@@ -84,8 +83,7 @@ struct iowait_s {
 
     _Atomic int32_t       refcnt;
     _Atomic uint16_t      gen;
-    _Atomic bool          registered;
-    _Atomic int           interest;
+    _Atomic int           interest;    /* PLATFORM_POLLER_NO_OP when not subscribed */
     _Atomic bool          closed;
     _Atomic bool          poll_error;
 
@@ -254,11 +252,6 @@ static inline mco_coro* _iowait_waiter_from_slot(uintptr_t slot) {
     return slot > IOWAIT_DIR_SLOT_READY ? (mco_coro*)slot : NULL;
 }
 
-static bool _iowait_has_waiter(_iowait_dir_t* d) {
-    uintptr_t slot = atomic_load(&d->slot);
-    return _iowait_waiter_from_slot(slot) != NULL;
-}
-
 static bool _iowait_take_ready(_iowait_dir_t* d) {
     uintptr_t expected = IOWAIT_DIR_SLOT_READY;
     return atomic_compare_exchange_strong(
@@ -283,18 +276,13 @@ static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
     }
 }
 
-static mco_coro* _iowait_publish_ready(
-    _iowait_dir_t* d,
-    bool           publish_if_empty) {
+static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
     uintptr_t slot = atomic_load(&d->slot);
     for (;;) {
         if (slot == IOWAIT_DIR_SLOT_READY) {
             return NULL;
         }
         mco_coro* co = _iowait_waiter_from_slot(slot);
-        if (!co && !publish_if_empty) {
-            return NULL;
-        }
         if (atomic_compare_exchange_weak(
                 &d->slot,
                 &slot,
@@ -307,81 +295,30 @@ static mco_coro* _iowait_publish_ready(
 static int _iowait_update_interest(
     iowait_t*            w,
     platform_poller_op_t op) {
-    platform_poller_op_t current = (platform_poller_op_t)
+    platform_poller_op_t prev = (platform_poller_op_t)
         atomic_load(&w->interest);
-    bool registered = atomic_load(&w->registered);
 
-    if (current == op) {
-        w->sqe.op = op;
+    if (prev == op) {
         return 0;
     }
 
     w->sqe.op = op;
 
+    int rc;
     if (op == PLATFORM_POLLER_NO_OP) {
-        if (registered) {
-            platform_poller_del(w->poller, &w->sqe);
-        }
-        atomic_store(&w->registered, false);
-        atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
-        return 0;
+        platform_poller_del(w->poller, &w->sqe);
+        rc = 0;
+    } else if (prev == PLATFORM_POLLER_NO_OP) {
+        rc = platform_poller_add(w->poller, &w->sqe);
+    } else {
+        rc = platform_poller_mod(w->poller, &w->sqe);
     }
 
-    if (!registered) {
-        if (platform_poller_add(w->poller, &w->sqe) != 0) {
-            return -1;
-        }
-        atomic_store(&w->registered, true);
-        atomic_store(&w->interest, op);
-        return 0;
-    }
-
-    if (platform_poller_mod(w->poller, &w->sqe) != 0) {
+    if (rc != 0) {
         return -1;
     }
     atomic_store(&w->interest, op);
     return 0;
-}
-
-/* ET pollers stay registered RD|WR; one-shot pollers arm parked directions. */
-static _iowait_arm_status_t _iowait_arm(iowait_t* w) {
-    if (atomic_load(&w->closed)) {
-        return IOWAIT_ARM_CLOSED;
-    }
-
-    platform_poller_op_t op = PLATFORM_POLLER_NO_OP;
-    switch (PLATFORM_POLLER_TRIGGER_MODE) {
-    case PLATFORM_POLLER_TRIGGER_ET:
-        if ((platform_poller_op_t)atomic_load(&w->interest)
-            == PLATFORM_POLLER_RW_OP) {
-            return IOWAIT_ARM_OK;
-        }
-        op = PLATFORM_POLLER_RW_OP;
-        break;
-    case PLATFORM_POLLER_TRIGGER_LT:
-        if (_iowait_has_waiter(&w->rd)) {
-            op |= PLATFORM_POLLER_RD_OP;
-        }
-        if (_iowait_has_waiter(&w->wr)) {
-            op |= PLATFORM_POLLER_WR_OP;
-        }
-        break;
-    default:
-        return IOWAIT_ARM_ERROR;
-    }
-
-    mtx_lock(&w->arm_lock);
-
-    /* Re-check under the lock: iowait_close may have raced in. */
-    if (atomic_load(&w->closed)) {
-        mtx_unlock(&w->arm_lock);
-        return IOWAIT_ARM_CLOSED;
-    }
-
-    int ret = _iowait_update_interest(w, op);
-
-    mtx_unlock(&w->arm_lock);
-    return ret == 0 ? IOWAIT_ARM_OK : IOWAIT_ARM_ERROR;
 }
 
 static void _iowait_wake_waiter(_iowait_dir_t* d) {
@@ -400,12 +337,7 @@ static bool _iowait_deadline_expired(_iowait_dir_t* d) {
 
 static void _iowait_handle_dir_event(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
-    mco_coro* co = NULL;
-    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
-        co = _iowait_publish_ready(d, true);
-    } else {
-        co = _iowait_publish_ready(d, false);
-    }
+    mco_coro* co = _iowait_publish_ready(d);
     if (!co) {
         return;
     }
@@ -432,8 +364,7 @@ static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
         return true;
     }
 
-    if (slot == IOWAIT_DIR_SLOT_READY
-        && PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_ET) {
+    if (slot == IOWAIT_DIR_SLOT_READY) {
         return false;
     }
 
@@ -449,7 +380,6 @@ static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
         (void*)prev,
         (void*)co);
     abort();
-    return false;
 }
 
 static bool _iowait_park_cb(mco_coro* co, void* arg) {
@@ -470,31 +400,11 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
         return false;
     }
 
-    _iowait_arm_status_t arm_status = _iowait_arm(w);
-    if (arm_status == IOWAIT_ARM_CLOSED) {
-        _iowait_wake_waiter(d);
-        return true;
-    }
-    if (arm_status == IOWAIT_ARM_ERROR) {
-        atomic_store(&w->poll_error, true);
-        _iowait_wake_waiter(d);
-        return true;
-    }
-
     /* Re-check after publish: close or deadline may have raced in. */
-    if (atomic_load(&w->closed)) {
-        _iowait_wake_waiter(d);
-        return true;
-    }
-    if (atomic_load(&w->poll_error)) {
-        _iowait_wake_waiter(d);
-        return true;
-    }
-    if (atomic_load(&d->deadline_error)) {
-        _iowait_wake_waiter(d);
-        return true;
-    }
-    if (_iowait_deadline_expired(d)) {
+    if (atomic_load(&w->closed)
+        || atomic_load(&w->poll_error)
+        || atomic_load(&d->deadline_error)
+        || _iowait_deadline_expired(d)) {
         _iowait_wake_waiter(d);
     }
     return true;
@@ -627,7 +537,6 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store(&w->wr.deadline_error, false);
     atomic_store(&w->closed, false);
     atomic_store(&w->poll_error, false);
-    atomic_store(&w->registered, false);
     atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     w->slab = slab;
 
@@ -643,7 +552,7 @@ iowait_t* iowait_create(platform_sock_t fd) {
     w->wr.w = w;
 
     _iowait_ref(w);
-    if (_iowait_arm(w) != IOWAIT_ARM_OK) {
+    if (_iowait_update_interest(w, PLATFORM_POLLER_RW_OP) != 0) {
         _iowait_unref(w);
         return NULL;
     }
@@ -685,9 +594,9 @@ void iowait_close(iowait_t* w) {
 
     /* Drop poller subscription now so the caller can safely close the fd. */
     mtx_lock(&w->arm_lock);
-    if (atomic_load(&w->registered)) {
+    if ((platform_poller_op_t)atomic_load(&w->interest)
+        != PLATFORM_POLLER_NO_OP) {
         platform_poller_del(w->poller, &w->sqe);
-        atomic_store(&w->registered, false);
         atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     }
     mtx_unlock(&w->arm_lock);
@@ -730,10 +639,21 @@ void iowait_on_event(
         _iowait_handle_dir_event(sched, batch, &w->wr);
     }
 
-    if (_iowait_arm(w) == IOWAIT_ARM_ERROR) {
-        atomic_store(&w->poll_error, true);
-        _iowait_wake_waiter(&w->rd);
-        _iowait_wake_waiter(&w->wr);
+    /**
+     * ONESHOT auto-disabled the fd; sync interest and re-arm.
+     * ET never needs this: interest stays RW_OP, kernel keeps the fd.
+     */
+    if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_LT) {
+        atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
+        mtx_lock(&w->arm_lock);
+        if (!atomic_load(&w->closed)) {
+            if (_iowait_update_interest(w, PLATFORM_POLLER_RW_OP) != 0) {
+                atomic_store(&w->poll_error, true);
+                _iowait_wake_waiter(&w->rd);
+                _iowait_wake_waiter(&w->wr);
+            }
+        }
+        mtx_unlock(&w->arm_lock);
     }
 
     _iowait_unref(w);
