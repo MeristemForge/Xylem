@@ -52,6 +52,7 @@
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
+#include "xylem/xylem-threads.h"
 
 #include "iowait.h"
 #include "wsq.h"
@@ -66,7 +67,6 @@
 #include "platform/platform-info.h"
 #include "platform/platform-cpu.h"
 #include "sync/spin.h"
-#include "xylem/xylem-threads.h"
 
 #include "minicoro/minicoro.h"
 
@@ -160,7 +160,7 @@ struct scheduler_s {
     _Atomic uint32_t      timer_rr;
     list_t                registry;
     spin_t                registry_lock;
-    _sched_coro_pool_t          coro_pool;
+    _sched_coro_pool_t    coro_pool;
 };
 
 
@@ -214,7 +214,7 @@ typedef struct _sched_timer_fire_s {
 
 static thread_local _sched_worker_t* _tls_worker;
 
-static inline _sched_worker_t* _sched_timer_owner_worker(
+static inline _sched_worker_t* _sched_timer_worker(
     scheduler_timer_t* timer) {
     return &timer->sched->workers[timer->owner];
 }
@@ -223,9 +223,6 @@ static inline bool _sched_is_running(scheduler_t* sched) {
     return sched
         && atomic_load(&sched->running);
 }
-
-static bool _sched_claim_for_wake(mco_coro* co);
-static void _sched_enqueue(scheduler_t* sched, mco_coro* co);
 
 static void _sched_coro_entry_cb(mco_coro* co) {
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
@@ -676,7 +673,7 @@ static int _sched_timer_next_timeout(_sched_worker_t* w) {
 
 static void _sched_timer_fire_done(_sched_timer_fire_t* fire) {
     scheduler_timer_t* timer = fire->timer;
-    _sched_worker_t*   owner = _sched_timer_owner_worker(timer);
+    _sched_worker_t*   owner = _sched_timer_worker(timer);
     bool               armed = false;
     uint64_t           now   = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
@@ -872,6 +869,37 @@ static void _sched_poller_release(scheduler_t* sched) {
 
 static void _sched_poller_set_waiting(scheduler_t* sched, bool waiting) {
     atomic_store(&sched->poller_waiting, waiting);
+}
+
+/**
+ * Transition a coroutine that a waker wants to run. Returns true if the
+ * caller should enqueue it now, false if it must not (either the park
+ * callback is still arming and will requeue on return, or another claim
+ * already won). A coroutine not in a park handshake (PARK_IDLE) is a
+ * normal schedule and is always enqueued.
+ */
+static bool _sched_claim_for_wake(mco_coro* co) {
+    _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
+    _park_state_t state =
+        atomic_load(&ctx->park_state);
+    for (;;) {
+        switch (state) {
+        case PARK_IDLE:
+            return true;
+        case PARK_PARKED:
+            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
+                return true;
+            }
+            break;
+        case PARK_ARMING:
+            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
+                return false;
+            }
+            break;
+        case PARK_CLAIMED:
+            return false;
+        }
+    }
 }
 
 static mco_coro* _sched_io_process_events(
@@ -1255,9 +1283,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     if (sched->poller_ready) {
         platform_poller_deinit(&sched->poller);
     }
-    if (sched->iowait_slab) {
-        iowait_slab_destroy(sched->iowait_slab);
-    }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
         _sched_coro_slot_release(&sched->coro_pool, sched->coro_pool.slots[i]);
@@ -1503,41 +1528,6 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
      */
 }
 
-/**
- * Transition a coroutine that a waker wants to run. Returns true if the
- * caller should enqueue it now, false if it must not (either the park
- * callback is still arming and will requeue on return, or another claim
- * already won). A coroutine not in a park handshake (PARK_IDLE) is a
- * normal schedule and is always enqueued.
- */
-static bool _sched_claim_for_wake(mco_coro* co) {
-    _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
-    _park_state_t state =
-        atomic_load(&ctx->park_state);
-    for (;;) {
-        switch (state) {
-        case PARK_IDLE:
-            /* Not in a park handshake: a normal schedule, always enqueue. */
-            return true;
-        case PARK_PARKED:
-            /* Park callback already returned; claim it, we requeue. */
-            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
-                return true;
-            }
-            break; /* state reloaded by the CAS; re-evaluate */
-        case PARK_ARMING:
-            /* Park callback still arming; it sees CLAIMED and requeues. */
-            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
-                return false;
-            }
-            break; /* state reloaded; ARMING may have advanced to PARKED. */
-        case PARK_CLAIMED:
-            /* Another waker already claimed it; nothing for us to do. */
-            return false;
-        }
-    }
-}
-
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     if (!_sched_is_running(sched)) {
         return;
@@ -1775,16 +1765,16 @@ void scheduler_timer_destroy(scheduler_timer_t* timer) {
 int scheduler_timer_start(
     scheduler_timer_t*   timer,
     scheduler_timer_fn_t cb,
-    void*            ud,
-    uint64_t         timeout_ms,
-    uint64_t         repeat_ms) {
+    void*                ud,
+    uint64_t             timeout_ms,
+    uint64_t             repeat_ms) {
     if (!timer || !_sched_is_running(timer->sched)) {
         return -1;
     }
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    _sched_worker_t* owner = _sched_timer_owner_worker(timer);
+    _sched_worker_t* owner = _sched_timer_worker(timer);
     bool armed = false;
     mtx_lock(&owner->timer_lock);
     if (timer->state == SCHED_TIMER_QUEUED) {
@@ -1816,7 +1806,7 @@ int scheduler_timer_start(
 }
 
 bool scheduler_timer_stop(scheduler_timer_t* timer) {
-    _sched_worker_t* owner = _sched_timer_owner_worker(timer);
+    _sched_worker_t* owner = _sched_timer_worker(timer);
 
     bool cancelled = false;
     mtx_lock(&owner->timer_lock);
@@ -1842,7 +1832,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    _sched_worker_t* owner = _sched_timer_owner_worker(timer);
+    _sched_worker_t* owner = _sched_timer_worker(timer);
     bool was_active;
     bool armed = false;
     mtx_lock(&owner->timer_lock);

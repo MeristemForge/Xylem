@@ -67,16 +67,17 @@ typedef enum iowait_result_e {
     IOWAIT_READY   = 0, /* fd became readable / writable. */
     IOWAIT_TIMEOUT = 1, /* deadline reached. */
     IOWAIT_CLOSED  = 2, /* iowait_close() was invoked. */
-    IOWAIT_ERROR   = 3, /* Poller arm failed. */
+    IOWAIT_ERROR   = 3, /* Deadline timer arm failed. */
 } iowait_result_t;
 
 /**
  * @brief Create an IO wait handle bound to a file descriptor.
  *
- * On edge-triggered pollers, the handle registers read+write readiness
- * immediately and caches readiness in iowait. On one-shot pollers, the
- * handle arms only while a coroutine is parked. The fd must already be in
- * non-blocking mode, and must not be shared with another iowait concurrently.
+ * Registers the fd for read+write readiness on the scheduler's poller
+ * immediately. On ET pollers the registration is persistent; on LT+ONESHOT
+ * pollers iowait_on_event re-registers after each event. The fd must
+ * already be in non-blocking mode, and must not be shared with another
+ * iowait concurrently.
  *
  * @param fd  Non-blocking socket descriptor.
  *
@@ -145,14 +146,14 @@ extern bool iowait_write_deadline_expired(iowait_t* w);
 /**
  * @brief Suspend the calling coroutine until the fd is readable.
  *
- * Arms the fd on the scheduler's poller and yields. The coroutine
- * resumes when the fd becomes readable, the read deadline passes,
- * or iowait_close() is called. Returns immediately with
- * IOWAIT_TIMEOUT if the deadline was already past at entry, or with
- * IOWAIT_CLOSED if the handle was already closed. Must be called
- * from inside a coroutine running on the scheduler.
+ * Yields the calling coroutine, which resumes when the fd becomes
+ * readable, the read deadline passes, or iowait_close() is called.
+ * Returns immediately with IOWAIT_TIMEOUT if the deadline was already
+ * past at entry, or with IOWAIT_CLOSED if the handle was already
+ * closed. Must be called from inside a coroutine running on the
+ * scheduler.
  *
- * See the threading-model comment at the top of this header for
+ * See the concurrency-model comment at the top of this header for
  * the one-reader-per-direction rule.
  *
  * @param w  IO wait handle.

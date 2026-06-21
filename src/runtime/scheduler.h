@@ -103,22 +103,22 @@ typedef enum scheduler_timer_state_e {
  * worker; see scheduler.c for the access/locking rules.
  */
 struct scheduler_timer_s {
-    heap_node_t         heap_node;
-    scheduler_t*        sched;
-    scheduler_timer_fn_t    cb;
-    void*               ud;
-    scheduler_timer_ud_fn_t ud_ref;
-    scheduler_timer_ud_fn_t ud_unref;
-    uint64_t            timeout;
-    uint64_t            repeat;
-    uint64_t            reset_timeout;
-    uint64_t            reset_repeat;
-    scheduler_timer_state_t state;
-    bool                stop_pending;
-    bool                reset_pending;
-    bool                spawn;
-    _Atomic int32_t     refcnt;
-    uint32_t            owner;
+    heap_node_t              heap_node;
+    scheduler_t*             sched;
+    scheduler_timer_fn_t     cb;
+    void*                    ud;
+    scheduler_timer_ud_fn_t  ud_ref;
+    scheduler_timer_ud_fn_t  ud_unref;
+    uint64_t                 timeout;
+    uint64_t                 repeat;
+    uint64_t                 reset_timeout;
+    uint64_t                 reset_repeat;
+    scheduler_timer_state_t  state;
+    bool                     stop_pending;
+    bool                     reset_pending;
+    bool                     spawn;
+    _Atomic int32_t          refcnt;
+    uint32_t                 owner;
 };
 
 /* Configuration for scheduler_create. */
@@ -126,7 +126,7 @@ typedef struct scheduler_opts_s {
     int32_t  worker_count;       /* 0 = use CPU count. */
     uint32_t deque_capacity;      /* 0 = use default (256). Must be power of 2. */
     uint32_t coro_pool_capacity;  /* 0 = use default (worker_count * 64). */
-    size_t   coro_stack_size;/* 0 = use default (128 KB). */
+    size_t   coro_stack_size;   /* 0 = use default (128 KB). */
 } scheduler_opts_t;
 
 /**
