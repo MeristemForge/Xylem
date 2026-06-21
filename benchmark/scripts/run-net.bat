@@ -40,6 +40,7 @@ set "OUT_DIR=%BENCH_DIR%\out"
 set "BIN_DIR=%OUT_DIR%"
 set "BUILD_DIR=%OUT_DIR%\build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
+set "WINCLIENT_PS1=%OUT_DIR%\run-net-winclient.ps1"
 
 REM ---- defaults (env vars seed them; CLI overrides) --------------------------
 if not defined PROTO    set "PROTO=tcp"
@@ -49,6 +50,7 @@ if not defined PAYLOADS set "PAYLOADS=64,4096,65536"
 if not defined DURATION set "DURATION=10"
 if not defined MODE     set "MODE=both"
 if not defined REPEAT   set "REPEAT=1"
+if not defined BENCH_WARMUP_RUNS set "BENCH_WARMUP_RUNS=1"
 set "RUN_CONNRATE=true"
 if not defined STRICT   set "STRICT=false"
 
@@ -205,7 +207,7 @@ if not exist "%_VCVARS%" (
     exit /b 1
 )
 call :info "initializing MSVC x64 environment (vcvars64.bat)..."
-call "%_VCVARS%" >nul
+call "%_VCVARS%" >nul 2>&1
 where cl >nul 2>&1 || (call :err "cl.exe still not found after vcvars64.bat" & exit /b 1)
 goto :eof
 
@@ -234,10 +236,10 @@ where ninja >nul 2>&1 && set "USE_NINJA=true"
 
 call :info "building xylem static library (XYLEM_ENABLE_TLS=%TLS_FLAG%)..."
 if "%USE_NINJA%"=="true" (
-    cmake -S "%PROJECT_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DXYLEM_ENABLE_TLS=%TLS_FLAG% >nul 2>&1
+    cmake -S "%PROJECT_ROOT%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl "-DCMAKE_C_FLAGS_RELEASE=/O2 /DNDEBUG /GL" -DXYLEM_ENABLE_TLS=%TLS_FLAG% >nul 2>&1
     cmake --build "%BUILD_DIR%" --target xylem -j %NCPU% >nul 2>&1
 ) else (
-    cmake -S "%PROJECT_ROOT%" -B "%BUILD_DIR%" -DCMAKE_C_COMPILER=cl -DXYLEM_ENABLE_TLS=%TLS_FLAG% >nul 2>&1
+    cmake -S "%PROJECT_ROOT%" -B "%BUILD_DIR%" -DCMAKE_C_COMPILER=cl "-DCMAKE_C_FLAGS_RELEASE=/O2 /DNDEBUG /GL" -DXYLEM_ENABLE_TLS=%TLS_FLAG% >nul 2>&1
     cmake --build "%BUILD_DIR%" --target xylem --config Release -j %NCPU% >nul 2>&1
 )
 
@@ -252,7 +254,7 @@ if not exist "%XYLEM_LIB%" (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3"
+set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /GL /MD /W3"
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 for %%P in (%PROTO:,= %) do call :build_proto "%%P"
@@ -315,7 +317,7 @@ set "_SRC=%NET_DIR%\%CUR_PROTO%\server\xylem-echo\server%_SUF%.c"
 set "_OUT=%BIN_DIR%\%CUR_PROTO%-xylem-echo%_SUF%.exe"
 if not exist "%_SRC%" goto :eof
 call :info "building %CUR_PROTO%-xylem-echo%_SUF%..."
-cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" >nul 2>&1
+cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" /link /LTCG >nul 2>&1
 if errorlevel 1 (
     call :warn "skip xylem %CUR_PROTO%%_SUF% (build failed)"
 ) else (
@@ -340,7 +342,10 @@ set "_SUF=%~1"
 set "_DIR=%NET_DIR%\%CUR_PROTO%\server\rust-echo"
 if not exist "%_DIR%" goto :eof
 pushd "%_DIR%"
+set "_OLD_RUSTFLAGS=%RUSTFLAGS%"
+if defined RUSTFLAGS (set "RUSTFLAGS=%RUSTFLAGS% -C strip=symbols") else (set "RUSTFLAGS=-C strip=symbols")
 cargo build --release -q --bin %CUR_PROTO%-rust-echo%_SUF% && copy /Y "target\release\%CUR_PROTO%-rust-echo%_SUF%.exe" "%BIN_DIR%\" >nul && (call :ok "%CUR_PROTO%-rust-echo%_SUF% built") || (call :warn "skip rust %CUR_PROTO%%_SUF% (build failed)")
+if defined _OLD_RUSTFLAGS (set "RUSTFLAGS=%_OLD_RUSTFLAGS%") else (set "RUSTFLAGS=")
 popd
 goto :eof
 
@@ -360,13 +365,13 @@ REM bench
 REM ============================================================================
 :cmd_bench
 call :ensure_bin || exit /b 1
+call :ensure_winclient_helper || exit /b 1
 
-for /f "tokens=2 delims==" %%T in ('wmic os get localdatetime /value 2^>nul ^| find "="') do set "_DT=%%T"
-set "TS=%_DT:~0,8%-%_DT:~8,6%"
+for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss" 2^>nul') do set "TS=%%T"
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 
-call :info "results -> %RUN_DIR%   (MT workers = %SERVER_NCPU%)"
+call :info "results to %RUN_DIR%   (MT workers = %SERVER_NCPU%)"
 call :info "protocols: %PROTO%"
 if "%PIN_ENABLE%"=="true" (
     call :info "core-pinning: server mask %SRV_MASK% / %SERVER_NCPU% cores, client mask %CLI_MASK% / %CLIENT_NCPU% cores (GOMAXPROCS), of %NCPU%"
@@ -390,11 +395,26 @@ for %%P in (%PROTO:,= %) do (
 )
 goto :eof
 
+:ensure_winclient_helper
+if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
+set "__RUN_NET_BAT=%~f0"
+set "__WINCLIENT_PS1=%WINCLIENT_PS1%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m='::WINCLIENT::'; Get-Content -LiteralPath $env:__RUN_NET_BAT | Where-Object { $_.StartsWith($m) } | ForEach-Object { $_.Substring($m.Length) } | Set-Content -LiteralPath $env:__WINCLIENT_PS1 -Encoding UTF8" 1>nul 2>nul
+if errorlevel 1 (
+    call :err "failed to prepare internal Windows bench client helper"
+    exit /b 1
+)
+if not exist "%WINCLIENT_PS1%" (
+    call :err "internal Windows bench client helper was not created"
+    exit /b 1
+)
+goto :eof
+
 REM bench_proto <proto>
 :bench_proto
 set "CUR_PROTO=%~1"
 call :proto_config "%CUR_PROTO%" || exit /b 1
-call :kill_servers
+call :kill_servers 1>nul 2>nul
 
 set "_DO_ST=false"
 set "_DO_MT=false"
@@ -436,12 +456,12 @@ if "%_DO_MT%"=="true" (
 goto :eof
 
 :kill_servers
-taskkill /F /IM %CUR_PROTO%-xylem-echo.exe    >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-xylem-echo-mt.exe >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-go-echo.exe       >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-go-echo-mt.exe    >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-rust-echo.exe     >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  >nul 2>&1
+taskkill /F /IM %CUR_PROTO%-xylem-echo.exe    1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-xylem-echo-mt.exe 1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-go-echo.exe       1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-go-echo-mt.exe    1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-rust-echo.exe     1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  1>nul 2>nul
 ping -n 2 127.0.0.1 >nul
 goto :eof
 
@@ -471,6 +491,12 @@ if defined _raw (
 set "_raw="
 goto :eof
 
+REM Calc-MiBPerSec <msg_per_sec> <payload_bytes> -> _MIBPS
+:calc_mib_per_sec
+set "_MIBPS=0"
+for /f "delims=" %%M in ('powershell -NoProfile -Command "[int64][math]::Floor(([int64]%~1 * [int64]%~2) / 1048576)"') do set "_MIBPS=%%M"
+goto :eof
+
 REM bench_throughput <row_label> <bin_suffix> <workers> <conns> <payload>
 :bench_throughput
 set "ROW=%~1"
@@ -484,8 +510,11 @@ set "CONNS_LBL=%_FMT%"
 call :format_size %PAYLOAD_V%
 set "SIZE_LBL=%_FMT%"
 
-call :info "=== [%CUR_PROTO%] %ROW% Throughput: c%CONNS_LBL% payload=%SIZE_LBL% %DURATION%s x%REPEAT% ==="
-echo   SERVER       msg/s(avg)     MB/s    p50(us)    p99(us)    max(us)  runs
+set "WARMUP_LABEL="
+if %BENCH_WARMUP_RUNS% GTR 0 set "WARMUP_LABEL= (+%BENCH_WARMUP_RUNS% warmup)"
+call :info "=== [%CUR_PROTO%] %ROW% Throughput: c%CONNS_LBL% payload=%SIZE_LBL% %DURATION%s x%REPEAT%%WARMUP_LABEL% ==="
+if %REPEAT% GTR 1 echo   SERVER       msg/s^(avg^)     MB/s    p50^(us^)    p99^(us^)    max^(us^)  runs
+if not %REPEAT% GTR 1 echo   SERVER            msg/s     MB/s    p50^(us^)    p99^(us^)    max^(us^)
 echo   ------------------------------------------------------------------------
 
 set /a _offset=0
@@ -498,14 +527,17 @@ for %%N in (%SERVERS:,= %) do (
     if not exist "!bin!" (
         call :warn "skip !name! (binary %CUR_PROTO%-!name!%BSUFFIX%.exe not found)"
     ) else (
-        call :start_server "!bin!" !port! "%WORKERS%"
+        call :start_server "!bin!" !port! "%WORKERS%" 1>nul 2>nul
         ping -n 3 127.0.0.1 >nul
 
         set /a tp_sum=0, p50_sum=0, p99_sum=0, max_sum=0, valid_runs=0
         set "tp_vals="
 
-        for /l %%R in (1,1,%REPEAT%) do (
-            set "out=%RUN_DIR%\%CUR_PROTO%-throughput-%ROW%-c!CONNS_LBL!-!SIZE_LBL!-!name!-r%%R.json"
+        set /a total_runs=%REPEAT% + %BENCH_WARMUP_RUNS%
+        for /l %%R in (1,1,!total_runs!) do (
+            set /a measured_run=%%R - %BENCH_WARMUP_RUNS%
+            if !measured_run! LEQ 0 (set "run_name=warmup%%R") else (set "run_name=r!measured_run!")
+            set "out=%RUN_DIR%\%CUR_PROTO%-throughput-%ROW%-c!CONNS_LBL!-!SIZE_LBL!-!name!-!run_name!.json"
             set "_climask="
             set "_gmp=0"
             set "_strict="
@@ -514,9 +546,13 @@ for %%N in (%SERVERS:,= %) do (
             set "_srvn=%SERVER_NCPU%"
             if "%PIN_ENABLE%"=="true" if /I "%ROW%"=="ST" set "_srvn=1"
             set "srv_cpu_line="
-            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn!') do set "srv_cpu_line=%%L"
+            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn! 2^>nul') do set "srv_cpu_line=%%L"
 
-            for %%F in ("!out!") do set "_sz=%%~zF"
+            if !measured_run! LEQ 0 (
+                set "_sz="
+            ) else (
+                for %%F in ("!out!") do set "_sz=%%~zF"
+            )
             if defined _sz if !_sz! GTR 0 (
                 call :extract_json "!out!" throughput_msg_per_sec
                 set "tp=!_JVAL!"
@@ -536,17 +572,18 @@ for %%N in (%SERVERS:,= %) do (
                 )
             )
             set "_sz="
-            if %%R LSS %REPEAT% ping -n 2 127.0.0.1 >nul
+            if %%R LSS !total_runs! ping -n 2 127.0.0.1 >nul
         )
 
-        call :proc_peak_rss "%CUR_PROTO%-!name!%BSUFFIX%.exe"
+        call :proc_peak_rss "%CUR_PROTO%-!name!%BSUFFIX%.exe" 1>nul 2>nul
         set "srv_peak=!_PEAK_RSS!"
-        call :stop_server
+        call :stop_server 1>nul 2>nul
         ping -n 2 127.0.0.1 >nul
 
         if !valid_runs! GTR 0 (
             set /a tp_avg=tp_sum/valid_runs, p50_avg=p50_sum/valid_runs, p99_avg=p99_sum/valid_runs, max_avg=max_sum/valid_runs
-            set /a mbps=tp_avg*PAYLOAD_V/1048576
+            call :calc_mib_per_sec !tp_avg! !PAYLOAD_V!
+            set "mbps=!_MIBPS!"
             if %REPEAT% GTR 1 (
                 echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!  [!tp_vals!]
             ) else (
@@ -586,16 +623,16 @@ for %%N in (%SERVERS:,= %) do (
     if not exist "!bin!" (
         call :warn "skip !name! (binary %CUR_PROTO%-!name!%BSUFFIX%.exe not found)"
     ) else (
-        call :start_server "!bin!" !port! "%WORKERS%"
+        call :start_server "!bin!" !port! "%WORKERS%" 1>nul 2>nul
         ping -n 3 127.0.0.1 >nul
 
         set "out=%RUN_DIR%\%CUR_PROTO%-connrate-%ROW%-!CONC_LBL!-!name!.json"
         set "_climask="
         set "_gmp=0"
         if "%PIN_ENABLE%"=="true" set "_climask=!CLI_MASK!" & set "_gmp=!CLIENT_NCPU!"
-        powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%winclient.ps1" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "connrate -c !CONC_V! -d %DURATION% -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu 0 >nul 2>&1
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "connrate -c !CONC_V! -d %DURATION% -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu 0 >nul 2>&1
 
-        call :stop_server
+        call :stop_server 1>nul 2>nul
         ping -n 2 127.0.0.1 >nul
 
         for %%F in ("!out!") do set "_sz=%%~zF"
@@ -632,20 +669,20 @@ if "%PIN_ENABLE%"=="true" (
     if "%_workers%"=="" (set "_aff=/affinity %SRV_ST_MASK%") else (set "_aff=/affinity %SRV_MASK%")
 )
 if "%_workers%"=="" (
-    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% >nul 2>&1
+    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% 1>nul 2>nul
 ) else (
-    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% %_workers% >nul 2>&1
+    start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% %_workers% 1>nul 2>nul
 )
 goto :eof
 
 REM stop_server -- kill the bench server processes for the current protocol
 :stop_server
-taskkill /F /IM %CUR_PROTO%-xylem-echo.exe    >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-xylem-echo-mt.exe >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-go-echo.exe       >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-go-echo-mt.exe    >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-rust-echo.exe     >nul 2>&1
-taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  >nul 2>&1
+taskkill /F /IM %CUR_PROTO%-xylem-echo.exe    1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-xylem-echo-mt.exe 1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-go-echo.exe       1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-go-echo-mt.exe    1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-rust-echo.exe     1>nul 2>nul
+taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  1>nul 2>nul
 goto :eof
 
 REM ============================================================================
@@ -718,9 +755,62 @@ echo Notes:
 echo   TLS needs OpenSSL (vcpkg); xylem is built with -DXYLEM_ENABLE_TLS=ON when
 echo   tls is among the protocols. UDP has no MT row. The Windows client uses
 echo   IOCP; numbers are NOT comparable to Unix runs.
+echo   Throughput runs one uncounted warmup pass by default; set
+echo   BENCH_WARMUP_RUNS=0 to disable or another value to change it.
 echo.
 echo Examples:
 echo   %~nx0 build --proto tcp,udp,tls
 echo   %~nx0 bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
 echo   %~nx0 bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
 goto :eof
+
+::WINCLIENT::# Internal Windows helper extracted by run-net.bat.
+::WINCLIENT::param(
+::WINCLIENT::    [string]$Exe,
+::WINCLIENT::    [string]$OutFile,
+::WINCLIENT::    [string]$ArgString,
+::WINCLIENT::    [string]$CliMaskHex = "",
+::WINCLIENT::    [int]$Gomaxprocs = 0,
+::WINCLIENT::    [int]$ServerNcpu = 0
+::WINCLIENT::)
+::WINCLIENT::
+::WINCLIENT::if ($Gomaxprocs -gt 0) { $env:GOMAXPROCS = "$Gomaxprocs" }
+::WINCLIENT::$ClientArgs = $ArgString.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+::WINCLIENT::
+::WINCLIENT::function Sample-Cores($n) {
+::WINCLIENT::    $rows = Get-CimInstance Win32_PerfRawData_PerfOS_Processor -ErrorAction SilentlyContinue |
+::WINCLIENT::            Where-Object { $_.Name -match '^\d+$' -and [int]$_.Name -lt $n }
+::WINCLIENT::    $m = @{}
+::WINCLIENT::    foreach ($r in $rows) { $m[[int]$r.Name] = @($r.PercentProcessorTime, $r.Timestamp_Sys100NS) }
+::WINCLIENT::    return $m
+::WINCLIENT::}
+::WINCLIENT::
+::WINCLIENT::$before = $null
+::WINCLIENT::if ($ServerNcpu -gt 0) { $before = Sample-Cores $ServerNcpu }
+::WINCLIENT::
+::WINCLIENT::$ErrFile = [System.IO.Path]::GetTempFileName()
+::WINCLIENT::$p = Start-Process -FilePath $Exe -ArgumentList $ClientArgs `
+::WINCLIENT::        -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile `
+::WINCLIENT::        -PassThru -WindowStyle Hidden
+::WINCLIENT::if ($CliMaskHex -ne "") {
+::WINCLIENT::    try { $p.ProcessorAffinity = [IntPtr]([Convert]::ToInt64($CliMaskHex, 16)) } catch {}
+::WINCLIENT::}
+::WINCLIENT::$p.WaitForExit()
+::WINCLIENT::Remove-Item -LiteralPath $ErrFile -ErrorAction SilentlyContinue
+::WINCLIENT::
+::WINCLIENT::if ($ServerNcpu -gt 0 -and $before) {
+::WINCLIENT::    $after = Sample-Cores $ServerNcpu
+::WINCLIENT::    $parts = @()
+::WINCLIENT::    for ($i = 0; $i -lt $ServerNcpu; $i++) {
+::WINCLIENT::        if ($before.ContainsKey($i) -and $after.ContainsKey($i)) {
+::WINCLIENT::            $dIdle = [double]($after[$i][0] - $before[$i][0])
+::WINCLIENT::            $dTime = [double]($after[$i][1] - $before[$i][1])
+::WINCLIENT::            $pct = 0
+::WINCLIENT::            if ($dTime -gt 0) { $pct = [math]::Round((1 - $dIdle / $dTime) * 100) }
+::WINCLIENT::            if ($pct -lt 0) { $pct = 0 }
+::WINCLIENT::            if ($pct -gt 100) { $pct = 100 }
+::WINCLIENT::            $parts += "cpu${i}:${pct}%"
+::WINCLIENT::        }
+::WINCLIENT::    }
+::WINCLIENT::    Write-Output ($parts -join " ")
+::WINCLIENT::}

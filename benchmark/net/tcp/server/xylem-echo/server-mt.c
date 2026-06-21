@@ -116,7 +116,6 @@ int main(int argc, char** argv) {
 
     xylem_opts_t rt_opts = {
         .workers = workers,
-        .coro_stack_size = 32 * 1024,
     };
     xylem_run(_acceptor, &port, &rt_opts);
     return 0;

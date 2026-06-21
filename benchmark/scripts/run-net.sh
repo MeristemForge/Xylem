@@ -154,7 +154,8 @@ cmd_install() {
 
     if [ "$(id -u)" -ne 0 ]; then
         info "escalating to root for dependency install..."
-        exec sudo -E "$0" install
+        sudo -E "$0" install
+        return
     fi
 
     info "apt base packages..."
@@ -294,6 +295,7 @@ set -euo pipefail
 DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 workers="${default_workers}"
 exec java \
+  -Xms64m -Xmx512m \
   -Djdk.virtualThreadScheduler.parallelism="\$workers" \
   -Djdk.virtualThreadScheduler.maxPoolSize="\$workers" \
   -cp "\$DIR/java-classes/${proto}" \
@@ -402,7 +404,7 @@ start_server() {
 
 snapshot_cpu() {
     [ "$CPU_SAMPLING" = true ] || { : > "$1"; return; }
-    grep '^cpu[0-9]' /proc/stat > "$1"
+    grep '^cpu[0-9]' /proc/stat > "$1" || true
 }
 
 calc_cpu_usage() {
@@ -907,6 +909,11 @@ EOF
 }
 
 main() {
+    # If stdout is piped, re-exec with line-buffered output for real-time visibility
+    if [ ! -t 1 ] && command -v stdbuf >/dev/null 2>&1 && [ "${STDBUF_RERUN:-}" != "1" ]; then
+        STDBUF_RERUN=1 exec stdbuf -oL "$0" "$@"
+    fi
+
     local cmd="${1:-all}"
     shift || true
 
