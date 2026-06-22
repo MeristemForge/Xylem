@@ -82,7 +82,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 #define SCHED_DEQUE_CAP          256
 #define SCHED_TIMER_TICK_MS      1
 #define SCHED_CORO_POOL_CAP_MUL  64
@@ -151,7 +150,7 @@ struct scheduler_s {
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
     _Atomic bool          post_draining;
-    _Atomic bool          running;
+    _Atomic int           state;
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
     _Atomic int32_t       searching;
@@ -191,6 +190,12 @@ typedef enum _park_state_e {
     PARK_CLAIMED = 3,
 } _park_state_t;
 
+typedef enum _sched_state_e {
+    SCHED_STOPPED  = 0,
+    SCHED_RUNNING  = 1,
+    SCHED_STOPPING = 2,
+} _sched_state_t;
+
 typedef struct _sched_coro_ctx_s {
     void (*fn)(void*);
     void*                  arg;
@@ -224,7 +229,11 @@ static inline _sched_worker_t* _sched_timer_worker(
 
 static inline bool _sched_is_running(scheduler_t* sched) {
     return sched
-        && atomic_load(&sched->running);
+        && atomic_load(&sched->state) == SCHED_RUNNING;
+}
+
+static inline bool _sched_is_stopping(scheduler_t* sched) {
+    return !sched || atomic_load(&sched->state) != SCHED_RUNNING;
 }
 
 static void _sched_coro_entry_cb(mco_coro* co) {
@@ -519,7 +528,7 @@ static void _sched_wake_worker(scheduler_t* sched) {
     /**
      * Round-robin scan so repeated wakeups don't all land on worker[0].
      * The CAS on ->searching serialises concurrent callers, so the hint
-     * is touched by at most one thread at a time — relaxed is sufficient.
+     * is touched by at most one thread at a time; relaxed is sufficient.
      */
     uint32_t start = atomic_load(&sched->wake_rr);
     for (int32_t j = 0; j < sched->worker_count; j++) {
@@ -1042,6 +1051,11 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
         }
         return;
     }
+    if (_sched_is_stopping(w->sched)) {
+        w->park_fn  = NULL;
+        w->park_arg = NULL;
+        return;
+    }
     if (!w->park_fn) {
         xylem_loge("<sched> yield without park co=%p", (void*)co);
         scheduler_schedule(w->sched, co);
@@ -1076,6 +1090,9 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
 
     /* Declined, or claimed during arming: requeue the coroutine ourselves. */
     atomic_store(&ctx->park_state, PARK_IDLE);
+    if (_sched_is_stopping(w->sched)) {
+        return;
+    }
     /**
      * Enqueue raw, without _sched_claim_for_wake: we are not a waker. The
      * coro is not on any wait structure (either the park callback declined
@@ -1094,6 +1111,14 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
     w->io_bytes = SCHED_IO_BYTES_DEFAULT;
     mco_resume(co);
     _sched_coro_handle_yield(w, co);
+}
+
+static bool _sched_try_run_coro(_sched_worker_t* w, mco_coro* co) {
+    if (_sched_is_stopping(w->sched)) {
+        return false;
+    }
+    _sched_run_coro(w, co);
+    return true;
 }
 
 static void _sched_maintenance(scheduler_t* sched, _sched_worker_t* w) {
@@ -1115,7 +1140,7 @@ static mco_coro* _sched_worker_drive_poller(
     scheduler_t*           sched,
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
-    while (atomic_load(&sched->running)) {
+    while (_sched_is_running(sched)) {
         /* Must set before re-check so producers see it and pipe-wake. */
         _sched_poller_set_waiting(sched, true);
 
@@ -1130,7 +1155,7 @@ static mco_coro* _sched_worker_drive_poller(
         _sched_search_stop(sched, w, false);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         _sched_poller_set_waiting(sched, false);
-        if (!atomic_load(&sched->running)) {
+        if (!_sched_is_running(sched)) {
             break;
         }
         co = n > 0 ? _sched_io_process_events(sched, w, cqes, n) : NULL;
@@ -1211,7 +1236,7 @@ static int _sched_worker_entry_cb(void* arg) {
 
     platform_poller_cqe_t cqes[PLATFORM_POLLER_CQE_NUM];
 
-    while (atomic_load(&sched->running)) {
+    while (_sched_is_running(sched)) {
         _sched_maintenance(sched, w);
 
         mco_coro* co = _sched_worker_find_fair_coro(sched, w, cqes);
@@ -1220,14 +1245,18 @@ static int _sched_worker_entry_cb(void* arg) {
         }
         if (co) {
             _sched_search_stop(sched, w, true);
-            _sched_run_coro(w, co);
+            if (!_sched_try_run_coro(w, co)) {
+                break;
+            }
             continue;
         }
 
         co = _sched_worker_park(sched, w);
         if (co) {
             _sched_search_stop(sched, w, true);
-            _sched_run_coro(w, co);
+            if (!_sched_try_run_coro(w, co)) {
+                break;
+            }
         }
     }
 
@@ -1235,7 +1264,7 @@ static int _sched_worker_entry_cb(void* arg) {
 }
 
 static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
-    atomic_store(&sched->running, false);
+    atomic_store(&sched->state, SCHED_STOPPING);
 
     if (sched->workers) {
         if (!sched->joined) {
@@ -1370,7 +1399,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         sched->wakeup_wr = pair[1];
     }
 
-    atomic_store(&sched->running, true);
+    atomic_store(&sched->state, SCHED_RUNNING);
     atomic_store(&sched->searching, 0);
     sched->iowait_slab = iowait_slab_create();
     if (!sched->iowait_slab) {
@@ -1488,10 +1517,15 @@ void scheduler_stop(scheduler_t* sched) {
         return;
     }
 
-    atomic_store(&sched->running, false);
-    for (int32_t i = 0; i < sched->worker_count; i++) {
-        platform_sem_post(sched->workers[i].sem);
-        _sched_poller_wake(sched);
+    int expected = SCHED_RUNNING;
+    if (atomic_compare_exchange_strong(
+            &sched->state, &expected, SCHED_STOPPING)) {
+        for (int32_t i = 0; i < sched->worker_count; i++) {
+            platform_sem_post(sched->workers[i].sem);
+            _sched_poller_wake(sched);
+        }
+    } else if (expected == SCHED_STOPPED) {
+        return;
     }
 
     if (_tls_worker && _tls_worker->sched == sched) {
@@ -1502,6 +1536,7 @@ void scheduler_stop(scheduler_t* sched) {
         thrd_join(sched->workers[i].thread, NULL);
     }
     sched->joined = true;
+    atomic_store(&sched->state, SCHED_STOPPED);
 }
 
 static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
