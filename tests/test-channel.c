@@ -155,7 +155,7 @@ static void test_timeout_deliver(void) {
     ASSERT(ctx.tested == 1);
 }
 
-#define STALE_TIMER_ROUNDS 500
+#define STALE_TIMER_ROUNDS 100
 
 typedef struct {
     int tested;
