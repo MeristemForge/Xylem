@@ -119,12 +119,24 @@ jobs:
           cmake_args+=(-DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)")
         elif [ "$RUNNER_OS" = "Windows" ]; then
           cmake_args+=(-DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
+          cmake_args+=(-DXYLEM_ENABLE_ASAN=ON)
         fi
 
         cmake "${cmake_args[@]}"
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+
+    - name: Set up ASAN DLL path (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $msvc = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+        $asan = Get-ChildItem "$msvc\VC\Tools\MSVC" -Recurse -Filter "clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
+        if ($asan) {
+          Copy-Item $asan.FullName "${{ steps.strings.outputs.build-output-dir }}\${{ matrix.build_type }}\"
+          Write-Host "ASAN DLL copied: $($asan.FullName)"
+        }
 
     - name: Test
       working-directory: ${{ steps.strings.outputs.build-output-dir }}
