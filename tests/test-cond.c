@@ -29,7 +29,7 @@
 
 #define SAFETY_TIMEOUT_MS 10000
 
-static xylem_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 0 };
 
 typedef struct {
     xylem_mutex_t* mtx;

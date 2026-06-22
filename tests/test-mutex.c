@@ -29,7 +29,7 @@
 
 #define SAFETY_TIMEOUT_MS 5000
 
-static xylem_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 0 };
 
 typedef struct {
     atomic_int stop;

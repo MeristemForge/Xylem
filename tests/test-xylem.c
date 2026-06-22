@@ -39,7 +39,7 @@
 #define STKGROW_REUSE_COUNT   50
 #define STKGROW_REUSE_DEPTH   3
 
-static xylem_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 0 };
 
 static void test_null_entrypoints(void) {
     xylem_shutdown();

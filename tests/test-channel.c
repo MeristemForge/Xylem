@@ -32,7 +32,7 @@
 
 #define SAFETY_TIMEOUT_MS 5000
 
-static xylem_opts_t _rt_opts = { .workers = 4 };
+static xylem_opts_t _rt_opts = { .workers = 0 };
 
 #define CH_SENDERS  20
 #define CH_MESSAGES 10
