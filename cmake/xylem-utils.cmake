@@ -7,6 +7,8 @@ function(xylem_apply_sanitizer TARGET NAME FLAG)
         elseif(WIN32 AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
             target_compile_options(${TARGET} PRIVATE
                 "/fsanitize=${FLAG}" /Zi /Oy-)
+            target_link_options(${TARGET} PRIVATE
+                "/fsanitize=${FLAG}" /DEBUG)
         elseif(UNIX)
             target_compile_options(${TARGET} PRIVATE
                 "-fsanitize=${FLAG}" -fno-omit-frame-pointer)
