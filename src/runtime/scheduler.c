@@ -134,6 +134,8 @@ typedef struct _sched_worker_s {
     _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
     void**               coro_cache;       /* per-worker free coroutine slots. */
     int32_t              coro_cache_count; /* slots currently held locally.    */
+    list_t               registry;         /* coroutines owned for shutdown.   */
+    spin_t               registry_lock;    /* protects registry.               */
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -158,8 +160,8 @@ struct scheduler_s {
     _Atomic int64_t       alive;
     _Atomic uint64_t      last_maintenance_ms;
     _Atomic uint32_t      timer_rr;
-    list_t                registry;
-    spin_t                registry_lock;
+    _Atomic uint32_t      wake_rr;       /* round-robin start for wake_worker scan. */
+    _Atomic uint32_t      spawn_rr;      /* round-robin for non-worker spawn owner. */
     _sched_coro_pool_t    coro_pool;
 };
 
@@ -196,6 +198,7 @@ typedef struct _sched_coro_ctx_s {
     list_node_t            registry_node;
     mco_coro*              co;
     _Atomic _park_state_t  park_state;
+    uint32_t               registry_owner; /* worker that owns the registry entry. */
 } _sched_coro_ctx_t;
 
 typedef struct _sched_post_s {
@@ -513,10 +516,20 @@ static void _sched_wake_worker(scheduler_t* sched) {
         return;
     }
 
-    for (int32_t i = 0; i < sched->worker_count; i++) {
+    /**
+     * Round-robin scan so repeated wakeups don't all land on worker[0].
+     * The CAS on ->searching serialises concurrent callers, so the hint
+     * is touched by at most one thread at a time — relaxed is sufficient.
+     */
+    uint32_t start = atomic_load(&sched->wake_rr);
+    for (int32_t j = 0; j < sched->worker_count; j++) {
+        int32_t i = (int32_t)(((uint32_t)start + (uint32_t)j)
+                              % (uint32_t)sched->worker_count);
         if (_sched_worker_clear_parked(&sched->workers[i])) {
             atomic_store(&sched->workers[i].searching, true);
             platform_sem_post(sched->workers[i].sem);
+            atomic_store(&sched->wake_rr,
+                         (uint32_t)((i + 1) % sched->worker_count));
             return;
         }
     }
@@ -1013,10 +1026,11 @@ static bool _sched_credit_park_cb(mco_coro* co, void* arg) {
 static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (mco_status(co) == MCO_DEAD) {
         _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
+        _sched_worker_t*   owner = &w->sched->workers[ctx->registry_owner];
 
-        spin_lock(&w->sched->registry_lock);
-        list_remove(&w->sched->registry, &ctx->registry_node);
-        spin_unlock(&w->sched->registry_lock);
+        spin_lock(&owner->registry_lock);
+        list_remove(&owner->registry, &ctx->registry_node);
+        spin_unlock(&owner->registry_lock);
 
         free(ctx);
         mco_destroy(co);
@@ -1324,8 +1338,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     }
 
     mpsc_init(&sched->posts);
-    list_init(&sched->registry);
-    spin_init(&sched->registry_lock);
+    atomic_store(&sched->wake_rr, 0);
+    atomic_store(&sched->spawn_rr, 0);
 
     if (platform_poller_init(&sched->poller) != 0) {
         _sched_cleanup(sched, 0);
@@ -1403,6 +1417,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         atomic_store(&w->parked, false);
         atomic_store(&w->searching, false);
         heap_init(&w->timers, _sched_timer_compare_cb);
+        list_init(&w->registry);
+        spin_init(&w->registry_lock);
         if (mtx_init(&w->timer_lock, mtx_plain) != thrd_success) {
             _sched_cleanup(sched, 0);
             return NULL;
@@ -1445,20 +1461,24 @@ void scheduler_destroy(scheduler_t* sched) {
 
     scheduler_stop(sched);
 
-    spin_lock(&sched->registry_lock);
-    while (!list_empty(&sched->registry)) {
-        list_node_t* node = list_head(&sched->registry);
-        list_remove(&sched->registry, node);
-        spin_unlock(&sched->registry_lock);
+    /* Drain per-worker registries of any coroutines stranded in queues. */
+    for (int32_t i = 0; i < sched->worker_count; i++) {
+        _sched_worker_t* w = &sched->workers[i];
+        spin_lock(&w->registry_lock);
+        while (!list_empty(&w->registry)) {
+            list_node_t* node = list_head(&w->registry);
+            list_remove(&w->registry, node);
+            spin_unlock(&w->registry_lock);
 
-        _sched_coro_ctx_t* ctx =
-            list_entry(node, _sched_coro_ctx_t, registry_node);
-        mco_destroy(ctx->co);
-        free(ctx);
+            _sched_coro_ctx_t* ctx =
+                list_entry(node, _sched_coro_ctx_t, registry_node);
+            mco_destroy(ctx->co);
+            free(ctx);
 
-        spin_lock(&sched->registry_lock);
+            spin_lock(&w->registry_lock);
+        }
+        spin_unlock(&w->registry_lock);
     }
-    spin_unlock(&sched->registry_lock);
 
     _sched_cleanup(sched, sched->worker_count);
 }
@@ -1627,9 +1647,20 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 
     ctx->co = co;
 
-    spin_lock(&sched->registry_lock);
-    list_insert_tail(&sched->registry, &ctx->registry_node);
-    spin_unlock(&sched->registry_lock);
+    {
+        uint32_t owner_idx;
+        if (_tls_worker && _tls_worker->sched == sched) {
+            owner_idx = _tls_worker->index;
+        } else {
+            owner_idx = atomic_fetch_add(&sched->spawn_rr, 1)
+                        % (uint32_t)sched->worker_count;
+        }
+        ctx->registry_owner = owner_idx;
+        _sched_worker_t* owner = &sched->workers[owner_idx];
+        spin_lock(&owner->registry_lock);
+        list_insert_tail(&owner->registry, &ctx->registry_node);
+        spin_unlock(&owner->registry_lock);
+    }
 
     atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);

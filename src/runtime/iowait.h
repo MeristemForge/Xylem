@@ -47,7 +47,7 @@ typedef struct iowait_s iowait_t;
  * is woken exactly once with the winning cause stamped into the
  * iowait_result_t return value.
  *
- * Deadline setters, iowait_close, iowait_destroy, and iowait_is_closed
+ * Deadline setters, iowait_close, and iowait_destroy
  * are all safe to call from any thread, including while a read or
  * write is parked on another thread. The one exception is the
  * deadline setter on a single direction: concurrent setters on the
@@ -204,15 +204,6 @@ extern void iowait_close(iowait_t* w);
  * @param w  IO wait handle (NULL is ignored).
  */
 extern void iowait_destroy(iowait_t* w);
-
-/**
- * @brief Check whether the handle has been closed.
- *
- * @param w  IO wait handle.
- *
- * @return true if iowait_close() has been called.
- */
-extern bool iowait_is_closed(iowait_t* w);
 
 /**
  * @brief Process a single I/O completion event.

@@ -574,10 +574,6 @@ void iowait_destroy(iowait_t* w) {
     _iowait_unref(w);
 }
 
-bool iowait_is_closed(iowait_t* w) {
-    return atomic_load(&w->closed);
-}
-
 void iowait_on_event(
     scheduler_t*      sched,
     int               revents,
