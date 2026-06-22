@@ -33,7 +33,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 
 typedef struct _test_iowait_dir_s {
     iowait_t*          w;

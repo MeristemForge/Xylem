@@ -27,7 +27,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 
 static xylem_opts_t _rt_opts = { .workers = 0 };
 

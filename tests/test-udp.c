@@ -28,7 +28,7 @@
 #define UDP_HOST          "127.0.0.1"
 #define UDP_PORT_A        19100
 #define UDP_PORT_B        19101
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 

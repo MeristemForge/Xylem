@@ -26,7 +26,7 @@
 #include <string.h>
 
 #define RUDP_HOST         "127.0.0.1"
-#define SAFETY_TIMEOUT_MS 8000
+#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 

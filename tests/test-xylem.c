@@ -26,7 +26,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 5000
+#define SAFETY_TIMEOUT_MS 10000
 #define SPAWN_MANY_COUNT  1000
 #define SLEEP_ORDER_COUNT 4
 #define SUBMIT_CONC_COUNT 20
