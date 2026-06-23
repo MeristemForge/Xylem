@@ -55,12 +55,6 @@ typedef struct iowait_slab_s iowait_slab_t;
  */
 typedef bool (*scheduler_park_fn_t)(mco_coro* co, void* arg);
 
-/**
- * Callback type for scheduler_post() deferred execution.
- *
- * ud  User data passed to scheduler_post().
- */
-typedef void (*scheduler_post_fn_t)(void* ud);
 
 /**
  * Timer expiry callback.
@@ -291,8 +285,6 @@ extern void scheduler_yield_credit(void);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int scheduler_post(
-    scheduler_t* sched, scheduler_post_fn_t cb, void* ud);
 
 /**
  * @brief Get the scheduler's poller handle.
