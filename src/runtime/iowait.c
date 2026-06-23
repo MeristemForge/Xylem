@@ -57,7 +57,7 @@ enum {
     IOWAIT_WAITER_NONE = 0,
     IOWAIT_WAITER_READY = 1,
     /**
-     * Values above READY encode a parked coroutine pointer -- the PARKED state.
+     * Values above READY encode a parked coroutine pointer.
      * A heap-allocated coroutine address is never 0 or 1, so NONE, READY and
      * PARKED are disjoint by construction without a separate tag.
      */
@@ -270,9 +270,6 @@ static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
 static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
     uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        if (raw == IOWAIT_WAITER_READY) {
-            return NULL;
-        }
         mco_coro* co = _iowait_waiter_decode(raw);
         if (atomic_compare_exchange_weak(
                 &d->waiter,
