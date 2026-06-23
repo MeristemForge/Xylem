@@ -177,7 +177,7 @@ struct scheduler_s {
  *   WOKEN   - a waker has marked the coroutine; it is (or will be)
  *             requeued exactly once.
  *
- * At most one waker reaches the claim path per park, because the sync
+ * At most one waker reaches the wake path per park, because the sync
  * primitive (or iowait) hands off a single one-shot waiter. A waker that
  * observes PARKING only marks WOKEN and does NOT enqueue: the park
  * callback, on return, sees WOKEN and requeues the coroutine itself,
@@ -896,11 +896,11 @@ static void _sched_poller_set_waiting(scheduler_t* sched, bool waiting) {
 /**
  * Transition a coroutine that a waker wants to run. Returns true if the
  * caller should enqueue it now, false if it must not (either the park
- * callback is still arming and will requeue on return, or another claim
+ * callback is still parking and will requeue on return, or another wake
  * already won). A coroutine not in a park handshake (PARK_IDLE) is a
  * normal schedule and is always enqueued.
  */
-static bool _sched_claim_for_wake(mco_coro* co) {
+static bool _sched_try_wake(mco_coro* co) {
     _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
     _park_state_t state =
         atomic_load(&ctx->park_state);
@@ -962,7 +962,7 @@ static mco_coro* _sched_io_process_events(
 
     for (int32_t i = 0; i < ready_count; i++) {
         mco_coro* co = ready.coros[i];
-        if (!_sched_claim_for_wake(co)) {
+        if (!_sched_try_wake(co)) {
             continue;
         }
         if (!run_now) {
@@ -1017,7 +1017,7 @@ static mco_coro* _sched_worker_find_fair_coro(
     return _sched_worker_steal_coro(sched, w);
 }
 
-/* Requeue on the parking worker after a declined or claimed park. */
+/* Requeue on the parking worker after a declined or woken park. */
 static void _sched_enqueue_local(_sched_worker_t* w, mco_coro* co) {
     if (wsq_push(w->deque, co) != 0) {
         _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
@@ -1082,24 +1082,24 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
             return; /* cleanly parked; a waker will requeue us */
         }
         /**
-         * CAS failed, so expected == PARK_WOKEN: a waker claimed us
+         * CAS failed, so expected == PARK_WOKEN: a waker woke us
          * mid-callback and deliberately did not enqueue, so the requeue
          * is ours.
          */
     }
 
-    /* Declined, or claimed during arming: requeue the coroutine ourselves. */
+    /* Declined, or woken during parking: requeue the coroutine ourselves. */
     atomic_store(&ctx->park_state, PARK_IDLE);
     if (_sched_is_stopping(w->sched)) {
         return;
     }
     /**
-     * Enqueue raw, without _sched_claim_for_wake: we are not a waker. The
+     * Enqueue raw, without _sched_try_wake: we are not a waker. The
      * coro is not on any wait structure (either the park callback declined
      * to park, or the lone waker that set WOKEN already removed it and
      * left the requeue to us), so no other waker can reference it -- there
-     * is nothing to dedup against. Routing this through the claim would be
-     * wrong anyway: park_state is now IDLE, which the claim treats as a
+     * is nothing to dedup against. Routing this through _sched_try_wake
+     * would be wrong: park_state is now IDLE, which treated as a
      * normal always-enqueue, so it would add no protection.
      */
     _sched_enqueue_local(w, co);
@@ -1587,7 +1587,7 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
     if (!_sched_is_running(sched)) {
         return;
     }
-    if (_sched_claim_for_wake(co)) {
+    if (_sched_try_wake(co)) {
         _sched_enqueue(sched, co);
     }
 }
@@ -1600,7 +1600,7 @@ void scheduler_schedule_batch(
 
     if (_tls_worker && _tls_worker->sched == sched && sched->worker_count == 1) {
         for (int32_t i = 0; i < n; i++) {
-            if (!_sched_claim_for_wake(cos[i])) {
+            if (!_sched_try_wake(cos[i])) {
                 continue;
             }
             _sched_enqueue_local(_tls_worker, cos[i]);
@@ -1623,10 +1623,10 @@ void scheduler_schedule_batch(
     int32_t claimed_n = 0;
     for (int32_t i = 0; i < n; i++) {
         /**
-         * A coro still arming its park must not be enqueued here; its park
+         * A coro still parking must not be enqueued here; its park
          * callback owns the requeue. Drop it from the batch.
          */
-        if (!_sched_claim_for_wake(cos[i])) {
+        if (!_sched_try_wake(cos[i])) {
             continue;
         }
         _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(cos[i]);
