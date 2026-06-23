@@ -297,7 +297,7 @@ static bool _iowait_deadline_expired(_iowait_dir_t* d) {
         && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline;
 }
 
-static void _iowait_handle_dir_event(
+static void _iowait_on_ready(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
     mco_coro* co = _iowait_publish_ready(d);
     if (!co) {
@@ -588,10 +588,10 @@ void iowait_on_event(
     }
 
     if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_handle_dir_event(sched, batch, &w->rd);
+        _iowait_on_ready(sched, batch, &w->rd);
     }
     if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_handle_dir_event(sched, batch, &w->wr);
+        _iowait_on_ready(sched, batch, &w->wr);
     }
 
     /**
