@@ -171,23 +171,23 @@ struct scheduler_s {
  * the parking worker (and thus still dereferencing the object it parked
  * on -- the classic park_cb-touches-freed-channel race).
  *
- *   IDLE     - running, or sitting in a normal run queue.
- *   ARMING   - between mco_yield and the end of the park callback.
- *   PARKED   - park callback returned true; suspended awaiting a wake.
- *   CLAIMED  - a waker has claimed the coroutine; it is (or will be)
- *              requeued exactly once.
+ *   IDLE    - running, or sitting in a normal run queue.
+ *   PARKING - between mco_yield and the end of the park callback.
+ *   PARKED  - park callback returned true; suspended awaiting a wake.
+ *   WOKEN   - a waker has marked the coroutine; it is (or will be)
+ *             requeued exactly once.
  *
  * At most one waker reaches the claim path per park, because the sync
  * primitive (or iowait) hands off a single one-shot waiter. A waker that
- * observes ARMING only marks CLAIMED and does NOT enqueue: the park
- * callback, on return, sees CLAIMED and requeues the coroutine itself,
+ * observes PARKING only marks WOKEN and does NOT enqueue: the park
+ * callback, on return, sees WOKEN and requeues the coroutine itself,
  * so resume can never overlap the tail of the callback.
  */
 typedef enum _park_state_e {
     PARK_IDLE    = 0,
-    PARK_ARMING  = 1,
+    PARK_PARKING = 1,
     PARK_PARKED  = 2,
-    PARK_CLAIMED = 3,
+    PARK_WOKEN   = 3,
 } _park_state_t;
 
 typedef enum _sched_state_e {
@@ -909,16 +909,16 @@ static bool _sched_claim_for_wake(mco_coro* co) {
         case PARK_IDLE:
             return true;
         case PARK_PARKED:
-            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
+            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_WOKEN)) {
                 return true;
             }
             break;
-        case PARK_ARMING:
-            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_CLAIMED)) {
+        case PARK_PARKING:
+            if (atomic_compare_exchange_weak(&ctx->park_state, &state, PARK_WOKEN)) {
                 return false;
             }
             break;
-        case PARK_CLAIMED:
+        case PARK_WOKEN:
             return false;
         }
     }
@@ -1067,22 +1067,22 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     w->park_arg = NULL;
 
     _sched_coro_ctx_t* ctx = _sched_coro_get_ctx(co);
-    atomic_store(&ctx->park_state, PARK_ARMING);
+    atomic_store(&ctx->park_state, PARK_PARKING);
 
     if (fn(co, arg)) {
         /**
          * Commit the park with a CAS, not a plain store: a waker may have
-         * raced in during the callback and set CLAIMED. A blind store
+         * raced in during the callback and set WOKEN. A blind store
          * would clobber that and strand the coroutine forever -- the waker
          * deliberately did not enqueue, expecting us to (lost wakeup). The
-         * CAS parks only if we are still ARMING, i.e. untouched by a waker.
+         * CAS parks only if we are still PARKING, i.e. untouched by a waker.
          */
-        _park_state_t expected = PARK_ARMING;
+        _park_state_t expected = PARK_PARKING;
         if (atomic_compare_exchange_strong(&ctx->park_state, &expected, PARK_PARKED)) {
             return; /* cleanly parked; a waker will requeue us */
         }
         /**
-         * CAS failed, so expected == PARK_CLAIMED: a waker claimed us
+         * CAS failed, so expected == PARK_WOKEN: a waker claimed us
          * mid-callback and deliberately did not enqueue, so the requeue
          * is ours.
          */
@@ -1096,7 +1096,7 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     /**
      * Enqueue raw, without _sched_claim_for_wake: we are not a waker. The
      * coro is not on any wait structure (either the park callback declined
-     * to park, or the lone waker that set CLAIMED already removed it and
+     * to park, or the lone waker that set WOKEN already removed it and
      * left the requeue to us), so no other waker can reference it -- there
      * is nothing to dedup against. Routing this through the claim would be
      * wrong anyway: park_state is now IDLE, which the claim treats as a
