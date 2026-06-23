@@ -239,8 +239,8 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
     return w;
 }
 
-static inline mco_coro* _iowait_waiter_from_slot(uintptr_t slot) {
-    return slot > IOWAIT_WAITER_READY ? (mco_coro*)slot : NULL;
+static inline mco_coro* _iowait_waiter_decode(uintptr_t raw) {
+    return raw > IOWAIT_WAITER_READY ? (mco_coro*)raw : NULL;
 }
 
 static bool _iowait_take_ready(_iowait_dir_t* d) {
@@ -252,15 +252,15 @@ static bool _iowait_take_ready(_iowait_dir_t* d) {
 }
 
 static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
-    uintptr_t slot = atomic_load(&d->waiter);
+    uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        mco_coro* co = _iowait_waiter_from_slot(slot);
+        mco_coro* co = _iowait_waiter_decode(raw);
         if (!co) {
             return NULL;
         }
         if (atomic_compare_exchange_weak(
                 &d->waiter,
-                &slot,
+                &raw,
                 IOWAIT_WAITER_NONE)) {
             return co;
         }
@@ -268,15 +268,15 @@ static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
 }
 
 static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
-    uintptr_t slot = atomic_load(&d->waiter);
+    uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        if (slot == IOWAIT_WAITER_READY) {
+        if (raw == IOWAIT_WAITER_READY) {
             return NULL;
         }
-        mco_coro* co = _iowait_waiter_from_slot(slot);
+        mco_coro* co = _iowait_waiter_decode(raw);
         if (atomic_compare_exchange_weak(
                 &d->waiter,
-                &slot,
+                &raw,
                 IOWAIT_WAITER_READY)) {
             return co;
         }
@@ -321,16 +321,16 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
 }
 
 static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
-    uintptr_t slot = IOWAIT_WAITER_NONE;
-    if (atomic_compare_exchange_strong(&d->waiter, &slot, (uintptr_t)co)) {
+    uintptr_t raw = IOWAIT_WAITER_NONE;
+    if (atomic_compare_exchange_strong(&d->waiter, &raw, (uintptr_t)co)) {
         return true;
     }
 
-    if (slot == IOWAIT_WAITER_READY) {
+    if (raw == IOWAIT_WAITER_READY) {
         return false;
     }
 
-    mco_coro* prev = _iowait_waiter_from_slot(slot);
+    mco_coro* prev = _iowait_waiter_decode(raw);
     if (!prev) {
         abort();
     }
