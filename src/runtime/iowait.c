@@ -54,18 +54,18 @@ _Static_assert(
 typedef struct _iowait_dir_s _iowait_dir_t;
 
 enum {
-    IOWAIT_DIR_WAITER_EMPTY = 0,
-    IOWAIT_DIR_WAITER_READY = 1,
+    IOWAIT_WAITER_NONE = 0,
+    IOWAIT_WAITER_READY = 1,
     /**
      * Values above READY encode a parked coroutine pointer -- the PARKED state.
-     * A heap-allocated coroutine address is never 0 or 1, so EMPTY, READY and
+     * A heap-allocated coroutine address is never 0 or 1, so NONE, READY and
      * PARKED are disjoint by construction without a separate tag.
      */
 };
 
 struct _iowait_dir_s {
     iowait_t*          w;
-    _Atomic uintptr_t  waiter;  /* EMPTY | READY | parked coroutine ptr */
+    _Atomic uintptr_t  waiter;  /* NONE | READY | parked coroutine ptr */
     scheduler_timer_t* timer;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
@@ -240,15 +240,15 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
 }
 
 static inline mco_coro* _iowait_waiter_from_slot(uintptr_t slot) {
-    return slot > IOWAIT_DIR_WAITER_READY ? (mco_coro*)slot : NULL;
+    return slot > IOWAIT_WAITER_READY ? (mco_coro*)slot : NULL;
 }
 
 static bool _iowait_take_ready(_iowait_dir_t* d) {
-    uintptr_t expected = IOWAIT_DIR_WAITER_READY;
+    uintptr_t expected = IOWAIT_WAITER_READY;
     return atomic_compare_exchange_strong(
         &d->waiter,
         &expected,
-        IOWAIT_DIR_WAITER_EMPTY);
+        IOWAIT_WAITER_NONE);
 }
 
 static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
@@ -261,7 +261,7 @@ static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
         if (atomic_compare_exchange_weak(
                 &d->waiter,
                 &slot,
-                IOWAIT_DIR_WAITER_EMPTY)) {
+                IOWAIT_WAITER_NONE)) {
             return co;
         }
     }
@@ -270,14 +270,14 @@ static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
 static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
     uintptr_t slot = atomic_load(&d->waiter);
     for (;;) {
-        if (slot == IOWAIT_DIR_WAITER_READY) {
+        if (slot == IOWAIT_WAITER_READY) {
             return NULL;
         }
         mco_coro* co = _iowait_waiter_from_slot(slot);
         if (atomic_compare_exchange_weak(
                 &d->waiter,
                 &slot,
-                IOWAIT_DIR_WAITER_READY)) {
+                IOWAIT_WAITER_READY)) {
             return co;
         }
     }
@@ -321,12 +321,12 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
 }
 
 static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
-    uintptr_t slot = IOWAIT_DIR_WAITER_EMPTY;
+    uintptr_t slot = IOWAIT_WAITER_NONE;
     if (atomic_compare_exchange_strong(&d->waiter, &slot, (uintptr_t)co)) {
         return true;
     }
 
-    if (slot == IOWAIT_DIR_WAITER_READY) {
+    if (slot == IOWAIT_WAITER_READY) {
         return false;
     }
 
@@ -487,8 +487,8 @@ iowait_t* iowait_create(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_store(&w->rd.waiter, IOWAIT_DIR_WAITER_EMPTY);
-    atomic_store(&w->wr.waiter, IOWAIT_DIR_WAITER_EMPTY);
+    atomic_store(&w->rd.waiter, IOWAIT_WAITER_NONE);
+    atomic_store(&w->wr.waiter, IOWAIT_WAITER_NONE);
     atomic_store(&w->rd.deadline, 0);
     atomic_store(&w->wr.deadline, 0);
     atomic_store(&w->rd.deadline_error, false);
