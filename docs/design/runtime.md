@@ -310,7 +310,7 @@ parked. The steps:
 
 1. `iowait_read()` calls `scheduler_park(_iowait_park_cb, &w->rd)`.
 2. After the yield, `_iowait_park_cb` publishes the coroutine into
-   `rd.slot` with a CAS. A slot already holding a parked coroutine means an
+   `rd.waiter` with a CAS. A slot already holding a parked coroutine means an
    illegal second reader — the process aborts with a diagnostic.
 3. It **re-checks** `closed`, `deadline_error`, and `deadline_expired`,
    because close or a deadline reset could have raced in between publish and
@@ -350,7 +350,7 @@ actor's timeline):
      |                 |                  |   fd becomes ready    |
      |                 |                  |        CQE (gen,idx)  |
      |                 |                  |   tryref + gen check  |
-     |<--------------------------------------- exchange(&rd.slot, |
+     |<--------------------------------------- exchange(&rd.waiter, |
      |                 |                  |   READY) -> schedule(co)
      |                                                           |
      | resume; result = READY / TIMEOUT / CLOSED / ERROR         |
@@ -370,7 +370,7 @@ and wakes the coroutine, but the deadline is cleared or reset before it
 resumes, that wake is treated as spurious and the wait retries.
 
 ```
-   I/O event      deadline timer     iowait_close          rd.slot (atomic)
+   I/O event      deadline timer     iowait_close          rd.waiter (atomic)
        |                |                  |          EMPTY | READY | PARKED(co)
        |                |                  |                     |
        |  -- the three sources may fire concurrently --          |
