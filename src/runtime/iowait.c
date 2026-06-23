@@ -340,7 +340,7 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
     /**
      * Publish the park record, then re-check close/deadline. This is a
      * Dekker handshake against a concurrent waker (iowait_close /
-     * deadline timer), which claims the waiter and stamps its cause
+     * deadline timer), which claims the waiter or leaves a READY marker
      * before scheduling it.
      * The publish and re-check loads below use the default atomic order
      * (matching the closed store in iowait_close and the slot CAS done

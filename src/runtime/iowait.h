@@ -44,8 +44,11 @@ typedef struct iowait_s iowait_t;
  *
  * Wake sources (an IO event, a deadline timer, iowait_close) race
  * through a single arbitrator per direction, so the parked coroutine
- * is woken exactly once with the winning cause stamped into the
- * iowait_result_t return value.
+ * is resumed at most once per wait attempt. The iowait_result_t return
+ * value is then derived from the state re-checked on resume in this
+ * order: CLOSED, ERROR, TIMEOUT, READY. In particular, a readiness wake
+ * that arrives first may still return IOWAIT_TIMEOUT if the coroutine
+ * resumes after the deadline has passed.
  *
  * Deadline setters, iowait_close, and iowait_destroy
  * are all safe to call from any thread, including while a read or
