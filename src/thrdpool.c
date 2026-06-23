@@ -55,6 +55,12 @@ static _thrdpool_job_t* _thrdpool_pop(thrdpool_t* pool) {
     return queue_entry(node, _thrdpool_job_t, node);
 }
 
+static void _thrdpool_push(thrdpool_t* pool, _thrdpool_job_t* job) {
+    mtx_lock(&pool->lock);
+    queue_enqueue(&pool->jobs, &job->node);
+    mtx_unlock(&pool->lock);
+}
+
 static int _thrdpool_worker_entry(void* arg) {
     thrdpool_t* pool = (thrdpool_t*)arg;
 
@@ -120,10 +126,7 @@ int thrdpool_submit(
     job->routine = routine;
     job->arg = arg;
 
-    mtx_lock(&pool->lock);
-    queue_enqueue(&pool->jobs, &job->node);
-    mtx_unlock(&pool->lock);
-
+    _thrdpool_push(pool, job);
     platform_sem_post(pool->sem);
     return 0;
 }
