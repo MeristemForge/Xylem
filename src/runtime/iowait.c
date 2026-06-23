@@ -54,12 +54,12 @@ _Static_assert(
 typedef struct _iowait_dir_s _iowait_dir_t;
 
 enum {
-    IOWAIT_WAITER_NONE = 0,
+    IOWAIT_WAITER_NONE  = 0,
     IOWAIT_WAITER_READY = 1,
     /**
      * Values above READY encode a parked coroutine pointer.
      * A heap-allocated coroutine address is never 0 or 1, so NONE, READY and
-     * PARKED are disjoint by construction without a separate tag.
+     * the parked pointer are disjoint by construction without a separate tag.
      */
 };
 
@@ -239,42 +239,36 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
     return w;
 }
 
-static inline mco_coro* _iowait_waiter_decode(uintptr_t raw) {
-    return raw > IOWAIT_WAITER_READY ? (mco_coro*)raw : NULL;
-}
-
-static bool _iowait_take_ready(_iowait_dir_t* d) {
-    uintptr_t expected = IOWAIT_WAITER_READY;
-    return atomic_compare_exchange_strong(
-        &d->waiter,
-        &expected,
-        IOWAIT_WAITER_NONE);
-}
-
 static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
     uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        mco_coro* co = _iowait_waiter_decode(raw);
-        if (!co) {
+        if (raw <= IOWAIT_WAITER_READY) {
             return NULL;
         }
         if (atomic_compare_exchange_weak(
                 &d->waiter,
                 &raw,
                 IOWAIT_WAITER_NONE)) {
-            return co;
+            return (mco_coro*)raw;
         }
     }
+}
+
+static bool _iowait_take_ready(_iowait_dir_t* d) {
+    uintptr_t expected = IOWAIT_WAITER_READY;
+    return atomic_compare_exchange_strong(
+        &d->waiter, &expected, IOWAIT_WAITER_NONE);
 }
 
 static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
     uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        mco_coro* co = _iowait_waiter_decode(raw);
+        if (raw == IOWAIT_WAITER_READY) {
+            return NULL;
+        }
+        mco_coro* co = raw > IOWAIT_WAITER_READY ? (mco_coro*)raw : NULL;
         if (atomic_compare_exchange_weak(
-                &d->waiter,
-                &raw,
-                IOWAIT_WAITER_READY)) {
+                &d->waiter, &raw, IOWAIT_WAITER_READY)) {
             return co;
         }
     }
@@ -323,20 +317,18 @@ static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
         return true;
     }
 
+    /* IO event already arrived; no need to park. */
     if (raw == IOWAIT_WAITER_READY) {
         return false;
     }
 
-    mco_coro* prev = _iowait_waiter_decode(raw);
-    if (!prev) {
-        abort();
-    }
+    /* raw is a pointer: another coroutine is already parked here. */
     iowait_t* w = d->w;
     xylem_loge(
         "<iowait> double park dir=%s w=%p prev=%p new=%p",
         (d == &w->rd) ? "rd" : "wr",
         (void*)w,
-        (void*)prev,
+        (void*)raw,
         (void*)co);
     abort();
 }
