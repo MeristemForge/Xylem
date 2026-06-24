@@ -1095,7 +1095,7 @@ static mco_coro* _sched_worker_park(
     } else {
         platform_sem_wait(w->sem);
     }
-    bool expected = true;
+    expected = true;
     atomic_compare_exchange_strong(&w->parked, &expected, false);
     return NULL;
 }
