@@ -33,6 +33,8 @@ REM ============================================================================
 
 REM ---- paths -----------------------------------------------------------------
 set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_PATH=%~f0"
+set "SCRIPT_NAME=%~nx0"
 for %%I in ("%SCRIPT_DIR%..") do set "BENCH_DIR=%%~fI"
 for %%I in ("%BENCH_DIR%\..") do set "PROJECT_ROOT=%%~fI"
 set "NET_DIR=%BENCH_DIR%\net"
@@ -389,7 +391,7 @@ goto :eof
 :ensure_bin
 for %%P in (%PROTO:,= %) do (
     if not exist "%BIN_DIR%\%%P-bench.exe" (
-        call :err "binaries missing in %BIN_DIR%; run: %~nx0 build --proto %PROTO%"
+        call :err "binaries missing in %BIN_DIR%; run: %SCRIPT_NAME% build --proto %PROTO%"
         exit /b 1
     )
 )
@@ -397,7 +399,7 @@ goto :eof
 
 :ensure_winclient_helper
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
-set "__RUN_NET_BAT=%~f0"
+set "__RUN_NET_BAT=%SCRIPT_PATH%"
 set "__WINCLIENT_PS1=%WINCLIENT_PS1%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$m='::WINCLIENT::'; Get-Content -LiteralPath $env:__RUN_NET_BAT | Where-Object { $_.StartsWith($m) } | ForEach-Object { $_.Substring($m.Length) } | Set-Content -LiteralPath $env:__WINCLIENT_PS1 -Encoding UTF8" 1>nul 2>nul
 if errorlevel 1 (
@@ -727,7 +729,7 @@ REM ============================================================================
 REM usage
 REM ============================================================================
 :usage
-echo usage: %~nx0 [install^|build^|bench^|all] [options...]
+echo usage: %SCRIPT_NAME% [install^|build^|bench^|all] [options...]
 echo.
 echo Windows benchmark driver. Build auto-inits MSVC via vcvars64.bat (vswhere).
 echo.
@@ -759,9 +761,9 @@ echo   Throughput runs one uncounted warmup pass by default; set
 echo   BENCH_WARMUP_RUNS=0 to disable or another value to change it.
 echo.
 echo Examples:
-echo   %~nx0 build --proto tcp,udp,tls
-echo   %~nx0 bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
-echo   %~nx0 bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
+echo   %SCRIPT_NAME% build --proto tcp,udp,tls
+echo   %SCRIPT_NAME% bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
+echo   %SCRIPT_NAME% bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
 goto :eof
 
 ::WINCLIENT::# Internal Windows helper extracted by run-net.bat.
