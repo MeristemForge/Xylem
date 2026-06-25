@@ -83,38 +83,6 @@ typedef void (*scheduler_timer_fn_t)(scheduler_timer_t* timer, void* ud);
  */
 typedef void (*scheduler_timer_ud_fn_t)(void* ud);
 
-typedef enum scheduler_timer_state_e {
-    SCHED_TIMER_IDLE = 0,
-    SCHED_TIMER_QUEUED,
-    SCHED_TIMER_FIRING,
-} scheduler_timer_state_t;
-
-/**
- * Scheduler timer.
- *
- * heap_node must remain embedded by value (the per-worker timer heap
- * recovers the timer via heap_entry). Fields are owned by the timer's
- * worker; see scheduler.c for the access/locking rules.
- */
-struct scheduler_timer_s {
-    heap_node_t              heap_node;
-    scheduler_t*             sched;
-    scheduler_timer_fn_t     cb;
-    void*                    ud;
-    scheduler_timer_ud_fn_t  ud_ref;
-    scheduler_timer_ud_fn_t  ud_unref;
-    uint64_t                 timeout;
-    uint64_t                 repeat;
-    uint64_t                 reset_timeout;
-    uint64_t                 reset_repeat;
-    scheduler_timer_state_t  state;
-    bool                     stop_pending;
-    bool                     reset_pending;
-    bool                     spawn;
-    _Atomic int32_t          refcnt;
-    uint32_t                 owner;
-};
-
 /* Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {
     int32_t  worker_count;       /* 0 = use CPU count. */

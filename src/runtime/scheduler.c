@@ -149,7 +149,7 @@ struct scheduler_s {
     iowait_slab_t*        iowait_slab;
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
-    _Atomic int           state;
+    _Atomic bool          running;
     _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
     _Atomic int32_t       num_stealing;
@@ -188,11 +188,37 @@ typedef enum _park_state_e {
     PARK_WOKEN   = 3,
 } _park_state_t;
 
-typedef enum _sched_state_e {
-    SCHED_STOPPED  = 0,
-    SCHED_RUNNING  = 1,
-    SCHED_STOPPING = 2,
-} _sched_state_t;
+typedef enum _timer_state_e {
+    TIMER_IDLE = 0,
+    TIMER_QUEUED,
+    TIMER_FIRING,
+} _timer_state_t;
+
+/**
+ * Scheduler timer.
+ *
+ * heap_node must remain embedded by value (the per-worker timer heap
+ * recovers the timer via heap_entry). Fields are owned by the timer's
+ * worker; see the _sched_timer_* helpers for access/locking rules.
+ */
+struct scheduler_timer_s {
+    heap_node_t              heap_node;
+    scheduler_t*             sched;
+    scheduler_timer_fn_t     cb;
+    void*                    ud;
+    scheduler_timer_ud_fn_t  ud_ref;
+    scheduler_timer_ud_fn_t  ud_unref;
+    uint64_t                 timeout;
+    uint64_t                 repeat;
+    uint64_t                 reset_timeout;
+    uint64_t                 reset_repeat;
+    _timer_state_t           state;
+    bool                     stop_pending;
+    bool                     reset_pending;
+    bool                     spawn;
+    _Atomic int32_t          refcnt;
+    uint32_t                 owner;
+};
 
 typedef struct _sched_coro_ctx_s {
     void (*fn)(void*);
@@ -217,15 +243,6 @@ static thread_local _sched_worker_t* _tls_worker;
 static inline _sched_worker_t* _sched_timer_worker(
     scheduler_timer_t* timer) {
     return &timer->sched->workers[timer->owner];
-}
-
-static inline bool _sched_is_running(scheduler_t* sched) {
-    return sched
-        && atomic_load(&sched->state) == SCHED_RUNNING;
-}
-
-static inline bool _sched_is_stopping(scheduler_t* sched) {
-    return !sched || atomic_load(&sched->state) != SCHED_RUNNING;
 }
 
 static void _sched_coro_entry_cb(mco_coro* co) {
@@ -613,25 +630,25 @@ static void _sched_timer_complete(_sched_timer_fire_t* fire) {
     uint64_t           now   = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     mtx_lock(&owner->timer_lock);
-    if (timer->state == SCHED_TIMER_FIRING) {
+    if (timer->state == TIMER_FIRING) {
         if (timer->stop_pending) {
             timer->stop_pending  = false;
             timer->reset_pending = false;
-            timer->state         = SCHED_TIMER_IDLE;
+            timer->state         = TIMER_IDLE;
         } else if (timer->reset_pending) {
             timer->timeout       = now + timer->reset_timeout;
             timer->repeat        = timer->reset_repeat;
             timer->reset_pending = false;
-            timer->state         = SCHED_TIMER_QUEUED;
+            timer->state         = TIMER_QUEUED;
             heap_insert(&owner->timers, &timer->heap_node);
             armed = true;
-        } else if (timer->repeat > 0 && _sched_is_running(timer->sched)) {
+        } else if (timer->repeat > 0 && atomic_load(&timer->sched->running)) {
             timer->timeout = now + timer->repeat;
-            timer->state   = SCHED_TIMER_QUEUED;
+            timer->state   = TIMER_QUEUED;
             heap_insert(&owner->timers, &timer->heap_node);
             armed = true;
         } else {
-            timer->state = SCHED_TIMER_IDLE;
+            timer->state = TIMER_IDLE;
         }
         _sched_timer_publish_deadline(owner);
     }
@@ -691,7 +708,7 @@ static int _sched_timer_process(_sched_worker_t* w) {
             scheduler_timer_t* t = heap_entry(root, scheduler_timer_t, heap_node);
             if (t->timeout <= now_ms) {
                 heap_dequeue(&w->timers);
-                t->state = SCHED_TIMER_FIRING;
+                t->state = TIMER_FIRING;
                 _sched_timer_ref(t);
                 /**
                  * Pin ud while still holding timer_lock, atomically with
@@ -908,7 +925,7 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
         }
         return;
     }
-    if (_sched_is_stopping(w->sched)) {
+    if (!atomic_load(&w->sched->running)) {
         w->park_fn  = NULL;
         w->park_arg = NULL;
         return;
@@ -947,7 +964,7 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
 
     /* Declined, or woken during parking: requeue the coroutine ourselves. */
     atomic_store(&ctx->park_state, PARK_IDLE);
-    if (_sched_is_stopping(w->sched)) {
+    if (!atomic_load(&w->sched->running)) {
         return;
     }
     /**
@@ -962,7 +979,7 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     _sched_worker_enqueue(w, co);
 }
 
-static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
+static inline void _sched_worker_run(_sched_worker_t* w, mco_coro* co) {
     w->credit = SCHED_CREDIT_DEFAULT;
     w->io_credit = SCHED_IO_CREDIT_DEFAULT;
     w->io_bytes = SCHED_IO_BYTES_DEFAULT;
@@ -970,19 +987,11 @@ static inline void _sched_run_coro(_sched_worker_t* w, mco_coro* co) {
     _sched_coro_handle_yield(w, co);
 }
 
-static bool _sched_try_run_coro(_sched_worker_t* w, mco_coro* co) {
-    if (_sched_is_stopping(w->sched)) {
-        return false;
-    }
-    _sched_run_coro(w, co);
-    return true;
-}
-
 static mco_coro* _sched_worker_poll(
     scheduler_t*           sched,
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
-    while (_sched_is_running(sched)) {
+    while (atomic_load(&sched->running)) {
         /* Must set before re-check so producers see it and pipe-wake. */
         atomic_store(&sched->poller_waiting, true);
 
@@ -998,7 +1007,7 @@ static mco_coro* _sched_worker_poll(
         int poll_ms = _sched_timer_nearest_deadline(sched);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         atomic_store(&sched->poller_waiting, false);
-        if (!_sched_is_running(sched)) {
+        if (!atomic_load(&sched->running)) {
             break;
         }
         co = n > 0 ? _sched_io_process(sched, w, cqes, n) : NULL;
@@ -1090,22 +1099,18 @@ static int _sched_worker_entry_cb(void* arg) {
     scheduler_t* sched = w->sched;
     _tls_worker = w;
 
-    while (_sched_is_running(sched)) {
+    while (atomic_load(&sched->running)) {
         int timer_ms = _sched_timer_process(w);
 
         mco_coro* co = _sched_worker_find(sched, w);
         if (co) {
-            if (!_sched_try_run_coro(w, co)) {
-                break;
-            }
+            _sched_worker_run(w, co);
             continue;
         }
 
         co = _sched_worker_park(sched, w, timer_ms);
         if (co) {
-            if (!_sched_try_run_coro(w, co)) {
-                break;
-            }
+            _sched_worker_run(w, co);
         }
     }
 
@@ -1113,8 +1118,6 @@ static int _sched_worker_entry_cb(void* arg) {
 }
 
 static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
-    atomic_store(&sched->state, SCHED_STOPPING);
-
     if (sched->workers) {
         if (!sched->joined) {
             for (int32_t i = 0; i < started_count; i++) {
@@ -1145,7 +1148,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
                     scheduler_timer_t* t =
                         heap_entry(node, scheduler_timer_t, heap_node);
                     heap_dequeue(&w->timers);
-                    t->state = SCHED_TIMER_IDLE;
+                    t->state = TIMER_IDLE;
                     _sched_timer_unref(t);
                 }
             }
@@ -1257,7 +1260,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         sched->wakeup_wr = pair[1];
     }
 
-    atomic_store(&sched->state, SCHED_RUNNING);
+    atomic_store(&sched->running, true);
     atomic_store(&sched->num_stealing, 0);
     sched->iowait_slab = iowait_slab_create();
     if (!sched->iowait_slab) {
@@ -1365,15 +1368,13 @@ void scheduler_stop(scheduler_t* sched) {
         return;
     }
 
-    int expected = SCHED_RUNNING;
+    bool expected = true;
     if (atomic_compare_exchange_strong(
-            &sched->state, &expected, SCHED_STOPPING)) {
+            &sched->running, &expected, false)) {
         for (int32_t i = 0; i < sched->worker_count; i++) {
             platform_sem_post(sched->workers[i].sem);
             _sched_poller_wake(sched);
         }
-    } else if (expected == SCHED_STOPPED) {
-        return;
     }
 
     if (_tls_worker && _tls_worker->sched == sched) {
@@ -1384,7 +1385,6 @@ void scheduler_stop(scheduler_t* sched) {
         thrd_join(sched->workers[i].thread, NULL);
     }
     sched->joined = true;
-    atomic_store(&sched->state, SCHED_STOPPED);
 }
 
 static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
@@ -1432,9 +1432,6 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
 }
 
 void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
-    if (!_sched_is_running(sched)) {
-        return;
-    }
     if (_sched_try_wake(co)) {
         _sched_enqueue(sched, co);
     }
@@ -1442,7 +1439,7 @@ void scheduler_schedule(scheduler_t* sched, mco_coro* co) {
 
 void scheduler_schedule_batch(
     scheduler_t* sched, mco_coro** cos, int32_t n) {
-    if (n <= 0 || !_sched_is_running(sched)) {
+    if (n <= 0) {
         return;
     }
 
@@ -1497,7 +1494,7 @@ void scheduler_schedule_batch(
 }
 
 int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
-    if (!fn || !_sched_is_running(sched)) {
+    if (!fn) {
         return -1;
     }
 
@@ -1518,12 +1515,6 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
 
     mco_coro* co = NULL;
     if (mco_create(&co, &desc) != MCO_SUCCESS) {
-        free(ctx);
-        return -1;
-    }
-
-    if (!_sched_is_running(sched)) {
-        mco_destroy(co);
         free(ctx);
         return -1;
     }
@@ -1661,7 +1652,7 @@ int scheduler_timer_start(
     void*                ud,
     uint64_t             timeout_ms,
     uint64_t             repeat_ms) {
-    if (!timer || !_sched_is_running(timer->sched)) {
+    if (!timer) {
         return -1;
     }
 
@@ -1670,7 +1661,7 @@ int scheduler_timer_start(
     _sched_worker_t* owner = _sched_timer_worker(timer);
     bool armed = false;
     mtx_lock(&owner->timer_lock);
-    if (timer->state == SCHED_TIMER_QUEUED) {
+    if (timer->state == TIMER_QUEUED) {
         xylem_loge("<sched> double start on queued timer=%p", (void*)timer);
         abort();
     }
@@ -1678,14 +1669,14 @@ int scheduler_timer_start(
     timer->ud            = ud;
     timer->repeat        = repeat_ms;
     timer->stop_pending  = false;
-    if (timer->state == SCHED_TIMER_FIRING) {
+    if (timer->state == TIMER_FIRING) {
         timer->reset_pending = true;
         timer->reset_timeout = timeout_ms;
         timer->reset_repeat  = repeat_ms;
     } else {
         timer->timeout       = now + timeout_ms;
         timer->reset_pending = false;
-        timer->state         = SCHED_TIMER_QUEUED;
+        timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         armed = true;
     }
@@ -1703,13 +1694,13 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
 
     bool cancelled = false;
     mtx_lock(&owner->timer_lock);
-    if (timer->state == SCHED_TIMER_QUEUED) {
+    if (timer->state == TIMER_QUEUED) {
         heap_remove(&owner->timers, &timer->heap_node);
-        timer->state         = SCHED_TIMER_IDLE;
+        timer->state         = TIMER_IDLE;
         timer->stop_pending  = false;
         timer->reset_pending = false;
         cancelled = true;
-    } else if (timer->state == SCHED_TIMER_FIRING) {
+    } else if (timer->state == TIMER_FIRING) {
         timer->stop_pending  = true;
         timer->reset_pending = false;
     }
@@ -1719,7 +1710,7 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
 }
 
 bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
-    if (!timer || !_sched_is_running(timer->sched)) {
+    if (!timer) {
         return false;
     }
 
@@ -1729,8 +1720,8 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
     bool was_active;
     bool armed = false;
     mtx_lock(&owner->timer_lock);
-    was_active = (timer->state == SCHED_TIMER_QUEUED);
-    if (timer->state == SCHED_TIMER_QUEUED) {
+    was_active = (timer->state == TIMER_QUEUED);
+    if (timer->state == TIMER_QUEUED) {
         heap_remove(&owner->timers, &timer->heap_node);
         timer->timeout = now + timeout_ms;
         if (timer->repeat != 0) {
@@ -1740,7 +1731,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
         timer->reset_pending = false;
         heap_insert(&owner->timers, &timer->heap_node);
         armed = true;
-    } else if (timer->state == SCHED_TIMER_FIRING) {
+    } else if (timer->state == TIMER_FIRING) {
         timer->stop_pending   = false;
         timer->reset_pending  = true;
         timer->reset_timeout  = timeout_ms;
@@ -1752,7 +1743,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
         }
         timer->stop_pending  = false;
         timer->reset_pending = false;
-        timer->state         = SCHED_TIMER_QUEUED;
+        timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         armed = true;
     }
