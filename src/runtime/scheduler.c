@@ -640,16 +640,67 @@ static void _sched_timer_complete(_sched_timer_fire_t* fire) {
     _sched_timer_unref(timer);
 }
 
+static int _sched_spawn(
+    scheduler_t* sched, void (*fn)(void*), void* arg,
+    void (*cleanup)(void*)) {
+    if (!fn) {
+        return -1;
+    }
+
+    _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)calloc(1, sizeof(_sched_coro_ctx_t));
+    if (!ctx) {
+        return -1;
+    }
+
+    ctx->fn      = fn;
+    ctx->arg     = arg;
+    ctx->cleanup = cleanup;
+
+    mco_desc desc = mco_desc_init(
+        _sched_coro_entry_cb, sched->coro_pool.stack_size);
+    desc.alloc_cb       = _sched_coro_pool_alloc_cb;
+    desc.dealloc_cb     = _sched_coro_pool_dealloc_cb;
+    desc.allocator_data = &sched->coro_pool;
+    desc.user_data      = ctx;
+
+    mco_coro* co = NULL;
+    if (mco_create(&co, &desc) != MCO_SUCCESS) {
+        free(ctx);
+        return -1;
+    }
+
+    ctx->co = co;
+
+    {
+        uint32_t owner_idx;
+        if (_tls_worker && _tls_worker->sched == sched) {
+            owner_idx = _tls_worker->index;
+        } else {
+            owner_idx = atomic_fetch_add(&sched->spawn_rr, 1)
+                        % (uint32_t)sched->worker_count;
+        }
+        ctx->registry_owner = owner_idx;
+        _sched_worker_t* owner = &sched->workers[owner_idx];
+        spin_lock(&owner->registry_lock);
+        list_insert_tail(&owner->registry, &ctx->registry_node);
+        spin_unlock(&owner->registry_lock);
+    }
+
+    atomic_fetch_add(&sched->alive, 1);
+    scheduler_schedule(sched, co);
+    return 0;
+}
+
+int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
+    return _sched_spawn(sched, fn, arg, NULL);
+}
+
 static void _sched_timer_launch_cb(void* arg) {
     _sched_timer_fire_t* fire = (_sched_timer_fire_t*)arg;
     fire->cb(fire->timer, fire->ud);
     _sched_timer_complete(fire);
     free(fire);
 }
-
-static int _sched_spawn(
-    scheduler_t* sched, void (*fn)(void*), void* arg,
-    void (*cleanup)(void*));
 
 static int _sched_timer_launch(
     scheduler_t* sched, _sched_timer_fire_t* fire) {
@@ -1477,61 +1528,6 @@ void scheduler_schedule_batch(
          */
         _sched_wake_worker(sched);
     }
-}
-
-static int _sched_spawn(
-    scheduler_t* sched, void (*fn)(void*), void* arg,
-    void (*cleanup)(void*)) {
-    if (!fn) {
-        return -1;
-    }
-
-    _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)calloc(1, sizeof(_sched_coro_ctx_t));
-    if (!ctx) {
-        return -1;
-    }
-
-    ctx->fn      = fn;
-    ctx->arg     = arg;
-    ctx->cleanup = cleanup;
-
-    mco_desc desc = mco_desc_init(
-        _sched_coro_entry_cb, sched->coro_pool.stack_size);
-    desc.alloc_cb       = _sched_coro_pool_alloc_cb;
-    desc.dealloc_cb     = _sched_coro_pool_dealloc_cb;
-    desc.allocator_data = &sched->coro_pool;
-    desc.user_data      = ctx;
-
-    mco_coro* co = NULL;
-    if (mco_create(&co, &desc) != MCO_SUCCESS) {
-        free(ctx);
-        return -1;
-    }
-
-    ctx->co = co;
-
-    {
-        uint32_t owner_idx;
-        if (_tls_worker && _tls_worker->sched == sched) {
-            owner_idx = _tls_worker->index;
-        } else {
-            owner_idx = atomic_fetch_add(&sched->spawn_rr, 1)
-                        % (uint32_t)sched->worker_count;
-        }
-        ctx->registry_owner = owner_idx;
-        _sched_worker_t* owner = &sched->workers[owner_idx];
-        spin_lock(&owner->registry_lock);
-        list_insert_tail(&owner->registry, &ctx->registry_node);
-        spin_unlock(&owner->registry_lock);
-    }
-
-    atomic_fetch_add(&sched->alive, 1);
-    scheduler_schedule(sched, co);
-    return 0;
-}
-
-int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
-    return _sched_spawn(sched, fn, arg, NULL);
 }
 
 void scheduler_park(
