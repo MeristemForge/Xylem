@@ -91,7 +91,8 @@
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
 
-#define SCHED_CORO_STACK_SIZE (128 * 1024)
+#define SCHED_CORO_STACK_SIZE \
+    (sizeof(void*) > 4 ? 1024 * 1024 : 128 * 1024)
 
 /**
  * Per-worker coroutine-slot cache. Each worker keeps up to
