@@ -1650,7 +1650,6 @@ void scheduler_timer_start(
     timer->cb           = cb;
     timer->ud           = ud;
     timer->repeat       = repeat_ms;
-    timer->stop_pending = false;
 
     switch (timer->state) {
     case TIMER_FIRING:

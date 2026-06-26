@@ -324,12 +324,17 @@ extern void scheduler_timer_destroy(scheduler_timer_t* timer);
 /**
  * @brief Start or reconfigure a timer. Thread-safe.
  *
- * The timer must not already be queued. If a previous fire is currently
- * running, start schedules the next generation after that callback returns.
+ * If the timer is already queued, it is removed and re-inserted with the
+ * new parameters. If a previous fire is currently running, start schedules
+ * the next generation after that callback returns.
  * Use scheduler_timer_reset() to move an armed timer to a new deadline
  * while preserving cb/ud.
  * Repeat timers are re-queued only after the previous callback returns,
  * so callbacks for the same timer never overlap.
+ *
+ * When both scheduler_timer_stop() and scheduler_timer_start() are called
+ * during the same callback, stop takes priority: the timer goes idle and
+ * the start request is silently dropped.
  *
  * @param timer       Timer handle (must not be NULL).
  * @param cb          Callback to invoke on expiry.
