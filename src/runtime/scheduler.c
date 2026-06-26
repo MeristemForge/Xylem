@@ -477,30 +477,20 @@ static bool _sched_worker_try_steal(scheduler_t* sched, _sched_worker_t* w) {
 }
 
 static void _sched_wake_worker(scheduler_t* sched) {
-    int32_t expected = 0;
-    if (atomic_compare_exchange_strong(&sched->num_stealing, &expected, 1)) {
-        /**
-         * Round-robin scan so repeated wakeups don't all land on worker[0].
-         * The CAS on ->num_stealing serialises concurrent callers, so the hint
-         * is touched by at most one thread at a time; relaxed is sufficient.
-         */
-        uint32_t n = (uint32_t)sched->worker_count;
-        uint32_t start = atomic_load(&sched->wake_rr);
-        for (uint32_t j = 0; j < n; j++) {
-            uint32_t i = (start + j) % n;
-            bool expected = true;
-            if (atomic_compare_exchange_strong(&sched->workers[i].parked, &expected, false)) {
-                atomic_store(&sched->workers[i].stealing, true);
-                platform_sem_post(sched->workers[i].sem);
-                atomic_store(&sched->wake_rr, (i + 1) % n);
-                return;
-            }
+    uint32_t n = (uint32_t)sched->worker_count;
+    uint32_t start = atomic_load(&sched->wake_rr);
+    for (uint32_t j = 0; j < n; j++) {
+        uint32_t i = (start + j) % n;
+        bool expected = true;
+        if (atomic_compare_exchange_strong(&sched->workers[i].parked, &expected, false)) {
+            platform_sem_post(sched->workers[i].sem);
+            atomic_store(&sched->wake_rr, (i + 1) % n);
+            return;
         }
-        atomic_fetch_sub(&sched->num_stealing, 1);
     }
     /**
-     * Poller may be sleeping while work is pending — wake it so it
-     * re-checks after a failed or fruitless wake attempt.
+     * No parked worker — poller may be sleeping while work is pending,
+     * wake it so it re-checks.
      */
     if (atomic_load(&sched->poller_waiting)) {
         _sched_poller_wake(sched);
