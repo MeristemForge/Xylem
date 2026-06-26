@@ -1327,6 +1327,7 @@ void scheduler_destroy(scheduler_t* sched) {
             _sched_coro_ctx_t* ctx =
                 list_entry(node, _sched_coro_ctx_t, registry_node);
             mco_destroy(ctx->co);
+            free(ctx->arg);
             free(ctx);
 
             spin_lock(&w->registry_lock);
