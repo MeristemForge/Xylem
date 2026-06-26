@@ -221,6 +221,7 @@ struct scheduler_timer_s {
 typedef struct _sched_coro_ctx_s {
     void (*fn)(void*);
     void*                  arg;
+    void (*cleanup)(void*); /* called if coroutine never runs; NULL-safe */
     queue_node_t           runq_node;
     list_node_t            registry_node;
     mco_coro*              co;
@@ -241,7 +242,11 @@ static thread_local _sched_worker_t* _tls_worker;
 
 static void _sched_coro_entry_cb(mco_coro* co) {
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
-    ctx->fn(ctx->arg);
+    void (*fn)(void*)   = ctx->fn;
+    void* arg           = ctx->arg;
+
+    ctx->cleanup = NULL; /* fn owns arg lifecycle; drain must not free it. */
+    fn(arg);
 }
 
 static size_t _sched_vmem_page_size(void) {
@@ -651,7 +656,7 @@ static int _sched_timer_launch(
         return -1;
     }
     *f = *fire;
-    if (scheduler_spawn(sched, _sched_timer_launch_cb, f) != 0) {
+    if (_sched_spawn(sched, _sched_timer_launch_cb, f, free) != 0) {
         xylem_loge("<sched> timer spawn failed");
         free(f);
         return -1;
@@ -1327,6 +1332,9 @@ void scheduler_destroy(scheduler_t* sched) {
             _sched_coro_ctx_t* ctx =
                 list_entry(node, _sched_coro_ctx_t, registry_node);
             mco_destroy(ctx->co);
+            if (ctx->cleanup) {
+                ctx->cleanup(ctx->arg);
+            }
             free(ctx);
 
             spin_lock(&w->registry_lock);
@@ -1467,7 +1475,9 @@ void scheduler_schedule_batch(
     }
 }
 
-int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
+static int _sched_spawn(
+    scheduler_t* sched, void (*fn)(void*), void* arg,
+    void (*cleanup)(void*)) {
     if (!fn) {
         return -1;
     }
@@ -1477,8 +1487,9 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
         return -1;
     }
 
-    ctx->fn = fn;
-    ctx->arg = arg;
+    ctx->fn      = fn;
+    ctx->arg     = arg;
+    ctx->cleanup = cleanup;
 
     mco_desc desc = mco_desc_init(
         _sched_coro_entry_cb, sched->coro_pool.stack_size);
@@ -1513,6 +1524,10 @@ int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     atomic_fetch_add(&sched->alive, 1);
     scheduler_schedule(sched, co);
     return 0;
+}
+
+int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
+    return _sched_spawn(sched, fn, arg, NULL);
 }
 
 void scheduler_park(
