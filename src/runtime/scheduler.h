@@ -331,15 +331,13 @@ extern void scheduler_timer_destroy(scheduler_timer_t* timer);
  * Repeat timers are re-queued only after the previous callback returns,
  * so callbacks for the same timer never overlap.
  *
- * @param timer       Timer handle.
+ * @param timer       Timer handle (must not be NULL).
  * @param cb          Callback to invoke on expiry.
  * @param ud          User data for callback.
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
- *
- * @return 0 on success, -1 if the scheduler is stopping or stopped.
  */
-extern int scheduler_timer_start(
+extern void scheduler_timer_start(
     scheduler_timer_t*   timer,
     scheduler_timer_fn_t cb,
     void*            ud,
@@ -375,6 +373,11 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  * callback is currently running, reset is applied after that callback
  * returns. If it was inactive (never armed, callback already dispatched),
  * it is armed fresh.
+ *
+ * When both scheduler_timer_stop() and scheduler_timer_reset() are called
+ * during the same callback (stop_pending and reset_pending both true),
+ * stop takes priority: the timer goes idle and the reset request is
+ * silently dropped.
  *
  * @param timer       Timer handle, previously armed with scheduler_timer_start().
  * @param timeout_ms  New delay in milliseconds. Also becomes the new

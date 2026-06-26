@@ -248,14 +248,12 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     /* Arm the deadline timer; one reference for the armed timer. */
     if (ctx->timer) {
         _addr_ctx_ref(ctx);
-        if (scheduler_timer_start(
+        scheduler_timer_start(
                 ctx->timer,
                 _addr_resolve_timeout_cb,
                 ctx,
                 ctx->timeout_ms,
-                0) != 0) {
-            _addr_ctx_unref(ctx);
-        }
+                0);
     }
     return true;
 }

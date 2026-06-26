@@ -45,7 +45,13 @@ _Pragma("once")
  *     still requires the runtime to be running, since the ticks are
  *     produced by a scheduler timer.
  *   - xylem_ticker_destroy() is callable from any thread or context;
- *     it is idempotent and safe to call once from the consumer side.
+ *     it is idempotent. The internal refcount keeps the ticker alive
+ *     across a concurrent recv, so destroy never frees memory that
+ *     recv is still touching. The caller owns the mutual exclusion
+ *     between destroy and recv on the same ticker, exactly like
+ *     Go's Ticker.Stop vs. reading Ticker.C -- the refcount only
+ *     prevents use-after-free, it does not make concurrent
+ *     destroy+recv meaningful.
  *
  * Lifetime:
  *   - The ticker is driven by the runtime scheduler. External OS

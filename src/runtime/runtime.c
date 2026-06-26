@@ -68,12 +68,8 @@ static void _runtime_sleep_timeout_cb(scheduler_timer_t* timer, void* ud) {
 
 static bool _runtime_sleep_park_cb(mco_coro* co, void* arg) {
     _sleep_park_t* p = (_sleep_park_t*)arg;
-    if (scheduler_timer_start(
-            p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0) != 0) {
-        scheduler_timer_destroy(p->timer);
-        p->timer = NULL;
-        return false;
-    }
+    scheduler_timer_start(
+            p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
     return true;
 }
 

@@ -37,7 +37,16 @@
  * ticker matches the underlying timer, which is usable from coroutine
  * and thread alike. The sem also avoids a per-tick heap allocation (no
  * message node) and fits the ticker's single-producer/single-consumer,
- * coalesce-to-one model: count stays in {0,1}, gated by `pending`.
+ * coalesce-to-one model.
+ *
+ * In normal operation the sem count is bounded to {0,1}, gated by
+ * `pending`. A concurrent xylem_ticker_destroy can cause a transient
+ * double-post (the callback and destroy each call xylem_sem_post),
+ * which is harmless: the consumer sees `closed` and discards the extra
+ * token. The caller owns the destroy-vs-recv serialisation, exactly
+ * like Go's Ticker.Stop and the Ticker.C channel -- the refcount only
+ * guarantees that the ticker is not freed mid-use, not that every
+ * field converges perfectly during teardown.
  */
 struct xylem_ticker_s {
     scheduler_timer_t*   timer;     /* repeating, run inline (spawn == false) */
@@ -100,8 +109,14 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
     /**
      * Deliver only if the previous tick has been drained. Otherwise the
      * consumer is behind and we coalesce (drop) this tick, exactly like
-     * Go's buffered-by-one Ticker channel. post() never fails or
-     * allocates, so the slot transitions 0 -> 1 -> (recv) -> 0 cleanly.
+     * Go's buffered-by-one Ticker channel.
+     *
+     * A concurrent xylem_ticker_destroy may have already posted the
+     * wakeup sem after setting closed but before this callback runs.
+     * That TOCTOU is harmless -- the callback's own post is extra, but
+     * the consumer sees closed and discards it. The refcount (held by
+     * the scheduler across the callback) guarantees the ticker is still
+     * alive here even if the creator already called destroy.
      */
     int32_t expected = 0;
     if (atomic_compare_exchange_strong(&t->pending, &expected, 1)) {
@@ -137,13 +152,8 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
 
     /* Native repeat on the inline path; the callback is small and ordered. */
     scheduler_timer_set_ud_guard(t->timer, _ticker_ref, _ticker_unref);
-    if (scheduler_timer_start(
-            t->timer, _ticker_tick_cb, t, interval_ms, interval_ms) != 0) {
-        scheduler_timer_destroy(t->timer);
-        xylem_sem_destroy(t->sem);
-        free(t);
-        return NULL;
-    }
+    /* start never fails for a valid timer; timer just created above. */
+    scheduler_timer_start(t->timer, _ticker_tick_cb, t, interval_ms, interval_ms);
 
     return t;
 }
@@ -185,10 +195,13 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
 
     /**
      * Wake a consumer blocked in recv; it sees `closed` and returns 0.
-     * post() is any-context and idempotent enough here: an extra token
-     * just makes the next (already-closed) wait return immediately. We
-     * set `closed` before posting so the woken consumer cannot mistake
-     * this wake for a real tick.
+     *
+     * The tick callback _ticker_tick_cb may race through its closed
+     * check before this exchange and post the sem as well, resulting in
+     * two wake tokens. That is harmless -- the extra token makes the
+     * next (already-closed) wait return immediately, and the consumer
+     * discards both. Setting `closed` before the post guarantees the
+     * consumer cannot mistake any wake for a real tick.
      */
     xylem_sem_post(ticker->sem);
 

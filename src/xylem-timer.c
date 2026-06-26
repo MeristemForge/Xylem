@@ -81,12 +81,8 @@ static xylem_timer_t* _timer_create(
 
     scheduler_timer_set_spawn(t, true);
     scheduler_timer_set_ud_guard(t, _timer_ref, _timer_unref);
-    if (scheduler_timer_start(
-            t, _timer_fire_cb, timer, delay_ms, repeat_ms) != 0) {
-        scheduler_timer_destroy(t);
-        free(timer);
-        return NULL;
-    }
+    /* start never fails for a valid timer; timer just created above. */
+    scheduler_timer_start(t, _timer_fire_cb, timer, delay_ms, repeat_ms);
     return timer;
 }
 

@@ -397,11 +397,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
 
     _iowait_ref(d->w);
-    if (scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0) != 0) {
-        atomic_store(&d->deadline_error, true);
-        _iowait_wake_waiter(d);
-        _iowait_unref(d->w);
-    }
+    scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
 }
 
 static iowait_result_t _iowait_check_result(iowait_t* w, _iowait_dir_t* d) {

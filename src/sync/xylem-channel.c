@@ -299,16 +299,12 @@ static void* _channel_recv_coro(xylem_channel_t* ch, uint64_t timeout_ms) {
                 /* Refs for the timer cb; balanced by it, or by us on stop(). */
                 _channel_ref(ch);
                 _channel_recv_op_ref(op);
-                if (scheduler_timer_start(
+                scheduler_timer_start(
                         op->timer,
                         _channel_recv_timeout_cb,
                         op,
                         deadline_ms - now,
-                        0) != 0) {
-                    _channel_recv_op_unref(op);
-                    _channel_unref(ch);
-                    break;
-                }
+                        0);
             }
         }
 

@@ -747,16 +747,8 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
     scheduler_timer_set_ud_guard(
         sess->update_timer, _rudp_conn_ref, _rudp_conn_unref);
     scheduler_timer_set_spawn(sess->update_timer, true);
-    if (scheduler_timer_start(
-            sess->update_timer, _rudp_update_timer_cb, sess, 10, 0) != 0) {
-        scheduler_timer_destroy(sess->update_timer);
-        xylem_channel_destroy(sess->inbox);
-        ikcp_release(sess->kcp);
-        rudp_fec_enc_destroy(sess->fec_enc);
-        rudp_fec_dec_destroy(sess->fec_dec);
-        free(sess);
-        return -1;
-    }
+    scheduler_timer_start(
+            sess->update_timer, _rudp_update_timer_cb, sess, 10, 0);
     _rudp_schedule_update(sess);
 
     bool published = false;
@@ -1142,11 +1134,8 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     scheduler_timer_set_ud_guard(
         c->update_timer, _rudp_conn_ref, _rudp_conn_unref);
     scheduler_timer_set_spawn(c->update_timer, true);
-    if (scheduler_timer_start(
-            c->update_timer, _rudp_update_timer_cb, c, 10, 0) != 0) {
-        _rudp_conn_unref(c);
-        return NULL;
-    }
+    scheduler_timer_start(
+            c->update_timer, _rudp_update_timer_cb, c, 10, 0);
     _rudp_schedule_update(c);
 
     return c;

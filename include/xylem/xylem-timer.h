@@ -92,7 +92,9 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * For periodic timers, delay_ms also becomes the new interval.
  * Calls on different timer handles may run concurrently, but operations
  * on the same handle, including reset/reset and reset/cancel, require
- * external synchronization.
+ * external synchronization. If both cancel and reset are issued during
+ * the same callback, cancel takes priority and the reset is silently
+ * dropped.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer     Timer handle, or NULL.

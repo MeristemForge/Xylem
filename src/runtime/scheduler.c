@@ -1635,16 +1635,12 @@ void scheduler_timer_destroy(scheduler_timer_t* timer) {
     _sched_timer_unref(timer);
 }
 
-int scheduler_timer_start(
+void scheduler_timer_start(
     scheduler_timer_t*   timer,
     scheduler_timer_fn_t cb,
     void*                ud,
     uint64_t             timeout_ms,
     uint64_t             repeat_ms) {
-    if (!timer) {
-        return -1;
-    }
-
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = &timer->sched->workers[timer->owner];
@@ -1678,7 +1674,6 @@ int scheduler_timer_start(
     if (armed) {
         _sched_timer_wake_owner(owner);
     }
-    return 0;
 }
 
 bool scheduler_timer_stop(scheduler_timer_t* timer) {
@@ -1719,8 +1714,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
 
     mtx_lock(&owner->timer_lock);
     was_queued = (timer->state == TIMER_QUEUED);
-    timer->stop_pending = false;
-    
+
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
     }
