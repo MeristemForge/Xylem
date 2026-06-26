@@ -382,9 +382,9 @@ static void _rudp_recv_input(xylem_rudp_conn_t* c, void* data,
 }
 
 static void _rudp_schedule_update(xylem_rudp_conn_t* c);
-static void _rudp_conn_unref(xylem_rudp_conn_t* conn);
+static void _rudp_conn_ref(void* ud);
+static void _rudp_conn_unref(void* ud);
 static void _rudp_deferred_close(void* arg);
-static void _rudp_conn_ref(xylem_rudp_conn_t* conn);
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn);
 
 static void _rudp_listener_ref(xylem_rudp_listener_t* ln) {
@@ -514,7 +514,8 @@ static void _rudp_inbox_push(xylem_rudp_conn_t* sess, const void* data,
     }
 }
 
-static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
+static void _rudp_conn_ref(void* ud) {
+    xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)ud;
     atomic_fetch_add(&conn->refcnt, 1);
 }
 
@@ -527,7 +528,8 @@ static void _rudp_conn_ref(xylem_rudp_conn_t* conn) {
  * conn itself stay alive until the woken reader drops its reference
  * here. Mirrors the refcounting used by tcp/tls/dtls connections.
  */
-static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
+static void _rudp_conn_unref(void* ud) {
+    xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)ud;
     if (atomic_fetch_sub(&conn->refcnt, 1)
         != 1) {
         return;
@@ -574,20 +576,6 @@ static void _rudp_conn_unref(xylem_rudp_conn_t* conn) {
     }
 
     free(conn);
-}
-
-/**
- * ud-guard adapters: pin the connection across an in-flight update-timer
- * fire, the same way the ticker does. Closes the window where a
- * concurrent last _rudp_conn_unref (e.g. a woken reader on another
- * worker) frees the conn between dispatch and callback execution.
- */
-static void _rudp_conn_ud_ref(void* ud) {
-    _rudp_conn_ref((xylem_rudp_conn_t*)ud);
-}
-
-static void _rudp_conn_ud_unref(void* ud) {
-    _rudp_conn_unref((xylem_rudp_conn_t*)ud);
 }
 
 /**
@@ -757,7 +745,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
     }
 
     scheduler_timer_set_ud_guard(
-        sess->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
+        sess->update_timer, _rudp_conn_ref, _rudp_conn_unref);
     scheduler_timer_set_spawn(sess->update_timer, true);
     if (scheduler_timer_start(
             sess->update_timer, _rudp_update_timer_cb, sess, 10, 0) != 0) {
@@ -1152,7 +1140,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(
 
     /* Start the KCP update timer. */
     scheduler_timer_set_ud_guard(
-        c->update_timer, _rudp_conn_ud_ref, _rudp_conn_ud_unref);
+        c->update_timer, _rudp_conn_ref, _rudp_conn_unref);
     scheduler_timer_set_spawn(c->update_timer, true);
     if (scheduler_timer_start(
             c->update_timer, _rudp_update_timer_cb, c, 10, 0) != 0) {

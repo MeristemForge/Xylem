@@ -508,7 +508,6 @@ static void _sched_wake_worker(scheduler_t* sched) {
 
 static void _sched_worker_finish_steal(
     scheduler_t* sched, _sched_worker_t* w, bool found_work) {
-    (void)found_work;
     if (!atomic_exchange(&w->stealing, false)) {
         return;
     }

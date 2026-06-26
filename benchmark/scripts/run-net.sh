@@ -16,7 +16,7 @@ set -euo pipefail
 #   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
 #         (xylem built with -DXYLEM_ENABLE_TLS=ON; servers link OpenSSL)
 #
-# Compared servers: xylem, go, rust, and Java virtual threads for TCP.
+# Compared servers: xylem, go, rust.
 # Override with --servers. Missing binaries are skipped automatically. UDP has
 # no MT row (the public UDP API exposes no SO_REUSEPORT, so a single bound port
 # cannot be fanned across workers).
@@ -139,7 +139,7 @@ cmd_install() {
             err "Homebrew not found. Install it from https://brew.sh then re-run."
             exit 1
         fi
-        local BREW_PKGS=(cmake ninja pkg-config openssl go rust openjdk)
+        local BREW_PKGS=(cmake ninja pkg-config openssl go rust)
         local missing=()
         local pkg
         for pkg in "${BREW_PKGS[@]}"; do
@@ -164,7 +164,6 @@ cmd_install() {
         autoconf automake libtool
         libssl-dev
         golang-go
-        openjdk-21-jdk
         curl git
     )
     local missing=()
@@ -279,31 +278,6 @@ build_proto() {
               || warn "skip rust ${label} (build failed)"
         fi
 
-        # java (JDK 21+ virtual threads; TCP only for now)
-        local javadir="$NET_DIR/${proto}/server/java-echo"
-        if [ -f "$javadir/TcpEchoServer.java" ] && command -v javac >/dev/null 2>&1; then
-            local classes_dir="$BIN_DIR/java-classes/${proto}"
-            mkdir -p "$classes_dir"
-            javac --release 21 -d "$classes_dir" "$javadir/TcpEchoServer.java" \
-                || { warn "skip java ${label} (build failed)"; continue; }
-            local launcher="$BIN_DIR/${proto}-java-echo${suf}"
-            local default_workers=1
-            [ -n "$suf" ] && default_workers='${2:-4}'
-            cat > "$launcher" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="\$(cd "\$(dirname "\$0")" && pwd)"
-workers="${default_workers}"
-exec java \
-  -Xms64m -Xmx512m \
-  -Djdk.virtualThreadScheduler.parallelism="\$workers" \
-  -Djdk.virtualThreadScheduler.maxPoolSize="\$workers" \
-  -cp "\$DIR/java-classes/${proto}" \
-  TcpEchoServer "\$@"
-EOF
-            chmod +x "$launcher"
-            ok "${proto}-java-echo${suf} built"
-        fi
     done
 
     info "building ${proto}-bench client..."
@@ -789,7 +763,7 @@ cmd_bench() {
 # parse bench options
 # =============================================================================
 
-SERVERS=(xylem go rust java)
+SERVERS=(xylem go rust)
 IFS=',' read -ra PROTOS    <<< "${PROTO:-tcp}"
 IFS=',' read -ra CONNS     <<< "${CONNS:-1000,10000}"
 IFS=',' read -ra PAYLOADS  <<< "${PAYLOADS:-64,4096,65536}"
@@ -879,8 +853,8 @@ Options (pass after the command; env vars seed defaults):
   --proto, -P    tcp,udp,tls        protocols to build/bench (default: tcp)
                                     tcp/tls: ST+MT, throughput+connrate
                                     udp: ST only, throughput
-  --servers, -s  xylem,go,rust,java servers to compare (comma-separated)
-                                    available: xylem, go, rust, java
+  --servers, -s  xylem,go,rust      servers to compare (comma-separated)
+                                    available: xylem, go, rust
   --conns, -c    1000,10000         connection counts (comma-separated)
   --payload, -S  64,4096,65536      payload sizes in bytes (comma-separated)
   --duration, -d 10                 test duration in seconds

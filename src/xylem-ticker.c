@@ -48,11 +48,13 @@ struct xylem_ticker_s {
     _Atomic int32_t  refcnt;
 };
 
-static void _ticker_ref(xylem_ticker_t* t) {
+static void _ticker_ref(void* ud) {
+    xylem_ticker_t* t = (xylem_ticker_t*)ud;
     atomic_fetch_add(&t->refcnt, 1);
 }
 
-static void _ticker_unref(xylem_ticker_t* t) {
+static void _ticker_unref(void* ud) {
+    xylem_ticker_t* t = (xylem_ticker_t*)ud;
     if (atomic_fetch_sub(&t->refcnt, 1) != 1) {
         return;
     }
@@ -67,18 +69,6 @@ static void _ticker_unref(xylem_ticker_t* t) {
         xylem_sem_destroy(t->sem);
     }
     free(t);
-}
-
-/**
- * ud-guard adapters: the scheduler pins the ticker across a fire via
- * these, see _ticker_tick_cb and xylem_ticker_create.
- */
-static void _ticker_ud_ref(void* ud) {
-    _ticker_ref((xylem_ticker_t*)ud);
-}
-
-static void _ticker_ud_unref(void* ud) {
-    _ticker_unref((xylem_ticker_t*)ud);
 }
 
 /**
@@ -146,7 +136,7 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
     atomic_store(&t->refcnt, 1);
 
     /* Native repeat on the inline path; the callback is small and ordered. */
-    scheduler_timer_set_ud_guard(t->timer, _ticker_ud_ref, _ticker_ud_unref);
+    scheduler_timer_set_ud_guard(t->timer, _ticker_ref, _ticker_unref);
     if (scheduler_timer_start(
             t->timer, _ticker_tick_cb, t, interval_ms, interval_ms) != 0) {
         scheduler_timer_destroy(t->timer);
