@@ -647,6 +647,10 @@ static void _sched_timer_launch_cb(void* arg) {
     free(fire);
 }
 
+static int _sched_spawn(
+    scheduler_t* sched, void (*fn)(void*), void* arg,
+    void (*cleanup)(void*));
+
 static int _sched_timer_launch(
     scheduler_t* sched, _sched_timer_fire_t* fire) {
     _sched_timer_fire_t* f =
