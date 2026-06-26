@@ -95,14 +95,13 @@
 
 /**
  * Per-worker coroutine-slot cache. Each worker keeps up to
- * SCHED_CORO_CACHE_CAP free slots it can pop/push with no lock; only when
+ * SCHED_CORO_POOL_CAP free slots it can pop/push with no lock; only when
  * the local cache underflows or overflows does it exchange a batch of
- * SCHED_CORO_CACHE_BATCH slots with the shared pool under a single lock.
- * Mirrors the per-P gFree/stackcache design in the Go runtime: the hot
- * spawn/death path stays lock-free and the shared-pool lock is amortized.
+ * half of SCHED_CORO_POOL_CAP slots with the shared pool under a single
+ * lock. Mirrors the per-P gFree/stackcache design in the Go runtime: the
+ * hot spawn/death path stays lock-free and the shared-pool lock is amortized.
  */
-#define SCHED_CORO_CACHE_CAP   64
-#define SCHED_CORO_CACHE_BATCH 32
+#define SCHED_CORO_POOL_CAP 64
 
 typedef struct _sched_coro_pool_s {
     spin_t    lock;
@@ -132,8 +131,8 @@ typedef struct _sched_worker_s {
     heap_t               timers;
     mtx_t                timer_lock;
     _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
-    void**               coro_cache;       /* per-worker free coroutine slots. */
-    int32_t              coro_cache_count; /* slots currently held locally.    */
+    void**               coro_pool;       /* per-worker free coroutine slots. */
+    int32_t              coro_pool_count; /* slots currently held locally.    */
     list_t               registry;         /* coroutines owned for shutdown.   */
     spin_t               registry_lock;    /* protects registry.               */
 } _sched_worker_t;
@@ -240,11 +239,6 @@ typedef struct _sched_timer_fire_s {
 
 static thread_local _sched_worker_t* _tls_worker;
 
-static inline _sched_worker_t* _sched_timer_worker(
-    scheduler_timer_t* timer) {
-    return &timer->sched->workers[timer->owner];
-}
-
 static void _sched_coro_entry_cb(mco_coro* co) {
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
     ctx->fn(ctx->arg);
@@ -264,8 +258,8 @@ static size_t _sched_coro_metadata_size(size_t coro_size, size_t stack_size) {
     return (meta + page_size - 1) & ~(page_size - 1);
 }
 
-/* Reserve, commit, and guard-page one coroutine slot (mco_coro + stack). */
-static void* _sched_coro_slot_reserve(_sched_coro_pool_t* pool, size_t size) {
+/* Allocate one coroutine slot (mco_coro + stack), with guard page. */
+static void* _sched_coro_alloc(_sched_coro_pool_t* pool, size_t size) {
     if (SCHED_STACK_EXTERNAL) {
         return calloc(1, size);
     }
@@ -287,7 +281,7 @@ static void* _sched_coro_slot_reserve(_sched_coro_pool_t* pool, size_t size) {
     return base;
 }
 
-static void _sched_coro_stack_reset(_sched_coro_pool_t* pool, void* ptr, size_t size) {
+static void _sched_coro_shrink(_sched_coro_pool_t* pool, void* ptr, size_t size) {
     if (SCHED_STACK_EXTERNAL) {
         return;
     }
@@ -303,7 +297,7 @@ static void _sched_coro_stack_reset(_sched_coro_pool_t* pool, void* ptr, size_t 
 }
 
 /* Return one coroutine slot's address space to the OS. */
-static void _sched_coro_slot_release(_sched_coro_pool_t* pool, void* ptr) {
+static void _sched_coro_free(_sched_coro_pool_t* pool, void* ptr) {
     if (SCHED_STACK_EXTERNAL) {
         free(ptr);
         return;
@@ -315,7 +309,7 @@ static void _sched_coro_slot_release(_sched_coro_pool_t* pool, void* ptr) {
 }
 
 /* Pop one slot from the shared pool; NULL when empty. Takes the pool lock. */
-static void* _sched_coro_pool_global_pop(_sched_coro_pool_t* pool) {
+static void* _sched_coro_pool_pop(_sched_coro_pool_t* pool) {
     void* ptr = NULL;
     spin_lock(&pool->lock);
     if (pool->count > 0) {
@@ -326,7 +320,7 @@ static void* _sched_coro_pool_global_pop(_sched_coro_pool_t* pool) {
 }
 
 /* Push one slot into the shared pool; release it when the pool is full. */
-static void _sched_coro_pool_global_push(_sched_coro_pool_t* pool, void* ptr) {
+static void _sched_coro_pool_push(_sched_coro_pool_t* pool, void* ptr) {
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
         pool->slots[pool->count++] = ptr;
@@ -334,88 +328,78 @@ static void _sched_coro_pool_global_push(_sched_coro_pool_t* pool, void* ptr) {
         return;
     }
     spin_unlock(&pool->lock);
-    _sched_coro_slot_release(pool, ptr);
+    _sched_coro_free(pool, ptr);
 }
 
 /**
  * The current worker's local slot cache, or NULL when the caller is not a
  * worker of this scheduler (e.g. the initial spawn on the main thread).
  */
-static _sched_worker_t* _sched_coro_pool_local(_sched_coro_pool_t* pool) {
-    _sched_worker_t* w = _tls_worker;
-    if (w && &w->sched->coro_pool == pool && w->coro_cache) {
-        return w;
-    }
-    return NULL;
-}
-
 static void* _sched_coro_pool_alloc_cb(size_t size, void* allocator_data) {
-    _sched_coro_pool_t*    pool = (_sched_coro_pool_t*)allocator_data;
-    _sched_worker_t* w    = _sched_coro_pool_local(pool);
-
-    if (!w) {
-        /* Non-worker caller: go straight to the shared pool. */
-        void* ptr = _sched_coro_pool_global_pop(pool);
-        return ptr ? ptr : _sched_coro_slot_reserve(pool, size);
+    _sched_coro_pool_t* pool = (_sched_coro_pool_t*)allocator_data;
+    _sched_worker_t*    w    = _tls_worker;
+    if (!w || &w->sched->coro_pool != pool || !w->coro_pool) {
+        void* ptr = _sched_coro_pool_pop(pool);
+        return ptr ? ptr : _sched_coro_alloc(pool, size);
     }
 
     /* Fast path: local cache hit, no lock. */
-    if (w->coro_cache_count > 0) {
-        return w->coro_cache[--w->coro_cache_count];
+    if (w->coro_pool_count > 0) {
+        return w->coro_pool[--w->coro_pool_count];
     }
 
     /* Local cache empty: refill a batch from the shared pool under one lock. */
     spin_lock(&pool->lock);
-    int32_t n = (pool->count < SCHED_CORO_CACHE_BATCH)
+    int32_t n = (pool->count < SCHED_CORO_POOL_CAP / 2)
                     ? pool->count
-                    : SCHED_CORO_CACHE_BATCH;
+                    : SCHED_CORO_POOL_CAP / 2;
     for (int32_t i = 0; i < n; i++) {
-        w->coro_cache[i] = pool->slots[--pool->count];
+        w->coro_pool[i] = pool->slots[--pool->count];
     }
     spin_unlock(&pool->lock);
 
     if (n > 0) {
-        w->coro_cache_count = n - 1;
-        return w->coro_cache[n - 1];
+        w->coro_pool_count = n - 1;
+        return w->coro_pool[n - 1];
     }
 
-    /* Shared pool empty too: reserve a fresh slot. */
-    return _sched_coro_slot_reserve(pool, size);
+    /* Shared pool empty too: allocate a fresh slot. */
+    return _sched_coro_alloc(pool, size);
 }
 
 static void _sched_coro_pool_dealloc_cb(
     void* ptr, size_t size, void* allocator_data) {
-    _sched_coro_pool_t*    pool = (_sched_coro_pool_t*)allocator_data;
-    _sched_worker_t* w    = _sched_coro_pool_local(pool);
+    _sched_coro_pool_t* pool = (_sched_coro_pool_t*)allocator_data;
+    _sched_worker_t*    w    = _tls_worker;
 
     /* Drop the physical stack pages regardless of where the slot lands. */
-    _sched_coro_stack_reset(pool, ptr, size);
+    _sched_coro_shrink(pool, ptr, size);
 
-    if (!w) {
-        _sched_coro_pool_global_push(pool, ptr);
+    if (!w || &w->sched->coro_pool != pool || !w->coro_pool) {
+        _sched_coro_pool_push(pool, ptr);
         return;
     }
 
     /* Fast path: room in the local cache, no lock. */
-    if (w->coro_cache_count < SCHED_CORO_CACHE_CAP) {
-        w->coro_cache[w->coro_cache_count++] = ptr;
+    if (w->coro_pool_count < SCHED_CORO_POOL_CAP) {
+        w->coro_pool[w->coro_pool_count++] = ptr;
         return;
     }
 
     /**
-     * Local cache full: move a batch down to the shared pool under one
-     * lock, release whatever the pool refuses, then store the new slot.
+     * Local pool full: drain half to the shared pool under one lock,
+     * free whatever the pool refuses, then store the new slot.
      */
-    int32_t keep = SCHED_CORO_CACHE_CAP - SCHED_CORO_CACHE_BATCH;
+    int32_t keep = SCHED_CORO_POOL_CAP / 2;
     spin_lock(&pool->lock);
-    while (w->coro_cache_count > keep && pool->count < pool->cap) {
-        pool->slots[pool->count++] = w->coro_cache[--w->coro_cache_count];
+    while (w->coro_pool_count > keep && pool->count < pool->cap) {
+        pool->slots[pool->count++] = w->coro_pool[--w->coro_pool_count];
     }
     spin_unlock(&pool->lock);
-    while (w->coro_cache_count > keep) {
-        _sched_coro_slot_release(pool, w->coro_cache[--w->coro_cache_count]);
+    while (w->coro_pool_count > keep) {
+        _sched_coro_free(pool, w->coro_pool[--w->coro_pool_count]);
     }
-    w->coro_cache[w->coro_cache_count++] = ptr;
+    w->coro_pool[w->coro_pool_count++] = ptr;
 }
 
 static void _sched_timer_ref(scheduler_timer_t* timer) {
@@ -625,7 +609,7 @@ static inline void _sched_timer_publish_deadline(_sched_worker_t* w) {
 
 static void _sched_timer_complete(_sched_timer_fire_t* fire) {
     scheduler_timer_t* timer = fire->timer;
-    _sched_worker_t*   owner = _sched_timer_worker(timer);
+    _sched_worker_t*   owner = &timer->sched->workers[timer->owner];
     bool               armed = false;
     uint64_t           now   = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
@@ -1153,11 +1137,11 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
                 }
             }
             mtx_destroy(&w->timer_lock);
-            if (w->coro_cache) {
-                for (int32_t j = 0; j < w->coro_cache_count; j++) {
-                    _sched_coro_slot_release(&sched->coro_pool, w->coro_cache[j]);
+            if (w->coro_pool) {
+                for (int32_t j = 0; j < w->coro_pool_count; j++) {
+                    _sched_coro_free(&sched->coro_pool, w->coro_pool[j]);
                 }
-                free(w->coro_cache);
+                free(w->coro_pool);
             }
         }
         free(sched->workers);
@@ -1179,7 +1163,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
-        _sched_coro_slot_release(&sched->coro_pool, sched->coro_pool.slots[i]);
+        _sched_coro_free(&sched->coro_pool, sched->coro_pool.slots[i]);
     }
     free(sched->coro_pool.slots);
 
@@ -1308,11 +1292,11 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         w->deque = wsq_create(deque_capacity);
         w->sem = platform_sem_create(0);
         atomic_init(&w->next_deadline_ms, UINT64_MAX);
-        w->coro_cache = (void**)calloc(
-            SCHED_CORO_CACHE_CAP, sizeof(void*));
-        w->coro_cache_count = 0;
+        w->coro_pool = (void**)calloc(
+            SCHED_CORO_POOL_CAP, sizeof(void*));
+        w->coro_pool_count = 0;
 
-        if (!w->deque || !w->sem || !w->coro_cache) {
+        if (!w->deque || !w->sem || !w->coro_pool) {
             _sched_cleanup(sched, 0);
             return NULL;
         }
@@ -1658,7 +1642,7 @@ int scheduler_timer_start(
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    _sched_worker_t* owner = _sched_timer_worker(timer);
+    _sched_worker_t* owner = &timer->sched->workers[timer->owner];
     bool armed = false;
     mtx_lock(&owner->timer_lock);
     if (timer->state == TIMER_QUEUED) {
@@ -1690,7 +1674,7 @@ int scheduler_timer_start(
 }
 
 bool scheduler_timer_stop(scheduler_timer_t* timer) {
-    _sched_worker_t* owner = _sched_timer_worker(timer);
+    _sched_worker_t* owner = &timer->sched->workers[timer->owner];
 
     bool cancelled = false;
     mtx_lock(&owner->timer_lock);
@@ -1716,7 +1700,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
-    _sched_worker_t* owner = _sched_timer_worker(timer);
+    _sched_worker_t* owner = &timer->sched->workers[timer->owner];
     bool was_active;
     bool armed = false;
     mtx_lock(&owner->timer_lock);
