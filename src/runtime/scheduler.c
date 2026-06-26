@@ -210,8 +210,6 @@ struct scheduler_timer_s {
     scheduler_timer_ud_fn_t  ud_unref;
     uint64_t                 timeout;
     uint64_t                 repeat;
-    uint64_t                 reset_timeout;
-    uint64_t                 reset_repeat;
     _timer_state_t           state;
     bool                     stop_pending;
     bool                     reset_pending;
@@ -234,6 +232,7 @@ typedef struct _sched_timer_fire_s {
     scheduler_timer_t*       timer;
     scheduler_timer_fn_t     cb;
     void*                    ud;
+    scheduler_timer_ud_fn_t  ud_ref;
     scheduler_timer_ud_fn_t  ud_unref;
     bool                     spawn;
 } _sched_timer_fire_t;
@@ -610,13 +609,12 @@ static void _sched_timer_complete(_sched_timer_fire_t* fire) {
             timer->reset_pending = false;
             timer->state         = TIMER_IDLE;
         } else if (timer->reset_pending) {
-            timer->timeout       = now + timer->reset_timeout;
-            timer->repeat        = timer->reset_repeat;
+            timer->timeout       = now + timer->timeout;
             timer->reset_pending = false;
             timer->state         = TIMER_QUEUED;
             heap_insert(&owner->timers, &timer->heap_node);
             armed = true;
-        } else if (timer->repeat > 0 && atomic_load(&timer->sched->running)) {
+        } else if (timer->repeat > 0) {
             timer->timeout = now + timer->repeat;
             timer->state   = TIMER_QUEUED;
             heap_insert(&owner->timers, &timer->heap_node);
@@ -646,16 +644,16 @@ static void _sched_timer_launch_cb(void* arg) {
 
 static int _sched_timer_launch(
     scheduler_t* sched, _sched_timer_fire_t* fire) {
-    _sched_timer_fire_t* heap_fire =
-        (_sched_timer_fire_t*)calloc(1, sizeof(*heap_fire));
-    if (!heap_fire) {
+    _sched_timer_fire_t* f =
+        (_sched_timer_fire_t*)calloc(1, sizeof(*f));
+    if (!f) {
         xylem_loge("<sched> timer spawn alloc failed");
         return -1;
     }
-    *heap_fire = *fire;
-    if (scheduler_spawn(sched, _sched_timer_launch_cb, heap_fire) != 0) {
+    *f = *fire;
+    if (scheduler_spawn(sched, _sched_timer_launch_cb, f) != 0) {
         xylem_loge("<sched> timer spawn failed");
-        free(heap_fire);
+        free(f);
         return -1;
     }
     return 0;
@@ -694,14 +692,16 @@ static int _sched_timer_process(_sched_worker_t* w) {
                  * until the matching ud_unref below. Released after the
                  * callback returns (inline) or in the spawn entry.
                  */
-                if (t->ud_ref) {
-                    t->ud_ref(t->ud);
-                }
                 fire.timer    = t;
                 fire.cb       = t->cb;
                 fire.ud       = t->ud;
+                fire.ud_ref   = t->ud_ref;
                 fire.ud_unref = t->ud_unref;
                 fire.spawn    = t->spawn;
+
+                if (fire.ud_ref) {
+                    fire.ud_ref(fire.ud);
+                }
             }
         }
         mtx_unlock(&w->timer_lock);
@@ -1123,7 +1123,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
                         heap_entry(node, scheduler_timer_t, heap_node);
                     heap_dequeue(&w->timers);
                     t->state = TIMER_IDLE;
-                    _sched_timer_unref(t);
+                    /* Heap never took a reference; user owns the ref. */
                 }
             }
             mtx_destroy(&w->timer_lock);
@@ -1634,25 +1634,28 @@ int scheduler_timer_start(
 
     _sched_worker_t* owner = &timer->sched->workers[timer->owner];
     bool armed = false;
+
     mtx_lock(&owner->timer_lock);
-    if (timer->state == TIMER_QUEUED) {
-        xylem_loge("<sched> double start on queued timer=%p", (void*)timer);
-        abort();
-    }
-    timer->cb            = cb;
-    timer->ud            = ud;
-    timer->repeat        = repeat_ms;
-    timer->stop_pending  = false;
-    if (timer->state == TIMER_FIRING) {
+    timer->cb           = cb;
+    timer->ud           = ud;
+    timer->repeat       = repeat_ms;
+    timer->stop_pending = false;
+
+    switch (timer->state) {
+    case TIMER_FIRING:
         timer->reset_pending = true;
-        timer->reset_timeout = timeout_ms;
-        timer->reset_repeat  = repeat_ms;
-    } else {
+        timer->timeout       = timeout_ms;
+        break;
+    case TIMER_QUEUED:
+        heap_remove(&owner->timers, &timer->heap_node);
+        /* fallthrough */
+    case TIMER_IDLE:
         timer->timeout       = now + timeout_ms;
         timer->reset_pending = false;
         timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         armed = true;
+        break;
     }
     _sched_timer_publish_deadline(owner);
     mtx_unlock(&owner->timer_lock);
@@ -1668,15 +1671,20 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
 
     bool cancelled = false;
     mtx_lock(&owner->timer_lock);
-    if (timer->state == TIMER_QUEUED) {
+    switch (timer->state) {
+    case TIMER_QUEUED:
         heap_remove(&owner->timers, &timer->heap_node);
         timer->state         = TIMER_IDLE;
         timer->stop_pending  = false;
         timer->reset_pending = false;
         cancelled = true;
-    } else if (timer->state == TIMER_FIRING) {
+        break;
+    case TIMER_FIRING:
         timer->stop_pending  = true;
         timer->reset_pending = false;
+        break;
+    case TIMER_IDLE:
+        break;
     }
     _sched_timer_publish_deadline(owner);
     mtx_unlock(&owner->timer_lock);
@@ -1691,35 +1699,31 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = &timer->sched->workers[timer->owner];
-    bool was_active;
+    bool was_queued;
     bool armed = false;
+
     mtx_lock(&owner->timer_lock);
-    was_active = (timer->state == TIMER_QUEUED);
-    if (timer->state == TIMER_QUEUED) {
+    was_queued = (timer->state == TIMER_QUEUED);
+    timer->stop_pending = false;
+    
+    if (timer->repeat != 0) {
+        timer->repeat = timeout_ms;
+    }
+    switch (timer->state) {
+    case TIMER_FIRING:
+        timer->reset_pending = true;
+        timer->timeout       = timeout_ms;
+        break;
+    case TIMER_QUEUED:
         heap_remove(&owner->timers, &timer->heap_node);
-        timer->timeout = now + timeout_ms;
-        if (timer->repeat != 0) {
-            timer->repeat = timeout_ms;
-        }
-        timer->stop_pending  = false;
-        timer->reset_pending = false;
-        heap_insert(&owner->timers, &timer->heap_node);
-        armed = true;
-    } else if (timer->state == TIMER_FIRING) {
-        timer->stop_pending   = false;
-        timer->reset_pending  = true;
-        timer->reset_timeout  = timeout_ms;
-        timer->reset_repeat   = timer->repeat != 0 ? timeout_ms : 0;
-    } else {
-        timer->timeout = now + timeout_ms;
-        if (timer->repeat != 0) {
-            timer->repeat = timeout_ms;
-        }
-        timer->stop_pending  = false;
+        /* fallthrough */
+    case TIMER_IDLE:
+        timer->timeout       = now + timeout_ms;
         timer->reset_pending = false;
         timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         armed = true;
+        break;
     }
     _sched_timer_publish_deadline(owner);
     mtx_unlock(&owner->timer_lock);
@@ -1727,7 +1731,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
     if (armed) {
         _sched_timer_wake_owner(owner);
     }
-    return was_active;
+    return was_queued;
 }
 
 void scheduler_set_idle_cb(
