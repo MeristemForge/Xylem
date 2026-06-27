@@ -436,8 +436,21 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
   fresh coroutine.
 - Periodic timers (`repeat > 0`) are reinserted only after the fired callback
   completes. A timer in `FIRING` state records stop/reset/start requests as
-  pending state and applies them in the completion path, so callbacks for the
-  same timer never overlap.
+  pending flags (`stop_pending`, `reset_pending`) and applies them in the
+  completion path (`_sched_timer_complete`), so callbacks for the same timer
+  never overlap. The priority order is:
+
+  1. **stop** — always wins. Neither `reset` nor `start` clear `stop_pending`.
+     Once a stop has been requested, the timer goes idle and any concurrent
+     re-arm request is silently dropped.
+  2. **reset** — honoured only when `stop_pending` is false. For periodic
+     timers, `reset` also updates the repeat interval.
+  3. **repeat** — the original periodic interval, used when neither stop nor
+     reset was requested.
+
+  Operations on the same timer handle (cancel/cancel, cancel/reset,
+  cancel/start) are **not safe for concurrent use** and require external
+  synchronization, matching Go's `Timer.Stop`/`Reset` contract.
 - Timers are reference counted so `scheduler_timer_destroy()` is safe to call
   concurrently with an in-flight fire. `scheduler_timer_stop()`/`reset()` return
   whether they cancelled a still-pending fire, which lets callers (e.g. the
