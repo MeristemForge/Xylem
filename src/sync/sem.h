@@ -24,14 +24,14 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct xylem_sem_s xylem_sem_t;
+typedef struct sem_s sem_t;
 
 /**
  * Counting semaphore that bridges coroutines and OS threads.
  *
  * Unlike the other primitives in this directory (mutex, cond,
  * waitgroup, channel), which are coroutine-only and abort if a
- * blocking op is called off-coroutine, xylem_sem is the one sync
+ * blocking op is called off-coroutine, sem_t is the one sync
  * object whose blocking op is *any-context*: it is meant precisely
  * for a coroutine to notify an external thread, or an external thread
  * to notify a coroutine.
@@ -74,7 +74,7 @@ typedef struct xylem_sem_s xylem_sem_t;
 /**
  * @brief Create a counting semaphore.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any thread or context.
  *
@@ -82,19 +82,19 @@ typedef struct xylem_sem_s xylem_sem_t;
  *
  * @return Semaphore handle, or NULL on allocation failure.
  */
-extern xylem_sem_t* xylem_sem_create(unsigned int value);
+extern sem_t* sem_create(uint32_t value);
 
 /**
  * @brief Destroy the semaphore and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any thread or context. The caller must ensure no
  * coroutine or thread is still blocked in wait() on this semaphore.
  *
  * @param sem  Semaphore handle, NULL is safe.
  */
-extern void xylem_sem_destroy(xylem_sem_t* sem);
+extern void sem_destroy(sem_t* sem);
 
 /**
  * @brief Acquire a token, blocking if none is available.
@@ -111,14 +111,14 @@ extern void xylem_sem_destroy(xylem_sem_t* sem);
  *
  * @param sem  Semaphore handle.
  */
-extern void xylem_sem_wait(xylem_sem_t* sem);
+extern void sem_wait(sem_t* sem);
 
 /**
  * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Like xylem_sem_wait, but gives up after the timeout elapses. A
+ * Like sem_wait, but gives up after the timeout elapses. A
  * timeout of 0 makes this a non-blocking attempt: it acquires a token
  * if one is immediately available, otherwise returns false at once
  * (never blocks, never parks).
@@ -134,12 +134,12 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
  *
  * @return true if a token was acquired, false if the timeout elapsed.
  */
-extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
+extern bool sem_timedwait(sem_t* sem, uint64_t timeout_ms);
 
 /**
  * @brief Release a token.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If only coroutine waiters are queued, the FIFO-oldest coroutine is
  * handed the token and woken. If OS threads are blocked, the token is
@@ -150,4 +150,4 @@ extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
  *
  * @param sem  Semaphore handle.
  */
-extern void xylem_sem_post(xylem_sem_t* sem);
+extern void sem_post(sem_t* sem);

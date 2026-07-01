@@ -31,7 +31,5 @@ AlignConsecutiveBitFields: true
 AlignTrailingComments: true
 AlignEscapedNewlines: Left
 
-# Functions always span their own braces; no collapsing onto one line.
-AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false

@@ -58,7 +58,7 @@ set(SRCS
 	src/sync/xylem-channel.c
 	src/sync/xylem-mutex.c
 	src/sync/xylem-cond.c
-	src/sync/xylem-sem.c
+	src/sync/sem.c
 	src/sync/tls-wake.c
 	src/sync/spin.c
 	src/crypto/xylem-sha1.c

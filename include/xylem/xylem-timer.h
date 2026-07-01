@@ -30,6 +30,14 @@ typedef struct xylem_timer_s xylem_timer_t;
 typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
 
 /**
+ * One-shot and periodic scheduler timers.
+ *
+ * Lifetime: timers are driven by the runtime scheduler; all timer APIs
+ * require xylem_run() to be active. External OS threads must not call
+ * timer APIs after xylem_shutdown() has been called.
+ */
+
+/**
  * @brief Arm a one-shot timer.
  *
  * @note [THREAD-SAFE]
