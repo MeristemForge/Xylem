@@ -131,14 +131,21 @@ if not defined XYLEM_LIB (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3"
+set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3 /I\"%PROJECT_ROOT%\src\""
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 echo %LANGS% | findstr /I "xylem" >nul && (
     call :info "building xylem sync-bench..."
-    if exist "%BIN_DIR%\sync-xylem.exe" del /q "%BIN_DIR%\sync-xylem.exe"
-    cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" "%SYNC_DIR%\xylem-sync\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sync-xylem.exe" >nul 2>&1
-    if errorlevel 1 (call :err "sync-xylem build failed" & exit /b 1) else (call :ok "sync-xylem built")
+    if exist "%BIN_DIR%\sem-xylem.exe" del /q "%BIN_DIR%\sem-xylem.exe"
+    cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\sem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
+    if errorlevel 1 (call :err "sem-xylem build failed" & exit /b 1) else (call :ok "sem-xylem built")
+)
+
+echo %LANGS% | findstr /I "rust" >nul && (
+    call :info "building sem-rust..."
+    pushd "%SYNC_DIR%\sem\rust"
+    cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\sem-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sem-rust built") || (call :warn "skip sem-rust")
+    popd
 )
 
 echo %LANGS% | findstr /I "go" >nul && (
@@ -162,7 +169,7 @@ echo %LANGS% | findstr /I "rust" >nul && (
     if not errorlevel 1 (
         call :info "building rust sync-bench..."
         pushd "%SYNC_DIR%\rust-sync"
-        cargo build --release -q && copy /Y "target\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
+        cargo build --release -q --target-dir "%BIN_DIR%\cargo" && copy /Y "%BIN_DIR%\cargo\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
         popd
     ) else (
         call :err "cargo not found"
@@ -223,7 +230,6 @@ set "ITERS_T=1000000"
 if /I "%~1"=="mutex"     (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="cond"      (set "TASKS=2" & set "ITERS=2000000" & set "ITERS_T=2000000")
 if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=50000"  & set "ITERS_T=2000")
-if /I "%~1"=="sem"       (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="channel"   (set "TASKS=4" & set "ITERS=1000000" & set "ITERS_T=1000000")
 if /I "%~1"=="handoff"   (set "TASKS=2" & set "ITERS=500000"  & set "ITERS_T=500000")
 goto :eof
@@ -242,12 +248,12 @@ goto :eof
 REM bench_prim <prim>
 :bench_prim
 set "PRIM=%~1"
-call :prim_params "%PRIM%"
 if /I "%PRIM%"=="sem" (
-    call :info "=== %PRIM%  (tasks=%TASKS% permits=%PERMITS%) ==="
-) else (
-    call :info "=== %PRIM%  (tasks=%TASKS%) ==="
+    call :bench_sem
+    goto :eof
 )
+call :prim_params "%PRIM%"
+call :info "=== %PRIM%  (tasks=%TASKS%) ==="
 echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s)
 echo   -------------------------------------------------------------------------------
 
@@ -392,6 +398,72 @@ call set "_cur=%%%_LV%%%"
 if defined _cur (call set "%_LV%=%%%_LV%%%,%_lt%") else (set "%_LV%=%_lt%")
 shift
 goto :collect_list
+
+REM ------------------------------------------------------------------ sem
+:bench_sem
+call :info "=== sem  (handoff, 5s) ==="
+echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
+echo   -------------------------------------------------------------------------------
+
+for %%L in (%LANGS:,= %) do (
+    set "lang=%%L"
+    if /I "!lang!"=="go" goto :sem_skip
+    if /I "!lang!"=="xylem" (set "BIN=%BIN_DIR%\sem-xylem.exe") else (set "BIN=%BIN_DIR%\sem-rust.exe")
+    if not exist "!BIN!" (
+        call :warn "skip !lang! (no binary)"
+    ) else (
+        if /I "!lang!"=="xylem" set "modes=cc tt ct tc"
+        if /I "!lang!"=="rust"  set "modes=coro"
+
+        for %%M in (!modes!) do (
+            set "mode=%%M"
+            set /a ops_sum=0, nspo_sum=0, valid=0
+            set "ops_vals="
+            set "total_last=0"
+
+            for /l %%R in (1,1,%REPEAT%) do (
+                set "out=%RUN_DIR%\sync-sem-!lang!-!mode!-r%%R.json"
+                if /I "!lang!"=="xylem" (
+                    "%BIN_DIR%\sem-xylem.exe" > "!out!" 2>nul
+                ) else (
+                    "%BIN_DIR%\sem-rust.exe" > "!out!" 2>nul
+                )
+
+                for %%F in ("!out!") do set "_sz=%%~zF"
+                if defined _sz if !_sz! GTR 0 (
+                    for /f "tokens=1-3 delims=|" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match \"`\"mode`\":\s*`\"$m`\"\"){$o='';$n='';$t='';if($b -match '`\"ops_per_sec`\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '`\"ns_per_op`\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '`\"total_ops`\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output \"$o|$n|$t\"}}"') do (
+                        set "ops=%%A"
+                        set "nspo=%%B"
+                        set "total=%%C"
+                    )
+                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                    if defined ops if !ops! GTR 0 (
+                        set /a ops_sum+=ops, valid+=1
+                        call :nspo_to_x100 "!nspo!"
+                        set /a nspo_sum+=_NSPO_X100
+                        set "total_last=!total!"
+                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
+                    )
+                )
+                set "_sz="
+            )
+
+            if !valid! GTR 0 (
+                set /a ops_avg=ops_sum/valid
+                set /a nspo_avg_x100=nspo_sum/valid
+                set /a nspo_avg_i=nspo_avg_x100/100
+                set /a nspo_avg_f=nspo_avg_x100%%100
+                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
+                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
+            ) else (
+                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+            )
+        )
+    )
+    :sem_skip
+)
+echo.
+goto :eof
 
 :usage
 echo usage: %~nx0 [build^|bench^|all] [options]
