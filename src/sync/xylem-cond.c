@@ -27,7 +27,7 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
-#include "sync/tls-wake.h"
+#include "sync/thrd-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
 
@@ -68,7 +68,7 @@ typedef struct _cond_waiter_s {
     _cond_kind_t kind;
     mco_coro*    co;    /* COND_WAITER_CO  */
     scheduler_t* sched; /* COND_WAITER_CO  */
-    tls_wake_t*  wake;  /* COND_WAITER_THR */
+    thrd_wake_t* wake;  /* COND_WAITER_THR */
 } _cond_waiter_t;
 
 /**
@@ -81,7 +81,7 @@ static void _cond_wake(_cond_waiter_t w) {
     if (w.kind == COND_WAITER_CO) {
         scheduler_schedule(w.sched, w.co);
     } else {
-        tls_wake_signal(w.wake);
+        thrd_wake_signal(w.wake);
     }
 }
 
@@ -169,20 +169,14 @@ void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx) {
     } else {
         /* External OS thread: block on the per-thread futex wake. */
         w.kind = COND_WAITER_THR;
-        w.wake = tls_wake_self();
+        w.wake = thrd_wake_self();
 
         spin_lock(&cond->guard);
-        if (!w.wake) {
-            /* No wake object (OOM): cannot block; do not enqueue. */
-            spin_unlock(&cond->guard);
-            xylem_mutex_unlock(mtx);
-        } else {
-            list_insert_tail(&cond->waiters, &w.node);
-            spin_unlock(&cond->guard);
-            /* Linked and visible to signalers: now drop the user mutex. */
-            xylem_mutex_unlock(mtx);
-            tls_wake_wait(w.wake);
-        }
+        list_insert_tail(&cond->waiters, &w.node);
+        spin_unlock(&cond->guard);
+        /* Linked and visible to signalers: now drop the user mutex. */
+        xylem_mutex_unlock(mtx);
+        thrd_wake_wait(w.wake);
     }
 
     /* Woken: restore the "caller holds mtx" postcondition. */

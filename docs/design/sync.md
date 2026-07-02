@@ -24,18 +24,16 @@ All five public primitives share one shape:
 - **Blocking ops are context-adaptive.** `mutex_lock`, `cond_wait`,
   `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
   they park (the worker thread stays free); on any other thread they block that
-  OS thread. Mutex, cond, and waitgroup preserve FIFO waiter order. `xylem_sem`
-  preserves FIFO among coroutine waiters, but OS-thread waiters contend on the
-  count word and may barge. None of them requires a coroutine context.
+  OS thread. Mutex, cond, waitgroup, and `xylem_sem` preserve FIFO waiter
+  order across coroutine and OS-thread waiters. None of them requires a
+  coroutine context.
 - **Wakeup/non-blocking ops never block.** `unlock`, `signal`/`broadcast`,
   `add`/`done`, `send`/`close`, `post`, and all `create`/`destroy` are safe from
   any thread. Cross-context coroutine wakeups go through
   `scheduler_schedule()`; OS-thread wakeups use the primitive's platform
   blocking path.
-- **FIFO wakeups where the primitive owns a waiter list.** Mutex, cond, and
-  waitgroup resume waiters in arrival order. `xylem_sem` is FIFO only for its
-  coroutine queue; OS-thread waiters use the platform futex/semaphore path and
-  are not globally FIFO.
+- **FIFO wakeups where the primitive owns a waiter list.** Mutex, cond,
+  waitgroup, and sem resume waiters in arrival order.
 - **Abort on contract violation.** Counter underflow, double-close, and
   multi-receiver are logic bugs, so misuse aborts with a diagnostic rather than
   corrupting state silently. (None of the primitives aborts merely for being
@@ -68,9 +66,9 @@ primitive -- and inline the same small block/wake mechanics directly:
 `mco_running()` decides park vs. OS-thread block, the acquire/visibility step is
 done under the guard so a racing waker is never lost, and a drain reads each
 node's successor before waking so a vanishing stack waiter cannot strand it. The
-channel and sem skip the list entirely, keeping their own specialised machinery
-(a lock-free single-slot fast path, a timed-wait timer); all of them share only
-the `waiter` representation and wake dispatch.
+channel skips the list entirely, keeping its own specialised machinery (a
+lock-free single-slot fast path and a timed-wait timer). Sem keeps its own FIFO
+waiter list because it must pair direct token ownership with a count.
 
 ### Cross-context wake cost
 
@@ -262,22 +260,20 @@ wrappers. `destroy()` should follow a drain.
 
 A counting semaphore. Like the other primitives it bridges coroutines and OS
 threads, and it adds two things they don't have: a **count** (so a `post()` with
-no waiter is remembered) and a **timed wait**. Its coroutine wait path keeps a
-FIFO list, while OS-thread waiters contend on the count word through the
-platform futex/semaphore path. That split is intentional: it avoids a syscall
-for coroutine-only hand-off while still preventing OS-thread starvation.
+no waiter is remembered) and a **timed wait**. Coroutine and OS-thread waiters
+share one FIFO list. A posted token is handed directly to the FIFO-oldest
+waiter; only posts that find no waiter increment the count.
 
 - `wait()` decrements the count, or blocks if it is zero. It is
   **context-adaptive**: on a coroutine it parks (the worker thread stays free);
-  on any other thread it blocks that OS thread. Coroutine waiters are FIFO among
-  themselves; OS-thread waiters are not globally ordered with them.
+  on any other thread it blocks that OS thread. Waiters are FIFO across
+  coroutine and OS-thread callers.
 - `timedwait(ms)` is `wait()` with a deadline: it returns `true` once a token is
   acquired, or `false` if `ms` elapses first. `timedwait(0)` is a non-blocking
   try (acquire-or-fail, never parks) and replaces the old `trywait`.
-- `post()` hands the token directly to the FIFO-oldest coroutine only when no
-  OS thread is blocked. If an OS thread is blocked, `post()` banks the token and
-  wakes contenders; a thread may acquire it before an older coroutine. `post`,
-  `create`, `destroy` are callable from any thread or context and never park.
+- `post()` hands the token directly to the FIFO-oldest waiter. If nobody is
+  waiting, `post()` banks the token in the count. `post`, `create`, `destroy`
+  are callable from any thread or context and never park.
 
 ### Who waits decides how it wakes
 
@@ -285,35 +281,30 @@ The poster chooses the wake path from the blocked party's kind:
 
 - a **coroutine waiter** stores its `mco_coro*` and the scheduler it parked
   under, and is woken with `scheduler_schedule()` (thread-safe from any caller);
-- a **thread waiter** increments `thr_waiters`, blocks on the count word through
-  the platform futex/semaphore path, and competes for a banked token when woken.
+- a **thread waiter** stores its per-thread futex wake object and blocks on
+  that wake object until the posted token is handed to it.
 
 So "thread posts -> coroutine waits" reschedules the coroutine, and "coroutine
-posts -> thread waits" signals the platform futex/semaphore path. The branch is
-on the blocked party's kind, not the poster's.
+posts -> thread waits" signals that thread's wake object. The branch is on the
+blocked party's kind, not the poster's.
 
 ### Direct hand-off, no lost wakeups
 
-A short spin `guard` serialises coroutine queue mutations and count banking.
-When only coroutine waiters exist, `post()` transfers the token straight to the
-FIFO-oldest coroutine and never touches the count; the woken coroutine returns
-from `wait()` without re-decrementing. The coroutine fast path re-checks the
-count inside the park callback under the guard, so a `post()` racing the park
-either hands over the count (park declines) or finds the waiter already queued.
-
-Once an OS thread is blocked, direct coroutine hand-off stops. `post()` banks a
-token in `count`, wakes one OS-thread waiter through the platform path, and wakes
-the FIFO-oldest coroutine to re-contend if one exists. Whichever side
-CAS-decrements the banked count first owns the token. This admits barging, but
-it prevents a steady coroutine queue from starving OS threads forever.
+A short spin `guard` serialises waiter queue mutations and count banking.
+When waiters exist, `post()` transfers the token straight to the FIFO-oldest
+waiter and never touches the count; the woken party returns from `wait()`
+already owning the token. The wait fast path re-checks the count while holding
+the guard during enqueue, so a `post()` racing the block either banks a token
+that the waiter consumes immediately, or finds the waiter already queued and
+hands the token to it.
 
 ### Timeout and waiter lifetime
 
-Most coroutine waiters live on the blocked coroutine's stack: an infinite wait
-stays valid because the coroutine is suspended. `post()` copies the wake target
-out under the guard and never touches the record again, so a stack waiter is
-safe. OS-thread waiters do not have queue records in `xylem_sem`; they sleep on
-the platform path and contend on `count`.
+Most waiters live on the blocked caller's stack: an infinite coroutine wait
+stays valid because the coroutine is suspended, and an OS-thread waiter stays
+valid while that thread is blocked on its per-thread wake object. `post()` copies
+the wake target out under the guard and never touches the record again, so stack
+waiters are safe.
 
 A **timed coroutine wait** is the exception. It arms a scheduler timer that can
 pull the waiter out of the FIFO from another worker, and that timer callback may
@@ -326,11 +317,11 @@ racing `post()` cannot dequeue and resume the coroutine before the timer is
 live; on resume the waiter cancels the timer and reports timeout-vs-token from a
 flag the timeout callback set while holding the guard.
 
-The thread-side timeout needs no timer: `platform_sem_timedwait` does the
-blocking, and on wakeup the thread resolves the race with a concurrent `post()`
-under the guard — if it is still queued it removes itself and reports timeout;
-if a `post()` already dequeued it, it consumes the handed-off token (so the
-token is not lost) and reports success.
+The thread-side timeout needs no scheduler timer: `thrd_wake_timedwait` does the
+blocking. On timeout the thread resolves the race with a concurrent `post()`
+under the guard. If it is still queued it removes itself and reports timeout;
+if a `post()` already dequeued it, it consumes the handed-off wake token and
+reports success.
 
 Like the other primitives, `xylem_sem` works from any context. A coroutine
 waiter does require a running scheduler (that is how it is woken, and a timed

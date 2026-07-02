@@ -41,22 +41,22 @@ _Pragma("once")
  * the scheduler.
  */
 
-typedef struct tls_wake_s tls_wake_t;
+typedef struct thrd_wake_s thrd_wake_t;
 
 /**
  * @brief Get the calling thread's wake object, creating it on first use.
  *
- * @return The thread's wake object, or NULL on allocation failure (the
- *         caller must then neither block nor enqueue).
+ * @return The thread's wake object. The process aborts if it cannot be
+ *         created.
  */
-extern tls_wake_t* tls_wake_self(void);
+extern thrd_wake_t* thrd_wake_self(void);
 
 /**
  * @brief Acquire a token, blocking until one is available.
  *
  * @param w  Wake object.
  */
-extern void tls_wake_wait(tls_wake_t* w);
+extern void thrd_wake_wait(thrd_wake_t* w);
 
 /**
  * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
@@ -66,7 +66,7 @@ extern void tls_wake_wait(tls_wake_t* w);
  *
  * @return true if a token was acquired, false if the timeout elapsed.
  */
-extern bool tls_wake_timedwait(tls_wake_t* w, uint64_t timeout_ms);
+extern bool thrd_wake_timedwait(thrd_wake_t* w, uint64_t timeout_ms);
 
 /**
  * @brief Release a token and wake the thread if it is blocked.
@@ -76,4 +76,4 @@ extern bool tls_wake_timedwait(tls_wake_t* w, uint64_t timeout_ms);
  *
  * @param w  Wake object to signal.
  */
-extern void tls_wake_signal(tls_wake_t* w);
+extern void thrd_wake_signal(thrd_wake_t* w);

@@ -59,7 +59,7 @@ set(SRCS
 	src/sync/xylem-mutex.c
 	src/sync/xylem-cond.c
 	src/sync/sem.c
-	src/sync/tls-wake.c
+	src/sync/thrd-wake.c
 	src/sync/spin.c
 	src/crypto/xylem-sha1.c
 	src/crypto/xylem-sha256.c

@@ -39,21 +39,17 @@ typedef struct sem_s sem_t;
  * Semantics:
  *   - Standard counting semaphore. wait() decrements; if the count is
  *     already zero the caller blocks until a post() hands it a token.
- *     Coroutine waiters are queued FIFO. OS-thread waiters contend on
- *     the count word and may barge when a token is posted, so FIFO is
- *     not a global fairness guarantee across OS threads.
- *   - Direct hand-off: when only coroutine waiters are queued, post()
- *     transfers the token to the FIFO-oldest coroutine and never
- *     touches the count. When OS threads are blocked, post() banks
- *     the token and wakes contenders so threads cannot starve.
+ *     Coroutine and OS-thread waiters share one FIFO queue.
+ *   - Direct hand-off: when waiters are queued, post() transfers the
+ *     token to the FIFO-oldest waiter and never touches the count.
+ *     With no waiters, post() increments the count.
  *
  * Threading:
  *   - wait() adapts to its caller. On a coroutine it parks the
  *     coroutine (the worker thread stays free); on any other thread it
  *     blocks that OS thread. Coroutine waiters share one FIFO queue;
- *     OS-thread waiters share the same count but compete through the
- *     platform futex/semaphore path. timedwait() is the same with a
- *     deadline.
+ *     OS-thread waiters block on a per-thread wake object. timedwait()
+ *     is the same with a deadline.
  *   - post(), timedwait(0), create(), destroy() are all callable from
  *     any thread and any context (coroutine or not). They never park.
  *   - How a waiter is woken is decided by what the waiter is, not by
@@ -103,8 +99,8 @@ extern void sem_destroy(sem_t* sem);
  *
  * If the count is positive it is decremented and the call returns
  * immediately. Otherwise the caller blocks until a post() hands it a
- * token. Coroutine waiters are resumed FIFO; OS-thread waiters contend
- * for banked tokens and are not globally FIFO.
+ * token. Waiters are resumed FIFO across coroutine and OS-thread
+ * callers.
  *
  * Parks the calling coroutine when invoked from a coroutine, or blocks
  * the OS thread when invoked from any other thread.
@@ -125,8 +121,7 @@ extern void sem_wait(sem_t* sem);
  *
  * A coroutine caller parks with a scheduler timer; an external thread
  * blocks on its per-thread OS semaphore with the same timeout. Both
- * share the one count. Coroutine waiters are FIFO among themselves;
- * OS-thread waiters contend for banked tokens.
+ * share the one count and one FIFO waiter queue.
  *
  * @param sem         Semaphore handle.
  * @param timeout_ms  Maximum time to wait, in milliseconds. 0 means a
@@ -141,10 +136,8 @@ extern bool sem_timedwait(sem_t* sem, uint64_t timeout_ms);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * If only coroutine waiters are queued, the FIFO-oldest coroutine is
- * handed the token and woken. If OS threads are blocked, the token is
- * banked and contenders are woken; an OS thread may acquire it before
- * an older coroutine. With no waiters, the count is incremented.
+ * If waiters are queued, the FIFO-oldest waiter is handed the token
+ * and woken. With no waiters, the count is incremented.
  *
  * Callable from any thread or context; never blocks.
  *

@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "sync/tls-wake.h"
+#include "sync/thrd-wake.h"
 
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-threads.h"
@@ -29,44 +29,48 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-struct tls_wake_s {
+struct thrd_wake_s {
     _Atomic uint32_t count; /* token count; the futex word for blocked waits */
 };
 
 /* Thread-local; created lazily, freed by the TLS destructor on exit. */
 
-static tss_t     _tls_wake_key;
-static once_flag _tls_wake_once = ONCE_FLAG_INIT;
-static bool      _tls_wake_ready;
+static tss_t     _thrd_wake_key;
+static once_flag _thrd_wake_once = ONCE_FLAG_INIT;
+static bool      _thrd_wake_ready;
 
-static void _tls_wake_dtor(void* p) {
+static void _thrd_wake_dtor(void* p) {
     free(p);
 }
 
-static void _tls_wake_init(void) {
-    _tls_wake_ready =
-        (tss_create(&_tls_wake_key, _tls_wake_dtor) == thrd_success);
+static void _thrd_wake_init(void) {
+    _thrd_wake_ready =
+        (tss_create(&_thrd_wake_key, _thrd_wake_dtor) == thrd_success);
 }
 
-tls_wake_t* tls_wake_self(void) {
-    call_once(&_tls_wake_once, _tls_wake_init);
-    if (!_tls_wake_ready) {
-        return NULL;
+thrd_wake_t* thrd_wake_self(void) {
+    call_once(&_thrd_wake_once, _thrd_wake_init);
+    if (!_thrd_wake_ready) {
+        abort();
     }
 
-    tls_wake_t* w = (tls_wake_t*)tss_get(_tls_wake_key);
+    thrd_wake_t* w = (thrd_wake_t*)tss_get(_thrd_wake_key);
     if (!w) {
-        w = (tls_wake_t*)calloc(1, sizeof(tls_wake_t));
-        if (w) {
-            atomic_init(&w->count, 0);
-            tss_set(_tls_wake_key, w);
+        w = (thrd_wake_t*)calloc(1, sizeof(thrd_wake_t));
+        if (!w) {
+            abort();
+        }
+        atomic_init(&w->count, 0);
+        if (tss_set(_thrd_wake_key, w) != thrd_success) {
+            free(w);
+            abort();
         }
     }
     return w;
 }
 
 /* Take a banked token if one is free: lock-free CAS-decrement. */
-static bool _tls_wake_try(tls_wake_t* w) {
+static bool _thrd_wake_try(thrd_wake_t* w) {
     uint32_t c = atomic_load(&w->count);
     while (c > 0) {
         if (atomic_compare_exchange_weak(&w->count, &c, c - 1)) {
@@ -76,9 +80,9 @@ static bool _tls_wake_try(tls_wake_t* w) {
     return false;
 }
 
-void tls_wake_wait(tls_wake_t* w) {
+void thrd_wake_wait(thrd_wake_t* w) {
     for (;;) {
-        if (_tls_wake_try(w)) {
+        if (_thrd_wake_try(w)) {
             return;
         }
         /**
@@ -89,11 +93,11 @@ void tls_wake_wait(tls_wake_t* w) {
     }
 }
 
-bool tls_wake_timedwait(tls_wake_t* w, uint64_t timeout_ms) {
+bool thrd_wake_timedwait(thrd_wake_t* w, uint64_t timeout_ms) {
     uint64_t deadline =
         xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
     for (;;) {
-        if (_tls_wake_try(w)) {
+        if (_thrd_wake_try(w)) {
             return true;
         }
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -104,7 +108,7 @@ bool tls_wake_timedwait(tls_wake_t* w, uint64_t timeout_ms) {
     }
 }
 
-void tls_wake_signal(tls_wake_t* w) {
+void thrd_wake_signal(thrd_wake_t* w) {
     atomic_fetch_add(&w->count, 1);
     platform_futex_signal(&w->count);
 }

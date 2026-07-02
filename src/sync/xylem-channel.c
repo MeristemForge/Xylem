@@ -29,7 +29,7 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "container/mpsc.h"
-#include "sync/tls-wake.h"
+#include "sync/thrd-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
 
@@ -61,7 +61,7 @@ typedef struct _channel_waiter_s {
     _channel_kind_t kind;
     mco_coro*       co;    /* CHANNEL_WAITER_CO  */
     scheduler_t*    sched; /* CHANNEL_WAITER_CO  */
-    tls_wake_t*     wake;  /* CHANNEL_WAITER_THR */
+    thrd_wake_t*    wake;  /* CHANNEL_WAITER_THR */
 } _channel_waiter_t;
 
 /**
@@ -73,7 +73,7 @@ typedef struct _channel_waiter_s {
  * claims the wakeup with one atomic_exchange on that slot, so exactly
  * one resumes the receiver and none double-wakes. The waiter record is
  * per wait; a thread waiter blocks on its per-thread futex wake
- * (tls-wake) and a coroutine waiter is rescheduled. Timed coroutine
+ * (thrd-wake) and a coroutine waiter is rescheduled. Timed coroutine
  * receives use a per-call recv op, so a stale timer callback can only
  * mark and wake the waiter it was armed for.
  *
@@ -108,7 +108,7 @@ static void _channel_wake(_channel_waiter_t w) {
     if (w.kind == CHANNEL_WAITER_CO) {
         scheduler_schedule(w.sched, w.co);
     } else {
-        tls_wake_signal(w.wake);
+        thrd_wake_signal(w.wake);
     }
 }
 
@@ -349,11 +349,7 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
 
     _channel_waiter_t w;
     w.kind = CHANNEL_WAITER_THR;
-    w.wake = tls_wake_self();
-    if (!w.wake) {
-        /* No wake object (OOM): best-effort single pop, never block. */
-        return _channel_try_pop(ch);
-    }
+    w.wake = thrd_wake_self();
 
     void* payload = NULL;
     for (;;) {
@@ -391,11 +387,11 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
         }
 
         if (infinite) {
-            tls_wake_wait(w.wake);
+            thrd_wake_wait(w.wake);
             continue; /* woken: retry pop */
         }
 
-        if (tls_wake_timedwait(w.wake, remaining)) {
+        if (thrd_wake_timedwait(w.wake, remaining)) {
             continue; /* a waker handed us a token: retry pop */
         }
 
@@ -405,7 +401,7 @@ static void* _channel_recv_thread(xylem_channel_t* ch, uint64_t timeout_ms) {
             break; /* removed ourselves cleanly -> timeout */
         }
         /* A waker claimed us and will signal; consume the token, retry pop. */
-        tls_wake_wait(w.wake);
+        thrd_wake_wait(w.wake);
     }
     return payload;
 }

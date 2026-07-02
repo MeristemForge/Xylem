@@ -20,13 +20,12 @@
  */
 
 #include "sync/sem.h"
-#include "xylem/xylem-utils.h"
 
 #include "container/list.h"
-#include "platform/platform-futex.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
+#include "sync/thrd-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
 
@@ -38,102 +37,49 @@
 /**
  * Cross-context counting semaphore.
  *
- * The one primitive both coroutines and plain OS threads may block on,
- * so either can notify the other; the rest are coroutine-only.
+ * `count` stores banked tokens only when no waiter is queued. Once a waiter
+ * is queued, each post directly transfers ownership of one token to the
+ * FIFO-oldest waiter and wakes exactly that waiter. This keeps the coroutine
+ * wait path single-shot: a resumed coroutine already owns its token and does
+ * not need a granted/re-contend loop.
  *
- * Two waiter kinds block differently, mirroring mutex:
- *
- *   - Coroutines queue FIFO on `co_waiters` (guarded by `guard`) and park on
- *     the scheduler. When no OS thread is blocked, post() hands a token to
- *     the oldest by waking it directly, never touching `count`, so the
- *     woken coroutine returns with its token in hand and none is lost --
- *     no kernel round-trip. This is the common coroutine-only fast path.
- *
- *   - OS threads do not queue: they barge on `count` (the futex word),
- *     CAS-decrementing a free token or sleeping in platform_futex_wait
- *     while it is zero. post() banks the token (count++) and wakes one via
- *     platform_futex_signal. `thr_waiters` only tells post whether a futex
- *     wake is needed, so a coroutine-only workload pays no syscall.
- *
- * Fairness across the two kinds (mirrors mutex): the direct hand-off
- * is taken ONLY while `thr_waiters == 0`. The instant a thread is blocked,
- * post() switches to the release path -- it banks the token (count++) and
- * wakes one of each to contend for it: the FIFO-oldest coroutine is woken
- * to re-contend (granted == 0) and a thread is futex-signalled. Whoever
- * CAS-takes the banked token first wins; the loser re-parks (coroutine) or
- * re-sleeps (thread). Without this, a steady stream of coroutine waiters
- * would let post() hand every token to a coroutine and starve threads
- * forever.
- *
- * A woken coroutine therefore learns how it was woken from `granted`:
- *   1 = a token was handed to it (it owns it, returns), 0 = a release-path
- *   wake to re-contend (it must _sem_try_take, and re-park if it loses).
- *
- * `guard` serialises the post decision (hand to a coroutine vs. bank the
- * token) against a coroutine enqueuing in its park callback: the bank
- * (count++) happens under the guard, so a coroutine racing post is either
- * seen in the list (woken) or observes the banked count in its park
- * callback (takes it) -- never stranded. Threads need no guard: a barge
- * that beats the bank just re-checks the word, and the default atomic
- * ordering between post's count++ and a thread's arm closes the
- * lost-wakeup race.
- *
- * Waiter lifetime: infinite coroutine waits keep the record on the parked
- * coroutine's stack (post snapshots it under the guard, never derefs it
- * after). A timed coroutine wait can be pulled from the queue by a timer
- * on another worker racing the resumed coroutine, so it is a refcounted
- * heap object (wait ref + timer ref) freed by whoever drops the last ref.
+ * The `guard` serializes queue mutation with count banking. A waiter racing a
+ * post either observes the banked count in its park/enqueue callback or is
+ * linked before the post chooses a wake target.
  */
-
 struct sem_s {
-    spin_t           guard;        /* serialises coro list + the count bank */
-    _Atomic uint32_t count;        /* tokens; also the thread futex word    */
-    _Atomic int32_t  thr_waiters;  /* OS threads sleeping on the futex word */
-    list_t           co_waiters;   /* coroutine waiters, FIFO               */
-    scheduler_t*     sched;        /* the one scheduler; set at create      */
+    spin_t           guard;
+    _Atomic uint32_t count;
+    list_t           waiters;
+    scheduler_t*     sched;
 };
 
-/**
- * Coroutine waiter record. Lives in the waiting coroutine's lock frame
- * (infinite wait) or inside the refcounted timed object below. Threads
- * never queue here -- they barge on `count`.
- */
-typedef struct _co_waiter_s {
-    list_node_t      node;
-    mco_coro*        co;
-    _Atomic uint32_t granted; /* 1 = token handed over, 0 = re-contend wake */
-} _co_waiter_t;
+typedef enum _waiter_kind_e {
+    WAITER_CORO,
+    WAITER_THRD,
+} _waiter_kind_t;
 
-/* Timed coroutine waiter: refcounted heap object (sem is its only user). */
+typedef struct _waiter_s {
+    list_node_t    node;
+    _waiter_kind_t kind;
+    sem_t*         sem;
+    bool           queued;
+} _waiter_t;
 
-typedef struct _co_timed_s {
-    _co_waiter_t    base;
-    sem_t*              sem;
-    scheduler_timer_t*  timer;        /* NULL if creation failed */
-    uint64_t            timeout_ms;
-    bool                armed;        /* timer started once; guarded by sem->guard */
-    _Atomic int32_t     refcnt;       /* wait ref + timer ref while armed */
-    _Atomic bool        timed_out;
-} _co_timed_t;
+typedef struct _coro_waiter_s {
+    _waiter_t          base;
+    mco_coro*          co;
+    uint64_t           timeout_ms;
+    scheduler_timer_t* timer;
+    _Atomic int32_t    refcnt;
+    _Atomic bool       timer_fired;
+} _coro_waiter_t;
 
-typedef struct _timed_ctx_s {
-    sem_t*            sem;
-    _co_timed_t*  w;
-} _timed_ctx_t;
+typedef struct _thrd_waiter_s {
+    _waiter_t    base;
+    thrd_wake_t* wake;
+} _thrd_waiter_t;
 
-typedef struct _inf_ctx_s {
-    sem_t*             sem;
-    _co_waiter_t*  w;
-} _inf_ctx_t;
-
-static uint64_t _sem_now_ms(void) {
-    return xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-}
-
-/**
- * Take a token if one is free: lock-free CAS-decrement of `count`, valid
- * in any context (coroutine fast path, thread barge, non-blocking try).
- */
 static bool _sem_try_take(sem_t* s) {
     uint32_t c = atomic_load(&s->count);
     while (c > 0) {
@@ -144,132 +90,197 @@ static bool _sem_try_take(sem_t* s) {
     return false;
 }
 
-/**
- * A NULL next link means the node was never linked or was removed
- * (list_remove clears it). Read under the guard to arbitrate the
- * timeout-vs-post race.
- */
-static inline bool _sem_node_linked(const list_node_t* n) {
-    return n->next != NULL;
+static void _sem_wake(sem_t* s, _waiter_t* w) {
+    if (w->kind == WAITER_CORO) {
+        _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
+        scheduler_schedule(s->sched, cw->co);
+    } else {
+        _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
+        thrd_wake_signal(tw->wake);
+    }
 }
 
-static void _sem_co_ref(_co_timed_t* w) {
+static void _sem_push_waiter(list_t* waiters, _waiter_t* w) {
+    w->queued = true;
+    list_insert_tail(waiters, &w->node);
+}
+
+static _waiter_t* _sem_pop_waiter(list_t* waiters) {
+    list_node_t* n = list_head(waiters);
+    if (!n) {
+        return NULL;
+    }
+    _waiter_t* w = list_entry(n, _waiter_t, node);
+    list_remove(waiters, &w->node);
+    w->queued = false;
+    return w;
+}
+
+static bool _sem_cancel_waiter(list_t* waiters, _waiter_t* w) {
+    bool queued = w->queued;
+    if (queued) {
+        list_remove(waiters, &w->node);
+        w->queued = false;
+    }
+    return queued;
+}
+
+static void _sem_coro_timed_ref(_coro_waiter_t* w) {
     atomic_fetch_add(&w->refcnt, 1);
 }
 
-static void _sem_co_unref(_co_timed_t* w) {
+static void _sem_coro_timed_unref(_coro_waiter_t* w) {
     if (atomic_fetch_sub(&w->refcnt, 1) != 1) {
         return;
     }
-    /* The last ref owns the timer; destroy is safe even mid-callback. */
     if (w->timer) {
         scheduler_timer_destroy(w->timer);
     }
     free(w);
 }
 
-static void _sem_co_timeout_cb(scheduler_timer_t* timer, void* ud) {
+static void _sem_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
-    _co_timed_t* w = (_co_timed_t*)ud;
-    sem_t*     s = w->sem;
+    _coro_waiter_t* w      = (_coro_waiter_t*)ud;
+    sem_t*          s      = w->base.sem;
+    _waiter_t*      target = NULL;
 
-    /**
-     * Mark timed_out before deciding whether to schedule. Setting it
-     * unconditionally (even when the node is already unlinked) closes the
-     * strand window of the re-contend loop: a release-path post() may have
-     * pulled the node to wake the coroutine for re-contention, and if the
-     * timer fires in that gap the coroutine must still observe the timeout
-     * (in its loop or its next park callback) instead of re-parking on a
-     * timer that has already fired and will never fire again.
-     *
-     * Schedule only if the node is still linked: otherwise a post() owns
-     * the wake and is resuming the coroutine, so scheduling here would be
-     * a double wake.
-     */
     spin_lock(&s->guard);
-    bool linked = _sem_node_linked(&w->base.node);
-    if (linked) {
-        list_remove(&s->co_waiters, &w->base.node);
+    if (_sem_cancel_waiter(&s->waiters, &w->base)) {
+        target = &w->base;
+        atomic_store(&w->timer_fired, true);
     }
-    atomic_store(&w->timed_out, true);
-    mco_coro* target_co = w->base.co;
     spin_unlock(&s->guard);
 
-    /* Last touch of the coroutine: it may drop its ref and free w. */
-    if (linked) {
-        atomic_store(&w->base.granted, 0);
-        scheduler_schedule(s->sched, target_co);
+    if (target) {
+        _sem_wake(s, target);
     }
-    _sem_co_unref(w);
+    _sem_coro_timed_unref(w);
 }
 
-static bool _sem_timed_park_cb(mco_coro* co, void* arg) {
-    _timed_ctx_t* ctx = (_timed_ctx_t*)arg;
-    sem_t*      s   = ctx->sem;
-    _co_timed_t*  w   = ctx->w;
+static bool _sem_park_cb(mco_coro* co, void* arg) {
+    _coro_waiter_t* w = (_coro_waiter_t*)arg;
+    sem_t*          s = w->base.sem;
 
-    w->base.co = co;
+    w->co = co;
 
     spin_lock(&s->guard);
-    /* A post() may have banked a token since the fast path; take it. */
     if (_sem_try_take(s)) {
         spin_unlock(&s->guard);
-        atomic_store(&w->base.granted, 1);
         return false;
     }
-    /**
-     * The timer may have fired during a re-contend gap (node unlinked) and
-     * set timed_out. Decline the park so the coroutine reports the timeout
-     * in its loop instead of re-parking on a timer that will never fire
-     * again.
-     */
-    if (atomic_load(&w->timed_out)) {
-        spin_unlock(&s->guard);
-        return false;
-    }
-
-    list_insert_tail(&s->co_waiters, &w->base.node);
-
-    /**
-     * Arm under the guard so a post() blocked on it cannot resume this
-     * coroutine before the timer is live, and only once across the
-     * re-contend loop -- the original deadline is preserved on re-park, so
-     * the timer is never restarted. scheduler_timer_start only touches the
-     * timer heap, so holding the spin across it is safe.
-     */
-    if (!w->armed) {
-        w->armed = true;
-        _sem_co_ref(w); /* timer ref: released by the cb, or by us on stop() */
+    _sem_push_waiter(&s->waiters, &w->base);
+    if (w->timeout_ms > 0) {
+        _sem_coro_timed_ref(w);
         scheduler_timer_start(
-                w->timer, _sem_co_timeout_cb, w, w->timeout_ms, 0);
+                w->timer, _sem_timeout_cb, w, w->timeout_ms, 0);
     }
     spin_unlock(&s->guard);
     return true;
 }
 
-/**
- * Stack-allocated because an infinite waiter never outlives the
- * waiting coroutine's frame -- no heap allocation needed, unlike
- * the timed variant which must survive a timer callback from
- * another worker.
- */
+static void _sem_wait_thrd(sem_t* s) {
+    if (_sem_try_take(s)) {
+        return;
+    }
 
-static bool _sem_inf_park_cb(mco_coro* co, void* arg) {
-    _inf_ctx_t* ctx = (_inf_ctx_t*)arg;
-    sem_t*    s   = ctx->sem;
+    thrd_wake_t* wake = thrd_wake_self();
 
-    ctx->w->co = co;
+    _thrd_waiter_t w;
+    w.base.kind = WAITER_THRD;
+    w.base.sem  = s;
+    w.wake      = wake;
 
     spin_lock(&s->guard);
-    /* A post() may have banked a token since the fast path; take it. */
     if (_sem_try_take(s)) {
         spin_unlock(&s->guard);
-        atomic_store(&ctx->w->granted, 1);
+        return;
+    }
+    _sem_push_waiter(&s->waiters, &w.base);
+    spin_unlock(&s->guard);
+
+    thrd_wake_wait(wake);
+}
+
+static bool _sem_timedwait_thrd(sem_t* s, uint64_t timeout_ms) {
+    if (_sem_try_take(s)) {
+        return true;
+    }
+
+    thrd_wake_t* wake = thrd_wake_self();
+
+    _thrd_waiter_t w;
+    w.base.kind = WAITER_THRD;
+    w.base.sem  = s;
+    w.wake      = wake;
+
+    spin_lock(&s->guard);
+    if (_sem_try_take(s)) {
+        spin_unlock(&s->guard);
+        return true;
+    }
+    _sem_push_waiter(&s->waiters, &w.base);
+    spin_unlock(&s->guard);
+
+    if (thrd_wake_timedwait(wake, timeout_ms)) {
+        return true;
+    }
+
+    spin_lock(&s->guard);
+    bool cancelled = _sem_cancel_waiter(&s->waiters, &w.base);
+    spin_unlock(&s->guard);
+    if (cancelled) {
         return false;
     }
-    list_insert_tail(&s->co_waiters, &ctx->w->node);
-    spin_unlock(&s->guard);
+
+    thrd_wake_wait(wake);
     return true;
+}
+
+static void _sem_wait_coro(sem_t* s) {
+    if (_sem_try_take(s)) {
+        return;
+    }
+
+    _coro_waiter_t w;
+    w.base.kind  = WAITER_CORO;
+    w.base.sem   = s;
+    w.co         = NULL;
+    w.timeout_ms = 0;
+
+    scheduler_park(s->sched, _sem_park_cb, &w);
+}
+
+static bool _sem_timedwait_coro(sem_t* s, uint64_t timeout_ms) {
+    if (_sem_try_take(s)) {
+        return true;
+    }
+
+    _coro_waiter_t* w =
+            (_coro_waiter_t*)calloc(1, sizeof(_coro_waiter_t));
+    if (!w) {
+        return false;
+    }
+    w->base.kind  = WAITER_CORO;
+    w->base.sem   = s;
+    w->co         = NULL;
+    w->timeout_ms = timeout_ms;
+    w->timer      = scheduler_timer_create(s->sched);
+    if (!w->timer) {
+        free(w);
+        return false;
+    }
+    atomic_init(&w->refcnt, 1);
+    atomic_init(&w->timer_fired, false);
+
+    scheduler_park(s->sched, _sem_park_cb, w);
+
+    bool fired = atomic_load(&w->timer_fired);
+    if (scheduler_timer_stop(w->timer)) {
+        _sem_coro_timed_unref(w);
+    }
+    _sem_coro_timed_unref(w);
+    return !fired;
 }
 
 sem_t* sem_create(uint32_t value) {
@@ -279,8 +290,7 @@ sem_t* sem_create(uint32_t value) {
     }
     spin_init(&s->guard);
     atomic_init(&s->count, value);
-    atomic_init(&s->thr_waiters, 0);
-    list_init(&s->co_waiters);
+    list_init(&s->waiters);
     s->sched = runtime_get_scheduler();
     return s;
 }
@@ -292,203 +302,35 @@ void sem_destroy(sem_t* s) {
     free(s);
 }
 
-/**
- * Thread acquire: barge on the futex word. CAS-decrement a free token or
- * sleep while it is zero; `expected == 0` makes the wait a no-op if a
- * post() banked a token between the load and the sleep. thr_waiters is
- * published atomically so post() cannot skip our wake (the store pairs
- * with post()'s count bump + thr_waiters read).
- */
-static bool _sem_wait_thread(sem_t* s, bool timed, uint64_t timeout_ms) {
-    uint64_t deadline = timed ? _sem_now_ms() + timeout_ms : 0;
-
-    atomic_fetch_add(&s->thr_waiters, 1);
-    bool got = false;
-    for (;;) {
-        uint32_t c = atomic_load(&s->count);
-        if (c > 0) {
-            if (atomic_compare_exchange_weak(&s->count, &c, c - 1)) {
-                got = true;
-                break;
-            }
-            continue; /* lost the race for this token; reload and retry */
-        }
-        if (!timed) {
-            platform_futex_wait(&s->count, 0);
-            continue;
-        }
-        uint64_t now = _sem_now_ms();
-        if (now >= deadline) {
-            break; /* timed out */
-        }
-        platform_futex_timedwait(&s->count, 0, deadline - now);
-    }
-    atomic_fetch_sub(&s->thr_waiters, 1);
-    return got;
-}
-
 void sem_wait(sem_t* s) {
     if (mco_running()) {
-        /* Coroutine: park on a stack waiter (park cb re-checks the token). */
-        if (_sem_try_take(s)) {
-            return;
-        }
-
-        _co_waiter_t w;
-        w.co    = NULL;
-        atomic_init(&w.granted, 0);
-
-        /**
-         * Re-park until a post() either hands us a token (granted == 1) or
-         * wakes us to re-contend (granted == 0) and we win the banked
-         * token; a lost re-contention loops back to re-park.
-         */
-        _inf_ctx_t ctx = { s, &w };
-        for (;;) {
-            atomic_store(&w.granted, 0);
-            scheduler_park(s->sched, _sem_inf_park_cb, &ctx);
-            if (atomic_load(&w.granted)) {
-                return; /* token handed over (or taken in the callback) */
-            }
-            if (_sem_try_take(s)) {
-                return; /* won the banked token */
-            }
-            /* lost the race; re-park */
-        }
+        _sem_wait_coro(s);
     } else {
-        /* Thread: barge on the futex word until a token is taken. */
-        (void)_sem_wait_thread(s, false, 0);
+        _sem_wait_thrd(s);
     }
 }
 
 bool sem_timedwait(sem_t* s, uint64_t timeout_ms) {
-    /* Zero timeout is a non-blocking try in any context. */
     if (timeout_ms == 0) {
         return _sem_try_take(s);
     }
 
     if (mco_running()) {
-        if (_sem_try_take(s)) {
-            return true;
-        }
-
-        _co_timed_t* w =
-            (_co_timed_t*)calloc(1, sizeof(_co_timed_t));
-        if (!w) {
-            /* Cannot honour a timeout we cannot arm; fail closed. */
-            return false;
-        }
-        w->base.co    = NULL;
-        w->sem        = s;
-        w->timeout_ms = timeout_ms;
-        w->timer      = scheduler_timer_create(s->sched);
-        if (!w->timer) {
-            /* No timer means no deadline; fail closed over an unbounded wait. */
-            free(w);
-            return false;
-        }
-        atomic_init(&w->base.granted, 0);
-        atomic_init(&w->refcnt, 1); /* initial wait ref */
-        atomic_init(&w->timed_out, false);
-
-        _timed_ctx_t ctx = { s, w };
-
-        /**
-         * Re-park until handed a token (granted == 1), until we win a
-         * banked token on a re-contend wake, or until the timer fires
-         * (timed_out). A lost re-contention that has not yet timed out
-         * loops back to re-park; the timer keeps the original deadline,
-         * so it is armed once (see _sem_timed_park_cb) and not restarted.
-         */
-        bool ok;
-        for (;;) {
-            atomic_store(&w->base.granted, 0);
-            scheduler_park(s->sched, _sem_timed_park_cb, &ctx);
-            if (atomic_load(&w->base.granted)) {
-                ok = true; /* token handed over (or taken in the callback) */
-                break;
-            }
-            if (_sem_try_take(s)) {
-                ok = true; /* won the banked token */
-                break;
-            }
-            if (atomic_load(&w->timed_out)) {
-                ok = false; /* deadline elapsed */
-                break;
-            }
-            /* lost the re-contend race, not timed out: re-park */
-        }
-
-        /**
-         * Cancel a still-pending timer; a true from stop() means we
-         * caught it before it fired and own its ref.
-         */
-        if (scheduler_timer_stop(w->timer)) {
-            _sem_co_unref(w);
-        }
-        _sem_co_unref(w);
-        return ok;
+        return _sem_timedwait_coro(s, timeout_ms);
     } else {
-        /* External thread with deadline: barge on the futex word. */
-        return _sem_wait_thread(s, true, timeout_ms);
+        return _sem_timedwait_thrd(s, timeout_ms);
     }
-}
-
-/**
- * Detach the FIFO-oldest coroutine waiter, recording in `granted` how it
- * was woken (1 = token handed over, 0 = re-contend). Reads the waiter out
- * before the caller schedules it, since its frame (infinite wait) vanishes
- * once resumed.
- */
-static mco_coro* _sem_take_waiter(
-    sem_t* s, list_node_t* n, uint32_t granted) {
-    list_remove(&s->co_waiters, n);
-    _co_waiter_t* w  = list_entry(n, _co_waiter_t, node);
-    mco_coro*         co = w->co;
-    atomic_store(&w->granted, granted);
-    return co;
 }
 
 void sem_post(sem_t* s) {
     spin_lock(&s->guard);
-    list_node_t* n = list_head(&s->co_waiters);
-
-    /**
-     * Pure coroutine hand-off: the token rides the wake, count stays
-     * untouched, none is lost -- the zero-syscall fast path. Taken only
-     * while no OS thread is blocked, since a thread cannot accept a handed
-     * token; it must observe a banked count. The thr_waiters read may race
-     * a thread arming right after, which is safe: this branch banks
-     * nothing, so the racing thread simply blocks on a genuinely empty
-     * count until the next post takes the release path below.
-     */
-    if (n && atomic_load(&s->thr_waiters)
-                == 0) {
-        mco_coro* co = _sem_take_waiter(s, n, 1);
-        spin_unlock(&s->guard);
-        scheduler_schedule(s->sched, co);
-        return;
+    _waiter_t* target = _sem_pop_waiter(&s->waiters);
+    if (!target) {
+        atomic_fetch_add(&s->count, 1);
     }
-
-    /**
-     * Release path: bank the token under the guard (so a coroutine racing
-     * in its park callback either is seen above or observes the banked
-     * count), then wake one of each to contend for it -- the FIFO-oldest
-     * coroutine to re-contend (granted == 0) and, when a thread is blocked,
-     * a futex signal. The default atomic bank pairs with a thread waiter's
-     * arm so the wake is never skipped while a thread sleeps on a zero word.
-     * Whoever CAS-takes the banked token first wins; the loser re-parks or
-     * re-sleeps. This is what keeps threads from starving under a steady
-     * stream of coroutine waiters.
-     */
-    mco_coro* co = n ? _sem_take_waiter(s, n, 0) : NULL;
-    atomic_fetch_add(&s->count, 1);
     spin_unlock(&s->guard);
 
-    if (atomic_load(&s->thr_waiters) > 0) {
-        platform_futex_signal(&s->count);
-    }
-    if (co) {
-        scheduler_schedule(s->sched, co);
+    if (target) {
+        _sem_wake(s, target);
     }
 }
