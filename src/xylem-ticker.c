@@ -21,7 +21,7 @@
 
 #include "xylem/xylem-ticker.h"
 
-#include "sync/sem.h"
+#include "xylem/sync/xylem-sem.h"
 #include "xylem/xylem-utils.h"
 
 #include "runtime/runtime.h"
@@ -41,7 +41,7 @@
  *
  * In normal operation the sem count is bounded to {0,1}, gated by
  * `pending`. A concurrent xylem_ticker_destroy can cause a transient
- * double-post (the callback and destroy each call sem_post),
+ * double-post (the callback and destroy each call xylem_sem_post),
  * which is harmless: the consumer sees `closed` and discards the extra
  * token. The caller owns the destroy-vs-recv serialisation, exactly
  * like Go's Ticker.Stop and the Ticker.C channel -- the refcount only
@@ -50,11 +50,11 @@
  */
 struct xylem_ticker_s {
     scheduler_timer_t*   timer;     /* repeating, run inline (spawn == false) */
-    sem_t*     sem;
-    _Atomic bool     closed;
-    _Atomic int32_t  pending;   /* 0/1 coalescing cap: drop ticks when behind */
-    _Atomic uint64_t last_tick;
-    _Atomic int32_t  refcnt;
+    xylem_sem_t*         sem;
+    _Atomic bool         closed;
+    _Atomic int32_t      pending;   /* 0/1 coalescing cap: drop ticks when behind */
+    _Atomic uint64_t     last_tick;
+    _Atomic int32_t      refcnt;
 };
 
 static void _ticker_ref(void* ud) {
@@ -75,7 +75,7 @@ static void _ticker_unref(void* ud) {
         scheduler_timer_destroy(t->timer);
     }
     if (t->sem) {
-        sem_destroy(t->sem);
+        xylem_sem_destroy(t->sem);
     }
     free(t);
 }
@@ -84,7 +84,7 @@ static void _ticker_unref(void* ud) {
  * Runs inline on the timer's owner worker (spawn == false), so it is
  * serialized against itself: ticks can never overlap or re-enter. It
  * does no blocking work and never yields -- just a coalescing,
- * non-blocking hand-off via sem_post (any-context, never parks).
+ * non-blocking hand-off via xylem_sem_post (any-context, never parks).
  *
  * The scheduler holds a reference on the ticker for the whole duration
  * of this callback: it calls the ud_ref hook (installed in
@@ -120,7 +120,7 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
      */
     int32_t expected = 0;
     if (atomic_compare_exchange_strong(&t->pending, &expected, 1)) {
-        sem_post(t->sem);
+        xylem_sem_post(t->sem);
     }
 }
 
@@ -135,11 +135,11 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
         return NULL;
     }
 
-    t->sem   = sem_create(0);
+    t->sem   = xylem_sem_create(0);
     t->timer = scheduler_timer_create(sched);
     if (!t->sem || !t->timer) {
         if (t->sem) {
-            sem_destroy(t->sem);
+            xylem_sem_destroy(t->sem);
         }
         if (t->timer) {
             scheduler_timer_destroy(t->timer);
@@ -166,13 +166,13 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
     /**
      * Hold a reference across the (blocking) wait so a concurrent
      * xylem_ticker_destroy cannot free the ticker out from under us.
-     * sem_wait adapts to the caller: it parks a coroutine or
+     * xylem_sem_wait adapts to the caller: it parks a coroutine or
      * blocks an OS thread, so recv works from either context.
      */
     _ticker_ref(ticker);
 
     uint64_t tick = 0;
-    sem_wait(ticker->sem);
+    xylem_sem_wait(ticker->sem);
     if (!atomic_load(&ticker->closed)) {
         /* Allow the next tick through; re-opens the coalescing slot. */
         atomic_store(&ticker->pending, 0);
@@ -203,7 +203,7 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
      * discards both. Setting `closed` before the post guarantees the
      * consumer cannot mistake any wake for a real tick.
      */
-    sem_post(ticker->sem);
+    xylem_sem_post(ticker->sem);
 
     /* Drop the creator's reference. */
     _ticker_unref(ticker);

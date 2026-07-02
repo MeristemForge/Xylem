@@ -41,6 +41,7 @@ _Pragma("once")
 #include "xylem/sync/xylem-channel.h"
 #include "xylem/sync/xylem-mutex.h"
 #include "xylem/sync/xylem-cond.h"
+#include "xylem/sync/xylem-sem.h"
 /* sync */
 
 /* container */

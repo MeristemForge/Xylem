@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "sync/sem.h"
+#include "xylem/sync/xylem-sem.h"
 
 #include "container/list.h"
 #include "runtime/runtime.h"
@@ -47,7 +47,7 @@
  * post either observes the banked count in its park/enqueue callback or is
  * linked before the post chooses a wake target.
  */
-struct sem_s {
+struct xylem_sem_s {
     spin_t           guard;
     _Atomic uint32_t count;
     list_t           waiters;
@@ -62,7 +62,7 @@ typedef enum _waiter_kind_e {
 typedef struct _waiter_s {
     list_node_t    node;
     _waiter_kind_t kind;
-    sem_t*         sem;
+    xylem_sem_t*   sem;
     bool           queued;
 } _waiter_t;
 
@@ -80,7 +80,7 @@ typedef struct _thrd_waiter_s {
     thrd_wake_t* wake;
 } _thrd_waiter_t;
 
-static bool _sem_try_take(sem_t* s) {
+static bool _sem_try_take(xylem_sem_t* s) {
     uint32_t c = atomic_load(&s->count);
     while (c > 0) {
         if (atomic_compare_exchange_weak(&s->count, &c, c - 1)) {
@@ -90,7 +90,7 @@ static bool _sem_try_take(sem_t* s) {
     return false;
 }
 
-static void _sem_wake(sem_t* s, _waiter_t* w) {
+static void _sem_wake(xylem_sem_t* s, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
         scheduler_schedule(s->sched, cw->co);
@@ -142,7 +142,7 @@ static void _sem_coro_timed_unref(_coro_waiter_t* w) {
 static void _sem_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _coro_waiter_t* w      = (_coro_waiter_t*)ud;
-    sem_t*          s      = w->base.sem;
+    xylem_sem_t*    s      = w->base.sem;
     _waiter_t*      target = NULL;
 
     spin_lock(&s->guard);
@@ -160,7 +160,7 @@ static void _sem_timeout_cb(scheduler_timer_t* timer, void* ud) {
 
 static bool _sem_park_cb(mco_coro* co, void* arg) {
     _coro_waiter_t* w = (_coro_waiter_t*)arg;
-    sem_t*          s = w->base.sem;
+    xylem_sem_t*    s = w->base.sem;
 
     w->co = co;
 
@@ -179,7 +179,7 @@ static bool _sem_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
-static void _sem_wait_thrd(sem_t* s) {
+static void _sem_wait_thrd(xylem_sem_t* s) {
     if (_sem_try_take(s)) {
         return;
     }
@@ -202,7 +202,7 @@ static void _sem_wait_thrd(sem_t* s) {
     thrd_wake_wait(wake);
 }
 
-static bool _sem_timedwait_thrd(sem_t* s, uint64_t timeout_ms) {
+static bool _sem_timedwait_thrd(xylem_sem_t* s, uint64_t timeout_ms) {
     if (_sem_try_take(s)) {
         return true;
     }
@@ -237,7 +237,7 @@ static bool _sem_timedwait_thrd(sem_t* s, uint64_t timeout_ms) {
     return true;
 }
 
-static void _sem_wait_coro(sem_t* s) {
+static void _sem_wait_coro(xylem_sem_t* s) {
     if (_sem_try_take(s)) {
         return;
     }
@@ -251,13 +251,12 @@ static void _sem_wait_coro(sem_t* s) {
     scheduler_park(s->sched, _sem_park_cb, &w);
 }
 
-static bool _sem_timedwait_coro(sem_t* s, uint64_t timeout_ms) {
+static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     if (_sem_try_take(s)) {
         return true;
     }
 
-    _coro_waiter_t* w =
-            (_coro_waiter_t*)calloc(1, sizeof(_coro_waiter_t));
+    _coro_waiter_t* w = (_coro_waiter_t*)calloc(1, sizeof(_coro_waiter_t));
     if (!w) {
         return false;
     }
@@ -283,8 +282,8 @@ static bool _sem_timedwait_coro(sem_t* s, uint64_t timeout_ms) {
     return !fired;
 }
 
-sem_t* sem_create(uint32_t value) {
-    sem_t* s = (sem_t*)calloc(1, sizeof(sem_t));
+xylem_sem_t* xylem_sem_create(uint32_t value) {
+    xylem_sem_t* s = (xylem_sem_t*)calloc(1, sizeof(xylem_sem_t));
     if (!s) {
         return NULL;
     }
@@ -295,14 +294,14 @@ sem_t* sem_create(uint32_t value) {
     return s;
 }
 
-void sem_destroy(sem_t* s) {
+void xylem_sem_destroy(xylem_sem_t* s) {
     if (!s) {
         return;
     }
     free(s);
 }
 
-void sem_wait(sem_t* s) {
+void xylem_sem_wait(xylem_sem_t* s) {
     if (mco_running()) {
         _sem_wait_coro(s);
     } else {
@@ -310,7 +309,7 @@ void sem_wait(sem_t* s) {
     }
 }
 
-bool sem_timedwait(sem_t* s, uint64_t timeout_ms) {
+bool xylem_sem_timedwait(xylem_sem_t* s, uint64_t timeout_ms) {
     if (timeout_ms == 0) {
         return _sem_try_take(s);
     }
@@ -322,7 +321,7 @@ bool sem_timedwait(sem_t* s, uint64_t timeout_ms) {
     }
 }
 
-void sem_post(sem_t* s) {
+void xylem_sem_post(xylem_sem_t* s) {
     spin_lock(&s->guard);
     _waiter_t* target = _sem_pop_waiter(&s->waiters);
     if (!target) {

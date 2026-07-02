@@ -24,14 +24,14 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct sem_s sem_t;
+typedef struct xylem_sem_s xylem_sem_t;
 
 /**
  * Counting semaphore that bridges coroutines and OS threads.
  *
  * Unlike the other primitives in this directory (mutex, cond,
  * waitgroup, channel), which are coroutine-only and abort if a
- * blocking op is called off-coroutine, sem_t is the one sync
+ * blocking op is called off-coroutine, xylem_sem_t is the one sync
  * object whose blocking op is *any-context*: it is meant precisely
  * for a coroutine to notify an external thread, or an external thread
  * to notify a coroutine.
@@ -78,7 +78,7 @@ typedef struct sem_s sem_t;
  *
  * @return Semaphore handle, or NULL on allocation failure.
  */
-extern sem_t* sem_create(uint32_t value);
+extern xylem_sem_t* xylem_sem_create(uint32_t value);
 
 /**
  * @brief Destroy the semaphore and free its resources.
@@ -90,7 +90,7 @@ extern sem_t* sem_create(uint32_t value);
  *
  * @param sem  Semaphore handle, NULL is safe.
  */
-extern void sem_destroy(sem_t* sem);
+extern void xylem_sem_destroy(xylem_sem_t* sem);
 
 /**
  * @brief Acquire a token, blocking if none is available.
@@ -107,14 +107,14 @@ extern void sem_destroy(sem_t* sem);
  *
  * @param sem  Semaphore handle.
  */
-extern void sem_wait(sem_t* sem);
+extern void xylem_sem_wait(xylem_sem_t* sem);
 
 /**
  * @brief Acquire a token, blocking up to @p timeout_ms milliseconds.
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Like sem_wait, but gives up after the timeout elapses. A
+ * Like xylem_sem_wait, but gives up after the timeout elapses. A
  * timeout of 0 makes this a non-blocking attempt: it acquires a token
  * if one is immediately available, otherwise returns false at once
  * (never blocks, never parks).
@@ -129,7 +129,7 @@ extern void sem_wait(sem_t* sem);
  *
  * @return true if a token was acquired, false if the timeout elapsed.
  */
-extern bool sem_timedwait(sem_t* sem, uint64_t timeout_ms);
+extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
 
 /**
  * @brief Release a token.
@@ -143,4 +143,4 @@ extern bool sem_timedwait(sem_t* sem, uint64_t timeout_ms);
  *
  * @param sem  Semaphore handle.
  */
-extern void sem_post(sem_t* sem);
+extern void xylem_sem_post(xylem_sem_t* sem);
