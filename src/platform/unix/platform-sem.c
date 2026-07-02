@@ -105,7 +105,9 @@ void platform_sem_wait(platform_sem_t* sem) {
 
 int platform_sem_timedwait(platform_sem_t* sem, uint64_t timeout_ms) {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    if (timespec_get(&ts, TIME_UTC) != TIME_UTC) {
+        return -1;
+    }
     ts.tv_sec += (time_t)(timeout_ms / 1000);
     ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000;
     if (ts.tv_nsec >= 1000000000L) {
