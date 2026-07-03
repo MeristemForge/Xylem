@@ -55,11 +55,6 @@ static uint64_t _now_ns(void) {
     return xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
 }
 
-static void _fail(const char* msg) {
-    fprintf(stderr, "%s\n", msg);
-    exit(1);
-}
-
 static int32_t _default_workers(void) {
     int32_t workers = (int32_t)platform_info_getcpus();
     if (workers < 1) {
@@ -91,7 +86,7 @@ static int _worker_thrd(void* arg) {
 static void _spawn_thread(void) {
     thrd_t thrd;
     if (thrd_create(&thrd, _worker_thrd, NULL) != thrd_success) {
-        _fail("thrd_create failed");
+        abort();
     }
     thrd_detach(thrd);
 }
@@ -135,7 +130,7 @@ static void _run(void* arg) {
     G.mutex = xylem_mutex_create();
     G.wg    = xylem_waitgroup_create();
     if (!G.mutex || !G.wg) {
-        _fail("allocation failed");
+        abort();
     }
     G.counter = 0;
 

@@ -28,6 +28,7 @@
 #include <stdio.h>
 
 #define SAFETY_TIMEOUT_MS 10000
+#define CREDIT_WAKE_COUNT 129
 
 static xylem_opts_t _rt_opts = { .workers = 0 };
 
@@ -468,6 +469,99 @@ static void test_mixed_broadcast(void) {
     }
 }
 
+typedef struct {
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    xylem_cond_t*  all_parked;
+    int            flag;
+    int            parked;
+    atomic_int     observed_yield;
+    atomic_int     released;
+    atomic_int     signaler_done;
+    int            tested;
+} _credit_ctx_t;
+
+static void _credit_maybe_finish(_credit_ctx_t* ctx) {
+    if (atomic_load(&ctx->released) != CREDIT_WAKE_COUNT ||
+        atomic_load(&ctx->signaler_done) == 0) {
+        return;
+    }
+    ctx->tested = 1;
+    xylem_cond_destroy(ctx->all_parked);
+    ctx->all_parked = NULL;
+    xylem_cond_destroy(ctx->cond);
+    ctx->cond = NULL;
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
+    xylem_shutdown();
+}
+
+static void _credit_waiter(void* arg) {
+    _credit_ctx_t* ctx = (_credit_ctx_t*)arg;
+
+    xylem_mutex_lock(ctx->mtx);
+    if (++ctx->parked == CREDIT_WAKE_COUNT) {
+        xylem_cond_signal(ctx->all_parked);
+    }
+    while (!ctx->flag) {
+        xylem_cond_wait(ctx->cond, ctx->mtx);
+    }
+    xylem_mutex_unlock(ctx->mtx);
+
+    atomic_fetch_add(&ctx->released, 1);
+    _credit_maybe_finish(ctx);
+}
+
+static void _credit_observer(void* arg) {
+    _credit_ctx_t* ctx = (_credit_ctx_t*)arg;
+
+    if (atomic_load(&ctx->signaler_done) == 0) {
+        atomic_store(&ctx->observed_yield, 1);
+    }
+}
+
+static void _credit_signaler(void* arg) {
+    _credit_ctx_t* ctx = (_credit_ctx_t*)arg;
+
+    xylem_mutex_lock(ctx->mtx);
+    while (ctx->parked < CREDIT_WAKE_COUNT) {
+        xylem_cond_wait(ctx->all_parked, ctx->mtx);
+    }
+
+    ctx->flag = 1;
+    xylem_spawn(_credit_observer, ctx);
+    for (int i = 0; i < CREDIT_WAKE_COUNT; i++) {
+        xylem_cond_signal(ctx->cond);
+    }
+    ASSERT(atomic_load(&ctx->observed_yield) == 1);
+    atomic_store(&ctx->signaler_done, 1);
+    xylem_mutex_unlock(ctx->mtx);
+
+    _credit_maybe_finish(ctx);
+}
+
+static void _test_credit_main(void* arg) {
+    _credit_ctx_t* ctx = (_credit_ctx_t*)arg;
+
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx        = xylem_mutex_create();
+    ctx->cond       = xylem_cond_create();
+    ctx->all_parked = xylem_cond_create();
+    for (int i = 0; i < CREDIT_WAKE_COUNT; i++) {
+        xylem_spawn(_credit_waiter, ctx);
+    }
+    xylem_spawn(_credit_signaler, ctx);
+}
+
+static void test_signal_consumes_credit(void) {
+    fprintf(stderr, "=== test_signal_consumes_credit\n");
+
+    xylem_opts_t opts = { .workers = 1 };
+    _credit_ctx_t ctx = {0};
+    xylem_run(_test_credit_main, &ctx, &opts);
+    ASSERT(ctx.tested == 1);
+}
+
 int main(void) {
     test_signal_one();
     test_broadcast();
@@ -475,5 +569,6 @@ int main(void) {
     test_external_signal();
     test_thread_waiter();
     test_mixed_broadcast();
+    test_signal_consumes_credit();
     return 0;
 }
