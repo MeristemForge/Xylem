@@ -22,6 +22,7 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "container/list.h"
+#include "platform/platform-cpu.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
@@ -34,12 +35,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#define MUTEX_SPIN_TRIES 128u
+
 /**
  * Cross-context coroutine/thread mutex.
  *
- * Coroutine and OS-thread waiters share one FIFO queue. unlock() keeps
- * the lock held when handing it to a queued waiter, so the resumed waiter
- * owns the mutex without re-contending.
+ * Coroutine and OS-thread waiters share one sleep queue. unlock() releases
+ * the lock before waking one waiter, so resumed waiters re-contend instead
+ * of receiving ownership by handoff.
  */
 struct xylem_mutex_s {
     _Atomic bool locked;
@@ -72,6 +75,16 @@ typedef struct _thrd_waiter_s {
 static bool _mutex_try_take(xylem_mutex_t* mtx) {
     bool expected = false;
     return atomic_compare_exchange_strong(&mtx->locked, &expected, true);
+}
+
+static bool _mutex_spin_take(xylem_mutex_t* mtx) {
+    for (uint32_t i = 0; i < MUTEX_SPIN_TRIES; i++) {
+        platform_cpu_relax();
+        if (_mutex_try_take(mtx)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void _mutex_consume_credit(uint32_t cost) {
@@ -111,7 +124,7 @@ static bool _mutex_park_cb(mco_coro* co, void* arg) {
     w->co = co;
 
     spin_lock(&mtx->guard);
-    if (_mutex_try_take(mtx)) {
+    if (!atomic_load(&mtx->locked)) {
         spin_unlock(&mtx->guard);
         return false;
     }
@@ -126,7 +139,12 @@ static void _mutex_wait_coro(xylem_mutex_t* mtx) {
     w.base.mtx  = mtx;
     w.co        = NULL;
 
-    scheduler_park(mtx->sched, _mutex_park_cb, &w);
+    for (;;) {
+        scheduler_park(mtx->sched, _mutex_park_cb, &w);
+        if (_mutex_try_take(mtx)) {
+            return;
+        }
+    }
 }
 
 static void _mutex_wait_thrd(xylem_mutex_t* mtx) {
@@ -136,15 +154,24 @@ static void _mutex_wait_thrd(xylem_mutex_t* mtx) {
     w.base.mtx  = mtx;
     w.wake      = wake;
 
-    spin_lock(&mtx->guard);
-    if (_mutex_try_take(mtx)) {
-        spin_unlock(&mtx->guard);
-        return;
-    }
-    _mutex_push_waiter(&mtx->waiters, &w.base);
-    spin_unlock(&mtx->guard);
+    for (;;) {
+        if (_mutex_spin_take(mtx)) {
+            return;
+        }
 
-    thrd_wake_wait(wake);
+        spin_lock(&mtx->guard);
+        if (_mutex_try_take(mtx)) {
+            spin_unlock(&mtx->guard);
+            return;
+        }
+        _mutex_push_waiter(&mtx->waiters, &w.base);
+        spin_unlock(&mtx->guard);
+
+        thrd_wake_wait(wake);
+        if (_mutex_try_take(mtx)) {
+            return;
+        }
+    }
 }
 
 xylem_mutex_t* xylem_mutex_create(void) {
@@ -182,11 +209,10 @@ bool xylem_mutex_trylock(xylem_mutex_t* mtx) {
 }
 
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
+    atomic_store(&mtx->locked, false);
+
     spin_lock(&mtx->guard);
     _waiter_t* target = _mutex_pop_waiter(&mtx->waiters);
-    if (!target) {
-        atomic_store(&mtx->locked, false);
-    }
     spin_unlock(&mtx->guard);
 
     if (target) {
