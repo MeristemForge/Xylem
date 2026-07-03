@@ -78,11 +78,7 @@ static socklen_t _datagram_addr_len(const addr_t* addr) {
 }
 
 static void _datagram_consume_io_budget(size_t bytes) {
-    bool should_yield = runtime_consume_credit(1);
     if (runtime_consume_io_credit(bytes)) {
-        should_yield = true;
-    }
-    if (should_yield) {
         runtime_yield_credit();
     }
 }

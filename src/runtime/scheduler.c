@@ -86,7 +86,7 @@
 
 #define SCHED_CORO_POOL_CAP_MUL  64
 #define SCHED_CREDIT_DEFAULT     128
-#define SCHED_IO_CREDIT_DEFAULT  32
+#define SCHED_IO_CREDIT_COST     4u
 #define SCHED_IO_BYTES_DEFAULT   (512 * 1024)
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
@@ -127,7 +127,6 @@ typedef struct _sched_worker_s {
 
     uint32_t             sched_tick;
     uint32_t             credit;
-    uint32_t             io_credit;
     size_t               io_bytes;
     heap_t               timers;
     mtx_t                timer_lock;
@@ -493,7 +492,7 @@ static void _sched_wake_worker(scheduler_t* sched) {
         }
     }
     /**
-     * No parked worker — poller may be sleeping while work is pending,
+     * No parked worker -- poller may be sleeping while work is pending,
      * wake it so it re-checks.
      */
     if (atomic_load(&sched->poller_waiting)) {
@@ -1015,7 +1014,6 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
 
 static inline void _sched_worker_run(_sched_worker_t* w, mco_coro* co) {
     w->credit = SCHED_CREDIT_DEFAULT;
-    w->io_credit = SCHED_IO_CREDIT_DEFAULT;
     w->io_bytes = SCHED_IO_BYTES_DEFAULT;
     mco_resume(co);
     _sched_coro_handle_yield(w, co);
@@ -1565,14 +1563,7 @@ bool scheduler_consume_io_credit(size_t bytes) {
     if (!_tls_worker || !mco_running()) {
         return false;
     }
-    bool exhausted = false;
-
-    if (_tls_worker->io_credit > 1) {
-        _tls_worker->io_credit--;
-    } else {
-        _tls_worker->io_credit = 0;
-        exhausted = true;
-    }
+    bool exhausted = scheduler_consume_credit(SCHED_IO_CREDIT_COST);
 
     if (_tls_worker->io_bytes > bytes) {
         _tls_worker->io_bytes -= bytes;

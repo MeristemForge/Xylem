@@ -131,32 +131,57 @@ if not defined XYLEM_LIB (
 )
 call :ok "xylem built (%XYLEM_LIB%)"
 
-set "CL_FLAGS=/nologo /std:c11 /O2 /DNDEBUG /MD /W3 /I\"%PROJECT_ROOT%\src\""
+set "CL_FLAGS=/nologo /std:c11 /experimental:c11atomics /O2 /DNDEBUG /MD /W3 /I\"%PROJECT_ROOT%\src\""
 set "SYS_LIBS=ws2_32.lib mswsock.lib psapi.lib"
 
 echo %LANGS% | findstr /I "xylem" >nul && (
     call :info "building xylem sync-bench..."
-    if exist "%BIN_DIR%\sem-xylem.exe" del /q "%BIN_DIR%\sem-xylem.exe"
-    cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\sem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
-    if errorlevel 1 (call :err "sem-xylem build failed" & exit /b 1) else (call :ok "sem-xylem built")
+    echo %PRIMS% | findstr /I "mutex" >nul && (
+        if exist "%BIN_DIR%\mutex-xylem.exe" del /q "%BIN_DIR%\mutex-xylem.exe"
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\mutex\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\mutex-xylem.exe" >nul 2>&1
+        if errorlevel 1 (call :err "mutex-xylem build failed" & exit /b 1) else (call :ok "mutex-xylem built")
+    )
+    echo %PRIMS% | findstr /I "sem" >nul && (
+        if exist "%BIN_DIR%\sem-xylem.exe" del /q "%BIN_DIR%\sem-xylem.exe"
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\sem\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
+        if errorlevel 1 (call :err "sem-xylem build failed" & exit /b 1) else (call :ok "sem-xylem built")
+    )
 )
 
 echo %LANGS% | findstr /I "rust" >nul && (
-    call :info "building sem-rust..."
-    pushd "%SYNC_DIR%\sem\rust"
-    cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\sem-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sem-rust built") || (call :warn "skip sem-rust")
-    popd
+    echo %PRIMS% | findstr /I "mutex" >nul && (
+        call :info "building mutex-rust..."
+        pushd "%SYNC_DIR%\mutex\rust"
+        cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\mutex-rust.exe" "%BIN_DIR%\" >nul && (call :ok "mutex-rust built") || (call :warn "skip mutex-rust")
+        popd
+    )
+    echo %PRIMS% | findstr /I "sem" >nul && (
+        call :info "building sem-rust..."
+        pushd "%SYNC_DIR%\sem\rust"
+        cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\sem-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sem-rust built") || (call :warn "skip sem-rust")
+        popd
+    )
 )
 
 echo %LANGS% | findstr /I "go" >nul && (
-    if exist "%BIN_DIR%\sync-go.exe" del /q "%BIN_DIR%\sync-go.exe"
     where go >nul 2>&1
     if not errorlevel 1 (
-        call :info "building go sync-bench..."
-        pushd "%SYNC_DIR%\go-sync"
-        set "CGO_ENABLED=0"
-        go build -ldflags="-s -w" -o "%BIN_DIR%\sync-go.exe" . && (call :ok "sync-go built") || (popd & call :err "sync-go build failed" & exit /b 1)
-        popd
+        echo %PRIMS% | findstr /I "mutex" >nul && (
+            if exist "%BIN_DIR%\mutex-go.exe" del /q "%BIN_DIR%\mutex-go.exe"
+            call :info "building mutex-go..."
+            pushd "%SYNC_DIR%\mutex\go"
+            set "CGO_ENABLED=0"
+            go build -ldflags="-s -w" -o "%BIN_DIR%\mutex-go.exe" . && (call :ok "mutex-go built") || (popd & call :err "mutex-go build failed" & exit /b 1)
+            popd
+        )
+        if exist "%SYNC_DIR%\go-sync" (
+            if exist "%BIN_DIR%\sync-go.exe" del /q "%BIN_DIR%\sync-go.exe"
+            call :info "building go sync-bench..."
+            pushd "%SYNC_DIR%\go-sync"
+            set "CGO_ENABLED=0"
+            go build -ldflags="-s -w" -o "%BIN_DIR%\sync-go.exe" . && (call :ok "sync-go built") || (popd & call :err "sync-go build failed" & exit /b 1)
+            popd
+        )
     ) else (
         call :err "go not found"
         exit /b 1
@@ -164,13 +189,15 @@ echo %LANGS% | findstr /I "go" >nul && (
 )
 
 echo %LANGS% | findstr /I "rust" >nul && (
-    if exist "%BIN_DIR%\sync-rust.exe" del /q "%BIN_DIR%\sync-rust.exe"
     where cargo >nul 2>&1
     if not errorlevel 1 (
-        call :info "building rust sync-bench..."
-        pushd "%SYNC_DIR%\rust-sync"
-        cargo build --release -q --target-dir "%BIN_DIR%\cargo" && copy /Y "%BIN_DIR%\cargo\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
-        popd
+        if exist "%SYNC_DIR%\rust-sync" (
+            if exist "%BIN_DIR%\sync-rust.exe" del /q "%BIN_DIR%\sync-rust.exe"
+            call :info "building rust sync-bench..."
+            pushd "%SYNC_DIR%\rust-sync"
+            cargo build --release -q --target-dir "%BIN_DIR%\cargo" && copy /Y "%BIN_DIR%\cargo\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
+            popd
+        )
     ) else (
         call :err "cargo not found"
         exit /b 1
@@ -192,20 +219,12 @@ goto :eof
 
 REM ------------------------------------------------------------------ bench
 :cmd_bench
-for %%L in (%LANGS:,= %) do (
-    call :bin_for %%L
-    if not exist "!BIN!" (
-        call :err "binary for %%L missing; run: %~nx0 build"
-        exit /b 1
-    )
-)
-
 for /f "tokens=2 delims==" %%T in ('wmic os get localdatetime /value 2^>nul ^| find "="') do set "_DT=%%T"
 set "TS=%_DT:~0,8%-%_DT:~8,6%"
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 
-call :info "results -> %RUN_DIR%   workers=%WORKERS% repeat=%REPEAT%"
+call :info "results: %RUN_DIR%   workers=%WORKERS% repeat=%REPEAT%"
 call :info "prims: %PRIMS%   langs: %LANGS%"
 echo.
 
@@ -248,6 +267,10 @@ goto :eof
 REM bench_prim <prim>
 :bench_prim
 set "PRIM=%~1"
+if /I "%PRIM%"=="mutex" (
+    call :bench_mutex
+    goto :eof
+)
 if /I "%PRIM%"=="sem" (
     call :bench_sem
     goto :eof
@@ -399,6 +422,71 @@ if defined _cur (call set "%_LV%=%%%_LV%%%,%_lt%") else (set "%_LV%=%_lt%")
 shift
 goto :collect_list
 
+:bench_mutex
+call :info "=== mutex  (tasks=2*workers, 5s) ==="
+echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
+echo   -------------------------------------------------------------------------------
+
+for %%L in (%LANGS:,= %) do (
+    set "lang=%%L"
+    set "BIN="
+    set "modes="
+    if /I "!lang!"=="xylem" (set "BIN=%BIN_DIR%\mutex-xylem.exe" & set "modes=cc tt ct tc")
+    if /I "!lang!"=="go"    (set "BIN=%BIN_DIR%\mutex-go.exe"    & set "modes=cc")
+    if /I "!lang!"=="rust"  (set "BIN=%BIN_DIR%\mutex-rust.exe"  & set "modes=cc tt")
+    if not defined BIN (
+        call :warn "skip !lang! (mutex unsupported)"
+    ) else if not exist "!BIN!" (
+        call :warn "skip !lang! (no binary)"
+    ) else (
+        for %%M in (!modes!) do (
+            set "mode=%%M"
+            set /a ops_sum=0, nspo_sum=0, valid=0
+            set "ops_vals="
+            set "total_last=0"
+
+            for /l %%R in (1,1,%REPEAT%) do (
+                set "out=%RUN_DIR%\sync-mutex-!lang!-r%%R.json"
+                if not exist "!out!.done" (
+                    "!BIN!" > "!out!" 2>nul
+                    type nul > "!out!.done"
+                )
+
+                for %%F in ("!out!") do set "_sz=%%~zF"
+                if defined _sz if !_sz! GTR 0 (
+                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                        set "ops=%%A"
+                        set "nspo=%%B"
+                        set "total=%%C"
+                    )
+                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                    if defined ops if !ops! GTR 0 (
+                        set /a ops_sum+=ops, valid+=1
+                        call :nspo_to_x100 "!nspo!"
+                        set /a nspo_sum+=_NSPO_X100
+                        set "total_last=!total!"
+                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
+                    )
+                )
+                set "_sz="
+            )
+
+            if !valid! GTR 0 (
+                set /a ops_avg=ops_sum/valid
+                set /a nspo_avg_x100=nspo_sum/valid
+                set /a nspo_avg_i=nspo_avg_x100/100
+                set /a nspo_avg_f=nspo_avg_x100%%100
+                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
+                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
+            ) else (
+                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+            )
+        )
+    )
+)
+echo.
+goto :eof
+
 REM ------------------------------------------------------------------ sem
 :bench_sem
 call :info "=== sem  (handoff, 5s) ==="
@@ -431,7 +519,7 @@ for %%L in (%LANGS:,= %) do (
 
                 for %%F in ("!out!") do set "_sz=%%~zF"
                 if defined _sz if !_sz! GTR 0 (
-                    for /f "tokens=1-3 delims=|" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match \"`\"mode`\":\s*`\"$m`\"\"){$o='';$n='';$t='';if($b -match '`\"ops_per_sec`\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '`\"ns_per_op`\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '`\"total_ops`\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output \"$o|$n|$t\"}}"') do (
+                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
                         set "ops=%%A"
                         set "nspo=%%B"
                         set "total=%%C"

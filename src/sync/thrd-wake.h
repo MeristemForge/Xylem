@@ -27,11 +27,10 @@ _Pragma("once")
 /**
  * Per-thread futex-backed wake semaphore.
  *
- * The wake primitive for OS-thread waiters in the handoff primitives
- * (cond, channel): a thread blocks until a waker hands it a token. It is
- * a genuine counting semaphore -- a post landing before the wait banks a
- * token the next wait consumes -- so it is a drop-in for a kernel wake
- * semaphore and keeps the consumers' claim/arbitrate races valid.
+ * The wake primitive for OS-thread waiters in cross-context sync
+ * primitives: a thread blocks until a waker hands it a token. It is a
+ * counting wake object -- a signal landing before the wait banks a token
+ * the next wait consumes -- so it closes signal-before-wait races.
  *
  * The token count is thread-local and lives for the thread's lifetime, so
  * a waker holding only a pointer to it can signal safely even after the

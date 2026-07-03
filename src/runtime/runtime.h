@@ -84,6 +84,8 @@ extern bool runtime_consume_credit(uint32_t cost);
 /**
  * @brief Consume cooperative runtime I/O credit.
  *
+ * Charges a higher-cost cooperative operation and a byte budget.
+ *
  * @param bytes  Bytes moved by the successful I/O operation.
  *
  * @return true when the caller should yield, false otherwise.

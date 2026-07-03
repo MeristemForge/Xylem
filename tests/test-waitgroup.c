@@ -185,9 +185,86 @@ static void test_thread_waiter(void) {
     }
 }
 
+#define WGM_CORO_WAITERS   6
+#define WGM_THREAD_WAITERS 4
+#define WGM_WAITERS        (WGM_CORO_WAITERS + WGM_THREAD_WAITERS)
+#define WGM_WORKERS        10
+
+typedef struct {
+    xylem_waitgroup_t* wg;
+    atomic_int         done_count;
+    atomic_int         released;
+    int                tested;
+} _wgm_ctx_t;
+
+static int _wgm_thread_waiter(void* arg) {
+    _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WGM_WORKERS);
+    atomic_fetch_add(&ctx->released, 1);
+    return 0;
+}
+
+static void _wgm_coro_waiter(void* arg) {
+    _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
+    xylem_waitgroup_wait(ctx->wg);
+    ASSERT(atomic_load(&ctx->done_count) == WGM_WORKERS);
+    atomic_fetch_add(&ctx->released, 1);
+}
+
+static void _wgm_worker(void* arg) {
+    _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
+    xylem_sleep(2);
+    atomic_fetch_add(&ctx->done_count, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _wgm_driver(void* arg) {
+    _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
+    while (atomic_load(&ctx->released) < WGM_WAITERS) {
+        xylem_sleep(2);
+    }
+    ctx->tested = 1;
+    xylem_waitgroup_destroy(ctx->wg);
+    ctx->wg = NULL;
+    xylem_shutdown();
+}
+
+static void _test_wgm_main(void* arg) {
+    _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(ctx->wg, WGM_WORKERS);
+    for (int i = 0; i < WGM_THREAD_WAITERS; i++) {
+        thrd_t th;
+        ASSERT(thrd_create(&th, _wgm_thread_waiter, ctx) == thrd_success);
+        thrd_detach(th);
+    }
+    for (int i = 0; i < WGM_CORO_WAITERS; i++) {
+        xylem_spawn(_wgm_coro_waiter, ctx);
+    }
+    for (int i = 0; i < WGM_WORKERS; i++) {
+        xylem_spawn(_wgm_worker, ctx);
+    }
+    xylem_spawn(_wgm_driver, ctx);
+}
+
+static void test_mixed_waiters(void) {
+    fprintf(stderr, "=== test_mixed_waiters\n");
+    for (int round = 0; round < 20; round++) {
+        _wgm_ctx_t ctx = {0};
+        atomic_init(&ctx.done_count, 0);
+        atomic_init(&ctx.released, 0);
+        xylem_run(_test_wgm_main, &ctx, &_rt_opts);
+        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.released) == WGM_WAITERS);
+    }
+}
+
 int main(void) {
     test_concurrent();
     test_multi_waiter();
     test_thread_waiter();
+    test_mixed_waiters();
     return 0;
 }

@@ -24,126 +24,129 @@
 #include "xylem/xylem-logger.h"
 
 #include "container/list.h"
-#include "platform/platform-futex.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
+#include "sync/thrd-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
 
-#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 /**
- * Cross-context countdown latch (Go's sync.WaitGroup).
- *
- * `cnt` is the latch counter; the predicate every waiter blocks on is
- * "cnt == 0". The two waiter kinds block differently, mirroring
- * xylem_sem / xylem_mutex:
- *
- *   - Coroutines queue FIFO on `co_waiters` and park on the scheduler.
- *     done()-at-zero drains the list and reschedules each, with no kernel
- *     round-trip.
- *
- *   - OS threads do not queue: they sleep on `gate`, a generation word
- *     that done()-at-zero bumps and broadcasts. The futex value-compare
- *     against the generation snapshotted under the guard closes the
- *     lost-wakeup race (a done() that opens the latch after the snapshot
- *     but before the sleep changes `gate`, so the wait returns at once).
- *     `thr_waiters` tells done() whether a broadcast is needed, so a
- *     coroutine-only workload pays no syscall.
- *
- * Lifetime is the delicate part. wait() returning lets its caller
- * destroy() -> free(wg), and a waiter may learn the latch is open either
- * by being woken by done() or by independently observing cnt == 0 (e.g. a
- * wait() that starts after the final done()). So the invariant is: a
- * waiter only ever inspects cnt -- the read that may lead it to return and
- * free wg -- while holding `guard`, and done() performs *every* access to
- * wg (the decrement to zero, the drain, the gate bump, the broadcast)
- * under that same guard. A waiter therefore cannot observe the open latch
- * and free wg until done() has released the guard, by which point done()'s
- * only remaining act is rescheduling the drained coroutines -- which
- * touches the private drained list and the still-parked frames, never wg.
- *
- * This is why threads, unlike in xylem_sem, also take the guard here: the
- * counter being driven to exactly zero is a one-shot edge that frees the
- * object, not a token a late barger can simply re-read. done() keeps that
- * edge inside the guard -- it CAS-decrements any value > 1 lock-free, and
- * routes only the final 1 -> 0 transition through the guard -- so the open
- * latch becomes observable to a waiter only while done() holds the guard.
- *
- * `cnt` is size_t (the public counter width); a futex word must be 32-bit,
- * so threads block on the separate `gate` generation rather than on `cnt`.
- *
- * Reuse (add() after the latch reached zero) follows Go's contract: such
- * add()s must happen-after all prior wait()s returned.
+ * count and waiters share a guard so wait() cannot return and free wg
+ * while done() is still draining the latch.
  */
 struct xylem_waitgroup_s {
-    atomic_size_t    cnt;
-    _Atomic uint32_t gate;        /* generation; bumped when latch opens  */
-    _Atomic int32_t  thr_waiters; /* OS threads blocked on the futex       */
-    spin_t           guard;       /* serialises the decrement + wake path  */
-    list_t           co_waiters;  /* coroutine waiters, FIFO               */
+    size_t       count;
+    spin_t       guard;
+    list_t       waiters;
+    scheduler_t* sched;
 };
 
-/**
- * Coroutine waiter record, embedded in the waiting coroutine's wait()
- * frame (which stays alive while parked, so done() may read it).
- */
-typedef struct _wg_co_waiter_s {
-    list_node_t  node;
-    mco_coro*    co;
-    scheduler_t* sched;
-} _wg_co_waiter_t;
+typedef enum _waiter_kind_e {
+    WAITER_CORO,
+    WAITER_THRD,
+} _waiter_kind_t;
 
-typedef struct _wg_park_ctx_s {
+typedef struct _waiter_s {
+    list_node_t        node;
+    _waiter_kind_t     kind;
     xylem_waitgroup_t* wg;
-    _wg_co_waiter_t*   w;
-} _wg_park_ctx_t;
+} _waiter_t;
 
-/**
- * Park callback, run once the coroutine has actually suspended. Under the
- * guard -- the same one done() holds across its whole critical section --
- * enqueue if the latch is still closed, or decline the park (false) if
- * done() already opened it. Declining makes wait() return inline; reading
- * cnt here under the guard is what keeps that return ordered after done()
- * has finished touching wg.
- */
+typedef struct _coro_waiter_s {
+    _waiter_t base;
+    mco_coro* co;
+} _coro_waiter_t;
+
+typedef struct _thrd_waiter_s {
+    _waiter_t    base;
+    thrd_wake_t* wake;
+} _thrd_waiter_t;
+
+static void _wg_push_waiter(list_t* waiters, _waiter_t* w) {
+    list_insert_tail(waiters, &w->node);
+}
+
+static void _wg_consume_credit(uint32_t cost) {
+    if (runtime_consume_credit(cost)) {
+        runtime_yield_credit();
+    }
+}
+
+static _waiter_t* _wg_pop_waiter(list_t* waiters) {
+    list_node_t* n = list_head(waiters);
+    if (!n) {
+        return NULL;
+    }
+    _waiter_t* w = list_entry(n, _waiter_t, node);
+    list_remove(waiters, &w->node);
+    return w;
+}
+
 static bool _wg_park_cb(mco_coro* co, void* arg) {
-    _wg_park_ctx_t*    ctx = (_wg_park_ctx_t*)arg;
-    xylem_waitgroup_t* wg  = ctx->wg;
+    _coro_waiter_t*    w  = (_coro_waiter_t*)arg;
+    xylem_waitgroup_t* wg = w->base.wg;
 
-    /* co is known only now that the coroutine has actually suspended. */
-    ctx->w->co = co;
+    w->co = co;
 
     spin_lock(&wg->guard);
-    if (atomic_load(&wg->cnt) == 0) {
+    if (wg->count == 0) {
         spin_unlock(&wg->guard);
-        return false; /* latch already open: decline the park, run inline */
+        return false;
     }
-    list_insert_tail(&wg->co_waiters, &ctx->w->node);
+    _wg_push_waiter(&wg->waiters, &w->base);
     spin_unlock(&wg->guard);
     return true;
 }
 
-/**
- * Reschedule every coroutine in a drained list, in FIFO order. Reads each
- * node's successor before waking it, since the woken coroutine's frame may
- * vanish on resume.
- */
-static void _wg_wake_all(list_t* drained) {
-    list_node_t* sentinel = list_sentinel(drained);
-    list_node_t* n        = list_head(drained);
-    while (n) {
-        list_node_t* next = list_next(n);
-        if (next == sentinel) {
-            next = NULL;
-        }
-        _wg_co_waiter_t* w = list_entry(n, _wg_co_waiter_t, node);
-        scheduler_schedule(w->sched, w->co);
-        n = next;
+static void _wg_wake(scheduler_t* sched, _waiter_t* w) {
+    if (w->kind == WAITER_CORO) {
+        _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
+        scheduler_schedule(sched, cw->co);
+    } else {
+        _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
+        thrd_wake_signal(tw->wake);
     }
+}
+
+static void _wg_wake_all(scheduler_t* sched, list_t* wake_list) {
+    for (;;) {
+        _waiter_t* w = _wg_pop_waiter(wake_list);
+        if (!w) {
+            return;
+        }
+        _wg_wake(sched, w);
+    }
+}
+
+static void _wg_wait_coro(xylem_waitgroup_t* wg) {
+    _coro_waiter_t w;
+    w.base.kind = WAITER_CORO;
+    w.base.wg   = wg;
+    w.co        = NULL;
+
+    scheduler_park(wg->sched, _wg_park_cb, &w);
+}
+
+static void _wg_wait_thrd(xylem_waitgroup_t* wg) {
+    thrd_wake_t*  wake = thrd_wake_self();
+    _thrd_waiter_t w;
+    w.base.kind = WAITER_THRD;
+    w.base.wg   = wg;
+    w.wake      = wake;
+
+    spin_lock(&wg->guard);
+    if (wg->count != 0) {
+        _wg_push_waiter(&wg->waiters, &w.base);
+        spin_unlock(&wg->guard);
+        thrd_wake_wait(wake);
+        return;
+    }
+    spin_unlock(&wg->guard);
 }
 
 xylem_waitgroup_t* xylem_waitgroup_create(void) {
@@ -152,11 +155,10 @@ xylem_waitgroup_t* xylem_waitgroup_create(void) {
     if (!wg) {
         return NULL;
     }
-    atomic_init(&wg->cnt, 0);
-    atomic_init(&wg->gate, 0);
-    atomic_init(&wg->thr_waiters, 0);
+    wg->count = 0;
     spin_init(&wg->guard);
-    list_init(&wg->co_waiters);
+    list_init(&wg->waiters);
+    wg->sched = runtime_get_scheduler();
     return wg;
 }
 
@@ -168,128 +170,39 @@ void xylem_waitgroup_destroy(xylem_waitgroup_t* wg) {
 }
 
 void xylem_waitgroup_add(xylem_waitgroup_t* wg, size_t delta) {
-    /* Lock-free: neither parks nor wakes, so safe from any context. */
-    atomic_fetch_add(&wg->cnt, delta);
+    spin_lock(&wg->guard);
+    wg->count += delta;
+    spin_unlock(&wg->guard);
 }
 
 void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
-    list_t drained;
-    list_init(&drained);
+    list_t       wake_list;
+    scheduler_t* sched = NULL;
+    list_init(&wake_list);
 
-    /**
-     * Fast path: a done() that does not drive the counter to zero touches
-     * nothing but the counter. Its decrement is ordered (in cnt's
-     * modification order) before the final 1 -> 0 decrement that any
-     * waiter's "latch open" observation reads, so it happens-before any
-     * free of wg and needs no guard. Only the last decrement opens the
-     * latch and must run under the guard, so a waiter cannot observe the
-     * open latch and free wg while we still touch it.
-     *
-     * The invariant that keeps this safe is "never let the counter reach
-     * zero outside the guard": CAS any value > 1 down lock-free, and route
-     * only the 1 -> 0 transition through the guarded path below. (A bare
-     * fetch_sub that happened to read prev == 1 would have already exposed
-     * cnt == 0 before we could take the guard -- the very window the guard
-     * is meant to close.)
-     */
-    for (;;) {
-        size_t c = atomic_load(&wg->cnt);
-        if (c == 0) {
-            /* Underflow: more done() than add(); mirrors Go's panic. */
-            xylem_loge("<waitgroup> done called with zero counter wg=%p",
-                       (void*)wg);
-            abort();
-        }
-        if (c == 1) {
-            break; /* potential last: take the guarded path */
-        }
-        if (atomic_compare_exchange_weak(&wg->cnt, &c, c - 1)) {
-            return; /* decremented a value > 1: not last, lock-free */
-        }
-        /* lost the race; reload and retry */
-    }
-
-    /**
-     * Counter is 1: decrement it to zero under the guard so the open latch
-     * becomes observable only while we hold the guard. A waiter reads cnt
-     * only under this same guard, so none can observe the open latch,
-     * return, and free wg until we unlock; a thread woken by the broadcast
-     * re-takes the guard before it can leave. Then do every remaining
-     * access to wg -- drain, open a new generation, broadcast -- here.
-     * The default atomic gate update pairs with a thread's armed generation
-     * so the wake is never skipped.
-     */
     spin_lock(&wg->guard);
-    size_t prev = atomic_fetch_sub(&wg->cnt, 1);
-    if (prev == 0) {
-        spin_unlock(&wg->guard);
+    if (wg->count == 0) {
         xylem_loge("<waitgroup> done called with zero counter wg=%p",
                    (void*)wg);
         abort();
     }
-    if (prev != 1) {
-        /**
-         * Counter climbed back above 1 between the peek and the guard (a
-         * reuse add()); we decremented a value > 1, so we are not last.
-         */
-        spin_unlock(&wg->guard);
-        return;
-    }
-
-    list_swap(&drained, &wg->co_waiters);
-    atomic_fetch_add(&wg->gate, 1);
-    if (atomic_load(&wg->thr_waiters) > 0) {
-        platform_futex_broadcast(&wg->gate);
+    wg->count--;
+    if (wg->count == 0) {
+        list_swap(&wake_list, &wg->waiters);
+        sched = wg->sched;
     }
     spin_unlock(&wg->guard);
 
-    /**
-     * Last action: reschedule the drained coroutine waiters. This touches
-     * only the privately-owned `drained` list and each waiter's frame
-     * (still parked, hence alive, until it resumes), never wg, so a
-     * coroutine that resumes and frees wg here cannot strand us -- nothing
-     * after this reads wg.
-     */
-    _wg_wake_all(&drained);
+    if (!list_empty(&wake_list)) {
+        _wg_wake_all(sched, &wake_list);
+    }
+    _wg_consume_credit(1);
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {
     if (mco_running()) {
-        /**
-         * Coroutine: park unconditionally; the callback decides under the
-         * guard whether to enqueue or run inline (latch already open).
-         * There is no unguarded cnt fast path -- reading cnt outside the
-         * guard could let this coroutine return and free wg while a
-         * concurrent done() is still touching it.
-         */
-        _wg_co_waiter_t w;
-        w.co    = NULL;
-        w.sched = runtime_get_scheduler();
-
-        _wg_park_ctx_t ctx = { wg, &w };
-        scheduler_park(w.sched, _wg_park_cb, &ctx);
-        return;
+        _wg_wait_coro(wg);
+    } else {
+        _wg_wait_thrd(wg);
     }
-
-    /**
-     * OS thread: inspect cnt under the guard (the same one done() holds
-     * across its critical section), so observing the open latch -- and
-     * thus returning to a caller that may destroy wg -- is ordered after
-     * done() has finished every access to wg. Snapshot the generation and
-     * arm `thr_waiters` under the guard, then release it across the futex
-     * sleep; a done() that opens the latch in that window bumps the gate,
-     * so the value-compare returns the wait immediately.
-     */
-    spin_lock(&wg->guard);
-    while (atomic_load(&wg->cnt) != 0) {
-        uint32_t g = atomic_load(&wg->gate);
-        atomic_fetch_add(&wg->thr_waiters, 1);
-        spin_unlock(&wg->guard);
-
-        platform_futex_wait(&wg->gate, g);
-
-        spin_lock(&wg->guard);
-        atomic_fetch_sub(&wg->thr_waiters, 1);
-    }
-    spin_unlock(&wg->guard);
 }

@@ -29,12 +29,9 @@ typedef struct xylem_sem_s xylem_sem_t;
 /**
  * Counting semaphore that bridges coroutines and OS threads.
  *
- * Unlike the other primitives in this directory (mutex, cond,
- * waitgroup, channel), which are coroutine-only and abort if a
- * blocking op is called off-coroutine, xylem_sem_t is the one sync
- * object whose blocking op is *any-context*: it is meant precisely
- * for a coroutine to notify an external thread, or an external thread
- * to notify a coroutine.
+ * xylem_sem_t is a cross-context counting semaphore: a coroutine can
+ * notify an external thread, and an external thread can notify a
+ * coroutine.
  *
  * Semantics:
  *   - Standard counting semaphore. wait() decrements; if the count is
@@ -47,17 +44,17 @@ typedef struct xylem_sem_s xylem_sem_t;
  * Threading:
  *   - wait() adapts to its caller. On a coroutine it parks the
  *     coroutine (the worker thread stays free); on any other thread it
- *     blocks that OS thread. Coroutine waiters share one FIFO queue;
- *     OS-thread waiters block on a per-thread wake object. timedwait()
- *     is the same with a deadline.
+ *     blocks that OS thread. Coroutine and OS-thread waiters share one
+ *     FIFO queue. OS-thread waiters block on a per-thread wake object.
+ *     timedwait() is the same with a deadline.
  *   - post(), timedwait(0), create(), destroy() are all callable from
  *     any thread and any context (coroutine or not). They never park.
  *   - How a waiter is woken is decided by what the waiter is, not by
  *     who posts: a coroutine waiter is rescheduled, a thread waiter is
- *     released on an OS semaphore. The poster may be either.
+ *     released on its per-thread wake object. The poster may be either.
  *
- * A coroutine waiter requires a running scheduler (it is woken via the
- * scheduler it was parked on); a thread waiter needs no runtime.
+ * A semaphore that may park coroutine waiters must be created while
+ * the runtime scheduler is available; thread waiters need no runtime.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -72,7 +69,8 @@ typedef struct xylem_sem_s xylem_sem_t;
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Callable from any thread or context.
+ * Callable from any thread or context. If coroutine waiters will use
+ * the semaphore, create it while the runtime scheduler is available.
  *
  * @param value  Initial token count.
  *
@@ -86,7 +84,8 @@ extern xylem_sem_t* xylem_sem_create(uint32_t value);
  * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any thread or context. The caller must ensure no
- * coroutine or thread is still blocked in wait() on this semaphore.
+ * coroutine or thread is still blocked in wait() or timedwait() on
+ * this semaphore.
  *
  * @param sem  Semaphore handle, NULL is safe.
  */
@@ -120,7 +119,7 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
  * (never blocks, never parks).
  *
  * A coroutine caller parks with a scheduler timer; an external thread
- * blocks on its per-thread OS semaphore with the same timeout. Both
+ * blocks on its per-thread wake object with the same timeout. Both
  * share the one count and one FIFO waiter queue.
  *
  * @param sem         Semaphore handle.

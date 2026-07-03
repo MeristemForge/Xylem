@@ -30,18 +30,16 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  *
  * A waitgroup is a countdown latch: producers call add() to register
  * pending work and done() when each unit finishes; any number of
- * consumer coroutines call wait() to block until the counter hits
- * zero, at which point all parked waiters are woken in a single
- * broadcast.
+ * coroutines or OS threads call wait() to block until the counter hits
+ * zero. When the counter reaches zero, all queued waiters are released.
  *
  * Threading:
  *   - All operations work from any context: a coroutine on a scheduler
  *     worker, or an external OS thread. wait() blocks the caller in the
  *     way that fits its context (a coroutine parks, an OS thread blocks
- *     on a per-thread semaphore) until the counter hits zero;
- *     add()/done() never block. Multiple waiters (coroutines, threads,
- *     or a mix) may wait() on the same waitgroup concurrently; they are
- *     all released together when the counter reaches zero.
+ *     on its per-thread wake object) until the counter hits zero.
+ *     Coroutine and OS-thread waiters share one FIFO queue. add() and
+ *     done() never wait for the counter.
  *
  * Misuse that aborts the process:
  *   - done() called more times than add() has ever promised
@@ -59,7 +57,7 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
 /**
  * @brief Create a new waitgroup.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * @return Pointer to the new waitgroup, or NULL on allocation failure.
  */
@@ -68,12 +66,12 @@ extern xylem_waitgroup_t* xylem_waitgroup_create(void);
 /**
  * @brief Increment the waitgroup counter.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Typically called before
  * spawning the work units whose completion the counter tracks; calling
- * add() once a wait() may already be in progress is a logic error and
- * is not supported.
+ * add() while waiters from a previous round may still be blocked is a
+ * logic error and is not supported.
  *
  * @param waitgroup  Pointer to the waitgroup.
  * @param delta      Number of work items to add.
@@ -83,12 +81,12 @@ extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
 /**
  * @brief Decrement the waitgroup counter by one.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
- * When the counter reaches zero, every waiter parked
- * in xylem_waitgroup_wait() is resumed in FIFO order. Calling done()
- * more times than add() has promised aborts the process with a
- * diagnostic log. Callable from any context.
+ * When the counter reaches zero, every queued waiter in
+ * xylem_waitgroup_wait() is released. Calling done() more times than
+ * add() has promised aborts the process with a diagnostic log.
+ * Callable from any context.
  *
  * @param waitgroup  Pointer to the waitgroup.
  */
@@ -102,7 +100,7 @@ extern void xylem_waitgroup_done(xylem_waitgroup_t* waitgroup);
  *
  * Returns immediately if the counter is already zero. Any number of
  * waiters (coroutines, threads, or a mix) may wait() on the same
- * waitgroup; they are all released together by the done() that drops
+ * waitgroup; all queued waiters are released by the done() that drops
  * the counter to zero.
  *
  * @param waitgroup  Pointer to the waitgroup.
@@ -112,7 +110,7 @@ extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
 /**
  * @brief Destroy the waitgroup and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * The caller must ensure no coroutine or thread is blocked in wait()
  * and no add()/done() call is in flight on this waitgroup.

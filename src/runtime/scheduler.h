@@ -223,8 +223,8 @@ extern bool scheduler_consume_credit(uint32_t cost);
 /**
  * @brief Consume cooperative I/O credit for the current coroutine.
  *
- * I/O credit is refilled each time a coroutine is resumed. Long I/O loops
- * call this after successful operations and yield when it returns true.
+ * Charges a higher-cost cooperative operation and a byte budget. Long I/O
+ * loops call this after successful operations and yield when it returns true.
  *
  * @param bytes  Bytes moved by the successful I/O operation.
  *

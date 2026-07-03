@@ -32,7 +32,7 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * lock() and unlock() by whoever acquired it -- a coroutine or a plain
  * OS thread. A contended lock() parks the calling coroutine on the
  * scheduler, or blocks the calling OS thread on a per-thread wake
- * semaphore, instead of spinning the worker. Ownership is not tied to
+ * object, instead of spinning the worker. Ownership is not tied to
  * any thread: unlock() hands the lock straight to the FIFO-oldest
  * waiter, so a coroutine may unlock a lock another coroutine or thread
  * acquired.
@@ -42,21 +42,24 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     worker, or an external OS thread. lock() blocks the caller in the
  *     way that fits its context (park vs OS-thread block); the others
  *     never block. A coroutine waiter is woken by the scheduler; a
- *     thread waiter by its OS semaphore. Coroutine and thread waiters
+ *     thread waiter by its wake object. Coroutine and thread waiters
  *     may queue on the same mutex and notify each other.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
- *     scheduler. External OS threads must not call mutex APIs after
- *     xylem_shutdown() has been called. Stop and join those threads
- *     before shutdown, or make sure they touch no mutex once shutdown
- *     begins.
+ *     scheduler captured at create() time. Create mutexes while the
+ *     runtime scheduler is available. External OS threads must not call
+ *     mutex APIs after xylem_shutdown() has been called. Stop and join
+ *     those threads before shutdown, or make sure they touch no mutex
+ *     once shutdown begins.
  */
 
 /**
- * @brief Create a new coroutine mutex.
+ * @brief Create a new mutex.
  *
  * @note [THREAD-SAFE]
+ *
+ * Create while the runtime scheduler is available.
  *
  * @return Pointer to the new mutex, or NULL on allocation failure.
  */
@@ -69,7 +72,7 @@ extern xylem_mutex_t* xylem_mutex_create(void);
  *
  * If the mutex is already held, the caller blocks until the holder
  * calls xylem_mutex_unlock(): a coroutine is suspended (parked) on the
- * scheduler, an external OS thread blocks on a per-thread semaphore.
+ * scheduler, an external OS thread blocks on a per-thread wake object.
  *
  * @param mutex  Pointer to the mutex.
  */

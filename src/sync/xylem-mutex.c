@@ -22,174 +22,129 @@
 #include "xylem/sync/xylem-mutex.h"
 
 #include "container/list.h"
-#include "platform/platform-futex.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 #include "sync/spin.h"
+#include "sync/thrd-wake.h"
 
 #include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
-
-/**
- * `state` is a classic 3-state futex word, and also the word OS threads
- * block on:
- *
- *   FREE      0  unlocked, no waiter recorded
- *   LOCKED    1  held, no OS thread known to be blocked
- *   CONTENDED 2  held, an OS thread may be blocked in platform_futex_wait
- *
- * The CONTENDED value is what lets unlock avoid a wake syscall when none
- * is needed: an OS thread publishes it (xchg -> 2) before it sleeps, so a
- * release that observes anything other than 2 is provably free of blocked
- * threads and skips the wake. A thread that acquires from a contended
- * state re-publishes 2 (it cannot know whether others still wait), so the
- * flag is self-correcting -- the next clean FREE->LOCKED acquire drops it.
- */
-#define MTX_FREE      0u
-#define MTX_LOCKED    1u
-#define MTX_CONTENDED 2u
 
 /**
  * Cross-context coroutine/thread mutex.
  *
- * The two waiter kinds block differently, since a coroutine must never
- * block its worker:
- *
- *   - Coroutines park on the scheduler and queue FIFO on `co_waiters`.
- *     unlock hands the lock to the oldest with the word kept held, so
- *     ownership transfers with no kernel round-trip or re-contention --
- *     the common fast path. Coroutines never touch CONTENDED; they only
- *     ever acquire cleanly (FREE -> LOCKED).
- *
- *   - Threads do not queue: they run the 3-state futex protocol on
- *     `state`, publishing CONTENDED before sleeping and barging on every
- *     wake. The word itself records whether a wake is owed, so unlock
- *     needs no separate waiter counter.
- *
- * `guard` serialises the unlock decision against coroutine enqueue and
- * the lock clear, closing the lost-wakeup race: a coroutine racing unlock
- * is either seen in the list or grabs the freed lock in its park
- * callback, never stranded. Threads need no guard -- futex_wait re-checks
- * the word, so a clear that beats the sleep returns instead of losing it,
- * and the release reads the authoritative word value (via exchange) to
- * decide the wake.
+ * Coroutine and OS-thread waiters share one FIFO queue. unlock() keeps
+ * the lock held when handing it to a queued waiter, so the resumed waiter
+ * owns the mutex without re-contending.
  */
 struct xylem_mutex_s {
-    _Atomic uint32_t state;      /* 3-state futex word (see above)          */
-    spin_t           guard;      /* serialises the coro list + lock clear   */
-    list_t           co_waiters; /* coroutine waiters, FIFO                 */
+    _Atomic bool locked;
+    spin_t       guard;
+    list_t       waiters;
+    scheduler_t* sched;
 };
 
-/**
- * A parked coroutine waiter, embedded in the coroutine's lock() frame
- * (which stays alive while parked, so unlock may read it). `granted`
- * tells the woken coroutine which wake it got: 1 = the lock was handed
- * to it (it owns it, return), 0 = a barging release (it must re-contend).
- */
-typedef struct _mutex_co_waiter_s {
-    list_node_t      node;
-    mco_coro*        co;
-    scheduler_t*     sched;
-    _Atomic uint32_t granted;
-} _mutex_co_waiter_t;
+typedef enum _waiter_kind_e {
+    WAITER_CORO,
+    WAITER_THRD,
+} _waiter_kind_t;
 
-typedef struct _mutex_park_ctx_s {
-    xylem_mutex_t*      mtx;
-    _mutex_co_waiter_t* w;
-} _mutex_park_ctx_t;
+typedef struct _waiter_s {
+    list_node_t    node;
+    _waiter_kind_t kind;
+    xylem_mutex_t* mtx;
+} _waiter_t;
 
-/* Acquire only from FREE: clean CAS FREE -> LOCKED, valid in any context. */
-static bool _mutex_try_acquire(xylem_mutex_t* mtx) {
-    uint32_t expected = MTX_FREE;
-    return atomic_compare_exchange_strong(&mtx->state, &expected, MTX_LOCKED);
+typedef struct _coro_waiter_s {
+    _waiter_t base;
+    mco_coro* co;
+} _coro_waiter_t;
+
+typedef struct _thrd_waiter_s {
+    _waiter_t    base;
+    thrd_wake_t* wake;
+} _thrd_waiter_t;
+
+static bool _mutex_try_take(xylem_mutex_t* mtx) {
+    bool expected = false;
+    return atomic_compare_exchange_strong(&mtx->locked, &expected, true);
 }
 
-/**
- * Runs after the coroutine has suspended. Under the guard, either grab a
- * lock just freed by a racing unlock (decline the park) or enqueue to be
- * woken -- the ordering that closes the lost-wakeup race.
- */
+static void _mutex_consume_credit(uint32_t cost) {
+    if (runtime_consume_credit(cost)) {
+        runtime_yield_credit();
+    }
+}
+
+static void _mutex_push_waiter(list_t* waiters, _waiter_t* w) {
+    list_insert_tail(waiters, &w->node);
+}
+
+static _waiter_t* _mutex_pop_waiter(list_t* waiters) {
+    list_node_t* n = list_head(waiters);
+    if (!n) {
+        return NULL;
+    }
+    _waiter_t* w = list_entry(n, _waiter_t, node);
+    list_remove(waiters, &w->node);
+    return w;
+}
+
+static void _mutex_wake(scheduler_t* sched, _waiter_t* w) {
+    if (w->kind == WAITER_CORO) {
+        _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
+        scheduler_schedule(sched, cw->co);
+    } else {
+        _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
+        thrd_wake_signal(tw->wake);
+    }
+}
+
 static bool _mutex_park_cb(mco_coro* co, void* arg) {
-    _mutex_park_ctx_t*  ctx = (_mutex_park_ctx_t*)arg;
-    xylem_mutex_t*      mtx = ctx->mtx;
-    _mutex_co_waiter_t* w   = ctx->w;
+    _coro_waiter_t* w   = (_coro_waiter_t*)arg;
+    xylem_mutex_t*  mtx = w->base.mtx;
 
     w->co = co;
 
     spin_lock(&mtx->guard);
-    if (_mutex_try_acquire(mtx)) {
+    if (_mutex_try_take(mtx)) {
         spin_unlock(&mtx->guard);
-        atomic_store(&w->granted, 1);
-        return false; /* acquired in-line: decline the park */
+        return false;
     }
-    list_insert_tail(&mtx->co_waiters, &w->node);
+    _mutex_push_waiter(&mtx->waiters, &w->base);
     spin_unlock(&mtx->guard);
-    return true; /* parked: an unlock will wake us */
+    return true;
 }
 
-/**
- * Coroutine slow path. Re-park until woken with the lock handed over
- * (granted) or until a barge succeeds on a release; a lost re-contention
- * loops to re-park.
- */
-static void _mutex_lock_co(xylem_mutex_t* mtx) {
-    _mutex_co_waiter_t w;
-    w.co    = NULL;
-    w.sched = runtime_get_scheduler();
-    atomic_init(&w.granted, 0);
+static void _mutex_wait_coro(xylem_mutex_t* mtx) {
+    _coro_waiter_t w;
+    w.base.kind = WAITER_CORO;
+    w.base.mtx  = mtx;
+    w.co        = NULL;
 
-    _mutex_park_ctx_t ctx = { mtx, &w };
-    for (;;) {
-        atomic_store(&w.granted, 0);
-        scheduler_park(w.sched, _mutex_park_cb, &ctx);
-        if (atomic_load(&w.granted)) {
-            return; /* handed the lock (or acquired in the callback) */
-        }
-        if (_mutex_try_acquire(mtx)) {
-            return; /* barged in on the released lock */
-        }
-        /* lost the race; re-park */
-    }
+    scheduler_park(mtx->sched, _mutex_park_cb, &w);
 }
 
-/**
- * Thread slow path: the classic 3-state futex acquire. Try a clean
- * FREE -> LOCKED once more (the lock may have freed since the fast path),
- * else publish CONTENDED and sleep while the word still holds it, barging
- * on every wake. Acquiring from contention re-stamps CONTENDED so a later
- * unlock still wakes any remaining sleeper.
- */
-static void _mutex_lock_thr(xylem_mutex_t* mtx) {
-    uint32_t c = MTX_FREE;
-    if (atomic_compare_exchange_strong(&mtx->state, &c, MTX_LOCKED)) {
+static void _mutex_wait_thrd(xylem_mutex_t* mtx) {
+    thrd_wake_t*  wake = thrd_wake_self();
+    _thrd_waiter_t w;
+    w.base.kind = WAITER_THRD;
+    w.base.mtx  = mtx;
+    w.wake      = wake;
+
+    spin_lock(&mtx->guard);
+    if (_mutex_try_take(mtx)) {
+        spin_unlock(&mtx->guard);
         return;
     }
-    if (c != MTX_CONTENDED) {
-        c = atomic_exchange(&mtx->state, MTX_CONTENDED);
-    }
-    while (c != MTX_FREE) {
-        platform_futex_wait(&mtx->state, MTX_CONTENDED);
-        c = atomic_exchange(&mtx->state, MTX_CONTENDED);
-    }
-}
+    _mutex_push_waiter(&mtx->waiters, &w.base);
+    spin_unlock(&mtx->guard);
 
-/**
- * Detach the FIFO-oldest coroutine waiter, recording in `granted` how it
- * was woken (1 = lock handed over, 0 = re-contend). Reads the waiter out
- * before the caller schedules it, since its frame vanishes once resumed.
- */
-static mco_coro* _mutex_take_waiter(
-    xylem_mutex_t* mtx, list_node_t* n, uint32_t granted,
-    scheduler_t** sched) {
-    list_remove(&mtx->co_waiters, n);
-    _mutex_co_waiter_t* w  = list_entry(n, _mutex_co_waiter_t, node);
-    mco_coro*           co = w->co;
-    *sched                 = w->sched;
-    atomic_store(&w->granted, granted);
-    return co;
+    thrd_wake_wait(wake);
 }
 
 xylem_mutex_t* xylem_mutex_create(void) {
@@ -197,9 +152,10 @@ xylem_mutex_t* xylem_mutex_create(void) {
     if (!mtx) {
         return NULL;
     }
-    atomic_init(&mtx->state, MTX_FREE);
+    atomic_init(&mtx->locked, false);
     spin_init(&mtx->guard);
-    list_init(&mtx->co_waiters);
+    list_init(&mtx->waiters);
+    mtx->sched = runtime_get_scheduler();
     return mtx;
 }
 
@@ -211,60 +167,30 @@ void xylem_mutex_destroy(xylem_mutex_t* mtx) {
 }
 
 void xylem_mutex_lock(xylem_mutex_t* mtx) {
-    /* Uncontended fast path: no park, no block, no guard. */
-    if (_mutex_try_acquire(mtx)) {
+    if (_mutex_try_take(mtx)) {
         return;
     }
     if (mco_running()) {
-        _mutex_lock_co(mtx);
+        _mutex_wait_coro(mtx);
     } else {
-        _mutex_lock_thr(mtx);
+        _mutex_wait_thrd(mtx);
     }
 }
 
 bool xylem_mutex_trylock(xylem_mutex_t* mtx) {
-    return _mutex_try_acquire(mtx);
+    return _mutex_try_take(mtx);
 }
 
 void xylem_mutex_unlock(xylem_mutex_t* mtx) {
     spin_lock(&mtx->guard);
-    list_node_t* n = list_head(&mtx->co_waiters);
-
-    /**
-     * Pure coroutine hand-off: give the lock to the FIFO-oldest with the
-     * word kept held, so ownership transfers with no free/re-contend.
-     * Taken only when no OS thread is blocked (state != CONTENDED) -- a
-     * thread cannot accept a handed lock, it must observe the cleared
-     * word. The read may race a thread stamping CONTENDED right after;
-     * that is safe, because we do not clear here, so the flag persists
-     * and the handed coroutine's own unlock wakes the thread.
-     */
-    if (n && atomic_load(&mtx->state)
-                != MTX_CONTENDED) {
-        scheduler_t* sched;
-        mco_coro*    co = _mutex_take_waiter(mtx, n, 1, &sched);
-        spin_unlock(&mtx->guard);
-        scheduler_schedule(sched, co);
-        return;
+    _waiter_t* target = _mutex_pop_waiter(&mtx->waiters);
+    if (!target) {
+        atomic_store(&mtx->locked, false);
     }
-
-    /**
-     * Release path: clear the lock under the guard (so a coroutine
-     * enqueuing concurrently is either seen above or grabs the freed lock
-     * in its park callback) and read the word's authoritative prior value
-     * via the exchange. A blocked thread is woken exactly when that value
-     * was CONTENDED -- no separate counter, no unconditional syscall. A
-     * mixed wait wakes one of each to re-contend.
-     */
-    scheduler_t* sched = NULL;
-    mco_coro*    co    = n ? _mutex_take_waiter(mtx, n, 0, &sched) : NULL;
-    uint32_t     prev  = atomic_exchange(&mtx->state, MTX_FREE);
     spin_unlock(&mtx->guard);
 
-    if (prev == MTX_CONTENDED) {
-        platform_futex_signal(&mtx->state);
+    if (target) {
+        _mutex_wake(mtx->sched, target);
     }
-    if (co) {
-        scheduler_schedule(sched, co);
-    }
+    _mutex_consume_credit(1);
 }

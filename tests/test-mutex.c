@@ -135,8 +135,9 @@ static void test_trylock(void) {
 typedef struct {
     xylem_mutex_t* mtx;
     long long      counter;
+    atomic_int     done;
+    thrd_t         threads[MTX_THREADS];
 } _mtx_thr_ctx_t;
-
 static int _mtx_thr_worker(void* arg) {
     _mtx_thr_ctx_t* ctx = (_mtx_thr_ctx_t*)arg;
     for (int i = 0; i < MTX_THR_INCREMENTS; i++) {
@@ -144,25 +145,37 @@ static int _mtx_thr_worker(void* arg) {
         ctx->counter++;
         xylem_mutex_unlock(ctx->mtx);
     }
+    atomic_fetch_add(&ctx->done, 1);
     return 0;
+}
+static void _test_mtx_thr_main(void* arg) {
+    _mtx_thr_ctx_t* ctx = (_mtx_thr_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx = xylem_mutex_create();
+    for (int i = 0; i < MTX_THREADS; i++) {
+        ASSERT(thrd_create(&ctx->threads[i], _mtx_thr_worker, ctx) ==
+               thrd_success);
+    }
+    while (atomic_load(&ctx->done) < MTX_THREADS) {
+        xylem_sleep(1);
+    }
+    xylem_shutdown();
 }
 
 static void test_threads(void) {
     fprintf(stderr, "=== test_threads\n");
     _mtx_thr_ctx_t ctx = {0};
-    ctx.mtx = xylem_mutex_create();
+    atomic_init(&ctx.done, 0);
 
     _thr_wd_t wd = { .timeout_ms = SAFETY_TIMEOUT_MS };
     atomic_init(&wd.stop, 0);
     thrd_t wd_th;
     ASSERT(thrd_create(&wd_th, _thr_wd_fn, &wd) == thrd_success);
 
-    thrd_t th[MTX_THREADS];
+    xylem_run(_test_mtx_thr_main, &ctx, &_rt_opts);
+
     for (int i = 0; i < MTX_THREADS; i++) {
-        ASSERT(thrd_create(&th[i], _mtx_thr_worker, &ctx) == thrd_success);
-    }
-    for (int i = 0; i < MTX_THREADS; i++) {
-        thrd_join(th[i], NULL);
+        thrd_join(ctx.threads[i], NULL);
     }
 
     atomic_store(&wd.stop, 1);
@@ -180,8 +193,9 @@ typedef struct {
     xylem_mutex_t* mtx;
     long long      counter;
     atomic_int     coros_done;
+    atomic_int     threads_done;
+    thrd_t         threads[MTX_MIX_THREADS];
 } _mtx_mixed_ctx_t;
-
 static int _mtx_mixed_thr(void* arg) {
     _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
     for (int i = 0; i < MTX_MIX_INCREMENTS; i++) {
@@ -189,9 +203,9 @@ static int _mtx_mixed_thr(void* arg) {
         ctx->counter++;
         xylem_mutex_unlock(ctx->mtx);
     }
+    atomic_fetch_add(&ctx->threads_done, 1);
     return 0;
 }
-
 static void _mtx_mixed_coro(void* arg) {
     _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
     for (int i = 0; i < MTX_MIX_INCREMENTS; i++) {
@@ -199,38 +213,41 @@ static void _mtx_mixed_coro(void* arg) {
         ctx->counter++;
         xylem_mutex_unlock(ctx->mtx);
     }
-    if (atomic_fetch_add(&ctx->coros_done, 1) == MTX_MIX_COROS - 1) {
-        xylem_shutdown();
-    }
+    atomic_fetch_add(&ctx->coros_done, 1);
 }
-
 static void _test_mtx_mixed_main(void* arg) {
     _mtx_mixed_ctx_t* ctx = (_mtx_mixed_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx = xylem_mutex_create();
+    for (int i = 0; i < MTX_MIX_THREADS; i++) {
+        ASSERT(thrd_create(&ctx->threads[i], _mtx_mixed_thr, ctx) ==
+               thrd_success);
+    }
     for (int i = 0; i < MTX_MIX_COROS; i++) {
         xylem_spawn(_mtx_mixed_coro, ctx);
     }
+    while (atomic_load(&ctx->coros_done) < MTX_MIX_COROS ||
+           atomic_load(&ctx->threads_done) < MTX_MIX_THREADS) {
+        xylem_sleep(1);
+    }
+    xylem_shutdown();
 }
 
 static void test_mixed(void) {
     fprintf(stderr, "=== test_mixed\n");
     _mtx_mixed_ctx_t ctx = {0};
-    ctx.mtx = xylem_mutex_create();
+    atomic_init(&ctx.coros_done, 0);
+    atomic_init(&ctx.threads_done, 0);
 
     _thr_wd_t wd = { .timeout_ms = SAFETY_TIMEOUT_MS };
     atomic_init(&wd.stop, 0);
     thrd_t wd_th;
     ASSERT(thrd_create(&wd_th, _thr_wd_fn, &wd) == thrd_success);
 
-    thrd_t th[MTX_MIX_THREADS];
-    for (int i = 0; i < MTX_MIX_THREADS; i++) {
-        ASSERT(thrd_create(&th[i], _mtx_mixed_thr, &ctx) == thrd_success);
-    }
-
     xylem_run(_test_mtx_mixed_main, &ctx, &_rt_opts);
 
     for (int i = 0; i < MTX_MIX_THREADS; i++) {
-        thrd_join(th[i], NULL);
+        thrd_join(ctx.threads[i], NULL);
     }
 
     atomic_store(&wd.stop, 1);
@@ -241,10 +258,85 @@ static void test_mixed(void) {
     xylem_mutex_destroy(ctx.mtx);
 }
 
+typedef struct {
+    xylem_mutex_t* mtx;
+    atomic_int     ready;
+    atomic_int     order;
+    atomic_int     done;
+    int            thread_order;
+    int            coro_order;
+} _mtx_handoff_ctx_t;
+
+static int _mtx_handoff_thr(void* arg) {
+    _mtx_handoff_ctx_t* ctx = (_mtx_handoff_ctx_t*)arg;
+    atomic_fetch_add(&ctx->ready, 1);
+    xylem_mutex_lock(ctx->mtx);
+    ctx->thread_order = atomic_fetch_add(&ctx->order, 1) + 1;
+    xylem_mutex_unlock(ctx->mtx);
+    atomic_fetch_add(&ctx->done, 1);
+    return 0;
+}
+
+static void _mtx_handoff_coro(void* arg) {
+    _mtx_handoff_ctx_t* ctx = (_mtx_handoff_ctx_t*)arg;
+    atomic_fetch_add(&ctx->ready, 1);
+    xylem_mutex_lock(ctx->mtx);
+    ctx->coro_order = atomic_fetch_add(&ctx->order, 1) + 1;
+    xylem_mutex_unlock(ctx->mtx);
+    atomic_fetch_add(&ctx->done, 1);
+}
+
+static void _test_mtx_handoff_main(void* arg) {
+    _mtx_handoff_ctx_t* ctx = (_mtx_handoff_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ctx->mtx = xylem_mutex_create();
+    xylem_mutex_lock(ctx->mtx);
+
+    thrd_t th;
+    ASSERT(thrd_create(&th, _mtx_handoff_thr, ctx) == thrd_success);
+    thrd_detach(th);
+
+    while (atomic_load(&ctx->ready) < 1) {
+        xylem_sleep(1);
+    }
+    xylem_sleep(10);
+
+    xylem_spawn(_mtx_handoff_coro, ctx);
+    while (atomic_load(&ctx->ready) < 2) {
+        xylem_sleep(1);
+    }
+    xylem_sleep(10);
+
+    xylem_mutex_unlock(ctx->mtx);
+    while (atomic_load(&ctx->done) < 2) {
+        xylem_sleep(1);
+    }
+
+    ASSERT(ctx->thread_order == 1);
+    ASSERT(ctx->coro_order == 2);
+    xylem_mutex_destroy(ctx->mtx);
+    ctx->mtx = NULL;
+    xylem_shutdown();
+}
+
+static void test_mixed_handoff_order(void) {
+    fprintf(stderr, "=== test_mixed_handoff_order\n");
+    for (int round = 0; round < 20; round++) {
+        _mtx_handoff_ctx_t ctx = {0};
+        atomic_init(&ctx.ready, 0);
+        atomic_init(&ctx.order, 0);
+        atomic_init(&ctx.done, 0);
+        xylem_run(_test_mtx_handoff_main, &ctx, &_rt_opts);
+        ASSERT(ctx.thread_order == 1);
+        ASSERT(ctx.coro_order == 2);
+    }
+}
+
 int main(void) {
     test_concurrent();
     test_trylock();
     test_threads();
     test_mixed();
+    test_mixed_handoff_order();
     return 0;
 }
