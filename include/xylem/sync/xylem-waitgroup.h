@@ -38,8 +38,10 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  *     worker, or an external OS thread. wait() blocks the caller in the
  *     way that fits its context (a coroutine parks, an OS thread blocks
  *     on its per-thread wake object) until the counter hits zero.
- *     Coroutine and OS-thread waiters share one FIFO queue. add() and
- *     done() never wait for the counter.
+ *     Coroutine and OS-thread waiters share one FIFO queue. When the
+ *     counter reaches zero, queued waiters are drained and woken in FIFO
+ *     order, but scheduler/OS wake timing does not guarantee FIFO return
+ *     order. add() and done() never wait for the counter.
  *
  * Misuse that aborts the process:
  *   - done() called more times than add() has ever promised
@@ -48,7 +50,9 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
- *     scheduler. External OS threads must not call waitgroup APIs after
+ *     scheduler captured at create() time. Create waitgroups while the
+ *     runtime scheduler is available if coroutine waiters will use
+ *     them. External OS threads must not call waitgroup APIs after
  *     xylem_shutdown() has been called. Stop and join those threads
  *     before shutdown, or make sure they touch no waitgroup once
  *     shutdown begins.
@@ -58,6 +62,9 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
  * @brief Create a new waitgroup.
  *
  * @note [CONTEXT-ADAPTIVE]
+ *
+ * If coroutine waiters will use this waitgroup, create it while the
+ * runtime scheduler is available.
  *
  * @return Pointer to the new waitgroup, or NULL on allocation failure.
  */

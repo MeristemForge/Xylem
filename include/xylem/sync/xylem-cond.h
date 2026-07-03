@@ -36,7 +36,7 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *   - All operations work from any context: a coroutine on a scheduler
  *     worker, or an external OS thread. wait() blocks the caller in the
  *     way that fits its context (a coroutine parks, an OS thread blocks
- *     on a per-thread semaphore) and re-acquires `mtx` on wake; the
+ *     on a per-thread wake object) and re-acquires `mtx` on wake; the
  *     caller MUST currently hold `mtx`. signal()/broadcast() never
  *     block.
  *
@@ -46,6 +46,9 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * the atomic release + sleep correct: any signaler serialised
  * through `mtx` cannot observe the released mutex until the waiter
  * is already linked and thus visible to signal()/broadcast().
+ * signal() chooses the FIFO-oldest waiter; broadcast() drains queued
+ * waiters in FIFO order. Waiters still re-acquire `mtx` after wake, so
+ * return order is not guaranteed to be FIFO.
  *
  * Correct usage:
  *
@@ -69,7 +72,9 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
- *     scheduler. External OS threads must not call cond APIs after
+ *     scheduler captured at create() time. Create conds while the
+ *     runtime scheduler is available if coroutine waiters will use
+ *     them. External OS threads must not call cond APIs after
  *     xylem_shutdown() has been called. Stop and join those threads
  *     before shutdown, or make sure they touch no cond once shutdown
  *     begins.
@@ -79,6 +84,9 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * @brief Create a new condition variable.
  *
  * @note [THREAD-SAFE]
+ *
+ * If coroutine waiters will use this cond, create it while the runtime
+ * scheduler is available.
  *
  * @return Pointer to the new cond, or NULL on allocation failure.
  */
@@ -103,7 +111,7 @@ extern void xylem_cond_destroy(xylem_cond_t* cond);
  * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any context, holding `mtx`: a coroutine parks, an
- * external OS thread blocks on a per-thread semaphore. On return,
+ * external OS thread blocks on a per-thread wake object. On return,
  * `mtx` is held again. Callers must re-check the predicate in a
  * while-loop.
  *
@@ -118,7 +126,8 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
  * @note [THREAD-SAFE]
  *
  * Callable from any context; never blocks. If no one is currently
- * parked on the cond the call is a no-op (no permit is stored).
+ * parked on the cond the call is a no-op (no permit is stored). If
+ * waiters are queued, the FIFO-oldest waiter is woken.
  *
  * @param cond  Pointer to the cond.
  */
@@ -130,8 +139,9 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
  * @note [THREAD-SAFE]
  *
  * Callable from any context; never blocks. Waiters observed at the
- * moment broadcast() acquires its internal guard are all resumed;
- * waiters that block after that point are not affected.
+ * moment broadcast() acquires its internal guard are all resumed in
+ * FIFO wake order; waiters that block after that point are not
+ * affected.
  *
  * @param cond  Pointer to the cond.
  */

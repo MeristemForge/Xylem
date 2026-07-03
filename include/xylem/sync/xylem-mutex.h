@@ -32,9 +32,8 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * lock() and unlock() by whoever acquired it -- a coroutine or a plain
  * OS thread. A contended lock() parks the calling coroutine on the
  * scheduler, or blocks the calling OS thread on a per-thread wake
- * object, instead of spinning the worker. Ownership is not tied to
- * any thread: unlock() hands the lock straight to the FIFO-oldest
- * waiter, so a coroutine may unlock a lock another coroutine or thread
+ * object, instead of spinning the worker. Ownership is not tied to any
+ * thread: a coroutine may unlock a lock another coroutine or thread
  * acquired.
  *
  * Threading:
@@ -43,7 +42,10 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     way that fits its context (park vs OS-thread block); the others
  *     never block. A coroutine waiter is woken by the scheduler; a
  *     thread waiter by its wake object. Coroutine and thread waiters
- *     may queue on the same mutex and notify each other.
+ *     may queue on the same mutex and notify each other. unlock()
+ *     releases the mutex, then wakes the FIFO-oldest waiter if one is
+ *     queued; the woken waiter re-contends for ownership, so mutex
+ *     acquisition order is not a strict FIFO guarantee.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -98,8 +100,10 @@ extern bool xylem_mutex_trylock(xylem_mutex_t* mutex);
  *
  * @note [THREAD-SAFE]
  *
- * If anyone is waiting, the FIFO-oldest waiter (coroutine or thread) is
- * handed the lock directly. Callable from any context.
+ * Releases the mutex. If anyone is waiting, the FIFO-oldest waiter
+ * (coroutine or thread) is woken after the release. The woken waiter
+ * must acquire the mutex normally before lock() returns. Callable from
+ * any context.
  *
  * @param mutex  Pointer to the mutex.
  */

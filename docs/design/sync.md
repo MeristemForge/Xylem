@@ -4,15 +4,15 @@ Xylem's public synchronization primitives — mutex, condition variable,
 wait-group, and channel — are **cross-context**: a contended operation blocks
 the caller in the way that fits its context. A coroutine parks on the scheduler
 (the OS worker thread stays free); an external OS thread blocks on a per-thread
-wake semaphore. The two kinds can notify each other, so a coroutine can hand
+wake object. The two kinds can notify each other, so a coroutine can hand
 off to an OS thread and vice versa. This document covers
 their semantics, threading contracts, and the ordering rules that make them
-correct. The internal `spin_t` and the shared `waiter` core are also
-described because they back the others.
+correct. The internal `spin_t` and `thrd_wake_t` helpers are also described
+because they back the public primitives.
 
 Sources: public headers in `include/xylem/sync/`, implementations in
-`src/sync/`. Shared waiter core in `src/sync/waiter.{h,c}`, internal spinlock
-in `src/sync/spin.{h,c}`.
+`src/sync/`. Per-thread OS wake support is in `src/sync/thrd-wake.{h,c}`;
+the internal spinlock is in `src/sync/spin.{h,c}`.
 
 Prerequisite: the parking model in [`runtime.md`](runtime.md) (`scheduler_park`,
 `scheduler_schedule`).
@@ -24,16 +24,18 @@ All five public primitives share one shape:
 - **Blocking ops are context-adaptive.** `mutex_lock`, `cond_wait`,
   `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
   they park (the worker thread stays free); on any other thread they block that
-  OS thread. Mutex, cond, waitgroup, and `xylem_sem` preserve FIFO waiter
-  order across coroutine and OS-thread waiters. None of them requires a
-  coroutine context.
+  OS thread. None of them requires a coroutine context.
 - **Wakeup/non-blocking ops never block.** `unlock`, `signal`/`broadcast`,
   `add`/`done`, `send`/`close`, `post`, and all `create`/`destroy` are safe from
   any thread. Cross-context coroutine wakeups go through
   `scheduler_schedule()`; OS-thread wakeups use the primitive's platform
   blocking path.
-- **FIFO wakeups where the primitive owns a waiter list.** Mutex, cond,
-  waitgroup, and sem resume waiters in arrival order.
+- **FIFO wake target selection where the primitive owns a waiter list.** Mutex
+  and cond choose the FIFO-oldest waiter to wake, waitgroup drains waiters in
+  FIFO order, and sem hands tokens to FIFO-oldest waiters. Only sem transfers a
+  token directly to the waiter. Mutex waiters and cond waiters re-contend for
+  their mutex after waking, so their return/acquire order is not guaranteed to
+  be FIFO.
 - **Abort on contract violation.** Counter underflow, double-close, and
   multi-receiver are logic bugs, so misuse aborts with a diagnostic rather than
   corrupting state silently. (None of the primitives aborts merely for being
@@ -41,34 +43,25 @@ All five public primitives share one shape:
 
 | Primitive | Blocking op (any context) | Non-blocking ops | Pattern |
 |-----------|---------------------------|------------------|---------|
-| `xylem_mutex` | `lock` | `unlock`, `trylock`, create/destroy | hand-off lock |
+| `xylem_mutex` | `lock` | `unlock`, `trylock`, create/destroy | cross-context lock |
 | `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
 | `xylem_channel` | `recv` / `recv_timeout` | `send`, `close`, c/d | MPSC message passing |
 | `xylem_sem` | `wait` / `timedwait` | `post`, c/d | counting semaphore |
 
-### The shared waiter core (`waiter`)
+### Waiter representation
 
-`src/sync/waiter.{h,c}` owns the parts that are identical across primitives:
+The FIFO primitives keep their own guarded waiter lists: a `spin_t` guard plus
+an intrusive `list_t` embedded in the primitive. A waiter record is tagged as a
+parked coroutine or a blocked OS thread. Coroutine waiters store the `mco_coro*`
+to reschedule with `scheduler_schedule()`; OS-thread waiters store a
+`thrd_wake_t*`, a per-thread wake object created lazily and cached in TLS.
 
-- `waiter_t` — one blocked party, tagged `WAITER_CO` (a parked coroutine, woken
-  via `scheduler_schedule`) or `WAITER_THR` (a blocked OS thread, woken via its
-  per-thread `platform_sem`). The thread's wake sem is created lazily on first
-  block and cached in TLS for the thread's lifetime.
-- `waiter_wake` — a waker copies the wake target out (a by-value `waiter_t`)
-  under the lock, releases the lock, then wakes; the waiter's storage (often a
-  stack frame) may vanish the instant it resumes, so it is never touched
-  afterward.
-
-The FIFO primitives (mutex, cond, waitgroup) each keep their **own** guarded
-list of `waiter_t` -- a `spin_t` guard plus an intrusive `list_t` embedded in the
-primitive -- and inline the same small block/wake mechanics directly:
-`mco_running()` decides park vs. OS-thread block, the acquire/visibility step is
-done under the guard so a racing waker is never lost, and a drain reads each
-node's successor before waking so a vanishing stack waiter cannot strand it. The
-channel skips the list entirely, keeping its own specialised machinery (a
-lock-free single-slot fast path and a timed-wait timer). Sem keeps its own FIFO
-waiter list because it must pair direct token ownership with a count.
+The waker selects or drains waiter records under the guard, releases the guard,
+then wakes. Stack waiter records may vanish as soon as the blocked caller
+resumes, so wakers do not touch a waiter after signaling it. The channel keeps
+specialized machinery instead of a FIFO waiter list, because it has a
+single-receiver wake slot and a different timed-wait path.
 
 ### Cross-context wake cost
 
@@ -83,16 +76,16 @@ absolute nanoseconds vary by machine and OS):
 | Pairing | What gets woken each direction | ns / round-trip |
 |---------|--------------------------------|----------------:|
 | coro ↔ coro (`cc`)   | scheduler reschedule (pure userspace)      | ~430  |
-| thread ↔ thread (`tt`) | each thread's `platform_sem` (futex)     | ~1050 |
-| coro ↔ thread (`ct`) | one reschedule + one OS-sem wake, both ways crossing the boundary | ~2030 |
+| thread ↔ thread (`tt`) | each thread's wake object (futex)        | ~1050 |
+| coro ↔ thread (`ct`) | one reschedule + one OS-thread wake, both ways crossing the boundary | ~2030 |
 
 The pure-coroutine reschedule is the cheapest hand-off. Crossing the
 coroutine/OS-thread boundary (`ct`) is the most expensive — and notably costs
 *more* than the same-context thread case, not less: a cross-context wake carries
-extra dispatch work beyond the bare `platform_sem_post`/reschedule. Waking a
+extra dispatch work beyond the bare thread wake/reschedule. Waking a
 coroutine *from* an OS thread routes through `scheduler_schedule()` to the global
 runq and may have to rouse a parked worker; waking a thread *from* a coroutine
-posts that thread's sem from off-scheduler. So `ct` pays a boundary tax on
+signals that thread's wake object from off-scheduler. So `ct` pays a boundary tax on
 *both* legs rather than averaging `cc` and `tt`.
 
 Design consequence: keep a hot, tight hand-off inside a single context when you
@@ -104,20 +97,21 @@ back-and-forth; see §5) and why a per-item `ct` ping-pong is the shape to avoid
 
 ## 2. Mutex
 
-A hand-off lock. Ownership is held between `lock()` and `unlock()` by whoever
-acquired it — a coroutine or an OS thread — not by the OS thread identity. A
-contended `lock()` blocks the caller (park or OS-thread block) and is resumed
-FIFO when the holder unlocks.
+A cross-context lock. Ownership is held between `lock()` and `unlock()` by
+whoever acquired it — a coroutine or an OS thread — not by the OS thread
+identity. A contended `lock()` blocks the caller (park or OS-thread block).
+When the holder unlocks, it releases the lock and wakes the FIFO-oldest waiter
+if one is queued; the resumed waiter then re-contends for ownership.
 
 - **`lock()` works from any context.** The uncontended fast path is a single
   lock-free CAS. On contention a coroutine parks and a thread blocks on its
-  per-thread sem; the acquire predicate (the same CAS) is re-checked under the
-  primitive's own guard, so an `unlock()` racing the block either hands the lock
-  over or queues the caller for a later hand-off.
-- **`unlock()` hands the lock off directly.** It pops the FIFO-oldest waiter and
-  wakes it *without* clearing the owned flag, so the woken party returns from
-  `lock()` already owning the mutex. Only an unlock that finds no waiter clears
-  the flag. This is why ownership is independent of the unlocking thread.
+  per-thread wake object; the acquire predicate (the same CAS) is re-checked
+  under the primitive's own guard before enqueue, so an `unlock()` racing the
+  block cannot be missed.
+- **`unlock()` releases before wake.** It clears the owned flag, pops the
+  FIFO-oldest waiter, then wakes it. The woken party loops back through the same
+  CAS before returning from `lock()`. This avoids ownership tracking by OS
+  thread identity, but it also means mutex acquisition is not strict FIFO.
   `trylock()` is a lock-free CAS, callable from any context.
 
 ## 3. Condition variable
@@ -170,7 +164,10 @@ predicate flag *before* calling `signal`/`broadcast`, so a waiter that has not
 yet parked sees the flag on its next predicate check.
 
 - `signal()` wakes one waiter; `broadcast()` wakes everyone parked at the moment
-  it takes its internal guard (later arrivals are unaffected).
+  it takes its internal guard (later arrivals are unaffected). Waiter selection
+  and broadcast wake order are FIFO, but each waiter re-locks `m`, so return
+  order is not guaranteed to be FIFO. `signal()` and `broadcast()` consume one
+  cooperative runtime credit per call.
 - Destroying a cond that still has waiters is a caller bug (matches
   `pthread_cond_destroy`).
 
@@ -180,7 +177,7 @@ A countdown latch, modeled on Go's `sync.WaitGroup`:
 
 - `add(delta)` registers pending work, **before** spawning the units it counts.
 - `done()` decrements by one; when the counter hits zero, every parked waiter is
-  released together in one broadcast (FIFO).
+  drained and woken in FIFO order.
 - `wait()` parks until the counter reaches zero; returns immediately if already
   zero. Multiple coroutines may `wait()` concurrently.
 
@@ -197,8 +194,9 @@ lock-free (intrusive MPSC queue) and the single receiver, when it must block,
 publishes itself into one atomic wakeup slot that a sender / `close` / the
 deadline timer arbitrate with a single `atomic_exchange`. This lets a
 coroutine producer hand work to an OS-thread consumer (and vice versa). The
-cross-context waiter representation, per-thread wake semaphore, and wake
-dispatch come from the shared `waiter` module (also used by `xylem_sem`).
+receiver wake path uses the same per-thread `thrd_wake_t` and scheduler
+reschedule mechanisms as the FIFO primitives, but with channel-specific state
+instead of a shared waiter module.
 
 - `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL. Returns
   `0` on success, `XYLEM_CHANNEL_FULL` when a bounded channel is at capacity,
