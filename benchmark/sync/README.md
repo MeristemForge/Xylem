@@ -9,7 +9,7 @@ the equivalent constructs in Go (goroutines) and Rust (Tokio tasks).
 | cond      | `xylem_cond`  | `sync.Cond`  | `std::sync::Condvar` (thread mode) |
 | waitgroup | `xylem_waitgroup` | `sync.WaitGroup` | `tokio::task::JoinSet` |
 | sem       | `xylem_sem`   | buffered `chan` (token bucket) | `tokio::sync::Semaphore` |
-| channel   | `xylem_channel` (MPSC) | buffered `chan` | `tokio::sync::mpsc` (unbounded) |
+| channel   | `xylem_channel` (MPSC) | buffered `chan` | `tokio::sync::mpsc` / `std::sync::mpsc` |
 
 A sixth probe, `handoff`, measures the raw cross-context wake latency (see
 "Cross-context direction" below). All three languages run it, but only xylem
@@ -42,8 +42,8 @@ code runs in every mode — only how workers are launched changes.
   **`channel`** primitive is the exception: a channel's producer end is a plain
   sync call usable from either world (`tokio::mpsc::UnboundedSender::send` from
   an OS thread, `std::mpsc::Sender::send` from an async task), so Rust *does*
-  run `channel` in `mixed` -- senders in one context feed a receiver in the
-  other over one shared MPSC (`--chan-dir t2c|c2t` pins the direction).
+  run `channel` in `mixed`. The benchmark pins one sender and one receiver to
+  `cc`, `tt`, `ct`, or `tc`.
 - **xylem** is the only one that covers `mixed` for *every* primitive: e.g. a
   coroutine producer handing off to an OS-thread consumer through the same
   `xylem_cond`.
@@ -79,10 +79,11 @@ Most primitives cannot expose a single direction in `mixed` mode:
 - **cond**, **waitgroup** -- a round-trip (ping-pong / release-then-join), so
   every cycle pays *both* directions; pinning a role to a context only
   relabels the same total.
-- **channel** -- the one naturally one-way case (senders only wake, the
-  receiver only blocks), so `--chan-dir t2c|c2t` pins a clean direction.
-  Because xylem's channel is unbounded, the receiver rarely sleeps, so both
-  directions measure close: buffering amortizes the wake away.
+- **channel** -- the one naturally one-way case: one sender feeds one receiver.
+  `ct` means coroutine sender to thread receiver; `tc` means thread sender to
+  coroutine receiver. Because xylem's channel is unbounded, the receiver often
+  drains buffered messages without sleeping, so buffering can amortize wake
+  cost.
 
 To see the bare cost of each direction, use the `handoff` probe: two parties
 ping-pong through a pair of binary semaphores (no mutex, no predicate), with
@@ -168,7 +169,7 @@ All three implementations do the same logical work. `T` = `--tasks`,
 | cond      | 1 producer + 1 consumer ping-pong, `N` hand-offs | `N` |
 | waitgroup | `N` rounds over a **pre-spawned** pool of `T` workers; each round releases the pool and joins it (task creation is outside the timed loop) | `T*N` |
 | sem       | `T` tasks each loop `N`x: acquire / release, `K` permits | `T*N` |
-| channel   | `T` senders each send `N` messages to 1 receiver | `T*N` |
+| channel   | 1 sender + 1 receiver run for 5 seconds, one-way, no benchmark-level backpressure | messages received during the timed window |
 
 The per-primitive `tasks`/`iters` defaults baked into the drivers are sized so
 each cell runs roughly 1–2 seconds.
@@ -212,9 +213,10 @@ The driver also prints a per-primitive comparison table (avg ops/sec, ns/op).
     `Semaphore` (coro) / a `Mutex`+`Condvar` semaphore (thread).
   - **sem** — Go has no semaphore in the standard library, so it uses the
     idiomatic buffered-channel token bucket. Rust uses `tokio::sync::Semaphore`.
-  - **channel** — xylem's channel is an unbounded MPSC (`create()`); Rust
-    matches it with `mpsc::unbounded_channel`. Go has no unbounded channel, so
-    it uses a buffered channel (cap 1024) and senders block on a full buffer
-    (backpressure that the other two do not apply).
+  - **channel** — xylem's channel is an unbounded MPSC (`create()`). Rust uses
+    Tokio unbounded MPSC when the receiver is async and standard `mpsc` when
+    the receiver is a thread, which covers `cc`, `tt`, `ct`, and `tc`. Go has
+    only goroutines; it reports `cc` using a buffered channel (cap 1024), so a
+    full buffer can still block the sender.
 - Numbers are only comparable **within the same platform and run**, never
   across machines or OSes.

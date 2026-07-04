@@ -64,7 +64,7 @@ typedef struct xylem_ticker_s xylem_ticker_t;
 /**
  * @brief Create and arm a periodic ticker.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * @param interval_ms  Tick period in milliseconds (must be > 0).
  *
@@ -92,7 +92,7 @@ extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
 /**
  * @brief Stop ticking and destroy the ticker.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Idempotent.
  *

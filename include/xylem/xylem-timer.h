@@ -40,7 +40,7 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
 /**
  * @brief Arm a one-shot timer.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * The handle must be consumed by xylem_timer_cancel(), even after the
  * callback has fired. Timer APIs must not be called from external OS
@@ -58,7 +58,7 @@ extern xylem_timer_t* xylem_timer_after(
 /**
  * @brief Arm a periodic timer.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * The first fire occurs after interval_ms. Subsequent fires are scheduled
  * only after the previous callback returns, so callbacks for the same timer
@@ -76,7 +76,7 @@ extern xylem_timer_t* xylem_timer_every(
 /**
  * @brief Cancel the timer and release the handle.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * A callback already in flight may still run to completion. This call
  * consumes @p timer; the handle must not be used again after it returns.
@@ -94,7 +94,7 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
 /**
  * @brief Re-arm a timer with a new delay.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Preserves callback and user data. Restarts the countdown from now.
  * For periodic timers, delay_ms also becomes the new interval.

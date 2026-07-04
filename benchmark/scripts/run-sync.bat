@@ -151,6 +151,11 @@ echo %LANGS% | findstr /I "xylem" >nul && (
         cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\sem\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
         if errorlevel 1 (call :err "sem-xylem build failed" & exit /b 1) else (call :ok "sem-xylem built")
     )
+    echo %PRIMS% | findstr /I "channel" >nul && (
+        if exist "%BIN_DIR%\channel-xylem.exe" del /q "%BIN_DIR%\channel-xylem.exe"
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\channel\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\channel-xylem.exe" >nul 2>&1
+        if errorlevel 1 (call :err "channel-xylem build failed" & exit /b 1) else (call :ok "channel-xylem built")
+    )
 )
 
 echo %LANGS% | findstr /I "rust" >nul && (
@@ -172,6 +177,12 @@ echo %LANGS% | findstr /I "rust" >nul && (
         cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\sem-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sem-rust built") || (call :warn "skip sem-rust")
         popd
     )
+    echo %PRIMS% | findstr /I "channel" >nul && (
+        call :info "building channel-rust..."
+        pushd "%SYNC_DIR%\channel\rust"
+        cargo build --release -q --target-dir "%BIN_DIR%\cargo" >nul 2>&1 && copy /Y "%BIN_DIR%\cargo\release\channel-rust.exe" "%BIN_DIR%\" >nul && (call :ok "channel-rust built") || (call :warn "skip channel-rust")
+        popd
+    )
 )
 
 echo %LANGS% | findstr /I "go" >nul && (
@@ -191,6 +202,14 @@ echo %LANGS% | findstr /I "go" >nul && (
             pushd "%SYNC_DIR%\cond\go"
             set "CGO_ENABLED=0"
             go build -ldflags="-s -w" -o "%BIN_DIR%\cond-go.exe" . && (call :ok "cond-go built") || (popd & call :err "cond-go build failed" & exit /b 1)
+            popd
+        )
+        echo %PRIMS% | findstr /I "channel" >nul && (
+            if exist "%BIN_DIR%\channel-go.exe" del /q "%BIN_DIR%\channel-go.exe"
+            call :info "building channel-go..."
+            pushd "%SYNC_DIR%\channel\go"
+            set "CGO_ENABLED=0"
+            go build -ldflags="-s -w" -o "%BIN_DIR%\channel-go.exe" . && (call :ok "channel-go built") || (popd & call :err "channel-go build failed" & exit /b 1)
             popd
         )
         if exist "%SYNC_DIR%\go-sync" (
@@ -296,6 +315,10 @@ if /I "%PRIM%"=="cond" (
 )
 if /I "%PRIM%"=="sem" (
     call :bench_sem
+    goto :eof
+)
+if /I "%PRIM%"=="channel" (
+    call :bench_channel
     goto :eof
 )
 call :prim_params "%PRIM%"
@@ -634,7 +657,69 @@ for %%L in (%LANGS:,= %) do (
             )
         )
     )
-    :sem_skip
+:sem_skip
+)
+echo.
+goto :eof
+
+:bench_channel
+call :info "=== channel  (one-way, 5s) ==="
+echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
+echo   -------------------------------------------------------------------------------
+
+for %%L in (%LANGS:,= %) do (
+    set "lang=%%L"
+    set "BIN="
+    set "modes="
+    if /I "!lang!"=="xylem" (set "BIN=%BIN_DIR%\channel-xylem.exe" & set "modes=cc tt ct tc")
+    if /I "!lang!"=="go"    (set "BIN=%BIN_DIR%\channel-go.exe"    & set "modes=cc")
+    if /I "!lang!"=="rust"  (set "BIN=%BIN_DIR%\channel-rust.exe"  & set "modes=cc tt ct tc")
+    if not defined BIN (
+        call :warn "skip !lang! (channel unsupported)"
+    ) else if not exist "!BIN!" (
+        call :warn "skip !lang! (no binary)"
+    ) else (
+        for %%M in (!modes!) do (
+            set "mode=%%M"
+            set /a ops_sum=0, nspo_sum=0, valid=0
+            set "ops_vals="
+            set "total_last=0"
+
+            for /l %%R in (1,1,%REPEAT%) do (
+                set "out=%RUN_DIR%\sync-channel-!lang!-!mode!-r%%R.json"
+                "!BIN!" > "!out!" 2>nul
+
+                for %%F in ("!out!") do set "_sz=%%~zF"
+                if defined _sz if !_sz! GTR 0 (
+                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                        set "ops=%%A"
+                        set "nspo=%%B"
+                        set "total=%%C"
+                    )
+                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                    if defined ops if !ops! GTR 0 (
+                        set /a ops_sum+=ops, valid+=1
+                        call :nspo_to_x100 "!nspo!"
+                        set /a nspo_sum+=_NSPO_X100
+                        set "total_last=!total!"
+                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
+                    )
+                )
+                set "_sz="
+            )
+
+            if !valid! GTR 0 (
+                set /a ops_avg=ops_sum/valid
+                set /a nspo_avg_x100=nspo_sum/valid
+                set /a nspo_avg_i=nspo_avg_x100/100
+                set /a nspo_avg_f=nspo_avg_x100%%100
+                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
+                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
+            ) else (
+                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+            )
+        )
+    )
 )
 echo.
 goto :eof

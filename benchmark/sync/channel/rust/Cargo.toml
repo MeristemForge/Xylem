@@ -1,0 +1,15 @@
+[package]
+name = "channel-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "time"] }
+
+[[bin]]
+name = "channel-rust"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
