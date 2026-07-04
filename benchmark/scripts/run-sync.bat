@@ -12,11 +12,12 @@ REM   build  - build xylem static lib + C/Go/Rust sync-bench binaries
 REM   bench  - run each primitive across xylem/go/rust, write out\results\<ts>\
 REM   all    - build + bench                                         [default]
 REM
-REM Primitives (--prims): mutex,cond,waitgroup,sem,channel
+REM Primitives (--prims): mutex,cond,sem,channel
 REM Languages  (--langs): xylem,go,rust
 REM ============================================================================
 
 set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_NAME=%~nx0"
 for %%I in ("%SCRIPT_DIR%..") do set "BENCH_DIR=%%~fI"
 set "SYNC_DIR=%BENCH_DIR%\sync"
 for %%I in ("%BENCH_DIR%\..") do set "PROJECT_ROOT=%%~fI"
@@ -25,7 +26,7 @@ set "BIN_DIR=%OUT_DIR%"
 set "BUILD_DIR=%OUT_DIR%\build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
 
-if not defined PRIMS   set "PRIMS=mutex,cond,waitgroup,sem,channel,handoff"
+if not defined PRIMS   set "PRIMS=mutex,cond,sem,channel"
 if not defined LANGS   set "LANGS=xylem,go,rust"
 if not defined MODES   set "MODES=coro,thread,mixed"
 if not defined WORKERS set "WORKERS=0"
@@ -725,7 +726,7 @@ echo.
 goto :eof
 
 :usage
-echo usage: %~nx0 [build^|bench^|all] [options]
+echo usage: %SCRIPT_NAME% [build^|bench^|all] [options]
 echo.
 echo Windows sync-primitive benchmark. Build auto-inits MSVC via vcvars64.bat.
 echo.
@@ -735,15 +736,11 @@ echo   bench   run each primitive across languages, write out\results\^<ts^>\
 echo   all     build + bench   (default)
 echo.
 echo Options:
-echo   --prims, -p    mutex,cond,waitgroup,sem,channel   primitives to run
+echo   --prims, -p    mutex,cond,sem,channel             primitives to run
 echo   --langs, -l    xylem,go,rust                       languages to compare
-echo   --modes, -m    coro,thread,mixed                   concurrency models
-echo                                                      (go: coro; rust: coro,thread,+channel/handoff mixed)
-echo   --workers, -w  0                                   runtime worker threads
 echo   --repeat, -r   3                                   repeat each cell N times
-echo   --permits      4                                   semaphore permits (sem)
 echo.
 echo Examples:
-echo   %~nx0
-echo   %~nx0 bench --prims mutex,channel --langs xylem,rust --workers 4
+echo   %SCRIPT_NAME%
+echo   %SCRIPT_NAME% bench --prims mutex,channel --langs xylem,rust --repeat 1
 goto :eof

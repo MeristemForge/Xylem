@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # =============================================================================
-# Xylem sync-primitive benchmark (CC only: coroutine / goroutine / task)
+# Xylem sync-primitive benchmark (per-primitive, fixed-duration)
 # -----------------------------------------------------------------------------
 #   build  - build xylem static lib + C/Go/Rust sync-bench binaries
 #   bench  - run every primitive across xylem/go/rust, write out/results/<ts>/
 #   all    - build + bench                                          [default]
 #
-# Primitives (--prims, comma-separated): mutex,cond,waitgroup,sem,channel
+# Primitives (--prims, comma-separated): mutex,cond,sem,channel
 # Languages  (--langs, comma-separated): xylem,go,rust
 # =============================================================================
 
@@ -29,13 +29,13 @@ err()  { printf "\033[1;31m[err]\033[0m %s\n" "$1" >&2; }
 if [ "$(uname -s)" = "Darwin" ]; then ncpu() { sysctl -n hw.ncpu; }
 else ncpu() { nproc; }; fi
 
-IFS=',' read -ra PRIMS <<< "${PRIMS:-mutex,cond,waitgroup,sem,channel}"
+IFS=',' read -ra PRIMS <<< "${PRIMS:-mutex,cond,sem,channel}"
 IFS=',' read -ra LANGS <<< "${LANGS:-xylem,go,rust}"
 WORKERS="${WORKERS:-0}"
 REPEAT="${REPEAT:-3}"
 
-declare -A P_TASKS=( [mutex]=8 [cond]=2 [waitgroup]=8 [channel]=4 )
-declare -A P_ITERS=( [mutex]=1000000 [cond]=1000 [waitgroup]=1 [channel]=1000000 )
+declare -A P_TASKS=( [mutex]=8 [cond]=2 [channel]=4 )
+declare -A P_ITERS=( [mutex]=1000000 [cond]=1000 [channel]=1000000 )
 P_PERMITS="${PERMITS:-4}"
 
 CFLAGS="-std=gnu11 -O3 -DNDEBUG -flto -Wall -Wextra"
@@ -538,13 +538,12 @@ Commands:
   all       build + bench   (default)
 
 Options (env vars seed defaults):
-  --prims, -p    mutex,cond,waitgroup,sem,channel   (default: all)
+  --prims, -p    mutex,cond,sem,channel             (default: all)
   --langs, -l    xylem,go,rust                       (default: all)
   --repeat, -r   3                                   repeat each test N times
-  --workers, -w  0                                   scheduler workers (0=auto)
 
 Examples:
-  $0 all --prims mutex,sem --langs xylem,go
+  $0 bench --prims mutex,channel --langs xylem,rust --repeat 1
 EOF
 }
 

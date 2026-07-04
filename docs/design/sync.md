@@ -1,11 +1,11 @@
 # Synchronization Primitives Design
 
-Xylem's public synchronization primitives — mutex, condition variable,
-wait-group, and channel — are **cross-context**: a contended operation blocks
-the caller in the way that fits its context. A coroutine parks on the scheduler
-(the OS worker thread stays free); an external OS thread blocks on a per-thread
-wake object. The two kinds can notify each other, so a coroutine can hand
-off to an OS thread and vice versa. This document covers
+Xylem's public synchronization primitives -- mutex, condition variable,
+wait-group, semaphore, and channel -- are **cross-context**: a contended
+operation blocks the caller in the way that fits its context. A coroutine parks
+on the scheduler (the OS worker thread stays free); an external OS thread
+blocks on a per-thread wake object. The two kinds can notify each other, so a
+coroutine can hand off to an OS thread and vice versa. This document covers
 their semantics, threading contracts, and the ordering rules that make them
 correct. The internal `spin_t` and `thrd_wake_t` helpers are also described
 because they back the public primitives.
@@ -65,36 +65,24 @@ single-receiver wake slot and a different timed-wait path.
 
 ### Cross-context wake cost
 
-Because the wake path is chosen by the *waiter's* kind, the three context
-pairings of a blocking hand-off are not equally cheap. The `handoff` probe in
-`benchmark/sync` isolates the bare wake latency — a two-party ping-pong over a
-pair of semaphores, no mutex and no predicate, so each round-trip forces exactly
-one wake in each direction. Indicative figures from one local run (Windows x64,
-MSVC release, 15 repeats; the **relative ordering is the portable takeaway** —
-absolute nanoseconds vary by machine and OS):
+Because the wake path is chosen by the *waiter's* kind, the context pairings of
+a blocking hand-off are not equally cheap. The current `benchmark/sync` suite
+reports `cc`, `tt`, `ct`, and `tc` where each primitive and comparison language
+can express that pairing. It does not include a separate raw handoff probe.
 
-| Pairing | What gets woken each direction | ns / round-trip |
-|---------|--------------------------------|----------------:|
-| coro ↔ coro (`cc`)   | scheduler reschedule (pure userspace)      | ~430  |
-| thread ↔ thread (`tt`) | each thread's wake object (futex)        | ~1050 |
-| coro ↔ thread (`ct`) | one reschedule + one OS-thread wake, both ways crossing the boundary | ~2030 |
-
-The pure-coroutine reschedule is the cheapest hand-off. Crossing the
-coroutine/OS-thread boundary (`ct`) is the most expensive — and notably costs
-*more* than the same-context thread case, not less: a cross-context wake carries
-extra dispatch work beyond the bare thread wake/reschedule. Waking a
-coroutine *from* an OS thread routes through `scheduler_schedule()` to the global
-runq and may have to rouse a parked worker; waking a thread *from* a coroutine
-signals that thread's wake object from off-scheduler. So `ct` pays a boundary tax on
-*both* legs rather than averaging `cc` and `tt`.
+The pure-coroutine reschedule is usually the cheapest hand-off. Crossing the
+coroutine/OS-thread boundary costs extra dispatch work beyond the bare thread
+wake/reschedule: waking a coroutine from an OS thread routes through
+`scheduler_schedule()` to the global run queue and may need to wake a parked
+worker, while waking a thread from a coroutine signals that thread's wake
+object from off-scheduler.
 
 Design consequence: keep a hot, tight hand-off inside a single context when you
 can, and treat each boundary crossing as a real cost on the path. When a
 producer/consumer pair must straddle the boundary, prefer **batching across it**
-over a per-item ping-pong — which is exactly why `xylem_channel` is built to
-never park the producer (queue, drop by caller policy, or retry later instead
-of a blocking back-and-forth; see §5) and why a per-item `ct` ping-pong is the
-shape to avoid.
+over a per-item ping-pong -- which is exactly why `xylem_channel` never parks
+the producer (queue, drop by caller policy, or retry later instead of a
+blocking back-and-forth; see section 5).
 
 ## 2. Mutex
 
@@ -180,7 +168,7 @@ A countdown latch, modeled on Go's `sync.WaitGroup`:
 - `done()` decrements by one; when the counter hits zero, every parked waiter is
   drained and woken in FIFO order.
 - `wait()` parks until the counter reaches zero; returns immediately if already
-  zero. Multiple coroutines may `wait()` concurrently.
+  zero. Multiple coroutines and OS threads may `wait()` concurrently.
 
 Contract: `done()` more times than `add()` ever promised underflows the counter
 and **aborts** (Go's "negative WaitGroup counter" panic). `add()` racing a
@@ -338,9 +326,9 @@ guard that serialises each FIFO primitive's waiter list. It does not interact
 with the scheduler (no parking), so it must only guard sections that are short
 and non-blocking. It is not part of the public API and carries no `xylem_` prefix.
 
-The FIFO primitives (mutex, cond, waitgroup) use it internally to guard their
-waiter lists; the *waiters* block, but the list bookkeeping is protected by a short
-spin.
+The FIFO primitives (mutex, cond, waitgroup, sem) use it internally to guard
+their waiter lists; the *waiters* block, but the list bookkeeping is protected
+by a short spin.
 
 ## 8. Choosing a primitive
 

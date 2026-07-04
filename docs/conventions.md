@@ -67,8 +67,10 @@ Conventions:
   abort with a diagnostic rather than corrupt state silently.)
 - Diagnostics go through the logger (`xylem_loge(...)`), not `stderr` directly.
 - Destroy functions return `void` where possible, accept `NULL`, and are
-  idempotent unless a module documents otherwise. Close functions that release
-  their handle consume it; the handle is invalid after the call returns.
+  idempotent unless a module documents otherwise. `xylem_ticker_destroy()` is
+  one documented exception: it accepts `NULL`, but a non-NULL ticker handle is
+  consumed and must not be destroyed again. Close functions that release their
+  handle consume it; the handle is invalid after the call returns.
 
 ## 4. Options structs and the NULL-means-default rule
 
@@ -97,10 +99,12 @@ Two pairing styles, by allocation ownership:
 
 Rules:
 - **`destroy` accepts `NULL` and is idempotent unless a module says
-  otherwise.** A `close` function that releases the handle consumes that
-  handle; callers must not use or close the same handle again after `close`
-  returns. Atomic `closed` flags only coordinate concurrent close/read/write
-  paths while another reference keeps the object alive.
+  otherwise.** `xylem_ticker_destroy()` accepts `NULL` but consumes a non-NULL
+  ticker handle, so callers must not destroy the same ticker handle twice. A
+  `close` function that releases the handle consumes that handle; callers must
+  not use or close the same handle again after `close` returns. Atomic `closed`
+  flags only coordinate concurrent close/read/write paths while another
+  reference keeps the object alive.
 - **Read before close.** For connections, query any state you need (e.g.
   `xylem_tcp_remote_addr`) *before* calling `close`; close may free backing
   state and wakes any coroutine blocked on the handle.
@@ -207,29 +211,26 @@ Every public function's doc comment states its threading contract. The
 recurring categories:
 
 - **Any-thread.** Safe to call from any thread, including outside the runtime.
-  `xylem_spawn`, `xylem_shutdown`, timer arm/cancel/reset, and the
-  wakeup/non-blocking sync ops (`unlock`, `signal`/`broadcast`, `add`/`done`,
-  channel `send`/`close`). (Thread-safe does not always mean concurrency-safe on
-  one object: `xylem_timer_cancel`/`reset` are each callable from any thread but
-  must not run concurrently with each other on the *same* handle — see
-  [`design/core.md`](design/core.md) §2.)
+  `xylem_spawn`, `xylem_shutdown`, and wakeup/non-blocking sync ops (`unlock`,
+  `trylock`, `signal`/`broadcast`, `add`/`done`, channel `send`/`close`, and
+  semaphore `post`) are examples. Thread-safe does not always mean
+  concurrency-safe on one object: each API documents which same-handle races are
+  forbidden.
 - **Coroutine-only.** Must be called from inside a coroutine on the runtime.
   The **entire connection API** is coroutine-only — not just `read`/`write`/
   `accept`/`dial` (which may park), but also `close`, the read/write deadline
   setters, and the address getters (TCP/UDP/UDS/RUDP/TLS/DTLS). `close` is
-  coroutine-only because its teardown may touch other coroutine-only primitives
-  (e.g. draining an inbox channel); to cancel a connection whose reader/writer
-  is parked, close it from *another* coroutine. Also coroutine-only:
-  `xylem_await` and the blocking sync ops (`mutex_lock`, `cond_wait`,
-  `waitgroup_wait`, `channel_recv`). Calling any of these off a coroutine
-  aborts.
+  coroutine-only because teardown is serialized through the runtime; to cancel
+  a connection whose reader/writer is parked, close it from *another*
+  coroutine. `xylem_await` is also coroutine-only.
 - **Context-adaptive.** Safe from either a coroutine or a plain OS thread; the
   call inspects its context and does the right thing. On a coroutine it parks
   (the worker stays free); on a thread it blocks the OS thread. The observable
-  semantics are identical in both contexts. This covers `xylem_sleep`, the
-  `xylem_sem` blocking ops (`wait`/`timedwait`), and `xylem_ticker_recv`. These
-  deliberately do **not** abort off-coroutine — bridging the coroutine/OS-thread
-  boundary is the point.
+  semantics are identical in both contexts. This covers `xylem_sleep`,
+  timer arm/cancel/reset, ticker recv, and blocking sync ops such as
+  `mutex_lock`, `cond_wait`, `waitgroup_wait`, `channel_recv`, and semaphore
+  `wait`/`timedwait`. These deliberately do **not** abort off-coroutine --
+  bridging the coroutine/OS-thread boundary is the point.
 - **Single-owner.** One logical owner at a time, stated explicitly — e.g. one
   reader and one writer per `iowait` direction; a single deadline driver per
   direction.

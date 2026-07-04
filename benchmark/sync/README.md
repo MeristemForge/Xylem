@@ -1,222 +1,149 @@
 # Xylem Sync-Primitive Benchmark
 
-Microbenchmarks for the xylem coroutine sync primitives, compared against
-the equivalent constructs in Go (goroutines) and Rust (Tokio tasks).
+Microbenchmarks for Xylem synchronization primitives, compared with closest
+standard Go and Rust equivalents where the language can express the same
+context pairing.
 
-| Primitive | Xylem | Go | Rust (Tokio) |
-|-----------|:-----:|:--:|:------------:|
-| mutex     | `xylem_mutex` | `sync.Mutex` | `tokio::sync::Mutex` |
-| cond      | `xylem_cond`  | `sync.Cond`  | `std::sync::Condvar` (thread mode) |
-| waitgroup | `xylem_waitgroup` | `sync.WaitGroup` | `tokio::task::JoinSet` |
-| sem       | `xylem_sem`   | buffered `chan` (token bucket) | `tokio::sync::Semaphore` |
-| channel   | `xylem_channel` (MPSC) | buffered `chan` | `tokio::sync::mpsc` / `std::sync::mpsc` |
+Each benchmark program is self-contained: it takes no command-line parameters,
+runs a fixed 5-second timed window, prints one or more JSON objects, and exits.
+The driver scripts build the per-primitive binaries, run them, collect the JSON,
+and print an averaged comparison table.
 
-A sixth probe, `handoff`, measures the raw cross-context wake latency (see
-"Cross-context direction" below). All three languages run it, but only xylem
-and Rust have a thread↔coro cell -- Go has just goroutine↔goroutine.
+## Current Suite
 
-Unlike the protocol suites (`tcp/`, `udp/`, `tls/`), there is no client/server
-or network I/O here: each binary runs one primitive entirely in-process and
-prints a JSON result. The C, Go and Rust programs run the **identical**
-workload so the numbers line up field-for-field.
+| Primitive | Xylem | Go | Rust |
+|-----------|:-----:|:--:|:----:|
+| mutex | `xylem_mutex` | `sync.Mutex` | `tokio::sync::Mutex` / `std::sync::Mutex` |
+| cond | `xylem_cond` | `sync.Cond` | `std::sync::Condvar` |
+| sem | `xylem_sem` | - | `tokio::sync::Semaphore` |
+| channel | `xylem_channel` | buffered `chan` | `tokio::sync::mpsc` / `std::sync::mpsc` |
 
-## Concurrency modes (`--modes`)
+The current checked-in benchmark programs cover `mutex`, `cond`, `sem`, and
+`channel`. Waitgroup and raw handoff probes are not part of the current
+per-primitive suite.
 
-Each primitive runs under up to three concurrency models. xylem's sync
-primitives are *context-adaptive* (a blocking op parks a coroutine or blocks an
-OS thread, and the two interoperate on the same object), so the **same** worker
-code runs in every mode — only how workers are launched changes.
+## Modes
 
-| Mode     | Workers are…            | xylem | go | rust |
-|----------|-------------------------|:-----:|:--:|:----:|
-| `coro`   | coroutines / async tasks | ✓ (`xylem_spawn`) | ✓ (goroutines) | ✓ (Tokio) |
-| `thread` | plain OS threads         | ✓ | – | ✓ (`std::thread` + `std::sync`) |
-| `mixed`  | half coroutines, half OS threads on one primitive | ✓ | – | channel only |
+The Xylem programs report four pinned context pairs:
 
-- **Go** has only goroutines, so a pure-thread or mixed model isn't expressible
-  (user code always runs on a goroutine) — `go` runs `coro` only.
-- **Rust** offers `coro` (Tokio + `tokio::sync`) and `thread` (`std::thread` +
-  `std::sync`). The two can't share a *lock-style* primitive (an async
-  `Mutex`/`Notify`/`Semaphore` isn't usable from a blocking thread, and
-  vice-versa), so `mutex`/`cond`/`sem`/`waitgroup` have no `mixed`. The
-  **`channel`** primitive is the exception: a channel's producer end is a plain
-  sync call usable from either world (`tokio::mpsc::UnboundedSender::send` from
-  an OS thread, `std::mpsc::Sender::send` from an async task), so Rust *does*
-  run `channel` in `mixed`. The benchmark pins one sender and one receiver to
-  `cc`, `tt`, `ct`, or `tc`.
-- **xylem** is the only one that covers `mixed` for *every* primitive: e.g. a
-  coroutine producer handing off to an OS-thread consumer through the same
-  `xylem_cond`.
+| Mode | Sender / first party | Receiver / second party |
+|------|----------------------|-------------------------|
+| `cc` | coroutine | coroutine |
+| `tt` | OS thread | OS thread |
+| `ct` | coroutine | OS thread |
+| `tc` | OS thread | coroutine |
 
-The runner skips unsupported `(lang, mode)` cells automatically (the binaries
-also reject them with a non-zero exit). Thread/mixed modes use lighter
-per-primitive iteration counts since spawning an OS thread costs far more than
-a coroutine (notably `waitgroup`, which spawns workers every round).
+For symmetric primitives (`mutex`, `cond`, `sem`), the labels pin which party is
+created in which context. For `channel`, the direction is literal: `ct` means a
+coroutine sender feeding a thread receiver, and `tc` means a thread sender
+feeding a coroutine receiver.
 
-For the `handoff` probe the mode axis is reused to select the *context pair*
-instead of the worker kind: `coro` = coro↔coro, `thread` = thread↔thread,
-`mixed` = thread↔coro. Here Rust **does** support all three (`mixed` is an
-external `std::thread` handing off to a Tokio task over a channel -- the
-video-capture pattern), while Go has only the `coro` (goroutine↔goroutine)
-cell.
+Go only reports `cc`, because user code runs in goroutines rather than raw OS
+threads. Rust reports the cells its standard libraries can model:
 
-## Cross-context direction
+- `mutex`: `cc` via Tokio mutex and `tt` via standard mutex.
+- `cond`: `tt` via `std::sync::Condvar`.
+- `sem`: `cc` via Tokio semaphore.
+- `channel`: `cc`, `tt`, `ct`, and `tc`, choosing Tokio or standard MPSC based
+  on the receiver context.
 
-When a coroutine and an OS thread block on the same object, the *direction* of
-the wake matters a lot, and the two directions are far from symmetric:
+## Workloads
 
-| waker → waiter      | relative cost | why |
-|---------------------|:-------------:|-----|
-| coro → coro         | cheapest      | pure userspace reschedule |
-| coro → thread       | cheap         | one `futex`/`WaitOnAddress` wake |
-| thread → thread     | medium        | one `futex` wake |
-| **thread → coro**   | **expensive** | a foreign thread must inject into the scheduler's global run queue, wake a parked worker, which then resumes (and often migrates) the coroutine |
+All current workloads are fixed-duration runs. `total_ops` is the number of
+successful operations counted during the timed window.
 
-Most primitives cannot expose a single direction in `mixed` mode:
+| Primitive | Workload | total_ops |
+|-----------|----------|-----------|
+| mutex | Multiple workers loop: lock, increment, unlock | increments |
+| cond | Two-party ping-pong through a condition variable and mutex | turns |
+| sem | Two-party semaphore handoff | handoff steps |
+| channel | One sender, one receiver, one-way, no benchmark-level backpressure | received messages |
 
-- **mutex**, **sem** -- every worker both acquires and releases, so wakes go
-  both ways (symmetric); direction is not separable.
-- **cond**, **waitgroup** -- a round-trip (ping-pong / release-then-join), so
-  every cycle pays *both* directions; pinning a role to a context only
-  relabels the same total.
-- **channel** -- the one naturally one-way case: one sender feeds one receiver.
-  `ct` means coroutine sender to thread receiver; `tc` means thread sender to
-  coroutine receiver. Because xylem's channel is unbounded, the receiver often
-  drains buffered messages without sleeping, so buffering can amortize wake
-  cost.
-
-To see the bare cost of each direction, use the `handoff` probe: two parties
-ping-pong through a pair of binary semaphores (no mutex, no predicate), with
-each party's vehicle pinned by `--ho-dir`:
-
-```
-sync-xylem handoff --ho-dir cc --iters 1000000   # coro  <-> coro
-sync-xylem handoff --ho-dir ct --iters 1000000   # coro  <-> OS thread
-sync-xylem handoff --ho-dir tt --iters 1000000   # thread <-> OS thread
-```
-
-`ns/op` is the round-trip wake latency. A representative run (Windows, ratios
-matter more than absolutes): `cc` ~440 ns, `tt` ~1.3 us, `ct` ~12.8 us. Since
-`ct = (coro→thread) + (thread→coro)` and `coro→thread` is about a futex
-(~0.6 us), the `thread→coro` wake alone is ~12 us -- roughly 20x a
-same-context wake. **Takeaway:** keep a high-frequency `thread→coro` wake off
-the hot path; let the coroutine side block on a buffered channel and drain in
-batches, or batch the thread-side signal, so one wake amortizes many items.
+Channel intentionally measures steady-state unbounded queue throughput, not
+forced wake latency. The sender never waits for an acknowledgement, so the
+receiver often drains already-buffered messages. A ping-pong or ack-gated
+benchmark would measure a different path.
 
 ## Layout
 
 ```
 benchmark/sync/
-  xylem-sync/main.c      five primitives + the handoff probe (-> sync-xylem)
-  go-sync/main.go        Go equivalent                       (-> sync-go)
-  rust-sync/src/main.rs  Rust/Tokio equivalent               (-> sync-rust)
+  mutex/{xylem,go,rust}/
+  cond/{xylem,go,rust}/
+  sem/{xylem,rust}/
+  channel/{xylem,go,rust}/
 
-benchmark/out/           build output, shared with the net suite (gitignored):
-                         binaries, build/ (CMake tree), results/<ts>/ JSON
+benchmark/out/
+  built binaries, CMake build tree, results/<timestamp>/*.json
 
 benchmark/scripts/
-  run-sync.sh            Linux/macOS driver (build/bench/all)
-  run-sync.bat           Windows driver (run from a VS Dev Prompt)
+  run-sync.sh
+  run-sync.bat
 ```
 
 ## Quick Start
 
-### Linux / macOS
+Linux / macOS:
 
 ```bash
 cd benchmark/scripts
-./run-sync.sh                       # build + bench all primitives
-./run-sync.sh build                 # just build
-./run-sync.sh bench --workers 4     # just bench, pin 4 worker threads
+./run-sync.sh build --prims channel
+./run-sync.sh bench --prims channel --langs xylem,go,rust --repeat 1
 ```
 
-### Windows
-
-From any terminal (`cl.exe` is auto-initialized via `vcvars64.bat`; `cmake`,
-`ninja` must be on PATH):
+Windows:
 
 ```bat
 cd benchmark\scripts
-run-sync.bat
-run-sync.bat bench --prims mutex,channel --langs xylem,rust
+run-sync.bat build --prims channel
+run-sync.bat bench --prims channel --langs xylem,go,rust --repeat 1
 ```
 
-## Options
-
-Same on both drivers (env vars seed defaults; CLI overrides):
+## Driver Options
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--prims`, `-p`   | `mutex,cond,waitgroup,sem,channel,handoff` | primitives to run |
-| `--langs`, `-l`   | `xylem,go,rust` | languages to compare |
-| `--modes`, `-m`   | `coro,thread,mixed` | concurrency models (unsupported cells skipped) |
-| `--workers`, `-w` | `0` | runtime worker threads (`0` = each runtime's default = CPU count) |
-| `--repeat`, `-r`  | `3` | repeat each cell N times, report the average |
-| `--permits`       | `4` | semaphore permits (the `sem` primitive only) |
+| `--prims`, `-p` | `mutex,cond,sem,channel` | Primitive list |
+| `--langs`, `-l` | `xylem,go,rust` | Language list |
+| `--repeat`, `-r` | `3` | Runs per cell |
 
-`--workers` maps to the xylem scheduler worker count, Go's `GOMAXPROCS`, and
-Tokio's `worker_threads`. Set it equal across runs for an apples-to-apples
-comparison.
-
-## Workload Model
-
-All three implementations do the same logical work. `T` = `--tasks`,
-`N` = `--iters`, `K` = `--permits`.
-
-| Primitive | What each cell does | total_ops |
-|-----------|---------------------|-----------|
-| mutex     | `T` tasks each loop `N`x: lock / counter++ / unlock | `T*N` |
-| cond      | 1 producer + 1 consumer ping-pong, `N` hand-offs | `N` |
-| waitgroup | `N` rounds over a **pre-spawned** pool of `T` workers; each round releases the pool and joins it (task creation is outside the timed loop) | `T*N` |
-| sem       | `T` tasks each loop `N`x: acquire / release, `K` permits | `T*N` |
-| channel   | 1 sender + 1 receiver run for 5 seconds, one-way, no benchmark-level backpressure | messages received during the timed window |
-
-The per-primitive `tasks`/`iters` defaults baked into the drivers are sized so
-each cell runs roughly 1–2 seconds.
+The drivers still accept a few legacy options for compatibility with older
+scripts, but the current per-primitive programs do not take benchmark
+parameters.
 
 ## Output
 
-Each `(primitive, language, run)` writes `out/results/<ts>/sync-<prim>-<lang>-r<run>.json`:
+Each run writes JSON under `benchmark/out/results/<timestamp>/`. Programs that
+support multiple modes print multiple JSON objects; the driver extracts the
+object matching the mode it is summarizing.
+
+Example:
 
 ```json
 {
-  "primitive": "mutex",
+  "primitive": "channel",
   "lang": "xylem",
-  "workers": 4,
-  "tasks": 8,
-  "iters": 1000000,
-  "total_ops": 8000000,
-  "duration_sec": 1.234567,
-  "ops_per_sec": 6480000,
-  "ns_per_op": 154.32
+  "mode": "tc",
+  "duration_ms": 5000,
+  "total_ops": 28694659,
+  "duration_sec": 5.000000,
+  "ops_per_sec": 5738131,
+  "ns_per_op": 174.27
 }
 ```
 
-The driver also prints a per-primitive comparison table (avg ops/sec, ns/op).
+The driver also prints a comparison table with average `ops/s`, `ns/op`, and
+the per-run `ops/s` values.
 
-## Fairness & Caveats
+## Caveats
 
-- All C is built `-O3 -DNDEBUG -flto` (MSVC `/O2 /DNDEBUG`) and stripped; Go
-  with `-ldflags="-s -w"`; Rust with `opt-level=3, lto=true`.
-- The mapping is "closest idiomatic equivalent", not a byte-identical port:
-  - **cond** — Go uses a real `sync.Cond` in goroutine mode. Rust's standard
-    library has `std::sync::Condvar`, so Rust contributes the `thread`/`tt`
-    cell. Tokio async has no standard condition variable; third-party async
-    condvars exist, but are not included as a baseline here.
-  - **waitgroup** — measures the primitive in isolation: a fixed pool of
-    `T` workers is spawned **once, outside the timed region**, and loops
-    over the rounds, so task-creation cost never enters the number. Each
-    round releases the pool and joins it through a fresh pair of single-use
-    sync objects (a `gate` to start the round, a `fin` to join it). xylem
-    uses `xylem_waitgroup`, Go uses `sync.WaitGroup`; Tokio/Rust has no
-    WaitGroup, so it builds the identical gate/fin handoff from
-    `Semaphore` (coro) / a `Mutex`+`Condvar` semaphore (thread).
-  - **sem** — Go has no semaphore in the standard library, so it uses the
-    idiomatic buffered-channel token bucket. Rust uses `tokio::sync::Semaphore`.
-  - **channel** — xylem's channel is an unbounded MPSC (`create()`). Rust uses
-    Tokio unbounded MPSC when the receiver is async and standard `mpsc` when
-    the receiver is a thread, which covers `cc`, `tt`, `ct`, and `tc`. Go has
-    only goroutines; it reports `cc` using a buffered channel (cap 1024), so a
-    full buffer can still block the sender.
-- Numbers are only comparable **within the same platform and run**, never
-  across machines or OSes.
+- The mapping is idiomatic, not byte-identical. Rust channel results are
+  especially not one primitive across all modes: Tokio MPSC is used when the
+  receiver is async, and standard MPSC is used when the receiver is a thread.
+- Go channel uses a finite buffered channel, because Go has no unbounded
+  standard channel. That can introduce sender blocking if the buffer fills.
+- Xylem channel is one context-adaptive primitive across all four modes. Its
+  send path allocates one node per message and supports runtime-aware receiver
+  wakeup, so the channel benchmark includes that generality.
+- Results are comparable only within the same machine, OS, compiler/runtime
+  versions, and run.

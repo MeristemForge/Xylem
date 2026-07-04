@@ -40,13 +40,11 @@
  * coalesce-to-one model.
  *
  * In normal operation the sem count is bounded to {0,1}, gated by
- * `pending`. A concurrent xylem_ticker_destroy can cause a transient
+ * `pending`. A racing xylem_ticker_destroy can cause a transient
  * double-post (the callback and destroy each call xylem_sem_post),
  * which is harmless: the consumer sees `closed` and discards the extra
- * token. The caller owns the destroy-vs-recv serialisation, exactly
- * like Go's Ticker.Stop and the Ticker.C channel -- the refcount only
- * guarantees that the ticker is not freed mid-use, not that every
- * field converges perfectly during teardown.
+ * token. The refcount guarantees that the ticker is not freed mid-use,
+ * but destroy still consumes the caller's handle.
  */
 struct xylem_ticker_s {
     scheduler_timer_t*   timer;     /* repeating, run inline (spawn == false) */

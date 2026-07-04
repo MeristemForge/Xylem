@@ -44,12 +44,13 @@ _Pragma("once")
  *     receive on a given ticker (single-consumer). A thread consumer
  *     still requires the runtime to be running, since the ticks are
  *     produced by a scheduler timer.
- *   - xylem_ticker_destroy() is callable from any thread or context;
- *     it is idempotent. The internal refcount keeps the ticker alive
- *     across a concurrent recv, so destroy never frees memory that
- *     recv is still touching. The caller owns the mutual exclusion
- *     between destroy and recv on the same ticker, exactly like
- *     Go's Ticker.Stop vs. reading Ticker.C -- the refcount only
+ *   - xylem_ticker_destroy() is callable from any thread or context
+ *     and accepts NULL. It consumes the handle; the same non-NULL
+ *     handle must not be destroyed again. The internal refcount keeps
+ *     the ticker alive across a concurrent recv, so destroy never frees
+ *     memory that recv is still touching. The caller owns the mutual
+ *     exclusion between destroy and recv on the same ticker, exactly
+ *     like Go's Ticker.Stop vs. reading Ticker.C -- the refcount only
  *     prevents use-after-free, it does not make concurrent
  *     destroy+recv meaningful.
  *
@@ -94,11 +95,11 @@ extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Idempotent.
- *
  * Wakes a consumer blocked in xylem_ticker_recv() (which then returns
  * 0). The underlying memory is freed once the last reference is gone,
- * so it is safe to call even while a recv is in flight.
+ * so it is safe to call even while a recv is in flight. This call
+ * consumes the handle; passing NULL is a no-op, but destroying the same
+ * non-NULL handle again is invalid.
  *
  * @param ticker  Ticker handle, or NULL (no-op).
  */
