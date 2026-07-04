@@ -181,16 +181,20 @@ static bool _channel_wait_pending_send(xylem_channel_t* ch) {
     return true;
 }
 
+static bool _channel_cancel_waiter(xylem_channel_t* ch, _waiter_t* w) {
+    _waiter_t* expected = w;
+    return atomic_compare_exchange_strong(&ch->waiter, &expected, NULL);
+}
+
 static bool _channel_publish_waiter(xylem_channel_t* ch, _waiter_t* w) {
     atomic_store(&ch->waiter, w);
 
     /* Avoid lost wakeups between the failed pop and waiter publish. */
-    if (!atomic_load(&ch->closed) && !mpsc_can_pop(&ch->queue)) {
+    if (atomic_load(&ch->closed) || mpsc_can_pop(&ch->queue)) {
+        return !_channel_cancel_waiter(ch, w);
+    } else {
         return true;
     }
-
-    _waiter_t* expected = w;
-    return !atomic_compare_exchange_strong(&ch->waiter, &expected, NULL);
 }
 
 static void* _channel_wait_coro(xylem_channel_t* ch) {
@@ -329,17 +333,15 @@ static void* _channel_timedwait_thrd(
         }
 
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        if (now >= deadline_ms) {
-            break;
-        }
-        uint64_t remaining = deadline_ms - now;
-        if (thrd_wake_timedwait(w.wake, remaining)) {
-            continue;
+        if (now < deadline_ms) {
+            uint64_t remaining = deadline_ms - now;
+            if (thrd_wake_timedwait(w.wake, remaining)) {
+                continue;
+            }
         }
 
         /* CAS failure means a wake is already in flight. */
-        _waiter_t* expected = &w.base;
-        if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
+        if (_channel_cancel_waiter(ch, &w.base)) {
             break;
         }
         thrd_wake_wait(w.wake);
