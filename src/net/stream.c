@@ -372,41 +372,40 @@ int stream_write(stream_t* stream, const void* data, int len) {
     _stream_ref(stream);
     int ret = -1;
 
-    if (!atomic_load(&stream->closed)) {
-        const char* ptr = (const char*)data;
-        int         rem = len;
+    const char* ptr = (const char*)data;
+    int         rem = len;
 
-        while (rem > 0) {
-            if (iowait_write_deadline_expired(stream->waiter)) {
-                break;
-            }
-            ssize_t n = platform_socket_send(stream->fd, ptr, rem);
-            if (n > 0) {
-                ptr += n;
-                rem -= (int)n;
-                _stream_consume_io_budget((size_t)n);
+    while (rem > 0) {
+        if (atomic_load(&stream->closed)
+            || iowait_write_deadline_expired(stream->waiter)) {
+            break;
+        }
+
+        ssize_t n = platform_socket_send(stream->fd, ptr, rem);
+        if (n > 0) {
+            ptr += n;
+            rem -= (int)n;
+            _stream_consume_io_budget((size_t)n);
+            continue;
+        }
+
+        int err = platform_socket_get_lasterror();
+        if (_stream_is_again(err)) {
+            if (iowait_write(stream->waiter) == IOWAIT_READY) {
                 continue;
             }
-
-            int err = platform_socket_get_lasterror();
-            if (err != PLATFORM_SO_ERROR_EAGAIN
-                && err != PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                xylem_loge(
-                    "<stream> write failed fd=%d err=%s",
-                    (int)stream->fd,
-                    platform_socket_tostring(err));
-                break;
-            }
-
-            iowait_result_t r = iowait_write(stream->waiter);
-            if (r != IOWAIT_READY
-                || atomic_load(&stream->closed)) {
-                break;
-            }
+            break;
         }
-        if (rem == 0) {
-            ret = 0;
-        }
+
+        xylem_loge(
+            "<stream> write failed fd=%d err=%s",
+            (int)stream->fd,
+            platform_socket_tostring(err));
+        break;
+    }
+    if (rem == 0
+        && !atomic_load(&stream->closed)) {
+        ret = 0;
     }
 
     _stream_unref(stream);

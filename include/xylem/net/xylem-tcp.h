@@ -136,8 +136,8 @@ extern void xylem_tcp_set_write_deadline(
  * Returns available data from the socket. Suspends the calling
  * coroutine if no data is immediately available. At most len
  * bytes are returned; the actual count may be less.
- * At most one coroutine may be blocked in read on a connection
- * at a time; a concurrent second reader aborts.
+ * A connection has a single logical reader. Concurrent read
+ * calls on the same connection are unsupported.
  *
  * @param tcp  Connection handle.
  * @param buf  Destination buffer.
@@ -157,8 +157,8 @@ extern int xylem_tcp_read(
  *
  * Loops internally until all len bytes are sent or an error
  * occurs. Suspends the calling coroutine as needed.
- * At most one coroutine may be blocked in write on a connection
- * at a time; a concurrent second writer aborts.
+ * A connection has a single logical writer. Concurrent write
+ * calls on the same connection are unsupported.
  *
  * @param tcp   Connection handle.
  * @param data  Source buffer.
@@ -261,6 +261,8 @@ extern int xylem_tcp_shutdown_wr(xylem_tcp_conn_t* tcp);
  * @note [COROUTINE-ONLY]
  *
  * Discards further incoming data. Subsequent read calls return -1.
+ * Does not cancel an in-flight read; use close or a read deadline
+ * to wake a blocked reader.
  *
  * @param tcp  Connection handle.
  *

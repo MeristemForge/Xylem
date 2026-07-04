@@ -24,6 +24,7 @@
 #include "utils.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define TCP_HOST          "127.0.0.1"
@@ -39,6 +40,15 @@ typedef struct {
     _coro_t            server;
     _coro_t            client;
 } _ctx_t;
+
+typedef struct {
+    xylem_tcp_conn_t*  conn;
+    xylem_channel_t*   started;
+    xylem_waitgroup_t* wg;
+    char*              data;
+    int                len;
+    int                rc;
+} _close_write_ctx_t;
 
 static void _pair_main(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
@@ -457,6 +467,88 @@ static void test_invalid_io_args(void) {
     _run_pair(TCP_PORT + 8, _invalid_io_server, _invalid_io_client);
 }
 
+static void _close_write_writer(void* arg) {
+    _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
+    ASSERT(xylem_channel_send(ctx->started, ctx) == 0);
+    ctx->rc = xylem_tcp_write(ctx->conn, ctx->data, ctx->len);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _close_write_closer(void* arg) {
+    _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
+    xylem_channel_recv(ctx->started);
+    xylem_tcp_close(ctx->conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _close_write_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+
+    char buf[16384];
+    for (;;) {
+        int n = xylem_tcp_read(conn, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+    }
+
+    xylem_tcp_close(conn);
+    xylem_tcp_close_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _close_write_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    ASSERT(conn != NULL);
+
+    enum { WRITE_LEN = 32 * 1024 * 1024 };
+    char* data = (char*)calloc(1, WRITE_LEN);
+    ASSERT(data != NULL);
+    memset(data, 'x', WRITE_LEN);
+
+    _close_write_ctx_t write_ctx = {
+        .conn = conn,
+        .started = xylem_channel_create(),
+        .wg = xylem_waitgroup_create(),
+        .data = data,
+        .len = WRITE_LEN,
+        .rc = 0,
+    };
+    ASSERT(write_ctx.started != NULL);
+    ASSERT(write_ctx.wg != NULL);
+
+    xylem_waitgroup_add(write_ctx.wg, 2);
+    xylem_spawn(_close_write_writer, &write_ctx);
+    xylem_spawn(_close_write_closer, &write_ctx);
+    xylem_waitgroup_wait(write_ctx.wg);
+
+    ASSERT(write_ctx.rc == -1);
+
+    xylem_waitgroup_destroy(write_ctx.wg);
+    xylem_channel_destroy(write_ctx.started);
+    free(data);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_close_stops_inflight_write(void) {
+    _ctx_t ctx = {
+        .port = TCP_PORT + 9,
+        .server = _close_write_server,
+        .client = _close_write_client,
+    };
+    xylem_opts_t opts = {.workers = 1};
+    xylem_run(_pair_main, &ctx, &opts);
+}
+
 int main(void) {
     test_echo();
     test_reader_full();
@@ -468,5 +560,6 @@ int main(void) {
     test_expired_read_deadline_blocks_ready_data();
     test_expired_write_deadline_blocks_ready_socket();
     test_invalid_io_args();
+    test_close_stops_inflight_write();
     return 0;
 }
