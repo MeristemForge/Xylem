@@ -522,11 +522,10 @@ static void _rudp_conn_ref(void* ud) {
 /**
  * Drop a reference; the last one out performs the actual teardown.
  *
- * A reader parked in xylem_channel_recv / iowait_read holds a reference
- * across the park, so a concurrent xylem_rudp_close only marks the
- * session closed and wakes the reader -- the inbox, KCP state and the
- * conn itself stay alive until the woken reader drops its reference
- * here. Mirrors the refcounting used by tcp/tls/dtls connections.
+ * A reader parked in xylem_channel_recv / iowait_read holds a conn
+ * reference across the park, so a concurrent xylem_rudp_close only marks
+ * the session closed and wakes the reader. The inbox and KCP state stay
+ * alive until the woken reader drops its reference here.
  */
 static void _rudp_conn_unref(void* ud) {
     xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)ud;
@@ -725,7 +724,7 @@ static int _rudp_accept_session(xylem_rudp_listener_t* ln,
         return -1;
     }
 
-    sess->inbox = xylem_channel_create(0);
+    sess->inbox = xylem_channel_create();
     if (!sess->inbox) {
         ikcp_release(sess->kcp);
         rudp_fec_enc_destroy(sess->fec_enc);
@@ -1259,7 +1258,7 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     }
 
     /* Accept queue: a channel carrying accepted session pointers. */
-    ln->accept_ch = xylem_channel_create(0);
+    ln->accept_ch = xylem_channel_create();
     if (!ln->accept_ch) {
         mtx_destroy(&ln->sessions_mtx);
         xylem_aes256_destroy(ln->aes);
@@ -1326,11 +1325,9 @@ static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
         mtx_unlock(&conn->listener->sessions_mtx);
 
         /**
-         * Now close the inbox channel to wake a parked reader. The
-         * reader's in-flight recv holds a channel reference, so the
-         * channel stays alive until _rudp_conn_unref drains+destroys
-         * it. The reader also holds a conn reference across its park,
-         * so conn survives until it drops that reference.
+         * Now close the inbox channel to wake a parked reader. The reader
+         * holds a conn reference across its park, so the inbox and conn
+         * stay alive until it drops that reference.
          */
         xylem_channel_close(conn->inbox);
         if (drop_session_ref) {

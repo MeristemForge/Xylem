@@ -92,8 +92,9 @@ Design consequence: keep a hot, tight hand-off inside a single context when you
 can, and treat each boundary crossing as a real cost on the path. When a
 producer/consumer pair must straddle the boundary, prefer **batching across it**
 over a per-item ping-pong — which is exactly why `xylem_channel` is built to
-never park the producer (drop or `XYLEM_CHANNEL_FULL` instead of a blocking
-back-and-forth; see §5) and why a per-item `ct` ping-pong is the shape to avoid.
+never park the producer (queue, drop by caller policy, or retry later instead
+of a blocking back-and-forth; see §5) and why a per-item `ct` ping-pong is the
+shape to avoid.
 
 ## 2. Mutex
 
@@ -199,8 +200,7 @@ reschedule mechanisms as the FIFO primitives, but with channel-specific state
 instead of a shared waiter module.
 
 - `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL. Returns
-  `0` on success, `XYLEM_CHANNEL_FULL` when a bounded channel is at capacity,
-  or `-1` (invalid input or allocation failure). **Never parks.**
+  `0` on success or `-1` (invalid input or allocation failure). **Never parks.**
 - `recv()` — blocks the calling coroutine **or thread** until a message
   arrives or the channel is closed-and-drained (then returns NULL).
   `recv_timeout(ms)` is the general form with a three-state wait policy:
@@ -211,37 +211,41 @@ instead of a shared waiter module.
   - any other `n` — block up to `n` ms.
   A NULL return does **not** distinguish "nothing available" / "timed out" /
   "closed and empty" — track the reason out of band if you need it.
-- `len()` / `cap()` — best-effort in-flight count and the configured capacity
-  (`cap()` is 0 for an unbounded channel). Safe from any thread; useful for
-  drop/backpressure decisions.
+- `len()` — best-effort in-flight count. Safe from any thread; useful for
+  observability and soft drop/backoff thresholds.
+- `create()`, `destroy()`, and `close()` are any-context operations. `create()`
+  requires the runtime to be running so the channel can bind to the scheduler.
+  `close()` may race with `recv()` to wake the receiver, but must not race with
+  `send()`. `destroy()` must not race with any other channel API.
 - **Single receiver.** Concurrent `recv()` (from two coroutines, two threads,
   or one of each) aborts.
 
 ### Capacity and backpressure
 
-- `create(0)` — **unbounded**: `send` always queues (barring OOM), never
-  reports full.
-- `create(cap)` with `cap > 0` — caps the **in-flight** message count (sent but
-  not yet received) at `cap`. When full, `send` returns `XYLEM_CHANNEL_FULL` so
-  the caller can drop or retry; it does **not** park the producer. This is the
-  only send mode: a deliberate choice so an external capture thread is never
-  stalled by a slow consumer (drop a frame instead). **Blocking backpressure
-  (parking the producer until space frees) is intentionally not provided** — it
-  would force `send` to park/block and would need a multi-waiter set, breaking
-  the lock-free, never-park contract. Backpressure is instead a receiver-side
-  policy: watch `len()`/`cap()` and, once over a threshold, drain with
-  `recv_timeout(ch, 0)` to drop the backlog (dropping oldest, keeping newest).
+Channels are **unbounded**: `send` always queues (barring OOM), never reports
+full, and never parks the producer. Hard capacity is intentionally not part of
+the channel contract. A correct hard bound would require an atomic reservation
+inside `send` or an external synchronization primitive; a caller-side
+`len() < threshold` check is only a snapshot and races with other senders.
 
-Implementation: a single `_Atomic size_t count` tracks in-flight messages.
-`send` reserves a slot with `fetch_add` before pushing; on overshoot it backs
-the slot out and returns full, so the count never exceeds `cap` under
-concurrent producers (no check-then-act race). `recv` decrements after a
-successful pop. The count is maintained for unbounded channels too, purely so
-`len()` works. This bounds the **count**, not allocation: each message is still
-a per-node `malloc`. A bounded, zero-allocation MPSC would need a preallocated
-MPMC ring, which this is not.
+Backpressure is therefore a caller policy. Use `len()` as a soft signal to drop,
+yield, or retry above a threshold, or compose a semaphore with the channel when
+a hard bound is required. Receivers can drain with `recv_timeout(ch, 0)` to drop
+old backlog (dropping oldest, keeping newest).
+
+Implementation: a single `_Atomic size_t count` tracks in-flight messages for
+`len()`. `send` increments it for each queued node; `recv` decrements after a
+successful pop. This is an observation count, not an allocation bound: each
+message is still a per-node `malloc`. A bounded, zero-allocation MPSC would need
+a preallocated MPMC ring, which this is not.
 
 Close/lifecycle semantics are strict and abort-on-misuse:
+
+| Operation race | Contract |
+|----------------|----------|
+| `close()` vs `recv()` | allowed; close wakes the receiver |
+| `close()` vs `send()` | forbidden; callers stop producers first |
+| `destroy()` vs any channel API | forbidden |
 
 | After `close()` | Behavior |
 |-----------------|----------|

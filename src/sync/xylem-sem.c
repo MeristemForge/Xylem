@@ -50,6 +50,7 @@
 struct xylem_sem_s {
     spin_t           guard;
     _Atomic uint32_t count;
+    _Atomic int32_t  refcnt;
     list_t           waiters;
     scheduler_t*     sched;
 };
@@ -88,6 +89,17 @@ static bool _sem_try_take(xylem_sem_t* s) {
         }
     }
     return false;
+}
+
+static void _sem_ref(xylem_sem_t* s) {
+    atomic_fetch_add(&s->refcnt, 1);
+}
+
+static void _sem_unref(xylem_sem_t* s) {
+    if (atomic_fetch_sub(&s->refcnt, 1) != 1) {
+        return;
+    }
+    free(s);
 }
 
 static void _sem_consume_credit(uint32_t cost) {
@@ -162,6 +174,7 @@ static void _sem_timeout_cb(scheduler_timer_t* timer, void* ud) {
         _sem_wake(s, target);
     }
     _sem_coro_timed_unref(w);
+    _sem_unref(s);
 }
 
 static bool _sem_park_cb(mco_coro* co, void* arg) {
@@ -177,6 +190,7 @@ static bool _sem_park_cb(mco_coro* co, void* arg) {
     }
     _sem_push_waiter(&s->waiters, &w->base);
     if (w->timeout_ms > 0) {
+        _sem_ref(s);
         _sem_coro_timed_ref(w);
         scheduler_timer_start(
                 w->timer, _sem_timeout_cb, w, w->timeout_ms, 0);
@@ -283,6 +297,7 @@ static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     bool fired = atomic_load(&w->timer_fired);
     if (scheduler_timer_stop(w->timer)) {
         _sem_coro_timed_unref(w);
+        _sem_unref(s);
     }
     _sem_coro_timed_unref(w);
     return !fired;
@@ -295,6 +310,7 @@ xylem_sem_t* xylem_sem_create(uint32_t value) {
     }
     spin_init(&s->guard);
     atomic_init(&s->count, value);
+    atomic_init(&s->refcnt, 1);
     list_init(&s->waiters);
     s->sched = runtime_get_scheduler();
     return s;
@@ -304,7 +320,7 @@ void xylem_sem_destroy(xylem_sem_t* s) {
     if (!s) {
         return;
     }
-    free(s);
+    _sem_unref(s);
 }
 
 void xylem_sem_wait(xylem_sem_t* s) {

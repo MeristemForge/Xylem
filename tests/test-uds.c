@@ -41,7 +41,7 @@ typedef struct {
 
 static void _pair_main(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    ctx->ready  = xylem_channel_create(0);
+    ctx->ready  = xylem_channel_create();
     ctx->wg     = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, 2);
     xylem_timer_t* wd =

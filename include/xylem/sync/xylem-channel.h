@@ -21,7 +21,6 @@
 
 _Pragma("once")
 
-#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,15 +36,17 @@ typedef struct xylem_channel_s xylem_channel_t;
  *
  * Threading:
  *   - send(): callable from any thread or coroutine; never parks. A
- *     full bounded channel returns INT_MAX (drop/retry is
- *     the caller's choice -- there is no blocking backpressure). An
- *     unbounded channel never reports full. Like Go channels, send()
- *     must not race with close() on the same channel.
+ *     channel never reports full; callers that need soft backpressure
+ *     can watch len() and drop, yield, or retry above their own
+ *     threshold. Like Go channels, send() must not race with close()
+ *     on the same channel.
  *   - recv() / recv_timeout(): callable from a coroutine OR an OS
- *     thread. Only one receiver may operate on a channel at a time;
- *     concurrent recv aborts (single-consumer MPSC contract).
- *   - create(), destroy() must be called from inside a coroutine
- *     (coroutine-only; they abort otherwise). close() is any-context.
+ *     thread. close() may race with recv() to wake the receiver. Only
+ *     one receiver may operate on a channel at a time; concurrent recv
+ *     aborts (single-consumer MPSC contract).
+ *   - create(), destroy(), close() are any-context. create() requires
+ *     the runtime to be running; destroy() must not race with other API
+ *     calls on the same channel.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -55,36 +56,30 @@ typedef struct xylem_channel_s xylem_channel_t;
  *     begins.
  *
  * Capacity:
- *   - create(0) makes an unbounded channel: send never reports full
- *     (it always queues, barring OOM).
- *   - create(cap) with cap > 0 caps the in-flight message count at cap;
- *     send returns INT_MAX when full. For backpressure the
- *     receiver can watch len()/cap() and drop once over a threshold
- *     (recv_timeout(ch, 0) drains without blocking).
+ *   - Channels are unbounded. len() is a best-effort snapshot for
+ *     observability and soft threshold policies; it is not a hard
+ *     reservation and cannot enforce a bound under concurrent senders.
  */
 
 /**
  * @brief Create a channel.
  *
- * @note [COROUTINE-ONLY]
+ * @note [THREAD-SAFE]
  *
- * @param cap  Maximum in-flight messages (sent but not yet received).
- *             0 makes the channel unbounded (send never reports full);
- *             a value > 0 caps the in-flight count, and send returns
- *             INT_MAX instead of queueing when full. send
- *             never blocks either way.
+ * Must be called while the runtime is running.
  *
  * @return Channel handle, or NULL on allocation failure.
  */
-extern xylem_channel_t* xylem_channel_create(size_t cap);
+extern xylem_channel_t* xylem_channel_create(void);
 
 /**
  * @brief Destroy the channel, releasing its memory.
  *
- * @note [COROUTINE-ONLY]
+ * @note [THREAD-SAFE]
  *
  * Any messages still queued are freed (node wrapper only -- payload
- * lifetime is the caller's responsibility). Accepts NULL.
+ * lifetime is the caller's responsibility). Accepts NULL. Must not race
+ * with any other channel API on the same channel.
  *
  * @param ch  Channel handle.
  */
@@ -95,8 +90,9 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
  *
  * @note [THREAD-SAFE]
  *
- * Like Go channels, close must not race with send on the same channel:
- * callers must stop all producers before closing.
+ * May race with recv() to wake the receiver. Like Go channels, close
+ * must not race with send on the same channel: callers must stop all
+ * producers before closing.
  *
  * After close:
  *   - recv() continues to return queued messages, then NULL.
@@ -120,9 +116,7 @@ extern void xylem_channel_close(xylem_channel_t* ch);
  * @param ch   Channel handle.
  * @param msg  Opaque message pointer (must be non-NULL).
  *
- * @return 0 on success, INT_MAX if the channel is bounded
- *         and at capacity, or -1 on invalid input or allocation
- *         failure.
+ * @return 0 on success, or -1 on invalid input or allocation failure.
  */
 extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 
@@ -174,21 +168,11 @@ extern void* xylem_channel_recv_timeout(
  * @note [THREAD-SAFE]
  *
  * Best-effort snapshot, safe to call from any thread. Useful for
- * drop/backpressure decisions against cap().
+ * observability and soft drop/backoff thresholds. Not a reservation:
+ * concurrent senders may exceed a threshold checked by len().
  *
  * @param ch  Channel handle (NULL returns 0).
  *
  * @return Message count at the moment of the call.
  */
 extern size_t xylem_channel_len(xylem_channel_t* ch);
-
-/**
- * @brief Capacity of the channel.
- *
- * @note [THREAD-SAFE]
- *
- * @param ch  Channel handle (NULL returns 0).
- *
- * @return The cap passed to create(), or 0 for an unbounded channel.
- */
-extern size_t xylem_channel_cap(xylem_channel_t* ch);

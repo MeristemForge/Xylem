@@ -43,8 +43,8 @@ typedef struct {
 static void _main(void* arg) {
     _ctx_t* ctx  = (_ctx_t*)arg;
     int     n    = ctx->c ? 3 : 2;
-    ctx->ready   = xylem_channel_create(0);
-    ctx->handoff = xylem_channel_create(0);
+    ctx->ready   = xylem_channel_create();
+    ctx->handoff = xylem_channel_create();
     ctx->wg      = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, n);
     xylem_timer_t* wd =

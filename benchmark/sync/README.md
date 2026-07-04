@@ -6,7 +6,7 @@ the equivalent constructs in Go (goroutines) and Rust (Tokio tasks).
 | Primitive | Xylem | Go | Rust (Tokio) |
 |-----------|:-----:|:--:|:------------:|
 | mutex     | `xylem_mutex` | `sync.Mutex` | `tokio::sync::Mutex` |
-| cond      | `xylem_cond`  | `sync.Cond`  | `tokio::sync::Notify` |
+| cond      | `xylem_cond`  | `sync.Cond`  | `std::sync::Condvar` (thread mode) |
 | waitgroup | `xylem_waitgroup` | `sync.WaitGroup` | `tokio::task::JoinSet` |
 | sem       | `xylem_sem`   | buffered `chan` (token bucket) | `tokio::sync::Semaphore` |
 | channel   | `xylem_channel` (MPSC) | buffered `chan` | `tokio::sync::mpsc` (unbounded) |
@@ -198,9 +198,10 @@ The driver also prints a per-primitive comparison table (avg ops/sec, ns/op).
 - All C is built `-O3 -DNDEBUG -flto` (MSVC `/O2 /DNDEBUG`) and stripped; Go
   with `-ldflags="-s -w"`; Rust with `opt-level=3, lto=true`.
 - The mapping is "closest idiomatic equivalent", not a byte-identical port:
-  - **cond** — Tokio async has no condition variable; the Rust column uses a
-    pair of `Notify` objects for the producer/consumer hand-off. Go uses a real
-    `sync.Cond`.
+  - **cond** — Go uses a real `sync.Cond` in goroutine mode. Rust's standard
+    library has `std::sync::Condvar`, so Rust contributes the `thread`/`tt`
+    cell. Tokio async has no standard condition variable; third-party async
+    condvars exist, but are not included as a baseline here.
   - **waitgroup** — measures the primitive in isolation: a fixed pool of
     `T` workers is spawned **once, outside the timed region**, and loops
     over the rounds, so task-creation cost never enters the number. Each
@@ -211,7 +212,7 @@ The driver also prints a per-primitive comparison table (avg ops/sec, ns/op).
     `Semaphore` (coro) / a `Mutex`+`Condvar` semaphore (thread).
   - **sem** — Go has no semaphore in the standard library, so it uses the
     idiomatic buffered-channel token bucket. Rust uses `tokio::sync::Semaphore`.
-  - **channel** — xylem's channel is an unbounded MPSC (`create(0)`); Rust
+  - **channel** — xylem's channel is an unbounded MPSC (`create()`); Rust
     matches it with `mpsc::unbounded_channel`. Go has no unbounded channel, so
     it uses a buffered channel (cap 1024) and senders block on a full buffer
     (backpressure that the other two do not apply).

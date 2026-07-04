@@ -400,7 +400,7 @@ xylem_mux_t* xylem_mux_create(
 
     spin_init(&mux->streams_lock);
 
-    mux->accept_ch = xylem_channel_create(0);
+    mux->accept_ch = xylem_channel_create();
     if (!mux->accept_ch) {
         free(mux);
         return NULL;

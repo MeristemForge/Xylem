@@ -25,7 +25,6 @@
 
 #include "xylem/xylem-threads.h"
 
-#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -71,7 +70,7 @@ static void _ch_receiver(void* arg) {
 static void _test_ch_main(void* arg) {
     _ch_ctx_t* ctx = (_ch_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     xylem_spawn(_ch_receiver, ctx);
     for (int i = 0; i < CH_SENDERS; i++) {
         xylem_spawn(_ch_sender, ctx);
@@ -113,7 +112,7 @@ static void _to_basic_coro(void* arg) {
 static void _to_basic_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     xylem_spawn(_to_basic_coro, ctx);
 }
 
@@ -143,7 +142,7 @@ static void _to_recv_coro(void* arg) {
 static void _to_deliver_main(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     xylem_spawn(_to_recv_coro, ctx);
     xylem_spawn(_to_sender_coro, ctx);
 }
@@ -172,7 +171,7 @@ static void _stale_send_after_coro(void* arg) {
 
 static void _stale_recv_coro(void* arg) {
     _stale_ctx_t* ctx = (_stale_ctx_t*)arg;
-    xylem_channel_t* ch = xylem_channel_create(0);
+    xylem_channel_t* ch = xylem_channel_create();
     xylem_waitgroup_t* wg = xylem_waitgroup_create();
 
     for (int round = 0; round < STALE_TIMER_ROUNDS; round++) {
@@ -265,7 +264,7 @@ static void _race_recv_coro(void* arg) {
 static void _race_main(void* arg) {
     _race_ctx_t* ctx = (_race_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     ctx->wg = xylem_waitgroup_create();
     ctx->timeout_ms = 5;
     ctx->send_at_ms =
@@ -336,7 +335,7 @@ static void _tr_coordinator(void* arg) {
 static void _tr_main(void* arg) {
     _tr_ctx_t* ctx = (_tr_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, TR_SENDERS);
     ASSERT(thrd_create(&ctx->thr, _tr_recv_thread, ctx) == thrd_success);
@@ -384,7 +383,7 @@ static void _ts_recv_coro(void* arg) {
 static void _ts_main(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-    ctx->ch = xylem_channel_create(0);
+    ctx->ch = xylem_channel_create();
     ASSERT(thrd_create(&ctx->thr, _ts_send_thread, ctx) == thrd_success);
     xylem_spawn(_ts_recv_coro, ctx);
 }
@@ -400,25 +399,75 @@ static void test_thread_send(void) {
 }
 
 typedef struct {
+    xylem_channel_t* ch;
+    int              payload;
+    thrd_t           thr;
+    atomic_bool      ready;
+    atomic_bool      received;
+    int              tested;
+} _tc_ctx_t;
+
+static int _tc_owner_thread(void* arg) {
+    _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
+    ctx->ch = xylem_channel_create();
+    ASSERT(ctx->ch != NULL);
+    ASSERT(xylem_channel_send(ctx->ch, &ctx->payload) == 0);
+    xylem_channel_close(ctx->ch);
+    atomic_store(&ctx->ready, true);
+    while (!atomic_load(&ctx->received)) {
+        thrd_yield();
+    }
+    xylem_channel_destroy(ctx->ch);
+    ctx->ch = NULL;
+    return 0;
+}
+
+static void _tc_recv_coro(void* arg) {
+    _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
+    while (!atomic_load(&ctx->ready)) {
+        xylem_sleep(1);
+    }
+    void* msg = xylem_channel_recv(ctx->ch);
+    ASSERT(msg == &ctx->payload);
+    ASSERT(xylem_channel_recv(ctx->ch) == NULL);
+    atomic_store(&ctx->received, true);
+    thrd_join(ctx->thr, NULL);
+    ctx->tested = 1;
+    xylem_shutdown();
+}
+
+static void _tc_main(void* arg) {
+    _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ASSERT(thrd_create(&ctx->thr, _tc_owner_thread, ctx) == thrd_success);
+    xylem_spawn(_tc_recv_coro, ctx);
+}
+
+static void test_thread_create_destroy(void) {
+    fprintf(stderr, "=== test_thread_create_destroy\n");
+    _tc_ctx_t ctx = {0};
+    ctx.payload = 42;
+    xylem_run(_tc_main, &ctx, &_rt_opts);
+    ASSERT(ctx.tested == 1);
+}
+
+typedef struct {
     int tested;
 } _bt_ctx_t;
 
 static void _bt_coro(void* arg) {
     _bt_ctx_t* ctx = (_bt_ctx_t*)arg;
-    xylem_channel_t* ch = xylem_channel_create(2);
+    xylem_channel_t* ch = xylem_channel_create();
     ASSERT(ch != NULL);
-    ASSERT(xylem_channel_cap(ch) == 2);
 
     int a = 1, b = 2, c = 3;
     ASSERT(xylem_channel_send(ch, &a) == 0);
     ASSERT(xylem_channel_send(ch, &b) == 0);
-    ASSERT(xylem_channel_len(ch) == 2);
-
-    ASSERT(xylem_channel_send(ch, &c) == INT_MAX);
+    ASSERT(xylem_channel_send(ch, &c) == 0);
+    ASSERT(xylem_channel_len(ch) == 3);
 
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &a);
-    ASSERT(xylem_channel_len(ch) == 1);
-    ASSERT(xylem_channel_send(ch, &c) == 0);
+    ASSERT(xylem_channel_len(ch) == 2);
 
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &b);
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &c);
@@ -434,8 +483,8 @@ static void _bt_main(void* arg) {
     xylem_spawn(_bt_coro, arg);
 }
 
-static void test_bounded_try(void) {
-    fprintf(stderr, "=== test_bounded_try\n");
+static void test_unbounded_len(void) {
+    fprintf(stderr, "=== test_unbounded_len\n");
     _bt_ctx_t ctx = {0};
     xylem_run(_bt_main, &ctx, &_rt_opts);
     ASSERT(ctx.tested == 1);
@@ -449,6 +498,7 @@ int main(void) {
     test_timeout_race();
     test_thread_recv();
     test_thread_send();
-    test_bounded_try();
+    test_thread_create_destroy();
+    test_unbounded_len();
     return 0;
 }

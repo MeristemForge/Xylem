@@ -59,8 +59,8 @@ static xylem_dtls_ctx_t* _cli_ctx(void) {
 }
 
 static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b) {
-    ctx->ready = xylem_channel_create(0);
-    ctx->done  = xylem_channel_create(0);
+    ctx->ready = xylem_channel_create();
+    ctx->done  = xylem_channel_create();
     ctx->wg    = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, n);
     xylem_timer_t* wd =

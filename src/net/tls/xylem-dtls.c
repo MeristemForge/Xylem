@@ -424,7 +424,7 @@ static void _dtls_server_shutdown(xylem_dtls_conn_t* dtls) {
 
     /**
      * Close the inbox before dropping the session ref. A parked reader
-     * holds its own conn/channel refs and will release them after wakeup.
+     * holds its own conn ref and will release it after wakeup.
      */
     if (dtls->inbox) {
         xylem_channel_close(dtls->inbox);
@@ -963,7 +963,7 @@ static void _dtls_dispatcher(void* arg) {
         }
         atomic_store(&dtls->refcnt, 1);
         dtls->peer_addr        = from_addr;
-        dtls->inbox            = xylem_channel_create(0);
+        dtls->inbox            = xylem_channel_create();
         dtls->handshake_timer  = scheduler_timer_create(ln->sched);
 
         if (!dtls->inbox
@@ -1210,7 +1210,7 @@ xylem_dtls_listener_t* xylem_dtls_listen(
         return NULL;
     }
 
-    ln->accept_ch = xylem_channel_create(0);
+    ln->accept_ch = xylem_channel_create();
     if (!ln->accept_ch) {
         _dtls_listener_unref(ln);
         return NULL;
