@@ -211,11 +211,10 @@ Every public function's doc comment states its threading contract. The
 recurring categories:
 
 - **Any-thread.** Safe to call from any thread, including outside the runtime.
-  `xylem_spawn`, `xylem_shutdown`, and wakeup/non-blocking sync ops (`unlock`,
-  `trylock`, `signal`/`broadcast`, `add`/`done`, channel `send`/`close`, and
-  semaphore `post`) are examples. Thread-safe does not always mean
-  concurrency-safe on one object: each API documents which same-handle races are
-  forbidden.
+  Wakeup/non-blocking sync ops (`unlock`, `trylock`, `signal`/`broadcast`,
+  `add`/`done`, channel `send`/`close`, and semaphore `post`) are examples.
+  Thread-safe does not always mean concurrency-safe on one object: each API
+  documents which same-handle races are forbidden.
 - **Coroutine-only.** Must be called from inside a coroutine on the runtime.
   The **entire connection API** is coroutine-only — not just `read`/`write`/
   `accept`/`dial` (which may park), but also `close`, the read/write deadline
@@ -224,11 +223,12 @@ recurring categories:
   a connection whose reader/writer is parked, close it from *another*
   coroutine. `xylem_await` is also coroutine-only.
 - **Context-adaptive.** Safe from either a coroutine or a plain OS thread; the
-  call inspects its context and does the right thing. On a coroutine it parks
-  (the worker stays free); on a thread it blocks the OS thread. The observable
-  semantics are identical in both contexts. This covers `xylem_sleep`,
-  timer arm/cancel/reset, ticker recv, and blocking sync ops such as
-  `mutex_lock`, `cond_wait`, `waitgroup_wait`, `channel_recv`, and semaphore
+  call inspects its context when that matters and does the right thing. If the
+  operation blocks, it parks a coroutine (the worker stays free) or blocks a
+  plain OS thread. The observable semantics are identical in both contexts.
+  This covers `xylem_spawn`, `xylem_shutdown`, `xylem_sleep`, timer
+  arm/cancel/reset, ticker recv, and blocking sync ops such as `mutex_lock`,
+  `cond_wait`, `waitgroup_wait`, `channel_recv`, and semaphore
   `wait`/`timedwait`. These deliberately do **not** abort off-coroutine --
   bridging the coroutine/OS-thread boundary is the point.
 - **Single-owner.** One logical owner at a time, stated explicitly — e.g. one

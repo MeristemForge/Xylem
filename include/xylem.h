@@ -106,7 +106,7 @@ extern void xylem_run(
 /**
  * @brief Signal the runtime to shut down.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Unblocks xylem_run() without waiting for coroutines to finish
  * naturally. Already-running blocking jobs submitted by xylem_await()
@@ -124,7 +124,7 @@ extern void xylem_shutdown(void);
 /**
  * @brief Spawn a new coroutine on the runtime.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * @param fn   Coroutine entry function.
  * @param arg  Opaque argument.
