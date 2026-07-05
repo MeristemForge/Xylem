@@ -116,10 +116,10 @@ static int _tlsb_transport_bio_read(BIO* bio, char* out, int len) {
     }
 
     BIO_clear_retry_flags(bio);
-    bool again = false;
-    int  n     = c->io.read(c->io.user, out, len, &again);
-    if (n < 0 && again) {
+    int n = c->io.read(c->io.user, out, len);
+    if (n == TLS_BACKEND_IO_AGAIN) {
         BIO_set_retry_read(bio);
+        return -1;
     }
     return n;
 }
@@ -131,10 +131,10 @@ static int _tlsb_transport_bio_write(BIO* bio, const char* in, int len) {
     }
 
     BIO_clear_retry_flags(bio);
-    bool again = false;
-    int  n     = c->io.write(c->io.user, in, len, &again);
-    if (n < 0 && again) {
+    int n = c->io.write(c->io.user, in, len);
+    if (n == TLS_BACKEND_IO_AGAIN) {
         BIO_set_retry_write(bio);
+        return -1;
     }
     return n;
 }

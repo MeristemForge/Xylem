@@ -474,13 +474,11 @@ static _dtls_dgram_t* _dtls_take_dgram(xylem_dtls_conn_t* dtls) {
 static int _dtls_server_io_read(
     void* user,
     void* buf,
-    int   len,
-    bool* again) {
+    int   len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
     _dtls_dgram_t* dgram = _dtls_take_dgram(dtls);
     if (!dgram) {
-        *again = true;
-        return -1;
+        return TLS_BACKEND_IO_AGAIN;
     }
     return _dtls_copy_dgram(dtls, dgram, buf, len);
 }
@@ -488,29 +486,37 @@ static int _dtls_server_io_read(
 static int _dtls_server_io_write(
     void*       user,
     const void* buf,
-    int         len,
-    bool*       again) {
+    int         len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
     xylem_dtls_listener_t* ln = dtls->listener;
-    return datagram_try_send(ln->datagram, buf, len, &dtls->peer_addr, again);
+    bool again = false;
+    int  n = datagram_try_send(
+        ln->datagram,
+        buf,
+        len,
+        &dtls->peer_addr,
+        &again);
+    return again ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_read(
     void* user,
     void* buf,
-    int   len,
-    bool* again) {
+    int   len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    return datagram_try_recv(dtls->datagram, buf, len, NULL, again);
+    bool again = false;
+    int  n = datagram_try_recv(dtls->datagram, buf, len, NULL, &again);
+    return again ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_write(
     void*       user,
     const void* buf,
-    int         len,
-    bool*       again) {
+    int         len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    return datagram_try_send(dtls->datagram, buf, len, NULL, again);
+    bool again = false;
+    int  n = datagram_try_send(dtls->datagram, buf, len, NULL, &again);
+    return again ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 /**

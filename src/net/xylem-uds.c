@@ -237,10 +237,10 @@ xylem_uds_conn_t* xylem_uds_dial(
                   + connect_timeout_ms;
             stream_set_write_deadline(uds->stream, deadline);
         }
-        int rc = stream_wait_write(uds->stream);
+        iowait_result_t rc = stream_wait_write(uds->stream);
         stream_set_write_deadline(uds->stream, 0);
 
-        if (rc != 0) {
+        if (rc != IOWAIT_READY) {
             xylem_loge("<uds> dial connect timeout path=%s", path);
             xylem_uds_close(uds);
             return NULL;

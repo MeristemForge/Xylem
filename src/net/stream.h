@@ -32,6 +32,8 @@ _Pragma("once")
 typedef struct stream_s   stream_t;
 typedef struct listener_s listener_t;
 
+#define STREAM_IO_AGAIN (-2)
+
 /**
  * @brief Wrap an already connected fd in the coroutine stream core.
  *
@@ -42,6 +44,17 @@ typedef struct listener_s listener_t;
  * @return Stream handle, or NULL on allocation failure.
  */
 extern stream_t* stream_from_fd(platform_sock_t fd);
+
+/**
+ * @brief Wrap a listening fd in the coroutine listener core.
+ *
+ * The listener takes ownership of fd on success.
+ *
+ * @param fd  Listening socket.
+ *
+ * @return Listener handle, or NULL on allocation failure.
+ */
+extern listener_t* listener_from_fd(platform_sock_t fd);
 
 /**
  * @brief Dial a peer and return a coroutine stream.
@@ -117,33 +130,23 @@ extern int stream_read(stream_t* stream, void* buf, int len);
  * @param stream  Stream handle.
  * @param buf     Destination buffer.
  * @param len     Maximum bytes to read.
- * @param again   Receives true when the caller should wait for read readiness.
  *
- * @return Bytes read, 0 on peer close, or -1 on error/EAGAIN.
+ * @return Bytes read, 0 on peer close, STREAM_IO_AGAIN on EAGAIN, or -1 on
+ * error/timeout.
  */
 extern int stream_try_read(
     stream_t* stream,
     void*     buf,
-    int       len,
-    bool*     again);
+    int       len);
 
 /**
- * @brief Wait until the stream becomes readable.
- *
- * @param stream  Stream handle.
- *
- * @return 0 when ready, -1 on close, timeout, or poller error.
- */
-extern int stream_wait_read(stream_t* stream);
-
-/**
- * @brief Wait for read readiness and report the reason separately.
+ * @brief Wait for read readiness.
  *
  * @param stream  Stream handle.
  *
  * @return Readiness result.
  */
-extern iowait_result_t stream_wait_read_result(stream_t* stream);
+extern iowait_result_t stream_wait_read(stream_t* stream);
 
 /**
  * @brief Write the full buffer to the stream.
@@ -165,33 +168,23 @@ extern int stream_write(
  * @param stream  Stream handle.
  * @param data    Source buffer.
  * @param len     Maximum bytes to write.
- * @param again   Receives true when the caller should wait for write readiness.
  *
- * @return Bytes written (>0), or -1 on error/EAGAIN.
+ * @return Bytes written (>0), 0 when len is 0, STREAM_IO_AGAIN on EAGAIN,
+ * or -1 on error/timeout.
  */
 extern int stream_try_write(
     stream_t*   stream,
     const void* data,
-    int         len,
-    bool*       again);
+    int         len);
 
 /**
- * @brief Wait until the stream becomes writable.
- *
- * @param stream  Stream handle.
- *
- * @return 0 when ready, -1 on close, timeout, or poller error.
- */
-extern int stream_wait_write(stream_t* stream);
-
-/**
- * @brief Wait for write readiness and report the reason separately.
+ * @brief Wait for write readiness.
  *
  * @param stream  Stream handle.
  *
  * @return Readiness result.
  */
-extern iowait_result_t stream_wait_write_result(stream_t* stream);
+extern iowait_result_t stream_wait_write(stream_t* stream);
 
 /**
  * @brief Get the stream's remote address.

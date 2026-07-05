@@ -65,17 +65,17 @@ static void _tls_conn_ref(tls_conn_t* tls) {
 static int _tls_stream_read(
     void* user,
     void* buf,
-    int   len,
-    bool* again) {
-    return stream_try_read((stream_t*)user, buf, len, again);
+    int   len) {
+    int n = stream_try_read((stream_t*)user, buf, len);
+    return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _tls_stream_write(
     void*       user,
     const void* buf,
-    int         len,
-    bool*       again) {
-    return stream_try_write((stream_t*)user, buf, len, again);
+    int         len) {
+    int n = stream_try_write((stream_t*)user, buf, len);
+    return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static tls_conn_t* _tls_conn_create(stream_t* stream) {
@@ -200,14 +200,14 @@ static void _tls_conn_unref(tls_conn_t* tls) {
 
 static int _tls_wait_write(tls_conn_t* tls) {
     xylem_mutex_lock(tls->wr_mu);
-    int rc = stream_wait_write(tls->stream);
+    int rc = stream_wait_write(tls->stream) == IOWAIT_READY ? 0 : -1;
     xylem_mutex_unlock(tls->wr_mu);
     return rc;
 }
 
 static int _tls_wait_read(tls_conn_t* tls) {
     xylem_mutex_lock(tls->rd_mu);
-    int rc = stream_wait_read(tls->stream);
+    int rc = stream_wait_read(tls->stream) == IOWAIT_READY ? 0 : -1;
     xylem_mutex_unlock(tls->rd_mu);
     return rc;
 }
@@ -382,7 +382,7 @@ static int _tls_write_loop(
                 rem -= n;
                 continue;
             case TLS_BACKEND_WANT_WRITE:
-                if (stream_wait_write(tls->stream) != 0) {
+                if (stream_wait_write(tls->stream) != IOWAIT_READY) {
                     done = true;
                 }
                 continue;

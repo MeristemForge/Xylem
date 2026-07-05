@@ -39,23 +39,24 @@ _Pragma("once")
  * machine, exactly as it serializes the underlying library calls today.
  * Backends therefore use a plain, non-thread-safe state-machine object and
  * perform NO internal locking. Transport callbacks must be non-blocking:
- * they report EAGAIN through `again`, and the engine owns coroutine parking.
+ * they report EAGAIN through TLS_BACKEND_IO_AGAIN, and the engine owns
+ * coroutine parking.
  */
 
 typedef struct tls_backend_ctx_s  tls_backend_ctx_t;
 typedef struct tls_backend_conn_s tls_backend_conn_t;
 
+#define TLS_BACKEND_IO_AGAIN (-2)
+
 typedef int (*tls_backend_io_read_fn_t)(
     void* user,
     void* buf,
-    int   len,
-    bool* again);
+    int   len);
 
 typedef int (*tls_backend_io_write_fn_t)(
     void*       user,
     const void* buf,
-    int         len,
-    bool*       again);
+    int         len);
 
 typedef struct tls_backend_io_s {
     void*                     user;

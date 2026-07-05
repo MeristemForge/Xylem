@@ -34,8 +34,6 @@
 struct stream_s {
     iowait_t*       waiter;
     platform_sock_t fd;
-    addr_t          peer_addr;
-    bool            peer_addr_valid;
     _Atomic int32_t refcnt;
     _Atomic bool    rd_shutdown;
     _Atomic bool    closed;
@@ -94,6 +92,23 @@ static void _listener_unref(listener_t* listener) {
     free(listener);
 }
 
+listener_t* listener_from_fd(platform_sock_t fd) {
+    listener_t* listener = (listener_t*)calloc(1, sizeof(listener_t));
+    if (!listener) {
+        return NULL;
+    }
+
+    listener->fd     = fd;
+    listener->waiter = iowait_create(fd);
+    if (!listener->waiter) {
+        free(listener);
+        return NULL;
+    }
+
+    _listener_ref(listener);
+    return listener;
+}
+
 stream_t* stream_from_fd(platform_sock_t fd) {
     stream_t* stream = (stream_t*)calloc(1, sizeof(stream_t));
     if (!stream) {
@@ -119,9 +134,8 @@ stream_t* stream_dial(
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    const char* dial_host = host;
-    char        resolved_ip[INET6_ADDRSTRLEN];
-    addr_t      resolved_addr;
+    char   resolved_ip[INET6_ADDRSTRLEN];
+    addr_t resolved_addr;
 
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
@@ -133,14 +147,17 @@ stream_t* stream_dial(
         }
         resolved_addr = addrs[0];
         free(addrs);
-        uint16_t rport;
-        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
-        dial_host = resolved_ip;
+    }
+
+    if (addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), NULL)
+        != 0) {
+        xylem_loge("<stream> dial addr format failed host=%s", host);
+        return NULL;
     }
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        dial_host,
+        resolved_ip,
         port_str,
         SOCK_STREAM,
         &connected,
@@ -162,9 +179,6 @@ stream_t* stream_dial(
         platform_socket_close(fd);
         return NULL;
     }
-
-    stream->peer_addr       = resolved_addr;
-    stream->peer_addr_valid = true;
 
     if (!connected) {
         /**
@@ -198,7 +212,18 @@ stream_t* stream_dial(
 
         int32_t   err    = 0;
         socklen_t errlen = sizeof(err);
-        getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen)
+            != 0) {
+            err = platform_socket_get_lasterror();
+            xylem_loge(
+                "<stream> dial getsockopt failed fd=%d err=%d (%s)",
+                (int)fd,
+                err,
+                platform_socket_tostring(err));
+            stream_interrupt(stream);
+            stream_release(stream);
+            return NULL;
+        }
         if (err != 0) {
             xylem_loge(
                 "<stream> dial connect failed fd=%d err=%d (%s)",
@@ -237,38 +262,28 @@ void stream_set_write_deadline(
     iowait_set_wr_deadline(stream->waiter, deadline_ms);
 }
 
-static bool _stream_is_again(int err) {
-    return err == PLATFORM_SO_ERROR_EAGAIN
-           || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
-}
-
 static void _stream_consume_io_budget(size_t bytes) {
     if (runtime_consume_io_credit(bytes)) {
         runtime_yield_credit();
     }
 }
 
-static iowait_result_t _stream_wait_result(
+static iowait_result_t _stream_wait(
     stream_t* stream,
     bool      write) {
     _stream_ref(stream);
 
-    if (!write) {
-        if (atomic_load(&stream->rd_shutdown)) {
-            _stream_unref(stream);
-            return IOWAIT_CLOSED;
+    iowait_result_t ret = IOWAIT_CLOSED;
+    if (!atomic_load(&stream->closed)
+        && (write || !atomic_load(&stream->rd_shutdown))) {
+        if (write) {
+            ret = iowait_write(stream->waiter);
+        } else {
+            ret = iowait_read(stream->waiter);
         }
-    }
-
-    if (atomic_load(&stream->closed)) {
-        _stream_unref(stream);
-        return IOWAIT_CLOSED;
-    }
-
-    iowait_result_t ret = write ? iowait_write(stream->waiter)
-                                : iowait_read(stream->waiter);
-    if (atomic_load(&stream->closed)) {
-        ret = IOWAIT_CLOSED;
+        if (atomic_load(&stream->closed)) {
+            ret = IOWAIT_CLOSED;
+        }
     }
 
     _stream_unref(stream);
@@ -284,23 +299,17 @@ void stream_consume_credit(uint32_t cost) {
 int stream_try_read(
     stream_t* stream,
     void*     buf,
-    int       len,
-    bool*     again) {
+    int       len) {
     if (!buf || len <= 0) {
-        *again = false;
         return -1;
     }
 
     _stream_ref(stream);
     int ret = -1;
-    *again  = false;
 
     if (!atomic_load(&stream->closed)
-        && !atomic_load(&stream->rd_shutdown)) {
-        if (iowait_read_deadline_expired(stream->waiter)) {
-            _stream_unref(stream);
-            return ret;
-        }
+        && !atomic_load(&stream->rd_shutdown)
+        && !iowait_read_deadline_expired(stream->waiter)) {
         ssize_t n = platform_socket_recv(stream->fd, buf, len);
         if (n >= 0) {
             ret = (int)n;
@@ -309,8 +318,9 @@ int stream_try_read(
             }
         } else {
             int err = platform_socket_get_lasterror();
-            if (_stream_is_again(err)) {
-                *again = true;
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                ret = STREAM_IO_AGAIN;
             } else {
                 xylem_loge(
                     "<stream> read failed fd=%d err=%s",
@@ -324,12 +334,8 @@ int stream_try_read(
     return ret;
 }
 
-int stream_wait_read(stream_t* stream) {
-    return stream_wait_read_result(stream) == IOWAIT_READY ? 0 : -1;
-}
-
-iowait_result_t stream_wait_read_result(stream_t* stream) {
-    return _stream_wait_result(stream, false);
+iowait_result_t stream_wait_read(stream_t* stream) {
+    return _stream_wait(stream, false);
 }
 
 int stream_read(stream_t* stream, void* buf, int len) {
@@ -340,17 +346,17 @@ int stream_read(stream_t* stream, void* buf, int len) {
     _stream_ref(stream);
     int ret = -1;
 
-    if (!atomic_load(&stream->closed)) {
-        for (;;) {
-            bool again = false;
-            int  n     = stream_try_read(stream, buf, len, &again);
-            if (n >= 0) {
-                ret = n;
-                break;
-            }
-            if (!again || stream_wait_read(stream) != 0) {
-                break;
-            }
+    for (;;) {
+        int n = stream_try_read(stream, buf, len);
+        if (n >= 0) {
+            ret = n;
+            break;
+        }
+        if (n != STREAM_IO_AGAIN) {
+            break;
+        }
+        if (stream_wait_read(stream) != IOWAIT_READY) {
+            break;
         }
     }
 
@@ -359,14 +365,11 @@ int stream_read(stream_t* stream, void* buf, int len) {
 }
 
 int stream_write(stream_t* stream, const void* data, int len) {
-    if (len < 0) {
+    if (len < 0 || (len > 0 && !data)) {
         return -1;
     }
     if (len == 0) {
         return 0;
-    }
-    if (!data) {
-        return -1;
     }
 
     _stream_ref(stream);
@@ -388,9 +391,13 @@ int stream_write(stream_t* stream, const void* data, int len) {
             _stream_consume_io_budget((size_t)n);
             continue;
         }
+        if (n == 0) {
+            break;
+        }
 
         int err = platform_socket_get_lasterror();
-        if (_stream_is_again(err)) {
+        if (err == PLATFORM_SO_ERROR_EAGAIN
+            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
             if (iowait_write(stream->waiter) == IOWAIT_READY) {
                 continue;
             }
@@ -403,6 +410,7 @@ int stream_write(stream_t* stream, const void* data, int len) {
             platform_socket_tostring(err));
         break;
     }
+    /* A final yield may let close run before success is reported. */
     if (rem == 0
         && !atomic_load(&stream->closed)) {
         ret = 0;
@@ -415,38 +423,30 @@ int stream_write(stream_t* stream, const void* data, int len) {
 int stream_try_write(
     stream_t*   stream,
     const void* data,
-    int         len,
-    bool*       again) {
-    if (len < 0) {
-        *again = false;
+    int         len) {
+    if (len < 0 || (len > 0 && !data)) {
         return -1;
     }
     if (len == 0) {
-        *again = false;
         return 0;
-    }
-    if (!data) {
-        *again = false;
-        return -1;
     }
 
     _stream_ref(stream);
     int ret = -1;
-    *again  = false;
 
-    if (!atomic_load(&stream->closed)) {
-        if (iowait_write_deadline_expired(stream->waiter)) {
-            _stream_unref(stream);
-            return ret;
-        }
+    if (!atomic_load(&stream->closed)
+        && !iowait_write_deadline_expired(stream->waiter)) {
         ssize_t n = platform_socket_send(stream->fd, data, len);
         if (n > 0) {
             ret = (int)n;
             _stream_consume_io_budget((size_t)n);
+        } else if (n == 0) {
+            ret = -1;
         } else {
             int err = platform_socket_get_lasterror();
-            if (_stream_is_again(err)) {
-                *again = true;
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                ret = STREAM_IO_AGAIN;
             } else {
                 xylem_loge(
                     "<stream> write failed fd=%d err=%s",
@@ -460,12 +460,8 @@ int stream_try_write(
     return ret;
 }
 
-int stream_wait_write(stream_t* stream) {
-    return stream_wait_write_result(stream) == IOWAIT_READY ? 0 : -1;
-}
-
-iowait_result_t stream_wait_write_result(stream_t* stream) {
-    return _stream_wait_result(stream, true);
+iowait_result_t stream_wait_write(stream_t* stream) {
+    return _stream_wait(stream, true);
 }
 
 int stream_remote_addr(
@@ -473,19 +469,14 @@ int stream_remote_addr(
     char*     host,
     size_t    host_len,
     uint16_t* port) {
-    if (!stream->peer_addr_valid) {
-        socklen_t peer_len = sizeof(stream->peer_addr.storage);
-        if (getpeername(
-                stream->fd,
-                (struct sockaddr*)&stream->peer_addr.storage,
-                &peer_len)
-            != 0) {
-            return -1;
-        }
-        stream->peer_addr_valid = true;
+    addr_t    addr     = {0};
+    socklen_t peer_len = sizeof(addr.storage);
+    if (getpeername(stream->fd, (struct sockaddr*)&addr.storage, &peer_len)
+        != 0) {
+        return -1;
     }
 
-    return addr_ntop(&stream->peer_addr, host, host_len, port);
+    return addr_ntop(&addr, host, host_len, port);
 }
 
 int stream_local_addr(
@@ -493,7 +484,7 @@ int stream_local_addr(
     char*     host,
     size_t    host_len,
     uint16_t* port) {
-    addr_t addr;
+    addr_t    addr = {0};
     socklen_t len = sizeof(addr.storage);
     if (getsockname(stream->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
         return -1;
@@ -535,22 +526,11 @@ listener_t* listener_listen(
         platform_socket_enable_mss_clamp(fd, true);
     }
 
-    listener_t* listener
-        = (listener_t*)calloc(1, sizeof(listener_t));
+    listener_t* listener = listener_from_fd(fd);
     if (!listener) {
         platform_socket_close(fd);
         return NULL;
     }
-
-    listener->fd     = fd;
-    listener->waiter = iowait_create(fd);
-    if (!listener->waiter) {
-        platform_socket_close(fd);
-        free(listener);
-        return NULL;
-    }
-
-    _listener_ref(listener);
     return listener;
 }
 
@@ -626,7 +606,7 @@ int listener_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    addr_t addr;
+    addr_t    addr = {0};
     socklen_t len = sizeof(addr.storage);
     if (getsockname(listener->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
         return -1;
