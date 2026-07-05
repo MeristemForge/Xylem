@@ -28,6 +28,9 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
+#define RUNTIME_CREDIT_COST    1u
+#define RUNTIME_IO_CREDIT_COST 4u
+
 /* Runtime configuration options. */
 typedef struct runtime_opts_s {
     int32_t workers;  /* Thread pool size, 0 for default. */
@@ -80,17 +83,6 @@ extern void runtime_sleep(uint64_t ms);
  * @return true when the caller should yield, false otherwise.
  */
 extern bool runtime_consume_credit(uint32_t cost);
-
-/**
- * @brief Consume cooperative runtime I/O credit.
- *
- * Charges a higher-cost cooperative operation and a byte budget.
- *
- * @param bytes  Bytes moved by the successful I/O operation.
- *
- * @return true when the caller should yield, false otherwise.
- */
-extern bool runtime_consume_io_credit(size_t bytes);
 
 /**
  * @brief Yield the current coroutine after exhausting cooperative credit.

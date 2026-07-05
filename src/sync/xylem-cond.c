@@ -81,12 +81,6 @@ typedef struct _thrd_waiter_s {
     thrd_wake_t* wake;
 } _thrd_waiter_t;
 
-static void _cond_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 static void _cond_push_waiter(list_t* waiters, _waiter_t* w) {
     list_insert_tail(waiters, &w->node);
 }
@@ -200,7 +194,9 @@ void xylem_cond_signal(xylem_cond_t* cond) {
     if (target) {
         _cond_wake(cond, target);
     }
-    _cond_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
 }
 
 void xylem_cond_broadcast(xylem_cond_t* cond) {
@@ -214,5 +210,7 @@ void xylem_cond_broadcast(xylem_cond_t* cond) {
     if (!list_empty(&drained)) {
         _cond_wake_all(cond, &drained);
     }
-    _cond_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
 }

@@ -85,9 +85,7 @@
 #define SCHED_DEQUE_CAP          256
 
 #define SCHED_CORO_POOL_CAP_MUL  64
-#define SCHED_CREDIT_DEFAULT     128
-#define SCHED_IO_CREDIT_COST     4u
-#define SCHED_IO_BYTES_DEFAULT   (512 * 1024)
+#define SCHED_CREDIT_DEFAULT     128u
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
 
@@ -127,7 +125,6 @@ typedef struct _sched_worker_s {
 
     uint32_t             sched_tick;
     uint32_t             credit;
-    size_t               io_bytes;
     heap_t               timers;
     mtx_t                timer_lock;
     _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
@@ -1014,7 +1011,6 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
 
 static inline void _sched_worker_run(_sched_worker_t* w, mco_coro* co) {
     w->credit = SCHED_CREDIT_DEFAULT;
-    w->io_bytes = SCHED_IO_BYTES_DEFAULT;
     mco_resume(co);
     _sched_coro_handle_yield(w, co);
 }
@@ -1557,22 +1553,6 @@ bool scheduler_consume_credit(uint32_t cost) {
     }
     _tls_worker->credit = 0;
     return true;
-}
-
-bool scheduler_consume_io_credit(size_t bytes) {
-    if (!_tls_worker || !mco_running()) {
-        return false;
-    }
-    bool exhausted = scheduler_consume_credit(SCHED_IO_CREDIT_COST);
-
-    if (_tls_worker->io_bytes > bytes) {
-        _tls_worker->io_bytes -= bytes;
-    } else {
-        _tls_worker->io_bytes = 0;
-        exhausted = true;
-    }
-
-    return exhausted;
 }
 
 void scheduler_yield_credit(void) {

@@ -102,12 +102,6 @@ static void _channel_unref(xylem_channel_t* ch) {
     free(ch);
 }
 
-static void _channel_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 static bool _channel_park_cb(mco_coro* co, void* arg) {
     _coro_waiter_t*  w  = (_coro_waiter_t*)arg;
     xylem_channel_t* ch = w->base.ch;
@@ -367,7 +361,9 @@ static bool _channel_recv_enter(xylem_channel_t* ch) {
 static void* _channel_recv_leave(xylem_channel_t* ch, void* payload) {
     atomic_store(&ch->receiving, false);
     if (payload) {
-        _channel_consume_credit(1);
+        if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+            runtime_yield_credit();
+        }
     }
     return payload;
 }
@@ -476,7 +472,9 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         _channel_wake(ch, w);
     }
 
-    _channel_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
     return 0;
 }
 

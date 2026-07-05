@@ -87,12 +87,6 @@ static bool _mutex_spin_take(xylem_mutex_t* mtx) {
     return false;
 }
 
-static void _mutex_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 static void _mutex_push_waiter(list_t* waiters, _waiter_t* w) {
     list_insert_tail(waiters, &w->node);
 }
@@ -218,5 +212,7 @@ void xylem_mutex_unlock(xylem_mutex_t* mtx) {
     if (target) {
         _mutex_wake(mtx->sched, target);
     }
-    _mutex_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
 }

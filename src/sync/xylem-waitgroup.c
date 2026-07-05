@@ -71,12 +71,6 @@ static void _wg_push_waiter(list_t* waiters, _waiter_t* w) {
     list_insert_tail(waiters, &w->node);
 }
 
-static void _wg_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 static _waiter_t* _wg_pop_waiter(list_t* waiters) {
     list_node_t* n = list_head(waiters);
     if (!n) {
@@ -196,7 +190,9 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     if (!list_empty(&wake_list)) {
         _wg_wake_all(sched, &wake_list);
     }
-    _wg_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
 }
 
 void xylem_waitgroup_wait(xylem_waitgroup_t* wg) {

@@ -262,12 +262,6 @@ void stream_set_write_deadline(
     iowait_set_wr_deadline(stream->waiter, deadline_ms);
 }
 
-static void _stream_consume_io_budget(size_t bytes) {
-    if (runtime_consume_io_credit(bytes)) {
-        runtime_yield_credit();
-    }
-}
-
 static iowait_result_t _stream_wait(
     stream_t* stream,
     bool      write) {
@@ -290,12 +284,6 @@ static iowait_result_t _stream_wait(
     return ret;
 }
 
-void stream_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 int stream_try_read(
     stream_t* stream,
     void*     buf,
@@ -314,7 +302,9 @@ int stream_try_read(
         if (n >= 0) {
             ret = (int)n;
             if (n > 0) {
-                _stream_consume_io_budget((size_t)n);
+                if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+                    runtime_yield_credit();
+                }
             }
         } else {
             int err = platform_socket_get_lasterror();
@@ -388,7 +378,9 @@ int stream_write(stream_t* stream, const void* data, int len) {
         if (n > 0) {
             ptr += n;
             rem -= (int)n;
-            _stream_consume_io_budget((size_t)n);
+            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+                runtime_yield_credit();
+            }
             continue;
         }
         if (n == 0) {
@@ -439,7 +431,9 @@ int stream_try_write(
         ssize_t n = platform_socket_send(stream->fd, data, len);
         if (n > 0) {
             ret = (int)n;
-            _stream_consume_io_budget((size_t)n);
+            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+                runtime_yield_credit();
+            }
         } else if (n == 0) {
             ret = -1;
         } else {

@@ -102,12 +102,6 @@ static void _sem_unref(xylem_sem_t* s) {
     free(s);
 }
 
-static void _sem_consume_credit(uint32_t cost) {
-    if (runtime_consume_credit(cost)) {
-        runtime_yield_credit();
-    }
-}
-
 static void _sem_wake(xylem_sem_t* s, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
@@ -354,5 +348,7 @@ void xylem_sem_post(xylem_sem_t* s) {
     if (target) {
         _sem_wake(s, target);
     }
-    _sem_consume_credit(1);
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield_credit();
+    }
 }
