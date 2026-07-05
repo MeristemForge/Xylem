@@ -198,28 +198,6 @@ extern int tls_backend_ctx_set_alpn(
     size_t             count);
 
 /**
- * @brief Set the key-exchange groups (TLS 1.3) / curves (TLS 1.2).
- *
- * The group also drives handshake cost. Classic ECDHE curves (e.g.
- * "X25519") are cheaper than post-quantum hybrids (e.g.
- * "X25519MLKEM768"), which add KEM work and a larger key_share per
- * handshake, so narrowing to classic groups raises handshakes/sec at
- * the cost of post-quantum protection (keep the hybrid first to retain
- * it). The ctx starts with a classic, handshake-light default
- * ("X25519:P-256:P-384:P-521", also covering FIPS / NIST-only peers);
- * call this to choose a different set, e.g. a post-quantum hybrid.
- *
- * @param ctx     Context handle.
- * @param groups  Colon-separated group list in preference order
- *                (e.g. "X25519:P-256").
- *
- * @return 0 on success, -1 on failure.
- */
-extern int tls_backend_ctx_set_kx_groups(
-    tls_backend_ctx_t* ctx,
-    const char*        groups);
-
-/**
  * @brief Enable NSS key-log output for Wireshark decryption.
  *
  * @param ctx   Context handle.

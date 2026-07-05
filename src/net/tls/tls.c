@@ -354,7 +354,6 @@ static int _tls_write_loop(
     const char* ptr = (const char*)data;
     int         rem = len;
     int         ret = -1;
-    bool        done = false;
 
     /**
      * One public write owns the TLS write side until its whole buffer is
@@ -364,10 +363,9 @@ static int _tls_write_loop(
      * of calling _tls_wait_write(), which would lock wr_mu again.
      */
     xylem_mutex_lock(tls->wr_mu);
-    while (rem > 0 && !done) {
+    while (rem > 0) {
         if (_tls_deadline_expired(&tls->wr_deadline)) {
-            done = true;
-            continue;
+            break;
         }
 
         int chunk = rem < TLS_MAX_PLAINTEXT ? rem : TLS_MAX_PLAINTEXT;
@@ -376,27 +374,26 @@ static int _tls_write_loop(
         tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, chunk, &n);
         xylem_mutex_unlock(tls->ssl_mu);
 
-        switch (st) {
-            case TLS_BACKEND_OK:
-                ptr += n;
-                rem -= n;
-                continue;
-            case TLS_BACKEND_WANT_WRITE:
-                if (stream_wait_write(tls->stream) != IOWAIT_READY) {
-                    done = true;
-                }
-                continue;
-            case TLS_BACKEND_WANT_READ:
-                if (_tls_wait_read(tls) != 0) {
-                    done = true;
-                }
-                continue;
-            default:
-                done = true;
-                continue;
+        if (st == TLS_BACKEND_OK) {
+            ptr += n;
+            rem -= n;
+            continue;
         }
+        if (st == TLS_BACKEND_WANT_WRITE) {
+            if (stream_wait_write(tls->stream) != IOWAIT_READY) {
+                break;
+            }
+            continue;
+        }
+        if (st == TLS_BACKEND_WANT_READ) {
+            if (_tls_wait_read(tls) != 0) {
+                break;
+            }
+            continue;
+        }
+        break;
     }
-    if (!done) {
+    if (rem == 0) {
         ret = 0;
     }
 
