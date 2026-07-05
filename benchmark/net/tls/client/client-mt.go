@@ -143,6 +143,34 @@ func rssKB() int64 {
 	return 0
 }
 
+func snapshotProcStatFromEnv(name string) {
+	path := os.Getenv(name)
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	out := make([]byte, 0, len(data))
+	for _, line := range lines {
+		if strings.HasPrefix(line, "cpu") && len(line) > 3 && line[3] >= '0' && line[3] <= '9' {
+			out = append(out, line...)
+			out = append(out, '\n')
+		}
+	}
+	_ = os.WriteFile(path, out, 0644)
+}
+
+func touchFileFromEnv(name string) {
+	path := os.Getenv(name)
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, []byte("1\n"), 0644)
+}
+
 func pctile(sorted []int64, p float64) int64 {
 	if len(sorted) == 0 {
 		return 0
@@ -278,11 +306,15 @@ func runThroughput(args []string) {
 	}
 
 	warmwg.Wait()
+	touchFileFromEnv("BENCH_WINDOW_START_FILE")
+	snapshotProcStatFromEnv("BENCH_CPU_BEFORE_FILE")
 	realStart := time.Now()
 	atomic.StoreInt64(&deadlineNanos,
 		realStart.Add(time.Duration(o.duration)*time.Second).UnixNano())
 	close(start)
 	rwg.Wait()
+	snapshotProcStatFromEnv("BENCH_CPU_AFTER_FILE")
+	touchFileFromEnv("BENCH_WINDOW_END_FILE")
 	elapsed := time.Since(realStart).Seconds()
 
 	var totalSent, totalRecv uint64

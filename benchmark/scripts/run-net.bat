@@ -540,6 +540,10 @@ for %%N in (%SERVERS:,= %) do (
             set /a measured_run=%%R - %BENCH_WARMUP_RUNS%
             if !measured_run! LEQ 0 (set "run_name=warmup%%R") else (set "run_name=r!measured_run!")
             set "out=%RUN_DIR%\%CUR_PROTO%-throughput-%ROW%-c!CONNS_LBL!-!SIZE_LBL!-!name!-!run_name!.json"
+            set "start_marker=%RUN_DIR%\.window-start-!name!-!run_name!"
+            set "end_marker=%RUN_DIR%\.window-end-!name!-!run_name!"
+            if exist "!start_marker!" del /q "!start_marker!" >nul 2>nul
+            if exist "!end_marker!" del /q "!end_marker!" >nul 2>nul
             set "_climask="
             set "_gmp=0"
             set "_strict="
@@ -548,7 +552,9 @@ for %%N in (%SERVERS:,= %) do (
             set "_srvn=%SERVER_NCPU%"
             if "%PIN_ENABLE%"=="true" if /I "%ROW%"=="ST" set "_srvn=1"
             set "srv_cpu_line="
-            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn! 2^>nul') do set "srv_cpu_line=%%L"
+            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn! -StartMarker "!start_marker!" -EndMarker "!end_marker!" 2^>nul') do set "srv_cpu_line=%%L"
+            if exist "!start_marker!" del /q "!start_marker!" >nul 2>nul
+            if exist "!end_marker!" del /q "!end_marker!" >nul 2>nul
 
             if !measured_run! LEQ 0 (
                 set "_sz="
@@ -773,7 +779,9 @@ goto :eof
 ::WINCLIENT::    [string]$ArgString,
 ::WINCLIENT::    [string]$CliMaskHex = "",
 ::WINCLIENT::    [int]$Gomaxprocs = 0,
-::WINCLIENT::    [int]$ServerNcpu = 0
+::WINCLIENT::    [int]$ServerNcpu = 0,
+::WINCLIENT::    [string]$StartMarker = "",
+::WINCLIENT::    [string]$EndMarker = ""
 ::WINCLIENT::)
 ::WINCLIENT::
 ::WINCLIENT::if ($Gomaxprocs -gt 0) { $env:GOMAXPROCS = "$Gomaxprocs" }
@@ -787,8 +795,18 @@ goto :eof
 ::WINCLIENT::    return $m
 ::WINCLIENT::}
 ::WINCLIENT::
+::WINCLIENT::$fallbackBefore = $null
 ::WINCLIENT::$before = $null
-::WINCLIENT::if ($ServerNcpu -gt 0) { $before = Sample-Cores $ServerNcpu }
+::WINCLIENT::$after = $null
+::WINCLIENT::if ($ServerNcpu -gt 0) { $fallbackBefore = Sample-Cores $ServerNcpu }
+::WINCLIENT::if ($StartMarker -ne "") {
+::WINCLIENT::    Remove-Item -LiteralPath $StartMarker -ErrorAction SilentlyContinue
+::WINCLIENT::    $env:BENCH_WINDOW_START_FILE = $StartMarker
+::WINCLIENT::}
+::WINCLIENT::if ($EndMarker -ne "") {
+::WINCLIENT::    Remove-Item -LiteralPath $EndMarker -ErrorAction SilentlyContinue
+::WINCLIENT::    $env:BENCH_WINDOW_END_FILE = $EndMarker
+::WINCLIENT::}
 ::WINCLIENT::
 ::WINCLIENT::$ErrFile = [System.IO.Path]::GetTempFileName()
 ::WINCLIENT::$p = Start-Process -FilePath $Exe -ArgumentList $ClientArgs `
@@ -797,11 +815,36 @@ goto :eof
 ::WINCLIENT::if ($CliMaskHex -ne "") {
 ::WINCLIENT::    try { $p.ProcessorAffinity = [IntPtr]([Convert]::ToInt64($CliMaskHex, 16)) } catch {}
 ::WINCLIENT::}
+::WINCLIENT::if ($ServerNcpu -gt 0 -and $StartMarker -ne "" -and $EndMarker -ne "") {
+::WINCLIENT::    while (-not $p.HasExited -and -not (Test-Path -LiteralPath $StartMarker)) {
+::WINCLIENT::        Start-Sleep -Milliseconds 20
+::WINCLIENT::    }
+::WINCLIENT::    if (Test-Path -LiteralPath $StartMarker) {
+::WINCLIENT::        $before = Sample-Cores $ServerNcpu
+::WINCLIENT::        while (-not $p.HasExited -and -not (Test-Path -LiteralPath $EndMarker)) {
+::WINCLIENT::            Start-Sleep -Milliseconds 20
+::WINCLIENT::        }
+::WINCLIENT::        if (Test-Path -LiteralPath $EndMarker) {
+::WINCLIENT::            $after = Sample-Cores $ServerNcpu
+::WINCLIENT::        }
+::WINCLIENT::    }
+::WINCLIENT::}
 ::WINCLIENT::$p.WaitForExit()
+::WINCLIENT::if ($StartMarker -ne "") {
+::WINCLIENT::    Remove-Item Env:BENCH_WINDOW_START_FILE -ErrorAction SilentlyContinue
+::WINCLIENT::    Remove-Item -LiteralPath $StartMarker -ErrorAction SilentlyContinue
+::WINCLIENT::}
+::WINCLIENT::if ($EndMarker -ne "") {
+::WINCLIENT::    Remove-Item Env:BENCH_WINDOW_END_FILE -ErrorAction SilentlyContinue
+::WINCLIENT::    Remove-Item -LiteralPath $EndMarker -ErrorAction SilentlyContinue
+::WINCLIENT::}
 ::WINCLIENT::Remove-Item -LiteralPath $ErrFile -ErrorAction SilentlyContinue
 ::WINCLIENT::
-::WINCLIENT::if ($ServerNcpu -gt 0 -and $before) {
+::WINCLIENT::if ($ServerNcpu -gt 0 -and (-not $before -or -not $after)) {
+::WINCLIENT::    $before = $fallbackBefore
 ::WINCLIENT::    $after = Sample-Cores $ServerNcpu
+::WINCLIENT::}
+::WINCLIENT::if ($ServerNcpu -gt 0 -and $before -and $after) {
 ::WINCLIENT::    $parts = @()
 ::WINCLIENT::    for ($i = 0; $i -lt $ServerNcpu; $i++) {
 ::WINCLIENT::        if ($before.ContainsKey($i) -and $after.ContainsKey($i)) {

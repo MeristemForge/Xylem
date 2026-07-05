@@ -561,21 +561,33 @@ bench_throughput() {
             local out="$RUN_DIR/${CUR_PROTO}-throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-${run_name}.json"
             local cpu_before="$RUN_DIR/.cpu-before-${name}-${run_name}"
             local cpu_after="$RUN_DIR/.cpu-after-${name}-${run_name}"
+            local cpu_client_before="$RUN_DIR/.cpu-window-before-${name}-${run_name}"
+            local cpu_client_after="$RUN_DIR/.cpu-window-after-${name}-${run_name}"
+            rm -f "$cpu_client_before" "$cpu_client_after"
 
             snapshot_cpu "$cpu_before"
 
             local strict_flag=""
             [ "$STRICT" = true ] && strict_flag="-strict"
+            export BENCH_CPU_BEFORE_FILE="$cpu_client_before"
+            export BENCH_CPU_AFTER_FILE="$cpu_client_after"
             run_client "$BIN_DIR/${CUR_PROTO}-bench" throughput \
                 -n "$conns" -d "$DURATION" -s "$payload" -p "$port" $strict_flag \
                 > "$out" 2>/dev/null || true
+            unset BENCH_CPU_BEFORE_FILE BENCH_CPU_AFTER_FILE
 
             snapshot_cpu "$cpu_after"
-            cpu_usage_last="$(calc_cores_percpu "$cpu_before" "$cpu_after" \
+            local cpu_calc_before="$cpu_before"
+            local cpu_calc_after="$cpu_after"
+            if [ -s "$cpu_client_before" ] && [ -s "$cpu_client_after" ]; then
+                cpu_calc_before="$cpu_client_before"
+                cpu_calc_after="$cpu_client_after"
+            fi
+            cpu_usage_last="$(calc_cores_percpu "$cpu_calc_before" "$cpu_calc_after" \
                               "$(server_core_spec "$row_label")")"
-            srv_cpu_last="$(calc_cores_avg "$cpu_before" "$cpu_after" \
-                            "$(server_core_spec "$row_label")")"
-            rm -f "$cpu_before" "$cpu_after"
+            srv_cpu_last="$(calc_cores_avg "$cpu_calc_before" "$cpu_calc_after" \
+                             "$(server_core_spec "$row_label")")"
+            rm -f "$cpu_before" "$cpu_after" "$cpu_client_before" "$cpu_client_after"
             if [ "$measured_run" -le 0 ]; then
                 [ "$run" -lt "$total_runs" ] && sleep 1
                 continue
