@@ -26,14 +26,13 @@ Two platform-specific drivers live in `benchmark/scripts/`:
 | `run-net.sh` | Linux + macOS | GCC/Clang, auto-detected via `uname` |
 | `run-net.bat` | Windows | MSVC (`cl.exe`), auto-initialized via `vcvars64.bat` |
 
-Each script exposes the same subcommands: `install`, `build`, `bench`, `all`
-(default), and the same options. The protocol(s) under test are selected with
-`--proto` (default `tcp`); `build` compiles and `bench` runs each protocol in
-the comma-separated list.
+Each script exposes the same subcommands: `install`, `build`, `bench`, and
+`all` (default). The benchmark matrix is fixed in the `NET_BENCH_*` constants
+inside each script.
 
 ```bash
-./run-net.sh build --proto tcp,udp,tls   # build all three suites
-./run-net.sh bench --proto tls           # bench just TLS
+./run-net.sh build
+./run-net.sh bench
 ```
 
 When `tls` is among the protocols, xylem is built with
@@ -65,8 +64,8 @@ so no "Developer Command Prompt" is required:
 cd benchmark\scripts
 
 run-net.bat install    :: print winget/vcpkg setup guidance, verify cl.exe
-run-net.bat build --proto tcp,udp,tls   :: build servers + native Win32 (IOCP) clients
-run-net.bat bench --proto tcp           :: run benchmarks, write out\results\<timestamp>\
+run-net.bat build      :: build servers + native Win32 (IOCP) clients
+run-net.bat bench      :: run benchmarks, write out\results\<timestamp>\
 ```
 
 (TLS on Windows needs OpenSSL via vcpkg. The Windows driver builds only the
@@ -75,21 +74,15 @@ xylem/go/rust families.)
 ## Usage
 
 ```bash
-# Custom parameters (same options on both scripts):
-./run-net.sh bench --proto tcp,udp,tls --conns 10000 --duration 60
-./run-net.sh bench --proto tcp --servers xylem,go,rust,java --payload 64,4096 --mode st
-./run-net.sh bench --proto tls --servers xylem,go,rust --payload 64,4096 --mode st
-./run-net.sh bench -P udp -s xylem,rust -c 1000,5000 -d 15 --repeat 3
-
-# Environment variables seed defaults (CLI overrides them):
-PROTO=tls REPEAT=5 DURATION=5 CONNS=1000 ./run-net.sh bench
+./run-net.sh build
+./run-net.sh bench
+./run-net.sh all
 ```
 
-Bench options: `--proto` (tcp,udp,tls), `--servers` (xylem,go,rust,java),
-`--conns`, `--payload`, `--duration`, `--mode` (st|mt|both), `--repeat`,
-`--no-connrate`. UDP ignores `--mode mt` (no MT row) and connrate (it is
-connectionless); TLS connrate measures full TLS handshakes per second. Java is
-currently a TCP virtual-thread server in the Linux/macOS driver.
+The net driver uses a fixed matrix: `tcp,udp,tls`, `xylem,go,rust`,
+connections `1000,10000`, payloads `64,4096,65536`, duration `10s`, and
+ST+MT where the protocol supports it. Edit the `NET_BENCH_*` constants in
+`run-net.sh` / `run-net.bat` to change the standard suite.
 
 ### Platform notes
 
@@ -144,7 +137,6 @@ benchmark/
         xylem-echo/           server.c (ST) + server-mt.c (MT, tcp/tls)
         go-echo/              one module: echo/server.go (ST) + echo-mt/server.go (MT)
         rust-echo/            one crate: src/server.rs (ST) + src/server_mt.rs (MT)
-        java-echo/            TcpEchoServer.java (JDK 21 virtual threads, TCP)
       client/                 load generator: Go module (client-mt.go),
                               file per protocol (epoll/kqueue readiness on
                               POSIX, IOCP completion on Windows)
@@ -162,8 +154,7 @@ benchmark/
 ```
 
 The xylem/go/rust families each live in a single per-family directory that
-yields both the ST and MT binaries where the protocol supports it; Java is
-currently TCP-only and uses one virtual-thread server source for both rows.
+yields both the ST and MT binaries where the protocol supports it.
 
 Binaries and result files are namespaced by protocol: e.g. `tcp-xylem-echo`,
 `tls-xylem-echo-mt`, `udp-bench`, and `out/results/<ts>/tls-throughput-st-...json`.

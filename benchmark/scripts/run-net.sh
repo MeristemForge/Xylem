@@ -10,16 +10,15 @@ set -euo pipefail
 #   bench    - run comparison benchmarks and write out/results/<ts>/
 #   all      - install + build + bench                             [default]
 #
-# Protocols (--proto, comma-separated): tcp, udp, tls
+# Fixed protocol matrix: tcp, udp, tls
 #   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
 #   udp : datagram echo, ports from 9001, ST only, throughput
 #   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
 #         (xylem built with -DXYLEM_ENABLE_TLS=ON; servers link OpenSSL)
 #
-# Compared servers: xylem, go, rust.
-# Override with --servers. Missing binaries are skipped automatically. UDP has
-# no MT row (the public UDP API exposes no SO_REUSEPORT, so a single bound port
-# cannot be fanned across workers).
+# Compared servers: xylem, go, rust. Missing binaries are skipped automatically.
+# UDP has no MT row (the public UDP API exposes no SO_REUSEPORT, so a single
+# bound port cannot be fanned across workers).
 #
 # NOTE: macOS uses kqueue and lacks SO_REUSEPORT / /proc; its numbers are
 # NOT comparable to the Linux suite. Per-CPU usage sampling is Linux-only.
@@ -332,7 +331,7 @@ ensure_bin() {
     local proto
     for proto in "${PROTOS[@]}"; do
         if [ ! -x "$BIN_DIR/${proto}-bench" ]; then
-            err "binaries missing in $BIN_DIR; run: $0 build --proto $(IFS=,; echo "${PROTOS[*]}")"
+            err "binaries missing in $BIN_DIR; run: $0 build"
             exit 1
         fi
     done
@@ -567,12 +566,10 @@ bench_throughput() {
 
             snapshot_cpu "$cpu_before"
 
-            local strict_flag=""
-            [ "$STRICT" = true ] && strict_flag="-strict"
             export BENCH_CPU_BEFORE_FILE="$cpu_client_before"
             export BENCH_CPU_AFTER_FILE="$cpu_client_after"
             run_client "$BIN_DIR/${CUR_PROTO}-bench" throughput \
-                -n "$conns" -d "$DURATION" -s "$payload" -p "$port" $strict_flag \
+                -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
                 > "$out" 2>/dev/null || true
             unset BENCH_CPU_BEFORE_FILE BENCH_CPU_AFTER_FILE
 
@@ -772,74 +769,44 @@ cmd_bench() {
 }
 
 # =============================================================================
-# parse bench options
+# fixed bench matrix
 # =============================================================================
 
+# Keep the benchmark matrix in one place. The driver intentionally does not
+# accept CLI flags for these values; edit these constants when changing the
+# standard suite.
+NET_BENCH_PROTOS="tcp,udp,tls"
+NET_BENCH_SERVERS="xylem,go,rust"
+NET_BENCH_CONNS="1000,10000"
+NET_BENCH_PAYLOADS="64,4096,65536"
+NET_BENCH_DURATION=10
+NET_BENCH_MODE="both"
+NET_BENCH_REPEAT=1
+NET_BENCH_WARMUP_RUNS=1
+NET_BENCH_RUN_CONNRATE=true
+
 SERVERS=(xylem go rust)
-IFS=',' read -ra PROTOS    <<< "${PROTO:-tcp}"
-IFS=',' read -ra CONNS     <<< "${CONNS:-1000,10000}"
-IFS=',' read -ra PAYLOADS  <<< "${PAYLOADS:-64,4096,65536}"
-DURATION="${DURATION:-10}"
-MODE="${MODE:-both}"
-REPEAT="${REPEAT:-1}"
-BENCH_WARMUP_RUNS="${BENCH_WARMUP_RUNS:-1}"
-RUN_CONNRATE=true
-# STRICT: when true, a throughput run is aborted (and reported as no valid
-# output) unless every requested connection is established. Keeps the
-# established-connection count identical across servers so the aggregate
-# throughput comparison is apples-to-apples.
-STRICT="${STRICT:-false}"
+IFS=',' read -ra PROTOS    <<< "$NET_BENCH_PROTOS"
+IFS=',' read -ra SERVERS   <<< "$NET_BENCH_SERVERS"
+IFS=',' read -ra CONNS     <<< "$NET_BENCH_CONNS"
+IFS=',' read -ra PAYLOADS  <<< "$NET_BENCH_PAYLOADS"
+DURATION="$NET_BENCH_DURATION"
+MODE="$NET_BENCH_MODE"
+REPEAT="$NET_BENCH_REPEAT"
+BENCH_WARMUP_RUNS="$NET_BENCH_WARMUP_RUNS"
+RUN_CONNRATE="$NET_BENCH_RUN_CONNRATE"
 
-parse_bench_opts() {
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --proto|-P)
-                shift
-                IFS=',' read -ra PROTOS <<< "$1"
-                ;;
-            --servers|-s)
-                shift
-                IFS=',' read -ra SERVERS <<< "$1"
-                ;;
-            --conns|-c)
-                shift
-                IFS=',' read -ra CONNS <<< "$1"
-                ;;
-            --payload|-S)
-                shift
-                IFS=',' read -ra PAYLOADS <<< "$1"
-                ;;
-            --duration|-d)
-                shift
-                DURATION="$1"
-                ;;
-            --mode|-m)
-                shift
-                MODE="$1"
-                if [[ "$MODE" != "st" && "$MODE" != "mt" && "$MODE" != "both" ]]; then
-                    err "invalid mode: $MODE (must be st|mt|both)"
-                    exit 1
-                fi
-                ;;
-            --repeat|-r)
-                shift
-                REPEAT="$1"
-                ;;
-            --no-connrate)
-                RUN_CONNRATE=false
-                ;;
-            --strict)
-                STRICT=true
-                ;;
-            *)
-                err "unknown bench option: $1"
-                exit 1
-                ;;
-        esac
-        shift
-    done
+check_no_bench_opts() {
+    if [ "$#" -gt 0 ]; then
+        err "run-net uses a fixed benchmark matrix; edit NET_BENCH_* constants in $0 instead of passing CLI options"
+        exit 1
+    fi
 
-    # validate protocols up front
+    if [[ "$MODE" != "st" && "$MODE" != "mt" && "$MODE" != "both" ]]; then
+        err "invalid fixed mode: $MODE (must be st|mt|both)"
+        exit 1
+    fi
+
     local p
     for p in "${PROTOS[@]}"; do proto_config "$p"; done
 }
@@ -850,7 +817,7 @@ parse_bench_opts() {
 
 usage() {
     cat <<EOF
-usage: $0 [install|build|bench|all] [options...]
+usage: $0 [install|build|bench|all]
 
 Cross-platform (Linux + macOS). Current platform: $PLATFORM
 
@@ -861,36 +828,27 @@ Commands:
   bench     run comparison benchmarks, write benchmark/out/results/<ts>/
   all       install + build + bench   (default)
 
-Options (pass after the command; env vars seed defaults):
-  --proto, -P    tcp,udp,tls        protocols to build/bench (default: tcp)
-                                    tcp/tls: ST+MT, throughput+connrate
-                                    udp: ST only, throughput
-  --servers, -s  xylem,go,rust      servers to compare (comma-separated)
-                                    available: xylem, go, rust
-  --conns, -c    1000,10000         connection counts (comma-separated)
-  --payload, -S  64,4096,65536      payload sizes in bytes (comma-separated)
-  --duration, -d 10                 test duration in seconds
-  --mode, -m     st|mt|both         single-thread / multi-thread / both
-  --repeat, -r   3                  repeat each test N times (avg results)
-  --no-connrate                     skip connection-rate tests
-  --strict                          abort a throughput run unless every
-                                    requested connection is established
-                                    (keeps connection counts equal across
-                                    servers; also via STRICT=true env var)
+Fixed matrix (edit NET_BENCH_* constants in this script to change it):
+  protocols:  $NET_BENCH_PROTOS
+  servers:    $NET_BENCH_SERVERS
+  conns:      $NET_BENCH_CONNS
+  payloads:   $NET_BENCH_PAYLOADS
+  duration:   ${NET_BENCH_DURATION}s
+  mode:       $NET_BENCH_MODE
+  repeat:     $NET_BENCH_REPEAT
+  connrate:   $NET_BENCH_RUN_CONNRATE
 
 Notes:
   TLS requires OpenSSL; xylem is built with -DXYLEM_ENABLE_TLS=ON when tls is
   among the protocols. UDP has no MT row.
-  Throughput runs one uncounted warmup pass by default; set
-  BENCH_WARMUP_RUNS=0 to disable or another value to change it.
+  Throughput runs $NET_BENCH_WARMUP_RUNS uncounted warmup pass(es).
   macOS uses kqueue and lacks SO_REUSEPORT / /proc; numbers are NOT comparable
   to the Linux suite.
 
 Examples:
-  $0 build --proto tcp,udp,tls
-  $0 bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
-  $0 bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
-  $0 all --proto tcp,udp,tls --duration 15
+  $0 build
+  $0 bench
+  $0 all
 EOF
 }
 
@@ -906,15 +864,15 @@ main() {
     case "$cmd" in
         install) cmd_install ;;
         build)
-            parse_bench_opts "$@"
+            check_no_bench_opts "$@"
             cmd_build
             ;;
         bench)
-            parse_bench_opts "$@"
+            check_no_bench_opts "$@"
             cmd_bench
             ;;
         all)
-            parse_bench_opts "$@"
+            check_no_bench_opts "$@"
             cmd_install
             cmd_build
             cmd_bench

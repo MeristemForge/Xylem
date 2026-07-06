@@ -39,7 +39,7 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: tls-bench <mode> [options]")
 		fmt.Fprintln(os.Stderr, "modes:")
-		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port [-strict]")
+		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port")
 		fmt.Fprintln(os.Stderr, "  connrate    -c concurrency -d sec -h host -p port")
 		fmt.Fprintln(os.Stderr, "  memory      -n conns -w hold_sec -h host -p port")
 		os.Exit(1)
@@ -126,6 +126,35 @@ func dialTLS(addr string, timeout time.Duration) (*tls.Conn, error) {
 	return c, nil
 }
 
+func establishTLSConnections(addr string, target int) []*tls.Conn {
+	if target <= 0 {
+		return nil
+	}
+
+	conns := make([]*tls.Conn, target)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 512) // bound concurrent handshakes
+
+	for i := 0; i < target; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for {
+				sem <- struct{}{}
+				c, err := dialTLS(addr, 15*time.Second)
+				<-sem
+				if err == nil {
+					conns[idx] = c
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}(i)
+	}
+	wg.Wait()
+	return conns
+}
+
 func rssKB() int64 {
 	data, err := os.ReadFile("/proc/self/status")
 	if err != nil {
@@ -197,36 +226,16 @@ func runThroughput(args []string) {
 		ok bool
 	}
 	slots := make([]slot, o.conns)
-	var dwg sync.WaitGroup
-	sem := make(chan struct{}, 512) // bound concurrent handshakes
-	for i := 0; i < o.conns; i++ {
-		dwg.Add(1)
-		sem <- struct{}{}
-		go func(idx int) {
-			defer dwg.Done()
-			defer func() { <-sem }()
-			c, err := dialTLS(addr, 15*time.Second)
-			if err == nil {
-				slots[idx] = slot{c: c, ok: true}
-			}
-		}(i)
+	conns := establishTLSConnections(addr, o.conns)
+	for i, c := range conns {
+		slots[i] = slot{c: c, ok: true}
 	}
-	dwg.Wait()
 
 	established := 0
 	for i := range slots {
 		if slots[i].ok {
 			established++
 		}
-	}
-	// Strict mode: a run is only comparable when every requested connection is
-	// established. Differing connection counts change the parallelism and thus
-	// the aggregate throughput, so we refuse to report a misleading number.
-	if o.strict && established != o.conns {
-		fmt.Fprintf(os.Stderr,
-			"strict: established %d / %d connections, aborting run\n",
-			established, o.conns)
-		os.Exit(2)
 	}
 	fmt.Fprintf(os.Stderr, "tls connected %d / %d, running %ds...\n",
 		established, o.conns, o.duration)

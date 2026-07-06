@@ -43,7 +43,7 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: tcp-bench <mode> [options]")
 		fmt.Fprintln(os.Stderr, "modes:")
-		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port [-strict]")
+		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port")
 		fmt.Fprintln(os.Stderr, "  connrate    -c concurrency -d sec -h host -p port")
 		fmt.Fprintln(os.Stderr, "  memory      -n conns -w hold_sec -h host -p port")
 		os.Exit(1)
@@ -136,6 +136,32 @@ func dialNoDelay(addr string, timeout time.Duration) (net.Conn, error) {
 	return c, nil
 }
 
+func establishTCPConnections(addr string, target int) []net.Conn {
+	if target <= 0 {
+		return nil
+	}
+
+	conns := make([]net.Conn, target)
+
+	var wg sync.WaitGroup
+	for i := 0; i < target; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for {
+				c, err := dialNoDelay(addr, 10*time.Second)
+				if err == nil {
+					conns[idx] = c
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}(i)
+	}
+	wg.Wait()
+	return conns
+}
+
 // ---- RSS (Linux /proc; 0 elsewhere) ----------------------------------------
 
 func rssKB() int64 {
@@ -155,6 +181,34 @@ func rssKB() int64 {
 	return 0
 }
 
+func snapshotProcStatFromEnv(name string) {
+	path := os.Getenv(name)
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	out := make([]byte, 0, len(data))
+	for _, line := range lines {
+		if strings.HasPrefix(line, "cpu") && len(line) > 3 && line[3] >= '0' && line[3] <= '9' {
+			out = append(out, line...)
+			out = append(out, '\n')
+		}
+	}
+	_ = os.WriteFile(path, out, 0644)
+}
+
+func touchFileFromEnv(name string) {
+	path := os.Getenv(name)
+	if path == "" {
+		return
+	}
+	_ = os.WriteFile(path, []byte("1\n"), 0644)
+}
+
 // ---- throughput -------------------------------------------------------------
 
 type tpResult struct {
@@ -167,39 +221,22 @@ func runThroughput(args []string) {
 	o := parseOpts(args)
 	addr := net.JoinHostPort(o.host, strconv.Itoa(o.port))
 
-	// Establish all connections in parallel.
+	// Establish all requested connections before starting the measured window.
 	type slot struct {
 		c  net.Conn
 		ok bool
 	}
 	slots := make([]slot, o.conns)
-	var dwg sync.WaitGroup
-	for i := 0; i < o.conns; i++ {
-		dwg.Add(1)
-		go func(idx int) {
-			defer dwg.Done()
-			c, err := dialNoDelay(addr, 10*time.Second)
-			if err == nil {
-				slots[idx] = slot{c: c, ok: true}
-			}
-		}(i)
+	conns := establishTCPConnections(addr, o.conns)
+	for i, c := range conns {
+		slots[i] = slot{c: c, ok: true}
 	}
-	dwg.Wait()
 
 	established := 0
 	for i := range slots {
 		if slots[i].ok {
 			established++
 		}
-	}
-	// Strict mode: a run is only comparable when every requested connection is
-	// established. Differing connection counts change the parallelism and thus
-	// the aggregate throughput, so we refuse to report a misleading number.
-	if o.strict && established != o.conns {
-		fmt.Fprintf(os.Stderr,
-			"strict: established %d / %d connections, aborting run\n",
-			established, o.conns)
-		os.Exit(2)
 	}
 	fmt.Fprintf(os.Stderr, "connected %d / %d, running %ds...\n",
 		established, o.conns, o.duration)
@@ -278,11 +315,15 @@ func runThroughput(args []string) {
 	}
 
 	warmwg.Wait()
+	touchFileFromEnv("BENCH_WINDOW_START_FILE")
+	snapshotProcStatFromEnv("BENCH_CPU_BEFORE_FILE")
 	realStart := time.Now()
 	atomic.StoreInt64(&deadlineNanos,
 		realStart.Add(time.Duration(o.duration)*time.Second).UnixNano())
 	close(start)
 	rwg.Wait()
+	snapshotProcStatFromEnv("BENCH_CPU_AFTER_FILE")
+	touchFileFromEnv("BENCH_WINDOW_END_FILE")
 	elapsed := time.Since(realStart).Seconds()
 
 	var totalSent, totalRecv uint64

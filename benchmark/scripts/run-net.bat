@@ -14,7 +14,7 @@ REM   build    - build xylem + echo servers (per protocol) + bench client
 REM   bench    - run comparison benchmarks and write out\results\<ts>\
 REM   all      - build + bench                                       [default]
 REM
-REM Protocols (--proto, comma-separated): tcp, udp, tls
+REM Fixed protocol matrix: tcp, udp, tls
 REM   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
 REM   udp : datagram echo, ports from 9001, ST only, throughput
 REM   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
@@ -44,17 +44,29 @@ set "BUILD_DIR=%OUT_DIR%\build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
 set "WINCLIENT_PS1=%OUT_DIR%\run-net-winclient.ps1"
 
-REM ---- defaults (env vars seed them; CLI overrides) --------------------------
-if not defined PROTO    set "PROTO=tcp"
-if not defined SERVERS  set "SERVERS=xylem,go,rust"
-if not defined CONNS    set "CONNS=1000,10000"
-if not defined PAYLOADS set "PAYLOADS=64,4096,65536"
-if not defined DURATION set "DURATION=10"
-if not defined MODE     set "MODE=both"
-if not defined REPEAT   set "REPEAT=1"
-if not defined BENCH_WARMUP_RUNS set "BENCH_WARMUP_RUNS=1"
-set "RUN_CONNRATE=true"
-if not defined STRICT   set "STRICT=false"
+REM ---- fixed benchmark matrix ------------------------------------------------
+REM Keep the benchmark matrix in one place. The driver intentionally does not
+REM accept CLI flags for these values; edit these constants when changing the
+REM standard suite.
+set "NET_BENCH_PROTO=tcp,udp,tls"
+set "NET_BENCH_SERVERS=xylem,go,rust"
+set "NET_BENCH_CONNS=1000,10000"
+set "NET_BENCH_PAYLOADS=64,4096,65536"
+set "NET_BENCH_DURATION=10"
+set "NET_BENCH_MODE=both"
+set "NET_BENCH_REPEAT=1"
+set "NET_BENCH_WARMUP_RUNS=1"
+set "NET_BENCH_RUN_CONNRATE=true"
+
+set "PROTO=%NET_BENCH_PROTO%"
+set "SERVERS=%NET_BENCH_SERVERS%"
+set "CONNS=%NET_BENCH_CONNS%"
+set "PAYLOADS=%NET_BENCH_PAYLOADS%"
+set "DURATION=%NET_BENCH_DURATION%"
+set "MODE=%NET_BENCH_MODE%"
+set "REPEAT=%NET_BENCH_REPEAT%"
+set "BENCH_WARMUP_RUNS=%NET_BENCH_WARMUP_RUNS%"
+set "RUN_CONNRATE=%NET_BENCH_RUN_CONNRATE%"
 
 if not defined NUMBER_OF_PROCESSORS set "NUMBER_OF_PROCESSORS=4"
 set "NCPU=%NUMBER_OF_PROCESSORS%"
@@ -97,17 +109,17 @@ call :err "unknown command: %CMD%"
 goto :usage
 
 :do_build
-call :parse_bench_opts %*
+call :check_no_bench_opts %* || exit /b 1
 call :cmd_build
 goto :eof
 
 :do_bench
-call :parse_bench_opts %*
+call :check_no_bench_opts %* || exit /b 1
 call :cmd_bench
 goto :eof
 
 :do_all
-call :parse_bench_opts %*
+call :check_no_bench_opts %* || exit /b 1
 call :cmd_build || exit /b 1
 call :cmd_bench
 goto :eof
@@ -391,7 +403,7 @@ goto :eof
 :ensure_bin
 for %%P in (%PROTO:,= %) do (
     if not exist "%BIN_DIR%\%%P-bench.exe" (
-        call :err "binaries missing in %BIN_DIR%; run: %SCRIPT_NAME% build --proto %PROTO%"
+        call :err "binaries missing in %BIN_DIR%; run: %SCRIPT_NAME% build"
         exit /b 1
     )
 )
@@ -546,13 +558,11 @@ for %%N in (%SERVERS:,= %) do (
             if exist "!end_marker!" del /q "!end_marker!" >nul 2>nul
             set "_climask="
             set "_gmp=0"
-            set "_strict="
-            if /I "%STRICT%"=="true" set "_strict= -strict"
             if "%PIN_ENABLE%"=="true" set "_climask=!CLI_MASK!" & set "_gmp=!CLIENT_NCPU!"
             set "_srvn=%SERVER_NCPU%"
             if "%PIN_ENABLE%"=="true" if /I "%ROW%"=="ST" set "_srvn=1"
             set "srv_cpu_line="
-            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!!_strict!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn! -StartMarker "!start_marker!" -EndMarker "!end_marker!" 2^>nul') do set "srv_cpu_line=%%L"
+            for /f "delims=" %%L in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%WINCLIENT_PS1%" -Exe "%BIN_DIR%\%CUR_PROTO%-bench.exe" -OutFile "!out!" -ArgString "throughput -n !CONNS_V! -d %DURATION% -s !PAYLOAD_V! -p !port!" -CliMaskHex "!_climask!" -Gomaxprocs !_gmp! -ServerNcpu !_srvn! -StartMarker "!start_marker!" -EndMarker "!end_marker!" 2^>nul') do set "srv_cpu_line=%%L"
             if exist "!start_marker!" del /q "!start_marker!" >nul 2>nul
             if exist "!end_marker!" del /q "!end_marker!" >nul 2>nul
 
@@ -694,33 +704,12 @@ taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  1>nul 2>nul
 goto :eof
 
 REM ============================================================================
-REM option parsing  (env vars seed defaults; CLI overrides)
+REM fixed matrix validation
 REM ============================================================================
-:parse_bench_opts
+:check_no_bench_opts
 if "%~1"=="" goto :eof
 set "_opt=%~1"
-REM skip a leading command word (passed via %* which is unaffected by shift)
-if /I "%_opt%"=="install" (shift & goto :parse_bench_opts)
-if /I "%_opt%"=="build"   (shift & goto :parse_bench_opts)
-if /I "%_opt%"=="bench"   (shift & goto :parse_bench_opts)
-if /I "%_opt%"=="all"     (shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--proto"   (set "PROTO=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-P"        (set "PROTO=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--servers" (set "SERVERS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-s"        (set "SERVERS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--conns"   (set "CONNS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-c"        (set "CONNS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--payload" (set "PAYLOADS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-S"        (set "PAYLOADS=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--duration" (set "DURATION=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-d"        (set "DURATION=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--mode"    (call :set_mode "%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-m"        (call :set_mode "%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--repeat"  (set "REPEAT=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="-r"        (set "REPEAT=%~2" & shift & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--no-connrate" (set "RUN_CONNRATE=false" & shift & goto :parse_bench_opts)
-if /I "%_opt%"=="--strict"  (set "STRICT=true" & shift & goto :parse_bench_opts)
-call :err "unknown option: %_opt%"
+call :err "run-net uses a fixed benchmark matrix; edit NET_BENCH_* constants in %SCRIPT_NAME% instead of passing CLI options"
 exit /b 1
 
 :set_mode
@@ -735,7 +724,7 @@ REM ============================================================================
 REM usage
 REM ============================================================================
 :usage
-echo usage: %SCRIPT_NAME% [install^|build^|bench^|all] [options...]
+echo usage: %SCRIPT_NAME% [install^|build^|bench^|all]
 echo.
 echo Windows benchmark driver. Build auto-inits MSVC via vcvars64.bat (vswhere).
 echo.
@@ -745,31 +734,26 @@ echo   build     xylem static lib + per-protocol servers + bench clients
 echo   bench     run comparison benchmarks, write benchmark\out\results\^<ts^>\
 echo   all       build + bench   (default)
 echo.
-echo Options (pass after the command; env vars seed defaults):
-echo   --proto, -P    tcp,udp,tls        protocols (default: tcp); udp is ST only
-echo   --servers, -s  xylem,go,rust      servers to compare (comma-separated)
-echo   --conns, -c    1000,10000         connection counts (comma-separated)
-echo   --payload, -S  64,4096,65536      payload sizes in bytes (comma-separated)
-echo   --duration, -d 10                 test duration in seconds
-echo   --mode, -m     st^|mt^|both         single-thread / multi-thread / both
-echo   --repeat, -r   3                  repeat each test N times (avg results)
-echo   --no-connrate                     skip connection-rate tests
-echo   --strict                          abort a throughput run unless all
-echo                                     requested connections are established
-echo                                     (equal connection counts across servers;
-echo                                     also via STRICT=true env var)
+echo Fixed matrix (edit NET_BENCH_* constants in this script to change it):
+echo   protocols:  %NET_BENCH_PROTO%
+echo   servers:    %NET_BENCH_SERVERS%
+echo   conns:      %NET_BENCH_CONNS%
+echo   payloads:   %NET_BENCH_PAYLOADS%
+echo   duration:   %NET_BENCH_DURATION%s
+echo   mode:       %NET_BENCH_MODE%
+echo   repeat:     %NET_BENCH_REPEAT%
+echo   connrate:   %NET_BENCH_RUN_CONNRATE%
 echo.
 echo Notes:
 echo   TLS needs OpenSSL (vcpkg); xylem is built with -DXYLEM_ENABLE_TLS=ON when
 echo   tls is among the protocols. UDP has no MT row. The Windows client uses
 echo   IOCP; numbers are NOT comparable to Unix runs.
-echo   Throughput runs one uncounted warmup pass by default; set
-echo   BENCH_WARMUP_RUNS=0 to disable or another value to change it.
+echo   Throughput runs %NET_BENCH_WARMUP_RUNS% uncounted warmup pass(es).
 echo.
 echo Examples:
-echo   %SCRIPT_NAME% build --proto tcp,udp,tls
-echo   %SCRIPT_NAME% bench --proto tls --servers xylem,go,rust --conns 1000 --duration 5
-echo   %SCRIPT_NAME% bench -P udp -s xylem,rust -c 1000,5000 -d 15 --mode st
+echo   %SCRIPT_NAME% build
+echo   %SCRIPT_NAME% bench
+echo   %SCRIPT_NAME% all
 goto :eof
 
 ::WINCLIENT::# Internal Windows helper extracted by run-net.bat.
