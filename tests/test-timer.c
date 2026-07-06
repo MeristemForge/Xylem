@@ -28,9 +28,11 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
+#include <threads.h>
 
 #define SAFETY_TIMEOUT_MS 10000
 #define FIRE_TARGET       5
+#define SPAWN_TEARDOWN_TIMERS 8
 
 typedef struct {
     atomic_int         fires;
@@ -64,6 +66,17 @@ typedef struct {
     atomic_int         fires;
     xylem_waitgroup_t* wg;
 } _deferred_stop_ctx_t;
+
+typedef struct {
+    scheduler_t*       sched;
+    scheduler_timer_t* timers[SPAWN_TEARDOWN_TIMERS];
+    atomic_int         refs;
+    atomic_int         unrefs;
+    atomic_int         fires;
+    mtx_t              lock;
+    cnd_t              cnd;
+    bool               stopped;
+} _spawn_teardown_ctx_t;
 
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
@@ -433,6 +446,76 @@ static void test_stop_cancels_deferred_reset_from_callback(void) {
     xylem_run(_deferred_stop_main, NULL, NULL);
 }
 
+static void _spawn_teardown_ud_ref(void* ud) {
+    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
+    atomic_fetch_add(&ctx->refs, 1);
+}
+
+static void _spawn_teardown_ud_unref(void* ud) {
+    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
+    atomic_fetch_add(&ctx->unrefs, 1);
+}
+
+static void _spawn_teardown_cb(scheduler_timer_t* timer, void* ud) {
+    (void)timer;
+    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
+    ASSERT(atomic_fetch_add(&ctx->fires, 1) == 0);
+
+    scheduler_stop(ctx->sched);
+
+    mtx_lock(&ctx->lock);
+    ctx->stopped = true;
+    cnd_signal(&ctx->cnd);
+    mtx_unlock(&ctx->lock);
+}
+
+static void _spawn_teardown_start(void* arg) {
+    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)arg;
+    for (int i = 0; i < SPAWN_TEARDOWN_TIMERS; i++) {
+        ctx->timers[i] = scheduler_timer_create(ctx->sched);
+        ASSERT(ctx->timers[i] != NULL);
+        scheduler_timer_set_spawn(ctx->timers[i], true);
+        scheduler_timer_set_ud_guard(ctx->timers[i],
+                                     _spawn_teardown_ud_ref,
+                                     _spawn_teardown_ud_unref);
+        scheduler_timer_start(ctx->timers[i],
+                              _spawn_teardown_cb,
+                              ctx,
+                              0,
+                              0);
+    }
+}
+
+static void test_spawn_timer_teardown_completes_unrun_fires(void) {
+    scheduler_opts_t opts = {.worker_count = 1};
+    _spawn_teardown_ctx_t ctx = {0};
+
+    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
+    ASSERT(cnd_init(&ctx.cnd) == thrd_success);
+
+    ctx.sched = scheduler_create(&opts);
+    ASSERT(ctx.sched != NULL);
+    ASSERT(scheduler_spawn(ctx.sched, _spawn_teardown_start, &ctx) == 0);
+
+    mtx_lock(&ctx.lock);
+    while (!ctx.stopped) {
+        cnd_wait(&ctx.cnd, &ctx.lock);
+    }
+    mtx_unlock(&ctx.lock);
+
+    for (int i = 0; i < SPAWN_TEARDOWN_TIMERS; i++) {
+        scheduler_timer_destroy(ctx.timers[i]);
+    }
+    scheduler_destroy(ctx.sched);
+
+    ASSERT(atomic_load(&ctx.refs) == SPAWN_TEARDOWN_TIMERS);
+    ASSERT(atomic_load(&ctx.fires) == 1);
+    ASSERT(atomic_load(&ctx.unrefs) == SPAWN_TEARDOWN_TIMERS);
+
+    cnd_destroy(&ctx.cnd);
+    mtx_destroy(&ctx.lock);
+}
+
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
@@ -458,6 +541,7 @@ int main(void) {
     test_every_callbacks_do_not_overlap();
     test_every_reset_and_cancel_from_callback();
     test_stop_cancels_deferred_reset_from_callback();
+    test_spawn_timer_teardown_completes_unrun_fires();
     test_null();
     return 0;
 }

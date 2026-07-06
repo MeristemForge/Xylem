@@ -20,6 +20,10 @@
  */
 
 #include "xylem.h"
+
+#include "net/stream.h"
+#include "platform/platform-socket.h"
+
 #include "assert.h"
 #include "utils.h"
 
@@ -42,7 +46,7 @@ typedef struct {
 } _ctx_t;
 
 typedef struct {
-    xylem_tcp_conn_t*  conn;
+    stream_t*          stream;
     xylem_channel_t*   started;
     xylem_waitgroup_t* wg;
     char*              data;
@@ -469,46 +473,54 @@ static void test_invalid_io_args(void) {
 
 static void _close_write_writer(void* arg) {
     _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
+    for (;;) {
+        int n = stream_try_write(ctx->stream, ctx->data, ctx->len);
+        if (n == STREAM_IO_AGAIN) {
+            break;
+        }
+        ASSERT(n > 0);
+    }
     ASSERT(xylem_channel_send(ctx->started, ctx) == 0);
-    ctx->rc = xylem_tcp_write(ctx->conn, ctx->data, ctx->len);
+    ctx->rc = stream_write(ctx->stream, ctx->data, ctx->len);
     xylem_waitgroup_done(ctx->wg);
 }
 
 static void _close_write_closer(void* arg) {
     _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
     xylem_channel_recv(ctx->started);
-    xylem_tcp_close(ctx->conn);
+    stream_interrupt(ctx->stream);
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _close_write_server(void* arg) {
+static void _close_write_main(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
-    ASSERT(listener != NULL);
-    xylem_channel_send(ctx->ready, ctx);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
-    ASSERT(conn != NULL);
+    platform_sock_t socks[2] = {
+        PLATFORM_SO_ERROR_INVALID_SOCKET,
+        PLATFORM_SO_ERROR_INVALID_SOCKET,
+    };
+    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, socks) == 0);
+    platform_socket_enable_nonblocking(socks[0], true);
+    platform_socket_enable_nonblocking(socks[1], true);
+    platform_socket_set_rcvbuf(socks[0], 4096);
+    platform_socket_set_sndbuf(socks[1], 4096);
 
-    char buf[16384];
+    char fill[4096];
+    memset(fill, 'x', sizeof(fill));
     for (;;) {
-        int n = xylem_tcp_read(conn, buf, sizeof(buf));
-        if (n <= 0) {
-            break;
+        ssize_t n = platform_socket_send(socks[1], fill, sizeof(fill));
+        if (n > 0) {
+            continue;
         }
+        ASSERT(n == -1);
+        int err = platform_socket_get_lasterror();
+        ASSERT(err == PLATFORM_SO_ERROR_EAGAIN
+               || err == PLATFORM_SO_ERROR_EWOULDBLOCK);
+        break;
     }
 
-    xylem_tcp_close(conn);
-    xylem_tcp_close_listener(listener);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _close_write_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
-    ASSERT(conn != NULL);
+    stream_t* stream = stream_from_fd(socks[1]);
+    ASSERT(stream != NULL);
 
     enum { WRITE_LEN = 32 * 1024 * 1024 };
     char* data = (char*)calloc(1, WRITE_LEN);
@@ -516,7 +528,7 @@ static void _close_write_client(void* arg) {
     memset(data, 'x', WRITE_LEN);
 
     _close_write_ctx_t write_ctx = {
-        .conn = conn,
+        .stream = stream,
         .started = xylem_channel_create(),
         .wg = xylem_waitgroup_create(),
         .data = data,
@@ -535,18 +547,16 @@ static void _close_write_client(void* arg) {
 
     xylem_waitgroup_destroy(write_ctx.wg);
     xylem_channel_destroy(write_ctx.started);
+    stream_release(stream);
+    platform_socket_close(socks[0]);
     free(data);
     xylem_waitgroup_done(ctx->wg);
 }
 
 static void test_close_stops_inflight_write(void) {
-    _ctx_t ctx = {
-        .port = TCP_PORT + 9,
-        .server = _close_write_server,
-        .client = _close_write_client,
-    };
+    _ctx_t ctx = {.client = _close_write_main};
     xylem_opts_t opts = {.workers = 1};
-    xylem_run(_pair_main, &ctx, &opts);
+    xylem_run(_timeout_main, &ctx, &opts);
 }
 
 int main(void) {

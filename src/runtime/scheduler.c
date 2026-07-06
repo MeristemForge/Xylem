@@ -698,6 +698,15 @@ static void _sched_timer_launch_cb(void* arg) {
     free(fire);
 }
 
+static void _sched_timer_launch_cleanup(void* arg) {
+    _sched_timer_fire_t* fire = (_sched_timer_fire_t*)arg;
+    if (!fire) {
+        return;
+    }
+    _sched_timer_complete(fire);
+    free(fire);
+}
+
 static int _sched_timer_launch(
     scheduler_t* sched, _sched_timer_fire_t* fire) {
     _sched_timer_fire_t* f =
@@ -707,7 +716,10 @@ static int _sched_timer_launch(
         return -1;
     }
     *f = *fire;
-    if (_sched_spawn(sched, _sched_timer_launch_cb, f, free) != 0) {
+    if (_sched_spawn(sched,
+                     _sched_timer_launch_cb,
+                     f,
+                     _sched_timer_launch_cleanup) != 0) {
         xylem_loge("<sched> timer spawn failed");
         free(f);
         return -1;
