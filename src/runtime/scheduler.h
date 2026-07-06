@@ -340,15 +340,16 @@ extern void scheduler_timer_start(
 /**
  * @brief Stop a running timer. Thread-safe.
  *
- * Returns true if a pending fire was cancelled (the timer was still
- * in the heap), false if the timer was already inactive, its callback
- * already dispatched, or the timer never started. If a repeat callback
- * is currently running, stop prevents the callback completion path from
- * re-queueing the timer.
+ * Returns true if a pending fire was cancelled: either the timer was
+ * still in the heap, or a running callback had scheduled a deferred
+ * reset. Returns false if the timer was already inactive, its callback
+ * already dispatched with no deferred reset, or the timer never started.
+ * If a repeat callback is currently running, stop prevents the callback
+ * completion path from re-queueing the timer.
  *
  * @param timer  Timer handle.
  *
- * @return true if a pending fire was cancelled.
+ * @return true if a pending or deferred fire was cancelled.
  */
 extern bool scheduler_timer_stop(scheduler_timer_t* timer);
 
@@ -391,7 +392,9 @@ typedef void (*scheduler_idle_fn_t)(void* ud);
  * @brief Register a callback for when all coroutines have exited.
  *
  * The callback fires once when the alive coroutine count drops to zero.
- * Thread-safe. Only one callback may be registered at a time.
+ * Only one callback may be registered at a time. This must be called
+ * before workers can observe the callback, or while the scheduler is
+ * externally synchronized.
  *
  * @param sched  Scheduler handle.
  * @param cb     Callback, or NULL to clear.

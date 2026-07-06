@@ -34,11 +34,14 @@
 #include <stdio.h>
 
 #define SAFETY_TIMEOUT_MS 10000
+#define DEADLINE_RACE_THREADS 4
+#define DEADLINE_RACE_ITERS   2000
 
 typedef struct _test_iowait_dir_s {
     iowait_t*          w;
     _Atomic uintptr_t  state;
     scheduler_timer_t* timer;
+    mtx_t              deadline_lock;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
 } _test_iowait_dir_t;
@@ -70,9 +73,32 @@ typedef struct {
     int             tested;
 } _iowait_ctx_t;
 
+typedef struct {
+    platform_sock_t socks[2];
+    iowait_t*       active;
+    _Atomic bool    start;
+    int             tested;
+} _deadline_race_ctx_t;
+
 static void _iowait_wait_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
     ctx->result = iowait_read(ctx->active);
+}
+
+static int _deadline_setter_thread(void* arg) {
+    _deadline_race_ctx_t* ctx = (_deadline_race_ctx_t*)arg;
+    while (!atomic_load(&ctx->start)) {
+        thrd_yield();
+    }
+
+    for (int i = 0; i < DEADLINE_RACE_ITERS; i++) {
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        iowait_set_rd_deadline(ctx->active, now + 1000 + (uint64_t)(i & 7));
+        if ((i & 3) == 0) {
+            iowait_set_rd_deadline(ctx->active, 0);
+        }
+    }
+    return 0;
 }
 
 static void _iowait_inject_stale_read(void* ud) {
@@ -170,6 +196,39 @@ static void _iowait_closed_before_event_coro(void* arg) {
     xylem_shutdown();
 }
 
+static void _iowait_deadline_race_coro(void* arg) {
+    _deadline_race_ctx_t* ctx = (_deadline_race_ctx_t*)arg;
+    thrd_t                threads[DEADLINE_RACE_THREADS];
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
+           == 0);
+    platform_socket_enable_nonblocking(ctx->socks[0], true);
+    platform_socket_enable_nonblocking(ctx->socks[1], true);
+
+    ctx->active = iowait_create(ctx->socks[0]);
+    ASSERT(ctx->active != NULL);
+
+    for (int i = 0; i < DEADLINE_RACE_THREADS; i++) {
+        ASSERT(thrd_create(&threads[i], _deadline_setter_thread, ctx)
+               == thrd_success);
+    }
+
+    atomic_store(&ctx->start, true);
+    xylem_sleep(1);
+    iowait_close(ctx->active);
+
+    for (int i = 0; i < DEADLINE_RACE_THREADS; i++) {
+        ASSERT(thrd_join(threads[i], NULL) == thrd_success);
+    }
+
+    ctx->tested = 1;
+    iowait_destroy(ctx->active);
+    platform_socket_close(ctx->socks[0]);
+    platform_socket_close(ctx->socks[1]);
+    xylem_shutdown();
+}
+
 static void test_stale_event_after_generation_wrap_is_rejected(void) {
     fprintf(stderr, "=== test_stale_event_after_generation_wrap_is_rejected\n");
     _iowait_ctx_t ctx = {
@@ -196,8 +255,22 @@ static void test_closed_state_wins_over_late_event(void) {
     ASSERT(ctx.tested == 1);
 }
 
+static void test_concurrent_deadline_setters_and_close(void) {
+    fprintf(stderr, "=== test_concurrent_deadline_setters_and_close\n");
+    _deadline_race_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    atomic_init(&ctx.start, false);
+    xylem_run(_iowait_deadline_race_coro, &ctx, NULL);
+    ASSERT(ctx.tested == 1);
+}
+
 int main(void) {
     test_stale_event_after_generation_wrap_is_rejected();
     test_closed_state_wins_over_late_event();
+    test_concurrent_deadline_setters_and_close();
     return 0;
 }

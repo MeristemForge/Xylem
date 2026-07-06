@@ -53,8 +53,10 @@ extern void runtime_run(
 /**
  * @brief Force the runtime to shut down immediately.
  *
- * Thread-safe. Unblocks runtime_run() without waiting for coroutines
- * to finish naturally.
+ * Safe to call from another thread while runtime_run() is active.
+ * Calls before runtime_run() finishes initialization, or during teardown,
+ * are not synchronized. Unblocks runtime_run() without waiting for
+ * coroutines to finish naturally.
  */
 extern void runtime_shutdown(void);
 

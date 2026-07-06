@@ -50,14 +50,12 @@ typedef struct iowait_s iowait_t;
  * that arrives first may still return IOWAIT_TIMEOUT if the coroutine
  * resumes after the deadline has passed.
  *
- * Deadline setters, iowait_close, and iowait_destroy
- * are all safe to call from any thread, including while a read or
- * write is parked on another thread. The one exception is the
- * deadline setter on a single direction: concurrent setters on the
- * same direction of the same handle are not safe (the per-direction
- * deadline timer is allocated lazily). Normal usage is for one
- * logical owner (typically the same coroutine that also reads or
- * writes) to drive the deadline.
+ * Deadline setters and iowait_close are safe to call from any thread,
+ * including while a read or write is parked on another thread.
+ * Concurrent setters on the same direction are serialized internally.
+ * iowait_destroy is the final owner-side release, not a synchronization
+ * primitive: it must not race with any other iowait API call, and all
+ * parked waiters must have returned before it is called.
  */
 
 /**
@@ -101,11 +99,8 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * IOWAIT_TIMEOUT.
  *
  * Safe to call from any thread, including while a read is parked on
- * another thread, but concurrent setters on the read direction of
- * the same handle are not safe: a single logical owner (typically
- * the same coroutine that drives iowait_read) must drive the read
- * deadline. See the "iowait concurrency model" comment at the top
- * of this header for the full rules.
+ * another thread. See the "iowait concurrency model" comment at the
+ * top of this header for the full rules.
  *
  * @param w            IO wait handle.
  * @param deadline_ms  Monotonic deadline in ms (see xylem_utils_getnow
@@ -198,11 +193,12 @@ extern void iowait_close(iowait_t* w);
  * Implicitly closes the handle if not already closed, then drops the
  * creator's reference. The handle is freed once all in-flight
  * references (held by in-flight poller callbacks and armed deadline
- * timers, not by parked waiters) have been released. A parked waiter
- * does not hold a reference, so the caller must keep the handle alive
- * for as long as any coroutine may still be parked on it -- typically
- * by reference-counting the owning connection so that destroy only
- * runs once every reader and writer has returned.
+ * timers, not by parked waiters) have been released. This is the final
+ * owner-side release and must not race with any other iowait API call.
+ * A parked waiter does not hold a reference, so the caller must keep the
+ * handle alive until every reader and writer has returned -- typically
+ * by reference-counting the owning connection and destroying the iowait
+ * only after the owner reaches its final release.
  *
  * @param w  IO wait handle (NULL is ignored).
  */

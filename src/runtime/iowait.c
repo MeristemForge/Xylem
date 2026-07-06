@@ -67,6 +67,7 @@ struct _iowait_dir_s {
     iowait_t*          w;
     _Atomic uintptr_t  waiter;  /* NONE | READY | parked coroutine ptr */
     scheduler_timer_t* timer;
+    mtx_t              deadline_lock;
     _Atomic uint64_t   deadline;
     _Atomic bool       deadline_error;
 };
@@ -82,6 +83,11 @@ struct iowait_s {
     mtx_t                 arm_lock;
 
     _Atomic int32_t       refcnt;
+    /**
+     * Guards stale poller events after slot reuse. A 16-bit wrap is only
+     * a theoretical ABA risk: it would require the same slot to be reused
+     * 65536 times while an older CQE for that slot is still pending.
+     */
     _Atomic uint16_t      gen;
     _Atomic int           interest;    /* PLATFORM_POLLER_NO_OP when not subscribed */
     _Atomic bool          closed;
@@ -171,7 +177,34 @@ static iowait_t* _iowait_slab_alloc(
         if (mtx_init(&page[i].arm_lock, mtx_plain) != thrd_success) {
             for (uint32_t j = 0; j < i; j++) {
                 mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].rd.deadline_lock);
+                mtx_destroy(&page[j].wr.deadline_lock);
             }
+            free(page);
+            mtx_unlock(&slab->lock);
+            return NULL;
+        }
+        if (mtx_init(&page[i].rd.deadline_lock, mtx_plain)
+            != thrd_success) {
+            for (uint32_t j = 0; j < i; j++) {
+                mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].rd.deadline_lock);
+                mtx_destroy(&page[j].wr.deadline_lock);
+            }
+            mtx_destroy(&page[i].arm_lock);
+            free(page);
+            mtx_unlock(&slab->lock);
+            return NULL;
+        }
+        if (mtx_init(&page[i].wr.deadline_lock, mtx_plain)
+            != thrd_success) {
+            for (uint32_t j = 0; j < i; j++) {
+                mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].rd.deadline_lock);
+                mtx_destroy(&page[j].wr.deadline_lock);
+            }
+            mtx_destroy(&page[i].rd.deadline_lock);
+            mtx_destroy(&page[i].arm_lock);
             free(page);
             mtx_unlock(&slab->lock);
             return NULL;
@@ -361,43 +394,56 @@ static bool _iowait_park_cb(mco_coro* co, void* arg) {
 }
 
 static void _iowait_stop_deadline(_iowait_dir_t* d) {
+    mtx_lock(&d->deadline_lock);
     if (d->timer && scheduler_timer_stop(d->timer)) {
         _iowait_unref(d->w);
     }
+    mtx_unlock(&d->deadline_lock);
 }
 
 /* Each timer arm owns one iowait ref, released on timeout or rearm cancel. */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
+    mtx_lock(&d->deadline_lock);
+
     atomic_store(&d->deadline, deadline_ms);
     atomic_store(&d->deadline_error, false);
 
-    /**
-     * Cancel any timer arm still in flight; if we actually caught it
-     * before it fired, return the reference that arm owned.
-     */
-    _iowait_stop_deadline(d);
+    if (deadline_ms == 0 || atomic_load(&d->w->closed)) {
+        if (d->timer && scheduler_timer_stop(d->timer)) {
+            _iowait_unref(d->w);
+        }
+        mtx_unlock(&d->deadline_lock);
+        return;
+    }
 
-    if (deadline_ms == 0) {
-        return;
-    }
-    if (atomic_load(&d->w->closed)) {
-        return;
-    }
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
 
     if (!d->timer) {
         d->timer = scheduler_timer_create(runtime_get_scheduler());
         if (!d->timer) {
             atomic_store(&d->deadline_error, true);
             _iowait_wake_waiter(d);
+            mtx_unlock(&d->deadline_lock);
             return;
         }
+        _iowait_ref(d->w);
+        scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
+        mtx_unlock(&d->deadline_lock);
+        return;
     }
 
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
-
+    /**
+     * Non-zero deadline updates are re-arms, not stop/start pairs: stop
+     * is a destroy/cancel barrier for firing timers and would discard the
+     * reset scheduled below. Each new arm takes a ref; reset() returns true
+     * only when it cancelled an older queued arm whose ref must be released.
+     */
     _iowait_ref(d->w);
-    scheduler_timer_start(d->timer, _iowait_timeout_cb, d, in, 0);
+    if (scheduler_timer_reset(d->timer, in)) {
+        _iowait_unref(d->w);
+    }
+    mtx_unlock(&d->deadline_lock);
 }
 
 static iowait_result_t _iowait_check_result(iowait_t* w, _iowait_dir_t* d) {
@@ -455,6 +501,8 @@ void iowait_slab_destroy(iowait_slab_t* slab) {
             if (page[i].wr.timer) {
                 scheduler_timer_destroy(page[i].wr.timer);
             }
+            mtx_destroy(&page[i].rd.deadline_lock);
+            mtx_destroy(&page[i].wr.deadline_lock);
             mtx_destroy(&page[i].arm_lock);
         }
         free(page);

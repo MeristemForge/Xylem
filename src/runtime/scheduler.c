@@ -585,7 +585,7 @@ static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
 
 /**
  * Republish the earliest timer deadline so the lock-free guards in
- * _sched_timer_process / _sched_timer_next_timeout can skip the lock when
+ * _sched_timer_process / timeout helpers can skip the lock when
  * nothing is due. Caller MUST hold w->timer_lock; readers use the same
  * default atomic ordering on the worker hot path.
  */
@@ -804,7 +804,7 @@ static int _sched_timer_process(_sched_worker_t* w) {
  * -1 when no timer is armed anywhere. Each deadline is the lock-free
  * republished hint, so this is a cheap scan of one atomic per worker.
  */
-static int _sched_timer_nearest_deadline(scheduler_t* sched) {
+static int _sched_timer_poll_timeout(scheduler_t* sched) {
     uint64_t best = UINT64_MAX;
     for (int32_t i = 0; i < sched->worker_count; i++) {
         uint64_t nd = atomic_load(&sched->workers[i].next_deadline_ms);
@@ -820,6 +820,19 @@ static int _sched_timer_nearest_deadline(scheduler_t* sched) {
         return 0;
     }
     uint64_t diff = best - now;
+    return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
+}
+
+static int _sched_timer_worker_timeout(_sched_worker_t* w) {
+    uint64_t nd = atomic_load(&w->next_deadline_ms);
+    if (nd == UINT64_MAX) {
+        return -1;
+    }
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (nd <= now) {
+        return 0;
+    }
+    uint64_t diff = nd - now;
     return (diff > INT32_MAX) ? INT32_MAX : (int)diff;
 }
 
@@ -1032,7 +1045,7 @@ static mco_coro* _sched_worker_poll(
             atomic_store(&sched->poller_running, false);
             return co;
         }
-        int poll_ms = _sched_timer_nearest_deadline(sched);
+        int poll_ms = _sched_timer_poll_timeout(sched);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
         atomic_store(&sched->poller_waiting, false);
         if (!atomic_load(&sched->running)) {
@@ -1099,8 +1112,7 @@ static mco_coro* _sched_worker_find(
     return NULL;
 }
 
-static mco_coro* _sched_worker_park(
-    scheduler_t* sched, _sched_worker_t* w, int timer_ms) {
+static mco_coro* _sched_worker_park(scheduler_t* sched, _sched_worker_t* w) {
     bool expected = false;
     atomic_compare_exchange_strong(&w->parked, &expected, true);
 
@@ -1110,6 +1122,13 @@ static mco_coro* _sched_worker_park(
         bool expected = true;
         atomic_compare_exchange_strong(&w->parked, &expected, false);
         return co;
+    }
+
+    int timer_ms = _sched_timer_worker_timeout(w);
+    if (timer_ms == 0) {
+        expected = true;
+        atomic_compare_exchange_strong(&w->parked, &expected, false);
+        return NULL;
     }
 
     if (timer_ms >= 0) {
@@ -1128,7 +1147,7 @@ static int _sched_worker_entry_cb(void* arg) {
     _tls_worker = w;
 
     while (atomic_load(&sched->running)) {
-        int timer_ms = _sched_timer_process(w);
+        _sched_timer_process(w);
 
         mco_coro* co = _sched_worker_find(sched, w);
         if (co) {
@@ -1136,7 +1155,7 @@ static int _sched_worker_entry_cb(void* arg) {
             continue;
         }
 
-        co = _sched_worker_park(sched, w, timer_ms);
+        co = _sched_worker_park(sched, w);
         if (co) {
             _sched_worker_run(w, co);
         }
@@ -1146,6 +1165,10 @@ static int _sched_worker_entry_cb(void* arg) {
 }
 
 static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
+    if (started_count > 0) {
+        atomic_store(&sched->running, false);
+    }
+
     if (sched->workers) {
         if (!sched->joined) {
             for (int32_t i = 0; i < started_count; i++) {
@@ -1660,6 +1683,7 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
         cancelled = true;
         break;
     case TIMER_FIRING:
+        cancelled = timer->reset_pending;
         timer->stop_pending  = true;
         timer->reset_pending = false;
         break;

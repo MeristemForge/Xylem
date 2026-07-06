@@ -421,8 +421,19 @@ parked coroutine into the direction's slot and re-checks close/deadline.
 `iowait_close()` drops the poller subscription **synchronously** under the arm
 lock before waking parked coroutines, so the caller can close the underlying fd
 right afterward without racing a deferred `EPOLL_CTL_DEL` against a recycled fd
-number. The handle itself is freed only when all refs (active waits + in-flight
-poller callbacks) are dropped, so closing while a waiter is parked is safe.
+number. It is idempotent and may race with parked waits or deadline setters.
+
+Deadline state is per direction. `set_deadline`, `clear_deadline`, and close's
+deadline stop path are serialized by that direction's `deadline_lock`, which
+protects lazy timer creation, timer reset/stop, and the arm/ref accounting. The
+lock does not protect socket I/O, stream/TLS state, or object lifetime.
+
+`iowait_destroy()` is different from close: it is the final owner-side release
+and must not race with any other iowait API call. The handle itself is retired
+only when all internal refs (in-flight poller callbacks and armed deadline
+timers) are dropped, but a parked waiter does **not** hold an iowait ref. The
+owning connection must therefore keep the handle alive until every parked reader
+and writer has returned, then call destroy exactly as the last release.
 
 ## 8. Timers
 
@@ -448,16 +459,17 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
   3. **repeat** — the original periodic interval, used when neither stop nor
      reset was requested.
 
-  Operations on the same timer handle (cancel/cancel, cancel/reset,
-  cancel/start) are **not safe for concurrent use** and require external
-  synchronization, matching Go's `Timer.Stop`/`Reset` contract.
+- Operations on the same internal scheduler timer handle are serialized by the
+  owner worker's `timer_lock`; `start`, `reset`, and `stop` are thread-safe.
+  An already dispatched callback cannot be withdrawn by `stop()`, but `stop()`
+  does prevent a repeat requeue or a deferred reset from the same firing round.
 - Timers are reference counted so `scheduler_timer_destroy()` is safe to call
   concurrently with an in-flight fire. `scheduler_timer_stop()`/`reset()` return
-  whether they cancelled a still-pending fire, which lets callers (e.g. the
-  iowait deadline path) know whether to release a reference the callback would
-  otherwise drop. The iowait deadline callback re-checks the absolute deadline
-  before waking, so a callback that was already dispatched before a clear/reset
-  can become a harmless spurious wake.
+  whether they cancelled a still-pending or deferred fire, which lets callers
+  (e.g. the iowait deadline path) know whether to release a reference the
+  callback would otherwise drop. The iowait deadline callback re-checks the
+  absolute deadline before waking, so a callback that was already dispatched
+  before a clear/reset can become a harmless spurious wake.
 
 `xylem_sleep(ms)` is built directly on this: it creates a one-shot timer whose
 callback reschedules the sleeping coroutine, then parks.

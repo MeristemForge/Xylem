@@ -22,6 +22,8 @@
 #include "xylem.h"
 
 #include "assert.h"
+#include "runtime/runtime.h"
+#include "runtime/scheduler.h"
 #include "utils.h"
 
 #include <stdatomic.h>
@@ -56,6 +58,12 @@ typedef struct {
     atomic_uint_least64_t second_fire_ms;
     xylem_waitgroup_t*    wg;
 } _every_reset_ctx_t;
+
+typedef struct {
+    scheduler_timer_t* timer;
+    atomic_int         fires;
+    xylem_waitgroup_t* wg;
+} _deferred_stop_ctx_t;
 
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
@@ -392,6 +400,39 @@ static void test_every_reset_and_cancel_from_callback(void) {
     xylem_run(_every_reset_main, NULL, NULL);
 }
 
+static void _deferred_stop_cb(scheduler_timer_t* timer, void* ud) {
+    _deferred_stop_ctx_t* ctx = (_deferred_stop_ctx_t*)ud;
+    ASSERT(timer == ctx->timer);
+    ASSERT(atomic_fetch_add(&ctx->fires, 1) == 0);
+    ASSERT(scheduler_timer_reset(timer, 100) == false);
+    ASSERT(scheduler_timer_stop(timer) == true);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _deferred_stop_main(void* arg) {
+    (void)arg;
+    _deferred_stop_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = _arm_watchdog();
+    ctx.timer = scheduler_timer_create(runtime_get_scheduler());
+    ASSERT(ctx.timer != NULL);
+    scheduler_timer_start(ctx.timer, _deferred_stop_cb, &ctx, 10, 0);
+
+    xylem_waitgroup_wait(ctx.wg);
+    xylem_sleep(150);
+    ASSERT(atomic_load(&ctx.fires) == 1);
+
+    scheduler_timer_destroy(ctx.timer);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx.wg);
+    xylem_shutdown();
+}
+
+static void test_stop_cancels_deferred_reset_from_callback(void) {
+    xylem_run(_deferred_stop_main, NULL, NULL);
+}
+
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
@@ -416,6 +457,7 @@ int main(void) {
     test_blocking_cb();
     test_every_callbacks_do_not_overlap();
     test_every_reset_and_cancel_from_callback();
+    test_stop_cancels_deferred_reset_from_callback();
     test_null();
     return 0;
 }

@@ -100,21 +100,24 @@ int platform_poller_init(platform_poller_sq_t* sq) {
 
 int platform_poller_add(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
     struct kevent ke;
-    int           ret = 0;
 
     if (sqe->op & PLATFORM_POLLER_RD_OP) {
         EV_SET(&ke, sqe->fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
-            ret = -1;
+            return -1;
         }
     }
     if (sqe->op & PLATFORM_POLLER_WR_OP) {
         EV_SET(&ke, sqe->fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, sqe->ud);
         if (kevent(*sq, &ke, 1, NULL, 0, NULL) == -1) {
-            ret = -1;
+            if (sqe->op & PLATFORM_POLLER_RD_OP) {
+                EV_SET(&ke, sqe->fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+                kevent(*sq, &ke, 1, NULL, 0, NULL);
+            }
+            return -1;
         }
     }
-    return ret;
+    return 0;
 }
 
 int platform_poller_mod(platform_poller_sq_t* sq, platform_poller_sqe_t* sqe) {
