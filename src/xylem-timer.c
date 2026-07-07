@@ -25,12 +25,14 @@
 #include "runtime/scheduler.h"
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 struct xylem_timer_s {
     scheduler_timer_t* internal;
     xylem_timer_fn_t   cb;
     void*              ud;
+    bool               repeat;
     _Atomic int32_t    refcnt;
 };
 
@@ -77,6 +79,7 @@ static xylem_timer_t* _timer_create(
     timer->internal = t;
     timer->cb       = cb;
     timer->ud       = ud;
+    timer->repeat   = (repeat_ms != 0);
     atomic_init(&timer->refcnt, 1);
 
     scheduler_timer_set_spawn(t, true);
@@ -112,6 +115,9 @@ bool xylem_timer_cancel(xylem_timer_t* timer) {
 
 bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
     if (!timer) {
+        return false;
+    }
+    if (timer->repeat && delay_ms == 0) {
         return false;
     }
     return scheduler_timer_reset(timer->internal, delay_ms);

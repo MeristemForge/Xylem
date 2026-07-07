@@ -102,8 +102,6 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
         return;
     }
 
-    atomic_store(&t->last_tick, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
-
     /**
      * Deliver only if the previous tick has been drained. Otherwise the
      * consumer is behind and we coalesce (drop) this tick, exactly like
@@ -118,6 +116,8 @@ static void _ticker_tick_cb(scheduler_timer_t* timer, void* ud) {
      */
     int32_t expected = 0;
     if (atomic_compare_exchange_strong(&t->pending, &expected, 1)) {
+        atomic_store(&t->last_tick,
+                     xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
         xylem_sem_post(t->sem);
     }
 }
@@ -172,9 +172,9 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
     uint64_t tick = 0;
     xylem_sem_wait(ticker->sem);
     if (!atomic_load(&ticker->closed)) {
-        /* Allow the next tick through; re-opens the coalescing slot. */
-        atomic_store(&ticker->pending, 0);
         tick = atomic_load(&ticker->last_tick);
+        /* Re-open the coalescing slot after reading its payload. */
+        atomic_store(&ticker->pending, 0);
     }
 
     _ticker_unref(ticker);

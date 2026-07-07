@@ -103,8 +103,9 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * @note [CONTEXT-ADAPTIVE]
  *
  * Preserves callback and user data. Restarts the countdown from now.
- * For periodic timers, delay_ms also becomes the new interval. @p timer
- * must be a live handle that has not been consumed by xylem_timer_cancel().
+ * For periodic timers, delay_ms also becomes the new interval and must be
+ * greater than 0. @p timer must be a live handle that has not been consumed
+ * by xylem_timer_cancel().
  * Calls on different timer handles may run concurrently, but operations
  * on the same handle, including reset/reset and reset/cancel, require
  * external synchronization. If both cancel and reset are issued during

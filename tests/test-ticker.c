@@ -30,6 +30,7 @@
 
 #define TICK_INTERVAL_MS  20
 #define TICK_TARGET       5
+#define COALESCE_SLEEP_MS (TICK_INTERVAL_MS * 8)
 
 typedef struct {
     xylem_ticker_t*    tk;
@@ -63,6 +64,31 @@ static void _tick_main(void* arg) {
 
 static void test_tick(void) {
     _tick_main(NULL);
+}
+
+static void _coalesce_main(void* arg) {
+    (void)arg;
+    xylem_ticker_t* tk = xylem_ticker_create(TICK_INTERVAL_MS);
+    ASSERT(tk != NULL);
+
+    xylem_timer_t* wd = _arm_watchdog();
+
+    uint64_t first = xylem_ticker_recv(tk);
+    ASSERT(first != 0);
+
+    xylem_sleep(COALESCE_SLEEP_MS);
+    uint64_t before = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    uint64_t second = xylem_ticker_recv(tk);
+    ASSERT(second != 0);
+    ASSERT(second >= first);
+    ASSERT(before - second >= COALESCE_SLEEP_MS / 2);
+
+    xylem_timer_cancel(wd);
+    xylem_ticker_destroy(tk);
+}
+
+static void test_coalesced_tick_keeps_delivered_time(void) {
+    _coalesce_main(NULL);
 }
 
 static void _invalid_main(void* arg) {
@@ -179,26 +205,11 @@ static void test_thread_consumer(void) {
 /**
  * Concurrent destroy-while-ticking soak.
  *
- * Targets the window in _ticker_tick_cb(): the scheduler dequeues the
- * timer on its owner worker and is about to call the callback, but has
- * not yet run the callback's own _ticker_ref(). If a concurrent
- * xylem_ticker_destroy() from another thread drops the last reference
- * in that gap, the ticker is freed and the callback's first access is a
- * use-after-free.
- *
- * Crucially, no consumer ever parks in xylem_ticker_recv() here, so
- * nothing holds a protective reference across destroy. The other tests
- * always keep a consumer blocked in recv (which refs the ticker), which
- * masks this window -- that is why they never trip it.
- *
- * This is a probabilistic race: the window is a few instructions wide,
- * so the test deliberately oversubscribes CPUs (few workers, many
- * destroyer threads) to widen it via preemption, and hammers
- * create/destroy with no per-iteration heavy work. It is wall-clock
- * bounded so it does not balloon the suite. Set XYLEM_TICKER_SOAK_MS to
- * run it longer (e.g. under ASan/TSan) for a real chance of catching
- * the bug. With the bug present and a sanitizer attached, a long enough
- * run aborts the process; otherwise the run simply completes "clean".
+ * The scheduler's ud_guard must pin the ticker while an inline timer
+ * callback is in flight. This probabilistic soak hammers create/destroy
+ * with no consumer reference so ASan/TSan runs have a chance to catch a
+ * regression in that ownership path. Set XYLEM_TICKER_SOAK_MS to run it
+ * longer under sanitizers.
  */
 #define RACE_DESTROYERS  8
 #define RACE_INTERVAL_MS 1
@@ -267,6 +278,7 @@ static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     test_tick();
+    test_coalesced_tick_keeps_delivered_time();
     test_invalid();
     test_destroy_wakes_recv();
     test_thread_consumer();

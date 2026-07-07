@@ -309,6 +309,7 @@ static void _every_overlap_cb(xylem_timer_t* timer, void* ud) {
     xylem_sleep(20);
 
     if (n >= 3 && atomic_exchange(&ctx->done, 1) == 0) {
+        ASSERT(xylem_timer_cancel(timer) == false);
         xylem_waitgroup_done(ctx->wg);
     }
     atomic_fetch_sub(&ctx->in_cb, 1);
@@ -331,7 +332,6 @@ static void _every_overlap_main(void* arg) {
     ASSERT(atomic_load(&ctx.reentered) == 0);
     ASSERT(atomic_load(&ctx.fires) >= 3);
 
-    xylem_timer_cancel(ctx.timer);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
@@ -381,6 +381,28 @@ static void test_every_reset_and_cancel_from_callback(void) {
     _every_reset_main(NULL);
 }
 
+static void _every_reset_zero_main(void* arg) {
+    (void)arg;
+    _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = _arm_watchdog();
+    xylem_timer_t* t  = xylem_timer_every(10, _every_cb, &ctx);
+    ASSERT(t != NULL);
+    ASSERT(xylem_timer_reset(t, 0) == false);
+
+    xylem_waitgroup_wait(ctx.wg);
+    ASSERT(atomic_load(&ctx.fires) >= FIRE_TARGET);
+
+    xylem_timer_cancel(t);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx.wg);
+}
+
+static void test_every_reset_rejects_zero_interval(void) {
+    _every_reset_zero_main(NULL);
+}
+
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
@@ -407,6 +429,7 @@ static void _test_run_all(void* arg) {
     test_blocking_cb();
     test_every_callbacks_do_not_overlap();
     test_every_reset_and_cancel_from_callback();
+    test_every_reset_rejects_zero_interval();
     test_null();
     _utils_watchdog_stop();
     xylem_shutdown();
