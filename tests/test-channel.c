@@ -39,7 +39,7 @@ typedef struct {
     xylem_channel_t* ch;
     int              payload;
     atomic_int       recv_count;
-    int              tested;
+    atomic_int       tested;
 } _ch_ctx_t;
 
 static void _ch_sender(void* arg) {
@@ -60,7 +60,7 @@ static void _ch_receiver(void* arg) {
         atomic_fetch_add(&ctx->recv_count, 1);
     }
     ASSERT(atomic_load(&ctx->recv_count) == total);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
 }
@@ -79,17 +79,17 @@ static void test_concurrent(void) {
     for (int round = 0; round < 20; round++) {
         _ch_ctx_t ctx = {0};
         _test_ch_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
 typedef struct {
     xylem_channel_t* ch;
     int              payload;
-    int              tested;
+    atomic_int       tested;
 } _to_ctx_t;
 
 typedef struct {
@@ -103,7 +103,7 @@ static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
     ASSERT(msg == NULL);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
 }
@@ -118,10 +118,10 @@ static void test_timeout_empty(void) {
     fprintf(stderr, "=== test_timeout_empty\n");
     _to_ctx_t ctx = {0};
     _to_basic_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 static void _to_sender_coro(void* arg) {
@@ -134,7 +134,7 @@ static void _to_recv_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 1000);
     ASSERT(msg == &ctx->payload);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
 }
@@ -150,16 +150,16 @@ static void test_timeout_deliver(void) {
     fprintf(stderr, "=== test_timeout_deliver\n");
     _to_ctx_t ctx = {0};
     _to_deliver_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 #define STALE_TIMER_ROUNDS 100
 
 typedef struct {
-    int tested;
+    atomic_int tested;
 } _stale_ctx_t;
 
 static void _stale_send_after_coro(void* arg) {
@@ -201,7 +201,7 @@ static void _stale_recv_coro(void* arg) {
         ASSERT(second_msg == &second);
     }
 
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_waitgroup_destroy(wg);
     xylem_channel_destroy(ch);
 }
@@ -214,10 +214,10 @@ static void test_timeout_stale_timer_does_not_end_next_recv(void) {
     fprintf(stderr, "=== test_timeout_stale_timer_does_not_end_next_recv\n");
     _stale_ctx_t ctx = {0};
     _stale_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 #define TO_RACE_ROUNDS 200
@@ -228,9 +228,9 @@ typedef struct {
     int                payload;
     uint64_t           timeout_ms;
     uint64_t           send_at_ms;
-    int                got_timeout;
-    int                got_message;
-    int                tested;
+    atomic_int         got_timeout;
+    atomic_int         got_message;
+    atomic_int         tested;
 } _race_ctx_t;
 
 static void _race_sender_coro(void* arg) {
@@ -248,13 +248,13 @@ static void _race_recv_coro(void* arg) {
     void* msg = xylem_channel_recv_timeout(ctx->ch, ctx->timeout_ms);
     if (msg) {
         ASSERT(msg == &ctx->payload);
-        ctx->got_message = 1;
+        atomic_store(&ctx->got_message, 1);
     } else {
-        ctx->got_timeout = 1;
+        atomic_store(&ctx->got_timeout, 1);
     }
 
     xylem_waitgroup_wait(ctx->wg);
-    if (ctx->got_timeout) {
+    if (atomic_load(&ctx->got_timeout)) {
         void* leftover = xylem_channel_recv(ctx->ch);
         ASSERT(leftover == &ctx->payload);
     }
@@ -262,7 +262,7 @@ static void _race_recv_coro(void* arg) {
     ctx->ch = NULL;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _race_main(void* arg) {
@@ -283,11 +283,12 @@ static void test_timeout_race(void) {
         _race_ctx_t ctx = {0};
         ctx.payload = round;
         _race_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
 
-        ASSERT(ctx.got_message ^ ctx.got_timeout);
+        ASSERT(atomic_load(&ctx.got_message) ^
+               atomic_load(&ctx.got_timeout));
     }
 }
 
@@ -300,7 +301,7 @@ typedef struct {
     int                payload;
     atomic_int         recv_count;
     thrd_t             thr;
-    int                tested;
+    atomic_int         tested;
 } _tr_ctx_t;
 
 static int _tr_recv_thread(void* arg) {
@@ -330,7 +331,7 @@ static void _tr_coordinator(void* arg) {
     xylem_channel_close(ctx->ch);
     thrd_join(ctx->thr, NULL);
     ASSERT(atomic_load(&ctx->recv_count) == TR_SENDERS * TR_MESSAGES);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
     xylem_waitgroup_destroy(ctx->wg);
@@ -354,10 +355,10 @@ static void test_thread_recv(void) {
     for (int round = 0; round < 10; round++) {
         _tr_ctx_t ctx = {0};
         _tr_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
@@ -365,7 +366,7 @@ typedef struct {
     xylem_channel_t* ch;
     int              payload;
     thrd_t           thr;
-    int              tested;
+    atomic_int       tested;
 } _ts_ctx_t;
 
 static int _ts_send_thread(void* arg) {
@@ -381,7 +382,7 @@ static void _ts_recv_coro(void* arg) {
     void* msg = xylem_channel_recv(ctx->ch);
     ASSERT(msg == &ctx->payload);
     thrd_join(ctx->thr, NULL);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
 }
@@ -399,10 +400,10 @@ static void test_thread_send(void) {
         _ts_ctx_t ctx = {0};
         ctx.payload = round;
         _ts_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
@@ -412,7 +413,7 @@ typedef struct {
     thrd_t           thr;
     atomic_bool      ready;
     atomic_bool      received;
-    int              tested;
+    atomic_int       tested;
 } _tc_ctx_t;
 
 static int _tc_owner_thread(void* arg) {
@@ -440,7 +441,7 @@ static void _tc_recv_coro(void* arg) {
     ASSERT(xylem_channel_recv(ctx->ch) == NULL);
     atomic_store(&ctx->received, true);
     thrd_join(ctx->thr, NULL);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _tc_main(void* arg) {
@@ -454,14 +455,14 @@ static void test_thread_create_destroy(void) {
     _tc_ctx_t ctx = {0};
     ctx.payload = 42;
     _tc_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
-    int tested;
+    atomic_int tested;
 } _bt_ctx_t;
 
 static void _bt_coro(void* arg) {
@@ -482,7 +483,7 @@ static void _bt_coro(void* arg) {
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &c);
     ASSERT(xylem_channel_recv_timeout(ch, 0) == NULL);
 
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ch);
 }
 
@@ -494,10 +495,10 @@ static void test_unbounded_len(void) {
     fprintf(stderr, "=== test_unbounded_len\n");
     _bt_ctx_t ctx = {0};
     _bt_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 static void _test_run_all(void* arg) {

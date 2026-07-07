@@ -85,7 +85,8 @@ extern xylem_sem_t* xylem_sem_create(uint32_t value);
  *
  * Callable from any thread or context. The caller must ensure no
  * coroutine or thread is still blocked in wait() or timedwait() on
- * this semaphore.
+ * this semaphore, and destroy() must not race with any other semaphore
+ * API call on the same semaphore.
  *
  * @param sem  Semaphore handle, NULL is safe.
  */

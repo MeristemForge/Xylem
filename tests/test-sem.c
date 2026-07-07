@@ -32,7 +32,7 @@ static xylem_opts_t _rt_opts = { .workers = 0 };
 
 typedef struct {
     xylem_sem_t* sem;
-    int          tested;
+    atomic_int   tested;
 } _count_ctx_t;
 
 static void _count_main(void* arg) {
@@ -45,7 +45,7 @@ static void _count_main(void* arg) {
     xylem_sem_post(ctx->sem);
     ASSERT(xylem_sem_timedwait(ctx->sem, 0) == true);
 
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -53,23 +53,23 @@ static void test_count(void) {
     fprintf(stderr, "=== test_count\n");
     _count_ctx_t ctx = {0};
     _count_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
     xylem_sem_t* sem;
     atomic_int   woke;
-    int          tested;
+    atomic_int   tested;
 } _pair_ctx_t;
 
 static void _pair_waiter(void* arg) {
     _pair_ctx_t* ctx = (_pair_ctx_t*)arg;
     xylem_sem_wait(ctx->sem);
     atomic_store(&ctx->woke, 1);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -92,16 +92,16 @@ static void test_coro_pair(void) {
     _pair_ctx_t ctx = {0};
     atomic_init(&ctx.woke, 0);
     _pair_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
     xylem_sem_t* sem;
     atomic_int   thread_done;
-    int          tested;
+    atomic_int   tested;
 } _ct_ctx_t;
 
 static int _ct_thread_fn(void* arg) {
@@ -118,7 +118,7 @@ static void _ct_poster(void* arg) {
     while (atomic_load(&ctx->thread_done) == 0) {
         xylem_sleep(5);
     }
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -136,15 +136,15 @@ static void test_coro_posts_thread(void) {
     _ct_ctx_t ctx = {0};
     atomic_init(&ctx.thread_done, 0);
     _ct_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
     xylem_sem_t* sem;
-    int          tested;
+    atomic_int   tested;
 } _tc_ctx_t;
 
 static int _tc_thread_fn(void* arg) {
@@ -162,7 +162,7 @@ static void _tc_waiter(void* arg) {
     thrd_detach(th);
 
     xylem_sem_wait(ctx->sem);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -176,14 +176,14 @@ static void test_thread_posts_coro(void) {
     fprintf(stderr, "=== test_thread_posts_coro\n");
     _tc_ctx_t ctx = {0};
     _tc_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
-    int tested;
+    atomic_int tested;
 } _coto_ctx_t;
 
 static void _coto_main(void* arg) {
@@ -201,7 +201,7 @@ static void _coto_main(void* arg) {
     xylem_sem_post(sem);
     ASSERT(xylem_sem_timedwait(sem, 100) == true);
 
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(sem);
 }
 
@@ -209,22 +209,22 @@ static void test_coro_timeout(void) {
     fprintf(stderr, "=== test_coro_timeout\n");
     _coto_ctx_t ctx = {0};
     _coto_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
     xylem_sem_t* sem;
-    int          tested;
+    atomic_int   tested;
 } _win_ctx_t;
 
 static void _win_waiter(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
     bool ok = xylem_sem_timedwait(ctx->sem, 5000);
     ASSERT(ok == true);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -245,16 +245,16 @@ static void test_coro_timedwait_wins(void) {
     fprintf(stderr, "=== test_coro_timedwait_wins\n");
     _win_ctx_t ctx = {0};
     _win_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 typedef struct {
     xylem_sem_t* sem;
     atomic_int   thread_result;
-    int          tested;
+    atomic_int   tested;
 } _tto_ctx_t;
 
 static int _tto_thread_fn(void* arg) {
@@ -270,7 +270,7 @@ static void _tto_driver(void* arg) {
         xylem_sleep(5);
     }
     ASSERT(atomic_load(&ctx->thread_result) == 1);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -288,10 +288,10 @@ static void test_thread_timeout(void) {
     _tto_ctx_t ctx = {0};
     atomic_init(&ctx.thread_result, 0);
     _tto_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 #define STRESS_WAITERS 16
@@ -302,7 +302,7 @@ typedef struct {
     atomic_int   acquired;
     atomic_int   done;
     atomic_int   posters_done;
-    int          tested;
+    atomic_int   tested;
 } _stress_ctx_t;
 
 static void _stress_waiter(void* arg) {
@@ -313,7 +313,7 @@ static void _stress_waiter(void* arg) {
     }
     if (atomic_fetch_add(&ctx->done, 1) + 1 == STRESS_WAITERS) {
         ASSERT(atomic_load(&ctx->acquired) == STRESS_WAITERS * STRESS_ROUNDS);
-        ctx->tested = 1;
+        atomic_store(&ctx->tested, 1);
         while (atomic_load(&ctx->posters_done) < STRESS_WAITERS) {
             xylem_sleep(1);
         }
@@ -350,10 +350,10 @@ static void test_stress(void) {
     atomic_init(&ctx.done, 0);
     atomic_init(&ctx.posters_done, 0);
     _stress_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 #define MIX_CORO_W     8
@@ -371,7 +371,7 @@ typedef struct {
     atomic_int   acquired;
     atomic_int   waiters_done;
     atomic_int   posters_done;
-    int          tested;
+    atomic_int   tested;
 } _mix_ctx_t;
 
 static void _mix_acquire_loop(_mix_ctx_t* ctx) {
@@ -422,7 +422,7 @@ static void _mix_driver(void* arg) {
         xylem_sleep(2);
     }
     ASSERT(atomic_load(&ctx->acquired) == MIX_TOTAL);
-    ctx->tested = 1;
+    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
 }
 
@@ -456,10 +456,10 @@ static void test_mixed_waiters(void) {
         atomic_init(&ctx.waiters_done, 0);
         atomic_init(&ctx.posters_done, 0);
         _mix_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
