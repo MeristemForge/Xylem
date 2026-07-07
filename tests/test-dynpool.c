@@ -21,12 +21,15 @@
 
 #include "runtime/dynpool.h"
 #include "assert.h"
+#include "xylem/xylem-utils.h"
 #include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
 
 #define SUBMITTERS 64
+#define RETIRE_SUBMITTERS 8
+#define RETIRE_ROUNDS 256
 
 typedef struct {
     dynpool_t*  pool;
@@ -36,6 +39,12 @@ typedef struct {
     atomic_int  done;
     atomic_int  max_active;
 } _max_ctx_t;
+
+typedef struct {
+    dynpool_t*  pool;
+    atomic_bool start;
+    atomic_int  done;
+} _retire_ctx_t;
 
 static void _max_update(atomic_int* max_value, int value) {
     int cur = atomic_load(max_value);
@@ -63,6 +72,24 @@ static int _max_submitter(void* arg) {
         thrd_yield();
     }
     ASSERT(dynpool_submit(ctx->pool, _max_job, ctx) == 0);
+    return 0;
+}
+
+static void _retire_job(void* arg) {
+    _retire_ctx_t* ctx = (_retire_ctx_t*)arg;
+    atomic_fetch_add(&ctx->done, 1);
+}
+
+static int _retire_submitter(void* arg) {
+    _retire_ctx_t* ctx = (_retire_ctx_t*)arg;
+    while (!atomic_load(&ctx->start)) {
+        thrd_yield();
+    }
+
+    for (int i = 0; i < RETIRE_ROUNDS; i++) {
+        ASSERT(dynpool_submit(ctx->pool, _retire_job, ctx) == 0);
+        thrd_yield();
+    }
     return 0;
 }
 
@@ -108,7 +135,44 @@ static void test_max_threads_is_enforced_under_concurrent_submit(void) {
     dynpool_destroy(ctx.pool);
 }
 
+static void test_concurrent_submit_while_workers_retire_drains_queue(void) {
+    dynpool_opts_t opts = {
+        .max_threads = 4,
+        .idle_timeout = 1,
+    };
+    _retire_ctx_t ctx = {0};
+    atomic_init(&ctx.start, false);
+    atomic_init(&ctx.done, 0);
+
+    ctx.pool = dynpool_create(&opts);
+    ASSERT(ctx.pool != NULL);
+
+    thrd_t threads[RETIRE_SUBMITTERS];
+    for (int i = 0; i < RETIRE_SUBMITTERS; i++) {
+        ASSERT(thrd_create(&threads[i], _retire_submitter, &ctx)
+               == thrd_success);
+    }
+
+    atomic_store(&ctx.start, true);
+    for (int i = 0; i < RETIRE_SUBMITTERS; i++) {
+        ASSERT(thrd_join(threads[i], NULL) == thrd_success);
+    }
+
+    int expected = RETIRE_SUBMITTERS * RETIRE_ROUNDS;
+    uint64_t deadline =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000;
+    while (atomic_load(&ctx.done) < expected &&
+           xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) < deadline) {
+        thrd_yield();
+    }
+
+    ASSERT(atomic_load(&ctx.done) == expected);
+
+    dynpool_destroy(ctx.pool);
+}
+
 int main(void) {
     test_max_threads_is_enforced_under_concurrent_submit();
+    test_concurrent_submit_while_workers_retire_drains_queue();
     return 0;
 }

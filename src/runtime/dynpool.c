@@ -21,11 +21,10 @@
 
 #include "dynpool.h"
 
-#include "container/mpsc.h"
+#include "container/queue.h"
 #include "platform/platform-sem.h"
 #include "xylem/xylem-threads.h"
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -33,79 +32,89 @@
 #define DYNPOOL_DEFAULT_IDLE_TIMEOUT 10000
 
 typedef struct _dynpool_job_s {
+    queue_node_t node;
     void (*routine)(void*);
     void*       arg;
-    mpsc_node_t node;
 } _dynpool_job_t;
 
 struct dynpool_s {
-    mpsc_t           queue;
-    mtx_t            pop_mtx;
-    platform_sem_t*  sem;
-    _Atomic int32_t  thread_count;
-    _Atomic int32_t  idle_count;
-    int32_t          max_threads;
-    uint64_t         idle_timeout;
-    _Atomic bool     running;
+    queue_t         queue;
+    mtx_t           mtx;
+    platform_sem_t* sem;
+    int32_t         num_threads;
+    int32_t         num_idle;
+    int32_t         num_notify;
+    int32_t         max_threads;
+    uint64_t        idle_timeout;
+    bool            running;
 };
-
-static _dynpool_job_t* _dynpool_pop_job(dynpool_t* pool) {
-    mtx_lock(&pool->pop_mtx);
-    mpsc_node_t* node = mpsc_pop(&pool->queue);
-    mtx_unlock(&pool->pop_mtx);
-
-    if (node) {
-        return mpsc_entry(node, _dynpool_job_t, node);
-    }
-    return NULL;
-}
 
 static int _dynpool_thread_entry(void* arg) {
     dynpool_t* pool = (dynpool_t*)arg;
 
     for (;;) {
-        atomic_fetch_add(&pool->idle_count, 1);
-        int rc = platform_sem_timedwait(pool->sem, pool->idle_timeout);
-        atomic_fetch_sub(&pool->idle_count, 1);
+        mtx_lock(&pool->mtx);
 
-        if (!atomic_load(&pool->running)) {
-            break;
-        }
-
-        _dynpool_job_t* job = _dynpool_pop_job(pool);
-        if (job) {
+        queue_node_t* node = queue_dequeue(&pool->queue);
+        if (node) {
+            _dynpool_job_t* job = queue_entry(node, _dynpool_job_t, node);
+            mtx_unlock(&pool->mtx);
             job->routine(job->arg);
             free(job);
-        } else if (rc != 0) {
-            break;
+            continue;
         }
-    }
 
-    atomic_fetch_sub(&pool->thread_count, 1);
-    return 0;
+        if (!pool->running) {
+            pool->num_threads--;
+            mtx_unlock(&pool->mtx);
+            return 0;
+        }
+
+        pool->num_idle++;
+        mtx_unlock(&pool->mtx);
+
+        int rc = platform_sem_timedwait(pool->sem, pool->idle_timeout);
+
+        mtx_lock(&pool->mtx);
+        bool notified = false;
+        if (pool->num_notify > 0) {
+            pool->num_notify--;
+            notified = true;
+        }
+        pool->num_idle--;
+
+        bool retire =
+            !pool->running ||
+            (!notified && rc != 0 && queue_empty(&pool->queue));
+        if (retire) {
+            pool->num_threads--;
+            mtx_unlock(&pool->mtx);
+            return 0;
+        }
+
+        mtx_unlock(&pool->mtx);
+    }
 }
 
-static bool _dynpool_reserve_thread(dynpool_t* pool) {
-    int32_t count = atomic_load(&pool->thread_count);
-    while (count < pool->max_threads) {
-        if (atomic_compare_exchange_weak(
-                &pool->thread_count, &count, count + 1)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static void _dynpool_spawn_thread(dynpool_t* pool) {
-    if (!_dynpool_reserve_thread(pool)) {
-        return;
-    }
-
+static void _dynpool_spawn_reserved(dynpool_t* pool) {
     thrd_t thr;
     if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
         thrd_detach(thr);
-    } else {
-        atomic_fetch_sub(&pool->thread_count, 1);
+        return;
+    }
+
+    mtx_lock(&pool->mtx);
+    pool->num_threads--;
+    bool notify = false;
+    if (!queue_empty(&pool->queue) &&
+        pool->num_idle > pool->num_notify) {
+        pool->num_notify++;
+        notify = true;
+    }
+    mtx_unlock(&pool->mtx);
+
+    if (notify) {
+        platform_sem_post(pool->sem);
     }
 }
 
@@ -115,15 +124,15 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
         return NULL;
     }
 
-    mpsc_init(&pool->queue);
-    if (mtx_init(&pool->pop_mtx, mtx_plain) != thrd_success) {
+    queue_init(&pool->queue);
+    if (mtx_init(&pool->mtx, mtx_plain) != thrd_success) {
         free(pool);
         return NULL;
     }
 
     pool->sem = platform_sem_create(0);
     if (!pool->sem) {
-        mtx_destroy(&pool->pop_mtx);
+        mtx_destroy(&pool->mtx);
         free(pool);
         return NULL;
     }
@@ -140,12 +149,12 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
         }
     }
 
-    atomic_store(&pool->running, true);
+    pool->running = true;
     return pool;
 }
 
 int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
-    if (!pool || !routine || !atomic_load(&pool->running)) {
+    if (!pool || !routine) {
         return -1;
     }
 
@@ -157,11 +166,33 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
     job->routine = routine;
     job->arg = arg;
 
-    mpsc_push(&pool->queue, &job->node);
-    platform_sem_post(pool->sem);
+    mtx_lock(&pool->mtx);
+    if (!pool->running) {
+        mtx_unlock(&pool->mtx);
+        free(job);
+        return -1;
+    }
 
-    if (atomic_load(&pool->idle_count) == 0) {
-        _dynpool_spawn_thread(pool);
+    queue_enqueue(&pool->queue, &job->node);
+
+    bool notify = false;
+    if (pool->num_idle > pool->num_notify) {
+        pool->num_notify++;
+        notify = true;
+    }
+
+    bool spawn = false;
+    if (!notify && pool->num_threads < pool->max_threads) {
+        pool->num_threads++;
+        spawn = true;
+    }
+    mtx_unlock(&pool->mtx);
+
+    if (notify) {
+        platform_sem_post(pool->sem);
+    }
+    if (spawn) {
+        _dynpool_spawn_reserved(pool);
     }
 
     return 0;
@@ -172,24 +203,32 @@ void dynpool_destroy(dynpool_t* pool) {
         return;
     }
 
-    atomic_store(&pool->running, false);
+    mtx_lock(&pool->mtx);
+    pool->running = false;
+    int32_t count = pool->num_threads;
+    mtx_unlock(&pool->mtx);
 
-    int32_t count = atomic_load(&pool->thread_count);
     for (int32_t i = 0; i < count; i++) {
         platform_sem_post(pool->sem);
     }
 
-    while (atomic_load(&pool->thread_count) > 0) {
+    for (;;) {
+        mtx_lock(&pool->mtx);
+        count = pool->num_threads;
+        mtx_unlock(&pool->mtx);
+        if (count == 0) {
+            break;
+        }
         thrd_yield();
     }
 
-    mpsc_node_t* node;
-    while ((node = mpsc_pop(&pool->queue)) != NULL) {
-        _dynpool_job_t* job = mpsc_entry(node, _dynpool_job_t, node);
+    queue_node_t* node;
+    while ((node = queue_dequeue(&pool->queue)) != NULL) {
+        _dynpool_job_t* job = queue_entry(node, _dynpool_job_t, node);
         free(job);
     }
 
     platform_sem_destroy(pool->sem);
-    mtx_destroy(&pool->pop_mtx);
+    mtx_destroy(&pool->mtx);
     free(pool);
 }
