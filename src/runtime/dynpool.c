@@ -61,14 +61,13 @@ static void _dynpool_get_deadline(struct timespec* ts, uint64_t timeout_ms) {
 static int _dynpool_thread_entry(void* arg) {
     dynpool_t* pool = (dynpool_t*)arg;
 
+    mtx_lock(&pool->mtx);
     for (;;) {
-        mtx_lock(&pool->mtx);
-
         if (!pool->running) {
             break;
         }
 
-        while (pool->running && queue_empty(&pool->queue)) {
+        if (queue_empty(&pool->queue)) {
             struct timespec ts;
             _dynpool_get_deadline(&ts, pool->idle_timeout);
 
@@ -79,10 +78,7 @@ static int _dynpool_thread_entry(void* arg) {
             if (rc != thrd_success && queue_empty(&pool->queue)) {
                 break;
             }
-        }
-
-        if (!pool->running || queue_empty(&pool->queue)) {
-            break;
+            continue;
         }
 
         queue_node_t* node = queue_dequeue(&pool->queue);
@@ -90,6 +86,8 @@ static int _dynpool_thread_entry(void* arg) {
         mtx_unlock(&pool->mtx);
         job->routine(job->arg);
         free(job);
+
+        mtx_lock(&pool->mtx);
     }
 
     pool->num_threads--;
