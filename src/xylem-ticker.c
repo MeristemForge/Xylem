@@ -40,11 +40,11 @@
  * coalesce-to-one model.
  *
  * In normal operation the sem count is bounded to {0,1}, gated by
- * `pending`. A racing xylem_ticker_destroy can cause a transient
- * double-post (the callback and destroy each call xylem_sem_post),
+ * `pending`. A racing xylem_ticker_close can cause a transient
+ * double-post (the callback and close each call xylem_sem_post),
  * which is harmless: the consumer sees `closed` and discards the extra
- * token. The refcount guarantees that the ticker is not freed mid-use,
- * but destroy still consumes the caller's handle.
+ * token. close wakes a blocked consumer; destroy consumes the caller's
+ * handle after the caller has stopped admission of new recv operations.
  */
 struct xylem_ticker_s {
     scheduler_timer_t*   timer;     /* repeating, run inline (spawn == false) */
@@ -171,18 +171,20 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
     _ticker_ref(ticker);
 
     uint64_t tick = 0;
-    xylem_sem_wait(ticker->sem);
+    if (!atomic_load(&ticker->closed)) {
+        xylem_sem_wait(ticker->sem);
+    }
     if (!atomic_load(&ticker->closed)) {
         tick = atomic_load(&ticker->last_tick);
-        /* Re-open the coalescing slot after reading its payload. */
-        atomic_store(&ticker->pending, 0);
     }
+    /* Re-open the coalescing slot after reading or discarding its payload. */
+    atomic_store(&ticker->pending, 0);
 
     _ticker_unref(ticker);
     return tick;
 }
 
-void xylem_ticker_destroy(xylem_ticker_t* ticker) {
+void xylem_ticker_close(xylem_ticker_t* ticker) {
     if (!ticker) {
         return;
     }
@@ -203,6 +205,13 @@ void xylem_ticker_destroy(xylem_ticker_t* ticker) {
      * consumer cannot mistake any wake for a real tick.
      */
     xylem_sem_post(ticker->sem);
+}
+
+void xylem_ticker_destroy(xylem_ticker_t* ticker) {
+    if (!ticker) {
+        return;
+    }
+    xylem_ticker_close(ticker);
 
     /* Drop the creator's reference. */
     _ticker_unref(ticker);

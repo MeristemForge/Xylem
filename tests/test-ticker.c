@@ -95,6 +95,7 @@ static void _invalid_main(void* arg) {
     (void)arg;
     ASSERT(xylem_ticker_create(0) == NULL);
     ASSERT(xylem_ticker_recv(NULL) == 0);
+    xylem_ticker_close(NULL);
     xylem_ticker_destroy(NULL);
 }
 
@@ -115,7 +116,7 @@ static void _consumer(void* arg) {
     xylem_waitgroup_done(c->wg);
 }
 
-static void _destroy_main(void* arg) {
+static void _close_main(void* arg) {
     (void)arg;
     _consume_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     ctx.tk = xylem_ticker_create(TICK_INTERVAL_MS);
@@ -129,18 +130,38 @@ static void _destroy_main(void* arg) {
     while (atomic_load(&ctx.ticks) < 1) {
         xylem_sleep(TICK_INTERVAL_MS);
     }
-    xylem_ticker_destroy(ctx.tk);
+    xylem_ticker_close(ctx.tk);
 
     xylem_waitgroup_wait(ctx.wg);
     ASSERT(atomic_load(&ctx.ended));
     ASSERT(atomic_load(&ctx.ticks) >= 1);
 
     xylem_timer_cancel(wd);
+    xylem_ticker_destroy(ctx.tk);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
-static void test_destroy_wakes_recv(void) {
-    _destroy_main(NULL);
+static void test_close_wakes_recv(void) {
+    _close_main(NULL);
+}
+
+static void _close_recv_main(void* arg) {
+    (void)arg;
+    xylem_ticker_t* tk = xylem_ticker_create(TICK_INTERVAL_MS);
+    ASSERT(tk != NULL);
+
+    xylem_timer_t* wd = _arm_watchdog();
+
+    xylem_ticker_close(tk);
+    xylem_ticker_close(tk);
+    ASSERT(xylem_ticker_recv(tk) == 0);
+
+    xylem_timer_cancel(wd);
+    xylem_ticker_destroy(tk);
+}
+
+static void test_close_is_idempotent_and_recv_returns_zero(void) {
+    _close_recv_main(NULL);
 }
 
 typedef struct {
@@ -184,7 +205,7 @@ static void _thread_consumer_main(void* arg) {
     while (atomic_load(&ctx->ticks) < TICK_TARGET) {
         xylem_sleep(TICK_INTERVAL_MS);
     }
-    xylem_ticker_destroy(ctx->tk);
+    xylem_ticker_close(ctx->tk);
 
     ASSERT(thrd_join(th, NULL) == thrd_success);
     ASSERT(atomic_load(&ctx->ended));
@@ -192,6 +213,7 @@ static void _thread_consumer_main(void* arg) {
     ASSERT(atomic_load(&ctx->ticks) >= TICK_TARGET);
 
     xylem_timer_cancel(wd);
+    xylem_ticker_destroy(ctx->tk);
 }
 
 static void test_thread_consumer(void) {
@@ -280,7 +302,8 @@ static void _test_run_all(void* arg) {
     test_tick();
     test_coalesced_tick_keeps_delivered_time();
     test_invalid();
-    test_destroy_wakes_recv();
+    test_close_wakes_recv();
+    test_close_is_idempotent_and_recv_returns_zero();
     test_thread_consumer();
     test_destroy_race();
     _utils_watchdog_stop();

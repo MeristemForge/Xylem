@@ -117,10 +117,12 @@ extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
 /**
  * @brief Destroy the waitgroup and free its resources.
  *
- * @note [CONTEXT-ADAPTIVE]
+ * @note [CALLER-SYNCHRONIZED]
  *
  * The caller must ensure no coroutine or thread is blocked in wait()
- * and no add()/done() call is in flight on this waitgroup.
+ * and no add()/done() call is in flight on this waitgroup. destroy()
+ * must be the final call on the handle and must not race with any other
+ * waitgroup API.
  *
  * @param waitgroup  Pointer to the waitgroup, NULL is safe.
  */

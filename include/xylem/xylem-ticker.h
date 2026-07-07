@@ -46,15 +46,15 @@ _Pragma("once")
  *     receive on a given ticker (single-consumer). A thread consumer
  *     still requires the runtime to be running, since the ticks are
  *     produced by a scheduler timer.
- *   - xylem_ticker_destroy() is callable from any thread or context
- *     and accepts NULL. It consumes the handle; the same non-NULL
- *     handle must not be destroyed again. The internal refcount keeps
- *     the ticker alive across a concurrent recv, so destroy never frees
- *     memory that an already-entered recv is still touching. The caller
- *     owns admission control around destroy and recv on the same ticker:
- *     do not start a new recv after destroy may have consumed the handle.
- *     The refcount prevents use-after-free for an in-flight recv, but it
- *     does not make arbitrary concurrent destroy+recv meaningful.
+ *   - xylem_ticker_close() is callable from any thread or context. It
+ *     stops future ticks and wakes a consumer already blocked in
+ *     xylem_ticker_recv(), which then returns 0.
+ *   - xylem_ticker_destroy() consumes the handle and accepts NULL. The
+ *     same non-NULL handle must not be destroyed again. Call close first
+ *     when another context may be receiving, wait for that receiver to
+ *     exit, then destroy the handle. destroy calls close as a cleanup
+ *     fallback, but it is not the admission-control boundary for
+ *     starting new recv operations.
  *
  * Lifetime:
  *   - The ticker is driven by the runtime scheduler. External OS
@@ -76,6 +76,19 @@ typedef struct xylem_ticker_s xylem_ticker_t;
 extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 
 /**
+ * @brief Close the ticker and wake a blocked receiver.
+ *
+ * @note [CONTEXT-ADAPTIVE]
+ *
+ * Idempotent. Once closed, xylem_ticker_recv() returns 0. This call
+ * does not consume @p ticker; call xylem_ticker_destroy() after the
+ * receiver has exited to release the handle.
+ *
+ * @param ticker  Ticker handle, or NULL (no-op).
+ */
+extern void xylem_ticker_close(xylem_ticker_t* ticker);
+
+/**
  * @brief Block until the next tick.
  *
  * @note [CONTEXT-ADAPTIVE]
@@ -93,14 +106,19 @@ extern xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms);
 extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
 
 /**
- * @brief Stop ticking and destroy the ticker.
+ * @brief Close and destroy the ticker.
  *
- * @note [CONTEXT-ADAPTIVE]
+ * @note [CALLER-SYNCHRONIZED]
  *
- * Wakes a consumer already blocked in xylem_ticker_recv() (which then
- * returns 0). The underlying memory is freed once the last reference is
- * gone. This call consumes the handle; passing NULL is a no-op, but
- * destroying the same non-NULL handle again is invalid.
+ * Calls xylem_ticker_close() as a cleanup fallback, then drops the
+ * creator reference. The underlying memory is freed once the last
+ * reference is gone. This call consumes the handle and must not race
+ * with xylem_ticker_recv(), xylem_ticker_close(), or another destroy on
+ * the same handle. Passing NULL is a no-op, but destroying the same
+ * non-NULL handle again is invalid.
+ * If another context may be in xylem_ticker_recv(), call
+ * xylem_ticker_close() first, wait for that receiver to exit, then
+ * destroy the handle.
  *
  * @param ticker  Ticker handle, or NULL (no-op).
  */

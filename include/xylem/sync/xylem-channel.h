@@ -44,9 +44,10 @@ typedef struct xylem_channel_s xylem_channel_t;
  *     thread. close() may race with recv() to wake the receiver. Only
  *     one receiver may operate on a channel at a time; concurrent recv
  *     aborts (single-consumer MPSC contract).
- *   - create(), destroy(), close() are any-context. create() requires
- *     the runtime to be running; destroy() must not race with other API
- *     calls on the same channel.
+ *   - create() and close() are thread-safe. create() requires the
+ *     runtime to be running. destroy() is caller-synchronized: it must
+ *     be the final call on the handle and must not race with any other
+ *     channel API on the same channel.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -75,7 +76,7 @@ extern xylem_channel_t* xylem_channel_create(void);
 /**
  * @brief Destroy the channel, releasing its memory.
  *
- * @note [THREAD-SAFE]
+ * @note [CALLER-SYNCHRONIZED]
  *
  * Any messages still queued are freed (node wrapper only -- payload
  * lifetime is the caller's responsibility). Accepts NULL. Must not race

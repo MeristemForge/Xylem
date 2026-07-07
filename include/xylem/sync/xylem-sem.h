@@ -47,8 +47,10 @@ typedef struct xylem_sem_s xylem_sem_t;
  *     blocks that OS thread. Coroutine and OS-thread waiters share one
  *     FIFO queue. OS-thread waiters block on a per-thread wake object.
  *     timedwait() is the same with a deadline.
- *   - post(), timedwait(0), create(), destroy() are all callable from
- *     any thread and any context (coroutine or not). They never park.
+ *   - post(), timedwait(0), and create() are all callable from any
+ *     thread and any context (coroutine or not). They never park.
+ *     destroy() is caller-synchronized: it must be the final call on
+ *     the handle and must not race with any other semaphore API.
  *   - How a waiter is woken is decided by what the waiter is, not by
  *     who posts: a coroutine waiter is rescheduled, a thread waiter is
  *     released on its per-thread wake object. The poster may be either.
@@ -81,12 +83,13 @@ extern xylem_sem_t* xylem_sem_create(uint32_t value);
 /**
  * @brief Destroy the semaphore and free its resources.
  *
- * @note [CONTEXT-ADAPTIVE]
+ * @note [CALLER-SYNCHRONIZED]
  *
- * Callable from any thread or context. The caller must ensure no
- * coroutine or thread is still blocked in wait() or timedwait() on
- * this semaphore, and destroy() must not race with any other semaphore
- * API call on the same semaphore.
+ * Callable from any thread or context, but only as the final externally
+ * synchronized release. The caller must ensure no coroutine or thread is
+ * still blocked in wait() or timedwait() on this semaphore, and
+ * destroy() must not race with any other semaphore API call on the same
+ * semaphore.
  *
  * @param sem  Semaphore handle, NULL is safe.
  */

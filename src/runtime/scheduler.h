@@ -300,10 +300,15 @@ extern void scheduler_timer_set_ud_guard(
 /**
  * @brief Destroy a timer. Stops it first if armed.
  *
- * Safe to call concurrently with an in-flight fire: the scheduler
- * keeps the timer object alive internally while a callback is
- * running, so this call only drops the creator's reference.
- * `ud`'s backing object lifetime is still the caller's
+ * Caller-synchronized final release. This call stops the timer as a
+ * cleanup fallback, then drops the creator's reference. It must not race
+ * with scheduler_timer_start(), scheduler_timer_stop(),
+ * scheduler_timer_reset(), or another destroy on the same timer.
+ * scheduler_timer_stop() is the concurrent stop boundary.
+ *
+ * A callback already in flight may still run to completion; the
+ * scheduler keeps the timer object alive internally until that callback
+ * returns. `ud`'s backing object lifetime is still the caller's
  * responsibility.
  *
  * @param timer  Timer handle, or NULL (no-op).

@@ -492,10 +492,11 @@ an inline scheduler timer callback that never runs user code: the callback only
 records the tick timestamp and posts a semaphore if no previous tick is pending.
 The receiver drains ticks with `xylem_ticker_recv()`, which is
 context-adaptive; when the receiver falls behind, ticks coalesce to one buffered
-timestamp instead of queuing unbounded work. `xylem_ticker_destroy()` closes the
-ticker, wakes a blocked receiver with a zero result, and relies on the same
-timer user-data guard/refcount path to survive a concurrent in-flight tick
-callback.
+timestamp instead of queuing unbounded work. `xylem_ticker_close()` is the
+concurrent shutdown boundary: it stops the timer and wakes a blocked receiver,
+which returns 0. `xylem_ticker_destroy()` consumes the handle and calls close as
+a cleanup fallback, but callers that run a receiver in another context should
+close first, wait for the receiver to exit, then destroy the ticker.
 
 `xylem_sleep(ms)` is built directly on this: it creates a one-shot timer whose
 callback reschedules the sleeping coroutine, then parks.
