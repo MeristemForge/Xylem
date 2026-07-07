@@ -117,10 +117,7 @@ bool xylem_timer_cancel(xylem_timer_t* timer) {
 }
 
 bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
-    if (!timer) {
-        return false;
-    }
-    if (timer->repeat && delay_ms == 0) {
+    if (!timer || delay_ms == 0) {
         return false;
     }
     return scheduler_timer_reset(timer->internal, delay_ms);

@@ -56,6 +56,13 @@ typedef struct {
     xylem_waitgroup_t*    wg;
 } _every_reset_ctx_t;
 
+typedef struct {
+    atomic_int            fires;
+    atomic_uint_least64_t first_fire_ms;
+    atomic_uint_least64_t second_fire_ms;
+    xylem_waitgroup_t*    wg;
+} _double_reset_ctx_t;
+
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 }
@@ -382,6 +389,46 @@ static void test_every_reset_and_cancel_from_callback(void) {
     _every_reset_main(NULL);
 }
 
+static void _double_reset_cb(xylem_timer_t* timer, void* ud) {
+    _double_reset_ctx_t* ctx = (_double_reset_ctx_t*)ud;
+    int n = atomic_fetch_add(&ctx->fires, 1) + 1;
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (n == 1) {
+        atomic_store(&ctx->first_fire_ms, now);
+        ASSERT(xylem_timer_reset(timer, 30) == false);
+        ASSERT(xylem_timer_reset(timer, 50) == true);
+    } else if (n == 2) {
+        atomic_store(&ctx->second_fire_ms, now);
+        xylem_waitgroup_done(ctx->wg);
+    }
+}
+
+static void _double_reset_main(void* arg) {
+    (void)arg;
+    _double_reset_ctx_t ctx = { .wg = xylem_waitgroup_create() };
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    xylem_timer_t* wd = _arm_watchdog();
+    xylem_timer_t* t  = xylem_timer_every(10, _double_reset_cb, &ctx);
+    ASSERT(t != NULL);
+
+    xylem_waitgroup_wait(ctx.wg);
+
+    uint64_t first  = atomic_load(&ctx.first_fire_ms);
+    uint64_t second = atomic_load(&ctx.second_fire_ms);
+    ASSERT(first > 0);
+    ASSERT(second >= first);
+    ASSERT(second - first >= 45);
+
+    xylem_timer_cancel(t);
+    xylem_timer_cancel(wd);
+    xylem_waitgroup_destroy(ctx.wg);
+}
+
+static void test_reset_overwrites_deferred_reset_from_callback(void) {
+    _double_reset_main(NULL);
+}
+
 static void _every_reset_zero_main(void* arg) {
     (void)arg;
     _fire_ctx_t ctx = { .wg = xylem_waitgroup_create() };
@@ -402,6 +449,22 @@ static void _every_reset_zero_main(void* arg) {
 
 static void test_every_reset_rejects_zero_interval(void) {
     _every_reset_zero_main(NULL);
+}
+
+static void _reset_zero_main(void* arg) {
+    (void)arg;
+    xylem_timer_t* wd = _arm_watchdog();
+    xylem_timer_t* t  = xylem_timer_after(1000, _cancel_cb, NULL);
+    ASSERT(t != NULL);
+
+    ASSERT(xylem_timer_reset(t, 0) == false);
+    ASSERT(xylem_timer_cancel(t) == true);
+
+    xylem_timer_cancel(wd);
+}
+
+static void test_reset_rejects_zero_delay(void) {
+    _reset_zero_main(NULL);
 }
 
 static void _null_main(void* arg) {
@@ -433,7 +496,9 @@ static void _test_run_all(void* arg) {
     test_blocking_cb();
     test_every_callbacks_do_not_overlap();
     test_every_reset_and_cancel_from_callback();
+    test_reset_overwrites_deferred_reset_from_callback();
     test_every_reset_rejects_zero_interval();
+    test_reset_rejects_zero_delay();
     test_null();
     _utils_watchdog_stop();
     xylem_shutdown();

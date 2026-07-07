@@ -93,7 +93,8 @@ extern xylem_timer_t* xylem_timer_every(
  *
  * @param timer  Timer handle, or NULL.
  *
- * @return true if a pending fire was cancelled before it ran.
+ * @return true if a queued fire was cancelled before it ran, or if a
+ *         deferred reset from an in-flight callback was cancelled.
  */
 extern bool xylem_timer_cancel(xylem_timer_t* timer);
 
@@ -114,9 +115,11 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer     Timer handle, or NULL.
- * @param delay_ms  Delay in milliseconds until the next fire.
+ * @param delay_ms  Delay in milliseconds until the next fire (must be > 0).
  *
- * @return true if a pending fire was cancelled before it ran. false may
- *         still mean the timer was re-armed when no pending fire was queued.
+ * @return true if reset cancelled a queued fire before it ran, or if it
+ *         overwrote an earlier deferred reset from the same in-flight
+ *         callback. false may still mean the timer was re-armed when no
+ *         pending or deferred fire was cancelled.
  */
 extern bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms);

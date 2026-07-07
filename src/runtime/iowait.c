@@ -437,7 +437,8 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
      * Non-zero deadline updates are re-arms, not stop/start pairs: stop
      * is a destroy/cancel barrier for firing timers and would discard the
      * reset scheduled below. Each new arm takes a ref; reset() returns true
-     * only when it cancelled an older queued arm whose ref must be released.
+     * when it cancelled an older queued arm or overwrote an older deferred
+     * re-arm whose ref must be released.
      */
     _iowait_ref(d->w);
     if (scheduler_timer_reset(d->timer, in)) {

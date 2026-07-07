@@ -30,10 +30,12 @@ _Pragma("once")
  * Unlike a callback timer, the ticker decouples "timekeeping" from
  * "running user code", exactly like Go's time.Ticker:
  *
- *   - The internal timer fires on a fixed period and only does a
- *     non-blocking delivery of the tick time, coalescing (dropping)
- *     a tick when the previous one has not been consumed yet. It
- *     never runs user code, so ticks can never overlap or re-enter.
+ *   - The internal scheduler timer repeats at the requested interval
+ *     after each tiny delivery callback completes. That callback only
+ *     does a non-blocking delivery of the tick time, coalescing
+ *     (dropping) a tick when the previous one has not been consumed
+ *     yet. It never runs user code, so user work can never overlap or
+ *     re-enter through the ticker.
  *   - The consumer drains ticks one at a time via xylem_ticker_recv(),
  *     so user logic is naturally serialized.
  *

@@ -345,8 +345,8 @@ extern void scheduler_timer_start(
  * still in the heap, or a running callback had scheduled a deferred
  * reset. Returns false if the timer was already inactive, its callback
  * already dispatched with no deferred reset, or the timer never started.
- * If a repeat callback is currently running, stop prevents the callback
- * completion path from re-queueing the timer.
+ * If a repeat callback is currently running, stop still prevents the
+ * callback completion path from re-queueing the timer.
  *
  * @param timer  Timer handle.
  *
@@ -366,8 +366,9 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  *
  * If the timer was still pending, its queued fire is cancelled. If the
  * callback is currently running, reset is applied after that callback
- * returns. If it was inactive (never armed, callback already dispatched),
- * it is armed fresh.
+ * returns. A second reset during the same callback overwrites the earlier
+ * deferred reset. If it was inactive (never armed, callback already
+ * dispatched), it is armed fresh.
  *
  * When both scheduler_timer_stop() and scheduler_timer_reset() are called
  * during the same callback (stop_pending and reset_pending both true),
@@ -378,7 +379,8 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  * @param timeout_ms  New delay in milliseconds. Also becomes the new
  *                    repeat interval for periodic timers.
  *
- * @return true if a pending fire was cancelled before it ran.
+ * @return true if a queued fire was cancelled before it ran, or if an
+ *         earlier deferred reset from the current fire was overwritten.
  */
 extern bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms);
 

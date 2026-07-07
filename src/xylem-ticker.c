@@ -79,10 +79,11 @@ static void _ticker_unref(void* ud) {
 }
 
 /**
- * Runs inline on the timer's owner worker (spawn == false), so it is
- * serialized against itself: ticks can never overlap or re-enter. It
- * does no blocking work and never yields -- just a coalescing,
- * non-blocking hand-off via xylem_sem_post (any-context, never parks).
+ * Runs inline on whichever worker fires the timer (spawn == false), so
+ * the scheduler serializes it against itself: ticks can never overlap
+ * or re-enter. It does no blocking work and never yields -- just a
+ * coalescing, non-blocking hand-off via xylem_sem_post (any-context,
+ * never parks).
  *
  * The scheduler holds a reference on the ticker for the whole duration
  * of this callback: it calls the ud_ref hook (installed in

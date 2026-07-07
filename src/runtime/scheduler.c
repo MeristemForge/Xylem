@@ -1697,11 +1697,12 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = &timer->sched->workers[timer->owner];
-    bool was_queued;
+    bool cancelled = false;
     bool armed = false;
 
     mtx_lock(&owner->timer_lock);
-    was_queued = (timer->state == TIMER_QUEUED);
+    cancelled = (timer->state == TIMER_QUEUED)
+                || (timer->state == TIMER_FIRING && timer->reset_pending);
 
     if (timer->repeat != 0) {
         timer->repeat = timeout_ms;
@@ -1728,7 +1729,7 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
     if (armed) {
         _sched_timer_wake_owner(owner);
     }
-    return was_queued;
+    return cancelled;
 }
 
 void scheduler_set_idle_cb(
