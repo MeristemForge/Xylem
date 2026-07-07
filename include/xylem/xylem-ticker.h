@@ -48,11 +48,11 @@ _Pragma("once")
  *     and accepts NULL. It consumes the handle; the same non-NULL
  *     handle must not be destroyed again. The internal refcount keeps
  *     the ticker alive across a concurrent recv, so destroy never frees
- *     memory that recv is still touching. The caller owns the mutual
- *     exclusion between destroy and recv on the same ticker, exactly
- *     like Go's Ticker.Stop vs. reading Ticker.C -- the refcount only
- *     prevents use-after-free, it does not make concurrent
- *     destroy+recv meaningful.
+ *     memory that an already-entered recv is still touching. The caller
+ *     owns admission control around destroy and recv on the same ticker:
+ *     do not start a new recv after destroy may have consumed the handle.
+ *     The refcount prevents use-after-free for an in-flight recv, but it
+ *     does not make arbitrary concurrent destroy+recv meaningful.
  *
  * Lifetime:
  *   - The ticker is driven by the runtime scheduler. External OS
@@ -95,11 +95,10 @@ extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Wakes a consumer blocked in xylem_ticker_recv() (which then returns
- * 0). The underlying memory is freed once the last reference is gone,
- * so it is safe to call even while a recv is in flight. This call
- * consumes the handle; passing NULL is a no-op, but destroying the same
- * non-NULL handle again is invalid.
+ * Wakes a consumer already blocked in xylem_ticker_recv() (which then
+ * returns 0). The underlying memory is freed once the last reference is
+ * gone. This call consumes the handle; passing NULL is a no-op, but
+ * destroying the same non-NULL handle again is invalid.
  *
  * @param ticker  Ticker handle, or NULL (no-op).
  */

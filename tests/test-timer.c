@@ -189,14 +189,15 @@ static void _reset_main(void* arg) {
     xylem_timer_t* wd = _arm_watchdog();
 
     ctx.armed_at_ms  = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    xylem_timer_t* t = xylem_timer_after(100, _reset_cb, &ctx);
+    xylem_timer_t* t = xylem_timer_after(1000, _reset_cb, &ctx);
 
     xylem_sleep(10);
-    ASSERT(xylem_timer_reset(t, 200));
+    ASSERT(xylem_timer_reset(t, 30));
 
     xylem_waitgroup_wait(ctx.wg);
     uint64_t elapsed = atomic_load(&ctx.fired_at_ms) - ctx.armed_at_ms;
-    ASSERT(elapsed >= 200);
+    ASSERT(elapsed >= 30);
+    ASSERT(elapsed < 900);
 
     xylem_timer_cancel(t);
     xylem_timer_cancel(wd);
@@ -406,7 +407,10 @@ static void test_every_reset_rejects_zero_interval(void) {
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
+    ASSERT(xylem_timer_after(0, _after_cb, NULL) == NULL);
+    ASSERT(xylem_timer_after(10, NULL, NULL) == NULL);
     ASSERT(xylem_timer_every(0, _every_cb, NULL) == NULL);
+    ASSERT(xylem_timer_every(10, NULL, NULL) == NULL);
     ASSERT(xylem_timer_cancel(NULL) == false);
     ASSERT(xylem_timer_reset(NULL, 10) == false);
     xylem_timer_cancel(wd);

@@ -91,6 +91,9 @@ static xylem_timer_t* _timer_create(
 
 xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud) {
+    if (delay_ms == 0) {
+        return NULL;
+    }
     return _timer_create(delay_ms, 0, cb, ud);
 }
 

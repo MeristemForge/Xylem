@@ -50,11 +50,11 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  * not be called from external OS threads after xylem_shutdown() has been
  * called.
  *
- * @param delay_ms  Delay in milliseconds.
+ * @param delay_ms  Delay in milliseconds (must be > 0).
  * @param cb        Callback to invoke on expiry.
  * @param ud        Opaque user data passed to @p cb.
  *
- * @return Timer handle, or NULL on allocation failure.
+ * @return Timer handle, or NULL on bad input / allocation failure.
  */
 extern xylem_timer_t* xylem_timer_after(
     uint64_t delay_ms, xylem_timer_fn_t cb, void* ud);
@@ -73,7 +73,7 @@ extern xylem_timer_t* xylem_timer_after(
  * @param cb           Callback to invoke on each expiry.
  * @param ud           Opaque user data passed to @p cb.
  *
- * @return Timer handle, or NULL on allocation failure or interval_ms == 0.
+ * @return Timer handle, or NULL on bad input / allocation failure.
  */
 extern xylem_timer_t* xylem_timer_every(
     uint64_t interval_ms, xylem_timer_fn_t cb, void* ud);
@@ -116,6 +116,7 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * @param timer     Timer handle, or NULL.
  * @param delay_ms  Delay in milliseconds until the next fire.
  *
- * @return true if a pending fire was cancelled before it ran.
+ * @return true if a pending fire was cancelled before it ran. false may
+ *         still mean the timer was re-armed when no pending fire was queued.
  */
 extern bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms);
