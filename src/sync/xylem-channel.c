@@ -150,6 +150,17 @@ static void _channel_timeout_cb(scheduler_timer_t* timer, void* ud) {
     _channel_unref(ch);
 }
 
+static void _channel_timedwait_cleanup_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _coro_waiter_t*  w  = (_coro_waiter_t*)arg;
+    xylem_channel_t* ch = w->base.ch;
+    if (scheduler_timer_stop(w->timer)) {
+        _channel_coro_timed_unref(w);
+        _channel_unref(ch);
+    }
+    _channel_coro_timed_unref(w);
+}
+
 static void* _channel_try_take(xylem_channel_t* ch) {
     mpsc_node_t* node = mpsc_pop(&ch->queue);
     if (!node) {
@@ -211,7 +222,7 @@ static void* _channel_wait_coro(xylem_channel_t* ch) {
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_park_cb, &w);
+        scheduler_park(ch->sched, _channel_park_cb, NULL, &w);
     }
     return payload;
 }
@@ -260,7 +271,10 @@ static void* _channel_timedwait_coro(
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_park_cb, w);
+        scheduler_park(ch->sched,
+                       _channel_park_cb,
+                       _channel_timedwait_cleanup_cb,
+                       w);
     }
 
     if (scheduler_timer_stop(w->timer)) {

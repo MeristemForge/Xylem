@@ -53,7 +53,20 @@ typedef struct iowait_slab_s iowait_slab_t;
  *
  * Returns true to park, false to reschedule immediately.
  */
-typedef bool (*scheduler_park_fn_t)(mco_coro* co, void* arg);
+typedef bool (*scheduler_park_cb_t)(mco_coro* co, void* arg);
+
+/**
+ * Park cleanup callback invoked when scheduler shutdown prevents the park
+ * callback from running.
+ *
+ * The cleanup callback owns only resources prepared before scheduler_park().
+ * It must not cancel a successfully published waiter, arm new timers, submit
+ * new work, or call user callbacks.
+ *
+ * co   The suspended coroutine.
+ * arg  User data from scheduler_park().
+ */
+typedef void (*scheduler_park_cleanup_cb_t)(mco_coro* co, void* arg);
 
 
 /**
@@ -201,12 +214,16 @@ extern int scheduler_spawn(
  * and friends publish the park record and then arm the poller
  * without racing against an early wakeup.
  *
- * @param sched  Scheduler handle (currently unused; reserved).
- * @param fn     Park callback invoked after yield.
- * @param arg    Opaque argument passed to fn.
+ * @param sched       Scheduler handle (currently unused; reserved).
+ * @param park_cb     Park callback invoked after yield.
+ * @param cleanup_cb  Cleanup callback when shutdown skips park_cb, or NULL.
+ * @param arg         Opaque argument passed to callbacks.
  */
 extern void scheduler_park(
-    scheduler_t* sched, scheduler_park_fn_t fn, void* arg);
+    scheduler_t* sched,
+    scheduler_park_cb_t park_cb,
+    scheduler_park_cleanup_cb_t cleanup_cb,
+    void* arg);
 
 /**
  * @brief Consume cooperative scheduler credit for the current coroutine.

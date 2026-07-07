@@ -112,26 +112,28 @@ typedef struct _sched_coro_pool_s {
 } _sched_coro_pool_t;
 
 typedef struct _sched_worker_s {
-    thrd_t               thread;
-    wsq_t*               deque;
-    platform_sem_t*      sem;
-    scheduler_t*         sched;
-    uint32_t             index;
-    scheduler_park_fn_t  park_fn;
-    void*                park_arg;
-    _Atomic bool         parked;
-    _Atomic bool         stealing;
-    _Atomic(mco_coro*)   runnext;
+    thrd_t                      thread;
+    wsq_t*                      deque;
+    platform_sem_t*             sem;
+    scheduler_t*                sched;
+    uint32_t                    index;
+    scheduler_park_cb_t         park_cb;
+    scheduler_park_cleanup_cb_t park_cleanup_cb;
+    void*                       park_arg;
+    _Atomic bool                parked;
+    _Atomic bool                stealing;
+    _Atomic(mco_coro*)          runnext;
 
-    uint32_t             sched_tick;
-    uint32_t             credit;
-    heap_t               timers;
-    mtx_t                timer_lock;
-    _Atomic uint64_t     next_deadline_ms; /* earliest timer deadline, MAX if none. */
-    void**               coro_pool;       /* per-worker free coroutine slots. */
-    int32_t              coro_pool_count; /* slots currently held locally.    */
-    list_t               registry;         /* coroutines owned for shutdown.   */
-    spin_t               registry_lock;    /* protects registry.               */
+    uint32_t                    sched_tick;
+    uint32_t                    credit;
+    heap_t                      timers;
+    mtx_t                       timer_lock;
+    /* Earliest timer deadline, UINT64_MAX if none. */
+    _Atomic uint64_t            next_deadline_ms;
+    void**                      coro_pool;       /* per-worker free coroutine slots. */
+    int32_t                     coro_pool_count; /* slots currently held locally.    */
+    list_t                      registry;         /* coroutines owned for shutdown.   */
+    spin_t                      registry_lock;    /* protects registry.               */
 } _sched_worker_t;
 
 struct scheduler_s {
@@ -698,7 +700,7 @@ static void _sched_timer_launch_cb(void* arg) {
     free(fire);
 }
 
-static void _sched_timer_launch_cleanup(void* arg) {
+static void _sched_timer_cleanup_cb(void* arg) {
     _sched_timer_fire_t* fire = (_sched_timer_fire_t*)arg;
     if (!fire) {
         return;
@@ -719,7 +721,7 @@ static int _sched_timer_launch(
     if (_sched_spawn(sched,
                      _sched_timer_launch_cb,
                      f,
-                     _sched_timer_launch_cleanup) != 0) {
+                     _sched_timer_cleanup_cb) != 0) {
         xylem_loge("<sched> timer spawn failed");
         free(f);
         return -1;
@@ -981,24 +983,31 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
         return;
     }
     if (!atomic_load(&w->sched->running)) {
-        w->park_fn  = NULL;
-        w->park_arg = NULL;
+        scheduler_park_cleanup_cb_t cleanup_cb = w->park_cleanup_cb;
+        void* arg = w->park_arg;
+        w->park_cb         = NULL;
+        w->park_cleanup_cb = NULL;
+        w->park_arg        = NULL;
+        if (cleanup_cb) {
+            cleanup_cb(co, arg);
+        }
         return;
     }
-    if (!w->park_fn) {
+    if (!w->park_cb) {
         xylem_loge("<sched> yield without park co=%p", (void*)co);
         scheduler_schedule(w->sched, co);
         return;
     }
-    scheduler_park_fn_t fn = w->park_fn;
+    scheduler_park_cb_t park_cb = w->park_cb;
     void* arg = w->park_arg;
-    w->park_fn  = NULL;
-    w->park_arg = NULL;
+    w->park_cb         = NULL;
+    w->park_cleanup_cb = NULL;
+    w->park_arg        = NULL;
 
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
     atomic_store(&ctx->park_state, PARK_PARKING);
 
-    if (fn(co, arg)) {
+    if (park_cb(co, arg)) {
         /**
          * Commit the park with a CAS, not a plain store: a waker may have
          * raced in during the callback and set WOKEN. A blind store
@@ -1560,7 +1569,10 @@ void scheduler_schedule_batch(
 }
 
 void scheduler_park(
-    scheduler_t* sched, scheduler_park_fn_t fn, void* arg) {
+    scheduler_t* sched,
+    scheduler_park_cb_t park_cb,
+    scheduler_park_cleanup_cb_t cleanup_cb,
+    void* arg) {
     (void)sched;
     if (!_tls_worker || !mco_running()) {
         xylem_loge(
@@ -1569,8 +1581,9 @@ void scheduler_park(
         abort();
     }
 
-    _tls_worker->park_fn  = fn;
-    _tls_worker->park_arg = arg;
+    _tls_worker->park_cb         = park_cb;
+    _tls_worker->park_cleanup_cb = cleanup_cb;
+    _tls_worker->park_arg        = arg;
     mco_yield(mco_running());
 
     /* Resumed: clear park bookkeeping so the coro runs as PARK_IDLE. */
@@ -1594,7 +1607,7 @@ void scheduler_yield_credit(void) {
     if (!_tls_worker || !mco_running()) {
         return;
     }
-    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL);
+    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL, NULL);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {

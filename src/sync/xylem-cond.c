@@ -140,7 +140,7 @@ static void _cond_wait_coro(xylem_cond_t* cond, xylem_mutex_t* mtx) {
     w.base.mtx  = mtx;
     w.co        = NULL;
 
-    scheduler_park(cond->sched, _cond_park_cb, &w);
+    scheduler_park(cond->sched, _cond_park_cb, NULL, &w);
 }
 
 static void _cond_wait_thrd(xylem_cond_t* cond, xylem_mutex_t* mtx) {

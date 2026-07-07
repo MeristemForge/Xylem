@@ -78,6 +78,15 @@ typedef struct {
     bool               stopped;
 } _spawn_teardown_ctx_t;
 
+typedef struct {
+    scheduler_t* sched;
+    atomic_int   parked;
+    atomic_int   cleaned;
+    mtx_t        lock;
+    cnd_t        cnd;
+    bool         ready;
+} _park_cleanup_ctx_t;
+
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 }
@@ -516,6 +525,60 @@ static void test_spawn_timer_teardown_completes_unrun_fires(void) {
     mtx_destroy(&ctx.lock);
 }
 
+static bool _park_cleanup_park_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
+    atomic_fetch_add(&ctx->parked, 1);
+    return false;
+}
+
+static void _park_cleanup_cleanup_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
+    atomic_fetch_add(&ctx->cleaned, 1);
+}
+
+static void _park_cleanup_main(void* arg) {
+    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
+    scheduler_stop(ctx->sched);
+
+    mtx_lock(&ctx->lock);
+    ctx->ready = true;
+    cnd_signal(&ctx->cnd);
+    mtx_unlock(&ctx->lock);
+
+    scheduler_park(ctx->sched,
+                   _park_cleanup_park_cb,
+                   _park_cleanup_cleanup_cb,
+                   ctx);
+}
+
+static void test_park_cleanup_runs_when_shutdown_skips_park(void) {
+    scheduler_opts_t opts = {.worker_count = 1};
+    _park_cleanup_ctx_t ctx = {0};
+
+    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
+    ASSERT(cnd_init(&ctx.cnd) == thrd_success);
+
+    ctx.sched = scheduler_create(&opts);
+    ASSERT(ctx.sched != NULL);
+    ASSERT(scheduler_spawn(ctx.sched, _park_cleanup_main, &ctx) == 0);
+
+    mtx_lock(&ctx.lock);
+    while (!ctx.ready) {
+        cnd_wait(&ctx.cnd, &ctx.lock);
+    }
+    mtx_unlock(&ctx.lock);
+
+    scheduler_destroy(ctx.sched);
+
+    ASSERT(atomic_load(&ctx.parked) == 0);
+    ASSERT(atomic_load(&ctx.cleaned) == 1);
+
+    cnd_destroy(&ctx.cnd);
+    mtx_destroy(&ctx.lock);
+}
+
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
@@ -542,6 +605,7 @@ int main(void) {
     test_every_reset_and_cancel_from_callback();
     test_stop_cancels_deferred_reset_from_callback();
     test_spawn_timer_teardown_completes_unrun_fires();
+    test_park_cleanup_runs_when_shutdown_skips_park();
     test_null();
     return 0;
 }

@@ -258,6 +258,12 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
+static void _addr_resolve_cleanup_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
+    _addr_ctx_unref(ctx);
+}
+
 int addr_resolve(
     const char* domain,
     uint16_t port,
@@ -299,7 +305,10 @@ int addr_resolve(
         ctx->timer = scheduler_timer_create(runtime_get_scheduler());
     }
 
-    scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
+    scheduler_park(runtime_get_scheduler(),
+                   _addr_resolve_park_cb,
+                   _addr_resolve_cleanup_cb,
+                   ctx);
 
     int rc;
     if (atomic_load(&ctx->timed_out)) {

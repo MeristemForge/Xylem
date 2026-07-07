@@ -73,6 +73,12 @@ static bool _runtime_sleep_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
+static void _runtime_sleep_cleanup_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _sleep_park_t* p = (_sleep_park_t*)arg;
+    scheduler_timer_destroy(p->timer);
+}
+
 static void _runtime_submit_worker(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
     ctx->fn(ctx->arg);
@@ -88,6 +94,14 @@ static bool _runtime_submit_park_cb(mco_coro* co, void* arg) {
         return false;
     }
     return true;
+}
+
+static void _runtime_submit_cleanup_cb(mco_coro* co, void* arg) {
+    (void)co;
+    _submit_park_t* p = (_submit_park_t*)arg;
+    free(p->ctx);
+    p->ctx = NULL;
+    p->ok  = false;
 }
 
 scheduler_t* runtime_get_scheduler(void) {
@@ -114,7 +128,10 @@ void runtime_sleep(uint64_t ms) {
         return;
     }
     _sleep_park_t park = { .timer = timer, .ms = ms };
-    scheduler_park(g_sched, _runtime_sleep_park_cb, &park);
+    scheduler_park(g_sched,
+                   _runtime_sleep_park_cb,
+                   _runtime_sleep_cleanup_cb,
+                   &park);
 }
 
 bool runtime_consume_credit(uint32_t cost) {
@@ -141,10 +158,13 @@ int runtime_submit(void (*fn)(void*), void* arg) {
     ctx->sched = g_sched;
 
     _submit_park_t park = { .ctx = ctx, .ok = true };
-    scheduler_park(g_sched, _runtime_submit_park_cb, &park);
+    scheduler_park(g_sched,
+                   _runtime_submit_park_cb,
+                   _runtime_submit_cleanup_cb,
+                   &park);
 
     if (!park.ok) {
-        free(ctx);
+        free(park.ctx);
         return -1;
     }
     return 0;

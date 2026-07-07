@@ -584,7 +584,10 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
             return (st == MUX_STREAM_CLOSED) ? -1 : 0;
         }
 
-        scheduler_park(runtime_get_scheduler(), _mux_recv_park_cb, s);
+        scheduler_park(runtime_get_scheduler(),
+                       _mux_recv_park_cb,
+                       NULL,
+                       s);
     }
 }
 
@@ -618,8 +621,10 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
         spin_unlock(&s->lock);
 
         if (window == 0) {
-            scheduler_park(
-                runtime_get_scheduler(), _mux_send_park_cb, s);
+            scheduler_park(runtime_get_scheduler(),
+                           _mux_send_park_cb,
+                           NULL,
+                           s);
             continue;
         }
 

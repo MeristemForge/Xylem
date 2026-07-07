@@ -123,7 +123,7 @@ static void _wg_wait_coro(xylem_waitgroup_t* wg) {
     w.base.wg   = wg;
     w.co        = NULL;
 
-    scheduler_park(wg->sched, _wg_park_cb, &w);
+    scheduler_park(wg->sched, _wg_park_cb, NULL, &w);
 }
 
 static void _wg_wait_thrd(xylem_waitgroup_t* wg) {
