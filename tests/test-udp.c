@@ -28,7 +28,6 @@
 #define UDP_HOST          "127.0.0.1"
 #define UDP_PORT_A        19100
 #define UDP_PORT_B        19101
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -54,11 +53,10 @@ static void _pair_main(void* arg) {
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->ready);
-    xylem_shutdown();
 }
 
 static void _run_pair(_ctx_t ctx) {
-    xylem_run(_pair_main, &ctx, NULL);
+    _pair_main(&ctx);
 }
 
 static void _echo_server(void* arg) {
@@ -170,12 +168,11 @@ static void _timeout_main(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
-    xylem_shutdown();
 }
 
 static void test_deadline_timeout(void) {
     _ctx_t ctx = {.port_a = UDP_PORT_A + 4, .client = _timeout_coro};
-    xylem_run(_timeout_main, &ctx, NULL);
+    _timeout_main(&ctx);
 }
 
 static void _close_recv_coro(void* arg) {
@@ -275,7 +272,7 @@ static void _connaddr_coro(void* arg) {
 
 static void test_connected_addr(void) {
     _ctx_t ctx = {.port_a = UDP_PORT_A + 10, .client = _connaddr_coro};
-    xylem_run(_timeout_main, &ctx, NULL);
+    _timeout_main(&ctx);
 }
 
 static void _expired_recv_sender(void* arg) {
@@ -347,7 +344,10 @@ static void test_expired_write_deadline_blocks_ready_datagram(void) {
     });
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_echo();
     test_recvfrom_addr();
     test_deadline_timeout();
@@ -356,5 +356,11 @@ int main(void) {
     test_connected_addr();
     test_expired_read_deadline_blocks_ready_datagram();
     test_expired_write_deadline_blocks_ready_datagram();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

@@ -27,7 +27,6 @@
 
 #define MUX_HOST          "127.0.0.1"
 #define MUX_PORT          14600
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -57,12 +56,11 @@ static void _pair_main(void* arg) {
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->ready);
-    xylem_shutdown();
 }
 
 static void _run_pair(uint16_t port, _coro_t server, _coro_t client) {
     _ctx_t ctx = {.port = port, .server = server, .client = client};
-    xylem_run(_pair_main, &ctx, NULL);
+    _pair_main(&ctx);
 }
 
 static void _srv_echo_stream(void* arg) {
@@ -209,9 +207,18 @@ static void test_destroy_null(void) {
     xylem_mux_destroy(NULL);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_destroy_null();
     test_single_stream_echo();
     test_multiple_streams();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

@@ -57,14 +57,16 @@ extern dynpool_t* dynpool_create(dynpool_opts_t* opts);
  * @return 0 on success, -1 on failure.
  */
 extern int dynpool_submit(
-    dynpool_t* pool, void (*routine)(void*), void* arg);
+    dynpool_t* pool,
+    void (*routine)(void*),
+    void* arg);
 
 /**
  * @brief Destroy the pool.
  *
- * Signals all workers to exit, waits for running tasks to complete,
- * frees any remaining queued tasks, and frees resources. The caller must
- * ensure no concurrent dynpool_submit() calls are in flight.
+ * Signals all workers to exit, waits for running tasks to complete, drops any
+ * remaining queued tasks, and frees resources. The caller must ensure no
+ * concurrent dynpool_submit() calls are in flight.
  *
  * @param pool  Pool handle.
  */

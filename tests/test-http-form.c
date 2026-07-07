@@ -22,6 +22,7 @@
 #include "xylem/net/http/xylem-http-form.h"
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <string.h>
 
@@ -102,10 +103,18 @@ static void _run_all(void* arg) {
     test_parse_no_equals();
     test_parse_max_pairs();
     test_get();
+}
+
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    _run_all(NULL);
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
 int main(void) {
-    xylem_run(_run_all, NULL, NULL);
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

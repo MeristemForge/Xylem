@@ -46,6 +46,14 @@ typedef struct {
     atomic_int  done;
 } _retire_ctx_t;
 
+typedef struct {
+    dynpool_t*  pool;
+    atomic_bool started;
+    atomic_bool release;
+    atomic_bool destroy_started;
+    atomic_int  ran;
+} _destroy_ctx_t;
+
 static void _max_update(atomic_int* max_value, int value) {
     int cur = atomic_load(max_value);
     while (value > cur &&
@@ -90,6 +98,26 @@ static int _retire_submitter(void* arg) {
         ASSERT(dynpool_submit(ctx->pool, _retire_job, ctx) == 0);
         thrd_yield();
     }
+    return 0;
+}
+
+static void _destroy_blocking_job(void* arg) {
+    _destroy_ctx_t* ctx = (_destroy_ctx_t*)arg;
+    atomic_store(&ctx->started, true);
+    while (!atomic_load(&ctx->release)) {
+        thrd_yield();
+    }
+}
+
+static void _destroy_queued_job(void* arg) {
+    _destroy_ctx_t* ctx = (_destroy_ctx_t*)arg;
+    atomic_fetch_add(&ctx->ran, 1);
+}
+
+static int _destroy_thread(void* arg) {
+    _destroy_ctx_t* ctx = (_destroy_ctx_t*)arg;
+    atomic_store(&ctx->destroy_started, true);
+    dynpool_destroy(ctx->pool);
     return 0;
 }
 
@@ -171,8 +199,51 @@ static void test_concurrent_submit_while_workers_retire_drains_queue(void) {
     dynpool_destroy(ctx.pool);
 }
 
+static void test_destroy_drops_queued_jobs(void) {
+    dynpool_opts_t opts = {
+        .max_threads = 1,
+        .idle_timeout = 10000,
+    };
+    _destroy_ctx_t ctx = {0};
+    atomic_init(&ctx.started, false);
+    atomic_init(&ctx.release, false);
+    atomic_init(&ctx.destroy_started, false);
+    atomic_init(&ctx.ran, 0);
+
+    ctx.pool = dynpool_create(&opts);
+    ASSERT(ctx.pool != NULL);
+
+    ASSERT(dynpool_submit(ctx.pool,
+                          _destroy_blocking_job,
+                          &ctx)
+           == 0);
+    while (!atomic_load(&ctx.started)) {
+        thrd_yield();
+    }
+
+    ASSERT(dynpool_submit(ctx.pool,
+                          _destroy_queued_job,
+                          &ctx)
+           == 0);
+
+    thrd_t destroyer;
+    ASSERT(thrd_create(&destroyer, _destroy_thread, &ctx) == thrd_success);
+    while (!atomic_load(&ctx.destroy_started)) {
+        thrd_yield();
+    }
+    for (int i = 0; i < 1000; i++) {
+        thrd_yield();
+    }
+
+    atomic_store(&ctx.release, true);
+    ASSERT(thrd_join(destroyer, NULL) == thrd_success);
+
+    ASSERT(atomic_load(&ctx.ran) == 0);
+}
+
 int main(void) {
     test_max_threads_is_enforced_under_concurrent_submit();
     test_concurrent_submit_while_workers_retire_drains_queue();
+    test_destroy_drops_queued_jobs();
     return 0;
 }

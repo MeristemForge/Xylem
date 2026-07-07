@@ -24,6 +24,7 @@
 
 #include "net/http/http-utils.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,13 +103,12 @@ static void _serve_main(void* arg) {
     p->body(port);
 
     xylem_http_shutdown(srv, 5000);
-    xylem_shutdown();
 }
 
 static void _serve(_handler_t handler, xylem_http_srv_opts_t* opts,
                    _body_t body) {
     _plan_t plan = {handler, opts, body};
-    xylem_run(_serve_main, &plan, NULL);
+    _serve_main(&plan);
 }
 
 static void test_url_encode_unreserved(void) {
@@ -506,7 +506,10 @@ static void test_proxy_plain(void) {
     _serve(_proxy_handler, NULL, _proxy_body);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_url_encode_unreserved();
     test_url_encode_reserved();
     test_url_encode_empty();
@@ -529,5 +532,11 @@ int main(void) {
     test_expect_continue();
     test_content_length_mode();
     test_proxy_plain();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

@@ -232,8 +232,10 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
 
     /* Reference for the pool job. */
     _addr_ctx_ref(ctx);
-    if (dynpool_submit(
-            runtime_get_dynpool(), _addr_resolve_work, ctx) != 0) {
+    if (dynpool_submit(runtime_get_dynpool(),
+                       _addr_resolve_work,
+                       ctx)
+        != 0) {
         /**
          * Submit failed (e.g. OOM). Undo the job ref, reclaim the
          * waiter, and decline the park so the coroutine resumes inline
@@ -256,12 +258,6 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
                 0);
     }
     return true;
-}
-
-static void _addr_resolve_cleanup_cb(mco_coro* co, void* arg) {
-    (void)co;
-    _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
-    _addr_ctx_unref(ctx);
 }
 
 int addr_resolve(
@@ -305,10 +301,7 @@ int addr_resolve(
         ctx->timer = scheduler_timer_create(runtime_get_scheduler());
     }
 
-    scheduler_park(runtime_get_scheduler(),
-                   _addr_resolve_park_cb,
-                   _addr_resolve_cleanup_cb,
-                   ctx);
+    scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
 
     int rc;
     if (atomic_load(&ctx->timed_out)) {

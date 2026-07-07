@@ -118,7 +118,6 @@ typedef struct _sched_worker_s {
     scheduler_t*                sched;
     uint32_t                    index;
     scheduler_park_cb_t         park_cb;
-    scheduler_park_cleanup_cb_t park_cleanup_cb;
     void*                       park_arg;
     _Atomic bool                parked;
     _Atomic bool                stealing;
@@ -219,7 +218,6 @@ struct scheduler_timer_s {
 typedef struct _sched_coro_ctx_s {
     void (*fn)(void*);
     void*                  arg;
-    void (*cleanup)(void*); /* called if coroutine never runs; NULL-safe */
     queue_node_t           runq_node;
     list_node_t            registry_node;
     mco_coro*              co;
@@ -243,7 +241,6 @@ static void _sched_coro_entry_cb(mco_coro* co) {
     void (*fn)(void*)   = ctx->fn;
     void* arg           = ctx->arg;
 
-    ctx->cleanup = NULL; /* fn owns arg lifecycle; drain must not free it. */
     fn(arg);
 }
 
@@ -638,9 +635,10 @@ static void _sched_timer_complete(_sched_timer_fire_t* fire) {
     _sched_timer_unref(timer);
 }
 
-static int _sched_spawn(
-    scheduler_t* sched, void (*fn)(void*), void* arg,
-    void (*cleanup)(void*)) {
+int scheduler_spawn(
+    scheduler_t* sched,
+    void (*fn)(void*),
+    void* arg) {
     if (!fn) {
         return -1;
     }
@@ -650,9 +648,8 @@ static int _sched_spawn(
         return -1;
     }
 
-    ctx->fn      = fn;
-    ctx->arg     = arg;
-    ctx->cleanup = cleanup;
+    ctx->fn  = fn;
+    ctx->arg = arg;
 
     mco_desc desc = mco_desc_init(
         _sched_coro_entry_cb, sched->coro_pool.stack_size);
@@ -689,22 +686,9 @@ static int _sched_spawn(
     return 0;
 }
 
-int scheduler_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
-    return _sched_spawn(sched, fn, arg, NULL);
-}
-
 static void _sched_timer_launch_cb(void* arg) {
     _sched_timer_fire_t* fire = (_sched_timer_fire_t*)arg;
     fire->cb(fire->timer, fire->ud);
-    _sched_timer_complete(fire);
-    free(fire);
-}
-
-static void _sched_timer_cleanup_cb(void* arg) {
-    _sched_timer_fire_t* fire = (_sched_timer_fire_t*)arg;
-    if (!fire) {
-        return;
-    }
     _sched_timer_complete(fire);
     free(fire);
 }
@@ -718,10 +702,7 @@ static int _sched_timer_launch(
         return -1;
     }
     *f = *fire;
-    if (_sched_spawn(sched,
-                     _sched_timer_launch_cb,
-                     f,
-                     _sched_timer_cleanup_cb) != 0) {
+    if (scheduler_spawn(sched, _sched_timer_launch_cb, f) != 0) {
         xylem_loge("<sched> timer spawn failed");
         free(f);
         return -1;
@@ -983,14 +964,8 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
         return;
     }
     if (!atomic_load(&w->sched->running)) {
-        scheduler_park_cleanup_cb_t cleanup_cb = w->park_cleanup_cb;
-        void* arg = w->park_arg;
-        w->park_cb         = NULL;
-        w->park_cleanup_cb = NULL;
-        w->park_arg        = NULL;
-        if (cleanup_cb) {
-            cleanup_cb(co, arg);
-        }
+        w->park_cb  = NULL;
+        w->park_arg = NULL;
         return;
     }
     if (!w->park_cb) {
@@ -1000,9 +975,8 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     }
     scheduler_park_cb_t park_cb = w->park_cb;
     void* arg = w->park_arg;
-    w->park_cb         = NULL;
-    w->park_cleanup_cb = NULL;
-    w->park_arg        = NULL;
+    w->park_cb  = NULL;
+    w->park_arg = NULL;
 
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
     atomic_store(&ctx->park_state, PARK_PARKING);
@@ -1190,22 +1164,22 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
         atomic_store(&sched->running, false);
     }
 
-    if (sched->workers) {
-        if (!sched->joined) {
-            for (int32_t i = 0; i < started_count; i++) {
-                platform_sem_post(sched->workers[i].sem);
-                _sched_poller_wake(sched);
-            }
-            for (int32_t i = 0; i < started_count; i++) {
-                thrd_join(sched->workers[i].thread, NULL);
-            }
-            sched->joined = true;
+    if (sched->workers && !sched->joined) {
+        _sched_poller_wake(sched);
+        for (int32_t i = 0; i < started_count; i++) {
+            platform_sem_post(sched->workers[i].sem);
         }
+        for (int32_t i = 0; i < started_count; i++) {
+            thrd_join(sched->workers[i].thread, NULL);
+        }
+        sched->joined = true;
+    }
 
-        /* iowait timers call scheduler_timer_stop which takes timer_lock. */
-        iowait_slab_destroy(sched->iowait_slab);
-        sched->iowait_slab = NULL;
+    /* iowait timers call scheduler_timer_stop which takes timer_lock. */
+    iowait_slab_destroy(sched->iowait_slab);
+    sched->iowait_slab = NULL;
 
+    if (sched->workers) {
         for (int32_t i = 0; i < sched->worker_count; i++) {
             _sched_worker_t* w = &sched->workers[i];
             if (w->deque) {
@@ -1425,9 +1399,6 @@ void scheduler_destroy(scheduler_t* sched) {
             _sched_coro_ctx_t* ctx =
                 list_entry(node, _sched_coro_ctx_t, registry_node);
             mco_destroy(ctx->co);
-            if (ctx->cleanup) {
-                ctx->cleanup(ctx->arg);
-            }
             free(ctx);
 
             spin_lock(&w->registry_lock);
@@ -1446,9 +1417,9 @@ void scheduler_stop(scheduler_t* sched) {
     bool expected = true;
     if (atomic_compare_exchange_strong(
             &sched->running, &expected, false)) {
+        _sched_poller_wake(sched);
         for (int32_t i = 0; i < sched->worker_count; i++) {
             platform_sem_post(sched->workers[i].sem);
-            _sched_poller_wake(sched);
         }
     }
 
@@ -1571,7 +1542,6 @@ void scheduler_schedule_batch(
 void scheduler_park(
     scheduler_t* sched,
     scheduler_park_cb_t park_cb,
-    scheduler_park_cleanup_cb_t cleanup_cb,
     void* arg) {
     (void)sched;
     if (!_tls_worker || !mco_running()) {
@@ -1581,9 +1551,8 @@ void scheduler_park(
         abort();
     }
 
-    _tls_worker->park_cb         = park_cb;
-    _tls_worker->park_cleanup_cb = cleanup_cb;
-    _tls_worker->park_arg        = arg;
+    _tls_worker->park_cb  = park_cb;
+    _tls_worker->park_arg = arg;
     mco_yield(mco_running());
 
     /* Resumed: clear park bookkeeping so the coro runs as PARK_IDLE. */
@@ -1607,7 +1576,7 @@ void scheduler_yield_credit(void) {
     if (!_tls_worker || !mco_running()) {
         return;
     }
-    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL, NULL);
+    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {

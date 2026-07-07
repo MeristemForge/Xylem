@@ -28,7 +28,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 #define TICK_INTERVAL_MS  20
 #define TICK_TARGET       5
 
@@ -60,11 +59,10 @@ static void _tick_main(void* arg) {
 
     xylem_timer_cancel(wd);
     xylem_ticker_destroy(tk);
-    xylem_shutdown();
 }
 
 static void test_tick(void) {
-    xylem_run(_tick_main, NULL, NULL);
+    _tick_main(NULL);
 }
 
 static void _invalid_main(void* arg) {
@@ -72,11 +70,10 @@ static void _invalid_main(void* arg) {
     ASSERT(xylem_ticker_create(0) == NULL);
     ASSERT(xylem_ticker_recv(NULL) == 0);
     xylem_ticker_destroy(NULL);
-    xylem_shutdown();
 }
 
 static void test_invalid(void) {
-    xylem_run(_invalid_main, NULL, NULL);
+    _invalid_main(NULL);
 }
 
 static void _consumer(void* arg) {
@@ -114,11 +111,10 @@ static void _destroy_main(void* arg) {
 
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_destroy_wakes_recv(void) {
-    xylem_run(_destroy_main, NULL, NULL);
+    _destroy_main(NULL);
 }
 
 typedef struct {
@@ -170,7 +166,6 @@ static void _thread_consumer_main(void* arg) {
     ASSERT(atomic_load(&ctx->ticks) >= TICK_TARGET);
 
     xylem_timer_cancel(wd);
-    xylem_shutdown();
 }
 
 static void test_thread_consumer(void) {
@@ -178,7 +173,7 @@ static void test_thread_consumer(void) {
     atomic_init(&ctx.ticks, 0);
     atomic_init(&ctx.ended, false);
     atomic_init(&ctx.ordered, false);
-    xylem_run(_thread_consumer_main, &ctx, NULL);
+    _thread_consumer_main(&ctx);
 }
 
 /**
@@ -236,7 +231,6 @@ static int _race_destroyer_fn(void* arg) {
 
 static void _race_main(void* arg) {
     (void)arg;
-    _utils_watchdog_start(60000);
 
     uint64_t budget_ms = RACE_DEFAULT_MS;
     const char* env = getenv("XYLEM_TICKER_SOAK_MS");
@@ -260,22 +254,29 @@ static void _race_main(void* arg) {
         ASSERT(thrd_join(th[i], NULL) == thrd_success);
     }
     ASSERT(atomic_load(&ctx.destroys) > 0);
-
-    xylem_shutdown();
 }
 
 static void test_destroy_race(void) {
     /* Few workers vs many destroyer threads => oversubscription, which
      * widens the fire-dispatch window the race depends on. */
-    xylem_opts_t opts = { .workers = 2, .coro_stack_size = 0 };
-    xylem_run(_race_main, NULL, &opts);
+    _race_main(NULL);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_tick();
     test_invalid();
     test_destroy_wakes_recv();
     test_thread_consumer();
     test_destroy_race();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_opts_t opts = { .workers = 2, .coro_stack_size = 0 };
+    xylem_run(_test_run_all, NULL, &opts);
     return 0;
 }

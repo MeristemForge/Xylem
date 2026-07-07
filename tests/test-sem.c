@@ -27,7 +27,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 
 static xylem_opts_t _rt_opts = { .workers = 0 };
 
@@ -38,7 +37,6 @@ typedef struct {
 
 static void _count_main(void* arg) {
     _count_ctx_t* ctx = (_count_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     ctx->sem = xylem_sem_create(2);
     xylem_sem_wait(ctx->sem);
@@ -49,13 +47,15 @@ static void _count_main(void* arg) {
 
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void test_count(void) {
     fprintf(stderr, "=== test_count\n");
     _count_ctx_t ctx = {0};
-    xylem_run(_count_main, &ctx, &_rt_opts);
+    _count_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -71,7 +71,6 @@ static void _pair_waiter(void* arg) {
     atomic_store(&ctx->woke, 1);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _pair_poster(void* arg) {
@@ -83,7 +82,6 @@ static void _pair_poster(void* arg) {
 
 static void _pair_main(void* arg) {
     _pair_ctx_t* ctx = (_pair_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     xylem_spawn(_pair_waiter, ctx);
     xylem_spawn(_pair_poster, ctx);
@@ -93,7 +91,10 @@ static void test_coro_pair(void) {
     fprintf(stderr, "=== test_coro_pair\n");
     _pair_ctx_t ctx = {0};
     atomic_init(&ctx.woke, 0);
-    xylem_run(_pair_main, &ctx, &_rt_opts);
+    _pair_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -119,12 +120,10 @@ static void _ct_poster(void* arg) {
     }
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _ct_main(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     thrd_t th;
     thrd_create(&th, _ct_thread_fn, ctx);
@@ -136,7 +135,10 @@ static void test_coro_posts_thread(void) {
     fprintf(stderr, "=== test_coro_posts_thread\n");
     _ct_ctx_t ctx = {0};
     atomic_init(&ctx.thread_done, 0);
-    xylem_run(_ct_main, &ctx, &_rt_opts);
+    _ct_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -162,12 +164,10 @@ static void _tc_waiter(void* arg) {
     xylem_sem_wait(ctx->sem);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _tc_main(void* arg) {
     _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     xylem_spawn(_tc_waiter, ctx);
 }
@@ -175,7 +175,10 @@ static void _tc_main(void* arg) {
 static void test_thread_posts_coro(void) {
     fprintf(stderr, "=== test_thread_posts_coro\n");
     _tc_ctx_t ctx = {0};
-    xylem_run(_tc_main, &ctx, &_rt_opts);
+    _tc_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -185,7 +188,6 @@ typedef struct {
 
 static void _coto_main(void* arg) {
     _coto_ctx_t* ctx = (_coto_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     xylem_sem_t* sem = xylem_sem_create(0);
 
@@ -201,13 +203,15 @@ static void _coto_main(void* arg) {
 
     ctx->tested = 1;
     xylem_sem_destroy(sem);
-    xylem_shutdown();
 }
 
 static void test_coro_timeout(void) {
     fprintf(stderr, "=== test_coro_timeout\n");
     _coto_ctx_t ctx = {0};
-    xylem_run(_coto_main, &ctx, &_rt_opts);
+    _coto_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -222,7 +226,6 @@ static void _win_waiter(void* arg) {
     ASSERT(ok == true);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _win_poster(void* arg) {
@@ -233,7 +236,6 @@ static void _win_poster(void* arg) {
 
 static void _win_main(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     xylem_spawn(_win_waiter, ctx);
     xylem_spawn(_win_poster, ctx);
@@ -242,7 +244,10 @@ static void _win_main(void* arg) {
 static void test_coro_timedwait_wins(void) {
     fprintf(stderr, "=== test_coro_timedwait_wins\n");
     _win_ctx_t ctx = {0};
-    xylem_run(_win_main, &ctx, &_rt_opts);
+    _win_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -267,12 +272,10 @@ static void _tto_driver(void* arg) {
     ASSERT(atomic_load(&ctx->thread_result) == 1);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _tto_main(void* arg) {
     _tto_ctx_t* ctx = (_tto_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     thrd_t th;
     thrd_create(&th, _tto_thread_fn, ctx);
@@ -284,7 +287,10 @@ static void test_thread_timeout(void) {
     fprintf(stderr, "=== test_thread_timeout\n");
     _tto_ctx_t ctx = {0};
     atomic_init(&ctx.thread_result, 0);
-    xylem_run(_tto_main, &ctx, &_rt_opts);
+    _tto_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -312,7 +318,6 @@ static void _stress_waiter(void* arg) {
             xylem_sleep(1);
         }
         xylem_sem_destroy(ctx->sem);
-        xylem_shutdown();
     }
 }
 
@@ -329,7 +334,6 @@ static void _stress_poster(void* arg) {
 
 static void _stress_main(void* arg) {
     _stress_ctx_t* ctx = (_stress_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     for (int i = 0; i < STRESS_WAITERS; i++) {
         xylem_spawn(_stress_waiter, ctx);
@@ -345,7 +349,10 @@ static void test_stress(void) {
     atomic_init(&ctx.acquired, 0);
     atomic_init(&ctx.done, 0);
     atomic_init(&ctx.posters_done, 0);
-    xylem_run(_stress_main, &ctx, &_rt_opts);
+    _stress_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
@@ -417,12 +424,10 @@ static void _mix_driver(void* arg) {
     ASSERT(atomic_load(&ctx->acquired) == MIX_TOTAL);
     ctx->tested = 1;
     xylem_sem_destroy(ctx->sem);
-    xylem_shutdown();
 }
 
 static void _mix_main(void* arg) {
     _mix_ctx_t* ctx = (_mix_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->sem = xylem_sem_create(0);
     for (int i = 0; i < MIX_THREAD_W; i++) {
         thrd_t th;
@@ -450,12 +455,18 @@ static void test_mixed_waiters(void) {
         atomic_init(&ctx.acquired, 0);
         atomic_init(&ctx.waiters_done, 0);
         atomic_init(&ctx.posters_done, 0);
-        xylem_run(_mix_main, &ctx, &_rt_opts);
+        _mix_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_count();
     test_coro_pair();
     test_coro_posts_thread();
@@ -465,5 +476,11 @@ int main(void) {
     test_thread_timeout();
     test_stress();
     test_mixed_waiters();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, &_rt_opts);
     return 0;
 }

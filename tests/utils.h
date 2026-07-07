@@ -32,12 +32,12 @@ _Pragma("once")
 #include "xylem.h"
 #include "assert.h"
 
-#include <stdint.h>
+#define SAFETY_TIMEOUT_MS 10000
 
 /**
- * Watchdog for the public coroutine timer (xylem_timer_after). Pass this
- * as the callback; it aborts the test if the deadline is reached. The
- * caller keeps the returned handle and cancels it on the success path.
+ * Watchdog for public timers. Pass this as the callback; it aborts the
+ * test if the deadline is reached. The caller keeps the returned handle
+ * and cancels it on the success path.
  */
 static inline void _utils_watchdog_cb(xylem_timer_t* timer, void* userdata) {
     (void)timer;
@@ -45,15 +45,19 @@ static inline void _utils_watchdog_cb(xylem_timer_t* timer, void* userdata) {
     ASSERT(0 && "test timed out");
 }
 
-static inline void _utils_watchdog_coro(void* arg) {
-    uint64_t timeout_ms = (uint64_t)(uintptr_t)arg;
-    xylem_sleep(timeout_ms);
-    xylem_shutdown();
-    ASSERT(0 && "test timed out");
-}
+static xylem_timer_t* _utils_watchdog_timer;
 
 static inline void _utils_watchdog_start(uint64_t timeout_ms) {
-    xylem_spawn(_utils_watchdog_coro, (void*)(uintptr_t)timeout_ms);
+    ASSERT(_utils_watchdog_timer == NULL);
+    _utils_watchdog_timer =
+        xylem_timer_after(timeout_ms, _utils_watchdog_cb, NULL);
+    ASSERT(_utils_watchdog_timer != NULL);
+}
+
+static inline void _utils_watchdog_stop(void) {
+    xylem_timer_t* timer = _utils_watchdog_timer;
+    _utils_watchdog_timer = NULL;
+    xylem_timer_cancel(timer);
 }
 
 #ifdef TEST_WITH_TLS

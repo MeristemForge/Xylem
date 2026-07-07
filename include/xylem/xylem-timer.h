@@ -34,7 +34,10 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  *
  * Lifetime: timers are driven by the runtime scheduler; all timer APIs
  * require xylem_run() to be active. External OS threads must not call
- * timer APIs after xylem_shutdown() has been called.
+ * timer APIs after xylem_shutdown() has been called. A timer handle is a
+ * single-owner resource: calls on the same handle must be serialized by the
+ * caller. xylem_timer_cancel() consumes the handle; after it returns, the
+ * handle is invalid and must not be passed to any timer API again.
  */
 
 /**
@@ -42,9 +45,10 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * The handle must be consumed by xylem_timer_cancel(), even after the
- * callback has fired. Timer APIs must not be called from external OS
- * threads after xylem_shutdown() has been called.
+ * The returned handle must be consumed exactly once by
+ * xylem_timer_cancel(), even after the callback has fired. Timer APIs must
+ * not be called from external OS threads after xylem_shutdown() has been
+ * called.
  *
  * @param delay_ms  Delay in milliseconds.
  * @param cb        Callback to invoke on expiry.
@@ -62,7 +66,8 @@ extern xylem_timer_t* xylem_timer_after(
  *
  * The first fire occurs after interval_ms. Subsequent fires are scheduled
  * only after the previous callback returns, so callbacks for the same timer
- * never overlap. The handle must be consumed by xylem_timer_cancel().
+ * never overlap. The returned handle must be consumed exactly once by
+ * xylem_timer_cancel().
  *
  * @param interval_ms  Delay between callback completions, in milliseconds.
  * @param cb           Callback to invoke on each expiry.
@@ -79,10 +84,11 @@ extern xylem_timer_t* xylem_timer_every(
  * @note [CONTEXT-ADAPTIVE]
  *
  * A callback already in flight may still run to completion. This call
- * consumes @p timer; the handle must not be used again after it returns.
- * Calls on different timer handles may run concurrently, but operations
- * on the same handle, including cancel/cancel and cancel/reset, require
- * external synchronization.
+ * consumes @p timer; the handle is invalid after this function returns and
+ * must not be passed to xylem_timer_cancel(), xylem_timer_reset(), or any
+ * other timer API again. Calls on different timer handles may run
+ * concurrently, but operations on the same handle, including cancel/cancel
+ * and cancel/reset, require external synchronization.
  * Safe with @p timer == NULL (no-op, returns false).
  *
  * @param timer  Timer handle, or NULL.
@@ -97,7 +103,8 @@ extern bool xylem_timer_cancel(xylem_timer_t* timer);
  * @note [CONTEXT-ADAPTIVE]
  *
  * Preserves callback and user data. Restarts the countdown from now.
- * For periodic timers, delay_ms also becomes the new interval.
+ * For periodic timers, delay_ms also becomes the new interval. @p timer
+ * must be a live handle that has not been consumed by xylem_timer_cancel().
  * Calls on different timer handles may run concurrently, but operations
  * on the same handle, including reset/reset and reset/cancel, require
  * external synchronization. If both cancel and reset are issued during

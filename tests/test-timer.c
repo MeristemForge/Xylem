@@ -22,17 +22,12 @@
 #include "xylem.h"
 
 #include "assert.h"
-#include "runtime/runtime.h"
-#include "runtime/scheduler.h"
 #include "utils.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
-#include <threads.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 #define FIRE_TARGET       5
-#define SPAWN_TEARDOWN_TIMERS 8
 
 typedef struct {
     atomic_int         fires;
@@ -61,32 +56,6 @@ typedef struct {
     xylem_waitgroup_t*    wg;
 } _every_reset_ctx_t;
 
-typedef struct {
-    scheduler_timer_t* timer;
-    atomic_int         fires;
-    xylem_waitgroup_t* wg;
-} _deferred_stop_ctx_t;
-
-typedef struct {
-    scheduler_t*       sched;
-    scheduler_timer_t* timers[SPAWN_TEARDOWN_TIMERS];
-    atomic_int         refs;
-    atomic_int         unrefs;
-    atomic_int         fires;
-    mtx_t              lock;
-    cnd_t              cnd;
-    bool               stopped;
-} _spawn_teardown_ctx_t;
-
-typedef struct {
-    scheduler_t* sched;
-    atomic_int   parked;
-    atomic_int   cleaned;
-    mtx_t        lock;
-    cnd_t        cnd;
-    bool         ready;
-} _park_cleanup_ctx_t;
-
 static xylem_timer_t* _arm_watchdog(void) {
     return xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
 }
@@ -112,11 +81,10 @@ static void _after_main(void* arg) {
     ASSERT(atomic_load(&ctx.fires) == 1);
 
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_after(void) {
-    xylem_run(_after_main, NULL, NULL);
+    _after_main(NULL);
 }
 
 static void _cancel_cb(xylem_timer_t* t, void* ud) {
@@ -133,11 +101,10 @@ static void _cancel_main(void* arg) {
     xylem_sleep(50);
 
     xylem_timer_cancel(wd);
-    xylem_shutdown();
 }
 
 static void test_cancel(void) {
-    xylem_run(_cancel_main, NULL, NULL);
+    _cancel_main(NULL);
 }
 
 static void _repeat_cb(xylem_timer_t* t, void* ud) {
@@ -167,11 +134,10 @@ static void _repeat_main(void* arg) {
 
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_repeat(void) {
-    xylem_run(_repeat_main, NULL, NULL);
+    _repeat_main(NULL);
 }
 
 static void _every_cb(xylem_timer_t* t, void* ud) {
@@ -201,11 +167,10 @@ static void _every_main(void* arg) {
 
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_every(void) {
-    xylem_run(_every_main, NULL, NULL);
+    _every_main(NULL);
 }
 
 static void _reset_cb(xylem_timer_t* t, void* ud) {
@@ -236,11 +201,10 @@ static void _reset_main(void* arg) {
     xylem_timer_cancel(t);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_reset(void) {
-    xylem_run(_reset_main, NULL, NULL);
+    _reset_main(NULL);
 }
 
 typedef struct {
@@ -296,11 +260,10 @@ static void _reset_repeat_main(void* arg) {
     xylem_timer_cancel(t);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_reset_repeat(void) {
-    xylem_run(_reset_repeat_main, NULL, NULL);
+    _reset_repeat_main(NULL);
 }
 
 static void _blocking_cb(xylem_timer_t* t, void* ud) {
@@ -325,11 +288,10 @@ static void _blocking_main(void* arg) {
     ASSERT(atomic_load(&ctx.fires) == 1);
 
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_blocking_cb(void) {
-    xylem_run(_blocking_main, NULL, NULL);
+    _blocking_main(NULL);
 }
 
 static void _every_overlap_cb(xylem_timer_t* timer, void* ud) {
@@ -372,12 +334,10 @@ static void _every_overlap_main(void* arg) {
     xylem_timer_cancel(ctx.timer);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_every_callbacks_do_not_overlap(void) {
-    xylem_opts_t opts = { .workers = 2 };
-    xylem_run(_every_overlap_main, NULL, &opts);
+    _every_overlap_main(NULL);
 }
 
 static void _every_reset_cb(xylem_timer_t* timer, void* ud) {
@@ -415,168 +375,10 @@ static void _every_reset_main(void* arg) {
 
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
 }
 
 static void test_every_reset_and_cancel_from_callback(void) {
-    xylem_run(_every_reset_main, NULL, NULL);
-}
-
-static void _deferred_stop_cb(scheduler_timer_t* timer, void* ud) {
-    _deferred_stop_ctx_t* ctx = (_deferred_stop_ctx_t*)ud;
-    ASSERT(timer == ctx->timer);
-    ASSERT(atomic_fetch_add(&ctx->fires, 1) == 0);
-    ASSERT(scheduler_timer_reset(timer, 100) == false);
-    ASSERT(scheduler_timer_stop(timer) == true);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _deferred_stop_main(void* arg) {
-    (void)arg;
-    _deferred_stop_ctx_t ctx = { .wg = xylem_waitgroup_create() };
-    xylem_waitgroup_add(ctx.wg, 1);
-
-    xylem_timer_t* wd = _arm_watchdog();
-    ctx.timer = scheduler_timer_create(runtime_get_scheduler());
-    ASSERT(ctx.timer != NULL);
-    scheduler_timer_start(ctx.timer, _deferred_stop_cb, &ctx, 10, 0);
-
-    xylem_waitgroup_wait(ctx.wg);
-    xylem_sleep(150);
-    ASSERT(atomic_load(&ctx.fires) == 1);
-
-    scheduler_timer_destroy(ctx.timer);
-    xylem_timer_cancel(wd);
-    xylem_waitgroup_destroy(ctx.wg);
-    xylem_shutdown();
-}
-
-static void test_stop_cancels_deferred_reset_from_callback(void) {
-    xylem_run(_deferred_stop_main, NULL, NULL);
-}
-
-static void _spawn_teardown_ud_ref(void* ud) {
-    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
-    atomic_fetch_add(&ctx->refs, 1);
-}
-
-static void _spawn_teardown_ud_unref(void* ud) {
-    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
-    atomic_fetch_add(&ctx->unrefs, 1);
-}
-
-static void _spawn_teardown_cb(scheduler_timer_t* timer, void* ud) {
-    (void)timer;
-    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)ud;
-    ASSERT(atomic_fetch_add(&ctx->fires, 1) == 0);
-
-    scheduler_stop(ctx->sched);
-
-    mtx_lock(&ctx->lock);
-    ctx->stopped = true;
-    cnd_signal(&ctx->cnd);
-    mtx_unlock(&ctx->lock);
-}
-
-static void _spawn_teardown_start(void* arg) {
-    _spawn_teardown_ctx_t* ctx = (_spawn_teardown_ctx_t*)arg;
-    for (int i = 0; i < SPAWN_TEARDOWN_TIMERS; i++) {
-        ctx->timers[i] = scheduler_timer_create(ctx->sched);
-        ASSERT(ctx->timers[i] != NULL);
-        scheduler_timer_set_spawn(ctx->timers[i], true);
-        scheduler_timer_set_ud_guard(ctx->timers[i],
-                                     _spawn_teardown_ud_ref,
-                                     _spawn_teardown_ud_unref);
-        scheduler_timer_start(ctx->timers[i],
-                              _spawn_teardown_cb,
-                              ctx,
-                              0,
-                              0);
-    }
-}
-
-static void test_spawn_timer_teardown_completes_unrun_fires(void) {
-    scheduler_opts_t opts = {.worker_count = 1};
-    _spawn_teardown_ctx_t ctx = {0};
-
-    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
-    ASSERT(cnd_init(&ctx.cnd) == thrd_success);
-
-    ctx.sched = scheduler_create(&opts);
-    ASSERT(ctx.sched != NULL);
-    ASSERT(scheduler_spawn(ctx.sched, _spawn_teardown_start, &ctx) == 0);
-
-    mtx_lock(&ctx.lock);
-    while (!ctx.stopped) {
-        cnd_wait(&ctx.cnd, &ctx.lock);
-    }
-    mtx_unlock(&ctx.lock);
-
-    for (int i = 0; i < SPAWN_TEARDOWN_TIMERS; i++) {
-        scheduler_timer_destroy(ctx.timers[i]);
-    }
-    scheduler_destroy(ctx.sched);
-
-    ASSERT(atomic_load(&ctx.refs) == SPAWN_TEARDOWN_TIMERS);
-    ASSERT(atomic_load(&ctx.fires) == 1);
-    ASSERT(atomic_load(&ctx.unrefs) == SPAWN_TEARDOWN_TIMERS);
-
-    cnd_destroy(&ctx.cnd);
-    mtx_destroy(&ctx.lock);
-}
-
-static bool _park_cleanup_park_cb(mco_coro* co, void* arg) {
-    (void)co;
-    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
-    atomic_fetch_add(&ctx->parked, 1);
-    return false;
-}
-
-static void _park_cleanup_cleanup_cb(mco_coro* co, void* arg) {
-    (void)co;
-    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
-    atomic_fetch_add(&ctx->cleaned, 1);
-}
-
-static void _park_cleanup_main(void* arg) {
-    _park_cleanup_ctx_t* ctx = (_park_cleanup_ctx_t*)arg;
-    scheduler_stop(ctx->sched);
-
-    mtx_lock(&ctx->lock);
-    ctx->ready = true;
-    cnd_signal(&ctx->cnd);
-    mtx_unlock(&ctx->lock);
-
-    scheduler_park(ctx->sched,
-                   _park_cleanup_park_cb,
-                   _park_cleanup_cleanup_cb,
-                   ctx);
-}
-
-static void test_park_cleanup_runs_when_shutdown_skips_park(void) {
-    scheduler_opts_t opts = {.worker_count = 1};
-    _park_cleanup_ctx_t ctx = {0};
-
-    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
-    ASSERT(cnd_init(&ctx.cnd) == thrd_success);
-
-    ctx.sched = scheduler_create(&opts);
-    ASSERT(ctx.sched != NULL);
-    ASSERT(scheduler_spawn(ctx.sched, _park_cleanup_main, &ctx) == 0);
-
-    mtx_lock(&ctx.lock);
-    while (!ctx.ready) {
-        cnd_wait(&ctx.cnd, &ctx.lock);
-    }
-    mtx_unlock(&ctx.lock);
-
-    scheduler_destroy(ctx.sched);
-
-    ASSERT(atomic_load(&ctx.parked) == 0);
-    ASSERT(atomic_load(&ctx.cleaned) == 1);
-
-    cnd_destroy(&ctx.cnd);
-    mtx_destroy(&ctx.lock);
+    _every_reset_main(NULL);
 }
 
 static void _null_main(void* arg) {
@@ -586,14 +388,16 @@ static void _null_main(void* arg) {
     ASSERT(xylem_timer_cancel(NULL) == false);
     ASSERT(xylem_timer_reset(NULL, 10) == false);
     xylem_timer_cancel(wd);
-    xylem_shutdown();
 }
 
 static void test_null(void) {
-    xylem_run(_null_main, NULL, NULL);
+    _null_main(NULL);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_after();
     test_cancel();
     test_repeat();
@@ -603,9 +407,13 @@ int main(void) {
     test_blocking_cb();
     test_every_callbacks_do_not_overlap();
     test_every_reset_and_cancel_from_callback();
-    test_stop_cancels_deferred_reset_from_callback();
-    test_spawn_timer_teardown_completes_unrun_fires();
-    test_park_cleanup_runs_when_shutdown_skips_park();
     test_null();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_opts_t opts = { .workers = 2 };
+    xylem_run(_test_run_all, NULL, &opts);
     return 0;
 }

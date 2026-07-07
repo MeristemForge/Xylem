@@ -193,12 +193,6 @@ static bool _sem_park_cb(mco_coro* co, void* arg) {
     return true;
 }
 
-static void _sem_timedwait_cleanup_cb(mco_coro* co, void* arg) {
-    (void)co;
-    _coro_waiter_t* w = (_coro_waiter_t*)arg;
-    _sem_coro_timed_unref(w);
-}
-
 static void _sem_wait_thrd(xylem_sem_t* s) {
     if (_sem_try_take(s)) {
         return;
@@ -268,7 +262,7 @@ static void _sem_wait_coro(xylem_sem_t* s) {
     w.co         = NULL;
     w.timeout_ms = 0;
 
-    scheduler_park(s->sched, _sem_park_cb, NULL, &w);
+    scheduler_park(s->sched, _sem_park_cb, &w);
 }
 
 static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
@@ -292,7 +286,7 @@ static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     atomic_init(&w->refcnt, 1);
     atomic_init(&w->timer_fired, false);
 
-    scheduler_park(s->sched, _sem_park_cb, _sem_timedwait_cleanup_cb, w);
+    scheduler_park(s->sched, _sem_park_cb, w);
 
     bool fired = atomic_load(&w->timer_fired);
     if (scheduler_timer_stop(w->timer)) {

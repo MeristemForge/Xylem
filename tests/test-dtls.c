@@ -30,7 +30,6 @@
 
 #define DTLS_HOST         "127.0.0.1"
 #define DTLS_PORT         15433
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -97,11 +96,10 @@ static void _default_main(void* arg) {
     xylem_dtls_ctx_destroy(ctx.cli_ctx);
     remove(p->cert);
     remove(p->key);
-    xylem_shutdown();
 }
 
 static void _run_default(_plan_t plan) {
-    xylem_run(_default_main, &plan, NULL);
+    _default_main(&plan);
 }
 
 static void test_load_cert_valid(void) {
@@ -232,11 +230,10 @@ static void _alpn_main(void* arg) {
     xylem_dtls_ctx_destroy(cli_ctx);
     remove(cert);
     remove(key);
-    xylem_shutdown();
 }
 
 static void test_alpn_negotiation(void) {
-    xylem_run(_alpn_main, NULL, NULL);
+    _alpn_main(NULL);
 }
 
 static void _ci_server(void* arg) {
@@ -351,11 +348,10 @@ static void _cw_main(void* arg) {
     xylem_dtls_ctx_destroy(srv_ctx);
     remove(cert);
     remove(key);
-    xylem_shutdown();
 }
 
 static void test_close_wakes_recv(void) {
-    xylem_run(_cw_main, NULL, NULL);
+    _cw_main(NULL);
 }
 
 static void _lc_server(void* arg) {
@@ -578,11 +574,13 @@ static void test_full_duplex(void) {
 static void _run_cfg_tests(void* arg) {
     (void)arg;
     test_load_cert_valid();
-    xylem_shutdown();
 }
 
-int main(void) {
-    xylem_run(_run_cfg_tests, NULL, NULL);
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    _run_cfg_tests(NULL);
     test_handshake_and_echo();
     test_alpn_negotiation();
     test_close_wakes_peer();
@@ -592,5 +590,11 @@ int main(void) {
     test_listener_close_drops_unaccepted_conn();
     test_concurrent_sessions();
     test_full_duplex();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

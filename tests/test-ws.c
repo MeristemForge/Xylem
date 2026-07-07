@@ -22,6 +22,7 @@
 #include "xylem.h"
 #include "xylem/net/xylem-ws.h"
 #include "assert.h"
+#include "utils.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -89,7 +90,6 @@ static void test_text_echo(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_binary_echo(void* arg) {
@@ -102,7 +102,6 @@ static void test_binary_echo(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_BINARY, data, sizeof(data));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_multiple_messages(void* arg) {
@@ -118,7 +117,6 @@ static void test_multiple_messages(void* arg) {
     }
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_large_message(void* arg) {
@@ -140,7 +138,6 @@ static void test_large_message(void* arg) {
 
     free(big);
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void _srv_close_handler(xylem_ws_conn_t* ws, void* ud) {
@@ -165,7 +162,6 @@ static void test_server_close(void* arg) {
     ASSERT(xylem_ws_close_code(c) == 1000);
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_null_guards(void* arg) {
@@ -182,7 +178,6 @@ static void test_null_guards(void* arg) {
     xylem_ws_msg_free(NULL);
     xylem_ws_close_listener(NULL);
     ASSERT(xylem_ws_listener_port(NULL) == 0);
-    xylem_shutdown();
 }
 
 static void test_deflate_text_echo(void* arg) {
@@ -196,7 +191,6 @@ static void test_deflate_text_echo(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_deflate_context_takeover(void* arg) {
@@ -218,7 +212,6 @@ static void test_deflate_context_takeover(void* arg) {
     }
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_deflate_large_binary(void* arg) {
@@ -241,7 +234,6 @@ static void test_deflate_large_binary(void* arg) {
 
     free(big);
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_deflate_disabled_fallback(void* arg) {
@@ -256,7 +248,6 @@ static void test_deflate_disabled_fallback(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 typedef void (*test_fn_t)(void*);
@@ -276,10 +267,19 @@ static test_fn_t tests[] = {
 
 static int test_count = (int)(sizeof(tests) / sizeof(tests[0]));
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     for (int i = 0; i < test_count; i++) {
-        xylem_run(tests[i], NULL, NULL);
+        tests[i](NULL);
     }
     printf("All %d WS tests passed.\n", test_count);
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

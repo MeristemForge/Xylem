@@ -26,7 +26,6 @@
 #include <string.h>
 
 #define RUDP_HOST         "127.0.0.1"
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -59,11 +58,10 @@ static void _main(void* arg) {
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->handoff);
     xylem_channel_destroy(ctx->ready);
-    xylem_shutdown();
 }
 
 static void _run(_ctx_t ctx) {
-    xylem_run(_main, &ctx, NULL);
+    _main(&ctx);
 }
 
 static void _echo_server(void* arg) {
@@ -333,7 +331,10 @@ static void test_listener_close_preserves_accepted_conn(void) {
     });
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_echo();
     test_remote_addr();
     test_read_deadline();
@@ -341,5 +342,11 @@ int main(void) {
     test_dead_link();
     test_close_listener_wakes_dispatcher();
     test_listener_close_preserves_accepted_conn();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

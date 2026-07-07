@@ -33,7 +33,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 #define DEADLINE_RACE_THREADS 4
 #define DEADLINE_RACE_ITERS   2000
 
@@ -135,7 +134,6 @@ static void _iowait_inject_read(iowait_t* w) {
 
 static void _iowait_wrap_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
            == 0);
@@ -163,12 +161,10 @@ static void _iowait_wrap_coro(void* arg) {
     iowait_destroy(ctx->active);
     platform_socket_close(ctx->socks[0]);
     platform_socket_close(ctx->socks[1]);
-    xylem_shutdown();
 }
 
 static void _iowait_closed_before_event_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
            == 0);
@@ -193,13 +189,11 @@ static void _iowait_closed_before_event_coro(void* arg) {
     iowait_destroy(ctx->active);
     platform_socket_close(ctx->socks[0]);
     platform_socket_close(ctx->socks[1]);
-    xylem_shutdown();
 }
 
 static void _iowait_deadline_race_coro(void* arg) {
     _deadline_race_ctx_t* ctx = (_deadline_race_ctx_t*)arg;
     thrd_t                threads[DEADLINE_RACE_THREADS];
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
            == 0);
@@ -226,7 +220,6 @@ static void _iowait_deadline_race_coro(void* arg) {
     iowait_destroy(ctx->active);
     platform_socket_close(ctx->socks[0]);
     platform_socket_close(ctx->socks[1]);
-    xylem_shutdown();
 }
 
 static void test_stale_event_after_generation_wrap_is_rejected(void) {
@@ -238,7 +231,7 @@ static void test_stale_event_after_generation_wrap_is_rejected(void) {
         },
         .result = IOWAIT_ERROR,
     };
-    xylem_run(_iowait_wrap_coro, &ctx, NULL);
+    _iowait_wrap_coro(&ctx);
     ASSERT(ctx.tested == 1);
 }
 
@@ -251,7 +244,7 @@ static void test_closed_state_wins_over_late_event(void) {
         },
         .result = IOWAIT_ERROR,
     };
-    xylem_run(_iowait_closed_before_event_coro, &ctx, NULL);
+    _iowait_closed_before_event_coro(&ctx);
     ASSERT(ctx.tested == 1);
 }
 
@@ -264,13 +257,22 @@ static void test_concurrent_deadline_setters_and_close(void) {
         },
     };
     atomic_init(&ctx.start, false);
-    xylem_run(_iowait_deadline_race_coro, &ctx, NULL);
+    _iowait_deadline_race_coro(&ctx);
     ASSERT(ctx.tested == 1);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_stale_event_after_generation_wrap_is_rejected();
     test_closed_state_wins_over_late_event();
     test_concurrent_deadline_setters_and_close();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

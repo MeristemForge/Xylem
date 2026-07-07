@@ -151,6 +151,10 @@ per-coroutine `park_state` closes that window:
 | `PARKED` | callback returned true; suspended, awaiting a wake |
 | `WOKEN` | a waker has marked it; it is (or will be) requeued exactly once |
 
+Shutdown does not run park cleanup. If shutdown happens before or after a park
+record is published, the coroutine is simply stranded until process exit;
+`xylem_run()` return is the runtime lifetime boundary.
+
 The parking worker (`_sched_handle_yield`) and the waker (`scheduler_schedule`
 -> `_sched_try_wake`) cooperate through a CAS on `park_state`:
 
@@ -308,7 +312,7 @@ the park callback **after** `mco_yield()` has actually suspended the coroutine,
 so a wake source can never observe the coroutine pointer before it is safely
 parked. The steps:
 
-1. `iowait_read()` calls `scheduler_park(_iowait_park_cb, &w->rd)`.
+1. `iowait_read()` calls `scheduler_park()` with `_iowait_park_cb` and `&w->rd`.
 2. After the yield, `_iowait_park_cb` publishes the coroutine into
    `rd.waiter` with a CAS. A slot already holding a parked coroutine means an
    illegal second reader — the process aborts with a diagnostic.
@@ -528,6 +532,8 @@ is offloaded to the **dynamic thread pool**.
    reports `-1`.
 3. A pool thread runs `fn(arg)`, then calls `scheduler_schedule()` to resume the
    coroutine — a cross-thread wakeup that lands on the global runq.
+   If shutdown destroys the pool before a queued task runs, process-exit
+   teardown owns the remaining submit context.
 
 The cross-thread handoff (top to bottom is time):
 
@@ -577,9 +583,12 @@ changes.
 - **No lost wakeups against the poll driver.** The driver sets `poller_waiting`
   (seq-cst) before its final work re-check; producers that miss a parked worker
   fall back to poking the wakeup fd.
-- **Teardown never frees memory another thread may still touch.**
-  `stop → dynpool_destroy → destroy` ordering plus the coroutine registry cover
-  late cross-thread schedules and leaked-but-alive coroutines.
+- **Teardown is process-lifetime scoped.**
+  `xylem_run()` is expected to return directly to program exit. After it returns,
+  callers must not touch runtime-backed objects or start another runtime in the
+  same process. Shutdown joins running blocking tasks and frees core scheduler
+  structures, but it does not guarantee full cleanup for coroutines stranded in
+  already-committed parks.
 
 ## 12. Configuration
 

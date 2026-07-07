@@ -27,10 +27,9 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 #define CREDIT_WAKE_COUNT 129
 
-static xylem_opts_t _rt_opts = { .workers = 0 };
+static xylem_opts_t _rt_opts = { .workers = 1 };
 
 typedef struct {
     xylem_mutex_t* mtx;
@@ -46,7 +45,6 @@ static void _c_one_finish(_c_one_ctx_t* ctx) {
         ctx->cond = NULL;
         xylem_mutex_destroy(ctx->mtx);
         ctx->mtx = NULL;
-        xylem_shutdown();
     }
 }
 
@@ -72,7 +70,6 @@ static void _c_one_signaler(void* arg) {
 
 static void _test_c_one_main(void* arg) {
     _c_one_ctx_t* ctx = (_c_one_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
     xylem_spawn(_c_one_waiter, ctx);
@@ -83,7 +80,10 @@ static void test_signal_one(void) {
     fprintf(stderr, "=== test_signal_one\n");
     for (int round = 0; round < 20; round++) {
         _c_one_ctx_t ctx = {0};
-        xylem_run(_test_c_one_main, &ctx, &_rt_opts);
+        _test_c_one_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -119,7 +119,6 @@ static void _c_bcast_waiter(void* arg) {
         ctx->cond = NULL;
         xylem_mutex_destroy(ctx->mtx);
         ctx->mtx = NULL;
-        xylem_shutdown();
     }
 }
 
@@ -136,7 +135,6 @@ static void _c_bcast_signaler(void* arg) {
 
 static void _test_c_bcast_main(void* arg) {
     _c_bcast_ctx_t* ctx = (_c_bcast_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx        = xylem_mutex_create();
     ctx->cond       = xylem_cond_create();
     ctx->all_parked = xylem_cond_create();
@@ -150,7 +148,10 @@ static void test_broadcast(void) {
     fprintf(stderr, "=== test_broadcast\n");
     for (int round = 0; round < 10; round++) {
         _c_bcast_ctx_t ctx = {0};
-        xylem_run(_test_c_bcast_main, &ctx, &_rt_opts);
+        _test_c_bcast_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.released) == BCAST_WAITERS);
     }
@@ -235,13 +236,11 @@ static void _c_bq_consumer(void* arg) {
         ctx->not_empty = NULL;
         xylem_mutex_destroy(ctx->mtx);
         ctx->mtx = NULL;
-        xylem_shutdown();
     }
 }
 
 static void _test_c_bq_main(void* arg) {
     _c_bq_ctx_t* ctx = (_c_bq_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx       = xylem_mutex_create();
     ctx->not_empty = xylem_cond_create();
     ctx->not_full  = xylem_cond_create();
@@ -257,7 +256,10 @@ static void test_bounded_queue(void) {
     fprintf(stderr, "=== test_bounded_queue\n");
     for (int round = 0; round < 5; round++) {
         _c_bq_ctx_t ctx = {0};
-        xylem_run(_test_c_bq_main, &ctx, &_rt_opts);
+        _test_c_bq_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -292,7 +294,6 @@ static void _c_ext_waiter(void* arg) {
     ctx->cond = NULL;
     xylem_mutex_destroy(ctx->mtx);
     ctx->mtx = NULL;
-    xylem_shutdown();
 }
 
 static void _c_ext_submitter(void* arg) {
@@ -309,7 +310,6 @@ static void _c_ext_submitter(void* arg) {
 
 static void _test_c_ext_main(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx         = xylem_mutex_create();
     ctx->cond        = xylem_cond_create();
     ctx->parked_cond = xylem_cond_create();
@@ -321,7 +321,10 @@ static void test_external_signal(void) {
     fprintf(stderr, "=== test_external_signal\n");
     for (int round = 0; round < 10; round++) {
         _c_ext_ctx_t ctx = {0};
-        xylem_run(_test_c_ext_main, &ctx, &_rt_opts);
+        _test_c_ext_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -360,12 +363,10 @@ static void _ctw_signaler(void* arg) {
     ctx->cond = NULL;
     xylem_mutex_destroy(ctx->mtx);
     ctx->mtx = NULL;
-    xylem_shutdown();
 }
 
 static void _test_ctw_main(void* arg) {
     _ctw_ctx_t* ctx = (_ctw_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
     thrd_t th;
@@ -379,7 +380,10 @@ static void test_thread_waiter(void) {
     for (int round = 0; round < 10; round++) {
         _ctw_ctx_t ctx = {0};
         atomic_init(&ctx.thread_released, 0);
-        xylem_run(_test_ctw_main, &ctx, &_rt_opts);
+        _test_ctw_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -439,12 +443,10 @@ static void _mixb_driver(void* arg) {
     ctx->cond = NULL;
     xylem_mutex_destroy(ctx->mtx);
     ctx->mtx = NULL;
-    xylem_shutdown();
 }
 
 static void _test_mixb_main(void* arg) {
     _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
     thrd_t th;
@@ -464,7 +466,10 @@ static void test_mixed_broadcast(void) {
         atomic_init(&ctx.thread_parked, 0);
         atomic_init(&ctx.coro_released, 0);
         atomic_init(&ctx.thread_released, 0);
-        xylem_run(_test_mixb_main, &ctx, &_rt_opts);
+        _test_mixb_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -493,7 +498,6 @@ static void _credit_maybe_finish(_credit_ctx_t* ctx) {
     ctx->cond = NULL;
     xylem_mutex_destroy(ctx->mtx);
     ctx->mtx = NULL;
-    xylem_shutdown();
 }
 
 static void _credit_waiter(void* arg) {
@@ -542,8 +546,6 @@ static void _credit_signaler(void* arg) {
 
 static void _test_credit_main(void* arg) {
     _credit_ctx_t* ctx = (_credit_ctx_t*)arg;
-
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->mtx        = xylem_mutex_create();
     ctx->cond       = xylem_cond_create();
     ctx->all_parked = xylem_cond_create();
@@ -556,13 +558,18 @@ static void _test_credit_main(void* arg) {
 static void test_signal_consumes_credit(void) {
     fprintf(stderr, "=== test_signal_consumes_credit\n");
 
-    xylem_opts_t opts = { .workers = 1 };
     _credit_ctx_t ctx = {0};
-    xylem_run(_test_credit_main, &ctx, &opts);
+    _test_credit_main(&ctx);
+    while (ctx.tested == 0) {
+        xylem_sleep(1);
+    }
     ASSERT(ctx.tested == 1);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_signal_one();
     test_broadcast();
     test_bounded_queue();
@@ -570,5 +577,11 @@ int main(void) {
     test_thread_waiter();
     test_mixed_broadcast();
     test_signal_consumes_credit();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, &_rt_opts);
     return 0;
 }

@@ -105,11 +105,10 @@ static void _test_get_main(void* arg) {
     xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
-    xylem_shutdown();
 }
 
 static void test_https_get(void) {
-    xylem_run(_test_get_main, NULL, NULL);
+    _test_get_main(NULL);
 }
 
 static void _test_pinned_ca_main(void* arg) {
@@ -136,11 +135,10 @@ static void _test_pinned_ca_main(void* arg) {
     xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
-    xylem_shutdown();
 }
 
 static void test_https_pinned_ca(void) {
-    xylem_run(_test_pinned_ca_main, NULL, NULL);
+    _test_pinned_ca_main(NULL);
 }
 
 static void _test_verify_fail_main(void* arg) {
@@ -160,11 +158,10 @@ static void _test_verify_fail_main(void* arg) {
     xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
-    xylem_shutdown();
 }
 
 static void test_https_verify_fail(void) {
-    xylem_run(_test_verify_fail_main, NULL, NULL);
+    _test_verify_fail_main(NULL);
 }
 
 static void _test_post_main(void* arg) {
@@ -196,11 +193,10 @@ static void _test_post_main(void* arg) {
     xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
-    xylem_shutdown();
 }
 
 static void test_https_post(void) {
-    xylem_run(_test_post_main, NULL, NULL);
+    _test_post_main(NULL);
 }
 
 static void _test_pool_main(void* arg) {
@@ -231,19 +227,27 @@ static void _test_pool_main(void* arg) {
     xylem_http_shutdown(srv, 5000);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
-    xylem_shutdown();
 }
 
 static void test_https_pool_reuse(void) {
-    xylem_run(_test_pool_main, NULL, NULL);
+    _test_pool_main(NULL);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_https_get();
     test_https_pinned_ca();
     test_https_verify_fail();
     test_https_post();
     test_https_pool_reuse();
     printf("All HTTPS tests passed.\n");
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

@@ -33,7 +33,6 @@
 
 #define TCP_HOST          "127.0.0.1"
 #define TCP_PORT          18080
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -67,12 +66,11 @@ static void _pair_main(void* arg) {
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->ready);
-    xylem_shutdown();
 }
 
 static void _run_pair(uint16_t port, _coro_t server, _coro_t client) {
     _ctx_t ctx = {.port = port, .server = server, .client = client};
-    xylem_run(_pair_main, &ctx, NULL);
+    _pair_main(&ctx);
 }
 
 static void _echo_server(void* arg) {
@@ -220,12 +218,11 @@ static void _timeout_main(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
-    xylem_shutdown();
 }
 
 static void test_dial_timeout(void) {
     _ctx_t ctx = {.client = _timeout_client};
-    xylem_run(_timeout_main, &ctx, NULL);
+    _timeout_main(&ctx);
 }
 
 static void _eof_server(void* arg) {
@@ -555,11 +552,13 @@ static void _close_write_main(void* arg) {
 
 static void test_close_stops_inflight_write(void) {
     _ctx_t ctx = {.client = _close_write_main};
-    xylem_opts_t opts = {.workers = 1};
-    xylem_run(_timeout_main, &ctx, &opts);
+    _timeout_main(&ctx);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_echo();
     test_reader_full();
     test_writer_buffered();
@@ -571,5 +570,12 @@ int main(void) {
     test_expired_write_deadline_blocks_ready_socket();
     test_invalid_io_args();
     test_close_stops_inflight_write();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_opts_t opts = {.workers = 1};
+    xylem_run(_test_run_all, NULL, &opts);
     return 0;
 }

@@ -27,7 +27,6 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 
 static xylem_opts_t _rt_opts = { .workers = 0 };
 
@@ -52,12 +51,10 @@ static void _wg_waiter(void* arg) {
     ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
-    xylem_shutdown();
 }
 
 static void _test_wg_main(void* arg) {
     _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     xylem_spawn(_wg_waiter, ctx);
@@ -70,7 +67,10 @@ static void test_concurrent(void) {
     fprintf(stderr, "=== test_concurrent\n");
     for (int round = 0; round < 20; round++) {
         _wg_ctx_t ctx = {0};
-        xylem_run(_test_wg_main, &ctx, &_rt_opts);
+        _test_wg_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -98,13 +98,11 @@ static void _wg_multi_waiter(void* arg) {
         ctx->tested = 1;
         xylem_waitgroup_destroy(ctx->wg);
         ctx->wg = NULL;
-        xylem_shutdown();
     }
 }
 
 static void _test_wg_multi_main(void* arg) {
     _wg_multi_ctx_t* ctx = (_wg_multi_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WG_WORKERS);
     for (int i = 0; i < WG_MULTI_WAITERS; i++) {
@@ -119,7 +117,10 @@ static void test_multi_waiter(void) {
     fprintf(stderr, "=== test_multi_waiter\n");
     for (int round = 0; round < 20; round++) {
         _wg_multi_ctx_t ctx = {0};
-        xylem_run(_test_wg_multi_main, &ctx, &_rt_opts);
+        _test_wg_multi_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.waiters_released) == WG_MULTI_WAITERS);
     }
@@ -157,12 +158,10 @@ static void _wgt_driver(void* arg) {
     ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
-    xylem_shutdown();
 }
 
 static void _test_wgt_main(void* arg) {
     _wgt_ctx_t* ctx = (_wgt_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WGT_WORKERS);
     thrd_t th;
@@ -180,7 +179,10 @@ static void test_thread_waiter(void) {
         _wgt_ctx_t ctx = {0};
         atomic_init(&ctx.done_count, 0);
         atomic_init(&ctx.thread_released, 0);
-        xylem_run(_test_wgt_main, &ctx, &_rt_opts);
+        _test_wgt_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
     }
 }
@@ -227,12 +229,10 @@ static void _wgm_driver(void* arg) {
     ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
-    xylem_shutdown();
 }
 
 static void _test_wgm_main(void* arg) {
     _wgm_ctx_t* ctx = (_wgm_ctx_t*)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
     ctx->wg = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, WGM_WORKERS);
     for (int i = 0; i < WGM_THREAD_WAITERS; i++) {
@@ -255,16 +255,28 @@ static void test_mixed_waiters(void) {
         _wgm_ctx_t ctx = {0};
         atomic_init(&ctx.done_count, 0);
         atomic_init(&ctx.released, 0);
-        xylem_run(_test_wgm_main, &ctx, &_rt_opts);
+        _test_wgm_main(&ctx);
+        while (ctx.tested == 0) {
+            xylem_sleep(1);
+        }
         ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.released) == WGM_WAITERS);
     }
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_concurrent();
     test_multi_waiter();
     test_thread_waiter();
     test_mixed_waiters();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, &_rt_opts);
     return 0;
 }

@@ -469,7 +469,7 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
             return IOWAIT_READY;
         }
 
-        scheduler_park(runtime_get_scheduler(), _iowait_park_cb, NULL, d);
+        scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
     }
 }
 

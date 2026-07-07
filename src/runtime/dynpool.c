@@ -34,7 +34,7 @@
 typedef struct _dynpool_job_s {
     queue_node_t node;
     void (*routine)(void*);
-    void*       arg;
+    void*        arg;
 } _dynpool_job_t;
 
 struct dynpool_s {
@@ -95,19 +95,15 @@ static int _dynpool_thread_entry(void* arg) {
     return 0;
 }
 
-static void _dynpool_spawn_reserved(dynpool_t* pool) {
+static bool _dynpool_spawn_locked(dynpool_t* pool) {
     thrd_t thr;
     if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
+        pool->num_threads++;
         thrd_detach(thr);
-        return;
+        return true;
     }
 
-    mtx_lock(&pool->mtx);
-    pool->num_threads--;
-    if (!queue_empty(&pool->queue) && pool->num_idle > 0) {
-        cnd_signal(&pool->cond);
-    }
-    mtx_unlock(&pool->mtx);
+    return false;
 }
 
 dynpool_t* dynpool_create(dynpool_opts_t* opts) {
@@ -144,7 +140,10 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
     return pool;
 }
 
-int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
+int dynpool_submit(
+    dynpool_t* pool,
+    void (*routine)(void*),
+    void* arg) {
     if (!pool || !routine) {
         return -1;
     }
@@ -164,22 +163,20 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
         return -1;
     }
 
-    queue_enqueue(&pool->queue, &job->node);
-
-    bool spawn = false;
     if (pool->num_idle > 0) {
         cnd_signal(&pool->cond);
     }
-    if (queue_len(&pool->queue) > (size_t)pool->num_idle &&
-        pool->num_threads < pool->max_threads) {
-        pool->num_threads++;
-        spawn = true;
+    if (queue_len(&pool->queue) + 1 > (size_t)pool->num_idle &&
+        pool->num_threads < pool->max_threads &&
+        !_dynpool_spawn_locked(pool) &&
+        pool->num_threads == 0) {
+        mtx_unlock(&pool->mtx);
+        free(job);
+        return -1;
     }
-    mtx_unlock(&pool->mtx);
 
-    if (spawn) {
-        _dynpool_spawn_reserved(pool);
-    }
+    queue_enqueue(&pool->queue, &job->node);
+    mtx_unlock(&pool->mtx);
 
     return 0;
 }

@@ -104,7 +104,6 @@ static void test_wss_text_echo(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_wss_large_message(void* arg) {
@@ -129,7 +128,6 @@ static void test_wss_large_message(void* arg) {
 
     free(big);
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 static void test_wss_deflate(void* arg) {
@@ -153,7 +151,6 @@ static void test_wss_deflate(void* arg) {
     _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
 
     _drain(c, l, wg);
-    xylem_shutdown();
 }
 
 typedef void (*test_fn_t)(void*);
@@ -166,10 +163,19 @@ static test_fn_t tests[] = {
 
 static int test_count = (int)(sizeof(tests) / sizeof(tests[0]));
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     for (int i = 0; i < test_count; i++) {
-        xylem_run(tests[i], NULL, NULL);
+        tests[i](NULL);
     }
     printf("All %d WSS tests passed.\n", test_count);
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

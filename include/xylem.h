@@ -94,7 +94,16 @@ typedef struct xylem_opts_s {
  * Blocks the calling thread until every spawned coroutine has
  * returned or xylem_shutdown() is called. Boots the scheduler and
  * blocking-task pool under the hood, spawns @p main_fn as the root
- * coroutine, and tears the runtime down on return.
+ * coroutine, and tears the runtime down on return. Most applications use one
+ * xylem_run() call for the process lifetime and exit soon after it returns.
+ *
+ * Test programs may call xylem_run() multiple times, but each completed run
+ * must leave no live runtime-backed resources behind. The caller is
+ * responsible for closing, destroying, or otherwise releasing all channels,
+ * mutexes, conds, semaphores, waitgroups, timers, tickers, sockets, and
+ * external threads associated with the finished run before starting another
+ * runtime. Leak detectors such as ASAN may report those resources if the
+ * caller intentionally leaves them for process exit cleanup.
  *
  * @param main_fn  Initial coroutine entry point.
  * @param arg      Opaque argument passed to main_fn.
@@ -112,6 +121,14 @@ extern void xylem_run(
  * naturally. Already-running blocking jobs submitted by xylem_await()
  * are not killed; they must return before the blocking pool can finish
  * teardown.
+ * Shutdown favors fast teardown. Parked coroutines and queued runtime
+ * callbacks are not resumed for graceful cleanup, so memory they still hold
+ * may be left for process-exit OS cleanup. This matches the normal pattern:
+ * xylem_run() returns near the end of the process.
+ *
+ * Programs that call xylem_run() repeatedly, including tests, must release
+ * their runtime-backed resources before shutdown or before starting the next
+ * run if leak-free reports are required.
  *
  * After shutdown is requested, external OS threads must not keep using
  * runtime-backed objects such as channels, mutexes, conds, semaphores,

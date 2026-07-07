@@ -21,12 +21,12 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "utils.h"
 #include "xylem/xylem-threads.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SAFETY_TIMEOUT_MS 10000
 #define SPAWN_MANY_COUNT  1000
 #define SLEEP_ORDER_COUNT 4
 #define SUBMIT_CONC_COUNT 20
@@ -42,25 +42,20 @@
 static xylem_opts_t _rt_opts = { .workers = 0 };
 
 static void test_null_entrypoints(void) {
+    _utils_watchdog_stop();
     xylem_shutdown();
     xylem_run(NULL, NULL, &_rt_opts);
 }
 
-static void _timeout_coro(void* arg) {
-    (void)arg;
-    xylem_sleep(SAFETY_TIMEOUT_MS);
-    xylem_shutdown();
-    ASSERT(0 && "test timed out");
-}
-
 static void _start_safety_timer(void) {
-    xylem_spawn(_timeout_coro, NULL);
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 }
 
 static void _cycle_main(void* arg) {
     int* val = (int*)arg;
     _start_safety_timer();
     (*val)++;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -80,6 +75,7 @@ typedef struct {
 static void _stop_spawned(void* arg) {
     _stop_ctx_t* ctx = (_stop_ctx_t*)arg;
     ctx->tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -100,6 +96,7 @@ static void _spawn_null_main(void* arg) {
     _start_safety_timer();
     xylem_spawn(NULL, NULL);
     *tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -117,6 +114,7 @@ typedef struct {
 static void _ext_coro(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
     if (atomic_fetch_add(&ctx->count, 1) == ctx->target - 1) {
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -133,8 +131,8 @@ static void _ext_main(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
     _start_safety_timer();
     thrd_t th;
-    thrd_create(&th, _ext_thread_fn, ctx);
-    thrd_detach(th);
+    ASSERT(thrd_create(&th, _ext_thread_fn, ctx) == thrd_success);
+    ASSERT(thrd_join(th, NULL) == thrd_success);
 }
 
 static void test_spawn_from_external_thread(void) {
@@ -152,6 +150,7 @@ typedef struct {
 static void _nest_child(void* arg) {
     _nest_ctx_t* ctx = (_nest_ctx_t*)arg;
     atomic_store(&ctx->depth_reached, 2);
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -181,6 +180,7 @@ typedef struct {
 static void _many_coro(void* arg) {
     _many_ctx_t* ctx = (_many_ctx_t*)arg;
     if (atomic_fetch_add(&ctx->done, 1) == SPAWN_MANY_COUNT - 1) {
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -211,6 +211,7 @@ static void _sleep0_first(void* arg) {
     xylem_sleep(0);
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 1;
     if (atomic_load(&ctx->idx) == 2) {
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -219,6 +220,7 @@ static void _sleep0_second(void* arg) {
     _sleep0_ctx_t* ctx = (_sleep0_ctx_t*)arg;
     ctx->order[atomic_fetch_add(&ctx->idx, 1)] = 2;
     if (atomic_load(&ctx->idx) == 2) {
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -257,6 +259,7 @@ static void _sleepord_coro(void* arg) {
     uint64_t end = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     a->ctx->elapsed[a->id] = end - start;
     if (atomic_fetch_add(&a->ctx->idx, 1) + 1 == SLEEP_ORDER_COUNT) {
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -302,6 +305,7 @@ static void _submit_coro(void* arg) {
     ASSERT(rc == 0);
     ASSERT(ctx->output == 84);
     ctx->tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -321,6 +325,7 @@ static void _submit_null_coro(void* arg) {
     int* tested = (int*)arg;
     ASSERT(xylem_await(NULL, NULL) == -1);
     *tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -355,6 +360,7 @@ static void _submit_conc_coro(void* arg) {
     ASSERT(rc == 0);
     if (atomic_fetch_add(&ctx->done, 1) == SUBMIT_CONC_COUNT - 1) {
         ctx->tested = 1;
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -398,6 +404,7 @@ static void _submit_res_coro(void* arg) {
     ASSERT(rc == 0);
     if (atomic_fetch_add(&a->ctx->done, 1) == 3) {
         a->ctx->tested = 1;
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -455,6 +462,7 @@ static void _stkgrow_basic_coro(void* arg) {
     uint64_t sum = _stkgrow_recurse(STKGROW_BASIC_DEPTH, 0xa5);
     ASSERT(sum > 0);
     ctx->tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -479,6 +487,7 @@ static void _stkgrow_prog_coro(void* arg) {
     uint64_t sum = _stkgrow_recurse(STKGROW_RECURSE_DEPTH, 0x37);
     ASSERT(sum > 0);
     ctx->tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 
@@ -515,6 +524,7 @@ static void _stkgrow_conc_coro(void* arg) {
 
     if (atomic_fetch_add(&a->ctx->done, 1) == STKGROW_CONC_COUNT - 1) {
         a->ctx->tested = 1;
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -555,6 +565,7 @@ static void _stkgrow_reuse_coro(void* arg) {
         xylem_spawn(_stkgrow_reuse_coro, ctx);
     } else {
         ctx->tested = 1;
+        _utils_watchdog_stop();
         xylem_shutdown();
     }
 }
@@ -593,6 +604,7 @@ static void _stkgrow_large_coro(void* arg) {
     }
     ASSERT(sum > 0);
     ctx->tested = 1;
+    _utils_watchdog_stop();
     xylem_shutdown();
 }
 

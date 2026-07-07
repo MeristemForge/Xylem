@@ -28,7 +28,6 @@
 #include <stdio.h>
 
 #define UDS_PATH          "xylem-test-uds.sock"
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -52,12 +51,11 @@ static void _pair_main(void* arg) {
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->ready);
-    xylem_shutdown();
 }
 
 static void _run_pair(_coro_t server, _coro_t client) {
     _ctx_t ctx = {.server = server, .client = client};
-    xylem_run(_pair_main, &ctx, NULL);
+    _pair_main(&ctx);
     remove(UDS_PATH);
 }
 
@@ -71,12 +69,11 @@ static void _solo_main(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
-    xylem_shutdown();
 }
 
 static void _run_solo(_coro_t client) {
     _ctx_t ctx = {.client = client};
-    xylem_run(_solo_main, &ctx, NULL);
+    _solo_main(&ctx);
 }
 
 static void _echo_server(void* arg) {
@@ -210,10 +207,19 @@ static void test_peer_close_eof(void) {
     _run_pair(_eof_server, _eof_client);
 }
 
-int main(void) {
+static void _test_run_all(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_echo();
     test_reader_full();
     test_dial_nonexistent();
     test_peer_close_eof();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }

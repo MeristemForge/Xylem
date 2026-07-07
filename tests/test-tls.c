@@ -35,7 +35,6 @@
 
 #define TLS_HOST          "127.0.0.1"
 #define TLS_PORT          14433
-#define SAFETY_TIMEOUT_MS 10000
 
 typedef void (*_coro_t)(void*);
 
@@ -69,15 +68,12 @@ static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b, _coro_t c) {
     ctx->gate  = xylem_channel_create();
     ctx->wg    = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, n);
-    xylem_timer_t* wd =
-        xylem_timer_after(SAFETY_TIMEOUT_MS, _utils_watchdog_cb, NULL);
     xylem_spawn(a, ctx);
     xylem_spawn(b, ctx);
     if (c) {
         xylem_spawn(c, ctx);
     }
     xylem_waitgroup_wait(ctx->wg);
-    xylem_timer_cancel(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->gate);
     xylem_channel_destroy(ctx->ready);
@@ -107,11 +103,10 @@ static void _default_main(void* arg) {
     xylem_tls_ctx_destroy(ctx.cli_ctx);
     remove(p->cert);
     remove(p->key);
-    xylem_shutdown();
 }
 
 static void _run_default(_plan_t plan) {
-    xylem_run(_default_main, &plan, NULL);
+    _default_main(&plan);
 }
 
 static void test_load_cert_valid(void) {
@@ -368,11 +363,10 @@ static void _fail_main(void* arg) {
     remove(key);
     remove(cert2);
     remove(key2);
-    xylem_shutdown();
 }
 
 static void test_handshake_failure(void) {
-    xylem_run(_fail_main, NULL, NULL);
+    _fail_main(NULL);
 }
 
 static void _alpn_server(void* arg) {
@@ -446,11 +440,10 @@ static void _alpn_main(void* arg) {
     xylem_tls_ctx_destroy(cli_ctx);
     remove(cert);
     remove(key);
-    xylem_shutdown();
 }
 
 static void test_alpn_negotiation(void) {
-    xylem_run(_alpn_main, NULL, NULL);
+    _alpn_main(NULL);
 }
 
 static void _deadline_server(void* arg) {
@@ -697,11 +690,10 @@ static void _cl_main(void* arg) {
     xylem_tls_ctx_destroy(srv_ctx);
     remove(cert);
     remove(key);
-    xylem_shutdown();
 }
 
 static void test_close_listener(void) {
-    xylem_run(_cl_main, NULL, NULL);
+    _cl_main(NULL);
 }
 
 static void _kl_server(void* arg) {
@@ -764,11 +756,10 @@ static void _kl_main(void* arg) {
     remove(cert);
     remove(key);
     remove(keylog);
-    xylem_shutdown();
 }
 
 static void test_keylog(void) {
-    xylem_run(_kl_main, NULL, NULL);
+    _kl_main(NULL);
 }
 
 static void _sni_server(void* arg) {
@@ -910,11 +901,10 @@ static void _sni_sel_main(void* arg) {
     remove(def_key);
     remove(host_cert);
     remove(host_key);
-    xylem_shutdown();
 }
 
 static void test_sni_cert_selection(void) {
-    xylem_run(_sni_sel_main, NULL, NULL);
+    _sni_sel_main(NULL);
 }
 
 static void _addr_server(void* arg) {
@@ -1285,8 +1275,10 @@ static void test_close_with_parked_writer(void) {
                            TLS_PORT + 16, 2, _wrclose_server, _wrclose_client});
 }
 
-static void _run_cfg_tests(void* arg) {
+static void _test_run_all(void* arg) {
     (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_load_cert_valid();
     test_load_cert_invalid();
     test_load_ca();
@@ -1294,11 +1286,6 @@ static void _run_cfg_tests(void* arg) {
     test_set_alpn();
     test_null_handles();
     test_load_cert_mem();
-    xylem_shutdown();
-}
-
-int main(void) {
-    xylem_run(_run_cfg_tests, NULL, NULL);
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();
@@ -1317,5 +1304,11 @@ int main(void) {
     test_full_duplex();
     test_lazy_handshake();
     test_close_with_parked_writer();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+int main(void) {
+    xylem_run(_test_run_all, NULL, NULL);
     return 0;
 }
