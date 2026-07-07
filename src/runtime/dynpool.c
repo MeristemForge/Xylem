@@ -22,11 +22,11 @@
 #include "dynpool.h"
 
 #include "container/queue.h"
-#include "platform/platform-sem.h"
 #include "xylem/xylem-threads.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define DYNPOOL_DEFAULT_MAX_THREADS  512
 #define DYNPOOL_DEFAULT_IDLE_TIMEOUT 10000
@@ -38,16 +38,25 @@ typedef struct _dynpool_job_s {
 } _dynpool_job_t;
 
 struct dynpool_s {
-    queue_t         queue;
-    mtx_t           mtx;
-    platform_sem_t* sem;
-    int32_t         num_threads;
-    int32_t         num_idle;
-    int32_t         num_notify;
-    int32_t         max_threads;
-    uint64_t        idle_timeout;
-    bool            running;
+    queue_t  queue;
+    mtx_t    mtx;
+    cnd_t    cond;
+    int32_t  num_threads;
+    int32_t  num_idle;
+    int32_t  max_threads;
+    uint64_t idle_timeout;
+    bool     running;
 };
+
+static void _dynpool_get_deadline(struct timespec* ts, uint64_t timeout_ms) {
+    (void)timespec_get(ts, TIME_UTC);
+    ts->tv_sec += (time_t)(timeout_ms / 1000);
+    ts->tv_nsec += (long)((timeout_ms % 1000) * 1000000);
+    if (ts->tv_nsec >= 1000000000L) {
+        ts->tv_sec++;
+        ts->tv_nsec -= 1000000000L;
+    }
+}
 
 static int _dynpool_thread_entry(void* arg) {
     dynpool_t* pool = (dynpool_t*)arg;
@@ -55,45 +64,37 @@ static int _dynpool_thread_entry(void* arg) {
     for (;;) {
         mtx_lock(&pool->mtx);
 
-        queue_node_t* node = queue_dequeue(&pool->queue);
-        if (node) {
-            _dynpool_job_t* job = queue_entry(node, _dynpool_job_t, node);
-            mtx_unlock(&pool->mtx);
-            job->routine(job->arg);
-            free(job);
-            continue;
-        }
-
         if (!pool->running) {
-            pool->num_threads--;
-            mtx_unlock(&pool->mtx);
-            return 0;
+            break;
         }
 
-        pool->num_idle++;
+        while (pool->running && queue_empty(&pool->queue)) {
+            struct timespec ts;
+            _dynpool_get_deadline(&ts, pool->idle_timeout);
+
+            pool->num_idle++;
+            int rc = cnd_timedwait(&pool->cond, &pool->mtx, &ts);
+            pool->num_idle--;
+
+            if (rc != thrd_success && queue_empty(&pool->queue)) {
+                break;
+            }
+        }
+
+        if (!pool->running || queue_empty(&pool->queue)) {
+            break;
+        }
+
+        queue_node_t* node = queue_dequeue(&pool->queue);
+        _dynpool_job_t* job = queue_entry(node, _dynpool_job_t, node);
         mtx_unlock(&pool->mtx);
-
-        int rc = platform_sem_timedwait(pool->sem, pool->idle_timeout);
-
-        mtx_lock(&pool->mtx);
-        bool notified = false;
-        if (pool->num_notify > 0) {
-            pool->num_notify--;
-            notified = true;
-        }
-        pool->num_idle--;
-
-        bool retire =
-            !pool->running ||
-            (!notified && rc != 0 && queue_empty(&pool->queue));
-        if (retire) {
-            pool->num_threads--;
-            mtx_unlock(&pool->mtx);
-            return 0;
-        }
-
-        mtx_unlock(&pool->mtx);
+        job->routine(job->arg);
+        free(job);
     }
+
+    pool->num_threads--;
+    mtx_unlock(&pool->mtx);
+    return 0;
 }
 
 static void _dynpool_spawn_reserved(dynpool_t* pool) {
@@ -105,17 +106,10 @@ static void _dynpool_spawn_reserved(dynpool_t* pool) {
 
     mtx_lock(&pool->mtx);
     pool->num_threads--;
-    bool notify = false;
-    if (!queue_empty(&pool->queue) &&
-        pool->num_idle > pool->num_notify) {
-        pool->num_notify++;
-        notify = true;
+    if (!queue_empty(&pool->queue) && pool->num_idle > 0) {
+        cnd_signal(&pool->cond);
     }
     mtx_unlock(&pool->mtx);
-
-    if (notify) {
-        platform_sem_post(pool->sem);
-    }
 }
 
 dynpool_t* dynpool_create(dynpool_opts_t* opts) {
@@ -130,8 +124,7 @@ dynpool_t* dynpool_create(dynpool_opts_t* opts) {
         return NULL;
     }
 
-    pool->sem = platform_sem_create(0);
-    if (!pool->sem) {
+    if (cnd_init(&pool->cond) != thrd_success) {
         mtx_destroy(&pool->mtx);
         free(pool);
         return NULL;
@@ -175,22 +168,17 @@ int dynpool_submit(dynpool_t* pool, void (*routine)(void*), void* arg) {
 
     queue_enqueue(&pool->queue, &job->node);
 
-    bool notify = false;
-    if (pool->num_idle > pool->num_notify) {
-        pool->num_notify++;
-        notify = true;
-    }
-
     bool spawn = false;
-    if (!notify && pool->num_threads < pool->max_threads) {
+    if (pool->num_idle > 0) {
+        cnd_signal(&pool->cond);
+    }
+    if (queue_len(&pool->queue) > (size_t)pool->num_idle &&
+        pool->num_threads < pool->max_threads) {
         pool->num_threads++;
         spawn = true;
     }
     mtx_unlock(&pool->mtx);
 
-    if (notify) {
-        platform_sem_post(pool->sem);
-    }
     if (spawn) {
         _dynpool_spawn_reserved(pool);
     }
@@ -205,13 +193,10 @@ void dynpool_destroy(dynpool_t* pool) {
 
     mtx_lock(&pool->mtx);
     pool->running = false;
-    int32_t count = pool->num_threads;
+    cnd_broadcast(&pool->cond);
     mtx_unlock(&pool->mtx);
 
-    for (int32_t i = 0; i < count; i++) {
-        platform_sem_post(pool->sem);
-    }
-
+    int32_t count;
     for (;;) {
         mtx_lock(&pool->mtx);
         count = pool->num_threads;
@@ -228,7 +213,7 @@ void dynpool_destroy(dynpool_t* pool) {
         free(job);
     }
 
-    platform_sem_destroy(pool->sem);
+    cnd_destroy(&pool->cond);
     mtx_destroy(&pool->mtx);
     free(pool);
 }

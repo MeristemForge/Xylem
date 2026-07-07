@@ -46,8 +46,9 @@ extern dynpool_t* dynpool_create(dynpool_opts_t* opts);
 /**
  * @brief Submit a blocking task to the pool.
  *
- * The caller's push is lock-free. A pool thread will execute the task.
- * Must not race with dynpool_destroy().
+ * Submission serializes the task queue and worker lifecycle state under the
+ * pool mutex. A pool thread will execute the task. Must not race with
+ * dynpool_destroy().
  *
  * @param pool     Pool handle.
  * @param routine  Function to execute.
@@ -59,11 +60,11 @@ extern int dynpool_submit(
     dynpool_t* pool, void (*routine)(void*), void* arg);
 
 /**
- * @brief Destroy the pool, draining pending tasks.
+ * @brief Destroy the pool.
  *
  * Signals all workers to exit, waits for running tasks to complete,
- * and frees resources. The caller must ensure no concurrent
- * dynpool_submit() calls are in flight.
+ * frees any remaining queued tasks, and frees resources. The caller must
+ * ensure no concurrent dynpool_submit() calls are in flight.
  *
  * @param pool  Pool handle.
  */

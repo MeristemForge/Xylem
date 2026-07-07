@@ -559,8 +559,10 @@ global runq. If `dynpool_submit()` fails, the park callback returns `false`, the
 coroutine is rescheduled immediately, and `runtime_submit()` returns `-1`.
 
 The pool spawns threads on demand up to `max_threads` (default 512) and lets
-idle threads exit after `idle_timeout` (default 10 s). Task submission is
-lock-free on the caller side.
+idle threads exit after `idle_timeout` (default 10 s). Task submission holds
+the pool mutex while it enqueues the task and updates worker lifecycle state;
+the condition variable wakes idle workers when the queue or shutdown state
+changes.
 
 ## 11. Concurrency invariants
 
