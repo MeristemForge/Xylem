@@ -263,7 +263,7 @@ static void _sem_wait_coro(xylem_sem_t* s) {
     w.timeout_ms = 0;
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_park_cb, NULL, &w);
+    scheduler_park(s->sched, _sem_park_cb, &w);
     _sem_unref(s);
 }
 
@@ -289,7 +289,7 @@ static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     atomic_init(&w->timer_fired, false);
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_park_cb, NULL, w);
+    scheduler_park(s->sched, _sem_park_cb, w);
 
     bool fired = atomic_load(&w->timer_fired);
     if (scheduler_timer_stop(w->timer)) {
