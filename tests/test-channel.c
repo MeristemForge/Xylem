@@ -39,6 +39,7 @@ typedef struct {
     xylem_channel_t* ch;
     int              payload;
     atomic_int       recv_count;
+    atomic_int       senders_done;
     atomic_int       tested;
 } _ch_ctx_t;
 
@@ -47,6 +48,7 @@ static void _ch_sender(void* arg) {
     for (int i = 0; i < CH_MESSAGES; i++) {
         xylem_channel_send(ctx->ch, &ctx->payload);
     }
+    atomic_fetch_add(&ctx->senders_done, 1);
 }
 
 static void _ch_receiver(void* arg) {
@@ -60,9 +62,12 @@ static void _ch_receiver(void* arg) {
         atomic_fetch_add(&ctx->recv_count, 1);
     }
     ASSERT(atomic_load(&ctx->recv_count) == total);
-    atomic_store(&ctx->tested, 1);
+    while (atomic_load(&ctx->senders_done) < CH_SENDERS) {
+        xylem_sleep(1);
+    }
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_ch_main(void* arg) {
@@ -89,6 +94,7 @@ static void test_concurrent(void) {
 typedef struct {
     xylem_channel_t* ch;
     int              payload;
+    atomic_int       sender_done;
     atomic_int       tested;
 } _to_ctx_t;
 
@@ -103,9 +109,9 @@ static void _to_basic_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 30);
     ASSERT(msg == NULL);
-    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _to_basic_main(void* arg) {
@@ -128,15 +134,19 @@ static void _to_sender_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     xylem_sleep(20);
     xylem_channel_send(ctx->ch, &ctx->payload);
+    atomic_store(&ctx->sender_done, 1);
 }
 
 static void _to_recv_coro(void* arg) {
     _to_ctx_t* ctx = (_to_ctx_t*)arg;
     void* msg = xylem_channel_recv_timeout(ctx->ch, 1000);
     ASSERT(msg == &ctx->payload);
-    atomic_store(&ctx->tested, 1);
+    while (atomic_load(&ctx->sender_done) == 0) {
+        xylem_sleep(1);
+    }
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _to_deliver_main(void* arg) {
@@ -201,9 +211,9 @@ static void _stale_recv_coro(void* arg) {
         ASSERT(second_msg == &second);
     }
 
-    atomic_store(&ctx->tested, 1);
     xylem_waitgroup_destroy(wg);
     xylem_channel_destroy(ch);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _stale_main(void* arg) {
@@ -331,11 +341,11 @@ static void _tr_coordinator(void* arg) {
     xylem_channel_close(ctx->ch);
     thrd_join(ctx->thr, NULL);
     ASSERT(atomic_load(&ctx->recv_count) == TR_SENDERS * TR_MESSAGES);
-    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _tr_main(void* arg) {
@@ -382,9 +392,9 @@ static void _ts_recv_coro(void* arg) {
     void* msg = xylem_channel_recv(ctx->ch);
     ASSERT(msg == &ctx->payload);
     thrd_join(ctx->thr, NULL);
-    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _ts_main(void* arg) {
@@ -483,8 +493,8 @@ static void _bt_coro(void* arg) {
     ASSERT(xylem_channel_recv_timeout(ch, 0) == &c);
     ASSERT(xylem_channel_recv_timeout(ch, 0) == NULL);
 
-    atomic_store(&ctx->tested, 1);
     xylem_channel_destroy(ch);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _bt_main(void* arg) {

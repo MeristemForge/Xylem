@@ -57,7 +57,7 @@ typedef struct {
     xylem_mutex_t* mtx;
     int            counter;
     atomic_int     finished;
-    int            tested;
+    atomic_int     tested;
 } _mtx_ctx_t;
 
 static void _mtx_worker(void* arg) {
@@ -69,9 +69,9 @@ static void _mtx_worker(void* arg) {
     }
     if (atomic_fetch_add(&ctx->finished, 1) == MTX_WORKERS - 1) {
         ASSERT(ctx->counter == MTX_WORKERS * MTX_INCREMENTS);
-        ctx->tested = 1;
         xylem_mutex_destroy(ctx->mtx);
         ctx->mtx = NULL;
+        atomic_store(&ctx->tested, 1);
     }
 }
 
@@ -88,16 +88,16 @@ static void test_concurrent(void) {
     for (int round = 0; round < 20; round++) {
         _mtx_ctx_t ctx = {0};
         _test_mtx_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
 typedef struct {
     xylem_mutex_t* mtx;
-    int            tested;
+    atomic_int     tested;
 } _mtx_try_ctx_t;
 
 static void _mtx_trylock_coro(void* arg) {
@@ -109,9 +109,9 @@ static void _mtx_trylock_coro(void* arg) {
     ASSERT(xylem_mutex_trylock(ctx->mtx) == true);
     xylem_mutex_unlock(ctx->mtx);
 
-    ctx->tested = 1;
     xylem_mutex_destroy(ctx->mtx);
     ctx->mtx = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_mtx_try_main(void* arg) {
@@ -124,10 +124,10 @@ static void test_trylock(void) {
     fprintf(stderr, "=== test_trylock\n");
     _mtx_try_ctx_t ctx = {0};
     _test_mtx_try_main(&ctx);
-    while (ctx.tested == 0) {
+    while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
     }
-    ASSERT(ctx.tested == 1);
+    ASSERT(atomic_load(&ctx.tested) == 1);
 }
 
 #define MTX_THREADS        8

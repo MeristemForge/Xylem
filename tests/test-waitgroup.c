@@ -35,7 +35,7 @@ static xylem_opts_t _rt_opts = { .workers = 0 };
 typedef struct {
     xylem_waitgroup_t* wg;
     atomic_int         done_count;
-    int                tested;
+    atomic_int         tested;
 } _wg_ctx_t;
 
 static void _wg_worker(void* arg) {
@@ -48,9 +48,9 @@ static void _wg_waiter(void* arg) {
     _wg_ctx_t* ctx = (_wg_ctx_t*)arg;
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
-    ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_wg_main(void* arg) {
@@ -68,10 +68,10 @@ static void test_concurrent(void) {
     for (int round = 0; round < 20; round++) {
         _wg_ctx_t ctx = {0};
         _test_wg_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
@@ -81,7 +81,7 @@ typedef struct {
     xylem_waitgroup_t* wg;
     atomic_int         done_count;
     atomic_int         waiters_released;
-    int                tested;
+    atomic_int         tested;
 } _wg_multi_ctx_t;
 
 static void _wg_multi_worker(void* arg) {
@@ -95,9 +95,9 @@ static void _wg_multi_waiter(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     ASSERT(atomic_load(&ctx->done_count) == WG_WORKERS);
     if (atomic_fetch_add(&ctx->waiters_released, 1) + 1 == WG_MULTI_WAITERS) {
-        ctx->tested = 1;
         xylem_waitgroup_destroy(ctx->wg);
         ctx->wg = NULL;
+        atomic_store(&ctx->tested, 1);
     }
 }
 
@@ -118,10 +118,10 @@ static void test_multi_waiter(void) {
     for (int round = 0; round < 20; round++) {
         _wg_multi_ctx_t ctx = {0};
         _test_wg_multi_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
         ASSERT(atomic_load(&ctx.waiters_released) == WG_MULTI_WAITERS);
     }
 }
@@ -132,7 +132,7 @@ typedef struct {
     xylem_waitgroup_t* wg;
     atomic_int         done_count;
     atomic_int         thread_released;
-    int                tested;
+    atomic_int         tested;
 } _wgt_ctx_t;
 
 static int _wgt_thread_waiter(void* arg) {
@@ -155,9 +155,9 @@ static void _wgt_driver(void* arg) {
     while (atomic_load(&ctx->thread_released) == 0) {
         xylem_sleep(2);
     }
-    ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_wgt_main(void* arg) {
@@ -180,10 +180,10 @@ static void test_thread_waiter(void) {
         atomic_init(&ctx.done_count, 0);
         atomic_init(&ctx.thread_released, 0);
         _test_wgt_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
     }
 }
 
@@ -196,7 +196,7 @@ typedef struct {
     xylem_waitgroup_t* wg;
     atomic_int         done_count;
     atomic_int         released;
-    int                tested;
+    atomic_int         tested;
 } _wgm_ctx_t;
 
 static int _wgm_thread_waiter(void* arg) {
@@ -226,9 +226,9 @@ static void _wgm_driver(void* arg) {
     while (atomic_load(&ctx->released) < WGM_WAITERS) {
         xylem_sleep(2);
     }
-    ctx->tested = 1;
     xylem_waitgroup_destroy(ctx->wg);
     ctx->wg = NULL;
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_wgm_main(void* arg) {
@@ -256,10 +256,10 @@ static void test_mixed_waiters(void) {
         atomic_init(&ctx.done_count, 0);
         atomic_init(&ctx.released, 0);
         _test_wgm_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
         ASSERT(atomic_load(&ctx.released) == WGM_WAITERS);
     }
 }

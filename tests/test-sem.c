@@ -45,8 +45,8 @@ static void _count_main(void* arg) {
     xylem_sem_post(ctx->sem);
     ASSERT(xylem_sem_timedwait(ctx->sem, 0) == true);
 
-    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void test_count(void) {
@@ -62,6 +62,7 @@ static void test_count(void) {
 typedef struct {
     xylem_sem_t* sem;
     atomic_int   woke;
+    atomic_int   poster_done;
     atomic_int   tested;
 } _pair_ctx_t;
 
@@ -69,8 +70,11 @@ static void _pair_waiter(void* arg) {
     _pair_ctx_t* ctx = (_pair_ctx_t*)arg;
     xylem_sem_wait(ctx->sem);
     atomic_store(&ctx->woke, 1);
-    atomic_store(&ctx->tested, 1);
+    while (atomic_load(&ctx->poster_done) == 0) {
+        xylem_sleep(1);
+    }
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _pair_poster(void* arg) {
@@ -78,6 +82,7 @@ static void _pair_poster(void* arg) {
     xylem_sleep(50);
     ASSERT(atomic_load(&ctx->woke) == 0);
     xylem_sem_post(ctx->sem);
+    atomic_store(&ctx->poster_done, 1);
 }
 
 static void _pair_main(void* arg) {
@@ -91,6 +96,7 @@ static void test_coro_pair(void) {
     fprintf(stderr, "=== test_coro_pair\n");
     _pair_ctx_t ctx = {0};
     atomic_init(&ctx.woke, 0);
+    atomic_init(&ctx.poster_done, 0);
     _pair_main(&ctx);
     while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
@@ -118,8 +124,8 @@ static void _ct_poster(void* arg) {
     while (atomic_load(&ctx->thread_done) == 0) {
         xylem_sleep(5);
     }
-    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _ct_main(void* arg) {
@@ -144,6 +150,7 @@ static void test_coro_posts_thread(void) {
 
 typedef struct {
     xylem_sem_t* sem;
+    atomic_int   thread_done;
     atomic_int   tested;
 } _tc_ctx_t;
 
@@ -152,6 +159,7 @@ static int _tc_thread_fn(void* arg) {
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
     thrd_sleep(&ts, NULL);
     xylem_sem_post(ctx->sem);
+    atomic_store(&ctx->thread_done, 1);
     return 0;
 }
 
@@ -162,8 +170,11 @@ static void _tc_waiter(void* arg) {
     thrd_detach(th);
 
     xylem_sem_wait(ctx->sem);
-    atomic_store(&ctx->tested, 1);
+    while (atomic_load(&ctx->thread_done) == 0) {
+        xylem_sleep(1);
+    }
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _tc_main(void* arg) {
@@ -175,6 +186,7 @@ static void _tc_main(void* arg) {
 static void test_thread_posts_coro(void) {
     fprintf(stderr, "=== test_thread_posts_coro\n");
     _tc_ctx_t ctx = {0};
+    atomic_init(&ctx.thread_done, 0);
     _tc_main(&ctx);
     while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
@@ -201,8 +213,8 @@ static void _coto_main(void* arg) {
     xylem_sem_post(sem);
     ASSERT(xylem_sem_timedwait(sem, 100) == true);
 
-    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void test_coro_timeout(void) {
@@ -217,6 +229,7 @@ static void test_coro_timeout(void) {
 
 typedef struct {
     xylem_sem_t* sem;
+    atomic_int   poster_done;
     atomic_int   tested;
 } _win_ctx_t;
 
@@ -224,14 +237,18 @@ static void _win_waiter(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
     bool ok = xylem_sem_timedwait(ctx->sem, 5000);
     ASSERT(ok == true);
-    atomic_store(&ctx->tested, 1);
+    while (atomic_load(&ctx->poster_done) == 0) {
+        xylem_sleep(1);
+    }
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _win_poster(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
     xylem_sleep(30);
     xylem_sem_post(ctx->sem);
+    atomic_store(&ctx->poster_done, 1);
 }
 
 static void _win_main(void* arg) {
@@ -244,6 +261,7 @@ static void _win_main(void* arg) {
 static void test_coro_timedwait_wins(void) {
     fprintf(stderr, "=== test_coro_timedwait_wins\n");
     _win_ctx_t ctx = {0};
+    atomic_init(&ctx.poster_done, 0);
     _win_main(&ctx);
     while (atomic_load(&ctx.tested) == 0) {
         xylem_sleep(1);
@@ -270,8 +288,8 @@ static void _tto_driver(void* arg) {
         xylem_sleep(5);
     }
     ASSERT(atomic_load(&ctx->thread_result) == 1);
-    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _tto_main(void* arg) {
@@ -313,11 +331,11 @@ static void _stress_waiter(void* arg) {
     }
     if (atomic_fetch_add(&ctx->done, 1) + 1 == STRESS_WAITERS) {
         ASSERT(atomic_load(&ctx->acquired) == STRESS_WAITERS * STRESS_ROUNDS);
-        atomic_store(&ctx->tested, 1);
         while (atomic_load(&ctx->posters_done) < STRESS_WAITERS) {
             xylem_sleep(1);
         }
         xylem_sem_destroy(ctx->sem);
+        atomic_store(&ctx->tested, 1);
     }
 }
 
@@ -422,8 +440,8 @@ static void _mix_driver(void* arg) {
         xylem_sleep(2);
     }
     ASSERT(atomic_load(&ctx->acquired) == MIX_TOTAL);
-    atomic_store(&ctx->tested, 1);
     xylem_sem_destroy(ctx->sem);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _mix_main(void* arg) {
