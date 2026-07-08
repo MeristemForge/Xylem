@@ -222,11 +222,13 @@ extern void scheduler_park(
 extern bool scheduler_consume_credit(uint32_t cost);
 
 /**
- * @brief Yield the current coroutine after exhausting cooperative credit.
+ * @brief Yield the current coroutine and requeue it immediately.
  *
- * No-op outside a scheduler coroutine.
+ * The coroutine is placed back at the tail of the worker's run queue
+ * so other coroutines get a chance to run. No-op outside a scheduler
+ * coroutine.
  */
-extern void scheduler_yield_credit(void);
+extern void scheduler_yield(void);
 
 /**
  * @brief Get the scheduler's poller handle.

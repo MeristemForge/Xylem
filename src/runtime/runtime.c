@@ -123,8 +123,8 @@ bool runtime_consume_credit(uint32_t cost) {
     return scheduler_consume_credit(cost);
 }
 
-void runtime_yield_credit(void) {
-    scheduler_yield_credit();
+void runtime_yield(void) {
+    scheduler_yield();
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {

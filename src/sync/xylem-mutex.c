@@ -213,6 +213,6 @@ void xylem_mutex_unlock(xylem_mutex_t* mtx) {
         _mutex_wake(mtx->sched, target);
     }
     if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
-        runtime_yield_credit();
+        runtime_yield();
     }
 }

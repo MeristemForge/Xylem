@@ -1572,7 +1572,7 @@ bool scheduler_consume_credit(uint32_t cost) {
     return true;
 }
 
-void scheduler_yield_credit(void) {
+void scheduler_yield(void) {
     if (!_tls_worker || !mco_running()) {
         return;
     }

@@ -91,7 +91,7 @@ extern bool runtime_consume_credit(uint32_t cost);
  *
  * No-op outside a runtime coroutine.
  */
-extern void runtime_yield_credit(void);
+extern void runtime_yield(void);
 
 /**
  * @brief Execute a blocking function on the thread pool.

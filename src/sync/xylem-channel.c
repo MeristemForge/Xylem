@@ -168,7 +168,7 @@ static bool _channel_wait_pending_send(xylem_channel_t* ch) {
         return false;
     }
     if (mco_running()) {
-        runtime_yield_credit();
+        runtime_yield();
     } else {
         platform_cpu_relax();
     }
@@ -362,7 +362,7 @@ static void* _channel_recv_leave(xylem_channel_t* ch, void* payload) {
     atomic_store(&ch->receiving, false);
     if (payload) {
         if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
-            runtime_yield_credit();
+            runtime_yield();
         }
     }
     return payload;
@@ -473,7 +473,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     }
 
     if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
-        runtime_yield_credit();
+        runtime_yield();
     }
     return 0;
 }

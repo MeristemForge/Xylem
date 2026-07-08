@@ -263,7 +263,7 @@ int datagram_try_recv(
             }
             if (n > 0) {
                 if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                    runtime_yield_credit();
+                    runtime_yield();
                 }
             }
         } else {
@@ -367,7 +367,7 @@ int datagram_try_send(
             ret = (int)n;
             if (n > 0) {
                 if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                    runtime_yield_credit();
+                    runtime_yield();
                 }
             }
         } else {

@@ -303,7 +303,7 @@ int stream_try_read(
             ret = (int)n;
             if (n > 0) {
                 if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                    runtime_yield_credit();
+                    runtime_yield();
                 }
             }
         } else {
@@ -379,7 +379,7 @@ int stream_write(stream_t* stream, const void* data, int len) {
             ptr += n;
             rem -= (int)n;
             if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield_credit();
+                runtime_yield();
             }
             continue;
         }
@@ -432,7 +432,7 @@ int stream_try_write(
         if (n > 0) {
             ret = (int)n;
             if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield_credit();
+                runtime_yield();
             }
         } else if (n == 0) {
             ret = -1;
