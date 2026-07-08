@@ -51,6 +51,9 @@ extern int xylem_utils_getprng(int min, int max);
 /**
  * @brief Get the current time with specified precision.
  *
+ * The current implementation is backed by the UTC wall clock, so values
+ * can move if the system clock is adjusted.
+ *
  * @param precision  Time precision (sec, msec, usec, nsec).
  *
  * @return Current time in the requested unit.

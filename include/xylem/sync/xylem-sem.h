@@ -47,10 +47,12 @@ typedef struct xylem_sem_s xylem_sem_t;
  *     blocks that OS thread. Coroutine and OS-thread waiters share one
  *     FIFO queue. OS-thread waiters block on a per-thread wake object.
  *     timedwait() is the same with a deadline.
- *   - post(), timedwait(0), and create() are all callable from any
- *     thread and any context (coroutine or not). They never park.
- *     destroy() is caller-synchronized: it must be the final call on
- *     the handle and must not race with any other semaphore API.
+ *   - timedwait(0) and create() are callable from any thread and any
+ *     context (coroutine or not) and never park. post() is callable from
+ *     any thread and any context; it does not wait for a token or
+ *     consumer, but may cooperative-yield in coroutine context.
+ *     destroy() is caller-synchronized: it must be the final call on the
+ *     handle and must not race with any other semaphore API.
  *   - How a waiter is woken is decided by what the waiter is, not by
  *     who posts: a coroutine waiter is rescheduled, a thread waiter is
  *     released on its per-thread wake object. The poster may be either.
@@ -69,7 +71,7 @@ typedef struct xylem_sem_s xylem_sem_t;
 /**
  * @brief Create a counting semaphore.
  *
- * @note [CONTEXT-ADAPTIVE]
+ * @note [THREAD-SAFE]
  *
  * Callable from any thread or context. If coroutine waiters will use
  * the semaphore, create it while the runtime scheduler is available.
@@ -117,10 +119,12 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Like xylem_sem_wait, but gives up after the timeout elapses. A
- * timeout of 0 makes this a non-blocking attempt: it acquires a token
- * if one is immediately available, otherwise returns false at once
- * (never blocks, never parks).
+ * Like xylem_sem_wait, but gives up after the timeout elapses according
+ * to xylem_utils_getnow(MSEC). Because this is wall-clock based, system
+ * clock adjustments may shorten or extend the real elapsed wait. A
+ * timeout of 0 makes this a non-blocking attempt: it acquires a token if
+ * one is immediately available, otherwise returns false at once (never
+ * blocks, never parks).
  *
  * A coroutine caller parks with a scheduler timer; an external thread
  * blocks on its per-thread wake object with the same timeout. Both
@@ -130,19 +134,22 @@ extern void xylem_sem_wait(xylem_sem_t* sem);
  * @param timeout_ms  Maximum time to wait, in milliseconds. 0 means a
  *                    non-blocking try.
  *
- * @return true if a token was acquired, false if the timeout elapsed.
+ * @return true if a token was acquired; false if the timeout/try elapsed
+ *         without a token, or if a timed coroutine wait could not
+ *         allocate/arm its timer.
  */
 extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
 
 /**
  * @brief Release a token.
  *
- * @note [CONTEXT-ADAPTIVE]
+ * @note [THREAD-SAFE]
  *
  * If waiters are queued, the FIFO-oldest waiter is handed the token
  * and woken. With no waiters, the count is incremented.
  *
- * Callable from any thread or context; never blocks.
+ * Callable from any thread or context. Does not wait for semaphore
+ * state, but may cooperative-yield in coroutine context.
  *
  * @param sem  Semaphore handle.
  */

@@ -319,7 +319,7 @@ extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * @param tls          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_tls_set_read_deadline(
     xylem_tls_conn_t* tls,
@@ -331,7 +331,7 @@ extern void xylem_tls_set_read_deadline(
  * @note [COROUTINE-ONLY]
  *
  * @param tls          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_tls_set_write_deadline(
     xylem_tls_conn_t* tls,

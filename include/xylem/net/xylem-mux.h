@@ -156,7 +156,7 @@ extern void xylem_mux_close_stream(xylem_mux_stream_t* s);
  * @note [COROUTINE-ONLY]
  *
  * @param s            Stream handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_mux_set_read_deadline(
     xylem_mux_stream_t* s, uint64_t deadline_ms);
@@ -167,7 +167,7 @@ extern void xylem_mux_set_read_deadline(
  * @note [COROUTINE-ONLY]
  *
  * @param s            Stream handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_mux_set_write_deadline(
     xylem_mux_stream_t* s, uint64_t deadline_ms);

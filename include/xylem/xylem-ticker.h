@@ -28,7 +28,8 @@ _Pragma("once")
  * Periodic ticker -- the pull-based counterpart of xylem_timer_every.
  *
  * Unlike a callback timer, the ticker decouples "timekeeping" from
- * "running user code", exactly like Go's time.Ticker:
+ * "running user code". It is Go-like in the sense that ticks are
+ * pull-based and coalesced:
  *
  *   - The internal scheduler timer repeats at the requested interval
  *     after each tiny delivery callback completes. That callback only
@@ -43,9 +44,11 @@ _Pragma("once")
  *   - xylem_ticker_recv() is context-adaptive, like the underlying
  *     timer: call it from a coroutine (it parks) or from a plain OS
  *     thread (it blocks the thread). Either way, only one consumer may
- *     receive on a given ticker (single-consumer). A thread consumer
- *     still requires the runtime to be running, since the ticks are
- *     produced by a scheduler timer.
+ *     receive on a given ticker. This is a caller contract, not
+ *     dynamically enforced: concurrent recv calls on the same ticker are
+ *     unsupported and may block or steal each other's wakeups. A thread
+ *     consumer still requires the runtime to be running, since the ticks
+ *     are produced by a scheduler timer.
  *   - xylem_ticker_close() is callable from any thread or context. It
  *     stops future ticks and wakes a consumer already blocked in
  *     xylem_ticker_recv(), which then returns 0.
@@ -98,10 +101,10 @@ extern void xylem_ticker_close(xylem_ticker_t* ticker);
  * behind, the intervening ticks are dropped (coalesced) rather than
  * queued.
  *
- * @param ticker  Ticker handle.
+ * @param ticker  Ticker handle, or NULL.
  *
- * @return The tick time in milliseconds (monotonic), or 0 once the
- *         ticker has been stopped and drained.
+ * @return The tick time in xylem_utils_getnow(MSEC) milliseconds, or 0
+ *         when @p ticker is NULL or closed.
  */
 extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
 

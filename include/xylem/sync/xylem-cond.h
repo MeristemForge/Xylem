@@ -37,8 +37,9 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     worker, or an external OS thread. wait() blocks the caller in the
  *     way that fits its context (a coroutine parks, an OS thread blocks
  *     on a per-thread wake object) and re-acquires `mtx` on wake; the
- *     caller MUST currently hold `mtx`. signal()/broadcast() never
- *     block.
+ *     caller MUST currently hold `mtx`. signal()/broadcast() do not
+ *     wait on cond state, though they may cooperative-yield in
+ *     coroutine context.
  *
  * wait() atomically enqueues the caller on the cond's waiter list
  * and releases `mtx`, then blocks. On wake it re-acquires `mtx`
@@ -125,9 +126,10 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
  *
  * @note [THREAD-SAFE]
  *
- * Callable from any context; never blocks. If no one is currently
- * parked on the cond the call is a no-op (no permit is stored). If
- * waiters are queued, the FIFO-oldest waiter is woken.
+ * Callable from any context. If no one is currently parked on the cond
+ * the call is a no-op (no permit is stored). If waiters are queued, the
+ * FIFO-oldest waiter is woken. In coroutine context this call may
+ * cooperative-yield for runtime fairness.
  *
  * @param cond  Pointer to the cond.
  */
@@ -138,10 +140,10 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
  *
  * @note [THREAD-SAFE]
  *
- * Callable from any context; never blocks. Waiters observed at the
- * moment broadcast() acquires its internal guard are all resumed in
- * FIFO wake order; waiters that block after that point are not
- * affected.
+ * Callable from any context. Waiters observed at the moment broadcast()
+ * acquires its internal guard are all resumed in FIFO wake order;
+ * waiters that block after that point are not affected. In coroutine
+ * context this call may cooperative-yield for runtime fairness.
  *
  * @param cond  Pointer to the cond.
  */

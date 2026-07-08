@@ -90,7 +90,7 @@ extern void stream_release(stream_t* stream);
  * @brief Set the stream read deadline.
  *
  * @param stream       Stream handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0 to clear.
  */
 extern void stream_set_read_deadline(
     stream_t* stream,
@@ -100,7 +100,7 @@ extern void stream_set_read_deadline(
  * @brief Set the stream write deadline.
  *
  * @param stream       Stream handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0 to clear.
  */
 extern void stream_set_write_deadline(
     stream_t* stream,

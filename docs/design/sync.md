@@ -25,11 +25,13 @@ All five public primitives share one shape:
   `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
   they park (the worker thread stays free); on any other thread they block that
   OS thread. None of them requires a coroutine context.
-- **Wakeup/non-blocking ops never block.** `unlock`, `signal`/`broadcast`,
-  `add`/`done`, `send`/`close`, `post`, and all `create`/`destroy` are safe from
-  any thread. Cross-context coroutine wakeups go through
-  `scheduler_schedule()`; OS-thread wakeups use the primitive's platform
-  blocking path.
+- **Wakeup/non-blocking ops do not wait on the primitive state.** `unlock`,
+  `signal`/`broadcast`, `add`/`done`, `send`/`close`, `post`, and all
+  `create`/`destroy` are safe from any thread. Cross-context coroutine wakeups
+  go through `scheduler_schedule()`; OS-thread wakeups use the primitive's
+  platform blocking path. In coroutine context, `unlock`, `signal`,
+  `broadcast`, `done`, `send`, and `post` may perform a cooperative yield for
+  runtime fairness.
 - **FIFO wake target selection where the primitive owns a waiter list.** Mutex
   and cond choose the FIFO-oldest waiter to wake, waitgroup drains waiters in
   FIFO order, and sem hands tokens to FIFO-oldest waiters. Only sem transfers a
@@ -80,9 +82,10 @@ object from off-scheduler.
 Design consequence: keep a hot, tight hand-off inside a single context when you
 can, and treat each boundary crossing as a real cost on the path. When a
 producer/consumer pair must straddle the boundary, prefer **batching across it**
-over a per-item ping-pong -- which is exactly why `xylem_channel` never parks
-the producer (queue, drop by caller policy, or retry later instead of a
-blocking back-and-forth; see section 5).
+over a per-item ping-pong -- which is exactly why `xylem_channel` never waits
+for capacity or a receiver (queue, drop by caller policy, or retry later
+instead of a blocking back-and-forth; see section 5). A coroutine producer may
+still cooperative-yield for runtime fairness after enqueue/wake.
 
 ## 2. Mutex
 
@@ -187,8 +190,10 @@ receiver wake path uses the same per-thread `thrd_wake_t` and scheduler
 reschedule mechanisms as the FIFO primitives, but with channel-specific state
 instead of a shared waiter module.
 
-- `send(msg)` — non-blocking, thread-safe, `msg` must be non-NULL. Returns
-  `0` on success or `-1` (invalid input or allocation failure). **Never parks.**
+- `send(msg)` — thread-safe, `msg` must be non-NULL. It never waits for capacity
+  or a receiver; in coroutine context it may only cooperative-yield for runtime
+  fairness after enqueue/wake. Returns `0` on success or `-1` (invalid input or
+  allocation failure).
 - `recv()` — blocks the calling coroutine **or thread** until a message
   arrives or the channel is closed-and-drained (then returns NULL).
   `recv_timeout(ms)` is the general form with a three-state wait policy:
@@ -196,7 +201,9 @@ instead of a shared waiter module.
     return NULL at once without blocking. Use this to drain (e.g. drop down to
     the newest frame) without risking a block.
   - `(uint64_t)-1` — block forever, identical to `recv()`.
-  - any other `n` — block up to `n` ms.
+  - any other `n` — block until the relative timeout expires according to
+    `xylem_utils_getnow(MSEC)`. Because this is wall-clock based, system clock
+    adjustments may shorten or extend the real elapsed wait.
   A NULL return does **not** distinguish "nothing available" / "timed out" /
   "closed and empty" — track the reason out of band if you need it.
 - `len()` — best-effort in-flight count. Safe from any thread; useful for
@@ -210,10 +217,11 @@ instead of a shared waiter module.
 
 ### Capacity and backpressure
 
-Channels are **unbounded**: `send` always queues (barring OOM), never reports
-full, and never parks the producer. Hard capacity is intentionally not part of
-the channel contract. A correct hard bound would require an atomic reservation
-inside `send` or an external synchronization primitive; a caller-side
+Channels are **unbounded**: `send` always queues (barring OOM) and never reports
+full. In coroutine context it may cooperative-yield for runtime fairness, but it
+does not wait for capacity or a receiver. Hard capacity is intentionally not
+part of the channel contract. A correct hard bound would require an atomic
+reservation inside `send` or an external synchronization primitive; a caller-side
 `len() < threshold` check is only a snapshot and races with other senders.
 
 Backpressure is therefore a caller policy. Use `len()` as a soft signal to drop,
@@ -258,12 +266,16 @@ waiter; only posts that find no waiter increment the count.
   **context-adaptive**: on a coroutine it parks (the worker thread stays free);
   on any other thread it blocks that OS thread. Waiters are FIFO across
   coroutine and OS-thread callers.
-- `timedwait(ms)` is `wait()` with a deadline: it returns `true` once a token is
-  acquired, or `false` if `ms` elapses first. `timedwait(0)` is a non-blocking
-  try (acquire-or-fail, never parks) and replaces the old `trywait`.
+- `timedwait(ms)` is `wait()` with a relative timeout measured against
+  `xylem_utils_getnow(MSEC)`: it returns `true` once a token is acquired, or
+  `false` if the timeout elapses first. Because this is wall-clock based, system
+  clock adjustments may shorten or extend the real elapsed wait. `timedwait(0)`
+  is a non-blocking try (acquire-or-fail, never parks) and replaces the old
+  `trywait`.
 - `post()` hands the token directly to the FIFO-oldest waiter. If nobody is
-  waiting, `post()` banks the token in the count. `post`, `create`, `destroy`
-  are callable from any thread or context and never park.
+  waiting, `post()` banks the token in the count. `create` and `destroy` never
+  park; `post()` does not block on semaphore state, but may cooperative-yield
+  from a coroutine.
 
 ### Who waits decides how it wakes
 

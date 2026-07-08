@@ -87,7 +87,7 @@ typedef enum iowait_result_e {
 extern iowait_t* iowait_create(platform_sock_t fd);
 
 /**
- * @brief Set the read deadline, in absolute monotonic milliseconds.
+ * @brief Set the read deadline in xylem_utils_getnow(MSEC) milliseconds.
  *
  * Once set, subsequent or in-flight iowait_read() calls on the same
  * handle return IOWAIT_TIMEOUT as soon as the clock passes the
@@ -103,18 +103,18 @@ extern iowait_t* iowait_create(platform_sock_t fd);
  * top of this header for the full rules.
  *
  * @param w            IO wait handle.
- * @param deadline_ms  Monotonic deadline in ms (see xylem_utils_getnow
+ * @param deadline_ms  Deadline in ms (see xylem_utils_getnow
  *                     with XYLEM_TIME_PRECISION_MSEC), or 0 to clear.
  */
 extern void iowait_set_rd_deadline(iowait_t* w, uint64_t deadline_ms);
 
 /**
- * @brief Set the write deadline, in absolute monotonic milliseconds.
+ * @brief Set the write deadline in xylem_utils_getnow(MSEC) milliseconds.
  *
  * Mirror of iowait_set_rd_deadline for the write direction.
  *
  * @param w            IO wait handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void iowait_set_wr_deadline(iowait_t* w, uint64_t deadline_ms);
 
@@ -242,9 +242,9 @@ extern iowait_slab_t* iowait_slab_create(void);
 /**
  * @brief Destroy an iowait handle slab and free every page.
  *
- * Must only be called after the scheduler has been destroyed -- at
- * that point no worker threads are alive, so there are no in-flight
- * CQEs that could dereference slab memory.
+ * Must only be called after scheduler workers have stopped and no poller
+ * callback can dereference slab memory. scheduler_destroy() owns this call
+ * during teardown.
  *
  * @param slab  Slab to destroy, or NULL (no-op).
  */

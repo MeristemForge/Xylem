@@ -181,9 +181,10 @@ code; the intrusive ones exist for hot, allocation-sensitive internal paths.
 
 ## 8. Time, randomness, endianness
 
-- **Monotonic time:** `xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)` returns a
-  monotonic millisecond clock. All deadlines in the API are absolute monotonic
-  milliseconds against this clock (e.g. `xylem_tcp_set_read_deadline`). Other
+- **Time source:** `xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)` returns the
+  current UTC wall-clock time in milliseconds. All deadlines in the API are
+  absolute millisecond timestamps against this clock (e.g.
+  `xylem_tcp_set_read_deadline`). Other
   precisions: `SEC`, `USEC`, `NSEC`.
 - **Randomness:** `xylem_utils_getprng(min, max)` for non-cryptographic use;
   `platform_info_getrandom()` (internal) for CSPRNG bytes (BCryptGenRandom /

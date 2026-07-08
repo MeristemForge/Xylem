@@ -122,7 +122,7 @@ extern int xylem_udp_send(
  * xylem_udp_recv() calls return -1.
  *
  * @param udp          UDP handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
  *                     to clear.
  */
 extern void xylem_udp_set_read_deadline(
@@ -137,7 +137,7 @@ extern void xylem_udp_set_read_deadline(
  * xylem_udp_send() calls return -1.
  *
  * @param udp          UDP handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
  *                     to clear.
  */
 extern void xylem_udp_set_write_deadline(

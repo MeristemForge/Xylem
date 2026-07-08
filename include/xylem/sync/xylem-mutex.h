@@ -39,13 +39,15 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  * Threading:
  *   - All operations work from any context: a coroutine on a scheduler
  *     worker, or an external OS thread. lock() blocks the caller in the
- *     way that fits its context (park vs OS-thread block); the others
- *     never block. A coroutine waiter is woken by the scheduler; a
- *     thread waiter by its wake object. Coroutine and thread waiters
- *     may queue on the same mutex and notify each other. unlock()
- *     releases the mutex, then wakes the FIFO-oldest waiter if one is
- *     queued; the woken waiter re-contends for ownership, so mutex
- *     acquisition order is not a strict FIFO guarantee.
+ *     way that fits its context (park vs OS-thread block). The other
+ *     operations do not wait on mutex state, though unlock() may
+ *     cooperative-yield in coroutine context. A coroutine waiter is
+ *     woken by the scheduler; a thread waiter by its wake object.
+ *     Coroutine and thread waiters may queue on the same mutex and
+ *     notify each other. unlock() releases the mutex, then wakes the
+ *     FIFO-oldest waiter if one is queued; the woken waiter re-contends
+ *     for ownership, so mutex acquisition order is not a strict FIFO
+ *     guarantee.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime

@@ -19,9 +19,9 @@ Public API: `include/xylem.h` (`xylem_run`, `xylem_spawn`, `xylem_sleep`,
 - **Scale on a fixed thread pool.** N worker threads (default: CPU count) run
   many coroutines; blocking syscalls are pushed to a separate elastic pool so
   they never starve the workers.
-- **Thread-safe wakeups.** A coroutine can be made runnable from any thread,
-  which is what makes "`send`/`close` from any thread" safe at the protocol
-  layer.
+- **Thread-safe wakeups.** Low-level runtime primitives can make a parked
+  coroutine runnable from any thread. Public protocol operations remain
+  coroutine-only unless their own API documents a context-adaptive contract.
 
 The concurrency unit is a **stackful coroutine** (minicoro). A coroutine that
 cannot make progress *parks* (yields to its worker); a wake source later
@@ -197,8 +197,7 @@ callback. The delicate case is a waker arriving mid-callback:
 
 Each worker thread loops while the scheduler is running:
 
-1. **Maintenance.** Fire due timers; periodically (every `SCHED_TIMER_TICK_MS`,
-   guarded by a CAS so only one worker does it) drain the deferred-post queue.
+1. **Maintenance.** Fire due timers.
 2. **Occasional global pull.** Every 61st tick (61 is prime, so it never
    resonates with the power-of-two deque sizes), pull one coroutine from the
    global runq and do a non-blocking poll, so global work and I/O can't starve
@@ -215,8 +214,9 @@ Each worker thread loops while the scheduler is running:
    semaphore — with a timeout equal to the next local timer, so timers still
    fire on an otherwise idle scheduler.
 
-On shutdown the loop exits and `_sched_drain()` runs any coroutines still
-sitting in the local deque so destructors/cleanup paths complete.
+On shutdown the loop exits without draining queued or parked coroutines.
+`scheduler_destroy()` destroys any remaining registered coroutines without
+resuming user cleanup paths.
 
 ### The poll driver
 
@@ -227,12 +227,12 @@ Exactly one worker at a time owns the blocking poll, selected by a CAS on
   a concurrent producer either sees the flag (and pokes the wakeup fd) or the
   driver sees the new work — no lost wakeup.
 - Computes the poll timeout from the nearest timer deadline across **all**
-  workers (`_sched_timeout_all`), not just its own, so it wakes in time to
+  workers (`_sched_timer_poll_timeout`), not just its own, so it wakes in time to
   service a timer owned by a worker that is busy in a long coroutine.
 - After waking, greedily drains additional ready events with zero-timeout
   polls, fires due timers for **every** worker (timer stealing,
-  `_sched_process_timers_all`, see §8) and drains posts, then runs the first
-  ready coroutine and schedules the rest.
+  repeated `_sched_timer_process` calls, see §8), then runs the first ready
+  coroutine and schedules the rest.
 
 This "one driver, many parkers" design means there is no dedicated I/O thread:
 whichever worker happens to go idle takes over polling, and it relinquishes the
@@ -415,7 +415,7 @@ Both trigger modes register the fd with read+write interest:
 - **LT + ONESHOT (Windows/wepoll):** `iowait_create` likewise calls
   `platform_poller_add(RW_OP)`. After each event the kernel auto-disables the
   fd — `iowait_on_event` syncs `interest` to `NO_OP` and calls
-  `platform_poller_add(RW_OP)` again under `arm_lock` with a closed re-check.
+  `platform_poller_mod(RW_OP)` again under `arm_lock` with a closed re-check.
   ET mode skips this entirely.
 
 Because the fd is always registered (ET) or re-registered before the next
@@ -446,9 +446,11 @@ Each worker owns a binary **min-heap** of timers keyed by absolute expiry
 against the scheduler (`scheduler_timer_create`), assigned to an owner worker, and
 armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
 
-- Due timers are popped in `_sched_process_timers()`, which either runs the
-  callback **inline on the firing thread** or, if `spawn` is set, runs it in a
-  fresh coroutine.
+- Due timers are popped in `_sched_timer_process()`, which either runs the
+  callback **inline on the firing thread** or, if `spawn` is set, normally runs
+  it in a fresh coroutine. If spawning that coroutine fails, the fire is
+  completed without invoking the callback, and the normal completion/ud_unref
+  path still runs.
 - Periodic timers (`repeat > 0`) are reinserted only after the fired callback
   completes. A timer in `FIRING` state records stop/reset/start requests as
   pending flags (`stop_pending`, `reset_pending`) and applies them in the
@@ -503,11 +505,10 @@ callback reschedules the sleeping coroutine, then parks.
 
 ### Timer stealing — who fires whose timers, and where they run
 
-A worker normally drains its own heap on the maintenance path
-(`_sched_maintenance` → `_sched_process_timers`, local worker only). But a
-worker stuck running a long coroutine never reaches that path, which would
+A worker normally drains its own heap on the local `_sched_timer_process` path.
+But a worker stuck running a long coroutine never reaches that path, which would
 delay its timers. To bound that, the **idle poll driver also fires due timers
-for every worker** via `_sched_process_timers_all()` after each poll wake. This
+for every worker** by calling `_sched_timer_process()` after each poll wake. This
 is why the driver derives its poll timeout from the nearest deadline across all
 workers (§5) — it must wake in time to cover a busy worker's timers.
 
@@ -530,16 +531,7 @@ driver, not the owner:
   `runnext`/deque and is then free to be work-stolen by any worker, including
   the original owner.
 
-## 9. Deferred posts
-
-`scheduler_post(cb, ud)` enqueues a callback onto a lock-free **MPSC** queue
-(`container/mpsc`). The queue is drained by whichever worker next runs the
-maintenance path or the poll driver after waking — so a post is *not* tied to a
-specific worker or the calling thread. A CAS on `post_draining` guarantees only
-one worker drains at a time. This is the low-level deferred-execution primitive;
-most code uses `scheduler_schedule` (for coroutines) or timers instead.
-
-## 10. Blocking-task pool (`dynpool.c`)
+## 9. Blocking-task pool (`dynpool.c`)
 
 Some work genuinely blocks (DNS via `getaddrinfo`, file I/O, third-party calls).
 Running it on a worker would stall every coroutine pinned to that worker, so it
@@ -593,7 +585,7 @@ the pool mutex while it enqueues the task and updates worker lifecycle state;
 the condition variable wakes idle workers when the queue or shutdown state
 changes.
 
-## 11. Concurrency invariants
+## 10. Concurrency invariants
 
 - **A parked coroutine is requeued exactly once, never mid-callback.**
   `scheduler_park()` runs its callback after `mco_yield()`, and the per-coroutine
@@ -606,14 +598,15 @@ changes.
 - **No lost wakeups against the poll driver.** The driver sets `poller_waiting`
   (seq-cst) before its final work re-check; producers that miss a parked worker
   fall back to poking the wakeup fd.
-- **Teardown is process-lifetime scoped.**
-  `xylem_run()` is expected to return directly to program exit. After it returns,
-  callers must not touch runtime-backed objects or start another runtime in the
-  same process. Shutdown joins running blocking tasks and frees core scheduler
-  structures, but it does not guarantee full cleanup for coroutines stranded in
-  already-committed parks.
+- **Teardown invalidates runtime-backed objects.**
+  Most applications use one runtime near process exit. Sequential `xylem_run()`
+  calls are supported for tests or controlled scenarios if the previous run
+  leaves no live runtime-backed resources or external threads using them.
+  Shutdown joins running blocking tasks and frees core scheduler structures, but
+  it does not guarantee full cleanup for coroutines stranded in already-committed
+  parks.
 
-## 12. Configuration
+## 11. Configuration
 
 | Option | Where | Default | Meaning |
 |--------|-------|---------|---------|

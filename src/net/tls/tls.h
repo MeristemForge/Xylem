@@ -308,18 +308,18 @@ extern int tls_read(tls_conn_t* tls, void* buf, int len);
 extern int tls_write(tls_conn_t* tls, const void* data, int len);
 
 /**
- * @brief Set the read deadline, in absolute monotonic milliseconds.
+ * @brief Set the read deadline in xylem_utils_getnow(MSEC) milliseconds.
  *
  * @param tls          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms);
 
 /**
- * @brief Set the write deadline, in absolute monotonic milliseconds.
+ * @brief Set the write deadline in xylem_utils_getnow(MSEC) milliseconds.
  *
  * @param tls          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms);
 

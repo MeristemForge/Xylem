@@ -50,7 +50,7 @@ actual writes.
 ## 2. Timer (`xylem-timer`)
 
 The public, fire-a-callback timer. It is a thin facade over the scheduler's
-internal timer wheel (`sched_timer`, see [`runtime.md`](runtime.md) §8), so it
+per-worker timer heap (`scheduler_timer_t`, see [`runtime.md`](runtime.md) §8), so it
 **requires a running runtime** — the callback is dispatched by a scheduler
 worker.
 
@@ -67,13 +67,15 @@ Semantics and the lifetime gotcha:
 - `every(interval_ms, cb, ud)` arms a **periodic callback** timer. It is
   fixed-delay: the next fire is scheduled after the previous callback returns.
 - **The handle must always be released with `cancel()`**, even after the
-  callback has already fired. `cancel`/`reset` return `true` if they cancelled a
-  *pending* fire before it ran — callers pairing the arm with reference-counted
-  `ud` use that boolean to decide whether the callback will still run and drop
-  the ref.
-- `cancel`/`reset` are thread-safe but **must not run concurrently with each
-  other** on the same handle. A callback already in flight may still complete
-  after `cancel()`.
+  callback has already fired. `cancel`/`reset` return `true` when they removed a
+  queued fire or cancelled/overwrote a deferred reset from the current in-flight
+  callback. The boolean is not a general "callback will not run" signal: an
+  already dispatched callback may still complete, and `reset` may still re-arm
+  the timer.
+- Calls on different timer handles may run concurrently. Operations on the same
+  public timer handle, including `cancel`/`cancel`, `reset`/`reset`, and
+  `cancel`/`reset`, require external synchronization. `cancel` consumes the
+  handle.
 - `ticker` remains the pull-based periodic API: it produces coalesced ticks for
   a consumer to receive, while `every` runs user callback code on each fire.
 
@@ -81,11 +83,12 @@ Semantics and the lifetime gotcha:
 
 A small set of portable primitives used across the library:
 
-- **`xylem_utils_getnow(precision)`** — the monotonic clock. `precision` is one
-  of `SEC` / `MSEC` / `USEC` / `NSEC`. **All deadlines in the public API are
-  absolute monotonic milliseconds** measured against `getnow(MSEC)` — TCP
-  read/write deadlines, the scheduler's timer heap, and iowait deadlines all use
-  this one clock. Using wall-clock time for a deadline would be a bug.
+- **`xylem_utils_getnow(precision)`** — the current UTC wall-clock time.
+  `precision` is one of `SEC` / `MSEC` / `USEC` / `NSEC`. Deadline-taking APIs
+  use absolute millisecond timestamps measured against `getnow(MSEC)`.
+  Timer/ticker delay and interval parameters are relative durations; the
+  scheduler converts them internally to absolute heap expiry times. Values may
+  move if the system clock is adjusted.
 - **`xylem_utils_getprng(min, max)`** — a non-cryptographic PRNG returning an
   int in `[min, max]`. For key/IV material use the CSPRNG
   (`platform_info_getrandom`, surfaced through AES internally), never this.
@@ -130,7 +133,7 @@ combine serial with coroutine networking.
 
 ## 5. Related docs
 
-- Runtime timer wheel and blocking offload: [`runtime.md`](runtime.md)
+- Runtime timer heaps and blocking offload: [`runtime.md`](runtime.md)
 - Endianness companion: [`encoding.md`](encoding.md) §5
 - CSPRNG / serial backends: [`platform.md`](platform.md)
 - Conventions (options, lifetime, threading): [`../conventions.md`](../conventions.md)

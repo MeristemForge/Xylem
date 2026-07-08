@@ -343,7 +343,7 @@ extern int xylem_dtls_write(
  * xylem_dtls_read() calls return -1.
  *
  * @param dtls         Connection handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
  *                     to clear.
  */
 extern void xylem_dtls_set_read_deadline(
@@ -359,7 +359,7 @@ extern void xylem_dtls_set_read_deadline(
  * xylem_dtls_write() calls return -1.
  *
  * @param dtls         Connection handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
  *                     to clear.
  */
 extern void xylem_dtls_set_write_deadline(

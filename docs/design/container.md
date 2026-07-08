@@ -54,7 +54,7 @@ void* ptr = xylem_list_head(lst);
 
 Two containers exist in only one flavor: the **ring buffer** is public-only (no
 internal consumer needs it), and the **MPSC queue** is internal-only (it backs
-the scheduler's deferred-post path).
+the channel message queue).
 
 ## 3. Public (non-intrusive) API shape
 
@@ -95,7 +95,7 @@ operate on `*_node_t*`, and expose iteration the wrappers don't need to:
   "swap with an empty list to drain atomically" idiom.
 - `rbtree` exposes `next`/`prev`/`min`/`max` for in-order walks and uses
   node-node / key-node comparators (`cmp_nn` / `cmp_kn`).
-- `heap` exposes `peek`/`remove`/`dequeue`; the scheduler's timer wheel is a
+- `heap` exposes `peek`/`remove`/`dequeue`; each scheduler timer heap is a
   `heap_t` keyed by absolute expiry.
 - `queue` is a thin alias over `list` (`queue_node_t` *is* `list_node_t`,
   `queue_entry` *is* `list_entry`), so the runtime can move nodes between a
@@ -111,7 +111,7 @@ These aren't academic; they carry the runtime:
 - `runq` (global run queue) is a `queue_t` of coroutine contexts.
 - Per-worker **timer heaps** are `heap_t` keyed on expiry.
 - The scheduler **coroutine registry** is a `list_t`.
-- Deferred posts ride the `mpsc_t` (next section).
+- Channel messages ride the `mpsc_t` (next section).
 
 Choosing intrusive here is deliberate: scheduling a coroutine must not allocate,
 and a node already lives inside the coroutine context, so linking it in is a few
@@ -120,7 +120,7 @@ pointer writes.
 ## 6. MPSC queue — the one concurrent container
 
 `mpsc_t` is a lock-free **multi-producer / single-consumer** intrusive queue
-(Vyukov-style) used for `scheduler_post()` and `xylem_channel`. Two contracts
+(Vyukov-style) used by `xylem_channel`. Two contracts
 matter and are easy to get wrong:
 
 - **`mpsc_pop()` returning NULL does not mean "empty".** A producer may have
@@ -134,9 +134,8 @@ matter and are easy to get wrong:
   on one worker and resumes on another, so `head` is atomic (acquire/release)
   to give its successive cross-thread accesses a happens-before edge — the
   classic "single-threaded consumer" assumption does not hold under a
-  work-stealing runtime. The scheduler's post path serializes consumers with a
-  `post_draining` CAS; a channel's single-receiver contract does the same via
-  `wait_coro`.
+  work-stealing runtime. A channel's single-receiver contract serializes
+  consumers through its waiter state.
 
 Every other container in this document is **not** thread-safe; callers
 serialize access (the runtime does so by confining most structures to a single

@@ -85,7 +85,7 @@ extern void datagram_release(datagram_t* datagram);
  * @brief Set the datagram read deadline.
  *
  * @param datagram     Datagram handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0 to clear.
  */
 extern void datagram_set_read_deadline(
     datagram_t* datagram,
@@ -95,7 +95,7 @@ extern void datagram_set_read_deadline(
  * @brief Set the datagram write deadline.
  *
  * @param datagram     Datagram handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0 to clear.
  */
 extern void datagram_set_write_deadline(
     datagram_t* datagram,

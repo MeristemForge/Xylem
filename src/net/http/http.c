@@ -82,7 +82,7 @@ static inline void _transport_close(http_transport_t* t) {
 
 typedef struct _pool_idle_conn_s {
     http_transport_t transport;
-    uint64_t         idle_since; /* monotonic ms timestamp */
+    uint64_t         idle_since; /* xylem_utils_getnow(MSEC) timestamp */
 } _pool_idle_conn_t;
 
 typedef struct _pool_entry_s {

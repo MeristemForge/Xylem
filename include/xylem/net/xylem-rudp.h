@@ -157,7 +157,7 @@ extern void xylem_rudp_close(xylem_rudp_conn_t* conn);
  * @note [COROUTINE-ONLY]
  *
  * @param conn         Connection handle.
- * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_rudp_set_read_deadline(
     xylem_rudp_conn_t* conn,
@@ -169,7 +169,7 @@ extern void xylem_rudp_set_read_deadline(
  * @note [COROUTINE-ONLY]
  *
  * @param conn         Connection handle.
- * @param deadline_ms  Absolute monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_rudp_set_write_deadline(
     xylem_rudp_conn_t* conn,

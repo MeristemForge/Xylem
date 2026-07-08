@@ -35,11 +35,12 @@ typedef struct xylem_channel_s xylem_channel_t;
  * and vice versa.
  *
  * Threading:
- *   - send(): callable from any thread or coroutine; never parks. A
- *     channel never reports full; callers that need soft backpressure
- *     can watch len() and drop, yield, or retry above their own
- *     threshold. Like Go channels, send() must not race with close()
- *     on the same channel.
+ *   - send(): callable from any thread or coroutine. It never waits for
+ *     capacity or a receiver, but may cooperative-yield in coroutine
+ *     context after enqueue/wake. A channel never reports full; callers
+ *     that need soft backpressure can watch len() and drop, yield, or
+ *     retry above their own threshold. Like Go channels, send() must not
+ *     race with close() on the same channel.
  *   - recv() / recv_timeout(): callable from a coroutine OR an OS
  *     thread. close() may race with recv() to wake the receiver. Only
  *     one receiver may operate on a channel at a time; concurrent recv
@@ -122,13 +123,13 @@ extern void xylem_channel_close(xylem_channel_t* ch);
 extern int xylem_channel_send(xylem_channel_t* ch, void* msg);
 
 /**
- * @brief Receive the next message, blocking the calling coroutine
- *        forever until a message arrives or the channel closes.
+ * @brief Receive the next message, blocking the calling coroutine or OS
+ *        thread until a message arrives or the channel closes.
  *
  * @note [CONTEXT-ADAPTIVE]
  *
  * Equivalent to xylem_channel_recv_timeout(ch, (uint64_t)-1).
- * Concurrent recv from multiple coroutines aborts.
+ * Concurrent recv from multiple receivers in any context aborts.
  *
  * @param ch  Channel handle.
  *
@@ -141,8 +142,8 @@ extern void* xylem_channel_recv(xylem_channel_t* ch);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
- * Concurrent recv from multiple coroutines aborts (same single-
- * receiver contract as recv).
+ * Concurrent recv_timeout/recv from multiple receivers in any context
+ * aborts.
  *
  * @param ch          Channel handle.
  * @param timeout_ms  Wait policy, three cases:
@@ -152,12 +153,16 @@ extern void* xylem_channel_recv(xylem_channel_t* ch);
  *                                      NULL at once without parking.
  *                      - (uint64_t)-1: block forever (identical to
  *                                      xylem_channel_recv).
- *                      - any other n : block up to n milliseconds.
+ *                      - any other n : block until the timeout expires
+ *                                      according to xylem_utils_getnow(MSEC).
+ *                                      System clock adjustments may shorten
+ *                                      or extend the real elapsed wait.
  *
  * @return Message pointer, or NULL. NULL means, depending on the wait
- *         policy: nothing was immediately available (try), the timeout
- *         elapsed, or the channel is closed and empty. The NULL cases
- *         are not distinguished; callers needing the reason should
+ *         policy: invalid @p ch, nothing was immediately available
+ *         (try), the timeout elapsed, failure to allocate/arm a timed
+ *         coroutine waiter, or the channel is closed and empty. The NULL
+ *         cases are not distinguished; callers needing the reason should
  *         track it out of band.
  */
 extern void* xylem_channel_recv_timeout(

@@ -97,7 +97,7 @@ extern xylem_uds_conn_t* xylem_uds_dial(
  * xylem_uds_read() calls return -1.
  *
  * @param uds          Connection handle.
- * @param deadline_ms  Absolute monotonic timestamp in ms, or 0
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
  *                     to clear.
  */
 extern void xylem_uds_set_read_deadline(
@@ -112,7 +112,7 @@ extern void xylem_uds_set_read_deadline(
  * Mirror of xylem_uds_set_read_deadline for the write direction.
  *
  * @param uds          Connection handle.
- * @param deadline_ms  Monotonic deadline in ms, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
  */
 extern void xylem_uds_set_write_deadline(
     xylem_uds_conn_t* uds,

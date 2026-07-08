@@ -87,7 +87,7 @@ spawns `main_fn` as the root coroutine and blocks until every coroutine has
 exited or `xylem_shutdown()` is called. Each worker owns a `runnext` slot, a
 work-stealing deque, and a timer heap; overflow and cross-thread wakeups land in
 a shared global run queue. One idle worker at a time becomes the **poll driver**
-and blocks on the platform poller to service I/O, timers, and deferred posts;
+and blocks on the platform poller to service I/O and timers;
 the rest park on a semaphore. Coroutines that wait on a socket suspend through
 **`iowait`**, which arms the fd on the poller and resumes the coroutine when it
 becomes ready, its deadline passes, or it is closed. Blocking work (anything

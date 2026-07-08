@@ -229,21 +229,6 @@ extern bool scheduler_consume_credit(uint32_t cost);
 extern void scheduler_yield_credit(void);
 
 /**
- * @brief Post a deferred callback to the scheduler.
- *
- * Thread-safe. The callback runs on whichever worker next drains
- * the post queue (either the blocking-poll driver or a worker in
- * the maintenance path), so it is not guaranteed to run on the
- * calling thread or on any specific worker.
- *
- * @param sched  Scheduler handle.
- * @param cb     Callback function.
- * @param ud     User data.
- *
- * @return 0 on success, -1 on failure.
- */
-
-/**
  * @brief Get the scheduler's poller handle.
  *
  * @param sched  Scheduler handle.

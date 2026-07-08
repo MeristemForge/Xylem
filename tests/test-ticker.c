@@ -252,7 +252,7 @@ static int _race_destroyer_fn(void* arg) {
         }
         /**
          * Let the timer arm and start firing so a fire can be in flight
-         * on the owner worker at the moment we tear the ticker down.
+         * on a scheduler worker at the moment we tear the ticker down.
          */
         xylem_sleep(RACE_INTERVAL_MS * 2);
         xylem_ticker_destroy(tk);
