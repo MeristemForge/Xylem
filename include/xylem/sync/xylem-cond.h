@@ -84,7 +84,7 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * @brief Create a new condition variable.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If coroutine waiters will use this cond, create it while the runtime
  * scheduler is available.
@@ -96,10 +96,12 @@ extern xylem_cond_t* xylem_cond_create(void);
 /**
  * @brief Destroy the cond and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
- * It is a caller bug to destroy a cond that still has waiters on
- * it. Matches the pthread_cond_destroy contract.
+ * This must be the final externally synchronized call on the handle.
+ * The caller must ensure no coroutine or thread is blocked in wait()
+ * and no signal()/broadcast() call is in flight. Destroying a cond
+ * that still has waiters is a caller bug.
  *
  * @param cond  Pointer to the cond, NULL is safe.
  */
@@ -124,7 +126,7 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
 /**
  * @brief Wake one waiter, if any.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any context. If no one is currently parked on the cond
  * the call is a no-op (no permit is stored). If waiters are queued, the
@@ -138,7 +140,7 @@ extern void xylem_cond_signal(xylem_cond_t* cond);
 /**
  * @brief Wake every waiter currently parked on the cond.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any context. Waiters observed at the moment broadcast()
  * acquires its internal guard are all resumed in FIFO wake order;

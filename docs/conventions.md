@@ -212,9 +212,8 @@ Every public function's doc comment states its threading contract. The
 recurring categories:
 
 - **Any-thread.** Safe to call from any thread, including outside the runtime.
-  Wakeup/non-blocking sync ops (`unlock`, `trylock`, `signal`/`broadcast`,
-  `add`/`done`, channel `send`/`close`, and semaphore `post`) are examples.
-  Thread-safe does not always mean concurrency-safe on one object: each API
+  Low-level runtime wakeups and pure utility functions are examples.
+  Any-thread does not always mean concurrency-safe on one object: each API
   documents which same-handle races are forbidden.
 - **Coroutine-only.** Must be called from inside a coroutine on the runtime.
   The **entire connection API** is coroutine-only — not just `read`/`write`/
@@ -228,10 +227,12 @@ recurring categories:
   operation blocks, it parks a coroutine (the worker stays free) or blocks a
   plain OS thread. The observable semantics are identical in both contexts.
   This covers `xylem_spawn`, `xylem_shutdown`, `xylem_sleep`, timer
-  arm/cancel/reset, ticker recv, and blocking sync ops such as `mutex_lock`,
-  `cond_wait`, `waitgroup_wait`, `channel_recv`, and semaphore
-  `wait`/`timedwait`. These deliberately do **not** abort off-coroutine --
-  bridging the coroutine/OS-thread boundary is the point.
+  arm/cancel/reset, ticker recv, and the public sync APIs. For sync primitives,
+  `[CONTEXT-ADAPTIVE]` is the user-facing signal that the API supports both
+  coroutine and OS-thread callers. Non-blocking sync calls and final releases
+  still document their same-handle race and lifetime rules in the function text.
+  These deliberately do **not** abort off-coroutine -- bridging the
+  coroutine/OS-thread boundary is the point.
 - **Single-owner.** One logical owner at a time, stated explicitly — e.g. one
   reader and one writer per `iowait` direction; a single deadline driver per
   direction.

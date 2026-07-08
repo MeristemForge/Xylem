@@ -285,7 +285,7 @@ extern void scheduler_timer_set_ud_guard(
 /**
  * @brief Destroy a timer. Stops it first if armed.
  *
- * Caller-synchronized final release. This call stops the timer as a
+ * Final externally synchronized release. This call stops the timer as a
  * cleanup fallback, then drops the creator's reference. It must not race
  * with scheduler_timer_start(), scheduler_timer_stop(),
  * scheduler_timer_reset(), or another destroy on the same timer.

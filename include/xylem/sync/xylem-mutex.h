@@ -61,7 +61,7 @@ typedef struct xylem_mutex_s xylem_mutex_t;
 /**
  * @brief Create a new mutex.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Create while the runtime scheduler is available.
  *
@@ -85,7 +85,7 @@ extern void xylem_mutex_lock(xylem_mutex_t* mutex);
 /**
  * @brief Try to acquire the mutex without blocking.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Attempts the uncontended fast path only: if the mutex is free it is
  * acquired and true is returned; if it is already held this returns
@@ -100,7 +100,7 @@ extern bool xylem_mutex_trylock(xylem_mutex_t* mutex);
 /**
  * @brief Release the mutex.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Releases the mutex. If anyone is waiting, the FIFO-oldest waiter
  * (coroutine or thread) is woken after the release. The woken waiter
@@ -114,8 +114,9 @@ extern void xylem_mutex_unlock(xylem_mutex_t* mutex);
 /**
  * @brief Destroy the mutex and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
+ * This must be the final externally synchronized call on the handle.
  * The caller must ensure no coroutine or thread is blocked in lock(),
  * currently owns the mutex, or is otherwise using this mutex.
  *

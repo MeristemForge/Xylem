@@ -51,7 +51,7 @@ typedef struct xylem_sem_s xylem_sem_t;
  *     context (coroutine or not) and never park. post() is callable from
  *     any thread and any context; it does not wait for a token or
  *     consumer, but may cooperative-yield in coroutine context.
- *     destroy() is caller-synchronized: it must be the final call on the
+ *     destroy() must be the final externally synchronized call on the
  *     handle and must not race with any other semaphore API.
  *   - How a waiter is woken is decided by what the waiter is, not by
  *     who posts: a coroutine waiter is rescheduled, a thread waiter is
@@ -71,7 +71,7 @@ typedef struct xylem_sem_s xylem_sem_t;
 /**
  * @brief Create a counting semaphore.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any thread or context. If coroutine waiters will use
  * the semaphore, create it while the runtime scheduler is available.
@@ -85,7 +85,7 @@ extern xylem_sem_t* xylem_sem_create(uint32_t value);
 /**
  * @brief Destroy the semaphore and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Callable from any thread or context, but only as the final externally
  * synchronized release. The caller must ensure no coroutine or thread is
@@ -143,7 +143,7 @@ extern bool xylem_sem_timedwait(xylem_sem_t* sem, uint64_t timeout_ms);
 /**
  * @brief Release a token.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If waiters are queued, the FIFO-oldest waiter is handed the token
  * and woken. With no waiters, the count is incremented.

@@ -45,10 +45,10 @@ typedef struct xylem_channel_s xylem_channel_t;
  *     thread. close() may race with recv() to wake the receiver. Only
  *     one receiver may operate on a channel at a time; concurrent recv
  *     aborts (single-consumer MPSC contract).
- *   - create() and close() are thread-safe. create() requires the
- *     runtime to be running. destroy() is caller-synchronized: it must
- *     be the final call on the handle and must not race with any other
- *     channel API on the same channel.
+ *   - create() and close() are callable from coroutine or OS-thread
+ *     context. create() requires the runtime to be running. destroy()
+ *     must be the final externally synchronized call on the handle and
+ *     must not race with any other channel API on the same channel.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -66,7 +66,7 @@ typedef struct xylem_channel_s xylem_channel_t;
 /**
  * @brief Create a channel.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Must be called while the runtime is running.
  *
@@ -77,10 +77,11 @@ extern xylem_channel_t* xylem_channel_create(void);
 /**
  * @brief Destroy the channel, releasing its memory.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Any messages still queued are freed (node wrapper only -- payload
- * lifetime is the caller's responsibility). Accepts NULL. Must not race
+ * lifetime is the caller's responsibility). Accepts NULL. This must be
+ * the final externally synchronized call on the handle and must not race
  * with any other channel API on the same channel.
  *
  * @param ch  Channel handle.
@@ -90,7 +91,7 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
 /**
  * @brief Close the channel, signalling no more sends.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * May race with recv() to wake the receiver. Like Go channels, close
  * must not race with send on the same channel: callers must stop all
@@ -108,9 +109,9 @@ extern void xylem_channel_destroy(xylem_channel_t* ch);
 extern void xylem_channel_close(xylem_channel_t* ch);
 
 /**
- * @brief Send a message. Non-blocking, thread-safe.
+ * @brief Send a message.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Aborts if the channel is closed. Must not race with close on the same
  * channel; callers must stop all producers before closing.
@@ -171,7 +172,7 @@ extern void* xylem_channel_recv_timeout(
 /**
  * @brief Current number of in-flight messages (sent but not received).
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Best-effort snapshot, safe to call from any thread. Useful for
  * observability and soft drop/backoff thresholds. Not a reservation:

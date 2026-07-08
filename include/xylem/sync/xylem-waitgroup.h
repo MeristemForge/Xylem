@@ -61,7 +61,7 @@ typedef struct xylem_waitgroup_s xylem_waitgroup_t;
 /**
  * @brief Create a new waitgroup.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * If coroutine waiters will use this waitgroup, create it while the
  * runtime scheduler is available.
@@ -73,7 +73,7 @@ extern xylem_waitgroup_t* xylem_waitgroup_create(void);
 /**
  * @brief Increment the waitgroup counter.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Typically called before
  * spawning the work units whose completion the counter tracks; calling
@@ -88,7 +88,7 @@ extern void xylem_waitgroup_add(xylem_waitgroup_t* waitgroup, size_t delta);
 /**
  * @brief Decrement the waitgroup counter by one.
  *
- * @note [THREAD-SAFE]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * When the counter reaches zero, every queued waiter in
  * xylem_waitgroup_wait() is released according to its waiter kind.
@@ -118,7 +118,7 @@ extern void xylem_waitgroup_wait(xylem_waitgroup_t* waitgroup);
 /**
  * @brief Destroy the waitgroup and free its resources.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * The caller must ensure no coroutine or thread is blocked in wait()
  * and no add()/done() call is in flight on this waitgroup. destroy()

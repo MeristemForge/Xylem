@@ -25,6 +25,10 @@ All five public primitives share one shape:
   `waitgroup_wait`, `channel_recv`, and `sem_wait` may block. On a coroutine
   they park (the worker thread stays free); on any other thread they block that
   OS thread. None of them requires a coroutine context.
+- **Public sync APIs use `[CONTEXT-ADAPTIVE]`.** In sync headers, this tag means
+  the function is usable from coroutine and OS-thread contexts. Some calls do
+  not block; those document their same-handle race and final-release rules in
+  the function text.
 - **Wakeup/non-blocking ops do not wait on the primitive state.** `unlock`,
   `signal`/`broadcast`, `add`/`done`, `send`/`close`, `post`, and all
   `create`/`destroy` are safe from any thread. Cross-context coroutine wakeups
@@ -43,8 +47,8 @@ All five public primitives share one shape:
   corrupting state silently. (None of the primitives aborts merely for being
   called off-coroutine anymore — that is the point of cross-context.)
 
-| Primitive | Blocking op (any context) | Non-blocking ops | Pattern |
-|-----------|---------------------------|------------------|---------|
+| Primitive | Blocking op (any context) | Other context-adaptive ops | Pattern |
+|-----------|---------------------------|----------------------------|---------|
 | `xylem_mutex` | `lock` | `unlock`, `trylock`, create/destroy | cross-context lock |
 | `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
@@ -190,10 +194,10 @@ receiver wake path uses the same per-thread `thrd_wake_t` and scheduler
 reschedule mechanisms as the FIFO primitives, but with channel-specific state
 instead of a shared waiter module.
 
-- `send(msg)` — thread-safe, `msg` must be non-NULL. It never waits for capacity
-  or a receiver; in coroutine context it may only cooperative-yield for runtime
-  fairness after enqueue/wake. Returns `0` on success or `-1` (invalid input or
-  allocation failure).
+- `send(msg)` — context-adaptive, `msg` must be non-NULL. It never waits for
+  capacity or a receiver; in coroutine context it may only cooperative-yield for
+  runtime fairness after enqueue/wake. Returns `0` on success or `-1` (invalid
+  input or allocation failure).
 - `recv()` — blocks the calling coroutine **or thread** until a message
   arrives or the channel is closed-and-drained (then returns NULL).
   `recv_timeout(ms)` is the general form with a three-state wait policy:
@@ -206,7 +210,7 @@ instead of a shared waiter module.
     adjustments may shorten or extend the real elapsed wait.
   A NULL return does **not** distinguish "nothing available" / "timed out" /
   "closed and empty" — track the reason out of band if you need it.
-- `len()` — best-effort in-flight count. Safe from any thread; useful for
+- `len()` — context-adaptive best-effort in-flight count; useful for
   observability and soft drop/backoff thresholds.
 - `create()`, `destroy()`, and `close()` are any-context operations. `create()`
   requires the runtime to be running so the channel can bind to the scheduler.
@@ -282,7 +286,7 @@ waiter; only posts that find no waiter increment the count.
 The poster chooses the wake path from the blocked party's kind:
 
 - a **coroutine waiter** stores its `mco_coro*` and the scheduler it parked
-  under, and is woken with `scheduler_schedule()` (thread-safe from any caller);
+  under, and is woken with `scheduler_schedule()` (callable from any caller);
 - a **thread waiter** stores its per-thread futex wake object and blocks on
   that wake object until the posted token is handed to it.
 
@@ -361,5 +365,5 @@ preferred when a coroutine is (or may be) involved.
 ## 9. Related docs
 
 - Parking / scheduling model: [`runtime.md`](runtime.md)
-- Conventions (threading annotations, abort policy): [`../conventions.md`](../conventions.md)
+- Conventions (context annotations, abort policy): [`../conventions.md`](../conventions.md)
 - Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

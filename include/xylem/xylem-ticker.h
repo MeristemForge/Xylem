@@ -111,14 +111,15 @@ extern uint64_t xylem_ticker_recv(xylem_ticker_t* ticker);
 /**
  * @brief Close and destroy the ticker.
  *
- * @note [CALLER-SYNCHRONIZED]
+ * @note [CONTEXT-ADAPTIVE]
  *
  * Calls xylem_ticker_close() as a cleanup fallback, then drops the
  * creator reference. The underlying memory is freed once the last
- * reference is gone. This call consumes the handle and must not race
- * with xylem_ticker_recv(), xylem_ticker_close(), or another destroy on
- * the same handle. Passing NULL is a no-op, but destroying the same
- * non-NULL handle again is invalid.
+ * reference is gone. This must be the final externally synchronized
+ * call on the handle and must not race with xylem_ticker_recv(),
+ * xylem_ticker_close(), or another destroy on the same handle. Passing
+ * NULL is a no-op, but destroying the same non-NULL handle again is
+ * invalid.
  * If another context may be in xylem_ticker_recv(), call
  * xylem_ticker_close() first, wait for that receiver to exit, then
  * destroy the handle.
