@@ -938,7 +938,7 @@ static void _sched_worker_enqueue(_sched_worker_t* w, mco_coro* co) {
     }
 }
 
-static bool _sched_credit_park_cb(mco_coro* co, void* arg) {
+static bool _sched_yield_park_cb(mco_coro* co, void* arg) {
     (void)co;
     (void)arg;
     return false;
@@ -1576,7 +1576,7 @@ void scheduler_yield(void) {
     if (!_tls_worker || !mco_running()) {
         return;
     }
-    scheduler_park(_tls_worker->sched, _sched_credit_park_cb, NULL);
+    scheduler_park(_tls_worker->sched, _sched_yield_park_cb, NULL);
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {
