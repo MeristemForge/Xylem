@@ -65,8 +65,11 @@ extern int dynpool_submit(
  * @brief Destroy the pool.
  *
  * Signals all workers to exit, waits for running tasks to complete, drops any
- * remaining queued tasks, and frees resources. The caller must ensure no
- * concurrent dynpool_submit() calls are in flight.
+ * remaining queued tasks, and frees resources.
+ *
+ * @note This is a final release operation, not a concurrent stop operation.
+ *       The caller must ensure no dynpool_submit() calls are in flight and
+ *       must not call this function from a pool worker task.
  *
  * @param pool  Pool handle.
  */

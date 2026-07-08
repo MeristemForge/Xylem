@@ -91,19 +91,11 @@ static int _dynpool_thread_entry(void* arg) {
     }
 
     pool->num_threads--;
+    if (pool->num_threads == 0) {
+        cnd_signal(&pool->cond);
+    }
     mtx_unlock(&pool->mtx);
     return 0;
-}
-
-static bool _dynpool_spawn_locked(dynpool_t* pool) {
-    thrd_t thr;
-    if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
-        pool->num_threads++;
-        thrd_detach(thr);
-        return true;
-    }
-
-    return false;
 }
 
 dynpool_t* dynpool_create(dynpool_opts_t* opts) {
@@ -163,19 +155,25 @@ int dynpool_submit(
         return -1;
     }
 
-    if (pool->num_idle > 0) {
-        cnd_signal(&pool->cond);
-    }
     if (queue_len(&pool->queue) + 1 > (size_t)pool->num_idle &&
-        pool->num_threads < pool->max_threads &&
-        !_dynpool_spawn_locked(pool) &&
-        pool->num_threads == 0) {
-        mtx_unlock(&pool->mtx);
-        free(job);
-        return -1;
+        pool->num_threads < pool->max_threads) {
+        thrd_t thr;
+        if (thrd_create(&thr, _dynpool_thread_entry, pool) == thrd_success) {
+            pool->num_threads++;
+            thrd_detach(thr);
+        }
+        if (pool->num_threads == 0) {
+            mtx_unlock(&pool->mtx);
+            free(job);
+            return -1;
+        }
     }
 
     queue_enqueue(&pool->queue, &job->node);
+
+    if (pool->num_idle > 0) {
+        cnd_signal(&pool->cond);
+    }
     mtx_unlock(&pool->mtx);
 
     return 0;
@@ -189,18 +187,10 @@ void dynpool_destroy(dynpool_t* pool) {
     mtx_lock(&pool->mtx);
     pool->running = false;
     cnd_broadcast(&pool->cond);
-    mtx_unlock(&pool->mtx);
-
-    int32_t count;
-    for (;;) {
-        mtx_lock(&pool->mtx);
-        count = pool->num_threads;
-        mtx_unlock(&pool->mtx);
-        if (count == 0) {
-            break;
-        }
-        thrd_yield();
+    while (pool->num_threads != 0) {
+        cnd_wait(&pool->cond, &pool->mtx);
     }
+    mtx_unlock(&pool->mtx);
 
     queue_node_t* node;
     while ((node = queue_dequeue(&pool->queue)) != NULL) {
