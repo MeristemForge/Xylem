@@ -921,7 +921,9 @@ static void _dtls_handshake_coro(void* arg) {
         return;
     }
     _dtls_conn_ref(dtls);
-    xylem_channel_send(ln->accept_ch, dtls);
+    if (xylem_channel_send(ln->accept_ch, dtls) != 0) {
+        _dtls_conn_unref(dtls);
+    }
     xylem_mutex_unlock(ln->sessions_mu);
     _dtls_conn_unref(dtls);
 }
