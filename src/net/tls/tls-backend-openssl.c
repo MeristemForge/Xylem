@@ -556,6 +556,7 @@ tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {
         SSL_CTX_set_mode(ctx->ssl_ctx, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         SSL_CTX_set_cookie_generate_cb(ctx->ssl_ctx, _tlsb_cookie_generate_cb);
         SSL_CTX_set_cookie_verify_cb(ctx->ssl_ctx, _tlsb_cookie_verify_cb);
+        SSL_CTX_set_options(ctx->ssl_ctx, SSL_OP_COOKIE_EXCHANGE);
         SSL_CTX_set_min_proto_version(ctx->ssl_ctx, DTLS1_2_VERSION);
     } else {
         SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
