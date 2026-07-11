@@ -134,13 +134,29 @@ stream_t* stream_dial(
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
+    uint64_t connect_deadline_ms = 0;
+    if (connect_timeout_ms > 0) {
+        connect_deadline_ms
+            = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+              + connect_timeout_ms;
+    }
+
     char   resolved_ip[INET6_ADDRSTRLEN];
     addr_t resolved_addr;
 
     if (addr_pton(host, port, &resolved_addr) != 0) {
         addr_t* addrs = NULL;
         size_t  count = 0;
-        if (addr_resolve(host, port, connect_timeout_ms, &addrs, &count) != 0
+        uint64_t resolve_timeout_ms = 0;
+        if (connect_deadline_ms > 0) {
+            uint64_t resolve_now_ms
+                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (resolve_now_ms >= connect_deadline_ms) {
+                return NULL;
+            }
+            resolve_timeout_ms = connect_deadline_ms - resolve_now_ms;
+        }
+        if (addr_resolve(host, port, resolve_timeout_ms, &addrs, &count) != 0
             || count == 0) {
             xylem_loge("<stream> dial dns failed host=%s", host);
             return NULL;
@@ -152,6 +168,13 @@ stream_t* stream_dial(
     if (addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), NULL)
         != 0) {
         xylem_loge("<stream> dial addr format failed host=%s", host);
+        return NULL;
+    }
+
+    if (connect_deadline_ms > 0
+        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+               >= connect_deadline_ms) {
+        xylem_loge("<stream> dial timeout host=%s port=%u", host, port);
         return NULL;
     }
 
@@ -170,6 +193,14 @@ stream_t* stream_dial(
         return NULL;
     }
 
+    if (connect_deadline_ms > 0
+        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+               >= connect_deadline_ms) {
+        xylem_loge("<stream> dial timeout host=%s port=%u", host, port);
+        platform_socket_close(fd);
+        return NULL;
+    }
+
     if (enable_mss_clamp) {
         platform_socket_enable_mss_clamp(fd, true);
     }
@@ -183,14 +214,11 @@ stream_t* stream_dial(
     if (!connected) {
         /**
          * Connect completion surfaces as writability on the fd. Apply
-         * the connect timeout as a one-shot write deadline, then clear it
+         * the dial deadline as a one-shot write deadline, then clear it
          * so later writes start with no inherited deadline.
          */
-        if (connect_timeout_ms > 0) {
-            uint64_t deadline
-                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-                  + connect_timeout_ms;
-            iowait_set_wr_deadline(stream->waiter, deadline);
+        if (connect_deadline_ms > 0) {
+            iowait_set_wr_deadline(stream->waiter, connect_deadline_ms);
         }
         iowait_result_t r = iowait_write(stream->waiter);
         iowait_set_wr_deadline(stream->waiter, 0);

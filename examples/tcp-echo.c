@@ -60,7 +60,8 @@ static void _server(void* arg) {
 static void _client(void* arg) {
     (void)arg;
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial("127.0.0.1", PORT, 5000, NULL);
+    xylem_tcp_opts_t opts = {.connect_timeout_ms = 5000};
+    xylem_tcp_conn_t* conn = xylem_tcp_dial("127.0.0.1", PORT, &opts);
     if (!conn) {
         xylem_loge("[client] failed to connect");
         return;

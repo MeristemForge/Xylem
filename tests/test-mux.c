@@ -106,7 +106,7 @@ static void _cli_worker(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(MUX_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(MUX_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux =
@@ -171,7 +171,7 @@ static void _multi_cli_worker(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(MUX_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(MUX_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_mux_t* mux =

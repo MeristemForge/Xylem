@@ -61,7 +61,7 @@ extern listener_t* listener_from_fd(platform_sock_t fd);
  *
  * @param host                Remote hostname or address.
  * @param port                Remote port.
- * @param connect_timeout_ms  Connect timeout in ms, 0 for none.
+ * @param connect_timeout_ms  Total DNS and connect timeout in ms, 0 for none.
  * @param enable_mss_clamp    Whether to clamp MSS on the socket.
  *
  * @return Stream handle, or NULL on failure.

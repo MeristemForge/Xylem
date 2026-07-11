@@ -93,7 +93,7 @@ static void _cli_write(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 64);
@@ -135,7 +135,7 @@ static void _cli_write_large(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 8);
@@ -175,7 +175,7 @@ static void _cli_write_invalid(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 8);

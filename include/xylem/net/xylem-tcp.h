@@ -29,8 +29,9 @@ typedef struct xylem_tcp_conn_s     xylem_tcp_conn_t;
 typedef struct xylem_tcp_listener_s xylem_tcp_listener_t;
 
 typedef struct xylem_tcp_opts_s {
-    bool enable_mss_clamp; /* Clamp socket MSS to the minimum; default off,
-                              so the socket uses the path MTU. */
+    uint64_t connect_timeout_ms; /* Total DNS and connect timeout, 0 = none. */
+    bool     enable_mss_clamp;   /* Clamp socket MSS to the minimum; default
+                                    off, so the socket uses the path MTU. */
 } xylem_tcp_opts_t;
 
 /**
@@ -83,19 +84,18 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until the connection is established
- * or connect_timeout_ms elapses.
+ * or opts->connect_timeout_ms elapses. The timeout is one total budget
+ * for hostname resolution and TCP connection establishment.
  *
- * @param host                Remote hostname or IP address.
- * @param port                Remote port.
- * @param connect_timeout_ms  Connect timeout in ms, 0 = no timeout.
- * @param opts                Options, NULL for defaults.
+ * @param host  Remote hostname or IP address.
+ * @param port  Remote port.
+ * @param opts  Options, NULL for defaults.
  *
  * @return Connection handle, or NULL on failure or timeout.
  */
 extern xylem_tcp_conn_t* xylem_tcp_dial(
     const char*       host,
     uint16_t          port,
-    uint64_t          connect_timeout_ms,
     xylem_tcp_opts_t* opts);
 
 /**

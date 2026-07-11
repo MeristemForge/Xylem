@@ -96,7 +96,7 @@ static void _echo_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     const char* msg = "hello xylem";
@@ -136,7 +136,7 @@ static void _reader_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
@@ -182,7 +182,7 @@ static void _writer_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
@@ -203,7 +203,8 @@ static void test_writer_buffered(void) {
 
 static void _timeout_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_conn_t* conn = xylem_tcp_dial("192.0.2.1", 9999, 200, NULL);
+    xylem_tcp_opts_t opts = {.connect_timeout_ms = 200};
+    xylem_tcp_conn_t* conn = xylem_tcp_dial("192.0.2.1", 9999, &opts);
     ASSERT(conn == NULL);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -244,7 +245,7 @@ static void _eof_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     char buf[16];
@@ -290,7 +291,7 @@ static void _half_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     ASSERT(xylem_tcp_write(conn, "ping", 4) == 0);
@@ -329,7 +330,7 @@ static void _shutdown_rd_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     ASSERT(xylem_tcp_shutdown_rd(conn) == 0);
@@ -366,7 +367,7 @@ static void _expired_read_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_sleep(50);
@@ -403,7 +404,7 @@ static void _expired_write_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1;
@@ -443,7 +444,7 @@ static void _invalid_io_client(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     char buf[16];

@@ -296,9 +296,12 @@ int addr_resolve(
     atomic_init(&ctx->timed_out, false);
     atomic_init(&ctx->refcnt, 1); /* originator reference */
 
-    /* Best-effort: if the timer cannot be created, fall back to no timeout. */
     if (timeout_ms > 0) {
         ctx->timer = scheduler_timer_create(runtime_get_scheduler());
+        if (!ctx->timer) {
+            _addr_ctx_unref(ctx);
+            return -1;
+        }
     }
 
     scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);

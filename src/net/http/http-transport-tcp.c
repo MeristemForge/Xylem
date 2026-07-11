@@ -64,8 +64,8 @@ static http_transport_t _http_dial(const char* host, uint16_t port,
         dial_port = proxy->port;
     }
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(dial_host, dial_port,
-                                            timeout_ms, NULL);
+    xylem_tcp_opts_t opts = {.connect_timeout_ms = timeout_ms};
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(dial_host, dial_port, &opts);
     if (!conn) {
         return (http_transport_t){0};
     }

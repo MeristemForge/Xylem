@@ -81,7 +81,7 @@ static void _cli_read(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     const char* msg = "hello reader";
@@ -125,7 +125,7 @@ static void _cli_read_until(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 8);
@@ -174,7 +174,7 @@ static void _cli_read_full(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, 0, NULL);
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
 
     xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 8);

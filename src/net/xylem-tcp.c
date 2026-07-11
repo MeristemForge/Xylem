@@ -138,10 +138,10 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
 xylem_tcp_conn_t* xylem_tcp_dial(
     const char*       host,
     uint16_t          port,
-    uint64_t          connect_timeout_ms,
     xylem_tcp_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_dial");
 
+    uint64_t connect_timeout_ms = opts ? opts->connect_timeout_ms : 0;
     bool enable_mss_clamp = opts && opts->enable_mss_clamp;
     stream_t* stream
         = stream_dial(host, port, connect_timeout_ms, enable_mss_clamp);

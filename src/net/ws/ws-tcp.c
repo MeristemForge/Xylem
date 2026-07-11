@@ -56,7 +56,8 @@ xylem_ws_conn_t* ws_tcp_dial(const char* host, uint16_t port,
                        ? opts->handshake_timeout_ms
                        : WS_DEFAULT_HANDSHAKE_TIMEOUT;
 
-    xylem_tcp_conn_t* tcp = xylem_tcp_dial(host, port, timeout, NULL);
+    xylem_tcp_opts_t tcp_opts = {.connect_timeout_ms = timeout};
+    xylem_tcp_conn_t* tcp = xylem_tcp_dial(host, port, &tcp_opts);
     if (!tcp) {
         return NULL;
     }
