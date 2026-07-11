@@ -5,7 +5,7 @@ project(examples LANGUAGES C)
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
 # TCP example (always available)
-add_executable(tcp-echo tcp-echo.c)
+add_executable(tcp-echo example-tcp.c)
 target_link_libraries(tcp-echo PRIVATE xylem)
 
 # HTTP examples (disabled: pending port to coroutine-based API)
