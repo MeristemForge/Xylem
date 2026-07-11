@@ -31,6 +31,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,7 +44,7 @@ typedef struct {
 } _config_t;
 
 static void _usage(const char* program) {
-    xylem_loge("usage: %s <ip> <port> <server|client>", program);
+    fprintf(stderr, "usage: %s <ip> <port> <server|client>\n", program);
 }
 
 static int _parse_port(const char* text, uint16_t* port) {
@@ -105,18 +106,14 @@ static void _main(void* arg) {
 }
 
 int main(int argc, char** argv) {
-    xylem_logger_init(NULL, NULL);
-
     if (argc != 4) {
         _usage(argv[0]);
-        xylem_logger_deinit();
         return -1;
     }
 
     _config_t config = {.ip = argv[1]};
     if (_parse_port(argv[2], &config.port) != 0) {
         _usage(argv[0]);
-        xylem_logger_deinit();
         return -1;
     }
     if (strcmp(argv[3], "server") == 0) {
@@ -125,10 +122,10 @@ int main(int argc, char** argv) {
         config.server = false;
     } else {
         _usage(argv[0]);
-        xylem_logger_deinit();
         return -1;
     }
 
+    xylem_logger_init(NULL, NULL);
     xylem_run(_main, &config, NULL);
     xylem_logger_deinit();
     return 0;
