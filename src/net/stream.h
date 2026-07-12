@@ -21,7 +21,6 @@
 
 _Pragma("once")
 
-#include "net/addr.h"
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
 
@@ -71,6 +70,18 @@ extern stream_t* stream_dial(
     uint16_t    port,
     uint64_t    connect_timeout_ms,
     bool        enable_mss_clamp);
+
+/**
+ * @brief Dial a Unix domain socket peer and return a coroutine stream.
+ *
+ * @param path                Unix domain socket path.
+ * @param connect_timeout_ms  Connect timeout in ms, 0 for none.
+ *
+ * @return Stream handle, or NULL on failure.
+ */
+extern stream_t* stream_dial_unix(
+    const char* path,
+    uint64_t    connect_timeout_ms);
 
 /**
  * @brief Interrupt blocked stream operations without releasing ownership.
@@ -253,13 +264,31 @@ extern listener_t* listener_listen(
     bool        enable_mss_clamp);
 
 /**
+ * @brief Create a Unix domain socket listener.
+ *
+ * @param path  Unix domain socket path.
+ *
+ * @return Listener handle, or NULL on failure.
+ */
+extern listener_t* listener_listen_unix(const char* path);
+
+/**
  * @brief Accept a stream from a listener.
  *
  * @param listener  Listener handle.
  *
- * @return Accepted stream, or NULL if the listener is closed.
+ * @return Accepted stream, or NULL if the listener is closed or accept fails.
  */
 extern stream_t* listener_accept(listener_t* listener);
+
+/**
+ * @brief Accept a stream from a Unix domain socket listener.
+ *
+ * @param listener  Listener handle.
+ *
+ * @return Accepted stream, or NULL if the listener is closed or accept fails.
+ */
+extern stream_t* listener_accept_unix(listener_t* listener);
 
 /**
  * @brief Interrupt blocked listener operations without releasing ownership.

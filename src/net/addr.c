@@ -72,6 +72,45 @@ static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
     free(ctx);
 }
 
+static bool _addr_contains(
+    const addr_t* addrs,
+    size_t        count,
+    const addr_t* addr) {
+    for (size_t i = 0; i < count; i++) {
+        if (addrs[i].storage.ss_family != addr->storage.ss_family) {
+            continue;
+        }
+        if (addr->storage.ss_family == AF_INET) {
+            const struct sockaddr_in* lhs =
+                (const struct sockaddr_in*)&addrs[i].storage;
+            const struct sockaddr_in* rhs =
+                (const struct sockaddr_in*)&addr->storage;
+            if (memcmp(
+                    &lhs->sin_addr,
+                    &rhs->sin_addr,
+                    sizeof(lhs->sin_addr))
+                == 0) {
+                return true;
+            }
+        }
+        if (addr->storage.ss_family == AF_INET6) {
+            const struct sockaddr_in6* lhs =
+                (const struct sockaddr_in6*)&addrs[i].storage;
+            const struct sockaddr_in6* rhs =
+                (const struct sockaddr_in6*)&addr->storage;
+            if (lhs->sin6_scope_id == rhs->sin6_scope_id
+                && memcmp(
+                       &lhs->sin6_addr,
+                       &rhs->sin6_addr,
+                       sizeof(lhs->sin6_addr))
+                       == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /* Run the blocking lookup and record the outcome into ctx. */
 static void _addr_do_lookup(_addr_resolve_ctx_t* ctx) {
     struct addrinfo  hints;
@@ -101,25 +140,31 @@ static void _addr_do_lookup(_addr_resolve_ctx_t* ctx) {
         return;
     }
 
-    size_t i = 0;
+    size_t count = 0;
     for (struct addrinfo* rp = res; rp; rp = rp->ai_next) {
         if (rp->ai_family != AF_INET && rp->ai_family != AF_INET6) {
             continue;
         }
-        memcpy(&arr[i].storage, rp->ai_addr, rp->ai_addrlen);
+
+        addr_t addr = {0};
+        memcpy(&addr.storage, rp->ai_addr, rp->ai_addrlen);
         if (rp->ai_family == AF_INET) {
-            ((struct sockaddr_in*)&arr[i].storage)->sin_port =
-                htons(ctx->port);
-        } else {
-            ((struct sockaddr_in6*)&arr[i].storage)->sin6_port =
-                htons(ctx->port);
+            ((struct sockaddr_in*)&addr.storage)->sin_port = htons(ctx->port);
         }
-        i++;
+        if (rp->ai_family == AF_INET6) {
+            ((struct sockaddr_in6*)&addr.storage)->sin6_port = htons(ctx->port);
+        }
+
+        if (_addr_contains(arr, count, &addr)) {
+            continue;
+        }
+
+        arr[count++] = addr;
     }
     freeaddrinfo(res);
 
     ctx->result       = arr;
-    ctx->result_count = i;
+    ctx->result_count = count;
     ctx->status       = 0;
 }
 

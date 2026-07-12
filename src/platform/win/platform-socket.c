@@ -338,15 +338,24 @@ platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking) {
 }
 
 platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
-                                            bool nonblocking) {
+                                             bool nonblocking) {
     return _socket_accept(sock, nonblocking);
+}
+
+bool platform_socket_accept_retryable(int error) {
+    return error == WSAEINTR || error == WSAECONNABORTED
+           || error == WSAECONNRESET || error == WSAEMFILE
+           || error == WSAENOBUFS || error == WSAENETDOWN
+           || error == WSAENETUNREACH || error == WSAEHOSTUNREACH
+           || error == WSAETIMEDOUT;
 }
 
 platform_sock_t platform_socket_listen(
     const char* restrict host,
     const char* restrict port,
     int                  socktype,
-    bool                 nonblocking) {
+    bool                 nonblocking,
+    bool                 enable_mss_clamp) {
     platform_sock_t  sock;
     struct addrinfo* res;
     struct addrinfo* rp;
@@ -379,12 +388,15 @@ platform_sock_t platform_socket_listen(
             continue;
         }
         if (socktype == SOCK_STREAM) {
+            if (enable_mss_clamp) {
+                platform_socket_enable_mss_clamp(sock, true);
+            }
+            platform_socket_enable_nodelay(sock, true);
+            platform_socket_enable_keepalive(sock, true);
             if (listen(sock, SOMAXCONN) == PLATFORM_SO_ERROR_SOCKET_ERROR) {
                 platform_socket_close(sock);
                 continue;
             }
-            platform_socket_enable_nodelay(sock, true);
-            platform_socket_enable_keepalive(sock, true);
         }
         platform_socket_enable_nonblocking(sock, nonblocking);
         break;
@@ -402,7 +414,8 @@ platform_sock_t platform_socket_dial(
     const char* restrict port,
     int   socktype,
     bool* connected,
-    bool  nonblocking) {
+    bool  nonblocking,
+    bool  enable_mss_clamp) {
     platform_sock_t  sock = PLATFORM_SO_ERROR_INVALID_SOCKET;
     struct addrinfo* res;
     struct addrinfo* rp;
@@ -422,6 +435,9 @@ platform_sock_t platform_socket_dial(
         platform_socket_enable_nonblocking(sock, nonblocking);
 
         if (socktype == SOCK_STREAM) {
+            if (enable_mss_clamp) {
+                platform_socket_enable_mss_clamp(sock, true);
+            }
             platform_socket_enable_nodelay(sock, true);
             platform_socket_enable_keepalive(sock, true);
         }

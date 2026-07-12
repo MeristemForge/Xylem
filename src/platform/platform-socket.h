@@ -196,30 +196,52 @@ extern const char* platform_socket_tostring(int error);
 extern platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonblocking);
 
 /**
+ * @brief Check whether an accept error may succeed on a later attempt.
+ *
+ * @param error  Platform-specific socket error code.
+ *
+ * @return true for transient network or resource errors, false otherwise.
+ */
+extern bool platform_socket_accept_retryable(int error);
+
+/**
  * @brief Create a listening (server) socket.
  *
- * @param host         Bind address (e.g. "0.0.0.0", "::").
- * @param port         Bind port (e.g. "8080").
- * @param socktype     SOCK_STREAM or SOCK_DGRAM.
- * @param nonblocking  If true, set the socket to non-blocking mode.
+ * @param host              Bind address (e.g. "0.0.0.0", "::").
+ * @param port              Bind port (e.g. "8080").
+ * @param socktype          SOCK_STREAM or SOCK_DGRAM.
+ * @param nonblocking       If true, set the socket to non-blocking mode.
+ * @param enable_mss_clamp  If true, clamp MSS before listening on a stream.
  *
  * @return Listening socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
-extern platform_sock_t platform_socket_listen(const char* restrict host, const char* restrict port, int socktype, bool nonblocking);
+extern platform_sock_t platform_socket_listen(
+    const char* restrict host,
+    const char* restrict port,
+    int                  socktype,
+    bool                 nonblocking,
+    bool                 enable_mss_clamp);
 
 /**
  * @brief Create a client socket and connect to a remote host.
  *
- * @param host         Remote host address.
- * @param port         Remote port.
- * @param socktype     SOCK_STREAM or SOCK_DGRAM.
- * @param connected    Pointer to receive connection status (true if connected
- *                     immediately, false if in progress for non-blocking).
- * @param nonblocking  If true, set the socket to non-blocking mode.
+ * @param host              Remote host address.
+ * @param port              Remote port.
+ * @param socktype          SOCK_STREAM or SOCK_DGRAM.
+ * @param connected         Pointer to receive connection status (true if
+ *                          connected immediately, false if in progress).
+ * @param nonblocking       If true, set the socket to non-blocking mode.
+ * @param enable_mss_clamp  If true, clamp MSS before connecting a stream socket.
  *
  * @return Connected socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
-extern platform_sock_t platform_socket_dial(const char* restrict host, const char* restrict port, int socktype, bool* connected, bool nonblocking);
+extern platform_sock_t platform_socket_dial(
+    const char* restrict host,
+    const char* restrict port,
+    int                  socktype,
+    bool*                connected,
+    bool                 nonblocking,
+    bool                 enable_mss_clamp);
 
 /**
  * @brief Set the receive timeout on a socket.

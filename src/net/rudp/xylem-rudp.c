@@ -1264,7 +1264,7 @@ xylem_rudp_conn_t* xylem_rudp_dial(
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        dial_host, port_str, SOCK_DGRAM, &connected, true);
+        dial_host, port_str, SOCK_DGRAM, &connected, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("rudp dial: socket creation failed for %s:%u", host, port);
         return NULL;
@@ -1524,7 +1524,7 @@ xylem_rudp_listener_t* xylem_rudp_listen(
     snprintf(port_str, sizeof(port_str), "%u", port);
 
     platform_sock_t fd =
-        platform_socket_listen(host, port_str, SOCK_DGRAM, true);
+        platform_socket_listen(host, port_str, SOCK_DGRAM, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("rudp listen: bind failed for %s:%u", host, port);
         return NULL;

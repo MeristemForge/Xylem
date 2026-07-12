@@ -44,8 +44,7 @@ static void _tcp_conn_ref(xylem_tcp_conn_t* tcp) {
 }
 
 static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
-    if (atomic_fetch_sub(&tcp->refcnt, 1)
-        != 1) {
+    if (atomic_fetch_sub(&tcp->refcnt, 1) != 1) {
         return;
     }
     stream_release(tcp->stream);
@@ -71,8 +70,7 @@ static void _tcp_listener_ref(xylem_tcp_listener_t* listener) {
 }
 
 static void _tcp_listener_unref(xylem_tcp_listener_t* listener) {
-    if (atomic_fetch_sub(&listener->refcnt, 1)
-        != 1) {
+    if (atomic_fetch_sub(&listener->refcnt, 1) != 1) {
         return;
     }
     listener_release(listener->listener);

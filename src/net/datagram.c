@@ -143,7 +143,7 @@ datagram_t* datagram_listen(const char* host, uint16_t port) {
     snprintf(port_str, sizeof(port_str), "%u", port);
 
     platform_sock_t fd =
-        platform_socket_listen(host, port_str, SOCK_DGRAM, true);
+        platform_socket_listen(host, port_str, SOCK_DGRAM, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("<datagram> listen failed host=%s port=%s", host, port_str);
         return NULL;
@@ -181,7 +181,7 @@ datagram_t* datagram_dial(const char* host, uint16_t port) {
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        dial_host, port_str, SOCK_DGRAM, &connected, true);
+        dial_host, port_str, SOCK_DGRAM, &connected, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("<datagram> dial failed host=%s port=%s", host, port_str);
         return NULL;
@@ -261,10 +261,8 @@ int datagram_try_recv(
                     memcpy(&from->storage, &sender, sizeof(sender));
                 }
             }
-            if (n > 0) {
-                if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                    runtime_yield();
-                }
+            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+                runtime_yield();
             }
         } else {
             int err = platform_socket_get_lasterror();

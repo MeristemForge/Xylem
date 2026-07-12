@@ -21,6 +21,7 @@
 
 #include "xylem.h"
 
+#include "net/addr.h"
 #include "net/stream.h"
 #include "platform/platform-socket.h"
 
@@ -224,6 +225,88 @@ static void _timeout_main(void* arg) {
 static void test_dial_timeout(void) {
     _ctx_t ctx = {.client = _timeout_client};
     _timeout_main(&ctx);
+}
+
+static void _invalid_host_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    ASSERT(xylem_tcp_dial(NULL, 80, NULL) == NULL);
+    ASSERT(xylem_tcp_dial("", 80, NULL) == NULL);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_invalid_dial_host(void) {
+    _ctx_t ctx = {.client = _invalid_host_client};
+    _timeout_main(&ctx);
+}
+
+static void test_resolve_returns_unique_addresses(void) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    ASSERT(addr_resolve("localhost", 80, 1000, &addrs, &count) == 0);
+
+    for (size_t i = 0; i < count; i++) {
+        char     ip[INET6_ADDRSTRLEN];
+        uint16_t port = 0;
+        ASSERT(addr_ntop(&addrs[i], ip, sizeof(ip), &port) == 0);
+
+        for (size_t j = i + 1; j < count; j++) {
+            char     other_ip[INET6_ADDRSTRLEN];
+            uint16_t other_port = 0;
+            ASSERT(addr_ntop(
+                       &addrs[j],
+                       other_ip,
+                       sizeof(other_ip),
+                       &other_port)
+                   == 0);
+            ASSERT(strcmp(ip, other_ip) != 0 || port != other_port);
+        }
+    }
+
+    free(addrs);
+}
+
+static void test_accept_error_classification(void) {
+    ASSERT(platform_socket_accept_retryable(PLATFORM_SO_ERROR_ECONNRESET));
+    ASSERT(!platform_socket_accept_retryable(-1));
+}
+
+static void test_dial_falls_back_to_next_resolved_address(void) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    ASSERT(addr_resolve("localhost", 0, 1000, &addrs, &count) == 0);
+    ASSERT(count > 1);
+
+    char first_host[INET6_ADDRSTRLEN];
+    ASSERT(addr_ntop(&addrs[0], first_host, sizeof(first_host), NULL) == 0);
+
+    char bind_host[INET6_ADDRSTRLEN];
+    bool found = false;
+    for (size_t i = 1; i < count; i++) {
+        ASSERT(addr_ntop(&addrs[i], bind_host, sizeof(bind_host), NULL) == 0);
+        if (strcmp(first_host, bind_host) != 0) {
+            found = true;
+            break;
+        }
+    }
+    free(addrs);
+    ASSERT(found);
+
+    listener_t* listener = listener_listen(bind_host, 0, false);
+    ASSERT(listener != NULL);
+
+    uint16_t port = 0;
+    ASSERT(listener_addr(listener, NULL, 0, &port) == 0);
+
+    stream_t* stream = stream_dial("localhost", port, 1000, false);
+    bool connected = stream != NULL;
+    if (stream) {
+        stream_interrupt(stream);
+        stream_release(stream);
+    }
+    listener_interrupt(listener);
+    listener_release(listener);
+
+    ASSERT(connected);
 }
 
 static void _eof_server(void* arg) {
@@ -564,6 +647,10 @@ static void _test_run_all(void* arg) {
     test_reader_full();
     test_writer_buffered();
     test_dial_timeout();
+    test_invalid_dial_host();
+    test_resolve_returns_unique_addresses();
+    test_accept_error_classification();
+    test_dial_falls_back_to_next_resolved_address();
     test_peer_close_eof();
     test_half_close();
     test_shutdown_rd_read_fails();

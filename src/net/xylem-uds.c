@@ -22,13 +22,9 @@
 #include "xylem/net/xylem-uds.h"
 
 #include "xylem/xylem-logger.h"
-#include "xylem/xylem-utils.h"
 
 #include "net/stream.h"
-#include "platform/platform-socket.h"
-#include "runtime/iowait.h"
 #include "runtime/precond.h"
-#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -44,8 +40,7 @@ struct xylem_uds_conn_s {
 };
 
 struct xylem_uds_listener_s {
-    iowait_t*       waiter;
-    platform_sock_t fd;
+    listener_t*     listener;
     char            path[UDS_MAX_PATH];
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
@@ -56,83 +51,73 @@ static void _uds_conn_ref(xylem_uds_conn_t* uds) {
 }
 
 static void _uds_conn_unref(xylem_uds_conn_t* uds) {
-    if (atomic_fetch_sub(&uds->refcnt, 1)
-        != 1) {
+    if (atomic_fetch_sub(&uds->refcnt, 1) != 1) {
         return;
     }
     stream_release(uds->stream);
     free(uds);
 }
 
-static void _uds_listener_ref(xylem_uds_listener_t* ln) {
-    atomic_fetch_add(&ln->refcnt, 1);
-}
-
-static void _uds_listener_unref(xylem_uds_listener_t* ln) {
-    if (atomic_fetch_sub(&ln->refcnt, 1)
-        != 1) {
-        return;
-    }
-    if (ln->waiter) {
-        iowait_destroy(ln->waiter);
-    }
-    if (ln->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(ln->fd);
-    }
-    free(ln);
-}
-
-static xylem_uds_conn_t* _uds_conn_create(platform_sock_t fd) {
+static xylem_uds_conn_t* _uds_conn_create(stream_t* stream) {
     xylem_uds_conn_t* uds
         = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
     if (!uds) {
-        platform_socket_close(fd);
+        stream_release(stream);
         return NULL;
     }
 
-    uds->stream = stream_from_fd(fd);
-    if (!uds->stream) {
-        platform_socket_close(fd);
-        free(uds);
-        return NULL;
-    }
-
-    _uds_conn_ref(uds);
+    uds->stream = stream;
+    atomic_init(&uds->refcnt, 1);
+    atomic_init(&uds->closed, false);
     return uds;
 }
 
+static void _uds_listener_ref(xylem_uds_listener_t* listener) {
+    atomic_fetch_add(&listener->refcnt, 1);
+}
+
+static void _uds_listener_unref(xylem_uds_listener_t* listener) {
+    if (atomic_fetch_sub(&listener->refcnt, 1) != 1) {
+        return;
+    }
+    listener_release(listener->listener);
+    if (listener->path[0] != '\0') {
+        remove(listener->path);
+    }
+    free(listener);
+}
+
+static xylem_uds_listener_t* _uds_listener_create(
+    listener_t* listener,
+    const char* path) {
+    xylem_uds_listener_t* uds_listener = (xylem_uds_listener_t*)calloc(
+        1, sizeof(xylem_uds_listener_t));
+    if (!uds_listener) {
+        listener_release(listener);
+        remove(path);
+        return NULL;
+    }
+
+    uds_listener->listener = listener;
+    snprintf(uds_listener->path, UDS_MAX_PATH, "%s", path);
+    atomic_init(&uds_listener->refcnt, 1);
+    atomic_init(&uds_listener->closed, false);
+    return uds_listener;
+}
+
 xylem_uds_listener_t* xylem_uds_listen(const char* path) {
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_listen");
+
     if (!path || strlen(path) >= UDS_MAX_PATH) {
         xylem_loge("<uds> listen bad path len_max=%d", UDS_MAX_PATH - 1);
         return NULL;
     }
-    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_listen");
 
-    platform_sock_t fd = platform_socket_listen_unix(path, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<uds> listen failed path=%s", path);
-        return NULL;
-    }
-
-    xylem_uds_listener_t* listener = (xylem_uds_listener_t*)calloc(
-        1, sizeof(xylem_uds_listener_t));
+    listener_t* listener = listener_listen_unix(path);
     if (!listener) {
-        platform_socket_close(fd);
         return NULL;
     }
-
-    listener->fd = fd;
-    snprintf(listener->path, UDS_MAX_PATH, "%s", path);
-
-    listener->waiter = iowait_create(fd);
-    if (!listener->waiter) {
-        platform_socket_close(fd);
-        free(listener);
-        return NULL;
-    }
-
-    _uds_listener_ref(listener);
-    return listener;
+    return _uds_listener_create(listener, path);
 }
 
 xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
@@ -140,55 +125,16 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
 
     _uds_listener_ref(listener);
 
-    xylem_uds_conn_t* result = NULL;
-    uint64_t          backoff_ms = 5;
-    int               retries   = 0;
-
-    for (;;) {
-        if (atomic_load(&listener->closed)) {
-            break;
+    xylem_uds_conn_t* conn = NULL;
+    if (!atomic_load(&listener->closed)) {
+        stream_t* stream = listener_accept_unix(listener->listener);
+        if (stream) {
+            conn = _uds_conn_create(stream);
         }
-
-        platform_sock_t fd
-            = platform_socket_accept_unix(listener->fd, true);
-        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                if (iowait_read(listener->waiter) != IOWAIT_READY) {
-                    break;
-                }
-                continue;
-            }
-
-            xylem_loge("<uds> accept failed fd=%d err=%d (%s)",
-                       (int)listener->fd,
-                       err,
-                       platform_socket_tostring(err));
-            if (++retries > 8) {
-                break;
-            }
-            runtime_sleep(backoff_ms);
-            if (backoff_ms < 1000) {
-                backoff_ms *= 2;
-            }
-            continue;
-        }
-
-        backoff_ms = 5;
-        retries    = 0;
-
-        xylem_uds_conn_t* uds = _uds_conn_create(fd);
-        if (!uds) {
-            break;
-        }
-
-        result = uds;
-        break;
     }
 
     _uds_listener_unref(listener);
-    return result;
+    return conn;
 }
 
 void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
@@ -198,12 +144,7 @@ void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
         return;
     }
 
-    iowait_close(listener->waiter);
-
-    if (listener->path[0] != '\0') {
-        remove(listener->path);
-    }
-
+    listener_interrupt(listener->listener);
     _uds_listener_unref(listener);
 }
 
@@ -217,54 +158,16 @@ xylem_uds_conn_t* xylem_uds_dial(
         return NULL;
     }
 
-    bool connected = false;
-    platform_sock_t fd
-        = platform_socket_dial_unix(path, &connected, true);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<uds> dial failed path=%s", path);
+    stream_t* stream = stream_dial_unix(path, connect_timeout_ms);
+    if (!stream) {
         return NULL;
     }
-
-    xylem_uds_conn_t* uds = _uds_conn_create(fd);
-    if (!uds) {
-        return NULL;
-    }
-
-    if (!connected) {
-        if (connect_timeout_ms > 0) {
-            uint64_t deadline
-                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-                  + connect_timeout_ms;
-            stream_set_write_deadline(uds->stream, deadline);
-        }
-        iowait_result_t rc = stream_wait_write(uds->stream);
-        stream_set_write_deadline(uds->stream, 0);
-
-        if (rc != IOWAIT_READY) {
-            xylem_loge("<uds> dial connect timeout path=%s", path);
-            xylem_uds_close(uds);
-            return NULL;
-        }
-
-        int32_t   err    = 0;
-        socklen_t errlen = sizeof(err);
-        getsockopt(
-            stream_fd(uds->stream), SOL_SOCKET, SO_ERROR, (char*)&err, &errlen);
-        if (err != 0) {
-            xylem_loge("<uds> dial connect failed fd=%d err=%d (%s)",
-                       (int)stream_fd(uds->stream),
-                       err,
-                       platform_socket_tostring(err));
-            xylem_uds_close(uds);
-            return NULL;
-        }
-    }
-
-    return uds;
+    return _uds_conn_create(stream);
 }
 
 void xylem_uds_set_read_deadline(
-    xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    xylem_uds_conn_t* uds,
+    uint64_t          deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_read_deadline");
 
     _uds_conn_ref(uds);
@@ -275,7 +178,8 @@ void xylem_uds_set_read_deadline(
 }
 
 void xylem_uds_set_write_deadline(
-    xylem_uds_conn_t* uds, uint64_t deadline_ms) {
+    xylem_uds_conn_t* uds,
+    uint64_t          deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_write_deadline");
 
     _uds_conn_ref(uds);
@@ -294,11 +198,9 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
 
     _uds_conn_ref(uds);
     int ret = -1;
-
     if (!atomic_load(&uds->closed)) {
         ret = stream_read(uds->stream, buf, len);
     }
-
     _uds_conn_unref(uds);
     return ret;
 }
@@ -318,11 +220,9 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
 
     _uds_conn_ref(uds);
     int ret = -1;
-
     if (!atomic_load(&uds->closed)) {
         ret = stream_write(uds->stream, data, len);
     }
-
     _uds_conn_unref(uds);
     return ret;
 }

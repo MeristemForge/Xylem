@@ -24,6 +24,7 @@
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 
+#include "net/addr.h"
 #include "runtime/iowait.h"
 #include "runtime/runtime.h"
 
@@ -33,7 +34,7 @@
 
 #define STREAM_ACCEPT_INITIAL_BACKOFF_MS 5
 #define STREAM_ACCEPT_MAX_BACKOFF_MS     1000
-#define STREAM_ACCEPT_MAX_RETRIES        8
+#define STREAM_ACCEPT_BACKOFF_SLICE_MS   10
 
 struct stream_s {
     iowait_t*       waiter;
@@ -61,11 +62,6 @@ static void _stream_unref(stream_t* stream) {
     }
 
     if (stream->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference until the stale deadline fires.
-         */
         iowait_set_rd_deadline(stream->waiter, 0);
         iowait_set_wr_deadline(stream->waiter, 0);
         iowait_destroy(stream->waiter);
@@ -94,6 +90,173 @@ static void _listener_unref(listener_t* listener) {
         platform_socket_close(listener->fd);
     }
     free(listener);
+}
+
+static int _stream_resolve_addrs(
+    const char* host,
+    uint16_t    port,
+    uint64_t    deadline_ms,
+    addr_t**    addrs,
+    size_t*     count) {
+    *addrs = NULL;
+    *count = 0;
+
+    addr_t addr;
+    if (addr_pton(host, port, &addr) == 0) {
+        addr_t* result = (addr_t*)malloc(sizeof(addr_t));
+        if (!result) {
+            return -1;
+        }
+        *result = addr;
+        *addrs  = result;
+        *count  = 1;
+        return 0;
+    }
+
+    uint64_t resolve_timeout_ms = 0;
+    if (deadline_ms > 0) {
+        uint64_t now_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        if (now_ms >= deadline_ms) {
+            return -1;
+        }
+        resolve_timeout_ms = deadline_ms - now_ms;
+    }
+
+    if (addr_resolve(host, port, resolve_timeout_ms, addrs, count) != 0
+        || *count == 0) {
+        free(*addrs);
+        *addrs = NULL;
+        *count = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static int _stream_wait_dial(
+    stream_t* stream,
+    uint64_t  deadline_ms) {
+    if (deadline_ms > 0) {
+        iowait_set_wr_deadline(stream->waiter, deadline_ms);
+    }
+    iowait_result_t r = iowait_write(stream->waiter);
+    iowait_set_wr_deadline(stream->waiter, 0);
+
+    if (r != IOWAIT_READY) {
+        xylem_loge(
+            "<stream> connect wait failed fd=%d result=%d",
+            (int)stream->fd,
+            (int)r);
+        return -1;
+    }
+
+    int       err    = 0;
+    socklen_t errlen = sizeof(err);
+    if (getsockopt(
+            stream->fd,
+            SOL_SOCKET,
+            SO_ERROR,
+            (char*)&err,
+            &errlen)
+        != 0) {
+        err = platform_socket_get_lasterror();
+        xylem_loge(
+            "<stream> connect getsockopt failed fd=%d err=%d (%s)",
+            (int)stream->fd,
+            err,
+            platform_socket_tostring(err));
+        return -1;
+    }
+    if (err != 0) {
+        xylem_loge(
+            "<stream> connect failed fd=%d err=%d (%s)",
+            (int)stream->fd,
+            err,
+            platform_socket_tostring(err));
+        return -1;
+    }
+    return 0;
+}
+
+static bool _listener_wait_backoff(
+    listener_t* listener,
+    uint64_t    backoff_ms) {
+    while (backoff_ms > 0 && !atomic_load(&listener->closed)) {
+        uint64_t sleep_ms = backoff_ms > STREAM_ACCEPT_BACKOFF_SLICE_MS
+            ? STREAM_ACCEPT_BACKOFF_SLICE_MS
+            : backoff_ms;
+        runtime_sleep(sleep_ms);
+        backoff_ms -= sleep_ms;
+    }
+
+    return !atomic_load(&listener->closed);
+}
+
+static stream_t* _listener_accept(
+    listener_t* listener,
+    bool        unix_socket) {
+    _listener_ref(listener);
+
+    stream_t* stream     = NULL;
+    uint64_t  backoff_ms = STREAM_ACCEPT_INITIAL_BACKOFF_MS;
+
+    for (;;) {
+        if (atomic_load(&listener->closed)) {
+            break;
+        }
+
+        platform_sock_t fd = unix_socket
+            ? platform_socket_accept_unix(listener->fd, true)
+            : platform_socket_accept(listener->fd, true);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            int err = platform_socket_get_lasterror();
+            if (atomic_load(&listener->closed)) {
+                break;
+            }
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                if (iowait_read(listener->waiter) != IOWAIT_READY) {
+                    break;
+                }
+                continue;
+            }
+
+            if (!platform_socket_accept_retryable(err)) {
+                xylem_loge(
+                    "<stream> accept failed fd=%d err=%d (%s)",
+                    (int)listener->fd,
+                    err,
+                    platform_socket_tostring(err));
+                break;
+            }
+            if (!_listener_wait_backoff(listener, backoff_ms)) {
+                break;
+            }
+
+            if (backoff_ms < STREAM_ACCEPT_MAX_BACKOFF_MS) {
+                backoff_ms *= 2;
+                if (backoff_ms > STREAM_ACCEPT_MAX_BACKOFF_MS) {
+                    backoff_ms = STREAM_ACCEPT_MAX_BACKOFF_MS;
+                }
+            }
+            continue;
+        }
+
+        if (atomic_load(&listener->closed)) {
+            platform_socket_close(fd);
+            break;
+        }
+
+        stream = stream_from_fd(fd);
+        if (!stream) {
+            platform_socket_close(fd);
+            break;
+        }
+
+        break;
+    }
+
+    _listener_unref(listener);
+    return stream;
 }
 
 listener_t* listener_from_fd(platform_sock_t fd) {
@@ -138,6 +301,10 @@ stream_t* stream_dial(
     uint16_t    port,
     uint64_t    connect_timeout_ms,
     bool        enable_mss_clamp) {
+    if (!host || !*host) {
+        return NULL;
+    }
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
@@ -148,68 +315,109 @@ stream_t* stream_dial(
               + connect_timeout_ms;
     }
 
-    char   resolved_ip[INET6_ADDRSTRLEN];
-    addr_t resolved_addr;
-
-    if (addr_pton(host, port, &resolved_addr) != 0) {
-        addr_t* addrs = NULL;
-        size_t  count = 0;
-        uint64_t resolve_timeout_ms = 0;
-        if (connect_deadline_ms > 0) {
-            uint64_t resolve_now_ms
-                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-            if (resolve_now_ms >= connect_deadline_ms) {
-                return NULL;
-            }
-            resolve_timeout_ms = connect_deadline_ms - resolve_now_ms;
-        }
-        if (addr_resolve(host, port, resolve_timeout_ms, &addrs, &count) != 0
-            || count == 0) {
-            xylem_loge("<stream> dial dns failed host=%s", host);
-            return NULL;
-        }
-        resolved_addr = addrs[0];
-        free(addrs);
-    }
-
-    if (addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), NULL)
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    if (_stream_resolve_addrs(
+            host,
+            port,
+            connect_deadline_ms,
+            &addrs,
+            &count)
         != 0) {
-        xylem_loge("<stream> dial addr format failed host=%s", host);
+        xylem_loge("<stream> dial resolve failed host=%s", host);
         return NULL;
     }
 
-    if (connect_deadline_ms > 0
-        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-               >= connect_deadline_ms) {
-        xylem_loge("<stream> dial timeout host=%s port=%u", host, port);
+    for (size_t i = 0; i < count; i++) {
+        uint64_t attempt_deadline_ms = 0;
+        if (connect_deadline_ms > 0) {
+            uint64_t now_ms
+                = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+            if (now_ms >= connect_deadline_ms) {
+                break;
+            }
+
+            uint64_t remaining_ms = connect_deadline_ms - now_ms;
+            uint64_t attempt_ms   = remaining_ms / (count - i);
+            if (attempt_ms == 0) {
+                attempt_ms = 1;
+            }
+            attempt_deadline_ms = now_ms + attempt_ms;
+        }
+
+        char resolved_ip[INET6_ADDRSTRLEN];
+        if (addr_ntop(&addrs[i], resolved_ip, sizeof(resolved_ip), NULL)
+            != 0) {
+            continue;
+        }
+
+        bool connected = false;
+        platform_sock_t fd = platform_socket_dial(
+            resolved_ip,
+            port_str,
+            SOCK_STREAM,
+            &connected,
+            true,
+            enable_mss_clamp);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            continue;
+        }
+
+        if (attempt_deadline_ms > 0
+            && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+                   >= attempt_deadline_ms) {
+            platform_socket_close(fd);
+            continue;
+        }
+
+        stream_t* stream = stream_from_fd(fd);
+        if (!stream) {
+            platform_socket_close(fd);
+            break;
+        }
+
+        if (!connected
+            && _stream_wait_dial(stream, attempt_deadline_ms) != 0) {
+            stream_release(stream);
+            continue;
+        }
+
+        free(addrs);
+        return stream;
+    }
+
+    free(addrs);
+    return NULL;
+}
+
+stream_t* stream_dial_unix(
+    const char* path,
+    uint64_t    connect_timeout_ms) {
+    if (!path) {
         return NULL;
+    }
+
+    uint64_t connect_deadline_ms = 0;
+    if (connect_timeout_ms > 0) {
+        connect_deadline_ms
+            = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
+              + connect_timeout_ms;
     }
 
     bool connected = false;
-    platform_sock_t fd = platform_socket_dial(
-        resolved_ip,
-        port_str,
-        SOCK_STREAM,
-        &connected,
-        true);
+    platform_sock_t fd
+        = platform_socket_dial_unix(path, &connected, true);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge(
-            "<stream> dial socket failed host=%s port=%s",
-            host,
-            port_str);
+        xylem_loge("<stream> dial unix failed path=%s", path);
         return NULL;
     }
 
     if (connect_deadline_ms > 0
         && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
                >= connect_deadline_ms) {
-        xylem_loge("<stream> dial timeout host=%s port=%u", host, port);
+        xylem_loge("<stream> dial unix timeout path=%s", path);
         platform_socket_close(fd);
         return NULL;
-    }
-
-    if (enable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, true);
     }
 
     stream_t* stream = stream_from_fd(fd);
@@ -218,51 +426,10 @@ stream_t* stream_dial(
         return NULL;
     }
 
-    if (!connected) {
-        /**
-         * Connect completion surfaces as writability on the fd. Apply
-         * the dial deadline as a one-shot write deadline, then clear it
-         * so later writes start with no inherited deadline.
-         */
-        if (connect_deadline_ms > 0) {
-            iowait_set_wr_deadline(stream->waiter, connect_deadline_ms);
-        }
-        iowait_result_t r = iowait_write(stream->waiter);
-        iowait_set_wr_deadline(stream->waiter, 0);
-
-        if (r != IOWAIT_READY) {
-            if (r == IOWAIT_TIMEOUT) {
-                xylem_loge(
-                    "<stream> dial connect timeout host=%s port=%u",
-                    host,
-                    port);
-            }
-            stream_release(stream);
-            return NULL;
-        }
-
-        int       err    = 0;
-        socklen_t errlen = sizeof(err);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen)
-            != 0) {
-            err = platform_socket_get_lasterror();
-            xylem_loge(
-                "<stream> dial getsockopt failed fd=%d err=%d (%s)",
-                (int)fd,
-                err,
-                platform_socket_tostring(err));
-            stream_release(stream);
-            return NULL;
-        }
-        if (err != 0) {
-            xylem_loge(
-                "<stream> dial connect failed fd=%d err=%d (%s)",
-                (int)fd,
-                err,
-                platform_socket_tostring(err));
-            stream_release(stream);
-            return NULL;
-        }
+    if (!connected
+        && _stream_wait_dial(stream, connect_deadline_ms) != 0) {
+        stream_release(stream);
+        return NULL;
     }
 
     return stream;
@@ -296,17 +463,17 @@ static iowait_result_t _stream_wait(
     bool      write) {
     _stream_ref(stream);
 
-    iowait_result_t ret = IOWAIT_CLOSED;
-    if (!atomic_load(&stream->closed)
-        && (write || !atomic_load(&stream->rd_shutdown))) {
-        if (write) {
-            ret = iowait_write(stream->waiter);
-        } else {
-            ret = iowait_read(stream->waiter);
-        }
-        if (atomic_load(&stream->closed)) {
-            ret = IOWAIT_CLOSED;
-        }
+    if (atomic_load(&stream->closed)
+        || (!write && atomic_load(&stream->rd_shutdown))) {
+        _stream_unref(stream);
+        return IOWAIT_CLOSED;
+    }
+
+    iowait_result_t ret = write
+        ? iowait_write(stream->waiter)
+        : iowait_read(stream->waiter);
+    if (atomic_load(&stream->closed)) {
+        ret = IOWAIT_CLOSED;
     }
 
     _stream_unref(stream);
@@ -322,30 +489,30 @@ int stream_try_read(
     }
 
     _stream_ref(stream);
-    int ret = -1;
+    if (atomic_load(&stream->closed)
+        || atomic_load(&stream->rd_shutdown)
+        || iowait_read_deadline_expired(stream->waiter)) {
+        _stream_unref(stream);
+        return -1;
+    }
 
-    if (!atomic_load(&stream->closed)
-        && !atomic_load(&stream->rd_shutdown)
-        && !iowait_read_deadline_expired(stream->waiter)) {
-        ssize_t n = platform_socket_recv(stream->fd, buf, len);
-        if (n >= 0) {
-            ret = (int)n;
-            if (n > 0) {
-                if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                    runtime_yield();
-                }
-            }
+    int     ret = -1;
+    ssize_t n   = platform_socket_recv(stream->fd, buf, len);
+    if (n >= 0) {
+        ret = (int)n;
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+    } else {
+        int err = platform_socket_get_lasterror();
+        if (err == PLATFORM_SO_ERROR_EAGAIN
+            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            ret = STREAM_IO_AGAIN;
         } else {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                ret = STREAM_IO_AGAIN;
-            } else {
-                xylem_loge(
-                    "<stream> read failed fd=%d err=%s",
-                    (int)stream->fd,
-                    platform_socket_tostring(err));
-            }
+            xylem_loge(
+                "<stream> read failed fd=%d err=%s",
+                (int)stream->fd,
+                platform_socket_tostring(err));
         }
     }
 
@@ -366,17 +533,34 @@ int stream_read(stream_t* stream, void* buf, int len) {
     int ret = -1;
 
     for (;;) {
-        int n = stream_try_read(stream, buf, len);
+        if (atomic_load(&stream->closed)
+            || atomic_load(&stream->rd_shutdown)
+            || iowait_read_deadline_expired(stream->waiter)) {
+            break;
+        }
+
+        ssize_t n = platform_socket_recv(stream->fd, buf, len);
         if (n >= 0) {
-            ret = n;
+            ret = (int)n;
+            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+                runtime_yield();
+            }
             break;
         }
-        if (n != STREAM_IO_AGAIN) {
-            break;
+
+        int err = platform_socket_get_lasterror();
+        if (err == PLATFORM_SO_ERROR_EAGAIN
+            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            if (iowait_read(stream->waiter) == IOWAIT_READY) {
+                continue;
+            }
+        } else {
+            xylem_loge(
+                "<stream> read failed fd=%d err=%s",
+                (int)stream->fd,
+                platform_socket_tostring(err));
         }
-        if (stream_wait_read(stream) != IOWAIT_READY) {
-            break;
-        }
+        break;
     }
 
     _stream_unref(stream);
@@ -412,26 +596,22 @@ int stream_write(stream_t* stream, const void* data, int len) {
             }
             continue;
         }
-        if (n == 0) {
-            break;
-        }
-
-        int err = platform_socket_get_lasterror();
-        if (err == PLATFORM_SO_ERROR_EAGAIN
-            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            if (iowait_write(stream->waiter) == IOWAIT_READY) {
-                continue;
+        if (n < 0) {
+            int err = platform_socket_get_lasterror();
+            if (err == PLATFORM_SO_ERROR_EAGAIN
+                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+                if (iowait_write(stream->waiter) == IOWAIT_READY) {
+                    continue;
+                }
+            } else {
+                xylem_loge(
+                    "<stream> write failed fd=%d err=%s",
+                    (int)stream->fd,
+                    platform_socket_tostring(err));
             }
-            break;
         }
-
-        xylem_loge(
-            "<stream> write failed fd=%d err=%s",
-            (int)stream->fd,
-            platform_socket_tostring(err));
         break;
     }
-    /* A final yield may let close run before success is reported. */
     if (rem == 0
         && !atomic_load(&stream->closed)) {
         ret = 0;
@@ -453,29 +633,30 @@ int stream_try_write(
     }
 
     _stream_ref(stream);
-    int ret = -1;
+    if (atomic_load(&stream->closed)
+        || iowait_write_deadline_expired(stream->waiter)) {
+        _stream_unref(stream);
+        return -1;
+    }
 
-    if (!atomic_load(&stream->closed)
-        && !iowait_write_deadline_expired(stream->waiter)) {
-        ssize_t n = platform_socket_send(stream->fd, data, len);
-        if (n > 0) {
-            ret = (int)n;
-            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield();
-            }
-        } else if (n == 0) {
-            ret = -1;
+    int     ret = -1;
+    ssize_t n   = platform_socket_send(stream->fd, data, len);
+    if (n > 0) {
+        ret = (int)n;
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+    }
+    if (n < 0) {
+        int err = platform_socket_get_lasterror();
+        if (err == PLATFORM_SO_ERROR_EAGAIN
+            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            ret = STREAM_IO_AGAIN;
         } else {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                ret = STREAM_IO_AGAIN;
-            } else {
-                xylem_loge(
-                    "<stream> write failed fd=%d err=%s",
-                    (int)stream->fd,
-                    platform_socket_tostring(err));
-            }
+            xylem_loge(
+                "<stream> write failed fd=%d err=%s",
+                (int)stream->fd,
+                platform_socket_tostring(err));
         }
     }
 
@@ -538,15 +719,18 @@ listener_t* listener_listen(
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    platform_sock_t fd
-        = platform_socket_listen(host, port_str, SOCK_STREAM, true);
+    platform_sock_t fd = platform_socket_listen(
+        host,
+        port_str,
+        SOCK_STREAM,
+        true,
+        enable_mss_clamp);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        xylem_loge("<stream> listen failed host=%s port=%s", host, port_str);
+        xylem_loge(
+            "<stream> listen failed host=%s port=%s",
+            host ? host : "*",
+            port_str);
         return NULL;
-    }
-
-    if (enable_mss_clamp) {
-        platform_socket_enable_mss_clamp(fd, true);
     }
 
     listener_t* listener = listener_from_fd(fd);
@@ -557,61 +741,32 @@ listener_t* listener_listen(
     return listener;
 }
 
-stream_t* listener_accept(listener_t* listener) {
-    _listener_ref(listener);
-
-    stream_t* stream     = NULL;
-    uint64_t  backoff_ms = STREAM_ACCEPT_INITIAL_BACKOFF_MS;
-    int       retries    = 0;
-
-    for (;;) {
-        if (atomic_load(&listener->closed)) {
-            break;
-        }
-
-        platform_sock_t fd = platform_socket_accept(listener->fd, true);
-        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            int err = platform_socket_get_lasterror();
-            if (atomic_load(&listener->closed)) {
-                break;
-            }
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                if (iowait_read(listener->waiter) != IOWAIT_READY) {
-                    break;
-                }
-                continue;
-            }
-
-            if (++retries > STREAM_ACCEPT_MAX_RETRIES) {
-                xylem_loge(
-                    "<stream> accept failed fd=%d err=%d (%s)",
-                    (int)listener->fd,
-                    err,
-                    platform_socket_tostring(err));
-                break;
-            }
-            runtime_sleep(backoff_ms);
-            if (backoff_ms < STREAM_ACCEPT_MAX_BACKOFF_MS) {
-                backoff_ms *= 2;
-                if (backoff_ms > STREAM_ACCEPT_MAX_BACKOFF_MS) {
-                    backoff_ms = STREAM_ACCEPT_MAX_BACKOFF_MS;
-                }
-            }
-            continue;
-        }
-
-        stream = stream_from_fd(fd);
-        if (!stream) {
-            platform_socket_close(fd);
-            break;
-        }
-
-        break;
+listener_t* listener_listen_unix(const char* path) {
+    if (!path) {
+        return NULL;
     }
 
-    _listener_unref(listener);
-    return stream;
+    platform_sock_t fd = platform_socket_listen_unix(path, true);
+    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        xylem_loge("<stream> listen unix failed path=%s", path);
+        return NULL;
+    }
+
+    listener_t* listener = listener_from_fd(fd);
+    if (!listener) {
+        platform_socket_close(fd);
+        remove(path);
+        return NULL;
+    }
+    return listener;
+}
+
+stream_t* listener_accept(listener_t* listener) {
+    return _listener_accept(listener, false);
+}
+
+stream_t* listener_accept_unix(listener_t* listener) {
+    return _listener_accept(listener, true);
 }
 
 void listener_interrupt(listener_t* listener) {

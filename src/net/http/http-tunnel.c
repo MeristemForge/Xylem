@@ -265,7 +265,7 @@ platform_sock_t http_tunnel_connect(const char* proxy_host,
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        proxy_host, port_str, SOCK_STREAM, &connected, true);
+        proxy_host, port_str, SOCK_STREAM, &connected, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
