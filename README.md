@@ -6,15 +6,17 @@
 [![C11](https://img.shields.io/badge/Standard-C11-green.svg)](https://en.wikipedia.org/wiki/C11_(C_standard_revision))
 
 # Overview
-Xylem is a pure C library, **supplementing** — not replacing — the C11 standard.
+Xylem is a general-purpose C library providing concurrency, networking,
+and foundational utilities.
 
 
 # Features
 
-- **Platforms**    — Windows, Linux, macOS, Android, and iOS
-- **Coroutines**   — simple sequential code that scales to thousands of connections
-- **Dependencies** — C11 standard library only; OpenSSL optional for TLS
-- **Protocols**    — TCP, UDP, UDS, TLS, DTLS, Reliable UDP, HTTP/1.1, WebSocket, Serial
+- **Coroutines** — First-class citizens by design
+- **Platforms** — Windows, Linux, macOS, Android, and iOS
+- **Simplicity** — Concurrent code reads like ordinary blocking code
+- **Networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, HTTP/1.1, WebSocket
+- **Dependencies** — No required external dependencies; OpenSSL optional for TLS
 
 
 # Build
