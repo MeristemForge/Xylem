@@ -90,13 +90,11 @@ platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
     return _socket_accept(sock, nonblocking);
 }
 
-bool platform_socket_accept_retryable(int error) {
+bool platform_socket_accept_should_retry(int error) {
     return error == EINTR || error == ECONNABORTED || error == ECONNRESET
            || error == EMFILE || error == ENFILE || error == ENOBUFS
            || error == ENOMEM || error == ENETDOWN || error == ENETUNREACH
-           || error == EHOSTUNREACH || error == EPROTO
-           || error == ENOPROTOOPT || error == EHOSTDOWN || error == ENONET
-           || error == EOPNOTSUPP;
+           || error == EHOSTUNREACH || error == EHOSTDOWN;
 }
 
 void platform_socket_enable_nodelay(platform_sock_t sock, bool on) {

@@ -266,8 +266,8 @@ static void test_resolve_returns_unique_addresses(void) {
 }
 
 static void test_accept_error_classification(void) {
-    ASSERT(platform_socket_accept_retryable(PLATFORM_SO_ERROR_ECONNRESET));
-    ASSERT(!platform_socket_accept_retryable(-1));
+    ASSERT(platform_socket_accept_should_retry(PLATFORM_SO_ERROR_ECONNRESET));
+    ASSERT(!platform_socket_accept_should_retry(-1));
 }
 
 static void test_dial_falls_back_to_next_resolved_address(void) {

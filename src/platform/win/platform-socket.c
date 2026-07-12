@@ -342,7 +342,7 @@ platform_sock_t platform_socket_accept_unix(platform_sock_t sock,
     return _socket_accept(sock, nonblocking);
 }
 
-bool platform_socket_accept_retryable(int error) {
+bool platform_socket_accept_should_retry(int error) {
     return error == WSAEINTR || error == WSAECONNABORTED
            || error == WSAECONNRESET || error == WSAEMFILE
            || error == WSAENOBUFS || error == WSAENETDOWN

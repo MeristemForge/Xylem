@@ -220,7 +220,7 @@ static stream_t* _listener_accept(
                 continue;
             }
 
-            if (!platform_socket_accept_retryable(err)) {
+            if (!platform_socket_accept_should_retry(err)) {
                 xylem_loge(
                     "<stream> accept failed fd=%d err=%d (%s)",
                     (int)listener->fd,

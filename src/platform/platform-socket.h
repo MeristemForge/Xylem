@@ -200,9 +200,9 @@ extern platform_sock_t platform_socket_accept(platform_sock_t sock, bool nonbloc
  *
  * @param error  Platform-specific socket error code.
  *
- * @return true for transient network or resource errors, false otherwise.
+ * @return true if a later accept attempt may succeed, false otherwise.
  */
-extern bool platform_socket_accept_retryable(int error);
+extern bool platform_socket_accept_should_retry(int error);
 
 /**
  * @brief Create a listening (server) socket.
