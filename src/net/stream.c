@@ -31,6 +31,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define STREAM_ACCEPT_INITIAL_BACKOFF_MS 5
+#define STREAM_ACCEPT_MAX_BACKOFF_MS     1000
+#define STREAM_ACCEPT_MAX_RETRIES        8
+
 struct stream_s {
     iowait_t*       waiter;
     platform_sock_t fd;
@@ -105,7 +109,8 @@ listener_t* listener_from_fd(platform_sock_t fd) {
         return NULL;
     }
 
-    _listener_ref(listener);
+    atomic_init(&listener->refcnt, 1);
+    atomic_init(&listener->closed, false);
     return listener;
 }
 
@@ -122,7 +127,9 @@ stream_t* stream_from_fd(platform_sock_t fd) {
         return NULL;
     }
 
-    _stream_ref(stream);
+    atomic_init(&stream->refcnt, 1);
+    atomic_init(&stream->rd_shutdown, false);
+    atomic_init(&stream->closed, false);
     return stream;
 }
 
@@ -559,8 +566,8 @@ listener_t* listener_listen(
 stream_t* listener_accept(listener_t* listener) {
     _listener_ref(listener);
 
-    stream_t* result     = NULL;
-    uint64_t  backoff_ms = 5;
+    stream_t* stream     = NULL;
+    uint64_t  backoff_ms = STREAM_ACCEPT_INITIAL_BACKOFF_MS;
     int       retries    = 0;
 
     for (;;) {
@@ -571,6 +578,9 @@ stream_t* listener_accept(listener_t* listener) {
         platform_sock_t fd = platform_socket_accept(listener->fd, true);
         if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
             int err = platform_socket_get_lasterror();
+            if (atomic_load(&listener->closed)) {
+                break;
+            }
             if (err == PLATFORM_SO_ERROR_EAGAIN
                 || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
                 if (iowait_read(listener->waiter) != IOWAIT_READY) {
@@ -579,36 +589,35 @@ stream_t* listener_accept(listener_t* listener) {
                 continue;
             }
 
-            xylem_loge(
-                "<stream> accept failed fd=%d err=%d (%s)",
-                (int)listener->fd,
-                err,
-                platform_socket_tostring(err));
-            if (++retries > 8) {
+            if (++retries > STREAM_ACCEPT_MAX_RETRIES) {
+                xylem_loge(
+                    "<stream> accept failed fd=%d err=%d (%s)",
+                    (int)listener->fd,
+                    err,
+                    platform_socket_tostring(err));
                 break;
             }
             runtime_sleep(backoff_ms);
-            if (backoff_ms < 1000) {
+            if (backoff_ms < STREAM_ACCEPT_MAX_BACKOFF_MS) {
                 backoff_ms *= 2;
+                if (backoff_ms > STREAM_ACCEPT_MAX_BACKOFF_MS) {
+                    backoff_ms = STREAM_ACCEPT_MAX_BACKOFF_MS;
+                }
             }
             continue;
         }
 
-        backoff_ms = 5;
-        retries    = 0;
-
-        stream_t* stream = stream_from_fd(fd);
+        stream = stream_from_fd(fd);
         if (!stream) {
             platform_socket_close(fd);
             break;
         }
 
-        result = stream;
         break;
     }
 
     _listener_unref(listener);
-    return result;
+    return stream;
 }
 
 void listener_interrupt(listener_t* listener) {

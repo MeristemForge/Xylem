@@ -61,7 +61,8 @@ static xylem_tcp_conn_t* _tcp_conn_create(stream_t* stream) {
     }
 
     tcp->stream = stream;
-    _tcp_conn_ref(tcp);
+    atomic_init(&tcp->refcnt, 1);
+    atomic_init(&tcp->closed, false);
     return tcp;
 }
 
@@ -87,7 +88,8 @@ static xylem_tcp_listener_t* _tcp_listener_create(listener_t* listener) {
     }
 
     tcp_listener->listener = listener;
-    _tcp_listener_ref(tcp_listener);
+    atomic_init(&tcp_listener->refcnt, 1);
+    atomic_init(&tcp_listener->closed, false);
     return tcp_listener;
 }
 
@@ -112,16 +114,16 @@ xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* listener) {
 
     _tcp_listener_ref(listener);
 
-    xylem_tcp_conn_t* result = NULL;
+    xylem_tcp_conn_t* conn = NULL;
     if (!atomic_load(&listener->closed)) {
         stream_t* stream = listener_accept(listener->listener);
         if (stream) {
-            result = _tcp_conn_create(stream);
+            conn = _tcp_conn_create(stream);
         }
     }
 
     _tcp_listener_unref(listener);
-    return result;
+    return conn;
 }
 
 void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
