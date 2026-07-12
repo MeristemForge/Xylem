@@ -230,22 +230,18 @@ stream_t* stream_dial(
         iowait_result_t r = iowait_write(stream->waiter);
         iowait_set_wr_deadline(stream->waiter, 0);
 
-        if (r == IOWAIT_TIMEOUT) {
-            xylem_loge(
-                "<stream> dial connect timeout host=%s port=%u",
-                host,
-                port);
-            stream_interrupt(stream);
-            stream_release(stream);
-            return NULL;
-        }
         if (r != IOWAIT_READY) {
-            stream_interrupt(stream);
+            if (r == IOWAIT_TIMEOUT) {
+                xylem_loge(
+                    "<stream> dial connect timeout host=%s port=%u",
+                    host,
+                    port);
+            }
             stream_release(stream);
             return NULL;
         }
 
-        int32_t   err    = 0;
+        int       err    = 0;
         socklen_t errlen = sizeof(err);
         if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &errlen)
             != 0) {
@@ -255,7 +251,6 @@ stream_t* stream_dial(
                 (int)fd,
                 err,
                 platform_socket_tostring(err));
-            stream_interrupt(stream);
             stream_release(stream);
             return NULL;
         }
@@ -265,7 +260,6 @@ stream_t* stream_dial(
                 (int)fd,
                 err,
                 platform_socket_tostring(err));
-            stream_interrupt(stream);
             stream_release(stream);
             return NULL;
         }
