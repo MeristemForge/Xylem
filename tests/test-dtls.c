@@ -450,22 +450,28 @@ static void _conc_client_seq(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_channel_recv(ctx->ready);
 
+    xylem_dtls_conn_t* conns[CONC_COUNT] = {0};
     for (int i = 0; i < CONC_COUNT; i++) {
-        xylem_dtls_conn_t* conn =
-            xylem_dtls_dial(DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
-        ASSERT(conn != NULL);
+        conns[i] = xylem_dtls_dial(
+            DTLS_HOST,
+            ctx->port,
+            ctx->cli_ctx,
+            NULL);
+        ASSERT(conns[i] != NULL);
 
         char msg[64];
         int  len = snprintf(msg, sizeof(msg), "client-%d", i);
 
-        ASSERT(xylem_dtls_write(conn, msg, len) == 0);
+        ASSERT(xylem_dtls_write(conns[i], msg, len) == 0);
 
         char buf[64];
-        int  n = xylem_dtls_read(conn, buf, sizeof(buf));
+        int  n = xylem_dtls_read(conns[i], buf, sizeof(buf));
         ASSERT(n == (int64_t)len);
         ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+    }
 
-        xylem_dtls_close(conn);
+    for (int i = 0; i < CONC_COUNT; i++) {
+        xylem_dtls_close(conns[i]);
     }
 
     xylem_waitgroup_done(ctx->wg);
