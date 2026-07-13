@@ -42,7 +42,7 @@ typedef struct datagram_s datagram_t;
  * @param connected  Whether fd has a connected peer.
  * @param peer_addr  Connected peer address, required when connected is true.
  *
- * @return Datagram handle, or NULL on allocation failure.
+ * @return Datagram handle, or NULL on invalid arguments or allocation failure.
  */
 extern datagram_t* datagram_from_fd(
     platform_sock_t fd,

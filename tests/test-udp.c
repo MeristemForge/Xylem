@@ -23,6 +23,8 @@
 #include "assert.h"
 #include "utils.h"
 
+#include "net/datagram.h"
+
 #include <string.h>
 
 #define UDP_HOST          "127.0.0.1"
@@ -399,6 +401,14 @@ static void test_dial_rejects_invalid_host(void) {
     _timeout_main(&ctx);
 }
 
+static void test_connected_from_fd_requires_peer_addr(void) {
+    platform_sock_t fd =
+        platform_socket_listen(UDP_HOST, "0", SOCK_DGRAM, true, false);
+    ASSERT(fd != PLATFORM_SO_ERROR_INVALID_SOCKET);
+    ASSERT(datagram_from_fd(fd, true, NULL) == NULL);
+    platform_socket_close(fd);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
@@ -414,6 +424,7 @@ static void _test_run_all(void* arg) {
     test_unconnected_send_requires_destination();
     test_connected_send_rejects_destination();
     test_dial_rejects_invalid_host();
+    test_connected_from_fd_requires_peer_addr();
     _utils_watchdog_stop();
     xylem_shutdown();
 }

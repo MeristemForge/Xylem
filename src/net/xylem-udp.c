@@ -165,20 +165,20 @@ int xylem_udp_send(
         return -1;
     }
 
-    const addr_t* to = NULL;
-    addr_t        dest;
+    addr_t dest;
     if (!udp->connected && addr_pton(host, port, &dest) != 0) {
         xylem_loge("<udp> send needs numeric ip host=%s", host);
         _udp_chan_unref(udp);
         return -1;
     }
-    if (!udp->connected) {
-        to = &dest;
-    }
 
     int ret = -1;
     if (!atomic_load(&udp->closed)) {
-        ret = datagram_send(udp->datagram, data, len, to);
+        ret = datagram_send(
+            udp->datagram,
+            data,
+            len,
+            udp->connected ? NULL : &dest);
     }
 
     _udp_chan_unref(udp);

@@ -35,7 +35,6 @@ struct datagram_s {
     iowait_t*       waiter;
     platform_sock_t fd;
     addr_t          peer_addr;
-    bool            peer_addr_valid;
     bool            connected;
     _Atomic int32_t refcnt;
     _Atomic bool    closed;
@@ -93,23 +92,6 @@ static iowait_result_t _datagram_wait(
     return ret;
 }
 
-static int _datagram_load_peer_addr(datagram_t* datagram) {
-    if (datagram->peer_addr_valid) {
-        return 0;
-    }
-
-    socklen_t peer_len = sizeof(datagram->peer_addr.storage);
-    if (getpeername(
-            datagram->fd,
-            (struct sockaddr*)&datagram->peer_addr.storage,
-            &peer_len)
-        != 0) {
-        return -1;
-    }
-    datagram->peer_addr_valid = true;
-    return 0;
-}
-
 static int _datagram_recv_once(
     datagram_t* datagram,
     void*       buf,
@@ -132,9 +114,7 @@ static int _datagram_recv_once(
     if (n >= 0) {
         if (from) {
             if (datagram->connected) {
-                if (_datagram_load_peer_addr(datagram) == 0) {
-                    *from = datagram->peer_addr;
-                }
+                *from = datagram->peer_addr;
             } else {
                 memcpy(&from->storage, &sender, sizeof(sender));
             }
@@ -199,6 +179,10 @@ datagram_t* datagram_from_fd(
     platform_sock_t fd,
     bool            connected,
     const addr_t*   peer_addr) {
+    if (connected && !peer_addr) {
+        return NULL;
+    }
+
     datagram_t* datagram = (datagram_t*)calloc(1, sizeof(datagram_t));
     if (!datagram) {
         return NULL;
@@ -206,9 +190,8 @@ datagram_t* datagram_from_fd(
 
     datagram->fd        = fd;
     datagram->connected = connected;
-    if (connected && peer_addr) {
-        datagram->peer_addr       = *peer_addr;
-        datagram->peer_addr_valid = true;
+    if (connected) {
+        datagram->peer_addr = *peer_addr;
     }
 
     datagram->waiter = iowait_create(fd);
@@ -453,7 +436,7 @@ int datagram_remote_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    if (!datagram->connected || _datagram_load_peer_addr(datagram) != 0) {
+    if (!datagram->connected) {
         return -1;
     }
     return addr_ntop(&datagram->peer_addr, host, host_len, port);
