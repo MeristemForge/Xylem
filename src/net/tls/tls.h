@@ -20,14 +20,13 @@
  */
 
 /**
- * Internal TLS engine.
+ * Internal TLS and DTLS engines.
  *
- * Defines the concrete connection/context/listener structs and the
- * engine API (tls_*), built on the backend TLS interface and the
- * coroutine runtime. The public xylem_tls_* surface is a thin shim over
- * these; internal consumers that need the engine directly -- e.g. the
- * HTTPS transport running the client handshake over a proxy-tunnel fd
- * via tls_client_handshake_fd -- include this header instead.
+ * Defines the concrete TLS-family context and the separate stream TLS
+ * and datagram DTLS connection/listener types. The public xylem_tls_*
+ * and xylem_dtls_* surfaces are thin shims over these engines. Internal
+ * consumers that need the TLS engine directly -- e.g. HTTPS over an
+ * HTTP CONNECT tunnel -- include this header instead.
  *
  * Not part of the public API. Do not include outside the TLS/HTTP/WS
  * modules.
@@ -35,11 +34,17 @@
 
 _Pragma("once")
 
+#include "xylem/net/xylem-dtls.h"
 #include "xylem/net/xylem-tls.h"
+#include "xylem/sync/xylem-channel.h"
 #include "xylem/sync/xylem-mutex.h"
 
+#include "container/rbtree.h"
+#include "net/addr.h"
+#include "net/datagram.h"
 #include "net/stream.h"
 #include "net/tls/tls-backend.h"
+#include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -47,15 +52,17 @@ _Pragma("once")
 #include <stdint.h>
 
 /**
- * The public header declares opaque xylem_tls_* handles; the engine
- * works on these concrete tls_* structs, which the public shim wraps by
- * first-member equivalence so the two layers never share a struct tag.
- * xylem_tls_opts_t has no internal alias: it is a transparent value type
- * the engine uses as-is.
+ * The public headers declare opaque TLS/DTLS handles. Each public shim
+ * wraps the corresponding concrete internal type as its first member.
+ * The option structs are transparent value types used directly by the
+ * engines.
  */
-typedef struct tls_ctx_s      tls_ctx_t;
-typedef struct tls_conn_s     tls_conn_t;
-typedef struct tls_listener_s tls_listener_t;
+typedef struct tls_ctx_s       tls_ctx_t;
+typedef struct tls_conn_s      tls_conn_t;
+typedef struct tls_listener_s  tls_listener_t;
+typedef struct dtls_conn_s     dtls_conn_t;
+typedef struct dtls_listener_s dtls_listener_t;
+typedef struct _dtls_dgram_s   _dtls_dgram_t;
 
 struct tls_ctx_s {
     tls_backend_ctx_t* be;
@@ -86,6 +93,46 @@ struct tls_listener_s {
     xylem_tls_opts_t opts;
     _Atomic int32_t  refcnt;
     _Atomic bool     closed;
+};
+
+struct dtls_conn_s {
+    tls_backend_conn_t*  be;
+    addr_t               peer_addr;
+    char                 alpn[32];
+    _Atomic bool         closed;
+    _Atomic bool         closing;
+    _Atomic int32_t      refcnt;
+    bool                 handshake_done;
+    _dtls_dgram_t*       pending_dgram;
+    datagram_t*          datagram;
+    xylem_mutex_t*       ssl_mu;
+    xylem_mutex_t*       rd_mu;
+    xylem_mutex_t*       wr_mu;
+    xylem_channel_t*     inbox;
+    _Atomic int32_t      inbox_len;
+    scheduler_timer_t*   handshake_timer;
+    dtls_listener_t*     listener;
+    rbtree_node_t        server_node;
+    bool                 in_sessions;
+    uint64_t             rd_deadline_ms;
+    uint64_t             wr_deadline_ms;
+};
+
+struct dtls_listener_s {
+    datagram_t*        datagram;
+    tls_ctx_t*         ctx;
+    xylem_dtls_opts_t  opts;
+    rbtree_t           sessions;
+    xylem_mutex_t*     sessions_mu;
+    xylem_mutex_t*     write_mu;
+    xylem_mutex_t*     dgram_pool_mu;
+    scheduler_t*       sched;
+    _dtls_dgram_t*     dgram_pool;
+    size_t             dgram_pool_len;
+    size_t             dgram_bufsz;
+    xylem_channel_t*   accept_ch;
+    _Atomic bool       closed;
+    _Atomic int32_t    refcnt;
 };
 
 /**
@@ -424,3 +471,164 @@ extern tls_conn_t* tls_client_handshake_fd(
     platform_sock_t   fd,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts);
+
+/**
+ * @brief Create a DTLS engine context.
+ *
+ * @return Context handle, or NULL on failure.
+ */
+extern tls_ctx_t* dtls_ctx_create(void);
+
+/**
+ * @brief Dial and handshake a DTLS connection.
+ *
+ * @param host  Remote host.
+ * @param port  Remote port.
+ * @param ctx   Shared TLS-family context.
+ * @param opts  DTLS options, or NULL for defaults.
+ *
+ * @return Connection handle, or NULL on failure.
+ */
+extern dtls_conn_t* dtls_dial(
+    const char*        host,
+    uint16_t           port,
+    tls_ctx_t*         ctx,
+    xylem_dtls_opts_t* opts);
+
+/**
+ * @brief Create a DTLS listener.
+ *
+ * @param host  Local host.
+ * @param port  Local port.
+ * @param ctx   Shared TLS-family context.
+ * @param opts  DTLS options, or NULL for defaults.
+ *
+ * @return Listener handle, or NULL on failure.
+ */
+extern dtls_listener_t* dtls_listen(
+    const char*        host,
+    uint16_t           port,
+    tls_ctx_t*         ctx,
+    xylem_dtls_opts_t* opts);
+
+/**
+ * @brief Accept a handshaked DTLS connection.
+ *
+ * @param ln  Listener handle.
+ *
+ * @return Connection handle, or NULL when the listener is closed.
+ */
+extern dtls_conn_t* dtls_accept(dtls_listener_t* ln);
+
+/**
+ * @brief Read one DTLS application datagram.
+ *
+ * @param dtls  Connection handle.
+ * @param buf   Destination buffer.
+ * @param len   Destination capacity.
+ *
+ * @return Bytes read, 0 on peer close, or -1 on error.
+ */
+extern int dtls_read(dtls_conn_t* dtls, void* buf, int len);
+
+/**
+ * @brief Write one DTLS application datagram.
+ *
+ * @param dtls  Connection handle.
+ * @param data  Datagram payload.
+ * @param len   Payload length.
+ *
+ * @return 0 on success, or -1 on error.
+ */
+extern int dtls_write(dtls_conn_t* dtls, const void* data, int len);
+
+/**
+ * @brief Close a DTLS connection.
+ *
+ * @param dtls  Connection handle.
+ */
+extern void dtls_close(dtls_conn_t* dtls);
+
+/**
+ * @brief Close a DTLS listener.
+ *
+ * @param ln  Listener handle.
+ */
+extern void dtls_close_listener(dtls_listener_t* ln);
+
+/**
+ * @brief Set the absolute read deadline.
+ *
+ * @param dtls         Connection handle.
+ * @param deadline_ms  Absolute deadline in milliseconds, or 0 to clear.
+ */
+extern void dtls_set_read_deadline(
+    dtls_conn_t* dtls,
+    uint64_t     deadline_ms);
+
+/**
+ * @brief Set the absolute write deadline.
+ *
+ * @param dtls         Connection handle.
+ * @param deadline_ms  Absolute deadline in milliseconds, or 0 to clear.
+ */
+extern void dtls_set_write_deadline(
+    dtls_conn_t* dtls,
+    uint64_t     deadline_ms);
+
+/**
+ * @brief Get the negotiated DTLS ALPN protocol.
+ *
+ * @param dtls  Connection handle.
+ *
+ * @return Protocol string, or NULL if none negotiated.
+ */
+extern const char* dtls_get_alpn(dtls_conn_t* dtls);
+
+/**
+ * @brief Get the DTLS peer address.
+ *
+ * @param dtls      Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives the peer port.
+ *
+ * @return 0 on success, or -1 on error.
+ */
+extern int dtls_remote_addr(
+    dtls_conn_t* dtls,
+    char*        host,
+    size_t       host_len,
+    uint16_t*    port);
+
+/**
+ * @brief Get the DTLS local address.
+ *
+ * @param dtls      Connection handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, or -1 on error.
+ */
+extern int dtls_local_addr(
+    dtls_conn_t* dtls,
+    char*        host,
+    size_t       host_len,
+    uint16_t*    port);
+
+/**
+ * @brief Get the DTLS listener address.
+ *
+ * @param ln        Listener handle.
+ * @param host      Buffer to receive the address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives the local port.
+ *
+ * @return 0 on success, or -1 on error.
+ */
+extern int dtls_listener_addr(
+    dtls_listener_t* ln,
+    char*            host,
+    size_t           host_len,
+    uint16_t*        port);
