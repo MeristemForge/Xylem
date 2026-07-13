@@ -111,9 +111,9 @@ run_client() {
 # current protocol $1.
 proto_config() {
     case "$1" in
-        tcp) PROTO_PORT_BASE=9000; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=false ;;
-        udp) PROTO_PORT_BASE=9001; PROTO_HAS_MT=false; PROTO_HAS_CONNRATE=false; PROTO_TLS=false ;;
-        tls) PROTO_PORT_BASE=9443; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=true  ;;
+        tcp) PROTO_PORT_BASE=9000; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=false; PROTO_CONNS="1000,10000" ;;
+        udp) PROTO_PORT_BASE=9001; PROTO_HAS_MT=false; PROTO_HAS_CONNRATE=false; PROTO_TLS=false; PROTO_CONNS="1" ;;
+        tls) PROTO_PORT_BASE=9443; PROTO_HAS_MT=true;  PROTO_HAS_CONNRATE=true;  PROTO_TLS=true;  PROTO_CONNS="1000,10000" ;;
         *)   err "unknown protocol: $1 (must be tcp|udp|tls)"; exit 1 ;;
     esac
 }
@@ -699,6 +699,9 @@ bench_proto() {
     proto_config "$CUR_PROTO"
     PORT_BASE="$PROTO_PORT_BASE"
 
+    # Per-protocol connection counts; UDP is connectionless (1 socket).
+    IFS=',' read -ra CONNS <<< "$PROTO_CONNS"
+
     local nproc_val; nproc_val="$(ncpu)"
 
     kill_servers
@@ -778,7 +781,7 @@ cmd_bench() {
 NET_BENCH_PROTOS="tcp,udp,tls"
 NET_BENCH_SERVERS="xylem,go,rust"
 NET_BENCH_CONNS="1000,10000"
-NET_BENCH_PAYLOADS="64,4096,65536"
+NET_BENCH_PAYLOADS="64,1400"
 NET_BENCH_DURATION=10
 NET_BENCH_MODE="both"
 NET_BENCH_REPEAT=1

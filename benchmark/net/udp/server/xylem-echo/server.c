@@ -28,7 +28,7 @@
  * scheduler worker (ST); the public UDP API exposes no SO_REUSEPORT, so
  * there is no MT variant.
  *
- * Usage: udp-xylem-echo [port]
+ * Self-contained: all parameters are compile-time macros, no CLI args.
  */
 
 #include "xylem.h"
@@ -37,26 +37,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define DEFAULT_PORT  9001
+#define PORT          9001
 #define READ_BUF_SIZE 65536
 #define HOST_BUF_SIZE 46
 
-/* Parse a base-10 integer in [min, max]; returns fallback on any error. */
-static long _parse_int(const char* s, long min, long max, long fallback) {
-    char* end = NULL;
-    long  v   = strtol(s, &end, 10);
-    if (end == s || *end != '\0' || v < min || v > max) {
-        return fallback;
-    }
-    return v;
-}
+static void _echo_server(void* arg) {
+    (void)arg;
 
-static void _server(void* arg) {
-    uint16_t port = *(uint16_t*)arg;
-
-    xylem_udp_chan_t* udp = xylem_udp_listen("0.0.0.0", port);
+    xylem_udp_chan_t* udp = xylem_udp_listen("0.0.0.0", PORT);
     if (!udp) {
-        fprintf(stderr, "udp echo: bind failed port=%" PRIu16 "\n", port);
+        fprintf(
+            stderr,
+            "udp echo: bind failed port=%" PRIu16 "\n",
+            (uint16_t)PORT);
         xylem_shutdown();
         return;
     }
@@ -64,7 +57,7 @@ static void _server(void* arg) {
     fprintf(
         stderr,
         "xylem udp echo server listening on 0.0.0.0:%" PRIu16 "\n",
-        port);
+        (uint16_t)PORT);
 
     char* buf = (char*)malloc(READ_BUF_SIZE);
     if (!buf) {
@@ -93,13 +86,8 @@ static void _server(void* arg) {
     xylem_udp_close(udp);
 }
 
-int main(int argc, char** argv) {
-    uint16_t port = DEFAULT_PORT;
-    if (argc > 1) {
-        port = (uint16_t)_parse_int(argv[1], 1, 65535, DEFAULT_PORT);
-    }
-
+int main(void) {
     xylem_opts_t rt_opts = {.workers = 1};
-    xylem_run(_server, &port, &rt_opts);
+    xylem_run(_echo_server, NULL, &rt_opts);
     return 0;
 }

@@ -48,15 +48,15 @@ REM ---- fixed benchmark matrix ------------------------------------------------
 REM Keep the benchmark matrix in one place. The driver intentionally does not
 REM accept CLI flags for these values; edit these constants when changing the
 REM standard suite.
-set "NET_BENCH_PROTO=tcp,udp,tls"
+set "NET_BENCH_PROTO=udp"
 set "NET_BENCH_SERVERS=xylem,go,rust"
-set "NET_BENCH_CONNS=1000,10000"
-set "NET_BENCH_PAYLOADS=64,4096,65536"
+set "NET_BENCH_CONNS=1"
+set "NET_BENCH_PAYLOADS=64,1400"
 set "NET_BENCH_DURATION=10"
-set "NET_BENCH_MODE=both"
+set "NET_BENCH_MODE=st"
 set "NET_BENCH_REPEAT=1"
 set "NET_BENCH_WARMUP_RUNS=1"
-set "NET_BENCH_RUN_CONNRATE=true"
+set "NET_BENCH_RUN_CONNRATE=false"
 
 set "PROTO=%NET_BENCH_PROTO%"
 set "SERVERS=%NET_BENCH_SERVERS%"
@@ -141,7 +141,7 @@ echo [err] %~1 1>&2
 goto :eof
 
 REM ============================================================================
-REM per-protocol config: sets PORT_BASE / HAS_MT / HAS_CONNRATE / IS_TLS
+REM per-protocol config: sets PORT_BASE / HAS_MT / HAS_CONNRATE / IS_TLS / PROTO_CONNS
 REM ============================================================================
 :proto_config
 set "_p=%~1"
@@ -150,6 +150,7 @@ if /I "%_p%"=="tcp" (
     set "HAS_MT=true"
     set "HAS_CONNRATE=true"
     set "IS_TLS=false"
+    set "PROTO_CONNS=1000,10000"
     exit /b 0
 )
 if /I "%_p%"=="udp" (
@@ -157,6 +158,7 @@ if /I "%_p%"=="udp" (
     set "HAS_MT=false"
     set "HAS_CONNRATE=false"
     set "IS_TLS=false"
+    set "PROTO_CONNS=1"
     exit /b 0
 )
 if /I "%_p%"=="tls" (
@@ -164,6 +166,7 @@ if /I "%_p%"=="tls" (
     set "HAS_MT=true"
     set "HAS_CONNRATE=true"
     set "IS_TLS=true"
+    set "PROTO_CONNS=1000,10000"
     exit /b 0
 )
 call :err "unknown protocol: %_p% (must be tcp|udp|tls)"
@@ -439,17 +442,17 @@ if "%HAS_MT%"=="false" set "_DO_MT=false"
 
 call :info "=== protocol: %CUR_PROTO%  (port base %PORT_BASE%) ==="
 call :info "servers: %SERVERS%"
-call :info "conns: %CONNS%  payload: %PAYLOADS%  duration: %DURATION%s  mode: %MODE%"
+call :info "conns: %PROTO_CONNS%  payload: %PAYLOADS%  duration: %DURATION%s  mode: %MODE%"
 echo.
 
 if "%_DO_ST%"=="true" (
     for %%Y in (%PAYLOADS:,= %) do (
-        for %%C in (%CONNS:,= %) do (
+        for %%C in (%PROTO_CONNS:,= %) do (
             call :bench_throughput ST -echo "" %%C %%Y
         )
     )
     if "%RUN_CONNRATE%"=="true" if "%HAS_CONNRATE%"=="true" (
-        for %%C in (%CONNS:,= %) do (
+        for %%C in (%PROTO_CONNS:,= %) do (
             call :bench_connrate ST -echo "" %%C
         )
     )
@@ -457,12 +460,12 @@ if "%_DO_ST%"=="true" (
 
 if "%_DO_MT%"=="true" (
     for %%Y in (%PAYLOADS:,= %) do (
-        for %%C in (%CONNS:,= %) do (
+        for %%C in (%PROTO_CONNS:,= %) do (
             call :bench_throughput MT -echo-mt %SERVER_NCPU% %%C %%Y
         )
     )
     if "%RUN_CONNRATE%"=="true" if "%HAS_CONNRATE%"=="true" (
-        for %%C in (%CONNS:,= %) do (
+        for %%C in (%PROTO_CONNS:,= %) do (
             call :bench_connrate MT -echo-mt %SERVER_NCPU% %%C
         )
     )
