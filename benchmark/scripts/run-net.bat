@@ -48,15 +48,15 @@ REM ---- fixed benchmark matrix ------------------------------------------------
 REM Keep the benchmark matrix in one place. The driver intentionally does not
 REM accept CLI flags for these values; edit these constants when changing the
 REM standard suite.
-set "NET_BENCH_PROTO=udp"
+set "NET_BENCH_PROTO=tcp,udp,tls"
 set "NET_BENCH_SERVERS=xylem,go,rust"
-set "NET_BENCH_CONNS=1"
-set "NET_BENCH_PAYLOADS=64,1400"
+set "NET_BENCH_CONNS=1000,10000"
+set "NET_BENCH_PAYLOADS=64,4096,65536"
 set "NET_BENCH_DURATION=10"
-set "NET_BENCH_MODE=st"
+set "NET_BENCH_MODE=both"
 set "NET_BENCH_REPEAT=1"
 set "NET_BENCH_WARMUP_RUNS=1"
-set "NET_BENCH_RUN_CONNRATE=false"
+set "NET_BENCH_RUN_CONNRATE=true"
 
 set "PROTO=%NET_BENCH_PROTO%"
 set "SERVERS=%NET_BENCH_SERVERS%"
@@ -151,6 +151,7 @@ if /I "%_p%"=="tcp" (
     set "HAS_CONNRATE=true"
     set "IS_TLS=false"
     set "PROTO_CONNS=1000,10000"
+    set "PROTO_PAYLOADS=64,4096,65536"
     exit /b 0
 )
 if /I "%_p%"=="udp" (
@@ -159,6 +160,7 @@ if /I "%_p%"=="udp" (
     set "HAS_CONNRATE=false"
     set "IS_TLS=false"
     set "PROTO_CONNS=1"
+    set "PROTO_PAYLOADS=64,1400"
     exit /b 0
 )
 if /I "%_p%"=="tls" (
@@ -167,6 +169,7 @@ if /I "%_p%"=="tls" (
     set "HAS_CONNRATE=true"
     set "IS_TLS=true"
     set "PROTO_CONNS=1000,10000"
+    set "PROTO_PAYLOADS=64,4096,65536"
     exit /b 0
 )
 call :err "unknown protocol: %_p% (must be tcp|udp|tls)"
@@ -431,6 +434,8 @@ REM bench_proto <proto>
 :bench_proto
 set "CUR_PROTO=%~1"
 call :proto_config "%CUR_PROTO%" || exit /b 1
+REM Per-protocol payload sizes override the global default.
+set "PAYLOADS=%PROTO_PAYLOADS%"
 call :kill_servers 1>nul 2>nul
 
 set "_DO_ST=false"
