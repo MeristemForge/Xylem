@@ -96,3 +96,26 @@ extern int addr_resolve(
     uint64_t timeout_ms,
     addr_t** addrs,
     size_t* count);
+
+/**
+ * @brief Convert a numeric IP or resolve a hostname to addresses.
+ *
+ * Numeric IP addresses are converted directly without using the runtime
+ * thread pool. Hostnames are resolved through addr_resolve(). The result
+ * array is heap-allocated and must be freed by the caller.
+ *
+ * @param host        Numeric IP address or hostname.
+ * @param port        Port to embed in each result.
+ * @param timeout_ms  DNS timeout in milliseconds, or 0 for none.
+ * @param addrs       Receives a malloc'd array of results.
+ * @param count       Receives the number of results.
+ *
+ * @return 0 on success, -1 on invalid input, allocation failure, DNS failure,
+ *         or timeout.
+ */
+extern int addr_lookup(
+    const char* host,
+    uint16_t port,
+    uint64_t timeout_ms,
+    addr_t** addrs,
+    size_t* count);

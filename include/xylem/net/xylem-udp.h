@@ -57,6 +57,38 @@ extern xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port);
 extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
 
 /**
+ * @brief Set the read deadline.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_udp_recv() calls return -1.
+ *
+ * @param udp          UDP handle.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
+ *                     to clear.
+ */
+extern void xylem_udp_set_read_deadline(
+    xylem_udp_chan_t* udp,
+    uint64_t          deadline_ms);
+
+/**
+ * @brief Set the write deadline.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * Once the clock passes the deadline, in-flight and subsequent
+ * xylem_udp_send() calls return -1.
+ *
+ * @param udp          UDP handle.
+ * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
+ *                     to clear.
+ */
+extern void xylem_udp_set_write_deadline(
+    xylem_udp_chan_t* udp,
+    uint64_t          deadline_ms);
+
+/**
  * @brief Receive a datagram.
  *
  * @note [COROUTINE-ONLY]
@@ -78,11 +110,11 @@ extern xylem_udp_chan_t* xylem_udp_dial(const char* host, uint16_t port);
  */
 extern int xylem_udp_recv(
     xylem_udp_chan_t* udp,
-    void*        buf,
-    int          len,
-    char*        host,
-    size_t       host_len,
-    uint16_t*    port);
+    void*             buf,
+    int               len,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);
 
 /**
  * @brief Send a datagram.
@@ -108,40 +140,10 @@ extern int xylem_udp_recv(
  */
 extern int xylem_udp_send(
     xylem_udp_chan_t* udp,
-    const void*  data,
-    int          len,
-    const char*  host,
-    uint16_t     port);
-
-/**
- * @brief Set the read deadline.
- *
- * @note [COROUTINE-ONLY]
- *
- * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_recv() calls return -1.
- *
- * @param udp          UDP handle.
- * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
- *                     to clear.
- */
-extern void xylem_udp_set_read_deadline(
-    xylem_udp_chan_t* udp, uint64_t deadline_ms);
-
-/**
- * @brief Set the write deadline.
- *
- * @note [COROUTINE-ONLY]
- *
- * Once the clock passes the deadline, in-flight and subsequent
- * xylem_udp_send() calls return -1.
- *
- * @param udp          UDP handle.
- * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
- *                     to clear.
- */
-extern void xylem_udp_set_write_deadline(
-    xylem_udp_chan_t* udp, uint64_t deadline_ms);
+    const void*       data,
+    int               len,
+    const char*       host,
+    uint16_t          port);
 
 /**
  * @brief Close the UDP handle.
@@ -154,24 +156,6 @@ extern void xylem_udp_set_write_deadline(
  * @param udp  UDP handle.
  */
 extern void xylem_udp_close(xylem_udp_chan_t* udp);
-
-/**
- * @brief Get the local bound address.
- *
- * @note [COROUTINE-ONLY]
- *
- * @param udp       UDP handle.
- * @param host      Buffer for address string.
- * @param host_len  Size of host buffer.
- * @param port      Receives local port.
- *
- * @return 0 on success, -1 on error.
- */
-extern int xylem_udp_local_addr(
-    xylem_udp_chan_t* udp,
-    char*        host,
-    size_t       host_len,
-    uint16_t*    port);
 
 /**
  * @brief Get the remote address (connected mode only).
@@ -187,6 +171,24 @@ extern int xylem_udp_local_addr(
  */
 extern int xylem_udp_remote_addr(
     xylem_udp_chan_t* udp,
-    char*        host,
-    size_t       host_len,
-    uint16_t*    port);
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);
+
+/**
+ * @brief Get the local bound address.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * @param udp       UDP handle.
+ * @param host      Buffer for address string.
+ * @param host_len  Size of host buffer.
+ * @param port      Receives local port.
+ *
+ * @return 0 on success, -1 on error.
+ */
+extern int xylem_udp_local_addr(
+    xylem_udp_chan_t* udp,
+    char*             host,
+    size_t            host_len,
+    uint16_t*         port);

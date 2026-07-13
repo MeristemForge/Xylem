@@ -1238,33 +1238,37 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     xylem_rudp_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_dial");
 
+    if (!host || !*host) {
+        return NULL;
+    }
+
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%u", port);
 
-    /* Resolve hostname if needed. */
-    const char* dial_host = host;
-    char        resolved_ip[INET6_ADDRSTRLEN];
-    addr_t      resolved_addr;
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    uint64_t resolve_timeout = opts ? opts->connect_timeout_ms : 0;
+    if (addr_lookup(host, port, resolve_timeout, &addrs, &count) != 0) {
+        xylem_loge("rudp dial: address lookup failed for %s", host);
+        return NULL;
+    }
 
-    if (addr_pton(host, port, &resolved_addr) != 0) {
-        addr_t* addrs = NULL;
-        size_t  count = 0;
-        uint64_t resolve_timeout = opts ? opts->connect_timeout_ms : 0;
-        if (addr_resolve(host, port, resolve_timeout, &addrs, &count) != 0
-            || count == 0) {
-            xylem_loge("rudp dial: DNS resolution failed for %s", host);
-            return NULL;
-        }
-        resolved_addr = addrs[0];
-        free(addrs);
-        uint16_t rport;
-        addr_ntop(&resolved_addr, resolved_ip, sizeof(resolved_ip), &rport);
-        dial_host = resolved_ip;
+    addr_t resolved_addr = addrs[0];
+    free(addrs);
+
+    char resolved_ip[INET6_ADDRSTRLEN];
+    if (addr_ntop(
+            &resolved_addr,
+            resolved_ip,
+            sizeof(resolved_ip),
+            NULL)
+        != 0) {
+        return NULL;
     }
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        dial_host, port_str, SOCK_DGRAM, &connected, true, false);
+        resolved_ip, port_str, SOCK_DGRAM, &connected, true, false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("rudp dial: socket creation failed for %s:%u", host, port);
         return NULL;

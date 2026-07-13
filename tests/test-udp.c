@@ -344,6 +344,61 @@ static void test_expired_write_deadline_blocks_ready_datagram(void) {
     });
 }
 
+static void _unconnected_send_mode_coro(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+    ASSERT(xylem_udp_send(udp, "x", 1, NULL, 0) == -1);
+
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_unconnected_send_requires_destination(void) {
+    _ctx_t ctx = {
+        .port_a = UDP_PORT_A + 16,
+        .client = _unconnected_send_mode_coro,
+    };
+    _timeout_main(&ctx);
+}
+
+static void _connected_send_mode_coro(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
+    ASSERT(udp != NULL);
+    ASSERT(xylem_udp_send(udp, "x", 1, UDP_HOST, ctx->port_a) == -1);
+
+    xylem_udp_close(udp);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_connected_send_rejects_destination(void) {
+    _ctx_t ctx = {
+        .port_a = UDP_PORT_A + 18,
+        .client = _connected_send_mode_coro,
+    };
+    _timeout_main(&ctx);
+}
+
+static void _invalid_dial_host_coro(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+
+    ASSERT(xylem_udp_dial(NULL, ctx->port_a) == NULL);
+    ASSERT(xylem_udp_dial("", ctx->port_a) == NULL);
+
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_dial_rejects_invalid_host(void) {
+    _ctx_t ctx = {
+        .port_a = UDP_PORT_A + 20,
+        .client = _invalid_dial_host_coro,
+    };
+    _timeout_main(&ctx);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
@@ -356,6 +411,9 @@ static void _test_run_all(void* arg) {
     test_connected_addr();
     test_expired_read_deadline_blocks_ready_datagram();
     test_expired_write_deadline_blocks_ready_datagram();
+    test_unconnected_send_requires_destination();
+    test_connected_send_rejects_destination();
+    test_dial_rejects_invalid_host();
     _utils_watchdog_stop();
     xylem_shutdown();
 }

@@ -31,6 +31,8 @@ _Pragma("once")
 
 typedef struct datagram_s datagram_t;
 
+#define DATAGRAM_IO_AGAIN (-2)
+
 /**
  * @brief Wrap an already opened datagram fd.
  *
@@ -124,39 +126,28 @@ extern int datagram_recv(
  * @param buf       Destination buffer.
  * @param len       Maximum bytes to read.
  * @param from      Receives source address, or NULL.
- * @param again     Receives true when the caller should wait for read readiness.
  *
- * @return Bytes read, or -1 on error/EAGAIN.
+ * @return Bytes read, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
  */
 extern int datagram_try_recv(
     datagram_t* datagram,
     void*       buf,
     int         len,
-    addr_t*     from,
-    bool*       again);
+    addr_t*     from);
 
 /**
  * @brief Wait until the datagram socket becomes readable.
  *
  * @param datagram  Datagram handle.
  *
- * @return 0 when ready, -1 on close, timeout, or poller error.
- */
-extern int datagram_wait_read(datagram_t* datagram);
-
-/**
- * @brief Wait for read readiness and report the reason separately.
- *
- * @param datagram  Datagram handle.
- *
  * @return Readiness result.
  */
-extern iowait_result_t datagram_wait_read_result(datagram_t* datagram);
+extern iowait_result_t datagram_wait_read(datagram_t* datagram);
 
 /**
  * @brief Send one datagram.
  *
- * For connected endpoints, to may be NULL. For unconnected endpoints, to
+ * For connected endpoints, to must be NULL. For unconnected endpoints, to
  * must point at the destination address.
  *
  * @param datagram  Datagram handle.
@@ -175,54 +166,30 @@ extern int datagram_send(
 /**
  * @brief Try one non-blocking datagram send.
  *
+ * For connected endpoints, to must be NULL. For unconnected endpoints, to
+ * must point at the destination address.
+ *
  * @param datagram  Datagram handle.
  * @param data      Source buffer.
  * @param len       Number of bytes to send.
  * @param to        Destination address, or NULL for connected endpoint.
- * @param again     Receives true when the caller should wait for write readiness.
  *
- * @return Bytes written, or -1 on error/EAGAIN.
+ * @return Bytes written, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
  */
 extern int datagram_try_send(
     datagram_t*  datagram,
     const void*  data,
     int          len,
-    const addr_t* to,
-    bool*        again);
+    const addr_t* to);
 
 /**
  * @brief Wait until the datagram socket becomes writable.
  *
  * @param datagram  Datagram handle.
  *
- * @return 0 when ready, -1 on close, timeout, or poller error.
- */
-extern int datagram_wait_write(datagram_t* datagram);
-
-/**
- * @brief Wait for write readiness and report the reason separately.
- *
- * @param datagram  Datagram handle.
- *
  * @return Readiness result.
  */
-extern iowait_result_t datagram_wait_write_result(datagram_t* datagram);
-
-/**
- * @brief Get the datagram endpoint's local address.
- *
- * @param datagram  Datagram handle.
- * @param host      Output host buffer.
- * @param host_len  Output host buffer length.
- * @param port      Output port pointer.
- *
- * @return 0 on success, -1 on failure.
- */
-extern int datagram_local_addr(
-    datagram_t* datagram,
-    char*       host,
-    size_t      host_len,
-    uint16_t*   port);
+extern iowait_result_t datagram_wait_write(datagram_t* datagram);
 
 /**
  * @brief Get the connected peer address.
@@ -235,6 +202,22 @@ extern int datagram_local_addr(
  * @return 0 on success, -1 if unconnected or on failure.
  */
 extern int datagram_remote_addr(
+    datagram_t* datagram,
+    char*       host,
+    size_t      host_len,
+    uint16_t*   port);
+
+/**
+ * @brief Get the datagram endpoint's local address.
+ *
+ * @param datagram  Datagram handle.
+ * @param host      Output host buffer.
+ * @param host_len  Output host buffer length.
+ * @param port      Output port pointer.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int datagram_local_addr(
     datagram_t* datagram,
     char*       host,
     size_t      host_len,

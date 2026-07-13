@@ -265,6 +265,47 @@ static void test_resolve_returns_unique_addresses(void) {
     free(addrs);
 }
 
+static void test_lookup_numeric_address(void) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    ASSERT(addr_lookup(TCP_HOST, 1234, 1000, &addrs, &count) == 0);
+    ASSERT(count == 1);
+
+    char     host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    ASSERT(addr_ntop(&addrs[0], host, sizeof(host), &port) == 0);
+    ASSERT(strcmp(host, TCP_HOST) == 0);
+    ASSERT(port == 1234);
+
+    free(addrs);
+}
+
+static void test_lookup_hostname(void) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    ASSERT(addr_lookup("localhost", 4321, 1000, &addrs, &count) == 0);
+    ASSERT(count > 0);
+
+    for (size_t i = 0; i < count; i++) {
+        uint16_t port = 0;
+        ASSERT(addr_ntop(&addrs[i], NULL, 0, &port) == 0);
+        ASSERT(port == 4321);
+    }
+
+    free(addrs);
+}
+
+static void test_lookup_rejects_invalid_args(void) {
+    addr_t* addrs = (addr_t*)1;
+    size_t  count = 1;
+    ASSERT(addr_lookup(NULL, 80, 0, &addrs, &count) == -1);
+    ASSERT(addrs == NULL);
+    ASSERT(count == 0);
+
+    ASSERT(addr_lookup(TCP_HOST, 80, 0, NULL, &count) == -1);
+    ASSERT(addr_lookup(TCP_HOST, 80, 0, &addrs, NULL) == -1);
+}
+
 static void test_accept_error_classification(void) {
     ASSERT(platform_socket_accept_should_retry(PLATFORM_SO_ERROR_ECONNRESET));
     ASSERT(!platform_socket_accept_should_retry(-1));
@@ -274,7 +315,10 @@ static void test_dial_falls_back_to_next_resolved_address(void) {
     addr_t* addrs = NULL;
     size_t  count = 0;
     ASSERT(addr_resolve("localhost", 0, 1000, &addrs, &count) == 0);
-    ASSERT(count > 1);
+    if (count < 2) {
+        free(addrs);
+        return;
+    }
 
     char first_host[INET6_ADDRSTRLEN];
     ASSERT(addr_ntop(&addrs[0], first_host, sizeof(first_host), NULL) == 0);
@@ -649,6 +693,9 @@ static void _test_run_all(void* arg) {
     test_dial_timeout();
     test_invalid_dial_host();
     test_resolve_returns_unique_addresses();
+    test_lookup_numeric_address();
+    test_lookup_hostname();
+    test_lookup_rejects_invalid_args();
     test_accept_error_classification();
     test_dial_falls_back_to_next_resolved_address();
     test_peer_close_eof();

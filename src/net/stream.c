@@ -92,46 +92,6 @@ static void _listener_unref(listener_t* listener) {
     free(listener);
 }
 
-static int _stream_resolve_addrs(
-    const char* host,
-    uint16_t    port,
-    uint64_t    deadline_ms,
-    addr_t**    addrs,
-    size_t*     count) {
-    *addrs = NULL;
-    *count = 0;
-
-    addr_t addr;
-    if (addr_pton(host, port, &addr) == 0) {
-        addr_t* result = (addr_t*)malloc(sizeof(addr_t));
-        if (!result) {
-            return -1;
-        }
-        *result = addr;
-        *addrs  = result;
-        *count  = 1;
-        return 0;
-    }
-
-    uint64_t resolve_timeout_ms = 0;
-    if (deadline_ms > 0) {
-        uint64_t now_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-        if (now_ms >= deadline_ms) {
-            return -1;
-        }
-        resolve_timeout_ms = deadline_ms - now_ms;
-    }
-
-    if (addr_resolve(host, port, resolve_timeout_ms, addrs, count) != 0
-        || *count == 0) {
-        free(*addrs);
-        *addrs = NULL;
-        *count = 0;
-        return -1;
-    }
-    return 0;
-}
-
 static int _stream_wait_dial(
     stream_t* stream,
     uint64_t  deadline_ms) {
@@ -317,10 +277,10 @@ stream_t* stream_dial(
 
     addr_t* addrs = NULL;
     size_t  count = 0;
-    if (_stream_resolve_addrs(
+    if (addr_lookup(
             host,
             port,
-            connect_deadline_ms,
+            connect_timeout_ms,
             &addrs,
             &count)
         != 0) {

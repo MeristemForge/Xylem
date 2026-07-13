@@ -489,14 +489,8 @@ static int _dtls_server_io_write(
     int         len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
     xylem_dtls_listener_t* ln = dtls->listener;
-    bool again = false;
-    int  n = datagram_try_send(
-        ln->datagram,
-        buf,
-        len,
-        &dtls->peer_addr,
-        &again);
-    return again ? TLS_BACKEND_IO_AGAIN : n;
+    int n = datagram_try_send(ln->datagram, buf, len, &dtls->peer_addr);
+    return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_read(
@@ -504,9 +498,8 @@ static int _dtls_client_io_read(
     void* buf,
     int   len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    bool again = false;
-    int  n = datagram_try_recv(dtls->datagram, buf, len, NULL, &again);
-    return again ? TLS_BACKEND_IO_AGAIN : n;
+    int n = datagram_try_recv(dtls->datagram, buf, len, NULL);
+    return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_write(
@@ -514,9 +507,8 @@ static int _dtls_client_io_write(
     const void* buf,
     int         len) {
     xylem_dtls_conn_t* dtls = (xylem_dtls_conn_t*)user;
-    bool again = false;
-    int  n = datagram_try_send(dtls->datagram, buf, len, NULL, &again);
-    return again ? TLS_BACKEND_IO_AGAIN : n;
+    int n = datagram_try_send(dtls->datagram, buf, len, NULL);
+    return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 /**
@@ -529,7 +521,7 @@ static int _dtls_client_wait_read(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->rd_mu);
-    iowait_result_t r = datagram_wait_read_result(dtls->datagram);
+    iowait_result_t r = datagram_wait_read(dtls->datagram);
     if (r == IOWAIT_READY) {
         ret = 0;
     } else if (r == IOWAIT_TIMEOUT) {
@@ -546,7 +538,7 @@ static int _dtls_client_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->wr_mu);
-    iowait_result_t r = datagram_wait_write_result(dtls->datagram);
+    iowait_result_t r = datagram_wait_write(dtls->datagram);
     if (r == IOWAIT_READY) {
         ret = 0;
     } else if (r == IOWAIT_TIMEOUT) {
@@ -579,7 +571,7 @@ static int _dtls_server_wait_write(xylem_dtls_conn_t* dtls) {
     int ret = -1;
 
     xylem_mutex_lock(dtls->listener->write_mu);
-    iowait_result_t r = datagram_wait_write_result(dtls->listener->datagram);
+    iowait_result_t r = datagram_wait_write(dtls->listener->datagram);
     if (r == IOWAIT_READY) {
         ret = 0;
     } else if (r == IOWAIT_TIMEOUT) {
@@ -601,7 +593,8 @@ static int _dtls_server_send_record(
             case TLS_BACKEND_OK:
                 return 0;
             case TLS_BACKEND_WANT_WRITE: {
-                if (datagram_wait_write(dtls->listener->datagram) != 0) {
+                if (datagram_wait_write(dtls->listener->datagram)
+                    != IOWAIT_READY) {
                     return -1;
                 }
                 continue;

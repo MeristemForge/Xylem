@@ -375,3 +375,41 @@ int addr_resolve(
     _addr_ctx_unref(ctx); /* drop originator reference */
     return rc;
 }
+
+int addr_lookup(
+    const char* host,
+    uint16_t    port,
+    uint64_t    timeout_ms,
+    addr_t**    addrs,
+    size_t*     count) {
+    if (!addrs || !count) {
+        return -1;
+    }
+
+    *addrs = NULL;
+    *count = 0;
+    if (!host || !*host) {
+        return -1;
+    }
+
+    addr_t addr;
+    if (addr_pton(host, port, &addr) == 0) {
+        addr_t* result = (addr_t*)malloc(sizeof(addr_t));
+        if (!result) {
+            return -1;
+        }
+        *result = addr;
+        *addrs  = result;
+        *count  = 1;
+        return 0;
+    }
+
+    if (addr_resolve(host, port, timeout_ms, addrs, count) != 0
+        || *count == 0) {
+        free(*addrs);
+        *addrs = NULL;
+        *count = 0;
+        return -1;
+    }
+    return 0;
+}
