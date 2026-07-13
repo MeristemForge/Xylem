@@ -95,6 +95,8 @@ extern void xylem_udp_set_write_deadline(
  *
  * Suspends the calling coroutine until a datagram arrives, the
  * deadline passes, or the handle is closed.
+ * A UDP handle has a single logical receiver. Concurrent recv calls
+ * on the same handle are unsupported.
  *
  * For unconnected sockets, writes the sender address into host/port.
  * For connected sockets, host/port may be NULL.
@@ -123,6 +125,8 @@ extern int xylem_udp_recv(
  *
  * Suspends the calling coroutine if the socket buffer is full until
  * writable, the deadline passes, or the handle is closed.
+ * A UDP handle has a single logical sender. Concurrent send calls on
+ * the same handle are unsupported.
  *
  * For unconnected sockets, host/port specify the destination. The
  * host must be a numeric IP address (IPv4 or IPv6); hostnames are

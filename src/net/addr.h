@@ -60,9 +60,9 @@ extern int addr_pton(const char* src, uint16_t port, addr_t* dst);
  */
 extern int addr_ntop(
     const addr_t* addr,
-    char* dst,
-    size_t dst_len,
-    uint16_t* port);
+    char*         dst,
+    size_t        dst_len,
+    uint16_t*     port);
 
 /**
  * @brief Resolve a domain name to all addresses, with a timeout.
@@ -92,10 +92,10 @@ extern int addr_ntop(
  */
 extern int addr_resolve(
     const char* domain,
-    uint16_t port,
-    uint64_t timeout_ms,
-    addr_t** addrs,
-    size_t* count);
+    uint16_t    port,
+    uint64_t    timeout_ms,
+    addr_t**    addrs,
+    size_t*     count);
 
 /**
  * @brief Convert a numeric IP or resolve a hostname to addresses.
@@ -115,7 +115,7 @@ extern int addr_resolve(
  */
 extern int addr_lookup(
     const char* host,
-    uint16_t port,
-    uint64_t timeout_ms,
-    addr_t** addrs,
-    size_t* count);
+    uint16_t    port,
+    uint64_t    timeout_ms,
+    addr_t**    addrs,
+    size_t*     count);

@@ -157,7 +157,12 @@ extern ssize_t platform_socket_recvfrom(platform_sock_t sock, void* buf, int siz
  *
  * @return Number of bytes sent, or -1 on error.
  */
-extern ssize_t platform_socket_sendto(platform_sock_t sock, const void* buf, int size, struct sockaddr_storage* ss, socklen_t sslen);
+extern ssize_t platform_socket_sendto(
+    platform_sock_t                sock,
+    const void*                    buf,
+    int                            size,
+    const struct sockaddr_storage* ss,
+    socklen_t                      sslen);
 
 /**
  * @brief Create a pair of connected sockets.

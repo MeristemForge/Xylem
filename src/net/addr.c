@@ -51,7 +51,7 @@ typedef struct _addr_resolve_ctx_s {
     size_t             result_count;
     int                status;     /* worker outcome: 0 ok, -1 fail */
     _Atomic bool       timed_out;  /* set only by the winning timer */
-    scheduler_timer_t*     timer;
+    scheduler_timer_t* timer;
     _Atomic int32_t    refcnt;
 } _addr_resolve_ctx_t;
 
@@ -196,7 +196,7 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
         struct sockaddr_in* sin = (struct sockaddr_in*)&dst->storage;
         if (inet_pton(AF_INET, src, &sin->sin_addr) == 1) {
             sin->sin_family = AF_INET;
-            sin->sin_port = htons(port);
+            sin->sin_port   = htons(port);
             return 0;
         }
     }
@@ -205,7 +205,7 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
         struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&dst->storage;
         if (inet_pton(AF_INET6, src, &sin6->sin6_addr) == 1) {
             sin6->sin6_family = AF_INET6;
-            sin6->sin6_port = htons(port);
+            sin6->sin6_port   = htons(port);
             return 0;
         }
     }
@@ -215,9 +215,9 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
 
 int addr_ntop(
     const addr_t* addr,
-    char* dst,
-    size_t dst_len,
-    uint16_t* port) {
+    char*         dst,
+    size_t        dst_len,
+    uint16_t*     port) {
     if (!addr) {
         return -1;
     }
@@ -307,10 +307,10 @@ static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
 
 int addr_resolve(
     const char* domain,
-    uint16_t port,
-    uint64_t timeout_ms,
-    addr_t** addrs,
-    size_t* count) {
+    uint16_t    port,
+    uint64_t    timeout_ms,
+    addr_t**    addrs,
+    size_t*     count) {
     RUNTIME_REQUIRE_COROUTINE("addr", "addr_resolve");
 
     if (!domain || !addrs || !count) {
@@ -358,8 +358,8 @@ int addr_resolve(
     } else {
         rc = ctx->status;
         if (rc == 0) {
-            *addrs = ctx->result;
-            *count = ctx->result_count;
+            *addrs      = ctx->result;
+            *count      = ctx->result_count;
             ctx->result = NULL; /* ownership transferred to the caller */
         }
 

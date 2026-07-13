@@ -66,11 +66,6 @@ static void _datagram_unref(datagram_t* datagram) {
     free(datagram);
 }
 
-static bool _datagram_is_again(int err) {
-    return err == PLATFORM_SO_ERROR_EAGAIN
-           || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
-}
-
 static socklen_t _datagram_addr_len(const addr_t* addr) {
     return (addr->storage.ss_family == AF_INET6)
         ? (socklen_t)sizeof(struct sockaddr_in6)
@@ -113,6 +108,91 @@ static int _datagram_load_peer_addr(datagram_t* datagram) {
     }
     datagram->peer_addr_valid = true;
     return 0;
+}
+
+static int _datagram_recv_once(
+    datagram_t* datagram,
+    void*       buf,
+    int         len,
+    addr_t*     from) {
+    struct sockaddr_storage sender;
+    socklen_t               sender_len = sizeof(sender);
+    ssize_t                 n;
+    if (datagram->connected) {
+        n = platform_socket_recv(datagram->fd, buf, len);
+    } else {
+        n = platform_socket_recvfrom(
+            datagram->fd,
+            buf,
+            len,
+            &sender,
+            &sender_len);
+    }
+
+    if (n >= 0) {
+        if (from) {
+            if (datagram->connected) {
+                if (_datagram_load_peer_addr(datagram) == 0) {
+                    *from = datagram->peer_addr;
+                }
+            } else {
+                memcpy(&from->storage, &sender, sizeof(sender));
+            }
+        }
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+        return (int)n;
+    }
+
+    int err = platform_socket_get_lasterror();
+    if (err == PLATFORM_SO_ERROR_EAGAIN
+        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+        return DATAGRAM_IO_AGAIN;
+    }
+
+    xylem_loge(
+        "<datagram> recv failed fd=%d err=%s",
+        (int)datagram->fd,
+        platform_socket_tostring(err));
+    return -1;
+}
+
+static int _datagram_send_once(
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
+    const addr_t* to) {
+    ssize_t n;
+    if (datagram->connected) {
+        n = platform_socket_send(datagram->fd, data, len);
+    } else {
+        n = platform_socket_sendto(
+            datagram->fd,
+            data,
+            len,
+            &to->storage,
+            _datagram_addr_len(to));
+    }
+
+    if (n >= 0) {
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+        return (int)n;
+    }
+
+    int err = platform_socket_get_lasterror();
+    if (err == PLATFORM_SO_ERROR_EAGAIN
+        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+        return DATAGRAM_IO_AGAIN;
+    }
+
+    xylem_loge(
+        "<datagram> send failed fd=%d err=%s",
+        (int)datagram->fd,
+        platform_socket_tostring(err));
+    return -1;
 }
 
 datagram_t* datagram_from_fd(
@@ -251,43 +331,7 @@ int datagram_try_recv(
         return -1;
     }
 
-    struct sockaddr_storage sender;
-    socklen_t sender_len = sizeof(sender);
-    ssize_t   n = datagram->connected
-        ? platform_socket_recv(datagram->fd, buf, len)
-        : platform_socket_recvfrom(
-              datagram->fd,
-              buf,
-              len,
-              &sender,
-              &sender_len);
-
-    int ret = -1;
-    if (n >= 0) {
-        ret = (int)n;
-        if (from) {
-            if (datagram->connected) {
-                if (_datagram_load_peer_addr(datagram) == 0) {
-                    *from = datagram->peer_addr;
-                }
-            } else {
-                memcpy(&from->storage, &sender, sizeof(sender));
-            }
-        }
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
-    } else {
-        int err = platform_socket_get_lasterror();
-        if (_datagram_is_again(err)) {
-            ret = DATAGRAM_IO_AGAIN;
-        } else {
-            xylem_loge(
-                "<datagram> recv failed fd=%d err=%s",
-                (int)datagram->fd,
-                platform_socket_tostring(err));
-        }
-    }
+    int ret = _datagram_recv_once(datagram, buf, len, from);
 
     _datagram_unref(datagram);
     return ret;
@@ -315,44 +359,14 @@ int datagram_recv(
             break;
         }
 
-        struct sockaddr_storage sender;
-        socklen_t sender_len = sizeof(sender);
-        ssize_t   n = datagram->connected
-            ? platform_socket_recv(datagram->fd, buf, len)
-            : platform_socket_recvfrom(
-                  datagram->fd,
-                  buf,
-                  len,
-                  &sender,
-                  &sender_len);
-        if (n >= 0) {
-            ret = (int)n;
-            if (from) {
-                if (datagram->connected) {
-                    if (_datagram_load_peer_addr(datagram) == 0) {
-                        *from = datagram->peer_addr;
-                    }
-                } else {
-                    memcpy(&from->storage, &sender, sizeof(sender));
-                }
-            }
-            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield();
-            }
+        ret = _datagram_recv_once(datagram, buf, len, from);
+        if (ret != DATAGRAM_IO_AGAIN) {
             break;
         }
-
-        int err = platform_socket_get_lasterror();
-        if (_datagram_is_again(err)) {
-            if (iowait_read(datagram->waiter) == IOWAIT_READY) {
-                continue;
-            }
-        } else {
-            xylem_loge(
-                "<datagram> recv failed fd=%d err=%s",
-                (int)datagram->fd,
-                platform_socket_tostring(err));
+        if (iowait_read(datagram->waiter) == IOWAIT_READY) {
+            continue;
         }
+        ret = -1;
         break;
     }
 
@@ -361,9 +375,9 @@ int datagram_recv(
 }
 
 int datagram_try_send(
-    datagram_t*  datagram,
-    const void*  data,
-    int          len,
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
     const addr_t* to) {
     if (len < 0 || (len > 0 && !data)) {
         return -1;
@@ -382,37 +396,7 @@ int datagram_try_send(
         return -1;
     }
 
-    addr_t  dest;
-    ssize_t n;
-    if (datagram->connected) {
-        n = platform_socket_send(datagram->fd, data, len);
-    } else {
-        dest = *to;
-        n    = platform_socket_sendto(
-            datagram->fd,
-            data,
-            len,
-            &dest.storage,
-            _datagram_addr_len(&dest));
-    }
-
-    int ret = -1;
-    if (n >= 0) {
-        ret = (int)n;
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
-    } else {
-        int err = platform_socket_get_lasterror();
-        if (_datagram_is_again(err)) {
-            ret = DATAGRAM_IO_AGAIN;
-        } else {
-            xylem_loge(
-                "<datagram> send failed fd=%d err=%s",
-                (int)datagram->fd,
-                platform_socket_tostring(err));
-        }
-    }
+    int ret = _datagram_send_once(datagram, data, len, to);
 
     _datagram_unref(datagram);
     return ret;
@@ -423,9 +407,9 @@ iowait_result_t datagram_wait_write(datagram_t* datagram) {
 }
 
 int datagram_send(
-    datagram_t*  datagram,
-    const void*  data,
-    int          len,
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
     const addr_t* to) {
     if (len < 0 || (len > 0 && !data)) {
         return -1;
@@ -446,37 +430,16 @@ int datagram_send(
             break;
         }
 
-        addr_t  dest;
-        ssize_t n;
-        if (datagram->connected) {
-            n = platform_socket_send(datagram->fd, data, len);
-        } else {
-            dest = *to;
-            n    = platform_socket_sendto(
-                datagram->fd,
-                data,
-                len,
-                &dest.storage,
-                _datagram_addr_len(&dest));
-        }
+        int n = _datagram_send_once(datagram, data, len, to);
         if (n >= 0) {
-            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield();
-            }
             ret = 0;
             break;
         }
-
-        int err = platform_socket_get_lasterror();
-        if (_datagram_is_again(err)) {
-            if (iowait_write(datagram->waiter) == IOWAIT_READY) {
-                continue;
-            }
-        } else {
-            xylem_loge(
-                "<datagram> send failed fd=%d err=%s",
-                (int)datagram->fd,
-                platform_socket_tostring(err));
+        if (n != DATAGRAM_IO_AGAIN) {
+            break;
+        }
+        if (iowait_write(datagram->waiter) == IOWAIT_READY) {
+            continue;
         }
         break;
     }

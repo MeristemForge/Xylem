@@ -440,6 +440,58 @@ static iowait_result_t _stream_wait(
     return ret;
 }
 
+static int _stream_read_once(
+    stream_t* stream,
+    void*     buf,
+    int       len) {
+    ssize_t n = platform_socket_recv(stream->fd, buf, len);
+    if (n >= 0) {
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+        return (int)n;
+    }
+
+    int err = platform_socket_get_lasterror();
+    if (err == PLATFORM_SO_ERROR_EAGAIN
+        || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+        return STREAM_IO_AGAIN;
+    }
+
+    xylem_loge(
+        "<stream> read failed fd=%d err=%s",
+        (int)stream->fd,
+        platform_socket_tostring(err));
+    return -1;
+}
+
+static int _stream_write_once(
+    stream_t*   stream,
+    const void* data,
+    int         len) {
+    ssize_t n = platform_socket_send(stream->fd, data, len);
+    if (n > 0) {
+        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+            runtime_yield();
+        }
+        return (int)n;
+    }
+
+    if (n < 0) {
+        int err = platform_socket_get_lasterror();
+        if (err == PLATFORM_SO_ERROR_EAGAIN
+            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
+            return STREAM_IO_AGAIN;
+        }
+
+        xylem_loge(
+            "<stream> write failed fd=%d err=%s",
+            (int)stream->fd,
+            platform_socket_tostring(err));
+    }
+    return -1;
+}
+
 int stream_try_read(
     stream_t* stream,
     void*     buf,
@@ -456,25 +508,7 @@ int stream_try_read(
         return -1;
     }
 
-    int     ret = -1;
-    ssize_t n   = platform_socket_recv(stream->fd, buf, len);
-    if (n >= 0) {
-        ret = (int)n;
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
-    } else {
-        int err = platform_socket_get_lasterror();
-        if (err == PLATFORM_SO_ERROR_EAGAIN
-            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            ret = STREAM_IO_AGAIN;
-        } else {
-            xylem_loge(
-                "<stream> read failed fd=%d err=%s",
-                (int)stream->fd,
-                platform_socket_tostring(err));
-        }
-    }
+    int ret = _stream_read_once(stream, buf, len);
 
     _stream_unref(stream);
     return ret;
@@ -499,27 +533,14 @@ int stream_read(stream_t* stream, void* buf, int len) {
             break;
         }
 
-        ssize_t n = platform_socket_recv(stream->fd, buf, len);
-        if (n >= 0) {
-            ret = (int)n;
-            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield();
-            }
+        ret = _stream_read_once(stream, buf, len);
+        if (ret != STREAM_IO_AGAIN) {
             break;
         }
-
-        int err = platform_socket_get_lasterror();
-        if (err == PLATFORM_SO_ERROR_EAGAIN
-            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            if (iowait_read(stream->waiter) == IOWAIT_READY) {
-                continue;
-            }
-        } else {
-            xylem_loge(
-                "<stream> read failed fd=%d err=%s",
-                (int)stream->fd,
-                platform_socket_tostring(err));
+        if (iowait_read(stream->waiter) == IOWAIT_READY) {
+            continue;
         }
+        ret = -1;
         break;
     }
 
@@ -547,28 +568,17 @@ int stream_write(stream_t* stream, const void* data, int len) {
             break;
         }
 
-        ssize_t n = platform_socket_send(stream->fd, ptr, rem);
+        int n = _stream_write_once(stream, ptr, rem);
         if (n > 0) {
             ptr += n;
-            rem -= (int)n;
-            if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-                runtime_yield();
-            }
+            rem -= n;
             continue;
         }
-        if (n < 0) {
-            int err = platform_socket_get_lasterror();
-            if (err == PLATFORM_SO_ERROR_EAGAIN
-                || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-                if (iowait_write(stream->waiter) == IOWAIT_READY) {
-                    continue;
-                }
-            } else {
-                xylem_loge(
-                    "<stream> write failed fd=%d err=%s",
-                    (int)stream->fd,
-                    platform_socket_tostring(err));
-            }
+        if (n != STREAM_IO_AGAIN) {
+            break;
+        }
+        if (iowait_write(stream->waiter) == IOWAIT_READY) {
+            continue;
         }
         break;
     }
@@ -599,26 +609,7 @@ int stream_try_write(
         return -1;
     }
 
-    int     ret = -1;
-    ssize_t n   = platform_socket_send(stream->fd, data, len);
-    if (n > 0) {
-        ret = (int)n;
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
-    }
-    if (n < 0) {
-        int err = platform_socket_get_lasterror();
-        if (err == PLATFORM_SO_ERROR_EAGAIN
-            || err == PLATFORM_SO_ERROR_EWOULDBLOCK) {
-            ret = STREAM_IO_AGAIN;
-        } else {
-            xylem_loge(
-                "<stream> write failed fd=%d err=%s",
-                (int)stream->fd,
-                platform_socket_tostring(err));
-        }
-    }
+    int ret = _stream_write_once(stream, data, len);
 
     _stream_unref(stream);
     return ret;

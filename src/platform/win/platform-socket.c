@@ -237,17 +237,17 @@ ssize_t platform_socket_recvfrom(
 }
 
 ssize_t platform_socket_sendto(
-    platform_sock_t          sock,
-    const void*              buf,
-    int                      size,
-    struct sockaddr_storage* ss,
-    socklen_t                sslen) {
+    platform_sock_t                sock,
+    const void*                    buf,
+    int                            size,
+    const struct sockaddr_storage* ss,
+    socklen_t                      sslen) {
     if (size < 0) {
         WSASetLastError(WSAEINVAL);
         return PLATFORM_SO_ERROR_SOCKET_ERROR;
     }
 
-    return sendto(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
+    return sendto(sock, buf, size, 0, (const struct sockaddr*)ss, sslen);
 }
 
 int platform_socket_socketpair(

@@ -317,11 +317,11 @@ ssize_t platform_socket_recvfrom(
 }
 
 ssize_t platform_socket_sendto(
-    platform_sock_t          sock,
-    const void*              buf,
-    int                      size,
-    struct sockaddr_storage* ss,
-    socklen_t                sslen) {
+    platform_sock_t                sock,
+    const void*                    buf,
+    int                            size,
+    const struct sockaddr_storage* ss,
+    socklen_t                      sslen) {
     if (size < 0) {
         errno = EINVAL;
         return PLATFORM_SO_ERROR_SOCKET_ERROR;
@@ -329,7 +329,7 @@ ssize_t platform_socket_sendto(
 
     ssize_t n;
     do {
-        n = sendto(sock, buf, size, 0, (struct sockaddr*)ss, sslen);
+        n = sendto(sock, buf, size, 0, (const struct sockaddr*)ss, sslen);
     } while (n < 0 && errno == EINTR);
     return n < 0 ? PLATFORM_SO_ERROR_SOCKET_ERROR : n;
 }

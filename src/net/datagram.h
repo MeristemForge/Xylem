@@ -106,6 +106,9 @@ extern void datagram_set_write_deadline(
 /**
  * @brief Receive one datagram.
  *
+ * A datagram has a single logical receiver. Concurrent blocking receive
+ * operations on the same datagram are unsupported.
+ *
  * @param datagram  Datagram handle.
  * @param buf       Destination buffer.
  * @param len       Maximum bytes to read.
@@ -138,6 +141,8 @@ extern int datagram_try_recv(
 /**
  * @brief Wait until the datagram socket becomes readable.
  *
+ * Only one read-side waiter may be active per datagram.
+ *
  * @param datagram  Datagram handle.
  *
  * @return Readiness result.
@@ -150,6 +155,9 @@ extern iowait_result_t datagram_wait_read(datagram_t* datagram);
  * For connected endpoints, to must be NULL. For unconnected endpoints, to
  * must point at the destination address.
  *
+ * A datagram has a single logical sender. Concurrent blocking send operations
+ * on the same datagram are unsupported.
+ *
  * @param datagram  Datagram handle.
  * @param data      Source buffer.
  * @param len       Number of bytes to send.
@@ -158,9 +166,9 @@ extern iowait_result_t datagram_wait_read(datagram_t* datagram);
  * @return 0 on success, -1 on error/timeout/close.
  */
 extern int datagram_send(
-    datagram_t* datagram,
-    const void* data,
-    int         len,
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
     const addr_t* to);
 
 /**
@@ -177,13 +185,15 @@ extern int datagram_send(
  * @return Bytes written, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
  */
 extern int datagram_try_send(
-    datagram_t*  datagram,
-    const void*  data,
-    int          len,
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
     const addr_t* to);
 
 /**
  * @brief Wait until the datagram socket becomes writable.
+ *
+ * Only one write-side waiter may be active per datagram.
  *
  * @param datagram  Datagram handle.
  *
