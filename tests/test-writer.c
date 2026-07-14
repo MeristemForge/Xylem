@@ -85,7 +85,9 @@ static void _srv_recv(void* arg) {
     ASSERT(memcmp(buf, "aaabbbccc", 9) == 0);
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -105,6 +107,7 @@ static void _cli_write(void* arg) {
 
     xylem_writer_destroy(wr);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -127,7 +130,9 @@ static void _srv_recv_large(void* arg) {
     ASSERT(memcmp(buf, "abLARGE-DATA!!", 14) == 0);
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -146,6 +151,7 @@ static void _cli_write_large(void* arg) {
 
     xylem_writer_destroy(wr);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -167,7 +173,9 @@ static void _srv_recv_empty(void* arg) {
     ASSERT(total == 0);
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -187,6 +195,7 @@ static void _cli_write_invalid(void* arg) {
 
     xylem_writer_destroy(wr);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 

@@ -33,13 +33,17 @@
 
 #include "xylem/net/xylem-tcp.h"
 
+static void _ws_tcp_close(xylem_tcp_conn_t* conn) {
+    xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
+}
 
 static http_transport_t _ws_make_tcp_transport(xylem_tcp_conn_t* conn) {
     return (http_transport_t){
         .conn            = conn,
         .read            = (int (*)(void*, void*, int))xylem_tcp_read,
         .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
-        .close           = (void (*)(void*))xylem_tcp_close,
+        .close           = (void (*)(void*))_ws_tcp_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
         .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,

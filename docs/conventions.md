@@ -102,19 +102,20 @@ Rules:
   otherwise.** `xylem_ticker_destroy()` accepts `NULL` but consumes a non-NULL
   ticker handle, so callers must not destroy the same ticker handle twice. A
   `close` function that releases the handle consumes that handle; callers must
-  not use or close the same handle again after `close` returns. Atomic `closed`
-  flags only coordinate concurrent close/read/write paths while another
-  reference keeps the object alive.
-- **Read before close.** For connections, query any state you need (e.g.
-  `xylem_tcp_remote_addr`) *before* calling `close`; close may free backing
-  state and wakes any coroutine blocked on the handle.
-- **Cross-coroutine lifetime uses reference counting.** A connection can be
-  closed from one coroutine while another is parked in `read`/`write` on it
-  (and the close wakeup itself crosses threads via `scheduler_schedule()`), so
-  an internal atomic refcount (`ref`/`unref`) keeps the handle alive until the
-  last user drops it; `iowait` adds a generation tag so stale events are
-  rejected rather than dereferenced. See
-  [`design/runtime.md`](design/runtime.md).
+  not use or close the same handle again after `close` returns.
+- **TCP separates close from destroy.** `xylem_tcp_close()` and
+  `xylem_tcp_close_listener()` atomically mark the handle closed and wake
+  blocked operations without freeing it. After every operation using that
+  handle has returned, the owner calls `xylem_tcp_destroy()` or
+  `xylem_tcp_destroy_listener()` as the final, non-concurrent operation.
+  Operations attempted between close and destroy fail without touching a
+  released wrapper.
+- **Cross-coroutine lifetime follows the module contract.** TCP uses the
+  explicit close/wait/destroy sequence above. APIs whose close still consumes
+  the handle may retain an internal atomic reference count. Independently,
+  `iowait` keeps its own references while scheduler/poller wakeups can outlive
+  the initiating call, and uses a generation tag so stale events are rejected
+  rather than dereferenced. See [`design/runtime.md`](design/runtime.md).
 
 ## 6. Initialization order
 
@@ -217,10 +218,10 @@ recurring categories:
   documents which same-handle races are forbidden.
 - **Coroutine-only.** Must be called from inside a coroutine on the runtime.
   The **entire connection API** is coroutine-only — not just `read`/`write`/
-  `accept`/`dial` (which may park), but also `close`, the read/write deadline
-  setters, and the address getters (TCP/UDP/UDS/RUDP/TLS/DTLS). `close` is
-  coroutine-only because teardown is serialized through the runtime; to cancel
-  a connection whose reader/writer is parked, close it from *another*
+  `accept`/`dial` (which may park), but also `close`, `destroy`, the read/write
+  deadline setters, and the address getters (TCP/UDP/UDS/RUDP/TLS/DTLS).
+  `close` is coroutine-only because teardown is serialized through the runtime;
+  to cancel a connection whose reader/writer is parked, close it from *another*
   coroutine. `xylem_await` is also coroutine-only.
 - **Context-adaptive.** Safe from either a coroutine or a plain OS thread; the
   call inspects its context when that matters and does the right thing. If the

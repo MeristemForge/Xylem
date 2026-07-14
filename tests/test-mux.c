@@ -98,7 +98,9 @@ static void _srv_worker(void* arg) {
 
     xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -127,6 +129,7 @@ static void _cli_worker(void* arg) {
     xylem_mux_close_stream(s);
     xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -163,7 +166,9 @@ static void _multi_srv_worker(void* arg) {
 
     xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -196,6 +201,7 @@ static void _multi_cli_worker(void* arg) {
 
     xylem_mux_destroy(mux);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 

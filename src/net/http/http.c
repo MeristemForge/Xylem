@@ -594,6 +594,9 @@ static void _srv_parser_reset(_srv_parser_t* sp) {
 
 void http_srv_unref(http_srv_t* s) {
     if (atomic_fetch_sub(&s->active_conns, 1) == 1) {
+        if (s->destroy_listener) {
+            s->destroy_listener(s->listener);
+        }
         if (s->transport_ctx_free) {
             s->transport_ctx_free(s->transport_ctx);
         }

@@ -73,7 +73,9 @@ static void _srv_echo(void* arg) {
     xylem_tcp_write(conn, buf, n);
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -97,6 +99,7 @@ static void _cli_read(void* arg) {
 
     xylem_reader_destroy(rd);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -117,7 +120,9 @@ static void _srv_lines(void* arg) {
     xylem_tcp_write(conn, data, (int)strlen(data));
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -146,6 +151,7 @@ static void _cli_read_until(void* arg) {
 
     xylem_reader_destroy(rd);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -166,7 +172,9 @@ static void _srv_full(void* arg) {
     xylem_tcp_write(conn, data, 16);
 
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_tcp_close_listener(ln);
+    xylem_tcp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -186,6 +194,7 @@ static void _cli_read_full(void* arg) {
 
     xylem_reader_destroy(rd);
     xylem_tcp_close(conn);
+    xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
