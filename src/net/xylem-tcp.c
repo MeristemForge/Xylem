@@ -23,6 +23,7 @@
 
 #include "net/stream.h"
 #include "runtime/precond.h"
+#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -61,6 +62,12 @@ static xylem_tcp_listener_t* _tcp_listener_create(listener_t* listener) {
     tcp_listener->listener = listener;
     atomic_init(&tcp_listener->closed, false);
     return tcp_listener;
+}
+
+static void _tcp_consume_io_credit(void) {
+    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+        runtime_yield();
+    }
 }
 
 xylem_tcp_listener_t* xylem_tcp_listen(
@@ -158,11 +165,24 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&tcp->closed)) {
-        ret = stream_read(tcp->stream, buf, len);
+    for (;;) {
+        if (atomic_load(&tcp->closed)) {
+            return -1;
+        }
+
+        int n = stream_read(tcp->stream, buf, len);
+        if (n == 0) {
+            return 0;
+        }
+        if (n > 0) {
+            _tcp_consume_io_credit();
+            return n;
+        }
+        if (n != STREAM_IO_AGAIN
+            || stream_wait_read(tcp->stream) != IOWAIT_READY) {
+            return -1;
+        }
     }
-    return ret;
 }
 
 int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
@@ -178,11 +198,28 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&tcp->closed)) {
-        ret = stream_write(tcp->stream, data, len);
+    const char* ptr = (const char*)data;
+    int         rem = len;
+
+    while (rem > 0) {
+        if (atomic_load(&tcp->closed)) {
+            return -1;
+        }
+
+        int n = stream_write(tcp->stream, ptr, rem);
+        if (n > 0) {
+            ptr += n;
+            rem -= n;
+            _tcp_consume_io_credit();
+            continue;
+        }
+        if (n != STREAM_IO_AGAIN
+            || stream_wait_write(tcp->stream) != IOWAIT_READY) {
+            return -1;
+        }
     }
-    return ret;
+
+    return atomic_load(&tcp->closed) ? -1 : 0;
 }
 
 void xylem_tcp_close(xylem_tcp_conn_t* tcp) {

@@ -24,6 +24,7 @@
 #include "utils.h"
 
 #include "net/datagram.h"
+#include "runtime/runtime.h"
 
 #include <string.h>
 
@@ -433,6 +434,31 @@ static void test_connected_from_fd_requires_peer_addr(void) {
     platform_socket_close(fd);
 }
 
+static void test_once_io_does_not_yield(void) {
+    datagram_t* receiver = datagram_listen(UDP_HOST, 0);
+    ASSERT(receiver != NULL);
+
+    uint16_t port = 0;
+    ASSERT(datagram_local_addr(receiver, NULL, 0, &port) == 0);
+    datagram_t* sender = datagram_dial(UDP_HOST, port);
+    ASSERT(sender != NULL);
+
+    char byte = 'x';
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    ASSERT(datagram_send(sender, &byte, 1, NULL) == 1);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
+
+    ASSERT(datagram_wait_read(receiver) == IOWAIT_READY);
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    ASSERT(datagram_recv(receiver, &byte, 1, NULL) == 1);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
+
+    datagram_destroy(sender);
+    datagram_destroy(receiver);
+}
+
 static void test_closed_public_operations(void) {
     xylem_udp_chan_t* listener = xylem_udp_listen(UDP_HOST, 0);
     ASSERT(listener != NULL);
@@ -478,6 +504,7 @@ static void _test_run_all(void* arg) {
     test_dial_rejects_invalid_host();
     test_closed_leaf_operations();
     test_connected_from_fd_requires_peer_addr();
+    test_once_io_does_not_yield();
     test_closed_public_operations();
     _utils_watchdog_stop();
     xylem_shutdown();

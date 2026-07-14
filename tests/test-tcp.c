@@ -24,6 +24,7 @@
 #include "net/addr.h"
 #include "net/stream.h"
 #include "platform/platform-socket.h"
+#include "runtime/runtime.h"
 
 #include "assert.h"
 #include "utils.h"
@@ -383,6 +384,12 @@ static void _eof_client(void* arg) {
     n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n == 0);
 
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    n = xylem_tcp_read(conn, buf, sizeof(buf));
+    ASSERT(n == 0);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
+
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -596,17 +603,64 @@ static void test_invalid_io_args(void) {
     _run_pair(TCP_PORT + 8, _invalid_io_server, _invalid_io_client);
 }
 
+static void test_once_io_does_not_yield(void) {
+    platform_sock_t socks[2] = {
+        PLATFORM_SO_ERROR_INVALID_SOCKET,
+        PLATFORM_SO_ERROR_INVALID_SOCKET,
+    };
+    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, socks) == 0);
+    platform_socket_enable_nonblocking(socks[0], true);
+    platform_socket_enable_nonblocking(socks[1], true);
+
+    stream_t* stream = stream_from_fd(socks[0]);
+    ASSERT(stream != NULL);
+
+    char byte = 'x';
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    ASSERT(stream_write(stream, &byte, 1) == 1);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
+
+    ASSERT(platform_socket_send(socks[1], &byte, 1) == 1);
+    ASSERT(stream_wait_read(stream) == IOWAIT_READY);
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    ASSERT(stream_read(stream, &byte, 1) == 1);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
+
+    stream_destroy(stream);
+    platform_socket_close(socks[1]);
+}
+
 static void _close_write_writer(void* arg) {
     _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
     for (;;) {
-        int n = stream_try_write(ctx->stream, ctx->data, ctx->len);
+        int n = stream_write(ctx->stream, ctx->data, ctx->len);
         if (n == STREAM_IO_AGAIN) {
             break;
         }
         ASSERT(n > 0);
     }
     ASSERT(xylem_channel_send(ctx->started, ctx) == 0);
-    ctx->rc = stream_write(ctx->stream, ctx->data, ctx->len);
+
+    const char* ptr = ctx->data;
+    int         rem = ctx->len;
+    ctx->rc         = -1;
+    while (rem > 0) {
+        int n = stream_write(ctx->stream, ptr, rem);
+        if (n > 0) {
+            ptr += n;
+            rem -= n;
+            continue;
+        }
+        if (n != STREAM_IO_AGAIN
+            || stream_wait_write(ctx->stream) != IOWAIT_READY) {
+            break;
+        }
+    }
+    if (rem == 0) {
+        ctx->rc = 0;
+    }
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -775,6 +829,7 @@ static void _test_run_all(void* arg) {
     test_expired_read_deadline_blocks_ready_data();
     test_expired_write_deadline_blocks_ready_socket();
     test_invalid_io_args();
+    test_once_io_does_not_yield();
     test_closed_leaf_operations();
     test_closed_public_listener_operations();
     test_closed_public_connection_operations();

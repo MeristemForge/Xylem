@@ -25,6 +25,7 @@
 
 #include "net/stream.h"
 #include "runtime/precond.h"
+#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -72,6 +73,12 @@ static xylem_uds_listener_t* _uds_listener_create(
     snprintf(uds_listener->path, UDS_MAX_PATH, "%s", path);
     atomic_init(&uds_listener->closed, false);
     return uds_listener;
+}
+
+static void _uds_consume_io_credit(void) {
+    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+        runtime_yield();
+    }
 }
 
 xylem_uds_listener_t* xylem_uds_listen(const char* path) {
@@ -169,11 +176,24 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&uds->closed)) {
-        ret = stream_read(uds->stream, buf, len);
+    for (;;) {
+        if (atomic_load(&uds->closed)) {
+            return -1;
+        }
+
+        int n = stream_read(uds->stream, buf, len);
+        if (n == 0) {
+            return 0;
+        }
+        if (n > 0) {
+            _uds_consume_io_credit();
+            return n;
+        }
+        if (n != STREAM_IO_AGAIN
+            || stream_wait_read(uds->stream) != IOWAIT_READY) {
+            return -1;
+        }
     }
-    return ret;
 }
 
 int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
@@ -189,11 +209,28 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&uds->closed)) {
-        ret = stream_write(uds->stream, data, len);
+    const char* ptr = (const char*)data;
+    int         rem = len;
+
+    while (rem > 0) {
+        if (atomic_load(&uds->closed)) {
+            return -1;
+        }
+
+        int n = stream_write(uds->stream, ptr, rem);
+        if (n > 0) {
+            ptr += n;
+            rem -= n;
+            _uds_consume_io_credit();
+            continue;
+        }
+        if (n != STREAM_IO_AGAIN
+            || stream_wait_write(uds->stream) != IOWAIT_READY) {
+            return -1;
+        }
     }
-    return ret;
+
+    return atomic_load(&uds->closed) ? -1 : 0;
 }
 
 void xylem_uds_close(xylem_uds_conn_t* uds) {

@@ -403,15 +403,22 @@ static iowait_result_t _stream_wait(
     return ret;
 }
 
-static int _stream_read_once(
+int stream_read(
     stream_t* stream,
     void*     buf,
     int       len) {
+    if (!buf || len <= 0) {
+        return -1;
+    }
+
+    if (atomic_load(&stream->closed)
+        || atomic_load(&stream->rd_shutdown)
+        || iowait_read_deadline_expired(stream->waiter)) {
+        return -1;
+    }
+
     ssize_t n = platform_socket_recv(stream->fd, buf, len);
     if (n >= 0) {
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
         return (int)n;
     }
 
@@ -428,15 +435,28 @@ static int _stream_read_once(
     return -1;
 }
 
-static int _stream_write_once(
+iowait_result_t stream_wait_read(stream_t* stream) {
+    return _stream_wait(stream, false);
+}
+
+int stream_write(
     stream_t*   stream,
     const void* data,
     int         len) {
+    if (len < 0 || (len > 0 && !data)) {
+        return -1;
+    }
+    if (len == 0) {
+        return 0;
+    }
+
+    if (atomic_load(&stream->closed)
+        || iowait_write_deadline_expired(stream->waiter)) {
+        return -1;
+    }
+
     ssize_t n = platform_socket_send(stream->fd, data, len);
     if (n > 0) {
-        if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
-            runtime_yield();
-        }
         return (int)n;
     }
 
@@ -453,115 +473,6 @@ static int _stream_write_once(
             platform_socket_tostring(err));
     }
     return -1;
-}
-
-int stream_try_read(
-    stream_t* stream,
-    void*     buf,
-    int       len) {
-    if (!buf || len <= 0) {
-        return -1;
-    }
-
-    if (atomic_load(&stream->closed)
-        || atomic_load(&stream->rd_shutdown)
-        || iowait_read_deadline_expired(stream->waiter)) {
-        return -1;
-    }
-
-    return _stream_read_once(stream, buf, len);
-}
-
-iowait_result_t stream_wait_read(stream_t* stream) {
-    return _stream_wait(stream, false);
-}
-
-int stream_read(stream_t* stream, void* buf, int len) {
-    if (!buf || len <= 0) {
-        return -1;
-    }
-
-    int ret = -1;
-
-    for (;;) {
-        if (atomic_load(&stream->closed)
-            || atomic_load(&stream->rd_shutdown)
-            || iowait_read_deadline_expired(stream->waiter)) {
-            break;
-        }
-
-        ret = _stream_read_once(stream, buf, len);
-        if (ret != STREAM_IO_AGAIN) {
-            break;
-        }
-        if (iowait_read(stream->waiter) == IOWAIT_READY) {
-            continue;
-        }
-        ret = -1;
-        break;
-    }
-
-    return ret;
-}
-
-int stream_write(stream_t* stream, const void* data, int len) {
-    if (len < 0 || (len > 0 && !data)) {
-        return -1;
-    }
-    if (len == 0) {
-        return 0;
-    }
-
-    int ret = -1;
-
-    const char* ptr = (const char*)data;
-    int         rem = len;
-
-    while (rem > 0) {
-        if (atomic_load(&stream->closed)
-            || iowait_write_deadline_expired(stream->waiter)) {
-            break;
-        }
-
-        int n = _stream_write_once(stream, ptr, rem);
-        if (n > 0) {
-            ptr += n;
-            rem -= n;
-            continue;
-        }
-        if (n != STREAM_IO_AGAIN) {
-            break;
-        }
-        if (iowait_write(stream->waiter) == IOWAIT_READY) {
-            continue;
-        }
-        break;
-    }
-    if (rem == 0
-        && !atomic_load(&stream->closed)) {
-        ret = 0;
-    }
-
-    return ret;
-}
-
-int stream_try_write(
-    stream_t*   stream,
-    const void* data,
-    int         len) {
-    if (len < 0 || (len > 0 && !data)) {
-        return -1;
-    }
-    if (len == 0) {
-        return 0;
-    }
-
-    if (atomic_load(&stream->closed)
-        || iowait_write_deadline_expired(stream->waiter)) {
-        return -1;
-    }
-
-    return _stream_write_once(stream, data, len);
 }
 
 iowait_result_t stream_wait_write(stream_t* stream) {

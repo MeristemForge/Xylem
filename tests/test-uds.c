@@ -20,6 +20,9 @@
  */
 
 #include "xylem.h"
+
+#include "runtime/runtime.h"
+
 #include "assert.h"
 #include "utils.h"
 
@@ -198,6 +201,12 @@ static void _eof_client(void* arg) {
 
     n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n == 0);
+
+    ASSERT(runtime_consume_credit(UINT32_MAX));
+    n = xylem_uds_read(uds, buf, sizeof(buf));
+    ASSERT(n == 0);
+    ASSERT(runtime_consume_credit(1));
+    runtime_yield();
 
     xylem_uds_destroy(uds);
     xylem_waitgroup_done(ctx->wg);

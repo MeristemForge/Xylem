@@ -80,11 +80,18 @@ typedef enum _tls_hs_state_e {
     HS_FAILED  = 2
 } _tls_hs_state_t;
 
+static void _tls_consume_io_credit(void) {
+    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+        runtime_yield();
+    }
+}
+
 static int _tls_stream_io_read(
     void* user,
     void* buf,
     int   len) {
-    int n = stream_try_read((stream_t*)user, buf, len);
+    tls_conn_t* tls = (tls_conn_t*)user;
+    int         n   = stream_read(tls->stream, buf, len);
     return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
@@ -92,7 +99,8 @@ static int _tls_stream_io_write(
     void*       user,
     const void* buf,
     int         len) {
-    int n = stream_try_write((stream_t*)user, buf, len);
+    tls_conn_t* tls = (tls_conn_t*)user;
+    int         n   = stream_write(tls->stream, buf, len);
     return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
@@ -229,6 +237,7 @@ static int _tls_do_handshake(tls_conn_t* tls) {
 
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return 0;
             case TLS_BACKEND_WANT_READ:
                 if (_tls_wait_read(tls) != 0) {
@@ -292,7 +301,7 @@ static void _tls_cache_alpn(
 
 static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
     tls_backend_io_t io = {
-        .user  = tls->stream,
+        .user  = tls,
         .read  = _tls_stream_io_read,
         .write = _tls_stream_io_write,
     };
@@ -335,6 +344,7 @@ static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
 
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return n;
             case TLS_BACKEND_CLOSED:
                 return 0;
@@ -397,6 +407,7 @@ static int _tls_write_loop(
         xylem_mutex_unlock(tls->ssl_mu);
 
         if (st == TLS_BACKEND_OK) {
+            _tls_consume_io_credit();
             ptr += n;
             rem -= n;
             continue;
@@ -433,7 +444,7 @@ static int _tls_write_loop(
  */
 static int _tls_server_handshake(tls_conn_t* tls) {
     tls_backend_io_t io = {
-        .user  = tls->stream,
+        .user  = tls,
         .read  = _tls_stream_io_read,
         .write = _tls_stream_io_write,
     };
@@ -757,16 +768,8 @@ static int _dtls_copy_dgram(
 }
 
 static _dtls_dgram_t* _dtls_take_dgram(dtls_conn_t* dtls) {
-    if (dtls->pending_dgram) {
-        _dtls_dgram_t* dgram = dtls->pending_dgram;
-        dtls->pending_dgram  = NULL;
-        return dgram;
-    }
-    _dtls_dgram_t* dgram =
-        (_dtls_dgram_t*)xylem_channel_recv_timeout(dtls->inbox, 0);
-    if (dgram) {
-        atomic_fetch_sub(&dtls->inbox_len, 1);
-    }
+    _dtls_dgram_t* dgram = dtls->pending_dgram;
+    dtls->pending_dgram  = NULL;
     return dgram;
 }
 
@@ -782,19 +785,19 @@ static int _dtls_server_io_read(void* user, void* buf, int len) {
 static int _dtls_server_io_write(void* user, const void* buf, int len) {
     dtls_conn_t*     dtls = (dtls_conn_t*)user;
     dtls_listener_t* ln   = dtls->listener;
-    int n = datagram_try_send(ln->datagram, buf, len, &dtls->peer_addr);
+    int n = datagram_send(ln->datagram, buf, len, &dtls->peer_addr);
     return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_read(void* user, void* buf, int len) {
     dtls_conn_t* dtls = (dtls_conn_t*)user;
-    int          n    = datagram_try_recv(dtls->datagram, buf, len, NULL);
+    int          n    = datagram_recv(dtls->datagram, buf, len, NULL);
     return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
 static int _dtls_client_io_write(void* user, const void* buf, int len) {
     dtls_conn_t* dtls = (dtls_conn_t*)user;
-    int          n    = datagram_try_send(dtls->datagram, buf, len, NULL);
+    int          n    = datagram_send(dtls->datagram, buf, len, NULL);
     return n == DATAGRAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
 }
 
@@ -876,6 +879,7 @@ static int _dtls_server_send_record(
             tls_backend_conn_write(dtls->be, data, len, &n);
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return 0;
             case TLS_BACKEND_WANT_WRITE: {
                 if (datagram_wait_write(dtls->listener->datagram) !=
@@ -904,6 +908,7 @@ static int _dtls_client_do_handshake(dtls_conn_t* dtls, uint64_t deadline) {
 
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return 0;
             case TLS_BACKEND_WANT_READ: {
                 uint64_t rd_dl = deadline;
@@ -965,6 +970,7 @@ static int _dtls_client_recv_loop(dtls_conn_t* dtls, void* buf, int len) {
 
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return n;
             case TLS_BACKEND_CLOSED:
                 return 0;
@@ -1021,6 +1027,7 @@ static int _dtls_client_send_loop(
 
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return 0;
             case TLS_BACKEND_WANT_WRITE:
                 if (_dtls_client_wait_write(dtls) != 0) {
@@ -1140,6 +1147,7 @@ static void _dtls_handshake_coro(void* arg) {
 
         tls_backend_state_t st = tls_backend_conn_handshake(dtls->be);
         if (st == TLS_BACKEND_OK) {
+            _tls_consume_io_credit();
             dtls->handshake_done = true;
             success              = true;
             break;
@@ -1210,11 +1218,22 @@ static void _dtls_dispatcher(void* arg) {
         }
 
         addr_t from_addr;
-        int    n = datagram_recv(
-            ln->datagram,
-            dgram->data,
-            (int)ln->dgram_bufsz,
-            &from_addr);
+        int n;
+        for (;;) {
+            n = datagram_recv(
+                ln->datagram,
+                dgram->data,
+                (int)ln->dgram_bufsz,
+                &from_addr);
+            if (n >= 0) {
+                _tls_consume_io_credit();
+                break;
+            }
+            if (n != DATAGRAM_IO_AGAIN
+                || datagram_wait_read(ln->datagram) != IOWAIT_READY) {
+                break;
+            }
+        }
 
         if (n < 0) {
             _dtls_dgram_release(ln, dgram);
@@ -1285,6 +1304,7 @@ static int _dtls_server_recv_loop(dtls_conn_t* dtls, void* buf, int len) {
         tls_backend_state_t st = tls_backend_conn_read(dtls->be, buf, len, &n);
         switch (st) {
             case TLS_BACKEND_OK:
+                _tls_consume_io_credit();
                 return n;
             case TLS_BACKEND_CLOSED:
                 return 0;

@@ -104,26 +104,9 @@ extern void datagram_set_write_deadline(
     uint64_t    deadline_ms);
 
 /**
- * @brief Receive one datagram.
+ * @brief Perform at most one non-blocking datagram receive syscall.
  *
- * A datagram has a single logical receiver. Concurrent blocking receive
- * operations on the same datagram are unsupported.
- *
- * @param datagram  Datagram handle.
- * @param buf       Destination buffer.
- * @param len       Maximum bytes to read.
- * @param from      Receives source address, or NULL.
- *
- * @return Bytes read, or -1 on error/timeout/close.
- */
-extern int datagram_recv(
-    datagram_t* datagram,
-    void*       buf,
-    int         len,
-    addr_t*     from);
-
-/**
- * @brief Try one non-blocking datagram receive.
+ * This function never parks or yields the current coroutine.
  *
  * @param datagram  Datagram handle.
  * @param buf       Destination buffer.
@@ -132,7 +115,7 @@ extern int datagram_recv(
  *
  * @return Bytes read, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
  */
-extern int datagram_try_recv(
+extern int datagram_recv(
     datagram_t* datagram,
     void*       buf,
     int         len,
@@ -150,29 +133,9 @@ extern int datagram_try_recv(
 extern iowait_result_t datagram_wait_read(datagram_t* datagram);
 
 /**
- * @brief Send one datagram.
+ * @brief Perform at most one non-blocking datagram send syscall.
  *
- * For connected endpoints, to must be NULL. For unconnected endpoints, to
- * must point at the destination address.
- *
- * A datagram has a single logical sender. Concurrent blocking send operations
- * on the same datagram are unsupported.
- *
- * @param datagram  Datagram handle.
- * @param data      Source buffer.
- * @param len       Number of bytes to send.
- * @param to        Destination address, or NULL for connected endpoint.
- *
- * @return 0 on success, -1 on error/timeout/close.
- */
-extern int datagram_send(
-    datagram_t*   datagram,
-    const void*   data,
-    int           len,
-    const addr_t* to);
-
-/**
- * @brief Try one non-blocking datagram send.
+ * This function never parks or yields the current coroutine.
  *
  * For connected endpoints, to must be NULL. For unconnected endpoints, to
  * must point at the destination address.
@@ -184,7 +147,7 @@ extern int datagram_send(
  *
  * @return Bytes written, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
  */
-extern int datagram_try_send(
+extern int datagram_send(
     datagram_t*   datagram,
     const void*   data,
     int           len,

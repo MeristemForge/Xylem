@@ -118,18 +118,9 @@ extern void stream_set_write_deadline(
     uint64_t  deadline_ms);
 
 /**
- * @brief Read available bytes from the stream.
+ * @brief Perform at most one non-blocking stream read syscall.
  *
- * @param stream  Stream handle.
- * @param buf     Destination buffer.
- * @param len     Maximum bytes to read.
- *
- * @return Bytes read, 0 on peer close, or -1 on error/timeout.
- */
-extern int stream_read(stream_t* stream, void* buf, int len);
-
-/**
- * @brief Try one non-blocking stream read.
+ * This function never parks or yields the current coroutine.
  *
  * @param stream  Stream handle.
  * @param buf     Destination buffer.
@@ -138,7 +129,7 @@ extern int stream_read(stream_t* stream, void* buf, int len);
  * @return Bytes read, 0 on peer close, STREAM_IO_AGAIN on EAGAIN, or -1 on
  * error/timeout.
  */
-extern int stream_try_read(
+extern int stream_read(
     stream_t* stream,
     void*     buf,
     int       len);
@@ -153,21 +144,9 @@ extern int stream_try_read(
 extern iowait_result_t stream_wait_read(stream_t* stream);
 
 /**
- * @brief Write the full buffer to the stream.
+ * @brief Perform at most one non-blocking stream write syscall.
  *
- * @param stream  Stream handle.
- * @param data    Source buffer.
- * @param len     Number of bytes to write.
- *
- * @return 0 on success, -1 on error/timeout.
- */
-extern int stream_write(
-    stream_t* stream,
-    const void* data,
-    int         len);
-
-/**
- * @brief Try one non-blocking stream write.
+ * This function never parks or yields the current coroutine.
  *
  * @param stream  Stream handle.
  * @param data    Source buffer.
@@ -176,7 +155,7 @@ extern int stream_write(
  * @return Bytes written (>0), 0 when len is 0, STREAM_IO_AGAIN on EAGAIN,
  * or -1 on error/timeout.
  */
-extern int stream_try_write(
+extern int stream_write(
     stream_t*   stream,
     const void* data,
     int         len);

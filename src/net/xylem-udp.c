@@ -26,6 +26,7 @@
 #include "net/addr.h"
 #include "net/datagram.h"
 #include "runtime/precond.h"
+#include "runtime/runtime.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -50,6 +51,12 @@ static xylem_udp_chan_t* _udp_chan_create(
     udp->connected = connected;
     atomic_init(&udp->closed, false);
     return udp;
+}
+
+static void _udp_consume_io_credit(void) {
+    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+        runtime_yield();
+    }
 }
 
 xylem_udp_chan_t* xylem_udp_listen(const char* host, uint16_t port) {
@@ -107,17 +114,27 @@ int xylem_udp_recv(
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&udp->closed)) {
-        addr_t from;
-        addr_t* from_ptr = (host || port) ? &from : NULL;
-        ret = datagram_recv(udp->datagram, buf, len, from_ptr);
-        if (ret >= 0 && from_ptr) {
-            (void)addr_ntop(from_ptr, host, host_len, port);
+    addr_t  from;
+    addr_t* from_ptr = (host || port) ? &from : NULL;
+
+    for (;;) {
+        if (atomic_load(&udp->closed)) {
+            return -1;
+        }
+
+        int n = datagram_recv(udp->datagram, buf, len, from_ptr);
+        if (n >= 0) {
+            _udp_consume_io_credit();
+            if (from_ptr) {
+                (void)addr_ntop(from_ptr, host, host_len, port);
+            }
+            return n;
+        }
+        if (n != DATAGRAM_IO_AGAIN
+            || datagram_wait_read(udp->datagram) != IOWAIT_READY) {
+            return -1;
         }
     }
-
-    return ret;
 }
 
 int xylem_udp_send(
@@ -147,16 +164,25 @@ int xylem_udp_send(
         return -1;
     }
 
-    int ret = -1;
-    if (!atomic_load(&udp->closed)) {
-        ret = datagram_send(
+    for (;;) {
+        if (atomic_load(&udp->closed)) {
+            return -1;
+        }
+
+        int n = datagram_send(
             udp->datagram,
             data,
             len,
             udp->connected ? NULL : &dest);
+        if (n >= 0) {
+            _udp_consume_io_credit();
+            return 0;
+        }
+        if (n != DATAGRAM_IO_AGAIN
+            || datagram_wait_write(udp->datagram) != IOWAIT_READY) {
+            return -1;
+        }
     }
-
-    return ret;
 }
 
 void xylem_udp_close(xylem_udp_chan_t* udp) {
