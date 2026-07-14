@@ -39,7 +39,6 @@
 struct stream_s {
     iowait_t*       waiter;
     platform_sock_t fd;
-    _Atomic int32_t refcnt;
     _Atomic bool    rd_shutdown;
     _Atomic bool    closed;
 };
@@ -47,50 +46,8 @@ struct stream_s {
 struct listener_s {
     iowait_t*       waiter;
     platform_sock_t fd;
-    _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
-
-static void _stream_ref(stream_t* stream) {
-    atomic_fetch_add(&stream->refcnt, 1);
-}
-
-static void _stream_unref(stream_t* stream) {
-    if (atomic_fetch_sub(&stream->refcnt, 1)
-        != 1) {
-        return;
-    }
-
-    if (stream->waiter) {
-        iowait_set_rd_deadline(stream->waiter, 0);
-        iowait_set_wr_deadline(stream->waiter, 0);
-        iowait_destroy(stream->waiter);
-    }
-    if (stream->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        shutdown(stream->fd, PLATFORM_SHUT_WR);
-        platform_socket_close(stream->fd);
-    }
-    free(stream);
-}
-
-static void _listener_ref(listener_t* listener) {
-    atomic_fetch_add(&listener->refcnt, 1);
-}
-
-static void _listener_unref(listener_t* listener) {
-    if (atomic_fetch_sub(&listener->refcnt, 1)
-        != 1) {
-        return;
-    }
-
-    if (listener->waiter) {
-        iowait_destroy(listener->waiter);
-    }
-    if (listener->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(listener->fd);
-    }
-    free(listener);
-}
 
 static int _stream_wait_dial(
     stream_t* stream,
@@ -154,8 +111,6 @@ static bool _listener_wait_backoff(
 static stream_t* _listener_accept(
     listener_t* listener,
     bool        unix_socket) {
-    _listener_ref(listener);
-
     stream_t* stream     = NULL;
     uint64_t  backoff_ms = STREAM_ACCEPT_INITIAL_BACKOFF_MS;
 
@@ -215,7 +170,6 @@ static stream_t* _listener_accept(
         break;
     }
 
-    _listener_unref(listener);
     return stream;
 }
 
@@ -232,7 +186,6 @@ listener_t* listener_from_fd(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_init(&listener->refcnt, 1);
     atomic_init(&listener->closed, false);
     return listener;
 }
@@ -250,7 +203,6 @@ stream_t* stream_from_fd(platform_sock_t fd) {
         return NULL;
     }
 
-    atomic_init(&stream->refcnt, 1);
     atomic_init(&stream->rd_shutdown, false);
     atomic_init(&stream->closed, false);
     return stream;
@@ -338,7 +290,7 @@ stream_t* stream_dial(
 
         if (!connected
             && _stream_wait_dial(stream, attempt_deadline_ms) != 0) {
-            stream_release(stream);
+            stream_destroy(stream);
             continue;
         }
 
@@ -388,44 +340,56 @@ stream_t* stream_dial_unix(
 
     if (!connected
         && _stream_wait_dial(stream, connect_deadline_ms) != 0) {
-        stream_release(stream);
+        stream_destroy(stream);
         return NULL;
     }
 
     return stream;
 }
 
-void stream_interrupt(stream_t* stream) {
-    if (atomic_exchange(&stream->closed, true)) {
-        return;
+void stream_close(stream_t* stream) {
+    if (!atomic_exchange(&stream->closed, true)) {
+        iowait_close(stream->waiter);
     }
-    iowait_close(stream->waiter);
 }
 
-void stream_release(stream_t* stream) {
-    _stream_unref(stream);
+void stream_destroy(stream_t* stream) {
+    if (!stream) {
+        return;
+    }
+    if (stream->waiter) {
+        iowait_set_rd_deadline(stream->waiter, 0);
+        iowait_set_wr_deadline(stream->waiter, 0);
+        iowait_destroy(stream->waiter);
+    }
+    if (stream->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        shutdown(stream->fd, PLATFORM_SHUT_WR);
+        platform_socket_close(stream->fd);
+    }
+    free(stream);
 }
 
 void stream_set_read_deadline(
     stream_t* stream,
     uint64_t  deadline_ms) {
-    iowait_set_rd_deadline(stream->waiter, deadline_ms);
+    if (!atomic_load(&stream->closed)) {
+        iowait_set_rd_deadline(stream->waiter, deadline_ms);
+    }
 }
 
 void stream_set_write_deadline(
     stream_t* stream,
     uint64_t  deadline_ms) {
-    iowait_set_wr_deadline(stream->waiter, deadline_ms);
+    if (!atomic_load(&stream->closed)) {
+        iowait_set_wr_deadline(stream->waiter, deadline_ms);
+    }
 }
 
 static iowait_result_t _stream_wait(
     stream_t* stream,
     bool      write) {
-    _stream_ref(stream);
-
     if (atomic_load(&stream->closed)
         || (!write && atomic_load(&stream->rd_shutdown))) {
-        _stream_unref(stream);
         return IOWAIT_CLOSED;
     }
 
@@ -436,7 +400,6 @@ static iowait_result_t _stream_wait(
         ret = IOWAIT_CLOSED;
     }
 
-    _stream_unref(stream);
     return ret;
 }
 
@@ -500,18 +463,13 @@ int stream_try_read(
         return -1;
     }
 
-    _stream_ref(stream);
     if (atomic_load(&stream->closed)
         || atomic_load(&stream->rd_shutdown)
         || iowait_read_deadline_expired(stream->waiter)) {
-        _stream_unref(stream);
         return -1;
     }
 
-    int ret = _stream_read_once(stream, buf, len);
-
-    _stream_unref(stream);
-    return ret;
+    return _stream_read_once(stream, buf, len);
 }
 
 iowait_result_t stream_wait_read(stream_t* stream) {
@@ -523,7 +481,6 @@ int stream_read(stream_t* stream, void* buf, int len) {
         return -1;
     }
 
-    _stream_ref(stream);
     int ret = -1;
 
     for (;;) {
@@ -544,7 +501,6 @@ int stream_read(stream_t* stream, void* buf, int len) {
         break;
     }
 
-    _stream_unref(stream);
     return ret;
 }
 
@@ -556,7 +512,6 @@ int stream_write(stream_t* stream, const void* data, int len) {
         return 0;
     }
 
-    _stream_ref(stream);
     int ret = -1;
 
     const char* ptr = (const char*)data;
@@ -587,7 +542,6 @@ int stream_write(stream_t* stream, const void* data, int len) {
         ret = 0;
     }
 
-    _stream_unref(stream);
     return ret;
 }
 
@@ -602,17 +556,12 @@ int stream_try_write(
         return 0;
     }
 
-    _stream_ref(stream);
     if (atomic_load(&stream->closed)
         || iowait_write_deadline_expired(stream->waiter)) {
-        _stream_unref(stream);
         return -1;
     }
 
-    int ret = _stream_write_once(stream, data, len);
-
-    _stream_unref(stream);
-    return ret;
+    return _stream_write_once(stream, data, len);
 }
 
 iowait_result_t stream_wait_write(stream_t* stream) {
@@ -624,6 +573,10 @@ int stream_remote_addr(
     char*     host,
     size_t    host_len,
     uint16_t* port) {
+    if (atomic_load(&stream->closed)) {
+        return -1;
+    }
+
     addr_t    addr     = {0};
     socklen_t peer_len = sizeof(addr.storage);
     if (getpeername(stream->fd, (struct sockaddr*)&addr.storage, &peer_len)
@@ -639,6 +592,10 @@ int stream_local_addr(
     char*     host,
     size_t    host_len,
     uint16_t* port) {
+    if (atomic_load(&stream->closed)) {
+        return -1;
+    }
+
     addr_t    addr = {0};
     socklen_t len = sizeof(addr.storage);
     if (getsockname(stream->fd, (struct sockaddr*)&addr.storage, &len) != 0) {
@@ -648,10 +605,18 @@ int stream_local_addr(
 }
 
 int stream_shutdown_wr(stream_t* stream) {
+    if (atomic_load(&stream->closed)) {
+        return -1;
+    }
+
     return shutdown(stream->fd, PLATFORM_SHUT_WR) == 0 ? 0 : -1;
 }
 
 int stream_shutdown_rd(stream_t* stream) {
+    if (atomic_load(&stream->closed)) {
+        return -1;
+    }
+
     if (shutdown(stream->fd, PLATFORM_SHUT_RD) != 0) {
         return -1;
     }
@@ -720,16 +685,23 @@ stream_t* listener_accept_unix(listener_t* listener) {
     return _listener_accept(listener, true);
 }
 
-void listener_interrupt(listener_t* listener) {
-    if (atomic_exchange(&listener->closed, true)) {
-        return;
+void listener_close(listener_t* listener) {
+    if (!atomic_exchange(&listener->closed, true)) {
+        iowait_close(listener->waiter);
     }
-
-    iowait_close(listener->waiter);
 }
 
-void listener_release(listener_t* listener) {
-    _listener_unref(listener);
+void listener_destroy(listener_t* listener) {
+    if (!listener) {
+        return;
+    }
+    if (listener->waiter) {
+        iowait_destroy(listener->waiter);
+    }
+    if (listener->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(listener->fd);
+    }
+    free(listener);
 }
 
 int listener_addr(
@@ -737,6 +709,10 @@ int listener_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
+    if (atomic_load(&listener->closed)) {
+        return -1;
+    }
+
     addr_t    addr = {0};
     socklen_t len = sizeof(addr.storage);
     if (getsockname(listener->fd, (struct sockaddr*)&addr.storage, &len) != 0) {

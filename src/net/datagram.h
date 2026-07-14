@@ -70,18 +70,18 @@ extern datagram_t* datagram_listen(const char* host, uint16_t port);
 extern datagram_t* datagram_dial(const char* host, uint16_t port);
 
 /**
- * @brief Interrupt blocked datagram operations without releasing ownership.
+ * @brief Close the datagram and interrupt blocked operations.
  *
  * @param datagram  Datagram handle.
  */
-extern void datagram_interrupt(datagram_t* datagram);
+extern void datagram_close(datagram_t* datagram);
 
 /**
- * @brief Release one datagram ownership reference.
+ * @brief Destroy a datagram after all operations have returned.
  *
  * @param datagram  Datagram handle.
  */
-extern void datagram_release(datagram_t* datagram);
+extern void datagram_destroy(datagram_t* datagram);
 
 /**
  * @brief Set the datagram read deadline.
@@ -239,5 +239,8 @@ extern int datagram_local_addr(
  * @param datagram  Datagram handle.
  *
  * @return Platform socket handle.
+ *
+ * @note The returned descriptor is borrowed. The caller must keep the datagram
+ *       alive for the full duration of descriptor use.
  */
 extern platform_sock_t datagram_fd(datagram_t* datagram);

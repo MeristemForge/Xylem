@@ -36,34 +36,8 @@ struct datagram_s {
     platform_sock_t fd;
     addr_t          peer_addr;
     bool            connected;
-    _Atomic int32_t refcnt;
     _Atomic bool    closed;
 };
-
-static void _datagram_ref(datagram_t* datagram) {
-    atomic_fetch_add(&datagram->refcnt, 1);
-}
-
-static void _datagram_unref(datagram_t* datagram) {
-    if (atomic_fetch_sub(&datagram->refcnt, 1) != 1) {
-        return;
-    }
-
-    if (datagram->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference until the stale deadline fires.
-         */
-        iowait_set_rd_deadline(datagram->waiter, 0);
-        iowait_set_wr_deadline(datagram->waiter, 0);
-        iowait_destroy(datagram->waiter);
-    }
-    if (datagram->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        platform_socket_close(datagram->fd);
-    }
-    free(datagram);
-}
 
 static socklen_t _datagram_addr_len(const addr_t* addr) {
     return (addr->storage.ss_family == AF_INET6)
@@ -74,10 +48,7 @@ static socklen_t _datagram_addr_len(const addr_t* addr) {
 static iowait_result_t _datagram_wait(
     datagram_t* datagram,
     bool        write) {
-    _datagram_ref(datagram);
-
     if (atomic_load(&datagram->closed)) {
-        _datagram_unref(datagram);
         return IOWAIT_CLOSED;
     }
 
@@ -88,7 +59,6 @@ static iowait_result_t _datagram_wait(
         ret = IOWAIT_CLOSED;
     }
 
-    _datagram_unref(datagram);
     return ret;
 }
 
@@ -200,7 +170,6 @@ datagram_t* datagram_from_fd(
         return NULL;
     }
 
-    atomic_init(&datagram->refcnt, 1);
     atomic_init(&datagram->closed, false);
     return datagram;
 }
@@ -275,27 +244,46 @@ datagram_t* datagram_dial(const char* host, uint16_t port) {
     return NULL;
 }
 
-void datagram_interrupt(datagram_t* datagram) {
-    if (atomic_exchange(&datagram->closed, true)) {
-        return;
+void datagram_close(datagram_t* datagram) {
+    if (!atomic_exchange(&datagram->closed, true)) {
+        iowait_close(datagram->waiter);
     }
-    iowait_close(datagram->waiter);
 }
 
-void datagram_release(datagram_t* datagram) {
-    _datagram_unref(datagram);
+void datagram_destroy(datagram_t* datagram) {
+    if (!datagram) {
+        return;
+    }
+    if (datagram->waiter) {
+        /**
+         * Disarm any in-flight deadline timer before teardown. iowait
+         * close/destroy do not cancel timers, and an armed timer holds
+         * an iowait reference until the stale deadline fires.
+         */
+        iowait_set_rd_deadline(datagram->waiter, 0);
+        iowait_set_wr_deadline(datagram->waiter, 0);
+        iowait_destroy(datagram->waiter);
+    }
+    if (datagram->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
+        platform_socket_close(datagram->fd);
+    }
+    free(datagram);
 }
 
 void datagram_set_read_deadline(
     datagram_t* datagram,
     uint64_t    deadline_ms) {
-    iowait_set_rd_deadline(datagram->waiter, deadline_ms);
+    if (!atomic_load(&datagram->closed)) {
+        iowait_set_rd_deadline(datagram->waiter, deadline_ms);
+    }
 }
 
 void datagram_set_write_deadline(
     datagram_t* datagram,
     uint64_t    deadline_ms) {
-    iowait_set_wr_deadline(datagram->waiter, deadline_ms);
+    if (!atomic_load(&datagram->closed)) {
+        iowait_set_wr_deadline(datagram->waiter, deadline_ms);
+    }
 }
 
 int datagram_try_recv(
@@ -307,17 +295,12 @@ int datagram_try_recv(
         return -1;
     }
 
-    _datagram_ref(datagram);
     if (atomic_load(&datagram->closed)
         || iowait_read_deadline_expired(datagram->waiter)) {
-        _datagram_unref(datagram);
         return -1;
     }
 
-    int ret = _datagram_recv_once(datagram, buf, len, from);
-
-    _datagram_unref(datagram);
-    return ret;
+    return _datagram_recv_once(datagram, buf, len, from);
 }
 
 iowait_result_t datagram_wait_read(datagram_t* datagram) {
@@ -333,7 +316,6 @@ int datagram_recv(
         return -1;
     }
 
-    _datagram_ref(datagram);
     int ret = -1;
 
     for (;;) {
@@ -353,7 +335,6 @@ int datagram_recv(
         break;
     }
 
-    _datagram_unref(datagram);
     return ret;
 }
 
@@ -372,17 +353,12 @@ int datagram_try_send(
         return 0;
     }
 
-    _datagram_ref(datagram);
     if (atomic_load(&datagram->closed)
         || iowait_write_deadline_expired(datagram->waiter)) {
-        _datagram_unref(datagram);
         return -1;
     }
 
-    int ret = _datagram_send_once(datagram, data, len, to);
-
-    _datagram_unref(datagram);
-    return ret;
+    return _datagram_send_once(datagram, data, len, to);
 }
 
 iowait_result_t datagram_wait_write(datagram_t* datagram) {
@@ -404,7 +380,6 @@ int datagram_send(
         return 0;
     }
 
-    _datagram_ref(datagram);
     int ret = -1;
 
     for (;;) {
@@ -427,7 +402,6 @@ int datagram_send(
         break;
     }
 
-    _datagram_unref(datagram);
     return ret;
 }
 
@@ -436,6 +410,10 @@ int datagram_remote_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
+    if (atomic_load(&datagram->closed)) {
+        return -1;
+    }
+
     if (!datagram->connected) {
         return -1;
     }
@@ -447,6 +425,10 @@ int datagram_local_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
+    if (atomic_load(&datagram->closed)) {
+        return -1;
+    }
+
     addr_t    addr = {0};
     socklen_t len  = sizeof(addr.storage);
     if (getsockname(datagram->fd, (struct sockaddr*)&addr.storage, &len)

@@ -47,7 +47,7 @@ static void _tcp_conn_unref(xylem_tcp_conn_t* tcp) {
     if (atomic_fetch_sub(&tcp->refcnt, 1) != 1) {
         return;
     }
-    stream_release(tcp->stream);
+    stream_destroy(tcp->stream);
     free(tcp);
 }
 
@@ -55,7 +55,7 @@ static xylem_tcp_conn_t* _tcp_conn_create(stream_t* stream) {
     xylem_tcp_conn_t* tcp
         = (xylem_tcp_conn_t*)calloc(1, sizeof(xylem_tcp_conn_t));
     if (!tcp) {
-        stream_release(stream);
+        stream_destroy(stream);
         return NULL;
     }
 
@@ -73,7 +73,7 @@ static void _tcp_listener_unref(xylem_tcp_listener_t* listener) {
     if (atomic_fetch_sub(&listener->refcnt, 1) != 1) {
         return;
     }
-    listener_release(listener->listener);
+    listener_destroy(listener->listener);
     free(listener);
 }
 
@@ -81,7 +81,7 @@ static xylem_tcp_listener_t* _tcp_listener_create(listener_t* listener) {
     xylem_tcp_listener_t* tcp_listener
         = (xylem_tcp_listener_t*)calloc(1, sizeof(xylem_tcp_listener_t));
     if (!tcp_listener) {
-        listener_release(listener);
+        listener_destroy(listener);
         return NULL;
     }
 
@@ -131,7 +131,7 @@ void xylem_tcp_close_listener(xylem_tcp_listener_t* listener) {
         return;
     }
 
-    listener_interrupt(listener->listener);
+    listener_close(listener->listener);
     _tcp_listener_unref(listener);
 }
 
@@ -220,7 +220,7 @@ void xylem_tcp_close(xylem_tcp_conn_t* tcp) {
     if (atomic_exchange(&tcp->closed, true)) {
         return;
     }
-    stream_interrupt(tcp->stream);
+    stream_close(tcp->stream);
     _tcp_conn_unref(tcp);
 }
 

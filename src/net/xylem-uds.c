@@ -54,7 +54,7 @@ static void _uds_conn_unref(xylem_uds_conn_t* uds) {
     if (atomic_fetch_sub(&uds->refcnt, 1) != 1) {
         return;
     }
-    stream_release(uds->stream);
+    stream_destroy(uds->stream);
     free(uds);
 }
 
@@ -62,7 +62,7 @@ static xylem_uds_conn_t* _uds_conn_create(stream_t* stream) {
     xylem_uds_conn_t* uds
         = (xylem_uds_conn_t*)calloc(1, sizeof(xylem_uds_conn_t));
     if (!uds) {
-        stream_release(stream);
+        stream_destroy(stream);
         return NULL;
     }
 
@@ -80,7 +80,7 @@ static void _uds_listener_unref(xylem_uds_listener_t* listener) {
     if (atomic_fetch_sub(&listener->refcnt, 1) != 1) {
         return;
     }
-    listener_release(listener->listener);
+    listener_destroy(listener->listener);
     if (listener->path[0] != '\0') {
         remove(listener->path);
     }
@@ -93,7 +93,7 @@ static xylem_uds_listener_t* _uds_listener_create(
     xylem_uds_listener_t* uds_listener = (xylem_uds_listener_t*)calloc(
         1, sizeof(xylem_uds_listener_t));
     if (!uds_listener) {
-        listener_release(listener);
+        listener_destroy(listener);
         remove(path);
         return NULL;
     }
@@ -144,7 +144,7 @@ void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
         return;
     }
 
-    listener_interrupt(listener->listener);
+    listener_close(listener->listener);
     _uds_listener_unref(listener);
 }
 
@@ -233,7 +233,7 @@ void xylem_uds_close(xylem_uds_conn_t* uds) {
     if (atomic_exchange(&uds->closed, true)) {
         return;
     }
-    stream_interrupt(uds->stream);
+    stream_close(uds->stream);
     _uds_conn_unref(uds);
 }
 

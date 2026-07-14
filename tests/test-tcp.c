@@ -344,11 +344,11 @@ static void test_dial_falls_back_to_next_resolved_address(void) {
     stream_t* stream = stream_dial("localhost", port, 1000, false);
     bool connected = stream != NULL;
     if (stream) {
-        stream_interrupt(stream);
-        stream_release(stream);
+        stream_close(stream);
+        stream_destroy(stream);
     }
-    listener_interrupt(listener);
-    listener_release(listener);
+    listener_close(listener);
+    listener_destroy(listener);
 
     ASSERT(connected);
 }
@@ -613,7 +613,7 @@ static void _close_write_writer(void* arg) {
 static void _close_write_closer(void* arg) {
     _close_write_ctx_t* ctx = (_close_write_ctx_t*)arg;
     xylem_channel_recv(ctx->started);
-    stream_interrupt(ctx->stream);
+    stream_close(ctx->stream);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -672,7 +672,7 @@ static void _close_write_main(void* arg) {
 
     xylem_waitgroup_destroy(write_ctx.wg);
     xylem_channel_destroy(write_ctx.started);
-    stream_release(stream);
+    stream_destroy(stream);
     platform_socket_close(socks[0]);
     free(data);
     xylem_waitgroup_done(ctx->wg);
@@ -681,6 +681,34 @@ static void _close_write_main(void* arg) {
 static void test_close_stops_inflight_write(void) {
     _ctx_t ctx = {.client = _close_write_main};
     _timeout_main(&ctx);
+}
+
+static void test_closed_leaf_operations(void) {
+    listener_t* listener = listener_listen(TCP_HOST, 0, false);
+    ASSERT(listener != NULL);
+
+    uint16_t port = 0;
+    ASSERT(listener_addr(listener, NULL, 0, &port) == 0);
+    stream_t* stream = stream_dial(TCP_HOST, port, 1000, false);
+    ASSERT(stream != NULL);
+
+    char host[INET6_ADDRSTRLEN];
+    ASSERT(stream_local_addr(stream, host, sizeof(host), &port) == 0);
+    ASSERT(stream_remote_addr(stream, host, sizeof(host), &port) == 0);
+
+    listener_close(listener);
+    ASSERT(listener_addr(listener, NULL, 0, &port) == -1);
+    listener_destroy(listener);
+
+    stream_close(stream);
+    stream_set_read_deadline(stream, 1);
+    stream_set_write_deadline(stream, 1);
+    ASSERT(stream_local_addr(stream, host, sizeof(host), &port) == -1);
+    ASSERT(stream_remote_addr(stream, host, sizeof(host), &port) == -1);
+    ASSERT(stream_shutdown_rd(stream) == -1);
+    ASSERT(stream_shutdown_wr(stream) == -1);
+
+    stream_destroy(stream);
 }
 
 static void _test_run_all(void* arg) {
@@ -704,6 +732,7 @@ static void _test_run_all(void* arg) {
     test_expired_read_deadline_blocks_ready_data();
     test_expired_write_deadline_blocks_ready_socket();
     test_invalid_io_args();
+    test_closed_leaf_operations();
     test_close_stops_inflight_write();
     _utils_watchdog_stop();
     xylem_shutdown();

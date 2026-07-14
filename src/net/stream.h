@@ -84,18 +84,18 @@ extern stream_t* stream_dial_unix(
     uint64_t    connect_timeout_ms);
 
 /**
- * @brief Interrupt blocked stream operations without releasing ownership.
+ * @brief Close the stream and interrupt blocked operations.
  *
  * @param stream  Stream handle.
  */
-extern void stream_interrupt(stream_t* stream);
+extern void stream_close(stream_t* stream);
 
 /**
- * @brief Release one stream ownership reference.
+ * @brief Destroy a stream after all operations have returned.
  *
  * @param stream  Stream handle.
  */
-extern void stream_release(stream_t* stream);
+extern void stream_destroy(stream_t* stream);
 
 /**
  * @brief Set the stream read deadline.
@@ -246,6 +246,9 @@ extern int stream_shutdown_rd(stream_t* stream);
  * @param stream  Stream handle.
  *
  * @return Platform socket handle.
+ *
+ * @note The returned descriptor is borrowed. The caller must keep the stream
+ *       alive for the full duration of descriptor use.
  */
 extern platform_sock_t stream_fd(stream_t* stream);
 
@@ -291,18 +294,18 @@ extern stream_t* listener_accept(listener_t* listener);
 extern stream_t* listener_accept_unix(listener_t* listener);
 
 /**
- * @brief Interrupt blocked listener operations without releasing ownership.
+ * @brief Close the listener and interrupt blocked operations.
  *
  * @param listener  Listener handle.
  */
-extern void listener_interrupt(listener_t* listener);
+extern void listener_close(listener_t* listener);
 
 /**
- * @brief Release one listener ownership reference.
+ * @brief Destroy a listener after all operations have returned.
  *
  * @param listener  Listener handle.
  */
-extern void listener_release(listener_t* listener);
+extern void listener_destroy(listener_t* listener);
 
 /**
  * @brief Get the listener's local address.

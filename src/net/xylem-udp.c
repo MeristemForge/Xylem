@@ -45,7 +45,7 @@ static void _udp_chan_unref(xylem_udp_chan_t* udp) {
     if (atomic_fetch_sub(&udp->refcnt, 1) != 1) {
         return;
     }
-    datagram_release(udp->datagram);
+    datagram_destroy(udp->datagram);
     free(udp);
 }
 
@@ -55,7 +55,7 @@ static xylem_udp_chan_t* _udp_chan_create(
     xylem_udp_chan_t* udp
         = (xylem_udp_chan_t*)calloc(1, sizeof(xylem_udp_chan_t));
     if (!udp) {
-        datagram_release(datagram);
+        datagram_destroy(datagram);
         return NULL;
     }
 
@@ -191,7 +191,7 @@ void xylem_udp_close(xylem_udp_chan_t* udp) {
     if (atomic_exchange(&udp->closed, true)) {
         return;
     }
-    datagram_interrupt(udp->datagram);
+    datagram_close(udp->datagram);
     _udp_chan_unref(udp);
 }
 

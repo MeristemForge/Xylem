@@ -401,6 +401,27 @@ static void test_dial_rejects_invalid_host(void) {
     _timeout_main(&ctx);
 }
 
+static void test_closed_leaf_operations(void) {
+    datagram_t* listener = datagram_listen(UDP_HOST, 0);
+    ASSERT(listener != NULL);
+
+    char     host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    ASSERT(datagram_local_addr(listener, host, sizeof(host), &port) == 0);
+    datagram_close(listener);
+    datagram_set_read_deadline(listener, 1);
+    datagram_set_write_deadline(listener, 1);
+    ASSERT(datagram_local_addr(listener, host, sizeof(host), &port) == -1);
+    datagram_destroy(listener);
+
+    datagram_t* connected = datagram_dial(UDP_HOST, UDP_PORT_A);
+    ASSERT(connected != NULL);
+    ASSERT(datagram_remote_addr(connected, host, sizeof(host), &port) == 0);
+    datagram_close(connected);
+    ASSERT(datagram_remote_addr(connected, host, sizeof(host), &port) == -1);
+    datagram_destroy(connected);
+}
+
 static void test_connected_from_fd_requires_peer_addr(void) {
     platform_sock_t fd =
         platform_socket_listen(UDP_HOST, "0", SOCK_DGRAM, true, false);
@@ -424,6 +445,7 @@ static void _test_run_all(void* arg) {
     test_unconnected_send_requires_destination();
     test_connected_send_rejects_destination();
     test_dial_rejects_invalid_host();
+    test_closed_leaf_operations();
     test_connected_from_fd_requires_peer_addr();
     _utils_watchdog_stop();
     xylem_shutdown();

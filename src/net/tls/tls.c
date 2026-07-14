@@ -197,7 +197,7 @@ static void _tls_restore_handshake_deadline(
 static void _tls_conn_free(tls_conn_t* tls) {
     if (tls->stream) {
         _tls_set_deadline(tls, 0);
-        stream_release(tls->stream);
+        stream_destroy(tls->stream);
     }
     xylem_mutex_destroy(tls->ssl_mu);
     xylem_mutex_destroy(tls->rd_mu);
@@ -337,7 +337,7 @@ static void _tls_listener_unref(tls_listener_t* ln) {
         return;
     }
     if (ln->listener) {
-        listener_release(ln->listener);
+        listener_destroy(ln->listener);
     }
     free(ln);
 }
@@ -560,7 +560,7 @@ static void _dtls_listener_unref(dtls_listener_t* ln) {
     if (atomic_fetch_sub(&ln->refcnt, 1) != 1) {
         return;
     }
-    datagram_release(ln->datagram);
+    datagram_destroy(ln->datagram);
     xylem_mutex_destroy(ln->sessions_mu);
     xylem_mutex_destroy(ln->write_mu);
     _dtls_dgram_t* dgram = ln->dgram_pool;
@@ -591,7 +591,7 @@ static void _dtls_conn_unref(dtls_conn_t* dtls) {
     if (dtls->datagram) {
         datagram_set_read_deadline(dtls->datagram, 0);
         datagram_set_write_deadline(dtls->datagram, 0);
-        datagram_release(dtls->datagram);
+        datagram_destroy(dtls->datagram);
     }
     xylem_mutex_destroy(dtls->ssl_mu);
     xylem_mutex_destroy(dtls->rd_mu);
@@ -1100,7 +1100,7 @@ static void _dtls_client_close(dtls_conn_t* dtls) {
      * best-effort close_notify, we skip it here: it is best-effort on a
      * datagram socket and not worth the backend access.)
      */
-    datagram_interrupt(dtls->datagram);
+    datagram_close(dtls->datagram);
     _dtls_conn_unref(dtls);
 }
 
@@ -1495,7 +1495,7 @@ tls_conn_t* tls_dial(
 
     tls_conn_t* tls = _tls_conn_create(stream);
     if (!tls) {
-        stream_release(stream);
+        stream_destroy(stream);
         return NULL;
     }
 
@@ -1526,7 +1526,7 @@ void tls_close(tls_conn_t* tls) {
      * blocking lock: another coroutine (possibly on a different worker)
      * parked in tls_write holds wr_mu across its (possibly unbounded)
      * park, and a blocking lock here would wait behind the very
-     * coroutine that stream_interrupt must wake -- a teardown deadlock. A
+     * coroutine that stream_close must wake -- a teardown deadlock. A
      * busy wr_mu means a writer is active, so skip the notify and go
      * straight to the hard close, whose stream interrupt wakes any parked
      * reader/writer. This mirrors Go's tls.Conn.Close, which skips
@@ -1537,7 +1537,7 @@ void tls_close(tls_conn_t* tls) {
         xylem_mutex_unlock(tls->wr_mu);
     }
 
-    stream_interrupt(tls->stream);
+    stream_close(tls->stream);
     _tls_conn_unref(tls);
 }
 
@@ -1554,7 +1554,7 @@ tls_listener_t* tls_listen(
 
     tls_listener_t* ln = (tls_listener_t*)calloc(1, sizeof(tls_listener_t));
     if (!ln) {
-        listener_release(listener);
+        listener_destroy(listener);
         return NULL;
     }
 
@@ -1585,7 +1585,7 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
 
         tls_conn_t* conn = _tls_conn_create(stream);
         if (!conn) {
-            stream_release(stream);
+            stream_destroy(stream);
             break;
         }
 
@@ -1612,7 +1612,7 @@ void tls_close_listener(tls_listener_t* ln) {
         return;
     }
 
-    listener_interrupt(ln->listener);
+    listener_close(ln->listener);
     _tls_listener_unref(ln);
 }
 
@@ -1763,7 +1763,7 @@ tls_conn_t* tls_client_handshake_fd(
 
     tls_conn_t* tls = _tls_conn_create(stream);
     if (!tls) {
-        stream_release(stream);
+        stream_destroy(stream);
         return NULL;
     }
     tls->ctx = ctx;
@@ -1796,7 +1796,7 @@ dtls_conn_t* dtls_dial(
 
     dtls_conn_t* dtls = (dtls_conn_t*)calloc(1, sizeof(dtls_conn_t));
     if (!dtls) {
-        datagram_release(datagram);
+        datagram_destroy(datagram);
         return NULL;
     }
 
@@ -1860,7 +1860,7 @@ dtls_listener_t* dtls_listen(
 
     dtls_listener_t* ln = (dtls_listener_t*)calloc(1, sizeof(dtls_listener_t));
     if (!ln) {
-        datagram_release(datagram);
+        datagram_destroy(datagram);
         return NULL;
     }
 
@@ -1959,7 +1959,7 @@ void dtls_close_listener(dtls_listener_t* ln) {
     }
     xylem_mutex_unlock(ln->sessions_mu);
 
-    datagram_interrupt(ln->datagram);
+    datagram_close(ln->datagram);
     xylem_channel_close(ln->accept_ch);
     _dtls_listener_unref(ln);
 }
