@@ -90,8 +90,8 @@ static void _echo_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_uds_write(uds, buf, n) == 0);
 
-    xylem_uds_close(uds);
-    xylem_uds_close_listener(ln);
+    xylem_uds_destroy(uds);
+    xylem_uds_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -110,7 +110,7 @@ static void _echo_client(void* arg) {
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_uds_close(uds);
+    xylem_uds_destroy(uds);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -130,8 +130,8 @@ static void _reader_server(void* arg) {
     ASSERT(xylem_uds_write(uds, "ABCD", 4) == 0);
     xylem_sleep(30);
     ASSERT(xylem_uds_write(uds, "EFGH", 4) == 0);
-    xylem_uds_close(uds);
-    xylem_uds_close_listener(ln);
+    xylem_uds_destroy(uds);
+    xylem_uds_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -150,7 +150,7 @@ static void _reader_client(void* arg) {
     ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
 
     xylem_reader_destroy(rd);
-    xylem_uds_close(uds);
+    xylem_uds_destroy(uds);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -179,8 +179,8 @@ static void _eof_server(void* arg) {
     ASSERT(uds != NULL);
 
     ASSERT(xylem_uds_write(uds, "bye", 3) == 0);
-    xylem_uds_close(uds);
-    xylem_uds_close_listener(ln);
+    xylem_uds_destroy(uds);
+    xylem_uds_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -199,12 +199,46 @@ static void _eof_client(void* arg) {
     n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n == 0);
 
-    xylem_uds_close(uds);
+    xylem_uds_destroy(uds);
     xylem_waitgroup_done(ctx->wg);
 }
 
 static void test_peer_close_eof(void) {
     _run_pair(_eof_server, _eof_client);
+}
+
+static void test_closed_public_listener_operations(void) {
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+
+    xylem_uds_close_listener(ln);
+    xylem_uds_close_listener(ln);
+    ASSERT(xylem_uds_accept(ln) == NULL);
+    xylem_uds_destroy_listener(ln);
+    xylem_uds_destroy_listener(NULL);
+}
+
+static void test_closed_public_connection_operations(void) {
+    xylem_uds_listener_t* ln = xylem_uds_listen(UDS_PATH);
+    ASSERT(ln != NULL);
+
+    xylem_uds_conn_t* uds = xylem_uds_dial(UDS_PATH, 0);
+    ASSERT(uds != NULL);
+
+    xylem_uds_close(uds);
+    xylem_uds_close(uds);
+    xylem_uds_set_read_deadline(uds, 1);
+    xylem_uds_set_write_deadline(uds, 1);
+
+    char byte = 0;
+    ASSERT(xylem_uds_read(uds, &byte, 1) == -1);
+    ASSERT(xylem_uds_write(uds, &byte, 1) == -1);
+    ASSERT(xylem_uds_shutdown_rd(uds) == -1);
+    ASSERT(xylem_uds_shutdown_wr(uds) == -1);
+    xylem_uds_destroy(uds);
+    xylem_uds_destroy(NULL);
+
+    xylem_uds_destroy_listener(ln);
 }
 
 static void _test_run_all(void* arg) {
@@ -215,6 +249,8 @@ static void _test_run_all(void* arg) {
     test_reader_full();
     test_dial_nonexistent();
     test_peer_close_eof();
+    test_closed_public_listener_operations();
+    test_closed_public_connection_operations();
     _utils_watchdog_stop();
     xylem_shutdown();
 }

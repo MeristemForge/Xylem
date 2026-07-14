@@ -77,7 +77,7 @@ static void _echo_server(void* arg) {
 
     ASSERT(xylem_udp_send(udp, "world", 5, sender_host, sender_port) == 0);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -95,7 +95,7 @@ static void _echo_client(void* arg) {
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "world", 5) == 0);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -114,7 +114,7 @@ static void _addr_sender(void* arg) {
     xylem_udp_chan_t* udp = xylem_udp_listen(UDP_HOST, ctx->port_b);
     ASSERT(udp != NULL);
     ASSERT(xylem_udp_send(udp, "ping", 4, UDP_HOST, ctx->port_a) == 0);
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -131,7 +131,7 @@ static void _addr_receiver(void* arg) {
     ASSERT(n == 4);
     ASSERT(port == ctx->port_b);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -156,7 +156,7 @@ static void _timeout_coro(void* arg) {
     int  n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -187,6 +187,8 @@ static void _close_recv_coro(void* arg) {
     int  n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == -1);
 
+    xylem_channel_recv(ctx->ready);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -196,6 +198,7 @@ static void _close_closer_coro(void* arg) {
 
     xylem_sleep(50);
     xylem_udp_close(udp);
+    xylem_channel_send(ctx->ready, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -218,7 +221,7 @@ static void _boundary_sender(void* arg) {
     ASSERT(xylem_udp_send(udp, "BB", 2, NULL, 0) == 0);
     ASSERT(xylem_udp_send(udp, "CCC", 3, NULL, 0) == 0);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -240,7 +243,7 @@ static void _boundary_receiver(void* arg) {
     n = xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL);
     ASSERT(n == 3 && memcmp(buf, "CCC", 3) == 0);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -268,7 +271,7 @@ static void _connaddr_coro(void* arg) {
     ASSERT(xylem_udp_local_addr(udp, lhost, sizeof(lhost), &lport) == 0);
     ASSERT(lport != 0);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -284,7 +287,7 @@ static void _expired_recv_sender(void* arg) {
     xylem_udp_chan_t* udp = xylem_udp_dial(UDP_HOST, ctx->port_a);
     ASSERT(udp != NULL);
     ASSERT(xylem_udp_send(udp, "late", 4, NULL, 0) == 0);
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -301,7 +304,7 @@ static void _expired_recv_receiver(void* arg) {
     char buf[64];
     ASSERT(xylem_udp_recv(udp, buf, sizeof(buf), NULL, 0, NULL) == -1);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -319,7 +322,7 @@ static void _expired_send_peer(void* arg) {
     ASSERT(udp != NULL);
     xylem_channel_send(ctx->ready, ctx);
     xylem_sleep(100);
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -334,7 +337,7 @@ static void _expired_send_coro(void* arg) {
     xylem_udp_set_write_deadline(udp, deadline);
     ASSERT(xylem_udp_send(udp, "late", 4, NULL, 0) == -1);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -353,7 +356,7 @@ static void _unconnected_send_mode_coro(void* arg) {
     ASSERT(udp != NULL);
     ASSERT(xylem_udp_send(udp, "x", 1, NULL, 0) == -1);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -372,7 +375,7 @@ static void _connected_send_mode_coro(void* arg) {
     ASSERT(udp != NULL);
     ASSERT(xylem_udp_send(udp, "x", 1, UDP_HOST, ctx->port_a) == -1);
 
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -430,6 +433,34 @@ static void test_connected_from_fd_requires_peer_addr(void) {
     platform_socket_close(fd);
 }
 
+static void test_closed_public_operations(void) {
+    xylem_udp_chan_t* listener = xylem_udp_listen(UDP_HOST, 0);
+    ASSERT(listener != NULL);
+
+    char     host[INET6_ADDRSTRLEN];
+    uint16_t port = 0;
+    ASSERT(xylem_udp_local_addr(listener, host, sizeof(host), &port) == 0);
+
+    xylem_udp_close(listener);
+    xylem_udp_close(listener);
+    xylem_udp_set_read_deadline(listener, 1);
+    xylem_udp_set_write_deadline(listener, 1);
+
+    char byte = 0;
+    ASSERT(xylem_udp_recv(listener, &byte, 1, NULL, 0, NULL) == -1);
+    ASSERT(xylem_udp_send(listener, &byte, 1, UDP_HOST, port) == -1);
+    ASSERT(xylem_udp_local_addr(listener, host, sizeof(host), &port) == -1);
+    xylem_udp_destroy(listener);
+    xylem_udp_destroy(NULL);
+
+    xylem_udp_chan_t* connected = xylem_udp_dial(UDP_HOST, UDP_PORT_A);
+    ASSERT(connected != NULL);
+    ASSERT(xylem_udp_remote_addr(connected, host, sizeof(host), &port) == 0);
+    xylem_udp_close(connected);
+    ASSERT(xylem_udp_remote_addr(connected, host, sizeof(host), &port) == -1);
+    xylem_udp_destroy(connected);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
@@ -447,6 +478,7 @@ static void _test_run_all(void* arg) {
     test_dial_rejects_invalid_host();
     test_closed_leaf_operations();
     test_connected_from_fd_requires_peer_addr();
+    test_closed_public_operations();
     _utils_watchdog_stop();
     xylem_shutdown();
 }

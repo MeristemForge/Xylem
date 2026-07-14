@@ -61,7 +61,7 @@ static void _echo_server(void* arg) {
 
     char* buf = (char*)malloc(READ_BUF_SIZE);
     if (!buf) {
-        xylem_udp_close(udp);
+        xylem_udp_destroy(udp);
         xylem_shutdown();
         return;
     }
@@ -83,7 +83,7 @@ static void _echo_server(void* arg) {
     }
 
     free(buf);
-    xylem_udp_close(udp);
+    xylem_udp_destroy(udp);
 }
 
 int main(void) {

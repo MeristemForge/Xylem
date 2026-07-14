@@ -64,7 +64,6 @@ static void _handle_client(void* arg) {
     while ((n = xylem_tcp_read(conn, buf, sizeof(buf))) > 0) {
         xylem_tcp_write(conn, buf, n);
     }
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
 }
 
@@ -94,7 +93,6 @@ static void _client(void* arg) {
     xylem_tcp_read(conn, buf, sizeof(buf) - 1);
     xylem_logi("[client] echo: %s", buf);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
 }
 

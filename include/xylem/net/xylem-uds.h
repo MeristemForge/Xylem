@@ -59,17 +59,30 @@ extern xylem_uds_listener_t* xylem_uds_listen(const char* path);
 extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close a listener and interrupt blocked accept.
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in xylem_uds_accept().
- * Unlinks the socket path from the filesystem.
- * The listener handle is invalid after this function returns.
+ * Wakes any coroutine blocked in xylem_uds_accept(). This function is
+ * idempotent and does not free the listener. After all operations using
+ * the listener have returned, call xylem_uds_destroy_listener().
  *
  * @param ln  Listener handle.
  */
 extern void xylem_uds_close_listener(xylem_uds_listener_t* ln);
+
+/**
+ * @brief Destroy a listener after all operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the listener and must not race with any
+ * other listener operation. It closes the listener if needed, then unlinks
+ * the socket path. Passing NULL is safe.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void xylem_uds_destroy_listener(xylem_uds_listener_t* ln);
 
 /**
  * @brief Connect to a Unix domain socket.
@@ -162,16 +175,31 @@ extern int xylem_uds_write(
     int               len);
 
 /**
- * @brief Close a connection and release its handle.
+ * @brief Close a connection and interrupt blocked operations.
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in read/write.
- * The connection handle is invalid after this function returns.
+ * Wakes any coroutine blocked in read/write. This function is idempotent
+ * and may run concurrently with connection operations. It does not free
+ * the connection. After all operations have returned, call
+ * xylem_uds_destroy().
  *
  * @param uds  Connection handle.
  */
 extern void xylem_uds_close(xylem_uds_conn_t* uds);
+
+/**
+ * @brief Destroy a connection after all operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the connection and must not race with any
+ * other connection operation. It closes the connection if needed. Passing
+ * NULL is safe.
+ *
+ * @param uds  Connection handle, or NULL.
+ */
+extern void xylem_uds_destroy(xylem_uds_conn_t* uds);
 
 /**
  * @brief Shut down the write side of the connection.

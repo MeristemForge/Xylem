@@ -109,6 +109,7 @@ void xylem_tcp_destroy_listener(xylem_tcp_listener_t* listener) {
     }
     RUNTIME_REQUIRE_COROUTINE("tcp", "xylem_tcp_destroy_listener");
 
+    xylem_tcp_close_listener(listener);
     listener_destroy(listener->listener);
     free(listener);
 }

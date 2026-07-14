@@ -150,16 +150,29 @@ extern int xylem_udp_send(
     uint16_t          port);
 
 /**
- * @brief Close the UDP handle.
+ * @brief Close the UDP handle and interrupt blocked operations.
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in recv/send.
- * The UDP handle is invalid after this function returns.
+ * Wakes any coroutine blocked in recv/send. This function is idempotent
+ * and may run concurrently with UDP operations. It does not free the
+ * handle. After all operations have returned, call xylem_udp_destroy().
  *
  * @param udp  UDP handle.
  */
 extern void xylem_udp_close(xylem_udp_chan_t* udp);
+
+/**
+ * @brief Destroy a UDP handle after all operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the handle and must not race with any
+ * other UDP operation. It closes the handle if needed. Passing NULL is safe.
+ *
+ * @param udp  UDP handle, or NULL.
+ */
+extern void xylem_udp_destroy(xylem_udp_chan_t* udp);
 
 /**
  * @brief Get the remote address (connected mode only).

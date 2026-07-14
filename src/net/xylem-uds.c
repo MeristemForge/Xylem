@@ -34,29 +34,15 @@
 #define UDS_MAX_PATH 104
 
 struct xylem_uds_conn_s {
-    stream_t*       stream;
-    _Atomic int32_t refcnt;
-    _Atomic bool    closed;
+    stream_t*    stream;
+    _Atomic bool closed;
 };
 
 struct xylem_uds_listener_s {
-    listener_t*     listener;
-    char            path[UDS_MAX_PATH];
-    _Atomic int32_t refcnt;
-    _Atomic bool    closed;
+    listener_t*  listener;
+    char         path[UDS_MAX_PATH];
+    _Atomic bool closed;
 };
-
-static void _uds_conn_ref(xylem_uds_conn_t* uds) {
-    atomic_fetch_add(&uds->refcnt, 1);
-}
-
-static void _uds_conn_unref(xylem_uds_conn_t* uds) {
-    if (atomic_fetch_sub(&uds->refcnt, 1) != 1) {
-        return;
-    }
-    stream_destroy(uds->stream);
-    free(uds);
-}
 
 static xylem_uds_conn_t* _uds_conn_create(stream_t* stream) {
     xylem_uds_conn_t* uds
@@ -67,24 +53,8 @@ static xylem_uds_conn_t* _uds_conn_create(stream_t* stream) {
     }
 
     uds->stream = stream;
-    atomic_init(&uds->refcnt, 1);
     atomic_init(&uds->closed, false);
     return uds;
-}
-
-static void _uds_listener_ref(xylem_uds_listener_t* listener) {
-    atomic_fetch_add(&listener->refcnt, 1);
-}
-
-static void _uds_listener_unref(xylem_uds_listener_t* listener) {
-    if (atomic_fetch_sub(&listener->refcnt, 1) != 1) {
-        return;
-    }
-    listener_destroy(listener->listener);
-    if (listener->path[0] != '\0') {
-        remove(listener->path);
-    }
-    free(listener);
 }
 
 static xylem_uds_listener_t* _uds_listener_create(
@@ -100,7 +70,6 @@ static xylem_uds_listener_t* _uds_listener_create(
 
     uds_listener->listener = listener;
     snprintf(uds_listener->path, UDS_MAX_PATH, "%s", path);
-    atomic_init(&uds_listener->refcnt, 1);
     atomic_init(&uds_listener->closed, false);
     return uds_listener;
 }
@@ -123,8 +92,6 @@ xylem_uds_listener_t* xylem_uds_listen(const char* path) {
 xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_accept");
 
-    _uds_listener_ref(listener);
-
     xylem_uds_conn_t* conn = NULL;
     if (!atomic_load(&listener->closed)) {
         stream_t* stream = listener_accept_unix(listener->listener);
@@ -133,19 +100,29 @@ xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* listener) {
         }
     }
 
-    _uds_listener_unref(listener);
     return conn;
 }
 
 void xylem_uds_close_listener(xylem_uds_listener_t* listener) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_close_listener");
 
-    if (atomic_exchange(&listener->closed, true)) {
+    if (!atomic_exchange(&listener->closed, true)) {
+        listener_close(listener->listener);
+    }
+}
+
+void xylem_uds_destroy_listener(xylem_uds_listener_t* listener) {
+    if (!listener) {
         return;
     }
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_destroy_listener");
 
-    listener_close(listener->listener);
-    _uds_listener_unref(listener);
+    xylem_uds_close_listener(listener);
+    listener_destroy(listener->listener);
+    if (listener->path[0] != '\0') {
+        remove(listener->path);
+    }
+    free(listener);
 }
 
 xylem_uds_conn_t* xylem_uds_dial(
@@ -170,11 +147,9 @@ void xylem_uds_set_read_deadline(
     uint64_t          deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_read_deadline");
 
-    _uds_conn_ref(uds);
     if (!atomic_load(&uds->closed)) {
         stream_set_read_deadline(uds->stream, deadline_ms);
     }
-    _uds_conn_unref(uds);
 }
 
 void xylem_uds_set_write_deadline(
@@ -182,11 +157,9 @@ void xylem_uds_set_write_deadline(
     uint64_t          deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_set_write_deadline");
 
-    _uds_conn_ref(uds);
     if (!atomic_load(&uds->closed)) {
         stream_set_write_deadline(uds->stream, deadline_ms);
     }
-    _uds_conn_unref(uds);
 }
 
 int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
@@ -196,12 +169,10 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
         return -1;
     }
 
-    _uds_conn_ref(uds);
     int ret = -1;
     if (!atomic_load(&uds->closed)) {
         ret = stream_read(uds->stream, buf, len);
     }
-    _uds_conn_unref(uds);
     return ret;
 }
 
@@ -218,45 +189,48 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
         return -1;
     }
 
-    _uds_conn_ref(uds);
     int ret = -1;
     if (!atomic_load(&uds->closed)) {
         ret = stream_write(uds->stream, data, len);
     }
-    _uds_conn_unref(uds);
     return ret;
 }
 
 void xylem_uds_close(xylem_uds_conn_t* uds) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_close");
 
-    if (atomic_exchange(&uds->closed, true)) {
+    if (!atomic_exchange(&uds->closed, true)) {
+        stream_close(uds->stream);
+    }
+}
+
+void xylem_uds_destroy(xylem_uds_conn_t* uds) {
+    if (!uds) {
         return;
     }
-    stream_close(uds->stream);
-    _uds_conn_unref(uds);
+    RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_destroy");
+
+    xylem_uds_close(uds);
+    stream_destroy(uds->stream);
+    free(uds);
 }
 
 int xylem_uds_shutdown_wr(xylem_uds_conn_t* uds) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_wr");
 
-    _uds_conn_ref(uds);
     int ret = -1;
     if (!atomic_load(&uds->closed)) {
         ret = stream_shutdown_wr(uds->stream);
     }
-    _uds_conn_unref(uds);
     return ret;
 }
 
 int xylem_uds_shutdown_rd(xylem_uds_conn_t* uds) {
     RUNTIME_REQUIRE_COROUTINE("uds", "xylem_uds_shutdown_rd");
 
-    _uds_conn_ref(uds);
     int ret = -1;
     if (!atomic_load(&uds->closed)) {
         ret = stream_shutdown_rd(uds->stream);
     }
-    _uds_conn_unref(uds);
     return ret;
 }

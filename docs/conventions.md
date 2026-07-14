@@ -103,19 +103,22 @@ Rules:
   ticker handle, so callers must not destroy the same ticker handle twice. A
   `close` function that releases the handle consumes that handle; callers must
   not use or close the same handle again after `close` returns.
-- **TCP separates close from destroy.** `xylem_tcp_close()` and
-  `xylem_tcp_close_listener()` atomically mark the handle closed and wake
-  blocked operations without freeing it. After every operation using that
-  handle has returned, the owner calls `xylem_tcp_destroy()` or
-  `xylem_tcp_destroy_listener()` as the final, non-concurrent operation.
-  Operations attempted between close and destroy fail without touching a
-  released wrapper.
-- **Cross-coroutine lifetime follows the module contract.** TCP uses the
-  explicit close/wait/destroy sequence above. APIs whose close still consumes
-  the handle may retain an internal atomic reference count. Independently,
-  `iowait` keeps its own references while scheduler/poller wakeups can outlive
-  the initiating call, and uses a generation tag so stale events are rejected
-  rather than dereferenced. See [`design/runtime.md`](design/runtime.md).
+- **TCP, UDP, and UDS separate close from destroy.** Their public `close`
+  functions atomically mark the handle closed and wake blocked operations
+  without freeing it. After every operation using that handle has returned,
+  the owner calls the matching `destroy` function as the final,
+  non-concurrent operation. Operations attempted between close and destroy
+  fail without touching a released wrapper. When the owner is already in the
+  final non-concurrent context, it may call `destroy` directly because destroy
+  closes the handle if needed. Use a separate close/wait/destroy sequence only
+  when close must first cancel operations running in other coroutines.
+- **Cross-coroutine lifetime follows the module contract.** TCP, UDP, and UDS
+  use the explicit close/wait/destroy sequence above. APIs whose close still
+  consumes the handle may retain an internal atomic reference count.
+  Independently, `iowait` keeps its own references while scheduler/poller
+  wakeups can outlive the initiating call, and uses a generation tag so stale
+  events are rejected rather than dereferenced. See
+  [`design/runtime.md`](design/runtime.md).
 
 ## 6. Initialization order
 

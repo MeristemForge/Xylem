@@ -57,7 +57,6 @@ static void _handle_conn(void* arg) {
     /* Heap buffer: 64 KiB would consume half the 128 KiB coroutine stack. */
     char* buf = (char*)malloc(READ_BUF_SIZE);
     if (!buf) {
-        xylem_tcp_close(conn);
         xylem_tcp_destroy(conn);
         return;
     }
@@ -74,7 +73,6 @@ static void _handle_conn(void* arg) {
     }
 
     free(buf);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
 }
 
@@ -103,7 +101,6 @@ static void _acceptor(void* arg) {
         xylem_spawn(_handle_conn, conn);
     }
 
-    xylem_tcp_close_listener(server);
     xylem_tcp_destroy_listener(server);
 }
 

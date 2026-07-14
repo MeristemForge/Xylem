@@ -85,7 +85,8 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the listener and must not race with any
- * other listener operation. Passing NULL is safe.
+ * other listener operation. It closes the listener if needed. Passing NULL
+ * is safe.
  *
  * @param ln  Listener handle, or NULL.
  */

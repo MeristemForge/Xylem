@@ -88,9 +88,7 @@ static void _echo_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_tcp_write(conn, buf, n) == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -110,7 +108,6 @@ static void _echo_client(void* arg) {
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -131,9 +128,7 @@ static void _reader_server(void* arg) {
     ASSERT(xylem_tcp_write(conn, "ABCD", 4) == 0);
     xylem_sleep(30);
     ASSERT(xylem_tcp_write(conn, "EFGH", 4) == 0);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -153,7 +148,6 @@ static void _reader_client(void* arg) {
     ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
 
     xylem_reader_destroy(rd);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -180,9 +174,7 @@ static void _writer_server(void* arg) {
     ASSERT(xylem_writer_flush(wr) == 0);
 
     xylem_writer_destroy(wr);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -202,7 +194,6 @@ static void _writer_client(void* arg) {
     ASSERT(memcmp(result, "hello world", 11) == 0);
 
     xylem_reader_destroy(rd);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -372,9 +363,7 @@ static void _eof_server(void* arg) {
     ASSERT(conn != NULL);
 
     ASSERT(xylem_tcp_write(conn, "bye", 3) == 0);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -394,7 +383,6 @@ static void _eof_client(void* arg) {
     n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -421,9 +409,7 @@ static void _half_server(void* arg) {
     ASSERT(n == 0);
 
     ASSERT(xylem_tcp_write(conn, "pong", 4) == 0);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -443,7 +429,6 @@ static void _half_client(void* arg) {
     ASSERT(n == 4);
     ASSERT(memcmp(buf, "pong", 4) == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -463,9 +448,7 @@ static void _shutdown_rd_server(void* arg) {
 
     xylem_sleep(50);
     ASSERT(xylem_tcp_write(conn, "data", 4) == 0);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -483,7 +466,6 @@ static void _shutdown_rd_client(void* arg) {
     int  n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -503,9 +485,7 @@ static void _expired_read_server(void* arg) {
 
     ASSERT(xylem_tcp_write(conn, "late", 4) == 0);
     xylem_sleep(100);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -524,7 +504,6 @@ static void _expired_read_client(void* arg) {
     char buf[16];
     ASSERT(xylem_tcp_read(conn, buf, sizeof(buf)) == -1);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -543,9 +522,7 @@ static void _expired_write_server(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_sleep(100);
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -561,7 +538,6 @@ static void _expired_write_client(void* arg) {
     xylem_tcp_set_write_deadline(conn, deadline);
     ASSERT(xylem_tcp_write(conn, "late", 4) == -1);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -586,9 +562,7 @@ static void _invalid_io_server(void* arg) {
     ASSERT(n == 2);
     ASSERT(memcmp(buf, "ok", 2) == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -614,7 +588,6 @@ static void _invalid_io_client(void* arg) {
 
     ASSERT(xylem_tcp_write(conn, "ok", 2) == 0);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -746,8 +719,8 @@ static void test_closed_public_listener_operations(void) {
     ASSERT(xylem_tcp_listener_addr(listener, NULL, 0, &port) == 0);
 
     xylem_tcp_close_listener(listener);
-    ASSERT(xylem_tcp_listener_addr(listener, NULL, 0, &port) == -1);
     xylem_tcp_close_listener(listener);
+    ASSERT(xylem_tcp_listener_addr(listener, NULL, 0, &port) == -1);
     xylem_tcp_destroy_listener(listener);
     xylem_tcp_destroy_listener(NULL);
 }
@@ -762,6 +735,7 @@ static void test_closed_public_connection_operations(void) {
     ASSERT(conn != NULL);
 
     xylem_tcp_close(conn);
+    xylem_tcp_close(conn);
     xylem_tcp_set_read_deadline(conn, 1);
     xylem_tcp_set_write_deadline(conn, 1);
 
@@ -774,11 +748,9 @@ static void test_closed_public_connection_operations(void) {
     ASSERT(xylem_tcp_shutdown_rd(conn) == -1);
     ASSERT(xylem_tcp_shutdown_wr(conn) == -1);
 
-    xylem_tcp_close(conn);
     xylem_tcp_destroy(conn);
     xylem_tcp_destroy(NULL);
 
-    xylem_tcp_close_listener(listener);
     xylem_tcp_destroy_listener(listener);
 }
 

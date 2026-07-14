@@ -33,9 +33,8 @@
 
 #include <stdlib.h>
 
-static void _http_tcp_close(xylem_tcp_conn_t* conn) {
-    xylem_tcp_close(conn);
-    xylem_tcp_destroy(conn);
+static void _http_tcp_close(void* conn) {
+    xylem_tcp_destroy((xylem_tcp_conn_t*)conn);
 }
 
 static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
@@ -43,7 +42,7 @@ static http_transport_t _http_make_transport(xylem_tcp_conn_t* conn) {
         .conn            = conn,
         .read            = (int (*)(void*, void*, int))xylem_tcp_read,
         .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
-        .close           = (void (*)(void*))_http_tcp_close,
+        .close           = _http_tcp_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
         .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
@@ -90,7 +89,6 @@ static void _http_accept_coroutine(void* arg) {
         http_srv_conn_ctx_t* ctx =
             (http_srv_conn_ctx_t*)malloc(sizeof(*ctx));
         if (!ctx) {
-            xylem_tcp_close(conn);
             xylem_tcp_destroy(conn);
             continue;
         }
@@ -134,7 +132,6 @@ xylem_http_srv_t* http_tcp_listen(
 
     http_srv_t* srv = (http_srv_t*)calloc(1, sizeof(*srv));
     if (!srv) {
-        xylem_tcp_close_listener(ln);
         xylem_tcp_destroy_listener(ln);
         return NULL;
     }
@@ -155,7 +152,6 @@ xylem_http_srv_t* http_tcp_listen(
      */
     atomic_store(&srv->active_conns, 2);
     if (runtime_spawn(_http_accept_coroutine, srv) != 0) {
-        xylem_tcp_close_listener(ln);
         xylem_tcp_destroy_listener(ln);
         free(srv);
         return NULL;
