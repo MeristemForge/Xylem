@@ -559,6 +559,8 @@ tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {
         SSL_CTX_set_options(ctx->ssl_ctx, SSL_OP_COOKIE_EXCHANGE);
         SSL_CTX_set_min_proto_version(ctx->ssl_ctx, DTLS1_2_VERSION);
     } else {
+        /* Avoid separate transport reads for the TLS record header and body. */
+        SSL_CTX_set_read_ahead(ctx->ssl_ctx, 1);
         SSL_CTX_set_min_proto_version(ctx->ssl_ctx, TLS1_2_VERSION);
     }
 
