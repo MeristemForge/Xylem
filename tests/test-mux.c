@@ -161,6 +161,7 @@ static void _multi_srv_worker(void* arg) {
     xylem_waitgroup_wait(swg);
     xylem_waitgroup_destroy(swg);
 
+    xylem_mux_close(mux);
     xylem_mux_destroy(mux);
     xylem_tcp_destroy(conn);
     xylem_tcp_destroy_listener(ln);
@@ -194,6 +195,7 @@ static void _multi_cli_worker(void* arg) {
         xylem_mux_close_stream(s);
     }
 
+    xylem_mux_close(mux);
     xylem_mux_destroy(mux);
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
@@ -207,10 +209,15 @@ static void test_destroy_null(void) {
     xylem_mux_destroy(NULL);
 }
 
+static void test_close_null(void) {
+    xylem_mux_close(NULL);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
+    test_close_null();
     test_destroy_null();
     test_single_stream_echo();
     test_multiple_streams();

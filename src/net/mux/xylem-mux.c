@@ -41,11 +41,13 @@
 
 typedef int (*_mux_read_fn_t)(void* ctx, void* buf, int len);
 typedef int (*_mux_write_fn_t)(void* ctx, const void* data, int len);
+typedef void (*_mux_close_fn_t)(void* ctx);
 
 struct xylem_mux_s {
     void*                       transport_ctx;
     _mux_read_fn_t              read_fn;
     _mux_write_fn_t             write_fn;
+    _mux_close_fn_t             close_fn;
     xylem_mux_role_t            role;
     uint32_t                    next_stream_id;
     xylem_channel_t*            accept_ch;
@@ -65,17 +67,20 @@ struct xylem_mux_s {
     spin_t                      streams_lock;
     uint32_t                    max_stream_window;
     _Atomic bool                closed;
-    _Atomic int32_t             refcnt;
+    _Atomic bool                reader_done;
 };
 
-static void _mux_ref(xylem_mux_t* mux) {
-    atomic_fetch_add(&mux->refcnt, 1);
-}
-
-static void _mux_unref(xylem_mux_t* mux) {
-    if (atomic_fetch_sub(&mux->refcnt, 1)
-        != 1) {
-        return;
+static void _mux_free(xylem_mux_t* mux) {
+    if (mux->accept_ch) {
+        for (;;) {
+            struct xylem_mux_stream_s* s =
+                (struct xylem_mux_stream_s*)xylem_channel_recv_timeout(
+                    mux->accept_ch, 0);
+            if (!s) {
+                break;
+            }
+            mux_stream_unref(s);
+        }
     }
     for (size_t i = 0; i < mux->stream_count; i++) {
         if (mux->streams[i]) {
@@ -188,6 +193,10 @@ static struct xylem_mux_stream_s* _mux_accept_syn(
     bool created = false;
 
     spin_lock(&mux->streams_lock);
+    if (atomic_load(&mux->closed)) {
+        spin_unlock(&mux->streams_lock);
+        return NULL;
+    }
     struct xylem_mux_stream_s* s = _mux_find_stream(mux, stream_id);
     if (!s) {
         s = mux_stream_create(mux, stream_id, mux->max_stream_window);
@@ -280,9 +289,7 @@ static void _mux_handle_ping(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
     }
 }
 
-static void _mux_teardown(xylem_mux_t* mux) {
-    atomic_store(&mux->closed, true);
-
+static void _mux_reset_streams(xylem_mux_t* mux) {
     spin_lock(&mux->streams_lock);
     size_t n = mux->stream_count;
     spin_unlock(&mux->streams_lock);
@@ -294,10 +301,32 @@ static void _mux_teardown(xylem_mux_t* mux) {
             mux_stream_notify_reset(s);
         }
     }
+}
 
-    xylem_channel_destroy(mux->accept_ch);
-    mux->accept_ch = NULL;
-    _mux_unref(mux);
+static void _mux_close_session(xylem_mux_t* mux) {
+    if (atomic_exchange(&mux->closed, true)) {
+        return;
+    }
+
+    _mux_reset_streams(mux);
+
+    _mux_frame_hdr_t hdr = {
+        .version   = MUX_PROTO_VERSION,
+        .type      = MUX_TYPE_GO_AWAY,
+        .flags     = 0,
+        .stream_id = 0,
+        .length    = 0
+    };
+    _mux_write_frame_try(mux, &hdr, NULL);
+    mux->close_fn(mux->transport_ctx);
+}
+
+static void _mux_teardown(xylem_mux_t* mux) {
+    _mux_close_session(mux);
+
+    xylem_channel_close(mux->accept_ch);
+    /* Last mux access by the reader; destroy may free after observing it. */
+    atomic_store(&mux->reader_done, true);
 }
 
 static int _mux_dispatch(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
@@ -311,8 +340,7 @@ static int _mux_dispatch(xylem_mux_t* mux, _mux_frame_hdr_t* hdr) {
         _mux_handle_ping(mux, hdr);
         return 0;
     case MUX_TYPE_GO_AWAY:
-        atomic_store(&mux->closed, true);
-        return 0;
+        return -1;
     default:
         return 0;
     }
@@ -345,20 +373,24 @@ static void _mux_reader_loop(void* arg) {
 
 static int _mux_resolve_transport(
     xylem_mux_transport_t transport,
-    _mux_read_fn_t*         out_read,
-    _mux_write_fn_t*        out_write) {
+    _mux_read_fn_t*       out_read,
+    _mux_write_fn_t*      out_write,
+    _mux_close_fn_t*      out_close) {
     switch (transport) {
     case XYLEM_MUX_TCP:
         *out_read  = (_mux_read_fn_t)xylem_tcp_read;
         *out_write = (_mux_write_fn_t)xylem_tcp_write;
+        *out_close = (_mux_close_fn_t)xylem_tcp_close;
         return 0;
     case XYLEM_MUX_TLS:
         *out_read  = (_mux_read_fn_t)xylem_tls_read;
         *out_write = (_mux_write_fn_t)xylem_tls_write;
+        *out_close = (_mux_close_fn_t)xylem_tls_close;
         return 0;
     case XYLEM_MUX_UDS:
         *out_read  = (_mux_read_fn_t)xylem_uds_read;
         *out_write = (_mux_write_fn_t)xylem_uds_write;
+        *out_close = (_mux_close_fn_t)xylem_uds_close;
         return 0;
     case XYLEM_MUX_RUDP_STREAM:
         xylem_loge("RUDP stream transport not yet implemented for mux");
@@ -378,7 +410,9 @@ xylem_mux_t* xylem_mux_create(
 
     _mux_read_fn_t  read_fn;
     _mux_write_fn_t write_fn;
-    if (_mux_resolve_transport(transport, &read_fn, &write_fn) != 0) {
+    _mux_close_fn_t close_fn;
+    if (_mux_resolve_transport(
+            transport, &read_fn, &write_fn, &close_fn) != 0) {
         return NULL;
     }
 
@@ -390,6 +424,7 @@ xylem_mux_t* xylem_mux_create(
     mux->transport_ctx = conn;
     mux->read_fn       = read_fn;
     mux->write_fn      = write_fn;
+    mux->close_fn      = close_fn;
     mux->role          = role;
     mux->next_stream_id = (role == XYLEM_MUX_CLIENT) ? 1 : 2;
 
@@ -408,21 +443,27 @@ xylem_mux_t* xylem_mux_create(
 
     mux->write_mu = xylem_mutex_create();
     if (!mux->write_mu) {
-        xylem_channel_destroy(mux->accept_ch);
-        free(mux);
+        _mux_free(mux);
         return NULL;
     }
 
-    atomic_store(&mux->refcnt, 1);
-
-    _mux_ref(mux);
+    atomic_init(&mux->closed, false);
+    atomic_init(&mux->reader_done, false);
     if (runtime_spawn(_mux_reader_loop, mux) != 0) {
-        _mux_unref(mux);
-        _mux_unref(mux);
+        _mux_free(mux);
         return NULL;
     }
 
     return mux;
+}
+
+void xylem_mux_close(xylem_mux_t* mux) {
+    if (!mux) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_close");
+
+    _mux_close_session(mux);
 }
 
 void xylem_mux_destroy(xylem_mux_t* mux) {
@@ -431,53 +472,21 @@ void xylem_mux_destroy(xylem_mux_t* mux) {
     }
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_destroy");
 
-    if (atomic_exchange(&mux->closed, true)) {
-        return;
+    xylem_mux_close(mux);
+    while (!atomic_load(&mux->reader_done)) {
+        runtime_yield();
     }
-
-    /**
-     * Reset every stream FIRST so any parked reader/writer is woken
-     * unconditionally -- this is the cancellation that must always
-     * happen. mux_stream_notify_reset wakes via scheduler_schedule and
-     * never touches write_mu, so it cannot block.
-     */
-    spin_lock(&mux->streams_lock);
-    size_t n = mux->stream_count;
-    spin_unlock(&mux->streams_lock);
-    for (size_t i = 0; i < n; i++) {
-        spin_lock(&mux->streams_lock);
-        struct xylem_mux_stream_s* s = mux->streams[i];
-        spin_unlock(&mux->streams_lock);
-        if (s) {
-            mux_stream_notify_reset(s);
-        }
-    }
-
-    /**
-     * GO_AWAY is advisory and best-effort: send it only if write_mu is
-     * free. A blocking lock could deadlock behind a writer parked in the
-     * transport write (see _mux_write_frame_try).
-     */
-    _mux_frame_hdr_t hdr = {
-        .version   = MUX_PROTO_VERSION,
-        .type      = MUX_TYPE_GO_AWAY,
-        .flags     = 0,
-        .stream_id = 0,
-        .length    = 0
-    };
-    _mux_write_frame_try(mux, &hdr, NULL);
-
-    _mux_unref(mux);
+    _mux_free(mux);
 }
 
 xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_open_stream");
 
+    spin_lock(&mux->streams_lock);
     if (atomic_load(&mux->closed)) {
+        spin_unlock(&mux->streams_lock);
         return NULL;
     }
-
-    spin_lock(&mux->streams_lock);
     uint32_t id = mux->next_stream_id;
     mux->next_stream_id += 2;
     spin_unlock(&mux->streams_lock);
@@ -503,6 +512,12 @@ xylem_mux_stream_t* xylem_mux_open_stream(xylem_mux_t* mux) {
 
     mux_stream_ref(s);
     spin_lock(&mux->streams_lock);
+    if (atomic_load(&mux->closed)) {
+        spin_unlock(&mux->streams_lock);
+        mux_stream_unref(s);
+        mux_stream_unref(s);
+        return NULL;
+    }
     _mux_add_stream(mux, s);
     spin_unlock(&mux->streams_lock);
     return s;

@@ -55,6 +55,8 @@ typedef struct xylem_mux_opts_s {
  *
  * Spawns a background reader coroutine that demultiplexes incoming
  * frames and dispatches them to the appropriate streams.
+ * The mux exclusively uses the transport while it is alive. Closing or
+ * destroying the mux closes the transport but never destroys its handle.
  *
  * @param conn       Transport connection handle.
  * @param transport  Transport type (determines read/write functions).
@@ -70,13 +72,31 @@ extern xylem_mux_t* xylem_mux_create(
     xylem_mux_opts_t*      opts);
 
 /**
- * @brief Destroy the mux session.
+ * @brief Close a mux session and interrupt blocked operations.
  *
  * @note [COROUTINE-ONLY]
  *
- * Sends GoAway, resets all streams, and releases resources.
+ * Sends a best-effort GoAway, resets all streams, closes the underlying
+ * transport, and wakes the background reader. This function is idempotent
+ * and may run concurrently with mux operations. It does not free the mux or
+ * transport handle. After all user operations have returned, call
+ * xylem_mux_destroy().
  *
- * @param mux  Session handle.
+ * @param mux  Session handle, or NULL.
+ */
+extern void xylem_mux_close(xylem_mux_t* mux);
+
+/**
+ * @brief Destroy a mux session after all user operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the mux and must not race with any stream
+ * operation. It closes the session if needed, waits for the background
+ * reader to exit, and releases mux resources. The transport is left closed
+ * but allocated; destroy it separately after this function returns.
+ *
+ * @param mux  Session handle, or NULL.
  */
 extern void xylem_mux_destroy(xylem_mux_t* mux);
 
