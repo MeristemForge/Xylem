@@ -40,12 +40,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void _https_conn_destroy(void* conn) {
+    tls_destroy((tls_conn_t*)conn);
+}
+
+static void _https_listener_close(void* listener) {
+    tls_close_listener((tls_listener_t*)listener);
+}
+
+static void _https_listener_destroy(void* listener) {
+    tls_destroy_listener((tls_listener_t*)listener);
+}
+
+static void _https_ctx_destroy(void* ctx) {
+    tls_ctx_destroy((tls_ctx_t*)ctx);
+}
+
 static http_transport_t _https_make_transport(tls_conn_t* conn) {
     return (http_transport_t){
         .conn            = conn,
         .read            = (int (*)(void*, void*, int))tls_read,
         .write           = (int (*)(void*, const void*, int))tls_write,
-        .close           = (void (*)(void*))tls_close,
+        .close           = _https_conn_destroy,
         .set_rd_deadline = (void (*)(void*, uint64_t))tls_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))tls_set_write_deadline,
         .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))tls_remote_addr,
@@ -117,7 +133,7 @@ static void _https_accept_coroutine(void* arg) {
         http_srv_conn_ctx_t* ctx =
             (http_srv_conn_ctx_t*)malloc(sizeof(*ctx));
         if (!ctx) {
-            tls_close(conn);
+            tls_destroy(conn);
             continue;
         }
         ctx->srv       = srv;
@@ -172,16 +188,17 @@ xylem_http_srv_t* http_tls_listen(
 
     http_srv_t* srv = (http_srv_t*)calloc(1, sizeof(*srv));
     if (!srv) {
-        tls_close_listener(ln);
+        tls_destroy_listener(ln);
         tls_ctx_destroy(tls_ctx);
         return NULL;
     }
-    srv->listener       = ln;
-    srv->close_listener = (void (*)(void*))tls_close_listener;
-    srv->transport_ctx  = tls_ctx;
-    srv->transport_ctx_free = (void (*)(void*))tls_ctx_destroy;
-    srv->handler        = handler;
-    srv->userdata       = userdata;
+    srv->listener           = ln;
+    srv->close_listener     = _https_listener_close;
+    srv->destroy_listener   = _https_listener_destroy;
+    srv->transport_ctx      = tls_ctx;
+    srv->transport_ctx_free = _https_ctx_destroy;
+    srv->handler            = handler;
+    srv->userdata           = userdata;
     http_srv_init(srv, opts);
 
     tls_listener_addr(ln, srv->host, sizeof(srv->host), &srv->port);
@@ -192,7 +209,7 @@ xylem_http_srv_t* http_tls_listen(
      */
     atomic_store(&srv->active_conns, 2);
     if (runtime_spawn(_https_accept_coroutine, srv) != 0) {
-        tls_close_listener(ln);
+        tls_destroy_listener(ln);
         tls_ctx_destroy(tls_ctx);
         free(srv);
         return NULL;

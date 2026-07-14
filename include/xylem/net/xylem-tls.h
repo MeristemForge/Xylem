@@ -390,23 +390,51 @@ extern int xylem_tls_write(
  * aborts. To cancel a connection whose reader/writer is parked, close
  * it from another coroutine -- that wakes the parked coroutine. Read any
  * needed state (xylem_tls_remote_addr) before closing.
- * The connection handle is invalid after this function returns.
+ * This function is idempotent and does not free the connection. After all
+ * operations have returned, call xylem_tls_destroy().
  *
  * @param tls  Connection handle.
  */
 extern void xylem_tls_close(xylem_tls_conn_t* tls);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Destroy a TLS connection after all operations have returned.
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in xylem_tls_accept().
- * The listener handle is invalid after this function returns.
+ * This must be the final call on the connection and must not race with any
+ * other connection operation. It closes the connection if needed. Passing
+ * NULL is safe.
+ *
+ * @param tls  Connection handle, or NULL.
+ */
+extern void xylem_tls_destroy(xylem_tls_conn_t* tls);
+
+/**
+ * @brief Close a listener and interrupt blocked accept.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * Wakes any coroutine blocked in xylem_tls_accept(). This function is
+ * idempotent and does not free the listener. After all operations using
+ * the listener have returned, call xylem_tls_destroy_listener().
  *
  * @param ln  Listener handle.
  */
 extern void xylem_tls_close_listener(xylem_tls_listener_t* ln);
+
+/**
+ * @brief Destroy a TLS listener after all operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the listener and must not race with any
+ * other listener operation. It closes the listener if needed. Passing NULL
+ * is safe.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void xylem_tls_destroy_listener(xylem_tls_listener_t* ln);
 
 /**
  * @brief Get the remote address of the connection.

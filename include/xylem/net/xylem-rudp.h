@@ -98,12 +98,26 @@ extern xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln);
  *
  * @note [COROUTINE-ONLY]
  *
- * Resets all active sessions and wakes any parked accept caller.
- * The listener handle is invalid after this function returns.
+ * Resets all active sessions and wakes any parked accept caller without
+ * releasing the owner handle. After user operations have returned, call
+ * xylem_rudp_destroy_listener().
  *
  * @param ln  Listener handle.
  */
 extern void xylem_rudp_close_listener(xylem_rudp_listener_t* ln);
+
+/**
+ * @brief Destroy a RUDP listener after user operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the listener and must not race with any
+ * user operation. Internal dispatcher references may defer the actual free.
+ * It closes the listener if needed. Passing NULL is safe.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void xylem_rudp_destroy_listener(xylem_rudp_listener_t* ln);
 
 /**
  * @brief Read data from a stream-mode connection.
@@ -145,11 +159,25 @@ extern int xylem_rudp_write(
  *
  * @note [COROUTINE-ONLY]
  *
- * The connection handle is invalid after this function returns.
+ * This function is idempotent and does not release the owner handle. After
+ * all user operations have returned, call xylem_rudp_destroy().
  *
  * @param conn  Connection handle.
  */
 extern void xylem_rudp_close(xylem_rudp_conn_t* conn);
+
+/**
+ * @brief Destroy a RUDP connection after user operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the connection and must not race with any
+ * user operation. Internal timer or dispatcher references may defer the
+ * actual free. It closes the connection if needed. Passing NULL is safe.
+ *
+ * @param conn  Connection handle, or NULL.
+ */
+extern void xylem_rudp_destroy(xylem_rudp_conn_t* conn);
 
 /**
  * @brief Set the read deadline for a connection.

@@ -130,8 +130,8 @@ static void _echo_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_dtls_write(conn, buf, n) == 0);
 
-    xylem_dtls_close(conn);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy(conn);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -151,7 +151,7 @@ static void _echo_client(void* arg) {
     ASSERT(n == (int64_t)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -180,8 +180,8 @@ static void _alpn_server(void* arg) {
         xylem_dtls_write(conn, buf, n);
     }
 
-    xylem_dtls_close(conn);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy(conn);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -201,7 +201,7 @@ static void _alpn_client(void* arg) {
     char buf[8];
     xylem_dtls_read(conn, buf, sizeof(buf));
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -247,9 +247,9 @@ static void _ci_server(void* arg) {
     if (conn) {
         char buf[8];
         xylem_dtls_read(conn, buf, sizeof(buf));
-        xylem_dtls_close(conn);
+        xylem_dtls_destroy(conn);
     }
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -263,6 +263,8 @@ static void _ci_client(void* arg) {
 
     xylem_dtls_write(conn, "x", 1);
     xylem_dtls_close(conn);
+    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
 
     xylem_waitgroup_done(ctx->wg);
 }
@@ -283,8 +285,8 @@ static void _dl_server(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_sleep(2000);
-    xylem_dtls_close(conn);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy(conn);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -303,7 +305,7 @@ static void _dl_client(void* arg) {
     int  n = xylem_dtls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -322,6 +324,7 @@ static void _cw_server(void* arg) {
     xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
     ASSERT(conn == NULL);
 
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -364,8 +367,8 @@ static void _lc_server(void* arg) {
     xylem_dtls_conn_t* conn = xylem_dtls_accept(ln);
     ASSERT(conn != NULL);
 
-    xylem_dtls_close_listener(ln);
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy_listener(ln);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -377,7 +380,7 @@ static void _lc_client(void* arg) {
         xylem_dtls_dial(DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -393,7 +396,7 @@ static void _lu_server(void* arg) {
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
     xylem_channel_recv(ctx->done);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -405,7 +408,7 @@ static void _lu_client(void* arg) {
         xylem_dtls_dial(DTLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_channel_send(ctx->done, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -425,7 +428,7 @@ static void _conc_echo_handler(void* arg) {
         xylem_dtls_write(conn, buf, n);
     }
     xylem_sleep(100);
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
 }
 
 static void _conc_server(void* arg) {
@@ -442,7 +445,7 @@ static void _conc_server(void* arg) {
     }
 
     xylem_sleep(500);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -471,7 +474,7 @@ static void _conc_client_seq(void* arg) {
     }
 
     for (int i = 0; i < CONC_COUNT; i++) {
-        xylem_dtls_close(conns[i]);
+        xylem_dtls_destroy(conns[i]);
     }
 
     xylem_waitgroup_done(ctx->wg);
@@ -513,8 +516,8 @@ static void _fdx_server(void* arg) {
     }
 
     xylem_sleep(200);
-    xylem_dtls_close(conn);
-    xylem_dtls_close_listener(ln);
+    xylem_dtls_destroy(conn);
+    xylem_dtls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -568,7 +571,7 @@ static void _fdx_client(void* arg) {
     xylem_waitgroup_destroy(io_wg);
     ASSERT(sh.ok == 1);
 
-    xylem_dtls_close(conn);
+    xylem_dtls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -585,6 +588,9 @@ static void _run_cfg_tests(void* arg) {
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    xylem_dtls_destroy(NULL);
+    xylem_dtls_destroy_listener(NULL);
 
     _run_cfg_tests(NULL);
     test_handshake_and_echo();

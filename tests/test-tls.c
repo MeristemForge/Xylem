@@ -239,8 +239,8 @@ static void _echo_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -260,7 +260,7 @@ static void _echo_client(void* arg) {
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -296,7 +296,7 @@ static void _fail_good_client(void* arg) {
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -314,15 +314,15 @@ static void _fail_server(void* arg) {
         char buf[64];
         int  n = xylem_tls_read(conn, buf, sizeof(buf));
         if (n <= 0) {
-            xylem_tls_close(conn);
+            xylem_tls_destroy(conn);
             continue;
         }
         ASSERT(xylem_tls_write(conn, buf, n) == 0);
-        xylem_tls_close(conn);
+        xylem_tls_destroy(conn);
         break;
     }
 
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -390,8 +390,8 @@ static void _alpn_server(void* arg) {
         xylem_tls_write(conn, buf, n);
     }
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -411,7 +411,7 @@ static void _alpn_client(void* arg) {
     char buf[8];
     xylem_tls_read(conn, buf, sizeof(buf));
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -458,8 +458,8 @@ static void _deadline_server(void* arg) {
     ASSERT(xylem_tls_handshake(conn) == 0);
 
     xylem_sleep(2000);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -478,7 +478,7 @@ static void _deadline_client(void* arg) {
     int  n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -506,8 +506,8 @@ static void _lazy_deadline_server(void* arg) {
     ASSERT(n == -1);
 
     xylem_channel_send(ctx->gate, ctx);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -520,7 +520,7 @@ static void _lazy_deadline_client(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_channel_recv(ctx->gate);
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -543,8 +543,8 @@ static void _stale_errq_server(void* arg) {
     ASSERT(xylem_tls_handshake(conn) == 0);
 
     xylem_sleep(200);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -567,7 +567,7 @@ static void _stale_errq_client(void* arg) {
     ASSERT(n == -1);
     ASSERT(end - start >= 80);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -588,8 +588,8 @@ static void _expired_read_server(void* arg) {
     ASSERT(conn != NULL);
     ASSERT(xylem_tls_write(conn, "late", 4) == 0);
     xylem_sleep(100);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -608,7 +608,7 @@ static void _expired_read_client(void* arg) {
     char buf[64];
     ASSERT(xylem_tls_read(conn, buf, sizeof(buf)) == -1);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -629,9 +629,9 @@ static void _sac_server(void* arg) {
     if (conn) {
         char buf[8];
         xylem_tls_read(conn, buf, sizeof(buf));
-        xylem_tls_close(conn);
+        xylem_tls_destroy(conn);
     }
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -645,6 +645,8 @@ static void _sac_client(void* arg) {
 
     xylem_tls_write(conn, "x", 1);
     xylem_tls_close(conn);
+    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
 
     xylem_waitgroup_done(ctx->wg);
 }
@@ -664,6 +666,7 @@ static void _cl_server(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn == NULL);
 
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -707,9 +710,9 @@ static void _kl_server(void* arg) {
     if (conn) {
         char buf[8];
         xylem_tls_read(conn, buf, sizeof(buf));
-        xylem_tls_close(conn);
+        xylem_tls_destroy(conn);
     }
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -721,7 +724,7 @@ static void _kl_client(void* arg) {
         xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
     xylem_tls_write(conn, "k", 1);
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -777,8 +780,8 @@ static void _sni_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -801,7 +804,7 @@ static void _sni_client(void* arg) {
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -825,10 +828,10 @@ static void _sni_sel_server(void* arg) {
         int  n = xylem_tls_read(conn, buf, sizeof(buf));
         ASSERT(n > 0);
         ASSERT(xylem_tls_write(conn, buf, n) == 0);
-        xylem_tls_close(conn);
+        xylem_tls_destroy(conn);
     }
 
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -846,7 +849,7 @@ static void _sni_sel_roundtrip(xylem_tls_ctx_t* cctx, uint16_t port,
     ASSERT(n == (int)strlen(msg));
     ASSERT(memcmp(buf, msg, (size_t)n) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
 }
 
 static void _sni_sel_client(void* arg) {
@@ -928,8 +931,8 @@ static void _addr_server(void* arg) {
     ASSERT(n > 0);
     ASSERT(xylem_tls_write(conn, buf, n) == 0);
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -953,7 +956,7 @@ static void _addr_client(void* arg) {
     int  n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == (int)strlen(msg));
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -974,15 +977,18 @@ static void _conc_close_server(void* arg) {
     ASSERT(xylem_tls_handshake(conn) == 0);
 
     xylem_sleep(2000);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
 static void _conc_close_closer(void* arg) {
-    xylem_tls_conn_t* conn = (xylem_tls_conn_t*)arg;
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_conn_t* conn =
+        (xylem_tls_conn_t*)xylem_channel_recv(ctx->gate);
     xylem_sleep(100);
     xylem_tls_close(conn);
+    xylem_channel_send(ctx->gate, ctx);
 }
 
 static void _conc_close_client(void* arg) {
@@ -993,12 +999,15 @@ static void _conc_close_client(void* arg) {
         xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    xylem_spawn(_conc_close_closer, conn);
+    xylem_spawn(_conc_close_closer, ctx);
+    xylem_channel_send(ctx->gate, conn);
 
     char buf[64];
     int  n = xylem_tls_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
+    xylem_channel_recv(ctx->gate);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1018,7 +1027,7 @@ static void _clac_server(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
 
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy_listener(ln);
 
     char buf[64];
     int  n = xylem_tls_read(conn, buf, sizeof(buf));
@@ -1026,7 +1035,7 @@ static void _clac_server(void* arg) {
     ASSERT(memcmp(buf, "ping", 4) == 0);
     ASSERT(xylem_tls_write(conn, "pong", 4) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1046,7 +1055,7 @@ static void _clac_client(void* arg) {
     ASSERT(n == 4);
     ASSERT(memcmp(buf, "pong", 4) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1088,8 +1097,8 @@ static void _fdx_server(void* arg) {
         echoed += n;
     }
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1142,7 +1151,7 @@ static void _fdx_client(void* arg) {
     xylem_waitgroup_destroy(io_wg);
     ASSERT(sh.ok == 1);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1194,8 +1203,8 @@ static void _lazy_server(void* arg) {
     xylem_waitgroup_destroy(io_wg);
     ASSERT(sh.ok == 1);
 
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1216,7 +1225,7 @@ static void _lazy_client(void* arg) {
     ASSERT(n == 2);
     ASSERT(memcmp(buf, "yo", 2) == 0);
 
-    xylem_tls_close(conn);
+    xylem_tls_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1226,9 +1235,12 @@ static void test_lazy_handshake(void) {
 }
 
 static void _wrclose_closer(void* arg) {
-    xylem_tls_conn_t* conn = (xylem_tls_conn_t*)arg;
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_conn_t* conn =
+        (xylem_tls_conn_t*)xylem_channel_recv(ctx->ready);
     xylem_sleep(500);
     xylem_tls_close(conn);
+    xylem_channel_send(ctx->ready, ctx);
 }
 
 static void _wrclose_client(void* arg) {
@@ -1239,7 +1251,8 @@ static void _wrclose_client(void* arg) {
         xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
     ASSERT(conn != NULL);
 
-    xylem_spawn(_wrclose_closer, conn);
+    xylem_spawn(_wrclose_closer, ctx);
+    xylem_channel_send(ctx->ready, conn);
 
     static char big[64 * 1024];
     memset(big, 'x', sizeof(big));
@@ -1249,6 +1262,8 @@ static void _wrclose_client(void* arg) {
     }
     ASSERT(rc == -1);
 
+    xylem_channel_recv(ctx->ready);
+    xylem_tls_destroy(conn);
     xylem_channel_send(ctx->gate, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -1265,8 +1280,8 @@ static void _wrclose_server(void* arg) {
     ASSERT(xylem_tls_handshake(conn) == 0);
 
     xylem_channel_recv(ctx->gate);
-    xylem_tls_close(conn);
-    xylem_tls_close_listener(ln);
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -1278,6 +1293,9 @@ static void test_close_with_parked_writer(void) {
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    xylem_tls_destroy(NULL);
+    xylem_tls_destroy_listener(NULL);
 
     test_load_cert_valid();
     test_load_cert_invalid();

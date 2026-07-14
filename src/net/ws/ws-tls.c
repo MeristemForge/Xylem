@@ -35,13 +35,16 @@
 
 #include <stdbool.h>
 
+static void _ws_tls_close(void* conn) {
+    xylem_tls_destroy((xylem_tls_conn_t*)conn);
+}
 
 static http_transport_t _ws_make_tls_transport(xylem_tls_conn_t* conn) {
     return (http_transport_t){
         .conn            = conn,
         .read            = (int (*)(void*, void*, int))xylem_tls_read,
         .write           = (int (*)(void*, const void*, int))xylem_tls_write,
-        .close           = (void (*)(void*))xylem_tls_close,
+        .close           = _ws_tls_close,
         .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tls_set_read_deadline,
         .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tls_set_write_deadline,
     };

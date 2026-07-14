@@ -725,9 +725,9 @@ static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
         /**
          * The update timer callback itself is spawned. Defer teardown one
          * more scheduler turn so this timer fire can return and release its
-         * ud guard before close/shutdown drops owner references or destroys
-         * timer-owned resources. The extra reference keeps the conn alive
-         * until the deferred coroutine runs.
+         * ud guard before shutdown drops session references. The extra
+         * reference keeps the conn and timer-owned resources alive until
+         * the deferred coroutine runs.
          */
         _rudp_conn_ref(c);
         if (runtime_spawn(_rudp_deferred_close, c) != 0) {
@@ -741,8 +741,8 @@ static void _rudp_update_timer_cb(scheduler_timer_t* timer, void* ud) {
 
 /**
  * Drain residual datagrams from an already-closed session inbox and
- * destroy it. The caller (xylem_rudp_close) has already closed the
- * channel, so the drain recv() never parks: it pops any payloads the
+ * destroy it. The shutdown path has already closed the channel, so the
+ * drain recv() never parks: it pops any payloads the
  * dispatcher queued, then returns NULL once empty. We free the
  * payloads here because xylem_channel_destroy only frees the node
  * wrappers, not the opaque dgram pointers. Runs from _rudp_conn_unref
@@ -861,12 +861,12 @@ static void _rudp_conn_unref(void* ud) {
  * callback frame. Drops the reference taken when the teardown was scheduled.
  *
  * The timer must only perform shutdown. Application/accept references
- * remain owned by their callers and are dropped by xylem_rudp_close().
+ * remain owned by their callers and are dropped by xylem_rudp_destroy().
  * For listener sessions, shutdown removes the session tree reference.
  */
 static void _rudp_deferred_close(void* arg) {
     xylem_rudp_conn_t* conn = (xylem_rudp_conn_t*)arg;
-    _rudp_conn_shutdown(conn); /* wake readers; owner refs close normally */
+    _rudp_conn_shutdown(conn); /* wake readers; owner refs destroy normally */
     _rudp_conn_unref(conn); /* drop the ref taken by the timer callback */
 }
 
@@ -1462,8 +1462,9 @@ int xylem_rudp_read(xylem_rudp_conn_t* conn, void* buf, int len) {
         return -1;
     }
     /**
-     * Hold a reference across the (parking) read so a concurrent
-     * xylem_rudp_close cannot free the conn/inbox out from under us.
+     * Hold an operation reference across the park while close may drop
+     * the session-tree reference. The owner calls destroy after this
+     * operation returns.
      */
     _rudp_conn_ref(conn);
     int ret;
@@ -1631,7 +1632,7 @@ xylem_rudp_conn_t* xylem_rudp_accept(xylem_rudp_listener_t* ln) {
  * Tear a session down exactly once (guarded by the `closed` exchange):
  * stop the update timer and wake any parked reader. Does NOT drop the
  * owner reference -- callers decide who owns that drop (see
- * xylem_rudp_close and _rudp_deferred_close). Idempotent: a second caller
+ * xylem_rudp_destroy and _rudp_deferred_close). Idempotent: a second caller
  * loses the exchange and returns immediately.
  */
 static void _rudp_conn_shutdown(xylem_rudp_conn_t* conn) {
@@ -1678,8 +1679,15 @@ void xylem_rudp_close(xylem_rudp_conn_t* conn) {
     RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_close");
 
     _rudp_conn_shutdown(conn);
+}
 
-    /* Drop the owner reference; the last reference out frees the conn. */
+void xylem_rudp_destroy(xylem_rudp_conn_t* conn) {
+    if (!conn) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_destroy");
+
+    xylem_rudp_close(conn);
     _rudp_conn_unref(conn);
 }
 
@@ -1713,7 +1721,15 @@ void xylem_rudp_close_listener(xylem_rudp_listener_t* ln) {
     }
     xylem_channel_close(ln->accept_ch);
     mtx_unlock(&ln->sessions_mtx);
+}
 
+void xylem_rudp_destroy_listener(xylem_rudp_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("rudp", "xylem_rudp_destroy_listener");
+
+    xylem_rudp_close_listener(ln);
     _rudp_listener_unref(ln);
 }
 

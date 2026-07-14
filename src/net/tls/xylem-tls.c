@@ -180,6 +180,15 @@ void xylem_tls_close(xylem_tls_conn_t* tls) {
     }
 }
 
+void xylem_tls_destroy(xylem_tls_conn_t* tls) {
+    if (!tls) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_destroy");
+
+    tls_destroy(&tls->internal);
+}
+
 xylem_tls_listener_t* xylem_tls_listen(
     const char*       host,
     uint16_t          port,
@@ -208,6 +217,15 @@ void xylem_tls_close_listener(xylem_tls_listener_t* ln) {
 
         tls_close_listener(&ln->internal);
     }
+}
+
+void xylem_tls_destroy_listener(xylem_tls_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("tls", "xylem_tls_destroy_listener");
+
+    tls_destroy_listener(&ln->internal);
 }
 
 int xylem_tls_read(xylem_tls_conn_t* tls, void* buf, int len) {

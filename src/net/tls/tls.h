@@ -83,7 +83,6 @@ struct tls_conn_s {
     _Atomic uint64_t    rd_deadline;
     _Atomic uint64_t    wr_deadline;
     _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
-    _Atomic int32_t     refcnt;
     _Atomic bool        closed;
 };
 
@@ -91,7 +90,6 @@ struct tls_listener_s {
     listener_t*      listener;
     tls_ctx_t*       ctx;
     xylem_tls_opts_t opts;
-    _Atomic int32_t  refcnt;
     _Atomic bool     closed;
 };
 
@@ -267,13 +265,22 @@ extern tls_conn_t* tls_dial(
     xylem_tls_opts_t* opts);
 
 /**
- * @brief Close a connection and release it.
+ * @brief Close a connection and interrupt blocked operations.
  *
- * The connection handle is invalid after this function returns.
+ * Does not release the owner handle.
  *
  * @param tls  Connection handle.
  */
-extern void        tls_close(tls_conn_t* tls);
+extern void tls_close(tls_conn_t* tls);
+
+/**
+ * @brief Destroy a TLS connection. NULL-safe.
+ *
+ * Closes the connection if needed, then releases the owner handle.
+ *
+ * @param tls  Connection handle, or NULL.
+ */
+extern void tls_destroy(tls_conn_t* tls);
 
 /**
  * @brief Create a TLS listener bound to the given address.
@@ -324,13 +331,22 @@ extern tls_listener_t* tls_listen(
 extern tls_conn_t*     tls_accept(tls_listener_t* ln);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Close a listener and interrupt blocked accept.
  *
- * The listener handle is invalid after this function returns.
+ * Does not release the owner handle.
  *
  * @param ln  Listener handle.
  */
-extern void            tls_close_listener(tls_listener_t* ln);
+extern void tls_close_listener(tls_listener_t* ln);
+
+/**
+ * @brief Destroy a TLS listener. NULL-safe.
+ *
+ * Closes the listener if needed, then releases the owner handle.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void tls_destroy_listener(tls_listener_t* ln);
 
 /**
  * @brief Read available plaintext (read-some semantics).
@@ -550,11 +566,31 @@ extern int dtls_write(dtls_conn_t* dtls, const void* data, int len);
 extern void dtls_close(dtls_conn_t* dtls);
 
 /**
+ * @brief Destroy a DTLS connection. NULL-safe.
+ *
+ * Closes the connection if needed, then releases the owner reference.
+ * Internal references may defer the actual free.
+ *
+ * @param dtls  Connection handle, or NULL.
+ */
+extern void dtls_destroy(dtls_conn_t* dtls);
+
+/**
  * @brief Close a DTLS listener.
  *
  * @param ln  Listener handle.
  */
 extern void dtls_close_listener(dtls_listener_t* ln);
+
+/**
+ * @brief Destroy a DTLS listener. NULL-safe.
+ *
+ * Closes the listener if needed, then releases the owner reference.
+ * Internal references may defer the actual free.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void dtls_destroy_listener(dtls_listener_t* ln);
 
 /**
  * @brief Set the absolute read deadline.

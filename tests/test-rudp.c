@@ -81,8 +81,8 @@ static void _echo_server(void* arg) {
 
     xylem_sleep(100);
 
-    xylem_rudp_close(conn);
-    xylem_rudp_close_listener(ln);
+    xylem_rudp_destroy(conn);
+    xylem_rudp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -100,7 +100,7 @@ static void _echo_client(void* arg) {
     ASSERT(n == 5);
     ASSERT(memcmp(buf, "world", 5) == 0);
 
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -124,8 +124,8 @@ static void _addr_server(void* arg) {
     ASSERT(port != 0);
 
     xylem_sleep(100);
-    xylem_rudp_close(conn);
-    xylem_rudp_close_listener(ln);
+    xylem_rudp_destroy(conn);
+    xylem_rudp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -136,7 +136,7 @@ static void _addr_client(void* arg) {
     xylem_rudp_conn_t* conn = xylem_rudp_dial(RUDP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
     xylem_sleep(150);
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -155,8 +155,8 @@ static void _deadline_server(void* arg) {
 
     xylem_sleep(250);
 
-    xylem_rudp_close(conn);
-    xylem_rudp_close_listener(ln);
+    xylem_rudp_destroy(conn);
+    xylem_rudp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -174,7 +174,7 @@ static void _deadline_client(void* arg) {
     int  n = xylem_rudp_read(conn, buf, sizeof(buf));
     ASSERT(n == -1);
 
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -196,7 +196,9 @@ static void _wake_server(void* arg) {
     int  n = xylem_rudp_read(conn, buf, sizeof(buf));
     ASSERT(n <= 0);
 
-    xylem_rudp_close_listener(ln);
+    xylem_channel_recv(ctx->handoff);
+    xylem_rudp_destroy(conn);
+    xylem_rudp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -206,6 +208,8 @@ static void _wake_closer(void* arg) {
         (xylem_rudp_conn_t*)xylem_channel_recv(ctx->handoff);
     xylem_sleep(80);
     xylem_rudp_close(conn);
+    xylem_rudp_close(conn);
+    xylem_channel_send(ctx->handoff, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -216,7 +220,7 @@ static void _wake_client(void* arg) {
     xylem_rudp_conn_t* conn = xylem_rudp_dial(RUDP_HOST, ctx->port, NULL);
     ASSERT(conn != NULL);
     xylem_sleep(200);
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -238,10 +242,10 @@ static void _dead_server(void* arg) {
     xylem_rudp_conn_t* conn = xylem_rudp_accept(ln);
     ASSERT(conn != NULL);
 
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
 
     xylem_channel_recv(ctx->ready);
-    xylem_rudp_close_listener(ln);
+    xylem_rudp_destroy_listener(ln);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -260,7 +264,7 @@ static void _dead_client(void* arg) {
     int  n = xylem_rudp_read(conn, buf, sizeof(buf));
     ASSERT(n <= 0);
 
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_channel_send(ctx->ready, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -277,7 +281,9 @@ static void _close_listener_server(void* arg) {
             xylem_rudp_listen(RUDP_HOST, (uint16_t)(ctx->port + i), NULL);
         ASSERT(ln != NULL);
         xylem_rudp_close_listener(ln);
+        xylem_rudp_close_listener(ln);
         xylem_sleep(1);
+        xylem_rudp_destroy_listener(ln);
     }
 
     xylem_waitgroup_done(ctx->wg);
@@ -306,8 +312,8 @@ static void _listener_close_server(void* arg) {
     xylem_rudp_conn_t* conn = xylem_rudp_accept(ln);
     ASSERT(conn != NULL);
 
-    xylem_rudp_close_listener(ln);
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy_listener(ln);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -319,7 +325,7 @@ static void _listener_close_client(void* arg) {
     ASSERT(conn != NULL);
 
     xylem_sleep(100);
-    xylem_rudp_close(conn);
+    xylem_rudp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -334,6 +340,9 @@ static void test_listener_close_preserves_accepted_conn(void) {
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    xylem_rudp_destroy(NULL);
+    xylem_rudp_destroy_listener(NULL);
 
     test_echo();
     test_remote_addr();

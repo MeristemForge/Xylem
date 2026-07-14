@@ -371,25 +371,52 @@ extern void xylem_dtls_set_write_deadline(
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in recv/send.
- * The connection handle is invalid after this function returns.
+ * Wakes any coroutine blocked in recv/send. This function is idempotent
+ * and does not release the owner handle. After all user operations have
+ * returned, call xylem_dtls_destroy().
  *
  * @param dtls  Connection handle.
  */
 extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 
 /**
- * @brief Close and destroy a listener.
+ * @brief Destroy a DTLS connection after user operations have returned.
  *
  * @note [COROUTINE-ONLY]
  *
- * Closes all active sessions, stops the dispatcher coroutine,
- * and frees all resources.
- * The listener handle is invalid after this function returns.
+ * This must be the final call on the connection and must not race with any
+ * user operation. Internal timer or dispatcher references may defer the
+ * actual free. It closes the connection if needed. Passing NULL is safe.
+ *
+ * @param dtls  Connection handle, or NULL.
+ */
+extern void xylem_dtls_destroy(xylem_dtls_conn_t* dtls);
+
+/**
+ * @brief Close a listener and stop its dispatcher.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * Closes all active sessions, stops the dispatcher coroutine, and wakes
+ * blocked accept without releasing the owner handle. After user operations
+ * have returned, call xylem_dtls_destroy_listener().
  *
  * @param ln  Listener handle.
  */
 extern void xylem_dtls_close_listener(xylem_dtls_listener_t* ln);
+
+/**
+ * @brief Destroy a DTLS listener after user operations have returned.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * This must be the final call on the listener and must not race with any
+ * user operation. Internal dispatcher references may defer the actual free.
+ * It closes the listener if needed. Passing NULL is safe.
+ *
+ * @param ln  Listener handle, or NULL.
+ */
+extern void xylem_dtls_destroy_listener(xylem_dtls_listener_t* ln);
 
 /**
  * @brief Get the negotiated ALPN protocol.

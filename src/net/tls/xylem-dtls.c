@@ -203,10 +203,28 @@ void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
     dtls_close(&dtls->internal);
 }
 
+void xylem_dtls_destroy(xylem_dtls_conn_t* dtls) {
+    if (!dtls) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_destroy");
+
+    dtls_destroy(&dtls->internal);
+}
+
 void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_close_listener");
 
     dtls_close_listener(&ln->internal);
+}
+
+void xylem_dtls_destroy_listener(xylem_dtls_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_destroy_listener");
+
+    dtls_destroy_listener(&ln->internal);
 }
 
 void xylem_dtls_set_read_deadline(

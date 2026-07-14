@@ -29,7 +29,6 @@
 #include "net/stream.h"
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
-#include "runtime/precond.h"
 #include "runtime/runtime.h"
 
 #include <stdatomic.h>
@@ -81,10 +80,6 @@ typedef enum _tls_hs_state_e {
     HS_FAILED  = 2
 } _tls_hs_state_t;
 
-static void _tls_conn_ref(tls_conn_t* tls) {
-    atomic_fetch_add(&tls->refcnt, 1);
-}
-
 static int _tls_stream_io_read(
     void* user,
     void* buf,
@@ -121,7 +116,6 @@ static tls_conn_t* _tls_conn_create(stream_t* stream) {
         return NULL;
     }
 
-    _tls_conn_ref(tls);
     return tls;
 }
 
@@ -211,14 +205,6 @@ static void _tls_conn_destroy(tls_conn_t* tls) {
         tls_backend_conn_destroy(tls->be);
     }
     _tls_conn_free(tls);
-}
-
-static void _tls_conn_unref(tls_conn_t* tls) {
-    /* Graceful close_notify lives in tls_close; refcount drop only destroys. */
-    if (atomic_fetch_sub(&tls->refcnt, 1)
-        == 1) {
-        _tls_conn_destroy(tls);
-    }
 }
 
 static int _tls_wait_write(tls_conn_t* tls) {
@@ -325,21 +311,6 @@ static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
     }
     _tls_cache_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
     return 0;
-}
-
-static void _tls_listener_ref(tls_listener_t* ln) {
-    atomic_fetch_add(&ln->refcnt, 1);
-}
-
-static void _tls_listener_unref(tls_listener_t* ln) {
-    if (atomic_fetch_sub(&ln->refcnt, 1)
-        != 1) {
-        return;
-    }
-    if (ln->listener) {
-        listener_destroy(ln->listener);
-    }
-    free(ln);
 }
 
 /**
@@ -1101,7 +1072,6 @@ static void _dtls_client_close(dtls_conn_t* dtls) {
      * datagram socket and not worth the backend access.)
      */
     datagram_close(dtls->datagram);
-    _dtls_conn_unref(dtls);
 }
 
 static void _dtls_handshake_coro(void* arg) {
@@ -1395,7 +1365,6 @@ static void _dtls_server_close(dtls_conn_t* dtls) {
      * matching the client close path.
      */
     _dtls_server_shutdown(dtls);
-    _dtls_conn_unref(dtls);
 }
 
 static tls_ctx_t* _tls_ctx_create(tls_backend_proto_t proto) {
@@ -1483,8 +1452,6 @@ tls_conn_t* tls_dial(
     uint16_t          port,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_dial");
-
     uint64_t timeout_ms = opts ? opts->handshake_timeout_ms : 0;
     uint64_t deadline   = _tls_make_deadline(timeout_ms);
     stream_t* stream
@@ -1514,8 +1481,6 @@ tls_conn_t* tls_dial(
 }
 
 void tls_close(tls_conn_t* tls) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_close");
-
     if (atomic_exchange(&tls->closed, true)) {
         return;
     }
@@ -1538,7 +1503,14 @@ void tls_close(tls_conn_t* tls) {
     }
 
     stream_close(tls->stream);
-    _tls_conn_unref(tls);
+}
+
+void tls_destroy(tls_conn_t* tls) {
+    if (!tls) {
+        return;
+    }
+    tls_close(tls);
+    _tls_conn_destroy(tls);
 }
 
 tls_listener_t* tls_listen(
@@ -1564,15 +1536,10 @@ tls_listener_t* tls_listen(
         ln->opts = *opts;
     }
 
-    _tls_listener_ref(ln);
     return ln;
 }
 
 tls_conn_t* tls_accept(tls_listener_t* ln) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_accept");
-
-    _tls_listener_ref(ln);
-
     for (;;) {
         if (atomic_load(&ln->closed)) {
             break;
@@ -1599,11 +1566,9 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
         conn->hs_timeout_ms = ln->opts.handshake_timeout_ms;
         atomic_store(&conn->hs_state, HS_PENDING);
 
-        _tls_listener_unref(ln);
         return conn;
     }
 
-    _tls_listener_unref(ln);
     return NULL;
 }
 
@@ -1613,37 +1578,31 @@ void tls_close_listener(tls_listener_t* ln) {
     }
 
     listener_close(ln->listener);
-    _tls_listener_unref(ln);
+}
+
+void tls_destroy_listener(tls_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    tls_close_listener(ln);
+    listener_destroy(ln->listener);
+    free(ln);
 }
 
 int tls_read(tls_conn_t* tls, void* buf, int len) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_read");
-
     if (!buf || len <= 0) {
         return -1;
     }
 
-    /**
-     * Take the reference before testing `closed`: a concurrent
-     * tls_close() from another coroutine (possibly on another worker)
-     * may drop the last reference and free tls in the window between
-     * the test and the ref, otherwise. Holding a ref first caps a
-     * racing close at refcnt 2->1 (no free); our own unref does the
-     * final teardown.
-     */
-    _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load(&tls->closed)
         && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_read_loop(tls, buf, len);
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
 int tls_write(tls_conn_t* tls, const void* data, int len) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_write");
-
     if (len < 0) {
         return -1;
     }
@@ -1654,44 +1613,34 @@ int tls_write(tls_conn_t* tls, const void* data, int len) {
         return -1;
     }
 
-    _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load(&tls->closed)
         && _tls_ensure_handshake(tls) == 0) {
         ret = _tls_write_loop(tls, data, len);
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
 int tls_handshake(tls_conn_t* tls) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_handshake");
-
-    _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load(&tls->closed)) {
         ret = _tls_ensure_handshake(tls);
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
 void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    _tls_conn_ref(tls);
     if (!atomic_load(&tls->closed)) {
         atomic_store(&tls->rd_deadline, deadline_ms);
         stream_set_read_deadline(tls->stream, deadline_ms);
     }
-    _tls_conn_unref(tls);
 }
 
 void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    _tls_conn_ref(tls);
     if (!atomic_load(&tls->closed)) {
         atomic_store(&tls->wr_deadline, deadline_ms);
         stream_set_write_deadline(tls->stream, deadline_ms);
     }
-    _tls_conn_unref(tls);
 }
 
 int tls_remote_addr(
@@ -1699,12 +1648,10 @@ int tls_remote_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load(&tls->closed)) {
         ret = stream_remote_addr(tls->stream, host, host_len, port);
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
@@ -1713,12 +1660,10 @@ int tls_local_addr(
     char*       host,
     size_t      host_len,
     uint16_t*   port) {
-    _tls_conn_ref(tls);
     int ret = -1;
     if (!atomic_load(&tls->closed)) {
         ret = stream_local_addr(tls->stream, host, host_len, port);
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
@@ -1727,17 +1672,14 @@ int tls_listener_addr(
     char*           host,
     size_t          host_len,
     uint16_t*       port) {
-    _tls_listener_ref(ln);
     int ret = -1;
     if (!atomic_load(&ln->closed)) {
         ret = listener_addr(ln->listener, host, host_len, port);
     }
-    _tls_listener_unref(ln);
     return ret;
 }
 
 const char* tls_get_alpn(tls_conn_t* tls) {
-    _tls_conn_ref(tls);
     static _Thread_local char alpn[sizeof(tls->alpn)];
     const char* ret = NULL;
     if (!atomic_load(&tls->closed)
@@ -1745,7 +1687,6 @@ const char* tls_get_alpn(tls_conn_t* tls) {
         memcpy(alpn, tls->alpn, sizeof(alpn));
         ret = alpn;
     }
-    _tls_conn_unref(tls);
     return ret;
 }
 
@@ -1753,8 +1694,6 @@ tls_conn_t* tls_client_handshake_fd(
     platform_sock_t   fd,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
-    RUNTIME_REQUIRE_COROUTINE("tls", "tls_client_handshake_fd");
-
     stream_t* stream = stream_from_fd(fd);
     if (!stream) {
         platform_socket_close(fd);
@@ -1873,7 +1812,7 @@ dtls_listener_t* dtls_listen(
 
     ln->dgram_bufsz = _dtls_record_bufsz(ln->opts.mtu);
 
-    _dtls_listener_ref(ln); /* caller's reference (released by close) */
+    _dtls_listener_ref(ln); /* caller's reference */
 
     rbtree_init(&ln->sessions, _dtls_session_cmp_nn, _dtls_session_cmp_kn);
     ln->sessions_mu   = xylem_mutex_create();
@@ -1942,6 +1881,14 @@ void dtls_close(dtls_conn_t* dtls) {
     }
 }
 
+void dtls_destroy(dtls_conn_t* dtls) {
+    if (!dtls) {
+        return;
+    }
+    dtls_close(dtls);
+    _dtls_conn_unref(dtls);
+}
+
 void dtls_close_listener(dtls_listener_t* ln) {
     if (atomic_exchange(&ln->closed, true)) {
         return;
@@ -1961,6 +1908,13 @@ void dtls_close_listener(dtls_listener_t* ln) {
 
     datagram_close(ln->datagram);
     xylem_channel_close(ln->accept_ch);
+}
+
+void dtls_destroy_listener(dtls_listener_t* ln) {
+    if (!ln) {
+        return;
+    }
+    dtls_close_listener(ln);
     _dtls_listener_unref(ln);
 }
 
