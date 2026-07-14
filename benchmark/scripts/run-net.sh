@@ -10,7 +10,7 @@ set -euo pipefail
 #   bench    - run comparison benchmarks and write out/results/<ts>/
 #   all      - install + build + bench                             [default]
 #
-# Fixed protocol matrix: tcp, udp, tls
+# Default protocol matrix: tcp, udp, tls (override via: bench tls, bench tcp, etc.)
 #   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
 #   udp : datagram echo, ports from 9001, ST only, throughput
 #   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
@@ -776,9 +776,11 @@ cmd_bench() {
 # fixed bench matrix
 # =============================================================================
 
-# Keep the benchmark matrix in one place. The driver intentionally does not
-# accept CLI flags for these values; edit these constants when changing the
-# standard suite.
+# Default benchmark matrix constants.  Override protocols on the CLI:
+#   $0 bench tcp        # single protocol
+#   $0 bench tcp,tls     # multiple
+#   $0 bench             # all defaults (below)
+
 NET_BENCH_PROTOS="tcp,udp,tls"
 NET_BENCH_SERVERS="xylem,go,rust"
 NET_BENCH_CONNS="1000,10000"
@@ -789,20 +791,31 @@ NET_BENCH_REPEAT=1
 NET_BENCH_WARMUP_RUNS=1
 NET_BENCH_RUN_CONNRATE=true
 
-SERVERS=(xylem go rust)
-IFS=',' read -ra PROTOS    <<< "$NET_BENCH_PROTOS"
-IFS=',' read -ra SERVERS   <<< "$NET_BENCH_SERVERS"
-IFS=',' read -ra CONNS     <<< "$NET_BENCH_CONNS"
-IFS=',' read -ra PAYLOADS  <<< "$NET_BENCH_PAYLOADS"
-DURATION="$NET_BENCH_DURATION"
-MODE="$NET_BENCH_MODE"
-REPEAT="$NET_BENCH_REPEAT"
-BENCH_WARMUP_RUNS="$NET_BENCH_WARMUP_RUNS"
-RUN_CONNRATE="$NET_BENCH_RUN_CONNRATE"
+# Split the comma-separated constants into arrays.  Called after CLI-override
+# has a chance to replace NET_BENCH_PROTOS.
+split_bench_matrix() {
+    IFS=',' read -ra PROTOS    <<< "$NET_BENCH_PROTOS"
+    IFS=',' read -ra SERVERS   <<< "$NET_BENCH_SERVERS"
+    IFS=',' read -ra CONNS     <<< "$NET_BENCH_CONNS"
+    IFS=',' read -ra PAYLOADS  <<< "$NET_BENCH_PAYLOADS"
+    DURATION="$NET_BENCH_DURATION"
+    MODE="$NET_BENCH_MODE"
+    REPEAT="$NET_BENCH_REPEAT"
+    BENCH_WARMUP_RUNS="$NET_BENCH_WARMUP_RUNS"
+    RUN_CONNRATE="$NET_BENCH_RUN_CONNRATE"
+}
 
-check_no_bench_opts() {
+parse_bench_opts() {
+    # Optional first arg overrides NET_BENCH_PROTOS
     if [ "$#" -gt 0 ]; then
-        err "run-net uses a fixed benchmark matrix; edit NET_BENCH_* constants in $0 instead of passing CLI options"
+        NET_BENCH_PROTOS="$1"
+        shift
+    fi
+
+    split_bench_matrix
+
+    if [ "$#" -gt 0 ]; then
+        err "unexpected extra arguments: $*"
         exit 1
     fi
 
@@ -821,7 +834,7 @@ check_no_bench_opts() {
 
 usage() {
     cat <<EOF
-usage: $0 [install|build|bench|all]
+usage: $0 [install|build|bench|all] [protos]
 
 Cross-platform (Linux + macOS). Current platform: $PLATFORM
 
@@ -832,7 +845,10 @@ Commands:
   bench     run comparison benchmarks, write benchmark/out/results/<ts>/
   all       install + build + bench   (default)
 
-Fixed matrix (edit NET_BENCH_* constants in this script to change it):
+Optional [protos] overrides the protocol list (comma-separated: tcp,udp,tls).
+  Default (no argument): $NET_BENCH_PROTOS
+
+Fixed matrix (edit NET_BENCH_* constants in this script to change defaults):
   protocols:  $NET_BENCH_PROTOS
   servers:    $NET_BENCH_SERVERS
   conns:      $NET_BENCH_CONNS
@@ -852,6 +868,8 @@ Notes:
 Examples:
   $0 build
   $0 bench
+  $0 bench tls
+  $0 bench tcp,tls
   $0 all
 EOF
 }
@@ -868,15 +886,15 @@ main() {
     case "$cmd" in
         install) cmd_install ;;
         build)
-            check_no_bench_opts "$@"
+            parse_bench_opts "$@"
             cmd_build
             ;;
         bench)
-            check_no_bench_opts "$@"
+            parse_bench_opts "$@"
             cmd_bench
             ;;
         all)
-            check_no_bench_opts "$@"
+            parse_bench_opts "$@"
             cmd_install
             cmd_build
             cmd_bench
