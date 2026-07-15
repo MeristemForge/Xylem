@@ -131,20 +131,20 @@ this difference.
 
 ## 5. Virtual memory
 
-`platform-vmem` exposes a reserve/commit/protect model so the scheduler can
-allocate coroutine stacks with a guard page:
+`platform-vmem` exposes allocation, reset, and protection operations so the
+scheduler can recycle coroutine stacks while retaining their virtual mappings:
 
 | Function | Unix | Windows |
 |----------|------|---------|
-| `reserve(size)` | `mmap(PROT_NONE)` | `VirtualAlloc(MEM_RESERVE)` |
-| `commit(ptr,size)` | `mprotect(RW)` | `VirtualAlloc(MEM_COMMIT)` |
-| `decommit(ptr,size)` | `madvise(DONTNEED)` / remap | `VirtualFree(MEM_DECOMMIT)` |
-| `release(ptr,size)` | `munmap` | `VirtualFree(MEM_RELEASE)` |
+| `alloc(size)` | `mmap(RW)` | `VirtualAlloc(RESERVE \| COMMIT)` |
+| `reset(ptr,size)` | `madvise(DONTNEED)` | `VirtualAlloc(MEM_RESET)` |
+| `dealloc(ptr,size)` | `munmap` | `VirtualFree(MEM_RELEASE)` |
 | `protect(ptr,size,prot)` | `mprotect` | `VirtualProtect` |
 
-The runtime uses this to reserve a stack, commit it, mark one page `PROT_NONE`
-as an overflow guard, and `decommit` (not `release`) on free so the reservation
-can be recycled by the coroutine pool. See [`runtime.md`](runtime.md) §6.
+Reset keeps the mapping and its protection while making prior contents
+unspecified, so a pooled stack can be reused without another allocation. The
+runtime protects one page as an overflow guard and deallocates complete regions
+only when they leave the pool. See [`runtime.md`](runtime.md) §6.
 
 ## 6. Semaphore
 

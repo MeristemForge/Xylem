@@ -45,7 +45,6 @@ _Pragma("once")
 #define VMEM_ASAN_RESET(ptr, size) ((void)0)
 #endif
 
-
 /* Virtual memory protection flags. */
 typedef enum platform_vmem_prot_e {
     PLATFORM_VMEM_PROT_NONE  = 0,
@@ -61,49 +60,36 @@ typedef enum platform_vmem_prot_e {
 extern size_t platform_vmem_page_size(void);
 
 /**
- * @brief Reserve virtual address space without committing physical memory.
+ * @brief Allocate a read/write virtual-memory region.
  *
- * The reserved region is inaccessible until committed via platform_vmem_commit.
+ * @param size  Number of bytes to allocate (rounded up to page boundary).
  *
- * @param size  Number of bytes to reserve (rounded up to page boundary).
- *
- * @return Base address of the reserved region, or NULL on failure.
+ * @return Base address of the allocated region, or NULL on failure.
  */
-extern void* platform_vmem_reserve(size_t size);
+extern void* platform_vmem_alloc(size_t size);
 
 /**
- * @brief Commit physical pages within a previously reserved region.
+ * @brief Discard contents while preserving the mapped region.
  *
- * Committed pages become read/write accessible.
+ * Previous contents become unspecified, but the region remains accessible
+ * with its current protection. This operation does not guarantee immediate
+ * zeroing or release of system commit charge.
  *
- * @param ptr   Page-aligned address within a reserved region.
- * @param size  Number of bytes to commit (must be page-aligned).
- *
- * @return 0 on success, -1 on failure.
+ * @param ptr   Page-aligned address within an allocated region.
+ * @param size  Number of bytes to reset (must be page-aligned).
  */
-extern int platform_vmem_commit(void* ptr, size_t size);
+extern void platform_vmem_reset(void* ptr, size_t size);
 
 /**
- * @brief Release physical pages without changing protection.
+ * @brief Deallocate an entire virtual-memory region.
  *
- * The address range remains accessible (mapped RW) but the OS may reclaim
- * the physical backing.  Next access will fault in a fresh zero page.
- *
- * @param ptr   Page-aligned address within a committed region.
- * @param size  Number of bytes to decommit (must be page-aligned).
+ * @param ptr   Base address returned by platform_vmem_alloc.
+ * @param size  Size passed to platform_vmem_alloc.
  */
-extern void platform_vmem_decommit(void* ptr, size_t size);
+extern void platform_vmem_dealloc(void* ptr, size_t size);
 
 /**
- * @brief Release a reserved region entirely (commit + address space).
- *
- * @param ptr   Base address returned by platform_vmem_reserve.
- * @param size  Size passed to the original reservation.
- */
-extern void platform_vmem_release(void* ptr, size_t size);
-
-/**
- * @brief Change memory protection on a committed region.
+ * @brief Change memory protection on an allocated region.
  *
  * @param ptr   Page-aligned address.
  * @param size  Number of bytes to protect (must be page-aligned).
@@ -111,4 +97,7 @@ extern void platform_vmem_release(void* ptr, size_t size);
  *
  * @return 0 on success, -1 on failure.
  */
-extern int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot);
+extern int platform_vmem_protect(
+    void* ptr,
+    size_t size,
+    platform_vmem_prot_t prot);

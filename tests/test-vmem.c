@@ -20,45 +20,40 @@
  */
 
 #include "platform/platform-vmem.h"
+#include "assert.h"
 
-#include <sys/mman.h>
-#include <unistd.h>
+#include <stdint.h>
 
-size_t platform_vmem_page_size(void) {
-    return (size_t)sysconf(_SC_PAGESIZE);
+static void test_alloc_reset_protect_dealloc(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    uint8_t* ptr = (uint8_t*)platform_vmem_alloc(page_size);
+    ASSERT(ptr != NULL);
+    ASSERT((uintptr_t)ptr % page_size == 0);
+
+    ptr[0] = 0x5a;
+    ASSERT(ptr[0] == 0x5a);
+
+    platform_vmem_reset(ptr, page_size);
+    ptr[0] = 0xa5;
+    ASSERT(ptr[0] == 0xa5);
+
+    ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_READ) == 0);
+    ASSERT(ptr[0] == 0xa5);
+    ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_NONE) == 0);
+    ASSERT(
+        platform_vmem_protect(
+            ptr,
+            page_size,
+            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) == 0);
+
+    ptr[0] = 0x3c;
+    ASSERT(ptr[0] == 0x3c);
+    platform_vmem_dealloc(ptr, page_size);
 }
 
-void* platform_vmem_alloc(size_t size) {
-    /* Direct read/write mapping avoids a separate protection call. */
-    void* ptr = mmap(
-        NULL,
-        size,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0);
-    if (ptr != MAP_FAILED) {
-        VMEM_ASAN_RESET(ptr, size);
-        return ptr;
-    }
-    return NULL;
-}
-
-void platform_vmem_reset(void* ptr, size_t size) {
-    madvise(ptr, size, MADV_DONTNEED);
-}
-
-void platform_vmem_dealloc(void* ptr, size_t size) {
-    munmap(ptr, size);
-}
-
-int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
-    int flags = PROT_NONE;
-    if (prot & PLATFORM_VMEM_PROT_READ) {
-        flags |= PROT_READ;
-    }
-    if (prot & PLATFORM_VMEM_PROT_WRITE) {
-        flags |= PROT_WRITE;
-    }
-    return mprotect(ptr, size, flags) == 0 ? 0 : -1;
+int main(void) {
+    test_alloc_reset_protect_dealloc();
+    return 0;
 }

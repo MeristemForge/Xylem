@@ -288,16 +288,16 @@ idle callback that shuts the runtime down.
 To avoid hammering the allocator on every spawn, the scheduler keeps a
 **coroutine pool** (default capacity `worker_count * 64`) of recycled stacks:
 
-- **Stack-based platforms.** `_sched_coro_pool_alloc()` reserves virtual memory,
-  commits it, and marks one page `PROT_NONE` as a **guard page** below the
-  stack to turn overflow into an immediate fault. On free, the stack region is
-  decommitted (returned to the OS) but the reservation is retained in the pool
-  for reuse.
+- **Stack-based platforms.** `_sched_coro_pool_alloc()` allocates read/write
+  virtual memory and marks one page `PROT_NONE` as a **guard page** below the
+  stack to turn overflow into an immediate fault. On free, reusable stack pages
+  are reset so the OS may reclaim their backing while the mapping remains in
+  the pool.
 - **Fiber-based platforms** (`MCO_USE_FIBERS`, e.g. Windows fibers): fall back
   to `calloc`/`free`.
 
-The pool is guarded by a spinlock and bounded by its capacity; overflow frees
-back to the OS.
+The pool is guarded by a spinlock and bounded by its capacity; overflow and
+scheduler teardown deallocate complete regions.
 
 ## 7. I/O parking (`iowait.c`)
 

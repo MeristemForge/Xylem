@@ -89,8 +89,7 @@
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
 
-#define SCHED_CORO_STACK_SIZE \
-    (sizeof(void*) > 4 ? 1024 * 1024 : 128 * 1024)
+#define SCHED_CORO_STACK_SIZE (128 * 1024)
 
 /**
  * Per-worker coroutine-slot cache. Each worker keeps up to
@@ -267,21 +266,28 @@ static void* _sched_coro_alloc(_sched_coro_pool_t* pool, size_t size) {
     size_t page_size = _sched_vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
 
-    char* base = (char*)platform_vmem_reserve(total);
+    /* Allocate the complete slot in one platform call. */
+    char* base = (char*)platform_vmem_alloc(total);
     if (!base) {
         return NULL;
     }
 
-    platform_vmem_commit(base, total);
-
     size_t meta_size = _sched_coro_metadata_size(total, pool->stack_size);
-    platform_vmem_protect(
-        base + meta_size, page_size, PLATFORM_VMEM_PROT_NONE);
+    if (platform_vmem_protect(
+            base + meta_size,
+            page_size,
+            PLATFORM_VMEM_PROT_NONE) != 0) {
+        platform_vmem_dealloc(base, total);
+        return NULL;
+    }
 
     return base;
 }
 
-static void _sched_coro_shrink(_sched_coro_pool_t* pool, void* ptr, size_t size) {
+static void _sched_coro_shrink(
+    _sched_coro_pool_t* pool,
+    void* ptr,
+    size_t size) {
     if (SCHED_STACK_EXTERNAL) {
         return;
     }
@@ -292,12 +298,12 @@ static void _sched_coro_shrink(_sched_coro_pool_t* pool, void* ptr, size_t size)
 
     size_t stack_start = meta_size + page_size;
     if (total > stack_start) {
-        platform_vmem_decommit((char*)ptr + stack_start, total - stack_start);
+        platform_vmem_reset((char*)ptr + stack_start, total - stack_start);
     }
 }
 
 /* Return one coroutine slot's address space to the OS. */
-static void _sched_coro_free(_sched_coro_pool_t* pool, void* ptr) {
+static void _sched_coro_dealloc(_sched_coro_pool_t* pool, void* ptr) {
     if (SCHED_STACK_EXTERNAL) {
         free(ptr);
         return;
@@ -305,7 +311,7 @@ static void _sched_coro_free(_sched_coro_pool_t* pool, void* ptr) {
 
     size_t page_size = _sched_vmem_page_size();
     size_t total     = (pool->slot_size + page_size - 1) & ~(page_size - 1);
-    platform_vmem_release(ptr, total);
+    platform_vmem_dealloc(ptr, total);
 }
 
 /* Pop one slot from the shared pool; NULL when empty. Takes the pool lock. */
@@ -319,7 +325,7 @@ static void* _sched_coro_pool_pop(_sched_coro_pool_t* pool) {
     return ptr;
 }
 
-/* Push one slot into the shared pool; release it when the pool is full. */
+/* Push one slot into the shared pool; deallocate it when the pool is full. */
 static void _sched_coro_pool_push(_sched_coro_pool_t* pool, void* ptr) {
     spin_lock(&pool->lock);
     if (pool->count < pool->cap) {
@@ -328,7 +334,7 @@ static void _sched_coro_pool_push(_sched_coro_pool_t* pool, void* ptr) {
         return;
     }
     spin_unlock(&pool->lock);
-    _sched_coro_free(pool, ptr);
+    _sched_coro_dealloc(pool, ptr);
 }
 
 /**
@@ -397,7 +403,7 @@ static void _sched_coro_pool_dealloc_cb(
     }
     spin_unlock(&pool->lock);
     while (w->coro_pool_count > keep) {
-        _sched_coro_free(pool, w->coro_pool[--w->coro_pool_count]);
+        _sched_coro_dealloc(pool, w->coro_pool[--w->coro_pool_count]);
     }
     w->coro_pool[w->coro_pool_count++] = ptr;
 }
@@ -1201,7 +1207,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
             mtx_destroy(&w->timer_lock);
             if (w->coro_pool) {
                 for (int32_t j = 0; j < w->coro_pool_count; j++) {
-                    _sched_coro_free(&sched->coro_pool, w->coro_pool[j]);
+                    _sched_coro_dealloc(&sched->coro_pool, w->coro_pool[j]);
                 }
                 free(w->coro_pool);
             }
@@ -1225,7 +1231,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     }
 
     for (int32_t i = 0; i < sched->coro_pool.count; i++) {
-        _sched_coro_free(&sched->coro_pool, sched->coro_pool.slots[i]);
+        _sched_coro_dealloc(&sched->coro_pool, sched->coro_pool.slots[i]);
     }
     free(sched->coro_pool.slots);
 
