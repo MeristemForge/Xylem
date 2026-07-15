@@ -72,6 +72,11 @@ extern datagram_t* datagram_dial(const char* host, uint16_t port);
 /**
  * @brief Close the datagram and interrupt blocked operations.
  *
+ * Atomically marks the datagram closed, stops its deadline timers, removes its
+ * poller subscription, and wakes blocked receive/send operations. Idempotent
+ * and safe to call concurrently with datagram operations. Does not close the
+ * socket or free the datagram.
+ *
  * @param datagram  Datagram handle.
  */
 extern void datagram_close(datagram_t* datagram);
@@ -79,7 +84,11 @@ extern void datagram_close(datagram_t* datagram);
 /**
  * @brief Destroy a datagram after all operations have returned.
  *
- * @param datagram  Datagram handle.
+ * This must be the final call on the datagram and must not race with any other
+ * datagram operation. It closes the datagram if needed, releases its IO wait
+ * handle, closes its socket, and frees the datagram. Passing NULL is safe.
+ *
+ * @param datagram  Datagram handle, or NULL.
  */
 extern void datagram_destroy(datagram_t* datagram);
 

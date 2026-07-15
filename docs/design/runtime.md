@@ -437,7 +437,11 @@ and must not race with any other iowait API call. The handle itself is retired
 only when all internal refs (in-flight poller callbacks and armed deadline
 timers) are dropped, but a parked waiter does **not** hold an iowait ref. The
 owning connection must therefore keep the handle alive until every parked reader
-and writer has returned, then call destroy exactly as the last release.
+and writer has returned, then call destroy exactly as the last release. The
+internal stream, listener, and datagram owners call their close operation first
+so deadline timers and poller state are detached before the fd is closed; their
+destroy operation performs that close automatically when no concurrent operation
+needs a separate close/wait/destroy sequence.
 
 ## 8. Timers
 

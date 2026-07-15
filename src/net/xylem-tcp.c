@@ -28,6 +28,10 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+/**
+ * Public handles use close/wait/destroy. Close only publishes cancellation and
+ * wakes blocked operations; destroy is the final non-concurrent release.
+ */
 struct xylem_tcp_conn_s {
     stream_t*    stream;
     _Atomic bool closed;

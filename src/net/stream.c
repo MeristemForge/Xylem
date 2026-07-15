@@ -357,9 +357,9 @@ void stream_destroy(stream_t* stream) {
     if (!stream) {
         return;
     }
+    /* Detach iowait before closing the fd so a reused fd has no stale poller state. */
+    stream_close(stream);
     if (stream->waiter) {
-        iowait_set_rd_deadline(stream->waiter, 0);
-        iowait_set_wr_deadline(stream->waiter, 0);
         iowait_destroy(stream->waiter);
     }
     if (stream->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
@@ -606,6 +606,8 @@ void listener_destroy(listener_t* listener) {
     if (!listener) {
         return;
     }
+    /* Detach iowait before closing the fd so a reused fd has no stale poller state. */
+    listener_close(listener);
     if (listener->waiter) {
         iowait_destroy(listener->waiter);
     }

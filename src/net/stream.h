@@ -86,6 +86,11 @@ extern stream_t* stream_dial_unix(
 /**
  * @brief Close the stream and interrupt blocked operations.
  *
+ * Atomically marks the stream closed, stops its deadline timers, removes its
+ * poller subscription, and wakes blocked read/write operations. Idempotent and
+ * safe to call concurrently with stream operations. Does not close the socket
+ * or free the stream.
+ *
  * @param stream  Stream handle.
  */
 extern void stream_close(stream_t* stream);
@@ -93,7 +98,11 @@ extern void stream_close(stream_t* stream);
 /**
  * @brief Destroy a stream after all operations have returned.
  *
- * @param stream  Stream handle.
+ * This must be the final call on the stream and must not race with any other
+ * stream operation. It closes the stream if needed, releases its IO wait
+ * handle, closes its socket, and frees the stream. Passing NULL is safe.
+ *
+ * @param stream  Stream handle, or NULL.
  */
 extern void stream_destroy(stream_t* stream);
 
@@ -275,6 +284,11 @@ extern stream_t* listener_accept_unix(listener_t* listener);
 /**
  * @brief Close the listener and interrupt blocked operations.
  *
+ * Atomically marks the listener closed, stops its deadline timer, removes its
+ * poller subscription, and wakes a blocked accept operation. Idempotent and
+ * safe to call concurrently with listener operations. Does not close the
+ * socket or free the listener.
+ *
  * @param listener  Listener handle.
  */
 extern void listener_close(listener_t* listener);
@@ -282,7 +296,11 @@ extern void listener_close(listener_t* listener);
 /**
  * @brief Destroy a listener after all operations have returned.
  *
- * @param listener  Listener handle.
+ * This must be the final call on the listener and must not race with any other
+ * listener operation. It closes the listener if needed, releases its IO wait
+ * handle, closes its socket, and frees the listener. Passing NULL is safe.
+ *
+ * @param listener  Listener handle, or NULL.
  */
 extern void listener_destroy(listener_t* listener);
 

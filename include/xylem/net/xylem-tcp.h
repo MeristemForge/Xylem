@@ -71,9 +71,11 @@ extern xylem_tcp_conn_t* xylem_tcp_accept(xylem_tcp_listener_t* ln);
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in xylem_tcp_accept(). This function is
- * idempotent and does not free the listener. After all operations using
- * the listener have returned, call xylem_tcp_destroy_listener().
+ * Atomically marks the listener closed and wakes any coroutine blocked in
+ * xylem_tcp_accept(). This function is idempotent and may run concurrently
+ * with listener operations. It keeps the socket and public listener handle
+ * alive. After all operations using the listener have returned, call
+ * xylem_tcp_destroy_listener().
  *
  * @param ln  Listener handle.
  */
@@ -85,8 +87,8 @@ extern void xylem_tcp_close_listener(xylem_tcp_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the listener and must not race with any
- * other listener operation. It closes the listener if needed. Passing NULL
- * is safe.
+ * other listener operation. It closes the listener if needed, closes the
+ * socket, and frees the listener handle. Passing NULL is safe.
  *
  * @param ln  Listener handle, or NULL.
  */
@@ -190,10 +192,10 @@ extern int xylem_tcp_write(
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in read/write. This function is idempotent
- * and may run concurrently with connection operations. It does not free
- * the connection. After all operations have returned, call
- * xylem_tcp_destroy().
+ * Atomically marks the connection closed and wakes any coroutine blocked in
+ * read/write. This function is idempotent and may run concurrently with
+ * connection operations. It keeps the socket and public connection handle
+ * alive. After all operations have returned, call xylem_tcp_destroy().
  *
  * @param tcp  Connection handle.
  */
@@ -205,8 +207,8 @@ extern void xylem_tcp_close(xylem_tcp_conn_t* tcp);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the connection and must not race with any
- * other connection operation. It closes the connection if needed. Passing
- * NULL is safe.
+ * other connection operation. It closes the connection if needed, closes the
+ * socket, and frees the connection handle. Passing NULL is safe.
  *
  * @param tcp  Connection handle, or NULL.
  */

@@ -34,6 +34,11 @@
 
 #define UDS_MAX_PATH 104
 
+/**
+ * Public handles use close/wait/destroy. Close only publishes cancellation and
+ * wakes blocked operations; destroy is the final non-concurrent release. A
+ * listener retains its socket path until destroy unlinks it.
+ */
 struct xylem_uds_conn_s {
     stream_t*    stream;
     _Atomic bool closed;

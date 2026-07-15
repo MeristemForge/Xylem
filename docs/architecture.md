@@ -127,10 +127,16 @@ with a distinct result (`IOWAIT_TIMEOUT` / `IOWAIT_CLOSED`).
   *another* coroutine: the cross-direction wakeup goes through
   `scheduler_schedule()`, which pushes to the global run queue and wakes a
   worker, so the closer and the parked coroutine need not be the same one.
-- **Reference counting everywhere lifetimes cross threads.** Connections and
-  `iowait` handles carry refcounts; `iowait` additionally uses a generation tag
-  so a completion event for a recycled slot is rejected instead of waking the
-  wrong coroutine.
+- **`destroy` is the final non-concurrent release.** TCP, UDP, and UDS keep the
+  socket and public wrapper alive during close. After parked operations return,
+  destroy releases the internal transport, closes the socket, and frees the
+  wrapper. Calling destroy directly is valid only when no operation can still
+  be using the handle; otherwise use close, wait, then destroy.
+- **Cross-thread lifetimes are explicit or reference counted.** TCP, UDP, and
+  UDS use the close/wait/destroy contract instead of wrapper refcounts. Handles
+  that can outlive their owner through callbacks may retain refcounts. `iowait`
+  always carries internal refs plus a generation tag so a completion event for
+  a recycled slot is rejected instead of waking the wrong coroutine.
 - **One-reader / one-writer per direction.** At most one coroutine may park on
   a handle's read side and one on its write side at a time; violations abort
   with a diagnostic rather than corrupting state silently.

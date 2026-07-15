@@ -63,9 +63,11 @@ extern xylem_uds_conn_t* xylem_uds_accept(xylem_uds_listener_t* ln);
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in xylem_uds_accept(). This function is
- * idempotent and does not free the listener. After all operations using
- * the listener have returned, call xylem_uds_destroy_listener().
+ * Atomically marks the listener closed and wakes any coroutine blocked in
+ * xylem_uds_accept(). This function is idempotent and may run concurrently
+ * with listener operations. It keeps the socket and public listener handle
+ * alive and leaves the socket path linked. After all operations using the
+ * listener have returned, call xylem_uds_destroy_listener().
  *
  * @param ln  Listener handle.
  */
@@ -77,8 +79,8 @@ extern void xylem_uds_close_listener(xylem_uds_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the listener and must not race with any
- * other listener operation. It closes the listener if needed, then unlinks
- * the socket path. Passing NULL is safe.
+ * other listener operation. It closes the listener and socket if needed,
+ * unlinks the socket path, and frees the listener handle. Passing NULL is safe.
  *
  * @param ln  Listener handle, or NULL.
  */
@@ -179,10 +181,10 @@ extern int xylem_uds_write(
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in read/write. This function is idempotent
- * and may run concurrently with connection operations. It does not free
- * the connection. After all operations have returned, call
- * xylem_uds_destroy().
+ * Atomically marks the connection closed and wakes any coroutine blocked in
+ * read/write. This function is idempotent and may run concurrently with
+ * connection operations. It keeps the socket and public connection handle
+ * alive. After all operations have returned, call xylem_uds_destroy().
  *
  * @param uds  Connection handle.
  */
@@ -194,8 +196,8 @@ extern void xylem_uds_close(xylem_uds_conn_t* uds);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the connection and must not race with any
- * other connection operation. It closes the connection if needed. Passing
- * NULL is safe.
+ * other connection operation. It closes the connection and socket if needed,
+ * then frees the connection handle. Passing NULL is safe.
  *
  * @param uds  Connection handle, or NULL.
  */

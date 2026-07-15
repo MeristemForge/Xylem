@@ -31,6 +31,10 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+/**
+ * Public handles use close/wait/destroy. Close only publishes cancellation and
+ * wakes blocked operations; destroy is the final non-concurrent release.
+ */
 struct xylem_udp_chan_s {
     datagram_t*  datagram;
     bool         connected;

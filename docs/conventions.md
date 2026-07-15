@@ -98,20 +98,30 @@ Two pairing styles, by allocation ownership:
   `xylem_<m>_deinit()` (e.g. the logger).
 
 Rules:
-- **`destroy` accepts `NULL` and is idempotent unless a module says
-  otherwise.** `xylem_ticker_destroy()` accepts `NULL` but consumes a non-NULL
-  ticker handle, so callers must not destroy the same ticker handle twice. A
-  `close` function that releases the handle consumes that handle; callers must
-  not use or close the same handle again after `close` returns.
+- **`destroy` accepts `NULL` unless a module says otherwise.** A non-NULL
+  destroy consumes the handle: callers must not use or destroy the same handle
+  again after it returns. A close function that releases its handle has the
+  same consuming rule. TCP, UDP, and UDS are the documented two-phase
+  exception: their close functions are idempotent and keep the handle alive for
+  the final destroy.
 - **TCP, UDP, and UDS separate close from destroy.** Their public `close`
   functions atomically mark the handle closed and wake blocked operations
-  without freeing it. After every operation using that handle has returned,
-  the owner calls the matching `destroy` function as the final,
-  non-concurrent operation. Operations attempted between close and destroy
-  fail without touching a released wrapper. When the owner is already in the
-  final non-concurrent context, it may call `destroy` directly because destroy
-  closes the handle if needed. Use a separate close/wait/destroy sequence only
-  when close must first cancel operations running in other coroutines.
+  without closing the socket or freeing the wrapper. After every operation
+  using that handle has returned, the owner calls the matching `destroy`
+  function as the final, non-concurrent operation; destroy releases the
+  internal transport, closes the socket, and frees the public wrapper. UDS
+  listener destroy also unlinks the socket path. Operations attempted between
+  close and destroy fail without touching a released wrapper. When the owner is
+  already in the final non-concurrent context, it may call `destroy` directly
+  because destroy closes the handle if needed. Use a separate
+  close/wait/destroy sequence only when close must first cancel operations
+  running in other coroutines.
+- **Internal socket cores use the same two-phase lifetime.** `stream_t`,
+  `listener_t`, and `datagram_t` close their `iowait` handle to stop deadlines,
+  remove the poller subscription, and wake parked operations, but leave the fd
+  and wrapper allocated. Their destroy functions call close if needed before
+  destroying `iowait`, closing the fd, and freeing the wrapper. Destroy remains
+  the final non-concurrent operation.
 - **Cross-coroutine lifetime follows the module contract.** TCP, UDP, and UDS
   use the explicit close/wait/destroy sequence above. APIs whose close still
   consumes the handle may retain an internal atomic reference count.

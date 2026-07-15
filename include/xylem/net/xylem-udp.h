@@ -154,9 +154,10 @@ extern int xylem_udp_send(
  *
  * @note [COROUTINE-ONLY]
  *
- * Wakes any coroutine blocked in recv/send. This function is idempotent
- * and may run concurrently with UDP operations. It does not free the
- * handle. After all operations have returned, call xylem_udp_destroy().
+ * Atomically marks the handle closed and wakes any coroutine blocked in
+ * recv/send. This function is idempotent and may run concurrently with UDP
+ * operations. It keeps the socket and public UDP handle alive. After all
+ * operations have returned, call xylem_udp_destroy().
  *
  * @param udp  UDP handle.
  */
@@ -167,8 +168,9 @@ extern void xylem_udp_close(xylem_udp_chan_t* udp);
  *
  * @note [COROUTINE-ONLY]
  *
- * This must be the final call on the handle and must not race with any
- * other UDP operation. It closes the handle if needed. Passing NULL is safe.
+ * This must be the final call on the handle and must not race with any other
+ * UDP operation. It closes the handle if needed, closes the socket, and frees
+ * the UDP handle. Passing NULL is safe.
  *
  * @param udp  UDP handle, or NULL.
  */

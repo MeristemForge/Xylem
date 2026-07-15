@@ -170,14 +170,9 @@ void datagram_destroy(datagram_t* datagram) {
     if (!datagram) {
         return;
     }
+    /* Detach iowait before closing the fd so a reused fd has no stale poller state. */
+    datagram_close(datagram);
     if (datagram->waiter) {
-        /**
-         * Disarm any in-flight deadline timer before teardown. iowait
-         * close/destroy do not cancel timers, and an armed timer holds
-         * an iowait reference until the stale deadline fires.
-         */
-        iowait_set_rd_deadline(datagram->waiter, 0);
-        iowait_set_wr_deadline(datagram->waiter, 0);
         iowait_destroy(datagram->waiter);
     }
     if (datagram->fd != PLATFORM_SO_ERROR_INVALID_SOCKET) {
