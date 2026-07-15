@@ -20,16 +20,19 @@
  */
 
 /**
- * Stub TLS read/write primitives for builds without TLS support. The
- * reader, writer, and mux transport tables name xylem_tls_read and
- * xylem_tls_write in their XYLEM_*_TLS cases; those files compile
- * unconditionally, so the symbols must exist even when the real TLS
- * engine (xylem-tls.c) is excluded. A caller can never reach these
- * stubs through a live connection without TLS enabled, but they keep
- * the link clean and degrade to an error if the dead case is ever hit.
+ * Stub TLS close/read/write primitives for builds without TLS support.
+ * Transport tables name these functions in their XYLEM_*_TLS cases;
+ * those files compile unconditionally, so the symbols must exist even
+ * when the real TLS engine (xylem-tls.c) is excluded. A caller can never
+ * reach these stubs through a live connection without TLS enabled, but
+ * they keep the link clean and degrade I/O to an error if reached.
  */
 
 #include "xylem/net/xylem-tls.h"
+
+void xylem_tls_close(xylem_tls_conn_t* tls) {
+    (void)tls;
+}
 
 int xylem_tls_read(xylem_tls_conn_t* tls, void* buf, int len) {
     (void)tls;
