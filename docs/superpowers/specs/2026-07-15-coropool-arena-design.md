@@ -2,6 +2,7 @@
 
 Status: Draft for written review
 Date: 2026-07-15
+Updated: 2026-07-16
 
 ## 1. Summary
 
@@ -19,10 +20,11 @@ One `coropool_t` is shared by a scheduler. Each worker embeds a
 are lock-free. A pool mutex protects the shared recycled array, arena list,
 and arena bump allocation.
 
-Arenas retain their virtual addresses and, on Windows, their commit charge
-until the runtime is destroyed. Slot deallocation calls
-`platform_vmem_reset()` so the operating system may discard the slot's
-physical contents without releasing its address or Windows commit charge.
+Arenas retain their virtual addresses until the runtime is destroyed. On
+Windows, an arena is reserved without being committed. Active slots and
+worker-local cached slots are committed; slots moved to the shared recycled
+array are decommitted. This bounds idle commit while preserving a syscall-free
+local allocation path.
 
 ## 2. Motivation
 
@@ -40,6 +42,12 @@ per-slot mappings.
 
 The arena design also removes per-slot guard-page protection calls and
 amortizes virtual-memory allocation over hundreds of slots.
+
+The current Windows pool releases individual mappings once the bounded local
+and shared caches are full, so commit falls after a concurrency spike. A naive
+whole-arena commit policy would regress that behavior by retaining the peak
+until runtime destruction. The selected hybrid policy retains arena addresses
+but decommits slots spilled beyond worker-local caches.
 
 The fixed 128 KiB default is supported by measured Debug high-water marks in
 the current TLS test paths:
@@ -64,7 +72,9 @@ bound. Applications can continue to configure a larger stack.
 - Keep coroutine creation and destruction lock-free on worker-local cache
   hits.
 - Retain arena address space until scheduler destruction.
-- Reset recycled slots so their physical contents may be discarded.
+- Reset worker-local cached slots so their physical contents may be discarded.
+- Decommit shared recycled slots so Windows commit falls after a concurrency
+  spike.
 - Detect stack overflow with a canary plus minicoro's SP and metadata-magic
   checks, and abort immediately when detection occurs.
 - Preserve a fallback for minicoro backends whose stacks are externally owned,
@@ -75,7 +85,8 @@ bound. Applications can continue to configure a larger stack.
 - Grow or copy a coroutine stack while the coroutine is running.
 - Release an empty arena before scheduler destruction.
 - Guarantee immediate stack-overflow detection at the faulting instruction.
-- Eliminate Windows system-wide commit charge for retained arenas.
+- Eliminate Windows commit charge for active stacks or the bounded
+  worker-local committed caches.
 - Add a public coropool API.
 - Add per-worker arena ownership or remote-free queues.
 
@@ -104,7 +115,7 @@ src/runtime/coropool.c
 - arena allocation, bump allocation, and destruction;
 - the shared recycled-address array and its mutex;
 - worker-local cache refill and drain operations;
-- slot reset;
+- slot commit, reset, and decommit transitions;
 - canary initialization and validation.
 
 The scheduler owns:
@@ -272,29 +283,50 @@ to hold every slot created so far. This guarantees that later deallocation
 does not need to allocate memory or discard a reusable address. Failure to
 grow the tracking array prevents publication of the new arena.
 
-Arena virtual memory is allocated lazily. `coropool_create()` creates pool
-metadata but does not allocate the first arena.
+Arena virtual memory is reserved lazily. `coropool_create()` creates pool
+metadata but does not reserve the first arena.
+
+Slot location defines its normal backing state:
+
+| Location | Windows state | Unix state |
+| --- | --- | --- |
+| Arena at or beyond `bump` | reserved only | mapped, untouched |
+| Active coroutine | committed | mapped, populated on demand |
+| Worker-local cache | committed and reset | mapped and reset |
+| Shared recycled array | decommitted | mapped and discarded |
+
+The shared recycled array contains addresses, not data stored inside the
+slots, so decommitting a shared slot does not make pool metadata inaccessible.
 
 ## 10. Allocation Flow
 
 The allocation order is:
 
-1. Pop one address from the current worker's local cache without a lock.
-2. If the local cache is empty, lock the pool and refill up to 32 addresses
-   from the shared recycled array.
-3. If no recycled address exists, take `current->bump` and advance it.
-4. If no current arena has bump capacity, allocate and publish a new arena,
-   then take its first slot.
-5. Unlock the pool and return the page-aligned slot address.
+1. Pop one committed address from the current worker's local cache without a
+   lock or virtual-memory call.
+2. If the local cache is empty, remove up to 32 decommitted addresses from the
+   shared recycled array under the pool mutex.
+3. Commit the removed addresses outside the mutex. Keep successful commits in
+   the local cache and return one of them. Return failed commits to the shared
+   recycled array before reporting allocation failure.
+4. If no recycled address exists, claim `current->bump` and advance it under
+   the mutex.
+5. If no current arena has bump capacity, reserve and publish a new arena,
+   then claim its first slot.
+6. Commit a newly claimed bump slot before returning it. If commit fails, put
+   the still-reserved address into the shared recycled array and return
+   `NULL`.
 
 An external thread passes `cache == NULL`, skips local-cache operations, and
-uses the shared recycled or arena path directly. The initial root coroutine is
-created this way because the thread running `runtime_run()` is not a scheduler
-worker.
+commits only the one shared or bump slot it will return. The initial root
+coroutine is created this way because the thread running `runtime_run()` is
+not a scheduler worker.
 
 The pool uses `mtx_t`, not a spin lock, because arena growth performs
-`platform_vmem_alloc()` while serializing publication. Worker-local hits do
-not touch the mutex, and shared refill is batched.
+`platform_vmem_reserve()` while serializing publication. Worker-local hits do
+not touch the mutex, and shared refill is batched. Slot commit calls occur
+outside the mutex after the corresponding addresses have been removed from
+shared ownership.
 
 ## 11. Deallocation Flow
 
@@ -306,26 +338,34 @@ mco_uninit()
 coropool_dealloc()
 ```
 
-`coropool_dealloc()` resets the complete page-aligned slot with
-`platform_vmem_reset(slot, slot_stride)` and then:
+`coropool_dealloc()` then applies the following policy:
 
-1. pushes the address into the current worker's local cache if it has room;
-2. otherwise drains half of the 64-entry local cache into the shared recycled
-   array under the pool mutex, then caches the newly freed slot;
-3. or, when `cache == NULL`, pushes directly into the shared recycled array.
+1. If the current worker's local cache has room, reset the complete
+   page-aligned slot with `platform_vmem_reset(slot, slot_stride)` and cache
+   its still-committed address without taking the pool mutex.
+2. If the local cache is full, remove half of its 64 entries. Decommit those
+   entries outside the pool mutex, append their addresses to the shared
+   recycled array under the mutex, then reset and locally cache the newly
+   freed slot.
+3. When `cache == NULL`, decommit the newly freed slot and append its address
+   directly to the shared recycled array.
 
 The shared recycled array has no configured retention limit. A slot is never
-individually released because its arena owns the mapping until pool
-destruction.
+individually released because its arena owns the reservation until pool
+destruction. A decommit failure affects commit reclamation but not address
+ownership. The address still enters the shared array; recommitting an already
+committed Windows range is valid and idempotent.
 
 ## 12. Virtual Memory Semantics
 
-Coropool keeps the existing platform operations:
+Coropool uses an explicit backing lifecycle:
 
-```text
-platform_vmem_alloc()
-platform_vmem_reset()
-platform_vmem_dealloc()
+```c
+void* platform_vmem_reserve(size_t size);
+int   platform_vmem_commit(void* ptr, size_t size);
+void  platform_vmem_reset(void* ptr, size_t size);
+int   platform_vmem_decommit(void* ptr, size_t size);
+void  platform_vmem_release(void* ptr, size_t size);
 ```
 
 It does not use a per-slot guard page and does not call
@@ -333,25 +373,41 @@ It does not use a per-slot guard page and does not call
 
 On Unix-like systems:
 
-- one arena is one read/write anonymous `mmap`;
+- reserve creates one read/write anonymous `mmap` for the complete arena;
+- commit is a logical operation and does not call `mprotect`;
 - physical pages are populated on demand;
-- slot reset uses `madvise(MADV_DONTNEED)`;
-- arena destruction uses `munmap`;
+- reset and decommit use `madvise(MADV_DONTNEED)`;
+- release uses `munmap`;
 - reset does not change page protection and therefore does not create a
   persistent per-slot VMA split.
 
 On Windows:
 
-- arena allocation uses the current `MEM_RESERVE | MEM_COMMIT` operation;
+- reserve uses `VirtualAlloc(..., MEM_RESERVE, PAGE_NOACCESS)` for the complete
+  arena;
+- commit uses `VirtualAlloc(slot, slot_stride, MEM_COMMIT, PAGE_READWRITE)`;
 - slot reset uses `MEM_RESET`;
-- arena destruction uses `MEM_RELEASE`.
+- decommit uses `VirtualFree(slot, slot_stride, MEM_DECOMMIT)`;
+- release uses `VirtualFree(arena, 0, MEM_RELEASE)`.
 
 Windows commit charge is system-wide. `MEM_RESET` allows the system to discard
-slot contents and physical backing but does not release commit charge. Commit
-therefore follows the historical arena high-water mark and remains until
-runtime destruction. With 4 KiB pages, 100,000 default slots require 196
-arenas, or approximately 12.63 GiB of retained commit. This is an accepted
-trade-off for avoiding per-coroutine commit/decommit operations.
+local-cache contents and physical backing but does not release commit charge.
+`MEM_DECOMMIT` releases the commit charge of slots moved to shared recycled
+storage while preserving the encompassing arena reservation.
+
+At a concurrency peak, active fixed stacks still require their full committed
+slot sizes. With 4 KiB pages, 100,000 active default slots require about
+12.63 GiB of commit. After those coroutines finish, the normal retained idle
+commit is bounded by worker-local caches:
+
+```text
+worker_count * COROPOOL_CACHE_CAPACITY * slot_stride
+```
+
+For 16 workers, 64 cached slots per worker, and a 132 KiB stride, that bound is
+approximately 132 MiB. Shared recycled slots and never-used bump slots do not
+retain Windows commit. Arena address space is released only at runtime
+destruction.
 
 ## 13. Minicoro Lifecycle
 
@@ -426,13 +482,17 @@ detected.
 
 - Invalid or overflowing size calculation makes `coropool_create()` return
   `NULL`.
-- Heap allocation, recycled-array growth, or arena allocation failure makes
-  creation or allocation return `NULL` without publishing partial arena state.
+- Heap allocation, recycled-array growth, arena reserve, or slot commit
+  failure makes creation or allocation return `NULL` without losing the slot
+  address or publishing partial arena state.
 - `scheduler_spawn()` propagates allocation or `mco_init()` failure through
   its existing failure result.
 - `platform_vmem_reset()` remains a best-effort operation with its current
   void result. Failure to discard pages affects reclamation, not slot
   correctness.
+- `platform_vmem_decommit()` failure leaves excess commit charged but does not
+  invalidate the reserved address. A later commit of that shared address is
+  idempotent.
 - Canary damage and minicoro lifecycle invariant violations abort rather than
   allowing potentially corrupted execution to continue.
 
@@ -442,8 +502,10 @@ detected.
 
 Per-worker arenas avoid a shared allocator lock but waste one partially used
 arena per active worker and require remote-free handling after work stealing.
-With 16 workers and one slot used by each, 512-slot arenas would commit about
-1,056 MiB on Windows instead of one shared 66 MiB arena.
+With 16 workers and one slot used by each, 512-slot arenas would reserve about
+1,056 MiB of fragmented address space instead of sharing one 66 MiB arena.
+More importantly, free capacity owned by one worker would not automatically
+satisfy demand on another worker.
 
 ### Per-slot descriptor objects
 
@@ -457,12 +519,20 @@ An intrusive list would make free-list state depend on reset slot contents.
 The external recycled-address array is simpler and preserves the option to
 change reset semantics later.
 
-### Per-slot reserve and commit phases
+### Whole-arena commit
 
-Committing on every allocation and decommitting on every free would preserve
-commit more precisely but would add operating-system calls to coroutine churn
-and make the local cache ineffective. The selected design commits an arena
-once and resets slots without decommitting them.
+Using `MEM_RESERVE | MEM_COMMIT` once per arena minimizes Windows VM calls but
+retains the historical concurrency high-water as system-wide commit. A burst
+to 100,000 default slots would leave about 12.63 GiB charged until runtime
+destruction even after all connections closed. The selected design reserves
+the arena and commits individual slots instead.
+
+### Decommit on every coroutine destruction
+
+Immediately decommitting every freed slot would preserve commit most precisely
+but would add a decommit and recommit to every hot coroutine lifecycle. The
+selected design keeps the bounded worker-local caches committed and decommits
+only slots spilled to shared recycled storage.
 
 ### Per-slot guard pages
 
@@ -485,10 +555,14 @@ Focused coropool and scheduler tests will cover:
 - unique addresses for simultaneously allocated slots;
 - recycled-address reuse across multiple arenas;
 - local-cache refill and half-drain behavior;
+- local committed, shared decommitted, and bump reserved-only state
+  transitions;
 - `cache == NULL` allocation and deallocation;
 - concurrent allocation and deallocation with one cache per worker thread;
 - repeated runtime creation and destruction;
 - `mco_init()` failure cleanup;
+- slot commit failure returning its address to shared ownership;
+- decommit failure preserving a reusable address;
 - canary corruption causing process abort;
 - `MCO_STACK_OVERFLOW` causing process abort;
 - ASAN and UBSAN runs where supported;
@@ -508,5 +582,8 @@ is visible as approximately one mapping per arena rather than per slot.
 - A 100,000-coroutine stress run is not limited by VMA count.
 - Local-cache allocation and deallocation do not acquire the pool mutex.
 - No per-slot guard-page protection remains in the inline-stack path.
-- Arena addresses and Windows commit are released at runtime destruction.
+- Shared recycled slots release Windows commit during runtime operation.
+- Normal idle Windows commit is bounded by worker-local cache capacity.
+- Arena addresses and any remaining Windows commit are released at runtime
+  destruction.
 - Canary or minicoro overflow detection terminates the process immediately.
