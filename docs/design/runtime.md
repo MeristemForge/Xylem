@@ -299,6 +299,42 @@ To avoid hammering the allocator on every spawn, the scheduler keeps a
 The pool is guarded by a spinlock and bounded by its capacity; overflow and
 scheduler teardown deallocate complete regions.
 
+#### Operating-system resource limits
+
+The pool does not impose a fixed limit on active coroutines. On stack-based
+platforms, however, every active or retained idle slot owns a separate virtual
+memory region, so coroutine creation remains subject to operating-system
+resource limits. Reaching one of these limits makes `scheduler_spawn()` fail
+through the virtual-memory allocation path.
+
+On Windows, `platform_vmem_alloc()` uses `MEM_RESERVE | MEM_COMMIT` for the
+complete page-rounded slot. The complete slot therefore consumes system-wide
+commit as soon as it is allocated, even when the coroutine touches only a small
+part of its stack. `MEM_RESET` lets Windows discard the contents of an idle
+pooled stack, but it does not release its commit charge. Commit is released
+only when a slot leaves the bounded pool or the scheduler is destroyed and
+`MEM_RELEASE` runs. The Windows commit limit is approximately physical memory
+plus the configured page files; enabling or enlarging a page file raises this
+limit, but does not make commit unlimited.
+
+Linux anonymous writable mappings are also subject to the system's memory
+commit policy. `vm.overcommit_memory=0` uses the kernel heuristic,
+`vm.overcommit_memory=1` permits reservations without strict commit accounting,
+and `vm.overcommit_memory=2` enforces the `CommitLimit` reported by
+`/proc/meminfo`. In strict mode the limit is controlled by available swap and
+`vm.overcommit_ratio` or `vm.overcommit_kbytes`. Adding swap or changing these
+sysctls can raise or relax the allocation-time limit, but actual page faults can
+still exhaust memory and invoke the OOM killer.
+
+Linux and WSL have an additional, independent per-process VMA limit. Every slot
+uses a separate `mmap()`, and protecting its internal guard page with
+`mprotect()` can split that mapping into multiple VMAs. VMA consumption
+therefore grows linearly with the number of active and pooled slots and can
+reach `vm.max_map_count` while address space and commit are still available.
+An administrator can raise `vm.max_map_count` temporarily with `sysctl` or
+persist it in a file under `/etc/sysctl.d/`. Raising it moves this limit rather
+than removing the kernel memory and address-space cost of the mappings.
+
 ## 7. I/O parking (`iowait.c`)
 
 `iowait` bridges a coroutine and the platform poller. One handle wraps one fd

@@ -146,6 +146,14 @@ unspecified, so a pooled stack can be reused without another allocation. The
 runtime protects one page as an overflow guard and deallocates complete regions
 only when they leave the pool. See [`runtime.md`](runtime.md) §6.
 
+Windows `alloc` commits the complete region immediately, and `reset` does not
+release that system-wide commit charge. Unix anonymous writable mappings are
+subject to the host commit policy; on Linux, protecting an internal subrange can
+also split a mapping into additional VMAs. Both the commit policy and Linux
+`vm.max_map_count` can be adjusted by an administrator, but remain
+operating-system resource boundaries. See the coroutine-pool resource limits in
+[`runtime.md`](runtime.md).
+
 ## 6. Semaphore
 
 `platform-sem` is a counting semaphore with `create/destroy/post/wait/timedwait`.

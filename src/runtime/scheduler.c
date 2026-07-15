@@ -269,6 +269,8 @@ static void* _sched_coro_alloc(_sched_coro_pool_t* pool, size_t size) {
     /* Allocate the complete slot in one platform call. */
     char* base = (char*)platform_vmem_alloc(total);
     if (!base) {
+        /* System commit limit or Linux VMA exhaustion can cause this failure. */
+        xylem_loge("<sched> coroutine slot alloc failed");
         return NULL;
     }
 
