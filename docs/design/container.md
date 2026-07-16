@@ -108,7 +108,7 @@ them — `offsetof`-based, zero-cost, and **internal** (never exposed publicly).
 
 These aren't academic; they carry the runtime:
 
-- `runq` (global run queue) is a `queue_t` of coroutine contexts.
+- `runq` is a dedicated intrusive singly linked FIFO of coroutine contexts.
 - Per-worker **timer heaps** are `heap_t` keyed on expiry.
 - The scheduler **coroutine registry** is a `list_t`.
 - Channel messages ride the `mpsc_t` (next section).

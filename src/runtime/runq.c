@@ -23,96 +23,138 @@
 
 #include "xylem/xylem-threads.h"
 
-#include <stdatomic.h>
 #include <stdlib.h>
 
 struct runq_s {
-    queue_t          q;
-    mtx_t            lock;
-    _Atomic int32_t  len; /* lock-free length hint for spin/peek fast paths */
+    runq_node_t* head;
+    runq_node_t* tail;
+    size_t       node_count;
+    mtx_t        lock;
 };
 
-runq_t* runq_create(void) {
-    runq_t* rq = (runq_t*)calloc(1, sizeof(runq_t));
-    if (!rq) {
-        return NULL;
+static void _runq_append(
+    runq_t*      runq,
+    runq_node_t* batch_head,
+    runq_node_t* batch_tail,
+    size_t       count) {
+    if (runq->tail) {
+        runq->tail->next = batch_head;
+    } else {
+        runq->head = batch_head;
     }
-    queue_init(&rq->q);
-    if (mtx_init(&rq->lock, mtx_plain) != thrd_success) {
-        free(rq);
-        return NULL;
-    }
-    return rq;
+    runq->tail = batch_tail;
+    runq->node_count += count;
 }
 
-void runq_destroy(runq_t* rq) {
-    if (!rq) {
+static runq_node_t* _runq_detach(runq_t* runq, size_t count) {
+    runq_node_t* batch_head = runq->head;
+    runq_node_t* batch_tail = batch_head;
+
+    for (size_t i = 1; i < count; i++) {
+        batch_tail = batch_tail->next;
+    }
+    runq->head = batch_tail->next;
+    if (!runq->head) {
+        runq->tail = NULL;
+    }
+    runq->node_count -= count;
+    batch_tail->next = NULL;
+    return batch_head;
+}
+
+runq_t* runq_create(void) {
+    runq_t* runq = (runq_t*)calloc(1, sizeof(runq_t));
+    if (!runq) {
+        return NULL;
+    }
+    if (mtx_init(&runq->lock, mtx_plain) != thrd_success) {
+        free(runq);
+        return NULL;
+    }
+    return runq;
+}
+
+void runq_destroy(runq_t* runq) {
+    if (!runq) {
         return;
     }
-    mtx_destroy(&rq->lock);
-    free(rq);
+    mtx_destroy(&runq->lock);
+    free(runq);
 }
 
-void runq_push(runq_t* rq, queue_node_t* node) {
-    mtx_lock(&rq->lock);
-    queue_enqueue(&rq->q, node);
-    atomic_fetch_add(&rq->len, 1);
-    mtx_unlock(&rq->lock);
+void runq_push(runq_t* runq, runq_node_t* node) {
+    node->next = NULL;
+
+    mtx_lock(&runq->lock);
+    _runq_append(runq, node, node, 1);
+    mtx_unlock(&runq->lock);
 }
 
-void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count) {
+void runq_push_batch(
+    runq_t*       runq,
+    runq_node_t** nodes,
+    int           count) {
     if (count <= 0) {
         return;
     }
-    mtx_lock(&rq->lock);
-    for (int32_t i = 0; i < count; i++) {
-        queue_enqueue(&rq->q, nodes[i]);
+
+    for (int i = 1; i < count; i++) {
+        nodes[i - 1]->next = nodes[i];
     }
-    atomic_fetch_add(&rq->len, count);
-    mtx_unlock(&rq->lock);
+    runq_node_t* batch_head = nodes[0];
+    runq_node_t* batch_tail = nodes[count - 1];
+    batch_tail->next = NULL;
+
+    mtx_lock(&runq->lock);
+    _runq_append(runq, batch_head, batch_tail, (size_t)count);
+    mtx_unlock(&runq->lock);
 }
 
-queue_node_t* runq_pop(runq_t* rq) {
-    mtx_lock(&rq->lock);
-    queue_node_t* node = queue_dequeue(&rq->q);
-    if (node) {
-        atomic_fetch_sub(&rq->len, 1);
+runq_node_t* runq_pop(runq_t* runq) {
+    mtx_lock(&runq->lock);
+    runq_node_t* node = NULL;
+    if (runq->head) {
+        node = _runq_detach(runq, 1);
     }
-    mtx_unlock(&rq->lock);
+    mtx_unlock(&runq->lock);
     return node;
 }
 
-int32_t runq_len_approx(runq_t* rq) {
-    return atomic_load(&rq->len);
-}
-
-
-int32_t runq_pop_fair(
-    runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs) {
-    if (cap <= 0 || nprocs <= 0) {
+int runq_pop_fair(
+    runq_t*       runq,
+    runq_node_t** nodes,
+    int           nodes_cap,
+    int           consumer_count) {
+    if (nodes_cap <= 0 || consumer_count <= 0) {
         return 0;
     }
-    mtx_lock(&rq->lock);
-    size_t  size = queue_len(&rq->q);
-    int32_t grab = (int32_t)(size / (size_t)nprocs + 1);
-    if (grab > (int32_t)size) {
-        grab = (int32_t)size;
+
+    mtx_lock(&runq->lock);
+    size_t queued_count = runq->node_count;
+    size_t take_count = queued_count / (size_t)consumer_count;
+    if (take_count < queued_count) {
+        take_count++;
     }
-    if (grab > cap) {
-        grab = cap;
+    if (take_count > (size_t)nodes_cap) {
+        take_count = (size_t)nodes_cap;
     }
-    int32_t n = 0;
-    while (n < grab) {
-        queue_node_t* node = queue_dequeue(&rq->q);
-        if (!node) {
-            break;
-        }
-        out[n++] = node;
+    if (take_count == 0) {
+        mtx_unlock(&runq->lock);
+        return 0;
     }
-    if (n > 0) {
-        atomic_fetch_sub(&rq->len, n);
+
+    runq_node_t* batch_head = _runq_detach(runq, take_count);
+    mtx_unlock(&runq->lock);
+
+    int          count = (int)take_count;
+    runq_node_t* node  = batch_head;
+
+    for (int i = 0; i < count; i++) {
+        runq_node_t* next_node = node->next;
+        node->next = NULL;
+        nodes[i] = node;
+        node = next_node;
     }
-    mtx_unlock(&rq->lock);
-    return n;
+    return count;
 }
 

@@ -21,29 +21,31 @@
 
 _Pragma("once")
 
-#include <stdint.h>
-
-/* Opaque FIFO work-stealing run queue handle. */
+/* Opaque fixed-capacity SPMC FIFO work-stealing queue. */
 typedef struct wsq_s wsq_t;
 
 /**
  * @brief Create a FIFO work-stealing queue of pointers.
  *
- * Single-producer (the owner pushes at the tail) / multi-consumer (the owner
- * and thieves claim from the head with CAS). This mirrors Go's per-P runq:
- * a fixed FIFO ring, an owner tail, and an atomic head shared by stealers.
+ * The queue is a fixed power-of-two ring. One owner thread is the only
+ * producer and publishes elements at the tail. The owner and any number of
+ * thieves consume from the head with compare-and-swap.
  *
- * Stores opaque element pointers; NULL is reserved as the empty result, so
- * callers must not push NULL.
+ * Head and tail are 64-bit monotonic counters; physical slots are selected by
+ * masking their low bits. Slots are atomic so a losing consumer can safely
+ * overlap a producer that reuses a slot after another consumer advances the
+ * head. NULL is reserved as the empty result and cannot be pushed.
  *
- * @param cap  Capacity (must be a power of 2).
+ * @param cap  Capacity (must be a positive power of 2).
  *
  * @return Queue handle, or NULL on failure.
  */
-extern wsq_t* wsq_create(uint32_t cap);
+extern wsq_t* wsq_create(int cap);
 
 /**
  * @brief Destroy a queue and free its memory.
+ *
+ * No thread may access the queue while it is being destroyed.
  *
  * @param q  Queue to destroy.
  */
@@ -60,23 +62,27 @@ extern void wsq_destroy(wsq_t* q);
  *
  * @return Number of free slots.
  */
-extern int32_t wsq_remaining(wsq_t* q);
+extern int wsq_remaining(wsq_t* q);
 
 /**
  * @brief Push an element onto the tail (owner thread only).
  *
+ * Stores the element in its slot before publishing the incremented tail, so a
+ * consumer that observes the new tail also observes the element.
+ *
  * @param q     Queue to push onto.
  * @param elem  Element pointer to enqueue; must be non-NULL.
  *
- * @return 0 on success, -1 if full.
+ * @return 0 on success, -1 if full or elem is NULL.
  */
 extern int wsq_push(wsq_t* q, void* elem);
 
 /**
  * @brief Pop the oldest element from the head (owner thread only).
  *
- * FIFO: returns the least-recently pushed element. Shares the head with
- * thieves, so it resolves the race with a compare-and-swap.
+ * Reads the oldest slot, then claims it by advancing the shared head with
+ * compare-and-swap. A failed claim retries with the head value returned by the
+ * failed compare-and-swap.
  *
  * @param q  Queue to pop from.
  *
@@ -87,27 +93,31 @@ extern void* wsq_pop(wsq_t* q);
 /**
  * @brief Move up to half of the queued elements off the head (owner thread).
  *
- * Takes roughly half from the oldest end. Used by the owner when overflowing
- * to the global queue, matching Go's runqputslow shape.
+ * Claims min(ceil(available / 2), elems_cap) oldest elements with one
+ * successful head compare-and-swap. Used when a full local queue spills work
+ * to the global queue.
  *
- * @param q    Queue to drain.
- * @param out  Output buffer to receive elements.
- * @param cap  Capacity of the output buffer.
+ * @param q          Queue to drain.
+ * @param elems      Output buffer; non-NULL when elems_cap is positive.
+ * @param elems_cap  Maximum number of elements to remove.
  *
- * @return Number of elements removed.
+ * @return Number of elements removed, or 0 if empty or elems_cap is not
+ * positive.
  */
-extern int32_t wsq_pop_half(wsq_t* q, void** out, int32_t cap);
+extern int wsq_pop_half(wsq_t* q, void** elems, int elems_cap);
 
 /**
  * @brief Steal up to half of the queued elements from the head (any thread).
  *
- * Atomically claims roughly half of the available items from the oldest end
- * and writes them into the output buffer.
+ * Claims min(ceil(available / 2), elems_cap) oldest elements with one
+ * successful head compare-and-swap. On contention, retries with the updated
+ * head rather than returning a partial batch.
  *
- * @param q    Queue to steal from.
- * @param out  Output buffer to receive stolen elements.
- * @param cap  Capacity of the output buffer.
+ * @param q          Queue to steal from.
+ * @param elems      Output buffer; non-NULL when elems_cap is positive.
+ * @param elems_cap  Maximum number of elements to steal.
  *
- * @return Number of elements stolen (0 if empty or contended).
+ * @return Number of elements stolen, or 0 if empty or elems_cap is not
+ * positive.
  */
-extern int32_t wsq_steal_half(wsq_t* q, void** out, int32_t cap);
+extern int wsq_steal_half(wsq_t* q, void** elems, int elems_cap);

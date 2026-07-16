@@ -57,8 +57,8 @@ cannot make progress *parks* (yields to its worker); a wake source later
 |-----------|------|------|
 | Runtime facade | `runtime.c` | Global singletons; maps `xylem_*` onto scheduler + dynpool. |
 | Scheduler | `scheduler.c` | Workers, runnable pool, poll driver, timers, coroutine pool. |
-| Work-stealing queue | `wsq.c` | Per-worker lock-free FIFO run queue. |
-| Global run queue | `runq.c` | Mutex-protected MPMC overflow / injection queue. |
+| Work-stealing queue | `wsq.c` | Per-worker fixed-capacity SPMC FIFO run queue. |
+| Global run queue | `runq.c` | Mutex-protected intrusive singly linked MPMC FIFO. |
 | I/O wait | `iowait.c` | Per-fd, per-direction coroutine parking on the poller. |
 | Blocking pool | `dynpool.c` | Elastic thread pool for blocking work. |
 | Coroutines | `minicoro/` | Stackful coroutine primitive (bundled). |
@@ -103,19 +103,46 @@ from cheapest to most contended:
 1. **`runnext` (per-worker, single slot).** A LIFO hand-off used when a worker
    schedules a coroutine onto itself. Cache-hot; checked first on pop. Pushing
    a new coroutine here evicts the previous occupant down to the queue. Only
-   the owning worker pops its `runnext`, so a stalled owner (blocked syscall,
-   long CPU loop) would normally strand the slot — steals touch only the queue.
-   As a last resort, after the local queue and every victim queue come up
-   empty, an idle worker may steal a `runnext` entry that has aged past
-   `SCHED_RUNNEXT_STEAL_MS`; the race with the owner's own pop is settled by an
-   atomic exchange, so a coroutine is never run twice.
+   the owning worker normally pops its `runnext`. As a last resort, after the
+   local queue and every victim queue come up empty, a searching worker may
+   steal another worker's `runnext`. The race with the owner's own pop is
+   settled by an atomic exchange, so a coroutine is never run twice.
 2. **Work-stealing queue (`wsq`, per-worker).** The owner pushes at the tail
    and pops from the head (FIFO, arrival order); other workers steal from the
-   head too. Lock-free, single-producer / multi-consumer. FIFO bounds how long
-   any one coroutine waits. Default capacity 256 (power of 2).
-3. **Global run queue (`runq`).** A mutex-protected MPMC queue. Two roles:
+   head too. It is a fixed-capacity, single-producer / multi-consumer ring.
+   FIFO bounds how long any one coroutine waits. Default capacity 256 (power
+   of 2).
+3. **Global run queue (`runq`).** A mutex-protected intrusive singly linked
+   MPMC FIFO. Two roles:
    overflow when a deque is full, and the **injection point** for any
    cross-thread `scheduler_schedule()` caller.
+
+### Work-stealing queue representation and invariants
+
+Each `wsq` owns a power-of-two array of atomic element pointers. `head` and
+`tail` are ever-increasing `uint64_t` sequence counters modulo 2^64; the
+physical array index is `counter & (capacity - 1)`, and `tail - head` is the
+current logical length. Using 64 bits makes a stale CAS surviving a complete
+counter cycle practically unreachable.
+
+Only the owner writes `tail`. A push stores the pointer into its atomic slot
+before storing `tail + 1`. The project uses the default sequentially consistent
+C11 atomic operations, so a consumer that observes the new tail also observes
+the published pointer. Consumers read candidate slots before attempting to
+advance `head`. If another consumer wins the CAS, the loser retries with the
+head value returned by the failed CAS.
+
+Slots themselves are atomic for a separate reason: after one consumer advances
+`head`, the producer may wrap and reuse the released physical slot while a
+losing consumer is still reading its stale candidate batch. Atomic slot access
+makes that overlap data-race-free; the losing consumer discards the stale read
+after its head CAS fails.
+
+`wsq_pop()` claims one oldest element. `wsq_pop_half()` and
+`wsq_steal_half()` claim `min(ceil(available / 2), elems_cap)` elements with one
+successful head CAS. The owner uses `pop_half` when a full local queue must
+spill a batch to the global `runq`; thieves use `steal_half` to distribute
+useful work without taking the victim's entire queue.
 
 ### `scheduler_schedule(sched, co)`
 
@@ -125,15 +152,17 @@ from cheapest to most contended:
 - **From any other thread** (a different scheduler's worker, a dynpool thread,
   application thread): push straight to the global runq and wake one worker.
 
-After scheduling, `_sched_wake_worker()` wakes at most one parked worker via
-its semaphore; if none are parked but the poll driver is blocked, it pokes the
-wakeup fd instead.
+After scheduling, `_sched_wake_worker()` does nothing while another worker is
+already searching. Otherwise it reserves one parked or polling worker as
+searching before signalling it, so concurrent producers coalesce into one wake.
+Parked workers are signalled through their semaphore; a blocked poll owner is
+signalled through the poller wakeup fd.
 
 ### `scheduler_schedule_batch(sched, cos, n)`
 
-Pushes a whole array to the global runq under one lock acquisition and performs
-**one** wake, amortizing lock + signal cost. Used by the I/O path when a single
-poll pass makes many coroutines runnable.
+Links a whole array before locking, appends it to the global runq in O(1), and
+performs **one** wake, amortizing lock + signal cost. Used by the I/O path when
+a single poll pass makes many coroutines runnable.
 
 ### Park-state handshake (no resume mid-callback)
 
@@ -202,7 +231,7 @@ Each worker thread loops while the scheduler is running:
    resonates with the power-of-two deque sizes), pull one coroutine from the
    global runq and do a non-blocking poll, so global work and I/O can't starve
    behind a hot local deque.
-3. **Find work** via `_sched_worker_find_coro()`:
+3. **Find work** via `_sched_worker_find()`:
    - Pop local (`runnext` → deque → fair share of the global runq).
    - If nobody owns the poll driver, do a **non-blocking** poll and take any
      coroutine it produces.
@@ -651,7 +680,7 @@ changes.
 | Option | Where | Default | Meaning |
 |--------|-------|---------|---------|
 | `workers` | `xylem_opts_t` / `runtime_opts_t` | CPU count | Scheduler worker threads. |
-| `deque_capacity` | `scheduler_opts_t` | 256 | Per-worker deque capacity (power of 2). |
+| `deque_capacity` | `scheduler_opts_t` | 256 | Per-worker deque capacity (positive power of 2, at most `INT_MAX`). |
 | `coro_pool_capacity` | `scheduler_opts_t` | `workers * 64` | Recycled coroutine stacks. |
 | `max_threads` | `dynpool_opts_t` | 512 | Max blocking-pool threads. |
 | `idle_timeout` | `dynpool_opts_t` | 10000 ms | Blocking-pool idle thread lifetime. |

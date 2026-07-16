@@ -85,8 +85,9 @@ Bundled third-party code lives next to its consumer: `src/runtime/minicoro/`
 worker threads (default: CPU count) and a **dynamic blocking-task pool**, then
 spawns `main_fn` as the root coroutine and blocks until every coroutine has
 exited or `xylem_shutdown()` is called. Each worker owns a `runnext` slot, a
-work-stealing deque, and a timer heap; overflow and cross-thread wakeups land in
-a shared global run queue. One idle worker at a time becomes the **poll driver**
+fixed-capacity SPMC FIFO work-stealing queue, and a timer heap; overflow and
+cross-thread wakeups land in a shared mutex-protected MPMC queue. One idle
+worker at a time becomes the **poll driver**
 and blocks on the platform poller to service I/O and timers;
 the rest park on a semaphore. Coroutines that wait on a socket suspend through
 **`iowait`**, which arms the fd on the poller and resumes the coroutine when it

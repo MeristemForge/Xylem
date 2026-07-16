@@ -21,17 +21,23 @@
 
 _Pragma("once")
 
-#include "container/queue.h"
+#include <stddef.h>
 
-#include <stdint.h>
-
-/* Opaque global run queue handle. */
+/* Opaque mutex-protected global run queue. */
 typedef struct runq_s runq_t;
+typedef struct runq_node_s runq_node_t;
+
+struct runq_node_s {
+    runq_node_t* next;
+};
+
+#define runq_entry(node, type, member) \
+    ((type*)((char*)(node) - offsetof(type, member)))
 
 /**
  * @brief Create a global run queue.
  *
- * Thread-safe MPMC queue protected by a mutex.
+ * Thread-safe MPMC FIFO protected by a mutex.
  *
  * @return Run queue handle, or NULL on failure.
  */
@@ -42,64 +48,66 @@ extern runq_t* runq_create(void);
  *
  * The queue must be empty before destruction.
  *
- * @param rq  Run queue to destroy.
+ * @param runq  Run queue to destroy.
  */
-extern void runq_destroy(runq_t* rq);
+extern void runq_destroy(runq_t* runq);
 
 /**
  * @brief Push a node onto the run queue.
  *
  * Thread-safe: can be called from any thread.
  *
- * @param rq    Run queue.
- * @param node  Intrusive queue node embedded in the caller's struct.
+ * @param runq  Run queue.
+ * @param node  Intrusive run queue node embedded in the caller's struct.
+ *
+ * @note node must be non-NULL, not currently queued, and remain valid until
+ *       popped.
  */
-extern void runq_push(runq_t* rq, queue_node_t* node);
+extern void runq_push(runq_t* runq, runq_node_t* node);
 
 /**
- * @brief Push multiple nodes onto the run queue in one lock acquisition.
+ * @brief Push multiple nodes onto the run queue.
  *
- * Thread-safe: can be called from any thread. More efficient than calling
- * runq_push in a loop when transferring a batch.
+ * A non-positive count is ignored.
  *
- * @param rq     Run queue.
- * @param nodes  Array of pointers to intrusive queue nodes.
+ * @param runq   Run queue.
+ * @param nodes  Array of pointers to intrusive run queue nodes.
  * @param count  Number of nodes in the array.
+ *
+ * @note For a positive count, nodes must point to distinct, non-NULL nodes
+ *       that are not currently queued. They must remain valid until popped.
  */
-extern void runq_push_batch(runq_t* rq, queue_node_t** nodes, int32_t count);
+extern void runq_push_batch(
+    runq_t*       runq,
+    runq_node_t** nodes,
+    int           count);
 
 /**
  * @brief Pop a node from the run queue.
  *
  * Thread-safe: can be called from any thread.
  *
- * @param rq  Run queue.
+ * @param runq  Run queue.
  *
- * @return Queue node pointer, or NULL if empty.
+ * @return Run queue node pointer, or NULL if empty.
  */
-extern queue_node_t* runq_pop(runq_t* rq);
+extern runq_node_t* runq_pop(runq_t* runq);
 
 /**
- * @brief Approximate queue length, read without taking the lock.
+ * @brief Pop a fair share of nodes from the run queue.
  *
- * For spin/peek fast paths only: a lock-free hint that may be momentarily
- * stale. A return of 0 does not guarantee a concurrent push has not just
- * landed, and vice-versa -- callers must still handle a racing runq_pop()
- * returning NULL (or a node). Never use it for a correctness decision that
- * a missed/extra item would break.
+ * Computes min(size / consumer_count + 1, size, nodes_cap) and removes that
+ * many nodes under one lock acquisition.
  *
- * @param rq  Run queue.
- * @return    Approximate number of queued nodes.
+ * @param runq            Run queue.
+ * @param nodes           Output buffer; non-NULL when nodes_cap is positive.
+ * @param nodes_cap       Maximum number of nodes to dequeue.
+ * @param consumer_count  Number of consumers sharing the queue.
+ *
+ * @return Number of nodes dequeued, or 0 for an empty queue or invalid limits.
  */
-extern int32_t runq_len_approx(runq_t* rq);
-
-
-/**
- * @brief Pop up to min(size/nprocs + 1, cap) nodes from the queue.
- *
- * Thread-safe. Fair-share formula: each worker takes 1/Nth of the
- * queue so local deques drain faster.
- */
-extern int32_t runq_pop_fair(
-    runq_t* rq, queue_node_t** out, int32_t cap, int32_t nprocs);
-
+extern int runq_pop_fair(
+    runq_t*       runq,
+    runq_node_t** nodes,
+    int           nodes_cap,
+    int           consumer_count);
