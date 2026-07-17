@@ -372,58 +372,42 @@ one parked coroutine.
 
 ### Park / wake handshake
 
-The subtlety is avoiding a "wake before yield" race. `scheduler_park()` invokes
-the park callback **after** `mco_yield()` has actually suspended the coroutine,
-so a wake source can never observe the coroutine pointer before it is safely
-parked. The steps:
+The subtlety is avoiding a wake between the final state check and coroutine
+publication. Each direction uses `NONE / WAIT / READY / co`:
 
-1. `iowait_read()` calls `scheduler_park()` with `_iowait_park_cb` and `&w->rd`.
-2. After the yield, `_iowait_park_cb` publishes the coroutine into
-   `rd.waiter` with a CAS. A slot already holding a parked coroutine means an
-   illegal second reader — the process aborts with a diagnostic.
-3. It **re-checks** `closed`, `deadline_error`, and `deadline_expired`,
-   because close or a deadline reset could have raced in between publish and
-   the check. If any condition is true, it wakes itself immediately.
-4. On resume, the return value is decided from the current state by re-reading
-   `closed`, `deadline_error`, and `deadline`: `IOWAIT_READY`, `IOWAIT_TIMEOUT`,
-   `IOWAIT_ERROR`, or `IOWAIT_CLOSED`.
+1. The waiter consumes a retained `READY` before checking errors.
+2. Without `READY`, it reads `poll_info` and the direction deadline. Result
+   priority is `CLOSED`, `TIMEOUT`, then `ERROR`.
+3. It reserves the slot with `NONE -> WAIT`, then repeats the result check.
+   If an error appeared, `_iowait_transition_waiter(..., IOWAIT_WAITER_NONE)`
+   cancels the reservation while preserving any concurrent `READY`.
+4. `scheduler_park()` yields the coroutine and invokes
+   `_iowait_wait_commit_cb()`. The callback's final operation is the CAS
+   `WAIT -> co`; it returns false if a wake source already consumed `WAIT`.
+5. After resume, the waiter consumes `READY` first, otherwise checks
+   `poll_info` again. A deadline reset can turn a timeout wake into a harmless
+   retry.
 
 The fd is already registered with the kernel poller before parking — it was
-armed at `iowait_create` (and, on LT+ONESHOT, re-armed in `iowait_on_event`
+armed at `iowait_create` (and, on LT+ONESHOT, re-armed in `iowait_process_event`
 after each event). Park never touches the poller.
 
 The same steps as a time-ordered diagram (top to bottom is time; `|` is each
 actor's timeline):
 
 ```
- Coroutine      scheduler_park     _iowait_park_cb     poller / poll driver
-     |                 |                  |                     |
-     |  iowait_read()  |                  |                     |
-     |---------------->|                  |                     |
-     |                 | mco_yield()      |                     |
-     |  (suspended) ...| .........        |                     |
-     |                 |                  |                     |
-     |                 | cb runs AFTER yield -> no waker can see |
-     |                 | the coroutine before it is parked      |
-     |                 |----------------->|                     |
-     |                 |                  | publish waiter CAS  |
-     |                 |                  | (abort if prev)     |
-     |                 |                  | re-check closed /   |
-     |                 |                  | deadline (raced in?)|
-     |                 |                  |                      |
-     | == case A: closed/deadline already passed ==             |
-     |<----------------------------------| self-wake: schedule  |
-     |                 |                  | co immediately       |
-     |                 |                  |                      |
-     | == case B: still waiting ==        |                      |
-     |                 |                  |   fd becomes ready    |
-     |                 |                  |        CQE (gen,idx)  |
-     |                 |                  |   tryref + gen check  |
-     |<--------------------------------------- exchange(&rd.waiter, |
-     |                 |                  |   READY) -> schedule(co)
-     |                                                           |
-     | resume; result = READY / TIMEOUT / CLOSED / ERROR         |
-     v                                                           v
+ Coroutine       rd.waiter       scheduler_park       wake source
+     |                |                 |                  |
+     | NONE -> WAIT   |                 |                  |
+     | re-check poll_info/deadline      |                  |
+     |--------------------------------->| mco_yield()      |
+     |                |<----------------| WAIT -> co       |
+     |                |                 |                  |
+     |                |<-----------------------------------|
+     |                | co -> READY/NONE; return old co    |
+     |<----------------------------------------------------|
+     | schedule(co), resume, consume READY or poll_info     |
+     v                v                 v                  v
 ```
 
 ### Three wake sources, one winner
@@ -432,28 +416,28 @@ A parked coroutine can be woken by an **I/O event**, a **deadline timer**, or
 **`iowait_close()`**. Each tries to claim the parked coroutine from the
 per-direction slot; only the claimant that observes the coroutine pointer
 actually reschedules it. I/O readiness is cached as `READY` in the slot for
-the next parker to consume without blocking. Deadline timeout is deliberately
-not latched as an unconditional result: the resumed coroutine reports timeout
-only if the deadline is still expired when it runs. If a deadline timer fires
-and wakes the coroutine, but the deadline is cleared or reset before it
-resumes, that wake is treated as spurious and the wait retries.
+the next parker to consume without blocking. Deadline expiry is latched in the
+direction-specific bit of the handle's `poll_info` word and cleared whenever
+that deadline is reset or disabled. If a deadline timer wakes the coroutine
+but the deadline is reset before it resumes, the cleared timeout bit makes
+that wake spurious and the wait retries.
 
 ```
-   I/O event      deadline timer     iowait_close          rd.waiter (atomic)
-       |                |                  |          EMPTY | READY | PARKED(co)
+   I/O event      deadline timer     iowait_close          waiter (atomic)
+       |                |                  |        NONE | WAIT | READY | co
        |                |                  |                     |
        |  -- the three sources may fire concurrently --          |
-       |  CAS to READY, return old co ------------------------->|
-       |                | CAS to EMPTY, return old co --------->|
-       |                |                  | CAS to EMPTY, ---->|
-       |                |                  | return old co       |
+       |  transition to READY, return old co ------------------->|
+       |                | publish timeout; transition to NONE -->|
+       |                |                  | publish CLOSED; ---->|
+       |                |                  | transition to NONE   |
        |                |                  |                     |
-       |  exactly ONE CAS returns co; the others get NULL/READY  |
+       |  only the transition that observes co returns it        |
        |                                                         |
        |  winner: schedule(co)  ----------------------------->  Coroutine
        |                                                         |
-       |  on resume, co re-reads current state to report         |
-       |  READY / TIMEOUT / ERROR / CLOSED, or retries           |
+       |  on resume, co consumes READY or reads poll_info         |
+       |  to report TIMEOUT / ERROR / CLOSED, or retries          |
        v                                                         v
 ```
 
@@ -464,7 +448,7 @@ free-list. The poller's user-data is a `(generation, slab-index)` pair packed
 into a `uintptr_t` (16 generation bits, the rest index; layout validated by a
 `_Static_assert` and works on 32- and 64-bit). When a handle is retired its
 generation is bumped and the slot returns to the free list. If a completion
-event arrives for a recycled slot, `_iowait_tryref()` compares the event's tag
+event arrives for a recycled slot, `_iowait_try_ref()` compares the event's tag
 against the slot's current generation and **rejects the mismatch**, so a stale
 CQE can never wake the wrong coroutine. Index 0 is reserved as the NULL
 sentinel used by the scheduler's wakeup fd.
@@ -479,18 +463,43 @@ Both trigger modes register the fd with read+write interest:
 
 - **LT + ONESHOT (Windows/wepoll):** `iowait_create` likewise calls
   `platform_poller_add(RW_OP)`. After each event the kernel auto-disables the
-  fd — `iowait_on_event` syncs `interest` to `NO_OP` and calls
-  `platform_poller_mod(RW_OP)` again under `arm_lock` with a closed re-check.
+  fd — `iowait_process_event` syncs `interest` to `NO_OP` and calls
+  `platform_poller_mod(RW_OP)` again under `poll_lock` with a closed re-check.
   ET mode skips this entirely.
 
-Because the fd is always registered (ET) or re-registered before the next
-park (LT), the park callback never touches the poller — it only publishes the
-parked coroutine into the direction's slot and re-checks close/deadline.
+Read readiness, write readiness, and LT re-arm are handled under one
+`poll_lock` acquisition per completion event. After releasing the lock,
+`iowait_process_event()` returns up to two replaced coroutine pointers in a
+fixed-capacity output array.
 
-`iowait_close()` drops the poller subscription **synchronously** under the arm
-lock before waking parked coroutines, so the caller can close the underlying fd
-right afterward without racing a deferred `EPOLL_CTL_DEL` against a recycled fd
-number. It is idempotent and may race with parked waits or deadline setters.
+`poll_lock` belongs to one `iowait` handle; unrelated fds never share it. It
+gives close and readiness publication a total order: readiness first retains
+`READY`, while close first prevents later readiness and LT re-arm. On ET
+platforms the event-side critical section contains only the closed check and
+waiter transitions. On LT+ONESHOT it also contains `platform_poller_mod()`, and
+close contains the matching `platform_poller_del()`.
+
+Short-lived connections contend only when a completion races with close on
+the same fd. A waiting poller worker can temporarily delay the rest of its CQE
+batch, so coroutine queue placement remains outside the lock. Keeping poller
+modification and deletion inside the critical section avoids a re-arm-after-
+close race and makes `iowait_close()` a synchronous fd barrier.
+
+The scheduler owns runnable placement. `_sched_io_process()` consumes each
+event result immediately: the first runnable becomes `run_now`, subsequent
+runnables go to the polling worker's local deque, and local overflow is batched
+into the global run queue. `iowait` does not know about these queueing choices
+and never flushes scheduler batches itself.
+
+Because the fd is always registered (ET) or re-registered before the next
+park (LT), the park callback never touches the poller. Its only operation is
+the final `WAIT -> co` publication CAS.
+
+`iowait_close()` drops the poller subscription **synchronously** under
+`poll_lock` before waking parked coroutines, so the caller can close the
+underlying fd right afterward without racing a deferred `EPOLL_CTL_DEL` against
+a recycled fd number. It is idempotent and may race with parked waits, a second
+close, or deadline setters.
 
 Deadline state is per direction. `set_deadline`, `clear_deadline`, and close's
 deadline stop path are serialized by that direction's `deadline_lock`, which

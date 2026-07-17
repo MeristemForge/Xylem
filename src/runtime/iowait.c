@@ -54,11 +54,19 @@ _Static_assert(
 
 typedef struct _iowait_dir_s _iowait_dir_t;
 
-enum {
+typedef enum _iowait_waiter_state_e {
     IOWAIT_WAITER_NONE  = 0,
     IOWAIT_WAITER_WAIT  = 1,
     IOWAIT_WAITER_READY = 2,
-};
+} _iowait_waiter_state_t;
+
+typedef enum _iowait_poll_info_e {
+    IOWAIT_INFO_CLOSED     = 1u << 0,
+    IOWAIT_INFO_RD_TIMEOUT = 1u << 1,
+    IOWAIT_INFO_WR_TIMEOUT = 1u << 2,
+    IOWAIT_INFO_RD_ERROR   = 1u << 3,
+    IOWAIT_INFO_WR_ERROR   = 1u << 4,
+} _iowait_poll_info_t;
 
 _Static_assert(_Alignof(mco_coro) > IOWAIT_WAITER_READY,
                "iowait coroutine pointers must not alias sentinel states");
@@ -69,7 +77,6 @@ struct _iowait_dir_s {
     scheduler_timer_t* timer;
     mtx_t              deadline_lock;
     _Atomic uint64_t   deadline;
-    _Atomic bool       deadline_error;
 };
 
 struct iowait_s {
@@ -80,7 +87,7 @@ struct iowait_s {
     _iowait_dir_t         rd;
     _iowait_dir_t         wr;
 
-    mtx_t                 arm_lock;
+    mtx_t                 poll_lock; /* Close/readiness/LT re-arm ordering. */
 
     _Atomic int32_t       refcnt;
     /**
@@ -90,7 +97,7 @@ struct iowait_s {
      */
     _Atomic uint16_t      gen;
     _Atomic int           interest;    /* PLATFORM_POLLER_NO_OP when not subscribed */
-    _Atomic bool          closed;
+    _Atomic uint32_t      poll_info;
 
     iowait_slab_t*        slab;
     uint32_t              slot_index;
@@ -104,7 +111,8 @@ struct iowait_slab_s {
 };
 
 static inline iowait_t* _iowait_slab_at(
-    iowait_slab_t* slab, uint32_t index) {
+    iowait_slab_t* slab,
+    uint32_t       index) {
     uint32_t zi     = index - 1;
     uint32_t page   = zi >> IOWAIT_PAGE_SHIFT;
     uint32_t offset = zi & (IOWAIT_PAGE_SIZE - 1);
@@ -141,7 +149,8 @@ static inline uint16_t _iowait_ud_gen(void* ud) {
 }
 
 static iowait_t* _iowait_slab_alloc(
-    iowait_slab_t* slab, uint32_t* out_index) {
+    iowait_slab_t* slab,
+    uint32_t*      out_index) {
     mtx_lock(&slab->lock);
 
     if (slab->free_slot != IOWAIT_FREE_END) {
@@ -174,9 +183,9 @@ static iowait_t* _iowait_slab_alloc(
     uint32_t base = npages * IOWAIT_PAGE_SIZE + 1;
 
     for (uint32_t i = 0; i < IOWAIT_PAGE_SIZE; i++) {
-        if (mtx_init(&page[i].arm_lock, mtx_plain) != thrd_success) {
+        if (mtx_init(&page[i].poll_lock, mtx_plain) != thrd_success) {
             for (uint32_t j = 0; j < i; j++) {
-                mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].poll_lock);
                 mtx_destroy(&page[j].rd.deadline_lock);
                 mtx_destroy(&page[j].wr.deadline_lock);
             }
@@ -187,11 +196,11 @@ static iowait_t* _iowait_slab_alloc(
         if (mtx_init(&page[i].rd.deadline_lock, mtx_plain)
             != thrd_success) {
             for (uint32_t j = 0; j < i; j++) {
-                mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].poll_lock);
                 mtx_destroy(&page[j].rd.deadline_lock);
                 mtx_destroy(&page[j].wr.deadline_lock);
             }
-            mtx_destroy(&page[i].arm_lock);
+            mtx_destroy(&page[i].poll_lock);
             free(page);
             mtx_unlock(&slab->lock);
             return NULL;
@@ -199,12 +208,12 @@ static iowait_t* _iowait_slab_alloc(
         if (mtx_init(&page[i].wr.deadline_lock, mtx_plain)
             != thrd_success) {
             for (uint32_t j = 0; j < i; j++) {
-                mtx_destroy(&page[j].arm_lock);
+                mtx_destroy(&page[j].poll_lock);
                 mtx_destroy(&page[j].rd.deadline_lock);
                 mtx_destroy(&page[j].wr.deadline_lock);
             }
             mtx_destroy(&page[i].rd.deadline_lock);
-            mtx_destroy(&page[i].arm_lock);
+            mtx_destroy(&page[i].poll_lock);
             free(page);
             mtx_unlock(&slab->lock);
             return NULL;
@@ -272,27 +281,26 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
     return w;
 }
 
-static mco_coro* _iowait_unblock(_iowait_dir_t* d, bool io_ready) {
+static mco_coro* _iowait_transition_waiter(
+    _iowait_dir_t*         d,
+    _iowait_waiter_state_t next_state) {
     uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        uintptr_t next;
-        if (io_ready) {
+        if (next_state == IOWAIT_WAITER_READY) {
             if (raw == IOWAIT_WAITER_READY) {
                 return NULL;
             }
-            next = IOWAIT_WAITER_READY;
         } else {
             if (raw == IOWAIT_WAITER_NONE
                 || raw == IOWAIT_WAITER_READY) {
                 return NULL;
             }
-            next = IOWAIT_WAITER_NONE;
         }
 
         if (atomic_compare_exchange_weak(
                 &d->waiter,
                 &raw,
-                next)) {
+                next_state)) {
             if (raw > IOWAIT_WAITER_READY) {
                 return (mco_coro*)raw;
             }
@@ -307,53 +315,65 @@ static bool _iowait_take_ready(_iowait_dir_t* d) {
         &d->waiter, &expected, IOWAIT_WAITER_NONE);
 }
 
-static void _iowait_wake_waiter(_iowait_dir_t* d) {
-    mco_coro* co = _iowait_unblock(d, false);
-    if (!co) {
-        return;
-    }
-    scheduler_schedule(runtime_get_scheduler(), co);
+static _iowait_poll_info_t _iowait_timeout_mask(const _iowait_dir_t* d) {
+    return d == &d->w->rd ? IOWAIT_INFO_RD_TIMEOUT
+                          : IOWAIT_INFO_WR_TIMEOUT;
+}
+
+static _iowait_poll_info_t _iowait_error_mask(const _iowait_dir_t* d) {
+    return d == &d->w->rd ? IOWAIT_INFO_RD_ERROR : IOWAIT_INFO_WR_ERROR;
 }
 
 static bool _iowait_deadline_expired(_iowait_dir_t* d) {
+    uint32_t mask    = _iowait_timeout_mask(d);
+    bool     expired = false;
+
+    if (atomic_load(&d->w->poll_info) & mask) {
+        return true;
+    }
+
     uint64_t deadline = atomic_load(&d->deadline);
-    return deadline > 0
+    if (deadline == 0
+        || xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) < deadline) {
+        return false;
+    }
+
+    mtx_lock(&d->deadline_lock);
+    deadline = atomic_load(&d->deadline);
+    expired = deadline > 0
         && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline;
-}
-
-static void _iowait_handle_io(
-    scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
-    mtx_lock(&d->w->arm_lock);
-    if (atomic_load(&d->w->closed)) {
-        mtx_unlock(&d->w->arm_lock);
-        return;
+    if (expired) {
+        atomic_fetch_or(&d->w->poll_info, mask);
     }
-
-    mco_coro* co = _iowait_unblock(d, true);
-    mtx_unlock(&d->w->arm_lock);
-    if (!co) {
-        return;
-    }
-    if (batch->n == batch->cap) {
-        scheduler_schedule_batch(sched, batch->coros, batch->n);
-        batch->n = 0;
-    }
-    batch->coros[batch->n++] = co;
+    mtx_unlock(&d->deadline_lock);
+    return expired;
 }
 
 static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _iowait_dir_t* d = (_iowait_dir_t*)ud;
     iowait_t*      w = d->w;
-    if (_iowait_deadline_expired(d)) {
-        _iowait_wake_waiter(d);
+    mco_coro*      co = NULL;
+    uint64_t       deadline;
+
+    mtx_lock(&d->deadline_lock);
+    deadline = atomic_load(&d->deadline);
+    if (deadline > 0
+        && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline) {
+        atomic_fetch_or(&w->poll_info, _iowait_timeout_mask(d));
+        co = _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
+    }
+    mtx_unlock(&d->deadline_lock);
+
+    if (co) {
+        scheduler_schedule(runtime_get_scheduler(), co);
     }
     _iowait_unref(w);
 }
 
 static bool _iowait_wait_commit_cb(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
-    uintptr_t      expected = IOWAIT_WAITER_WAIT;
+    uintptr_t expected = IOWAIT_WAITER_WAIT;
     return atomic_compare_exchange_strong(
         &d->waiter, &expected, (uintptr_t)co);
 }
@@ -368,12 +388,17 @@ static void _iowait_stop_deadline(_iowait_dir_t* d) {
 
 /* Each timer arm owns one iowait ref, released on timeout or rearm cancel. */
 static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
+    mco_coro* co = NULL;
+
     mtx_lock(&d->deadline_lock);
 
     atomic_store(&d->deadline, deadline_ms);
-    atomic_store(&d->deadline_error, false);
+    atomic_fetch_and(
+        &d->w->poll_info,
+        ~(_iowait_timeout_mask(d) | _iowait_error_mask(d)));
 
-    if (deadline_ms == 0 || atomic_load(&d->w->closed)) {
+    if (deadline_ms == 0
+        || (atomic_load(&d->w->poll_info) & IOWAIT_INFO_CLOSED)) {
         if (d->timer && scheduler_timer_stop(d->timer)) {
             _iowait_unref(d->w);
         }
@@ -382,14 +407,30 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
     }
 
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    uint64_t in  = (deadline_ms > now) ? (deadline_ms - now) : 0;
+    if (deadline_ms <= now) {
+        atomic_fetch_or(&d->w->poll_info, _iowait_timeout_mask(d));
+        if (d->timer && scheduler_timer_stop(d->timer)) {
+            _iowait_unref(d->w);
+        }
+        co = _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
+        mtx_unlock(&d->deadline_lock);
+        if (co) {
+            scheduler_schedule(runtime_get_scheduler(), co);
+        }
+        return;
+    }
+
+    uint64_t in = deadline_ms - now;
 
     if (!d->timer) {
         d->timer = scheduler_timer_create(runtime_get_scheduler());
         if (!d->timer) {
-            atomic_store(&d->deadline_error, true);
-            _iowait_wake_waiter(d);
+            atomic_fetch_or(&d->w->poll_info, _iowait_error_mask(d));
+            co = _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
             mtx_unlock(&d->deadline_lock);
+            if (co) {
+                scheduler_schedule(runtime_get_scheduler(), co);
+            }
             return;
         }
         _iowait_ref(d->w);
@@ -413,13 +454,13 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
 }
 
 static iowait_result_t _iowait_check_result(iowait_t* w, _iowait_dir_t* d) {
-    if (atomic_load(&w->closed)) {
+    if (atomic_load(&w->poll_info) & IOWAIT_INFO_CLOSED) {
         return IOWAIT_CLOSED;
     }
     if (_iowait_deadline_expired(d)) {
         return IOWAIT_TIMEOUT;
     }
-    if (atomic_load(&d->deadline_error)) {
+    if (atomic_load(&w->poll_info) & _iowait_error_mask(d)) {
         return IOWAIT_ERROR;
     }
     return IOWAIT_READY;
@@ -456,27 +497,12 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
 
         result = _iowait_check_result(w, d);
         if (result != IOWAIT_READY) {
-            _iowait_unblock(d, false);
-            if (_iowait_take_ready(d)) {
-                return IOWAIT_READY;
-            }
-            result = _iowait_check_result(w, d);
-            if (result != IOWAIT_READY) {
-                return result;
-            }
+            _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
             continue;
         }
 
         scheduler_park(
             runtime_get_scheduler(), _iowait_wait_commit_cb, d);
-
-        if (_iowait_take_ready(d)) {
-            return IOWAIT_READY;
-        }
-        result = _iowait_check_result(w, d);
-        if (result != IOWAIT_READY) {
-            return result;
-        }
     }
 }
 
@@ -510,7 +536,7 @@ void iowait_slab_destroy(iowait_slab_t* slab) {
             }
             mtx_destroy(&page[i].rd.deadline_lock);
             mtx_destroy(&page[i].wr.deadline_lock);
-            mtx_destroy(&page[i].arm_lock);
+            mtx_destroy(&page[i].poll_lock);
         }
         free(page);
     }
@@ -531,9 +557,7 @@ iowait_t* iowait_create(platform_sock_t fd) {
     atomic_store(&w->wr.waiter, IOWAIT_WAITER_NONE);
     atomic_store(&w->rd.deadline, 0);
     atomic_store(&w->wr.deadline, 0);
-    atomic_store(&w->rd.deadline_error, false);
-    atomic_store(&w->wr.deadline_error, false);
-    atomic_store(&w->closed, false);
+    atomic_store(&w->poll_info, 0);
     atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     w->slab = slab;
 
@@ -585,24 +609,24 @@ iowait_result_t iowait_write(iowait_t* w) {
 void iowait_close(iowait_t* w) {
     mco_coro* rd;
     mco_coro* wr;
-    bool      expected = false;
 
-    mtx_lock(&w->arm_lock);
-    if (!atomic_compare_exchange_strong(&w->closed, &expected, true)) {
-        mtx_unlock(&w->arm_lock);
+    mtx_lock(&w->poll_lock);
+    if (atomic_load(&w->poll_info) & IOWAIT_INFO_CLOSED) {
+        mtx_unlock(&w->poll_lock);
         return;
     }
+    atomic_fetch_or(&w->poll_info, IOWAIT_INFO_CLOSED);
 
-    /* Drop poller subscription now so the caller can safely close the fd. */
+    /* Delete under poll_lock so no event can re-arm before close returns. */
     if ((platform_poller_op_t)atomic_load(&w->interest)
         != PLATFORM_POLLER_NO_OP) {
         platform_poller_del(w->poller, &w->sqe);
         atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     }
 
-    rd = _iowait_unblock(&w->rd, false);
-    wr = _iowait_unblock(&w->wr, false);
-    mtx_unlock(&w->arm_lock);
+    rd = _iowait_transition_waiter(&w->rd, IOWAIT_WAITER_NONE);
+    wr = _iowait_transition_waiter(&w->wr, IOWAIT_WAITER_NONE);
+    mtx_unlock(&w->poll_lock);
 
     _iowait_stop_deadline(&w->rd);
     _iowait_stop_deadline(&w->wr);
@@ -610,7 +634,7 @@ void iowait_close(iowait_t* w) {
     if (rd) {
         scheduler_schedule(runtime_get_scheduler(), rd);
     }
-    if (wr && wr != rd) {
+    if (wr) {
         scheduler_schedule(runtime_get_scheduler(), wr);
     }
 }
@@ -619,30 +643,44 @@ void iowait_destroy(iowait_t* w) {
     if (!w) {
         return;
     }
-    if (!atomic_load(&w->closed)) {
+    if (!(atomic_load(&w->poll_info) & IOWAIT_INFO_CLOSED)) {
         iowait_close(w);
     }
     _iowait_unref(w);
 }
 
-void iowait_on_event(
-    scheduler_t*      sched,
-    int               revents,
-    void*             ud,
-    runnable_batch_t* batch) {
+size_t iowait_process_event(
+    scheduler_t* sched,
+    int          revents,
+    void*        ud,
+    mco_coro**   runnables) {
     uint32_t       index = _iowait_ud_index(ud);
     uint16_t       gen   = _iowait_ud_gen(ud);
     iowait_slab_t* slab  = scheduler_get_iowait_slab(sched);
     iowait_t*      w     = _iowait_try_ref(_iowait_slab_at(slab, index), gen);
     if (!w) {
-        return;
+        return 0;
     }
 
-    if (revents & PLATFORM_POLLER_RD_OP) {
-        _iowait_handle_io(sched, batch, &w->rd);
-    }
-    if (revents & PLATFORM_POLLER_WR_OP) {
-        _iowait_handle_io(sched, batch, &w->wr);
+    mco_coro* rd = NULL;
+    mco_coro* wr = NULL;
+
+    /**
+     * Serialize readiness with close. The LT path stays in the same critical
+     * section so close cannot delete the fd between readiness and re-arm.
+     */
+    mtx_lock(&w->poll_lock);
+    if (!(atomic_load(&w->poll_info) & IOWAIT_INFO_CLOSED)) {
+        if (revents & PLATFORM_POLLER_RD_OP) {
+            rd = _iowait_transition_waiter(
+                &w->rd,
+                IOWAIT_WAITER_READY);
+        }
+        if (revents & PLATFORM_POLLER_WR_OP) {
+            wr = _iowait_transition_waiter(
+                &w->wr,
+                IOWAIT_WAITER_READY);
+        }
     }
 
     /**
@@ -652,8 +690,7 @@ void iowait_on_event(
     if (PLATFORM_POLLER_TRIGGER_MODE == PLATFORM_POLLER_TRIGGER_LT) {
         atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
         w->sqe.op = PLATFORM_POLLER_RW_OP;
-        mtx_lock(&w->arm_lock);
-        if (!atomic_load(&w->closed)) {
+        if (!(atomic_load(&w->poll_info) & IOWAIT_INFO_CLOSED)) {
             if (platform_poller_mod(w->poller, &w->sqe) != 0) {
                 xylem_loge("<iowait> re-arm mod failed w=%p fd=%d",
                            (void*)w, (int)w->fd);
@@ -661,8 +698,17 @@ void iowait_on_event(
             }
             atomic_store(&w->interest, PLATFORM_POLLER_RW_OP);
         }
-        mtx_unlock(&w->arm_lock);
+    }
+    mtx_unlock(&w->poll_lock);
+
+    size_t count = 0;
+    if (rd) {
+        runnables[count++] = rd;
+    }
+    if (wr) {
+        runnables[count++] = wr;
     }
 
     _iowait_unref(w);
+    return count;
 }

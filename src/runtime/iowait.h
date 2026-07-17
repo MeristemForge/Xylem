@@ -26,10 +26,14 @@ _Pragma("once")
 #include "platform/platform-socket.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Opaque I/O wait handle (per-fd, per-direction park). */
 typedef struct iowait_s iowait_t;
+
+/* One poll event can release both the read and write waiters. */
+#define IOWAIT_EVENT_RUNNABLE_CAP 2
 
 /**
  * iowait concurrency model
@@ -45,15 +49,22 @@ typedef struct iowait_s iowait_t;
  * aborts.
  *
  * Readiness changes NONE, WAIT, or a committed coroutine pointer to READY.
- * Close, timeout, and internal error change WAIT or a committed coroutine
- * pointer to NONE, while READY remains READY. Only the source that replaces a
- * committed pointer schedules it. A wait consumes READY before checking
- * errors; without READY, result priority is CLOSED, TIMEOUT, then ERROR.
+ * Close, timeout, and internal error publish their result in the handle's
+ * atomic poll-info word, then change WAIT or a committed coroutine pointer to
+ * NONE, while READY remains READY. Only the source that replaces a committed
+ * pointer schedules it. A wait consumes READY before checking poll-info;
+ * without READY, result priority is CLOSED, TIMEOUT, then ERROR.
  *
- * I/O events append a replaced coroutine pointer to the caller's ready batch.
- * READY prevents repeated events from appending the same coroutine twice.
- * A full batch is scheduled before another coroutine is appended, and the
- * caller schedules any remaining entries after the poll pass.
+ * Each handle owns a poll_lock that gives close and readiness publication a
+ * total order for that fd. If readiness acquires it first, READY remains
+ * consumable; if close acquires it first, later readiness is ignored. The
+ * same lock prevents LT re-arm from racing synchronous poller deletion. It is
+ * per handle, so unrelated fds never contend on it. Replaced coroutine
+ * pointers are scheduled only after the lock is released.
+ *
+ * I/O events return replaced coroutine pointers to the caller. READY prevents
+ * repeated events from returning the same coroutine twice. The caller owns
+ * runnable placement and scheduling.
  *
  * Deadline setters and iowait_close are safe to call from any thread,
  * including while a read or write is parked on another thread.
@@ -64,16 +75,17 @@ typedef struct iowait_s iowait_t;
  */
 
 /**
- * Result of iowait_read / iowait_write.
+ * Result returned by iowait_read / iowait_write.
  *
- * Distinguishes the ways a parked coroutine can wake up, each
- * mapping to a different error semantic at the protocol layer.
+ * READY is consumed from the direction's waiter slot. The other results are
+ * selected from poll_info; when multiple bits are set, result priority is
+ * CLOSED, TIMEOUT, then ERROR.
  */
 typedef enum iowait_result_e {
-    IOWAIT_READY   = 0, /* fd became readable / writable. */
-    IOWAIT_TIMEOUT = 1, /* deadline reached. */
-    IOWAIT_CLOSED  = 2, /* iowait_close() was invoked. */
-    IOWAIT_ERROR   = 3, /* Deadline timer arm failed. */
+    IOWAIT_READY   = 0, /* Readiness credit consumed. */
+    IOWAIT_TIMEOUT = 1, /* Direction deadline expired. */
+    IOWAIT_CLOSED  = 2, /* Handle was closed. */
+    IOWAIT_ERROR   = 3, /* Deadline timer setup failed. */
 } iowait_result_t;
 
 /**
@@ -81,7 +93,7 @@ typedef enum iowait_result_e {
  *
  * Registers the fd for read+write readiness on the scheduler's poller
  * immediately. On ET pollers the registration is persistent; on LT+ONESHOT
- * pollers iowait_on_event re-registers after each event. The fd must
+ * pollers iowait_process_event() re-registers after each event. The fd must
  * already be in non-blocking mode, and must not be shared with another
  * iowait concurrently.
  *
@@ -181,9 +193,9 @@ extern iowait_result_t iowait_write(iowait_t* w);
  *
  * After this call, iowait_read/write return IOWAIT_CLOSED unless a READY
  * credit won before close and remains to be consumed. Drops the kernel poller
- * subscription synchronously, so the caller can safely close the underlying
- * fd right after without racing a deferred EPOLL_CTL_DEL against a recycled
- * fd number.
+ * subscription synchronously under the handle's poll lock, so the caller can
+ * safely close the underlying fd right after without racing a deferred
+ * EPOLL_CTL_DEL against a recycled fd number.
  *
  * Idempotent, thread-safe: may be invoked concurrently with park or
  * with a second close; only the first caller actually runs the wake
@@ -213,21 +225,24 @@ extern void iowait_destroy(iowait_t* w);
 /**
  * @brief Process a single I/O completion event.
  *
- * Rejects stale CQEs via generation tag and appends committed waiters to
- * @p batch. A direction is appended at most once while READY is retained.
- * Full batches are scheduled internally; the caller schedules the remainder
- * after the poll pass.
+ * Rejects stale CQEs via generation tag and writes replaced coroutine pointers
+ * to @p runnables. A direction is returned at most once while READY is
+ * retained. Read/write readiness and LT re-arm are serialized with close by
+ * the handle's poll lock; unrelated handles do not share that lock.
  *
  * @param sched    Scheduler handle.
  * @param revents  Readiness mask.
  * @param ud       Generation-tagged slab index from the poller.
- * @param batch    Accumulator for ready coroutines. Must not be NULL.
+ * @param runnables Output buffer with IOWAIT_EVENT_RUNNABLE_CAP entries.
+ *                  Must not be NULL; passing a smaller buffer is invalid.
+ *
+ * @return Number of coroutine pointers written to @p runnables (0 to 2).
  */
-extern void iowait_on_event(
-    scheduler_t*      sched,
-    int               revents,
-    void*             ud,
-    runnable_batch_t* batch);
+extern size_t iowait_process_event(
+    scheduler_t* sched,
+    int          revents,
+    void*        ud,
+    mco_coro**   runnables);
 
 /**
  * Opaque per-scheduler iowait handle slab.
@@ -257,4 +272,3 @@ extern iowait_slab_t* iowait_slab_create(void);
  * @param slab  Slab to destroy, or NULL (no-op).
  */
 extern void iowait_slab_destroy(iowait_slab_t* slab);
-

@@ -148,18 +148,6 @@ extern void scheduler_stop(scheduler_t* sched);
 extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
 
 /**
- * Fixed-capacity batch of runnable coroutines.
- *
- * Caller provides the backing buffer and initialises `n = 0`
- * before use. scheduler_schedule_batch() flushes the batch.
- */
-typedef struct runnable_batch_s {
-    mco_coro** coros;
-    int32_t    cap;
-    int32_t    n;
-} runnable_batch_t;
-
-/**
  * @brief Schedule a batch of coroutines with a single wake.
  *
  * Pushes the whole batch to the global runq and performs at most

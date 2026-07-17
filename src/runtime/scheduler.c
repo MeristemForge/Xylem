@@ -953,56 +953,50 @@ static bool _sched_try_wake(mco_coro* co) {
 }
 
 static mco_coro* _sched_io_process(
-    scheduler_t* sched,
-    _sched_worker_t* w,
+    scheduler_t*           sched,
+    _sched_worker_t*       w,
     platform_poller_cqe_t* cqes,
-    int n) {
-    mco_coro* ready_coros[PLATFORM_POLLER_CQE_NUM * 2];
-    runnable_batch_t ready = {
-        .coros = ready_coros,
-        .cap = (int32_t)(sizeof(ready_coros) / sizeof(ready_coros[0])),
-        .n   = 0,
-    };
-
-    bool has_wakeup_event = false;
+    int                    n) {
+    mco_coro*    run_now = NULL;
+    mco_coro*    runnables[IOWAIT_EVENT_RUNNABLE_CAP];
+    runq_node_t* runq_nodes[
+        PLATFORM_POLLER_CQE_NUM * IOWAIT_EVENT_RUNNABLE_CAP];
+    int32_t runq_count       = 0;
+    int32_t local_count      = 0;
+    bool    has_wakeup_event = false;
 
     for (int i = 0; i < n; i++) {
         if (cqes[i].ud == NULL) {
             has_wakeup_event = true;
             continue;
         }
-        iowait_on_event(sched, (int)cqes[i].op, cqes[i].ud, &ready);
+
+        size_t runnable_count = iowait_process_event(
+            sched,
+            (int)cqes[i].op,
+            cqes[i].ud,
+            runnables);
+        for (size_t j = 0; j < runnable_count; j++) {
+            mco_coro* co = runnables[j];
+            if (!_sched_try_wake(co)) {
+                continue;
+            }
+            if (!run_now) {
+                run_now = co;
+                continue;
+            }
+            if (wsq_push(w->deque, co) == 0) {
+                local_count++;
+                continue;
+            }
+            _sched_coro_ctx_t* ctx =
+                (_sched_coro_ctx_t*)mco_get_user_data(co);
+            runq_nodes[runq_count++] = &ctx->runq_node;
+        }
     }
 
     if (has_wakeup_event) {
         _sched_wakeup_flush(sched);
-    }
-
-    int32_t ready_count = ready.n;
-    if (ready_count <= 0) {
-        return NULL;
-    }
-
-    mco_coro* run_now = NULL;
-    runq_node_t* runq_nodes[PLATFORM_POLLER_CQE_NUM * 2];
-    int32_t runq_count = 0;
-    int32_t local_count = 0;
-
-    for (int32_t i = 0; i < ready_count; i++) {
-        mco_coro* co = ready.coros[i];
-        if (!_sched_try_wake(co)) {
-            continue;
-        }
-        if (!run_now) {
-            run_now = co;
-            continue;
-        }
-        if (wsq_push(w->deque, co) == 0) {
-            local_count++;
-            continue;
-        }
-        _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
-        runq_nodes[runq_count++] = &ctx->runq_node;
     }
 
     if (runq_count > 0) {
