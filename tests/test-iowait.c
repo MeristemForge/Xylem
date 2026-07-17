@@ -36,6 +36,7 @@
 #define DEADLINE_RACE_ITERS   2000
 #define WAIT_RACE_ITERS       500
 #define TIMEOUT_RACE_ITERS    100
+#define EVENT_LOCK_YIELDS     1000
 
 enum {
     TEST_IOWAIT_WAITER_NONE  = 0,
@@ -102,6 +103,12 @@ typedef struct {
     _Atomic bool     finished;
 } _single_wait_ctx_t;
 
+typedef struct {
+    iowait_t*       active;
+    _Atomic bool    started;
+    int32_t         batch_count;
+} _event_thread_ctx_t;
+
 static void _iowait_wait_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
     ctx->result = iowait_read(ctx->active);
@@ -120,6 +127,25 @@ static int _deadline_setter_thread(void* arg) {
             iowait_set_rd_deadline(ctx->active, 0);
         }
     }
+    return 0;
+}
+
+static int _event_thread(void* arg) {
+    _event_thread_ctx_t* ctx = (_event_thread_ctx_t*)arg;
+    mco_coro* coros[2];
+    runnable_batch_t batch = {
+        .coros = coros,
+        .cap = (int32_t)(sizeof(coros) / sizeof(coros[0])),
+        .n = 0,
+    };
+
+    atomic_store(&ctx->started, true);
+    iowait_on_event(
+        runtime_get_scheduler(),
+        PLATFORM_POLLER_RD_OP,
+        ctx->active->sqe.ud,
+        &batch);
+    ctx->batch_count = batch.n;
     return 0;
 }
 
@@ -471,6 +497,46 @@ static void test_ready_wins_over_close(void) {
     _iowait_dispose(&ctx);
 }
 
+static void test_closed_state_blocks_stale_read_publication(void) {
+    _iowait_ctx_t owner = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    _event_thread_ctx_t event = {0};
+    thrd_t thread;
+
+    _iowait_open(&owner);
+    event.active = owner.active;
+
+    mtx_lock(&owner.active->arm_lock);
+    atomic_store(&owner.active->rd.waiter, TEST_IOWAIT_WAITER_NONE);
+    atomic_store(&owner.active->closed, false);
+    ASSERT(thrd_create(&thread, _event_thread, &event) == thrd_success);
+    while (!atomic_load(&event.started)) {
+        thrd_yield();
+    }
+    for (int32_t i = 0;
+         i < EVENT_LOCK_YIELDS
+         && atomic_load(&owner.active->rd.waiter)
+                == TEST_IOWAIT_WAITER_NONE;
+         i++) {
+        thrd_yield();
+    }
+    atomic_store(&owner.active->closed, true);
+    mtx_unlock(&owner.active->arm_lock);
+
+    ASSERT(thrd_join(thread, NULL) == thrd_success);
+    ASSERT(atomic_load(&owner.active->rd.waiter)
+           == TEST_IOWAIT_WAITER_NONE);
+    ASSERT(event.batch_count == 0);
+
+    atomic_store(&owner.active->closed, false);
+    iowait_close(owner.active);
+    _iowait_dispose(&owner);
+}
+
 static void test_timeout_wins_over_internal_error(void) {
     _iowait_ctx_t ctx = {
         .socks = {
@@ -574,6 +640,7 @@ static void _test_run_all(void* arg) {
     test_close_races_wait();
     test_timeout_races_wait();
     test_ready_wins_over_close();
+    test_closed_state_blocks_stale_read_publication();
     test_timeout_wins_over_internal_error();
     test_ready_batch_has_no_duplicate_coroutine();
     test_stale_event_after_generation_wrap_is_rejected();

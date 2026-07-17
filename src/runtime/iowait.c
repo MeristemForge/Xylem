@@ -30,6 +30,7 @@
 
 #include "minicoro/minicoro.h"
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -322,11 +323,14 @@ static bool _iowait_deadline_expired(_iowait_dir_t* d) {
 
 static void _iowait_handle_io(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
+    mtx_lock(&d->w->arm_lock);
     if (atomic_load(&d->w->closed)) {
+        mtx_unlock(&d->w->arm_lock);
         return;
     }
 
     mco_coro* co = _iowait_unblock(d, true);
+    mtx_unlock(&d->w->arm_lock);
     if (!co) {
         return;
     }
@@ -441,10 +445,11 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
             }
 
             xylem_loge(
-                "<iowait> duplicate waiter dir=%s w=%p state=%p co=%p",
+                "<iowait> duplicate waiter dir=%s w=%p state=0x%" PRIxPTR
+                " co=%p",
                 (d == &w->rd) ? "rd" : "wr",
                 (void*)w,
-                (void*)expected,
+                expected,
                 (void*)mco_running());
             abort();
         }
@@ -578,25 +583,36 @@ iowait_result_t iowait_write(iowait_t* w) {
 }
 
 void iowait_close(iowait_t* w) {
-    bool expected = false;
+    mco_coro* rd;
+    mco_coro* wr;
+    bool      expected = false;
+
+    mtx_lock(&w->arm_lock);
     if (!atomic_compare_exchange_strong(&w->closed, &expected, true)) {
+        mtx_unlock(&w->arm_lock);
         return;
     }
 
-    _iowait_stop_deadline(&w->rd);
-    _iowait_stop_deadline(&w->wr);
-
     /* Drop poller subscription now so the caller can safely close the fd. */
-    mtx_lock(&w->arm_lock);
     if ((platform_poller_op_t)atomic_load(&w->interest)
         != PLATFORM_POLLER_NO_OP) {
         platform_poller_del(w->poller, &w->sqe);
         atomic_store(&w->interest, PLATFORM_POLLER_NO_OP);
     }
+
+    rd = _iowait_unblock(&w->rd, false);
+    wr = _iowait_unblock(&w->wr, false);
     mtx_unlock(&w->arm_lock);
 
-    _iowait_wake_waiter(&w->rd);
-    _iowait_wake_waiter(&w->wr);
+    _iowait_stop_deadline(&w->rd);
+    _iowait_stop_deadline(&w->wr);
+
+    if (rd) {
+        scheduler_schedule(runtime_get_scheduler(), rd);
+    }
+    if (wr && wr != rd) {
+        scheduler_schedule(runtime_get_scheduler(), wr);
+    }
 }
 
 void iowait_destroy(iowait_t* w) {
