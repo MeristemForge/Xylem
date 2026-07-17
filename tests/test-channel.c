@@ -25,6 +25,8 @@
 
 #include "xylem/xylem-threads.h"
 
+#include "runtime/runtime.h"
+
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -372,6 +374,111 @@ static void test_thread_recv(void) {
     }
 }
 
+#define PRECOMMIT_SEND_ROUNDS  2000
+#define PRECOMMIT_CLOSE_ROUNDS 500
+
+typedef struct {
+    xylem_channel_t* ch;
+    int              payload;
+    thrd_t           thr;
+    atomic_int       requested;
+    atomic_int       completed;
+    atomic_int       tested;
+} _precommit_send_ctx_t;
+
+static int _precommit_send_thread(void* arg) {
+    _precommit_send_ctx_t* ctx = (_precommit_send_ctx_t*)arg;
+    for (int round = 1; round <= PRECOMMIT_SEND_ROUNDS; round++) {
+        while (atomic_load(&ctx->requested) < round) {
+            thrd_yield();
+        }
+        ASSERT(xylem_channel_send(ctx->ch, &ctx->payload) == 0);
+        atomic_store(&ctx->completed, round);
+    }
+    return 0;
+}
+
+static void _precommit_send_coro(void* arg) {
+    _precommit_send_ctx_t* ctx = (_precommit_send_ctx_t*)arg;
+    ctx->ch = xylem_channel_create();
+    ASSERT(ctx->ch != NULL);
+    ASSERT(thrd_create(&ctx->thr, _precommit_send_thread, ctx)
+           == thrd_success);
+
+    for (int round = 1; round <= PRECOMMIT_SEND_ROUNDS; round++) {
+        atomic_store(&ctx->requested, round);
+        ASSERT(xylem_channel_recv(ctx->ch) == &ctx->payload);
+    }
+
+    thrd_join(ctx->thr, NULL);
+    ASSERT(atomic_load(&ctx->completed) == PRECOMMIT_SEND_ROUNDS);
+    xylem_channel_destroy(ctx->ch);
+    ctx->ch = NULL;
+    atomic_store(&ctx->tested, 1);
+}
+
+static void test_thread_send_precommit_race(void) {
+    fprintf(stderr, "=== test_thread_send_precommit_race\n");
+    _precommit_send_ctx_t ctx = {0};
+    xylem_spawn(_precommit_send_coro, &ctx);
+    while (atomic_load(&ctx.tested) == 0) {
+        runtime_yield();
+    }
+}
+
+typedef struct {
+    _Atomic(xylem_channel_t*) ch;
+    thrd_t                    thr;
+    atomic_int                requested;
+    atomic_int                completed;
+    atomic_int                tested;
+} _precommit_close_ctx_t;
+
+static int _precommit_close_thread(void* arg) {
+    _precommit_close_ctx_t* ctx = (_precommit_close_ctx_t*)arg;
+    for (int round = 1; round <= PRECOMMIT_CLOSE_ROUNDS; round++) {
+        while (atomic_load(&ctx->requested) < round) {
+            thrd_yield();
+        }
+        xylem_channel_t* ch = atomic_load(&ctx->ch);
+        ASSERT(ch != NULL);
+        xylem_channel_close(ch);
+        atomic_store(&ctx->completed, round);
+    }
+    return 0;
+}
+
+static void _precommit_close_coro(void* arg) {
+    _precommit_close_ctx_t* ctx = (_precommit_close_ctx_t*)arg;
+    ASSERT(thrd_create(&ctx->thr, _precommit_close_thread, ctx)
+           == thrd_success);
+
+    for (int round = 1; round <= PRECOMMIT_CLOSE_ROUNDS; round++) {
+        xylem_channel_t* ch = xylem_channel_create();
+        ASSERT(ch != NULL);
+        atomic_store(&ctx->ch, ch);
+        atomic_store(&ctx->requested, round);
+        ASSERT(xylem_channel_recv(ch) == NULL);
+        while (atomic_load(&ctx->completed) < round) {
+            thrd_yield();
+        }
+        xylem_channel_destroy(ch);
+    }
+
+    thrd_join(ctx->thr, NULL);
+    atomic_store(&ctx->ch, NULL);
+    atomic_store(&ctx->tested, 1);
+}
+
+static void test_thread_close_precommit_race(void) {
+    fprintf(stderr, "=== test_thread_close_precommit_race\n");
+    _precommit_close_ctx_t ctx = {0};
+    xylem_spawn(_precommit_close_coro, &ctx);
+    while (atomic_load(&ctx.tested) == 0) {
+        runtime_yield();
+    }
+}
+
 typedef struct {
     xylem_channel_t* ch;
     int              payload;
@@ -521,6 +628,8 @@ static void _test_run_all(void* arg) {
     test_timeout_stale_timer_does_not_end_next_recv();
     test_timeout_race();
     test_thread_recv();
+    test_thread_send_precommit_race();
+    test_thread_close_precommit_race();
     test_thread_send();
     test_thread_create_destroy();
     test_unbounded_len();

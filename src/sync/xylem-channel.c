@@ -32,6 +32,7 @@
 
 #include "runtime/minicoro/minicoro.h"
 
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -46,6 +47,11 @@ typedef enum _waiter_kind_e {
     WAITER_CORO,
     WAITER_THRD,
 } _waiter_kind_t;
+
+enum {
+    CHANNEL_WAITER_NONE = 0,
+    CHANNEL_WAITER_WAIT = 1,
+};
 
 typedef struct _waiter_s {
     _waiter_kind_t   kind;
@@ -66,15 +72,26 @@ typedef struct _thrd_waiter_s {
     thrd_wake_t* wake;
 } _thrd_waiter_t;
 
+_Static_assert(_Alignof(_waiter_t) > CHANNEL_WAITER_WAIT,
+               "channel waiter pointers must not alias sentinel states");
+
 struct xylem_channel_s {
-    mpsc_t              queue;
-    _Atomic(_waiter_t*) waiter;
-    _Atomic bool        closed;
-    _Atomic bool        receiving;
-    _Atomic int32_t     refcnt;
-    scheduler_t*        sched;
-    _Atomic size_t      count;
+    mpsc_t            queue;
+    _Atomic uintptr_t waiter;
+    _Atomic bool      closed;
+    _Atomic bool      receiving;
+    _Atomic int32_t   refcnt;
+    scheduler_t*      sched;
+    _Atomic size_t    count;
 };
+
+static _waiter_t* _channel_unblock(xylem_channel_t* ch) {
+    uintptr_t raw = atomic_exchange(&ch->waiter, CHANNEL_WAITER_NONE);
+    if (raw <= CHANNEL_WAITER_WAIT) {
+        return NULL;
+    }
+    return (_waiter_t*)raw;
+}
 
 static void _channel_wake(xylem_channel_t* ch, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
@@ -102,23 +119,14 @@ static void _channel_unref(xylem_channel_t* ch) {
     free(ch);
 }
 
-static bool _channel_park_cb(mco_coro* co, void* arg) {
+static bool _channel_wait_commit_cb(mco_coro* co, void* arg) {
     _coro_waiter_t*  w  = (_coro_waiter_t*)arg;
     xylem_channel_t* ch = w->base.ch;
 
     w->co = co;
-    atomic_store(&ch->waiter, &w->base);
-
-    /* Avoid sleeping after a send/close/timer wins the race to wake us. */
-    if (atomic_load(&ch->closed)
-        || (w->timer && atomic_load(&w->timer_fired))
-        || mpsc_can_pop(&ch->queue)) {
-        _waiter_t* expected = &w->base;
-        if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
-            return false;
-        }
-    }
-    return true;
+    uintptr_t expected = CHANNEL_WAITER_WAIT;
+    return atomic_compare_exchange_strong(
+        &ch->waiter, &expected, (uintptr_t)&w->base);
 }
 
 static void _channel_coro_timed_ref(_coro_waiter_t* w) {
@@ -141,9 +149,9 @@ static void _channel_timeout_cb(scheduler_timer_t* timer, void* ud) {
     xylem_channel_t* ch = w->base.ch;
     atomic_store(&w->timer_fired, true);
 
-    _waiter_t* expected = &w->base;
-    if (atomic_compare_exchange_strong(&ch->waiter, &expected, NULL)) {
-        _channel_wake(ch, &w->base);
+    _waiter_t* waiter = _channel_unblock(ch);
+    if (waiter) {
+        _channel_wake(ch, waiter);
     }
 
     _channel_coro_timed_unref(w);
@@ -176,12 +184,17 @@ static bool _channel_wait_pending_send(xylem_channel_t* ch) {
 }
 
 static bool _channel_cancel_waiter(xylem_channel_t* ch, _waiter_t* w) {
-    _waiter_t* expected = w;
-    return atomic_compare_exchange_strong(&ch->waiter, &expected, NULL);
+    uintptr_t expected = (uintptr_t)w;
+    return atomic_compare_exchange_strong(
+        &ch->waiter, &expected, CHANNEL_WAITER_NONE);
 }
 
 static bool _channel_publish_waiter(xylem_channel_t* ch, _waiter_t* w) {
-    atomic_store(&ch->waiter, w);
+    uintptr_t expected = CHANNEL_WAITER_NONE;
+    if (!atomic_compare_exchange_strong(
+            &ch->waiter, &expected, (uintptr_t)w)) {
+        return false;
+    }
 
     /* Avoid lost wakeups between the failed pop and waiter publish. */
     if (atomic_load(&ch->closed) || mpsc_can_pop(&ch->queue)) {
@@ -211,7 +224,22 @@ static void* _channel_wait_coro(xylem_channel_t* ch) {
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_park_cb, &w);
+        uintptr_t expected = CHANNEL_WAITER_NONE;
+        if (!atomic_compare_exchange_strong(
+                &ch->waiter, &expected, CHANNEL_WAITER_WAIT)) {
+            xylem_loge("<channel> waiter slot busy raw=%" PRIuPTR
+                       "; aborting",
+                       expected);
+            abort();
+        }
+        if (mpsc_can_pop(&ch->queue) || atomic_load(&ch->closed)) {
+            expected = CHANNEL_WAITER_WAIT;
+            atomic_compare_exchange_strong(
+                &ch->waiter, &expected, CHANNEL_WAITER_NONE);
+            continue;
+        }
+
+        scheduler_park(ch->sched, _channel_wait_commit_cb, &w);
     }
     return payload;
 }
@@ -260,7 +288,23 @@ static void* _channel_timedwait_coro(
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_park_cb, w);
+        uintptr_t expected = CHANNEL_WAITER_NONE;
+        if (!atomic_compare_exchange_strong(
+                &ch->waiter, &expected, CHANNEL_WAITER_WAIT)) {
+            xylem_loge("<channel> waiter slot busy raw=%" PRIuPTR
+                       "; aborting",
+                       expected);
+            abort();
+        }
+        if (mpsc_can_pop(&ch->queue) || atomic_load(&ch->closed)
+            || atomic_load(&w->timer_fired)) {
+            expected = CHANNEL_WAITER_WAIT;
+            atomic_compare_exchange_strong(
+                &ch->waiter, &expected, CHANNEL_WAITER_NONE);
+            continue;
+        }
+
+        scheduler_park(ch->sched, _channel_wait_commit_cb, w);
     }
 
     if (scheduler_timer_stop(w->timer)) {
@@ -413,7 +457,7 @@ xylem_channel_t* xylem_channel_create(void) {
         return NULL;
     }
     mpsc_init(&ch->queue);
-    atomic_init(&ch->waiter, NULL);
+    atomic_init(&ch->waiter, CHANNEL_WAITER_NONE);
     atomic_init(&ch->closed, false);
     atomic_init(&ch->receiving, false);
     atomic_init(&ch->refcnt, 1);
@@ -431,7 +475,7 @@ void xylem_channel_close(xylem_channel_t* ch) {
         xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
         abort();
     }
-    _waiter_t* w = atomic_exchange(&ch->waiter, NULL);
+    _waiter_t* w = _channel_unblock(ch);
     if (w) {
         _channel_wake(ch, w);
     }
@@ -467,7 +511,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     atomic_fetch_add(&ch->count, 1);
     mpsc_push(&ch->queue, &m->node);
 
-    _waiter_t* w = atomic_exchange(&ch->waiter, NULL);
+    _waiter_t* w = _channel_unblock(ch);
     if (w) {
         _channel_wake(ch, w);
     }

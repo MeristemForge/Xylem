@@ -30,9 +30,11 @@ typedef struct xylem_channel_s xylem_channel_t;
  * MPSC channel: many senders, single receiver.
  *
  * Lock-free data path (intrusive MPSC queue) with a single-receiver
- * wakeup slot, so recv works from either a coroutine or a plain OS
+ * waiter slot, so recv works from either a coroutine or a plain OS
  * thread: a coroutine producer can hand work to an OS-thread consumer
- * and vice versa.
+ * and vice versa. The waiter protocol reserves a coroutine park before
+ * publishing its concrete waiter. Message availability, closure, and
+ * timeout outcomes are durable, so no separate READY marker is needed.
  *
  * Threading:
  *   - send(): callable from any thread or coroutine. It never waits for
