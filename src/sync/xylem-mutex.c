@@ -111,7 +111,7 @@ static void _mutex_wake(scheduler_t* sched, _waiter_t* w) {
     }
 }
 
-static bool _mutex_park_cb(mco_coro* co, void* arg) {
+static bool _mutex_wait_commit_cb(mco_coro* co, void* arg) {
     _coro_waiter_t* w   = (_coro_waiter_t*)arg;
     xylem_mutex_t*  mtx = w->base.mtx;
 
@@ -134,7 +134,7 @@ static void _mutex_wait_coro(xylem_mutex_t* mtx) {
     w.co        = NULL;
 
     for (;;) {
-        scheduler_park(mtx->sched, _mutex_park_cb, &w);
+        scheduler_park(mtx->sched, _mutex_wait_commit_cb, &w);
         if (_mutex_try_take(mtx)) {
             return;
         }

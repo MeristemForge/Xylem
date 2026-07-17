@@ -81,7 +81,7 @@ static _waiter_t* _wg_pop_waiter(list_t* waiters) {
     return w;
 }
 
-static bool _wg_park_cb(mco_coro* co, void* arg) {
+static bool _wg_wait_commit_cb(mco_coro* co, void* arg) {
     _coro_waiter_t*    w  = (_coro_waiter_t*)arg;
     xylem_waitgroup_t* wg = w->base.wg;
 
@@ -123,7 +123,7 @@ static void _wg_wait_coro(xylem_waitgroup_t* wg) {
     w.base.wg   = wg;
     w.co        = NULL;
 
-    scheduler_park(wg->sched, _wg_park_cb, &w);
+    scheduler_park(wg->sched, _wg_wait_commit_cb, &w);
 }
 
 static void _wg_wait_thrd(xylem_waitgroup_t* wg) {

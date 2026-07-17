@@ -21,8 +21,14 @@
 
 #include "xylem.h"
 #include "assert.h"
+#include "park-gate.h"
 #include "xylem/xylem-threads.h"
 #include "utils.h"
+
+#include "runtime/runtime.h"
+#include "runtime/scheduler-test.h"
+
+#include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -481,6 +487,59 @@ static void test_mixed_waiters(void) {
     }
 }
 
+typedef struct {
+    xylem_sem_t*               sem;
+    park_gate_t                gate;
+    scheduler_test_park_hook_t hook;
+    atomic_int                 external_completed;
+    atomic_int                 target_returns;
+} _precommit_ctx_t;
+
+static int _precommit_poster(void* arg) {
+    _precommit_ctx_t* ctx = (_precommit_ctx_t*)arg;
+
+    park_gate_wait(&ctx->gate);
+    xylem_sem_post(ctx->sem);
+    atomic_fetch_add(&ctx->external_completed, 1);
+    park_gate_release(&ctx->gate);
+    return 0;
+}
+
+static void _precommit_waiter(void* arg) {
+    _precommit_ctx_t* ctx = (_precommit_ctx_t*)arg;
+
+    ctx->hook.target = mco_running();
+    scheduler_test_set_park_hook(runtime_get_scheduler(), &ctx->hook);
+    xylem_sem_wait(ctx->sem);
+    atomic_fetch_add(&ctx->target_returns, 1);
+}
+
+static void test_precommit_completion(void) {
+    fprintf(stderr, "=== test_precommit_completion\n");
+    _precommit_ctx_t ctx = {0};
+    thrd_t           th;
+
+    ctx.sem = xylem_sem_create(0);
+    ASSERT(ctx.sem != NULL);
+    ASSERT(park_gate_init(&ctx.gate) == 0);
+    ctx.hook.fn  = park_gate_hook;
+    ctx.hook.arg = &ctx.gate;
+
+    ASSERT(thrd_create(&th, _precommit_poster, &ctx) == thrd_success);
+    xylem_spawn(_precommit_waiter, &ctx);
+
+    while (atomic_load(&ctx.target_returns) == 0) {
+        runtime_yield();
+    }
+    ASSERT(thrd_join(th, NULL) == thrd_success);
+
+    ASSERT(atomic_load(&ctx.external_completed) == 1);
+    ASSERT(atomic_load(&ctx.target_returns) == 1);
+    ASSERT(xylem_sem_timedwait(ctx.sem, 0) == false);
+    xylem_sem_destroy(ctx.sem);
+    park_gate_deinit(&ctx.gate);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
@@ -494,6 +553,7 @@ static void _test_run_all(void* arg) {
     test_thread_timeout();
     test_stress();
     test_mixed_waiters();
+    test_precommit_completion();
     _utils_watchdog_stop();
     xylem_shutdown();
 }

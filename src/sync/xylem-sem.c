@@ -171,7 +171,7 @@ static void _sem_timeout_cb(scheduler_timer_t* timer, void* ud) {
     _sem_unref(s);
 }
 
-static bool _sem_park_cb(mco_coro* co, void* arg) {
+static bool _sem_wait_commit_cb(mco_coro* co, void* arg) {
     _coro_waiter_t* w = (_coro_waiter_t*)arg;
     xylem_sem_t*    s = w->base.sem;
 
@@ -263,7 +263,7 @@ static void _sem_wait_coro(xylem_sem_t* s) {
     w.timeout_ms = 0;
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_park_cb, &w);
+    scheduler_park(s->sched, _sem_wait_commit_cb, &w);
     _sem_unref(s);
 }
 
@@ -289,7 +289,7 @@ static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     atomic_init(&w->timer_fired, false);
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_park_cb, w);
+    scheduler_park(s->sched, _sem_wait_commit_cb, w);
 
     bool fired = atomic_load(&w->timer_fired);
     if (scheduler_timer_stop(w->timer)) {

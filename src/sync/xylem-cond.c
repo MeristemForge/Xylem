@@ -119,17 +119,17 @@ static void _cond_wake_all(xylem_cond_t* cond, list_t* wake_list) {
  * Runs after the coroutine suspends: enqueue, then drop the user mutex
  * now that the waiter is linked and visible to signalers.
  */
-static bool _cond_park_cb(mco_coro* co, void* arg) {
+static bool _cond_wait_commit_cb(mco_coro* co, void* arg) {
     _coro_waiter_t* w    = (_coro_waiter_t*)arg;
     xylem_cond_t*   cond = w->base.cond;
+    xylem_mutex_t*  mtx  = w->base.mtx;
 
     w->co = co;
 
     spin_lock(&cond->guard);
     _cond_push_waiter(&cond->waiters, &w->base);
+    xylem_mutex_unlock(mtx);
     spin_unlock(&cond->guard);
-
-    xylem_mutex_unlock(w->base.mtx);
     return true;
 }
 
@@ -140,7 +140,7 @@ static void _cond_wait_coro(xylem_cond_t* cond, xylem_mutex_t* mtx) {
     w.base.mtx  = mtx;
     w.co        = NULL;
 
-    scheduler_park(cond->sched, _cond_park_cb, &w);
+    scheduler_park(cond->sched, _cond_wait_commit_cb, &w);
 }
 
 static void _cond_wait_thrd(xylem_cond_t* cond, xylem_mutex_t* mtx) {
