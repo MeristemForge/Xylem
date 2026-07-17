@@ -126,7 +126,7 @@ with a distinct result (`IOWAIT_TIMEOUT` / `IOWAIT_CLOSED`).
   primitives, e.g. draining an inbox channel), so calling it off a coroutine
   aborts. To cancel a connection whose reader/writer is parked, close it from
   *another* coroutine: the cross-direction wakeup goes through
-  `scheduler_schedule()`, which pushes to the global run queue and wakes a
+  `scheduler_coro_ready()`, which pushes to the global run queue and wakes a
   worker, so the closer and the parked coroutine need not be the same one.
 - **`destroy` is the final non-concurrent release.** TCP, UDP, and UDS keep the
   socket and public wrapper alive during close. After parked operations return,

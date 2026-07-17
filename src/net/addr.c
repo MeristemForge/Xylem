@@ -21,6 +21,8 @@
 
 #include "addr.h"
 
+#include "xylem/xylem-logger.h"
+
 #include "runtime/precond.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
@@ -28,31 +30,31 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
+
+typedef enum {
+    ADDR_RESOLVE_PENDING,
+    ADDR_RESOLVE_DONE,
+    ADDR_RESOLVE_TIMEOUT,
+} _addr_resolve_state_t;
 
 /**
- * Resolve request context.
- *
- * Heap-allocated and reference-counted so the lookup can outlive the
- * waiting coroutine: getaddrinfo is not cancellable, so on timeout the
- * coroutine resumes with an error while the pool thread keeps running
- * the lookup. The completion and the deadline timer race through a
- * single-winner atomic exchange on `waiter`, so the coroutine is woken
- * exactly once; `timed_out` is stamped only by the winning timer.
- *
- * refcnt: 1 (originator/waiter) + 1 (pool job) + 1 (armed timer).
- * The last unref frees host, any unclaimed result, and the timer.
+ * getaddrinfo cannot be cancelled, so the pool job may outlive a timed-out
+ * waiter. References cover the originator, submitted job, and armed timer;
+ * lock serializes terminal state selection and waiter publication.
  */
 typedef struct _addr_resolve_ctx_s {
-    _Atomic(mco_coro*) waiter;
-    char*              host;
-    uint16_t           port;
-    uint64_t           timeout_ms;
-    addr_t*            result;
-    size_t             result_count;
-    int                status;     /* worker outcome: 0 ok, -1 fail */
-    _Atomic bool       timed_out;  /* set only by the winning timer */
-    scheduler_timer_t* timer;
-    _Atomic int32_t    refcnt;
+    mtx_t                 lock;
+    mco_coro*             waiter;
+    _addr_resolve_state_t state;
+    char*                 host;
+    uint16_t              port;
+    uint64_t              timeout_ms;
+    addr_t*               result;
+    size_t                result_count;
+    int                   status;
+    scheduler_timer_t*    timer;
+    _Atomic int32_t       refcnt;
 } _addr_resolve_ctx_t;
 
 static void _addr_ctx_ref(_addr_resolve_ctx_t* ctx) {
@@ -60,14 +62,14 @@ static void _addr_ctx_ref(_addr_resolve_ctx_t* ctx) {
 }
 
 static void _addr_ctx_unref(_addr_resolve_ctx_t* ctx) {
-    if (atomic_fetch_sub(&ctx->refcnt, 1)
-        != 1) {
+    if (atomic_fetch_sub(&ctx->refcnt, 1) != 1) {
         return;
     }
     if (ctx->timer) {
         scheduler_timer_destroy(ctx->timer);
     }
-    free(ctx->result); /* NULL on success (ownership transferred to caller). */
+    mtx_destroy(&ctx->lock);
+    free(ctx->result);
     free(ctx->host);
     free(ctx);
 }
@@ -173,14 +175,17 @@ static void _addr_resolve_work(void* arg) {
 
     _addr_do_lookup(ctx);
 
-    /**
-     * Single-winner wake: if the timeout already claimed the waiter, co
-     * is NULL and the result we just built is discarded (freed by the
-     * last unref). Otherwise wake the coroutine.
-     */
-    mco_coro* co = atomic_exchange(&ctx->waiter, NULL);
+    mco_coro* co = NULL;
+    mtx_lock(&ctx->lock);
+    if (ctx->state == ADDR_RESOLVE_PENDING) {
+        ctx->state  = ADDR_RESOLVE_DONE;
+        co          = ctx->waiter;
+        ctx->waiter = NULL;
+    }
+    mtx_unlock(&ctx->lock);
+
     if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
+        scheduler_coro_ready(runtime_get_scheduler(), co);
     }
     _addr_ctx_unref(ctx);
 }
@@ -260,48 +265,58 @@ static void _addr_resolve_timeout_cb(scheduler_timer_t* timer, void* ud) {
     (void)timer;
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)ud;
 
-    /* Single-winner: only stamp timed_out and wake if we beat the worker. */
-    mco_coro* co = atomic_exchange(&ctx->waiter, NULL);
+    mco_coro* co = NULL;
+    mtx_lock(&ctx->lock);
+    if (ctx->state == ADDR_RESOLVE_PENDING) {
+        ctx->state  = ADDR_RESOLVE_TIMEOUT;
+        co          = ctx->waiter;
+        ctx->waiter = NULL;
+    }
+    mtx_unlock(&ctx->lock);
+
     if (co) {
-        atomic_store(&ctx->timed_out, true);
-        scheduler_schedule(runtime_get_scheduler(), co);
+        scheduler_coro_ready(runtime_get_scheduler(), co);
     }
     _addr_ctx_unref(ctx);
 }
 
-static bool _addr_resolve_park_cb(mco_coro* co, void* arg) {
+static bool _addr_resolve_wait_commit_cb(mco_coro* co, void* arg) {
     _addr_resolve_ctx_t* ctx = (_addr_resolve_ctx_t*)arg;
 
-    /* Publish the waiter before submitting so a fast completion sees it. */
-    atomic_store(&ctx->waiter, co);
-
-    /* Reference for the pool job. */
     _addr_ctx_ref(ctx);
-    if (dynpool_submit(runtime_get_dynpool(),
-                       _addr_resolve_work,
-                       ctx)
+    if (dynpool_submit(runtime_get_dynpool(), _addr_resolve_work, ctx)
         != 0) {
-        /**
-         * Submit failed (e.g. OOM). Undo the job ref, reclaim the
-         * waiter, and decline the park so the coroutine resumes inline
-         * with status == -1. Not declining would orphan it forever.
-         */
         _addr_ctx_unref(ctx);
-        atomic_store(&ctx->waiter, NULL);
+        mtx_lock(&ctx->lock);
+        ctx->state  = ADDR_RESOLVE_DONE;
         ctx->status = -1;
+        mtx_unlock(&ctx->lock);
         return false;
     }
 
-    /* Arm the deadline timer; one reference for the armed timer. */
     if (ctx->timer) {
         _addr_ctx_ref(ctx);
         scheduler_timer_start(
-                ctx->timer,
-                _addr_resolve_timeout_cb,
-                ctx,
-                ctx->timeout_ms,
-                0);
+            ctx->timer,
+            _addr_resolve_timeout_cb,
+            ctx,
+            ctx->timeout_ms,
+            0);
     }
+
+    mtx_lock(&ctx->lock);
+    if (ctx->state != ADDR_RESOLVE_PENDING) {
+        mtx_unlock(&ctx->lock);
+        return false;
+    }
+    if (ctx->waiter) {
+        mtx_unlock(&ctx->lock);
+        xylem_loge("<addr> concurrent resolve waiter");
+        abort();
+    }
+    ctx->waiter = co;
+    /* Unlock is the final waiter publication. */
+    mtx_unlock(&ctx->lock);
     return true;
 }
 
@@ -325,10 +340,15 @@ int addr_resolve(
     if (!ctx) {
         return -1;
     }
+    if (mtx_init(&ctx->lock, mtx_plain) != thrd_success) {
+        free(ctx);
+        return -1;
+    }
 
     size_t hlen = strlen(domain) + 1;
     ctx->host = (char*)malloc(hlen);
     if (!ctx->host) {
+        mtx_destroy(&ctx->lock);
         free(ctx);
         return -1;
     }
@@ -337,9 +357,8 @@ int addr_resolve(
     ctx->port       = port;
     ctx->timeout_ms = timeout_ms;
     ctx->status     = -1;
-    atomic_init(&ctx->waiter, NULL);
-    atomic_init(&ctx->timed_out, false);
-    atomic_init(&ctx->refcnt, 1); /* originator reference */
+    ctx->state      = ADDR_RESOLVE_PENDING;
+    atomic_init(&ctx->refcnt, 1);
 
     if (timeout_ms > 0) {
         ctx->timer = scheduler_timer_create(runtime_get_scheduler());
@@ -349,30 +368,33 @@ int addr_resolve(
         }
     }
 
-    scheduler_park(runtime_get_scheduler(), _addr_resolve_park_cb, ctx);
+    scheduler_coro_park(
+        runtime_get_scheduler(),
+        _addr_resolve_wait_commit_cb,
+        ctx);
 
-    int rc;
-    if (atomic_load(&ctx->timed_out)) {
-        /* Timed out: the worker may still run, so do not touch result. */
-        rc = -1;
-    } else {
+    int rc = -1;
+    _addr_resolve_state_t state;
+
+    mtx_lock(&ctx->lock);
+    state = ctx->state;
+    if (state == ADDR_RESOLVE_DONE) {
         rc = ctx->status;
         if (rc == 0) {
             *addrs      = ctx->result;
             *count      = ctx->result_count;
-            ctx->result = NULL; /* ownership transferred to the caller */
-        }
-
-        /**
-         * We won the race (or never armed): cancel a still-pending
-         * timer and drop its reference if we caught it before it fired.
-         */
-        if (ctx->timer && scheduler_timer_stop(ctx->timer)) {
-            _addr_ctx_unref(ctx);
+            ctx->result = NULL;
         }
     }
+    mtx_unlock(&ctx->lock);
 
-    _addr_ctx_unref(ctx); /* drop originator reference */
+    if (state == ADDR_RESOLVE_DONE
+        && ctx->timer
+        && scheduler_timer_stop(ctx->timer)) {
+        _addr_ctx_unref(ctx);
+    }
+
+    _addr_ctx_unref(ctx);
     return rc;
 }
 

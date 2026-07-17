@@ -50,9 +50,8 @@ struct xylem_mux_stream_s {
      * `lock` guards the mutable per-stream state shared between the
      * mux reader coroutine (push_data / window / state transitions)
      * and the user coroutine (read / write): recv_buf, recv_len,
-     * recv_cap, recv_window, send_window and state. Held only for the
-     * short buffer/window updates; never across a park or a transport
-     * write (those happen after the spin is released).
+     * recv_cap, recv_window, send_window, state, and both waiters. Held
+     * only for short state updates; never across a park or transport write.
      */
     spin_t              lock;
     _mux_stream_state_t state;
@@ -60,9 +59,9 @@ struct xylem_mux_stream_s {
     size_t              recv_len;
     size_t              recv_cap;
     uint32_t            recv_window;
-    _Atomic(mco_coro*)  recv_park;
+    mco_coro*           recv_waiter;
     uint32_t            send_window;
-    _Atomic(mco_coro*)  send_park;
+    mco_coro*           send_waiter;
     uint64_t            rd_deadline;
     uint64_t            wr_deadline;
     _Atomic bool        closed;

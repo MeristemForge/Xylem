@@ -266,6 +266,23 @@ static void test_resolve_returns_unique_addresses(void) {
     free(addrs);
 }
 
+static void test_resolve_completion_timeout_race(void) {
+    for (int i = 0; i < 32; i++) {
+        addr_t* addrs = NULL;
+        size_t  count = 0;
+        int rc = addr_resolve("localhost", 80, 1, &addrs, &count);
+
+        if (rc == 0) {
+            ASSERT(addrs != NULL);
+            ASSERT(count > 0);
+            free(addrs);
+        } else {
+            ASSERT(addrs == NULL);
+            ASSERT(count == 0);
+        }
+    }
+}
+
 static void test_lookup_numeric_address(void) {
     addr_t* addrs = NULL;
     size_t  count = 0;
@@ -818,6 +835,7 @@ static void _test_run_all(void* arg) {
     test_dial_timeout();
     test_invalid_dial_host();
     test_resolve_returns_unique_addresses();
+    test_resolve_completion_timeout_race();
     test_lookup_numeric_address();
     test_lookup_hostname();
     test_lookup_rejects_invalid_args();

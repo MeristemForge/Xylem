@@ -105,7 +105,7 @@ static void _sem_unref(xylem_sem_t* s) {
 static void _sem_wake(xylem_sem_t* s, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
-        scheduler_schedule(s->sched, cw->co);
+        scheduler_coro_ready(s->sched, cw->co);
     } else {
         _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
         thrd_wake_signal(tw->wake);
@@ -263,7 +263,7 @@ static void _sem_wait_coro(xylem_sem_t* s) {
     w.timeout_ms = 0;
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_wait_commit_cb, &w);
+    scheduler_coro_park(s->sched, _sem_wait_commit_cb, &w);
     _sem_unref(s);
 }
 
@@ -289,7 +289,7 @@ static bool _sem_timedwait_coro(xylem_sem_t* s, uint64_t timeout_ms) {
     atomic_init(&w->timer_fired, false);
 
     _sem_ref(s);
-    scheduler_park(s->sched, _sem_wait_commit_cb, w);
+    scheduler_coro_park(s->sched, _sem_wait_commit_cb, w);
 
     bool fired = atomic_load(&w->timer_fired);
     if (scheduler_timer_stop(w->timer)) {

@@ -85,13 +85,13 @@ the user or automatically by the idle callback when the last coroutine exits.
 
 ```
 scheduler_stop()     // stop + join workers, but keep memory allocated
-dynpool_destroy()    // join blocking threads; late scheduler_schedule() calls
+dynpool_destroy()    // join blocking threads; late scheduler_coro_ready() calls
                      // from finishing tasks still see a valid scheduler
 scheduler_destroy()  // now free scheduler memory
 ```
 
 `scheduler_stop()` joins workers without freeing, so a dynpool thread that
-finishes a blocking task and calls `scheduler_schedule()` to resume its
+finishes a blocking task and calls `scheduler_coro_ready()` to resume its
 coroutine can still touch the scheduler safely. Only after the dynpool is fully
 drained does `scheduler_destroy()` release memory.
 
@@ -115,7 +115,7 @@ from cheapest to most contended:
 3. **Global run queue (`runq`).** A mutex-protected intrusive singly linked
    MPMC FIFO. Two roles:
    overflow when a deque is full, and the **injection point** for any
-   cross-thread `scheduler_schedule()` caller.
+   cross-thread `scheduler_coro_ready()` caller.
 
 ### Work-stealing queue representation and invariants
 
@@ -144,7 +144,9 @@ successful head CAS. The owner uses `pop_half` when a full local queue must
 spill a batch to the global `runq`; thieves use `steal_half` to distribute
 useful work without taking the victim's entire queue.
 
-### `scheduler_schedule(sched, co)`
+### `scheduler_coro_ready(sched, co)`
+
+Wake sources first perform `WAITING -> RUNNABLE`, then publish the coroutine:
 
 - **From a worker of this scheduler:** push to `runnext`; if `runnext` was
   occupied, push the evicted coroutine to the local deque. If the deque is
@@ -152,96 +154,98 @@ useful work without taking the victim's entire queue.
 - **From any other thread** (a different scheduler's worker, a dynpool thread,
   application thread): push straight to the global runq and wake one worker.
 
-After scheduling, `_sched_wake_worker()` does nothing while another worker is
+The transition uses a strong CAS. A duplicate wake, wake-before-commit, or
+attempt to ready a running coroutine is a protocol bug and aborts instead of
+silently adding a duplicate runq entry.
+
+After publication, `_sched_wake_worker()` does nothing while another worker is
 already searching. Otherwise it reserves one parked or polling worker as
 searching before signalling it, so concurrent producers coalesce into one wake.
 Parked workers are signalled through their semaphore; a blocked poll owner is
 signalled through the poller wakeup fd.
 
-### `scheduler_schedule_batch(sched, cos, n)`
+### `scheduler_coro_ready_batch(sched, coros, count)`
 
-Links a whole array before locking, appends it to the global runq in O(1), and
-performs **one** wake, amortizing lock + signal cost. Used by the I/O path when
-a single poll pass makes many coroutines runnable.
+Transitions every coroutine from `WAITING` to `RUNNABLE`, appends runq nodes in
+fixed-size batches, and performs **one** wake. This amortizes lock and signal
+cost when one poll pass releases many waiters.
 
-### Park-state handshake (no resume mid-callback)
+### Coroutine lifecycle and park commit
 
-`scheduler_park()` runs the park callback *after* `mco_yield()` (see §7), but
-the callback itself still touches the object it parks on — a channel's waiter
-list, a sem's queue. A waker that fires while the callback is mid-flight must
-not resume the coroutine yet, or the resumed coroutine could race the tail of
-its own park callback (the classic "park_cb touches a freed channel" bug). A
-per-coroutine `park_state` closes that window:
+Scheduler state is separate from minicoro's execution status:
 
-| State | Meaning |
-|-------|---------|
-| `IDLE` | running, or sitting in a normal run queue |
-| `PARKING` | between `mco_yield()` and the end of the park callback |
-| `PARKED` | callback returned true; suspended, awaiting a wake |
-| `WOKEN` | a waker has marked it; it is (or will be) requeued exactly once |
+| Transition | Operation |
+|------------|-----------|
+| `NEW -> RUNNABLE` | `_sched_coro_start()` after creation |
+| `RUNNABLE -> RUNNING` | `_sched_worker_execute_runnable()` |
+| `RUNNING -> RUNNABLE` | `scheduler_coro_yield()` |
+| `RUNNING -> WAITING` | park commit begins |
+| `WAITING -> RUNNABLE` | wake source or declined commit |
+| `RUNNING -> DEAD` | `_sched_coro_exit()` |
+
+`scheduler_coro_park()` records a commit callback and yields. After
+`mco_resume()` returns to the worker, `_sched_coro_commit_park()` changes
+`RUNNING -> WAITING` and invokes the callback. The callback follows a strict
+publication contract:
+
+1. A successful callback's final shared operation publishes the waiter.
+2. After publication it may only return `true`; it must not touch the
+   coroutine, callback argument, or parked-on object again.
+3. A callback returning `false` must not have published the waiter. The worker
+   performs `WAITING -> RUNNABLE` and requeues the coroutine locally.
+4. Wake sources arbitrate one winner in their own waiter protocol, then call
+   `scheduler_coro_ready()`.
+
+This lets a wake source ready and even execute the coroutine immediately after
+the commit point without overlapping any callback work. Locks, tagged waiter
+states, or durable conditions close each resource's check-versus-publication
+window; the scheduler no longer contains a separate park-only handshake.
+
+```
+ Parking worker                         Wake source
+       |                                     |
+ RUNNING -> WAITING                          |
+ run commit callback                        |
+ prepare waiter fields                      |
+ publish waiter (final shared operation) -->| claim waiter
+ return true                                | WAITING -> RUNNABLE
+       |                                     | enqueue
+       |                                     | RUNNABLE -> RUNNING
+       v                                     v
+```
 
 Shutdown does not run park cleanup. If shutdown happens before or after a park
-record is published, the coroutine is simply stranded until process exit;
-`xylem_run()` return is the runtime lifetime boundary.
+record is published, the coroutine is stranded until teardown;
+`xylem_run()` return remains the runtime lifetime boundary.
 
-The parking worker (`_sched_handle_yield`) and the waker (`scheduler_schedule`
--> `_sched_try_wake`) cooperate through a CAS on `park_state`:
+## 5. Worker loop (`_sched_worker_entry_cb`)
 
-- **Parking worker:** store `PARKING`, run the callback. If the callback wants to
-  park, CAS `PARKING -> PARKED`. A clean CAS means it is parked and some waker
-  will requeue it later. If the CAS instead finds `WOKEN`, a waker raced in
-  during the callback and deliberately did *not* enqueue, so the requeue is the
-  worker's — done now via `_sched_requeue_local`.
-- **Waker:** inspect `park_state` and act on its kind:
-  - `IDLE` — not in a park handshake; a normal schedule, always enqueue.
-  - `PARKED` — CAS to `WOKEN` and enqueue (the callback already returned; the
-    waker owns the requeue).
-  - `PARKING` — CAS to `WOKEN` but do **not** enqueue (the callback, on
-    return, sees `WOKEN` and requeues itself).
-  - `WOKEN` — another waker already claimed it; nothing to do.
-
-Only one waker reaches the wake path per park, because the sync primitive (or
-`iowait`) hands off a single one-shot waiter. The net guarantee: the coroutine
-is requeued exactly once, and a resume never overlaps the tail of its park
-callback. The delicate case is a waker arriving mid-callback:
-
-```
- Parking worker (_sched_handle_yield)      Waker (scheduler_schedule)
-        |                                          |
-   park_state = PARKING                             |
-   run park callback (still touching               |
-   the parked-on object) ...                       |
-        |                                  claim: sees PARKING
-        |                                  CAS PARKING -> WOKEN
-        |                                  return false -> does NOT enqueue
-   callback returns true                           |
-   CAS PARKING -> PARKED  FAILS (WOKEN) <--------+
-        |
-   park_state = IDLE
-   _sched_requeue_local(co)   (the worker requeues, exactly once)
-        v
-```
-
-## 5. Worker loop (`_sched_worker_entry`)
-
-Each worker thread loops while the scheduler is running:
+Each worker thread calls `_sched_worker_find_runnable()`, which keeps searching
+or waiting until it returns a coroutine or the scheduler stops:
 
 1. **Maintenance.** Fire due timers.
 2. **Occasional global pull.** Every 61st tick (61 is prime, so it never
    resonates with the power-of-two deque sizes), pull one coroutine from the
    global runq and do a non-blocking poll, so global work and I/O can't starve
    behind a hot local deque.
-3. **Find work** via `_sched_worker_find()`:
+3. **Find work** via `_sched_worker_find_runnable()`:
    - Pop local (`runnext` → deque → fair share of the global runq).
    - If nobody owns the poll driver, do a **non-blocking** poll and take any
      coroutine it produces.
    - Try to **steal** from other workers' deques (half at a time).
    - Otherwise try to become the **poll driver** (CAS on `poller_running`).
-     The driver does the blocking poll; non-drivers fall through and park.
-4. **Run** the coroutine: `mco_resume()`, then handle its yield.
-5. If no work was found and this worker isn't the driver, **park** on its
-   semaphore — with a timeout equal to the next local timer, so timers still
-   fire on an otherwise idle scheduler.
+     The driver does the blocking poll.
+4. If no work was found and this worker isn't the driver, publish
+   `WORKER_WAITING`, then recheck all runnable pools. This closes the race with
+   producers deciding whether a worker needs to be woken.
+5. If the final recheck is still empty, `_sched_worker_wait()` waits on the
+   worker semaphore with a timeout equal to the next local timer. After wake or
+   timeout, runnable discovery restarts from timer maintenance.
+
+The worker entry executes the returned coroutine through `_sched_worker_execute_runnable()`:
+transition `RUNNABLE -> RUNNING`, call `mco_resume()`, then handle exit, yield,
+or coroutine park. This is the only coroutine execution point in the worker
+loop.
 
 On shutdown the loop exits without draining queued or parked coroutines.
 `scheduler_destroy()` destroys any remaining registered coroutines without
@@ -252,65 +256,44 @@ resuming user cleanup paths.
 Exactly one worker at a time owns the blocking poll, selected by a CAS on
 `poller_running`. The driver:
 
-- Publishes `poller_waiting = true` (seq-cst) *before* re-checking for work, so
-  a concurrent producer either sees the flag (and pokes the wakeup fd) or the
-  driver sees the new work — no lost wakeup.
+- Publishes `WORKER_POLLING` under `worker_state_lock` before re-checking for
+  work. A producer either races before the recheck and is observed, or reserves
+  the polling worker as `WORKER_SEARCHING` and pokes the wakeup fd.
 - Computes the poll timeout from the nearest timer deadline across **all**
   workers (`_sched_timer_poll_timeout`), not just its own, so it wakes in time to
   service a timer owned by a worker that is busy in a long coroutine.
 - After waking, greedily drains additional ready events with zero-timeout
   polls, fires due timers for **every** worker (timer stealing,
-  repeated `_sched_timer_process` calls, see §8), then runs the first ready
+  repeated `_sched_timer_process_due` calls, see §8), then runs the first ready
   coroutine and schedules the rest.
 
-This "one driver, many parkers" design means there is no dedicated I/O thread:
+This "one driver, many waiters" design means there is no dedicated I/O thread:
 whichever worker happens to go idle takes over polling, and it relinquishes the
 role the moment it finds a runnable coroutine.
 
-The "no lost wakeup" handshake is the delicate part. The risk is: a producer
-makes a coroutine runnable just as the driver is about to block in the poller,
-and the driver sleeps without noticing. The seq-cst `poller_waiting` flag closes
-that window — the producer and the driver are guaranteed to see *at least one*
-of each other's stores:
-
-```
-   Producer thread                         Poll driver (idle worker)
-   (scheduler_schedule)                     |
-        |                                    | poller_waiting = true   (seq-cst)
-        | push work to runq                  |  (store BEFORE re-check)
-        | store seq-cst                       |
-        |                                    | re-check: pop local / steal?
-        |                                    |
-        |  -- both stores are seq-cst, so the threads cannot BOTH miss --
-        |                                    |
-        | load poller_waiting:               | == case A: re-check found work ==
-        |   == true ==                       | poller_waiting = false
-        |     poke wakeup fd ------------.    | run it (never blocks)
-        |   == false ==                  |    |
-        |     a worker is already        |    | == case B: re-check empty ==
-        |     awake; no poke needed      `--> | poller_wait(timeout = next timer)
-        |                                     |   <- wakes on fd poke or I/O
-        v                                     v
-```
-
-If the driver's re-check runs first and finds the new work (case A), it never
-blocks. If the producer's push lands first, the driver's re-check sees it. If
-they interleave, seq-cst ordering guarantees the producer observes
-`poller_waiting == true` and pokes the wakeup fd, so the blocking poll returns
-at once. No interleaving leaves the driver asleep with work pending.
+The no-lost-wakeup boundary is the worker state lock. Before blocking, a worker
+publishes `WORKER_WAITING` or `WORKER_POLLING`, then rechecks all runnable pools.
+A producer that needs help takes the same lock, reserves one idle worker as
+`WORKER_SEARCHING`, updates `num_idle/num_searching`, and only then signals it.
+Semaphore waiters receive a post; a polling worker receives a wakeup-fd event.
+Because reservation and idle publication are serialized, the worker either
+sees the work during its final recheck or the producer sees an idle state and
+wakes it. Existing searchers suppress redundant wakeups and extend the wake
+chain after finding work.
 
 ## 6. Coroutines (minicoro + pooling)
 
 Coroutines are stackful, provided by the bundled `minicoro` library. Each has a
 fixed 128 KiB stack.
 
-`scheduler_spawn()` allocates a `_sched_coro_ctx_t` (entry fn, arg, intrusive runq and
+`scheduler_coro_spawn()` allocates a `_sched_coro_ctx_t` (entry fn, arg, intrusive runq and
 registry nodes), creates the coroutine, links it into the scheduler's
 **registry** (so leaked-but-alive coroutines can be destroyed at teardown),
-bumps the `alive` counter, and routes it through `scheduler_schedule()`. When a
-coroutine returns, `_sched_handle_yield()` sees `MCO_DEAD`, unlinks it from the
-registry, frees it, decrements `alive`, and — if it was the last one — fires the
-idle callback that shuts the runtime down.
+bumps the `alive` counter, and calls `_sched_coro_start()` for
+`NEW -> RUNNABLE`. When a coroutine returns, `_sched_coro_exit()` performs
+`RUNNING -> DEAD`, unlinks it from the registry, frees it, decrements `alive`,
+and — if it was the last one — fires the idle callback that shuts the runtime
+down.
 
 ### Stack allocation and the coroutine pool
 
@@ -333,7 +316,7 @@ scheduler teardown deallocate complete regions.
 The pool does not impose a fixed limit on active coroutines. On stack-based
 platforms, however, every active or retained idle slot owns a separate virtual
 memory region, so coroutine creation remains subject to operating-system
-resource limits. Reaching one of these limits makes `scheduler_spawn()` fail
+resource limits. Reaching one of these limits makes `scheduler_coro_spawn()` fail
 through the virtual-memory allocation path.
 
 On Windows, `platform_vmem_alloc()` uses `MEM_RESERVE | MEM_COMMIT` for the
@@ -381,7 +364,7 @@ publication. Each direction uses `NONE / WAIT / READY / co`:
 3. It reserves the slot with `NONE -> WAIT`, then repeats the result check.
    If an error appeared, `_iowait_transition_waiter(..., IOWAIT_WAITER_NONE)`
    cancels the reservation while preserving any concurrent `READY`.
-4. `scheduler_park()` yields the coroutine and invokes
+4. `scheduler_coro_park()` yields the coroutine and invokes
    `_iowait_wait_commit_cb()`. The callback's final operation is the CAS
    `WAIT -> co`; it returns false if a wake source already consumed `WAIT`.
 5. After resume, the waiter consumes `READY` first, otherwise checks
@@ -396,7 +379,7 @@ The same steps as a time-ordered diagram (top to bottom is time; `|` is each
 actor's timeline):
 
 ```
- Coroutine       rd.waiter       scheduler_park       wake source
+ Coroutine       rd.waiter     scheduler_coro_park    wake source
      |                |                 |                  |
      | NONE -> WAIT   |                 |                  |
      | re-check poll_info/deadline      |                  |
@@ -406,7 +389,7 @@ actor's timeline):
      |                |<-----------------------------------|
      |                | co -> READY/NONE; return old co    |
      |<----------------------------------------------------|
-     | schedule(co), resume, consume READY or poll_info     |
+     | ready(co), resume, consume READY or poll_info        |
      v                v                 v                  v
 ```
 
@@ -415,7 +398,7 @@ actor's timeline):
 A parked coroutine can be woken by an **I/O event**, a **deadline timer**, or
 **`iowait_close()`**. Each tries to claim the parked coroutine from the
 per-direction slot; only the claimant that observes the coroutine pointer
-actually reschedules it. I/O readiness is cached as `READY` in the slot for
+actually readies it. I/O readiness is cached as `READY` in the slot for
 the next parker to consume without blocking. Deadline expiry is latched in the
 direction-specific bit of the handle's `poll_info` word and cleared whenever
 that deadline is reset or disabled. If a deadline timer wakes the coroutine
@@ -434,7 +417,7 @@ that wake spurious and the wait retries.
        |                |                  |                     |
        |  only the transition that observes co returns it        |
        |                                                         |
-       |  winner: schedule(co)  ----------------------------->  Coroutine
+       |  winner: ready(co)  -------------------------------->  Coroutine
        |                                                         |
        |  on resume, co consumes READY or reads poll_info         |
        |  to report TIMEOUT / ERROR / CLOSED, or retries          |
@@ -485,14 +468,15 @@ batch, so coroutine queue placement remains outside the lock. Keeping poller
 modification and deletion inside the critical section avoids a re-arm-after-
 close race and makes `iowait_close()` a synchronous fd barrier.
 
-The scheduler owns runnable placement. `_sched_io_process()` consumes each
-event result immediately: the first runnable becomes `run_now`, subsequent
-runnables go to the polling worker's local deque, and local overflow is batched
-into the global run queue. `iowait` does not know about these queueing choices
-and never flushes scheduler batches itself.
+The scheduler owns runnable placement.
+`_sched_worker_dispatch_poller_runnables()` consumes each event result
+immediately: the first runnable becomes `run_now`, subsequent runnables go to
+the polling worker's local deque, and local overflow is batched into the global
+run queue. `iowait` does not know about these queueing choices and never flushes
+scheduler batches itself.
 
 Because the fd is always registered (ET) or re-registered before the next
-park (LT), the park callback never touches the poller. Its only operation is
+park (LT), the commit callback never touches the poller. Its only operation is
 the final `WAIT -> co` publication CAS.
 
 `iowait_close()` drops the poller subscription **synchronously** under
@@ -524,7 +508,7 @@ Each worker owns a binary **min-heap** of timers keyed by absolute expiry
 against the scheduler (`scheduler_timer_create`), assigned to an owner worker, and
 armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
 
-- Due timers are popped in `_sched_timer_process()`, which either runs the
+- Due timers are popped in `_sched_timer_process_due()`, which either runs the
   callback **inline on the firing thread** or, if `spawn` is set, normally runs
   it in a fresh coroutine. If spawning that coroutine fails, the fire is
   completed without invoking the callback, and the normal completion/ud_unref
@@ -578,15 +562,15 @@ which returns 0. `xylem_ticker_destroy()` consumes the handle and calls close as
 a cleanup fallback, but callers that run a receiver in another context should
 close first, wait for the receiver to exit, then destroy the ticker.
 
-`xylem_sleep(ms)` is built directly on this: it creates a one-shot timer whose
-callback reschedules the sleeping coroutine, then parks.
+`xylem_sleep(ms)` is built directly on this: its park commit arms a one-shot
+timer, and the timer callback readies the sleeping coroutine.
 
 ### Timer stealing — who fires whose timers, and where they run
 
-A worker normally drains its own heap on the local `_sched_timer_process` path.
+A worker normally drains its own heap on the local `_sched_timer_process_due` path.
 But a worker stuck running a long coroutine never reaches that path, which would
 delay its timers. To bound that, the **idle poll driver also fires due timers
-for every worker** by calling `_sched_timer_process()` after each poll wake. This
+for every worker** by calling `_sched_timer_process_due()` after each poll wake. This
 is why the driver derives its poll timeout from the nearest deadline across all
 workers (§5) — it must wake in time to cover a busy worker's timers.
 
@@ -603,8 +587,8 @@ driver, not the owner:
 
 - **Inline timer (`spawn == false`):** `timer->cb` runs synchronously on the
   driver thread.
-- **Spawn timer (`spawn == true`):** `scheduler_spawn()` builds a coroutine and
-  routes it through `_sched_enqueue`, which keys off the *running* worker
+- **Spawn timer (`spawn == true`):** `scheduler_coro_spawn()` builds a coroutine and
+  routes it through `_sched_enqueue_runnable`, which keys off the *running* worker
   (`_tls_worker` = the driver), so the coroutine lands in the driver's own
   `runnext`/deque and is then free to be work-stolen by any worker, including
   the original owner.
@@ -619,11 +603,11 @@ is offloaded to the **dynamic thread pool**.
 
 1. Allocate a context capturing `fn`, `arg`, the scheduler, and (filled in at
    park time) the calling coroutine.
-2. `scheduler_park()` the coroutine; in the park callback, `dynpool_submit()`
-   hands the task to the pool. If submission fails, the park callback returns
-   `false` so the coroutine is rescheduled immediately and `runtime_submit()`
-   reports `-1`.
-3. A pool thread runs `fn(arg)`, then calls `scheduler_schedule()` to resume the
+2. `scheduler_coro_park()` the coroutine; in the commit callback,
+   `dynpool_submit()` is the final publication operation. If submission fails,
+   the callback returns `false` so the coroutine is rescheduled immediately and
+   `runtime_submit()` reports `-1`.
+3. A pool thread runs `fn(arg)`, then calls `scheduler_coro_ready()` to resume the
    coroutine — a cross-thread wakeup that lands on the global runq.
    If shutdown destroys the pool before a queued task runs, process-exit
    teardown owns the remaining submit context.
@@ -632,11 +616,11 @@ The cross-thread handoff (top to bottom is time):
 
 ```
  Coroutine        runtime_submit /        dynpool            worker that
- (on worker A)    park callback           thread             picks it up
+ (on worker A)    commit callback         thread             picks it up
      |                 |                    |                     |
      | xylem_await()   |                    |                     |
      |---------------->|                    |                     |
-     |                 | scheduler_park():  |                     |
+     |                 | coro_park():       |                     |
      | (suspended) ... | publish co into    |                     |
      |                 | ctx, then          |                     |
      |                 | dynpool_submit() ->|                     |
@@ -644,7 +628,7 @@ The cross-thread handoff (top to bottom is time):
      |   meanwhile worker A runs OTHER coroutines                 |
      |                 |                    | (blocking work)     |
      |                 |                    |                     |
-     |                 |                    | done -> schedule(co)|
+     |                 |                    | done -> ready(co)   |
      |                 |                    | push to global runq |
      |                 |                    | wake a worker ----->|
      |                 |                    |                     | pop co
@@ -653,8 +637,8 @@ The cross-thread handoff (top to bottom is time):
 ```
 
 Note the coroutine can resume on **any** worker, not necessarily the one it
-parked on — the wakeup is a plain cross-thread `scheduler_schedule()` into the
-global runq. If `dynpool_submit()` fails, the park callback returns `false`, the
+parked on — the wakeup is a plain cross-thread `scheduler_coro_ready()` into the
+global runq. If `dynpool_submit()` fails, the commit callback returns `false`, the
 coroutine is rescheduled immediately, and `runtime_submit()` returns `-1`.
 
 The pool spawns threads on demand up to `max_threads` (default 512) and lets
@@ -663,19 +647,35 @@ the pool mutex while it enqueues the task and updates worker lifecycle state;
 the condition variable wakes idle workers when the queue or shutdown state
 changes.
 
+### DNS resolve arbitration
+
+`addr_resolve()` has two completion sources: the pool job and an optional
+deadline timer. Its heap context is reference-counted because `getaddrinfo()`
+cannot be cancelled and may continue after the caller times out. A mutex guards
+`PENDING / DONE / TIMEOUT` and the single waiter pointer.
+
+The park commit submits the job and arms the timer before locking the context.
+If either source already selected a terminal state, the callback returns false.
+Otherwise it stores the coroutine pointer and unlocks as its final publication
+operation. The worker and timer select one terminal state under the same lock,
+detach the waiter, unlock, and call `scheduler_coro_ready()` outside the lock.
+The losing source only drops its reference.
+
 ## 10. Concurrency invariants
 
-- **A parked coroutine is requeued exactly once, never mid-callback.**
-  `scheduler_park()` runs its callback after `mco_yield()`, and the per-coroutine
-  `park_state` handshake (`PARKING`/`PARKED`/`WOKEN`, §4) ensures a waker that
-  races the still-running callback marks it `WOKEN` without enqueuing — the
-  callback then owns the requeue, so a resume never overlaps the callback tail.
+- **A parked coroutine is requeued exactly once after waiter publication.**
+  The worker performs `RUNNING -> WAITING` before the commit callback. A
+  successful callback publishes the waiter as its final shared operation;
+  the single winning wake source then performs `WAITING -> RUNNABLE`.
 - **At most one reader and one writer per `iowait` direction.** Enforced by the
   exchange-on-publish check; violations `abort()`.
+- **Mux stream conditions and waiters share one lock.** Receive data, send-window
+  updates, FIN/reset/close, and waiter commit all inspect or detach the waiter
+  under the stream lock, then ready it after unlocking.
 - **Stale completion events are rejected**, not tolerated — via generation tags.
-- **No lost wakeups against the poll driver.** The driver sets `poller_waiting`
-  (seq-cst) before its final work re-check; producers that miss a parked worker
-  fall back to poking the wakeup fd.
+- **No lost wakeups against idle workers.** Idle publication and wake reservation
+  are serialized by `worker_state_lock`; polling workers are signalled through
+  the wakeup fd.
 - **Teardown invalidates runtime-backed objects.**
   Most applications use one runtime near process exit. Sequential `xylem_run()`
   calls are supported for tests or controlled scenarios if the previous run

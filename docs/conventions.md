@@ -43,8 +43,8 @@ must not appear in a public header.
 
 - Lowercase module prefix, no `xylem_`: `scheduler_create`, `runq_push`,
   `iowait_read`, `platform_poller_wait`.
-- File-local statics and helpers are prefixed `_`: `_sched_worker_entry`,
-  `_iowait_park_cb`.
+- File-local statics and helpers are prefixed `_`: `_sched_worker_entry_cb`,
+  `_iowait_wait_commit_cb`.
 - Platform backends share one header (`src/platform/platform-*.h`) and a
   per-OS `.c` under `src/platform/{unix,win}/`.
 

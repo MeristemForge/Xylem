@@ -63,22 +63,22 @@ void mux_stream_unref(struct xylem_mux_stream_s* s) {
     free(s);
 }
 
-static void _mux_stream_wake_recv(struct xylem_mux_stream_s* s) {
-    mco_coro* co = atomic_exchange(&s->recv_park, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
+static mco_coro* _mux_stream_detach_recv(struct xylem_mux_stream_s* s) {
+    mco_coro* co = s->recv_waiter;
+    s->recv_waiter = NULL;
+    return co;
 }
 
-static void _mux_stream_wake_send(struct xylem_mux_stream_s* s) {
-    mco_coro* co = atomic_exchange(&s->send_park, NULL);
-    if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
-    }
+static mco_coro* _mux_stream_detach_send(struct xylem_mux_stream_s* s) {
+    mco_coro* co = s->send_waiter;
+    s->send_waiter = NULL;
+    return co;
 }
 
 void mux_stream_push_data(
     struct xylem_mux_stream_s* s, const void* data, size_t len) {
+    mco_coro* co;
+
     if (len == 0) {
         return;
     }
@@ -99,34 +99,56 @@ void mux_stream_push_data(
     memcpy(s->recv_buf + s->recv_len, data, len);
     s->recv_len += len;
     s->recv_window -= (uint32_t)len;
+    co = _mux_stream_detach_recv(s);
     spin_unlock(&s->lock);
-    _mux_stream_wake_recv(s);
+    if (co) {
+        scheduler_coro_ready(runtime_get_scheduler(), co);
+    }
 }
 
 void mux_stream_update_send_window(
     struct xylem_mux_stream_s* s, uint32_t delta) {
+    mco_coro* co;
+
     spin_lock(&s->lock);
     s->send_window += delta;
+    co = _mux_stream_detach_send(s);
     spin_unlock(&s->lock);
-    _mux_stream_wake_send(s);
+    if (co) {
+        scheduler_coro_ready(runtime_get_scheduler(), co);
+    }
 }
 
 void mux_stream_notify_remote_fin(struct xylem_mux_stream_s* s) {
+    mco_coro* co;
+
     spin_lock(&s->lock);
     if (s->state == MUX_STREAM_ESTABLISHED) {
         s->state = MUX_STREAM_REMOTE_CLOSE;
     } else if (s->state == MUX_STREAM_LOCAL_CLOSE) {
         s->state = MUX_STREAM_CLOSED;
     }
+    co = _mux_stream_detach_recv(s);
     spin_unlock(&s->lock);
-    _mux_stream_wake_recv(s);
+    if (co) {
+        scheduler_coro_ready(runtime_get_scheduler(), co);
+    }
 }
 
 void mux_stream_notify_reset(struct xylem_mux_stream_s* s) {
+    mco_coro* recv;
+    mco_coro* send;
+
     spin_lock(&s->lock);
     s->state = MUX_STREAM_CLOSED;
-    spin_unlock(&s->lock);
     atomic_store(&s->closed, true);
-    _mux_stream_wake_recv(s);
-    _mux_stream_wake_send(s);
+    recv = _mux_stream_detach_recv(s);
+    send = _mux_stream_detach_send(s);
+    spin_unlock(&s->lock);
+    if (recv) {
+        scheduler_coro_ready(runtime_get_scheduler(), recv);
+    }
+    if (send) {
+        scheduler_coro_ready(runtime_get_scheduler(), send);
+    }
 }

@@ -48,10 +48,11 @@ typedef enum _waiter_kind_e {
     WAITER_THRD,
 } _waiter_kind_t;
 
-enum {
-    CHANNEL_WAITER_NONE = 0,
-    CHANNEL_WAITER_WAIT = 1,
-};
+typedef enum {
+    CHANNEL_WAITER_NONE   = 0,
+    CHANNEL_WAITER_WAIT   = 1,
+    CHANNEL_WAITER_CLOSED = 2,
+} _channel_waiter_state_t;
 
 typedef struct _waiter_s {
     _waiter_kind_t   kind;
@@ -72,31 +73,56 @@ typedef struct _thrd_waiter_s {
     thrd_wake_t* wake;
 } _thrd_waiter_t;
 
-_Static_assert(_Alignof(_waiter_t) > CHANNEL_WAITER_WAIT,
+_Static_assert(_Alignof(_waiter_t) > CHANNEL_WAITER_CLOSED,
                "channel waiter pointers must not alias sentinel states");
 
 struct xylem_channel_s {
     mpsc_t            queue;
     _Atomic uintptr_t waiter;
-    _Atomic bool      closed;
     _Atomic bool      receiving;
     _Atomic int32_t   refcnt;
     scheduler_t*      sched;
     _Atomic size_t    count;
 };
 
-static _waiter_t* _channel_unblock(xylem_channel_t* ch) {
-    uintptr_t raw = atomic_exchange(&ch->waiter, CHANNEL_WAITER_NONE);
-    if (raw <= CHANNEL_WAITER_WAIT) {
-        return NULL;
+static _waiter_t* _channel_transition_waiter(
+    xylem_channel_t* ch,
+    _channel_waiter_state_t next_state) {
+    uintptr_t raw = atomic_load(&ch->waiter);
+
+    for (;;) {
+        if (next_state == CHANNEL_WAITER_CLOSED) {
+            if (raw == CHANNEL_WAITER_CLOSED) {
+                xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
+                abort();
+            }
+        } else {
+            if (raw == CHANNEL_WAITER_NONE
+                || raw == CHANNEL_WAITER_CLOSED) {
+                return NULL;
+            }
+        }
+
+        if (atomic_compare_exchange_weak(
+                &ch->waiter,
+                &raw,
+                next_state)) {
+            if (raw > CHANNEL_WAITER_CLOSED) {
+                return (_waiter_t*)raw;
+            }
+            return NULL;
+        }
     }
-    return (_waiter_t*)raw;
+}
+
+static bool _channel_is_closed(xylem_channel_t* ch) {
+    return atomic_load(&ch->waiter) == CHANNEL_WAITER_CLOSED;
 }
 
 static void _channel_wake(xylem_channel_t* ch, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = (_coro_waiter_t*)w;
-        scheduler_schedule(ch->sched, cw->co);
+        scheduler_coro_ready(ch->sched, cw->co);
     } else {
         _thrd_waiter_t* tw = (_thrd_waiter_t*)w;
         thrd_wake_signal(tw->wake);
@@ -149,7 +175,8 @@ static void _channel_timeout_cb(scheduler_timer_t* timer, void* ud) {
     xylem_channel_t* ch = w->base.ch;
     atomic_store(&w->timer_fired, true);
 
-    _waiter_t* waiter = _channel_unblock(ch);
+    _waiter_t* waiter =
+        _channel_transition_waiter(ch, CHANNEL_WAITER_NONE);
     if (waiter) {
         _channel_wake(ch, waiter);
     }
@@ -197,7 +224,7 @@ static bool _channel_publish_waiter(xylem_channel_t* ch, _waiter_t* w) {
     }
 
     /* Avoid lost wakeups between the failed pop and waiter publish. */
-    if (atomic_load(&ch->closed) || mpsc_can_pop(&ch->queue)) {
+    if (_channel_is_closed(ch) || mpsc_can_pop(&ch->queue)) {
         return !_channel_cancel_waiter(ch, w);
     } else {
         return true;
@@ -217,7 +244,7 @@ static void* _channel_wait_coro(xylem_channel_t* ch) {
         if (payload) {
             break;
         }
-        if (atomic_load(&ch->closed)) {
+        if (_channel_is_closed(ch)) {
             if (!_channel_wait_pending_send(ch)) {
                 break;
             }
@@ -227,19 +254,22 @@ static void* _channel_wait_coro(xylem_channel_t* ch) {
         uintptr_t expected = CHANNEL_WAITER_NONE;
         if (!atomic_compare_exchange_strong(
                 &ch->waiter, &expected, CHANNEL_WAITER_WAIT)) {
+            if (expected == CHANNEL_WAITER_CLOSED) {
+                continue;
+            }
             xylem_loge("<channel> waiter slot busy raw=%" PRIuPTR
                        "; aborting",
                        expected);
             abort();
         }
-        if (mpsc_can_pop(&ch->queue) || atomic_load(&ch->closed)) {
+        if (mpsc_can_pop(&ch->queue) || _channel_is_closed(ch)) {
             expected = CHANNEL_WAITER_WAIT;
             atomic_compare_exchange_strong(
                 &ch->waiter, &expected, CHANNEL_WAITER_NONE);
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_wait_commit_cb, &w);
+        scheduler_coro_park(ch->sched, _channel_wait_commit_cb, &w);
     }
     return payload;
 }
@@ -281,7 +311,7 @@ static void* _channel_timedwait_coro(
         if (atomic_load(&w->timer_fired)) {
             break;
         }
-        if (atomic_load(&ch->closed)) {
+        if (_channel_is_closed(ch)) {
             if (!_channel_wait_pending_send(ch)) {
                 break;
             }
@@ -291,12 +321,15 @@ static void* _channel_timedwait_coro(
         uintptr_t expected = CHANNEL_WAITER_NONE;
         if (!atomic_compare_exchange_strong(
                 &ch->waiter, &expected, CHANNEL_WAITER_WAIT)) {
+            if (expected == CHANNEL_WAITER_CLOSED) {
+                continue;
+            }
             xylem_loge("<channel> waiter slot busy raw=%" PRIuPTR
                        "; aborting",
                        expected);
             abort();
         }
-        if (mpsc_can_pop(&ch->queue) || atomic_load(&ch->closed)
+        if (mpsc_can_pop(&ch->queue) || _channel_is_closed(ch)
             || atomic_load(&w->timer_fired)) {
             expected = CHANNEL_WAITER_WAIT;
             atomic_compare_exchange_strong(
@@ -304,7 +337,7 @@ static void* _channel_timedwait_coro(
             continue;
         }
 
-        scheduler_park(ch->sched, _channel_wait_commit_cb, w);
+        scheduler_coro_park(ch->sched, _channel_wait_commit_cb, w);
     }
 
     if (scheduler_timer_stop(w->timer)) {
@@ -327,7 +360,7 @@ static void* _channel_wait_thrd(xylem_channel_t* ch) {
         if (payload) {
             break;
         }
-        if (atomic_load(&ch->closed)) {
+        if (_channel_is_closed(ch)) {
             if (!_channel_wait_pending_send(ch)) {
                 break;
             }
@@ -359,7 +392,7 @@ static void* _channel_timedwait_thrd(
         if (payload) {
             break;
         }
-        if (atomic_load(&ch->closed)) {
+        if (_channel_is_closed(ch)) {
             if (!_channel_wait_pending_send(ch)) {
                 break;
             }
@@ -458,7 +491,6 @@ xylem_channel_t* xylem_channel_create(void) {
     }
     mpsc_init(&ch->queue);
     atomic_init(&ch->waiter, CHANNEL_WAITER_NONE);
-    atomic_init(&ch->closed, false);
     atomic_init(&ch->receiving, false);
     atomic_init(&ch->refcnt, 1);
     ch->sched = sched;
@@ -471,11 +503,8 @@ void xylem_channel_close(xylem_channel_t* ch) {
         xylem_loge("<channel> close on NULL channel; aborting");
         abort();
     }
-    if (atomic_exchange(&ch->closed, true)) {
-        xylem_loge("<channel> double close ch=%p; aborting", (void*)ch);
-        abort();
-    }
-    _waiter_t* w = _channel_unblock(ch);
+    _waiter_t* w =
+        _channel_transition_waiter(ch, CHANNEL_WAITER_CLOSED);
     if (w) {
         _channel_wake(ch, w);
     }
@@ -496,7 +525,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         return -1;
     }
 
-    if (atomic_load(&ch->closed)) {
+    if (_channel_is_closed(ch)) {
         xylem_loge("<channel> send on closed channel ch=%p; aborting",
                    (void*)ch);
         abort();
@@ -511,7 +540,8 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
     atomic_fetch_add(&ch->count, 1);
     mpsc_push(&ch->queue, &m->node);
 
-    _waiter_t* w = _channel_unblock(ch);
+    _waiter_t* w =
+        _channel_transition_waiter(ch, CHANNEL_WAITER_NONE);
     if (w) {
         _channel_wake(ch, w);
     }

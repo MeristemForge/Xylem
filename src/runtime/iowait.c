@@ -366,7 +366,7 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
     mtx_unlock(&d->deadline_lock);
 
     if (co) {
-        scheduler_schedule(runtime_get_scheduler(), co);
+        scheduler_coro_ready(runtime_get_scheduler(), co);
     }
     _iowait_unref(w);
 }
@@ -415,7 +415,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
         co = _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
         mtx_unlock(&d->deadline_lock);
         if (co) {
-            scheduler_schedule(runtime_get_scheduler(), co);
+            scheduler_coro_ready(runtime_get_scheduler(), co);
         }
         return;
     }
@@ -429,7 +429,7 @@ static void _iowait_set_deadline(_iowait_dir_t* d, uint64_t deadline_ms) {
             co = _iowait_transition_waiter(d, IOWAIT_WAITER_NONE);
             mtx_unlock(&d->deadline_lock);
             if (co) {
-                scheduler_schedule(runtime_get_scheduler(), co);
+                scheduler_coro_ready(runtime_get_scheduler(), co);
             }
             return;
         }
@@ -501,7 +501,7 @@ static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
             continue;
         }
 
-        scheduler_park(
+        scheduler_coro_park(
             runtime_get_scheduler(), _iowait_wait_commit_cb, d);
     }
 }
@@ -632,10 +632,10 @@ void iowait_close(iowait_t* w) {
     _iowait_stop_deadline(&w->wr);
 
     if (rd) {
-        scheduler_schedule(runtime_get_scheduler(), rd);
+        scheduler_coro_ready(runtime_get_scheduler(), rd);
     }
     if (wr) {
-        scheduler_schedule(runtime_get_scheduler(), wr);
+        scheduler_coro_ready(runtime_get_scheduler(), wr);
     }
 }
 

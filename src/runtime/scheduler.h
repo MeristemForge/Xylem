@@ -42,18 +42,19 @@ typedef struct scheduler_timer_s scheduler_timer_t;
 typedef struct iowait_slab_s iowait_slab_t;
 
 /**
- * Park callback invoked after a coroutine yields.
+ * Park commit callback invoked after a coroutine yields.
  *
  * Called on the worker thread with the suspended coroutine. If the
- * callback returns true, the coroutine is parked (not rescheduled).
- * If false, the worker pushes it back to its local deque.
+ * callback returns true, it has published the waiter and the coroutine
+ * remains waiting. If false, the callback must not have published the
+ * waiter and the worker makes the coroutine runnable again.
  *
  * co   The suspended coroutine.
- * arg  User data from scheduler_park().
+ * arg  User data from scheduler_coro_park().
  *
  * Returns true to park, false to reschedule immediately.
  */
-typedef bool (*scheduler_park_cb_t)(mco_coro* co, void* arg);
+typedef bool (*scheduler_coro_park_commit_fn_t)(mco_coro* co, void* arg);
 
 /**
  * Timer expiry callback.
@@ -121,7 +122,7 @@ extern void scheduler_destroy(scheduler_t* sched);
  * scheduler can run, but the scheduler's runq, poller, and worker
  * structures remain allocated so late cross-thread callers (for
  * instance dynpool threads finishing a blocking task with
- * scheduler_schedule) can still touch the scheduler without UAF.
+ * scheduler_coro_ready) can still touch the scheduler without UAF.
  * scheduler_destroy() must still be called afterwards to free the
  * memory. Idempotent for sequential callers: calling it a second time
  * (or calling scheduler_destroy without calling stop first) is safe.
@@ -133,7 +134,7 @@ extern void scheduler_destroy(scheduler_t* sched);
 extern void scheduler_stop(scheduler_t* sched);
 
 /**
- * @brief Schedule a coroutine for execution on a worker.
+ * @brief Make a waiting coroutine runnable.
  *
  * Thread-safe, may be called from any thread. When called from a
  * scheduler worker thread, takes a fast path through the worker's
@@ -143,30 +144,31 @@ extern void scheduler_stop(scheduler_t* sched);
  * worker.
  *
  * @param sched  Scheduler handle.
- * @param co     Coroutine to schedule.
+ * @param co     Waiting coroutine to make runnable.
  */
-extern void scheduler_schedule(scheduler_t* sched, mco_coro* co);
+extern void scheduler_coro_ready(scheduler_t* sched, mco_coro* co);
 
 /**
- * @brief Schedule a batch of coroutines with a single wake.
+ * @brief Make a batch of waiting coroutines runnable with a single wake.
  *
  * Pushes the whole batch to the global runq and performs at most
  * one wake, amortising lock + signal costs.
  *
- * Thread-safe. For single-coroutine wakes, use scheduler_schedule.
+ * Thread-safe. For a single coroutine, use scheduler_coro_ready.
  *
  * @param sched  Scheduler handle.
- * @param cos    Array of coroutines to schedule. Must not be NULL
- *               when n > 0.
- * @param n      Number of coroutines in @p cos. No-op when n <= 0.
+ * @param coros  Array of waiting coroutines. Must not be NULL when count > 0.
+ * @param count  Number of coroutines in @p coros. No-op when count <= 0.
  */
-extern void scheduler_schedule_batch(
-    scheduler_t* sched, mco_coro** cos, int32_t n);
+extern void scheduler_coro_ready_batch(
+    scheduler_t* sched,
+    mco_coro** coros,
+    int count);
 
 /**
  * @brief Spawn a new coroutine on the scheduler.
  *
- * Allocates the coroutine and routes it through scheduler_schedule().
+ * Allocates the coroutine and makes it runnable.
  * When called from a worker thread it lands on that worker's local
  * path (runnext/deque); when called from any other thread it goes
  * to the global runq.
@@ -175,26 +177,28 @@ extern void scheduler_schedule_batch(
  * @param fn     Coroutine entry function.
  * @param arg    Opaque argument.
  */
-extern int scheduler_spawn(
-    scheduler_t* sched, void (*fn)(void*), void* arg);
+extern int scheduler_coro_spawn(
+    scheduler_t* sched,
+    void (*fn)(void*),
+    void* arg);
 
 /**
- * @brief Suspend the current coroutine and invoke a park callback.
+ * @brief Suspend the current coroutine and commit an external waiter.
  *
  * MUST be called from inside a coroutine running on a scheduler
- * worker thread. The callback is invoked *after* mco_yield returns,
- * so a wakeup source can never observe the coroutine pointer before
- * the yield has actually suspended it -- this is what lets iowait
- * and friends publish the park record and then arm the poller
- * without racing against an early wakeup.
+ * worker thread. After the coroutine yields, the worker changes it from
+ * RUNNING to WAITING and invokes @p commit. A successful commit must publish
+ * the waiter as its final shared operation and then only return true. A false
+ * result must leave the waiter unpublished; the worker makes the coroutine
+ * runnable again.
  *
- * @param sched    Scheduler handle (currently unused; reserved).
- * @param park_cb  Park callback invoked after yield.
- * @param arg      Opaque argument passed to park_cb.
+ * @param sched   Scheduler handle.
+ * @param commit  Commit callback invoked after the coroutine is waiting.
+ * @param arg     Opaque argument passed to commit.
  */
-extern void scheduler_park(
+extern void scheduler_coro_park(
     scheduler_t* sched,
-    scheduler_park_cb_t park_cb,
+    scheduler_coro_park_commit_fn_t commit,
     void* arg);
 
 /**
@@ -207,7 +211,7 @@ extern void scheduler_park(
  *
  * @return true when the caller should yield, false otherwise.
  */
-extern bool scheduler_consume_credit(uint32_t cost);
+extern bool scheduler_coro_consume_credit(uint32_t cost);
 
 /**
  * @brief Yield the current coroutine and requeue it immediately.
@@ -216,7 +220,7 @@ extern bool scheduler_consume_credit(uint32_t cost);
  * so other coroutines get a chance to run. No-op outside a scheduler
  * coroutine.
  */
-extern void scheduler_yield(void);
+extern void scheduler_coro_yield(void);
 
 /**
  * @brief Get the scheduler's poller handle.

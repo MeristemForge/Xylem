@@ -100,7 +100,7 @@ static bool _wg_wait_commit_cb(mco_coro* co, void* arg) {
 static void _wg_wake(scheduler_t* sched, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
-        scheduler_schedule(sched, cw->co);
+        scheduler_coro_ready(sched, cw->co);
     } else {
         _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
         thrd_wake_signal(tw->wake);
@@ -123,7 +123,7 @@ static void _wg_wait_coro(xylem_waitgroup_t* wg) {
     w.base.wg   = wg;
     w.co        = NULL;
 
-    scheduler_park(wg->sched, _wg_wait_commit_cb, &w);
+    scheduler_coro_park(wg->sched, _wg_wait_commit_cb, &w);
 }
 
 static void _wg_wait_thrd(xylem_waitgroup_t* wg) {

@@ -98,7 +98,7 @@ static _waiter_t* _cond_pop_waiter(list_t* waiters) {
 static void _cond_wake(xylem_cond_t* cond, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
-        scheduler_schedule(cond->sched, cw->co);
+        scheduler_coro_ready(cond->sched, cw->co);
     } else {
         _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
         thrd_wake_signal(tw->wake);
@@ -129,6 +129,7 @@ static bool _cond_wait_commit_cb(mco_coro* co, void* arg) {
     spin_lock(&cond->guard);
     _cond_push_waiter(&cond->waiters, &w->base);
     xylem_mutex_unlock(mtx);
+    /* Releasing the guard is the final waiter publication. */
     spin_unlock(&cond->guard);
     return true;
 }
@@ -140,7 +141,7 @@ static void _cond_wait_coro(xylem_cond_t* cond, xylem_mutex_t* mtx) {
     w.base.mtx  = mtx;
     w.co        = NULL;
 
-    scheduler_park(cond->sched, _cond_wait_commit_cb, &w);
+    scheduler_coro_park(cond->sched, _cond_wait_commit_cb, &w);
 }
 
 static void _cond_wait_thrd(xylem_cond_t* cond, xylem_mutex_t* mtx) {

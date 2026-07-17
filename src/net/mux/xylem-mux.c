@@ -535,22 +535,47 @@ xylem_mux_stream_t* xylem_mux_accept_stream(xylem_mux_t* mux) {
     return (xylem_mux_stream_t*)xylem_channel_recv(mux->accept_ch);
 }
 
-static bool _mux_recv_park_cb(mco_coro* co, void* arg) {
+static bool _mux_recv_wait_commit_cb(mco_coro* co, void* arg) {
     struct xylem_mux_stream_s* s = (struct xylem_mux_stream_s*)arg;
-    mco_coro* expected = NULL;
-    if (atomic_compare_exchange_strong(&s->recv_park, &expected, co)) {
-        return true;
+
+    spin_lock(&s->lock);
+    if (s->recv_len > 0
+        || s->state == MUX_STREAM_REMOTE_CLOSE
+        || s->state == MUX_STREAM_CLOSED
+        || atomic_load(&s->closed)) {
+        spin_unlock(&s->lock);
+        return false;
     }
-    return false;
+    if (s->recv_waiter) {
+        spin_unlock(&s->lock);
+        xylem_loge("<mux> concurrent receive waiter stream=%u", s->id);
+        abort();
+    }
+    s->recv_waiter = co;
+    /* Unlock is the final waiter publication. */
+    spin_unlock(&s->lock);
+    return true;
 }
 
-static bool _mux_send_park_cb(mco_coro* co, void* arg) {
+static bool _mux_send_wait_commit_cb(mco_coro* co, void* arg) {
     struct xylem_mux_stream_s* s = (struct xylem_mux_stream_s*)arg;
-    mco_coro* expected = NULL;
-    if (atomic_compare_exchange_strong(&s->send_park, &expected, co)) {
-        return true;
+
+    spin_lock(&s->lock);
+    if (s->send_window > 0
+        || s->state == MUX_STREAM_CLOSED
+        || atomic_load(&s->closed)) {
+        spin_unlock(&s->lock);
+        return false;
     }
-    return false;
+    if (s->send_waiter) {
+        spin_unlock(&s->lock);
+        xylem_loge("<mux> concurrent send waiter stream=%u", s->id);
+        abort();
+    }
+    s->send_waiter = co;
+    /* Unlock is the final waiter publication. */
+    spin_unlock(&s->lock);
+    return true;
 }
 
 int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
@@ -599,7 +624,10 @@ int xylem_mux_read(xylem_mux_stream_t* s, void* buf, int len) {
             return (st == MUX_STREAM_CLOSED) ? -1 : 0;
         }
 
-        scheduler_park(runtime_get_scheduler(), _mux_recv_park_cb, s);
+        scheduler_coro_park(
+            runtime_get_scheduler(),
+            _mux_recv_wait_commit_cb,
+            s);
     }
 }
 
@@ -633,7 +661,10 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
         spin_unlock(&s->lock);
 
         if (window == 0) {
-            scheduler_park(runtime_get_scheduler(), _mux_send_park_cb, s);
+            scheduler_coro_park(
+                runtime_get_scheduler(),
+                _mux_send_wait_commit_cb,
+                s);
             continue;
         }
 
@@ -671,6 +702,9 @@ int xylem_mux_write(xylem_mux_stream_t* s, const void* data, int len) {
 void xylem_mux_close_stream(xylem_mux_stream_t* s) {
     RUNTIME_REQUIRE_COROUTINE("mux", "xylem_mux_close_stream");
 
+    mco_coro* recv;
+    mco_coro* send;
+
     if (atomic_exchange(&s->closed, true)) {
         return;
     }
@@ -681,7 +715,18 @@ void xylem_mux_close_stream(xylem_mux_stream_t* s) {
     } else {
         s->state = MUX_STREAM_CLOSED;
     }
+    recv = s->recv_waiter;
+    send = s->send_waiter;
+    s->recv_waiter = NULL;
+    s->send_waiter = NULL;
     spin_unlock(&s->lock);
+
+    if (recv) {
+        scheduler_coro_ready(runtime_get_scheduler(), recv);
+    }
+    if (send) {
+        scheduler_coro_ready(runtime_get_scheduler(), send);
+    }
 
     /**
      * FIN is advisory and best-effort: a blocking write_mu acquire could

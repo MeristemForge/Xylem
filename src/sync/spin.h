@@ -32,7 +32,7 @@ _Pragma("once")
  * through the include/ tree.
  *
  * Callers MUST NOT hold the lock across any operation that can park
- * the coroutine (scheduler_park, iowait_read/write, xylem_mutex_lock
+ * the coroutine (scheduler_coro_park, iowait_read/write, xylem_mutex_lock
  * on a contested mutex, etc.). Parking a coroutine while holding a
  * spin lock wedges the current scheduler worker until the owning
  * coroutine is rescheduled, which may never happen if the scheduler

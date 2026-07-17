@@ -14,8 +14,8 @@ Sources: public headers in `include/xylem/sync/`, implementations in
 `src/sync/`. Per-thread OS wake support is in `src/sync/thrd-wake.{h,c}`;
 the internal spinlock is in `src/sync/spin.{h,c}`.
 
-Prerequisite: the parking model in [`runtime.md`](runtime.md) (`scheduler_park`,
-`scheduler_schedule`).
+Prerequisite: the parking model in [`runtime.md`](runtime.md)
+(`scheduler_coro_park`, `scheduler_coro_ready`).
 
 ## 1. The common model
 
@@ -32,7 +32,7 @@ All five public primitives share one shape:
 - **Wakeup/non-blocking ops do not wait on the primitive state.** `unlock`,
   `signal`/`broadcast`, `add`/`done`, `send`/`close`, `post`, and all
   `create`/`destroy` are safe from any thread. Cross-context coroutine wakeups
-  go through `scheduler_schedule()`; OS-thread wakeups use the primitive's
+  go through `scheduler_coro_ready()`; OS-thread wakeups use the primitive's
   platform blocking path. In coroutine context, `unlock`, `signal`,
   `broadcast`, `done`, `send`, and `post` may perform a cooperative yield for
   runtime fairness.
@@ -60,7 +60,7 @@ All five public primitives share one shape:
 The FIFO primitives keep their own guarded waiter lists: a `spin_t` guard plus
 an intrusive `list_t` embedded in the primitive. A waiter record is tagged as a
 parked coroutine or a blocked OS thread. Coroutine waiters store the `mco_coro*`
-to reschedule with `scheduler_schedule()`; OS-thread waiters store a
+to reschedule with `scheduler_coro_ready()`; OS-thread waiters store a
 `thrd_wake_t*`, a per-thread wake object created lazily and cached in TLS.
 
 The waker selects or drains waiter records under the guard, releases the guard,
@@ -79,7 +79,7 @@ can express that pairing. It does not include a separate raw handoff probe.
 The pure-coroutine reschedule is usually the cheapest hand-off. Crossing the
 coroutine/OS-thread boundary costs extra dispatch work beyond the bare thread
 wake/reschedule: waking a coroutine from an OS thread routes through
-`scheduler_schedule()` to the global run queue and may need to wake a parked
+`scheduler_coro_ready()` to the global run queue and may need to wake a parked
 worker, while waking a thread from a coroutine signals that thread's wake
 object from off-scheduler.
 
@@ -187,12 +187,14 @@ front.
 An **MPSC** message queue: many senders, exactly one receiver. The receiver
 may be **either a coroutine or a plain OS thread** — the data path is
 lock-free (intrusive MPSC queue) and the single receiver, when it must block,
-publishes itself into one atomic wakeup slot that a sender / `close` / the
-deadline timer arbitrate with a single `atomic_exchange`. This lets a
-coroutine producer hand work to an OS-thread consumer (and vice versa). The
-receiver wake path uses the same per-thread `thrd_wake_t` and scheduler
-reschedule mechanisms as the FIFO primitives, but with channel-specific state
-instead of a shared waiter module.
+publishes itself into one atomic wakeup slot. That slot stores `NONE`, the
+coroutine park reservation `WAIT`, the durable `CLOSED` state, or a concrete
+waiter pointer. Send, close, and timeout use CAS transitions on this slot to
+select at most one waker without losing closure. This lets a coroutine producer
+hand work to an OS-thread consumer (and vice versa). The receiver wake path uses
+the same per-thread `thrd_wake_t` and scheduler reschedule mechanisms as the
+FIFO primitives, but with channel-specific state instead of a shared waiter
+module.
 
 - `send(msg)` — context-adaptive, `msg` must be non-NULL. It never waits for
   capacity or a receiver; in coroutine context it may only cooperative-yield for
@@ -286,7 +288,7 @@ waiter; only posts that find no waiter increment the count.
 The poster chooses the wake path from the blocked party's kind:
 
 - a **coroutine waiter** stores its `mco_coro*` and the scheduler it parked
-  under, and is woken with `scheduler_schedule()` (callable from any caller);
+  under, and is woken with `scheduler_coro_ready()` (callable from any caller);
 - a **thread waiter** stores its per-thread futex wake object and blocks on
   that wake object until the posted token is handed to it.
 
@@ -318,8 +320,8 @@ run concurrently with the resumed coroutine — so a stack record would be a
 use-after-free. The timed coroutine waiter is therefore a small refcounted heap
 object (one reference for the waiting coroutine, one for the armed timer), freed
 by whichever side drops the last reference, exactly as `iowait` does for I/O
-deadlines. The timer is armed *under the guard* inside the park callback so a
-racing `post()` cannot dequeue and resume the coroutine before the timer is
+deadlines. The timer is armed *under the guard* inside the park commit callback
+so a racing `post()` cannot dequeue and resume the coroutine before the timer is
 live; on resume the waiter cancels the timer and reports timeout-vs-token from a
 flag the timeout callback set while holding the guard.
 

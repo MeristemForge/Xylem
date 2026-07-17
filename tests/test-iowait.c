@@ -157,10 +157,10 @@ static void _iowait_inject_stale_read(void* ud) {
         PLATFORM_POLLER_RD_OP,
         ud,
         runnables);
-    scheduler_schedule_batch(
+    scheduler_coro_ready_batch(
         runtime_get_scheduler(),
         runnables,
-        (int32_t)runnable_count);
+        (int)runnable_count);
 }
 
 static size_t _iowait_collect_read(
@@ -176,10 +176,10 @@ static size_t _iowait_collect_read(
 static void _iowait_inject_read(iowait_t* w) {
     mco_coro* runnables[IOWAIT_EVENT_RUNNABLE_CAP];
     size_t runnable_count = _iowait_collect_read(w, runnables);
-    scheduler_schedule_batch(
+    scheduler_coro_ready_batch(
         runtime_get_scheduler(),
         runnables,
-        (int32_t)runnable_count);
+        (int)runnable_count);
 }
 
 static void _iowait_open(_iowait_ctx_t* ctx) {
@@ -631,10 +631,10 @@ static void test_event_runnables_have_no_duplicate_coroutine(void) {
     size_t duplicate_count = _iowait_collect_read(owner.active, duplicates);
     ASSERT(runnable_count == 1);
     ASSERT(duplicate_count == 0);
-    scheduler_schedule_batch(
+    scheduler_coro_ready_batch(
         runtime_get_scheduler(),
         runnables,
-        (int32_t)runnable_count);
+        (int)runnable_count);
     while (!atomic_load(&ctx.finished)) {
         runtime_yield();
     }
@@ -697,10 +697,10 @@ static void test_event_returns_both_direction_runnables(void) {
         runnables);
     ASSERT(runnable_count == IOWAIT_EVENT_RUNNABLE_CAP);
     ASSERT(runnables[0] != runnables[1]);
-    scheduler_schedule_batch(
+    scheduler_coro_ready_batch(
         runtime_get_scheduler(),
         runnables,
-        (int32_t)runnable_count);
+        (int)runnable_count);
     while (!atomic_load(&rd.finished) || !atomic_load(&wr.finished)) {
         runtime_yield();
     }

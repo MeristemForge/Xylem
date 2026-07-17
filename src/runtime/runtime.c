@@ -63,24 +63,28 @@ typedef struct _submit_park_s {
 static void _runtime_sleep_timeout_cb(scheduler_timer_t* timer, void* ud) {
     mco_coro* co = (mco_coro*)ud;
     scheduler_timer_destroy(timer);
-    scheduler_schedule(g_sched, co);
+    scheduler_coro_ready(g_sched, co);
 }
 
-static bool _runtime_sleep_park_cb(mco_coro* co, void* arg) {
+static bool _runtime_sleep_commit_cb(mco_coro* co, void* arg) {
     _sleep_park_t* p = (_sleep_park_t*)arg;
     scheduler_timer_start(
-            p->timer, _runtime_sleep_timeout_cb, co, p->ms, 0);
+        p->timer,
+        _runtime_sleep_timeout_cb,
+        co,
+        p->ms,
+        0);
     return true;
 }
 
 static void _runtime_submit_work_cb(void* arg) {
     _submit_ctx_t* ctx = (_submit_ctx_t*)arg;
     ctx->fn(ctx->arg);
-    scheduler_schedule(ctx->sched, ctx->co);
+    scheduler_coro_ready(ctx->sched, ctx->co);
     free(ctx);
 }
 
-static bool _runtime_submit_park_cb(mco_coro* co, void* arg) {
+static bool _runtime_submit_commit_cb(mco_coro* co, void* arg) {
     _submit_park_t* p = (_submit_park_t*)arg;
     p->ctx->co = co;
     if (dynpool_submit(g_dynpool, _runtime_submit_work_cb, p->ctx) != 0) {
@@ -105,7 +109,7 @@ platform_poller_sq_t* runtime_get_poller(void) {
 }
 
 int runtime_spawn(void (*fn)(void*), void* arg) {
-    return scheduler_spawn(g_sched, fn, arg);
+    return scheduler_coro_spawn(g_sched, fn, arg);
 }
 
 void runtime_sleep(uint64_t ms) {
@@ -116,15 +120,15 @@ void runtime_sleep(uint64_t ms) {
         return;
     }
     _sleep_park_t park = { .timer = timer, .ms = ms };
-    scheduler_park(g_sched, _runtime_sleep_park_cb, &park);
+    scheduler_coro_park(g_sched, _runtime_sleep_commit_cb, &park);
 }
 
 bool runtime_consume_credit(uint32_t cost) {
-    return scheduler_consume_credit(cost);
+    return scheduler_coro_consume_credit(cost);
 }
 
 void runtime_yield(void) {
-    scheduler_yield();
+    scheduler_coro_yield();
 }
 
 int runtime_submit(void (*fn)(void*), void* arg) {
@@ -143,7 +147,7 @@ int runtime_submit(void (*fn)(void*), void* arg) {
     ctx->sched = g_sched;
 
     _submit_park_t park = { .ctx = ctx, .ok = true };
-    scheduler_park(g_sched, _runtime_submit_park_cb, &park);
+    scheduler_coro_park(g_sched, _runtime_submit_commit_cb, &park);
 
     if (!park.ok) {
         return -1;
@@ -199,7 +203,7 @@ void runtime_run(
     }
 
     scheduler_set_idle_cb(g_sched, _runtime_idle_cb, NULL);
-    if (scheduler_spawn(g_sched, main_fn, arg) != 0) {
+    if (scheduler_coro_spawn(g_sched, main_fn, arg) != 0) {
         scheduler_stop(g_sched);
         dynpool_destroy(g_dynpool);
         scheduler_destroy(g_sched);

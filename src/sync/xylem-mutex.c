@@ -104,7 +104,7 @@ static _waiter_t* _mutex_pop_waiter(list_t* waiters) {
 static void _mutex_wake(scheduler_t* sched, _waiter_t* w) {
     if (w->kind == WAITER_CORO) {
         _coro_waiter_t* cw = list_entry(w, _coro_waiter_t, base);
-        scheduler_schedule(sched, cw->co);
+        scheduler_coro_ready(sched, cw->co);
     } else {
         _thrd_waiter_t* tw = list_entry(w, _thrd_waiter_t, base);
         thrd_wake_signal(tw->wake);
@@ -134,7 +134,7 @@ static void _mutex_wait_coro(xylem_mutex_t* mtx) {
     w.co        = NULL;
 
     for (;;) {
-        scheduler_park(mtx->sched, _mutex_wait_commit_cb, &w);
+        scheduler_coro_park(mtx->sched, _mutex_wait_commit_cb, &w);
         if (_mutex_try_take(mtx)) {
             return;
         }
