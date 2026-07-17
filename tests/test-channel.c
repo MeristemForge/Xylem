@@ -25,8 +25,6 @@
 
 #include "xylem/xylem-threads.h"
 
-#include "runtime/runtime.h"
-
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -422,7 +420,7 @@ static void test_thread_send_precommit_race(void) {
     _precommit_send_ctx_t ctx = {0};
     xylem_spawn(_precommit_send_coro, &ctx);
     while (atomic_load(&ctx.tested) == 0) {
-        runtime_yield();
+        xylem_sleep(1);
     }
 }
 
@@ -475,7 +473,7 @@ static void test_thread_close_precommit_race(void) {
     _precommit_close_ctx_t ctx = {0};
     xylem_spawn(_precommit_close_coro, &ctx);
     while (atomic_load(&ctx.tested) == 0) {
-        runtime_yield();
+        xylem_sleep(1);
     }
 }
 
