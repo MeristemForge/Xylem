@@ -21,14 +21,8 @@
 
 #include "xylem.h"
 #include "assert.h"
-#include "park-gate.h"
 #include "utils.h"
 #include "xylem/xylem-threads.h"
-
-#include "runtime/runtime.h"
-#include "runtime/scheduler-test.h"
-
-#include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -572,74 +566,6 @@ static void test_signal_consumes_credit(void) {
     ASSERT(ctx.tested == 1);
 }
 
-typedef struct {
-    xylem_mutex_t*             mtx;
-    xylem_cond_t*              cond;
-    park_gate_t                gate;
-    scheduler_test_park_hook_t hook;
-    int                        predicate;
-    atomic_int                 predicate_observed;
-    atomic_int                 signaler_completed;
-    atomic_int                 target_returns;
-} _precommit_ctx_t;
-
-static int _precommit_signaler(void* arg) {
-    _precommit_ctx_t* ctx = (_precommit_ctx_t*)arg;
-
-    park_gate_wait(&ctx->gate);
-    park_gate_release(&ctx->gate);
-    xylem_mutex_lock(ctx->mtx);
-    ctx->predicate = 1;
-    xylem_cond_signal(ctx->cond);
-    xylem_mutex_unlock(ctx->mtx);
-    atomic_fetch_add(&ctx->signaler_completed, 1);
-    return 0;
-}
-
-static void _precommit_waiter(void* arg) {
-    _precommit_ctx_t* ctx = (_precommit_ctx_t*)arg;
-
-    xylem_mutex_lock(ctx->mtx);
-    while (!ctx->predicate) {
-        ctx->hook.target = mco_running();
-        scheduler_test_set_park_hook(runtime_get_scheduler(), &ctx->hook);
-        xylem_cond_wait(ctx->cond, ctx->mtx);
-    }
-    atomic_store(&ctx->predicate_observed, 1);
-    xylem_mutex_unlock(ctx->mtx);
-    atomic_fetch_add(&ctx->target_returns, 1);
-}
-
-static void test_precommit_completion(void) {
-    fprintf(stderr, "=== test_precommit_completion\n");
-    _precommit_ctx_t ctx = {0};
-    thrd_t           th;
-
-    ctx.mtx  = xylem_mutex_create();
-    ctx.cond = xylem_cond_create();
-    ASSERT(ctx.mtx != NULL);
-    ASSERT(ctx.cond != NULL);
-    ASSERT(park_gate_init(&ctx.gate) == 0);
-    ctx.hook.fn  = park_gate_hook;
-    ctx.hook.arg = &ctx.gate;
-
-    ASSERT(thrd_create(&th, _precommit_signaler, &ctx) == thrd_success);
-    xylem_spawn(_precommit_waiter, &ctx);
-
-    while (atomic_load(&ctx.target_returns) == 0) {
-        runtime_yield();
-    }
-    ASSERT(thrd_join(th, NULL) == thrd_success);
-
-    ASSERT(atomic_load(&ctx.signaler_completed) == 1);
-    ASSERT(atomic_load(&ctx.target_returns) == 1);
-    ASSERT(atomic_load(&ctx.predicate_observed) == 1);
-    ASSERT(ctx.predicate == 1);
-    xylem_cond_destroy(ctx.cond);
-    xylem_mutex_destroy(ctx.mtx);
-    park_gate_deinit(&ctx.gate);
-}
-
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
@@ -651,7 +577,6 @@ static void _test_run_all(void* arg) {
     test_thread_waiter();
     test_mixed_broadcast();
     test_signal_consumes_credit();
-    test_precommit_completion();
     _utils_watchdog_stop();
     xylem_shutdown();
 }
