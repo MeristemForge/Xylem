@@ -32,17 +32,22 @@
 typedef struct {
     scheduler_test_park_hook_t hook;
     atomic_int                 hook_calls;
+    atomic_int                 commit_calls;
     int                        resumed;
 } _sched_test_ctx_t;
 
 static void _park_hook(void* arg) {
     _sched_test_ctx_t* ctx = (_sched_test_ctx_t*)arg;
+    ASSERT(ctx->hook.target != NULL);
+    ASSERT(mco_status(ctx->hook.target) == MCO_SUSPENDED);
     atomic_fetch_add(&ctx->hook_calls, 1);
 }
 
 static bool _decline_commit(mco_coro* co, void* arg) {
     (void)co;
-    (void)arg;
+    _sched_test_ctx_t* ctx = (_sched_test_ctx_t*)arg;
+    ASSERT(atomic_load(&ctx->hook_calls) == 1);
+    atomic_fetch_add(&ctx->commit_calls, 1);
     return false;
 }
 
@@ -50,7 +55,7 @@ static void _park_coro(void* arg) {
     _sched_test_ctx_t* ctx = (_sched_test_ctx_t*)arg;
     ctx->hook.target = mco_running();
     scheduler_test_set_park_hook(runtime_get_scheduler(), &ctx->hook);
-    scheduler_park(runtime_get_scheduler(), _decline_commit, NULL);
+    scheduler_park(runtime_get_scheduler(), _decline_commit, ctx);
     ctx->resumed = 1;
 }
 
@@ -68,6 +73,7 @@ static void test_declined_park_checkpoint(void) {
     xylem_run(_test_main, &ctx, &opts);
 
     ASSERT(atomic_load(&ctx.hook_calls) == 1);
+    ASSERT(atomic_load(&ctx.commit_calls) == 1);
     ASSERT(ctx.resumed == 1);
 }
 

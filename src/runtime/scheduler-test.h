@@ -35,7 +35,13 @@ typedef struct scheduler_test_park_hook_s {
  * @brief Install a one-shot scheduler park checkpoint hook.
  *
  * @param sched  Scheduler handle.
- * @param hook   Hook remains valid until consumed, NULL cancels.
+ * @param hook   One-shot hook to publish, or NULL as described below.
+ *
+ * @note Hook fields and arg are immutable after publication. Hook and arg must
+ *       remain valid until consumed or the scheduler workers are quiescent.
+ * @note Concurrent replacement or cancellation while scheduler workers are
+ *       running is unsupported. Passing NULL clears an unobserved hook only
+ *       when scheduler workers are quiescent.
  */
 extern void scheduler_test_set_park_hook(
     scheduler_t* sched,
