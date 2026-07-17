@@ -182,6 +182,10 @@ else()
     add_library(xylem STATIC ${SRCS})
 endif()
 
+if(XYLEM_ENABLE_TESTING)
+	target_compile_definitions(xylem PRIVATE XYLEM_TESTING=1)
+endif()
+
 target_include_directories(xylem
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src

@@ -50,6 +50,10 @@
 
 #include "scheduler.h"
 
+#if defined(XYLEM_TESTING)
+#include "runtime/scheduler-test.h"
+#endif
+
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-threads.h"
@@ -166,6 +170,9 @@ struct scheduler_s {
     _Atomic uint32_t      wake_rr;       /* round-robin start for wake_worker scan. */
     _Atomic uint32_t      spawn_rr;      /* round-robin for non-worker spawn owner. */
     _sched_coro_pool_t    coro_pool;
+#if defined(XYLEM_TESTING)
+    _Atomic(scheduler_test_park_hook_t*) test_park_hook;
+#endif
 };
 
 /**
@@ -1034,6 +1041,23 @@ static bool _sched_yield_park_cb(mco_coro* co, void* arg) {
     return false;
 }
 
+#if defined(XYLEM_TESTING)
+static void _sched_test_park_checkpoint(scheduler_t* sched, mco_coro* co) {
+    _Atomic(scheduler_test_park_hook_t*)* slot = &sched->test_park_hook;
+    scheduler_test_park_hook_t*           hook = atomic_load(slot);
+
+    if (!hook || (hook->target && hook->target != co)) {
+        return;
+    }
+    if (!atomic_compare_exchange_strong(slot, &hook, NULL)) {
+        return;
+    }
+    if (hook->fn) {
+        hook->fn(hook->arg);
+    }
+}
+#endif
+
 static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
     if (mco_status(co) == MCO_DEAD) {
         _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
@@ -1070,6 +1094,9 @@ static void _sched_coro_handle_yield(_sched_worker_t* w, mco_coro* co) {
 
     _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
     atomic_store(&ctx->park_state, PARK_PARKING);
+#if defined(XYLEM_TESTING)
+    _sched_test_park_checkpoint(w->sched, co);
+#endif
 
     if (park_cb(co, arg)) {
         /**
@@ -1344,6 +1371,9 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     if (!sched) {
         return NULL;
     }
+#if defined(XYLEM_TESTING)
+    atomic_init(&sched->test_park_hook, NULL);
+#endif
 
     sched->wakeup_rd = PLATFORM_SO_ERROR_INVALID_SOCKET;
     sched->wakeup_wr = PLATFORM_SO_ERROR_INVALID_SOCKET;
@@ -1487,6 +1517,14 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     return sched;
 }
+
+#if defined(XYLEM_TESTING)
+void scheduler_test_set_park_hook(
+    scheduler_t* sched,
+    scheduler_test_park_hook_t* hook) {
+    atomic_store(&sched->test_park_hook, hook);
+}
+#endif
 
 void scheduler_destroy(scheduler_t* sched) {
     if (!sched) {
