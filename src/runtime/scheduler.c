@@ -31,16 +31,16 @@
  *                                    injection point for cross-thread
  *                                    scheduler_schedule() callers
  *
- * When a worker runs out of local work it does a non-blocking
- * poll + steal round. Exactly one idle worker becomes the "driver"
- * via CAS on poller_running: it owns the blocking poll that services
- * IO and timers. All other idle workers park on a per-worker semaphore;
- * scheduler_schedule wakes at most one parked worker per push. A
- * hand-off into an empty local
- * runnext slot wakes nobody -- the scheduling worker usually consumes that
- * coro itself. If the owner stalls and its FIFO queue is empty, other workers
- * may steal runnext as a last-resort rescue; this compensates for Xylem not
- * having Tokio's whole-core handoff path that moves LIFO back to the queue.
+ * When a worker runs out of local work it becomes SEARCHING and does a
+ * non-blocking poll + steal round. Exactly one idle worker becomes the
+ * poller via CAS on poller_running: it owns the blocking poll that services
+ * IO and timers. All other idle workers park on a per-worker semaphore.
+ * Work publication wakes one idle worker only when no worker is already
+ * SEARCHING. The idle worker is reserved as SEARCHING before it is signalled,
+ * so repeated spawn calls coalesce without repeated OS wakeups. A hand-off
+ * into an empty local runnext slot wakes nobody -- the scheduling worker
+ * usually consumes that coro itself. If the owner stalls and its FIFO queue
+ * is empty, other workers may steal runnext as a last-resort rescue.
  *
  * Coroutine parking flows through scheduler_park: the park callback
  * runs *after* mco_yield returns, so a wakeup source can never
@@ -76,6 +76,7 @@
 #define SCHED_STACK_EXTERNAL 0
 #endif
 
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -83,6 +84,7 @@
 #include <string.h>
 
 #define SCHED_DEQUE_CAP          256
+#define SCHED_RUNQ_BATCH_CAP     256
 
 #define SCHED_CORO_POOL_CAP_MUL  64
 #define SCHED_CREDIT_DEFAULT     128u
@@ -110,6 +112,13 @@ typedef struct _sched_coro_pool_s {
     size_t    stack_size;
 } _sched_coro_pool_t;
 
+typedef enum {
+    WORKER_RUNNING,
+    WORKER_SEARCHING,
+    WORKER_PARKED,
+    WORKER_POLLING,
+} _sched_worker_state_t;
+
 typedef struct _sched_worker_s {
     thrd_t                      thread;
     wsq_t*                      deque;
@@ -118,8 +127,7 @@ typedef struct _sched_worker_s {
     uint32_t                    index;
     scheduler_park_cb_t         park_cb;
     void*                       park_arg;
-    _Atomic bool                parked;
-    _Atomic bool                stealing;
+    _Atomic(_sched_worker_state_t) state;
     _Atomic(mco_coro*)          runnext;
 
     uint32_t                    sched_tick;
@@ -146,9 +154,10 @@ struct scheduler_s {
     scheduler_idle_fn_t   idle_cb;
     void*                 idle_ud;
     _Atomic bool          running;
-    _Atomic bool          poller_waiting;
     _Atomic bool          poller_running;
-    _Atomic int32_t       num_stealing;
+    spin_t                worker_state_lock;
+    _Atomic int32_t       num_idle;
+    _Atomic int32_t       num_searching;
     bool                  poller_ready;
     bool                  joined;
     _Atomic int64_t       alive;
@@ -217,7 +226,7 @@ struct scheduler_timer_s {
 typedef struct _sched_coro_ctx_s {
     void (*fn)(void*);
     void*                  arg;
-    queue_node_t           runq_node;
+    runq_node_t            runq_node;
     list_node_t            registry_node;
     mco_coro*              co;
     _Atomic _park_state_t  park_state;
@@ -457,62 +466,141 @@ static void _sched_poller_wake(scheduler_t* sched) {
     }
 }
 
-static void _sched_timer_wake_owner(_sched_worker_t* owner) {
-    if (atomic_load(&owner->parked)) {
-        platform_sem_post(owner->sem);
-    }
-    if (atomic_load(&owner->sched->poller_waiting)) {
-        _sched_poller_wake(owner->sched);
-    }
-}
-
-static bool _sched_worker_try_steal(scheduler_t* sched, _sched_worker_t* w) {
-    if (atomic_load(&w->stealing)) {
-        return true;
-    }
-
-    int32_t n = atomic_load(&sched->num_stealing);
-    for (;;) {
-        if (2 * n >= sched->worker_count) {
-            return false;
-        }
-        if (atomic_compare_exchange_weak(&sched->num_stealing, &n, n + 1)) {
-            atomic_store(&w->stealing, true);
-            return true;
-        }
-    }
-}
-
-static void _sched_wake_worker(scheduler_t* sched) {
-    uint32_t n = (uint32_t)sched->worker_count;
-    uint32_t start = atomic_load(&sched->wake_rr);
-    for (uint32_t j = 0; j < n; j++) {
-        uint32_t i = (start + j) % n;
-        bool expected = true;
-        if (atomic_compare_exchange_strong(&sched->workers[i].parked, &expected, false)) {
-            platform_sem_post(sched->workers[i].sem);
-            atomic_store(&sched->wake_rr, (i + 1) % n);
-            return;
-        }
-    }
-    /**
-     * No parked worker -- poller may be sleeping while work is pending,
-     * wake it so it re-checks.
-     */
-    if (atomic_load(&sched->poller_waiting)) {
+static void _sched_worker_signal(
+    scheduler_t* sched,
+    _sched_worker_t* w,
+    _sched_worker_state_t waiting_state) {
+    if (waiting_state == WORKER_PARKED) {
+        platform_sem_post(w->sem);
+    } else if (waiting_state == WORKER_POLLING) {
         _sched_poller_wake(sched);
     }
 }
 
-static void _sched_worker_finish_steal(
-    scheduler_t* sched, _sched_worker_t* w, bool found_work) {
-    if (!atomic_exchange(&w->stealing, false)) {
+/* Coalesced wake: no-op while a searcher already exists. */
+static void _sched_wake_worker(scheduler_t* sched) {
+    if (atomic_load(&sched->num_searching) != 0
+     || atomic_load(&sched->num_idle) == 0) {
         return;
     }
 
-    int32_t prev = atomic_fetch_sub(&sched->num_stealing, 1);
-    if (found_work && prev == 1) {
+    _sched_worker_t* target = NULL;
+    _sched_worker_state_t waiting_state = WORKER_RUNNING;
+
+    /* Reserve before signalling so concurrent producers coalesce here. */
+    spin_lock(&sched->worker_state_lock);
+    if (atomic_load(&sched->num_searching) != 0
+     || atomic_load(&sched->num_idle) == 0) {
+        spin_unlock(&sched->worker_state_lock);
+        return;
+    }
+
+    uint32_t n = (uint32_t)sched->worker_count;
+    uint32_t start = atomic_load(&sched->wake_rr);
+    for (uint32_t j = 0; j < n; j++) {
+        uint32_t i = (start + j) % n;
+        _sched_worker_t* w = &sched->workers[i];
+        _sched_worker_state_t state = atomic_load(&w->state);
+        if (state == WORKER_PARKED || state == WORKER_POLLING) {
+            target = w;
+            waiting_state = state;
+            atomic_store(&w->state, WORKER_SEARCHING);
+            atomic_fetch_sub(&sched->num_idle, 1);
+            atomic_fetch_add(&sched->num_searching, 1);
+            atomic_store(&sched->wake_rr, (i + 1) % n);
+            break;
+        }
+    }
+    spin_unlock(&sched->worker_state_lock);
+
+    if (target) {
+        _sched_worker_signal(sched, target, waiting_state);
+    }
+}
+
+static bool _sched_worker_begin_search(_sched_worker_t* w) {
+    scheduler_t* sched = w->sched;
+    bool searching = false;
+
+    spin_lock(&sched->worker_state_lock);
+    _sched_worker_state_t state = atomic_load(&w->state);
+    if (state == WORKER_SEARCHING) {
+        searching = true;
+    } else if (atomic_load(&sched->num_searching) == 0) {
+        if (state == WORKER_PARKED || state == WORKER_POLLING) {
+            atomic_fetch_sub(&sched->num_idle, 1);
+        }
+        atomic_store(&w->state, WORKER_SEARCHING);
+        atomic_fetch_add(&sched->num_searching, 1);
+        searching = true;
+    }
+    spin_unlock(&sched->worker_state_lock);
+    return searching;
+}
+
+static void _sched_worker_set_idle(
+    _sched_worker_t* w, _sched_worker_state_t idle_state) {
+    scheduler_t* sched = w->sched;
+
+    spin_lock(&sched->worker_state_lock);
+    _sched_worker_state_t state = atomic_load(&w->state);
+    if (state != idle_state) {
+        if (state == WORKER_SEARCHING) {
+            atomic_fetch_sub(&sched->num_searching, 1);
+        } else if (state == WORKER_PARKED || state == WORKER_POLLING) {
+            atomic_fetch_sub(&sched->num_idle, 1);
+        }
+        atomic_store(&w->state, idle_state);
+        atomic_fetch_add(&sched->num_idle, 1);
+    }
+    spin_unlock(&sched->worker_state_lock);
+}
+
+static void _sched_worker_set_running(_sched_worker_t* w, bool found_work) {
+    scheduler_t* sched = w->sched;
+
+    if (atomic_load(&w->state) == WORKER_RUNNING) {
+        return;
+    }
+
+    spin_lock(&sched->worker_state_lock);
+    _sched_worker_state_t state = atomic_load(&w->state);
+    if (state == WORKER_SEARCHING) {
+        atomic_fetch_sub(&sched->num_searching, 1);
+    } else if (state == WORKER_PARKED || state == WORKER_POLLING) {
+        atomic_fetch_sub(&sched->num_idle, 1);
+    }
+    atomic_store(&w->state, WORKER_RUNNING);
+    spin_unlock(&sched->worker_state_lock);
+
+    if (found_work) {
         _sched_wake_worker(sched);
+    }
+}
+
+static void _sched_timer_wake_owner(_sched_worker_t* owner) {
+    scheduler_t* sched = owner->sched;
+    _sched_worker_state_t owner_state = WORKER_RUNNING;
+    bool wake_poller = false;
+
+    spin_lock(&sched->worker_state_lock);
+    owner_state = atomic_load(&owner->state);
+    if (owner_state == WORKER_PARKED || owner_state == WORKER_POLLING) {
+        atomic_store(&owner->state, WORKER_SEARCHING);
+        atomic_fetch_sub(&sched->num_idle, 1);
+        atomic_fetch_add(&sched->num_searching, 1);
+    }
+    for (int32_t i = 0; i < sched->worker_count; i++) {
+        if (atomic_load(&sched->workers[i].state) == WORKER_POLLING) {
+            wake_poller = true;
+            break;
+        }
+    }
+    spin_unlock(&sched->worker_state_lock);
+
+    _sched_worker_signal(sched, owner, owner_state);
+    if (wake_poller && owner_state != WORKER_POLLING) {
+        _sched_poller_wake(sched);
     }
 }
 
@@ -527,21 +615,21 @@ static mco_coro* _sched_worker_fetch(scheduler_t* sched, _sched_worker_t* w) {
         return co;
     }
 
-    int32_t deque_cap = wsq_remaining(w->deque);
+    int deque_cap = wsq_remaining(w->deque);
     if (deque_cap > SCHED_DEQUE_CAP / 2) {
         deque_cap = SCHED_DEQUE_CAP / 2;
     }
-    queue_node_t* runq_nodes[(SCHED_DEQUE_CAP / 2)];
-    int32_t runq_n = runq_pop_fair(
+    runq_node_t* runq_nodes[(SCHED_DEQUE_CAP / 2)];
+    int runq_n = runq_pop_fair(
         sched->runq, runq_nodes, deque_cap, sched->worker_count);
     if (runq_n <= 0) {
         return NULL;
     }
 
-    for (int32_t i = 1; i < runq_n; i++) {
-        wsq_push(w->deque, queue_entry(runq_nodes[i], _sched_coro_ctx_t, runq_node)->co);
+    for (int i = 1; i < runq_n; i++) {
+        wsq_push(w->deque, runq_entry(runq_nodes[i], _sched_coro_ctx_t, runq_node)->co);
     }
-    return queue_entry(runq_nodes[0], _sched_coro_ctx_t, runq_node)->co;
+    return runq_entry(runq_nodes[0], _sched_coro_ctx_t, runq_node)->co;
 }
 
 static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
@@ -550,10 +638,7 @@ static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
     if (sched->worker_count <= 1) {
         return NULL;
     }
-    if (!_sched_worker_try_steal(sched, w)) {
-        return NULL;
-    }
-    int32_t deque_cap = wsq_remaining(w->deque);
+    int deque_cap = wsq_remaining(w->deque);
     if (deque_cap > SCHED_DEQUE_CAP / 2) {
         deque_cap = SCHED_DEQUE_CAP / 2;
     }
@@ -565,14 +650,13 @@ static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
     for (uint32_t i = 0; i < worker_count - 1; i++) {
         uint32_t target = (first + i) % worker_count;
         void* stolen[(SCHED_DEQUE_CAP / 2)];
-        int32_t stolen_n = wsq_steal_half(
+        int stolen_n = wsq_steal_half(
             sched->workers[target].deque, stolen, deque_cap);
         if (stolen_n > 0) {
-            for (int32_t j = 1; j < stolen_n; j++) {
+            for (int j = 1; j < stolen_n; j++) {
                 wsq_push(w->deque, stolen[j]);
             }
             co = (mco_coro*)stolen[0];
-            _sched_worker_finish_steal(sched, w, true);
             return co;
         }
     }
@@ -581,12 +665,10 @@ static mco_coro* _sched_worker_steal(scheduler_t* sched, _sched_worker_t* w) {
         uint32_t target = (first + i) % worker_count;
         co = atomic_exchange(&sched->workers[target].runnext, NULL);
         if (co) {
-            _sched_worker_finish_steal(sched, w, true);
             return co;
         }
     }
 
-    _sched_worker_finish_steal(sched, w, false);
     return NULL;
 }
 
@@ -902,7 +984,7 @@ static mco_coro* _sched_io_process(
     }
 
     mco_coro* run_now = NULL;
-    queue_node_t* runq_nodes[PLATFORM_POLLER_CQE_NUM * 2];
+    runq_node_t* runq_nodes[PLATFORM_POLLER_CQE_NUM * 2];
     int32_t runq_count = 0;
     int32_t local_count = 0;
 
@@ -1036,21 +1118,23 @@ static mco_coro* _sched_worker_poll(
     _sched_worker_t*       w,
     platform_poller_cqe_t* cqes) {
     while (atomic_load(&sched->running)) {
-        /* Must set before re-check so producers see it and pipe-wake. */
-        atomic_store(&sched->poller_waiting, true);
+        /* Publishing the idle state before the recheck closes lost wakeups. */
+        _sched_worker_set_idle(w, WORKER_POLLING);
 
         mco_coro* co = _sched_worker_fetch(sched, w);
-        if (!co) {
+        if (!co && _sched_worker_begin_search(w)) {
             co = _sched_worker_steal(sched, w);
+            if (!co) {
+                _sched_worker_set_idle(w, WORKER_POLLING);
+            }
         }
         if (co) {
-            atomic_store(&sched->poller_waiting, false);
+            _sched_worker_set_running(w, true);
             atomic_store(&sched->poller_running, false);
             return co;
         }
         int poll_ms = _sched_timer_poll_timeout(sched);
         int n = platform_poller_wait(&sched->poller, cqes, poll_ms);
-        atomic_store(&sched->poller_waiting, false);
         if (!atomic_load(&sched->running)) {
             break;
         }
@@ -1063,10 +1147,14 @@ static mco_coro* _sched_worker_poll(
         if (!co) {
             co = _sched_worker_fetch(sched, w);
         }
-        if (!co) {
+        if (!co && _sched_worker_begin_search(w)) {
             co = _sched_worker_steal(sched, w);
+            if (!co) {
+                _sched_worker_set_idle(w, WORKER_POLLING);
+            }
         }
         if (co) {
+            _sched_worker_set_running(w, true);
             atomic_store(&sched->poller_running, false);
             return co;
         }
@@ -1083,13 +1171,14 @@ static mco_coro* _sched_worker_find(
 
     /* Prevent busy workers from starving the global runq. */
     if (++w->sched_tick % SCHED_FAIR_TICK_INTERVAL == 0) {
-        queue_node_t* node = runq_pop(sched->runq);
-        co = node ? queue_entry(node, _sched_coro_ctx_t, runq_node)->co : NULL;
+        runq_node_t* node = runq_pop(sched->runq);
+        co = node ? runq_entry(node, _sched_coro_ctx_t, runq_node)->co : NULL;
     }
     if (!co) {
         co = _sched_worker_fetch(sched, w);
     }
     if (co) {
+        _sched_worker_set_running(w, true);
         return co;
     }
 
@@ -1099,13 +1188,17 @@ static mco_coro* _sched_worker_find(
         co = n > 0 ? _sched_io_process(sched, w, cqes, n) : NULL;
         atomic_store(&sched->poller_running, false);
         if (co) {
+            _sched_worker_set_running(w, true);
             return co;
         }
     }
 
-    co = _sched_worker_steal(sched, w);
-    if (co) {
-        return co;
+    if (_sched_worker_begin_search(w)) {
+        co = _sched_worker_steal(sched, w);
+        if (co) {
+            _sched_worker_set_running(w, true);
+            return co;
+        }
     }
 
     expected = false;
@@ -1116,21 +1209,26 @@ static mco_coro* _sched_worker_find(
 }
 
 static mco_coro* _sched_worker_park(scheduler_t* sched, _sched_worker_t* w) {
-    bool expected = false;
-    atomic_compare_exchange_strong(&w->parked, &expected, true);
+    /* The final searcher rechecks all runnable pools before blocking. */
+    _sched_worker_set_idle(w, WORKER_PARKED);
 
-    queue_node_t* node = runq_pop(sched->runq);
-    mco_coro* co = node ? queue_entry(node, _sched_coro_ctx_t, runq_node)->co : NULL;
+    mco_coro* co = _sched_worker_fetch(sched, w);
+    if (!co && _sched_worker_begin_search(w)) {
+        co = _sched_worker_steal(sched, w);
+        if (!co) {
+            _sched_worker_set_idle(w, WORKER_PARKED);
+        }
+    }
     if (co) {
-        bool expected = true;
-        atomic_compare_exchange_strong(&w->parked, &expected, false);
+        _sched_worker_set_running(w, true);
         return co;
     }
 
     int timer_ms = _sched_timer_worker_timeout(w);
     if (timer_ms == 0) {
-        expected = true;
-        atomic_compare_exchange_strong(&w->parked, &expected, false);
+        if (atomic_load(&w->state) == WORKER_PARKED) {
+            _sched_worker_set_running(w, false);
+        }
         return NULL;
     }
 
@@ -1139,8 +1237,9 @@ static mco_coro* _sched_worker_park(scheduler_t* sched, _sched_worker_t* w) {
     } else {
         platform_sem_wait(w->sem);
     }
-    expected = true;
-    atomic_compare_exchange_strong(&w->parked, &expected, false);
+    if (atomic_load(&w->state) == WORKER_PARKED) {
+        _sched_worker_set_running(w, false);
+    }
     return NULL;
 }
 
@@ -1250,7 +1349,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->wakeup_wr = PLATFORM_SO_ERROR_INVALID_SOCKET;
 
     int32_t  worker_count   = (int32_t)platform_info_getcpus();
-    uint32_t deque_capacity = SCHED_DEQUE_CAP;
+    int      deque_capacity = SCHED_DEQUE_CAP;
     uint32_t pool_cap       = 0;
     size_t   stack_size     = SCHED_CORO_STACK_SIZE;
 
@@ -1263,7 +1362,11 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
             worker_count = opts->worker_count;
         }
         if (opts->deque_capacity > 0) {
-            deque_capacity = opts->deque_capacity;
+            if (opts->deque_capacity > (uint32_t)INT_MAX) {
+                _sched_cleanup(sched, 0);
+                return NULL;
+            }
+            deque_capacity = (int)opts->deque_capacity;
         }
         if (opts->coro_pool_capacity > 0) {
             pool_cap = opts->coro_pool_capacity;
@@ -1315,7 +1418,9 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     }
 
     atomic_store(&sched->running, true);
-    atomic_store(&sched->num_stealing, 0);
+    atomic_store(&sched->num_idle, 0);
+    atomic_store(&sched->num_searching, 0);
+    spin_init(&sched->worker_state_lock);
     sched->iowait_slab = iowait_slab_create();
     if (!sched->iowait_slab) {
         _sched_cleanup(sched, 0);
@@ -1348,8 +1453,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         w->sched = sched;
         w->index = (uint32_t)i;
 
-        atomic_store(&w->parked, false);
-        atomic_store(&w->stealing, false);
+        atomic_store(&w->state, WORKER_RUNNING);
         heap_init(&w->timers, _sched_timer_compare_cb);
         list_init(&w->registry);
         spin_init(&w->registry_lock);
@@ -1458,12 +1562,12 @@ static void _sched_enqueue(scheduler_t* sched, mco_coro* co) {
     if (old) {
         if (wsq_push(_tls_worker->deque, old) != 0) {
             void* batch[(SCHED_DEQUE_CAP / 2) + 1];
-            int32_t n = wsq_pop_half(
+            int n = wsq_pop_half(
                 _tls_worker->deque, batch, (SCHED_DEQUE_CAP / 2));
             batch[n++] = old;
 
-            queue_node_t* runq_nodes[(SCHED_DEQUE_CAP / 2) + 1];
-            for (int32_t i = 0; i < n; i++) {
+            runq_node_t* runq_nodes[(SCHED_DEQUE_CAP / 2) + 1];
+            for (int i = 0; i < n; i++) {
                 _sched_coro_ctx_t* c =
                     (_sched_coro_ctx_t*)mco_get_user_data(batch[i]);
                 runq_nodes[i] = &c->runq_node;
@@ -1507,19 +1611,10 @@ void scheduler_schedule_batch(
         return;
     }
 
-    enum { INLINE_CAP = 64 };
-    queue_node_t*  inline_nodes[INLINE_CAP];
-    queue_node_t** nodes = inline_nodes;
-    if (n > INLINE_CAP) {
-        nodes = (queue_node_t**)calloc((size_t)n, sizeof(*nodes));
-        if (!nodes) {
-            for (int32_t i = 0; i < n; i++) {
-                scheduler_schedule(sched, cos[i]);
-            }
-            return;
-        }
-    }
-    int32_t claimed_n = 0;
+    runq_node_t* nodes[SCHED_RUNQ_BATCH_CAP];
+    int          node_count   = 0;
+    bool         has_runnable = false;
+
     for (int32_t i = 0; i < n; i++) {
         /**
          * A coro still parking must not be enqueued here; its park
@@ -1529,18 +1624,21 @@ void scheduler_schedule_batch(
             continue;
         }
         _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(cos[i]);
-        nodes[claimed_n++] = &ctx->runq_node;
-    }
-    if (claimed_n > 0) {
-        runq_push_batch(sched->runq, nodes, claimed_n);
-    }
-    if (nodes != inline_nodes) {
-        free(nodes);
+        nodes[node_count++] = &ctx->runq_node;
+        has_runnable = true;
+        if (node_count == SCHED_RUNQ_BATCH_CAP) {
+            runq_push_batch(sched->runq, nodes, node_count);
+            node_count = 0;
+        }
     }
 
-    if (claimed_n > 0) {
+    if (node_count > 0) {
+        runq_push_batch(sched->runq, nodes, node_count);
+    }
+
+    if (has_runnable) {
         /**
-         * Wake one worker for the batch. A stealing worker that finds work
+         * Wake one worker for the batch. A searching worker that finds work
          * expands the wakeup chain, avoiding a batch-sized wakeup herd.
          */
         _sched_wake_worker(sched);
