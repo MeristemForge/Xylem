@@ -50,13 +50,13 @@
 
 #include "scheduler.h"
 
-#if defined(XYLEM_TESTING)
-#include "runtime/scheduler-test.h"
-#endif
-
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-threads.h"
+
+#if defined(XYLEM_TESTING)
+#include "runtime/scheduler-test.h"
+#endif
 
 #include "iowait.h"
 #include "wsq.h"
