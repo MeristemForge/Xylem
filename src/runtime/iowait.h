@@ -34,21 +34,26 @@ typedef struct iowait_s iowait_t;
 /**
  * iowait concurrency model
  *
- * An iowait handle is one-reader / one-writer per direction: at most
- * one coroutine may be parked on `iowait_read` and at most one on
- * `iowait_write` at the same time. Read and write are independent;
- * they may be parked by two different coroutines simultaneously.
- * Violating this rule is detected when the second parker tries to
- * publish its park record and aborts the process with a diagnostic
- * log; it is not silently tolerated.
+ * Each direction has one atomic waiter slot. NONE means no waiter and no
+ * readiness credit. WAIT reserves the slot before parking. READY retains one
+ * readiness credit. Any other value is the committed coroutine pointer.
  *
- * Wake sources (an IO event, a deadline timer, iowait_close) race
- * through a single arbitrator per direction, so the parked coroutine
- * is resumed at most once per wait attempt. The iowait_result_t return
- * value is then derived from the state re-checked on resume in this
- * order: CLOSED, ERROR, TIMEOUT, READY. In particular, a readiness wake
- * that arrives first may still return IOWAIT_TIMEOUT if the coroutine
- * resumes after the deadline has passed.
+ * An iowait handle permits at most one read waiter and one write waiter.
+ * Read and write are independent and may be used by different coroutines.
+ * A second waiter that observes WAIT or a committed coroutine pointer on the
+ * same direction violates this restriction; iowait logs the duplicate and
+ * aborts.
+ *
+ * Readiness changes NONE, WAIT, or a committed coroutine pointer to READY.
+ * Close, timeout, and internal error change WAIT or a committed coroutine
+ * pointer to NONE, while READY remains READY. Only the source that replaces a
+ * committed pointer schedules it. A wait consumes READY before checking
+ * errors; without READY, result priority is CLOSED, TIMEOUT, then ERROR.
+ *
+ * I/O events append a replaced coroutine pointer to the caller's ready batch.
+ * READY prevents repeated events from appending the same coroutine twice.
+ * A full batch is scheduled before another coroutine is appended, and the
+ * caller schedules any remaining entries after the poll pass.
  *
  * Deadline setters and iowait_close are safe to call from any thread,
  * including while a read or write is parked on another thread.
@@ -146,10 +151,10 @@ extern bool iowait_write_deadline_expired(iowait_t* w);
  *
  * Yields the calling coroutine, which resumes when the fd becomes
  * readable, the read deadline passes, or iowait_close() is called.
- * Returns immediately with IOWAIT_TIMEOUT if the deadline was already
- * past at entry, or with IOWAIT_CLOSED if the handle was already
- * closed. Must be called from inside a coroutine running on the
- * scheduler.
+ * A retained readiness credit returns IOWAIT_READY first. Otherwise, a
+ * deadline already past at entry returns IOWAIT_TIMEOUT, and an already
+ * closed handle returns IOWAIT_CLOSED. Must be called from inside a
+ * coroutine running on the scheduler.
  *
  * See the concurrency-model comment at the top of this header for
  * the one-reader-per-direction rule.
@@ -174,10 +179,11 @@ extern iowait_result_t iowait_write(iowait_t* w);
 /**
  * @brief Mark the handle closed and wake all waiting coroutines.
  *
- * After this call, iowait_read/write return IOWAIT_CLOSED immediately.
- * Drops the kernel poller subscription synchronously, so the caller
- * can safely close the underlying fd right after without racing a
- * deferred EPOLL_CTL_DEL against a recycled fd number.
+ * After this call, iowait_read/write return IOWAIT_CLOSED unless a READY
+ * credit won before close and remains to be consumed. Drops the kernel poller
+ * subscription synchronously, so the caller can safely close the underlying
+ * fd right after without racing a deferred EPOLL_CTL_DEL against a recycled
+ * fd number.
  *
  * Idempotent, thread-safe: may be invoked concurrently with park or
  * with a second close; only the first caller actually runs the wake
@@ -207,8 +213,10 @@ extern void iowait_destroy(iowait_t* w);
 /**
  * @brief Process a single I/O completion event.
  *
- * Rejects stale CQEs via generation tag, wakes parked coroutines
- * into @p batch. Caller flushes the batch after the poll pass.
+ * Rejects stale CQEs via generation tag and appends committed waiters to
+ * @p batch. A direction is appended at most once while READY is retained.
+ * Full batches are scheduled internally; the caller schedules the remainder
+ * after the poll pass.
  *
  * @param sched    Scheduler handle.
  * @param revents  Readiness mask.

@@ -31,14 +31,21 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #define DEADLINE_RACE_THREADS 4
 #define DEADLINE_RACE_ITERS   2000
+#define WAIT_RACE_ITERS       500
+#define TIMEOUT_RACE_ITERS    100
+
+enum {
+    TEST_IOWAIT_WAITER_NONE  = 0,
+    TEST_IOWAIT_WAITER_WAIT  = 1,
+    TEST_IOWAIT_WAITER_READY = 2,
+};
 
 typedef struct _test_iowait_dir_s {
     iowait_t*          w;
-    _Atomic uintptr_t  state;
+    _Atomic uintptr_t  waiter;
     scheduler_timer_t* timer;
     mtx_t              deadline_lock;
     _Atomic uint64_t   deadline;
@@ -79,6 +86,22 @@ typedef struct {
     int             tested;
 } _deadline_race_ctx_t;
 
+typedef struct {
+    iowait_t*        active;
+    _Atomic int32_t  requested;
+    _Atomic int32_t  completed;
+    _Atomic int32_t  released;
+    _Atomic int32_t  failures;
+    _Atomic bool     finished;
+} _wait_race_ctx_t;
+
+typedef struct {
+    iowait_t*        active;
+    iowait_result_t  result;
+    _Atomic bool     started;
+    _Atomic bool     finished;
+} _single_wait_ctx_t;
+
 static void _iowait_wait_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
     ctx->result = iowait_read(ctx->active);
@@ -116,6 +139,14 @@ static void _iowait_inject_stale_read(void* ud) {
     scheduler_schedule_batch(runtime_get_scheduler(), coros, batch.n);
 }
 
+static void _iowait_collect_read(iowait_t* w, runnable_batch_t* batch) {
+    iowait_on_event(
+        runtime_get_scheduler(),
+        PLATFORM_POLLER_RD_OP,
+        w->sqe.ud,
+        batch);
+}
+
 static void _iowait_inject_read(iowait_t* w) {
     mco_coro* coros[4];
     runnable_batch_t batch = {
@@ -124,12 +155,60 @@ static void _iowait_inject_read(iowait_t* w) {
         .n = 0,
     };
 
-    iowait_on_event(
-        runtime_get_scheduler(),
-        PLATFORM_POLLER_RD_OP,
-        w->sqe.ud,
-        &batch);
+    _iowait_collect_read(w, &batch);
     scheduler_schedule_batch(runtime_get_scheduler(), coros, batch.n);
+}
+
+static void _iowait_open(_iowait_ctx_t* ctx) {
+    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
+           == 0);
+    platform_socket_enable_nonblocking(ctx->socks[0], true);
+    platform_socket_enable_nonblocking(ctx->socks[1], true);
+    ctx->active = iowait_create(ctx->socks[0]);
+    ASSERT(ctx->active != NULL);
+}
+
+static void _iowait_dispose(_iowait_ctx_t* ctx) {
+    iowait_destroy(ctx->active);
+    platform_socket_close(ctx->socks[0]);
+    platform_socket_close(ctx->socks[1]);
+}
+
+static void _wait_race_coro(void* arg) {
+    _wait_race_ctx_t* ctx = (_wait_race_ctx_t*)arg;
+    for (int32_t i = 1; i <= WAIT_RACE_ITERS; i++) {
+        atomic_store(&ctx->requested, i);
+        if (iowait_read(ctx->active) != IOWAIT_READY) {
+            atomic_fetch_add(&ctx->failures, 1);
+        }
+        atomic_store(&ctx->completed, i);
+        while (atomic_load(&ctx->released) < i) {
+            runtime_yield();
+        }
+    }
+    atomic_store(&ctx->finished, true);
+}
+
+static void _timeout_race_coro(void* arg) {
+    _wait_race_ctx_t* ctx = (_wait_race_ctx_t*)arg;
+    for (int32_t i = 1; i <= TIMEOUT_RACE_ITERS; i++) {
+        atomic_store(&ctx->requested, i);
+        if (iowait_read(ctx->active) != IOWAIT_TIMEOUT) {
+            atomic_fetch_add(&ctx->failures, 1);
+        }
+        atomic_store(&ctx->completed, i);
+        while (atomic_load(&ctx->released) < i) {
+            runtime_yield();
+        }
+    }
+    atomic_store(&ctx->finished, true);
+}
+
+static void _single_wait_coro(void* arg) {
+    _single_wait_ctx_t* ctx = (_single_wait_ctx_t*)arg;
+    atomic_store(&ctx->started, true);
+    ctx->result = iowait_read(ctx->active);
+    atomic_store(&ctx->finished, true);
 }
 
 static void _iowait_wrap_coro(void* arg) {
@@ -165,30 +244,27 @@ static void _iowait_wrap_coro(void* arg) {
 
 static void _iowait_closed_before_event_coro(void* arg) {
     _iowait_ctx_t* ctx = (_iowait_ctx_t*)arg;
+    _single_wait_ctx_t waiter = {.result = IOWAIT_ERROR};
 
-    ASSERT(platform_socket_socketpair(AF_INET, SOCK_STREAM, 0, ctx->socks)
-           == 0);
-    platform_socket_enable_nonblocking(ctx->socks[0], true);
-    platform_socket_enable_nonblocking(ctx->socks[1], true);
+    _iowait_open(ctx);
+    waiter.active = ctx->active;
 
-    ctx->active = iowait_create(ctx->socks[0]);
-    ASSERT(ctx->active != NULL);
+    xylem_spawn(_single_wait_coro, &waiter);
+    while (atomic_load(&ctx->active->rd.waiter)
+           <= TEST_IOWAIT_WAITER_READY) {
+        runtime_yield();
+    }
 
-    xylem_spawn(_iowait_wait_coro, ctx);
-    xylem_sleep(1);
-
-    atomic_store(&ctx->active->closed, true);
+    iowait_close(ctx->active);
     _iowait_inject_read(ctx->active);
-    xylem_sleep(1);
+    while (!atomic_load(&waiter.finished)) {
+        runtime_yield();
+    }
 
-    ASSERT(ctx->result == IOWAIT_CLOSED);
+    ASSERT(waiter.result == IOWAIT_CLOSED);
     ctx->tested = 1;
 
-    atomic_store(&ctx->active->closed, false);
-    iowait_close(ctx->active);
-    iowait_destroy(ctx->active);
-    platform_socket_close(ctx->socks[0]);
-    platform_socket_close(ctx->socks[1]);
+    _iowait_dispose(ctx);
 }
 
 static void _iowait_deadline_race_coro(void* arg) {
@@ -222,8 +298,236 @@ static void _iowait_deadline_race_coro(void* arg) {
     platform_socket_close(ctx->socks[1]);
 }
 
+static void test_readiness_is_retained_before_wait(void) {
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    mco_coro* coros[2];
+    runnable_batch_t batch = {
+        .coros = coros,
+        .cap = (int32_t)(sizeof(coros) / sizeof(coros[0])),
+        .n = 0,
+    };
+
+    _iowait_open(&ctx);
+    _iowait_collect_read(ctx.active, &batch);
+    ASSERT(batch.n == 0);
+    ASSERT(atomic_load(&ctx.active->rd.waiter)
+           == TEST_IOWAIT_WAITER_READY);
+    ASSERT(iowait_read(ctx.active) == IOWAIT_READY);
+    ASSERT(atomic_load(&ctx.active->rd.waiter)
+           == TEST_IOWAIT_WAITER_NONE);
+
+    iowait_close(ctx.active);
+    _iowait_dispose(&ctx);
+}
+
+static void test_readiness_resolves_wait_reservation(void) {
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    mco_coro* coros[2];
+    runnable_batch_t batch = {
+        .coros = coros,
+        .cap = (int32_t)(sizeof(coros) / sizeof(coros[0])),
+        .n = 0,
+    };
+
+    _iowait_open(&ctx);
+    atomic_store(&ctx.active->rd.waiter, TEST_IOWAIT_WAITER_WAIT);
+    _iowait_collect_read(ctx.active, &batch);
+    ASSERT(batch.n == 0);
+    ASSERT(atomic_load(&ctx.active->rd.waiter)
+           == TEST_IOWAIT_WAITER_READY);
+
+    iowait_close(ctx.active);
+    _iowait_dispose(&ctx);
+}
+
+static void test_close_cancels_wait_reservation(void) {
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+
+    _iowait_open(&ctx);
+    atomic_store(&ctx.active->rd.waiter, TEST_IOWAIT_WAITER_WAIT);
+    iowait_close(ctx.active);
+    ASSERT(atomic_load(&ctx.active->rd.waiter)
+           == TEST_IOWAIT_WAITER_NONE);
+    _iowait_dispose(&ctx);
+}
+
+static void test_readiness_races_wait_publication(void) {
+    _iowait_ctx_t owner = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    _wait_race_ctx_t ctx = {0};
+
+    _iowait_open(&owner);
+    ctx.active = owner.active;
+    xylem_spawn(_wait_race_coro, &ctx);
+
+    for (int32_t i = 1; i <= WAIT_RACE_ITERS; i++) {
+        while (atomic_load(&ctx.requested) < i) {
+            runtime_yield();
+        }
+        _iowait_inject_read(ctx.active);
+        while (atomic_load(&ctx.completed) < i) {
+            runtime_yield();
+        }
+        atomic_store(&ctx.released, i);
+    }
+    while (!atomic_load(&ctx.finished)) {
+        runtime_yield();
+    }
+
+    ASSERT(atomic_load(&ctx.failures) == 0);
+    iowait_close(owner.active);
+    _iowait_dispose(&owner);
+}
+
+static void test_close_races_wait(void) {
+    _iowait_ctx_t owner = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    _single_wait_ctx_t ctx = {.result = IOWAIT_ERROR};
+
+    _iowait_open(&owner);
+    ctx.active = owner.active;
+    xylem_spawn(_single_wait_coro, &ctx);
+    while (!atomic_load(&ctx.started)) {
+        runtime_yield();
+    }
+    iowait_close(ctx.active);
+    while (!atomic_load(&ctx.finished)) {
+        runtime_yield();
+    }
+
+    ASSERT(ctx.result == IOWAIT_CLOSED);
+    _iowait_dispose(&owner);
+}
+
+static void test_timeout_races_wait(void) {
+    _iowait_ctx_t owner = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    _wait_race_ctx_t ctx = {0};
+
+    _iowait_open(&owner);
+    ctx.active = owner.active;
+    xylem_spawn(_timeout_race_coro, &ctx);
+
+    for (int32_t i = 1; i <= TIMEOUT_RACE_ITERS; i++) {
+        while (atomic_load(&ctx.requested) < i) {
+            runtime_yield();
+        }
+        iowait_set_rd_deadline(
+            ctx.active, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
+        while (atomic_load(&ctx.completed) < i) {
+            runtime_yield();
+        }
+        iowait_set_rd_deadline(ctx.active, 0);
+        atomic_store(&ctx.released, i);
+    }
+    while (!atomic_load(&ctx.finished)) {
+        runtime_yield();
+    }
+
+    ASSERT(atomic_load(&ctx.failures) == 0);
+    iowait_close(owner.active);
+    _iowait_dispose(&owner);
+}
+
+static void test_ready_wins_over_close(void) {
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+
+    _iowait_open(&ctx);
+    _iowait_inject_read(ctx.active);
+    iowait_close(ctx.active);
+    ASSERT(iowait_read(ctx.active) == IOWAIT_READY);
+    _iowait_dispose(&ctx);
+}
+
+static void test_timeout_wins_over_internal_error(void) {
+    _iowait_ctx_t ctx = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+
+    _iowait_open(&ctx);
+    atomic_store(
+        &ctx.active->rd.deadline,
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
+    atomic_store(&ctx.active->rd.deadline_error, true);
+    ASSERT(iowait_read(ctx.active) == IOWAIT_TIMEOUT);
+    atomic_store(&ctx.active->rd.deadline, 0);
+    atomic_store(&ctx.active->rd.deadline_error, false);
+    iowait_close(ctx.active);
+    _iowait_dispose(&ctx);
+}
+
+static void test_ready_batch_has_no_duplicate_coroutine(void) {
+    _iowait_ctx_t owner = {
+        .socks = {
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+            PLATFORM_SO_ERROR_INVALID_SOCKET,
+        },
+    };
+    _single_wait_ctx_t ctx = {.result = IOWAIT_ERROR};
+    mco_coro* coros[4];
+    runnable_batch_t batch = {
+        .coros = coros,
+        .cap = (int32_t)(sizeof(coros) / sizeof(coros[0])),
+        .n = 0,
+    };
+
+    _iowait_open(&owner);
+    ctx.active = owner.active;
+    xylem_spawn(_single_wait_coro, &ctx);
+    while (atomic_load(&owner.active->rd.waiter)
+           <= TEST_IOWAIT_WAITER_READY) {
+        runtime_yield();
+    }
+
+    _iowait_collect_read(owner.active, &batch);
+    _iowait_collect_read(owner.active, &batch);
+    ASSERT(batch.n == 1);
+    scheduler_schedule_batch(runtime_get_scheduler(), batch.coros, batch.n);
+    while (!atomic_load(&ctx.finished)) {
+        runtime_yield();
+    }
+    ASSERT(ctx.result == IOWAIT_READY);
+
+    iowait_close(owner.active);
+    _iowait_dispose(&owner);
+}
+
 static void test_stale_event_after_generation_wrap_is_rejected(void) {
-    fprintf(stderr, "=== test_stale_event_after_generation_wrap_is_rejected\n");
     _iowait_ctx_t ctx = {
         .socks = {
             PLATFORM_SO_ERROR_INVALID_SOCKET,
@@ -236,7 +540,6 @@ static void test_stale_event_after_generation_wrap_is_rejected(void) {
 }
 
 static void test_closed_state_wins_over_late_event(void) {
-    fprintf(stderr, "=== test_closed_state_wins_over_late_event\n");
     _iowait_ctx_t ctx = {
         .socks = {
             PLATFORM_SO_ERROR_INVALID_SOCKET,
@@ -249,7 +552,6 @@ static void test_closed_state_wins_over_late_event(void) {
 }
 
 static void test_concurrent_deadline_setters_and_close(void) {
-    fprintf(stderr, "=== test_concurrent_deadline_setters_and_close\n");
     _deadline_race_ctx_t ctx = {
         .socks = {
             PLATFORM_SO_ERROR_INVALID_SOCKET,
@@ -265,6 +567,15 @@ static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
+    test_readiness_is_retained_before_wait();
+    test_readiness_resolves_wait_reservation();
+    test_close_cancels_wait_reservation();
+    test_readiness_races_wait_publication();
+    test_close_races_wait();
+    test_timeout_races_wait();
+    test_ready_wins_over_close();
+    test_timeout_wins_over_internal_error();
+    test_ready_batch_has_no_duplicate_coroutine();
     test_stale_event_after_generation_wrap_is_rejected();
     test_closed_state_wins_over_late_event();
     test_concurrent_deadline_setters_and_close();

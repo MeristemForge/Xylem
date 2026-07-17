@@ -55,17 +55,16 @@ typedef struct _iowait_dir_s _iowait_dir_t;
 
 enum {
     IOWAIT_WAITER_NONE  = 0,
-    IOWAIT_WAITER_READY = 1,
-    /**
-     * Values above READY encode a parked coroutine pointer.
-     * A heap-allocated coroutine address is never 0 or 1, so NONE, READY and
-     * the parked pointer are disjoint by construction without a separate tag.
-     */
+    IOWAIT_WAITER_WAIT  = 1,
+    IOWAIT_WAITER_READY = 2,
 };
+
+_Static_assert(_Alignof(mco_coro) > IOWAIT_WAITER_READY,
+               "iowait coroutine pointers must not alias sentinel states");
 
 struct _iowait_dir_s {
     iowait_t*          w;
-    _Atomic uintptr_t  waiter;  /* NONE | READY | parked coroutine ptr */
+    _Atomic uintptr_t  waiter;  /* NONE | WAIT | READY | coroutine ptr */
     scheduler_timer_t* timer;
     mtx_t              deadline_lock;
     _Atomic uint64_t   deadline;
@@ -272,17 +271,31 @@ static iowait_t* _iowait_try_ref(iowait_t* w, uint16_t expected_gen) {
     return w;
 }
 
-static mco_coro* _iowait_take_waiter(_iowait_dir_t* d) {
+static mco_coro* _iowait_unblock(_iowait_dir_t* d, bool io_ready) {
     uintptr_t raw = atomic_load(&d->waiter);
     for (;;) {
-        if (raw <= IOWAIT_WAITER_READY) {
-            return NULL;
+        uintptr_t next;
+        if (io_ready) {
+            if (raw == IOWAIT_WAITER_READY) {
+                return NULL;
+            }
+            next = IOWAIT_WAITER_READY;
+        } else {
+            if (raw == IOWAIT_WAITER_NONE
+                || raw == IOWAIT_WAITER_READY) {
+                return NULL;
+            }
+            next = IOWAIT_WAITER_NONE;
         }
+
         if (atomic_compare_exchange_weak(
                 &d->waiter,
                 &raw,
-                IOWAIT_WAITER_NONE)) {
-            return (mco_coro*)raw;
+                next)) {
+            if (raw > IOWAIT_WAITER_READY) {
+                return (mco_coro*)raw;
+            }
+            return NULL;
         }
     }
 }
@@ -293,22 +306,8 @@ static bool _iowait_take_ready(_iowait_dir_t* d) {
         &d->waiter, &expected, IOWAIT_WAITER_NONE);
 }
 
-static mco_coro* _iowait_publish_ready(_iowait_dir_t* d) {
-    uintptr_t raw = atomic_load(&d->waiter);
-    for (;;) {
-        if (raw == IOWAIT_WAITER_READY) {
-            return NULL;
-        }
-        mco_coro* co = raw > IOWAIT_WAITER_READY ? (mco_coro*)raw : NULL;
-        if (atomic_compare_exchange_weak(
-                &d->waiter, &raw, IOWAIT_WAITER_READY)) {
-            return co;
-        }
-    }
-}
-
 static void _iowait_wake_waiter(_iowait_dir_t* d) {
-    mco_coro* co = _iowait_take_waiter(d);
+    mco_coro* co = _iowait_unblock(d, false);
     if (!co) {
         return;
     }
@@ -323,7 +322,11 @@ static bool _iowait_deadline_expired(_iowait_dir_t* d) {
 
 static void _iowait_handle_io(
     scheduler_t* sched, runnable_batch_t* batch, _iowait_dir_t* d) {
-    mco_coro* co = _iowait_publish_ready(d);
+    if (atomic_load(&d->w->closed)) {
+        return;
+    }
+
+    mco_coro* co = _iowait_unblock(d, true);
     if (!co) {
         return;
     }
@@ -344,53 +347,11 @@ static void _iowait_timeout_cb(scheduler_timer_t* timer, void* ud) {
     _iowait_unref(w);
 }
 
-static bool _iowait_publish_waiter(_iowait_dir_t* d, mco_coro* co) {
-    uintptr_t raw = IOWAIT_WAITER_NONE;
-    if (atomic_compare_exchange_strong(&d->waiter, &raw, (uintptr_t)co)) {
-        return true;
-    }
-
-    /* IO event already arrived; no need to park. */
-    if (raw == IOWAIT_WAITER_READY) {
-        return false;
-    }
-
-    /* raw is a pointer: another coroutine is already parked here. */
-    iowait_t* w = d->w;
-    xylem_loge(
-        "<iowait> double park dir=%s w=%p prev=%p new=%p",
-        (d == &w->rd) ? "rd" : "wr",
-        (void*)w,
-        (void*)raw,
-        (void*)co);
-    abort();
-}
-
-static bool _iowait_park_cb(mco_coro* co, void* arg) {
+static bool _iowait_wait_commit_cb(mco_coro* co, void* arg) {
     _iowait_dir_t* d = (_iowait_dir_t*)arg;
-    iowait_t*      w = d->w;
-
-    /**
-     * Publish the park record, then re-check close/deadline. This is a
-     * Dekker handshake against a concurrent waker (iowait_close /
-     * deadline timer), which claims the waiter or leaves a READY marker
-     * before scheduling it.
-     * The publish and re-check loads below use the default atomic order
-     * (matching the closed store in iowait_close and the slot CAS done
-     * by every waker), so neither side can miss the other and strand the
-     * coroutine forever.
-     */
-    if (!_iowait_publish_waiter(d, co)) {
-        return false;
-    }
-
-    /* Re-check after publish: close or deadline may have raced in. */
-    if (atomic_load(&w->closed)
-        || atomic_load(&d->deadline_error)
-        || _iowait_deadline_expired(d)) {
-        _iowait_wake_waiter(d);
-    }
-    return true;
+    uintptr_t      expected = IOWAIT_WAITER_WAIT;
+    return atomic_compare_exchange_strong(
+        &d->waiter, &expected, (uintptr_t)co);
 }
 
 static void _iowait_stop_deadline(_iowait_dir_t* d) {
@@ -451,26 +412,66 @@ static iowait_result_t _iowait_check_result(iowait_t* w, _iowait_dir_t* d) {
     if (atomic_load(&w->closed)) {
         return IOWAIT_CLOSED;
     }
-    if (atomic_load(&d->deadline_error)) {
-        return IOWAIT_ERROR;
-    }
     if (_iowait_deadline_expired(d)) {
         return IOWAIT_TIMEOUT;
+    }
+    if (atomic_load(&d->deadline_error)) {
+        return IOWAIT_ERROR;
     }
     return IOWAIT_READY;
 }
 
 static iowait_result_t _iowait_wait(iowait_t* w, _iowait_dir_t* d) {
     for (;;) {
-        iowait_result_t result = _iowait_check_result(w, d);
-        if (result != IOWAIT_READY) {
-            return result;
-        }
         if (_iowait_take_ready(d)) {
             return IOWAIT_READY;
         }
 
-        scheduler_park(runtime_get_scheduler(), _iowait_park_cb, d);
+        iowait_result_t result = _iowait_check_result(w, d);
+        if (result != IOWAIT_READY) {
+            return result;
+        }
+
+        uintptr_t expected = IOWAIT_WAITER_NONE;
+        if (!atomic_compare_exchange_strong(
+                &d->waiter, &expected, IOWAIT_WAITER_WAIT)) {
+            if (expected == IOWAIT_WAITER_READY
+                || expected == IOWAIT_WAITER_NONE) {
+                continue;
+            }
+
+            xylem_loge(
+                "<iowait> duplicate waiter dir=%s w=%p state=%p co=%p",
+                (d == &w->rd) ? "rd" : "wr",
+                (void*)w,
+                (void*)expected,
+                (void*)mco_running());
+            abort();
+        }
+
+        result = _iowait_check_result(w, d);
+        if (result != IOWAIT_READY) {
+            _iowait_unblock(d, false);
+            if (_iowait_take_ready(d)) {
+                return IOWAIT_READY;
+            }
+            result = _iowait_check_result(w, d);
+            if (result != IOWAIT_READY) {
+                return result;
+            }
+            continue;
+        }
+
+        scheduler_park(
+            runtime_get_scheduler(), _iowait_wait_commit_cb, d);
+
+        if (_iowait_take_ready(d)) {
+            return IOWAIT_READY;
+        }
+        result = _iowait_check_result(w, d);
+        if (result != IOWAIT_READY) {
+            return result;
+        }
     }
 }
 
