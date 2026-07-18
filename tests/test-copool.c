@@ -26,7 +26,9 @@
 #include "platform/platform-vmem.h"
 #include "assert.h"
 
-#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef ARENA_STANDALONE_TEST
 void xylem_logger_log(
@@ -187,12 +189,46 @@ static void test_free_null_args(void) {
     copool_destroy(pool);
 }
 
-int main(void) {
+static int _free_zero_size_child(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, 1);
+    ASSERT(pool != NULL);
+    void* slot = copool_alloc(pool, NULL, page_size);
+    ASSERT(slot != NULL);
+
+    copool_free(pool, NULL, slot, 0);
+    copool_destroy(pool);
+    return 0;
+}
+
+static void test_free_zero_size_aborts(const char* executable) {
+    char command[4096];
+    int command_len = snprintf(
+        command,
+        sizeof(command),
+        "\"%s\" --free-zero-size",
+        executable);
+    ASSERT(command_len > 0);
+    ASSERT((size_t)command_len < sizeof(command));
+
+    int rc = system(command);
+    ASSERT(rc != -1);
+    ASSERT(rc != 0);
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--free-zero-size") == 0) {
+        return _free_zero_size_child();
+    }
+
     test_local_cache_reuse();
     test_external_path_refills_shared();
     test_local_overflow_reaches_shared_and_arena();
     test_create_invalid_args();
     test_alloc_invalid_args();
     test_free_null_args();
+    test_free_zero_size_aborts(argv[0]);
     return 0;
 }

@@ -174,9 +174,9 @@ void copool_free(
     if (!pool || !ptr) {
         return;
     }
-    if (size > pool->slot_size) {
+    if (size == 0 || size > pool->slot_size) {
         xylem_loge(
-            "<copool> free size overflow size=%zu slot_size=%zu",
+            "<copool> invalid free size size=%zu slot_size=%zu",
             size,
             pool->slot_size);
         abort();

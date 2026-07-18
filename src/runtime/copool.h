@@ -74,7 +74,7 @@ extern void* copool_alloc(
  * @param pool   Pool handle, or NULL.
  * @param cache  Worker-local cache, or NULL for the shared path.
  * @param ptr    Slot address, or NULL.
- * @param size   Allocation size, no greater than the configured slot size.
+ * @param size   Allocation size, from 1 through the configured slot size.
  */
 extern void copool_free(
     copool_t* pool,
