@@ -21,9 +21,9 @@
 
 #include "xylem/xylem-threads.h"
 
-#include "runtime/arena.h"
-#include "platform/platform-vmem.h"
 #include "assert.h"
+#include "platform/platform-vmem.h"
+#include "runtime/arena.h"
 
 #include <stdint.h>
 
@@ -114,8 +114,8 @@ static void test_alloc_free_realloc(void) {
             ASSERT(slots[i] != slots[j]);
         }
         uint8_t* bytes = (uint8_t*)slots[i];
-        bytes[0] = (uint8_t)i;
-        bytes[122] = (uint8_t)(i + 1);
+        bytes[0]       = (uint8_t)i;
+        bytes[122]     = (uint8_t)(i + 1);
         ASSERT(bytes[0] == (uint8_t)i);
         ASSERT(bytes[122] == (uint8_t)(i + 1));
     }
@@ -136,8 +136,8 @@ static void test_alloc_free_realloc(void) {
     for (int i = 0; i < 32; i++) {
         ASSERT(recycled[i] != NULL);
         uint8_t* bytes = (uint8_t*)recycled[i];
-        bytes[0] = (uint8_t)(i + 2);
-        bytes[122] = (uint8_t)(i + 3);
+        bytes[0]       = (uint8_t)(i + 2);
+        bytes[122]     = (uint8_t)(i + 3);
         ASSERT(bytes[0] == (uint8_t)(i + 2));
         ASSERT(bytes[122] == (uint8_t)(i + 3));
     }
@@ -175,8 +175,8 @@ static void test_growth(void) {
         for (int j = 0; j < i; j++) {
             ASSERT(slots[i] != slots[j]);
         }
-        uint8_t* bytes = (uint8_t*)slots[i];
-        bytes[0] = (uint8_t)i;
+        uint8_t* bytes  = (uint8_t*)slots[i];
+        bytes[0]        = (uint8_t)i;
         bytes[MIB - 1U] = (uint8_t)(i + 1);
         ASSERT(bytes[0] == (uint8_t)i);
         ASSERT(bytes[MIB - 1U] == (uint8_t)(i + 1));

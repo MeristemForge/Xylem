@@ -63,10 +63,7 @@ extern void copool_destroy(copool_t* pool);
  *
  * @return Slot address, or NULL for invalid arguments or allocation failure.
  */
-extern void* copool_alloc(
-    copool_t* pool,
-    copool_cache_t* cache,
-    size_t size);
+extern void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size);
 
 /**
  * @brief Return a committed slot to a cache or the backing arena.

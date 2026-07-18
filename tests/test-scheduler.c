@@ -32,15 +32,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define SCHED_BATCH_COUNT        8
-#define SCHED_CHURN_TASK_COUNT   4096
-#define SCHED_CHURN_DIRECT       2048
-#define SCHED_CHURN_EXTERNAL     1024
-#define SCHED_CHURN_PRODUCERS    3
-#define SCHED_IDLE_SPAWN_ROUNDS  1024
-#define SCHED_REUSE_COUNT        128
-#define SCHED_STACK_TOUCH_LEN    (16 * 1024)
-#define SCHED_YIELD_COUNT        64
+#define SCHED_BATCH_COUNT       8
+#define SCHED_CHURN_TASK_COUNT  4096
+#define SCHED_CHURN_DIRECT      2048
+#define SCHED_CHURN_EXTERNAL    1024
+#define SCHED_CHURN_PRODUCERS   3
+#define SCHED_IDLE_SPAWN_ROUNDS 1024
+#define SCHED_REUSE_COUNT       128
+#define SCHED_STACK_TOUCH_LEN   (16 * 1024)
+#define SCHED_YIELD_COUNT       64
 
 typedef struct {
     xylem_waitgroup_t* wg;

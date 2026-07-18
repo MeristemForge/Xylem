@@ -57,7 +57,7 @@ static int _arena_grow(arena_t* arena) {
 
     for (;;) {
         size_t region_size = slot_count * arena->slot_size;
-        base = platform_vmem_reserve(region_size);
+        base               = platform_vmem_reserve(region_size);
         if (base || slot_count == ARENA_REGION_MIN_SLOTS) {
             break;
         }
@@ -73,18 +73,14 @@ static int _arena_grow(arena_t* arena) {
     _arena_region_t* region =
         (_arena_region_t*)calloc(1, sizeof(_arena_region_t));
     if (!region) {
-        (void)platform_vmem_release(
-            base,
-            slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, slot_count * arena->slot_size);
         return -1;
     }
 
     if (slot_count > SIZE_MAX - arena->free_cap ||
         arena->free_cap + slot_count > SIZE_MAX / sizeof(void*)) {
         free(region);
-        (void)platform_vmem_release(
-            base,
-            slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, slot_count * arena->slot_size);
         return -1;
     }
 
@@ -93,20 +89,18 @@ static int _arena_grow(arena_t* arena) {
         (void**)realloc(arena->free_slots, new_cap * sizeof(void*));
     if (!free_slots) {
         free(region);
-        (void)platform_vmem_release(
-            base,
-            slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, slot_count * arena->slot_size);
         return -1;
     }
 
-    region->next = arena->regions;
-    region->base = base;
-    region->size = slot_count * arena->slot_size;
+    region->next       = arena->regions;
+    region->base       = base;
+    region->size       = slot_count * arena->slot_size;
     region->slot_count = slot_count;
 
     arena->free_slots = free_slots;
-    arena->free_cap = new_cap;
-    arena->regions = region;
+    arena->free_cap   = new_cap;
+    arena->regions    = region;
 
     uint8_t* slot = (uint8_t*)base;
     for (size_t i = 0; i < slot_count; i++) {

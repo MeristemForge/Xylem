@@ -54,19 +54,19 @@
 #include "xylem/xylem-utils.h"
 #include "xylem/xylem-threads.h"
 
-#include "copool.h"
-#include "iowait.h"
-#include "wsq.h"
-#include "runq.h"
 #include "container/heap.h"
 #include "container/list.h"
 #include "container/mpsc.h"
 #include "container/queue.h"
+#include "copool.h"
+#include "iowait.h"
+#include "platform/platform-cpu.h"
+#include "platform/platform-info.h"
 #include "platform/platform-sem.h"
 #include "platform/platform-socket.h"
-#include "platform/platform-info.h"
-#include "platform/platform-cpu.h"
+#include "runq.h"
 #include "sync/spin.h"
+#include "wsq.h"
 
 #include "minicoro/minicoro.h"
 
@@ -152,10 +152,10 @@ struct scheduler_s {
     _Atomic int64_t       alive;
 
     _Atomic uint32_t      timer_rr;
-    _Atomic uint32_t      wake_rr;        /* round-robin start for wake_worker scan. */
-    _Atomic uint32_t      spawn_rr;       /* round-robin for non-worker spawn owner. */
-    size_t                coro_stack_size;
-    copool_t*             coro_pool;
+    _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
+    _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
+    size_t           coro_stack_size;
+    copool_t*        coro_pool;
 };
 
 typedef enum _timer_state_e {
@@ -243,16 +243,14 @@ static copool_cache_t* _sched_current_coro_cache(scheduler_t* sched) {
 }
 
 static void* _sched_coro_alloc_cb(size_t size, void* allocator_data) {
-    scheduler_t*   sched = (scheduler_t*)allocator_data;
+    scheduler_t*    sched = (scheduler_t*)allocator_data;
     copool_cache_t* cache = _sched_current_coro_cache(sched);
     return copool_alloc(sched->coro_pool, cache, size);
 }
 
-static void _sched_coro_dealloc_cb(
-    void* ptr,
-    size_t size,
-    void* allocator_data) {
-    scheduler_t*   sched = (scheduler_t*)allocator_data;
+static void
+_sched_coro_dealloc_cb(void* ptr, size_t size, void* allocator_data) {
+    scheduler_t*    sched = (scheduler_t*)allocator_data;
     copool_cache_t* cache = _sched_current_coro_cache(sched);
     copool_free(sched->coro_pool, cache, ptr, size);
 }
@@ -625,9 +623,8 @@ int scheduler_coro_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     ctx->fn  = fn;
     ctx->arg = arg;
 
-    mco_desc desc = mco_desc_init(
-        _sched_coro_entry_cb, sched->coro_stack_size);
-    desc.alloc_cb       = _sched_coro_alloc_cb;
+    mco_desc desc = mco_desc_init(_sched_coro_entry_cb, sched->coro_stack_size);
+    desc.alloc_cb = _sched_coro_alloc_cb;
     desc.dealloc_cb     = _sched_coro_dealloc_cb;
     desc.allocator_data = sched;
     desc.user_data      = ctx;
@@ -1305,9 +1302,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     mco_desc desc_probe = mco_desc_init(_sched_coro_entry_cb, stack_size);
     sched->coro_stack_size = stack_size;
-    sched->coro_pool       = copool_create(
-        desc_probe.coro_size,
-        (int32_t)pool_cap);
+    sched->coro_pool = copool_create(desc_probe.coro_size, (int32_t)pool_cap);
     if (!sched->coro_pool) {
         _sched_cleanup(sched, 0);
         return NULL;

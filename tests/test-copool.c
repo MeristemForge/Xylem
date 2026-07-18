@@ -21,9 +21,9 @@
 
 #include "xylem/xylem-threads.h"
 
-#include "runtime/copool.h"
-#include "platform/platform-vmem.h"
 #include "assert.h"
+#include "platform/platform-vmem.h"
+#include "runtime/copool.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -112,10 +112,7 @@ static int _contains_slot(void** slots, int count, void* slot) {
     return 0;
 }
 
-static void _drain_cache(
-    copool_t* pool,
-    copool_cache_t* cache,
-    size_t size) {
+static void _drain_cache(copool_t* pool, copool_cache_t* cache, size_t size) {
     while (cache->count > 0) {
         void* slot = copool_alloc(pool, cache, size);
         ASSERT(slot != NULL);
@@ -129,9 +126,9 @@ static void test_local_cache_reuse(void) {
 
     copool_t* pool = copool_create(page_size, 64);
     ASSERT(pool != NULL);
-    copool_cache_t cache = {0};
-    void* slots[64] = {0};
-    void* recycled[64] = {0};
+    copool_cache_t cache        = {0};
+    void*          slots[64]    = {0};
+    void*          recycled[64] = {0};
 
     for (int i = 0; i < 64; i++) {
         slots[i] = copool_alloc(pool, &cache, page_size);
@@ -302,7 +299,7 @@ static int _free_zero_size_child(void) {
 
 static void test_free_zero_size_aborts(const char* executable) {
     char command[4096];
-    int command_len = snprintf(
+    int  command_len = snprintf(
         command,
         sizeof(command),
         "\"%s\" --free-zero-size",
