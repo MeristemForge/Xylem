@@ -21,28 +21,12 @@
 
 #include "runtime/arena.h"
 
-#include "xylem/xylem-logger.h"
-
 #include "platform/platform-vmem.h"
 #include "assert.h"
 
 #include <stdint.h>
 
 #define MIB (1024U * 1024U)
-
-#ifdef ARENA_STANDALONE_TEST
-void xylem_logger_log(
-    xylem_logger_level_t level,
-    const char* restrict file,
-    int line,
-    const char* restrict fmt,
-    ...) {
-    (void)level;
-    (void)file;
-    (void)line;
-    (void)fmt;
-}
-#endif
 
 static void test_create_limits(void) {
     ASSERT(arena_create(0) == NULL);

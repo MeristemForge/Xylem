@@ -242,6 +242,19 @@ static void test_batch_ready(void) {
     xylem_waitgroup_destroy(wg);
 }
 
+static void test_reject_oversized_final_slot(void) {
+    scheduler_opts_t opts = {
+        .worker_count    = 1,
+        .coro_stack_size = 1024U * 1024U,
+    };
+
+    scheduler_t* sched = scheduler_create(&opts);
+    if (sched) {
+        scheduler_destroy(sched);
+    }
+    ASSERT(sched == NULL);
+}
+
 static void _test_run_all(void* arg) {
     (void)arg;
 
@@ -258,10 +271,11 @@ static void _test_run_all(void* arg) {
 }
 
 int main(void) {
-    xylem_opts_t one_worker = {.workers = 1};
+    xylem_opts_t one_worker   = {.workers = 1};
     xylem_opts_t many_workers = {.workers = 4};
 
     xylem_run(_test_run_all, NULL, &one_worker);
     xylem_run(_test_run_all, NULL, &many_workers);
+    test_reject_oversized_final_slot();
     return 0;
 }

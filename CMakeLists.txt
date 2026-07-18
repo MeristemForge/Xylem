@@ -52,6 +52,8 @@ set(SRCS
 	src/runtime/wsq.c
 	src/runtime/runq.c
 	src/runtime/dynpool.c
+	src/runtime/arena.c
+	src/runtime/copool.c
 	src/runtime/scheduler.c
 	src/runtime/iowait.c
 	src/sync/xylem-waitgroup.c

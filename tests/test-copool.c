@@ -21,28 +21,12 @@
 
 #include "runtime/copool.h"
 
-#include "xylem/xylem-logger.h"
-
 #include "platform/platform-vmem.h"
 #include "assert.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef ARENA_STANDALONE_TEST
-void xylem_logger_log(
-    xylem_logger_level_t level,
-    const char* restrict file,
-    int line,
-    const char* restrict fmt,
-    ...) {
-    (void)level;
-    (void)file;
-    (void)line;
-    (void)fmt;
-}
-#endif
 
 static int _contains_slot(void** slots, int count, void* slot) {
     for (int i = 0; i < count; i++) {
@@ -190,6 +174,9 @@ static void test_free_null_args(void) {
 }
 
 static int _free_zero_size_child(void) {
+#if defined(_MSC_VER)
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
