@@ -19,14 +19,51 @@
  *  IN THE SOFTWARE.
  */
 
-#include "runtime/copool.h"
+#include "xylem/xylem-threads.h"
 
+#include "runtime/copool.h"
 #include "platform/platform-vmem.h"
 #include "assert.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define COPOOL_CONCURRENT_THREADS 4
+#define COPOOL_CONCURRENT_BATCH   16
+#define COPOOL_CONCURRENT_ROUNDS  500
+
+typedef struct {
+    copool_t*      pool;
+    copool_cache_t cache;
+    size_t         slot_size;
+    uint8_t        id;
+} _concurrent_worker_t;
+
+static int _concurrent_thread(void* arg) {
+    _concurrent_worker_t* worker = (_concurrent_worker_t*)arg;
+    void*                 slots[COPOOL_CONCURRENT_BATCH] = {0};
+
+    for (int round = 0; round < COPOOL_CONCURRENT_ROUNDS; round++) {
+        for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
+            slots[i] =
+                copool_alloc(worker->pool, &worker->cache, worker->slot_size);
+            ASSERT(slots[i] != NULL);
+            ((uint8_t*)slots[i])[0] =
+                (uint8_t)(worker->id ^ (uint8_t)round ^ (uint8_t)i);
+        }
+        thrd_yield();
+        for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
+            copool_free(
+                worker->pool,
+                &worker->cache,
+                slots[i],
+                worker->slot_size);
+        }
+    }
+    return 0;
+}
 
 static int _contains_slot(void** slots, int count, void* slot) {
     for (int i = 0; i < count; i++) {
@@ -173,6 +210,36 @@ static void test_free_null_args(void) {
     copool_destroy(pool);
 }
 
+static void test_concurrent_local_caches(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, COPOOL_CACHE_CAP);
+    ASSERT(pool != NULL);
+
+    thrd_t               threads[COPOOL_CONCURRENT_THREADS];
+    _concurrent_worker_t workers[COPOOL_CONCURRENT_THREADS] = {0};
+    for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
+        workers[i].pool      = pool;
+        workers[i].slot_size = page_size;
+        workers[i].id        = (uint8_t)i;
+        ASSERT(
+            thrd_create(&threads[i], _concurrent_thread, &workers[i]) ==
+            thrd_success);
+    }
+
+    for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
+        int result = -1;
+        ASSERT(thrd_join(threads[i], &result) == thrd_success);
+        ASSERT(result == 0);
+    }
+    for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
+        _drain_cache(pool, &workers[i].cache, page_size);
+        ASSERT(workers[i].cache.count == 0);
+    }
+    copool_destroy(pool);
+}
+
 static int _free_zero_size_child(void) {
 #if defined(_MSC_VER)
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
@@ -216,6 +283,7 @@ int main(int argc, char** argv) {
     test_create_invalid_args();
     test_alloc_invalid_args();
     test_free_null_args();
+    test_concurrent_local_caches();
     test_free_zero_size_aborts(argv[0]);
     return 0;
 }

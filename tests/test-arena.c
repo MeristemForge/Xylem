@@ -19,14 +19,77 @@
  *  IN THE SOFTWARE.
  */
 
-#include "runtime/arena.h"
+#include "xylem/xylem-threads.h"
 
+#include "runtime/arena.h"
 #include "platform/platform-vmem.h"
 #include "assert.h"
 
 #include <stdint.h>
 
-#define MIB (1024U * 1024U)
+#define MIB                      (1024U * 1024U)
+#define ARENA_CONCURRENT_THREADS 4
+#define ARENA_CONCURRENT_BATCH   8
+#define ARENA_CONCURRENT_ROUNDS  200
+
+typedef struct {
+    arena_t* arena;
+    mtx_t    lock;
+    void*    active[ARENA_CONCURRENT_THREADS * ARENA_CONCURRENT_BATCH];
+    size_t   active_count;
+} _concurrent_ctx_t;
+
+typedef struct {
+    _concurrent_ctx_t* ctx;
+    uint8_t            id;
+} _concurrent_worker_t;
+
+static int _concurrent_thread(void* arg) {
+    _concurrent_worker_t* worker = (_concurrent_worker_t*)arg;
+    _concurrent_ctx_t*    ctx    = worker->ctx;
+    void*                 slots[ARENA_CONCURRENT_BATCH] = {0};
+
+    for (int round = 0; round < ARENA_CONCURRENT_ROUNDS; round++) {
+        ASSERT(
+            arena_alloc(ctx->arena, slots, ARENA_CONCURRENT_BATCH) ==
+            ARENA_CONCURRENT_BATCH);
+
+        ASSERT(mtx_lock(&ctx->lock) == thrd_success);
+        for (int i = 0; i < ARENA_CONCURRENT_BATCH; i++) {
+            uint8_t* bytes = (uint8_t*)slots[i];
+            bytes[0] = (uint8_t)(worker->id ^ (uint8_t)round ^ (uint8_t)i);
+
+            for (size_t j = 0; j < ctx->active_count; j++) {
+                ASSERT(ctx->active[j] != slots[i]);
+            }
+            ASSERT(
+                ctx->active_count <
+                ARENA_CONCURRENT_THREADS * ARENA_CONCURRENT_BATCH);
+            ctx->active[ctx->active_count++] = slots[i];
+        }
+        ASSERT(mtx_unlock(&ctx->lock) == thrd_success);
+
+        thrd_yield();
+
+        ASSERT(mtx_lock(&ctx->lock) == thrd_success);
+        for (int i = 0; i < ARENA_CONCURRENT_BATCH; i++) {
+            size_t found = ctx->active_count;
+            for (size_t j = 0; j < ctx->active_count; j++) {
+                if (ctx->active[j] == slots[i]) {
+                    found = j;
+                    break;
+                }
+            }
+            ASSERT(found < ctx->active_count);
+            ctx->active[found] = ctx->active[--ctx->active_count];
+        }
+        ASSERT(mtx_unlock(&ctx->lock) == thrd_success);
+
+        arena_free(ctx->arena, slots, ARENA_CONCURRENT_BATCH);
+        thrd_yield();
+    }
+    return 0;
+}
 
 static void test_create_limits(void) {
     ASSERT(arena_create(0) == NULL);
@@ -134,11 +197,40 @@ static void test_destroy_with_allocated_slot(void) {
     arena_destroy(arena);
 }
 
+static void test_concurrent_alloc_free(void) {
+    _concurrent_ctx_t ctx = {
+        .arena = arena_create(64),
+    };
+    ASSERT(ctx.arena != NULL);
+    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
+
+    thrd_t               threads[ARENA_CONCURRENT_THREADS];
+    _concurrent_worker_t workers[ARENA_CONCURRENT_THREADS];
+    for (int i = 0; i < ARENA_CONCURRENT_THREADS; i++) {
+        workers[i].ctx = &ctx;
+        workers[i].id  = (uint8_t)i;
+        ASSERT(
+            thrd_create(&threads[i], _concurrent_thread, &workers[i]) ==
+            thrd_success);
+    }
+
+    for (int i = 0; i < ARENA_CONCURRENT_THREADS; i++) {
+        int result = -1;
+        ASSERT(thrd_join(threads[i], &result) == thrd_success);
+        ASSERT(result == 0);
+    }
+    ASSERT(ctx.active_count == 0);
+
+    mtx_destroy(&ctx.lock);
+    arena_destroy(ctx.arena);
+}
+
 int main(void) {
     test_create_limits();
     test_alloc_free_realloc();
     test_null_args();
     test_growth();
     test_destroy_with_allocated_slot();
+    test_concurrent_alloc_free();
     return 0;
 }

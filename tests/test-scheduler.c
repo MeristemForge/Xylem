@@ -30,8 +30,12 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #define SCHED_BATCH_COUNT     8
+#define SCHED_CHURN_TASK_COUNT 4096
+#define SCHED_CHURN_DIRECT     2048
+#define SCHED_CHURN_EXTERNAL   1024
 #define SCHED_REUSE_COUNT     128
 #define SCHED_STACK_TOUCH_LEN (16 * 1024)
 #define SCHED_YIELD_COUNT     64
@@ -46,6 +50,29 @@ typedef struct {
     _Atomic(mco_coro*) waiter;
     atomic_int          runs;
 } _park_ctx_t;
+
+typedef struct _churn_ctx_s _churn_ctx_t;
+
+typedef struct {
+    _churn_ctx_t* ctx;
+    uint32_t      id;
+} _churn_task_t;
+
+typedef struct {
+    _churn_ctx_t* ctx;
+    uint32_t      begin;
+    uint32_t      end;
+} _churn_range_t;
+
+struct _churn_ctx_s {
+    xylem_waitgroup_t* wg;
+    atomic_int*        marks;
+    _churn_task_t*     tasks;
+    atomic_int         completed;
+    atomic_int         duplicates;
+    atomic_int         spawn_errors;
+    atomic_int         nested_done;
+};
 
 static bool _park_wait_commit_cb(mco_coro* co, void* arg) {
     _park_ctx_t* ctx = (_park_ctx_t*)arg;
@@ -108,6 +135,44 @@ static void _park_and_decline(void* arg) {
         NULL);
     atomic_fetch_add(&ctx->runs, 1);
     xylem_waitgroup_done(ctx->wg);
+}
+
+static void _churn_task(void* arg) {
+    _churn_task_t* task     = (_churn_task_t*)arg;
+    _churn_ctx_t*  ctx      = task->ctx;
+    int            expected = 0;
+
+    if (!atomic_compare_exchange_strong(&ctx->marks[task->id], &expected, 1)) {
+        atomic_fetch_add(&ctx->duplicates, 1);
+    }
+    atomic_fetch_add(&ctx->completed, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static int _churn_spawn_range(_churn_range_t* range) {
+    int errors = 0;
+
+    for (uint32_t i = range->begin; i < range->end; i++) {
+        if (scheduler_coro_spawn(
+                runtime_get_scheduler(),
+                _churn_task,
+                &range->ctx->tasks[i]) != 0) {
+            errors++;
+            xylem_waitgroup_done(range->ctx->wg);
+        }
+    }
+    return errors;
+}
+
+static int _churn_external_thread(void* arg) {
+    return _churn_spawn_range((_churn_range_t*)arg);
+}
+
+static void _churn_nested_spawner(void* arg) {
+    _churn_range_t* range = (_churn_range_t*)arg;
+
+    atomic_fetch_add(&range->ctx->spawn_errors, _churn_spawn_range(range));
+    atomic_store(&range->ctx->nested_done, 1);
 }
 
 static void test_spawn_and_exit(void) {
@@ -259,9 +324,78 @@ static void test_backend_final_slot_limit(void) {
 #endif
 }
 
-static void _test_run_all(void* arg) {
-    (void)arg;
+static void test_concurrent_spawn_churn(void) {
+    _churn_ctx_t ctx = {
+        .wg = xylem_waitgroup_create(),
+    };
+    ASSERT(ctx.wg != NULL);
 
+    ctx.marks = (atomic_int*)calloc(SCHED_CHURN_TASK_COUNT, sizeof(atomic_int));
+    ctx.tasks =
+        (_churn_task_t*)calloc(SCHED_CHURN_TASK_COUNT, sizeof(_churn_task_t));
+    ASSERT(ctx.marks != NULL);
+    ASSERT(ctx.tasks != NULL);
+    atomic_init(&ctx.completed, 0);
+    atomic_init(&ctx.duplicates, 0);
+    atomic_init(&ctx.spawn_errors, 0);
+    atomic_init(&ctx.nested_done, 0);
+
+    for (uint32_t i = 0; i < SCHED_CHURN_TASK_COUNT; i++) {
+        atomic_init(&ctx.marks[i], 0);
+        ctx.tasks[i].ctx = &ctx;
+        ctx.tasks[i].id  = i;
+    }
+
+    /* The count covers leaf coroutines; the nested spawner is not a leaf. */
+    xylem_waitgroup_add(ctx.wg, SCHED_CHURN_TASK_COUNT);
+    _churn_range_t direct = {
+        .ctx   = &ctx,
+        .begin = 0,
+        .end   = SCHED_CHURN_DIRECT,
+    };
+    _churn_range_t external = {
+        .ctx   = &ctx,
+        .begin = SCHED_CHURN_DIRECT,
+        .end   = SCHED_CHURN_DIRECT + SCHED_CHURN_EXTERNAL,
+    };
+    _churn_range_t nested = {
+        .ctx   = &ctx,
+        .begin = SCHED_CHURN_DIRECT + SCHED_CHURN_EXTERNAL,
+        .end   = SCHED_CHURN_TASK_COUNT,
+    };
+
+    ASSERT(
+        scheduler_coro_spawn(
+            runtime_get_scheduler(),
+            _churn_nested_spawner,
+            &nested) == 0);
+    thrd_t external_thread;
+    ASSERT(
+        thrd_create(&external_thread, _churn_external_thread, &external) ==
+        thrd_success);
+    atomic_fetch_add(&ctx.spawn_errors, _churn_spawn_range(&direct));
+
+    int external_result = -1;
+    ASSERT(thrd_join(external_thread, &external_result) == thrd_success);
+    ASSERT(external_result == 0);
+    while (!atomic_load(&ctx.nested_done)) {
+        runtime_yield();
+    }
+    xylem_waitgroup_wait(ctx.wg);
+
+    ASSERT(atomic_load(&ctx.spawn_errors) == 0);
+    ASSERT(atomic_load(&ctx.duplicates) == 0);
+    ASSERT(atomic_load(&ctx.completed) == SCHED_CHURN_TASK_COUNT);
+    for (uint32_t i = 0; i < SCHED_CHURN_TASK_COUNT; i++) {
+        ASSERT(atomic_load(&ctx.marks[i]) == 1);
+    }
+
+    free(ctx.tasks);
+    free((void*)ctx.marks);
+    xylem_waitgroup_destroy(ctx.wg);
+}
+
+static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     test_spawn_and_exit();
@@ -270,6 +404,9 @@ static void _test_run_all(void* arg) {
     test_declined_park();
     test_external_ready();
     test_batch_ready();
+    if (arg) {
+        test_concurrent_spawn_churn();
+    }
     _utils_watchdog_stop();
     xylem_shutdown();
 }
@@ -279,7 +416,7 @@ int main(void) {
     xylem_opts_t many_workers = {.workers = 4};
 
     xylem_run(_test_run_all, NULL, &one_worker);
-    xylem_run(_test_run_all, NULL, &many_workers);
+    xylem_run(_test_run_all, &many_workers, &many_workers);
     test_backend_final_slot_limit();
     return 0;
 }
