@@ -381,6 +381,20 @@ accept a caller-provided stack address.
 The scheduler and `copool` do not use a separate calloc/free allocator path for
 Fiber mode.
 
+## Stack Overflow Detection
+
+The arena and coroutine pool do not add a separate per-slot canary. Minicoro
+retains its existing `magic_number` and stack-pointer range check when a
+coroutine yields. ASan builds use minicoro's sanitizer fiber-switch integration
+and red zones instead of that manual check.
+
+This is a delayed diagnostic rather than an immediate stack-boundary fault. A
+non-ASan coroutine that overflows before returning to the scheduler may corrupt
+its own metadata or adjacent memory before the check runs. Adding a reliable
+software boundary canary would require changing minicoro's internal layout to
+reserve bytes at `stack_base`; placing a value in arena alignment padding would
+not protect a downward-growing stack. That change is outside this design.
+
 ## Scheduler Cleanup
 
 Scheduler cleanup must preserve this order:
