@@ -24,8 +24,8 @@ _Pragma("once")
 #include <stddef.h>
 
 /**
- * Virtual-memory lifecycle calls bypass ASan's allocation interceptors.
- * Explicit poison tracks decommitted pages, and unpoison makes recommitted
+ * ASan does not track platform decommit and recommit transitions. Explicit
+ * poison marks decommitted pages inaccessible, and unpoison makes recommitted
  * pages accessible to the next occupant. Non-ASan builds need no shadow work.
  */
 #if defined(__SANITIZE_ADDRESS__)
@@ -46,13 +46,6 @@ _Pragma("once")
 #define VMEM_ASAN_UNPOISON(ptr, size) ((void)0)
 #endif
 
-/* Virtual memory protection flags. */
-typedef enum platform_vmem_prot_e {
-    PLATFORM_VMEM_PROT_NONE  = 0,
-    PLATFORM_VMEM_PROT_READ  = 1 << 0,
-    PLATFORM_VMEM_PROT_WRITE = 1 << 1,
-} platform_vmem_prot_t;
-
 /**
  * @brief Return the system page size in bytes.
  *
@@ -66,13 +59,16 @@ extern size_t platform_vmem_page_size(void);
  * @param size  Number of page-aligned bytes to reserve.
  *
  * @return Page-aligned base address, or NULL on failure.
+ *
+ * @note The range must be committed before it is accessed.
  */
 extern void* platform_vmem_reserve(size_t size);
 
 /**
- * @brief Commit pages for read/write access.
+ * @brief Make a reserved range available for read/write access.
  *
- * Committing an already committed range is permitted.
+ * Committing an already committed range is permitted. The operation may be a
+ * platform-specific accounting transition rather than a mapping change.
  *
  * @param ptr   Page-aligned address within a reservation.
  * @param size  Number of page-aligned bytes to commit.
@@ -82,10 +78,10 @@ extern void* platform_vmem_reserve(size_t size);
 extern int platform_vmem_commit(void* ptr, size_t size);
 
 /**
- * @brief Decommit pages while preserving their reservation.
+ * @brief Make a range reusable while preserving its reservation.
  *
- * Decommit forfeits previous contents. The range must not be accessed until
- * it is committed again.
+ * Previous contents become unspecified. The range must not be accessed until
+ * it is committed again successfully.
  *
  * @param ptr   Page-aligned address within a reservation.
  * @param size  Number of page-aligned bytes to decommit.
@@ -101,19 +97,7 @@ extern int platform_vmem_decommit(void* ptr, size_t size);
  * @param size  Complete reservation size passed to platform_vmem_reserve.
  *
  * @return 0 on success, -1 on failure.
+ *
+ * @note Partial reservation release is not supported.
  */
 extern int platform_vmem_release(void* ptr, size_t size);
-
-/**
- * @brief Change memory protection on an allocated region.
- *
- * @param ptr   Page-aligned address.
- * @param size  Number of bytes to protect (must be page-aligned).
- * @param prot  Protection flags (combination of platform_vmem_prot_t).
- *
- * @return 0 on success, -1 on failure.
- */
-extern int platform_vmem_protect(
-    void* ptr,
-    size_t size,
-    platform_vmem_prot_t prot);

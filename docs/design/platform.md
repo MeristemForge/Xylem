@@ -50,7 +50,7 @@ Design rules:
 |--------|---------|-------|-------|---------|
 | `platform-poller` | Readiness I/O multiplexing | epoll (ET) | kqueue (ET) | wepoll (LT + one-shot) |
 | `platform-socket` | Non-blocking sockets, socketpair, startup | BSD sockets | BSD sockets | Winsock2 |
-| `platform-vmem` | Reserve/commit/protect (coroutine stacks) | mmap/mprotect | mmap/mprotect | VirtualAlloc |
+| `platform-vmem` | Virtual-memory lifecycle | mmap/madvise | mmap/madvise | VirtualAlloc/VirtualFree |
 | `platform-sem` | Counting semaphores (worker parking) | POSIX `sem_init` | GCD `dispatch_semaphore` | Win32 semaphore |
 | `platform-info` | CPU count, tid/pid, time conversion, CSPRNG | syscalls | sysctl/pthread | Win32/BCrypt |
 | `platform-io` | Portable fopen/vsnprintf/stat | stdio/stat | stdio/stat | `*_s` + `_stat64` |
@@ -131,28 +131,40 @@ this difference.
 
 ## 5. Virtual memory
 
-`platform-vmem` exposes allocation, reset, and protection operations so the
-scheduler can recycle coroutine stacks while retaining their virtual mappings:
+`platform-vmem` separates address-range ownership from the lifecycle of pages
+inside that range:
 
-| Function | Unix | Windows |
-|----------|------|---------|
-| `alloc(size)` | `mmap(RW)` | `VirtualAlloc(RESERVE \| COMMIT)` |
-| `reset(ptr,size)` | `madvise(DONTNEED)` | `VirtualAlloc(MEM_RESET)` |
-| `dealloc(ptr,size)` | `munmap` | `VirtualFree(MEM_RELEASE)` |
-| `protect(ptr,size,prot)` | `mprotect` | `VirtualProtect` |
+| Function | Linux | macOS / iOS | Windows |
+|----------|-------|-------------|---------|
+| `page_size()` | `sysconf(_SC_PAGESIZE)` | `sysconf(_SC_PAGESIZE)` | `GetSystemInfo` |
+| `reserve(size)` | anonymous private `mmap(RW)` | anonymous private `mmap(RW)` | `VirtualAlloc(MEM_RESERVE)` |
+| `commit(ptr,size)` | ASAN unpoison | `MADV_FREE_REUSE`, then ASAN unpoison | `VirtualAlloc(MEM_COMMIT)` then ASAN unpoison |
+| `decommit(ptr,size)` | `MADV_FREE`, then ASAN poison | `MADV_FREE_REUSABLE`, then ASAN poison | `VirtualFree(MEM_DECOMMIT)` then ASAN poison |
+| `release(ptr,size)` | `munmap` | `munmap` | `VirtualFree(MEM_RELEASE)` |
 
-Reset keeps the mapping and its protection while making prior contents
-unspecified, so a pooled stack can be reused without another allocation. The
-runtime protects one page as an overflow guard and deallocates complete regions
-only when they leave the pool. See [`runtime.md`](runtime.md) §6.
+`reserve()` returns one page-aligned range. Callers treat pages as unavailable
+until `commit()` succeeds. `decommit()` preserves the reservation but makes the
+previous contents unspecified; the range must not be accessed again until a
+later `commit()` succeeds. `release()` accepts only the complete reservation.
 
-Windows `alloc` commits the complete region immediately, and `reset` does not
-release that system-wide commit charge. Unix anonymous writable mappings are
-subject to the host commit policy; on Linux, protecting an internal subrange can
-also split a mapping into additional VMAs. Both the commit policy and Linux
-`vm.max_map_count` can be adjusted by an administrator, but remain
-operating-system resource boundaries. See the coroutine-pool resource limits in
-[`runtime.md`](runtime.md).
+Linux maps the complete range read/write once. `commit()` therefore has no OS
+mapping transition. `decommit()` uses `MADV_FREE`, allowing the kernel to
+discard pages lazily under memory pressure. A range may still contain its old
+bytes before reclamation, so callers must never depend on recommitted contents.
+Linux also applies `MADV_NOHUGEPAGE` to the complete mapping as a best-effort
+hint; failure of that hint does not fail the reservation.
+
+Darwin uses `MADV_FREE_REUSABLE` and `MADV_FREE_REUSE` as a pair. Their reclaim
+behavior is similar to lazy free, while the paired transitions keep reusable
+memory accounting accurate for macOS and iOS.
+
+Windows reserves address space with `PAGE_NOACCESS`, commits individual ranges
+as `PAGE_READWRITE`, and decommits them with `MEM_DECOMMIT`. Decommitted pages no
+longer consume system commit charge, while the containing address range remains
+reserved.
+
+ASAN builds explicitly poison a range after successful decommit and unpoison it
+after successful commit. Non-ASAN builds compile these operations to no-ops.
 
 ## 6. Semaphore
 

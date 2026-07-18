@@ -319,15 +319,13 @@ memory region, so coroutine creation remains subject to operating-system
 resource limits. Reaching one of these limits makes `scheduler_coro_spawn()` fail
 through the virtual-memory allocation path.
 
-On Windows, `platform_vmem_alloc()` uses `MEM_RESERVE | MEM_COMMIT` for the
-complete page-rounded slot. The complete slot therefore consumes system-wide
-commit as soon as it is allocated, even when the coroutine touches only a small
-part of its stack. `MEM_RESET` lets Windows discard the contents of an idle
-pooled stack, but it does not release its commit charge. Commit is released
-only when a slot leaves the bounded pool or the scheduler is destroyed and
-`MEM_RELEASE` runs. The Windows commit limit is approximately physical memory
-plus the configured page files; enabling or enlarging a page file raises this
-limit, but does not make commit unlimited.
+On Windows, `platform_vmem_reserve()` acquires address space with `MEM_RESERVE`
+without consuming commit charge. `platform_vmem_commit()` commits the ranges
+that become active, and `platform_vmem_decommit()` releases that charge while
+preserving the reservation for reuse. `platform_vmem_release()` returns the
+complete address range with `MEM_RELEASE`. The Windows commit limit is
+approximately physical memory plus the configured page files; enabling or
+enlarging a page file raises this limit, but does not make commit unlimited.
 
 Linux anonymous writable mappings are also subject to the system's memory
 commit policy. `vm.overcommit_memory=0` uses the kernel heuristic,
@@ -337,6 +335,10 @@ and `vm.overcommit_memory=2` enforces the `CommitLimit` reported by
 `vm.overcommit_ratio` or `vm.overcommit_kbytes`. Adding swap or changing these
 sysctls can raise or relax the allocation-time limit, but actual page faults can
 still exhaust memory and invoke the OOM killer.
+
+Linux `platform_vmem_decommit()` uses `MADV_FREE`. The kernel may retain the
+old physical pages until memory pressure requires reclamation, so RSS need not
+drop immediately and recommitted contents are always treated as unspecified.
 
 Linux and WSL have an additional, independent per-process VMA limit. Every slot
 uses a separate `mmap()`, and protecting its internal guard page with

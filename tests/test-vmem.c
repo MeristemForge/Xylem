@@ -44,15 +44,6 @@ static void test_reserve_commit_decommit_release(void) {
     ptr[page_size] = 0x3c;
     ASSERT(ptr[page_size] == 0x3c);
 
-    ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_READ) == 0);
-    ASSERT(ptr[0] == 0x5a);
-    ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_NONE) == 0);
-    ASSERT(
-        platform_vmem_protect(
-            ptr,
-            page_size,
-            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) == 0);
-
     ptr[0] = 0xc3;
     ASSERT(ptr[0] == 0xc3);
     ASSERT(platform_vmem_release(ptr, size) == 0);

@@ -154,8 +154,8 @@ backends in `unix/` and `win/`:
 - **socket** — non-blocking sockets, socketpair (used for the scheduler's
   wakeup fd), and `startup`/`cleanup` (WSAStartup on Windows, `SIGPIPE` ignore
   on Unix).
-- **vmem** — reserve/commit/protect, used to allocate coroutine stacks with a
-  guard page.
+- **vmem** — reserve/commit/decommit/release lifecycle for reusable virtual
+  memory regions.
 - **sem / info / string / serial** — semaphores, CPU count, string helpers,
   and serial-port I/O.
 

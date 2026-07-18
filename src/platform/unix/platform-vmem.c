@@ -28,6 +28,8 @@ size_t platform_vmem_page_size(void) {
     return (size_t)sysconf(_SC_PAGESIZE);
 }
 
+#if defined(__linux__)
+
 void* platform_vmem_reserve(size_t size) {
     void* ptr = mmap(
         NULL,
@@ -39,42 +41,58 @@ void* platform_vmem_reserve(size_t size) {
     if (ptr == MAP_FAILED) {
         return NULL;
     }
-#if (defined(__linux__) || defined(__ANDROID__)) && defined(MADV_NOHUGEPAGE)
     (void)madvise(ptr, size, MADV_NOHUGEPAGE);
-#endif
     return ptr;
 }
 
 int platform_vmem_commit(void* ptr, size_t size) {
-#if defined(__APPLE__) && defined(MADV_FREE_REUSE)
-    if (madvise(ptr, size, MADV_FREE_REUSE) != 0) {
-        return -1;
-    }
-#endif
+    (void)ptr;
+    (void)size;
     VMEM_ASAN_UNPOISON(ptr, size);
     return 0;
 }
 
 int platform_vmem_decommit(void* ptr, size_t size) {
+    if (madvise(ptr, size, MADV_FREE) != 0) {
+        return -1;
+    }
     VMEM_ASAN_POISON(ptr, size);
-#if defined(__APPLE__) && defined(MADV_FREE_REUSABLE)
-    return madvise(ptr, size, MADV_FREE_REUSABLE) == 0 ? 0 : -1;
-#else
-    return madvise(ptr, size, MADV_DONTNEED) == 0 ? 0 : -1;
-#endif
+    return 0;
 }
+
+#endif
+
+#if defined(__APPLE__)
+
+void* platform_vmem_reserve(size_t size) {
+    void* ptr = mmap(
+        NULL,
+        size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0);
+    return ptr == MAP_FAILED ? NULL : ptr;
+}
+
+int platform_vmem_commit(void* ptr, size_t size) {
+    if (madvise(ptr, size, MADV_FREE_REUSE) != 0) {
+        return -1;
+    }
+    VMEM_ASAN_UNPOISON(ptr, size);
+    return 0;
+}
+
+int platform_vmem_decommit(void* ptr, size_t size) {
+    if (madvise(ptr, size, MADV_FREE_REUSABLE) != 0) {
+        return -1;
+    }
+    VMEM_ASAN_POISON(ptr, size);
+    return 0;
+}
+
+#endif
 
 int platform_vmem_release(void* ptr, size_t size) {
     return munmap(ptr, size) == 0 ? 0 : -1;
-}
-
-int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
-    int flags = PROT_NONE;
-    if (prot & PLATFORM_VMEM_PROT_READ) {
-        flags |= PROT_READ;
-    }
-    if (prot & PLATFORM_VMEM_PROT_WRITE) {
-        flags |= PROT_WRITE;
-    }
-    return mprotect(ptr, size, flags) == 0 ? 0 : -1;
 }
