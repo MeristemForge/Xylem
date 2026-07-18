@@ -23,6 +23,8 @@
 #include "assert.h"
 #include "utils.h"
 
+#include "runtime/runtime.h"
+
 #include <stdlib.h>
 #include <string.h>
 
