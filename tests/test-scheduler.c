@@ -32,13 +32,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define SCHED_BATCH_COUNT     8
+#define SCHED_BATCH_COUNT      8
 #define SCHED_CHURN_TASK_COUNT 4096
 #define SCHED_CHURN_DIRECT     2048
 #define SCHED_CHURN_EXTERNAL   1024
-#define SCHED_REUSE_COUNT     128
-#define SCHED_STACK_TOUCH_LEN (16 * 1024)
-#define SCHED_YIELD_COUNT     64
+#define SCHED_CHURN_PRODUCERS  3
+#define SCHED_REUSE_COUNT      128
+#define SCHED_STACK_TOUCH_LEN  (16 * 1024)
+#define SCHED_YIELD_COUNT      64
 
 typedef struct {
     xylem_waitgroup_t* wg;
@@ -72,6 +73,8 @@ struct _churn_ctx_s {
     atomic_int         duplicates;
     atomic_int         spawn_errors;
     atomic_int         nested_done;
+    atomic_int         producers_ready;
+    atomic_int         producers_start;
 };
 
 static bool _park_wait_commit_cb(mco_coro* co, void* arg) {
@@ -149,6 +152,29 @@ static void _churn_task(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
+static void _churn_arrive_start(_churn_ctx_t* ctx) {
+    int ready = atomic_fetch_add(&ctx->producers_ready, 1) + 1;
+
+    ASSERT(ready <= SCHED_CHURN_PRODUCERS);
+    if (ready == SCHED_CHURN_PRODUCERS) {
+        atomic_store(&ctx->producers_start, 1);
+    }
+}
+
+static void _churn_worker_wait_start(_churn_ctx_t* ctx) {
+    _churn_arrive_start(ctx);
+    while (!atomic_load(&ctx->producers_start)) {
+        runtime_yield();
+    }
+}
+
+static void _churn_external_wait_start(_churn_ctx_t* ctx) {
+    _churn_arrive_start(ctx);
+    while (!atomic_load(&ctx->producers_start)) {
+        thrd_yield();
+    }
+}
+
 static int _churn_spawn_range(_churn_range_t* range) {
     int errors = 0;
 
@@ -165,12 +191,16 @@ static int _churn_spawn_range(_churn_range_t* range) {
 }
 
 static int _churn_external_thread(void* arg) {
-    return _churn_spawn_range((_churn_range_t*)arg);
+    _churn_range_t* range = (_churn_range_t*)arg;
+
+    _churn_external_wait_start(range->ctx);
+    return _churn_spawn_range(range);
 }
 
 static void _churn_nested_spawner(void* arg) {
     _churn_range_t* range = (_churn_range_t*)arg;
 
+    _churn_worker_wait_start(range->ctx);
     atomic_fetch_add(&range->ctx->spawn_errors, _churn_spawn_range(range));
     atomic_store(&range->ctx->nested_done, 1);
 }
@@ -339,6 +369,8 @@ static void test_concurrent_spawn_churn(void) {
     atomic_init(&ctx.duplicates, 0);
     atomic_init(&ctx.spawn_errors, 0);
     atomic_init(&ctx.nested_done, 0);
+    atomic_init(&ctx.producers_ready, 0);
+    atomic_init(&ctx.producers_start, 0);
 
     for (uint32_t i = 0; i < SCHED_CHURN_TASK_COUNT; i++) {
         atomic_init(&ctx.marks[i], 0);
@@ -373,6 +405,11 @@ static void test_concurrent_spawn_churn(void) {
     ASSERT(
         thrd_create(&external_thread, _churn_external_thread, &external) ==
         thrd_success);
+    while (atomic_load(&ctx.producers_ready) < SCHED_CHURN_PRODUCERS - 1) {
+        runtime_yield();
+    }
+    ASSERT(atomic_load(&ctx.completed) == 0);
+    _churn_worker_wait_start(&ctx);
     atomic_fetch_add(&ctx.spawn_errors, _churn_spawn_range(&direct));
 
     int external_result = -1;

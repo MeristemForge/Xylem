@@ -35,10 +35,17 @@
 #define COPOOL_CONCURRENT_ROUNDS  500
 
 typedef struct {
-    copool_t*      pool;
-    copool_cache_t cache;
-    size_t         slot_size;
-    uint8_t        id;
+    copool_t* pool;
+    mtx_t     lock;
+    void*     active[COPOOL_CONCURRENT_THREADS * COPOOL_CONCURRENT_BATCH];
+    size_t    active_count;
+} _concurrent_ctx_t;
+
+typedef struct {
+    _concurrent_ctx_t* ctx;
+    copool_cache_t     cache;
+    size_t             slot_size;
+    uint8_t            id;
 } _concurrent_worker_t;
 
 static int _concurrent_thread(void* arg) {
@@ -47,16 +54,47 @@ static int _concurrent_thread(void* arg) {
 
     for (int round = 0; round < COPOOL_CONCURRENT_ROUNDS; round++) {
         for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
-            slots[i] =
-                copool_alloc(worker->pool, &worker->cache, worker->slot_size);
+            slots[i] = copool_alloc(
+                worker->ctx->pool,
+                &worker->cache,
+                worker->slot_size);
             ASSERT(slots[i] != NULL);
+        }
+
+        ASSERT(mtx_lock(&worker->ctx->lock) == thrd_success);
+        for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
+            for (size_t j = 0; j < worker->ctx->active_count; j++) {
+                ASSERT(worker->ctx->active[j] != slots[i]);
+            }
+            ASSERT(
+                worker->ctx->active_count <
+                COPOOL_CONCURRENT_THREADS * COPOOL_CONCURRENT_BATCH);
+            worker->ctx->active[worker->ctx->active_count++] = slots[i];
             ((uint8_t*)slots[i])[0] =
                 (uint8_t)(worker->id ^ (uint8_t)round ^ (uint8_t)i);
         }
+        ASSERT(mtx_unlock(&worker->ctx->lock) == thrd_success);
+
         thrd_yield();
+
+        ASSERT(mtx_lock(&worker->ctx->lock) == thrd_success);
+        for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
+            size_t found = worker->ctx->active_count;
+            for (size_t j = 0; j < worker->ctx->active_count; j++) {
+                if (worker->ctx->active[j] == slots[i]) {
+                    found = j;
+                    break;
+                }
+            }
+            ASSERT(found < worker->ctx->active_count);
+            worker->ctx->active[found] =
+                worker->ctx->active[--worker->ctx->active_count];
+        }
+        ASSERT(mtx_unlock(&worker->ctx->lock) == thrd_success);
+
         for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
             copool_free(
-                worker->pool,
+                worker->ctx->pool,
                 &worker->cache,
                 slots[i],
                 worker->slot_size);
@@ -214,13 +252,16 @@ static void test_concurrent_local_caches(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    copool_t* pool = copool_create(page_size, COPOOL_CACHE_CAP);
-    ASSERT(pool != NULL);
+    _concurrent_ctx_t ctx = {
+        .pool = copool_create(page_size, COPOOL_CACHE_CAP),
+    };
+    ASSERT(ctx.pool != NULL);
+    ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
 
     thrd_t               threads[COPOOL_CONCURRENT_THREADS];
     _concurrent_worker_t workers[COPOOL_CONCURRENT_THREADS] = {0};
     for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
-        workers[i].pool      = pool;
+        workers[i].ctx       = &ctx;
         workers[i].slot_size = page_size;
         workers[i].id        = (uint8_t)i;
         ASSERT(
@@ -233,11 +274,13 @@ static void test_concurrent_local_caches(void) {
         ASSERT(thrd_join(threads[i], &result) == thrd_success);
         ASSERT(result == 0);
     }
+    ASSERT(ctx.active_count == 0);
     for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
-        _drain_cache(pool, &workers[i].cache, page_size);
+        _drain_cache(ctx.pool, &workers[i].cache, page_size);
         ASSERT(workers[i].cache.count == 0);
     }
-    copool_destroy(pool);
+    mtx_destroy(&ctx.lock);
+    copool_destroy(ctx.pool);
 }
 
 static int _free_zero_size_child(void) {
