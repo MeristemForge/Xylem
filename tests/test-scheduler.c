@@ -37,6 +37,7 @@
 #define SCHED_CHURN_DIRECT     2048
 #define SCHED_CHURN_EXTERNAL   1024
 #define SCHED_CHURN_PRODUCERS  3
+#define SCHED_IDLE_SPAWN_ROUNDS 1024
 #define SCHED_REUSE_COUNT      128
 #define SCHED_STACK_TOUCH_LEN  (16 * 1024)
 #define SCHED_YIELD_COUNT      64
@@ -45,6 +46,10 @@ typedef struct {
     xylem_waitgroup_t* wg;
     atomic_int         runs;
 } _run_ctx_t;
+
+typedef struct {
+    atomic_int done;
+} _spawn_ctx_t;
 
 typedef struct {
     xylem_waitgroup_t*  wg;
@@ -150,6 +155,12 @@ static void _churn_task(void* arg) {
     }
     atomic_fetch_add(&ctx->completed, 1);
     xylem_waitgroup_done(ctx->wg);
+}
+
+static void _mark_done(void* arg) {
+    _spawn_ctx_t* ctx = (_spawn_ctx_t*)arg;
+
+    atomic_store(&ctx->done, 1);
 }
 
 static void _churn_arrive_start(_churn_ctx_t* ctx) {
@@ -432,6 +443,23 @@ static void test_concurrent_spawn_churn(void) {
     xylem_waitgroup_destroy(ctx.wg);
 }
 
+static void test_external_spawn_after_create(void) {
+    scheduler_opts_t opts = {.worker_count = 4};
+
+    for (int i = 0; i < SCHED_IDLE_SPAWN_ROUNDS; i++) {
+        _spawn_ctx_t ctx;
+        atomic_init(&ctx.done, 0);
+
+        scheduler_t* sched = scheduler_create(&opts);
+        ASSERT(sched != NULL);
+        ASSERT(scheduler_coro_spawn(sched, _mark_done, &ctx) == 0);
+        while (!atomic_load(&ctx.done)) {
+            thrd_yield();
+        }
+        scheduler_destroy(sched);
+    }
+}
+
 static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
@@ -454,6 +482,7 @@ int main(void) {
 
     xylem_run(_test_run_all, NULL, &one_worker);
     xylem_run(_test_run_all, &many_workers, &many_workers);
+    test_external_spawn_after_create();
     test_backend_final_slot_limit();
     return 0;
 }

@@ -977,6 +977,9 @@ static mco_coro* _sched_worker_poll_runnable(
                 spin_unlock(&sched->worker_state_lock);
             }
         }
+        if (!co) {
+            co = _sched_worker_take_runnable(w);
+        }
         if (co) {
             break;
         }
@@ -1003,6 +1006,9 @@ static mco_coro* _sched_worker_poll_runnable(
                 _sched_worker_transition(w, WORKER_POLLING);
                 spin_unlock(&sched->worker_state_lock);
             }
+        }
+        if (!co) {
+            co = _sched_worker_take_runnable(w);
         }
         if (co) {
             break;
@@ -1104,6 +1110,9 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
                 _sched_worker_transition(w, WORKER_WAITING);
                 spin_unlock(&sched->worker_state_lock);
             }
+        }
+        if (!co) {
+            co = _sched_worker_take_runnable(w);
         }
         if (co) {
             break;
