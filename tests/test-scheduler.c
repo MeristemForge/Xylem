@@ -27,9 +27,12 @@
 #include "runtime/scheduler.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
 
-#define SCHED_BATCH_COUNT 8
-#define SCHED_YIELD_COUNT 64
+#define SCHED_BATCH_COUNT     8
+#define SCHED_REUSE_COUNT     128
+#define SCHED_STACK_TOUCH_LEN (16 * 1024)
+#define SCHED_YIELD_COUNT     64
 
 typedef struct {
     xylem_waitgroup_t* wg;
@@ -58,6 +61,17 @@ static bool _park_decline_commit_cb(mco_coro* co, void* arg) {
 static void _run_once(void* arg) {
     _run_ctx_t* ctx = (_run_ctx_t*)arg;
 
+    atomic_fetch_add(&ctx->runs, 1);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _touch_stack(void* arg) {
+    _run_ctx_t*      ctx = (_run_ctx_t*)arg;
+    volatile uint8_t stack[SCHED_STACK_TOUCH_LEN];
+
+    for (size_t i = 0; i < SCHED_STACK_TOUCH_LEN; i += 4096) {
+        stack[i] = (uint8_t)i;
+    }
     atomic_fetch_add(&ctx->runs, 1);
     xylem_waitgroup_done(ctx->wg);
 }
@@ -127,6 +141,25 @@ static void test_repeated_yield(void) {
            == 0);
     xylem_waitgroup_wait(ctx.wg);
     ASSERT(atomic_load(&ctx.runs) == SCHED_YIELD_COUNT);
+    xylem_waitgroup_destroy(ctx.wg);
+}
+
+static void test_reuse_decommitted_stack(void) {
+    _run_ctx_t ctx = {
+        .wg = xylem_waitgroup_create(),
+    };
+    ASSERT(ctx.wg != NULL);
+    atomic_init(&ctx.runs, 0);
+
+    for (int i = 0; i < SCHED_REUSE_COUNT; i++) {
+        xylem_waitgroup_add(ctx.wg, 1);
+        ASSERT(
+            scheduler_coro_spawn(runtime_get_scheduler(), _touch_stack, &ctx) ==
+            0);
+        xylem_waitgroup_wait(ctx.wg);
+    }
+
+    ASSERT(atomic_load(&ctx.runs) == SCHED_REUSE_COUNT);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -216,6 +249,7 @@ static void _test_run_all(void* arg) {
 
     test_spawn_and_exit();
     test_repeated_yield();
+    test_reuse_decommitted_stack();
     test_declined_park();
     test_external_ready();
     test_batch_ready();

@@ -24,23 +24,28 @@
 
 #include <stdint.h>
 
-static void test_alloc_reset_protect_dealloc(void) {
+static void test_reserve_commit_decommit_release(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    uint8_t* ptr = (uint8_t*)platform_vmem_alloc(page_size);
+    size_t   size = page_size * 2;
+    uint8_t* ptr  = (uint8_t*)platform_vmem_reserve(size);
     ASSERT(ptr != NULL);
     ASSERT((uintptr_t)ptr % page_size == 0);
+    ASSERT(platform_vmem_commit(ptr, size) == 0);
 
     ptr[0] = 0x5a;
     ASSERT(ptr[0] == 0x5a);
+    ptr[page_size] = 0xa5;
+    ASSERT(ptr[page_size] == 0xa5);
 
-    platform_vmem_reset(ptr, page_size);
-    ptr[0] = 0xa5;
-    ASSERT(ptr[0] == 0xa5);
+    ASSERT(platform_vmem_decommit(ptr + page_size, page_size) == 0);
+    ASSERT(platform_vmem_commit(ptr + page_size, page_size) == 0);
+    ptr[page_size] = 0x3c;
+    ASSERT(ptr[page_size] == 0x3c);
 
     ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_READ) == 0);
-    ASSERT(ptr[0] == 0xa5);
+    ASSERT(ptr[0] == 0x5a);
     ASSERT(platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_NONE) == 0);
     ASSERT(
         platform_vmem_protect(
@@ -48,12 +53,12 @@ static void test_alloc_reset_protect_dealloc(void) {
             page_size,
             PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) == 0);
 
-    ptr[0] = 0x3c;
-    ASSERT(ptr[0] == 0x3c);
-    platform_vmem_dealloc(ptr, page_size);
+    ptr[0] = 0xc3;
+    ASSERT(ptr[0] == 0xc3);
+    ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 int main(void) {
-    test_alloc_reset_protect_dealloc();
+    test_reserve_commit_decommit_release();
     return 0;
 }

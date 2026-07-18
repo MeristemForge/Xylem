@@ -32,23 +32,27 @@ size_t platform_vmem_page_size(void) {
     return (size_t)si.dwPageSize;
 }
 
-void* platform_vmem_alloc(size_t size) {
-    /* Combined flags avoid a second OS call for fully committed ranges. */
-    void* ptr = VirtualAlloc(
-        NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (ptr) {
-        VMEM_ASAN_RESET(ptr, size);
+void* platform_vmem_reserve(size_t size) {
+    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
+}
+
+int platform_vmem_commit(void* ptr, size_t size) {
+    void* committed = VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE);
+    if (committed != ptr) {
+        return -1;
     }
-    return ptr;
+    VMEM_ASAN_UNPOISON(ptr, size);
+    return 0;
 }
 
-void platform_vmem_reset(void* ptr, size_t size) {
-    VirtualAlloc(ptr, size, MEM_RESET, PAGE_READWRITE);
+int platform_vmem_decommit(void* ptr, size_t size) {
+    VMEM_ASAN_POISON(ptr, size);
+    return VirtualFree(ptr, size, MEM_DECOMMIT) ? 0 : -1;
 }
 
-void platform_vmem_dealloc(void* ptr, size_t size) {
+int platform_vmem_release(void* ptr, size_t size) {
     (void)size;
-    VirtualFree(ptr, 0, MEM_RELEASE);
+    return VirtualFree(ptr, 0, MEM_RELEASE) ? 0 : -1;
 }
 
 int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {

@@ -283,11 +283,14 @@ static void* _sched_coro_alloc(_sched_coro_pool_t* pool, size_t size) {
     size_t page_size = _sched_vmem_page_size();
     size_t total     = (size + page_size - 1) & ~(page_size - 1);
 
-    /* Allocate the complete slot in one platform call. */
-    char* base = (char*)platform_vmem_alloc(total);
+    char* base = (char*)platform_vmem_reserve(total);
     if (!base) {
-        /* System commit limit or Linux VMA exhaustion can cause this failure. */
-        xylem_loge("<sched> coroutine slot alloc failed");
+        xylem_loge("<sched> reserve failed");
+        return NULL;
+    }
+    if (platform_vmem_commit(base, total) != 0) {
+        xylem_loge("<sched> commit failed");
+        platform_vmem_release(base, total);
         return NULL;
     }
 
@@ -296,17 +299,34 @@ static void* _sched_coro_alloc(_sched_coro_pool_t* pool, size_t size) {
             base + meta_size,
             page_size,
             PLATFORM_VMEM_PROT_NONE) != 0) {
-        platform_vmem_dealloc(base, total);
+        platform_vmem_release(base, total);
         return NULL;
     }
 
     return base;
 }
 
-static void _sched_coro_shrink(
-    _sched_coro_pool_t* pool,
-    void* ptr,
-    size_t size) {
+static int
+_sched_coro_commit_stack(_sched_coro_pool_t* pool, void* ptr, size_t size) {
+    if (SCHED_STACK_EXTERNAL) {
+        return 0;
+    }
+
+    size_t page_size = _sched_vmem_page_size();
+    size_t total     = (size + page_size - 1) & ~(page_size - 1);
+    size_t meta_size = _sched_coro_metadata_size(total, pool->stack_size);
+
+    size_t stack_start = meta_size + page_size;
+    if (total > stack_start) {
+        return platform_vmem_commit(
+            (char*)ptr + stack_start,
+            total - stack_start);
+    }
+    return 0;
+}
+
+static void
+_sched_coro_decommit_stack(_sched_coro_pool_t* pool, void* ptr, size_t size) {
     if (SCHED_STACK_EXTERNAL) {
         return;
     }
@@ -316,8 +336,10 @@ static void _sched_coro_shrink(
     size_t meta_size = _sched_coro_metadata_size(total, pool->stack_size);
 
     size_t stack_start = meta_size + page_size;
-    if (total > stack_start) {
-        platform_vmem_reset((char*)ptr + stack_start, total - stack_start);
+    if (total > stack_start &&
+        platform_vmem_decommit((char*)ptr + stack_start, total - stack_start) !=
+            0) {
+        xylem_loge("<sched> decommit failed");
     }
 }
 
@@ -330,7 +352,21 @@ static void _sched_coro_dealloc(_sched_coro_pool_t* pool, void* ptr) {
 
     size_t page_size = _sched_vmem_page_size();
     size_t total     = (pool->slot_size + page_size - 1) & ~(page_size - 1);
-    platform_vmem_dealloc(ptr, total);
+    if (platform_vmem_release(ptr, total) != 0) {
+        xylem_loge("<sched> release failed");
+    }
+}
+
+static void*
+_sched_coro_reuse(_sched_coro_pool_t* pool, void* ptr, size_t size) {
+    if (!ptr) {
+        return NULL;
+    }
+    if (_sched_coro_commit_stack(pool, ptr, size) == 0) {
+        return ptr;
+    }
+    _sched_coro_dealloc(pool, ptr);
+    return NULL;
 }
 
 /* Pop one slot from the shared pool; NULL when empty. Takes the pool lock. */
@@ -364,13 +400,15 @@ static void* _sched_coro_pool_alloc_cb(size_t size, void* allocator_data) {
     _sched_coro_pool_t* pool = (_sched_coro_pool_t*)allocator_data;
     _sched_worker_t*    w    = _tls_worker;
     if (!w || &w->sched->coro_pool != pool || !w->coro_pool) {
-        void* ptr = _sched_coro_pool_pop(pool);
+        void* ptr = _sched_coro_reuse(pool, _sched_coro_pool_pop(pool), size);
         return ptr ? ptr : _sched_coro_alloc(pool, size);
     }
 
     /* Fast path: local cache hit, no lock. */
     if (w->coro_pool_count > 0) {
-        return w->coro_pool[--w->coro_pool_count];
+        void* ptr =
+            _sched_coro_reuse(pool, w->coro_pool[--w->coro_pool_count], size);
+        return ptr ? ptr : _sched_coro_alloc(pool, size);
     }
 
     /* Local cache empty: refill a batch from the shared pool under one lock. */
@@ -385,7 +423,8 @@ static void* _sched_coro_pool_alloc_cb(size_t size, void* allocator_data) {
 
     if (n > 0) {
         w->coro_pool_count = n - 1;
-        return w->coro_pool[n - 1];
+        void* ptr          = _sched_coro_reuse(pool, w->coro_pool[n - 1], size);
+        return ptr ? ptr : _sched_coro_alloc(pool, size);
     }
 
     /* Shared pool empty too: allocate a fresh slot. */
@@ -398,7 +437,7 @@ static void _sched_coro_pool_dealloc_cb(
     _sched_worker_t*    w    = _tls_worker;
 
     /* Drop the physical stack pages regardless of where the slot lands. */
-    _sched_coro_shrink(pool, ptr, size);
+    _sched_coro_decommit_stack(pool, ptr, size);
 
     if (!w || &w->sched->coro_pool != pool || !w->coro_pool) {
         _sched_coro_pool_push(pool, ptr);

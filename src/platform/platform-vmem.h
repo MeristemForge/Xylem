@@ -24,11 +24,9 @@ _Pragma("once")
 #include <stddef.h>
 
 /**
- * The pooled allocator recycles virtual addresses without going through
- * ASan's interceptors, so a freshly committed region may still carry stale
- * shadow poison from its previous occupant, causing false errors on the
- * next user's in-bounds writes. VMEM_ASAN_RESET re-validates the region;
- * it compiles to nothing in non-ASan builds.
+ * Virtual-memory lifecycle calls bypass ASan's allocation interceptors.
+ * Explicit poison tracks decommitted pages, and unpoison makes recommitted
+ * pages accessible to the next occupant. Non-ASan builds need no shadow work.
  */
 #if defined(__SANITIZE_ADDRESS__)
 #define VMEM_ASAN 1
@@ -40,9 +38,12 @@ _Pragma("once")
 
 #ifdef VMEM_ASAN
 #include <sanitizer/asan_interface.h>
-#define VMEM_ASAN_RESET(ptr, size) __asan_unpoison_memory_region((ptr), (size))
+#define VMEM_ASAN_POISON(ptr, size) __asan_poison_memory_region((ptr), (size))
+#define VMEM_ASAN_UNPOISON(ptr, size) \
+    __asan_unpoison_memory_region((ptr), (size))
 #else
-#define VMEM_ASAN_RESET(ptr, size) ((void)0)
+#define VMEM_ASAN_POISON(ptr, size)   ((void)0)
+#define VMEM_ASAN_UNPOISON(ptr, size) ((void)0)
 #endif
 
 /* Virtual memory protection flags. */
@@ -60,33 +61,48 @@ typedef enum platform_vmem_prot_e {
 extern size_t platform_vmem_page_size(void);
 
 /**
- * @brief Allocate a read/write virtual-memory region.
+ * @brief Reserve a virtual-memory address range.
  *
- * @param size  Number of bytes to allocate (rounded up to page boundary).
+ * @param size  Number of page-aligned bytes to reserve.
  *
- * @return Base address of the allocated region, or NULL on failure.
+ * @return Page-aligned base address, or NULL on failure.
  */
-extern void* platform_vmem_alloc(size_t size);
+extern void* platform_vmem_reserve(size_t size);
 
 /**
- * @brief Discard contents while preserving the mapped region.
+ * @brief Commit pages for read/write access.
  *
- * Previous contents become unspecified, but the region remains accessible
- * with its current protection. This operation does not guarantee immediate
- * zeroing or release of system commit charge.
+ * Committing an already committed range is permitted.
  *
- * @param ptr   Page-aligned address within an allocated region.
- * @param size  Number of bytes to reset (must be page-aligned).
+ * @param ptr   Page-aligned address within a reservation.
+ * @param size  Number of page-aligned bytes to commit.
+ *
+ * @return 0 on success, -1 on failure.
  */
-extern void platform_vmem_reset(void* ptr, size_t size);
+extern int platform_vmem_commit(void* ptr, size_t size);
 
 /**
- * @brief Deallocate an entire virtual-memory region.
+ * @brief Decommit pages while preserving their reservation.
  *
- * @param ptr   Base address returned by platform_vmem_alloc.
- * @param size  Size passed to platform_vmem_alloc.
+ * Decommit forfeits previous contents. The range must not be accessed until
+ * it is committed again.
+ *
+ * @param ptr   Page-aligned address within a reservation.
+ * @param size  Number of page-aligned bytes to decommit.
+ *
+ * @return 0 on success, -1 on failure.
  */
-extern void platform_vmem_dealloc(void* ptr, size_t size);
+extern int platform_vmem_decommit(void* ptr, size_t size);
+
+/**
+ * @brief Release a complete virtual-memory reservation.
+ *
+ * @param ptr   Base address returned by platform_vmem_reserve.
+ * @param size  Complete reservation size passed to platform_vmem_reserve.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int platform_vmem_release(void* ptr, size_t size);
 
 /**
  * @brief Change memory protection on an allocated region.

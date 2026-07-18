@@ -28,8 +28,7 @@ size_t platform_vmem_page_size(void) {
     return (size_t)sysconf(_SC_PAGESIZE);
 }
 
-void* platform_vmem_alloc(size_t size) {
-    /* Direct read/write mapping avoids a separate protection call. */
+void* platform_vmem_reserve(size_t size) {
     void* ptr = mmap(
         NULL,
         size,
@@ -37,19 +36,36 @@ void* platform_vmem_alloc(size_t size) {
         MAP_PRIVATE | MAP_ANONYMOUS,
         -1,
         0);
-    if (ptr != MAP_FAILED) {
-        VMEM_ASAN_RESET(ptr, size);
-        return ptr;
+    if (ptr == MAP_FAILED) {
+        return NULL;
     }
-    return NULL;
+#if (defined(__linux__) || defined(__ANDROID__)) && defined(MADV_NOHUGEPAGE)
+    (void)madvise(ptr, size, MADV_NOHUGEPAGE);
+#endif
+    return ptr;
 }
 
-void platform_vmem_reset(void* ptr, size_t size) {
-    madvise(ptr, size, MADV_DONTNEED);
+int platform_vmem_commit(void* ptr, size_t size) {
+#if defined(__APPLE__) && defined(MADV_FREE_REUSE)
+    if (madvise(ptr, size, MADV_FREE_REUSE) != 0) {
+        return -1;
+    }
+#endif
+    VMEM_ASAN_UNPOISON(ptr, size);
+    return 0;
 }
 
-void platform_vmem_dealloc(void* ptr, size_t size) {
-    munmap(ptr, size);
+int platform_vmem_decommit(void* ptr, size_t size) {
+    VMEM_ASAN_POISON(ptr, size);
+#if defined(__APPLE__) && defined(MADV_FREE_REUSABLE)
+    return madvise(ptr, size, MADV_FREE_REUSABLE) == 0 ? 0 : -1;
+#else
+    return madvise(ptr, size, MADV_DONTNEED) == 0 ? 0 : -1;
+#endif
+}
+
+int platform_vmem_release(void* ptr, size_t size) {
+    return munmap(ptr, size) == 0 ? 0 : -1;
 }
 
 int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
