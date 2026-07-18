@@ -138,9 +138,9 @@ inside that range:
 |----------|-------|-------------|---------|
 | `page_size()` | `sysconf(_SC_PAGESIZE)` | `sysconf(_SC_PAGESIZE)` | `GetSystemInfo` |
 | `reserve(size)` | anonymous private `mmap(RW)` | anonymous private `mmap(RW)` | `VirtualAlloc(MEM_RESERVE)` |
-| `commit(ptr,size)` | ASAN unpoison | `MADV_FREE_REUSE`, then ASAN unpoison | `VirtualAlloc(MEM_COMMIT)` then ASAN unpoison |
+| `commit(ptr,size)` | ASAN unpoison | `MADV_FREE_REUSE`, then ASAN unpoison | ASAN unpoison, then `VirtualAlloc(MEM_COMMIT)`; re-poison on failure |
 | `decommit(ptr,size)` | `MADV_FREE`, then ASAN poison | `MADV_FREE_REUSABLE`, then ASAN poison | `VirtualFree(MEM_DECOMMIT)` then ASAN poison |
-| `release(ptr,size)` | `munmap` | `munmap` | `VirtualFree(MEM_RELEASE)` |
+| `release(ptr,size)` | `munmap` | `munmap` | ASAN unpoison, then `VirtualFree(MEM_RELEASE)`; re-poison on failure |
 
 `reserve()` returns one page-aligned range. Callers treat pages as unavailable
 until `commit()` succeeds. `decommit()` preserves the reservation but makes the
@@ -163,8 +163,12 @@ as `PAGE_READWRITE`, and decommits them with `MEM_DECOMMIT`. Decommitted pages n
 longer consume system commit charge, while the containing address range remains
 reserved.
 
-ASAN builds explicitly poison a range after successful decommit and unpoison it
-after successful commit. Non-ASAN builds compile these operations to no-ops.
+ASAN builds explicitly poison a range after successful decommit. Commit clears
+the poison before the range can be touched. On Windows this happens before
+`VirtualAlloc`, which may access the range internally; a failed commit restores
+the poison. Windows also clears stale poison before releasing an address range
+for reuse and restores it if release fails. Non-ASAN builds compile these
+operations to no-ops.
 
 ### Coroutine arena lifecycle
 
