@@ -215,7 +215,7 @@ void arena_free(arena_t* arena, void** slots, int count) {
 
     mtx_lock(&arena->lock);
     if ((size_t)count > arena->free_cap - arena->free_count) {
-        xylem_loge("<arena> free list overflow");
+        xylem_loge("<arena> free slot overflow");
         abort();
     }
     for (int i = 0; i < count; i++) {

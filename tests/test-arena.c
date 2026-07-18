@@ -78,6 +78,15 @@ static void test_alloc_free_realloc(void) {
     void* recycled[32] = {0};
     ASSERT(arena_alloc(arena, recycled, 32) == 32);
     for (int i = 0; i < 32; i++) {
+        int match_count = 0;
+        for (int j = 0; j < 32; j++) {
+            if (slots[i] == recycled[j]) {
+                match_count++;
+            }
+        }
+        ASSERT(match_count == 1);
+    }
+    for (int i = 0; i < 32; i++) {
         ASSERT(recycled[i] != NULL);
         uint8_t* bytes = (uint8_t*)recycled[i];
         bytes[0] = (uint8_t)(i + 2);
