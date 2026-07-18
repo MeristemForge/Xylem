@@ -22,6 +22,7 @@
 #include "addr.h"
 
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-threads.h"
 
 #include "runtime/precond.h"
 #include "runtime/runtime.h"
@@ -30,7 +31,6 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <threads.h>
 
 typedef enum {
     ADDR_RESOLVE_PENDING,
