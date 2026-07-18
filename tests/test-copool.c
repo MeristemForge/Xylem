@@ -1,0 +1,198 @@
+/** Copyright (c) 2026-2036, Jin.Wu <wujin.developer@gmail.com>
+ *
+ *  Permission is hereby granted, free of charge, to any person obtaining a copy
+ *  of this software and associated documentation files (the "Software"), to
+ *  deal in the Software without restriction, including without limitation the
+ *  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ *  sell copies of the Software, and to permit persons to whom the Software is
+ *  furnished to do so, subject to the following conditions:
+ *
+ *  The above copyright notice and this permission notice shall be included in
+ *  all copies or substantial portions of the Software.
+ *
+ *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ *  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ *  IN THE SOFTWARE.
+ */
+
+#include "runtime/copool.h"
+
+#include "xylem/xylem-logger.h"
+
+#include "platform/platform-vmem.h"
+#include "assert.h"
+
+#include <stdint.h>
+
+#ifdef ARENA_STANDALONE_TEST
+void xylem_logger_log(
+    xylem_logger_level_t level,
+    const char* restrict file,
+    int line,
+    const char* restrict fmt,
+    ...) {
+    (void)level;
+    (void)file;
+    (void)line;
+    (void)fmt;
+}
+#endif
+
+static int _contains_slot(void** slots, int count, void* slot) {
+    for (int i = 0; i < count; i++) {
+        if (slots[i] == slot) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void _drain_cache(
+    copool_t* pool,
+    copool_cache_t* cache,
+    size_t size) {
+    while (cache->count > 0) {
+        void* slot = copool_alloc(pool, cache, size);
+        ASSERT(slot != NULL);
+        copool_free(pool, NULL, slot, size);
+    }
+}
+
+static void test_local_cache_reuse(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, 64);
+    ASSERT(pool != NULL);
+    copool_cache_t cache = {0};
+    void* slots[64] = {0};
+    void* recycled[64] = {0};
+
+    for (int i = 0; i < 64; i++) {
+        slots[i] = copool_alloc(pool, &cache, page_size);
+        ASSERT(slots[i] != NULL);
+    }
+    ASSERT(cache.count == 0);
+
+    for (int i = 0; i < 64; i++) {
+        copool_free(pool, &cache, slots[i], page_size);
+    }
+    ASSERT(cache.count == COPOOL_CACHE_CAP);
+
+    for (int i = 0; i < 64; i++) {
+        recycled[i] = copool_alloc(pool, &cache, page_size);
+        ASSERT(recycled[i] != NULL);
+        ASSERT(_contains_slot(slots, 64, recycled[i]));
+        ASSERT(!_contains_slot(recycled, i, recycled[i]));
+    }
+    ASSERT(cache.count == 0);
+
+    for (int i = 0; i < 64; i++) {
+        copool_free(pool, NULL, recycled[i], page_size);
+    }
+    copool_destroy(pool);
+}
+
+static void test_external_path_refills_shared(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 1);
+
+    copool_t* pool = copool_create(page_size, 64);
+    ASSERT(pool != NULL);
+    void* slots[32] = {0};
+
+    for (int i = 0; i < 32; i++) {
+        slots[i] = copool_alloc(pool, NULL, page_size - 1);
+        ASSERT(slots[i] != NULL);
+    }
+    for (int i = 0; i < 32; i++) {
+        copool_free(pool, NULL, slots[i], page_size - 1);
+    }
+
+    for (int i = 0; i < 32; i++) {
+        slots[i] = copool_alloc(pool, NULL, page_size - 1);
+        ASSERT(slots[i] != NULL);
+    }
+    for (int i = 0; i < 32; i++) {
+        copool_free(pool, NULL, slots[i], page_size - 1);
+    }
+    copool_destroy(pool);
+}
+
+static void test_local_overflow_reaches_shared_and_arena(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, 1);
+    ASSERT(pool != NULL);
+    void* slots[65] = {0};
+
+    for (int i = 0; i < 65; i++) {
+        slots[i] = copool_alloc(pool, NULL, page_size);
+        ASSERT(slots[i] != NULL);
+    }
+
+    void* shared_slot = copool_alloc(pool, NULL, page_size);
+    ASSERT(shared_slot != NULL);
+
+    copool_cache_t cache = {0};
+    for (int i = 0; i < 65; i++) {
+        copool_free(pool, &cache, slots[i], page_size);
+    }
+    ASSERT(cache.count == 33);
+
+    copool_free(pool, NULL, shared_slot, page_size);
+    _drain_cache(pool, &cache, page_size);
+    ASSERT(cache.count == 0);
+    copool_destroy(pool);
+}
+
+static void test_create_invalid_args(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    ASSERT(copool_create(0, 1) == NULL);
+    ASSERT(copool_create(page_size, -1) == NULL);
+}
+
+static void test_alloc_invalid_args(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, 1);
+    ASSERT(pool != NULL);
+    copool_cache_t cache = {0};
+
+    ASSERT(copool_alloc(NULL, &cache, page_size) == NULL);
+    ASSERT(copool_alloc(pool, &cache, 0) == NULL);
+    ASSERT(copool_alloc(pool, &cache, page_size + 1) == NULL);
+
+    copool_destroy(pool);
+}
+
+static void test_free_null_args(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    copool_t* pool = copool_create(page_size, 1);
+    ASSERT(pool != NULL);
+
+    copool_free(NULL, NULL, NULL, page_size);
+    copool_free(pool, NULL, NULL, page_size);
+    copool_destroy(NULL);
+    copool_destroy(pool);
+}
+
+int main(void) {
+    test_local_cache_reuse();
+    test_external_path_refills_shared();
+    test_local_overflow_reaches_shared_and_arena();
+    test_create_invalid_args();
+    test_alloc_invalid_args();
+    test_free_null_args();
+    return 0;
+}
