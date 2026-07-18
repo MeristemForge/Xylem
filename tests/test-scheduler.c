@@ -26,6 +26,8 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
+#include "runtime/minicoro/minicoro.h"
+
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -242,17 +244,19 @@ static void test_batch_ready(void) {
     xylem_waitgroup_destroy(wg);
 }
 
-static void test_reject_oversized_final_slot(void) {
+static void test_backend_final_slot_limit(void) {
     scheduler_opts_t opts = {
         .worker_count    = 1,
         .coro_stack_size = 1024U * 1024U,
     };
 
     scheduler_t* sched = scheduler_create(&opts);
-    if (sched) {
-        scheduler_destroy(sched);
-    }
+#ifdef MCO_USE_FIBERS
+    ASSERT(sched != NULL);
+    scheduler_destroy(sched);
+#else
     ASSERT(sched == NULL);
+#endif
 }
 
 static void _test_run_all(void* arg) {
@@ -276,6 +280,6 @@ int main(void) {
 
     xylem_run(_test_run_all, NULL, &one_worker);
     xylem_run(_test_run_all, NULL, &many_workers);
-    test_reject_oversized_final_slot();
+    test_backend_final_slot_limit();
     return 0;
 }
