@@ -5,8 +5,9 @@ written in a straight-line, blocking style while multiplexing thousands of
 connections over a small pool of OS threads. This document describes the
 scheduler, coroutine model, I/O parking, timers, and the blocking-task pool.
 
-Sources: `src/runtime/` — `runtime.c`, `scheduler.{h,c}`, `iowait.{h,c}`,
-`wsq.{h,c}`, `runq.{h,c}`, `dynpool.{h,c}`, and bundled `minicoro/`.
+Sources: `src/runtime/` — `runtime.c`, `scheduler.{h,c}`, `arena.{h,c}`,
+`copool.{h,c}`, `iowait.{h,c}`, `wsq.{h,c}`, `runq.{h,c}`,
+`dynpool.{h,c}`, and bundled `minicoro/`.
 
 Public API: `include/xylem.h` (`xylem_run`, `xylem_spawn`, `xylem_sleep`,
 `xylem_await`, `xylem_shutdown`).
@@ -61,6 +62,7 @@ cannot make progress *parks* (yields to its worker); a wake source later
 | Global run queue | `runq.c` | Mutex-protected intrusive singly linked MPMC FIFO. |
 | I/O wait | `iowait.c` | Per-fd, per-direction coroutine parking on the poller. |
 | Blocking pool | `dynpool.c` | Elastic thread pool for blocking work. |
+| Coroutine pool | `copool.c`, `arena.c` | Committed-slot caches over region-based virtual memory. |
 | Coroutines | `minicoro/` | Stackful coroutine primitive (bundled). |
 
 ## 3. Boot and shutdown (`runtime.c`)
@@ -295,59 +297,74 @@ bumps the `alive` counter, and calls `_sched_coro_start()` for
 and — if it was the last one — fires the idle callback that shuts the runtime
 down.
 
-### Stack allocation and the coroutine pool
+### Coroutine allocation ownership
 
-To avoid hammering the allocator on every spawn, the scheduler keeps a
-**coroutine pool** (default capacity `worker_count * 64`) of recycled stacks:
+Coroutine memory follows `scheduler -> copool -> arena -> platform-vmem`.
+During scheduler creation, `mco_desc_init()` computes the complete minicoro
+allocation size for the configured stack size. The scheduler creates one
+fixed-slot copool of that size and installs two small minicoro allocator
+adapters. Each worker embeds a `copool_cache_t`; calls made outside a worker of
+that scheduler use the shared path without a worker-local cache.
 
-- **Stack-based platforms.** `_sched_coro_pool_alloc()` allocates read/write
-  virtual memory and marks one page `PROT_NONE` as a **guard page** below the
-  stack to turn overflow into an immediate fault. On free, reusable stack pages
-  are reset so the OS may reclaim their backing while the mapping remains in
-  the pool.
-- **Fiber-based platforms** (`MCO_USE_FIBERS`, e.g. Windows fibers): fall back
-  to `calloc`/`free`.
+The copool has two committed tiers:
 
-The pool is guarded by a spinlock and bounded by its capacity; overflow and
-scheduler teardown deallocate complete regions.
+- Every worker-local cache holds up to 64 slots. Allocation pops locally first;
+  an empty cache refills up to 32 slots from the shared cache, then from the
+  arena. A full local cache returns 32 slots before retaining the newly freed
+  slot.
+- The shared committed cache is protected by a spinlock. Its capacity is
+  configurable through `coro_pool_capacity` and defaults to `worker_count *
+  64`. The no-local-cache path takes one shared slot or allocates up to 32 arena
+  slots and places the surplus in the shared cache.
+- Slots that fit neither committed cache overflow to the arena, where they are
+  decommitted and become cold. Shared-cache operations finish before any arena
+  call, so the shared spinlock and arena mutex are never nested.
+
+The arena owns fixed-size, page-aligned slots and an external `void*` free-slot
+array; no allocator metadata is stored inside a cold slot. The aligned slot
+size may not exceed 1 MiB. Creating an arena eagerly reserves its first region.
+Each region contains at least 64 slots and is at most 64 MiB: reservation starts
+at `floor(64 MiB / slot_size)` slots and halves on failure until a 64-slot
+attempt. An allocation attempts at most one region growth and commits the
+addresses it removes from the free array, so it may return a partial batch when
+growth or individual commits fail.
+
+The arena mutex protects region metadata and the free-slot array, but
+`platform_vmem_commit()` and `platform_vmem_decommit()` run outside it. Moving a
+slot from arena to copool commits it; moving one from copool to arena decommits
+it before publishing it back to the cold array. Regions remain reserved through
+all slot reuse and are released in full only when scheduler teardown destroys
+the copool and arena. Coroutine slots therefore share region mappings, and VMA
+usage grows with region reservations rather than coroutine count.
+
+### Context-backend boundary and overflow detection
+
+For ASM and ucontext backends, minicoro places the coroutine object, context,
+storage, and stack in the arena slot. On the Windows Fiber backend, the slot
+still holds the coroutine object, context, and storage, while `CreateFiberEx()`
+and `DeleteFiber()` continue to own the Fiber stack allocation.
+
+Minicoro retains its own delayed overflow checks: non-ASAN yields validate the
+coroutine magic number and current stack address against the recorded stack
+range. ASAN builds use the sanitizer fiber-switch integration and its redzones.
+The arena does not add a second canary or a protected boundary page.
 
 #### Operating-system resource limits
 
-The pool does not impose a fixed limit on active coroutines. On stack-based
-platforms, however, every active or retained idle slot owns a separate virtual
-memory region, so coroutine creation remains subject to operating-system
-resource limits. Reaching one of these limits makes `scheduler_coro_spawn()` fail
-through the virtual-memory allocation path.
+The pool does not impose a fixed limit on active coroutines. Allocation can
+still fail when a new region cannot be reserved or a slot cannot be committed.
+On Windows, reserve uses `MEM_RESERVE`, active slots use `MEM_COMMIT`, cold
+arena slots are returned with `MEM_DECOMMIT`, and destroying the arena releases
+each complete region with `MEM_RELEASE`. Worker-local and shared cache entries
+remain committed, so their retained capacity still consumes commit charge.
 
-On Windows, `platform_vmem_reserve()` acquires address space with `MEM_RESERVE`
-without consuming commit charge. `platform_vmem_commit()` commits the ranges
-that become active, and `platform_vmem_decommit()` releases that charge while
-preserving the reservation for reuse. `platform_vmem_release()` returns the
-complete address range with `MEM_RELEASE`. The Windows commit limit is
-approximately physical memory plus the configured page files; enabling or
-enlarging a page file raises this limit, but does not make commit unlimited.
-
-Linux anonymous writable mappings are also subject to the system's memory
-commit policy. `vm.overcommit_memory=0` uses the kernel heuristic,
-`vm.overcommit_memory=1` permits reservations without strict commit accounting,
-and `vm.overcommit_memory=2` enforces the `CommitLimit` reported by
-`/proc/meminfo`. In strict mode the limit is controlled by available swap and
-`vm.overcommit_ratio` or `vm.overcommit_kbytes`. Adding swap or changing these
-sysctls can raise or relax the allocation-time limit, but actual page faults can
-still exhaust memory and invoke the OOM killer.
-
-Linux `platform_vmem_decommit()` uses `MADV_FREE`. The kernel may retain the
-old physical pages until memory pressure requires reclamation, so RSS need not
-drop immediately and recommitted contents are always treated as unspecified.
-
-Linux and WSL have an additional, independent per-process VMA limit. Every slot
-uses a separate `mmap()`, and protecting its internal guard page with
-`mprotect()` can split that mapping into multiple VMAs. VMA consumption
-therefore grows linearly with the number of active and pooled slots and can
-reach `vm.max_map_count` while address space and commit are still available.
-An administrator can raise `vm.max_map_count` temporarily with `sysctl` or
-persist it in a file under `/etc/sysctl.d/`. Raising it moves this limit rather
-than removing the kernel memory and address-space cost of the mappings.
+On Linux, each complete arena region is one anonymous writable mapping and
+remains subject to the system memory commit policy. Slot decommit uses
+`MADV_FREE`, so physical pages may remain resident until memory pressure and
+recommitted contents are always treated as unspecified. The per-process VMA
+count grows with arena regions rather than active or cached slots; region
+reservation can still reach `vm.max_map_count`, address-space, or commit-policy
+limits.
 
 ## 7. I/O parking (`iowait.c`)
 
@@ -692,12 +709,12 @@ The losing source only drops its reference.
 |--------|-------|---------|---------|
 | `workers` | `xylem_opts_t` / `runtime_opts_t` | CPU count | Scheduler worker threads. |
 | `deque_capacity` | `scheduler_opts_t` | 256 | Per-worker deque capacity (positive power of 2, at most `INT_MAX`). |
-| `coro_pool_capacity` | `scheduler_opts_t` | `workers * 64` | Recycled coroutine stacks. |
+| `coro_pool_capacity` | `scheduler_opts_t` | `workers * 64` | Shared committed-slot cache capacity. |
 | `max_threads` | `dynpool_opts_t` | 512 | Max blocking-pool threads. |
 | `idle_timeout` | `dynpool_opts_t` | 10000 ms | Blocking-pool idle thread lifetime. |
-| Coroutine stack | compile-time | 128 KiB | Per-coroutine stack size. |
+| `coro_stack_size` | `xylem_opts_t` / `runtime_opts_t` / `scheduler_opts_t` | 128 KiB | Per-coroutine stack size. |
 
-## 13. Related docs
+## 12. Related docs
 
 - System overview and how protocols sit on the runtime:
   [`../architecture.md`](../architecture.md).

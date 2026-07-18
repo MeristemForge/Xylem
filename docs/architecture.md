@@ -96,6 +96,15 @@ that can't be made non-blocking) is offloaded to the **dynpool** via
 `xylem_await()`. The full design is in
 [`docs/design/runtime.md`](design/runtime.md).
 
+Coroutine memory follows a single ownership chain: **scheduler -> copool ->
+arena -> platform-vmem**. The scheduler gives minicoro two allocator adapters
+and embeds a 64-slot committed cache in each worker; copool adds a shared
+committed cache. Cache overflow returns cold slots to the arena, which
+decommits them while retaining their containing virtual-memory region. The
+arena reserves and eventually releases complete multi-slot regions, so many
+coroutine slots share a mapping and Unix VMA usage grows with arena regions
+instead of slots.
+
 ## 5. How a network call flows
 
 Using `xylem_tcp_read()` as the canonical example:
