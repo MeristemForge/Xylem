@@ -96,15 +96,17 @@ that can't be made non-blocking) is offloaded to the **dynpool** via
 `xylem_await()`. The full design is in
 [`docs/design/runtime.md`](design/runtime.md).
 
-Coroutine memory follows a single ownership chain: **scheduler -> copool ->
-arena -> platform-vmem**. The scheduler gives minicoro two allocator adapters
-and embeds a 64-slot committed cache in each worker; copool adds a shared
-committed cache. Cache overflow normally decommits slots as they return to the
-arena while retaining their containing virtual-memory region. A decommit
-failure is logged, but the slot still enters the arena free array and its next
-allocation retries the permitted idempotent commit. The arena reserves and
-eventually releases complete multi-slot regions, so many coroutine slots share
-a mapping and Unix VMA usage grows with arena regions instead of slots.
+The arena-backed minicoro slot follows one ownership chain: **scheduler ->
+copool -> arena -> platform-vmem**. It holds the coroutine object, context, and
+storage, plus the stack on non-Fiber backends; the Windows Fiber stack remains
+owned by `CreateFiberEx()` / `DeleteFiber()` (see
+[`design/runtime.md`](design/runtime.md) §6). The scheduler embeds a 64-slot
+committed cache in each worker, and copool adds a shared committed cache. Cache
+overflow normally decommits slots as they return to the arena. A failure is
+logged, but the slot still enters the free array and its next allocation retries
+the permitted idempotent commit. Complete slot regions remain reserved until
+arena destruction, so many arena-backed slots share a mapping and Unix VMA
+usage grows with regions instead of slots.
 
 ## 5. How a network call flows
 

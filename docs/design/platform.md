@@ -168,21 +168,24 @@ after successful commit. Non-ASAN builds compile these operations to no-ops.
 
 ### Coroutine arena lifecycle
 
-The runtime's coroutine allocation path is `scheduler -> copool -> arena ->
-platform-vmem`. An arena eagerly reserves its first complete multi-slot region
-when it is created and reserves another complete region when its free-slot
-array cannot satisfy an allocation. Moving a slot from the arena to copool
-commits that slot. Worker-local and shared copool caches retain committed slots
-for fast reuse. Moving an overflow slot from copool back to the arena normally
-decommits it, making it cold while its address remains reserved. If decommit
-fails, the arena logs the failure but still returns the address to its free-slot
-array; the next allocation calls the permitted idempotent `commit()` again.
+The runtime's arena-backed minicoro slot follows the ownership chain
+`scheduler -> copool -> arena -> platform-vmem`. It contains the coroutine
+object, context, and storage, plus the stack on non-Fiber backends; the Windows
+Fiber stack is outside this chain and remains owned by `CreateFiberEx()` /
+`DeleteFiber()` (see
+[`runtime.md`](runtime.md) §6). An arena eagerly reserves its first complete
+multi-slot region and grows when its free-slot array cannot satisfy an
+allocation. Moving a slot to copool commits it, and worker-local and shared
+caches retain committed slots. Returning overflow normally decommits the slot,
+making it cold while its address remains reserved. If decommit fails, the arena
+logs the failure but still records the address; the next allocation calls the
+permitted idempotent `commit()` again.
 
 Neither cache eviction nor slot decommit releases part of a reservation.
-`copool_destroy()` calls `arena_destroy()`, which releases every complete region;
-this is also how scheduler teardown releases coroutine storage. Consequently,
-arena-backed coroutine slots share region mappings, and Unix VMA consumption
-grows once per successfully reserved region rather than once per coroutine.
+`copool_destroy()` calls `arena_destroy()`, which releases every complete
+arena-backed slot region; scheduler teardown uses the same path. Consequently,
+arena-backed slots share region mappings, and Unix VMA consumption grows once
+per successfully reserved region rather than once per coroutine.
 
 ## 6. Semaphore
 

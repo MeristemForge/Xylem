@@ -299,12 +299,13 @@ down.
 
 ### Coroutine allocation ownership
 
-Coroutine memory follows `scheduler -> copool -> arena -> platform-vmem`.
-During scheduler creation, `mco_desc_init()` computes the complete minicoro
-allocation size for the configured stack size. The scheduler creates one
-fixed-slot copool of that size and installs two small minicoro allocator
-adapters. Each worker embeds a `copool_cache_t`; calls made outside a worker of
-that scheduler use the shared path without a worker-local cache.
+The arena-backed minicoro slot follows the ownership chain
+`scheduler -> copool -> arena -> platform-vmem`. During scheduler creation,
+`mco_desc_init()` computes its backend-specific `coro_size` from the configured
+stack size. The scheduler creates one fixed-slot copool of that size and
+installs two small minicoro allocator adapters. Each worker embeds a
+`copool_cache_t`; calls made outside a worker of that scheduler use the shared
+path without a worker-local cache.
 
 The copool has two committed tiers:
 
@@ -337,7 +338,7 @@ slot from arena to copool commits it. Moving one from copool to arena attempts
 to decommit it before publishing it back to the free array; a failure is logged
 without dropping the slot. Regions remain reserved through all slot reuse and
 are released in full only when scheduler teardown destroys the copool and
-arena. Coroutine slots therefore share region mappings, and VMA usage grows
+arena. Arena-backed slots therefore share region mappings, and VMA usage grows
 with region reservations rather than coroutine count.
 
 ### Context-backend boundary and overflow detection
