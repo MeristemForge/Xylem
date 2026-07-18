@@ -1,15 +1,16 @@
-# Coroutine Arena Design
+# Coroutine Arena and Pool Design
 
 ## Scope
 
-Replace per-coroutine virtual-memory mappings with one scheduler-owned arena.
-Every minicoro allocator callback obtains its memory from the arena. The
-existing per-worker and shared coroutine pools remain as committed caches in
-front of the arena.
+Replace per-coroutine virtual-memory mappings with two runtime modules:
+`copool` manages committed local/shared caches, and `arena` manages cold
+fixed-size slots backed by virtual-memory regions. Every minicoro allocator
+callback enters through `copool`.
 
-The arena owns virtual address ranges and fixed-size slots. It does not own
-coroutine lifecycle state, runnable queues, worker assignment, or minicoro
-context initialization.
+The scheduler selects the current worker cache but does not implement pool or
+virtual-memory policy. `copool` owns one `arena_t`; `arena` owns its regions.
+Neither module owns coroutine lifecycle state, runnable queues, worker
+assignment, or minicoro context initialization.
 
 ## Goals
 
@@ -20,24 +21,32 @@ context initialization.
 - Avoid one virtual-memory mapping per coroutine.
 - Keep local and shared cache slots committed for fast reuse.
 - Decommit only cold slots returned to the arena.
+- Keep scheduler integration to two thin minicoro allocator adapters.
 - Support Linux, Android, macOS, iOS, and Windows through `platform-vmem`.
 - Keep the arena API independent from scheduler and minicoro types.
 
 ## Ownership and Lifetime
 
-The scheduler owns one `arena_t`:
+The ownership chain is:
+
+```text
+scheduler -> copool -> arena -> regions
+```
+
+Creation and destruction follow that chain:
 
 ```text
 scheduler_create
   -> calculate mco_desc.coro_size
-  -> arena_create(coro_size)
-  -> reserve the first region immediately
+  -> copool_create(coro_size, shared_capacity)
+       -> arena_create(coro_size)
+       -> reserve the first region immediately
 
 scheduler_destroy
   -> stop and join workers
   -> destroy remaining coroutines
-  -> discard local/shared pointer caches
-  -> arena_destroy
+  -> copool_destroy
+       -> arena_destroy
 ```
 
 Regions remain reserved for the scheduler lifetime. A completely free region
@@ -45,7 +54,7 @@ is not released while the scheduler is running. Cold slots can release physical
 resources through decommit while retaining their addresses. All regions are
 released together by `arena_destroy()`.
 
-## Public Internal API
+## Arena API
 
 The module lives in `src/runtime/arena.h` and `src/runtime/arena.c`.
 
@@ -70,6 +79,42 @@ extern void arena_free(
 `slots`, from zero through `count`. Partial success is valid. `arena_free()` is
 void because a decommit failure does not prevent the arena from recovering slot
 ownership.
+
+## Coroutine Pool API
+
+The cache module lives in `src/runtime/copool.h` and `src/runtime/copool.c`.
+
+```c
+typedef struct copool_s copool_t;
+
+#define COPOOL_CACHE_CAP 64
+
+typedef struct copool_cache_s {
+    void*   slots[COPOOL_CACHE_CAP];
+    int32_t count;
+} copool_cache_t;
+
+extern copool_t* copool_create(
+    size_t  slot_size,
+    int32_t shared_cap);
+
+extern void copool_destroy(copool_t* pool);
+
+extern void* copool_alloc(
+    copool_t*       pool,
+    copool_cache_t* cache,
+    size_t          size);
+
+extern void copool_free(
+    copool_t*       pool,
+    copool_cache_t* cache,
+    void*           ptr,
+    size_t          size);
+```
+
+`cache != NULL` selects a worker-local cache. `cache == NULL` selects the
+non-worker path. `copool_cache_t` is embedded directly in each scheduler worker
+and starts zero-initialized; it owns no memory outside the backing arena.
 
 ## Fixed Slot Layout
 
@@ -230,20 +275,24 @@ avoid locks, while global stack-pool refill and span allocation use locks. A
 lock-free arena bitmap or tagged atomic free list is not justified on the cold
 path and can be introduced later without changing the arena API.
 
-## Scheduler Cache Integration
+## Coroutine Pool Internals
 
-The shared scheduler pool contains only committed slots and uses the arena as
-its backing allocator:
+`copool_t` owns the committed shared cache and its arena:
 
 ```c
-typedef struct _sched_coro_pool_s {
+struct copool_s {
     spin_t   lock;
     void**   slots;
     int32_t  count;
     int32_t  cap;
+    size_t   slot_size;
     arena_t* arena;
-} _sched_coro_pool_t;
+};
 ```
+
+The local cache capacity is 64 and the transfer batch is half that capacity,
+32 slots. The shared capacity remains configurable through the scheduler's
+existing coroutine-pool capacity option.
 
 Worker allocation order:
 
@@ -285,6 +334,37 @@ return directly to the arena.
 Local and shared cache hits do not call commit or decommit. Only slots crossing
 the arena boundary perform platform virtual-memory transitions.
 
+## Scheduler Integration
+
+The scheduler owns `copool_t* coro_pool`, and each worker embeds one
+`copool_cache_t coro_cache`. It does not access arena internals or manipulate
+shared/local slot arrays directly.
+
+Scheduler code retains only two minicoro allocator adapters:
+
+```c
+static void* _sched_coro_alloc_cb(size_t size, void* data) {
+    scheduler_t* sched = (scheduler_t*)data;
+    copool_cache_t* cache = _sched_current_coro_cache(sched);
+    return copool_alloc(sched->coro_pool, cache, size);
+}
+
+static void _sched_coro_dealloc_cb(
+    void* ptr,
+    size_t size,
+    void* data) {
+    scheduler_t* sched = (scheduler_t*)data;
+    copool_cache_t* cache = _sched_current_coro_cache(sched);
+    copool_free(sched->coro_pool, cache, ptr, size);
+}
+```
+
+`_sched_current_coro_cache()` returns the current worker's cache only when the
+TLS worker belongs to the supplied scheduler. Otherwise it returns `NULL`.
+`mco_desc.allocator_data` points to the scheduler so the adapters can perform
+that ownership check without making `copool` depend on scheduler TLS or worker
+types.
+
 ## Minicoro Backend Boundary
 
 Every allocation made through minicoro's allocator callback uses the arena.
@@ -298,8 +378,8 @@ coroutine object, context, and storage. The stack remains owned by
 `CreateFiberEx()` and `DeleteFiber()` because the Windows Fiber API does not
 accept a caller-provided stack address.
 
-The scheduler no longer uses a separate calloc/free allocator path for Fiber
-mode.
+The scheduler and `copool` do not use a separate calloc/free allocator path for
+Fiber mode.
 
 ## Scheduler Cleanup
 
@@ -307,12 +387,12 @@ Scheduler cleanup must preserve this order:
 
 1. Stop and join workers.
 2. Destroy every remaining coroutine while allocator callbacks are valid.
-3. Free worker-local cache pointer arrays.
-4. Free the shared-pool pointer array.
-5. Destroy the arena and release every region.
+3. Call `copool_destroy()`.
+4. `copool_destroy()` frees the shared pointer array and destroys its arena.
 
-Local and shared slot addresses are not individually released. They refer to
-memory owned by arena regions.
+Worker-local caches are embedded values and require no allocation or deinit.
+Local and shared slot addresses are not individually released because they
+refer to memory owned by arena regions.
 
 ## Input and Error Semantics
 
@@ -321,19 +401,21 @@ memory owned by arena regions.
 - An aligned slot size above 1 MiB returns `NULL`.
 - `arena_alloc(NULL, ...)`, a NULL output array, or `count <= 0` returns zero.
 - `arena_free(NULL, ...)`, a NULL input array, or `count <= 0` is a no-op.
-- A minicoro allocation request larger than the arena slot size logs an error
-  and returns `NULL`.
 - A failed initial region reservation makes `arena_create()` fail.
 - A failed later region growth permits `arena_alloc()` to return slots that
   were already free, otherwise it returns zero.
 - Region release failures during destroy are logged while cleanup continues.
+- `copool_create()` fails when its arena or shared pointer array cannot be
+  created.
+- `copool_alloc()` returns `NULL` when `size` exceeds the configured slot size.
+- `copool_free()` logs and aborts when `size` exceeds the configured slot size.
 
 ## Removed Scheduler Responsibilities
 
 The scheduler no longer calculates page-rounded coroutine metadata or stack
-subranges. It no longer commits, decommits, or releases individual coroutine
-allocations. These responsibilities move behind `arena_alloc()`, `arena_free()`,
-and `arena_destroy()`.
+subranges. It no longer implements local/shared batching or commits, decommits,
+and releases coroutine allocations. These responsibilities move behind
+`copool_alloc()`, `copool_free()`, and the arena owned by `copool`.
 
 ## Verification
 
@@ -348,13 +430,19 @@ Add `tests/test-arena.c` with coverage for:
 - destroy with both allocated and free slots;
 - ASan reuse without stale poison reports.
 
-Scheduler tests cover:
+Add `tests/test-copool.c` with coverage for:
 
 - worker-local hits;
 - half-cache shared refill;
 - shared miss followed by a 32-slot arena refill;
 - local/shared overflow returned to the arena;
 - non-worker batch refill into the shared pool;
+- shared-capacity edge cases;
+- concurrent caches using one shared pool.
+
+Scheduler tests cover:
+
+- worker and non-worker allocator adapter selection;
 - concurrent coroutine creation and destruction;
 - scheduler creation failure when the final aligned slot exceeds 1 MiB.
 
