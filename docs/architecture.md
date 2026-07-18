@@ -99,11 +99,12 @@ that can't be made non-blocking) is offloaded to the **dynpool** via
 Coroutine memory follows a single ownership chain: **scheduler -> copool ->
 arena -> platform-vmem**. The scheduler gives minicoro two allocator adapters
 and embeds a 64-slot committed cache in each worker; copool adds a shared
-committed cache. Cache overflow returns cold slots to the arena, which
-decommits them while retaining their containing virtual-memory region. The
-arena reserves and eventually releases complete multi-slot regions, so many
-coroutine slots share a mapping and Unix VMA usage grows with arena regions
-instead of slots.
+committed cache. Cache overflow normally decommits slots as they return to the
+arena while retaining their containing virtual-memory region. A decommit
+failure is logged, but the slot still enters the arena free array and its next
+allocation retries the permitted idempotent commit. The arena reserves and
+eventually releases complete multi-slot regions, so many coroutine slots share
+a mapping and Unix VMA usage grows with arena regions instead of slots.
 
 ## 5. How a network call flows
 
@@ -179,7 +180,7 @@ platform-agnostic.
 | `XYLEM_ENABLE_TLS` | Compiles TLS/DTLS against OpenSSL ≥ 3.5. When off, the HTTP transport links a TLS stub and `wss://` is unavailable. |
 | `XYLEM_ENABLE_TESTING` | Builds the `tests/` suite. |
 | `XYLEM_ENABLE_DYNAMIC_LIBRARY` | Builds a shared library instead of static. |
-| `XYLEM_ENABLE_ASAN` / `TSAN` / `UBSAN` | Sanitizer builds. |
+| `XYLEM_ENABLE_ASAN` / `XYLEM_ENABLE_TSAN` / `XYLEM_ENABLE_UBSAN` | Sanitizer builds. |
 | `XYLEM_ENABLE_COVERAGE` | Coverage instrumentation. |
 
 See [`build.md`](build.md) for the full option matrix and per-platform notes.
@@ -189,4 +190,4 @@ See [`build.md`](build.md) for the full option matrix and per-platform notes.
 - Runtime internals: [`docs/design/runtime.md`](design/runtime.md)
 - Library-wide conventions: [`conventions.md`](conventions.md)
 - Per-module designs: [`docs/design/`](design/)
-- Test strategy: [`docs/test/strategy.md`](test/strategy.md)
+- Test strategy: `docs/test/strategy.md` *(planned)*

@@ -286,7 +286,7 @@ chain after finding work.
 ## 6. Coroutines (minicoro + pooling)
 
 Coroutines are stackful, provided by the bundled `minicoro` library. Each has a
-fixed 128 KiB stack.
+configured fixed-size stack (`coro_stack_size`, default 128 KiB).
 
 `scheduler_coro_spawn()` allocates a `_sched_coro_ctx_t` (entry fn, arg, intrusive runq and
 registry nodes), creates the coroutine, links it into the scheduler's
@@ -316,12 +316,14 @@ The copool has two committed tiers:
   configurable through `coro_pool_capacity` and defaults to `worker_count *
   64`. The no-local-cache path takes one shared slot or allocates up to 32 arena
   slots and places the surplus in the shared cache.
-- Slots that fit neither committed cache overflow to the arena, where they are
-  decommitted and become cold. Shared-cache operations finish before any arena
-  call, so the shared spinlock and arena mutex are never nested.
+- Slots that fit neither committed cache overflow to the arena. A successful
+  decommit makes them cold. A failure is logged, but the slot still enters the
+  arena free array and its next allocation retries the permitted idempotent
+  commit. Shared-cache operations finish before any arena call, so the shared
+  spinlock and arena mutex are never nested.
 
 The arena owns fixed-size, page-aligned slots and an external `void*` free-slot
-array; no allocator metadata is stored inside a cold slot. The aligned slot
+array; no allocator metadata is stored inside a free slot. The aligned slot
 size may not exceed 1 MiB. Creating an arena eagerly reserves its first region.
 Each region contains at least 64 slots and is at most 64 MiB: reservation starts
 at `floor(64 MiB / slot_size)` slots and halves on failure until a 64-slot
@@ -331,11 +333,12 @@ growth or individual commits fail.
 
 The arena mutex protects region metadata and the free-slot array, but
 `platform_vmem_commit()` and `platform_vmem_decommit()` run outside it. Moving a
-slot from arena to copool commits it; moving one from copool to arena decommits
-it before publishing it back to the cold array. Regions remain reserved through
-all slot reuse and are released in full only when scheduler teardown destroys
-the copool and arena. Coroutine slots therefore share region mappings, and VMA
-usage grows with region reservations rather than coroutine count.
+slot from arena to copool commits it. Moving one from copool to arena attempts
+to decommit it before publishing it back to the free array; a failure is logged
+without dropping the slot. Regions remain reserved through all slot reuse and
+are released in full only when scheduler teardown destroys the copool and
+arena. Coroutine slots therefore share region mappings, and VMA usage grows
+with region reservations rather than coroutine count.
 
 ### Context-backend boundary and overflow detection
 
@@ -353,10 +356,10 @@ The arena does not add a second canary or a protected boundary page.
 
 The pool does not impose a fixed limit on active coroutines. Allocation can
 still fail when a new region cannot be reserved or a slot cannot be committed.
-On Windows, reserve uses `MEM_RESERVE`, active slots use `MEM_COMMIT`, cold
-arena slots are returned with `MEM_DECOMMIT`, and destroying the arena releases
-each complete region with `MEM_RELEASE`. Worker-local and shared cache entries
-remain committed, so their retained capacity still consumes commit charge.
+On Windows, reserve uses `MEM_RESERVE`, active slots use `MEM_COMMIT`, and a
+successful arena return uses `MEM_DECOMMIT`; destroying the arena releases each
+complete region with `MEM_RELEASE`. Worker-local and shared cache entries remain
+committed, so their retained capacity still consumes commit charge.
 
 On Linux, each complete arena region is one anonymous writable mapping and
 remains subject to the system memory commit policy. Slot decommit uses
@@ -721,4 +724,4 @@ The losing source only drops its reference.
 - Platform poller / socket / vmem details:
   [`platform.md`](platform.md).
 - Per-protocol designs (TCP, UDP, TLS, …): [`../design/`](.).
-- Runtime test design: [`../test/runtime.md`](../test/runtime.md) *(planned)*.
+- Runtime test design: `../test/runtime.md` *(planned)*.

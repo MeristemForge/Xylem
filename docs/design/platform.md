@@ -170,12 +170,13 @@ after successful commit. Non-ASAN builds compile these operations to no-ops.
 
 The runtime's coroutine allocation path is `scheduler -> copool -> arena ->
 platform-vmem`. An arena eagerly reserves its first complete multi-slot region
-when it is created and reserves another complete region when its cold free-slot
+when it is created and reserves another complete region when its free-slot
 array cannot satisfy an allocation. Moving a slot from the arena to copool
 commits that slot. Worker-local and shared copool caches retain committed slots
-for fast reuse. Moving an overflow slot from copool back to the arena decommits
-it; the address remains reserved and returns to the arena's cold free-slot
-array.
+for fast reuse. Moving an overflow slot from copool back to the arena normally
+decommits it, making it cold while its address remains reserved. If decommit
+fails, the arena logs the failure but still returns the address to its free-slot
+array; the next allocation calls the permitted idempotent `commit()` again.
 
 Neither cache eviction nor slot decommit releases part of a reservation.
 `copool_destroy()` calls `arena_destroy()`, which releases every complete region;
