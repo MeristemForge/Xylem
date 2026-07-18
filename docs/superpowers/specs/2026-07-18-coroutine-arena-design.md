@@ -340,6 +340,20 @@ The scheduler owns `copool_t* coro_pool`, and each worker embeds one
 `copool_cache_t coro_cache`. It does not access arena internals or manipulate
 shared/local slot arrays directly.
 
+The configured minicoro stack size remains a scheduler property:
+
+```c
+struct scheduler_s {
+    ...
+    size_t    coro_stack_size;
+    copool_t* coro_pool;
+};
+```
+
+`scheduler_coro_spawn()` passes `sched->coro_stack_size` to `mco_desc_init()`.
+The resulting `desc.coro_size` is validated by `copool`; stack size is not a
+pool or arena policy field.
+
 Scheduler code retains only two minicoro allocator adapters:
 
 ```c
@@ -430,6 +444,8 @@ The scheduler no longer calculates page-rounded coroutine metadata or stack
 subranges. It no longer implements local/shared batching or commits, decommits,
 and releases coroutine allocations. These responsibilities move behind
 `copool_alloc()`, `copool_free()`, and the arena owned by `copool`.
+The scheduler continues to own the configured coroutine stack size because it
+is required to build each minicoro descriptor.
 
 ## Verification
 
