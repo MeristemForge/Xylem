@@ -268,33 +268,44 @@ static void test_init_alignment(void) {
     uint8_t*  raw;
     uint8_t*  buffer;
     size_t    padding;
-    size_t    misalignment;
     mco_result result;
-    int        unchanged;
+    mco_result uninit_result = MCO_SUCCESS;
+#if !defined(TEST_MCO_WINDOWS_FIBER)
+    int unchanged;
+#endif
 
     ASSERT(desc.coro_size <= SIZE_MAX - 32U);
 #if defined(TEST_MCO_WINDOWS_FIBER)
     ASSERT(mco_desc_stack_offset(&desc) == 0);
-    misalignment = 1U;
 #else
     ASSERT(mco_desc_stack_offset(&desc) != 0);
-    misalignment = 8U;
 #endif
     raw = (uint8_t*)malloc(desc.coro_size + 32U);
     ASSERT(raw != NULL);
     padding = (size_t)((16U - (uintptr_t)raw % 16U) % 16U);
-    buffer = raw + padding + misalignment;
-    ASSERT((uintptr_t)buffer % 16U == misalignment);
+    buffer = raw + padding + 8U;
+    ASSERT((uintptr_t)buffer % 16U == 8U);
+    ASSERT((uintptr_t)buffer % sizeof(void*) == 0);
     memset(buffer, 0xa5, desc.coro_size);
 
     result = mco_init((mco_coro*)buffer, &desc);
+#if defined(TEST_MCO_WINDOWS_FIBER)
+    if (result == MCO_SUCCESS) {
+        uninit_result = mco_uninit((mco_coro*)buffer);
+    }
+    free(raw);
+    ASSERT(result == MCO_SUCCESS);
+    ASSERT(uninit_result == MCO_SUCCESS);
+#else
     unchanged = _buffer_is_filled(buffer, desc.coro_size, 0xa5);
     if (result == MCO_SUCCESS) {
-        ASSERT(mco_uninit((mco_coro*)buffer) == MCO_SUCCESS);
+        uninit_result = mco_uninit((mco_coro*)buffer);
     }
+    free(raw);
+    ASSERT(uninit_result == MCO_SUCCESS);
     ASSERT(result == MCO_INVALID_ARGUMENTS);
     ASSERT(unchanged != 0);
-    free(raw);
+#endif
 }
 
 #if defined(TEST_MCO_WINDOWS_ASM)
