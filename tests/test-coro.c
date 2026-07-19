@@ -21,6 +21,8 @@
 
 #include "assert.h"
 #include "platform/platform-vmem.h"
+#include "runtime/copool.h"
+#include "runtime/coro.h"
 
 #include "runtime/minicoro/minicoro.h"
 
@@ -58,6 +60,10 @@ typedef struct {
     int    alloc_calls;
     int    dealloc_calls;
 } _misaligned_alloc_ctx_t;
+
+typedef struct {
+    copool_t* pool;
+} _coro_fixture_t;
 
 static void _empty_entry(mco_coro* co) {
     (void)co;
@@ -114,6 +120,18 @@ static void _misaligned_dealloc(void* ptr, size_t size, void* allocator_data) {
     ctx->dealloc_allocator_data = allocator_data;
     free(ctx->raw_ptr);
     ctx->raw_ptr = NULL;
+}
+
+static void* _coro_alloc_cb(size_t size, void* allocator_data) {
+    _coro_fixture_t* fixture = (_coro_fixture_t*)allocator_data;
+
+    return copool_alloc(fixture->pool, NULL, size);
+}
+
+static void _coro_dealloc_cb(void* ptr, size_t size, void* allocator_data) {
+    _coro_fixture_t* fixture = (_coro_fixture_t*)allocator_data;
+
+    copool_free(fixture->pool, NULL, ptr, size);
 }
 
 static int _buffer_is_filled(const uint8_t* ptr, size_t size, uint8_t value) {
@@ -263,6 +281,44 @@ static void test_allocator_alignment(void) {
     ASSERT(alloc_ctx.raw_ptr == NULL);
 }
 
+static void test_create_destroy_reuse(void) {
+    mco_desc          desc           = mco_desc_init(_empty_entry, 128U * 1024U);
+    copool_slot_ops_t ops            = coro_get_slot_ops(&desc);
+    _coro_fixture_t   fixture        = {0};
+    mco_coro*         first          = NULL;
+    mco_coro*         second         = NULL;
+    void*             first_ptr      = NULL;
+    mco_result        first_create   = MCO_GENERIC_ERROR;
+    mco_result        first_destroy  = MCO_GENERIC_ERROR;
+    mco_result        second_create  = MCO_GENERIC_ERROR;
+    mco_result        second_destroy = MCO_GENERIC_ERROR;
+
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+
+    first_create = coro_create(&first, &desc);
+    if (first_create == MCO_SUCCESS) {
+        first_ptr     = first;
+        first_destroy = coro_destroy(first);
+    }
+    if (first_destroy == MCO_SUCCESS) {
+        second_create = coro_create(&second, &desc);
+    }
+    if (second_create == MCO_SUCCESS) {
+        second_destroy = coro_destroy(second);
+    }
+    copool_destroy(fixture.pool);
+
+    ASSERT(first_create == MCO_SUCCESS);
+    ASSERT(first_destroy == MCO_SUCCESS);
+    ASSERT(second_create == MCO_SUCCESS);
+    ASSERT(second_destroy == MCO_SUCCESS);
+    ASSERT(second == first_ptr);
+}
+
 static void test_init_alignment(void) {
     mco_desc  desc = mco_desc_init(_empty_entry, 128U * 1024U);
     uint8_t*  raw;
@@ -365,6 +421,7 @@ int main(void) {
     test_stack_size_overflow();
     test_init_alignment();
     test_allocator_alignment();
+    test_create_destroy_reuse();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_stack_size_mutation();
     test_stack_size_layout_overflow();

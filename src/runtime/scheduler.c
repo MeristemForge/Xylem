@@ -59,6 +59,7 @@
 #include "container/mpsc.h"
 #include "container/queue.h"
 #include "copool.h"
+#include "coro.h"
 #include "iowait.h"
 #include "platform/platform-cpu.h"
 #include "platform/platform-info.h"
@@ -67,8 +68,6 @@
 #include "runq.h"
 #include "sync/spin.h"
 #include "wsq.h"
-
-#include "minicoro/minicoro.h"
 
 #include <limits.h>
 #include <stdatomic.h>
@@ -154,7 +153,7 @@ struct scheduler_s {
     _Atomic uint32_t      timer_rr;
     _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
     _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
-    size_t           coro_stack_size;
+    mco_desc         coro_desc;
     copool_t*        coro_pool;
 };
 
@@ -623,14 +622,11 @@ int scheduler_coro_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     ctx->fn  = fn;
     ctx->arg = arg;
 
-    mco_desc desc = mco_desc_init(_sched_coro_entry_cb, sched->coro_stack_size);
-    desc.alloc_cb = _sched_coro_alloc_cb;
-    desc.dealloc_cb     = _sched_coro_dealloc_cb;
-    desc.allocator_data = sched;
-    desc.user_data      = ctx;
+    mco_desc desc = sched->coro_desc;
+    desc.user_data = ctx;
 
     mco_coro* co = NULL;
-    if (mco_create(&co, &desc) != MCO_SUCCESS) {
+    if (coro_create(&co, &desc) != MCO_SUCCESS) {
         free(ctx);
         return -1;
     }
@@ -884,7 +880,7 @@ static void _sched_coro_exit(_sched_worker_t* w, mco_coro* co) {
     spin_unlock(&owner->registry_lock);
 
     free(ctx);
-    mco_destroy(co);
+    coro_destroy(co);
 
     scheduler_t* sched = w->sched;
     int64_t      prev  = atomic_fetch_sub(&sched->alive, 1);
@@ -1217,10 +1213,11 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->wakeup_rd = PLATFORM_SO_ERROR_INVALID_SOCKET;
     sched->wakeup_wr = PLATFORM_SO_ERROR_INVALID_SOCKET;
 
-    int32_t  worker_count   = (int32_t)platform_info_getcpus();
-    int      deque_capacity = SCHED_DEQUE_CAP;
-    size_t   pool_cap       = 0;
-    size_t   stack_size     = SCHED_CORO_STACK_SIZE;
+    int32_t           worker_count   = (int32_t)platform_info_getcpus();
+    int               deque_capacity = SCHED_DEQUE_CAP;
+    size_t            pool_cap       = 0;
+    size_t            stack_size     = SCHED_CORO_STACK_SIZE;
+    copool_slot_ops_t slot_ops;
 
     if (worker_count < 1) {
         worker_count = 4;
@@ -1300,10 +1297,16 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         return NULL;
     }
 
-    mco_desc desc_probe = mco_desc_init(_sched_coro_entry_cb, stack_size);
-    sched->coro_stack_size = stack_size;
-    sched->coro_pool =
-        copool_create(desc_probe.coro_size, (int32_t)pool_cap, NULL);
+    sched->coro_desc                =
+        mco_desc_init(_sched_coro_entry_cb, stack_size);
+    sched->coro_desc.alloc_cb       = _sched_coro_alloc_cb;
+    sched->coro_desc.dealloc_cb     = _sched_coro_dealloc_cb;
+    sched->coro_desc.allocator_data = sched;
+    slot_ops = coro_get_slot_ops(&sched->coro_desc);
+    sched->coro_pool = copool_create(
+        sched->coro_desc.coro_size,
+        (int32_t)pool_cap,
+        &slot_ops);
     if (!sched->coro_pool) {
         _sched_cleanup(sched, 0);
         return NULL;
@@ -1376,7 +1379,7 @@ void scheduler_destroy(scheduler_t* sched) {
 
             _sched_coro_ctx_t* ctx =
                 list_entry(node, _sched_coro_ctx_t, registry_node);
-            mco_destroy(ctx->co);
+            coro_destroy(ctx->co);
             free(ctx);
 
             spin_lock(&w->registry_lock);
