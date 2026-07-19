@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define TEST_DEFAULT_CORO_COUNT 64
+
 #if defined(_WIN32) && defined(MCO_USE_FIBERS)
 #define TEST_MCO_WINDOWS_FIBER 1
 #elif defined(_WIN32) && !defined(MCO_USE_FIBERS) && \
@@ -222,6 +224,50 @@ static void test_stack_limit(void) {
     ASSERT(mco_get_stack_limit(co) == NULL);
 #endif
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
+}
+
+static void test_create_default_allocator(void) {
+    mco_desc  desc = mco_desc_init(_empty_entry, 32U * 1024U);
+    mco_coro* coros[TEST_DEFAULT_CORO_COUNT] = {0};
+    int       create_success  = 1;
+    int       limit_valid     = 1;
+    int       destroy_success = 1;
+#if defined(TEST_MCO_WINDOWS_ASM)
+    size_t page_size     = platform_vmem_page_size();
+    int    saw_unaligned = 0;
+#endif
+
+    for (int i = 0; i < TEST_DEFAULT_CORO_COUNT; i++) {
+        if (coro_create(&coros[i], &desc) != MCO_SUCCESS) {
+            create_success = 0;
+            continue;
+        }
+#if defined(TEST_MCO_WINDOWS_ASM)
+        if (page_size > 0 && (uintptr_t)coros[i] % page_size != 0) {
+            saw_unaligned = 1;
+        }
+        if (mco_get_stack_limit(coros[i]) == NULL) {
+            limit_valid = 0;
+        }
+#else
+        if (mco_get_stack_limit(coros[i]) != NULL) {
+            limit_valid = 0;
+        }
+#endif
+    }
+    for (int i = 0; i < TEST_DEFAULT_CORO_COUNT; i++) {
+        if (coros[i] != NULL && coro_destroy(coros[i]) != MCO_SUCCESS) {
+            destroy_success = 0;
+        }
+    }
+
+    ASSERT(create_success != 0);
+#if defined(TEST_MCO_WINDOWS_ASM)
+    ASSERT(page_size > 0);
+    ASSERT(saw_unaligned != 0);
+#endif
+    ASSERT(limit_valid != 0);
+    ASSERT(destroy_success != 0);
 }
 
 static void test_stack_size_overflow(void) {
@@ -417,6 +463,7 @@ static void test_stack_size_layout_overflow(void) {
 int main(void) {
     test_stack_offset();
     test_stack_limit();
+    test_create_default_allocator();
     test_storage_size_mutation();
     test_stack_size_overflow();
     test_init_alignment();

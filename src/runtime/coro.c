@@ -86,6 +86,7 @@ static int _coro_slot_reset_cb(void* ptr, size_t size, void* ud) {
 mco_result coro_create(mco_coro** out, mco_desc* desc) {
     platform_coro_t platform;
     mco_result      result = mco_create(out, desc);
+    void*           stack_limit;
 
     if (result != MCO_SUCCESS) {
         return result;
@@ -98,7 +99,10 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
         return MCO_INVALID_ARGUMENTS;
     }
 
-    mco_set_stack_limit(*out, platform_coro_initial_stack_limit(&platform));
+    stack_limit = platform_coro_initial_stack_limit(&platform);
+    if (platform.stack_low == NULL || stack_limit != NULL) {
+        mco_set_stack_limit(*out, stack_limit);
+    }
     return MCO_SUCCESS;
 }
 
