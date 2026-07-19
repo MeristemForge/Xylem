@@ -29,7 +29,7 @@ _Pragma("once")
 /* Opaque fixed-slot coroutine pool. */
 typedef struct copool_s copool_t;
 
-/* Slot lifecycle callbacks copied by copool_create(). */
+/* Slot lifecycle callbacks. Functions may run concurrently. */
 typedef struct copool_slot_ops_s {
     int (*init)(void* ptr, size_t size, void* ud);
     int (*reset)(void* ptr, size_t size, void* ud);
@@ -44,6 +44,10 @@ typedef struct copool_cache_s {
 
 /**
  * @brief Create a fixed-slot coroutine pool.
+ *
+ * When provided, ops is copied by the pool. The caller must keep ops->ud valid
+ * until copool_destroy() returns and synchronize access to callback state.
+ * Callback functions may run concurrently.
  *
  * @param slot_size   Maximum allocation size in bytes.
  * @param shared_cap  Maximum number of slots in the shared cache.

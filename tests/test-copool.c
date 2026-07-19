@@ -25,6 +25,7 @@
 #include "platform/platform-vmem.h"
 #include "runtime/copool.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #define COPOOL_CONCURRENT_THREADS 4
@@ -46,31 +47,60 @@ typedef struct {
 } _concurrent_worker_t;
 
 typedef struct {
-    int init_count;
-    int reset_count;
-    int fail_init;
-    int fail_reset;
+    _Atomic int    init_count;
+    _Atomic int    reset_count;
+    _Atomic int    fail_init;
+    _Atomic int    fail_reset;
+    _Atomic size_t init_size;
+    _Atomic(void*) failed_init_ptr;
 } _slot_ops_ctx_t;
+
+static void _slot_ops_ctx_init(_slot_ops_ctx_t* ctx) {
+    atomic_init(&ctx->init_count, 0);
+    atomic_init(&ctx->reset_count, 0);
+    atomic_init(&ctx->fail_init, 0);
+    atomic_init(&ctx->fail_reset, 0);
+    atomic_init(&ctx->init_size, 0);
+    atomic_init(&ctx->failed_init_ptr, NULL);
+}
+
+static int _slot_consume_failure(_Atomic int* budget) {
+    int remaining = atomic_load_explicit(budget, memory_order_relaxed);
+    while (remaining > 0) {
+        if (atomic_compare_exchange_weak_explicit(
+                budget,
+                &remaining,
+                remaining - 1,
+                memory_order_relaxed,
+                memory_order_relaxed)) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static int _slot_init(void* ptr, size_t size, void* ud) {
     _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
 
-    ctx->init_count++;
-    if (ctx->fail_init > 0) {
-        ctx->fail_init--;
+    atomic_fetch_add_explicit(&ctx->init_count, 1, memory_order_relaxed);
+    atomic_store_explicit(&ctx->init_size, size, memory_order_relaxed);
+    if (_slot_consume_failure(&ctx->fail_init)) {
+        atomic_store_explicit(
+            &ctx->failed_init_ptr,
+            ptr,
+            memory_order_relaxed);
         return -1;
     }
     return platform_vmem_commit(ptr, size);
 }
 
 static int _slot_reset(void* ptr, size_t size, void* ud) {
-    _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
-
     (void)ptr;
     (void)size;
-    ctx->reset_count++;
-    if (ctx->fail_reset > 0) {
-        ctx->fail_reset--;
+    _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
+
+    atomic_fetch_add_explicit(&ctx->reset_count, 1, memory_order_relaxed);
+    if (_slot_consume_failure(&ctx->fail_reset)) {
         return -1;
     }
     return 0;
@@ -165,8 +195,9 @@ static void test_local_cache_reuse(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx  = {0};
-    copool_t*       pool = _create_pool(page_size, 64, &ctx);
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t* pool = _create_pool(page_size, 64, &ctx);
     ASSERT(pool != NULL);
     copool_cache_t cache        = {0};
     void*          slots[64]    = {0};
@@ -201,8 +232,9 @@ static void test_external_path_refills_shared(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 1);
 
-    _slot_ops_ctx_t ctx  = {0};
-    copool_t*       pool = _create_pool(page_size, 64, &ctx);
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t* pool = _create_pool(page_size, 64, &ctx);
     ASSERT(pool != NULL);
     void* slots[32] = {0};
 
@@ -228,8 +260,9 @@ static void test_local_overflow_reaches_shared_and_arena(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx  = {0};
-    copool_t*       pool = _create_pool(page_size, 1, &ctx);
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
     void* slots[65] = {0};
 
@@ -257,7 +290,8 @@ static void test_create_invalid_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx = {0};
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
 
     ASSERT(_create_pool(0, 1, &ctx) == NULL);
     ASSERT(_create_pool(page_size, -1, &ctx) == NULL);
@@ -267,8 +301,9 @@ static void test_alloc_invalid_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx  = {0};
-    copool_t*       pool = _create_pool(page_size, 1, &ctx);
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
     copool_cache_t cache = {0};
 
@@ -283,8 +318,9 @@ static void test_free_null_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx  = {0};
-    copool_t*       pool = _create_pool(page_size, 1, &ctx);
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
     copool_free(NULL, NULL, NULL, page_size);
@@ -297,7 +333,8 @@ static void test_concurrent_local_caches(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t slot_ctx = {0};
+    _slot_ops_ctx_t slot_ctx;
+    _slot_ops_ctx_init(&slot_ctx);
     _concurrent_ctx_t ctx = {
         .pool = _create_pool(page_size, COPOOL_CACHE_CAP, &slot_ctx),
     };
@@ -333,14 +370,17 @@ static void test_slot_init_on_arena_refill(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx   = {0};
-    copool_t*       pool  = _create_pool(page_size, 64, &ctx);
-    copool_cache_t  cache = {0};
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
+    copool_cache_t cache = {0};
     ASSERT(pool != NULL);
 
     void* slot = copool_alloc(pool, &cache, page_size);
     ASSERT(slot != NULL);
-    ASSERT(ctx.init_count == COPOOL_CACHE_CAP / 2);
+    ASSERT(
+        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
+        COPOOL_CACHE_CAP / 2);
 
     copool_free(pool, &cache, slot, page_size);
     copool_destroy(pool);
@@ -350,20 +390,25 @@ static void test_slot_reset_before_cache(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx   = {0};
-    copool_t*       pool  = _create_pool(page_size, 64, &ctx);
-    copool_cache_t  cache = {0};
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
+    copool_cache_t cache = {0};
     ASSERT(pool != NULL);
 
     void* slot = copool_alloc(pool, &cache, page_size);
     ASSERT(slot != NULL);
     copool_free(pool, &cache, slot, page_size);
-    ASSERT(ctx.reset_count == 1);
+    ASSERT(
+        atomic_load_explicit(&ctx.reset_count, memory_order_relaxed) == 1);
 
-    int init_count = ctx.init_count;
+    int init_count =
+        atomic_load_explicit(&ctx.init_count, memory_order_relaxed);
     void* recycled = copool_alloc(pool, &cache, page_size);
     ASSERT(recycled == slot);
-    ASSERT(ctx.init_count == init_count);
+    ASSERT(
+        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
+        init_count);
 
     copool_destroy(pool);
 }
@@ -372,9 +417,9 @@ static void test_slot_reset_failure_bypasses_cache(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    _slot_ops_ctx_t ctx = {
-        .fail_reset = 1,
-    };
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    atomic_store_explicit(&ctx.fail_reset, 1, memory_order_relaxed);
     copool_t*      pool  = _create_pool(page_size, 0, &ctx);
     copool_cache_t cache = {0};
     ASSERT(pool != NULL);
@@ -384,8 +429,71 @@ static void test_slot_reset_failure_bypasses_cache(void) {
     int before_count = cache.count;
     copool_free(pool, &cache, slot, page_size);
     ASSERT(cache.count == before_count);
-    ASSERT(ctx.reset_count == 1);
+    ASSERT(
+        atomic_load_explicit(&ctx.reset_count, memory_order_relaxed) == 1);
 
+    copool_destroy(pool);
+}
+
+static void test_slot_init_failure_isolated(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    atomic_store_explicit(&ctx.fail_init, 1, memory_order_relaxed);
+    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
+    copool_cache_t cache = {0};
+    ASSERT(pool != NULL);
+
+    void* slot = copool_alloc(pool, &cache, page_size);
+    ASSERT(slot != NULL);
+    void* failed = atomic_load_explicit(
+        &ctx.failed_init_ptr,
+        memory_order_relaxed);
+    ASSERT(failed != NULL);
+    ASSERT(slot != failed);
+    ASSERT(!_contains_slot(cache.slots, cache.count, failed));
+    ASSERT(cache.count == COPOOL_CACHE_CAP / 2 - 2);
+    ASSERT(
+        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
+        COPOOL_CACHE_CAP / 2);
+
+    int   cached_count = cache.count;
+    void* cached[COPOOL_CACHE_CAP / 2] = {0};
+    for (int i = 0; i < cached_count; i++) {
+        cached[i] = copool_alloc(pool, &cache, page_size);
+        ASSERT(cached[i] != NULL);
+        ASSERT(cached[i] != failed);
+    }
+    ASSERT(cache.count == 0);
+
+    copool_free(pool, NULL, slot, page_size);
+    for (int i = 0; i < cached_count; i++) {
+        copool_free(pool, NULL, cached[i], page_size);
+    }
+    copool_destroy(pool);
+}
+
+static void test_logical_max_uses_aligned_callback_size(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    size_t logical_size = page_size + 1;
+    _slot_ops_ctx_t ctx;
+    _slot_ops_ctx_init(&ctx);
+    copool_t*      pool  = _create_pool(logical_size, 64, &ctx);
+    copool_cache_t cache = {0};
+    ASSERT(pool != NULL);
+
+    void* slot = copool_alloc(pool, &cache, logical_size);
+    ASSERT(slot != NULL);
+    ASSERT(
+        atomic_load_explicit(&ctx.init_size, memory_order_relaxed) ==
+        page_size * 2);
+    ASSERT(copool_alloc(pool, &cache, logical_size + 1) == NULL);
+
+    copool_free(pool, &cache, slot, logical_size);
     copool_destroy(pool);
 }
 
@@ -400,5 +508,7 @@ int main(void) {
     test_slot_init_on_arena_refill();
     test_slot_reset_before_cache();
     test_slot_reset_failure_bypasses_cache();
+    test_slot_init_failure_isolated();
+    test_logical_max_uses_aligned_callback_size();
     return 0;
 }
