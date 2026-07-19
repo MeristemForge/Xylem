@@ -178,6 +178,33 @@ static void test_invalid_half_external_stack(void) {
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
+static void test_invalid_layout_decommits_valid_slot(void) {
+    size_t          page_size  = platform_vmem_page_size();
+    size_t          page_count = 5;
+    size_t          size       = page_size * page_count;
+    uint8_t*        ptr        = (uint8_t*)platform_vmem_reserve(size);
+    platform_coro_t coro;
+
+    ASSERT(page_size > 0);
+    ASSERT(ptr != NULL);
+    ASSERT(platform_vmem_commit(ptr, size) == 0);
+    ptr[0]             = 0x5a;
+    ptr[page_size * 2] = 0xa5;
+    ptr[size - 1]      = 0x3c;
+    ASSERT(ptr[0] == 0x5a);
+    ASSERT(ptr[page_size * 2] == 0xa5);
+    ASSERT(ptr[size - 1] == 0x3c);
+
+    coro = (platform_coro_t){.ptr       = ptr,
+                             .size      = size,
+                             .stack_low = ptr + page_size * 2};
+    ASSERT(platform_coro_init(&coro) == -1);
+    for (size_t i = 0; i < page_count; i++) {
+        _assert_page(ptr + i * page_size, MEM_RESERVE, 0, 0);
+    }
+    ASSERT(platform_vmem_release(ptr, size) == 0);
+}
+
 static void test_invalid_stack_outside_slot(void) {
     size_t          page_size = platform_vmem_page_size();
     size_t          size      = page_size * 5;
@@ -234,6 +261,7 @@ int main(void) {
     test_embedded_stack_layout();
     test_invalid_non_page_aligned_ranges();
     test_invalid_half_external_stack();
+    test_invalid_layout_decommits_valid_slot();
     test_invalid_stack_outside_slot();
     test_invalid_missing_metadata_or_boundary();
     test_invalid_stack_too_small();

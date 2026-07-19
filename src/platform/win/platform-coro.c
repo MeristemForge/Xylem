@@ -43,13 +43,11 @@ typedef struct {
     int      external;
 } _coro_layout_t;
 
-static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
+static int _coro_validate_slot(
+    const platform_coro_t* coro,
+    _coro_layout_t* layout) {
     size_t    page_size;
-    size_t    prefix_size;
     uintptr_t slot_low;
-    uintptr_t slot_high;
-    uintptr_t stack_low;
-    uintptr_t stack_high;
 
     if (coro == NULL || layout == NULL || coro->ptr == NULL ||
         coro->size == 0) {
@@ -62,11 +60,22 @@ static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
         coro->size > (size_t)(UINTPTR_MAX - slot_low)) {
         return -1;
     }
-    slot_high         = slot_low + coro->size;
     layout->slot_low  = (uint8_t*)slot_low;
     layout->slot_size = coro->size;
     layout->page_size = page_size;
     layout->external  = 0;
+    return 0;
+}
+
+static int _coro_validate_stack_layout(
+    const platform_coro_t* coro,
+    _coro_layout_t*        layout) {
+    size_t    page_size = layout->page_size;
+    size_t    prefix_size;
+    uintptr_t slot_low  = (uintptr_t)layout->slot_low;
+    uintptr_t slot_high = slot_low + layout->slot_size;
+    uintptr_t stack_low;
+    uintptr_t stack_high;
 
     if (coro->stack_low == NULL && coro->stack_size == 0) {
         layout->external = 1;
@@ -103,6 +112,13 @@ static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
     return 0;
 }
 
+static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
+    if (_coro_validate_slot(coro, layout) != 0) {
+        return -1;
+    }
+    return _coro_validate_stack_layout(coro, layout);
+}
+
 static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
     DWORD  previous_protection;
     size_t commit_size = layout->page_size * 2;
@@ -132,7 +148,11 @@ static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
 int platform_coro_init(const platform_coro_t* coro) {
     _coro_layout_t layout;
 
-    if (_coro_validate(coro, &layout) != 0) {
+    if (_coro_validate_slot(coro, &layout) != 0) {
+        return -1;
+    }
+    if (_coro_validate_stack_layout(coro, &layout) != 0) {
+        (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
         return -1;
     }
     if (platform_vmem_decommit(layout.slot_low, layout.slot_size) != 0) {
