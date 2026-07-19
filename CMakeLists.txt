@@ -130,6 +130,7 @@ set(SRCS
 
 if(WIN32)
 	list(APPEND SRCS
+		src/platform/win/platform-coro.c
 		src/platform/win/platform-info.c
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
@@ -145,6 +146,7 @@ endif()
 
 if(UNIX)
 	list(APPEND SRCS
+		src/platform/unix/platform-coro.c
 		src/platform/unix/platform-info.c
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-poller.c

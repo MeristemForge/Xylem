@@ -19,16 +19,27 @@
  *  IN THE SOFTWARE.
  */
 
-_Pragma("once")
+#include "platform/platform-coro.h"
 
-#include "platform-cpu.h"
-#include "platform-coro.h"
-#include "platform-futex.h"
-#include "platform-info.h"
-#include "platform-io.h"
-#include "platform-poller.h"
-#include "platform-serial.h"
-#include "platform-socket.h"
-#include "platform-string.h"
-#include "platform-tls.h"
-#include "platform-vmem.h"
+#include "platform/platform-vmem.h"
+
+int platform_coro_init(const platform_coro_t* coro) {
+    if (coro == NULL || coro->ptr == NULL || coro->size == 0) {
+        return -1;
+    }
+    return platform_vmem_commit(coro->ptr, coro->size);
+}
+
+int platform_coro_reset(
+    const platform_coro_t* coro,
+    void*                  current_stack_limit) {
+    (void)current_stack_limit;
+    if (coro == NULL || coro->ptr == NULL || coro->size == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+void* platform_coro_initial_stack_limit(const platform_coro_t* coro) {
+    return coro != NULL ? coro->stack_low : NULL;
+}
