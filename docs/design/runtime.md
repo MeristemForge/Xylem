@@ -62,8 +62,8 @@ cannot make progress *parks* (yields to its worker); a wake source later
 | Global run queue | `runq.c` | Mutex-protected intrusive singly linked MPMC FIFO. |
 | I/O wait | `iowait.c` | Per-fd, per-direction coroutine parking on the poller. |
 | Blocking pool | `dynpool.c` | Elastic thread pool for blocking work. |
-| Coroutine pool | `copool.c`, `arena.c` | Committed-slot caches over region-based virtual memory. |
-| Coroutines | `minicoro/` | Stackful coroutine primitive (bundled). |
+| Coroutine pool | `copool.c`, `arena.c` | Hot-slot caches over cold region-based virtual memory. |
+| Coroutines | `coro.c`, `minicoro/` | Lifecycle adapter and bundled stackful coroutine primitive. |
 
 ## 3. Boot and shutdown (`runtime.c`)
 
@@ -314,15 +314,66 @@ down.
 
 ### Coroutine allocation ownership
 
-The arena-backed minicoro slot follows the ownership chain
-`scheduler -> copool -> arena -> platform-vmem`. During scheduler creation,
-`mco_desc_init()` computes its backend-specific `coro_size` from the configured
-stack size. The scheduler creates one fixed-slot copool of that size and
-installs two small minicoro allocator adapters. Each worker embeds a
-`copool_cache_t`; calls made outside a worker of that scheduler use the shared
-path without a worker-local cache.
+Coroutine allocation is split across two ownership paths:
 
-The copool has two committed tiers:
+```
+scheduler -> coro -> minicoro / platform-coro
+scheduler -> copool -> arena -> platform-vmem
+```
+
+The first path owns descriptor provenance, coroutine construction, and the
+backend-specific memory layout. The second owns reusable fixed-slot addresses,
+cache placement, reservations, and full-slot decommit. C wrappers supplied by
+`coro_get_slot_ops()` connect the paths: copool invokes them for cold-slot init
+and used-slot reset, while arena sees only page-aligned ranges and never depends
+on minicoro object, context, storage, or stack layout.
+
+The public `coro_stack_size` configuration flow is unchanged. Runtime options
+copy it into `scheduler_opts_t`; scheduler creation passes the selected value to
+`mco_desc_init()` and stores the result as the persistent `sched->coro_desc`.
+`coro_alloc_ctx_init()` snapshots that descriptor's immutable layout and its
+original allocator callbacks/data, then wraps the persistent descriptor with
+allocator provenance that points back to the scheduler's copool. An atomic
+stack plan starts unknown: the first successful cold-slot init publishes either
+one backend-specific initial stack-limit offset or the external-stack marker,
+and concurrent initializers must agree with that plan.
+
+Minicoro computes the descriptor's `stack_offset` and `stack_alignment` once in
+`mco_desc_init()`. Construction and validation reuse those derived values, so a
+hot spawn does not query the operating system for page size or rebuild the
+backend layout. The bound allocation context includes both fields in its
+immutable-layout check.
+
+Each spawn copies the persistent descriptor, changes only `user_data`, and
+calls `coro_create()`. The wrapper verifies the copied layout and allocator
+provenance, lets minicoro construct the coroutine, then applies the published
+stack plan. The descriptor and `coro_alloc_ctx_t` are embedded in the scheduler
+and outlive every coroutine and the copool. Teardown destroys registered
+coroutines first, destroys the copool and its arena next, then deinitializes the
+allocation context to restore the persistent descriptor's original allocator
+fields before scheduler storage is freed.
+
+On return to copool, the coro reset callback compares the saved `StackLimit`
+with the published initial offset first. An unchanged limit or external stack
+returns directly to the hot cache. Only a grown or unknown embedded stack
+reconstructs and validates `platform_coro_t` before invoking the platform reset
+path.
+
+Slot state follows three transitions:
+
+```
+cold arena slot -> coro init callback  -> hot reusable slot
+used coroutine  -> coro reset callback -> hot reusable slot
+hot spill       -> arena full decommit -> cold slot
+```
+
+An init failure is isolated by returning that address through arena's full-slot
+decommit path. A reset failure bypasses both hot caches and takes the same path.
+In either case, only a successfully decommitted address re-enters the arena free
+array; a failure is logged and the address remains unavailable until its
+containing region is released.
+
+The copool has two hot tiers:
 
 - Every worker-local cache holds up to 64 slots. Allocation pops locally first;
   an empty cache refills up to 32 slots from the shared cache, then from the
@@ -332,50 +383,54 @@ The copool has two committed tiers:
   configurable through `coro_pool_capacity` and defaults to `worker_count *
   64`. The no-local-cache path takes one shared slot or allocates up to 32 arena
   slots and places the surplus in the shared cache.
-- Slots that fit neither committed cache overflow to the arena. A successful
-  decommit makes them cold. A failure is logged, but the slot still enters the
-  arena free array and its next allocation retries the permitted idempotent
-  commit. Shared-cache operations finish before any arena call, so the shared
-  spinlock and arena mutex are never nested.
+- Slots that fit neither hot cache overflow to the arena for full decommit.
+  Shared-cache operations finish before any arena call, so the shared spinlock
+  and arena mutex are never nested.
 
 The arena owns fixed-size, page-aligned slots and an external `void*` free-slot
 array; no allocator metadata is stored inside a free slot. The aligned slot
 size may not exceed 1 MiB. Creating an arena eagerly reserves its first region.
 Each region contains at least 64 slots and is at most 64 MiB: reservation starts
 at `floor(64 MiB / slot_size)` slots and halves on failure until a 64-slot
-attempt. An allocation attempts at most one region growth and commits the
-addresses it removes from the free array, so it may return a partial batch when
-growth or individual commits fail.
+attempt. The new region is fully decommitted before any address is published.
+An allocation attempts at most one region growth and removes cold addresses
+from the free array without touching their pages, so it may return a partial
+batch when growth fails. Copool's init callback is solely responsible for
+turning those cold addresses into valid hot slots.
 
-The arena mutex protects region metadata and the free-slot array, but
-`platform_vmem_commit()` and `platform_vmem_decommit()` run outside it. Moving a
-slot from arena to copool commits it. Moving one from copool to arena attempts
-to decommit it before publishing it back to the free array; a failure is logged
-without dropping the slot. Regions remain reserved through all slot reuse and
-are released in full only when scheduler teardown destroys the copool and
-arena. Arena-backed slots therefore share region mappings, and VMA usage grows
-with region reservations rather than coroutine count.
+The arena mutex protects region metadata and the free-slot array, while full
+decommit runs before the mutex is acquired. Regions remain reserved through all
+slot reuse and are released in full only when scheduler teardown destroys the
+copool and arena. Arena-backed slots therefore share region mappings, and VMA
+usage grows with region reservations rather than coroutine count.
 
 ### Context-backend boundary and overflow detection
 
-For ASM and ucontext backends, minicoro places the coroutine object, context,
-storage, and stack in the arena slot. On the Windows Fiber backend, the slot
-still holds the coroutine object, context, and storage, while `CreateFiberEx()`
-and `DeleteFiber()` continue to own the Fiber stack allocation.
+For embedded-stack backends, minicoro places the coroutine object, context,
+storage, and stack in the arena slot. Windows x64 ASM additionally page-aligns
+the embedded stack after committed metadata and an uncommitted overflow
+boundary; `platform-coro` prepares the initial guard/top pages and restores a
+grown stack before reuse. Unix makes the complete slot accessible during init
+and needs no reset transition while the slot remains hot. On the Windows Fiber
+backend, the slot holds only the coroutine object, context, and storage;
+`CreateFiberEx()` and `DeleteFiber()` own the external Fiber stack.
 
-Minicoro retains its own delayed overflow checks: non-ASAN yields validate the
-coroutine magic number and current stack address against the recorded stack
-range. ASAN builds use the sanitizer fiber-switch integration and its redzones.
-The arena does not add a second canary or a protected boundary page.
+Minicoro retains its delayed range checks on backends that use them. ASAN builds
+also use minicoro's sanitizer fiber-switch integration, while platform-vmem and
+platform-coro explicitly poison cold pages and unpoison them before commit.
+The page-level backend contracts are detailed in [`platform.md`](platform.md)
+§5.
 
 #### Operating-system resource limits
 
 The pool does not impose a fixed limit on active coroutines. Allocation can
 still fail when a new region cannot be reserved or a slot cannot be committed.
-On Windows, reserve uses `MEM_RESERVE`, active slots use `MEM_COMMIT`, and a
-successful arena return uses `MEM_DECOMMIT`; destroying the arena releases each
-complete region with `MEM_RELEASE`. Worker-local and shared cache entries remain
-committed, so their retained capacity still consumes commit charge.
+On Windows, reserve uses `MEM_RESERVE` and a successful arena return uses
+`MEM_DECOMMIT`; destroying the arena releases each complete region with
+`MEM_RELEASE`. Windows ASM hot slots commit metadata plus the current lazy
+stack extent, while Fiber slots commit their complete arena metadata block and
+keep the Fiber-owned stack outside it. Worker-local and shared cache entries
+remain hot, so their retained committed pages still consume commit charge.
 
 On Linux, each complete arena region is one anonymous writable mapping and
 remains subject to the system memory commit policy. Slot decommit uses

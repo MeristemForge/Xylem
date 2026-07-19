@@ -51,6 +51,7 @@ Design rules:
 | `platform-poller` | Readiness I/O multiplexing | epoll (ET) | kqueue (ET) | wepoll (LT + one-shot) |
 | `platform-socket` | Non-blocking sockets, socketpair, startup | BSD sockets | BSD sockets | Winsock2 |
 | `platform-vmem` | Virtual-memory lifecycle | mmap/madvise | mmap/madvise | VirtualAlloc/VirtualFree |
+| `platform-coro` | Coroutine slot page policy | whole slot | whole slot | lazy ASM / external Fiber stack |
 | `platform-sem` | Counting semaphores (worker parking) | POSIX `sem_init` | GCD `dispatch_semaphore` | Win32 semaphore |
 | `platform-info` | CPU count, tid/pid, time conversion, CSPRNG | syscalls | sysctl/pthread | Win32/BCrypt |
 | `platform-io` | Portable fopen/vsnprintf/stat | stdio/stat | stdio/stat | `*_s` + `_stat64` |
@@ -161,7 +162,9 @@ memory accounting accurate for macOS and iOS.
 Windows reserves address space with `PAGE_NOACCESS`, commits individual ranges
 as `PAGE_READWRITE`, and decommits them with `MEM_DECOMMIT`. Decommitted pages no
 longer consume system commit charge, while the containing address range remains
-reserved.
+reserved. The system page size is immutable for the process and is cached after
+the first `GetSystemInfo` query so cold-slot initialization does not repeat that
+query.
 
 ASAN builds explicitly poison a range after successful decommit. Commit clears
 the poison before the range can be touched. On Windows this happens before
@@ -170,20 +173,84 @@ the poison. Windows also clears stale poison before releasing an address range
 for reuse and restores it if release fails. Non-ASAN builds compile these
 operations to no-ops.
 
+### Coroutine slot page policy
+
+`platform_coro_t` describes fixed ranges without owning them. `ptr` and `size`
+name the complete page-aligned slot `[ptr, ptr + size)`. An embedded stack is
+the page-aligned subrange `[stack_low, stack_low + stack_size)`. The pair
+`stack_low == NULL` and `stack_size == 0` selects an external stack. The coro
+adapter derives a contained range from minicoro's persistent descriptor.
+Windows validates the slot and embedded subrange in full; Unix validates the
+complete slot and does not use the stack subrange for page transitions.
+
+On Windows x64 ASM, the embedded layout is:
+
+```
+low address
++------------------------------+
+| metadata: committed RW       |
++------------------------------+
+| overflow boundary: reserved  |
++------------------------------+ <- stack_low
+| lower stack: uncommitted     |
++------------------------------+
+| moving guard: RW | PAGE_GUARD|
++------------------------------+ <- initial StackLimit
+| top stack page: committed RW |
++------------------------------+ <- stack high / StackBase
+high address
+```
+
+Metadata is nonempty and page-aligned. The immediately following boundary page
+is outside the stack and remains uncommitted, so downward growth stops before
+metadata. The stack contains at least the guard and top pages; pages below the
+guard begin uncommitted. `StackLimit` is the low address of the first ordinary
+read/write stack page immediately above the guard. Windows stack growth moves
+that limit and guard downward while the coroutine runs, and minicoro saves the
+current limit in its context so a coroutine may resume on another worker.
+
+Initialization first decommits the complete slot, then commits metadata and the
+initial guard/top pair. The coro adapter compares the saved limit with its
+published initial offset before reconstructing the platform layout, so an
+unchanged stack returns directly to the hot cache. Otherwise platform reset
+decommits the complete embedded stack and rebuilds only the initial guard/top
+pair; a NULL saved limit deliberately selects this full rebuild. The library
+does not catch `EXCEPTION_STACK_OVERFLOW` or call `_resetstkoflw()`. Code that
+catches that exception and intends to continue on the native thread must restore
+the thread's overflow state itself before normal execution resumes.
+
+Cold Windows ASM initialization still requires separate metadata and initial
+stack commits plus guard protection. A producer that outpaces all workers can
+therefore measure cold-slot setup rather than hot reuse. Once slots circulate
+through worker-local or shared caches, unchanged stacks perform no VM operation.
+
+Windows Fiber uses the external-stack form. The arena slot contains minicoro
+metadata and is committed as one block; `CreateFiberEx()` / `DeleteFiber()` own
+the separate Fiber stack, and platform reset is a no-op. Unix uses whole-slot
+policy for both ASM/ucontext-style embedded layouts: init commits or marks the
+complete slot reusable, and reset is a no-op while the slot remains hot.
+
+ASAN shadow transitions follow the OS operation ordering. Windows unpoisons a
+range before `VirtualAlloc`, because that call may touch the range internally,
+and re-poisons on commit failure. Windows coroutine init/reset likewise
+unpoisons the guard/top pages before committing them; a later full decommit
+poisons the range again. Darwin performs `MADV_FREE_REUSE` before unpoisoning,
+while Linux commit only unpoisons its already mapped pages. Release on Windows
+unpoisons before `MEM_RELEASE` and restores poison if release fails.
+
 ### Coroutine arena lifecycle
 
-The runtime's arena-backed minicoro slot follows the ownership chain
-`scheduler -> copool -> arena -> platform-vmem`. It contains the coroutine
-object, context, and storage, plus the stack on non-Fiber backends; the Windows
-Fiber stack is outside this chain and remains owned by `CreateFiberEx()` /
-`DeleteFiber()` (see
-[`runtime.md`](runtime.md) §6). An arena eagerly reserves its first complete
-multi-slot region and grows when its free-slot array cannot satisfy an
-allocation. Moving a slot to copool commits it, and worker-local and shared
-caches retain committed slots. Returning overflow normally decommits the slot,
-making it cold while its address remains reserved. If decommit fails, the arena
-logs the failure but still records the address; the next allocation calls the
-permitted idempotent `commit()` again.
+The storage path is `scheduler -> copool -> arena -> platform-vmem`; coroutine
+layout policy separately follows `scheduler -> coro -> minicoro /
+platform-coro`. Copool callbacks connect them without exposing layout to arena.
+An arena eagerly reserves and fully decommits its first complete multi-slot
+region, then grows when its free-slot array cannot satisfy an allocation.
+
+Cold arena addresses become hot only after the coro init callback succeeds.
+Used slots run the coro reset callback before entering worker-local or shared
+hot caches. Cache overflow returns a complete slot to arena, whose successful
+full decommit makes it cold and republishes the address. A failed decommit is
+logged but not added to the free array.
 
 Neither cache eviction nor slot decommit releases part of a reservation.
 `copool_destroy()` calls `arena_destroy()`, which releases every complete
