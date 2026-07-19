@@ -1302,7 +1302,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     mco_desc desc_probe = mco_desc_init(_sched_coro_entry_cb, stack_size);
     sched->coro_stack_size = stack_size;
-    sched->coro_pool = copool_create(desc_probe.coro_size, (int32_t)pool_cap);
+    sched->coro_pool =
+        copool_create(desc_probe.coro_size, (int32_t)pool_cap, NULL);
     if (!sched->coro_pool) {
         _sched_cleanup(sched, 0);
         return NULL;

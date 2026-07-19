@@ -29,6 +29,13 @@ _Pragma("once")
 /* Opaque fixed-slot coroutine pool. */
 typedef struct copool_s copool_t;
 
+/* Slot lifecycle callbacks copied by copool_create(). */
+typedef struct copool_slot_ops_s {
+    int (*init)(void* ptr, size_t size, void* ud);
+    int (*reset)(void* ptr, size_t size, void* ud);
+    void* ud;
+} copool_slot_ops_t;
+
 /* Worker-local committed-slot cache. */
 typedef struct copool_cache_s {
     void*   slots[COPOOL_CACHE_CAP];
@@ -40,10 +47,16 @@ typedef struct copool_cache_s {
  *
  * @param slot_size   Maximum allocation size in bytes.
  * @param shared_cap  Maximum number of slots in the shared cache.
+ * @param ops         Optional slot lifecycle callbacks copied by the pool.
+ *                    init runs for slots obtained from the backing arena;
+ *                    reset runs before a slot enters a cache.
  *
  * @return Pool handle, or NULL for invalid arguments or allocation failure.
  */
-extern copool_t* copool_create(size_t slot_size, int32_t shared_cap);
+extern copool_t* copool_create(
+    size_t                   slot_size,
+    int32_t                  shared_cap,
+    const copool_slot_ops_t* ops);
 
 /**
  * @brief Destroy a coroutine pool and release its arena.

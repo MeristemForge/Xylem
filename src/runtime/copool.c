@@ -31,12 +31,14 @@
 #define COPOOL_BATCH_SIZE (COPOOL_CACHE_CAP / 2)
 
 struct copool_s {
-    spin_t   lock;
-    void**   slots;
-    int32_t  count;
-    int32_t  cap;
-    size_t   slot_size;
-    arena_t* arena;
+    spin_t             lock;
+    void**             slots;
+    int32_t            count;
+    int32_t            cap;
+    size_t             max_size;
+    size_t             slot_size;
+    copool_slot_ops_t  ops;
+    arena_t*           arena;
 };
 
 static int _copool_shared_take(copool_t* pool, void** slots, int count) {
@@ -65,7 +67,26 @@ static int _copool_shared_put(copool_t* pool, void** slots, int count) {
     return put_count;
 }
 
-copool_t* copool_create(size_t slot_size, int32_t shared_cap) {
+static int _copool_init_slots(copool_t* pool, void** slots, int count) {
+    if (!pool->ops.init) {
+        return count;
+    }
+
+    int success_count = 0;
+    for (int i = 0; i < count; i++) {
+        if (pool->ops.init(slots[i], pool->slot_size, pool->ops.ud) == 0) {
+            slots[success_count++] = slots[i];
+            continue;
+        }
+        arena_free(pool->arena, &slots[i], 1);
+    }
+    return success_count;
+}
+
+copool_t* copool_create(
+    size_t                   slot_size,
+    int32_t                  shared_cap,
+    const copool_slot_ops_t* ops) {
     if (slot_size == 0 || shared_cap < 0) {
         return NULL;
     }
@@ -92,8 +113,12 @@ copool_t* copool_create(size_t slot_size, int32_t shared_cap) {
 
     spin_init(&pool->lock);
     pool->cap       = shared_cap;
-    pool->slot_size = slot_size;
+    pool->max_size  = slot_size;
+    pool->slot_size = arena_slot_size(arena);
     pool->arena     = arena;
+    if (ops) {
+        pool->ops = *ops;
+    }
     return pool;
 }
 
@@ -108,7 +133,7 @@ void copool_destroy(copool_t* pool) {
 }
 
 void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size) {
-    if (!pool || size == 0 || size > pool->slot_size) {
+    if (!pool || size == 0 || size > pool->max_size) {
         return NULL;
     }
 
@@ -122,6 +147,10 @@ void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size) {
         if (cache->count == 0) {
             cache->count =
                 arena_alloc(pool->arena, cache->slots, COPOOL_BATCH_SIZE);
+            cache->count = _copool_init_slots(
+                pool,
+                cache->slots,
+                cache->count);
         }
         if (cache->count == 0) {
             return NULL;
@@ -135,6 +164,7 @@ void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size) {
     }
 
     int alloc_count = arena_alloc(pool->arena, batch, COPOOL_BATCH_SIZE);
+    alloc_count = _copool_init_slots(pool, batch, alloc_count);
     if (alloc_count == 0) {
         return NULL;
     }
@@ -155,12 +185,19 @@ void copool_free(
     if (!pool || !ptr) {
         return;
     }
-    if (size == 0 || size > pool->slot_size) {
+    if (size == 0 || size > pool->max_size) {
         xylem_loge(
-            "<copool> invalid free size size=%zu slot_size=%zu",
+            "<copool> invalid free size size=%zu max_size=%zu",
             size,
-            pool->slot_size);
+            pool->max_size);
         abort();
+    }
+
+    if (pool->ops.reset &&
+        pool->ops.reset(ptr, pool->slot_size, pool->ops.ud) != 0) {
+        void* slot = ptr;
+        arena_free(pool->arena, &slot, 1);
+        return;
     }
 
     if (cache) {

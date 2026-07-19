@@ -45,6 +45,50 @@ typedef struct {
     uint8_t            id;
 } _concurrent_worker_t;
 
+typedef struct {
+    int init_count;
+    int reset_count;
+    int fail_init;
+    int fail_reset;
+} _slot_ops_ctx_t;
+
+static int _slot_init(void* ptr, size_t size, void* ud) {
+    _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
+
+    ctx->init_count++;
+    if (ctx->fail_init > 0) {
+        ctx->fail_init--;
+        return -1;
+    }
+    return platform_vmem_commit(ptr, size);
+}
+
+static int _slot_reset(void* ptr, size_t size, void* ud) {
+    _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
+
+    (void)ptr;
+    (void)size;
+    ctx->reset_count++;
+    if (ctx->fail_reset > 0) {
+        ctx->fail_reset--;
+        return -1;
+    }
+    return 0;
+}
+
+static copool_t* _create_pool(
+    size_t           slot_size,
+    int32_t          shared_cap,
+    _slot_ops_ctx_t* ctx) {
+    copool_slot_ops_t ops = {
+        .init  = _slot_init,
+        .reset = _slot_reset,
+        .ud    = ctx,
+    };
+
+    return copool_create(slot_size, shared_cap, &ops);
+}
+
 static int _concurrent_thread(void* arg) {
     _concurrent_worker_t* worker = (_concurrent_worker_t*)arg;
     void*                 slots[COPOOL_CONCURRENT_BATCH] = {0};
@@ -121,7 +165,8 @@ static void test_local_cache_reuse(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    copool_t* pool = copool_create(page_size, 64);
+    _slot_ops_ctx_t ctx  = {0};
+    copool_t*       pool = _create_pool(page_size, 64, &ctx);
     ASSERT(pool != NULL);
     copool_cache_t cache        = {0};
     void*          slots[64]    = {0};
@@ -156,7 +201,8 @@ static void test_external_path_refills_shared(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 1);
 
-    copool_t* pool = copool_create(page_size, 64);
+    _slot_ops_ctx_t ctx  = {0};
+    copool_t*       pool = _create_pool(page_size, 64, &ctx);
     ASSERT(pool != NULL);
     void* slots[32] = {0};
 
@@ -182,7 +228,8 @@ static void test_local_overflow_reaches_shared_and_arena(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    copool_t* pool = copool_create(page_size, 1);
+    _slot_ops_ctx_t ctx  = {0};
+    copool_t*       pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
     void* slots[65] = {0};
 
@@ -210,15 +257,18 @@ static void test_create_invalid_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    ASSERT(copool_create(0, 1) == NULL);
-    ASSERT(copool_create(page_size, -1) == NULL);
+    _slot_ops_ctx_t ctx = {0};
+
+    ASSERT(_create_pool(0, 1, &ctx) == NULL);
+    ASSERT(_create_pool(page_size, -1, &ctx) == NULL);
 }
 
 static void test_alloc_invalid_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    copool_t* pool = copool_create(page_size, 1);
+    _slot_ops_ctx_t ctx  = {0};
+    copool_t*       pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
     copool_cache_t cache = {0};
 
@@ -233,7 +283,8 @@ static void test_free_null_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    copool_t* pool = copool_create(page_size, 1);
+    _slot_ops_ctx_t ctx  = {0};
+    copool_t*       pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
     copool_free(NULL, NULL, NULL, page_size);
@@ -246,8 +297,9 @@ static void test_concurrent_local_caches(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
+    _slot_ops_ctx_t slot_ctx = {0};
     _concurrent_ctx_t ctx = {
-        .pool = copool_create(page_size, COPOOL_CACHE_CAP),
+        .pool = _create_pool(page_size, COPOOL_CACHE_CAP, &slot_ctx),
     };
     ASSERT(ctx.pool != NULL);
     ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
@@ -277,6 +329,66 @@ static void test_concurrent_local_caches(void) {
     copool_destroy(ctx.pool);
 }
 
+static void test_slot_init_on_arena_refill(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    _slot_ops_ctx_t ctx   = {0};
+    copool_t*       pool  = _create_pool(page_size, 64, &ctx);
+    copool_cache_t  cache = {0};
+    ASSERT(pool != NULL);
+
+    void* slot = copool_alloc(pool, &cache, page_size);
+    ASSERT(slot != NULL);
+    ASSERT(ctx.init_count == COPOOL_CACHE_CAP / 2);
+
+    copool_free(pool, &cache, slot, page_size);
+    copool_destroy(pool);
+}
+
+static void test_slot_reset_before_cache(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    _slot_ops_ctx_t ctx   = {0};
+    copool_t*       pool  = _create_pool(page_size, 64, &ctx);
+    copool_cache_t  cache = {0};
+    ASSERT(pool != NULL);
+
+    void* slot = copool_alloc(pool, &cache, page_size);
+    ASSERT(slot != NULL);
+    copool_free(pool, &cache, slot, page_size);
+    ASSERT(ctx.reset_count == 1);
+
+    int init_count = ctx.init_count;
+    void* recycled = copool_alloc(pool, &cache, page_size);
+    ASSERT(recycled == slot);
+    ASSERT(ctx.init_count == init_count);
+
+    copool_destroy(pool);
+}
+
+static void test_slot_reset_failure_bypasses_cache(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    _slot_ops_ctx_t ctx = {
+        .fail_reset = 1,
+    };
+    copool_t*      pool  = _create_pool(page_size, 0, &ctx);
+    copool_cache_t cache = {0};
+    ASSERT(pool != NULL);
+
+    void* slot = copool_alloc(pool, &cache, page_size);
+    ASSERT(slot != NULL);
+    int before_count = cache.count;
+    copool_free(pool, &cache, slot, page_size);
+    ASSERT(cache.count == before_count);
+    ASSERT(ctx.reset_count == 1);
+
+    copool_destroy(pool);
+}
+
 int main(void) {
     test_local_cache_reuse();
     test_external_path_refills_shared();
@@ -285,5 +397,8 @@ int main(void) {
     test_alloc_invalid_args();
     test_free_null_args();
     test_concurrent_local_caches();
+    test_slot_init_on_arena_refill();
+    test_slot_reset_before_cache();
+    test_slot_reset_failure_bypasses_cache();
     return 0;
 }
