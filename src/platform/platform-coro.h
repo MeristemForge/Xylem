@@ -58,10 +58,12 @@ extern int platform_coro_reset(
     void* current_stack_limit);
 
 /**
- * @brief Return the initial native stack limit for a coroutine slot.
+ * @brief Return the platform initial stack-limit value used by the adapter.
  *
  * @param coro  Coroutine slot description.
  *
- * @return Initial stack limit, or NULL when the layout has no native limit.
+ * @return Platform stack-limit value, or NULL for an external stack.
+ *
+ * @note Unix may return stack_low even when minicoro's setter is a no-op.
  */
 extern void* platform_coro_initial_stack_limit(const platform_coro_t* coro);

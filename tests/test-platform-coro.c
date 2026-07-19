@@ -119,6 +119,7 @@ static void test_embedded_stack_layout(void) {
     ASSERT(ptr[page_size * 4] == 0x5a);
 
     ASSERT(platform_coro_reset(&coro, ptr + page_size * 3) == 0);
+    ASSERT(ptr[page_size * 4] == 0);
     _assert_embedded_layout(ptr, page_size);
     ASSERT(platform_vmem_decommit(ptr, size) == 0);
     ASSERT(platform_vmem_release(ptr, size) == 0);
