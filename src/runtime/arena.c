@@ -163,6 +163,10 @@ void arena_destroy(arena_t* arena) {
     free(arena);
 }
 
+size_t arena_slot_size(const arena_t* arena) {
+    return arena ? arena->slot_size : 0;
+}
+
 int arena_alloc(arena_t* arena, void** slots, int count) {
     if (!arena || !slots || count <= 0) {
         return 0;

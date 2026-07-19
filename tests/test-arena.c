@@ -97,7 +97,15 @@ static void test_create_limits(void) {
 
     arena_t* arena = arena_create(MIB);
     ASSERT(arena != NULL);
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+    ASSERT(arena_slot_size(arena) == MIB);
     arena_destroy(arena);
+
+    arena_t* aligned = arena_create(page_size + 1U);
+    ASSERT(aligned != NULL);
+    ASSERT(arena_slot_size(aligned) == page_size * 2U);
+    arena_destroy(aligned);
 }
 
 static void test_alloc_free_realloc(void) {
@@ -149,6 +157,7 @@ static void test_alloc_free_realloc(void) {
 static void test_null_args(void) {
     void* slots[1] = {NULL};
 
+    ASSERT(arena_slot_size(NULL) == 0);
     ASSERT(arena_alloc(NULL, slots, 1) == 0);
 
     arena_t* arena = arena_create(1);

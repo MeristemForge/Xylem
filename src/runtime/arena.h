@@ -48,6 +48,15 @@ extern arena_t* arena_create(size_t slot_size);
 extern void arena_destroy(arena_t* arena);
 
 /**
+ * @brief Get the page-aligned slot size.
+ *
+ * @param arena  Arena handle, or NULL.
+ *
+ * @return Page-aligned slot size, or 0 for NULL.
+ */
+extern size_t arena_slot_size(const arena_t* arena);
+
+/**
  * @brief Allocate and commit fixed-size slots.
  *
  * At most one region is added per call. Commit failures reduce the returned
