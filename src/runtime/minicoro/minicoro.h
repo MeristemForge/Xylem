@@ -330,6 +330,9 @@ MCO_API mco_result mco_resume(mco_coro* co);                                    
 MCO_API mco_result mco_yield(mco_coro* co);                                     /* Suspends the execution of a coroutine. */
 MCO_API mco_state mco_status(mco_coro* co);                                     /* Returns the status of the coroutine. */
 MCO_API void* mco_get_user_data(mco_coro* co);                                  /* Get coroutine user data supplied on coroutine creation. */
+MCO_API size_t mco_desc_stack_offset(const mco_desc* desc);                      /* Get the embedded stack offset, or 0 when the stack is external. */
+MCO_API void* mco_get_stack_limit(const mco_coro* co);                           /* Get the saved platform stack limit when available. */
+MCO_API void mco_set_stack_limit(mco_coro* co, void* stack_limit);               /* Set the saved platform stack limit when available. */
 
 /* Storage interface functions, used to pass values between yield and resume. */
 MCO_API mco_result mco_push(mco_coro* co, const void* src, size_t len); /* Push bytes to the coroutine storage. Use to send values between yield and resume. */
@@ -473,7 +476,8 @@ extern "C" {
   #endif
 #endif
 
-#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR))
+#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR) || \
+                        (defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))))
   #ifndef _WIN32_WINNT
     #define _WIN32_WINNT 0x0400
   #endif
@@ -779,6 +783,7 @@ void (*_mco_wrap_main)(void) = (void(*)(void))(void*)_mco_wrap_main_code;
 void (*_mco_switch)(_mco_ctxbuf* from, _mco_ctxbuf* to) = (void(*)(_mco_ctxbuf* from, _mco_ctxbuf* to))(void*)_mco_switch_code;
 
 static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base, size_t stack_size) {
+  void* stack_top = (void*)((size_t)stack_base + stack_size);
   stack_size = stack_size - 32; /* Reserve 32 bytes for the shadow space. */
   void** stack_high_ptr = (void**)((size_t)stack_base + stack_size - sizeof(size_t));
   stack_high_ptr[0] = (void*)(0xdeaddeaddeaddead);  /* Dummy return address. */
@@ -786,7 +791,6 @@ static mco_result _mco_makectx(mco_coro* co, _mco_ctxbuf* ctx, void* stack_base,
   ctx->rsp = (void*)(stack_high_ptr);
   ctx->r12 = (void*)(_mco_main);
   ctx->r13 = (void*)(co);
-  void* stack_top = (void*)((size_t)stack_base + stack_size);
   ctx->stack_base = stack_top;
   ctx->stack_limit = stack_base;
   ctx->dealloc_stack = stack_base;
@@ -1339,6 +1343,19 @@ typedef struct _mco_context {
   _mco_ctxbuf back_ctx;
 } _mco_context;
 
+static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
+  size_t metadata_size = _mco_align_forward(sizeof(mco_coro), 16) +
+                         _mco_align_forward(sizeof(_mco_context), 16) +
+                         _mco_align_forward(desc->storage_size, 16);
+#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  return _mco_align_forward(metadata_size, (size_t)si.dwPageSize) + (size_t)si.dwPageSize;
+#else
+  return metadata_size;
+#endif
+}
+
 static void _mco_jumpin(mco_coro* co) {
   _mco_context* context = (_mco_context*)co->context;
   _mco_prepare_jumpin(co);
@@ -1356,7 +1373,7 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   size_t co_addr = (size_t)co;
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
-  size_t stack_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
   /* Initialize context. */
   _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
@@ -1394,11 +1411,18 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
+#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  desc->stack_size = _mco_align_forward(stack_size, (size_t)si.dwPageSize);
+  desc->coro_size = _mco_stack_offset(desc) + desc->stack_size;
+#else
   desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
                     _mco_align_forward(sizeof(_mco_context), 16) +
                     _mco_align_forward(desc->storage_size, 16) +
                     stack_size + 16;
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
+#endif
 }
 
 #endif /* defined(MCO_USE_UCONTEXT) || defined(MCO_USE_ASM) */
@@ -1487,6 +1511,11 @@ static void _mco_destroy_context(mco_coro* co) {
   }
 }
 
+static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
+  _MCO_UNUSED(desc);
+  return 0;
+}
+
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
   desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
                     _mco_align_forward(sizeof(_mco_context), 16) +
@@ -1511,6 +1540,12 @@ typedef struct _mco_context {
 static emscripten_fiber_t* running_fib = NULL;
 static unsigned char main_asyncify_stack[MCO_ASYNCFY_STACK_SIZE];
 static emscripten_fiber_t main_fib;
+
+static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
+  return _mco_align_forward(sizeof(mco_coro), 16) +
+         _mco_align_forward(sizeof(_mco_context), 16) +
+         _mco_align_forward(desc->storage_size, 16);
+}
 
 static void _mco_wrap_main(void* co) {
   _mco_main((mco_coro*)co);
@@ -1545,7 +1580,7 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   size_t co_addr = (size_t)co;
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
-  size_t stack_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
   size_t asyncify_stack_addr = _mco_align_forward(stack_addr + desc->stack_size, 16);
   /* Initialize context. */
   _mco_context* context = (_mco_context*)context_addr;
@@ -1604,6 +1639,12 @@ typedef struct _mco_context {
   _asyncify_stack_region stack_region;
 } _mco_context;
 
+static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
+  return _mco_align_forward(sizeof(mco_coro), 16) +
+         _mco_align_forward(sizeof(_mco_context), 16) +
+         _mco_align_forward(desc->storage_size, 16);
+}
+
 __attribute__((import_module("asyncify"), import_name("start_unwind"))) void _asyncify_start_unwind(void*);
 __attribute__((import_module("asyncify"), import_name("stop_unwind")))  void _asyncify_stop_unwind();
 __attribute__((import_module("asyncify"), import_name("start_rewind"))) void _asyncify_start_rewind(void*);
@@ -1648,7 +1689,7 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   size_t co_addr = (size_t)co;
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
-  size_t stack_addr = _mco_align_forward(storage_addr + desc->storage_size, 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
   /* Initialize context. */
   _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
@@ -1684,6 +1725,35 @@ static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_s
 #endif /* MCO_USE_ASYNCIFY */
 
 /* ---------------------------------------------------------------------------------------------- */
+
+size_t mco_desc_stack_offset(const mco_desc* desc) {
+  return desc ? _mco_stack_offset(desc) : 0;
+}
+
+void* mco_get_stack_limit(const mco_coro* co) {
+#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
+  if(!co || !co->context) {
+    return NULL;
+  }
+  const _mco_context* context = (const _mco_context*)co->context;
+  return context->ctx.stack_limit;
+#else
+  _MCO_UNUSED(co);
+  return NULL;
+#endif
+}
+
+void mco_set_stack_limit(mco_coro* co, void* stack_limit) {
+#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
+  if(co && co->context) {
+    _mco_context* context = (_mco_context*)co->context;
+    context->ctx.stack_limit = stack_limit;
+  }
+#else
+  _MCO_UNUSED(co);
+  _MCO_UNUSED(stack_limit);
+#endif
+}
 
 mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size) {
   if(stack_size != 0) {
