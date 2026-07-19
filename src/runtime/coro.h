@@ -25,6 +25,42 @@ _Pragma("once")
 
 #include "minicoro/minicoro.h"
 
+#include <stdatomic.h>
+
+typedef struct coro_alloc_ctx_s {
+    size_t    state;
+    mco_desc* desc;
+    mco_desc  layout;
+    void* (*alloc_cb)(size_t size, void* allocator_data);
+    void (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);
+    void*         allocator_data;
+    atomic_size_t stack_plan;
+} coro_alloc_ctx_t;
+
+/**
+ * @brief Bind a descriptor to persistent prepared-allocation state.
+ *
+ * @param ctx   Zero-initialized caller-owned context.
+ * @param desc  Persistent descriptor whose allocator is wrapped.
+ *
+ * @return 0 on success, -1 for invalid arguments.
+ *
+ * @note ctx and desc must outlive all bound coroutines and the copool. The
+ *       descriptor layout and entry function are immutable until deinit;
+ *       copies may change only user_data.
+ */
+extern int coro_alloc_ctx_init(coro_alloc_ctx_t* ctx, mco_desc* desc);
+
+/**
+ * @brief Restore the descriptor allocator captured during initialization.
+ *
+ * @param ctx  Caller-owned context.
+ *
+ * @note Call only after all bound coroutines and the copool are destroyed.
+ *       Repeated calls are permitted.
+ */
+extern void coro_alloc_ctx_deinit(coro_alloc_ctx_t* ctx);
+
 /**
  * @brief Create a coroutine and prepare its platform stack state.
  *
@@ -47,10 +83,10 @@ extern mco_result coro_destroy(mco_coro* co);
 /**
  * @brief Return coroutine-pool slot lifecycle callbacks.
  *
- * @param desc  Descriptor used to describe every pool slot.
+ * @param ctx  Persistent allocation context used by every pool slot.
  *
- * @return Slot lifecycle callbacks carrying desc as callback data.
+ * @return Slot lifecycle callbacks carrying ctx as callback data.
  *
- * @note desc must outlive the copool created with the returned callbacks.
+ * @note ctx must outlive the copool created with the returned callbacks.
  */
-extern copool_slot_ops_t coro_get_slot_ops(const mco_desc* desc);
+extern copool_slot_ops_t coro_get_slot_ops(coro_alloc_ctx_t* ctx);

@@ -153,8 +153,9 @@ struct scheduler_s {
     _Atomic uint32_t      timer_rr;
     _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
     _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
-    mco_desc         coro_desc;
-    copool_t*        coro_pool;
+    mco_desc          coro_desc;
+    coro_alloc_ctx_t  coro_alloc_ctx;
+    copool_t*         coro_pool;
 };
 
 typedef enum _timer_state_e {
@@ -1201,6 +1202,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     }
 
     copool_destroy(sched->coro_pool);
+    coro_alloc_ctx_deinit(&sched->coro_alloc_ctx);
     free(sched);
 }
 
@@ -1302,7 +1304,11 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->coro_desc.alloc_cb       = _sched_coro_alloc_cb;
     sched->coro_desc.dealloc_cb     = _sched_coro_dealloc_cb;
     sched->coro_desc.allocator_data = sched;
-    slot_ops = coro_get_slot_ops(&sched->coro_desc);
+    if (coro_alloc_ctx_init(&sched->coro_alloc_ctx, &sched->coro_desc) != 0) {
+        _sched_cleanup(sched, 0);
+        return NULL;
+    }
+    slot_ops = coro_get_slot_ops(&sched->coro_alloc_ctx);
     sched->coro_pool = copool_create(
         sched->coro_desc.coro_size,
         (int32_t)pool_cap,
