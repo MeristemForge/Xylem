@@ -29,7 +29,7 @@ _Pragma("once")
 /* Opaque fixed-slot coroutine pool. */
 typedef struct copool_s copool_t;
 
-/* Slot lifecycle callbacks. Functions may run concurrently. */
+/* Required slot lifecycle callbacks. Functions may run concurrently. */
 typedef struct copool_slot_ops_s {
     int (*init)(void* ptr, size_t size, void* ud);
     int (*reset)(void* ptr, size_t size, void* ud);
@@ -45,15 +45,19 @@ typedef struct copool_cache_s {
 /**
  * @brief Create a fixed-slot coroutine pool.
  *
- * When provided, ops is copied by the pool. The caller must keep ops->ud valid
- * until copool_destroy() returns and synchronize access to callback state.
- * Callback functions may run concurrently.
+ * The required ops structure and both callbacks are copied by the pool. The
+ * caller must keep ops->ud valid until copool_destroy() returns and synchronize
+ * access to callback state. Callback functions may run concurrently. Callback
+ * size is the page-aligned arena slot size, while slot_size remains the logical
+ * maximum accepted by copool_alloc() and copool_free(). init receives a cold
+ * slot and must initialize it before access; reset prepares a used hot slot for
+ * reuse.
  *
- * @param slot_size   Maximum allocation size in bytes.
+ * @param slot_size   Logical maximum allocation size in bytes.
  * @param shared_cap  Maximum number of slots in the shared cache.
- * @param ops         Optional slot lifecycle callbacks copied by the pool.
- *                    init runs for slots obtained from the backing arena;
- *                    reset runs before a slot enters a cache.
+ * @param ops         Required lifecycle callbacks copied by the pool. init
+ *                    runs for slots obtained from the backing arena; reset
+ *                    runs before a used slot enters a cache.
  *
  * @return Pool handle, or NULL for invalid arguments or allocation failure.
  */
@@ -76,7 +80,7 @@ extern void copool_destroy(copool_t* pool);
  *
  * @param pool   Pool handle.
  * @param cache  Worker-local cache, or NULL for the shared path.
- * @param size   Requested size, from 1 through the configured slot size.
+ * @param size   Requested size, from 1 through the logical maximum.
  *
  * @return Slot address, or NULL for invalid arguments or allocation failure.
  */
@@ -88,7 +92,7 @@ extern void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size);
  * @param pool   Pool handle, or NULL.
  * @param cache  Worker-local cache, or NULL for the shared path.
  * @param ptr    Slot address, or NULL.
- * @param size   Allocation size, from 1 through the configured slot size.
+ * @param size   Allocation size, from 1 through the logical maximum.
  */
 extern void copool_free(
     copool_t* pool,

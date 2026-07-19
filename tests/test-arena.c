@@ -27,6 +27,13 @@
 
 #include <stdint.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #define MIB                      (1024U * 1024U)
 #define ARENA_CONCURRENT_THREADS 4
 #define ARENA_CONCURRENT_BATCH   8
@@ -41,8 +48,17 @@ typedef struct {
 
 typedef struct {
     _concurrent_ctx_t* ctx;
-    uint8_t            id;
 } _concurrent_worker_t;
+
+#if defined(_WIN32)
+static void _assert_cold_slot(const void* ptr) {
+    MEMORY_BASIC_INFORMATION info;
+
+    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
+    ASSERT(info.State == MEM_RESERVE);
+    ASSERT(info.Protect == 0);
+}
+#endif
 
 static int _concurrent_thread(void* arg) {
     _concurrent_worker_t* worker = (_concurrent_worker_t*)arg;
@@ -56,9 +72,6 @@ static int _concurrent_thread(void* arg) {
 
         ASSERT(mtx_lock(&ctx->lock) == thrd_success);
         for (int i = 0; i < ARENA_CONCURRENT_BATCH; i++) {
-            uint8_t* bytes = (uint8_t*)slots[i];
-            bytes[0] = (uint8_t)(worker->id ^ (uint8_t)round ^ (uint8_t)i);
-
             for (size_t j = 0; j < ctx->active_count; j++) {
                 ASSERT(ctx->active[j] != slots[i]);
             }
@@ -121,11 +134,6 @@ static void test_alloc_free_realloc(void) {
         for (int j = 0; j < i; j++) {
             ASSERT(slots[i] != slots[j]);
         }
-        uint8_t* bytes = (uint8_t*)slots[i];
-        bytes[0]       = (uint8_t)i;
-        bytes[122]     = (uint8_t)(i + 1);
-        ASSERT(bytes[0] == (uint8_t)i);
-        ASSERT(bytes[122] == (uint8_t)(i + 1));
     }
 
     arena_free(arena, slots, 32);
@@ -143,11 +151,6 @@ static void test_alloc_free_realloc(void) {
     }
     for (int i = 0; i < 32; i++) {
         ASSERT(recycled[i] != NULL);
-        uint8_t* bytes = (uint8_t*)recycled[i];
-        bytes[0]       = (uint8_t)(i + 2);
-        bytes[122]     = (uint8_t)(i + 3);
-        ASSERT(bytes[0] == (uint8_t)(i + 2));
-        ASSERT(bytes[122] == (uint8_t)(i + 3));
     }
 
     arena_free(arena, recycled, 32);
@@ -184,11 +187,6 @@ static void test_growth(void) {
         for (int j = 0; j < i; j++) {
             ASSERT(slots[i] != slots[j]);
         }
-        uint8_t* bytes  = (uint8_t*)slots[i];
-        bytes[0]        = (uint8_t)i;
-        bytes[MIB - 1U] = (uint8_t)(i + 1);
-        ASSERT(bytes[0] == (uint8_t)i);
-        ASSERT(bytes[MIB - 1U] == (uint8_t)(i + 1));
     }
 
     arena_free(arena, slots, 65);
@@ -202,7 +200,24 @@ static void test_destroy_with_allocated_slot(void) {
     void* slot = NULL;
     ASSERT(arena_alloc(arena, &slot, 1) == 1);
     ASSERT(slot != NULL);
-    ((uint8_t*)slot)[0] = 0x5a;
+    arena_destroy(arena);
+}
+
+static void test_alloc_returns_cold_slot(void) {
+    size_t page_size = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+
+    arena_t* arena = arena_create(page_size);
+    ASSERT(arena != NULL);
+
+    void* slot = NULL;
+    ASSERT(arena_alloc(arena, &slot, 1) == 1);
+    ASSERT(slot != NULL);
+#if defined(_WIN32)
+    _assert_cold_slot(slot);
+#endif
+
+    arena_free(arena, &slot, 1);
     arena_destroy(arena);
 }
 
@@ -217,7 +232,6 @@ static void test_concurrent_alloc_free(void) {
     _concurrent_worker_t workers[ARENA_CONCURRENT_THREADS];
     for (int i = 0; i < ARENA_CONCURRENT_THREADS; i++) {
         workers[i].ctx = &ctx;
-        workers[i].id  = (uint8_t)i;
         ASSERT(
             thrd_create(&threads[i], _concurrent_thread, &workers[i]) ==
             thrd_success);
@@ -240,6 +254,7 @@ int main(void) {
     test_null_args();
     test_growth();
     test_destroy_with_allocated_slot();
+    test_alloc_returns_cold_slot();
     test_concurrent_alloc_free();
     return 0;
 }

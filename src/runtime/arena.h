@@ -57,24 +57,28 @@ extern void arena_destroy(arena_t* arena);
 extern size_t arena_slot_size(const arena_t* arena);
 
 /**
- * @brief Allocate and commit fixed-size slots.
+ * @brief Allocate fixed-size cold slots.
  *
- * At most one region is added per call. Commit failures reduce the returned
- * count and leave failed addresses available for a later call.
+ * Returned addresses are fully decommitted and must be initialized before any
+ * access. At most one region is added per call.
  *
  * @param arena  Arena handle.
  * @param slots  Output array with capacity for count pointers.
  * @param count  Maximum number of slots to allocate.
  *
- * @return Number of committed slots written to slots, from 0 through count.
+ * @return Number of cold slot addresses written to slots, from 0 through
+ *         count.
  */
 extern int arena_alloc(arena_t* arena, void** slots, int count);
 
 /**
  * @brief Decommit and return slots to an arena.
  *
+ * Only slots decommitted successfully re-enter the free list. The slots array
+ * may be compacted in place so successful addresses occupy its leading entries.
+ *
  * @param arena  Arena handle.
- * @param slots  Array of slot addresses obtained from arena_alloc().
+ * @param slots  Mutable array of complete slot addresses from arena_alloc().
  * @param count  Number of slots to return.
  */
 extern void arena_free(arena_t* arena, void** slots, int count);

@@ -53,11 +53,15 @@ struct arena_s {
 
 static int _arena_grow(arena_t* arena) {
     size_t slot_count = ARENA_REGION_MAX_SIZE / arena->slot_size;
+    size_t region_size;
     void*  base       = NULL;
 
     for (;;) {
-        size_t region_size = slot_count * arena->slot_size;
-        base               = platform_vmem_reserve(region_size);
+        if (slot_count > SIZE_MAX / arena->slot_size) {
+            return -1;
+        }
+        region_size = slot_count * arena->slot_size;
+        base        = platform_vmem_reserve(region_size);
         if (base || slot_count == ARENA_REGION_MIN_SLOTS) {
             break;
         }
@@ -69,18 +73,22 @@ static int _arena_grow(arena_t* arena) {
     if (!base) {
         return -1;
     }
+    if (platform_vmem_decommit(base, region_size) != 0) {
+        (void)platform_vmem_release(base, region_size);
+        return -1;
+    }
 
     _arena_region_t* region =
         (_arena_region_t*)calloc(1, sizeof(_arena_region_t));
     if (!region) {
-        (void)platform_vmem_release(base, slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, region_size);
         return -1;
     }
 
     if (slot_count > SIZE_MAX - arena->free_cap ||
         arena->free_cap + slot_count > SIZE_MAX / sizeof(void*)) {
         free(region);
-        (void)platform_vmem_release(base, slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, region_size);
         return -1;
     }
 
@@ -89,13 +97,13 @@ static int _arena_grow(arena_t* arena) {
         (void**)realloc(arena->free_slots, new_cap * sizeof(void*));
     if (!free_slots) {
         free(region);
-        (void)platform_vmem_release(base, slot_count * arena->slot_size);
+        (void)platform_vmem_release(base, region_size);
         return -1;
     }
 
     region->next       = arena->regions;
     region->base       = base;
-    region->size       = slot_count * arena->slot_size;
+    region->size       = region_size;
     region->slot_count = slot_count;
 
     arena->free_slots = free_slots;
@@ -184,20 +192,7 @@ int arena_alloc(arena_t* arena, void** slots, int count) {
         slots[i] = arena->free_slots[--arena->free_count];
     }
     mtx_unlock(&arena->lock);
-
-    int success_count = 0;
-    for (size_t i = 0; i < take_count; i++) {
-        void* slot = slots[i];
-        if (platform_vmem_commit(slot, arena->slot_size) == 0) {
-            slots[success_count++] = slot;
-            continue;
-        }
-
-        mtx_lock(&arena->lock);
-        arena->free_slots[arena->free_count++] = slot;
-        mtx_unlock(&arena->lock);
-    }
-    return success_count;
+    return (int)take_count;
 }
 
 void arena_free(arena_t* arena, void** slots, int count) {
@@ -205,18 +200,25 @@ void arena_free(arena_t* arena, void** slots, int count) {
         return;
     }
 
+    int cold_count = 0;
     for (int i = 0; i < count; i++) {
-        if (platform_vmem_decommit(slots[i], arena->slot_size) != 0) {
-            xylem_loge("<arena> decommit failed ptr=%p", slots[i]);
+        void* slot = slots[i];
+        if (platform_vmem_decommit(slot, arena->slot_size) == 0) {
+            slots[cold_count++] = slot;
+        } else {
+            xylem_loge("<arena> decommit failed ptr=%p", slot);
         }
+    }
+    if (cold_count == 0) {
+        return;
     }
 
     mtx_lock(&arena->lock);
-    if ((size_t)count > arena->free_cap - arena->free_count) {
+    if ((size_t)cold_count > arena->free_cap - arena->free_count) {
         xylem_loge("<arena> free slot overflow");
         abort();
     }
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < cold_count; i++) {
         arena->free_slots[arena->free_count++] = slots[i];
     }
     mtx_unlock(&arena->lock);

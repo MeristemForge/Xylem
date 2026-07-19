@@ -28,6 +28,13 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #define COPOOL_CONCURRENT_THREADS 4
 #define COPOOL_CONCURRENT_BATCH   16
 #define COPOOL_CONCURRENT_ROUNDS  500
@@ -53,7 +60,21 @@ typedef struct {
     _Atomic int    fail_reset;
     _Atomic size_t init_size;
     _Atomic(void*) failed_init_ptr;
+    size_t         expected_size;
 } _slot_ops_ctx_t;
+
+#if defined(_WIN32)
+static void _assert_slot_state(
+    const void* ptr,
+    DWORD       expected_state,
+    DWORD       expected_protection) {
+    MEMORY_BASIC_INFORMATION info;
+
+    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
+    ASSERT(info.State == expected_state);
+    ASSERT((info.Protect & 0xffU) == expected_protection);
+}
+#endif
 
 static void _slot_ops_ctx_init(_slot_ops_ctx_t* ctx) {
     atomic_init(&ctx->init_count, 0);
@@ -62,6 +83,7 @@ static void _slot_ops_ctx_init(_slot_ops_ctx_t* ctx) {
     atomic_init(&ctx->fail_reset, 0);
     atomic_init(&ctx->init_size, 0);
     atomic_init(&ctx->failed_init_ptr, NULL);
+    ctx->expected_size = 0;
 }
 
 static int _slot_consume_failure(_Atomic int* budget) {
@@ -82,6 +104,11 @@ static int _slot_consume_failure(_Atomic int* budget) {
 static int _slot_init(void* ptr, size_t size, void* ud) {
     _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
 
+    ASSERT(size == ctx->expected_size);
+#if defined(_WIN32)
+    _assert_slot_state(ptr, MEM_RESERVE, 0);
+#endif
+
     atomic_fetch_add_explicit(&ctx->init_count, 1, memory_order_relaxed);
     atomic_store_explicit(&ctx->init_size, size, memory_order_relaxed);
     if (_slot_consume_failure(&ctx->fail_init)) {
@@ -91,13 +118,24 @@ static int _slot_init(void* ptr, size_t size, void* ud) {
             memory_order_relaxed);
         return -1;
     }
-    return platform_vmem_commit(ptr, size);
+    int rc = platform_vmem_commit(ptr, size);
+#if defined(_WIN32)
+    if (rc == 0) {
+        _assert_slot_state(ptr, MEM_COMMIT, PAGE_READWRITE);
+    }
+#endif
+    return rc;
 }
 
 static int _slot_reset(void* ptr, size_t size, void* ud) {
-    (void)ptr;
-    (void)size;
     _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
+
+    ASSERT(size == ctx->expected_size);
+#if defined(_WIN32)
+    _assert_slot_state(ptr, MEM_COMMIT, PAGE_READWRITE);
+#else
+    (void)ptr;
+#endif
 
     atomic_fetch_add_explicit(&ctx->reset_count, 1, memory_order_relaxed);
     if (_slot_consume_failure(&ctx->fail_reset)) {
@@ -115,6 +153,12 @@ static copool_t* _create_pool(
         .reset = _slot_reset,
         .ud    = ctx,
     };
+
+    size_t page_size = platform_vmem_page_size();
+    if (slot_size > 0) {
+        ctx->expected_size =
+            ((slot_size + page_size - 1) / page_size) * page_size;
+    }
 
     return copool_create(slot_size, shared_cap, &ops);
 }
@@ -292,9 +336,20 @@ static void test_create_invalid_args(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
+    copool_slot_ops_t missing_init = {
+        .reset = _slot_reset,
+        .ud    = &ctx,
+    };
+    copool_slot_ops_t missing_reset = {
+        .init = _slot_init,
+        .ud   = &ctx,
+    };
 
     ASSERT(_create_pool(0, 1, &ctx) == NULL);
     ASSERT(_create_pool(page_size, -1, &ctx) == NULL);
+    ASSERT(copool_create(page_size, 1, NULL) == NULL);
+    ASSERT(copool_create(page_size, 1, &missing_init) == NULL);
+    ASSERT(copool_create(page_size, 1, &missing_reset) == NULL);
 }
 
 static void test_alloc_invalid_args(void) {
@@ -498,10 +553,10 @@ static void test_logical_max_uses_aligned_callback_size(void) {
 }
 
 int main(void) {
+    test_create_invalid_args();
     test_local_cache_reuse();
     test_external_path_refills_shared();
     test_local_overflow_reaches_shared_and_arena();
-    test_create_invalid_args();
     test_alloc_invalid_args();
     test_free_null_args();
     test_concurrent_local_caches();

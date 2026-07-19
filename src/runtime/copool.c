@@ -68,10 +68,6 @@ static int _copool_shared_put(copool_t* pool, void** slots, int count) {
 }
 
 static int _copool_init_slots(copool_t* pool, void** slots, int count) {
-    if (!pool->ops.init) {
-        return count;
-    }
-
     int success_count = 0;
     for (int i = 0; i < count; i++) {
         if (pool->ops.init(slots[i], pool->slot_size, pool->ops.ud) == 0) {
@@ -87,7 +83,8 @@ copool_t* copool_create(
     size_t                   slot_size,
     int32_t                  shared_cap,
     const copool_slot_ops_t* ops) {
-    if (slot_size == 0 || shared_cap < 0) {
+    if (slot_size == 0 || shared_cap < 0 || !ops || !ops->init ||
+        !ops->reset) {
         return NULL;
     }
 
@@ -116,9 +113,7 @@ copool_t* copool_create(
     pool->max_size  = slot_size;
     pool->slot_size = arena_slot_size(arena);
     pool->arena     = arena;
-    if (ops) {
-        pool->ops = *ops;
-    }
+    pool->ops       = *ops;
     return pool;
 }
 
@@ -193,8 +188,7 @@ void copool_free(
         abort();
     }
 
-    if (pool->ops.reset &&
-        pool->ops.reset(ptr, pool->slot_size, pool->ops.ud) != 0) {
+    if (pool->ops.reset(ptr, pool->slot_size, pool->ops.ud) != 0) {
         void* slot = ptr;
         arena_free(pool->arena, &slot, 1);
         return;
