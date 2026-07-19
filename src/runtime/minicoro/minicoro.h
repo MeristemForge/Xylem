@@ -311,9 +311,9 @@ typedef struct mco_desc {
   void (*func)(mco_coro* co); /* Entry point function for the coroutine. */
   void* user_data;            /* Coroutine user data, can be get with `mco_get_user_data`. */
   /* Custom allocation interface. */
-  void* (*alloc_cb)(size_t size, void* allocator_data); /* Custom allocation function. */
-  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);     /* Custom deallocation function. */
-  void* allocator_data;       /* User data pointer passed to `alloc`/`dealloc` allocation functions. */
+  void* (*alloc_cb)(size_t size, void* allocator_data); /* Custom allocator. Embedded stacks require a 16-byte aligned result. */
+  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);     /* Custom deallocator receiving the same pointer, size and allocator data. */
+  void* allocator_data;       /* User data passed unchanged to the allocation functions. */
   size_t storage_size;        /* Coroutine storage size, to be used with the storage APIs. */
   /* These must be initialized only through `mco_init_desc`. */
   size_t coro_size;           /* Coroutine structure size. */
@@ -322,7 +322,7 @@ typedef struct mco_desc {
 
 /* Coroutine functions. */
 MCO_API mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size);  /* Initialize description of a coroutine. When stack size is 0 then MCO_DEFAULT_STACK_SIZE is used. */
-MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize the coroutine. */
+MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize in caller memory. Embedded stacks require `co` to be 16-byte aligned. */
 MCO_API mco_result mco_uninit(mco_coro* co);                                    /* Uninitialize the coroutine, may fail if it's not dead or suspended. */
 MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               /* Allocates and initializes a new coroutine. */
 MCO_API mco_result mco_destroy(mco_coro* co);                                   /* Uninitialize and deallocate the coroutine, may fail if it's not dead or suspended. */
@@ -600,6 +600,7 @@ void __tsan_destroy_fiber(void* fiber);
 void __tsan_switch_to_fiber(void* fiber, unsigned flags);
 #endif
 
+#include <stdint.h> /* For uintptr_t. */
 #include <string.h> /* For memcpy and memset. */
 
 #define _MCO_INVALID_SIZE (~(size_t)0)
@@ -1918,6 +1919,11 @@ static mco_result _mco_validate_desc(const mco_desc* desc) {
   return MCO_SUCCESS;
 }
 
+static MCO_FORCE_INLINE int _mco_coro_base_is_aligned(const mco_coro* co, const mco_desc* desc) {
+  size_t alignment = _mco_stack_offset(desc) != 0 ? 16 : sizeof(void*);
+  return (uintptr_t)co % alignment == 0;
+}
+
 size_t mco_desc_stack_offset(const mco_desc* desc) {
   if(_mco_validate_desc(desc) != MCO_SUCCESS) {
     return 0;
@@ -1985,6 +1991,10 @@ mco_result mco_init(mco_coro* co, mco_desc* desc) {
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS)
     return res;
+  if(!_mco_coro_base_is_aligned(co, desc)) {
+    MCO_LOG("coroutine memory is not properly aligned");
+    return MCO_INVALID_ARGUMENTS;
+  }
   memset(co, 0, sizeof(mco_coro));
   /* Create the coroutine. */
   res = _mco_create_context(co, desc);
