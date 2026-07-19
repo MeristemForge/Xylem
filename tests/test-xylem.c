@@ -27,9 +27,10 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
-#define SPAWN_MANY_COUNT  1000
-#define SLEEP_ORDER_COUNT 4
-#define SUBMIT_CONC_COUNT 20
+#define SPAWN_MANY_COUNT     1000
+#define SPAWN_FAIRNESS_COUNT 256
+#define SLEEP_ORDER_COUNT    4
+#define SUBMIT_CONC_COUNT    20
 
 #define STKGROW_FRAME_BYTES   (8 * 1024)
 #define STKGROW_BASIC_DEPTH   4
@@ -199,6 +200,36 @@ static void test_spawn_many(void) {
     atomic_init(&ctx.done, 0);
     xylem_run(_many_main, &ctx, &_rt_opts);
     ASSERT(atomic_load(&ctx.done) == SPAWN_MANY_COUNT);
+}
+
+typedef struct {
+    atomic_int child_runs;
+    int        observed_runs;
+} _spawn_fair_ctx_t;
+
+static void _spawn_fair_child(void* arg) {
+    _spawn_fair_ctx_t* ctx = (_spawn_fair_ctx_t*)arg;
+    atomic_fetch_add(&ctx->child_runs, 1);
+}
+
+static void _spawn_fair_main(void* arg) {
+    _spawn_fair_ctx_t* ctx = (_spawn_fair_ctx_t*)arg;
+    _start_safety_timer();
+    for (int i = 0; i < SPAWN_FAIRNESS_COUNT; i++) {
+        xylem_spawn(_spawn_fair_child, ctx);
+    }
+    ctx->observed_runs = atomic_load(&ctx->child_runs);
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+static void test_spawn_yields_on_credit_exhaustion(void) {
+    fprintf(stderr, "=== test_spawn_yields_on_credit_exhaustion\n");
+    _spawn_fair_ctx_t ctx = {0};
+    xylem_opts_t      opts = {.workers = 1};
+    atomic_init(&ctx.child_runs, 0);
+    xylem_run(_spawn_fair_main, &ctx, &opts);
+    ASSERT(ctx.observed_runs > 0);
 }
 
 typedef struct {
@@ -628,6 +659,7 @@ int main(void) {
     test_spawn_from_external_thread();
     test_spawn_nested();
     test_spawn_many();
+    test_spawn_yields_on_credit_exhaustion();
     test_sleep_zero();
     test_sleep_ordering();
     test_submit_basic();

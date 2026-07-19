@@ -109,7 +109,14 @@ platform_poller_sq_t* runtime_get_poller(void) {
 }
 
 int runtime_spawn(void (*fn)(void*), void* arg) {
-    return scheduler_coro_spawn(g_sched, fn, arg);
+    int rc = scheduler_coro_spawn(g_sched, fn, arg);
+    if (rc != 0) {
+        return rc;
+    }
+    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        runtime_yield();
+    }
+    return 0;
 }
 
 void runtime_sleep(uint64_t ms) {

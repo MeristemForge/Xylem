@@ -220,6 +220,21 @@ Shutdown does not run park cleanup. If shutdown happens before or after a park
 record is published, the coroutine is stranded until teardown;
 `xylem_run()` return remains the runtime lifetime boundary.
 
+### Spawn fairness
+
+`scheduler_coro_spawn()` is a scheduling primitive: it creates a coroutine,
+publishes it as runnable, and does not yield the caller. `runtime_spawn()` adds
+the runtime fairness policy. Each successful spawn from a runtime coroutine
+consumes one cooperative credit. When the current credit is exhausted, the
+caller yields after publishing the child and resumes with a fresh credit budget.
+This bounds runnable accumulation when a single worker repeatedly spawns
+without performing another cooperative operation. Calls from plain OS threads
+do not own worker credit and only enqueue the child.
+
+The API does not guarantee that a child starts after the spawn call returns.
+Other workers could already run it, and credit exhaustion gives a single worker
+the same opportunity. Failed spawns neither consume credit nor yield.
+
 ## 5. Worker loop (`_sched_worker_entry_cb`)
 
 Each worker thread calls `_sched_worker_find_runnable()`, which keeps searching

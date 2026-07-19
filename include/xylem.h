@@ -143,6 +143,10 @@ extern void xylem_shutdown(void);
  *
  * @note [CONTEXT-ADAPTIVE]
  *
+ * A call from a runtime coroutine may cooperatively yield before returning
+ * after its spawn credit is exhausted. A spawned coroutine may therefore begin
+ * before this function returns. Calls from plain OS threads only enqueue it.
+ *
  * @param fn   Coroutine entry function.
  * @param arg  Opaque argument.
  */

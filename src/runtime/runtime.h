@@ -63,8 +63,14 @@ extern void runtime_shutdown(void);
 /**
  * @brief Spawn a new coroutine. Thread-safe.
  *
+ * A successful call from a runtime coroutine consumes cooperative credit and
+ * may yield before returning when that credit is exhausted. Calls from plain
+ * OS threads only enqueue the new coroutine.
+ *
  * @param fn   Coroutine entry function.
  * @param arg  Argument passed to fn.
+ *
+ * @return 0 on success, -1 on failure.
  */
 extern int runtime_spawn(void (*fn)(void*), void* arg);
 
