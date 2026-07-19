@@ -61,6 +61,10 @@
 #define TEST_MCO_WINDOWS_ASM 1
 #endif
 
+#if defined(TEST_MCO_WINDOWS_ASM) && defined(_MSC_VER)
+#define TEST_MCO_WINDOWS_SEH 1
+#endif
+
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define TEST_MCO_ASAN 1
@@ -78,7 +82,7 @@
 #include <windows.h>
 #endif
 
-#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 #include <malloc.h>
 #endif
 
@@ -137,7 +141,7 @@ typedef struct {
     int      deep;
 } _stack_entry_ctx_t;
 
-#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 typedef struct _overflow_ctx_s _overflow_ctx_t;
 typedef uint32_t (*_overflow_recurse_fn_t)(
     _overflow_ctx_t* ctx,
@@ -209,7 +213,7 @@ static void _stack_entry(mco_coro* co) {
     }
 }
 
-#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 static __declspec(noinline) uint32_t _overflow_recurse(
     _overflow_ctx_t* ctx,
     uint8_t          seed) {
@@ -1095,7 +1099,7 @@ static void test_hot_deep_to_shallow_reuse(void) {
     coro_alloc_ctx_deinit(&alloc_ctx);
 }
 
-#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 static void test_stack_overflow_stops_before_metadata(void) {
     mco_desc          desc      = mco_desc_init(_overflow_entry, 128U * 1024U);
     coro_alloc_ctx_t  alloc_ctx = {0};
@@ -1285,7 +1289,7 @@ int main(void) {
     test_create_destroy_reuse();
     test_cross_thread_stack_migration();
     test_hot_deep_to_shallow_reuse();
-#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
     test_stack_overflow_stops_before_metadata();
 #endif
 #if defined(TEST_MCO_WINDOWS_ASM)
