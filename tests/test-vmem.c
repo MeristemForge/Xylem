@@ -24,6 +24,13 @@
 
 #include <stdint.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 static void test_reserve_commit_decommit_release(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
@@ -49,7 +56,48 @@ static void test_reserve_commit_decommit_release(void) {
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
+#if defined(_WIN32)
+static void test_page_size_lookup_is_cached(void) {
+    const int       lookup_count = 4096;
+    LARGE_INTEGER   start;
+    LARGE_INTEGER   end;
+    SYSTEM_INFO     info;
+    int64_t         lookup_ticks = INT64_MAX;
+    int64_t         system_ticks = INT64_MAX;
+    volatile size_t sink         = 0;
+
+    ASSERT(platform_vmem_page_size() > 0);
+    GetSystemInfo(&info);
+    for (int sample = 0; sample < 5; sample++) {
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < lookup_count; i++) {
+            sink += platform_vmem_page_size();
+        }
+        QueryPerformanceCounter(&end);
+        if (end.QuadPart - start.QuadPart < lookup_ticks) {
+            lookup_ticks = end.QuadPart - start.QuadPart;
+        }
+
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < lookup_count; i++) {
+            GetSystemInfo(&info);
+            sink += info.dwPageSize;
+        }
+        QueryPerformanceCounter(&end);
+        if (end.QuadPart - start.QuadPart < system_ticks) {
+            system_ticks = end.QuadPart - start.QuadPart;
+        }
+    }
+
+    ASSERT(sink != 0);
+    ASSERT(lookup_ticks * 2 < system_ticks);
+}
+#endif
+
 int main(void) {
     test_reserve_commit_decommit_release();
+#if defined(_WIN32)
+    test_page_size_lookup_is_cached();
+#endif
     return 0;
 }

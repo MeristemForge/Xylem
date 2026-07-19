@@ -103,7 +103,9 @@ static int _coro_desc_matches_ctx(
            desc->allocator_data == ctx &&
            desc->storage_size == layout->storage_size &&
            desc->coro_size == layout->coro_size &&
-           desc->stack_size == layout->stack_size;
+           desc->stack_size == layout->stack_size &&
+           desc->stack_offset == layout->stack_offset &&
+           desc->stack_alignment == layout->stack_alignment;
 }
 
 static int _coro_publish_stack_plan(
@@ -156,9 +158,26 @@ static int _coro_slot_init_cb(void* ptr, size_t size, void* ud) {
 
 static int _coro_slot_reset_cb(void* ptr, size_t size, void* ud) {
     coro_alloc_ctx_t* ctx = (coro_alloc_ctx_t*)ud;
-    platform_coro_t platform;
+    size_t            plan;
+    uintptr_t         base;
+    platform_coro_t   platform;
 
-    if (ctx == NULL || !_coro_desc_matches_ctx(ctx->desc, ctx) ||
+    if (ctx == NULL || ctx->state != CORO_ALLOC_CTX_READY || ptr == NULL ||
+        size == 0) {
+        return -1;
+    }
+    plan = atomic_load(&ctx->stack_plan);
+    if (plan == CORO_STACK_PLAN_EXTERNAL) {
+        return 0;
+    }
+    base = (uintptr_t)ptr;
+    if (plan != CORO_STACK_PLAN_UNKNOWN && plan < size &&
+        plan <= (size_t)(UINTPTR_MAX - base) &&
+        mco_get_stack_limit((const mco_coro*)ptr) == (void*)(base + plan)) {
+        return 0;
+    }
+
+    if (!_coro_desc_matches_ctx(ctx->desc, ctx) ||
         _coro_platform(ptr, size, &ctx->layout, &platform) != 0) {
         return -1;
     }
@@ -192,7 +211,7 @@ static int _coro_apply_stack_plan(
     if (plan == CORO_STACK_PLAN_UNKNOWN) {
         return -1;
     }
-    stack_offset = mco_desc_stack_offset(desc);
+    stack_offset = ctx->layout.stack_offset;
     if (plan == CORO_STACK_PLAN_EXTERNAL) {
         if (stack_offset != 0) {
             return -1;

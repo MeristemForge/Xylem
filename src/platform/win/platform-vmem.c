@@ -26,10 +26,31 @@
 #endif
 #include <windows.h>
 
+static BOOL CALLBACK _vmem_page_size_init_cb(
+    PINIT_ONCE once,
+    PVOID      param,
+    PVOID*     context) {
+    SYSTEM_INFO info;
+
+    (void)once;
+    (void)context;
+    GetSystemInfo(&info);
+    *(size_t*)param = (size_t)info.dwPageSize;
+    return TRUE;
+}
+
 size_t platform_vmem_page_size(void) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    return (size_t)si.dwPageSize;
+    static INIT_ONCE once      = INIT_ONCE_STATIC_INIT;
+    static size_t    page_size = 0;
+
+    if (!InitOnceExecuteOnce(
+            &once,
+            _vmem_page_size_init_cb,
+            &page_size,
+            NULL)) {
+        return 0;
+    }
+    return page_size;
 }
 
 void* platform_vmem_reserve(size_t size) {

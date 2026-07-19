@@ -680,6 +680,8 @@ static void test_alloc_ctx_rejects_descriptor_mutation(void) {
     size_t storage_size     = desc.storage_size;
     size_t coro_size        = desc.coro_size;
     size_t stack_size       = desc.stack_size;
+    size_t stack_offset     = desc.stack_offset;
+    size_t stack_alignment  = desc.stack_alignment;
 
     _coro_fixture_init(&fixture);
     desc.alloc_cb       = _coro_alloc_cb;
@@ -709,6 +711,16 @@ static void test_alloc_ctx_rejects_descriptor_mutation(void) {
     ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
     ASSERT(co == NULL);
     desc.stack_size = stack_size;
+
+    desc.stack_offset++;
+    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
+    ASSERT(co == NULL);
+    desc.stack_offset = stack_offset;
+
+    desc.stack_alignment++;
+    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
+    ASSERT(co == NULL);
+    desc.stack_alignment = stack_alignment;
     ASSERT(atomic_load(&fixture.alloc_calls) == 0);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 0);
 
@@ -1271,6 +1283,43 @@ static void test_stack_size_layout_overflow(void) {
     ASSERT(co == NULL);
     ASSERT(alloc_ctx.alloc_calls == 0);
 }
+
+static void test_stack_offset_lookup_is_cached(void) {
+    const int     lookup_count = 4096;
+    mco_desc      desc         = mco_desc_init(_empty_entry, 128U * 1024U);
+    LARGE_INTEGER start;
+    LARGE_INTEGER end;
+    SYSTEM_INFO   info;
+    int64_t       lookup_ticks = INT64_MAX;
+    int64_t       system_ticks = INT64_MAX;
+    volatile size_t sink       = 0;
+
+    ASSERT(mco_desc_stack_offset(&desc) > 0);
+    GetSystemInfo(&info);
+    for (int sample = 0; sample < 5; sample++) {
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < lookup_count; i++) {
+            sink += mco_desc_stack_offset(&desc);
+        }
+        QueryPerformanceCounter(&end);
+        if (end.QuadPart - start.QuadPart < lookup_ticks) {
+            lookup_ticks = end.QuadPart - start.QuadPart;
+        }
+
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < lookup_count; i++) {
+            GetSystemInfo(&info);
+            sink += info.dwPageSize;
+        }
+        QueryPerformanceCounter(&end);
+        if (end.QuadPart - start.QuadPart < system_ticks) {
+            system_ticks = end.QuadPart - start.QuadPart;
+        }
+    }
+
+    ASSERT(sink != 0);
+    ASSERT(lookup_ticks * 2 < system_ticks);
+}
 #endif
 
 int main(void) {
@@ -1295,6 +1344,7 @@ int main(void) {
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_stack_size_mutation();
     test_stack_size_layout_overflow();
+    test_stack_offset_lookup_is_cached();
 #endif
     return 0;
 }
