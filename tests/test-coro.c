@@ -36,10 +36,13 @@ static void test_stack_offset(void) {
 
     ASSERT(mco_create(&co, &desc) == MCO_SUCCESS);
     offset = mco_desc_stack_offset(&desc);
-    if (offset != 0) {
-        ASSERT((uint8_t*)co->stack_base == (uint8_t*)co + offset);
-        ASSERT(co->stack_size == desc.stack_size);
-    }
+#if defined(_WIN32) && defined(MCO_USE_FIBERS)
+    ASSERT(offset == 0);
+#else
+    ASSERT(offset != 0);
+    ASSERT((uint8_t*)co->stack_base == (uint8_t*)co + offset);
+    ASSERT(co->stack_size == desc.stack_size);
+#endif
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
 }
 
