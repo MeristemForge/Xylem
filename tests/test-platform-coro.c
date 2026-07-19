@@ -58,6 +58,14 @@ static void _assert_embedded_layout(uint8_t* ptr, size_t page_size) {
     _assert_page(ptr + page_size * 3, MEM_COMMIT, PAGE_READWRITE, 1);
     _assert_page(ptr + page_size * 4, MEM_COMMIT, PAGE_READWRITE, 0);
 }
+
+static void _assert_grown_embedded_layout(uint8_t* ptr, size_t page_size) {
+    _assert_page(ptr, MEM_COMMIT, PAGE_READWRITE, 0);
+    _assert_page(ptr + page_size, MEM_RESERVE, 0, 0);
+    _assert_page(ptr + page_size * 2, MEM_COMMIT, PAGE_READWRITE, 1);
+    _assert_page(ptr + page_size * 3, MEM_COMMIT, PAGE_READWRITE, 0);
+    _assert_page(ptr + page_size * 4, MEM_COMMIT, PAGE_READWRITE, 0);
+}
 #endif
 
 static void test_external_stack(void) {
@@ -102,6 +110,8 @@ static void test_embedded_stack_layout(void) {
     uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
     platform_coro_t coro;
     void*           initial;
+    void*           committed;
+    DWORD           previous_protection;
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
@@ -117,6 +127,25 @@ static void test_embedded_stack_layout(void) {
     ptr[page_size * 4] = 0x5a;
     ASSERT(platform_coro_reset(&coro, initial) == 0);
     ASSERT(ptr[page_size * 4] == 0x5a);
+
+    ASSERT(VirtualProtect(
+        ptr + page_size * 3,
+        page_size,
+        PAGE_READWRITE,
+        &previous_protection));
+    ASSERT((previous_protection & PAGE_GUARD) != 0);
+    committed = VirtualAlloc(
+        ptr + page_size * 2,
+        page_size,
+        MEM_COMMIT,
+        PAGE_READWRITE);
+    ASSERT(committed == ptr + page_size * 2);
+    ASSERT(VirtualProtect(
+        ptr + page_size * 2,
+        page_size,
+        PAGE_READWRITE | PAGE_GUARD,
+        &previous_protection));
+    _assert_grown_embedded_layout(ptr, page_size);
 
     ASSERT(platform_coro_reset(&coro, ptr + page_size * 3) == 0);
     ASSERT(ptr[page_size * 4] == 0);

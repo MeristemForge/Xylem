@@ -20,6 +20,7 @@
  */
 
 #include "assert.h"
+#include "platform/platform-info.h"
 #include "platform/platform-vmem.h"
 #include "runtime/copool.h"
 #include "runtime/coro.h"
@@ -32,7 +33,18 @@
 #include <string.h>
 #include <threads.h>
 
-#define TEST_COLD_THREAD_COUNT 8
+#define CORO_STACK_FRAME_SIZE    8192
+#define CORO_STACK_DEPTH         8
+#define TEST_COLD_THREAD_COUNT   8
+#define TEST_REUSE_DEEP_COUNT    128
+#define TEST_REUSE_SHALLOW_COUNT 128
+
+#define MIGRATION_FIRST_READY  (1 << 0)
+#define MIGRATION_SECOND_READY (1 << 1)
+#define MIGRATION_FIRST_GO     (1 << 2)
+#define MIGRATION_FIRST_DONE   (1 << 3)
+#define MIGRATION_SECOND_GO    (1 << 4)
+#define MIGRATION_SECOND_DONE  (1 << 5)
 
 #if defined(_WIN32) && defined(MCO_USE_FIBERS)
 #define TEST_MCO_WINDOWS_FIBER 1
@@ -47,6 +59,27 @@
     !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_ASYNCIFY) && \
     (defined(__x86_64__) || defined(_M_X64))
 #define TEST_MCO_WINDOWS_ASM 1
+#endif
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define TEST_MCO_ASAN 1
+#endif
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#define TEST_MCO_ASAN 1
+#endif
+
+#if defined(TEST_MCO_WINDOWS_ASM)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+#include <malloc.h>
 #endif
 
 typedef struct {
@@ -87,6 +120,42 @@ typedef struct {
     atomic_int destroy;
 } _cold_ctx_t;
 
+typedef struct {
+    atomic_uintptr_t co;
+    mtx_t            lock;
+    cnd_t            condition;
+    atomic_int       state;
+    atomic_int       entry_error;
+    atomic_uintptr_t first_tid;
+    atomic_uintptr_t second_tid;
+    atomic_uint      checksum;
+} _migration_ctx_t;
+
+typedef struct {
+    uint8_t  seed;
+    uint32_t checksum;
+    int      deep;
+} _stack_entry_ctx_t;
+
+#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+typedef struct _overflow_ctx_s _overflow_ctx_t;
+typedef uint32_t (*_overflow_recurse_fn_t)(
+    _overflow_ctx_t* ctx,
+    uint8_t          seed);
+
+struct _overflow_ctx_s {
+    _overflow_recurse_fn_t recurse;
+    uint64_t*              sentinel;
+    uint64_t               sentinel_value;
+    volatile int           keep_recursing;
+    DWORD                  exception_code;
+    uint32_t               checksum;
+    int                    reset_result;
+    int                    returned;
+    int                    calls;
+};
+#endif
+
 static void _empty_entry(mco_coro* co) {
     (void)co;
 }
@@ -96,6 +165,90 @@ static void _count_entry(mco_coro* co) {
 
     (*entry_calls)++;
 }
+
+static uint32_t _touch_stack(int depth, uint8_t seed) {
+    volatile uint8_t frame[CORO_STACK_FRAME_SIZE];
+    uint32_t         checksum = 0;
+
+    for (size_t i = 0; i < CORO_STACK_FRAME_SIZE; i += 4096U) {
+        frame[i] = (uint8_t)(seed + (uint8_t)(i / 4096U));
+        checksum += frame[i];
+    }
+    frame[CORO_STACK_FRAME_SIZE - 1] = (uint8_t)(seed ^ 0xa5U);
+    checksum += frame[CORO_STACK_FRAME_SIZE - 1];
+    if (depth > 0) {
+        checksum += _touch_stack(depth - 1, (uint8_t)(seed + 1U));
+    }
+    for (size_t i = 0; i < CORO_STACK_FRAME_SIZE; i += 4096U) {
+        checksum += frame[i];
+    }
+    checksum += frame[CORO_STACK_FRAME_SIZE - 1];
+    return checksum;
+}
+
+static void _migration_entry(mco_coro* co) {
+    _migration_ctx_t* ctx = (_migration_ctx_t*)mco_get_user_data(co);
+
+    atomic_store(&ctx->first_tid, (uintptr_t)platform_info_gettid());
+    atomic_fetch_add(&ctx->checksum, _touch_stack(CORO_STACK_DEPTH, 0x21U));
+    if (mco_yield(co) != MCO_SUCCESS) {
+        atomic_store(&ctx->entry_error, 1);
+        return;
+    }
+    atomic_store(&ctx->second_tid, (uintptr_t)platform_info_gettid());
+    atomic_fetch_add(&ctx->checksum, _touch_stack(CORO_STACK_DEPTH, 0x61U));
+}
+
+static void _stack_entry(mco_coro* co) {
+    _stack_entry_ctx_t* ctx = (_stack_entry_ctx_t*)mco_get_user_data(co);
+
+    if (ctx->deep) {
+        ctx->checksum = _touch_stack(CORO_STACK_DEPTH, ctx->seed);
+    } else {
+        ctx->checksum = (uint32_t)ctx->seed + 1U;
+    }
+}
+
+#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+static __declspec(noinline) uint32_t _overflow_recurse(
+    _overflow_ctx_t* ctx,
+    uint8_t          seed) {
+    volatile uint8_t frame[CORO_STACK_FRAME_SIZE];
+    uint32_t         checksum = 0;
+
+    ctx->calls++;
+    for (size_t i = 0; i < CORO_STACK_FRAME_SIZE; i += 4096U) {
+        frame[i] = (uint8_t)(seed + (uint8_t)(i / 4096U));
+        checksum += frame[i];
+    }
+    frame[CORO_STACK_FRAME_SIZE - 1] = (uint8_t)(seed ^ 0x5aU);
+    checksum += frame[CORO_STACK_FRAME_SIZE - 1];
+    if (ctx->keep_recursing != 0) {
+        checksum += ctx->recurse(ctx, (uint8_t)(seed + 1U));
+    }
+    checksum += frame[0];
+    checksum += frame[4096];
+    checksum += frame[CORO_STACK_FRAME_SIZE - 1];
+    return checksum;
+}
+
+static int _overflow_filter(DWORD code, _overflow_ctx_t* ctx) {
+    ctx->exception_code = code;
+    return code == EXCEPTION_STACK_OVERFLOW ? EXCEPTION_EXECUTE_HANDLER
+                                            : EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void _overflow_entry(mco_coro* co) {
+    _overflow_ctx_t* ctx = (_overflow_ctx_t*)mco_get_user_data(co);
+
+    __try {
+        ctx->checksum = ctx->recurse(ctx, 0x31U);
+    } __except (_overflow_filter(GetExceptionCode(), ctx)) {
+        ctx->reset_result = _resetstkoflw();
+    }
+    ctx->returned = 1;
+}
+#endif
 
 static void* _slack_alloc(size_t size, void* allocator_data) {
     _slack_alloc_ctx_t* ctx = (_slack_alloc_ctx_t*)allocator_data;
@@ -197,6 +350,121 @@ static void _coro_fixture_init(_coro_fixture_t* fixture) {
     atomic_init(&fixture->alloc_calls, 0);
     atomic_init(&fixture->dealloc_calls, 0);
 }
+
+static int _migration_signal(_migration_ctx_t* ctx, int state) {
+    int result = 0;
+
+    if (mtx_lock(&ctx->lock) != thrd_success) {
+        return -1;
+    }
+    atomic_fetch_or(&ctx->state, state);
+    if (cnd_broadcast(&ctx->condition) != thrd_success) {
+        result = -1;
+    }
+    if (mtx_unlock(&ctx->lock) != thrd_success) {
+        result = -1;
+    }
+    return result;
+}
+
+static int _migration_wait(_migration_ctx_t* ctx, int state) {
+    int result = 0;
+
+    if (mtx_lock(&ctx->lock) != thrd_success) {
+        return -1;
+    }
+    while ((atomic_load(&ctx->state) & state) != state) {
+        if (cnd_wait(&ctx->condition, &ctx->lock) != thrd_success) {
+            result = -1;
+            break;
+        }
+    }
+    if (mtx_unlock(&ctx->lock) != thrd_success) {
+        result = -1;
+    }
+    return result;
+}
+
+static int _migration_first_thread(void* arg) {
+    _migration_ctx_t* ctx = (_migration_ctx_t*)arg;
+    mco_result        result;
+
+    if (_migration_signal(ctx, MIGRATION_FIRST_READY) != 0 ||
+        _migration_wait(ctx, MIGRATION_FIRST_GO) != 0) {
+        return -1;
+    }
+    result = mco_resume((mco_coro*)atomic_load(&ctx->co));
+    if (_migration_signal(ctx, MIGRATION_FIRST_DONE) != 0 ||
+        _migration_wait(ctx, MIGRATION_SECOND_DONE) != 0) {
+        return -1;
+    }
+    return result == MCO_SUCCESS ? 0 : -1;
+}
+
+static int _migration_second_thread(void* arg) {
+    _migration_ctx_t* ctx = (_migration_ctx_t*)arg;
+    mco_result        result;
+
+    if (_migration_signal(ctx, MIGRATION_SECOND_READY) != 0 ||
+        _migration_wait(ctx, MIGRATION_SECOND_GO) != 0) {
+        return -1;
+    }
+    result = mco_resume((mco_coro*)atomic_load(&ctx->co));
+    if (_migration_signal(ctx, MIGRATION_SECOND_DONE) != 0) {
+        return -1;
+    }
+    return result == MCO_SUCCESS ? 0 : -1;
+}
+
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void _assert_windows_page(
+    const uint8_t* ptr,
+    DWORD          expected_state,
+    DWORD          expected_base_protection,
+    int            expected_guard) {
+    MEMORY_BASIC_INFORMATION info;
+
+    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
+    ASSERT(info.State == expected_state);
+    ASSERT((info.Protect & 0xffU) == expected_base_protection);
+    ASSERT(((info.Protect & PAGE_GUARD) != 0) == expected_guard);
+}
+
+static void _assert_prepared_stack_reset(
+    const void*     ptr,
+    const mco_desc* desc) {
+    size_t         page_size    = platform_vmem_page_size();
+    size_t         stack_offset = mco_desc_stack_offset(desc);
+    const uint8_t* slot         = (const uint8_t*)ptr;
+    const uint8_t* stack_low    = slot + stack_offset;
+    const uint8_t* stack_high   = stack_low + desc->stack_size;
+
+    ASSERT(page_size > 0);
+    ASSERT(stack_offset > page_size);
+    ASSERT(desc->stack_size >= page_size * 3U);
+    _assert_windows_page(
+        stack_low - page_size - 1U,
+        MEM_COMMIT,
+        PAGE_READWRITE,
+        0);
+    _assert_windows_page(stack_low - page_size, MEM_RESERVE, 0, 0);
+    _assert_windows_page(stack_low, MEM_RESERVE, 0, 0);
+    _assert_windows_page(stack_high - page_size * 3U, MEM_RESERVE, 0, 0);
+    _assert_windows_page(
+        stack_high - page_size * 2U,
+        MEM_COMMIT,
+        PAGE_READWRITE,
+        1);
+    _assert_windows_page(stack_high - page_size, MEM_COMMIT, PAGE_READWRITE, 0);
+}
+
+static void* _prepared_initial_stack_limit(
+    const void*     ptr,
+    const mco_desc* desc) {
+    return (uint8_t*)ptr + mco_desc_stack_offset(desc) + desc->stack_size -
+           platform_vmem_page_size();
+}
+#endif
 
 static int _buffer_is_filled(const uint8_t* ptr, size_t size, uint8_t value) {
     for (size_t i = 0; i < size; i++) {
@@ -649,6 +917,263 @@ static void test_create_destroy_reuse(void) {
     ASSERT(second == first_ptr);
 }
 
+static void test_cross_thread_stack_migration(void) {
+    mco_desc          desc      = mco_desc_init(_migration_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture = {0};
+    _migration_ctx_t  migration;
+    mco_desc          create_desc;
+    mco_coro*         co = NULL;
+    thrd_t            first_thread;
+    thrd_t            second_thread;
+    int               first_result  = -1;
+    int               second_result = -1;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    atomic_init(&migration.co, 0);
+    ASSERT(mtx_init(&migration.lock, mtx_plain) == thrd_success);
+    ASSERT(cnd_init(&migration.condition) == thrd_success);
+    atomic_init(&migration.state, 0);
+    atomic_init(&migration.entry_error, 0);
+    atomic_init(&migration.first_tid, 0);
+    atomic_init(&migration.second_tid, 0);
+    atomic_init(&migration.checksum, 0);
+
+    create_desc           = desc;
+    create_desc.user_data = &migration;
+    ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
+    ASSERT(co != NULL);
+    atomic_store(&migration.co, (uintptr_t)co);
+    ASSERT(
+        thrd_create(&first_thread, _migration_first_thread, &migration) ==
+        thrd_success);
+    ASSERT(
+        thrd_create(&second_thread, _migration_second_thread, &migration) ==
+        thrd_success);
+
+    ASSERT(
+        _migration_wait(
+            &migration,
+            MIGRATION_FIRST_READY | MIGRATION_SECOND_READY) == 0);
+    ASSERT(_migration_signal(&migration, MIGRATION_FIRST_GO) == 0);
+    ASSERT(_migration_wait(&migration, MIGRATION_FIRST_DONE) == 0);
+    ASSERT(mco_status(co) == MCO_SUSPENDED);
+    ASSERT(atomic_load(&migration.first_tid) != 0);
+    ASSERT(atomic_load(&migration.second_tid) == 0);
+
+    ASSERT(_migration_signal(&migration, MIGRATION_SECOND_GO) == 0);
+    ASSERT(_migration_wait(&migration, MIGRATION_SECOND_DONE) == 0);
+    ASSERT(mco_status(co) == MCO_DEAD);
+    ASSERT(thrd_join(first_thread, &first_result) == thrd_success);
+    ASSERT(thrd_join(second_thread, &second_result) == thrd_success);
+    ASSERT(first_result == 0);
+    ASSERT(second_result == 0);
+    ASSERT(atomic_load(&migration.entry_error) == 0);
+    ASSERT(atomic_load(&migration.checksum) != 0);
+    ASSERT(atomic_load(&migration.second_tid) != 0);
+    ASSERT(
+        atomic_load(&migration.first_tid) !=
+        atomic_load(&migration.second_tid));
+    ASSERT(coro_destroy(co) == MCO_SUCCESS);
+
+    cnd_destroy(&migration.condition);
+    mtx_destroy(&migration.lock);
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+    ASSERT(atomic_load(&fixture.alloc_calls) == 1);
+    ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
+}
+
+static void test_hot_deep_to_shallow_reuse(void) {
+    mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture     = {0};
+    void*             first_ptr   = NULL;
+    int               reuse_count = 0;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    for (int i = 0; i < TEST_REUSE_DEEP_COUNT; i++) {
+        _stack_entry_ctx_t entry = {
+            .seed = (uint8_t)(i + 1),
+            .deep = 1,
+        };
+        mco_desc  create_desc = desc;
+        mco_coro* co          = NULL;
+        void*     ptr;
+#if defined(TEST_MCO_WINDOWS_ASM)
+        void* initial_limit;
+#endif
+
+        create_desc.user_data = &entry;
+        ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
+        ASSERT(co != NULL);
+        ptr = co;
+        if (first_ptr == NULL) {
+            first_ptr = ptr;
+        } else if (ptr == first_ptr) {
+            reuse_count++;
+        }
+#if defined(TEST_MCO_WINDOWS_ASM)
+        initial_limit = _prepared_initial_stack_limit(ptr, &desc);
+        ASSERT(mco_get_stack_limit(co) == initial_limit);
+#endif
+        ASSERT(mco_resume(co) == MCO_SUCCESS);
+        ASSERT(mco_status(co) == MCO_DEAD);
+        ASSERT(entry.checksum != 0);
+#if defined(TEST_MCO_WINDOWS_ASM)
+        ASSERT((uintptr_t)mco_get_stack_limit(co) < (uintptr_t)initial_limit);
+#endif
+        ASSERT(coro_destroy(co) == MCO_SUCCESS);
+#if defined(TEST_MCO_WINDOWS_ASM)
+        _assert_prepared_stack_reset(ptr, &desc);
+#endif
+    }
+
+    for (int i = 0; i < TEST_REUSE_SHALLOW_COUNT; i++) {
+        _stack_entry_ctx_t entry = {
+            .seed = (uint8_t)(i + 1),
+            .deep = 0,
+        };
+        mco_desc  create_desc = desc;
+        mco_coro* co          = NULL;
+        void*     ptr;
+#if defined(TEST_MCO_WINDOWS_ASM)
+        void* initial_limit;
+#endif
+
+        create_desc.user_data = &entry;
+        ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
+        ASSERT(co != NULL);
+        ptr = co;
+        if (ptr == first_ptr) {
+            reuse_count++;
+        }
+#if defined(TEST_MCO_WINDOWS_ASM)
+        initial_limit = _prepared_initial_stack_limit(ptr, &desc);
+        ASSERT(mco_get_stack_limit(co) == initial_limit);
+#endif
+        ASSERT(mco_resume(co) == MCO_SUCCESS);
+        ASSERT(mco_status(co) == MCO_DEAD);
+        ASSERT(entry.checksum != 0);
+#if defined(TEST_MCO_WINDOWS_ASM)
+        ASSERT(mco_get_stack_limit(co) == initial_limit);
+#endif
+        ASSERT(coro_destroy(co) == MCO_SUCCESS);
+#if defined(TEST_MCO_WINDOWS_ASM)
+        _assert_prepared_stack_reset(ptr, &desc);
+#endif
+    }
+
+    ASSERT(reuse_count > 0);
+    ASSERT(
+        atomic_load(&fixture.alloc_calls) ==
+        TEST_REUSE_DEEP_COUNT + TEST_REUSE_SHALLOW_COUNT);
+    ASSERT(
+        atomic_load(&fixture.dealloc_calls) ==
+        TEST_REUSE_DEEP_COUNT + TEST_REUSE_SHALLOW_COUNT);
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+}
+
+#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+static void test_stack_overflow_stops_before_metadata(void) {
+    mco_desc          desc      = mco_desc_init(_overflow_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture  = {0};
+    _overflow_ctx_t   overflow = {
+          .recurse        = _overflow_recurse,
+          .sentinel_value = UINT64_C(0x5a3cc35aa55ac33c),
+          .keep_recursing = 1,
+          .exception_code = 0,
+          .checksum       = 0,
+          .reset_result   = 0,
+          .returned       = 0,
+          .calls          = 0,
+    };
+    mco_desc  create_desc;
+    mco_coro* co = NULL;
+    void*     ptr;
+    uint8_t*  metadata_end;
+    uint8_t*  storage_end;
+    uint8_t*  boundary;
+    void*     initial_limit;
+    void*     saved_stack_limit;
+    size_t    page_size;
+    size_t    stack_offset;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    create_desc           = desc;
+    create_desc.user_data = &overflow;
+    ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
+    ASSERT(co != NULL);
+    ptr          = co;
+    page_size    = platform_vmem_page_size();
+    stack_offset = mco_desc_stack_offset(&desc);
+    ASSERT(page_size > 0);
+    ASSERT(stack_offset > page_size);
+    metadata_end = (uint8_t*)co + stack_offset - page_size;
+    storage_end  = (uint8_t*)co->storage + co->storage_size;
+    ASSERT(
+        (uintptr_t)storage_end <=
+        (uintptr_t)metadata_end - sizeof(*overflow.sentinel));
+    overflow.sentinel  = (uint64_t*)(metadata_end - sizeof(*overflow.sentinel));
+    *overflow.sentinel = overflow.sentinel_value;
+    boundary           = (uint8_t*)co + stack_offset - page_size;
+    _assert_windows_page(boundary, MEM_RESERVE, 0, 0);
+
+    ASSERT(mco_resume(co) == MCO_SUCCESS);
+    ASSERT(mco_status(co) == MCO_DEAD);
+    ASSERT(overflow.exception_code == EXCEPTION_STACK_OVERFLOW);
+    ASSERT(overflow.reset_result != 0);
+    ASSERT(overflow.returned != 0);
+    ASSERT(overflow.calls > 0);
+    ASSERT(*overflow.sentinel == overflow.sentinel_value);
+    _assert_windows_page(boundary, MEM_RESERVE, 0, 0);
+    initial_limit     = _prepared_initial_stack_limit(ptr, &desc);
+    saved_stack_limit = mco_get_stack_limit(co);
+    ASSERT(saved_stack_limit == initial_limit);
+    mco_set_stack_limit(co, NULL);
+    ASSERT(coro_destroy(co) == MCO_SUCCESS);
+    ASSERT(*overflow.sentinel == overflow.sentinel_value);
+    _assert_prepared_stack_reset(ptr, &desc);
+
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+    ASSERT(atomic_load(&fixture.alloc_calls) == 1);
+    ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
+}
+#endif
+
 static void test_init_alignment(void) {
     mco_desc  desc = mco_desc_init(_empty_entry, 128U * 1024U);
     uint8_t*  raw;
@@ -758,6 +1283,11 @@ int main(void) {
     test_concurrent_cold_plan_publication();
     test_create_prepared_allocator();
     test_create_destroy_reuse();
+    test_cross_thread_stack_migration();
+    test_hot_deep_to_shallow_reuse();
+#if defined(TEST_MCO_WINDOWS_ASM) && !defined(TEST_MCO_ASAN)
+    test_stack_overflow_stops_before_metadata();
+#endif
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_stack_size_mutation();
     test_stack_size_layout_overflow();
