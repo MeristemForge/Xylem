@@ -4,7 +4,7 @@
 
 **Goal:** Synchronize ASan shadow state with Windows lazily committed coroutine stack pages.
 
-**Architecture:** `platform_coro_prepare_slot()` owns the transition from a cold arena slot to an active coroutine slot. It keeps the existing metadata/guard/RW commit layout and unpoisons the full logical slot after successful setup. Arena release continues to decommit and poison the whole slot.
+**Architecture:** Arena owns ASan shadow transitions for coroutine slots. It unpoisons a complete slot before allocation, then poisons it after successful decommit. Platform vmem operations expose ASan macros but never change shadow state implicitly.
 
 **Tech Stack:** C11, CMake, Windows x64 ASM backend, MSVC AddressSanitizer, CTest.
 
@@ -18,17 +18,21 @@
 - [ ] **Step 1: Add a test entry that consumes the real ASM coroutine stack and performs `calloc` at depth.** Keep the test Windows x64 ASM-only and use the existing coroutine creation helpers. The assertion is that the coroutine returns successfully and frees the allocation.
 - [ ] **Step 2: Build and run the focused test with ASan.** Expected before the production change: `AddressSanitizer: use-after-poison`.
 
-### Task 2: Unpoison an active slot's complete logical range
+### Task 2: Make vmem shadow transitions explicit
 
 **Files:**
-- Modify: `src/platform/win/platform-coro.c:116-141`
+- Modify: `src/platform/platform-vmem.h`
+- Modify: `src/platform/unix/platform-vmem.c`
+- Modify: `src/platform/win/platform-vmem.c`
+- Modify: `src/runtime/arena.c`
+- Modify: `tests/test-vmem.c`
 
-- [ ] **Step 1: After metadata and initial stack setup succeed, call `VMEM_ASAN_UNPOISON(layout.slot_low, layout.slot_size)`.** Do not change reserve, commit, guard, or decommit behavior.
-- [ ] **Step 2: Run the focused test and the failing integration tests.** Expected: no ASan report.
-- [ ] **Step 3: Run the complete Windows ASan CTest suite.** Expected: zero failed tests and zero sanitizer reports.
+- [ ] **Step 1: Remove implicit ASan operations from platform vmem implementations.** Keep `VMEM_ASAN_POISON` and `VMEM_ASAN_UNPOISON` available to callers.
+- [ ] **Step 2: Pair arena allocation and reclamation with explicit ASan macros.** Unpoison before returning a slot, poison after successful decommit, and unpoison before region release.
+- [ ] **Step 3: Run the focused test and the failing integration tests.** Expected: no ASan report.
+- [ ] **Step 4: Run the complete Windows ASan CTest suite.** Expected: zero failed tests and zero sanitizer reports.
 
 ### Task 3: Review and commit
 
 - [ ] **Step 1: Review the staged diff for scope, ASCII-only source, and no debug artifacts.**
-- [ ] **Step 2: Commit with `fix(runtime): sync asan with lazy coroutine stacks`.**
-
+- [ ] **Step 2: Commit with `refactor(platform): make asan shadow explicit`.**

@@ -39,6 +39,7 @@ static void test_reserve_commit_decommit_release(void) {
     uint8_t* ptr  = (uint8_t*)platform_vmem_reserve(size);
     ASSERT(ptr != NULL);
     ASSERT((uintptr_t)ptr % page_size == 0);
+    VMEM_ASAN_UNPOISON(ptr, size);
     ASSERT(platform_vmem_commit(ptr, size) == 0);
 
     ptr[0] = 0x5a;
@@ -47,6 +48,8 @@ static void test_reserve_commit_decommit_release(void) {
     ASSERT(ptr[page_size] == 0xa5);
 
     ASSERT(platform_vmem_decommit(ptr + page_size, page_size) == 0);
+    VMEM_ASAN_POISON(ptr + page_size, page_size);
+    VMEM_ASAN_UNPOISON(ptr + page_size, page_size);
     ASSERT(platform_vmem_commit(ptr + page_size, page_size) == 0);
     ptr[page_size] = 0x3c;
     ASSERT(ptr[page_size] == 0x3c);
@@ -66,6 +69,7 @@ static void test_guard(void) {
     ASSERT(page_size > 0);
     ptr = (uint8_t*)platform_vmem_reserve(page_size);
     ASSERT(ptr != NULL);
+    VMEM_ASAN_UNPOISON(ptr, page_size);
     ASSERT(platform_vmem_commit(ptr, page_size) == 0);
     ASSERT(platform_vmem_guard(ptr, page_size) == 0);
 #if defined(_WIN32)
@@ -78,6 +82,29 @@ static void test_guard(void) {
 #endif
     ASSERT(platform_vmem_release(ptr, page_size) == 0);
 }
+
+#ifdef VMEM_ASAN
+static void test_shadow_state_is_caller_owned(void) {
+    size_t   page_size = platform_vmem_page_size();
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(page_size);
+
+    ASSERT(ptr != NULL);
+    VMEM_ASAN_POISON(ptr, page_size);
+    ASSERT(__asan_address_is_poisoned(ptr) != 0);
+    ASSERT(platform_vmem_commit(ptr, page_size) == 0);
+    ASSERT(__asan_address_is_poisoned(ptr) != 0);
+
+    VMEM_ASAN_UNPOISON(ptr, page_size);
+    ASSERT(__asan_address_is_poisoned(ptr) == 0);
+    ASSERT(platform_vmem_decommit(ptr, page_size) == 0);
+    ASSERT(__asan_address_is_poisoned(ptr) == 0);
+
+    VMEM_ASAN_POISON(ptr, page_size);
+    ASSERT(__asan_address_is_poisoned(ptr) != 0);
+    VMEM_ASAN_UNPOISON(ptr, page_size);
+    ASSERT(platform_vmem_release(ptr, page_size) == 0);
+}
+#endif
 
 #if defined(_WIN32)
 static void test_page_size_lookup_is_cached(void) {
@@ -120,6 +147,9 @@ static void test_page_size_lookup_is_cached(void) {
 int main(void) {
     test_reserve_commit_decommit_release();
     test_guard();
+#ifdef VMEM_ASAN
+    test_shadow_state_is_caller_owned();
+#endif
 #if defined(_WIN32)
     test_page_size_lookup_is_cached();
 #endif

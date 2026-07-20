@@ -423,8 +423,8 @@ holds only the coroutine object, context, and storage; `CreateFiberEx()` and
 `DeleteFiber()` own the external Fiber stack.
 
 Minicoro retains its delayed range checks on backends that use them. ASAN builds
-also use minicoro's sanitizer fiber-switch integration, while platform-vmem and
-platform-coro explicitly poison cold pages and unpoison them before commit.
+also use minicoro's sanitizer fiber-switch integration, while arena explicitly
+unpoisons allocated slots and poisons slots after successful decommit.
 Scheduler resume and yield paths abort on every non-success minicoro result.
 This includes `MCO_STACK_OVERFLOW`, because execution cannot safely continue
 after the delayed check detects that the stack already crossed its range.

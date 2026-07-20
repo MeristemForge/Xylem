@@ -139,10 +139,10 @@ inside that range:
 |----------|-------|-------------|---------|
 | `page_size()` | `sysconf(_SC_PAGESIZE)` | `sysconf(_SC_PAGESIZE)` | `GetSystemInfo` |
 | `reserve(size)` | anonymous private `mmap(RW)` | anonymous private `mmap(RW)` | `VirtualAlloc(MEM_RESERVE)` |
-| `commit(ptr,size)` | ASAN unpoison | `MADV_FREE_REUSE`, then ASAN unpoison | ASAN unpoison, then `VirtualAlloc(MEM_COMMIT)`; re-poison on failure |
+| `commit(ptr,size)` | no OS transition | `MADV_FREE_REUSE` | `VirtualAlloc(MEM_COMMIT)` |
 | `guard(ptr,size)` | no-op | no-op | `VirtualProtect(PAGE_READWRITE | PAGE_GUARD)` |
-| `decommit(ptr,size)` | `MADV_FREE`, then ASAN poison | `MADV_FREE_REUSABLE`, then ASAN poison | `VirtualFree(MEM_DECOMMIT)` then ASAN poison |
-| `release(ptr,size)` | `munmap` | `munmap` | ASAN unpoison, then `VirtualFree(MEM_RELEASE)`; re-poison on failure |
+| `decommit(ptr,size)` | `MADV_FREE` | `MADV_FREE_REUSABLE` | `VirtualFree(MEM_DECOMMIT)` |
+| `release(ptr,size)` | `munmap` | `munmap` | `VirtualFree(MEM_RELEASE)` |
 
 `reserve()` returns one page-aligned range. Callers treat pages as unavailable
 until `commit()` succeeds. `decommit()` preserves the reservation but makes the
@@ -167,12 +167,10 @@ reserved. The system page size is immutable for the process and is cached after
 the first `GetSystemInfo` query so cold-slot initialization does not repeat that
 query.
 
-ASAN builds explicitly poison a range after successful decommit. Commit clears
-the poison before the range can be touched. On Windows this happens before
-`VirtualAlloc`, which may access the range internally; a failed commit restores
-the poison. Windows also clears stale poison before releasing an address range
-for reuse and restores it if release fails. Non-ASAN builds compile these
-operations to no-ops.
+The vmem operations do not change ASAN shadow state. Callers use
+`VMEM_ASAN_POISON` and `VMEM_ASAN_UNPOISON` explicitly: unpoison before commit or
+release when the range was previously poisoned, and poison after a successful
+decommit. Non-ASAN builds compile these macros to no-ops.
 
 ### Coroutine slot page policy
 
@@ -228,13 +226,11 @@ metadata and is committed as one block; `CreateFiberEx()` / `DeleteFiber()` own
 the separate Fiber stack. Unix uses whole-slot policy for ASM/ucontext-style
 embedded layouts. Both remain hot without a platform reuse operation.
 
-ASAN shadow transitions follow the OS operation ordering. Windows unpoisons a
-range before `VirtualAlloc`, because that call may touch the range internally,
-and re-poisons on commit failure. Windows cold-slot preparation likewise
-unpoisons pages before committing them; a later arena spill decommits and
-poisons the complete slot. Darwin performs `MADV_FREE_REUSE` before unpoisoning,
-while Linux commit only unpoisons its already mapped pages. Release on Windows
-unpoisons before `MEM_RELEASE` and restores poison if release fails.
+The arena owns ASAN shadow transitions for coroutine storage. It unpoisons a
+complete slot before returning it from `arena_alloc()`, allowing Windows moving
+guard pages to enter any reserved stack page. It poisons a slot only after a
+successful `platform_vmem_decommit()`. Region release unpoisons the complete
+reservation before `platform_vmem_release()` and restores poison on failure.
 
 ### Coroutine arena lifecycle
 

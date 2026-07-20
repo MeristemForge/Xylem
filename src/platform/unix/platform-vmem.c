@@ -62,7 +62,6 @@ void* platform_vmem_reserve(size_t size) {
 int platform_vmem_commit(void* ptr, size_t size) {
     (void)ptr;
     (void)size;
-    VMEM_ASAN_UNPOISON(ptr, size);
     return 0;
 }
 
@@ -70,7 +69,6 @@ int platform_vmem_decommit(void* ptr, size_t size) {
     if (madvise(ptr, size, MADV_FREE) != 0) {
         return -1;
     }
-    VMEM_ASAN_POISON(ptr, size);
     return 0;
 }
 
@@ -93,7 +91,6 @@ int platform_vmem_commit(void* ptr, size_t size) {
     if (madvise(ptr, size, MADV_FREE_REUSE) != 0) {
         return -1;
     }
-    VMEM_ASAN_UNPOISON(ptr, size);
     return 0;
 }
 
@@ -101,7 +98,6 @@ int platform_vmem_decommit(void* ptr, size_t size) {
     if (madvise(ptr, size, MADV_FREE_REUSABLE) != 0) {
         return -1;
     }
-    VMEM_ASAN_POISON(ptr, size);
     return 0;
 }
 

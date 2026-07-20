@@ -138,7 +138,6 @@ int platform_coro_prepare_slot(
         (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
         return -1;
     }
-    VMEM_ASAN_UNPOISON(layout.slot_low, layout.slot_size);
     return 0;
 }
 

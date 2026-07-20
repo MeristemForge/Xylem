@@ -48,11 +48,8 @@ void* platform_vmem_reserve(size_t size) {
 }
 
 int platform_vmem_commit(void* ptr, size_t size) {
-    /* VirtualAlloc may touch the range before returning to its caller. */
-    VMEM_ASAN_UNPOISON(ptr, size);
     void* committed = VirtualAlloc(ptr, size, MEM_COMMIT, PAGE_READWRITE);
     if (committed != ptr) {
-        VMEM_ASAN_POISON(ptr, size);
         return -1;
     }
     return 0;
@@ -74,14 +71,12 @@ int platform_vmem_decommit(void* ptr, size_t size) {
     if (!VirtualFree(ptr, size, MEM_DECOMMIT)) {
         return -1;
     }
-    VMEM_ASAN_POISON(ptr, size);
     return 0;
 }
 
 int platform_vmem_release(void* ptr, size_t size) {
-    VMEM_ASAN_UNPOISON(ptr, size);
+    (void)size;
     if (!VirtualFree(ptr, 0, MEM_RELEASE)) {
-        VMEM_ASAN_POISON(ptr, size);
         return -1;
     }
     return 0;

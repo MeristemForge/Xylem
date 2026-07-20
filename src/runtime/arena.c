@@ -51,6 +51,15 @@ struct arena_s {
     size_t           slot_size;
 };
 
+static int _arena_release_region(void* ptr, size_t size) {
+    VMEM_ASAN_UNPOISON(ptr, size);
+    if (platform_vmem_release(ptr, size) != 0) {
+        VMEM_ASAN_POISON(ptr, size);
+        return -1;
+    }
+    return 0;
+}
+
 static int _arena_grow(arena_t* arena) {
     size_t slot_count = ARENA_REGION_MAX_SIZE / arena->slot_size;
     size_t region_size;
@@ -72,21 +81,22 @@ static int _arena_grow(arena_t* arena) {
         }
     }
     if (platform_vmem_decommit(base, region_size) != 0) {
-        (void)platform_vmem_release(base, region_size);
+        (void)_arena_release_region(base, region_size);
         return -1;
     }
+    VMEM_ASAN_POISON(base, region_size);
 
     _arena_region_t* region =
         (_arena_region_t*)calloc(1, sizeof(_arena_region_t));
     if (!region) {
-        (void)platform_vmem_release(base, region_size);
+        (void)_arena_release_region(base, region_size);
         return -1;
     }
 
     if (slot_count > SIZE_MAX - arena->free_cap ||
         arena->free_cap + slot_count > SIZE_MAX / sizeof(void*)) {
         free(region);
-        (void)platform_vmem_release(base, region_size);
+        (void)_arena_release_region(base, region_size);
         return -1;
     }
 
@@ -95,7 +105,7 @@ static int _arena_grow(arena_t* arena) {
         (void**)realloc(arena->free_slots, new_cap * sizeof(void*));
     if (!free_slots) {
         free(region);
-        (void)platform_vmem_release(base, region_size);
+        (void)_arena_release_region(base, region_size);
         return -1;
     }
 
@@ -158,7 +168,7 @@ void arena_destroy(arena_t* arena) {
     _arena_region_t* region = arena->regions;
     while (region) {
         _arena_region_t* next = region->next;
-        if (platform_vmem_release(region->base, region->size) != 0) {
+        if (_arena_release_region(region->base, region->size) != 0) {
             xylem_loge("<arena> release failed ptr=%p", region->base);
         }
         free(region);
@@ -188,6 +198,7 @@ int arena_alloc(arena_t* arena, void** slots, int count) {
     }
     for (size_t i = 0; i < take_count; i++) {
         slots[i] = arena->free_slots[--arena->free_count];
+        VMEM_ASAN_UNPOISON(slots[i], arena->slot_size);
     }
     mtx_unlock(&arena->lock);
     return (int)take_count;
@@ -202,6 +213,7 @@ void arena_free(arena_t* arena, void** slots, int count) {
     for (int i = 0; i < count; i++) {
         void* slot = slots[i];
         if (platform_vmem_decommit(slot, arena->slot_size) == 0) {
+            VMEM_ASAN_POISON(slot, arena->slot_size);
             slots[cold_count++] = slot;
         } else {
             xylem_loge("<arena> decommit failed ptr=%p", slot);

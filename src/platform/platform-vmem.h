@@ -23,11 +23,7 @@ _Pragma("once")
 
 #include <stddef.h>
 
-/**
- * ASan does not track platform decommit and recommit transitions. Explicit
- * poison marks decommitted pages inaccessible, and unpoison makes recommitted
- * pages accessible to the next occupant. Non-ASan builds need no shadow work.
- */
+/* Explicit ASan shadow control for callers that own vmem lifecycle state. */
 #if defined(__SANITIZE_ADDRESS__)
 #define VMEM_ASAN 1
 #elif defined(__has_feature)
@@ -74,6 +70,9 @@ extern void* platform_vmem_reserve(size_t size);
  * @param size  Number of page-aligned bytes to commit.
  *
  * @return 0 on success, -1 on failure.
+ *
+ * @note This function does not update ASan shadow state. A caller that
+ *       previously poisoned the range must unpoison it before this call.
  */
 extern int platform_vmem_commit(void* ptr, size_t size);
 
@@ -99,6 +98,9 @@ extern int platform_vmem_guard(void* ptr, size_t size);
  * @param size  Number of page-aligned bytes to decommit.
  *
  * @return 0 on success, -1 on failure.
+ *
+ * @note This function does not update ASan shadow state. The caller must
+ *       poison the range after a successful decommit when required.
  */
 extern int platform_vmem_decommit(void* ptr, size_t size);
 
@@ -111,5 +113,7 @@ extern int platform_vmem_decommit(void* ptr, size_t size);
  * @return 0 on success, -1 on failure.
  *
  * @note Partial reservation release is not supported.
+ * @note This function does not update ASan shadow state. The caller must
+ *       unpoison a poisoned range before this call when required.
  */
 extern int platform_vmem_release(void* ptr, size_t size);
