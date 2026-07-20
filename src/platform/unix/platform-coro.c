@@ -23,13 +23,22 @@
 
 #include "platform/platform-vmem.h"
 
-int platform_coro_prepare_initial_layout(const platform_coro_t* coro) {
-    if (coro == NULL || coro->ptr == NULL || coro->size == 0) {
+int platform_coro_prepare_slot(
+    void*  slot,
+    size_t slot_size,
+    size_t stack_offset,
+    size_t stack_size) {
+    if (slot == NULL || slot_size == 0 ||
+        (stack_offset == 0) != (stack_size == 0)) {
         return -1;
     }
-    return platform_vmem_commit(coro->ptr, coro->size);
+    return platform_vmem_commit(slot, slot_size);
 }
 
-void* platform_coro_initial_stack_limit(const platform_coro_t* coro) {
-    return coro != NULL ? coro->stack_low : NULL;
+void* platform_coro_initial_stack_limit(
+    void*  stack_base,
+    size_t stack_size) {
+    (void)stack_base;
+    (void)stack_size;
+    return NULL;
 }

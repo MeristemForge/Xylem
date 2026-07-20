@@ -322,7 +322,7 @@ scheduler -> copool -> arena -> platform-vmem
 ```
 
 The first path owns descriptor layout, coroutine construction, and the
-backend-specific memory layout. The second owns reusable fixed-slot addresses,
+backend-specific memory policy. The second owns reusable fixed-slot addresses,
 cache placement, reservations, and full-slot decommit. The callback supplied by
 `coro_get_slot_ops()` connects the paths: copool invokes it only to prepare a
 cold slot, while arena sees only page-aligned ranges and never depends on
@@ -333,7 +333,8 @@ copy it into `scheduler_opts_t`; scheduler creation passes the selected value to
 `mco_desc_init()` and stores the result as the persistent `sched->coro_desc`.
 The descriptor retains the scheduler allocator callbacks and data unchanged.
 `coro_get_slot_ops()` carries a read-only pointer to that persistent descriptor
-so cold-slot initialization can derive the platform layout.
+so cold-slot initialization can forward minicoro's stack offset to the platform
+layer.
 
 Minicoro exposes a platform-managed stack offset and narrow saved `StackLimit`
 get/set accessors. Windows x64 ASM page-aligns metadata and the embedded stack
@@ -349,11 +350,12 @@ calls `coro_create()`. The adapter allocates a prepared slot and captures its
 saved `StackLimit` before `mco_init()` clears the old coroutine context. A
 non-NULL saved limit must be a page-aligned address strictly inside the embedded
 stack; violation indicates internal cache corruption and aborts. After
-initialization, the adapter restores the saved hot limit or installs the
-platform initial limit for a new cold slot. Cold-slot initialization publishes
-the process page alignment once, so hot validation only performs an atomic
-read. Ordinary minicoro allocators use `mco_create()` directly. The persistent
-descriptor outlives every coroutine and the copool. Teardown destroys registered
+initialization, the adapter validates the saved limit against minicoro's actual
+`stack_base` and `stack_size`, then restores it or installs the platform initial
+limit for a new cold slot. Cold-slot initialization publishes the process page
+alignment once, so hot validation only performs an atomic read. Ordinary
+minicoro allocators use `mco_create()` directly. The persistent descriptor
+outlives every coroutine and the copool. Teardown destroys registered
 coroutines before destroying the copool and its arena.
 
 On return to copool, the slot enters the worker-local or shared cache unchanged.

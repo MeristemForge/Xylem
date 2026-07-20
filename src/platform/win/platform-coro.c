@@ -30,7 +30,6 @@ typedef struct {
     uint8_t* stack_low;
     uint8_t* stack_high;
     uint8_t* guard_low;
-    void*    initial_stack_limit;
     size_t   slot_size;
     size_t   metadata_size;
     size_t   stack_size;
@@ -38,76 +37,68 @@ typedef struct {
     int      external;
 } _coro_layout_t;
 
-static int
-_coro_validate_slot(const platform_coro_t* coro, _coro_layout_t* layout) {
+static int _coro_validate_slot(
+    void*           slot,
+    size_t          slot_size,
+    _coro_layout_t* layout) {
     size_t    page_size;
     uintptr_t slot_low;
 
-    if (coro == NULL || layout == NULL || coro->ptr == NULL ||
-        coro->size == 0) {
+    if (slot == NULL || slot_size == 0 || layout == NULL) {
         return -1;
     }
     page_size = platform_vmem_page_size();
-    slot_low  = (uintptr_t)coro->ptr;
+    slot_low  = (uintptr_t)slot;
     if (page_size == 0 || slot_low % page_size != 0 ||
-        coro->size % page_size != 0 ||
-        coro->size > (size_t)(UINTPTR_MAX - slot_low)) {
+        slot_size % page_size != 0 ||
+        slot_size > (size_t)(UINTPTR_MAX - slot_low)) {
         return -1;
     }
     layout->slot_low  = (uint8_t*)slot_low;
-    layout->slot_size = coro->size;
+    layout->slot_size = slot_size;
     layout->page_size = page_size;
     layout->external  = 0;
     return 0;
 }
 
 static int _coro_validate_stack_layout(
-    const platform_coro_t* coro,
-    _coro_layout_t*        layout) {
-    size_t    page_size = layout->page_size;
-    size_t    prefix_size;
-    uintptr_t slot_low  = (uintptr_t)layout->slot_low;
-    uintptr_t slot_high = slot_low + layout->slot_size;
-    uintptr_t stack_low;
-    uintptr_t stack_high;
+    size_t          stack_offset,
+    size_t          stack_size,
+    _coro_layout_t* layout) {
+    size_t page_size = layout->page_size;
 
-    if (coro->stack_low == NULL && coro->stack_size == 0) {
+    if (stack_offset == 0 && stack_size == 0) {
         layout->external = 1;
         return 0;
     }
-    if (coro->stack_low == NULL || coro->stack_size == 0) {
+    if (stack_offset == 0 || stack_size == 0) {
+        return -1;
+    }
+    if (stack_offset % page_size != 0 || stack_size % page_size != 0 ||
+        page_size > SIZE_MAX / 2 || stack_size < page_size * 2 ||
+        stack_offset > layout->slot_size ||
+        stack_size > layout->slot_size - stack_offset) {
         return -1;
     }
 
-    stack_low = (uintptr_t)coro->stack_low;
-    if (stack_low % page_size != 0 || coro->stack_size % page_size != 0 ||
-        page_size > SIZE_MAX / 2 || coro->stack_size < page_size * 2 ||
-        coro->stack_size > (size_t)(UINTPTR_MAX - stack_low)) {
-        return -1;
-    }
-    stack_high = stack_low + coro->stack_size;
-    if (stack_low < slot_low || stack_high > slot_high) {
-        return -1;
-    }
-    prefix_size = (size_t)(stack_low - slot_low);
-    if (prefix_size == 0 || prefix_size % page_size != 0) {
-        return -1;
-    }
-    layout->metadata_size = prefix_size;
-
-    layout->stack_low           = (uint8_t*)stack_low;
-    layout->stack_high          = (uint8_t*)stack_high;
-    layout->stack_size          = coro->stack_size;
-    layout->guard_low           = layout->stack_high - page_size * 2;
-    layout->initial_stack_limit = layout->stack_high - page_size;
+    layout->metadata_size = stack_offset;
+    layout->stack_low     = layout->slot_low + stack_offset;
+    layout->stack_high    = layout->stack_low + stack_size;
+    layout->stack_size    = stack_size;
+    layout->guard_low     = layout->stack_high - page_size * 2;
     return 0;
 }
 
-static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
-    if (_coro_validate_slot(coro, layout) != 0) {
+static int _coro_validate(
+    void*           slot,
+    size_t          slot_size,
+    size_t          stack_offset,
+    size_t          stack_size,
+    _coro_layout_t* layout) {
+    if (_coro_validate_slot(slot, slot_size, layout) != 0) {
         return -1;
     }
-    return _coro_validate_stack_layout(coro, layout);
+    return _coro_validate_stack_layout(stack_offset, stack_size, layout);
 }
 
 static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
@@ -122,13 +113,19 @@ static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
     return 0;
 }
 
-int platform_coro_prepare_initial_layout(const platform_coro_t* coro) {
+int platform_coro_prepare_slot(
+    void*  slot,
+    size_t slot_size,
+    size_t stack_offset,
+    size_t stack_size) {
     _coro_layout_t layout;
 
-    if (_coro_validate_slot(coro, &layout) != 0) {
-        return -1;
-    }
-    if (_coro_validate_stack_layout(coro, &layout) != 0) {
+    if (_coro_validate(
+            slot,
+            slot_size,
+            stack_offset,
+            stack_size,
+            &layout) != 0) {
         return -1;
     }
     if (layout.external) {
@@ -144,11 +141,17 @@ int platform_coro_prepare_initial_layout(const platform_coro_t* coro) {
     return 0;
 }
 
-void* platform_coro_initial_stack_limit(const platform_coro_t* coro) {
-    _coro_layout_t layout;
+void* platform_coro_initial_stack_limit(
+    void*  stack_base,
+    size_t stack_size) {
+    size_t    page_size = platform_vmem_page_size();
+    uintptr_t stack_low = (uintptr_t)stack_base;
 
-    if (_coro_validate(coro, &layout) != 0 || layout.external) {
+    if (stack_base == NULL || page_size == 0 ||
+        stack_low % page_size != 0 || stack_size % page_size != 0 ||
+        page_size > SIZE_MAX / 2 || stack_size < page_size * 2 ||
+        stack_size > (size_t)(UINTPTR_MAX - stack_low)) {
         return NULL;
     }
-    return layout.initial_stack_limit;
+    return (uint8_t*)stack_base + stack_size - page_size;
 }

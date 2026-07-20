@@ -58,8 +58,7 @@ At runtime, `coro` supplies generic slot callbacks to `copool`. `copool` invokes
 those callbacks without depending on `coro` or `platform-coro` types.
 
 - `scheduler` owns the persistent minicoro descriptor template and `copool_t`.
-- `coro` translates minicoro layout/context information into
-  `platform_coro_t`.
+- `coro` forwards minicoro layout/context information to `platform-coro`.
 - `platform-coro` manages the usable page layout of a coroutine slot.
 - `copool` manages worker-local and shared hot-slot caches.
 - `arena` owns regions, slot addresses, and the fully decommitted cold state.
@@ -111,35 +110,33 @@ execution returns through `mco_yield()`.
 
 ## Platform Coroutine API
 
-`src/platform/platform-coro.h` defines the resolved memory view passed by
-`coro.c`:
+`src/platform/platform-coro.h` accepts minicoro's resolved stack offset without
+defining a second layout type:
 
 ```c
-typedef struct platform_coro_s {
-    void*  ptr;
-    size_t size;
-    void*  stack_low;
-    size_t stack_size;
-} platform_coro_t;
-
-extern int platform_coro_prepare_initial_layout(const platform_coro_t* coro);
+extern int platform_coro_prepare_slot(
+    void*  slot,
+    size_t slot_size,
+    size_t stack_offset,
+    size_t stack_size);
 
 extern void* platform_coro_initial_stack_limit(
-    const platform_coro_t* coro);
+    void*  stack_base,
+    size_t stack_size);
 ```
 
-`ptr` and `size` describe the complete page-aligned arena slot. `stack_low` and
-`stack_size` describe only an embedded stack. An external-stack backend uses
-`NULL` and zero.
+`slot` and `slot_size` describe the complete page-aligned arena slot. A nonzero
+`stack_offset` and `stack_size` describe an embedded stack. An external-stack
+backend uses zero for both values.
 
 All Windows ASM ranges must be page aligned and contained within the slot. The
-nonempty metadata span ends at `stack_low`. Invalid layouts fail initialization
-without entering a hot cache.
+nonempty metadata span ends at `slot + stack_offset`. Invalid layouts fail
+initialization without entering a hot cache.
 
-`platform_coro_prepare_initial_layout()` accepts only a fully decommitted cold
-slot obtained from the arena. It validates the complete layout before changing
-page state and then commits the required ranges directly. It does not decommit
-the slot before committing it. If a later commit or guard operation fails,
+`platform_coro_prepare_slot()` accepts only a fully decommitted cold slot
+obtained from the arena. It validates the complete layout before changing page
+state and then commits the required ranges directly. It does not decommit the
+slot before committing it. If a later commit or guard operation fails,
 initialization decommits the complete slot as rollback.
 
 The platform-vmem layer exposes one narrow native-guard operation:
@@ -161,7 +158,7 @@ arena code to coroutine-specific code.
 
 ### Windows x64 ASM
 
-`platform_coro_prepare_initial_layout()` directly commits metadata, creates the
+`platform_coro_prepare_slot()` directly commits metadata, creates the
 initial guard page, and commits the initial usable stack page. Unused stack
 pages remain uncommitted. It uses `platform_vmem_commit()` for page commitment
 and `platform_vmem_guard()` for the moving guard page; it does not call
@@ -179,17 +176,17 @@ poison/unpoison policy to the exact pages whose accessibility changes.
 
 ### Windows Fiber
 
-Windows Fiber slots use `stack_low == NULL` and `stack_size == 0` because
-`CreateFiberEx` owns the stack outside the arena slot. `init` commits the
-metadata slot, and `initial_stack_limit` returns `NULL`. `CreateFiberEx` and
+Windows Fiber slots use `stack_offset == 0` and `stack_size == 0` because
+`CreateFiberEx` owns the stack outside the arena slot. Slot preparation commits
+the metadata slot, and `initial_stack_limit` returns `NULL`. `CreateFiberEx` and
 `DeleteFiber` behavior does not change.
 
 ### Linux, Android, macOS, And iOS
 
-`init` makes the complete cold slot accessible and clears its ASan poison. Hot
-slots keep their current mapping without a reset callback. `initial_stack_limit`
-returns `stack_low`; the corresponding minicoro accessors are no-ops outside
-the Windows x64 ASM backend.
+Slot preparation makes the complete cold slot accessible and clears its ASan
+poison. Hot slots keep their current mapping without a reset callback.
+`initial_stack_limit` returns `NULL`, and the corresponding minicoro accessors
+are no-ops outside the Windows x64 ASM backend.
 
 ## Minicoro Bridge
 
@@ -243,9 +240,10 @@ extern copool_slot_ops_t coro_get_slot_ops(
 
 `coro_create()` performs the allocation and initialization sequence explicitly.
 After obtaining a slot from copool but before calling `mco_init()`, it reads the
-old saved stack limit. A non-`NULL` value identifies hot state and is restored
-after initialization. A `NULL` value identifies a newly prepared cold slot, so
-the adapter installs `platform_coro_initial_stack_limit()` instead.
+old saved stack limit. After initialization, a non-`NULL` value is validated
+against minicoro's actual `stack_base` and `stack_size` and then restored. A
+`NULL` value identifies a newly prepared cold slot, so the adapter installs
+`platform_coro_initial_stack_limit()` instead.
 Initialization failure returns the allocation through the descriptor's
 deallocator.
 

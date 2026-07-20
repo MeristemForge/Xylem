@@ -30,7 +30,8 @@ _Pragma("once")
  *
  * The descriptor allocator must return slots prepared by the callbacks from
  * coro_get_slot_ops(). A hot slot preserves its saved stack limit across reuse;
- * a cold slot receives the platform's initial limit after minicoro init.
+ * a cold slot receives the platform's initial limit after minicoro init. The
+ * platform stack range is derived from minicoro's descriptor layout.
  *
  * @param out   Receives the coroutine pointer on success.
  * @param desc  Coroutine descriptor and allocator configuration.

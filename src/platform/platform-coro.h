@@ -23,36 +23,37 @@ _Pragma("once")
 
 #include <stddef.h>
 
-typedef struct platform_coro_s {
-    void*  ptr;
-    size_t size;
-    void*  stack_low;
-    size_t stack_size;
-} platform_coro_t;
-
 /**
- * @brief Prepare the initial memory layout for a coroutine slot.
+ * @brief Prepare a cold coroutine slot for use.
  *
- * ptr and size define the fixed slot range [ptr, ptr + size). A NULL stack_low
- * with zero stack_size selects an external stack. Otherwise the embedded stack
- * is [stack_low, stack_low + stack_size). On Windows, the stack keeps all but
- * its guard and top pages uncommitted.
+ * A zero stack offset and size select an external stack. Otherwise the stack
+ * occupies [slot + stack_offset, slot + stack_offset + stack_size). On Windows,
+ * the embedded stack keeps all but its guard and top pages uncommitted.
  *
- * @param coro  Coroutine slot description.
+ * @param slot          Reserved slot address.
+ * @param slot_size     Reserved slot size in bytes.
+ * @param stack_offset  Embedded stack offset, or zero for an external stack.
+ * @param stack_size    Embedded stack size, or zero for an external stack.
  *
  * @return 0 on success, -1 for an invalid layout or VM operation failure.
  *
- * @note coro must describe a fully decommitted cold slot. Validation failure
- * does not mutate the slot; partial initialization failure rolls it back to
- * the cold state.
+ * @note The slot must be fully decommitted. Validation failure does not mutate
+ *       it; partial initialization failure rolls it back to the cold state.
  */
-extern int platform_coro_prepare_initial_layout(const platform_coro_t* coro);
+extern int platform_coro_prepare_slot(
+    void*  slot,
+    size_t slot_size,
+    size_t stack_offset,
+    size_t stack_size);
 
 /**
  * @brief Return the initial native stack limit for a coroutine slot.
  *
- * @param coro  Coroutine slot description.
+ * @param stack_base  Embedded stack base address.
+ * @param stack_size  Embedded stack size in bytes.
  *
- * @return Initial stack limit, or NULL for an external stack.
+ * @return Initial stack limit, or NULL when unavailable or invalid.
  */
-extern void* platform_coro_initial_stack_limit(const platform_coro_t* coro);
+extern void* platform_coro_initial_stack_limit(
+    void*  stack_base,
+    size_t stack_size);

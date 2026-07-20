@@ -82,14 +82,12 @@ static void _slot_ops_ctx_init(_slot_ops_ctx_t* ctx) {
 }
 
 static int _slot_consume_failure(_Atomic int* budget) {
-    int remaining = atomic_load_explicit(budget, memory_order_relaxed);
+    int remaining = atomic_load(budget);
     while (remaining > 0) {
-        if (atomic_compare_exchange_weak_explicit(
+        if (atomic_compare_exchange_weak(
                 budget,
                 &remaining,
-                remaining - 1,
-                memory_order_relaxed,
-                memory_order_relaxed)) {
+                remaining - 1)) {
             return 1;
         }
     }
@@ -104,13 +102,10 @@ static int _slot_init(void* ptr, size_t size, void* ud) {
     _assert_slot_state(ptr, MEM_RESERVE, 0);
 #endif
 
-    atomic_fetch_add_explicit(&ctx->init_count, 1, memory_order_relaxed);
-    atomic_store_explicit(&ctx->init_size, size, memory_order_relaxed);
+    atomic_fetch_add(&ctx->init_count, 1);
+    atomic_store(&ctx->init_size, size);
     if (_slot_consume_failure(&ctx->fail_init)) {
-        atomic_store_explicit(
-            &ctx->failed_init_ptr,
-            ptr,
-            memory_order_relaxed);
+        atomic_store(&ctx->failed_init_ptr, ptr);
         return -1;
     }
     int rc = platform_vmem_commit(ptr, size);
@@ -404,9 +399,7 @@ static void test_slot_init_on_arena_refill(void) {
 
     void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
-    ASSERT(
-        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
-        TEST_LOCAL_POOL_CAP / 2);
+    ASSERT(atomic_load(&ctx.init_count) == TEST_LOCAL_POOL_CAP / 2);
 
     copool_release(pool, 0, slot);
     copool_destroy(pool);
@@ -424,15 +417,12 @@ static void test_slot_return_stays_hot(void) {
     void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
     ((uint8_t*)slot)[0] = 0x5a;
-    int init_count =
-        atomic_load_explicit(&ctx.init_count, memory_order_relaxed);
+    int init_count = atomic_load(&ctx.init_count);
     copool_release(pool, 0, slot);
     void* recycled = copool_acquire(pool, 0);
     ASSERT(recycled == slot);
     ASSERT(((uint8_t*)recycled)[0] == 0x5a);
-    ASSERT(
-        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
-        init_count);
+    ASSERT(atomic_load(&ctx.init_count) == init_count);
 
     copool_release(pool, 0, recycled);
     copool_destroy(pool);
@@ -444,20 +434,16 @@ static void test_slot_init_failure_isolated(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    atomic_store_explicit(&ctx.fail_init, 1, memory_order_relaxed);
+    atomic_store(&ctx.fail_init, 1);
     copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
     void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
-    void* failed = atomic_load_explicit(
-        &ctx.failed_init_ptr,
-        memory_order_relaxed);
+    void* failed = atomic_load(&ctx.failed_init_ptr);
     ASSERT(failed != NULL);
     ASSERT(slot != failed);
-    ASSERT(
-        atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
-        TEST_LOCAL_POOL_CAP / 2);
+    ASSERT(atomic_load(&ctx.init_count) == TEST_LOCAL_POOL_CAP / 2);
 
     int   cached_count = TEST_LOCAL_POOL_CAP / 2 - 2;
     void* cached[TEST_LOCAL_POOL_CAP / 2] = {0};
@@ -486,9 +472,7 @@ static void test_aligned_callback_size(void) {
 
     void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
-    ASSERT(
-        atomic_load_explicit(&ctx.init_size, memory_order_relaxed) ==
-        page_size * 2);
+    ASSERT(atomic_load(&ctx.init_size) == page_size * 2);
     copool_release(pool, 0, slot);
     copool_destroy(pool);
 }

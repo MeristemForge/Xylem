@@ -30,47 +30,9 @@
 
 static _Atomic size_t _coro_stack_limit_alignment;
 
-static int _coro_platform(
-    void*            ptr,
-    size_t           size,
-    const mco_desc*  desc,
-    platform_coro_t* platform) {
-    uintptr_t base;
-    size_t    offset;
-
-    if (ptr == NULL || size == 0 || desc == NULL || platform == NULL ||
-        desc->func == NULL || desc->coro_size == 0 || desc->stack_size == 0 ||
-        desc->coro_size > size) {
-        return -1;
-    }
-
-    base = (uintptr_t)ptr;
-    if (size > (size_t)(UINTPTR_MAX - base)) {
-        return -1;
-    }
-
-    platform->ptr        = ptr;
-    platform->size       = size;
-    platform->stack_low  = NULL;
-    platform->stack_size = 0;
-
-    offset = mco_desc_stack_offset(desc);
-    if (offset == 0) {
-        return 0;
-    }
-    if (offset > desc->coro_size ||
-        desc->stack_size > desc->coro_size - offset) {
-        return -1;
-    }
-
-    platform->stack_low  = (void*)(base + offset);
-    platform->stack_size = desc->stack_size;
-    return 0;
-}
-
 static int _coro_stack_limit_valid(
-    const platform_coro_t* platform,
-    const void*            limit) {
+    const mco_coro* co,
+    const void*     limit) {
     uintptr_t low;
     uintptr_t high;
     uintptr_t value;
@@ -79,48 +41,52 @@ static int _coro_stack_limit_valid(
     if (limit == NULL) {
         return 1;
     }
-    alignment = atomic_load_explicit(
-        &_coro_stack_limit_alignment,
-        memory_order_acquire);
-    if (platform == NULL || platform->stack_low == NULL ||
-        platform->stack_size == 0 || alignment == 0) {
+    alignment = atomic_load(&_coro_stack_limit_alignment);
+    if (co == NULL || co->stack_base == NULL || co->stack_size == 0 ||
+        alignment == 0) {
         return 0;
     }
-    low = (uintptr_t)platform->stack_low;
-    if (platform->stack_size > (size_t)(UINTPTR_MAX - low)) {
+    low = (uintptr_t)co->stack_base;
+    if (co->stack_size > (size_t)(UINTPTR_MAX - low)) {
         return 0;
     }
-    high  = low + platform->stack_size;
+    high  = low + co->stack_size;
     value = (uintptr_t)limit;
     return low < value && value < high && value % alignment == 0;
 }
 
 static int _coro_slot_init_cb(void* ptr, size_t size, void* ud) {
     const mco_desc* desc = (const mco_desc*)ud;
-    platform_coro_t platform;
-    size_t          alignment;
+    size_t          stack_offset;
+    size_t          stack_size;
 
-    if (_coro_platform(ptr, size, desc, &platform) != 0) {
+    if (ptr == NULL || size == 0 || desc == NULL || desc->func == NULL ||
+        desc->coro_size == 0 || desc->stack_size == 0 ||
+        desc->coro_size > size) {
         return -1;
     }
-    if (platform.stack_low != NULL) {
-        alignment = platform_vmem_page_size();
+
+    stack_offset = mco_desc_stack_offset(desc);
+    stack_size   = stack_offset != 0 ? desc->stack_size : 0;
+    if (stack_offset != 0) {
+        size_t alignment = platform_vmem_page_size();
         if (alignment == 0) {
             return -1;
         }
-        atomic_store_explicit(
-            &_coro_stack_limit_alignment,
-            alignment,
-            memory_order_release);
+        atomic_store(&_coro_stack_limit_alignment, alignment);
     }
-    return platform_coro_prepare_initial_layout(&platform);
+    return platform_coro_prepare_slot(
+        ptr,
+        size,
+        stack_offset,
+        stack_size);
 }
 
 mco_result coro_create(mco_coro** out, mco_desc* desc) {
-    platform_coro_t platform;
-    mco_coro*       co;
-    void*           saved_stack_limit;
-    mco_result      result;
+    mco_coro*  co;
+    void*      saved_stack_limit;
+    size_t     stack_offset;
+    mco_result result;
 
     if (out == NULL) {
         return MCO_INVALID_POINTER;
@@ -134,22 +100,24 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
     if (co == NULL) {
         return MCO_OUT_OF_MEMORY;
     }
-    if (_coro_platform(co, desc->coro_size, desc, &platform) != 0) {
-        desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
-        return MCO_MAKE_CONTEXT_ERROR;
-    }
+    stack_offset      = mco_desc_stack_offset(desc);
     saved_stack_limit = mco_get_stack_limit(co);
-    if (!_coro_stack_limit_valid(&platform, saved_stack_limit)) {
-        abort();
-    }
     result = mco_init(co, desc);
     if (result != MCO_SUCCESS) {
         desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
         *out = NULL;
         return result;
     }
-    if (saved_stack_limit == NULL && platform.stack_low != NULL) {
-        saved_stack_limit = platform_coro_initial_stack_limit(&platform);
+    if (!_coro_stack_limit_valid(co, saved_stack_limit)) {
+        abort();
+    }
+    if (saved_stack_limit == NULL && stack_offset != 0) {
+        saved_stack_limit = platform_coro_initial_stack_limit(
+            co->stack_base,
+            co->stack_size);
+        if (saved_stack_limit == NULL) {
+            abort();
+        }
     }
     mco_set_stack_limit(co, saved_stack_limit);
     *out = co;

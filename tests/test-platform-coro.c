@@ -31,9 +31,16 @@
 #include <windows.h>
 #endif
 
-static void _assert_invalid(const platform_coro_t* coro) {
-    ASSERT(platform_coro_prepare_initial_layout(coro) == -1);
-    ASSERT(platform_coro_initial_stack_limit(coro) == NULL);
+static void _assert_invalid(
+    void*  slot,
+    size_t slot_size,
+    size_t stack_offset,
+    size_t stack_size) {
+    ASSERT(platform_coro_prepare_slot(
+               slot,
+               slot_size,
+               stack_offset,
+               stack_size) == -1);
 }
 
 #if defined(_WIN32)
@@ -61,55 +68,52 @@ static void _assert_embedded_layout(uint8_t* ptr, size_t page_size) {
 #endif
 
 static void test_external_stack(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 2;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro =
-        {.ptr = ptr, .size = size, .stack_low = NULL, .stack_size = 0};
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 2;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    ASSERT(platform_coro_prepare_initial_layout(&coro) == 0);
+    ASSERT(platform_coro_prepare_slot(ptr, size, 0, 0) == 0);
     ptr[0]        = 0x5a;
     ptr[size - 1] = 0xa5;
     ASSERT(ptr[0] == 0x5a);
     ASSERT(ptr[size - 1] == 0xa5);
-    ASSERT(platform_coro_initial_stack_limit(&coro) == NULL);
+    ASSERT(platform_coro_initial_stack_limit(NULL, 0) == NULL);
     ASSERT(platform_vmem_decommit(ptr, size) == 0);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 static void test_invalid_null_or_zero(void) {
-    size_t          page_size = platform_vmem_page_size();
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(page_size);
-    platform_coro_t null_ptr  = {0};
-    platform_coro_t zero_size = {.ptr = ptr};
+    size_t   page_size = platform_vmem_page_size();
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(page_size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    _assert_invalid(NULL);
-    null_ptr.size = page_size;
-    _assert_invalid(&null_ptr);
-    _assert_invalid(&zero_size);
+    _assert_invalid(NULL, page_size, 0, 0);
+    _assert_invalid(ptr, 0, 0, 0);
+    ASSERT(platform_coro_initial_stack_limit(NULL, page_size) == NULL);
+    ASSERT(platform_coro_initial_stack_limit(ptr, 0) == NULL);
     ASSERT(platform_vmem_release(ptr, page_size) == 0);
 }
 
 #if defined(_WIN32)
 static void test_embedded_stack_layout(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    coro = (platform_coro_t){.ptr        = ptr,
-                             .size       = size,
-                             .stack_low  = ptr + page_size * 2,
-                             .stack_size = page_size * 3};
-    ASSERT(platform_coro_prepare_initial_layout(&coro) == 0);
+    ASSERT(platform_coro_prepare_slot(
+               ptr,
+               size,
+               page_size * 2,
+               page_size * 3) == 0);
     _assert_embedded_layout(ptr, page_size);
-    ASSERT(platform_coro_initial_stack_limit(&coro) == ptr + page_size * 4);
+    ASSERT(platform_coro_initial_stack_limit(
+               ptr + page_size * 2,
+               page_size * 3) == ptr + page_size * 4);
 
     ptr[page_size * 4] = 0x5a;
     ASSERT(ptr[page_size * 4] == 0x5a);
@@ -118,65 +122,42 @@ static void test_embedded_stack_layout(void) {
 }
 
 static void test_invalid_non_page_aligned_ranges(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t slot_address;
-    platform_coro_t slot_size;
-    platform_coro_t stack_address;
-    platform_coro_t stack_size;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    slot_address  = (platform_coro_t){.ptr        = ptr + 1,
-                                      .size       = size,
-                                      .stack_low  = NULL,
-                                      .stack_size = 0};
-    slot_size     = (platform_coro_t){.ptr        = ptr,
-                                      .size       = size - 1,
-                                      .stack_low  = NULL,
-                                      .stack_size = 0};
-    stack_address = (platform_coro_t){.ptr        = ptr,
-                                      .size       = size,
-                                      .stack_low  = ptr + page_size * 2 + 1,
-                                      .stack_size = page_size * 2};
-    stack_size    = (platform_coro_t){.ptr        = ptr,
-                                      .size       = size,
-                                      .stack_low  = ptr + page_size * 2,
-                                      .stack_size = page_size * 2 - 1};
-    _assert_invalid(&slot_address);
-    _assert_invalid(&slot_size);
-    _assert_invalid(&stack_address);
-    _assert_invalid(&stack_size);
+    _assert_invalid(ptr + 1, size, 0, 0);
+    _assert_invalid(ptr, size - 1, 0, 0);
+    _assert_invalid(ptr, size, page_size * 2 + 1, page_size * 2);
+    _assert_invalid(ptr, size, page_size * 2, page_size * 2 - 1);
+    ASSERT(platform_coro_initial_stack_limit(
+               ptr + page_size * 2 + 1,
+               page_size * 2) == NULL);
+    ASSERT(platform_coro_initial_stack_limit(
+               ptr + page_size * 2,
+               page_size * 2 - 1) == NULL);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 static void test_invalid_half_external_stack(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t missing_size;
-    platform_coro_t missing_address;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    missing_size    = (platform_coro_t){.ptr       = ptr,
-                                        .size      = size,
-                                        .stack_low = ptr + page_size * 2};
-    missing_address = (platform_coro_t){.ptr        = ptr,
-                                        .size       = size,
-                                        .stack_size = page_size * 2};
-    _assert_invalid(&missing_size);
-    _assert_invalid(&missing_address);
+    _assert_invalid(ptr, size, page_size * 2, 0);
+    _assert_invalid(ptr, size, 0, page_size * 2);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 static void test_invalid_layout_preserves_slot(void) {
-    size_t          page_size  = platform_vmem_page_size();
-    size_t          page_count = 5;
-    size_t          size       = page_size * page_count;
-    uint8_t*        ptr        = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro;
+    size_t   page_size  = platform_vmem_page_size();
+    size_t   page_count = 5;
+    size_t   size       = page_size * page_count;
+    uint8_t* ptr        = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
@@ -184,10 +165,7 @@ static void test_invalid_layout_preserves_slot(void) {
     ptr[0]             = 0x5a;
     ptr[page_size * 2] = 0xa5;
     ptr[size - 1]      = 0x3c;
-    coro               = (platform_coro_t){.ptr       = ptr,
-                                           .size      = size,
-                                           .stack_low = ptr + page_size * 2};
-    ASSERT(platform_coro_prepare_initial_layout(&coro) == -1);
+    ASSERT(platform_coro_prepare_slot(ptr, size, page_size * 2, 0) == -1);
     for (size_t i = 0; i < page_count; i++) {
         _assert_page(ptr + i * page_size, MEM_COMMIT, PAGE_READWRITE, 0);
     }
@@ -199,50 +177,35 @@ static void test_invalid_layout_preserves_slot(void) {
 }
 
 static void test_invalid_stack_outside_slot(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    coro = (platform_coro_t){.ptr        = ptr,
-                             .size       = size,
-                             .stack_low  = ptr + size,
-                             .stack_size = page_size * 2};
-    _assert_invalid(&coro);
+    _assert_invalid(ptr, size, size, page_size * 2);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 static void test_invalid_missing_metadata(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    coro = (platform_coro_t){.ptr        = ptr,
-                             .size       = size,
-                             .stack_low  = ptr,
-                             .stack_size = page_size * 2};
-    _assert_invalid(&coro);
+    _assert_invalid(ptr, size, 0, page_size * 2);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
 static void test_invalid_stack_too_small(void) {
-    size_t          page_size = platform_vmem_page_size();
-    size_t          size      = page_size * 5;
-    uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
-    platform_coro_t coro;
+    size_t   page_size = platform_vmem_page_size();
+    size_t   size      = page_size * 5;
+    uint8_t* ptr       = (uint8_t*)platform_vmem_reserve(size);
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    coro = (platform_coro_t){.ptr        = ptr,
-                             .size       = size,
-                             .stack_low  = ptr + page_size * 2,
-                             .stack_size = page_size};
-    _assert_invalid(&coro);
+    _assert_invalid(ptr, size, page_size * 2, page_size);
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 #endif
