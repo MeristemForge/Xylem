@@ -796,6 +796,62 @@ static void test_hot_stack_limit_reuse(void) {
 }
 
 #if defined(TEST_MCO_WINDOWS_ASM)
+static void test_arena_spill_restores_initial_stack(void) {
+    mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture = {0};
+    _stack_entry_ctx_t entry = {
+        .seed = 0x31U,
+        .deep = 1,
+    };
+    mco_desc  create_desc;
+    mco_coro* first  = NULL;
+    mco_coro* second = NULL;
+    void*     first_slot;
+    void*     initial_limit;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, 0, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    create_desc           = desc;
+    create_desc.user_data = &entry;
+    ASSERT(coro_create(&first, &create_desc) == MCO_SUCCESS);
+    ASSERT(first != NULL);
+    first_slot    = first;
+    initial_limit = mco_get_stack_limit(first);
+    ASSERT(initial_limit != NULL);
+    ASSERT(mco_resume(first) == MCO_SUCCESS);
+    ASSERT(mco_status(first) == MCO_DEAD);
+    ASSERT(entry.checksum != 0);
+    ASSERT(
+        (uintptr_t)mco_get_stack_limit(first) < (uintptr_t)initial_limit);
+    ASSERT(coro_destroy(first) == MCO_SUCCESS);
+
+    entry.checksum = 0;
+    entry.deep     = 0;
+    ASSERT(coro_create(&second, &create_desc) == MCO_SUCCESS);
+    ASSERT(second == first_slot);
+    ASSERT(mco_get_stack_limit(second) == initial_limit);
+    _assert_initial_stack_layout(second, &desc);
+    ASSERT(mco_resume(second) == MCO_SUCCESS);
+    ASSERT(mco_status(second) == MCO_DEAD);
+    ASSERT(entry.checksum != 0);
+    ASSERT(coro_destroy(second) == MCO_SUCCESS);
+
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+    ASSERT(atomic_load(&fixture.alloc_calls) == 2);
+    ASSERT(atomic_load(&fixture.dealloc_calls) == 2);
+}
+
 static void test_reject_misaligned_hot_stack_limit(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
     coro_alloc_ctx_t  alloc_ctx = {0};
@@ -974,6 +1030,7 @@ int main(void) {
     test_cross_thread_stack_migration();
     test_hot_stack_limit_reuse();
 #if defined(TEST_MCO_WINDOWS_ASM)
+    test_arena_spill_restores_initial_stack();
     test_reject_misaligned_hot_stack_limit();
 #endif
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
