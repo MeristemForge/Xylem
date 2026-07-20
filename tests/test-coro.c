@@ -546,14 +546,8 @@ static void test_stack_offset(void) {
     ASSERT(desc.stack_size <= desc.coro_size - offset);
     ASSERT((uint8_t*)co->stack_base == (uint8_t*)co + offset);
     ASSERT(co->stack_size == desc.stack_size);
-#elif defined(TEST_MCO_WINDOWS_FIBER)
-    ASSERT(offset == 0);
 #else
-    ASSERT(offset != 0);
-    ASSERT(offset <= desc.coro_size);
-    ASSERT(desc.stack_size <= desc.coro_size - offset);
-    ASSERT((uint8_t*)co->stack_base == (uint8_t*)co + offset);
-    ASSERT(co->stack_size == desc.stack_size);
+    ASSERT(offset == 0);
 #endif
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
 }

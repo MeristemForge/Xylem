@@ -335,12 +335,14 @@ The descriptor retains the scheduler allocator callbacks and data unchanged.
 `coro_get_slot_ops()` carries a read-only pointer to that persistent descriptor
 so cold-slot initialization can derive the platform layout.
 
-Minicoro exposes the embedded stack offset and narrow saved `StackLimit`
+Minicoro exposes a platform-managed stack offset and narrow saved `StackLimit`
 get/set accessors. Windows x64 ASM page-aligns metadata and the embedded stack
 internally; its offset query derives the answer from the descriptor's total and
-stack sizes without a page-size lookup. Other backends report their native
-embedded offset or zero for an external stack. Reserve, commit, guard, and
-decommit policy remains outside minicoro.
+stack sizes without a page-size lookup. Other backends return zero because the
+Xylem platform layer does not manage their stack region separately. Reserve,
+commit, guard, and decommit policy remains outside minicoro. `runtime.c`
+injects `MCO_GET_PAGE_SIZE()` so Windows ASM and Fiber use the page size cached
+by `platform_vmem_page_size()` without querying the system from minicoro.
 
 Each spawn copies the persistent descriptor, changes only `user_data`, and
 calls `coro_create()`. The adapter allocates a prepared slot and captures its

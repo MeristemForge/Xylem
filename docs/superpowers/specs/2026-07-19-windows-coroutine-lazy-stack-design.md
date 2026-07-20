@@ -205,13 +205,13 @@ MCO_API void mco_set_stack_limit(
 ```
 
 The public functions have one shared implementation after minicoro selects its
-backend. Backend sections only define internal compile-time capabilities:
+backend:
 
-- An external-stack backend makes `mco_desc_stack_offset()` return zero.
-- Embedded-stack backends report the actual internal stack offset.
-- Windows x64 ASM enables access to `_mco_context.ctx.stack_limit`.
-- Other backends make `get_stack_limit` return `NULL` and `set_stack_limit` a
-  no-op.
+- Windows x64 ASM reports the arena-embedded stack offset and enables access
+  to `_mco_context.ctx.stack_limit`.
+- Other backends make `mco_desc_stack_offset()` return zero, make
+  `get_stack_limit` return `NULL`, and make `set_stack_limit` a no-op.
+- Other backend descriptor layouts and context creation remain unchanged.
 
 Both stack-limit accessors are null-safe for a missing or partially initialized
 context. The getter lets the runtime adapter capture a hot slot's retained
@@ -220,6 +220,11 @@ frontier before `mco_init()` clears its previous context.
 The Windows ASM descriptor size calculation page-aligns the end of metadata
 while preserving the requested stack capacity. Other backend descriptor
 layouts remain unchanged.
+
+The runtime implementation defines `MCO_GET_PAGE_SIZE()` in terms of
+`platform_vmem_page_size()` before enabling `MINICORO_IMPL`. Windows ASM and
+Fiber consume that provider; minicoro performs no direct page-size system
+query. The platform vmem module owns discovery and process-wide caching.
 
 ## Runtime Coroutine Adapter
 
