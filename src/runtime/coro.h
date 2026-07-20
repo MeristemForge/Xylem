@@ -32,6 +32,7 @@ typedef struct coro_alloc_ctx_s {
     void* (*alloc_cb)(size_t size, void* allocator_data);
     void (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);
     void*         allocator_data;
+    size_t        stack_limit_alignment;
 } coro_alloc_ctx_t;
 
 /**

@@ -795,6 +795,67 @@ static void test_hot_stack_limit_reuse(void) {
     ASSERT(atomic_load(&fixture.dealloc_calls) == 2);
 }
 
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void test_reject_misaligned_hot_stack_limit(void) {
+    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture = {0};
+    mco_coro*         first   = NULL;
+    mco_coro*         rejected;
+    mco_coro*         recovered = NULL;
+    void*             first_slot;
+    void*             initial_limit;
+    void*             misaligned_limit;
+    uint8_t*          stack_low;
+    uint8_t*          stack_high;
+    size_t            page_size;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    ASSERT(coro_create(&first, &desc) == MCO_SUCCESS);
+    ASSERT(first != NULL);
+    first_slot    = first;
+    initial_limit = mco_get_stack_limit(first);
+    stack_low     = (uint8_t*)first + mco_desc_stack_offset(&desc);
+    stack_high    = stack_low + desc.stack_size;
+    page_size     = platform_vmem_page_size();
+    ASSERT(initial_limit != NULL);
+    ASSERT(page_size > 1U);
+    misaligned_limit = (uint8_t*)initial_limit - 1U;
+    ASSERT((uintptr_t)misaligned_limit > (uintptr_t)stack_low);
+    ASSERT((uintptr_t)misaligned_limit < (uintptr_t)stack_high);
+    ASSERT((uintptr_t)misaligned_limit % page_size != 0);
+    ASSERT(mco_resume(first) == MCO_SUCCESS);
+    ASSERT(mco_status(first) == MCO_DEAD);
+    mco_set_stack_limit(first, misaligned_limit);
+    ASSERT(coro_destroy(first) == MCO_SUCCESS);
+
+    rejected = (mco_coro*)first_slot;
+    ASSERT(coro_create(&rejected, &desc) == MCO_MAKE_CONTEXT_ERROR);
+    ASSERT(rejected == NULL);
+    ASSERT(coro_create(&recovered, &desc) == MCO_SUCCESS);
+    ASSERT(recovered == first_slot);
+    ASSERT(mco_get_stack_limit(recovered) == initial_limit);
+    ASSERT(mco_resume(recovered) == MCO_SUCCESS);
+    ASSERT(mco_status(recovered) == MCO_DEAD);
+    ASSERT(coro_destroy(recovered) == MCO_SUCCESS);
+
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+    ASSERT(atomic_load(&fixture.alloc_calls) == 3);
+    ASSERT(atomic_load(&fixture.dealloc_calls) == 3);
+}
+#endif
+
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 static void test_stack_overflow_stops_before_metadata(void) {
     mco_desc          desc      = mco_desc_init(_overflow_entry, 128U * 1024U);
@@ -912,6 +973,9 @@ int main(void) {
     test_create_destroy_reuse();
     test_cross_thread_stack_migration();
     test_hot_stack_limit_reuse();
+#if defined(TEST_MCO_WINDOWS_ASM)
+    test_reject_misaligned_hot_stack_limit();
+#endif
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
     test_stack_overflow_stops_before_metadata();
 #endif

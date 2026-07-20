@@ -22,6 +22,7 @@
 #include "coro.h"
 
 #include "platform/platform-coro.h"
+#include "platform/platform-vmem.h"
 
 #include <stdint.h>
 
@@ -67,7 +68,8 @@ static int _coro_platform(
 
 static int _coro_stack_limit_valid(
     const platform_coro_t* platform,
-    const void*            limit) {
+    const void*            limit,
+    size_t                 alignment) {
     uintptr_t low;
     uintptr_t high;
     uintptr_t value;
@@ -76,7 +78,7 @@ static int _coro_stack_limit_valid(
         return 1;
     }
     if (platform == NULL || platform->stack_low == NULL ||
-        platform->stack_size == 0) {
+        platform->stack_size == 0 || alignment == 0) {
         return 0;
     }
     low = (uintptr_t)platform->stack_low;
@@ -85,7 +87,7 @@ static int _coro_stack_limit_valid(
     }
     high  = low + platform->stack_size;
     value = (uintptr_t)limit;
-    return low < value && value < high;
+    return low < value && value < high && value % alignment == 0;
 }
 
 static void* _coro_alloc_cb(size_t size, void* allocator_data) {
@@ -158,22 +160,31 @@ static void _coro_reject_retained_slot(
 }
 
 int coro_alloc_ctx_init(coro_alloc_ctx_t* ctx, mco_desc* desc) {
+    size_t stack_limit_alignment = 0;
+
     if (ctx == NULL || desc == NULL || desc->alloc_cb == NULL ||
         desc->dealloc_cb == NULL || ctx->state != 0 ||
         desc->alloc_cb == _coro_alloc_cb ||
         desc->dealloc_cb == _coro_dealloc_cb) {
         return -1;
     }
+    if (mco_desc_stack_offset(desc) != 0) {
+        stack_limit_alignment = platform_vmem_page_size();
+        if (stack_limit_alignment == 0) {
+            return -1;
+        }
+    }
 
-    ctx->desc            = desc;
-    ctx->layout          = *desc;
-    ctx->alloc_cb        = desc->alloc_cb;
-    ctx->dealloc_cb      = desc->dealloc_cb;
-    ctx->allocator_data  = desc->allocator_data;
-    desc->alloc_cb       = _coro_alloc_cb;
-    desc->dealloc_cb     = _coro_dealloc_cb;
-    desc->allocator_data = ctx;
-    ctx->state           = CORO_ALLOC_CTX_READY;
+    ctx->desc                  = desc;
+    ctx->layout                = *desc;
+    ctx->alloc_cb              = desc->alloc_cb;
+    ctx->dealloc_cb            = desc->dealloc_cb;
+    ctx->allocator_data        = desc->allocator_data;
+    ctx->stack_limit_alignment = stack_limit_alignment;
+    desc->alloc_cb             = _coro_alloc_cb;
+    desc->dealloc_cb           = _coro_dealloc_cb;
+    desc->allocator_data       = ctx;
+    ctx->state                 = CORO_ALLOC_CTX_READY;
     return 0;
 }
 
@@ -183,15 +194,16 @@ void coro_alloc_ctx_deinit(coro_alloc_ctx_t* ctx) {
         return;
     }
 
-    ctx->desc->alloc_cb       = ctx->alloc_cb;
-    ctx->desc->dealloc_cb     = ctx->dealloc_cb;
-    ctx->desc->allocator_data = ctx->allocator_data;
-    ctx->desc                 = NULL;
-    ctx->layout               = (mco_desc){0};
-    ctx->alloc_cb             = NULL;
-    ctx->dealloc_cb           = NULL;
-    ctx->allocator_data       = NULL;
-    ctx->state                = 0;
+    ctx->desc->alloc_cb        = ctx->alloc_cb;
+    ctx->desc->dealloc_cb      = ctx->dealloc_cb;
+    ctx->desc->allocator_data  = ctx->allocator_data;
+    ctx->desc                  = NULL;
+    ctx->layout                = (mco_desc){0};
+    ctx->alloc_cb              = NULL;
+    ctx->dealloc_cb            = NULL;
+    ctx->allocator_data        = NULL;
+    ctx->stack_limit_alignment = 0;
+    ctx->state                 = 0;
 }
 
 mco_result coro_create(mco_coro** out, mco_desc* desc) {
@@ -231,7 +243,10 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
         return MCO_MAKE_CONTEXT_ERROR;
     }
     retained = mco_get_stack_limit(co);
-    if (!_coro_stack_limit_valid(&platform, retained)) {
+    if (!_coro_stack_limit_valid(
+            &platform,
+            retained,
+            ctx->stack_limit_alignment)) {
         _coro_reject_retained_slot(co, desc, &platform);
         return MCO_MAKE_CONTEXT_ERROR;
     }
@@ -241,7 +256,7 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
         *out = NULL;
         return result;
     }
-    if (retained == NULL) {
+    if (retained == NULL && platform.stack_low != NULL) {
         retained = platform_coro_initial_stack_limit(&platform);
     }
     mco_set_stack_limit(co, retained);
