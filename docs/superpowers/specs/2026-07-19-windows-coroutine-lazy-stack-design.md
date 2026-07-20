@@ -136,6 +136,12 @@ All Windows ASM ranges must be page aligned and contained within the slot. The
 nonempty metadata span ends at `stack_low`. Invalid layouts fail initialization
 without entering a hot cache.
 
+`platform_coro_init()` accepts only a fully decommitted cold slot obtained from
+the arena. It validates the complete layout before changing page state and then
+commits the required ranges directly. It does not decommit the slot before
+committing it. If a later commit or protection operation fails, initialization
+decommits the complete slot as rollback.
+
 There is no `platform_coro_deinit()`. Returning a complete slot to the cold
 state is a full-slot decommit owned by `arena_free()`. A platform-coro deinit
 wrapper would duplicate that operation and invert the dependency from generic
@@ -143,8 +149,9 @@ arena code to coroutine-specific code.
 
 ### Windows x64 ASM
 
-`platform_coro_init()` commits metadata, creates the initial guard page, and
-commits the initial usable stack page. Unused stack pages remain uncommitted.
+`platform_coro_init()` directly commits metadata, creates the initial guard
+page, and commits the initial usable stack page. Unused stack pages remain
+uncommitted.
 
 `platform_coro_initial_stack_limit()` returns the low address of the initial
 ordinary read/write stack page, not the guard address.
@@ -222,6 +229,12 @@ after initialization. A `NULL` value identifies a newly prepared cold slot, so
 the adapter installs `platform_coro_initial_stack_limit()` instead.
 Initialization failure returns the allocation through the descriptor's
 deallocator.
+
+A saved stack limit in a hot slot is an internal runtime invariant. It must be
+page aligned and contained within that slot's embedded stack range. The value
+can be invalid only after memory corruption or a runtime/context-switch bug;
+the adapter fails fast instead of attempting to reset, cache, or recover the
+slot.
 
 `coro_destroy()` calls `mco_destroy()`. Windows ASM context destruction leaves
 the saved stack limit intact until the slot is either reused from a hot cache or
@@ -337,9 +350,8 @@ and recycled.
 - If no slot in a refill can be initialized, `copool_alloc()` returns `NULL`.
 - Arena decommit failure logs an error and excludes the slot from `free_slots`.
 - Local/shared allocation, return, and transfer introduce no platform call.
-- A missing retained stack limit selects the platform initial value; an invalid
-  non-`NULL` retained value fails coroutine initialization and returns the slot
-  to arena.
+- A missing saved stack limit selects the platform initial value. An invalid
+  non-`NULL` saved value is an internal invariant violation and fails fast.
 
 ## Verification
 
@@ -356,8 +368,9 @@ and recycled.
 
 - Embedded and external stack-offset reporting.
 - Initial stack-limit installation after `coro_create()`.
-- Retained stack-limit capture before `mco_init()` and restoration afterward.
+- Saved stack-limit capture before `mco_init()` and restoration afterward.
 - Cold slots select the initial limit while hot slots preserve a grown limit.
+- Invalid saved stack limits fail fast before a context switch.
 
 ### Windows x64 ASM
 
