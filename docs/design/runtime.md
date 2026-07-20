@@ -321,68 +321,70 @@ scheduler -> coro -> minicoro / platform-coro
 scheduler -> copool -> arena -> platform-vmem
 ```
 
-The first path owns descriptor provenance, coroutine construction, and the
+The first path owns descriptor layout, coroutine construction, and the
 backend-specific memory layout. The second owns reusable fixed-slot addresses,
-cache placement, reservations, and full-slot decommit. C wrappers supplied by
-`coro_get_slot_ops()` connect the paths: copool invokes them for cold-slot init
-and used-slot reset, while arena sees only page-aligned ranges and never depends
-on minicoro object, context, storage, or stack layout.
+cache placement, reservations, and full-slot decommit. The callback supplied by
+`coro_get_slot_ops()` connects the paths: copool invokes it only to prepare a
+cold slot, while arena sees only page-aligned ranges and never depends on
+minicoro object, context, storage, or stack layout.
 
 The public `coro_stack_size` configuration flow is unchanged. Runtime options
 copy it into `scheduler_opts_t`; scheduler creation passes the selected value to
 `mco_desc_init()` and stores the result as the persistent `sched->coro_desc`.
-`coro_alloc_ctx_init()` snapshots that descriptor's immutable layout and its
-original allocator callbacks/data, then wraps the persistent descriptor with
-allocator provenance that points back to the scheduler's copool. An atomic
-stack plan starts unknown: the first successful cold-slot init publishes either
-one backend-specific initial stack-limit offset or the external-stack marker,
-and concurrent initializers must agree with that plan.
+The descriptor retains the scheduler allocator callbacks and data unchanged.
+`coro_get_slot_ops()` carries a read-only pointer to that persistent descriptor
+so cold-slot initialization can derive the platform layout.
 
-Minicoro computes the descriptor's `stack_offset` and `stack_alignment` once in
-`mco_desc_init()`. Construction and validation reuse those derived values, so a
-hot spawn does not query the operating system for page size or rebuild the
-backend layout. The bound allocation context includes both fields in its
-immutable-layout check.
+Minicoro exposes the embedded stack offset and narrow saved `StackLimit`
+get/set accessors. Windows x64 ASM page-aligns metadata and the embedded stack
+internally; its offset query derives the answer from the descriptor's total and
+stack sizes without a page-size lookup. Other backends report their native
+embedded offset or zero for an external stack. Reserve, commit, guard, and
+decommit policy remains outside minicoro.
 
 Each spawn copies the persistent descriptor, changes only `user_data`, and
-calls `coro_create()`. The wrapper verifies the copied layout and allocator
-provenance, lets minicoro construct the coroutine, then applies the published
-stack plan. The descriptor and `coro_alloc_ctx_t` are embedded in the scheduler
-and outlive every coroutine and the copool. Teardown destroys registered
-coroutines first, destroys the copool and its arena next, then deinitializes the
-allocation context to restore the persistent descriptor's original allocator
-fields before scheduler storage is freed.
+calls `coro_create()`. The adapter allocates a prepared slot and captures its
+saved `StackLimit` before `mco_init()` clears the old coroutine context. A
+non-NULL saved limit must be a page-aligned address strictly inside the embedded
+stack; violation indicates internal cache corruption and aborts. After
+initialization, the adapter restores the saved hot limit or installs the
+platform initial limit for a new cold slot. Cold-slot initialization publishes
+the process page alignment once, so hot validation only performs an atomic
+read. Ordinary minicoro allocators use `mco_create()` directly. The persistent
+descriptor outlives every coroutine and the copool. Teardown destroys registered
+coroutines before destroying the copool and its arena.
 
-On return to copool, the coro reset callback compares the saved `StackLimit`
-with the published initial offset first. An unchanged limit or external stack
-returns directly to the hot cache. Only a grown or unknown embedded stack
-reconstructs and validates `platform_coro_t` before invoking the platform reset
-path.
+On return to copool, the slot enters the worker-local or shared cache unchanged.
+Windows ASM therefore retains its committed stack extent, moving guard, and
+saved `StackLimit`; Windows Fiber and Unix likewise retain their hot state.
 
 Slot state follows three transitions:
 
 ```
-cold arena slot -> coro init callback  -> hot reusable slot
-used coroutine  -> coro reset callback -> hot reusable slot
-hot spill       -> arena full decommit -> cold slot
+cold arena slot -> initial-layout callback -> hot reusable slot
+used coroutine  -> local/shared cache      -> hot reusable slot
+hot spill       -> arena full decommit     -> cold slot
 ```
 
-An init failure is isolated by returning that address through arena's full-slot
-decommit path. A reset failure bypasses both hot caches and takes the same path.
-In either case, only a successfully decommitted address re-enters the arena free
+An initial-layout failure returns that address through arena's full-slot
+decommit path. Only a successfully decommitted address re-enters the arena free
 array; a failure is logged and the address remains unavailable until its
 containing region is released.
 
-The copool has two hot tiers:
+The copool owns two hot tiers. It creates one local cache per scheduler worker;
+the scheduler passes the current worker index for worker-side allocation and
+return, or `-1` for an external thread that must use the shared path. The fixed
+slot size is established when the copool is created; cached acquire and release
+operations therefore carry no redundant size argument:
 
 - Every worker-local cache holds up to 64 slots. Allocation pops locally first;
   an empty cache refills up to 32 slots from the shared cache, then from the
   arena. A full local cache returns 32 slots before retaining the newly freed
   slot.
 - The shared committed cache is protected by a spinlock. Its capacity is
-  configurable through `coro_pool_capacity` and defaults to `worker_count *
-  64`. The no-local-cache path takes one shared slot or allocates up to 32 arena
-  slots and places the surplus in the shared cache.
+  `worker_count * 64`, equal to the combined local-cache capacity. The
+  no-local-cache path takes one shared slot or allocates up to 32 arena slots
+  and places the surplus in the shared cache.
 - Slots that fit neither hot cache overflow to the arena for full decommit.
   Shared-cache operations finish before any arena call, so the shared spinlock
   and arena mutex are never nested.
@@ -409,17 +411,22 @@ usage grows with region reservations rather than coroutine count.
 For embedded-stack backends, minicoro places the coroutine object, context,
 storage, and stack in the arena slot. Windows x64 ASM additionally page-aligns
 the embedded stack immediately after committed metadata; `platform-coro`
-prepares the initial guard/top pages and restores a grown stack before reuse.
-Unix makes the complete slot accessible during init and needs no reset
-transition while the slot remains hot. On the Windows Fiber backend, the slot
+prepares the initial guard/top pages once when a cold slot becomes hot. Later
+reuse preserves the current guard and committed extent.
+Unix makes the complete slot accessible during cold preparation and retains it
+while the slot remains hot. On the Windows Fiber backend, the slot
 holds only the coroutine object, context, and storage; `CreateFiberEx()` and
 `DeleteFiber()` own the external Fiber stack.
 
 Minicoro retains its delayed range checks on backends that use them. ASAN builds
 also use minicoro's sanitizer fiber-switch integration, while platform-vmem and
 platform-coro explicitly poison cold pages and unpoison them before commit.
-The page-level backend contracts are detailed in [`platform.md`](platform.md)
-§5.
+Scheduler resume and yield paths abort on every non-success minicoro result.
+This includes `MCO_STACK_OVERFLOW`, because execution cannot safely continue
+after the delayed check detects that the stack already crossed its range.
+Native Windows `EXCEPTION_STACK_OVERFLOW` remains an SEH exception and is not
+converted into a minicoro result. The page-level backend contracts are detailed
+in [`platform.md`](platform.md) §5.
 
 #### Operating-system resource limits
 
@@ -427,10 +434,10 @@ The pool does not impose a fixed limit on active coroutines. Allocation can
 still fail when a new region cannot be reserved or a slot cannot be committed.
 On Windows, reserve uses `MEM_RESERVE` and a successful arena return uses
 `MEM_DECOMMIT`; destroying the arena releases each complete region with
-`MEM_RELEASE`. Windows ASM hot slots commit metadata plus the current lazy
-stack extent, while Fiber slots commit their complete arena metadata block and
-keep the Fiber-owned stack outside it. Worker-local and shared cache entries
-remain hot, so their retained committed pages still consume commit charge.
+`MEM_RELEASE`. Windows ASM cached slots retain committed metadata plus their
+current lazy stack extent, while Fiber slots commit their complete arena
+metadata block and keep the Fiber-owned stack outside it. Returning or
+allocating a cached slot performs no VM operation.
 
 On Linux, each complete arena region is one anonymous writable mapping and
 remains subject to the system memory commit policy. Slot decommit uses
@@ -782,8 +789,6 @@ The losing source only drops its reference.
 | Option | Where | Default | Meaning |
 |--------|-------|---------|---------|
 | `workers` | `xylem_opts_t` / `runtime_opts_t` | CPU count | Scheduler worker threads. |
-| `deque_capacity` | `scheduler_opts_t` | 256 | Per-worker deque capacity (positive power of 2, at most `INT_MAX`). |
-| `coro_pool_capacity` | `scheduler_opts_t` | `workers * 64` | Shared committed-slot cache capacity. |
 | `max_threads` | `dynpool_opts_t` | 512 | Max blocking-pool threads. |
 | `idle_timeout` | `dynpool_opts_t` | 10000 ms | Blocking-pool idle thread lifetime. |
 | `coro_stack_size` | `xylem_opts_t` / `runtime_opts_t` / `scheduler_opts_t` | 128 KiB | Per-coroutine stack size. |

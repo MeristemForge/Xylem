@@ -29,6 +29,9 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <threads.h>
 
 #define CORO_STACK_FRAME_SIZE    8192
@@ -74,19 +77,16 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+
+#define INVALID_LIMIT_CHILD_MISALIGNED   "--invalid-limit-misaligned"
+#define INVALID_LIMIT_CHILD_OUT_OF_RANGE "--invalid-limit-out-of-range"
+#define INVALID_LIMIT_ABORT_EXIT_CODE    3U
+#define INVALID_LIMIT_CHILD_TIMEOUT_MS   5000U
 #endif
 
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 #include <malloc.h>
 #endif
-
-typedef struct {
-    void*  ptr;
-    size_t reserve_size;
-    int    alloc_calls;
-    int    dealloc_calls;
-    int    release_result;
-} _vmem_alloc_ctx_t;
 
 typedef struct {
     copool_t*  pool;
@@ -137,12 +137,6 @@ struct _overflow_ctx_s {
 
 static void _empty_entry(mco_coro* co) {
     (void)co;
-}
-
-static void _count_entry(mco_coro* co) {
-    int* entry_calls = (int*)mco_get_user_data(co);
-
-    (*entry_calls)++;
 }
 
 static uint32_t _touch_stack(int depth, uint8_t seed) {
@@ -238,51 +232,20 @@ static void _overflow_entry(mco_coro* co) {
 }
 #endif
 
-static void* _vmem_alloc(size_t size, void* allocator_data) {
-    _vmem_alloc_ctx_t* ctx       = (_vmem_alloc_ctx_t*)allocator_data;
-    size_t             page_size = platform_vmem_page_size();
-    size_t             reserve_size;
-
-    ctx->alloc_calls++;
-    if (page_size == 0 || size > SIZE_MAX - (page_size - 1U)) {
-        return NULL;
-    }
-    reserve_size = size + (page_size - size % page_size) % page_size;
-    ctx->ptr     = platform_vmem_reserve(reserve_size);
-    if (ctx->ptr == NULL) {
-        return NULL;
-    }
-    ctx->reserve_size = reserve_size;
-    if (platform_vmem_commit(ctx->ptr, reserve_size) != 0) {
-        (void)platform_vmem_release(ctx->ptr, reserve_size);
-        ctx->ptr          = NULL;
-        ctx->reserve_size = 0;
-        return NULL;
-    }
-    return ctx->ptr;
-}
-
-static void _vmem_dealloc(void* ptr, size_t size, void* allocator_data) {
-    _vmem_alloc_ctx_t* ctx = (_vmem_alloc_ctx_t*)allocator_data;
-
-    (void)size;
-    ctx->dealloc_calls++;
-    ctx->release_result = platform_vmem_release(ptr, ctx->reserve_size);
-    ctx->ptr            = NULL;
-}
-
 static void* _coro_alloc_cb(size_t size, void* allocator_data) {
+    (void)size;
     _coro_fixture_t* fixture = (_coro_fixture_t*)allocator_data;
 
     atomic_fetch_add(&fixture->alloc_calls, 1);
-    return copool_alloc(fixture->pool, NULL, size);
+    return copool_acquire(fixture->pool, -1);
 }
 
 static void _coro_dealloc_cb(void* ptr, size_t size, void* allocator_data) {
+    (void)size;
     _coro_fixture_t* fixture = (_coro_fixture_t*)allocator_data;
 
     atomic_fetch_add(&fixture->dealloc_calls, 1);
-    copool_free(fixture->pool, NULL, ptr, size);
+    copool_release(fixture->pool, -1, ptr);
 }
 
 static void _coro_fixture_init(_coro_fixture_t* fixture) {
@@ -290,6 +253,177 @@ static void _coro_fixture_init(_coro_fixture_t* fixture) {
     atomic_init(&fixture->alloc_calls, 0);
     atomic_init(&fixture->dealloc_calls, 0);
 }
+
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void _invalid_limit_child_cleanup(
+    _coro_fixture_t* fixture,
+    mco_coro*        co) {
+    if (co != NULL) {
+        (void)coro_destroy(co);
+    }
+    if (fixture->pool != NULL) {
+        copool_destroy(fixture->pool);
+        fixture->pool = NULL;
+    }
+}
+
+static int _invalid_limit_child(const char* mode) {
+    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
+    copool_slot_ops_t ops;
+    _coro_fixture_t   fixture = {0};
+    mco_coro*         first   = NULL;
+    mco_coro*         second  = NULL;
+    void*             initial_limit;
+    void*             invalid_limit;
+    uintptr_t         stack_low;
+    uintptr_t         stack_high;
+    uintptr_t         limit;
+    size_t            page_size;
+    mco_result        result;
+    int               misaligned;
+
+    SetErrorMode(SEM_NOGPFAULTERRORBOX);
+#if defined(_MSC_VER) && defined(_WRITE_ABORT_MSG) && defined(_CALL_REPORTFAULT)
+    (void)_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    if (strcmp(mode, INVALID_LIMIT_CHILD_MISALIGNED) == 0) {
+        misaligned = 1;
+    } else if (strcmp(mode, INVALID_LIMIT_CHILD_OUT_OF_RANGE) == 0) {
+        misaligned = 0;
+    } else {
+        return 10;
+    }
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
+    if (fixture.pool == NULL) {
+        return 12;
+    }
+
+    result = coro_create(&first, &desc);
+    if (result != MCO_SUCCESS) {
+        _invalid_limit_child_cleanup(&fixture, NULL);
+        return 13;
+    }
+    if (first == NULL) {
+        _invalid_limit_child_cleanup(&fixture, NULL);
+        return 14;
+    }
+    if (mco_resume(first) != MCO_SUCCESS) {
+        _invalid_limit_child_cleanup(&fixture, first);
+        return 15;
+    }
+    if (mco_status(first) != MCO_DEAD) {
+        _invalid_limit_child_cleanup(&fixture, first);
+        return 16;
+    }
+
+    initial_limit = mco_get_stack_limit(first);
+    page_size     = platform_vmem_page_size();
+    stack_low     = (uintptr_t)first->stack_base;
+    if (first->stack_size > (size_t)(UINTPTR_MAX - stack_low)) {
+        _invalid_limit_child_cleanup(&fixture, first);
+        return 17;
+    }
+    stack_high = stack_low + first->stack_size;
+    if (initial_limit == NULL || page_size <= 1U || stack_low == 0 ||
+        stack_low >= stack_high) {
+        _invalid_limit_child_cleanup(&fixture, first);
+        return 17;
+    }
+    if (misaligned) {
+        invalid_limit = (uint8_t*)initial_limit - 1U;
+        limit         = (uintptr_t)invalid_limit;
+        if (limit <= stack_low || limit >= stack_high ||
+            limit % page_size == 0) {
+            _invalid_limit_child_cleanup(&fixture, first);
+            return 18;
+        }
+    } else {
+        invalid_limit = first->stack_base;
+    }
+    mco_set_stack_limit(first, invalid_limit);
+    if (coro_destroy(first) != MCO_SUCCESS) {
+        _invalid_limit_child_cleanup(&fixture, NULL);
+        return 19;
+    }
+    first = NULL;
+
+    result = coro_create(&second, &desc);
+    if (result == MCO_SUCCESS) {
+        (void)coro_destroy(second);
+        second = NULL;
+    }
+    _invalid_limit_child_cleanup(&fixture, second);
+    return 20;
+}
+
+static DWORD _invalid_limit_run_child(const char* mode) {
+    STARTUPINFOA        startup = {0};
+    PROCESS_INFORMATION process = {0};
+    char                module_path[MAX_PATH];
+    char                command_line[MAX_PATH + 64];
+    DWORD               module_size;
+    DWORD               wait_result;
+    DWORD               exit_code = 0;
+    int                 command_size;
+    BOOL                result;
+
+    module_size = GetModuleFileNameA(NULL, module_path, sizeof(module_path));
+    ASSERT(module_size > 0 && module_size < sizeof(module_path));
+    command_size = snprintf(
+        command_line,
+        sizeof(command_line),
+        "\"%s\" %s",
+        module_path,
+        mode);
+    ASSERT(command_size > 0 && (size_t)command_size < sizeof(command_line));
+
+    startup.cb = sizeof(startup);
+    result     = CreateProcessA(
+        module_path,
+        command_line,
+        NULL,
+        NULL,
+        FALSE,
+        CREATE_NO_WINDOW,
+        NULL,
+        NULL,
+        &startup,
+        &process);
+    ASSERT(result != 0);
+
+    wait_result =
+        WaitForSingleObject(process.hProcess, INVALID_LIMIT_CHILD_TIMEOUT_MS);
+    if (wait_result == WAIT_TIMEOUT) {
+        (void)TerminateProcess(process.hProcess, 124U);
+        (void)WaitForSingleObject(process.hProcess, INFINITE);
+    }
+    if (wait_result == WAIT_OBJECT_0) {
+        result = GetExitCodeProcess(process.hProcess, &exit_code);
+    } else {
+        result = 0;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    ASSERT(wait_result == WAIT_OBJECT_0);
+    ASSERT(result != 0);
+    return exit_code;
+}
+
+static void test_invalid_saved_stack_limit_aborts(void) {
+    ASSERT(
+        _invalid_limit_run_child(INVALID_LIMIT_CHILD_MISALIGNED) ==
+        INVALID_LIMIT_ABORT_EXIT_CODE);
+    ASSERT(
+        _invalid_limit_run_child(INVALID_LIMIT_CHILD_OUT_OF_RANGE) ==
+        INVALID_LIMIT_ABORT_EXIT_CODE);
+}
+#endif
 
 static int _migration_signal(_migration_ctx_t* ctx, int state) {
     int result = 0;
@@ -424,105 +558,9 @@ static void test_stack_offset(void) {
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
 }
 
-static void test_create_ordinary_page_aligned_allocator(void) {
-    _vmem_alloc_ctx_t alloc_ctx = {0};
-    mco_desc          desc      = mco_desc_init(_empty_entry, 32U * 1024U);
-    mco_coro*         co        = NULL;
-    void*             stack_base;
-    mco_result        create_result;
-    mco_result        destroy_result = MCO_GENERIC_ERROR;
-
-    desc.alloc_cb       = _vmem_alloc;
-    desc.dealloc_cb     = _vmem_dealloc;
-    desc.allocator_data = &alloc_ctx;
-    create_result       = coro_create(&co, &desc);
-    ASSERT(create_result == MCO_SUCCESS);
-    ASSERT(co != NULL);
-    ASSERT(co == alloc_ctx.ptr);
-    stack_base     = co->stack_base;
-    destroy_result = coro_destroy(co);
-
-    ASSERT(stack_base != NULL);
-    ASSERT(destroy_result == MCO_SUCCESS);
-    ASSERT(alloc_ctx.alloc_calls == 1);
-    ASSERT(alloc_ctx.dealloc_calls == 1);
-    ASSERT(alloc_ctx.release_result == 0);
-    ASSERT(alloc_ctx.ptr == NULL);
-}
-
-static void test_alloc_ctx_rejects_descriptor_mutation(void) {
-    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    _coro_fixture_t   fixture   = {0};
-    coro_alloc_ctx_t  alloc_ctx = {0};
-    copool_slot_ops_t ops;
-    mco_coro*         co    = NULL;
-    void (*func)(mco_coro*) = desc.func;
-    size_t storage_size     = desc.storage_size;
-    size_t coro_size        = desc.coro_size;
-    size_t stack_size       = desc.stack_size;
-
-    _coro_fixture_init(&fixture);
-    desc.alloc_cb       = _coro_alloc_cb;
-    desc.dealloc_cb     = _coro_dealloc_cb;
-    desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
-    ASSERT(fixture.pool != NULL);
-
-    desc.func = _count_entry;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.func = func;
-
-    desc.storage_size++;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.storage_size = storage_size;
-
-    desc.coro_size++;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.coro_size = coro_size;
-
-    desc.stack_size--;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.stack_size = stack_size;
-
-    ASSERT(atomic_load(&fixture.alloc_calls) == 0);
-    ASSERT(atomic_load(&fixture.dealloc_calls) == 0);
-
-    copool_destroy(fixture.pool);
-    fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
-}
-
-static void test_alloc_ctx_rejects_double_init(void) {
-    mco_desc         desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    coro_alloc_ctx_t alloc_ctx = {0};
-    coro_alloc_ctx_t other_ctx = {0};
-    void* (*alloc_cb)(size_t, void*)         = desc.alloc_cb;
-    void (*dealloc_cb)(void*, size_t, void*) = desc.dealloc_cb;
-    void* allocator_data                     = desc.allocator_data;
-
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == -1);
-    ASSERT(coro_alloc_ctx_init(&other_ctx, &desc) == -1);
-    coro_alloc_ctx_deinit(&alloc_ctx);
-    ASSERT(desc.alloc_cb == alloc_cb);
-    ASSERT(desc.dealloc_cb == dealloc_cb);
-    ASSERT(desc.allocator_data == allocator_data);
-    coro_alloc_ctx_deinit(&alloc_ctx);
-    ASSERT(desc.alloc_cb == alloc_cb);
-    ASSERT(desc.dealloc_cb == dealloc_cb);
-    ASSERT(desc.allocator_data == allocator_data);
-}
-
 static void test_create_prepared_allocator(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
     _coro_fixture_t   fixture   = {0};
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     mco_coro*         co = NULL;
     void*             stack_base;
@@ -533,9 +571,8 @@ static void test_create_prepared_allocator(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     create_result = coro_create(&co, &desc);
@@ -549,7 +586,6 @@ static void test_create_prepared_allocator(void) {
     destroy_result = coro_destroy(co);
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
 
 #if defined(TEST_MCO_WINDOWS_ASM)
     ASSERT(stack_offset > 0);
@@ -567,7 +603,6 @@ static void test_create_prepared_allocator(void) {
 static void test_initial_teb_state(void) {
     mco_desc          desc      = mco_desc_init(_teb_entry, 128U * 1024U);
     _coro_fixture_t   fixture   = {0};
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _teb_entry_ctx_t  entry = {0};
     mco_desc          create_desc;
@@ -580,9 +615,8 @@ static void test_initial_teb_state(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     create_desc           = desc;
@@ -606,13 +640,11 @@ static void test_initial_teb_state(void) {
 
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
 }
 #endif
 
 static void test_create_destroy_reuse(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture        = {0};
     mco_coro*         first          = NULL;
@@ -627,9 +659,8 @@ static void test_create_destroy_reuse(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     first_create = coro_create(&first, &desc);
@@ -645,7 +676,6 @@ static void test_create_destroy_reuse(void) {
     }
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
 
     ASSERT(first_create == MCO_SUCCESS);
     ASSERT(first_destroy == MCO_SUCCESS);
@@ -656,7 +686,6 @@ static void test_create_destroy_reuse(void) {
 
 static void test_cross_thread_stack_migration(void) {
     mco_desc          desc      = mco_desc_init(_migration_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture = {0};
     _migration_ctx_t  migration;
@@ -671,9 +700,8 @@ static void test_cross_thread_stack_migration(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     atomic_init(&migration.co, 0);
@@ -726,14 +754,12 @@ static void test_cross_thread_stack_migration(void) {
     mtx_destroy(&migration.lock);
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
     ASSERT(atomic_load(&fixture.alloc_calls) == 1);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
 }
 
 static void test_hot_stack_limit_reuse(void) {
     mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture = {0};
     _stack_entry_ctx_t deep = {
@@ -755,9 +781,8 @@ static void test_hot_stack_limit_reuse(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     create_desc           = desc;
@@ -790,7 +815,6 @@ static void test_hot_stack_limit_reuse(void) {
 
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
     ASSERT(atomic_load(&fixture.alloc_calls) == 2);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 2);
 }
@@ -798,7 +822,6 @@ static void test_hot_stack_limit_reuse(void) {
 #if defined(TEST_MCO_WINDOWS_ASM)
 static void test_arena_spill_restores_initial_stack(void) {
     mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture = {0};
 
@@ -816,8 +839,7 @@ static void test_arena_spill_restores_initial_stack(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
+    ops          = coro_get_slot_ops(&desc);
     fixture.pool = copool_create(desc.coro_size, 0, &ops);
     ASSERT(fixture.pool != NULL);
 
@@ -849,7 +871,6 @@ static void test_arena_spill_restores_initial_stack(void) {
 
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
     ASSERT(atomic_load(&fixture.alloc_calls) == 2);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 2);
 }
@@ -859,7 +880,6 @@ static void test_arena_spill_restores_initial_stack(void) {
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 static void test_stack_overflow_stops_before_metadata(void) {
     mco_desc          desc      = mco_desc_init(_overflow_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture  = {0};
     _overflow_ctx_t   overflow = {
@@ -883,9 +903,8 @@ static void test_stack_overflow_stops_before_metadata(void) {
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops          = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ops          = coro_get_slot_ops(&desc);
+    fixture.pool = copool_create(desc.coro_size, 1, &ops);
     ASSERT(fixture.pool != NULL);
 
     create_desc           = desc;
@@ -916,7 +935,6 @@ static void test_stack_overflow_stops_before_metadata(void) {
 
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
     ASSERT(atomic_load(&fixture.alloc_calls) == 1);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
 }
@@ -961,11 +979,17 @@ static void test_stack_offset_lookup_is_cached(void) {
 }
 #endif
 
-int main(void) {
+int main(int argc, char** argv) {
+#if defined(TEST_MCO_WINDOWS_ASM)
+    if (argc == 2 && (strcmp(argv[1], INVALID_LIMIT_CHILD_MISALIGNED) == 0 ||
+                      strcmp(argv[1], INVALID_LIMIT_CHILD_OUT_OF_RANGE) == 0)) {
+        return _invalid_limit_child(argv[1]);
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     test_stack_offset();
-    test_create_ordinary_page_aligned_allocator();
-    test_alloc_ctx_rejects_double_init();
-    test_alloc_ctx_rejects_descriptor_mutation();
     test_create_prepared_allocator();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_initial_teb_state();
@@ -975,6 +999,7 @@ int main(void) {
     test_hot_stack_limit_reuse();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_arena_spill_restores_initial_stack();
+    test_invalid_saved_stack_limit_aborts();
 #endif
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
     test_stack_overflow_stops_before_metadata();

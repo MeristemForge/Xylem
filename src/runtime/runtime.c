@@ -181,7 +181,7 @@ void runtime_run(
     atomic_store(&g_shutdown, false);
     platform_socket_startup();
 
-    scheduler_opts_t sched_opts = { .worker_count = workers, .deque_capacity = 0 };
+    scheduler_opts_t sched_opts = {.worker_count = workers};
     if (opts && opts->coro_stack_size > 0) {
         sched_opts.coro_stack_size = opts->coro_stack_size;
     }

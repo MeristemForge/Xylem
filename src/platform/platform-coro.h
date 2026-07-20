@@ -31,7 +31,7 @@ typedef struct platform_coro_s {
 } platform_coro_t;
 
 /**
- * @brief Initialize a coroutine slot memory layout.
+ * @brief Prepare the initial memory layout for a coroutine slot.
  *
  * ptr and size define the fixed slot range [ptr, ptr + size). A NULL stack_low
  * with zero stack_size selects an external stack. Otherwise the embedded stack
@@ -41,8 +41,12 @@ typedef struct platform_coro_s {
  * @param coro  Coroutine slot description.
  *
  * @return 0 on success, -1 for an invalid layout or VM operation failure.
+ *
+ * @note coro must describe a fully decommitted cold slot. Validation failure
+ * does not mutate the slot; partial initialization failure rolls it back to
+ * the cold state.
  */
-extern int platform_coro_init(const platform_coro_t* coro);
+extern int platform_coro_prepare_initial_layout(const platform_coro_t* coro);
 
 /**
  * @brief Return the initial native stack limit for a coroutine slot.

@@ -140,6 +140,7 @@ inside that range:
 | `page_size()` | `sysconf(_SC_PAGESIZE)` | `sysconf(_SC_PAGESIZE)` | `GetSystemInfo` |
 | `reserve(size)` | anonymous private `mmap(RW)` | anonymous private `mmap(RW)` | `VirtualAlloc(MEM_RESERVE)` |
 | `commit(ptr,size)` | ASAN unpoison | `MADV_FREE_REUSE`, then ASAN unpoison | ASAN unpoison, then `VirtualAlloc(MEM_COMMIT)`; re-poison on failure |
+| `guard(ptr,size)` | no-op | no-op | `VirtualProtect(PAGE_READWRITE | PAGE_GUARD)` |
 | `decommit(ptr,size)` | `MADV_FREE`, then ASAN poison | `MADV_FREE_REUSABLE`, then ASAN poison | `VirtualFree(MEM_DECOMMIT)` then ASAN poison |
 | `release(ptr,size)` | `munmap` | `munmap` | ASAN unpoison, then `VirtualFree(MEM_RELEASE)`; re-poison on failure |
 
@@ -207,32 +208,31 @@ downward while the coroutine runs, and minicoro saves the current limit in its
 context so a coroutine may resume on another worker. Minicoro's delayed
 stack-range and magic-number check remains the overflow fallback.
 
-Initialization first decommits the complete slot, then commits metadata and the
-initial guard/top pair. The coro adapter compares the saved limit with its
-published initial offset before reconstructing the platform layout, so an
-unchanged stack returns directly to the hot cache. Otherwise platform reset
-decommits the complete embedded stack and rebuilds only the initial guard/top
-pair; a NULL saved limit deliberately selects this full rebuild. The library
+`platform_coro_prepare_initial_layout()` accepts a fully decommitted cold slot,
+validates its complete layout before mutation, then commits metadata and the
+initial guard/top pair directly. It rolls the complete slot back to the cold
+state if guard or stack preparation fails after metadata commit. The library
 does not catch `EXCEPTION_STACK_OVERFLOW` or call `_resetstkoflw()`. Code that
-catches that exception and intends to continue on the native thread must restore
-the thread's overflow state itself before normal execution resumes.
+catches that exception and intends to continue on the native thread must
+restore the thread's overflow state itself before normal execution resumes.
 
 Cold Windows ASM initialization still requires separate metadata and initial
 stack commits plus guard protection. A producer that outpaces all workers can
 therefore measure cold-slot setup rather than hot reuse. Once slots circulate
-through worker-local or shared caches, unchanged stacks perform no VM operation.
+through worker-local or shared caches, allocation and return perform no VM
+operation. A hot slot retains its current committed stack extent and moving
+guard until it spills back to arena.
 
 Windows Fiber uses the external-stack form. The arena slot contains minicoro
 metadata and is committed as one block; `CreateFiberEx()` / `DeleteFiber()` own
-the separate Fiber stack, and platform reset is a no-op. Unix uses whole-slot
-policy for both ASM/ucontext-style embedded layouts: init commits or marks the
-complete slot reusable, and reset is a no-op while the slot remains hot.
+the separate Fiber stack. Unix uses whole-slot policy for ASM/ucontext-style
+embedded layouts. Both remain hot without a platform reuse operation.
 
 ASAN shadow transitions follow the OS operation ordering. Windows unpoisons a
 range before `VirtualAlloc`, because that call may touch the range internally,
-and re-poisons on commit failure. Windows coroutine init/reset likewise
-unpoisons the guard/top pages before committing them; a later full decommit
-poisons the range again. Darwin performs `MADV_FREE_REUSE` before unpoisoning,
+and re-poisons on commit failure. Windows cold-slot preparation likewise
+unpoisons pages before committing them; a later arena spill decommits and
+poisons the complete slot. Darwin performs `MADV_FREE_REUSE` before unpoisoning,
 while Linux commit only unpoisons its already mapped pages. Release on Windows
 unpoisons before `MEM_RELEASE` and restores poison if release fails.
 
@@ -244,11 +244,11 @@ platform-coro`. Copool callbacks connect them without exposing layout to arena.
 An arena eagerly reserves and fully decommits its first complete multi-slot
 region, then grows when its free-slot array cannot satisfy an allocation.
 
-Cold arena addresses become hot only after the coro init callback succeeds.
-Used slots run the coro reset callback before entering worker-local or shared
-hot caches. Cache overflow returns a complete slot to arena, whose successful
-full decommit makes it cold and republishes the address. A failed decommit is
-logged but not added to the free array.
+Cold arena addresses become hot only after the coro initial-layout callback
+succeeds. Used slots enter worker-local or shared hot caches without a callback
+or VM operation. Cache overflow returns a complete slot to arena, whose
+successful full decommit makes it cold and republishes the address. A failed
+decommit is logged but not added to the free array.
 
 Neither cache eviction nor slot decommit releases part of a reservation.
 `copool_destroy()` calls `arena_destroy()`, which releases every complete

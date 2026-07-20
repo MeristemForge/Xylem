@@ -38,7 +38,7 @@ Creation and destruction follow that chain:
 ```text
 scheduler_create
   -> calculate mco_desc.coro_size
-  -> copool_create(coro_size, shared_capacity)
+  -> copool_create(coro_size, worker_count)
        -> arena_create(coro_size)
        -> reserve the first region immediately
 
@@ -87,34 +87,26 @@ The cache module lives in `src/runtime/copool.h` and `src/runtime/copool.c`.
 ```c
 typedef struct copool_s copool_t;
 
-#define COPOOL_CACHE_CAP 64
-
-typedef struct copool_cache_s {
-    void*   slots[COPOOL_CACHE_CAP];
-    int32_t count;
-} copool_cache_t;
-
 extern copool_t* copool_create(
-    size_t  slot_size,
-    int32_t shared_cap);
+    size_t slot_size,
+    int32_t local_pool_count,
+    const copool_slot_ops_t* ops);
 
 extern void copool_destroy(copool_t* pool);
 
-extern void* copool_alloc(
-    copool_t*       pool,
-    copool_cache_t* cache,
-    size_t          size);
+extern void* copool_acquire(
+    copool_t* pool,
+    int32_t local_index);
 
-extern void copool_free(
-    copool_t*       pool,
-    copool_cache_t* cache,
-    void*           ptr,
-    size_t          size);
+extern void copool_release(
+    copool_t* pool,
+    int32_t local_index,
+    void* ptr);
 ```
 
-`cache != NULL` selects a worker-local cache. `cache == NULL` selects the
-non-worker path. `copool_cache_t` is embedded directly in each scheduler worker
-and starts zero-initialized; it owns no memory outside the backing arena.
+`local_index >= 0` selects a worker-local pool owned by `copool_t`.
+`local_index == -1` selects the shared path for non-worker callers. The internal
+local and shared pools use the same `copool_cache_t` representation.
 
 ## Fixed Slot Layout
 
@@ -336,45 +328,48 @@ the arena boundary perform platform virtual-memory transitions.
 
 ## Scheduler Integration
 
-The scheduler owns `copool_t* coro_pool`, and each worker embeds one
-`copool_cache_t coro_cache`. It does not access arena internals or manipulate
-shared/local slot arrays directly.
+The scheduler owns `copool_t* coro_pool`. The copool owns one local pool per
+worker plus the shared pool; scheduler workers do not embed cache storage. The
+scheduler does not access arena internals or manipulate cache slot arrays.
 
-The configured minicoro stack size remains a scheduler property:
+The configured minicoro stack size determines a persistent scheduler descriptor:
 
 ```c
 struct scheduler_s {
     ...
-    size_t    coro_stack_size;
+    mco_desc  coro_desc;
     copool_t* coro_pool;
 };
 ```
 
-`scheduler_coro_spawn()` passes `sched->coro_stack_size` to `mco_desc_init()`.
-The resulting `desc.coro_size` is validated by `copool`; stack size is not a
-pool or arena policy field.
+Scheduler creation passes the configured stack size to `mco_desc_init()`.
+The resulting persistent `coro_desc.coro_size` determines the fixed copool slot
+size. Each spawn copies the descriptor and changes only `user_data`; stack size
+is not a pool or arena policy field.
 
 Scheduler code retains only two minicoro allocator adapters:
 
 ```c
 static void* _sched_coro_alloc_cb(size_t size, void* data) {
+    (void)size;
     scheduler_t* sched = (scheduler_t*)data;
-    copool_cache_t* cache = _sched_current_coro_cache(sched);
-    return copool_alloc(sched->coro_pool, cache, size);
+    int32_t local_index = _sched_current_worker_index(sched);
+    return copool_acquire(sched->coro_pool, local_index);
 }
 
 static void _sched_coro_dealloc_cb(
     void* ptr,
     size_t size,
     void* data) {
+    (void)size;
     scheduler_t* sched = (scheduler_t*)data;
-    copool_cache_t* cache = _sched_current_coro_cache(sched);
-    copool_free(sched->coro_pool, cache, ptr, size);
+    int32_t local_index = _sched_current_worker_index(sched);
+    copool_release(sched->coro_pool, local_index, ptr);
 }
 ```
 
-`_sched_current_coro_cache()` returns the current worker's cache only when the
-TLS worker belongs to the supplied scheduler. Otherwise it returns `NULL`.
+`_sched_current_worker_index()` returns the current worker index only when the
+TLS worker belongs to the supplied scheduler. Otherwise it returns `-1`.
 `mco_desc.allocator_data` points to the scheduler so the adapters can perform
 that ownership check without making `copool` depend on scheduler TLS or worker
 types.
@@ -416,9 +411,8 @@ Scheduler cleanup must preserve this order:
 1. Stop and join workers.
 2. Destroy every remaining coroutine while allocator callbacks are valid.
 3. Call `copool_destroy()`.
-4. `copool_destroy()` frees the shared pointer array and destroys its arena.
+4. `copool_destroy()` frees all local/shared caches and destroys its arena.
 
-Worker-local caches are embedded values and require no allocation or deinit.
 Local and shared slot addresses are not individually released because they
 refer to memory owned by arena regions.
 
@@ -433,17 +427,17 @@ refer to memory owned by arena regions.
 - A failed later region growth permits `arena_alloc()` to return slots that
   were already free, otherwise it returns zero.
 - Region release failures during destroy are logged while cleanup continues.
-- `copool_create()` fails when its arena or shared pointer array cannot be
+- `copool_create()` fails when its arena or any local/shared cache cannot be
   created.
-- `copool_alloc()` returns `NULL` when `size` exceeds the configured slot size.
-- `copool_free()` logs and aborts when `size` exceeds the configured slot size.
+- `copool_acquire()` returns `NULL` for an invalid pool or local index.
+- `copool_release()` logs and aborts for an invalid local index.
 
 ## Removed Scheduler Responsibilities
 
 The scheduler no longer calculates page-rounded coroutine metadata or stack
 subranges. It no longer implements local/shared batching or commits, decommits,
 and releases coroutine allocations. These responsibilities move behind
-`copool_alloc()`, `copool_free()`, and the arena owned by `copool`.
+`copool_acquire()`, `copool_release()`, and the arena owned by `copool`.
 The scheduler continues to own the configured coroutine stack size because it
 is required to build each minicoro descriptor.
 

@@ -107,26 +107,10 @@ int platform_vmem_decommit(void* ptr, size_t size) {
 
 #endif
 
-int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
-    int flags       = (int)prot;
-    int known_flags = PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE |
-                      PLATFORM_VMEM_PROT_GUARD;
-    int protection  = PROT_NONE;
-
-    if ((flags & ~known_flags) != 0 ||
-        ((flags & PLATFORM_VMEM_PROT_GUARD) != 0 &&
-         (flags & (PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE)) == 0)) {
-        return -1;
-    }
-    if ((flags & PLATFORM_VMEM_PROT_GUARD) == 0) {
-        if ((flags & PLATFORM_VMEM_PROT_READ) != 0) {
-            protection |= PROT_READ;
-        }
-        if ((flags & PLATFORM_VMEM_PROT_WRITE) != 0) {
-            protection |= PROT_WRITE;
-        }
-    }
-    return mprotect(ptr, size, protection) == 0 ? 0 : -1;
+int platform_vmem_guard(void* ptr, size_t size) {
+    (void)ptr;
+    (void)size;
+    return 0;
 }
 
 int platform_vmem_release(void* ptr, size_t size) {

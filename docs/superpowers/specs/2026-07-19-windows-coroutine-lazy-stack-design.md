@@ -122,7 +122,7 @@ typedef struct platform_coro_s {
     size_t stack_size;
 } platform_coro_t;
 
-extern int platform_coro_init(const platform_coro_t* coro);
+extern int platform_coro_prepare_initial_layout(const platform_coro_t* coro);
 
 extern void* platform_coro_initial_stack_limit(
     const platform_coro_t* coro);
@@ -136,11 +136,11 @@ All Windows ASM ranges must be page aligned and contained within the slot. The
 nonempty metadata span ends at `stack_low`. Invalid layouts fail initialization
 without entering a hot cache.
 
-`platform_coro_init()` accepts only a fully decommitted cold slot obtained from
-the arena. It validates the complete layout before changing page state and then
-commits the required ranges directly. It does not decommit the slot before
-committing it. If a later commit or guard operation fails, initialization
-decommits the complete slot as rollback.
+`platform_coro_prepare_initial_layout()` accepts only a fully decommitted cold
+slot obtained from the arena. It validates the complete layout before changing
+page state and then commits the required ranges directly. It does not decommit
+the slot before committing it. If a later commit or guard operation fails,
+initialization decommits the complete slot as rollback.
 
 The platform-vmem layer exposes one narrow native-guard operation:
 
@@ -161,10 +161,10 @@ arena code to coroutine-specific code.
 
 ### Windows x64 ASM
 
-`platform_coro_init()` directly commits metadata, creates the initial guard
-page, and commits the initial usable stack page. Unused stack pages remain
-uncommitted. It uses `platform_vmem_commit()` for page commitment and
-`platform_vmem_guard()` for the moving guard page; it does not call
+`platform_coro_prepare_initial_layout()` directly commits metadata, creates the
+initial guard page, and commits the initial usable stack page. Unused stack
+pages remain uncommitted. It uses `platform_vmem_commit()` for page commitment
+and `platform_vmem_guard()` for the moving guard page; it does not call
 `VirtualAlloc` or `VirtualProtect` directly.
 
 `platform_coro_initial_stack_limit()` returns the low address of the initial
@@ -248,7 +248,8 @@ A saved stack limit in a hot slot is an internal runtime invariant. It must be
 page aligned and contained within that slot's embedded stack range. The value
 can be invalid only after memory corruption or a runtime/context-switch bug;
 the adapter fails fast instead of attempting to reset, cache, or recover the
-slot.
+slot. Cold-slot initialization publishes the process page alignment once, so
+hot validation does not query the operating system or call `call_once`.
 
 `coro_destroy()` calls `mco_destroy()`. Windows ASM context destruction leaves
 the saved stack limit intact until the slot is either reused from a hot cache or
@@ -270,13 +271,14 @@ typedef struct copool_slot_ops_s {
 
 extern copool_t* copool_create(
     size_t slot_size,
-    int32_t shared_cap,
+    int32_t local_pool_count,
     const copool_slot_ops_t* ops);
 ```
 
 `copool_create()` copies the callback structure. Callback `size` is the actual
 page-aligned arena slot size obtained from `arena_slot_size()` after arena
-creation.
+creation. That fixed size is selected once by `copool_create()`; acquire and
+release operations do not accept a per-operation size.
 
 The lifecycle is:
 
@@ -296,8 +298,8 @@ An `init` failure sends that slot to `arena_free()` instead of a hot cache.
 Other slots in the same batch continue normally.
 
 Because hot capacity is bounded, retained Windows commit charge is bounded by
-`worker_count * COPOOL_CACHE_CAP + shared_cap` slots. Arena capacity may follow
-the historical concurrency peak without retaining commit charge.
+`worker_count * 128` slots across local and shared pools. Arena capacity may
+follow the historical concurrency peak without retaining commit charge.
 
 ## Arena Cold-State Contract
 
@@ -361,7 +363,7 @@ and recycled.
   region and fails that grow attempt.
 - Platform coroutine init failure returns the slot through `arena_free()` and
   continues initializing other slots in the batch.
-- If no slot in a refill can be initialized, `copool_alloc()` returns `NULL`.
+- If no slot in a refill can be initialized, `copool_acquire()` returns `NULL`.
 - Arena decommit failure logs an error and excludes the slot from `free_slots`.
 - Local/shared allocation, return, and transfer introduce no platform call.
 - A missing saved stack limit selects the platform initial value. An invalid

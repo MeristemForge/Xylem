@@ -79,7 +79,6 @@
 #define SCHED_DEQUE_CAP          256
 #define SCHED_RUNQ_BATCH_CAP     256
 
-#define SCHED_CORO_POOL_CAP_MUL  64
 #define SCHED_CREDIT_DEFAULT     128u
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
@@ -125,7 +124,6 @@ typedef struct _sched_worker_s {
     mtx_t                           timer_lock;
     /* Earliest timer deadline, UINT64_MAX if none. */
     _Atomic uint64_t                next_deadline_ms;
-    copool_cache_t                  coro_cache;
     list_t                          registry;        /* coroutines owned for shutdown.   */
     spin_t                          registry_lock;   /* protects registry.               */
 } _sched_worker_t;
@@ -153,9 +151,8 @@ struct scheduler_s {
     _Atomic uint32_t      timer_rr;
     _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
     _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
-    mco_desc          coro_desc;
-    coro_alloc_ctx_t  coro_alloc_ctx;
-    copool_t*         coro_pool;
+    mco_desc              coro_desc;
+    copool_t*             coro_pool;
 };
 
 typedef enum _timer_state_e {
@@ -235,24 +232,26 @@ static void _sched_coro_entry_cb(mco_coro* co) {
     fn(arg);
 }
 
-static copool_cache_t* _sched_current_coro_cache(scheduler_t* sched) {
+static int32_t _sched_current_worker_index(scheduler_t* sched) {
     if (!_tls_worker || _tls_worker->sched != sched) {
-        return NULL;
+        return -1;
     }
-    return &_tls_worker->coro_cache;
+    return (int32_t)_tls_worker->index;
 }
 
 static void* _sched_coro_alloc_cb(size_t size, void* allocator_data) {
-    scheduler_t*    sched = (scheduler_t*)allocator_data;
-    copool_cache_t* cache = _sched_current_coro_cache(sched);
-    return copool_alloc(sched->coro_pool, cache, size);
+    (void)size;
+    scheduler_t* sched = (scheduler_t*)allocator_data;
+    int32_t      local_index = _sched_current_worker_index(sched);
+    return copool_acquire(sched->coro_pool, local_index);
 }
 
 static void
 _sched_coro_dealloc_cb(void* ptr, size_t size, void* allocator_data) {
-    scheduler_t*    sched = (scheduler_t*)allocator_data;
-    copool_cache_t* cache = _sched_current_coro_cache(sched);
-    copool_free(sched->coro_pool, cache, ptr, size);
+    (void)size;
+    scheduler_t* sched = (scheduler_t*)allocator_data;
+    int32_t      local_index = _sched_current_worker_index(sched);
+    copool_release(sched->coro_pool, local_index, ptr);
 }
 
 static void _sched_timer_ref(scheduler_timer_t* timer) {
@@ -912,6 +911,12 @@ static void _sched_coro_commit_park(_sched_worker_t* w, mco_coro* co) {
     _sched_worker_enqueue_runnable(w, co);
 }
 
+static void _sched_coro_abort_on_error(mco_result result) {
+    if (result != MCO_SUCCESS) {
+        abort();
+    }
+}
+
 static inline void _sched_worker_execute_runnable(_sched_worker_t* w, mco_coro* co) {
     w->yield_reason = SCHED_YIELD_NONE;
     w->park_commit  = NULL;
@@ -919,7 +924,7 @@ static inline void _sched_worker_execute_runnable(_sched_worker_t* w, mco_coro* 
     w->credit       = SCHED_CREDIT_DEFAULT;
 
     _sched_coro_transition(co, SCHED_CORO_RUNNABLE, SCHED_CORO_RUNNING);
-    mco_resume(co);
+    _sched_coro_abort_on_error(mco_resume(co));
 
     if (mco_status(co) == MCO_DEAD) {
         _sched_coro_exit(w, co);
@@ -1202,7 +1207,6 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
     }
 
     copool_destroy(sched->coro_pool);
-    coro_alloc_ctx_deinit(&sched->coro_alloc_ctx);
     free(sched);
 }
 
@@ -1215,10 +1219,8 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->wakeup_rd = PLATFORM_SO_ERROR_INVALID_SOCKET;
     sched->wakeup_wr = PLATFORM_SO_ERROR_INVALID_SOCKET;
 
-    int32_t           worker_count   = (int32_t)platform_info_getcpus();
-    int               deque_capacity = SCHED_DEQUE_CAP;
-    size_t            pool_cap       = 0;
-    size_t            stack_size     = SCHED_CORO_STACK_SIZE;
+    int32_t           worker_count = (int32_t)platform_info_getcpus();
+    size_t            stack_size   = SCHED_CORO_STACK_SIZE;
     copool_slot_ops_t slot_ops;
 
     if (worker_count < 1) {
@@ -1229,26 +1231,9 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         if (opts->worker_count > 0) {
             worker_count = opts->worker_count;
         }
-        if (opts->deque_capacity > 0) {
-            if (opts->deque_capacity > (uint32_t)INT_MAX) {
-                _sched_cleanup(sched, 0);
-                return NULL;
-            }
-            deque_capacity = (int)opts->deque_capacity;
-        }
-        if (opts->coro_pool_capacity > 0) {
-            pool_cap = opts->coro_pool_capacity;
-        }
         if (opts->coro_stack_size > 0) {
             stack_size = opts->coro_stack_size;
         }
-    }
-    if (pool_cap == 0) {
-        pool_cap = (size_t)worker_count * SCHED_CORO_POOL_CAP_MUL;
-    }
-    if (pool_cap > INT32_MAX) {
-        _sched_cleanup(sched, 0);
-        return NULL;
     }
 
     sched->runq = runq_create();
@@ -1304,14 +1289,10 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->coro_desc.alloc_cb       = _sched_coro_alloc_cb;
     sched->coro_desc.dealloc_cb     = _sched_coro_dealloc_cb;
     sched->coro_desc.allocator_data = sched;
-    if (coro_alloc_ctx_init(&sched->coro_alloc_ctx, &sched->coro_desc) != 0) {
-        _sched_cleanup(sched, 0);
-        return NULL;
-    }
-    slot_ops = coro_get_slot_ops(&sched->coro_alloc_ctx);
+    slot_ops = coro_get_slot_ops(&sched->coro_desc);
     sched->coro_pool = copool_create(
         sched->coro_desc.coro_size,
-        (int32_t)pool_cap,
+        worker_count,
         &slot_ops);
     if (!sched->coro_pool) {
         _sched_cleanup(sched, 0);
@@ -1341,7 +1322,7 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         }
         sched->worker_count = i + 1;
 
-        w->deque = wsq_create(deque_capacity);
+        w->deque = wsq_create(SCHED_DEQUE_CAP);
         w->sem = platform_sem_create(0);
         atomic_init(&w->next_deadline_ms, UINT64_MAX);
 
@@ -1487,7 +1468,7 @@ void scheduler_coro_park(
     _tls_worker->yield_reason = SCHED_YIELD_PARK;
     _tls_worker->park_commit  = commit;
     _tls_worker->park_arg     = arg;
-    mco_yield(mco_running());
+    _sched_coro_abort_on_error(mco_yield(mco_running()));
 }
 
 bool scheduler_coro_consume_credit(uint32_t cost) {
@@ -1507,7 +1488,7 @@ void scheduler_coro_yield(void) {
         return;
     }
     _tls_worker->yield_reason = SCHED_YIELD_RUNNABLE;
-    mco_yield(mco_running());
+    _sched_coro_abort_on_error(mco_yield(mco_running()));
 }
 
 platform_poller_sq_t* scheduler_get_poller(scheduler_t* sched) {

@@ -116,17 +116,13 @@ static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
     if (platform_vmem_commit(layout->guard_low, commit_size) != 0) {
         return -1;
     }
-    if (platform_vmem_protect(
-            layout->guard_low,
-            layout->page_size,
-            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE |
-                PLATFORM_VMEM_PROT_GUARD) != 0) {
+    if (platform_vmem_guard(layout->guard_low, layout->page_size) != 0) {
         return -1;
     }
     return 0;
 }
 
-int platform_coro_init(const platform_coro_t* coro) {
+int platform_coro_prepare_initial_layout(const platform_coro_t* coro) {
     _coro_layout_t layout;
 
     if (_coro_validate_slot(coro, &layout) != 0) {

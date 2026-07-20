@@ -23,7 +23,7 @@
 
 #include "platform/platform-vmem.h"
 
-int platform_coro_init(const platform_coro_t* coro) {
+int platform_coro_prepare_initial_layout(const platform_coro_t* coro) {
     if (coro == NULL || coro->ptr == NULL || coro->size == 0) {
         return -1;
     }

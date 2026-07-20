@@ -32,7 +32,7 @@
 #endif
 
 static void _assert_invalid(const platform_coro_t* coro) {
-    ASSERT(platform_coro_init(coro) == -1);
+    ASSERT(platform_coro_prepare_initial_layout(coro) == -1);
     ASSERT(platform_coro_initial_stack_limit(coro) == NULL);
 }
 
@@ -69,7 +69,7 @@ static void test_external_stack(void) {
 
     ASSERT(page_size > 0);
     ASSERT(ptr != NULL);
-    ASSERT(platform_coro_init(&coro) == 0);
+    ASSERT(platform_coro_prepare_initial_layout(&coro) == 0);
     ptr[0]        = 0x5a;
     ptr[size - 1] = 0xa5;
     ASSERT(ptr[0] == 0x5a);
@@ -107,7 +107,7 @@ static void test_embedded_stack_layout(void) {
                              .size       = size,
                              .stack_low  = ptr + page_size * 2,
                              .stack_size = page_size * 3};
-    ASSERT(platform_coro_init(&coro) == 0);
+    ASSERT(platform_coro_prepare_initial_layout(&coro) == 0);
     _assert_embedded_layout(ptr, page_size);
     ASSERT(platform_coro_initial_stack_limit(&coro) == ptr + page_size * 4);
 
@@ -187,7 +187,7 @@ static void test_invalid_layout_preserves_slot(void) {
     coro               = (platform_coro_t){.ptr       = ptr,
                                            .size      = size,
                                            .stack_low = ptr + page_size * 2};
-    ASSERT(platform_coro_init(&coro) == -1);
+    ASSERT(platform_coro_prepare_initial_layout(&coro) == -1);
     for (size_t i = 0; i < page_count; i++) {
         _assert_page(ptr + i * page_size, MEM_COMMIT, PAGE_READWRITE, 0);
     }

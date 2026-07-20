@@ -85,10 +85,8 @@ typedef void (*scheduler_timer_ud_fn_t)(void* ud);
 
 /* Configuration for scheduler_create. */
 typedef struct scheduler_opts_s {
-    int32_t  worker_count;       /* 0 = use CPU count. */
-    uint32_t deque_capacity;      /* 0 = use default (256). Must be power of 2. */
-    uint32_t coro_pool_capacity;  /* 0 = use default (worker_count * 64). */
-    size_t   coro_stack_size;   /* 0 = use default (128 KB). */
+    int32_t worker_count;      /* 0 = use CPU count. */
+    size_t  coro_stack_size;   /* 0 = use default (128 KB). */
 } scheduler_opts_t;
 
 /**

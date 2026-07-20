@@ -54,24 +54,22 @@ struct arena_s {
 static int _arena_grow(arena_t* arena) {
     size_t slot_count = ARENA_REGION_MAX_SIZE / arena->slot_size;
     size_t region_size;
-    void*  base       = NULL;
+    void*  base;
 
     for (;;) {
-        if (slot_count > SIZE_MAX / arena->slot_size) {
-            return -1;
-        }
         region_size = slot_count * arena->slot_size;
         base        = platform_vmem_reserve(region_size);
-        if (base || slot_count == ARENA_REGION_MIN_SLOTS) {
+        if (base) {
             break;
         }
+        if (slot_count == ARENA_REGION_MIN_SLOTS) {
+            return -1;
+        }
+
         slot_count /= 2;
         if (slot_count < ARENA_REGION_MIN_SLOTS) {
             slot_count = ARENA_REGION_MIN_SLOTS;
         }
-    }
-    if (!base) {
-        return -1;
     }
     if (platform_vmem_decommit(base, region_size) != 0) {
         (void)platform_vmem_release(base, region_size);

@@ -24,8 +24,6 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
-#define COPOOL_CACHE_CAP 64
-
 /* Opaque fixed-slot coroutine pool. */
 typedef struct copool_s copool_t;
 
@@ -35,12 +33,6 @@ typedef struct copool_slot_ops_s {
     void* ud;
 } copool_slot_ops_t;
 
-/* Worker-local committed-slot cache. */
-typedef struct copool_cache_s {
-    void*   slots[COPOOL_CACHE_CAP];
-    int32_t count;
-} copool_cache_t;
-
 /**
  * @brief Create a fixed-slot coroutine pool.
  *
@@ -48,19 +40,19 @@ typedef struct copool_cache_s {
  * caller must keep ops->ud valid until copool_destroy() returns and synchronize
  * access to callback state. init may run concurrently and is called only for a
  * cold slot refilled from the backing arena. Local and shared caches retain hot
- * slot state. Callback size is the page-aligned arena slot size, while
- * slot_size remains the logical maximum accepted by copool_alloc() and
- * copool_free().
+ * slot state. Each local pool holds 64 slots; the shared pool holds
+ * local_pool_count * 64 slots. Callback size is the page-aligned arena slot
+ * size.
  *
- * @param slot_size   Logical maximum allocation size in bytes.
- * @param shared_cap  Maximum number of slots in the shared cache.
- * @param ops         Required cold-slot initializer copied by the pool.
+ * @param slot_size         Required slot size in bytes, aligned internally.
+ * @param local_pool_count  Number of worker-local pools.
+ * @param ops               Required cold-slot initializer copied by the pool.
  *
  * @return Pool handle, or NULL for invalid arguments or allocation failure.
  */
 extern copool_t* copool_create(
     size_t                   slot_size,
-    int32_t                  shared_cap,
+    int32_t                  local_pool_count,
     const copool_slot_ops_t* ops);
 
 /**
@@ -75,13 +67,17 @@ extern void copool_destroy(copool_t* pool);
 /**
  * @brief Allocate a committed slot.
  *
- * @param pool   Pool handle.
- * @param cache  Worker-local cache, or NULL for the shared path.
- * @param size   Requested size, from 1 through the logical maximum.
+ * @param pool         Pool handle.
+ * @param local_index  Local cache index, or -1 for the shared path.
  *
  * @return Slot address, or NULL for invalid arguments or allocation failure.
+ *
+ * @note A nonnegative local_index must not be used concurrently by multiple
+ * threads.
  */
-extern void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size);
+extern void* copool_acquire(
+    copool_t* pool,
+    int32_t local_index);
 
 /**
  * @brief Return a hot slot to a cache or the backing arena.
@@ -89,13 +85,14 @@ extern void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size);
  * Local and shared caches preserve the slot's committed pages and other hot
  * state. Only slots that spill to the backing arena are decommitted.
  *
- * @param pool   Pool handle, or NULL.
- * @param cache  Worker-local cache, or NULL for the shared path.
- * @param ptr    Slot address, or NULL.
- * @param size   Allocation size, from 1 through the logical maximum.
+ * @param pool         Pool handle, or NULL.
+ * @param local_index  Local cache index, or -1 for the shared path.
+ * @param ptr          Slot address, or NULL.
+ *
+ * @note A nonnegative local_index must not be used concurrently by multiple
+ * threads.
  */
-extern void copool_free(
+extern void copool_release(
     copool_t* pool,
-    copool_cache_t* cache,
-    void* ptr,
-    size_t size);
+    int32_t local_index,
+    void* ptr);

@@ -38,6 +38,7 @@
 #define COPOOL_CONCURRENT_THREADS 4
 #define COPOOL_CONCURRENT_BATCH   16
 #define COPOOL_CONCURRENT_ROUNDS  500
+#define TEST_LOCAL_POOL_CAP       64
 
 typedef struct {
     copool_t* pool;
@@ -48,9 +49,7 @@ typedef struct {
 
 typedef struct {
     _concurrent_ctx_t* ctx;
-    copool_cache_t     cache;
-    size_t             slot_size;
-    uint8_t            id;
+    int32_t            local_index;
 } _concurrent_worker_t;
 
 typedef struct {
@@ -125,7 +124,7 @@ static int _slot_init(void* ptr, size_t size, void* ud) {
 
 static copool_t* _create_pool(
     size_t           slot_size,
-    int32_t          shared_cap,
+    int32_t          local_pool_count,
     _slot_ops_ctx_t* ctx) {
     copool_slot_ops_t ops = {
         .init = _slot_init,
@@ -138,7 +137,7 @@ static copool_t* _create_pool(
             ((slot_size + page_size - 1) / page_size) * page_size;
     }
 
-    return copool_create(slot_size, shared_cap, &ops);
+    return copool_create(slot_size, local_pool_count, &ops);
 }
 
 static int _concurrent_thread(void* arg) {
@@ -147,10 +146,9 @@ static int _concurrent_thread(void* arg) {
 
     for (int round = 0; round < COPOOL_CONCURRENT_ROUNDS; round++) {
         for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
-            slots[i] = copool_alloc(
+            slots[i] = copool_acquire(
                 worker->ctx->pool,
-                &worker->cache,
-                worker->slot_size);
+                worker->local_index);
             ASSERT(slots[i] != NULL);
         }
 
@@ -164,7 +162,7 @@ static int _concurrent_thread(void* arg) {
                 COPOOL_CONCURRENT_THREADS * COPOOL_CONCURRENT_BATCH);
             worker->ctx->active[worker->ctx->active_count++] = slots[i];
             ((uint8_t*)slots[i])[0] =
-                (uint8_t)(worker->id ^ (uint8_t)round ^ (uint8_t)i);
+                (uint8_t)(worker->local_index ^ round ^ i);
         }
         ASSERT(mtx_unlock(&worker->ctx->lock) == thrd_success);
 
@@ -186,11 +184,10 @@ static int _concurrent_thread(void* arg) {
         ASSERT(mtx_unlock(&worker->ctx->lock) == thrd_success);
 
         for (int i = 0; i < COPOOL_CONCURRENT_BATCH; i++) {
-            copool_free(
+            copool_release(
                 worker->ctx->pool,
-                &worker->cache,
-                slots[i],
-                worker->slot_size);
+                worker->local_index,
+                slots[i]);
         }
     }
     return 0;
@@ -205,11 +202,14 @@ static int _contains_slot(void** slots, int count, void* slot) {
     return 0;
 }
 
-static void _drain_cache(copool_t* pool, copool_cache_t* cache, size_t size) {
-    while (cache->count > 0) {
-        void* slot = copool_alloc(pool, cache, size);
+static void _drain_local(
+    copool_t* pool,
+    int32_t local_index,
+    int count) {
+    for (int i = 0; i < count; i++) {
+        void* slot = copool_acquire(pool, local_index);
         ASSERT(slot != NULL);
-        copool_free(pool, NULL, slot, size);
+        copool_release(pool, -1, slot);
     }
 }
 
@@ -219,33 +219,29 @@ static void test_local_cache_reuse(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t* pool = _create_pool(page_size, 64, &ctx);
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
-    copool_cache_t cache        = {0};
-    void*          slots[64]    = {0};
-    void*          recycled[64] = {0};
+    void* slots[64]    = {0};
+    void* recycled[64] = {0};
 
     for (int i = 0; i < 64; i++) {
-        slots[i] = copool_alloc(pool, &cache, page_size);
+        slots[i] = copool_acquire(pool, 0);
         ASSERT(slots[i] != NULL);
     }
-    ASSERT(cache.count == 0);
 
     for (int i = 0; i < 64; i++) {
-        copool_free(pool, &cache, slots[i], page_size);
+        copool_release(pool, 0, slots[i]);
     }
-    ASSERT(cache.count == COPOOL_CACHE_CAP);
 
     for (int i = 0; i < 64; i++) {
-        recycled[i] = copool_alloc(pool, &cache, page_size);
+        recycled[i] = copool_acquire(pool, 0);
         ASSERT(recycled[i] != NULL);
         ASSERT(_contains_slot(slots, 64, recycled[i]));
         ASSERT(!_contains_slot(recycled, i, recycled[i]));
     }
-    ASSERT(cache.count == 0);
 
     for (int i = 0; i < 64; i++) {
-        copool_free(pool, NULL, recycled[i], page_size);
+        copool_release(pool, -1, recycled[i]);
     }
     copool_destroy(pool);
 }
@@ -256,24 +252,24 @@ static void test_external_path_refills_shared(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t* pool = _create_pool(page_size, 64, &ctx);
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
     void* slots[32] = {0};
 
     for (int i = 0; i < 32; i++) {
-        slots[i] = copool_alloc(pool, NULL, page_size - 1);
+        slots[i] = copool_acquire(pool, -1);
         ASSERT(slots[i] != NULL);
     }
     for (int i = 0; i < 32; i++) {
-        copool_free(pool, NULL, slots[i], page_size - 1);
+        copool_release(pool, -1, slots[i]);
     }
 
     for (int i = 0; i < 32; i++) {
-        slots[i] = copool_alloc(pool, NULL, page_size - 1);
+        slots[i] = copool_acquire(pool, -1);
         ASSERT(slots[i] != NULL);
     }
     for (int i = 0; i < 32; i++) {
-        copool_free(pool, NULL, slots[i], page_size - 1);
+        copool_release(pool, -1, slots[i]);
     }
     copool_destroy(pool);
 }
@@ -286,25 +282,25 @@ static void test_local_overflow_reaches_shared_and_arena(void) {
     _slot_ops_ctx_init(&ctx);
     copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
-    void* slots[65] = {0};
+    void* slots[TEST_LOCAL_POOL_CAP * 2] = {0};
 
-    for (int i = 0; i < 65; i++) {
-        slots[i] = copool_alloc(pool, NULL, page_size);
+    for (int i = 0; i < TEST_LOCAL_POOL_CAP * 2; i++) {
+        slots[i] = copool_acquire(pool, -1);
         ASSERT(slots[i] != NULL);
     }
 
-    void* shared_slot = copool_alloc(pool, NULL, page_size);
-    ASSERT(shared_slot != NULL);
-
-    copool_cache_t cache = {0};
-    for (int i = 0; i < 65; i++) {
-        copool_free(pool, &cache, slots[i], page_size);
+    for (int i = 0; i < TEST_LOCAL_POOL_CAP - 1; i++) {
+        copool_release(pool, -1, slots[i]);
     }
-    ASSERT(cache.count == 33);
 
-    copool_free(pool, NULL, shared_slot, page_size);
-    _drain_cache(pool, &cache, page_size);
-    ASSERT(cache.count == 0);
+    for (int i = 0; i < TEST_LOCAL_POOL_CAP + 1; i++) {
+        copool_release(
+            pool,
+            0,
+            slots[TEST_LOCAL_POOL_CAP - 1 + i]);
+    }
+
+    _drain_local(pool, 0, TEST_LOCAL_POOL_CAP / 2 + 1);
     copool_destroy(pool);
 }
 
@@ -320,11 +316,12 @@ static void test_create_invalid_args(void) {
 
     ASSERT(_create_pool(0, 1, &ctx) == NULL);
     ASSERT(_create_pool(page_size, -1, &ctx) == NULL);
+    ASSERT(_create_pool(page_size, INT32_MAX, &ctx) == NULL);
     ASSERT(copool_create(page_size, 1, NULL) == NULL);
     ASSERT(copool_create(page_size, 1, &missing_init) == NULL);
 }
 
-static void test_alloc_invalid_args(void) {
+static void test_acquire_invalid_pool_or_index(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
@@ -332,26 +329,25 @@ static void test_alloc_invalid_args(void) {
     _slot_ops_ctx_init(&ctx);
     copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
-    copool_cache_t cache = {0};
 
-    ASSERT(copool_alloc(NULL, &cache, page_size) == NULL);
-    ASSERT(copool_alloc(pool, &cache, 0) == NULL);
-    ASSERT(copool_alloc(pool, &cache, page_size + 1) == NULL);
+    ASSERT(copool_acquire(NULL, 0) == NULL);
+    ASSERT(copool_acquire(pool, -2) == NULL);
+    ASSERT(copool_acquire(pool, 1) == NULL);
 
     copool_destroy(pool);
 }
 
-static void test_free_null_args(void) {
+static void test_release_null_args(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t* pool = _create_pool(page_size, 1, &ctx);
+    copool_t* pool = _create_pool(page_size, 0, &ctx);
     ASSERT(pool != NULL);
 
-    copool_free(NULL, NULL, NULL, page_size);
-    copool_free(pool, NULL, NULL, page_size);
+    copool_release(NULL, -1, NULL);
+    copool_release(pool, -1, NULL);
     copool_destroy(NULL);
     copool_destroy(pool);
 }
@@ -363,7 +359,10 @@ static void test_concurrent_local_caches(void) {
     _slot_ops_ctx_t slot_ctx;
     _slot_ops_ctx_init(&slot_ctx);
     _concurrent_ctx_t ctx = {
-        .pool = _create_pool(page_size, COPOOL_CACHE_CAP, &slot_ctx),
+        .pool = _create_pool(
+            page_size,
+            COPOOL_CONCURRENT_THREADS,
+            &slot_ctx),
     };
     ASSERT(ctx.pool != NULL);
     ASSERT(mtx_init(&ctx.lock, mtx_plain) == thrd_success);
@@ -371,9 +370,8 @@ static void test_concurrent_local_caches(void) {
     thrd_t               threads[COPOOL_CONCURRENT_THREADS];
     _concurrent_worker_t workers[COPOOL_CONCURRENT_THREADS] = {0};
     for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
-        workers[i].ctx       = &ctx;
-        workers[i].slot_size = page_size;
-        workers[i].id        = (uint8_t)i;
+        workers[i].ctx         = &ctx;
+        workers[i].local_index = i;
         ASSERT(
             thrd_create(&threads[i], _concurrent_thread, &workers[i]) ==
             thrd_success);
@@ -386,8 +384,10 @@ static void test_concurrent_local_caches(void) {
     }
     ASSERT(ctx.active_count == 0);
     for (int i = 0; i < COPOOL_CONCURRENT_THREADS; i++) {
-        _drain_cache(ctx.pool, &workers[i].cache, page_size);
-        ASSERT(workers[i].cache.count == 0);
+        _drain_local(
+            ctx.pool,
+            workers[i].local_index,
+            TEST_LOCAL_POOL_CAP / 2);
     }
     mtx_destroy(&ctx.lock);
     copool_destroy(ctx.pool);
@@ -399,17 +399,16 @@ static void test_slot_init_on_arena_refill(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
-    copool_cache_t cache = {0};
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
-    void* slot = copool_alloc(pool, &cache, page_size);
+    void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
     ASSERT(
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
-        COPOOL_CACHE_CAP / 2);
+        TEST_LOCAL_POOL_CAP / 2);
 
-    copool_free(pool, &cache, slot, page_size);
+    copool_release(pool, 0, slot);
     copool_destroy(pool);
 }
 
@@ -419,24 +418,23 @@ static void test_slot_return_stays_hot(void) {
 
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
-    copool_cache_t cache = {0};
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
-    void* slot = copool_alloc(pool, &cache, page_size);
+    void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
     ((uint8_t*)slot)[0] = 0x5a;
     int init_count =
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed);
-    copool_free(pool, &cache, slot, page_size);
-    void* recycled = copool_alloc(pool, &cache, page_size);
+    copool_release(pool, 0, slot);
+    void* recycled = copool_acquire(pool, 0);
     ASSERT(recycled == slot);
     ASSERT(((uint8_t*)recycled)[0] == 0x5a);
     ASSERT(
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
         init_count);
 
-    copool_free(pool, &cache, recycled, page_size);
+    copool_release(pool, 0, recycled);
     copool_destroy(pool);
 }
 
@@ -447,58 +445,51 @@ static void test_slot_init_failure_isolated(void) {
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
     atomic_store_explicit(&ctx.fail_init, 1, memory_order_relaxed);
-    copool_t*      pool  = _create_pool(page_size, 64, &ctx);
-    copool_cache_t cache = {0};
+    copool_t* pool = _create_pool(page_size, 1, &ctx);
     ASSERT(pool != NULL);
 
-    void* slot = copool_alloc(pool, &cache, page_size);
+    void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
     void* failed = atomic_load_explicit(
         &ctx.failed_init_ptr,
         memory_order_relaxed);
     ASSERT(failed != NULL);
     ASSERT(slot != failed);
-    ASSERT(!_contains_slot(cache.slots, cache.count, failed));
-    ASSERT(cache.count == COPOOL_CACHE_CAP / 2 - 2);
     ASSERT(
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
-        COPOOL_CACHE_CAP / 2);
+        TEST_LOCAL_POOL_CAP / 2);
 
-    int   cached_count = cache.count;
-    void* cached[COPOOL_CACHE_CAP / 2] = {0};
+    int   cached_count = TEST_LOCAL_POOL_CAP / 2 - 2;
+    void* cached[TEST_LOCAL_POOL_CAP / 2] = {0};
     for (int i = 0; i < cached_count; i++) {
-        cached[i] = copool_alloc(pool, &cache, page_size);
+        cached[i] = copool_acquire(pool, 0);
         ASSERT(cached[i] != NULL);
         ASSERT(cached[i] != failed);
     }
-    ASSERT(cache.count == 0);
 
-    copool_free(pool, NULL, slot, page_size);
+    copool_release(pool, -1, slot);
     for (int i = 0; i < cached_count; i++) {
-        copool_free(pool, NULL, cached[i], page_size);
+        copool_release(pool, -1, cached[i]);
     }
     copool_destroy(pool);
 }
 
-static void test_logical_max_uses_aligned_callback_size(void) {
+static void test_aligned_callback_size(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
-    size_t logical_size = page_size + 1;
+    size_t slot_size = page_size + 1;
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
-    copool_t*      pool  = _create_pool(logical_size, 64, &ctx);
-    copool_cache_t cache = {0};
+    copool_t* pool = _create_pool(slot_size, 1, &ctx);
     ASSERT(pool != NULL);
 
-    void* slot = copool_alloc(pool, &cache, logical_size);
+    void* slot = copool_acquire(pool, 0);
     ASSERT(slot != NULL);
     ASSERT(
         atomic_load_explicit(&ctx.init_size, memory_order_relaxed) ==
         page_size * 2);
-    ASSERT(copool_alloc(pool, &cache, logical_size + 1) == NULL);
-
-    copool_free(pool, &cache, slot, logical_size);
+    copool_release(pool, 0, slot);
     copool_destroy(pool);
 }
 
@@ -507,12 +498,12 @@ int main(void) {
     test_local_cache_reuse();
     test_external_path_refills_shared();
     test_local_overflow_reaches_shared_and_arena();
-    test_alloc_invalid_args();
-    test_free_null_args();
+    test_acquire_invalid_pool_or_index();
+    test_release_null_args();
     test_concurrent_local_caches();
     test_slot_init_on_arena_refill();
     test_slot_return_stays_hot();
     test_slot_init_failure_isolated();
-    test_logical_max_uses_aligned_callback_size();
+    test_aligned_callback_size();
     return 0;
 }
