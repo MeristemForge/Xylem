@@ -21,36 +21,26 @@
 
 #include "platform/platform-vmem.h"
 
+#include "xylem/xylem-threads.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 
-static BOOL CALLBACK _vmem_page_size_init_cb(
-    PINIT_ONCE once,
-    PVOID      param,
-    PVOID*     context) {
+static once_flag _vmem_page_size_once = ONCE_FLAG_INIT;
+static size_t    _vmem_page_size      = 0;
+
+static void _vmem_page_size_init(void) {
     SYSTEM_INFO info;
 
-    (void)once;
-    (void)context;
     GetSystemInfo(&info);
-    *(size_t*)param = (size_t)info.dwPageSize;
-    return TRUE;
+    _vmem_page_size = (size_t)info.dwPageSize;
 }
 
 size_t platform_vmem_page_size(void) {
-    static INIT_ONCE once      = INIT_ONCE_STATIC_INIT;
-    static size_t    page_size = 0;
-
-    if (!InitOnceExecuteOnce(
-            &once,
-            _vmem_page_size_init_cb,
-            &page_size,
-            NULL)) {
-        return 0;
-    }
-    return page_size;
+    call_once(&_vmem_page_size_once, _vmem_page_size_init);
+    return _vmem_page_size;
 }
 
 void* platform_vmem_reserve(size_t size) {

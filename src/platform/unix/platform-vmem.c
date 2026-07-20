@@ -21,11 +21,25 @@
 
 #include "platform/platform-vmem.h"
 
+#include "xylem/xylem-threads.h"
+
 #include <sys/mman.h>
 #include <unistd.h>
 
+static once_flag _vmem_page_size_once = ONCE_FLAG_INIT;
+static size_t    _vmem_page_size      = 0;
+
+static void _vmem_page_size_init(void) {
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    if (page_size > 0) {
+        _vmem_page_size = (size_t)page_size;
+    }
+}
+
 size_t platform_vmem_page_size(void) {
-    return (size_t)sysconf(_SC_PAGESIZE);
+    call_once(&_vmem_page_size_once, _vmem_page_size_init);
+    return _vmem_page_size;
 }
 
 #if defined(__linux__)
