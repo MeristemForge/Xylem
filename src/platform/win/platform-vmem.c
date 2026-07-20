@@ -58,6 +58,31 @@ int platform_vmem_commit(void* ptr, size_t size) {
     return 0;
 }
 
+int platform_vmem_protect(void* ptr, size_t size, platform_vmem_prot_t prot) {
+    int flags       = (int)prot;
+    int known_flags = PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE |
+                      PLATFORM_VMEM_PROT_GUARD;
+    DWORD protection;
+    DWORD previous_protection;
+
+    if ((flags & ~known_flags) != 0 ||
+        ((flags & PLATFORM_VMEM_PROT_GUARD) != 0 &&
+         (flags & (PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE)) == 0)) {
+        return -1;
+    }
+    if (flags == PLATFORM_VMEM_PROT_NONE) {
+        protection = PAGE_NOACCESS;
+    } else if ((flags & PLATFORM_VMEM_PROT_WRITE) != 0) {
+        protection = PAGE_READWRITE;
+    } else {
+        protection = PAGE_READONLY;
+    }
+    if ((flags & PLATFORM_VMEM_PROT_GUARD) != 0) {
+        protection |= PAGE_GUARD;
+    }
+    return VirtualProtect(ptr, size, protection, &previous_protection) ? 0 : -1;
+}
+
 int platform_vmem_decommit(void* ptr, size_t size) {
     if (!VirtualFree(ptr, size, MEM_DECOMMIT)) {
         return -1;

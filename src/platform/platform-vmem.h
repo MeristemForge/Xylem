@@ -46,6 +46,14 @@ _Pragma("once")
 #define VMEM_ASAN_UNPOISON(ptr, size) ((void)0)
 #endif
 
+/* Virtual memory protection flags. */
+typedef enum platform_vmem_prot_e {
+    PLATFORM_VMEM_PROT_NONE  = 0,
+    PLATFORM_VMEM_PROT_READ  = 1 << 0,
+    PLATFORM_VMEM_PROT_WRITE = 1 << 1,
+    PLATFORM_VMEM_PROT_GUARD = 1 << 2,
+} platform_vmem_prot_t;
+
 /**
  * @brief Return the system page size in bytes.
  *
@@ -76,6 +84,25 @@ extern void* platform_vmem_reserve(size_t size);
  * @return 0 on success, -1 on failure.
  */
 extern int platform_vmem_commit(void* ptr, size_t size);
+
+/**
+ * @brief Change protection on a committed virtual-memory range.
+ *
+ * GUARD must be combined with READ or WRITE. Unknown flags are invalid.
+ *
+ * @param ptr   Page-aligned address within a reservation.
+ * @param size  Number of page-aligned bytes to protect.
+ * @param prot  Protection flags.
+ *
+ * @return 0 on success, -1 for invalid flags or platform failure.
+ *
+ * @note Windows guard protection is one-shot. Other platforms may implement a
+ * persistent no-access guard range.
+ */
+extern int platform_vmem_protect(
+    void*                ptr,
+    size_t               size,
+    platform_vmem_prot_t prot);
 
 /**
  * @brief Make a range reusable while preserving its reservation.

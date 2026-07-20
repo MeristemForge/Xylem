@@ -56,6 +56,40 @@ static void test_reserve_commit_decommit_release(void) {
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
+static void test_protect_guard(void) {
+    size_t   page_size = platform_vmem_page_size();
+    uint8_t* ptr;
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION info;
+#endif
+
+    ASSERT(page_size > 0);
+    ptr = (uint8_t*)platform_vmem_reserve(page_size);
+    ASSERT(ptr != NULL);
+    ASSERT(platform_vmem_commit(ptr, page_size) == 0);
+    ASSERT(
+        platform_vmem_protect(ptr, page_size, PLATFORM_VMEM_PROT_GUARD) == -1);
+    ASSERT(
+        platform_vmem_protect(
+            ptr,
+            page_size,
+            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE |
+                PLATFORM_VMEM_PROT_GUARD) == 0);
+#if defined(_WIN32)
+    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
+    ASSERT((info.Protect & 0xffU) == PAGE_READWRITE);
+    ASSERT((info.Protect & PAGE_GUARD) != 0);
+#endif
+    ASSERT(
+        platform_vmem_protect(
+            ptr,
+            page_size,
+            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE) == 0);
+    ptr[0] = 0x5a;
+    ASSERT(ptr[0] == 0x5a);
+    ASSERT(platform_vmem_release(ptr, page_size) == 0);
+}
+
 #if defined(_WIN32)
 static void test_page_size_lookup_is_cached(void) {
     const int       lookup_count = 4096;
@@ -96,6 +130,7 @@ static void test_page_size_lookup_is_cached(void) {
 
 int main(void) {
     test_reserve_commit_decommit_release();
+    test_protect_guard();
 #if defined(_WIN32)
     test_page_size_lookup_is_cached();
 #endif

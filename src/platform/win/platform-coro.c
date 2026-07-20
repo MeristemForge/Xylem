@@ -23,11 +23,6 @@
 
 #include "platform/platform-vmem.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include <stdint.h>
 
 typedef struct {
@@ -116,26 +111,16 @@ static int _coro_validate(const platform_coro_t* coro, _coro_layout_t* layout) {
 }
 
 static int _coro_commit_initial_stack(const _coro_layout_t* layout) {
-    DWORD  previous_protection;
     size_t commit_size = layout->page_size * 2;
-    void*  committed;
 
-    /* VirtualAlloc may touch the range before returning to its caller. */
-    VMEM_ASAN_UNPOISON(layout->guard_low, commit_size);
-    committed = VirtualAlloc(
-        layout->guard_low,
-        commit_size,
-        MEM_COMMIT,
-        PAGE_READWRITE);
-    if (committed != layout->guard_low) {
-        VMEM_ASAN_POISON(layout->guard_low, commit_size);
+    if (platform_vmem_commit(layout->guard_low, commit_size) != 0) {
         return -1;
     }
-    if (!VirtualProtect(
+    if (platform_vmem_protect(
             layout->guard_low,
             layout->page_size,
-            PAGE_READWRITE | PAGE_GUARD,
-            &previous_protection)) {
+            PLATFORM_VMEM_PROT_READ | PLATFORM_VMEM_PROT_WRITE |
+                PLATFORM_VMEM_PROT_GUARD) != 0) {
         return -1;
     }
     return 0;
