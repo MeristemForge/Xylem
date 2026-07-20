@@ -189,8 +189,6 @@ On Windows x64 ASM, the embedded layout is:
 low address
 +------------------------------+
 | metadata: committed RW       |
-+------------------------------+
-| overflow boundary: reserved  |
 +------------------------------+ <- stack_low
 | lower stack: uncommitted     |
 +------------------------------+
@@ -201,13 +199,13 @@ low address
 high address
 ```
 
-Metadata is nonempty and page-aligned. The immediately following boundary page
-is outside the stack and remains uncommitted, so downward growth stops before
-metadata. The stack contains at least the guard and top pages; pages below the
-guard begin uncommitted. `StackLimit` is the low address of the first ordinary
-read/write stack page immediately above the guard. Windows stack growth moves
-that limit and guard downward while the coroutine runs, and minicoro saves the
-current limit in its context so a coroutine may resume on another worker.
+Metadata is nonempty, page-aligned, and ends at `stack_low`. The stack contains
+at least the guard and top pages; pages below the guard begin uncommitted.
+`StackLimit` is the low address of the first ordinary read/write stack page
+immediately above the guard. Windows stack growth moves that limit and guard
+downward while the coroutine runs, and minicoro saves the current limit in its
+context so a coroutine may resume on another worker. Minicoro's delayed
+stack-range and magic-number check remains the overflow fallback.
 
 Initialization first decommits the complete slot, then commits metadata and the
 initial guard/top pair. The coro adapter compares the saved limit with its

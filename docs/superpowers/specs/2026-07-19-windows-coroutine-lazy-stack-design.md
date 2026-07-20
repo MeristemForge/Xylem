@@ -74,7 +74,6 @@ The Windows x64 ASM minicoro layout reserves a page-aligned slot:
 low address
 
 [coroutine metadata/context/storage]  committed PAGE_READWRITE
-[overflow boundary]                   reserved and inaccessible
 stack_low
 [uncommitted stack reservation]
 [moving guard page]                   PAGE_READWRITE | PAGE_GUARD
@@ -85,11 +84,10 @@ StackBase
 high address
 ```
 
-The metadata span may occupy more than one page. The overflow boundary is
-exactly one page immediately below `stack_low`. The embedded stack occupies
-`[stack_low, stack_low + stack_size)`. For the default 128 KiB stack and a 4 KiB
-metadata span, the slot is approximately 136 KiB while its initial commit charge
-is approximately 12 KiB.
+The metadata span may occupy more than one page and ends at `stack_low`. The
+embedded stack occupies `[stack_low, stack_low + stack_size)`. For the default
+128 KiB stack and a 4 KiB metadata span, the slot is approximately 132 KiB
+while its initial commit charge is approximately 12 KiB.
 
 `stack_low` is the fixed lowest address of the embedded stack reservation. It
 is not the Windows `StackLimit`. `StackLimit` is the current low boundary of the
@@ -104,9 +102,9 @@ StackBase - stack_low == stack_size
 
 The initial Windows context uses `StackBase = stack_low + stack_size` and
 `DeallocationStack = stack_low`. The context switch continues saving and
-restoring TEB `StackBase`, `StackLimit`, and `DeallocationStack`. Keeping
-`DeallocationStack` at `stack_low` makes the page below it an out-of-stack
-overflow boundary instead of another candidate guard page.
+restoring TEB `StackBase`, `StackLimit`, and `DeallocationStack`. Minicoro's
+magic-number and stack-range check remains the delayed overflow fallback when
+execution returns through `mco_yield()`.
 
 ## Platform Coroutine API
 
@@ -136,8 +134,8 @@ extern void* platform_coro_initial_stack_limit(
 `NULL` and zero.
 
 All Windows ASM ranges must be page aligned and contained within the slot. The
-metadata span must leave exactly one boundary page before `stack_low`. Invalid
-layouts fail initialization without entering a hot cache.
+nonempty metadata span ends at `stack_low`. Invalid layouts fail initialization
+without entering a hot cache.
 
 There is no `platform_coro_deinit()`. Returning a complete slot to the cold
 state is a full-slot decommit owned by `arena_free()`. A platform-coro deinit
@@ -147,8 +145,7 @@ arena code to coroutine-specific code.
 ### Windows x64 ASM
 
 `platform_coro_init()` commits metadata, creates the initial guard page, and
-commits the initial usable stack page. The overflow boundary and unused stack
-pages remain uncommitted.
+commits the initial usable stack page. Unused stack pages remain uncommitted.
 
 `platform_coro_initial_stack_limit()` returns the low address of the initial
 ordinary read/write stack page, not the guard address.
@@ -202,9 +199,9 @@ backend. Backend sections only define internal compile-time capabilities:
 context. This is required because `mco_create()` invokes its deallocator after
 an `mco_init()` failure.
 
-The Windows ASM descriptor size calculation inserts page alignment and the
-overflow boundary while preserving the requested stack capacity. Other
-backend descriptor layouts remain unchanged.
+The Windows ASM descriptor size calculation page-aligns the end of metadata
+while preserving the requested stack capacity. Other backend descriptor
+layouts remain unchanged.
 
 ## Runtime Coroutine Adapter
 
@@ -364,7 +361,7 @@ and recycled.
 - Stack growth after coroutine migration between worker threads.
 - No VM operation on reset when the stack did not grow.
 - Commit-charge release and initial guard restoration after growth.
-- Stack overflow when growth reaches the fixed overflow boundary.
+- Stack overflow handling when growth reaches the configured stack low bound.
 - Hot/cold reuse under MSVC ASan.
 
 ### Other Backends

@@ -53,7 +53,7 @@ static void _assert_page(
 
 static void _assert_embedded_layout(uint8_t* ptr, size_t page_size) {
     _assert_page(ptr, MEM_COMMIT, PAGE_READWRITE, 0);
-    _assert_page(ptr + page_size, MEM_RESERVE, 0, 0);
+    _assert_page(ptr + page_size, MEM_COMMIT, PAGE_READWRITE, 0);
     _assert_page(ptr + page_size * 2, MEM_RESERVE, 0, 0);
     _assert_page(ptr + page_size * 3, MEM_COMMIT, PAGE_READWRITE, 1);
     _assert_page(ptr + page_size * 4, MEM_COMMIT, PAGE_READWRITE, 0);
@@ -61,7 +61,7 @@ static void _assert_embedded_layout(uint8_t* ptr, size_t page_size) {
 
 static void _assert_grown_embedded_layout(uint8_t* ptr, size_t page_size) {
     _assert_page(ptr, MEM_COMMIT, PAGE_READWRITE, 0);
-    _assert_page(ptr + page_size, MEM_RESERVE, 0, 0);
+    _assert_page(ptr + page_size, MEM_COMMIT, PAGE_READWRITE, 0);
     _assert_page(ptr + page_size * 2, MEM_COMMIT, PAGE_READWRITE, 1);
     _assert_page(ptr + page_size * 3, MEM_COMMIT, PAGE_READWRITE, 0);
     _assert_page(ptr + page_size * 4, MEM_COMMIT, PAGE_READWRITE, 0);
@@ -251,7 +251,7 @@ static void test_invalid_stack_outside_slot(void) {
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
-static void test_invalid_missing_metadata_or_boundary(void) {
+static void test_invalid_missing_metadata(void) {
     size_t          page_size = platform_vmem_page_size();
     size_t          size      = page_size * 5;
     uint8_t*        ptr       = (uint8_t*)platform_vmem_reserve(size);
@@ -261,7 +261,7 @@ static void test_invalid_missing_metadata_or_boundary(void) {
     ASSERT(ptr != NULL);
     coro = (platform_coro_t){.ptr        = ptr,
                              .size       = size,
-                             .stack_low  = ptr + page_size,
+                             .stack_low  = ptr,
                              .stack_size = page_size * 2};
     _assert_invalid(&coro);
     ASSERT(platform_vmem_release(ptr, size) == 0);
@@ -293,7 +293,7 @@ int main(void) {
     test_invalid_half_external_stack();
     test_invalid_layout_decommits_valid_slot();
     test_invalid_stack_outside_slot();
-    test_invalid_missing_metadata_or_boundary();
+    test_invalid_missing_metadata();
     test_invalid_stack_too_small();
 #endif
     return 0;

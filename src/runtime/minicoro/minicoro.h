@@ -1391,8 +1391,7 @@ static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
   if(page_size == 0) {
     return _MCO_INVALID_SIZE;
   }
-  size_t stack_offset = _mco_align_forward_checked(metadata_size, page_size);
-  return _mco_add_size_checked(stack_offset, page_size);
+  return _mco_align_forward_checked(metadata_size, page_size);
 #else
   return metadata_size;
 #endif
@@ -1909,7 +1908,6 @@ static mco_result _mco_validate_desc(const mco_desc* desc) {
     return MCO_INVALID_ARGUMENTS;
   }
   expected_stack_offset = _mco_align_forward_checked(metadata_size, page_size);
-  expected_stack_offset = _mco_add_size_checked(expected_stack_offset, page_size);
 #elif defined(MCO_USE_FIBERS) && defined(_WIN32)
   expected_stack_offset = 0;
 #else

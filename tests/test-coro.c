@@ -444,14 +444,13 @@ static void _assert_prepared_stack_reset(
     const uint8_t* stack_high   = stack_low + desc->stack_size;
 
     ASSERT(page_size > 0);
-    ASSERT(stack_offset > page_size);
+    ASSERT(stack_offset >= page_size);
     ASSERT(desc->stack_size >= page_size * 3U);
     _assert_windows_page(
-        stack_low - page_size - 1U,
+        stack_low - 1U,
         MEM_COMMIT,
         PAGE_READWRITE,
         0);
-    _assert_windows_page(stack_low - page_size, MEM_RESERVE, 0, 0);
     _assert_windows_page(stack_low, MEM_RESERVE, 0, 0);
     _assert_windows_page(stack_high - page_size * 3U, MEM_RESERVE, 0, 0);
     _assert_windows_page(
@@ -1132,7 +1131,6 @@ static void test_stack_overflow_stops_before_metadata(void) {
     void*     ptr;
     uint8_t*  metadata_end;
     uint8_t*  storage_end;
-    uint8_t*  boundary;
     void*     initial_limit;
     void*     saved_stack_limit;
     size_t    page_size;
@@ -1155,16 +1153,14 @@ static void test_stack_overflow_stops_before_metadata(void) {
     page_size    = platform_vmem_page_size();
     stack_offset = mco_desc_stack_offset(&desc);
     ASSERT(page_size > 0);
-    ASSERT(stack_offset > page_size);
-    metadata_end = (uint8_t*)co + stack_offset - page_size;
+    ASSERT(stack_offset >= page_size);
+    metadata_end = (uint8_t*)co + stack_offset;
     storage_end  = (uint8_t*)co->storage + co->storage_size;
     ASSERT(
         (uintptr_t)storage_end <=
         (uintptr_t)metadata_end - sizeof(*overflow.sentinel));
     overflow.sentinel  = (uint64_t*)(metadata_end - sizeof(*overflow.sentinel));
     *overflow.sentinel = overflow.sentinel_value;
-    boundary           = (uint8_t*)co + stack_offset - page_size;
-    _assert_windows_page(boundary, MEM_RESERVE, 0, 0);
 
     ASSERT(mco_resume(co) == MCO_SUCCESS);
     ASSERT(mco_status(co) == MCO_DEAD);
@@ -1173,7 +1169,6 @@ static void test_stack_overflow_stops_before_metadata(void) {
     ASSERT(overflow.returned != 0);
     ASSERT(overflow.calls > 0);
     ASSERT(*overflow.sentinel == overflow.sentinel_value);
-    _assert_windows_page(boundary, MEM_RESERVE, 0, 0);
     initial_limit     = _prepared_initial_stack_limit(ptr, &desc);
     saved_stack_limit = mco_get_stack_limit(co);
     ASSERT(saved_stack_limit == initial_limit);

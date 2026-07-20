@@ -408,12 +408,12 @@ usage grows with region reservations rather than coroutine count.
 
 For embedded-stack backends, minicoro places the coroutine object, context,
 storage, and stack in the arena slot. Windows x64 ASM additionally page-aligns
-the embedded stack after committed metadata and an uncommitted overflow
-boundary; `platform-coro` prepares the initial guard/top pages and restores a
-grown stack before reuse. Unix makes the complete slot accessible during init
-and needs no reset transition while the slot remains hot. On the Windows Fiber
-backend, the slot holds only the coroutine object, context, and storage;
-`CreateFiberEx()` and `DeleteFiber()` own the external Fiber stack.
+the embedded stack immediately after committed metadata; `platform-coro`
+prepares the initial guard/top pages and restores a grown stack before reuse.
+Unix makes the complete slot accessible during init and needs no reset
+transition while the slot remains hot. On the Windows Fiber backend, the slot
+holds only the coroutine object, context, and storage; `CreateFiberEx()` and
+`DeleteFiber()` own the external Fiber stack.
 
 Minicoro retains its delayed range checks on backends that use them. ASAN builds
 also use minicoro's sanitizer fiber-switch integration, while platform-vmem and

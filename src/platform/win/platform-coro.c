@@ -96,13 +96,10 @@ static int _coro_validate_stack_layout(
         return -1;
     }
     prefix_size = (size_t)(stack_low - slot_low);
-    if (prefix_size <= page_size) {
+    if (prefix_size == 0 || prefix_size % page_size != 0) {
         return -1;
     }
-    layout->metadata_size = prefix_size - page_size;
-    if (layout->metadata_size == 0 || layout->metadata_size % page_size != 0) {
-        return -1;
-    }
+    layout->metadata_size = prefix_size;
 
     layout->stack_low           = (uint8_t*)stack_low;
     layout->stack_high          = (uint8_t*)stack_high;
