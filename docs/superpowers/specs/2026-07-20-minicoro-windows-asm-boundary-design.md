@@ -58,6 +58,24 @@ The initial context records:
 The 32-byte x64 shadow space affects the initial `RSP`, but does not reduce
 `StackBase`.
 
+## Page Size Provider
+
+Minicoro does not query the operating system for page size. The translation
+unit that enables `MINICORO_IMPL` must provide this function-like macro for the
+Windows Fiber and Windows x64 ASM backends:
+
+```c
+#define MCO_GET_PAGE_SIZE() platform_vmem_page_size()
+```
+
+`runtime.c` defines the macro immediately before including the implementation.
+Both backends call the macro when constructing their descriptor or Fiber. A
+missing provider on either Windows backend is a compile-time error.
+
+The platform vmem module owns system discovery and caching. This removes the
+Windows ASM implementation's page-size dependency on `windows.h`; Windows
+Fiber continues to include that header for `CreateFiberEx()` and related APIs.
+
 ## Other Backends
 
 Restore the upstream address and size calculations for Unix ASM/ucontext,
