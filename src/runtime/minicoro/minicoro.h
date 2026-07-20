@@ -311,20 +311,18 @@ typedef struct mco_desc {
   void (*func)(mco_coro* co); /* Entry point function for the coroutine. */
   void* user_data;            /* Coroutine user data, can be get with `mco_get_user_data`. */
   /* Custom allocation interface. */
-  void* (*alloc_cb)(size_t size, void* allocator_data); /* Custom allocator. Embedded stacks require a 16-byte aligned result. */
-  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);     /* Custom deallocator receiving the same pointer, size and allocator data. */
-  void* allocator_data;       /* User data passed unchanged to the allocation functions. */
+  void* (*alloc_cb)(size_t size, void* allocator_data); /* Custom allocation function. */
+  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);     /* Custom deallocation function. */
+  void* allocator_data;       /* User data pointer passed to `alloc`/`dealloc` allocation functions. */
   size_t storage_size;        /* Coroutine storage size, to be used with the storage APIs. */
-  /* These must be initialized only through `mco_desc_init`. */
+  /* These must be initialized only through `mco_init_desc`. */
   size_t coro_size;           /* Coroutine structure size. */
   size_t stack_size;          /* Coroutine stack size. */
-  size_t stack_offset;        /* Embedded stack offset, or 0 for external stacks. */
-  size_t stack_alignment;     /* Native stack alignment. */
 } mco_desc;
 
 /* Coroutine functions. */
 MCO_API mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size);  /* Initialize description of a coroutine. When stack size is 0 then MCO_DEFAULT_STACK_SIZE is used. */
-MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize in caller memory. Embedded stacks require `co` to be 16-byte aligned. */
+MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize the coroutine. */
 MCO_API mco_result mco_uninit(mco_coro* co);                                    /* Uninitialize the coroutine, may fail if it's not dead or suspended. */
 MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               /* Allocates and initializes a new coroutine. */
 MCO_API mco_result mco_destroy(mco_coro* co);                                   /* Uninitialize and deallocate the coroutine, may fail if it's not dead or suspended. */
@@ -489,15 +487,6 @@ extern "C" {
   #include <windows.h>
 #endif
 
-#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || \
-                        (defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))))
-static MCO_FORCE_INLINE size_t _mco_page_size(void) {
-  SYSTEM_INFO info;
-  GetSystemInfo(&info);
-  return (size_t)info.dwPageSize;
-}
-#endif
-
 #ifndef MCO_NO_DEFAULT_ALLOCATOR
   #if defined(MCO_USE_VMEM_ALLOCATOR) && defined(_WIN32)
     static void* mco_alloc(size_t size, void* allocator_data) {
@@ -611,27 +600,11 @@ void __tsan_destroy_fiber(void* fiber);
 void __tsan_switch_to_fiber(void* fiber, unsigned flags);
 #endif
 
-#include <stdint.h> /* For uintptr_t. */
 #include <string.h> /* For memcpy and memset. */
 
-#define _MCO_INVALID_SIZE (~(size_t)0)
-
-static MCO_FORCE_INLINE size_t _mco_add_size_checked(size_t a, size_t b) {
-  if(a > _MCO_INVALID_SIZE - b) {
-    return _MCO_INVALID_SIZE;
-  }
-  return a + b;
-}
-
-static MCO_FORCE_INLINE size_t _mco_align_forward_checked(size_t addr, size_t align) {
-  if(align == 0 || (align & (align - 1)) != 0) {
-    return _MCO_INVALID_SIZE;
-  }
-  size_t mask = align - 1;
-  if(addr > _MCO_INVALID_SIZE - mask) {
-    return _MCO_INVALID_SIZE;
-  }
-  return (addr + mask) & ~mask;
+/* Utility for aligning addresses. */
+static MCO_FORCE_INLINE size_t _mco_align_forward(size_t addr, size_t align) {
+  return (addr + (align-1)) & ~(align-1);
 }
 
 /* Variable holding the current running coroutine per thread. */
@@ -1371,43 +1344,16 @@ typedef struct _mco_context {
 } _mco_context;
 
 static MCO_FORCE_INLINE size_t _mco_metadata_size(const mco_desc* desc) {
-  if(!desc) {
-    return _MCO_INVALID_SIZE;
-  }
-  size_t coro_size = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_size = _mco_align_forward_checked(desc->storage_size, 16);
-  size_t metadata_size = _mco_add_size_checked(coro_size, context_size);
-  return _mco_add_size_checked(metadata_size, storage_size);
+  return _mco_align_forward(sizeof(mco_coro), 16) +
+         _mco_align_forward(sizeof(_mco_context), 16) +
+         _mco_align_forward(desc->storage_size, 16);
 }
 
 static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
-  size_t metadata_size = _mco_metadata_size(desc);
-  if(metadata_size == _MCO_INVALID_SIZE) {
-    return _MCO_INVALID_SIZE;
-  }
 #if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  size_t page_size = desc->stack_alignment;
-  if(page_size == 0) {
-    return _MCO_INVALID_SIZE;
-  }
-  return _mco_align_forward_checked(metadata_size, page_size);
+  return desc->coro_size - desc->stack_size;
 #else
-  return metadata_size;
-#endif
-}
-
-static MCO_FORCE_INLINE size_t _mco_required_coro_size(const mco_desc* desc) {
-  size_t stack_offset = desc->stack_offset;
-  size_t coro_size;
-  if(stack_offset == _MCO_INVALID_SIZE) {
-    return _MCO_INVALID_SIZE;
-  }
-  coro_size = _mco_add_size_checked(stack_offset, desc->stack_size);
-#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  return coro_size;
-#else
-  return _mco_add_size_checked(coro_size, 16);
+  return _mco_metadata_size(desc);
 #endif
 }
 
@@ -1425,22 +1371,17 @@ static void _mco_jumpout(mco_coro* co) {
 
 static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   /* Determine the context and stack address. */
-  size_t context_offset = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_offset = _mco_add_size_checked(context_offset, context_size);
-  size_t stack_offset = desc->stack_offset;
-  if(context_offset == _MCO_INVALID_SIZE || storage_offset == _MCO_INVALID_SIZE ||
-     stack_offset == _MCO_INVALID_SIZE || stack_offset > desc->coro_size) {
-    return MCO_INVALID_ARGUMENTS;
-  }
-  unsigned char* co_base = (unsigned char*)co;
+  size_t co_addr = (size_t)co;
+  size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
+  size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
   /* Initialize context. */
-  _mco_context* context = (_mco_context*)(co_base + context_offset);
+  _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
   /* Initialize storage. */
-  unsigned char* storage = co_base + storage_offset;
+  unsigned char* storage = (unsigned char*)storage_addr;
   /* Initialize stack. */
-  void *stack_base = (void*)(co_base + stack_offset);
+  void *stack_base = (void*)stack_addr;
   size_t stack_size = desc->stack_size;
   /* Make the context. */
   mco_result res = _mco_makectx(co, &context->ctx, stack_base, stack_size);
@@ -1448,7 +1389,7 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
     return res;
   }
 #ifdef MCO_USE_VALGRIND
-  context->valgrind_stack_id = VALGRIND_STACK_REGISTER((size_t)stack_base, (size_t)stack_base + stack_size);
+  context->valgrind_stack_id = VALGRIND_STACK_REGISTER(stack_addr, stack_addr + stack_size);
 #endif
   co->context = context;
   co->stack_base = stack_base;
@@ -1472,32 +1413,18 @@ static void _mco_destroy_context(mco_coro* co) {
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
 #if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  size_t page_size = _mco_page_size();
-  size_t aligned_stack_size = page_size != 0 ? _mco_align_forward_checked(stack_size, page_size) : _MCO_INVALID_SIZE;
-  if(aligned_stack_size == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-    return;
-  }
-  desc->stack_alignment = page_size;
-  desc->stack_size = aligned_stack_size;
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  size_t stack_offset = _mco_align_forward(_mco_metadata_size(desc), (size_t)si.dwPageSize);
+  desc->stack_size = _mco_align_forward(stack_size, (size_t)si.dwPageSize);
+  desc->coro_size = stack_offset + desc->stack_size;
 #else
-  desc->stack_alignment = 16;
+  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
+                    _mco_align_forward(sizeof(_mco_context), 16) +
+                    _mco_align_forward(desc->storage_size, 16) +
+                    stack_size + 16;
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
 #endif
-  desc->stack_offset = _mco_stack_offset(desc);
-  if(desc->stack_offset == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-    return;
-  }
-  size_t coro_size = _mco_required_coro_size(desc);
-  if(coro_size == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-    return;
-  }
-  desc->coro_size = coro_size;
 }
 
 #endif /* defined(MCO_USE_UCONTEXT) || defined(MCO_USE_ASM) */
@@ -1512,17 +1439,6 @@ typedef struct _mco_context {
   void* fib;
   void* back_fib;
 } _mco_context;
-
-static MCO_FORCE_INLINE size_t _mco_metadata_size(const mco_desc* desc) {
-  if(!desc) {
-    return _MCO_INVALID_SIZE;
-  }
-  size_t coro_size = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_size = _mco_align_forward_checked(desc->storage_size, 16);
-  size_t metadata_size = _mco_add_size_checked(coro_size, context_size);
-  return _mco_add_size_checked(metadata_size, storage_size);
-}
 
 static void _mco_jumpin(mco_coro* co) {
   void *cur_fib = GetCurrentFiber();
@@ -1564,25 +1480,18 @@ typedef struct _mco_fiber {
 
 static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   /* Determine the context address. */
-  size_t context_offset = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_offset = _mco_add_size_checked(context_offset, context_size);
-  if(context_offset == _MCO_INVALID_SIZE || storage_offset == _MCO_INVALID_SIZE ||
-     storage_offset > desc->coro_size) {
-    return MCO_INVALID_ARGUMENTS;
-  }
-  unsigned char* co_base = (unsigned char*)co;
+  size_t co_addr = (size_t)co;
+  size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
+  size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
   /* Initialize context. */
-  _mco_context* context = (_mco_context*)(co_base + context_offset);
+  _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
   /* Initialize storage. */
-  unsigned char* storage = co_base + storage_offset;
+  unsigned char* storage = (unsigned char*)storage_addr;
   /* Create the fiber. */
-  size_t page_size = desc->stack_alignment;
-  if(page_size == 0) {
-    return MCO_MAKE_CONTEXT_ERROR;
-  }
-  _mco_fiber* fib = (_mco_fiber*)CreateFiberEx(page_size, desc->stack_size, FIBER_FLAG_FLOAT_SWITCH, _mco_wrap_main, co);
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  _mco_fiber* fib = (_mco_fiber*)CreateFiberEx(si.dwPageSize, desc->stack_size, FIBER_FLAG_FLOAT_SWITCH, _mco_wrap_main, co);
   if(!fib) {
     MCO_LOG("failed to create fiber");
     return MCO_MAKE_CONTEXT_ERROR;
@@ -1609,25 +1518,12 @@ static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
   return 0;
 }
 
-static MCO_FORCE_INLINE size_t _mco_required_coro_size(const mco_desc* desc) {
-  size_t metadata_size = _mco_metadata_size(desc);
-  return _mco_add_size_checked(metadata_size, 16);
-}
-
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->stack_alignment = _mco_page_size();
-  desc->stack_offset = _mco_stack_offset(desc);
+  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
+                    _mco_align_forward(sizeof(_mco_context), 16) +
+                    _mco_align_forward(desc->storage_size, 16) +
+                    16;
   desc->stack_size = stack_size;
-  if(desc->stack_alignment == 0) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-    return;
-  }
-  desc->coro_size = _mco_required_coro_size(desc);
-  if(desc->coro_size == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-  }
 }
 
 #elif defined(__EMSCRIPTEN__)
@@ -1647,28 +1543,10 @@ static emscripten_fiber_t* running_fib = NULL;
 static unsigned char main_asyncify_stack[MCO_ASYNCFY_STACK_SIZE];
 static emscripten_fiber_t main_fib;
 
-static MCO_FORCE_INLINE size_t _mco_metadata_size(const mco_desc* desc) {
-  if(!desc) {
-    return _MCO_INVALID_SIZE;
-  }
-  size_t coro_size = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_size = _mco_align_forward_checked(desc->storage_size, 16);
-  size_t metadata_size = _mco_add_size_checked(coro_size, context_size);
-  return _mco_add_size_checked(metadata_size, storage_size);
-}
-
 static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
-  return _mco_metadata_size(desc);
-}
-
-static MCO_FORCE_INLINE size_t _mco_required_coro_size(const mco_desc* desc) {
-  size_t coro_size = desc->stack_offset;
-  size_t stack_size = _mco_align_forward_checked(desc->stack_size, 16);
-  size_t asyncify_stack_size = _mco_align_forward_checked(MCO_ASYNCFY_STACK_SIZE, 16);
-  coro_size = _mco_add_size_checked(coro_size, stack_size);
-  coro_size = _mco_add_size_checked(coro_size, asyncify_stack_size);
-  return _mco_add_size_checked(coro_size, 16);
+  return _mco_align_forward(sizeof(mco_coro), 16) +
+         _mco_align_forward(sizeof(_mco_context), 16) +
+         _mco_align_forward(desc->storage_size, 16);
 }
 
 static void _mco_wrap_main(void* co) {
@@ -1701,27 +1579,21 @@ static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
     return MCO_MAKE_CONTEXT_ERROR;
   }
   /* Determine the context address. */
-  size_t context_offset = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_offset = _mco_add_size_checked(context_offset, context_size);
-  size_t stack_offset = desc->stack_offset;
-  size_t stack_size = _mco_align_forward_checked(desc->stack_size, 16);
-  size_t asyncify_stack_offset = _mco_add_size_checked(stack_offset, stack_size);
-  if(context_offset == _MCO_INVALID_SIZE || storage_offset == _MCO_INVALID_SIZE ||
-     stack_offset == _MCO_INVALID_SIZE || asyncify_stack_offset == _MCO_INVALID_SIZE ||
-     asyncify_stack_offset > desc->coro_size) {
-    return MCO_INVALID_ARGUMENTS;
-  }
-  unsigned char* co_base = (unsigned char*)co;
+  size_t co_addr = (size_t)co;
+  size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
+  size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
+  size_t asyncify_stack_addr = _mco_align_forward(stack_addr + desc->stack_size, 16);
   /* Initialize context. */
-  _mco_context* context = (_mco_context*)(co_base + context_offset);
+  _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
   /* Initialize storage. */
-  unsigned char* storage = co_base + storage_offset;
+  unsigned char* storage = (unsigned char*)storage_addr;
   /* Initialize stack. */
-  void *stack_base = (void*)(co_base + stack_offset);
-  void *asyncify_stack_base = (void*)(co_base + asyncify_stack_offset);
-  size_t asyncify_stack_size = desc->coro_size - asyncify_stack_offset;
+  void *stack_base = (void*)stack_addr;
+  size_t stack_size = asyncify_stack_addr - stack_addr;
+  void *asyncify_stack_base = (void*)asyncify_stack_addr;
+  size_t asyncify_stack_size = co_addr + desc->coro_size - asyncify_stack_addr;
   /* Create the fiber. */
   emscripten_fiber_init(&context->fib, _mco_wrap_main, co, stack_base, stack_size, asyncify_stack_base, asyncify_stack_size);
   co->context = context;
@@ -1738,14 +1610,13 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->stack_alignment = 16;
+  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
+                    _mco_align_forward(sizeof(_mco_context), 16) +
+                    _mco_align_forward(desc->storage_size, 16) +
+                    _mco_align_forward(stack_size, 16) +
+                    _mco_align_forward(MCO_ASYNCFY_STACK_SIZE, 16) +
+                    16;
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
-  desc->stack_offset = _mco_stack_offset(desc);
-  desc->coro_size = _mco_required_coro_size(desc);
-  if(desc->coro_size == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-  }
 }
 
 #else
@@ -1770,26 +1641,10 @@ typedef struct _mco_context {
   _asyncify_stack_region stack_region;
 } _mco_context;
 
-static MCO_FORCE_INLINE size_t _mco_metadata_size(const mco_desc* desc) {
-  if(!desc) {
-    return _MCO_INVALID_SIZE;
-  }
-  size_t coro_size = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_size = _mco_align_forward_checked(desc->storage_size, 16);
-  size_t metadata_size = _mco_add_size_checked(coro_size, context_size);
-  return _mco_add_size_checked(metadata_size, storage_size);
-}
-
 static MCO_FORCE_INLINE size_t _mco_stack_offset(const mco_desc* desc) {
-  return _mco_metadata_size(desc);
-}
-
-static MCO_FORCE_INLINE size_t _mco_required_coro_size(const mco_desc* desc) {
-  size_t coro_size = desc->stack_offset;
-  size_t stack_size = _mco_align_forward_checked(desc->stack_size, 16);
-  coro_size = _mco_add_size_checked(coro_size, stack_size);
-  return _mco_add_size_checked(coro_size, 16);
+  return _mco_align_forward(sizeof(mco_coro), 16) +
+         _mco_align_forward(sizeof(_mco_context), 16) +
+         _mco_align_forward(desc->storage_size, 16);
 }
 
 __attribute__((import_module("asyncify"), import_name("start_unwind"))) void _asyncify_start_unwind(void*);
@@ -1833,22 +1688,17 @@ MCO_NO_INLINE void _mco_jumpout(mco_coro* co) {
 
 static mco_result _mco_create_context(mco_coro* co, mco_desc* desc) {
   /* Determine the context address. */
-  size_t context_offset = _mco_align_forward_checked(sizeof(mco_coro), 16);
-  size_t context_size = _mco_align_forward_checked(sizeof(_mco_context), 16);
-  size_t storage_offset = _mco_add_size_checked(context_offset, context_size);
-  size_t stack_offset = desc->stack_offset;
-  if(context_offset == _MCO_INVALID_SIZE || storage_offset == _MCO_INVALID_SIZE ||
-     stack_offset == _MCO_INVALID_SIZE || stack_offset > desc->coro_size) {
-    return MCO_INVALID_ARGUMENTS;
-  }
-  unsigned char* co_base = (unsigned char*)co;
+  size_t co_addr = (size_t)co;
+  size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
+  size_t storage_addr = _mco_align_forward(context_addr + sizeof(_mco_context), 16);
+  size_t stack_addr = co_addr + _mco_stack_offset(desc);
   /* Initialize context. */
-  _mco_context* context = (_mco_context*)(co_base + context_offset);
+  _mco_context* context = (_mco_context*)context_addr;
   memset(context, 0, sizeof(_mco_context));
   /* Initialize storage. */
-  unsigned char* storage = co_base + storage_offset;
+  unsigned char* storage = (unsigned char*)storage_addr;
   /* Initialize stack. */
-  void *stack_base = (void*)(co_base + stack_offset);
+  void *stack_base = (void*)stack_addr;
   size_t stack_size = desc->stack_size;
   context->stack_region.start = stack_base;
   context->stack_region.limit = (void*)((size_t)stack_base + stack_size);
@@ -1866,98 +1716,35 @@ static void _mco_destroy_context(mco_coro* co) {
 }
 
 static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_size) {
-  desc->stack_alignment = 16;
+  desc->coro_size = _mco_align_forward(sizeof(mco_coro), 16) +
+                    _mco_align_forward(sizeof(_mco_context), 16) +
+                    _mco_align_forward(desc->storage_size, 16) +
+                    _mco_align_forward(stack_size, 16) +
+                    16;
   desc->stack_size = stack_size; /* This is just a hint, it won't be the real one. */
-  desc->stack_offset = _mco_stack_offset(desc);
-  desc->coro_size = _mco_required_coro_size(desc);
-  if(desc->coro_size == _MCO_INVALID_SIZE) {
-    desc->coro_size = 0;
-    desc->stack_size = 0;
-  }
 }
 
 #endif /* MCO_USE_ASYNCIFY */
 
 /* ---------------------------------------------------------------------------------------------- */
 
-static mco_result _mco_validate_desc(const mco_desc* desc) {
-  size_t metadata_size;
-  size_t expected_stack_offset;
-  size_t required_coro_size;
-  if(!desc) {
-    MCO_LOG("coroutine description is NULL");
-    return MCO_INVALID_ARGUMENTS;
-  }
-  if(!desc->func) {
-    MCO_LOG("coroutine function in invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-  if(desc->stack_size < MCO_MIN_STACK_SIZE) {
-    MCO_LOG("coroutine stack size is too small");
-    return MCO_INVALID_ARGUMENTS;
-  }
-  metadata_size = _mco_metadata_size(desc);
-  if(metadata_size == _MCO_INVALID_SIZE || metadata_size > desc->coro_size) {
-    MCO_LOG("coroutine metadata layout is invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  size_t page_size = desc->stack_alignment;
-  if(page_size == 0 || desc->stack_size % page_size != 0) {
-    MCO_LOG("coroutine stack size is not page aligned");
-    return MCO_INVALID_ARGUMENTS;
-  }
-  expected_stack_offset = _mco_align_forward_checked(metadata_size, page_size);
-#elif defined(MCO_USE_FIBERS) && defined(_WIN32)
-  expected_stack_offset = 0;
-#else
-  expected_stack_offset = metadata_size;
-#endif
-  if(expected_stack_offset == _MCO_INVALID_SIZE ||
-     desc->stack_offset != expected_stack_offset) {
-    MCO_LOG("coroutine stack layout is invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-  required_coro_size = _mco_required_coro_size(desc);
-  if(required_coro_size == _MCO_INVALID_SIZE ||
-     required_coro_size != desc->coro_size) {
-    MCO_LOG("coroutine size is invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-#if defined(MCO_USE_FIBERS) && defined(_WIN32)
-  if(desc->stack_offset != 0) {
-    MCO_LOG("external coroutine stack offset is invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-#else
-  if(desc->stack_offset == 0 || desc->stack_offset > desc->coro_size ||
-     desc->stack_size > desc->coro_size - desc->stack_offset) {
-    MCO_LOG("embedded coroutine stack layout is invalid");
-    return MCO_INVALID_ARGUMENTS;
-  }
-#endif
-  return MCO_SUCCESS;
-}
-
-static MCO_FORCE_INLINE int _mco_coro_base_is_aligned(const mco_coro* co, const mco_desc* desc) {
-  size_t alignment = desc->stack_offset != 0 ? 16 : sizeof(void*);
-  return (uintptr_t)co % alignment == 0;
-}
-
 size_t mco_desc_stack_offset(const mco_desc* desc) {
-  if(_mco_validate_desc(desc) != MCO_SUCCESS) {
+#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
+  if(!desc || desc->coro_size < desc->stack_size) {
     return 0;
   }
-  return desc->stack_offset;
+  return desc->coro_size - desc->stack_size;
+#else
+  return desc ? _mco_stack_offset(desc) : 0;
+#endif
 }
 
 void* mco_get_stack_limit(const mco_coro* co) {
 #if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  if(!co || !co->context) {
-    return NULL;
+  if(co && co->context) {
+    return ((_mco_context*)co->context)->ctx.stack_limit;
   }
-  const _mco_context* context = (const _mco_context*)co->context;
-  return context->ctx.stack_limit;
+  return NULL;
 #else
   _MCO_UNUSED(co);
   return NULL;
@@ -1985,7 +1772,7 @@ mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size) {
   } else {
     stack_size = MCO_DEFAULT_STACK_SIZE;
   }
-  stack_size = _mco_align_forward_checked(stack_size, 16); /* Stack size should be aligned to 16 bytes. */
+  stack_size = _mco_align_forward(stack_size, 16); /* Stack size should be aligned to 16 bytes. */
   mco_desc desc;
   memset(&desc, 0, sizeof(mco_desc));
 #ifndef MCO_NO_DEFAULT_ALLOCATOR
@@ -1995,20 +1782,42 @@ mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size) {
 #endif
   desc.func = func;
   desc.storage_size = MCO_DEFAULT_STORAGE_SIZE;
-  if(stack_size == _MCO_INVALID_SIZE) {
-    return desc;
-  }
   _mco_init_desc_sizes(&desc, stack_size);
   return desc;
 }
 
-static mco_result _mco_init_validated(mco_coro* co, mco_desc* desc) {
-  if(!_mco_coro_base_is_aligned(co, desc)) {
-    MCO_LOG("coroutine memory is not properly aligned");
+static mco_result _mco_validate_desc(mco_desc* desc) {
+  if(!desc) {
+    MCO_LOG("coroutine description is NULL");
     return MCO_INVALID_ARGUMENTS;
   }
+  if(!desc->func) {
+    MCO_LOG("coroutine function in invalid");
+    return MCO_INVALID_ARGUMENTS;
+  }
+  if(desc->stack_size < MCO_MIN_STACK_SIZE) {
+    MCO_LOG("coroutine stack size is too small");
+    return MCO_INVALID_ARGUMENTS;
+  }
+  if(desc->coro_size < sizeof(mco_coro)) {
+    MCO_LOG("coroutine size is invalid");
+    return MCO_INVALID_ARGUMENTS;
+  }
+  return MCO_SUCCESS;
+}
+
+mco_result mco_init(mco_coro* co, mco_desc* desc) {
+  if(!co) {
+    MCO_LOG("attempt to initialize an invalid coroutine");
+    return MCO_INVALID_COROUTINE;
+  }
   memset(co, 0, sizeof(mco_coro));
-  mco_result res = _mco_create_context(co, desc);
+  /* Validate coroutine description. */
+  mco_result res = _mco_validate_desc(desc);
+  if(res != MCO_SUCCESS)
+    return res;
+  /* Create the coroutine. */
+  res = _mco_create_context(co, desc);
   if(res != MCO_SUCCESS)
     return res;
   co->state = MCO_SUSPENDED; /* We initialize in suspended state. */
@@ -2022,18 +1831,6 @@ static mco_result _mco_init_validated(mco_coro* co, mco_desc* desc) {
 #endif
   co->magic_number = MCO_MAGIC_NUMBER;
   return MCO_SUCCESS;
-}
-
-mco_result mco_init(mco_coro* co, mco_desc* desc) {
-  if(!co) {
-    MCO_LOG("attempt to initialize an invalid coroutine");
-    return MCO_INVALID_COROUTINE;
-  }
-  /* Validate coroutine description. */
-  mco_result res = _mco_validate_desc(desc);
-  if(res != MCO_SUCCESS)
-    return res;
-  return _mco_init_validated(co, desc);
 }
 
 mco_result mco_uninit(mco_coro* co) {
@@ -2069,11 +1866,6 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     MCO_LOG("coroutine allocator description is not set");
     return MCO_INVALID_ARGUMENTS;
   }
-  mco_result res = _mco_validate_desc(desc);
-  if(res != MCO_SUCCESS) {
-    *out_co = NULL;
-    return res;
-  }
   /* Allocate the coroutine. */
   mco_coro* co = (mco_coro*)desc->alloc_cb(desc->coro_size, desc->allocator_data);
   if(!co) {
@@ -2082,7 +1874,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     return MCO_OUT_OF_MEMORY;
   }
   /* Initialize the coroutine. */
-  res = _mco_init_validated(co, desc);
+  mco_result res = mco_init(co, desc);
   if(res != MCO_SUCCESS) {
     desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
     *out_co = NULL;

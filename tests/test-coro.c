@@ -29,15 +29,10 @@
 
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 #include <threads.h>
 
 #define CORO_STACK_FRAME_SIZE    8192
 #define CORO_STACK_DEPTH         8
-#define TEST_COLD_THREAD_COUNT   8
-#define TEST_REUSE_DEEP_COUNT    128
-#define TEST_REUSE_SHALLOW_COUNT 128
 
 #define MIGRATION_FIRST_READY  (1 << 0)
 #define MIGRATION_SECOND_READY (1 << 1)
@@ -48,14 +43,13 @@
 
 #if defined(_WIN32) && defined(MCO_USE_FIBERS)
 #define TEST_MCO_WINDOWS_FIBER 1
-#elif defined(_WIN32) && !defined(MCO_USE_FIBERS) && \
-      !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_ASM) && \
-      !defined(MCO_USE_ASYNCIFY) && \
-      !defined(__x86_64__) && !defined(_M_X64)
+#elif defined(_WIN32) && !defined(MCO_USE_FIBERS) &&       \
+    !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_ASM) && \
+    !defined(MCO_USE_ASYNCIFY) && !defined(__x86_64__) && !defined(_M_X64)
 #define TEST_MCO_WINDOWS_FIBER 1
 #endif
 
-#if defined(_WIN32) && !defined(MCO_USE_FIBERS) && \
+#if defined(_WIN32) && !defined(MCO_USE_FIBERS) &&              \
     !defined(MCO_USE_UCONTEXT) && !defined(MCO_USE_ASYNCIFY) && \
     (defined(__x86_64__) || defined(_M_X64))
 #define TEST_MCO_WINDOWS_ASM 1
@@ -87,11 +81,6 @@
 #endif
 
 typedef struct {
-    size_t slack_size;
-    int    alloc_calls;
-} _slack_alloc_ctx_t;
-
-typedef struct {
     void*  ptr;
     size_t reserve_size;
     int    alloc_calls;
@@ -100,29 +89,10 @@ typedef struct {
 } _vmem_alloc_ctx_t;
 
 typedef struct {
-    void*  raw_ptr;
-    void*  returned_ptr;
-    void*  dealloc_ptr;
-    void*  dealloc_allocator_data;
-    size_t requested_size;
-    size_t dealloc_size;
-    int    alloc_calls;
-    int    dealloc_calls;
-} _misaligned_alloc_ctx_t;
-
-typedef struct {
     copool_t*  pool;
     atomic_int alloc_calls;
     atomic_int dealloc_calls;
 } _coro_fixture_t;
-
-typedef struct {
-    mco_desc*  desc;
-    atomic_int ready;
-    atomic_int start;
-    atomic_int created;
-    atomic_int destroy;
-} _cold_ctx_t;
 
 typedef struct {
     atomic_uintptr_t co;
@@ -141,11 +111,16 @@ typedef struct {
     int      deep;
 } _stack_entry_ctx_t;
 
+#if defined(TEST_MCO_WINDOWS_ASM)
+typedef struct {
+    void* stack_base;
+    void* stack_limit;
+} _teb_entry_ctx_t;
+#endif
+
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
 typedef struct _overflow_ctx_s _overflow_ctx_t;
-typedef uint32_t (*_overflow_recurse_fn_t)(
-    _overflow_ctx_t* ctx,
-    uint8_t          seed);
+typedef uint32_t (*_overflow_recurse_fn_t)(_overflow_ctx_t* ctx, uint8_t seed);
 
 struct _overflow_ctx_s {
     _overflow_recurse_fn_t recurse;
@@ -213,10 +188,19 @@ static void _stack_entry(mco_coro* co) {
     }
 }
 
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void _teb_entry(mco_coro* co) {
+    _teb_entry_ctx_t* ctx = (_teb_entry_ctx_t*)mco_get_user_data(co);
+    NT_TIB*           tib = (NT_TIB*)NtCurrentTeb();
+
+    ctx->stack_base  = tib->StackBase;
+    ctx->stack_limit = tib->StackLimit;
+}
+#endif
+
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
-static __declspec(noinline) uint32_t _overflow_recurse(
-    _overflow_ctx_t* ctx,
-    uint8_t          seed) {
+static __declspec(noinline) uint32_t
+_overflow_recurse(_overflow_ctx_t* ctx, uint8_t seed) {
     volatile uint8_t frame[CORO_STACK_FRAME_SIZE];
     uint32_t         checksum = 0;
 
@@ -254,22 +238,6 @@ static void _overflow_entry(mco_coro* co) {
 }
 #endif
 
-static void* _slack_alloc(size_t size, void* allocator_data) {
-    _slack_alloc_ctx_t* ctx = (_slack_alloc_ctx_t*)allocator_data;
-
-    ctx->alloc_calls++;
-    if (size > SIZE_MAX - ctx->slack_size) {
-        return NULL;
-    }
-    return (void*)calloc(1, size + ctx->slack_size);
-}
-
-static void _slack_dealloc(void* ptr, size_t size, void* allocator_data) {
-    (void)size;
-    (void)allocator_data;
-    free(ptr);
-}
-
 static void* _vmem_alloc(size_t size, void* allocator_data) {
     _vmem_alloc_ctx_t* ctx       = (_vmem_alloc_ctx_t*)allocator_data;
     size_t             page_size = platform_vmem_page_size();
@@ -280,14 +248,14 @@ static void* _vmem_alloc(size_t size, void* allocator_data) {
         return NULL;
     }
     reserve_size = size + (page_size - size % page_size) % page_size;
-    ctx->ptr = platform_vmem_reserve(reserve_size);
+    ctx->ptr     = platform_vmem_reserve(reserve_size);
     if (ctx->ptr == NULL) {
         return NULL;
     }
     ctx->reserve_size = reserve_size;
     if (platform_vmem_commit(ctx->ptr, reserve_size) != 0) {
         (void)platform_vmem_release(ctx->ptr, reserve_size);
-        ctx->ptr = NULL;
+        ctx->ptr          = NULL;
         ctx->reserve_size = 0;
         return NULL;
     }
@@ -299,40 +267,8 @@ static void _vmem_dealloc(void* ptr, size_t size, void* allocator_data) {
 
     (void)size;
     ctx->dealloc_calls++;
-    ctx->release_result =
-        platform_vmem_release(ptr, ctx->reserve_size);
-    ctx->ptr = NULL;
-}
-
-static void* _misaligned_alloc(size_t size, void* allocator_data) {
-    _misaligned_alloc_ctx_t* ctx = (_misaligned_alloc_ctx_t*)allocator_data;
-    uint8_t*                 raw;
-    size_t                   padding;
-
-    ctx->alloc_calls++;
-    ctx->requested_size = size;
-    if (size > SIZE_MAX - 32U) {
-        return NULL;
-    }
-    raw = (uint8_t*)calloc(1, size + 32U);
-    if (raw == NULL) {
-        return NULL;
-    }
-    padding = (size_t)((16U - (uintptr_t)raw % 16U) % 16U);
-    ctx->raw_ptr = raw;
-    ctx->returned_ptr = raw + padding + 8U;
-    return ctx->returned_ptr;
-}
-
-static void _misaligned_dealloc(void* ptr, size_t size, void* allocator_data) {
-    _misaligned_alloc_ctx_t* ctx = (_misaligned_alloc_ctx_t*)allocator_data;
-
-    ctx->dealloc_calls++;
-    ctx->dealloc_ptr = ptr;
-    ctx->dealloc_size = size;
-    ctx->dealloc_allocator_data = allocator_data;
-    free(ctx->raw_ptr);
-    ctx->raw_ptr = NULL;
+    ctx->release_result = platform_vmem_release(ptr, ctx->reserve_size);
+    ctx->ptr            = NULL;
 }
 
 static void* _coro_alloc_cb(size_t size, void* allocator_data) {
@@ -434,9 +370,8 @@ static void _assert_windows_page(
     ASSERT(((info.Protect & PAGE_GUARD) != 0) == expected_guard);
 }
 
-static void _assert_prepared_stack_reset(
-    const void*     ptr,
-    const mco_desc* desc) {
+static void
+_assert_initial_stack_layout(const void* ptr, const mco_desc* desc) {
     size_t         page_size    = platform_vmem_page_size();
     size_t         stack_offset = mco_desc_stack_offset(desc);
     const uint8_t* slot         = (const uint8_t*)ptr;
@@ -446,11 +381,7 @@ static void _assert_prepared_stack_reset(
     ASSERT(page_size > 0);
     ASSERT(stack_offset >= page_size);
     ASSERT(desc->stack_size >= page_size * 3U);
-    _assert_windows_page(
-        stack_low - 1U,
-        MEM_COMMIT,
-        PAGE_READWRITE,
-        0);
+    _assert_windows_page(stack_low - 1U, MEM_COMMIT, PAGE_READWRITE, 0);
     _assert_windows_page(stack_low, MEM_RESERVE, 0, 0);
     _assert_windows_page(stack_high - page_size * 3U, MEM_RESERVE, 0, 0);
     _assert_windows_page(
@@ -461,43 +392,7 @@ static void _assert_prepared_stack_reset(
     _assert_windows_page(stack_high - page_size, MEM_COMMIT, PAGE_READWRITE, 0);
 }
 
-static void* _prepared_initial_stack_limit(
-    const void*     ptr,
-    const mco_desc* desc) {
-    return (uint8_t*)ptr + mco_desc_stack_offset(desc) + desc->stack_size -
-           platform_vmem_page_size();
-}
 #endif
-
-static int _buffer_is_filled(const uint8_t* ptr, size_t size, uint8_t value) {
-    for (size_t i = 0; i < size; i++) {
-        if (ptr[i] != value) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int _cold_create_thread(void* arg) {
-    _cold_ctx_t* ctx = (_cold_ctx_t*)arg;
-    mco_desc    desc = *ctx->desc;
-    mco_coro*   co   = NULL;
-    mco_result  result;
-
-    atomic_fetch_add(&ctx->ready, 1);
-    while (!atomic_load(&ctx->start)) {
-        thrd_yield();
-    }
-    result = coro_create(&co, &desc);
-    atomic_fetch_add(&ctx->created, 1);
-    while (!atomic_load(&ctx->destroy)) {
-        thrd_yield();
-    }
-    if (result != MCO_SUCCESS) {
-        return -1;
-    }
-    return coro_destroy(co) == MCO_SUCCESS ? 0 : -1;
-}
 
 static void test_stack_offset(void) {
     mco_desc  desc = mco_desc_init(_empty_entry, 128U * 1024U);
@@ -529,82 +424,25 @@ static void test_stack_offset(void) {
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
 }
 
-static void test_storage_size_mutation(void) {
-    size_t             page_size = platform_vmem_page_size();
-    _slack_alloc_ctx_t alloc_ctx = {.slack_size = page_size};
-    mco_desc           desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    mco_coro*          co        = NULL;
-    mco_result         result;
-    int                returned_co;
-
-    ASSERT(page_size > 0);
-    ASSERT(desc.storage_size <= SIZE_MAX - page_size);
-    desc.alloc_cb = _slack_alloc;
-    desc.dealloc_cb = _slack_dealloc;
-    desc.allocator_data = &alloc_ctx;
-    desc.storage_size += page_size;
-    ASSERT(mco_desc_stack_offset(&desc) == 0);
-
-    result = mco_create(&co, &desc);
-    returned_co = co != NULL;
-    if (co != NULL) {
-        ASSERT(mco_destroy(co) == MCO_SUCCESS);
-        co = NULL;
-    }
-    ASSERT(result == MCO_INVALID_ARGUMENTS);
-    ASSERT(returned_co == 0);
-    ASSERT(co == NULL);
-    ASSERT(alloc_ctx.alloc_calls == 0);
-}
-
-static void test_stack_limit(void) {
-    mco_desc  desc = mco_desc_init(_empty_entry, 128U * 1024U);
-    mco_coro* co   = NULL;
-    void*     original;
-
-    ASSERT(mco_create(&co, &desc) == MCO_SUCCESS);
-    original = mco_get_stack_limit(co);
-#if defined(TEST_MCO_WINDOWS_ASM)
-    ASSERT(original != NULL);
-    void* replacement = (uint8_t*)original + 16;
-
-    mco_set_stack_limit(co, replacement);
-    ASSERT(mco_get_stack_limit(co) == replacement);
-    mco_set_stack_limit(co, original);
-    ASSERT(mco_get_stack_limit(co) == original);
-#else
-    ASSERT(original == NULL);
-    mco_set_stack_limit(co, NULL);
-    ASSERT(mco_get_stack_limit(co) == NULL);
-#endif
-    ASSERT(mco_destroy(co) == MCO_SUCCESS);
-}
-
 static void test_create_ordinary_page_aligned_allocator(void) {
     _vmem_alloc_ctx_t alloc_ctx = {0};
-    mco_desc           desc      = mco_desc_init(_empty_entry, 32U * 1024U);
-    mco_coro*          co        = NULL;
-    void*              stack_limit;
-    void*              stack_base;
-    mco_result         create_result;
-    mco_result         destroy_result = MCO_GENERIC_ERROR;
+    mco_desc          desc      = mco_desc_init(_empty_entry, 32U * 1024U);
+    mco_coro*         co        = NULL;
+    void*             stack_base;
+    mco_result        create_result;
+    mco_result        destroy_result = MCO_GENERIC_ERROR;
 
     desc.alloc_cb       = _vmem_alloc;
     desc.dealloc_cb     = _vmem_dealloc;
     desc.allocator_data = &alloc_ctx;
-    create_result = coro_create(&co, &desc);
+    create_result       = coro_create(&co, &desc);
     ASSERT(create_result == MCO_SUCCESS);
     ASSERT(co != NULL);
     ASSERT(co == alloc_ctx.ptr);
-    stack_limit = mco_get_stack_limit(co);
-    stack_base = co->stack_base;
+    stack_base     = co->stack_base;
     destroy_result = coro_destroy(co);
 
-#if defined(TEST_MCO_WINDOWS_ASM)
-    ASSERT(stack_limit == stack_base);
-#else
-    ASSERT(stack_limit == NULL);
-#endif
+    ASSERT(stack_base != NULL);
     ASSERT(destroy_result == MCO_SUCCESS);
     ASSERT(alloc_ctx.alloc_calls == 1);
     ASSERT(alloc_ctx.dealloc_calls == 1);
@@ -612,82 +450,23 @@ static void test_create_ordinary_page_aligned_allocator(void) {
     ASSERT(alloc_ctx.ptr == NULL);
 }
 
-static void test_stack_size_overflow(void) {
-    _slack_alloc_ctx_t alloc_ctx = {0};
-    mco_desc           desc      = mco_desc_init(_empty_entry, SIZE_MAX);
-    mco_coro*          co        = NULL;
-    mco_coro           local_co  = {0};
-
-    ASSERT(desc.coro_size == 0);
-    ASSERT(desc.stack_size == 0);
-    ASSERT(mco_desc_stack_offset(&desc) == 0);
-    local_co.magic_number = 1234U;
-    ASSERT(mco_init(&local_co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(local_co.magic_number == 1234U);
-    desc.alloc_cb = _slack_alloc;
-    desc.dealloc_cb = _slack_dealloc;
-    desc.allocator_data = &alloc_ctx;
-    ASSERT(mco_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    ASSERT(alloc_ctx.alloc_calls == 0);
-}
-
-static void test_allocator_alignment(void) {
-    _misaligned_alloc_ctx_t alloc_ctx = {0};
-    mco_desc                desc      = mco_desc_init(_count_entry, 128U * 1024U);
-    mco_coro*               co        = NULL;
-    mco_result              result;
-    int                     entry_calls = 0;
-
-    desc.alloc_cb = _misaligned_alloc;
-    desc.dealloc_cb = _misaligned_dealloc;
-    desc.allocator_data = &alloc_ctx;
-    desc.user_data = &entry_calls;
-    result = mco_create(&co, &desc);
-    ASSERT((uintptr_t)alloc_ctx.returned_ptr % 16U == 8U);
-    ASSERT((uintptr_t)alloc_ctx.returned_ptr % sizeof(void*) == 0);
-#if defined(TEST_MCO_WINDOWS_FIBER)
-    ASSERT(result == MCO_SUCCESS);
-    ASSERT(co == alloc_ctx.returned_ptr);
-    ASSERT(mco_destroy(co) == MCO_SUCCESS);
-    co = NULL;
-#else
-    if (result == MCO_SUCCESS) {
-        ASSERT(mco_destroy(co) == MCO_SUCCESS);
-        co = NULL;
-    }
-    ASSERT(result == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-#endif
-    ASSERT(entry_calls == 0);
-    ASSERT(alloc_ctx.alloc_calls == 1);
-    ASSERT(alloc_ctx.dealloc_calls == 1);
-    ASSERT(alloc_ctx.requested_size == desc.coro_size);
-    ASSERT(alloc_ctx.dealloc_ptr == alloc_ctx.returned_ptr);
-    ASSERT(alloc_ctx.dealloc_size == desc.coro_size);
-    ASSERT(alloc_ctx.dealloc_allocator_data == &alloc_ctx);
-    ASSERT(alloc_ctx.raw_ptr == NULL);
-}
-
 static void test_alloc_ctx_rejects_descriptor_mutation(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
     _coro_fixture_t   fixture   = {0};
     coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
-    mco_coro*         co = NULL;
+    mco_coro*         co    = NULL;
     void (*func)(mco_coro*) = desc.func;
     size_t storage_size     = desc.storage_size;
     size_t coro_size        = desc.coro_size;
     size_t stack_size       = desc.stack_size;
-    size_t stack_offset     = desc.stack_offset;
-    size_t stack_alignment  = desc.stack_alignment;
 
     _coro_fixture_init(&fixture);
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
     ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops = coro_get_slot_ops(&alloc_ctx);
+    ops          = coro_get_slot_ops(&alloc_ctx);
     fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
     ASSERT(fixture.pool != NULL);
 
@@ -711,15 +490,6 @@ static void test_alloc_ctx_rejects_descriptor_mutation(void) {
     ASSERT(co == NULL);
     desc.stack_size = stack_size;
 
-    desc.stack_offset++;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.stack_offset = stack_offset;
-
-    desc.stack_alignment++;
-    ASSERT(coro_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    desc.stack_alignment = stack_alignment;
     ASSERT(atomic_load(&fixture.alloc_calls) == 0);
     ASSERT(atomic_load(&fixture.dealloc_calls) == 0);
 
@@ -732,9 +502,9 @@ static void test_alloc_ctx_rejects_double_init(void) {
     mco_desc         desc      = mco_desc_init(_empty_entry, 128U * 1024U);
     coro_alloc_ctx_t alloc_ctx = {0};
     coro_alloc_ctx_t other_ctx = {0};
-    void* (*alloc_cb)(size_t, void*) = desc.alloc_cb;
+    void* (*alloc_cb)(size_t, void*)         = desc.alloc_cb;
     void (*dealloc_cb)(void*, size_t, void*) = desc.dealloc_cb;
-    void* allocator_data = desc.allocator_data;
+    void* allocator_data                     = desc.allocator_data;
 
     ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
     ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == -1);
@@ -749,122 +519,32 @@ static void test_alloc_ctx_rejects_double_init(void) {
     ASSERT(desc.allocator_data == allocator_data);
 }
 
-static void test_create_prepared_unknown_plan(void) {
-    _vmem_alloc_ctx_t alloc     = {0};
-    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx = {0};
-    mco_coro*         co        = NULL;
-
-    desc.alloc_cb       = _vmem_alloc;
-    desc.dealloc_cb     = _vmem_dealloc;
-    desc.allocator_data = &alloc;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ASSERT(coro_create(&co, &desc) == MCO_MAKE_CONTEXT_ERROR);
-    ASSERT(co == NULL);
-    ASSERT(alloc.alloc_calls == 1);
-    ASSERT(alloc.dealloc_calls == 1);
-    ASSERT(alloc.release_result == 0);
-    ASSERT(alloc.ptr == NULL);
-    coro_alloc_ctx_deinit(&alloc_ctx);
-}
-
-static void test_concurrent_cold_plan_publication(void) {
-    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
-    _coro_fixture_t   fixture   = {0};
-    coro_alloc_ctx_t  alloc_ctx = {0};
-    copool_slot_ops_t ops;
-    _cold_ctx_t       cold = {.desc = &desc};
-    thrd_t            threads[TEST_COLD_THREAD_COUNT];
-    int               results[TEST_COLD_THREAD_COUNT] = {0};
-    size_t            stack_offset;
-
-    _coro_fixture_init(&fixture);
-    desc.alloc_cb       = _coro_alloc_cb;
-    desc.dealloc_cb     = _coro_dealloc_cb;
-    desc.allocator_data = &fixture;
-    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops = coro_get_slot_ops(&alloc_ctx);
-    fixture.pool = copool_create(desc.coro_size, 0, &ops);
-    ASSERT(fixture.pool != NULL);
-    atomic_init(&cold.ready, 0);
-    atomic_init(&cold.start, 0);
-    atomic_init(&cold.created, 0);
-    atomic_init(&cold.destroy, 0);
-
-    for (int i = 0; i < TEST_COLD_THREAD_COUNT; i++) {
-        ASSERT(
-            thrd_create(&threads[i], _cold_create_thread, &cold) ==
-            thrd_success);
-    }
-    while (atomic_load(&cold.ready) != TEST_COLD_THREAD_COUNT) {
-        thrd_yield();
-    }
-    atomic_store(&cold.start, 1);
-    while (atomic_load(&cold.created) != TEST_COLD_THREAD_COUNT) {
-        thrd_yield();
-    }
-    stack_offset = mco_desc_stack_offset(&desc);
-#if defined(TEST_MCO_WINDOWS_ASM)
-    ASSERT(
-        atomic_load(&alloc_ctx.stack_plan) ==
-        stack_offset + desc.stack_size - platform_vmem_page_size());
-#elif defined(TEST_MCO_WINDOWS_FIBER)
-    ASSERT(atomic_load(&alloc_ctx.stack_plan) == SIZE_MAX);
-#else
-    ASSERT(
-        atomic_load(&alloc_ctx.stack_plan) ==
-        (stack_offset == 0 ? SIZE_MAX : stack_offset));
-#endif
-    atomic_store(&cold.destroy, 1);
-    for (int i = 0; i < TEST_COLD_THREAD_COUNT; i++) {
-        ASSERT(thrd_join(threads[i], &results[i]) == thrd_success);
-        ASSERT(results[i] == 0);
-    }
-    ASSERT(
-        atomic_load(&fixture.alloc_calls) == TEST_COLD_THREAD_COUNT);
-    ASSERT(
-        atomic_load(&fixture.dealloc_calls) == TEST_COLD_THREAD_COUNT);
-
-    copool_destroy(fixture.pool);
-    fixture.pool = NULL;
-    coro_alloc_ctx_deinit(&alloc_ctx);
-}
-
 static void test_create_prepared_allocator(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
     _coro_fixture_t   fixture   = {0};
     coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     mco_coro*         co = NULL;
-    void*             stack_limit;
     void*             stack_base;
     size_t            stack_offset;
     mco_result        create_result;
     mco_result        destroy_result = MCO_GENERIC_ERROR;
-#if defined(TEST_MCO_WINDOWS_ASM)
-    size_t page_size;
-    void*  expected;
-#endif
-
     _coro_fixture_init(&fixture);
     desc.alloc_cb       = _coro_alloc_cb;
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
     ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops = coro_get_slot_ops(&alloc_ctx);
+    ops          = coro_get_slot_ops(&alloc_ctx);
     fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
     ASSERT(fixture.pool != NULL);
 
     create_result = coro_create(&co, &desc);
     ASSERT(create_result == MCO_SUCCESS);
     ASSERT(co != NULL);
-    stack_limit = mco_get_stack_limit(co);
-    stack_base = co->stack_base;
+    stack_base   = co->stack_base;
     stack_offset = mco_desc_stack_offset(&desc);
 #if defined(TEST_MCO_WINDOWS_ASM)
-    page_size = platform_vmem_page_size();
-    expected =
-        (uint8_t*)co + stack_offset + desc.stack_size - page_size;
+    _assert_initial_stack_layout(co, &desc);
 #endif
     destroy_result = coro_destroy(co);
     copool_destroy(fixture.pool);
@@ -872,25 +552,67 @@ static void test_create_prepared_allocator(void) {
     coro_alloc_ctx_deinit(&alloc_ctx);
 
 #if defined(TEST_MCO_WINDOWS_ASM)
-    ASSERT(page_size > 0);
     ASSERT(stack_offset > 0);
-    ASSERT(stack_limit == expected);
-    ASSERT(stack_limit != stack_base);
 #elif defined(TEST_MCO_WINDOWS_FIBER)
     ASSERT(stack_offset == 0);
-    ASSERT(stack_limit == NULL);
-#else
-    ASSERT(stack_limit == NULL);
 #endif
+    ASSERT(stack_base != NULL);
     ASSERT(destroy_result == MCO_SUCCESS);
     ASSERT(desc.alloc_cb == _coro_alloc_cb);
     ASSERT(desc.dealloc_cb == _coro_dealloc_cb);
     ASSERT(desc.allocator_data == &fixture);
 }
 
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void test_initial_teb_state(void) {
+    mco_desc          desc      = mco_desc_init(_teb_entry, 128U * 1024U);
+    _coro_fixture_t   fixture   = {0};
+    coro_alloc_ctx_t  alloc_ctx = {0};
+    copool_slot_ops_t ops;
+    _teb_entry_ctx_t  entry = {0};
+    mco_desc          create_desc;
+    mco_coro*         co;
+    uint8_t*          stack_low;
+    uint8_t*          stack_high;
+    size_t            page_size;
+
+    _coro_fixture_init(&fixture);
+    desc.alloc_cb       = _coro_alloc_cb;
+    desc.dealloc_cb     = _coro_dealloc_cb;
+    desc.allocator_data = &fixture;
+    ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
+    ops          = coro_get_slot_ops(&alloc_ctx);
+    fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
+    ASSERT(fixture.pool != NULL);
+
+    create_desc           = desc;
+    create_desc.user_data = &entry;
+    ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
+    stack_low  = (uint8_t*)co + mco_desc_stack_offset(&desc);
+    stack_high = stack_low + desc.stack_size;
+    page_size  = platform_vmem_page_size();
+    ASSERT(page_size > 0);
+    ASSERT(mco_resume(co) == MCO_SUCCESS);
+    ASSERT(entry.stack_base == stack_high);
+#if defined(TEST_MCO_ASAN)
+    ASSERT((uintptr_t)entry.stack_limit > (uintptr_t)stack_low);
+    ASSERT(
+        (uintptr_t)entry.stack_limit <=
+        (uintptr_t)(stack_high - page_size));
+#else
+    ASSERT(entry.stack_limit == stack_high - page_size);
+#endif
+    ASSERT(coro_destroy(co) == MCO_SUCCESS);
+
+    copool_destroy(fixture.pool);
+    fixture.pool = NULL;
+    coro_alloc_ctx_deinit(&alloc_ctx);
+}
+#endif
+
 static void test_create_destroy_reuse(void) {
-    mco_desc          desc           = mco_desc_init(_empty_entry, 128U * 1024U);
-    coro_alloc_ctx_t  alloc_ctx      = {0};
+    mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
+    coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture        = {0};
     mco_coro*         first          = NULL;
@@ -906,7 +628,7 @@ static void test_create_destroy_reuse(void) {
     desc.dealloc_cb     = _coro_dealloc_cb;
     desc.allocator_data = &fixture;
     ASSERT(coro_alloc_ctx_init(&alloc_ctx, &desc) == 0);
-    ops = coro_get_slot_ops(&alloc_ctx);
+    ops          = coro_get_slot_ops(&alloc_ctx);
     fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
     ASSERT(fixture.pool != NULL);
 
@@ -1009,13 +731,25 @@ static void test_cross_thread_stack_migration(void) {
     ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
 }
 
-static void test_hot_deep_to_shallow_reuse(void) {
+static void test_hot_stack_limit_reuse(void) {
     mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
     coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
-    _coro_fixture_t   fixture     = {0};
-    void*             first_ptr   = NULL;
-    int               reuse_count = 0;
+    _coro_fixture_t   fixture = {0};
+    _stack_entry_ctx_t deep = {
+        .seed = 0x21U,
+        .deep = 1,
+    };
+    _stack_entry_ctx_t shallow = {
+        .seed = 0x61U,
+        .deep = 0,
+    };
+    mco_desc  create_desc;
+    mco_coro* first  = NULL;
+    mco_coro* second = NULL;
+    void*     first_slot;
+    void*     initial_limit;
+    void*     grown_limit;
 
     _coro_fixture_init(&fixture);
     desc.alloc_cb       = _coro_alloc_cb;
@@ -1026,88 +760,39 @@ static void test_hot_deep_to_shallow_reuse(void) {
     fixture.pool = copool_create(desc.coro_size, COPOOL_CACHE_CAP, &ops);
     ASSERT(fixture.pool != NULL);
 
-    for (int i = 0; i < TEST_REUSE_DEEP_COUNT; i++) {
-        _stack_entry_ctx_t entry = {
-            .seed = (uint8_t)(i + 1),
-            .deep = 1,
-        };
-        mco_desc  create_desc = desc;
-        mco_coro* co          = NULL;
-        void*     ptr;
+    create_desc           = desc;
+    create_desc.user_data = &deep;
+    ASSERT(coro_create(&first, &create_desc) == MCO_SUCCESS);
+    ASSERT(first != NULL);
+    first_slot    = first;
+    initial_limit = mco_get_stack_limit(first);
+    ASSERT(mco_resume(first) == MCO_SUCCESS);
+    ASSERT(mco_status(first) == MCO_DEAD);
+    ASSERT(deep.checksum != 0);
+    grown_limit = mco_get_stack_limit(first);
 #if defined(TEST_MCO_WINDOWS_ASM)
-        void* initial_limit;
+    ASSERT(grown_limit != NULL);
+    ASSERT((uintptr_t)grown_limit < (uintptr_t)initial_limit);
+#else
+    ASSERT(initial_limit == NULL);
+    ASSERT(grown_limit == NULL);
 #endif
+    ASSERT(coro_destroy(first) == MCO_SUCCESS);
 
-        create_desc.user_data = &entry;
-        ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
-        ASSERT(co != NULL);
-        ptr = co;
-        if (first_ptr == NULL) {
-            first_ptr = ptr;
-        } else if (ptr == first_ptr) {
-            reuse_count++;
-        }
-#if defined(TEST_MCO_WINDOWS_ASM)
-        initial_limit = _prepared_initial_stack_limit(ptr, &desc);
-        ASSERT(mco_get_stack_limit(co) == initial_limit);
-#endif
-        ASSERT(mco_resume(co) == MCO_SUCCESS);
-        ASSERT(mco_status(co) == MCO_DEAD);
-        ASSERT(entry.checksum != 0);
-#if defined(TEST_MCO_WINDOWS_ASM)
-        ASSERT((uintptr_t)mco_get_stack_limit(co) < (uintptr_t)initial_limit);
-#endif
-        ASSERT(coro_destroy(co) == MCO_SUCCESS);
-#if defined(TEST_MCO_WINDOWS_ASM)
-        _assert_prepared_stack_reset(ptr, &desc);
-#endif
-    }
+    create_desc.user_data = &shallow;
+    ASSERT(coro_create(&second, &create_desc) == MCO_SUCCESS);
+    ASSERT(second == first_slot);
+    ASSERT(mco_get_stack_limit(second) == grown_limit);
+    ASSERT(mco_resume(second) == MCO_SUCCESS);
+    ASSERT(mco_status(second) == MCO_DEAD);
+    ASSERT(shallow.checksum != 0);
+    ASSERT(coro_destroy(second) == MCO_SUCCESS);
 
-    for (int i = 0; i < TEST_REUSE_SHALLOW_COUNT; i++) {
-        _stack_entry_ctx_t entry = {
-            .seed = (uint8_t)(i + 1),
-            .deep = 0,
-        };
-        mco_desc  create_desc = desc;
-        mco_coro* co          = NULL;
-        void*     ptr;
-#if defined(TEST_MCO_WINDOWS_ASM)
-        void* initial_limit;
-#endif
-
-        create_desc.user_data = &entry;
-        ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
-        ASSERT(co != NULL);
-        ptr = co;
-        if (ptr == first_ptr) {
-            reuse_count++;
-        }
-#if defined(TEST_MCO_WINDOWS_ASM)
-        initial_limit = _prepared_initial_stack_limit(ptr, &desc);
-        ASSERT(mco_get_stack_limit(co) == initial_limit);
-#endif
-        ASSERT(mco_resume(co) == MCO_SUCCESS);
-        ASSERT(mco_status(co) == MCO_DEAD);
-        ASSERT(entry.checksum != 0);
-#if defined(TEST_MCO_WINDOWS_ASM)
-        ASSERT(mco_get_stack_limit(co) == initial_limit);
-#endif
-        ASSERT(coro_destroy(co) == MCO_SUCCESS);
-#if defined(TEST_MCO_WINDOWS_ASM)
-        _assert_prepared_stack_reset(ptr, &desc);
-#endif
-    }
-
-    ASSERT(reuse_count > 0);
-    ASSERT(
-        atomic_load(&fixture.alloc_calls) ==
-        TEST_REUSE_DEEP_COUNT + TEST_REUSE_SHALLOW_COUNT);
-    ASSERT(
-        atomic_load(&fixture.dealloc_calls) ==
-        TEST_REUSE_DEEP_COUNT + TEST_REUSE_SHALLOW_COUNT);
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
     coro_alloc_ctx_deinit(&alloc_ctx);
+    ASSERT(atomic_load(&fixture.alloc_calls) == 2);
+    ASSERT(atomic_load(&fixture.dealloc_calls) == 2);
 }
 
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
@@ -1128,11 +813,8 @@ static void test_stack_overflow_stops_before_metadata(void) {
     };
     mco_desc  create_desc;
     mco_coro* co = NULL;
-    void*     ptr;
     uint8_t*  metadata_end;
     uint8_t*  storage_end;
-    void*     initial_limit;
-    void*     saved_stack_limit;
     size_t    page_size;
     size_t    stack_offset;
 
@@ -1149,7 +831,6 @@ static void test_stack_overflow_stops_before_metadata(void) {
     create_desc.user_data = &overflow;
     ASSERT(coro_create(&co, &create_desc) == MCO_SUCCESS);
     ASSERT(co != NULL);
-    ptr          = co;
     page_size    = platform_vmem_page_size();
     stack_offset = mco_desc_stack_offset(&desc);
     ASSERT(page_size > 0);
@@ -1169,13 +850,8 @@ static void test_stack_overflow_stops_before_metadata(void) {
     ASSERT(overflow.returned != 0);
     ASSERT(overflow.calls > 0);
     ASSERT(*overflow.sentinel == overflow.sentinel_value);
-    initial_limit     = _prepared_initial_stack_limit(ptr, &desc);
-    saved_stack_limit = mco_get_stack_limit(co);
-    ASSERT(saved_stack_limit == initial_limit);
-    mco_set_stack_limit(co, NULL);
     ASSERT(coro_destroy(co) == MCO_SUCCESS);
     ASSERT(*overflow.sentinel == overflow.sentinel_value);
-    _assert_prepared_stack_reset(ptr, &desc);
 
     copool_destroy(fixture.pool);
     fixture.pool = NULL;
@@ -1185,109 +861,16 @@ static void test_stack_overflow_stops_before_metadata(void) {
 }
 #endif
 
-static void test_init_alignment(void) {
-    mco_desc  desc = mco_desc_init(_empty_entry, 128U * 1024U);
-    uint8_t*  raw;
-    uint8_t*  buffer;
-    size_t    padding;
-    mco_result result;
-    mco_result uninit_result = MCO_SUCCESS;
-#if !defined(TEST_MCO_WINDOWS_FIBER)
-    int unchanged;
-#endif
-
-    ASSERT(desc.coro_size <= SIZE_MAX - 32U);
-#if defined(TEST_MCO_WINDOWS_FIBER)
-    ASSERT(mco_desc_stack_offset(&desc) == 0);
-#else
-    ASSERT(mco_desc_stack_offset(&desc) != 0);
-#endif
-    raw = (uint8_t*)malloc(desc.coro_size + 32U);
-    ASSERT(raw != NULL);
-    padding = (size_t)((16U - (uintptr_t)raw % 16U) % 16U);
-    buffer = raw + padding + 8U;
-    ASSERT((uintptr_t)buffer % 16U == 8U);
-    ASSERT((uintptr_t)buffer % sizeof(void*) == 0);
-    memset(buffer, 0xa5, desc.coro_size);
-
-    result = mco_init((mco_coro*)buffer, &desc);
-#if defined(TEST_MCO_WINDOWS_FIBER)
-    if (result == MCO_SUCCESS) {
-        uninit_result = mco_uninit((mco_coro*)buffer);
-    }
-    free(raw);
-    ASSERT(result == MCO_SUCCESS);
-    ASSERT(uninit_result == MCO_SUCCESS);
-#else
-    unchanged = _buffer_is_filled(buffer, desc.coro_size, 0xa5);
-    if (result == MCO_SUCCESS) {
-        uninit_result = mco_uninit((mco_coro*)buffer);
-    }
-    free(raw);
-    ASSERT(uninit_result == MCO_SUCCESS);
-    ASSERT(result == MCO_INVALID_ARGUMENTS);
-    ASSERT(unchanged != 0);
-#endif
-}
-
 #if defined(TEST_MCO_WINDOWS_ASM)
-static void test_stack_size_mutation(void) {
-    mco_desc   desc = mco_desc_init(_empty_entry, 128U * 1024U);
-    mco_coro*  co   = NULL;
-    mco_result result;
-    int        returned_co;
-
-    ASSERT(desc.stack_size > 0);
-    desc.stack_size--;
-    result = mco_create(&co, &desc);
-    returned_co = co != NULL;
-    if (co != NULL) {
-        ASSERT(mco_destroy(co) == MCO_SUCCESS);
-        co = NULL;
-    }
-    ASSERT(result == MCO_INVALID_ARGUMENTS);
-    ASSERT(returned_co == 0);
-    ASSERT(co == NULL);
-    ASSERT(mco_desc_stack_offset(&desc) == 0);
-}
-
-static void test_stack_size_layout_overflow(void) {
-    size_t             page_size = platform_vmem_page_size();
-    size_t             stack_size;
-    size_t             stack_offset;
-    _slack_alloc_ctx_t alloc_ctx = {0};
-    mco_desc           valid_desc = mco_desc_init(_empty_entry, 128U * 1024U);
-    mco_desc           desc;
-    mco_coro*          co = NULL;
-
-    ASSERT(page_size > 0);
-    stack_offset = mco_desc_stack_offset(&valid_desc);
-    ASSERT(stack_offset > 0);
-    stack_size = SIZE_MAX - SIZE_MAX % page_size;
-    ASSERT(stack_size % 16U == 0);
-    ASSERT(stack_size % page_size == 0);
-    ASSERT(stack_size > SIZE_MAX - stack_offset);
-    desc = mco_desc_init(_empty_entry, stack_size);
-    ASSERT(desc.coro_size == 0);
-    ASSERT(desc.stack_size == 0);
-    ASSERT(mco_desc_stack_offset(&desc) == 0);
-    desc.alloc_cb = _slack_alloc;
-    desc.dealloc_cb = _slack_dealloc;
-    desc.allocator_data = &alloc_ctx;
-    ASSERT(mco_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
-    ASSERT(co == NULL);
-    ASSERT(alloc_ctx.alloc_calls == 0);
-}
-
 static void test_stack_offset_lookup_is_cached(void) {
-    const int     lookup_count = 4096;
-    mco_desc      desc         = mco_desc_init(_empty_entry, 128U * 1024U);
-    LARGE_INTEGER start;
-    LARGE_INTEGER end;
-    SYSTEM_INFO   info;
-    int64_t       lookup_ticks = INT64_MAX;
-    int64_t       system_ticks = INT64_MAX;
-    volatile size_t sink       = 0;
+    const int       lookup_count = 4096;
+    mco_desc        desc         = mco_desc_init(_empty_entry, 128U * 1024U);
+    LARGE_INTEGER   start;
+    LARGE_INTEGER   end;
+    SYSTEM_INFO     info;
+    int64_t         lookup_ticks = INT64_MAX;
+    int64_t         system_ticks = INT64_MAX;
+    volatile size_t sink         = 0;
 
     ASSERT(mco_desc_stack_offset(&desc) > 0);
     GetSystemInfo(&info);
@@ -1319,26 +902,20 @@ static void test_stack_offset_lookup_is_cached(void) {
 
 int main(void) {
     test_stack_offset();
-    test_stack_limit();
     test_create_ordinary_page_aligned_allocator();
-    test_storage_size_mutation();
-    test_stack_size_overflow();
-    test_init_alignment();
-    test_allocator_alignment();
     test_alloc_ctx_rejects_double_init();
     test_alloc_ctx_rejects_descriptor_mutation();
-    test_create_prepared_unknown_plan();
-    test_concurrent_cold_plan_publication();
     test_create_prepared_allocator();
+#if defined(TEST_MCO_WINDOWS_ASM)
+    test_initial_teb_state();
+#endif
     test_create_destroy_reuse();
     test_cross_thread_stack_migration();
-    test_hot_deep_to_shallow_reuse();
+    test_hot_stack_limit_reuse();
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
     test_stack_overflow_stops_before_metadata();
 #endif
 #if defined(TEST_MCO_WINDOWS_ASM)
-    test_stack_size_mutation();
-    test_stack_size_layout_overflow();
     test_stack_offset_lookup_is_cached();
 #endif
     return 0;

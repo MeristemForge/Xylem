@@ -55,9 +55,7 @@ typedef struct {
 
 typedef struct {
     _Atomic int    init_count;
-    _Atomic int    reset_count;
     _Atomic int    fail_init;
-    _Atomic int    fail_reset;
     _Atomic size_t init_size;
     _Atomic(void*) failed_init_ptr;
     size_t         expected_size;
@@ -78,9 +76,7 @@ static void _assert_slot_state(
 
 static void _slot_ops_ctx_init(_slot_ops_ctx_t* ctx) {
     atomic_init(&ctx->init_count, 0);
-    atomic_init(&ctx->reset_count, 0);
     atomic_init(&ctx->fail_init, 0);
-    atomic_init(&ctx->fail_reset, 0);
     atomic_init(&ctx->init_size, 0);
     atomic_init(&ctx->failed_init_ptr, NULL);
     ctx->expected_size = 0;
@@ -127,31 +123,13 @@ static int _slot_init(void* ptr, size_t size, void* ud) {
     return rc;
 }
 
-static int _slot_reset(void* ptr, size_t size, void* ud) {
-    _slot_ops_ctx_t* ctx = (_slot_ops_ctx_t*)ud;
-
-    ASSERT(size == ctx->expected_size);
-#if defined(_WIN32)
-    _assert_slot_state(ptr, MEM_COMMIT, PAGE_READWRITE);
-#else
-    (void)ptr;
-#endif
-
-    atomic_fetch_add_explicit(&ctx->reset_count, 1, memory_order_relaxed);
-    if (_slot_consume_failure(&ctx->fail_reset)) {
-        return -1;
-    }
-    return 0;
-}
-
 static copool_t* _create_pool(
     size_t           slot_size,
     int32_t          shared_cap,
     _slot_ops_ctx_t* ctx) {
     copool_slot_ops_t ops = {
-        .init  = _slot_init,
-        .reset = _slot_reset,
-        .ud    = ctx,
+        .init = _slot_init,
+        .ud   = ctx,
     };
 
     size_t page_size = platform_vmem_page_size();
@@ -337,19 +315,13 @@ static void test_create_invalid_args(void) {
     _slot_ops_ctx_t ctx;
     _slot_ops_ctx_init(&ctx);
     copool_slot_ops_t missing_init = {
-        .reset = _slot_reset,
-        .ud    = &ctx,
-    };
-    copool_slot_ops_t missing_reset = {
-        .init = _slot_init,
-        .ud   = &ctx,
+        .ud = &ctx,
     };
 
     ASSERT(_create_pool(0, 1, &ctx) == NULL);
     ASSERT(_create_pool(page_size, -1, &ctx) == NULL);
     ASSERT(copool_create(page_size, 1, NULL) == NULL);
     ASSERT(copool_create(page_size, 1, &missing_init) == NULL);
-    ASSERT(copool_create(page_size, 1, &missing_reset) == NULL);
 }
 
 static void test_alloc_invalid_args(void) {
@@ -441,7 +413,7 @@ static void test_slot_init_on_arena_refill(void) {
     copool_destroy(pool);
 }
 
-static void test_slot_reset_before_cache(void) {
+static void test_slot_return_stays_hot(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
@@ -453,40 +425,18 @@ static void test_slot_reset_before_cache(void) {
 
     void* slot = copool_alloc(pool, &cache, page_size);
     ASSERT(slot != NULL);
-    copool_free(pool, &cache, slot, page_size);
-    ASSERT(
-        atomic_load_explicit(&ctx.reset_count, memory_order_relaxed) == 1);
-
+    ((uint8_t*)slot)[0] = 0x5a;
     int init_count =
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed);
+    copool_free(pool, &cache, slot, page_size);
     void* recycled = copool_alloc(pool, &cache, page_size);
     ASSERT(recycled == slot);
+    ASSERT(((uint8_t*)recycled)[0] == 0x5a);
     ASSERT(
         atomic_load_explicit(&ctx.init_count, memory_order_relaxed) ==
         init_count);
 
-    copool_destroy(pool);
-}
-
-static void test_slot_reset_failure_bypasses_cache(void) {
-    size_t page_size = platform_vmem_page_size();
-    ASSERT(page_size > 0);
-
-    _slot_ops_ctx_t ctx;
-    _slot_ops_ctx_init(&ctx);
-    atomic_store_explicit(&ctx.fail_reset, 1, memory_order_relaxed);
-    copool_t*      pool  = _create_pool(page_size, 0, &ctx);
-    copool_cache_t cache = {0};
-    ASSERT(pool != NULL);
-
-    void* slot = copool_alloc(pool, &cache, page_size);
-    ASSERT(slot != NULL);
-    int before_count = cache.count;
-    copool_free(pool, &cache, slot, page_size);
-    ASSERT(cache.count == before_count);
-    ASSERT(
-        atomic_load_explicit(&ctx.reset_count, memory_order_relaxed) == 1);
-
+    copool_free(pool, &cache, recycled, page_size);
     copool_destroy(pool);
 }
 
@@ -561,8 +511,7 @@ int main(void) {
     test_free_null_args();
     test_concurrent_local_caches();
     test_slot_init_on_arena_refill();
-    test_slot_reset_before_cache();
-    test_slot_reset_failure_bypasses_cache();
+    test_slot_return_stays_hot();
     test_slot_init_failure_isolated();
     test_logical_max_uses_aligned_callback_size();
     return 0;

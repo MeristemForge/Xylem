@@ -83,8 +83,7 @@ copool_t* copool_create(
     size_t                   slot_size,
     int32_t                  shared_cap,
     const copool_slot_ops_t* ops) {
-    if (slot_size == 0 || shared_cap < 0 || !ops || !ops->init ||
-        !ops->reset) {
+    if (slot_size == 0 || shared_cap < 0 || !ops || !ops->init) {
         return NULL;
     }
 
@@ -186,12 +185,6 @@ void copool_free(
             size,
             pool->max_size);
         abort();
-    }
-
-    if (pool->ops.reset(ptr, pool->slot_size, pool->ops.ud) != 0) {
-        void* slot = ptr;
-        arena_free(pool->arena, &slot, 1);
-        return;
     }
 
     if (cache) {

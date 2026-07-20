@@ -29,10 +29,9 @@ _Pragma("once")
 /* Opaque fixed-slot coroutine pool. */
 typedef struct copool_s copool_t;
 
-/* Required slot lifecycle callbacks. Functions may run concurrently. */
+/* Cold-slot initialization callback. It may run concurrently. */
 typedef struct copool_slot_ops_s {
     int (*init)(void* ptr, size_t size, void* ud);
-    int (*reset)(void* ptr, size_t size, void* ud);
     void* ud;
 } copool_slot_ops_t;
 
@@ -45,19 +44,17 @@ typedef struct copool_cache_s {
 /**
  * @brief Create a fixed-slot coroutine pool.
  *
- * The required ops structure and both callbacks are copied by the pool. The
+ * The required ops structure and init callback are copied by the pool. The
  * caller must keep ops->ud valid until copool_destroy() returns and synchronize
- * access to callback state. Callback functions may run concurrently. Callback
- * size is the page-aligned arena slot size, while slot_size remains the logical
- * maximum accepted by copool_alloc() and copool_free(). init receives a cold
- * slot and must initialize it before access; reset prepares a used hot slot for
- * reuse.
+ * access to callback state. init may run concurrently and is called only for a
+ * cold slot refilled from the backing arena. Local and shared caches retain hot
+ * slot state. Callback size is the page-aligned arena slot size, while
+ * slot_size remains the logical maximum accepted by copool_alloc() and
+ * copool_free().
  *
  * @param slot_size   Logical maximum allocation size in bytes.
  * @param shared_cap  Maximum number of slots in the shared cache.
- * @param ops         Required lifecycle callbacks copied by the pool. init
- *                    runs for slots obtained from the backing arena; reset
- *                    runs before a used slot enters a cache.
+ * @param ops         Required cold-slot initializer copied by the pool.
  *
  * @return Pool handle, or NULL for invalid arguments or allocation failure.
  */
@@ -87,7 +84,10 @@ extern void copool_destroy(copool_t* pool);
 extern void* copool_alloc(copool_t* pool, copool_cache_t* cache, size_t size);
 
 /**
- * @brief Return a committed slot to a cache or the backing arena.
+ * @brief Return a hot slot to a cache or the backing arena.
+ *
+ * Local and shared caches preserve the slot's committed pages and other hot
+ * state. Only slots that spill to the backing arena are decommitted.
  *
  * @param pool   Pool handle, or NULL.
  * @param cache  Worker-local cache, or NULL for the shared path.

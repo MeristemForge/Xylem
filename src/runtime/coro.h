@@ -25,8 +25,6 @@ _Pragma("once")
 
 #include "minicoro/minicoro.h"
 
-#include <stdatomic.h>
-
 typedef struct coro_alloc_ctx_s {
     size_t    state;
     mco_desc* desc;
@@ -34,7 +32,6 @@ typedef struct coro_alloc_ctx_s {
     void* (*alloc_cb)(size_t size, void* allocator_data);
     void (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);
     void*         allocator_data;
-    atomic_size_t stack_plan;
 } coro_alloc_ctx_t;
 
 /**
@@ -63,6 +60,10 @@ extern void coro_alloc_ctx_deinit(coro_alloc_ctx_t* ctx);
 
 /**
  * @brief Create a coroutine and prepare its platform stack state.
+ *
+ * A descriptor bound to a coroutine pool preserves the saved stack limit in a
+ * hot slot across reuse. A cold slot has no saved limit, so the platform's
+ * initial limit is installed after minicoro initialization.
  *
  * @param out   Receives the coroutine pointer on success.
  * @param desc  Coroutine descriptor and allocator configuration.
