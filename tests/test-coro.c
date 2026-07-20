@@ -801,6 +801,7 @@ static void test_arena_spill_restores_initial_stack(void) {
     coro_alloc_ctx_t  alloc_ctx = {0};
     copool_slot_ops_t ops;
     _coro_fixture_t   fixture = {0};
+
     _stack_entry_ctx_t entry = {
         .seed = 0x31U,
         .deep = 1,
@@ -830,9 +831,10 @@ static void test_arena_spill_restores_initial_stack(void) {
     ASSERT(mco_resume(first) == MCO_SUCCESS);
     ASSERT(mco_status(first) == MCO_DEAD);
     ASSERT(entry.checksum != 0);
-    ASSERT(
-        (uintptr_t)mco_get_stack_limit(first) < (uintptr_t)initial_limit);
+    ASSERT((uintptr_t)mco_get_stack_limit(first) < (uintptr_t)initial_limit);
     ASSERT(coro_destroy(first) == MCO_SUCCESS);
+    _assert_windows_page((const uint8_t*)first_slot, MEM_RESERVE, 0, 0);
+    _assert_windows_page((const uint8_t*)initial_limit, MEM_RESERVE, 0, 0);
 
     entry.checksum = 0;
     entry.deep     = 0;
