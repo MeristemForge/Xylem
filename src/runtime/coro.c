@@ -25,6 +25,7 @@
 #include "platform/platform-vmem.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 
 #define CORO_ALLOC_CTX_READY ((size_t)0xc07a110cU)
 
@@ -150,15 +151,6 @@ static coro_alloc_ctx_t* _coro_get_alloc_ctx(const mco_desc* desc) {
     return ctx;
 }
 
-static void _coro_reject_retained_slot(
-    mco_coro*             co,
-    mco_desc*             desc,
-    const platform_coro_t* platform) {
-    if (platform_coro_init(platform) == 0) {
-        desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
-    }
-}
-
 int coro_alloc_ctx_init(coro_alloc_ctx_t* ctx, mco_desc* desc) {
     size_t stack_limit_alignment = 0;
 
@@ -210,7 +202,7 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
     coro_alloc_ctx_t* ctx = _coro_get_alloc_ctx(desc);
     platform_coro_t   platform;
     mco_coro*         co;
-    void*             retained;
+    void*             saved_stack_limit;
     mco_result        result;
 
     if (ctx == NULL) {
@@ -242,13 +234,12 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
         desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
         return MCO_MAKE_CONTEXT_ERROR;
     }
-    retained = mco_get_stack_limit(co);
+    saved_stack_limit = mco_get_stack_limit(co);
     if (!_coro_stack_limit_valid(
             &platform,
-            retained,
+            saved_stack_limit,
             ctx->stack_limit_alignment)) {
-        _coro_reject_retained_slot(co, desc, &platform);
-        return MCO_MAKE_CONTEXT_ERROR;
+        abort();
     }
     result = mco_init(co, desc);
     if (result != MCO_SUCCESS) {
@@ -256,10 +247,10 @@ mco_result coro_create(mco_coro** out, mco_desc* desc) {
         *out = NULL;
         return result;
     }
-    if (retained == NULL && platform.stack_low != NULL) {
-        retained = platform_coro_initial_stack_limit(&platform);
+    if (saved_stack_limit == NULL && platform.stack_low != NULL) {
+        saved_stack_limit = platform_coro_initial_stack_limit(&platform);
     }
-    mco_set_stack_limit(co, retained);
+    mco_set_stack_limit(co, saved_stack_limit);
     *out = co;
     return MCO_SUCCESS;
 }

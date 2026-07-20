@@ -43,9 +43,8 @@ typedef struct {
     int      external;
 } _coro_layout_t;
 
-static int _coro_validate_slot(
-    const platform_coro_t* coro,
-    _coro_layout_t* layout) {
+static int
+_coro_validate_slot(const platform_coro_t* coro, _coro_layout_t* layout) {
     size_t    page_size;
     uintptr_t slot_low;
 
@@ -149,46 +148,16 @@ int platform_coro_init(const platform_coro_t* coro) {
         return -1;
     }
     if (_coro_validate_stack_layout(coro, &layout) != 0) {
-        (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
-        return -1;
-    }
-    if (platform_vmem_decommit(layout.slot_low, layout.slot_size) != 0) {
         return -1;
     }
     if (layout.external) {
-        if (platform_vmem_commit(layout.slot_low, layout.slot_size) == 0) {
-            return 0;
-        }
-        (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
-        return -1;
+        return platform_vmem_commit(layout.slot_low, layout.slot_size);
     }
-    if (platform_vmem_commit(layout.slot_low, layout.metadata_size) != 0 ||
-        _coro_commit_initial_stack(&layout) != 0) {
-        (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
-        return -1;
-    }
-    return 0;
-}
-
-int platform_coro_reset(
-    const platform_coro_t* coro,
-    void*                  current_stack_limit) {
-    _coro_layout_t layout;
-
-    if (_coro_validate(coro, &layout) != 0) {
-        return -1;
-    }
-    if (layout.external) {
-        return 0;
-    }
-    if (current_stack_limit == layout.initial_stack_limit) {
-        return 0;
-    }
-    if (platform_vmem_decommit(layout.stack_low, layout.stack_size) != 0) {
+    if (platform_vmem_commit(layout.slot_low, layout.metadata_size) != 0) {
         return -1;
     }
     if (_coro_commit_initial_stack(&layout) != 0) {
-        (void)platform_vmem_decommit(layout.stack_low, layout.stack_size);
+        (void)platform_vmem_decommit(layout.slot_low, layout.slot_size);
         return -1;
     }
     return 0;
