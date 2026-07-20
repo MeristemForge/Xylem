@@ -63,7 +63,7 @@ those callbacks without depending on `coro` or `platform-coro` types.
 - `platform-coro` manages the usable page layout of a coroutine slot.
 - `copool` manages worker-local and shared hot-slot caches.
 - `arena` owns regions, slot addresses, and the fully decommitted cold state.
-- `platform-vmem` owns generic reserve, commit, decommit, protection, and
+- `platform-vmem` owns generic reserve, commit, decommit, native guard, and
   release operations.
 
 `arena` must not include or call `platform-coro` directly. A generic arena only
@@ -139,29 +139,20 @@ without entering a hot cache.
 `platform_coro_init()` accepts only a fully decommitted cold slot obtained from
 the arena. It validates the complete layout before changing page state and then
 commits the required ranges directly. It does not decommit the slot before
-committing it. If a later commit or protection operation fails, initialization
+committing it. If a later commit or guard operation fails, initialization
 decommits the complete slot as rollback.
 
-The platform-vmem protection API uses portable read/write flags plus a guard
-modifier:
+The platform-vmem layer exposes one narrow native-guard operation:
 
 ```c
-typedef enum platform_vmem_prot_e {
-    PLATFORM_VMEM_PROT_NONE  = 0,
-    PLATFORM_VMEM_PROT_READ  = 1 << 0,
-    PLATFORM_VMEM_PROT_WRITE = 1 << 1,
-    PLATFORM_VMEM_PROT_GUARD = 1 << 2,
-} platform_vmem_prot_t;
-
-extern int platform_vmem_protect(
-    void* ptr,
-    size_t size,
-    platform_vmem_prot_t prot);
+extern int platform_vmem_guard(void* ptr, size_t size);
 ```
 
-Windows maps the guard modifier to `PAGE_GUARD`. Unix maps it to a no-access
-guard range; the API does not promise Windows' one-shot guard-clearing behavior
-on other platforms.
+Windows applies `PAGE_READWRITE | PAGE_GUARD` to an already committed range.
+Unix implements the operation as a successful no-op because Xylem does not use
+native moving guards for Unix coroutine stacks. This narrow API avoids adding
+generic protection state to platform-vmem or changing the low-cost Unix commit
+and decommit paths.
 
 There is no `platform_coro_deinit()`. Returning a complete slot to the cold
 state is a full-slot decommit owned by `arena_free()`. A platform-coro deinit
@@ -173,8 +164,8 @@ arena code to coroutine-specific code.
 `platform_coro_init()` directly commits metadata, creates the initial guard
 page, and commits the initial usable stack page. Unused stack pages remain
 uncommitted. It uses `platform_vmem_commit()` for page commitment and
-`platform_vmem_protect()` with read, write, and guard flags for the moving
-guard page; it does not call `VirtualAlloc` or `VirtualProtect` directly.
+`platform_vmem_guard()` for the moving guard page; it does not call
+`VirtualAlloc` or `VirtualProtect` directly.
 
 `platform_coro_initial_stack_limit()` returns the low address of the initial
 ordinary read/write stack page, not the guard address.
