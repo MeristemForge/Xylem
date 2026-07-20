@@ -6,8 +6,9 @@ Xylem will keep arena-backed coroutine slots while adding native Windows x64
 ASM stack growth. A Windows ASM slot reserves its full fixed stack but commits
 only coroutine metadata, one moving guard page, and one initial usable stack
 page. Windows grows the committed stack through its normal `PAGE_GUARD`
-mechanism. Recycled hot slots return to the same initial page state so their
-commit charge does not accumulate.
+mechanism. Local and shared hot caches retain each slot's current committed
+stack frontier and moving guard. Only slots evicted to the arena return to the
+fully decommitted cold state.
 
 The implementation introduces a runtime `coro` adapter and a platform
 `platform-coro` module. `coro` is the only layer that understands minicoro
@@ -19,11 +20,13 @@ independent of minicoro internals.
 
 - Use the native Windows x64 moving `PAGE_GUARD` mechanism for ASM coroutine
   stacks without a process-wide VEH.
-- Reserve the configured fixed stack size while charging only for the pages
-  initially required by a new or recycled coroutine.
-- Restore grown Windows ASM stacks to their initial committed state before a
-  slot enters a hot cache.
-- Keep local/shared copool hits free of VM system calls.
+- Reserve the configured fixed stack size while committing only metadata, one
+  guard page, and one usable page for a cold slot's first use.
+- Keep both allocation and return through local/shared copool caches free of VM
+  system calls.
+- Preserve a grown stack's current committed frontier while its slot remains in
+  a bounded hot cache.
+- Decommit the complete slot only when it leaves the hot caches for arena.
 - Preserve current Windows Fiber and Unix-family behavior.
 - Keep arena and virtual-memory modules generic.
 
@@ -121,10 +124,6 @@ typedef struct platform_coro_s {
 
 extern int platform_coro_init(const platform_coro_t* coro);
 
-extern int platform_coro_reset(
-    const platform_coro_t* coro,
-    void* current_stack_limit);
-
 extern void* platform_coro_initial_stack_limit(
     const platform_coro_t* coro);
 ```
@@ -150,28 +149,26 @@ commits the initial usable stack page. Unused stack pages remain uncommitted.
 `platform_coro_initial_stack_limit()` returns the low address of the initial
 ordinary read/write stack page, not the guard address.
 
-`platform_coro_reset()` compares `current_stack_limit` with the calculated
-initial value. Equal values take a no-system-call fast path. If the stack grew,
-the function decommits the embedded stack and recreates the initial guard and
-usable page. A `NULL` current value requests a complete reset and is used for a
-partially initialized minicoro context.
+Hot reuse does not call a platform reset function. The committed pages, moving
+guard, and saved stack limit stay associated with the slot. A full-slot arena
+decommit clears that retained state when the slot becomes cold.
 
-Windows commit, decommit, and guard transitions apply the existing ASan shadow
+Windows commit and decommit transitions apply the existing ASan shadow
 poison/unpoison policy to the exact pages whose accessibility changes.
 
 ### Windows Fiber
 
 Windows Fiber slots use `stack_low == NULL` and `stack_size == 0` because
 `CreateFiberEx` owns the stack outside the arena slot. `init` commits the
-metadata slot, `reset` is a no-op, and `initial_stack_limit` returns `NULL`.
-`CreateFiberEx` and `DeleteFiber` behavior does not change.
+metadata slot, and `initial_stack_limit` returns `NULL`. `CreateFiberEx` and
+`DeleteFiber` behavior does not change.
 
 ### Linux, Android, macOS, And iOS
 
-`init` makes the complete slot accessible and clears its ASan poison. `reset`
-is a no-op so a hot slot keeps its current mapping. `initial_stack_limit`
-returns `stack_low`; the corresponding minicoro setter is a no-op outside the
-Windows x64 ASM backend.
+`init` makes the complete cold slot accessible and clears its ASan poison. Hot
+slots keep their current mapping without a reset callback. `initial_stack_limit`
+returns `stack_low`; the corresponding minicoro accessors are no-ops outside
+the Windows x64 ASM backend.
 
 ## Minicoro Bridge
 
@@ -190,14 +187,14 @@ The public functions have one shared implementation after minicoro selects its
 backend. Backend sections only define internal compile-time capabilities:
 
 - An external-stack backend makes `mco_desc_stack_offset()` return zero.
-- Embedded-stack backends use the common tail-layout calculation.
+- Embedded-stack backends report the actual internal stack offset.
 - Windows x64 ASM enables access to `_mco_context.ctx.stack_limit`.
 - Other backends make `get_stack_limit` return `NULL` and `set_stack_limit` a
   no-op.
 
-`mco_get_stack_limit()` is null-safe for a missing or partially initialized
-context. This is required because `mco_create()` invokes its deallocator after
-an `mco_init()` failure.
+Both stack-limit accessors are null-safe for a missing or partially initialized
+context. The getter lets the runtime adapter capture a hot slot's retained
+frontier before `mco_init()` clears its previous context.
 
 The Windows ASM descriptor size calculation page-aligns the end of metadata
 while preserving the requested stack capacity. Other backend descriptor
@@ -218,11 +215,17 @@ extern copool_slot_ops_t coro_get_slot_ops(
     const mco_desc* desc);
 ```
 
-`coro_create()` calls `mco_create()`, builds a `platform_coro_t` from the
-initialized coroutine, computes the initial platform stack limit, and writes
-that address into the new minicoro context. `coro_destroy()` calls
-`mco_destroy()`; the deallocation callback eventually invokes the copool reset
-callback after `mco_uninit()` has preserved the saved context fields.
+`coro_create()` performs the allocation and initialization sequence explicitly.
+After obtaining a slot from copool but before calling `mco_init()`, it reads the
+old saved stack limit. A non-`NULL` value identifies hot state and is restored
+after initialization. A `NULL` value identifies a newly prepared cold slot, so
+the adapter installs `platform_coro_initial_stack_limit()` instead.
+Initialization failure returns the allocation through the descriptor's
+deallocator.
+
+`coro_destroy()` calls `mco_destroy()`. Windows ASM context destruction leaves
+the saved stack limit intact until the slot is either reused from a hot cache or
+fully decommitted by arena.
 
 The slot callbacks are static functions in `coro.c`. Their `ud` points to the
 scheduler-owned descriptor template and must remain valid until the copool is
@@ -235,7 +238,6 @@ destroyed.
 ```c
 typedef struct copool_slot_ops_s {
     int (*init)(void* ptr, size_t size, void* ud);
-    int (*reset)(void* ptr, size_t size, void* ud);
     void* ud;
 } copool_slot_ops_t;
 
@@ -253,17 +255,22 @@ The lifecycle is:
 
 ```text
 cold arena slot -> init  -> reusable hot slot
-used slot       -> reset -> reusable hot slot
-hot slot        -> arena_free -> cold arena slot
+used slot       -> local/shared hot cache without a callback
+hot slot        -> arena_free -> fully decommitted cold arena slot
 ```
 
 Local cache hits and local/shared transfers do not invoke callbacks. A refill
-from arena calls `init` for every cold slot before caching it. Every used slot
-calls `reset` before entering a local or shared cache. Slots spilled from a hot
-cache have already been reset and go directly to the shared cache or arena.
+from arena calls `init` for every cold slot before caching it. Returning a used
+slot to local or shared cache preserves its existing platform stack state.
+Slots rejected by the shared cache go directly to `arena_free()`, which
+decommits the complete slot without first restoring an initial stack layout.
 
-An `init` or `reset` failure sends that slot to `arena_free()` instead of a hot
-cache. Other slots in the same batch continue normally.
+An `init` failure sends that slot to `arena_free()` instead of a hot cache.
+Other slots in the same batch continue normally.
+
+Because hot capacity is bounded, retained Windows commit charge is bounded by
+`worker_count * COPOOL_CACHE_CAP + shared_cap` slots. Arena capacity may follow
+the historical concurrency peak without retaining commit charge.
 
 ## Arena Cold-State Contract
 
@@ -328,11 +335,11 @@ and recycled.
 - Platform coroutine init failure returns the slot through `arena_free()` and
   continues initializing other slots in the batch.
 - If no slot in a refill can be initialized, `copool_alloc()` returns `NULL`.
-- Platform coroutine reset failure bypasses all hot caches and returns the slot
-  through `arena_free()`.
 - Arena decommit failure logs an error and excludes the slot from `free_slots`.
-- A missing current stack limit requests a complete Windows ASM reset.
-- No normal hot-cache hit introduces a failure path or platform call.
+- Local/shared allocation, return, and transfer introduce no platform call.
+- A missing retained stack limit selects the platform initial value; an invalid
+  non-`NULL` retained value fails coroutine initialization and returns the slot
+  to arena.
 
 ## Verification
 
@@ -341,16 +348,16 @@ and recycled.
 - Arena cold allocation, return, reuse, region growth, and concurrent address
   uniqueness.
 - Slot callback invocation counts across local, shared, and arena paths.
-- Init and reset failure isolation.
+- Init failure isolation.
 - No duplicate callback calls during local/shared batch transfers.
-- No VM callback on a local hot-cache allocation hit.
+- No VM callback on local/shared hot allocation, return, or transfer.
 
 ### Coroutine Adapter
 
 - Embedded and external stack-offset reporting.
 - Initial stack-limit installation after `coro_create()`.
-- Current stack-limit forwarding during `coro_destroy()`.
-- Safe reset after a partially initialized minicoro context.
+- Retained stack-limit capture before `mco_init()` and restoration afterward.
+- Cold slots select the initial limit while hot slots preserve a grown limit.
 
 ### Windows x64 ASM
 
@@ -359,8 +366,9 @@ and recycled.
 - Correct TEB `StackBase`, `StackLimit`, and `DeallocationStack` across context
   switches.
 - Stack growth after coroutine migration between worker threads.
-- No VM operation on reset when the stack did not grow.
-- Commit-charge release and initial guard restoration after growth.
+- Grown stack reuse through local and shared hot caches without VM operations.
+- Complete decommit only after hot-cache overflow returns a slot to arena.
+- Initial guard reconstruction when the cold arena slot is allocated again.
 - Stack overflow handling when growth reaches the configured stack low bound.
 - Hot/cold reuse under MSVC ASan.
 
@@ -374,9 +382,10 @@ and recycled.
 ### Performance
 
 The existing single-worker and multi-worker spawn benchmarks remain the
-performance baseline. The hot spawn path must not add a VM system call. Windows
-cold-slot initialization may perform platform VM operations, amortized by the
-existing copool batch refill policy.
+performance baseline. Allocating, returning, and transferring a hot slot do not
+add VM system calls. A grown slot may retain more than the initial commit while
+hot; bounded cache capacity limits that footprint. Arena overflow pays one
+full-slot decommit, and a later cold refill pays platform initialization.
 
 ## Files
 
@@ -394,7 +403,7 @@ Modified areas:
 
 - minicoro layout and stack-limit bridge
 - arena cold-state transitions
-- copool lifecycle callbacks
+- hot-slot stack-state preservation and copool initialization callbacks
 - scheduler descriptor/lifecycle integration
 - CMake source and test registration
 - architecture, runtime, and platform design documentation
