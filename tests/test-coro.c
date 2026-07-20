@@ -20,6 +20,8 @@
  */
 
 #include "assert.h"
+#include "xylem/xylem-threads.h"
+
 #include "platform/platform-info.h"
 #include "platform/platform-vmem.h"
 #include "runtime/copool.h"
@@ -32,7 +34,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <threads.h>
 
 #define CORO_STACK_FRAME_SIZE    8192
 #define CORO_STACK_DEPTH         8
@@ -84,7 +85,7 @@
 #define INVALID_LIMIT_CHILD_TIMEOUT_MS   5000U
 #endif
 
-#if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
+#if defined(TEST_MCO_WINDOWS_ASM)
 #include <malloc.h>
 #endif
 
@@ -109,6 +110,7 @@ typedef struct {
     uint8_t  seed;
     uint32_t checksum;
     int      deep;
+    int      allocate;
 } _stack_entry_ctx_t;
 
 #if defined(TEST_MCO_WINDOWS_ASM)
@@ -179,6 +181,20 @@ static void _stack_entry(mco_coro* co) {
         ctx->checksum = _touch_stack(CORO_STACK_DEPTH, ctx->seed);
     } else {
         ctx->checksum = (uint32_t)ctx->seed + 1U;
+    }
+    if (ctx->allocate) {
+#if defined(TEST_MCO_WINDOWS_ASM)
+        volatile uint8_t* frame =
+            (volatile uint8_t*)_alloca(96U * 1024U);
+        for (size_t i = 0; i < 96U * 1024U; i += 4096U) {
+            frame[i] = (uint8_t)i;
+        }
+#endif
+        void* ptr = calloc(80, 1);
+        if (ptr == NULL) {
+            abort();
+        }
+        free(ptr);
     }
 }
 
@@ -760,6 +776,9 @@ static void test_hot_stack_limit_reuse(void) {
         .seed = 0x21U,
         .deep = 1,
     };
+#if defined(TEST_MCO_WINDOWS_ASM) && defined(TEST_MCO_ASAN)
+    deep.allocate = 1;
+#endif
     _stack_entry_ctx_t shallow = {
         .seed = 0x61U,
         .deep = 0,
