@@ -63,8 +63,8 @@ those callbacks without depending on `coro` or `platform-coro` types.
 - `platform-coro` manages the usable page layout of a coroutine slot.
 - `copool` manages worker-local and shared hot-slot caches.
 - `arena` owns regions, slot addresses, and the fully decommitted cold state.
-- `platform-vmem` owns only generic reserve, commit, decommit, and release
-  operations.
+- `platform-vmem` owns generic reserve, commit, decommit, protection, and
+  release operations.
 
 `arena` must not include or call `platform-coro` directly. A generic arena only
 knows a slot address and size and must not depend on coroutine layout.
@@ -142,6 +142,27 @@ commits the required ranges directly. It does not decommit the slot before
 committing it. If a later commit or protection operation fails, initialization
 decommits the complete slot as rollback.
 
+The platform-vmem protection API uses portable read/write flags plus a guard
+modifier:
+
+```c
+typedef enum platform_vmem_prot_e {
+    PLATFORM_VMEM_PROT_NONE  = 0,
+    PLATFORM_VMEM_PROT_READ  = 1 << 0,
+    PLATFORM_VMEM_PROT_WRITE = 1 << 1,
+    PLATFORM_VMEM_PROT_GUARD = 1 << 2,
+} platform_vmem_prot_t;
+
+extern int platform_vmem_protect(
+    void* ptr,
+    size_t size,
+    platform_vmem_prot_t prot);
+```
+
+Windows maps the guard modifier to `PAGE_GUARD`. Unix maps it to a no-access
+guard range; the API does not promise Windows' one-shot guard-clearing behavior
+on other platforms.
+
 There is no `platform_coro_deinit()`. Returning a complete slot to the cold
 state is a full-slot decommit owned by `arena_free()`. A platform-coro deinit
 wrapper would duplicate that operation and invert the dependency from generic
@@ -151,7 +172,9 @@ arena code to coroutine-specific code.
 
 `platform_coro_init()` directly commits metadata, creates the initial guard
 page, and commits the initial usable stack page. Unused stack pages remain
-uncommitted.
+uncommitted. It uses `platform_vmem_commit()` for page commitment and
+`platform_vmem_protect()` with read, write, and guard flags for the moving
+guard page; it does not call `VirtualAlloc` or `VirtualProtect` directly.
 
 `platform_coro_initial_stack_limit()` returns the low address of the initial
 ordinary read/write stack page, not the guard address.
