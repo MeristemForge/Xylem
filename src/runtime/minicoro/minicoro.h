@@ -1742,7 +1742,12 @@ typedef struct _mco_storage {
 
 static MCO_FORCE_INLINE int _mco_guard_stack_page(void* ptr, size_t size) {
   DWORD previous_protection;
-  return VirtualProtect(ptr, size, PAGE_READWRITE | PAGE_GUARD, &previous_protection) ? 0 : -1;
+  /* PAGE_GUARD may update the current coroutine's TEB StackLimit. */
+  NT_TIB* tib = (NT_TIB*)NtCurrentTeb();
+  void* stack_limit = tib->StackLimit;
+  BOOL succeeded = VirtualProtect(ptr, size, PAGE_READWRITE | PAGE_GUARD, &previous_protection);
+  tib->StackLimit = stack_limit;
+  return succeeded ? 0 : -1;
 }
 
 #endif

@@ -121,6 +121,22 @@ typedef struct {
     void* stack_base;
     void* stack_limit;
 } _teb_entry_ctx_t;
+
+typedef struct {
+    arena_t* arena;
+    void*    slots[2];
+    int      next_slot;
+} _ordered_fixture_t;
+
+typedef struct {
+    _ordered_fixture_t* fixture;
+    void*               stack_base_before;
+    void*               stack_base_after;
+    void*               stack_limit_before;
+    void*               stack_limit_after;
+    mco_result          create_result;
+    mco_result          destroy_result;
+} _cold_child_ctx_t;
 #endif
 
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
@@ -380,6 +396,53 @@ static void _coro_fixture_destroy(_coro_fixture_t* fixture) {
     fixture->arena       = NULL;
 }
 
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void* _ordered_alloc_cb(
+    size_t             size,
+    void*              allocator_data,
+    mco_storage_state* storage_state) {
+    (void)size;
+    _ordered_fixture_t* fixture = (_ordered_fixture_t*)allocator_data;
+
+    if (fixture->next_slot >= 2) {
+        return NULL;
+    }
+    *storage_state = MCO_STORAGE_COLD;
+    return fixture->slots[fixture->next_slot++];
+}
+
+static void _ordered_dealloc_cb(
+    void*             ptr,
+    size_t            size,
+    void*             allocator_data,
+    mco_storage_state storage_state) {
+    (void)ptr;
+    (void)size;
+    (void)allocator_data;
+    (void)storage_state;
+}
+
+static void _cold_child_entry(mco_coro* co) {
+    _cold_child_ctx_t* ctx = (_cold_child_ctx_t*)mco_get_user_data(co);
+    NT_TIB*            tib = (NT_TIB*)NtCurrentTeb();
+    mco_desc           child_desc = mco_desc_init(_empty_entry, 128U * 1024U);
+    mco_coro*          child      = NULL;
+
+    child_desc.alloc_cb       = _ordered_alloc_cb;
+    child_desc.dealloc_cb     = _ordered_dealloc_cb;
+    child_desc.allocator_data = ctx->fixture;
+
+    ctx->stack_base_before  = tib->StackBase;
+    ctx->stack_limit_before = tib->StackLimit;
+    ctx->create_result      = mco_create(&child, &child_desc);
+    ctx->stack_base_after   = tib->StackBase;
+    ctx->stack_limit_after  = tib->StackLimit;
+    if (ctx->create_result == MCO_SUCCESS) {
+        ctx->destroy_result = mco_destroy(child);
+    }
+}
+#endif
+
 static int _migration_signal(_migration_ctx_t* ctx, int state) {
     int result = 0;
 
@@ -612,6 +675,43 @@ static void test_initial_teb_state(void) {
     ASSERT(mco_destroy(co) == MCO_SUCCESS);
 
     _coro_fixture_destroy(&fixture);
+}
+
+static void test_cold_child_creation_preserves_parent_teb(void) {
+    mco_desc          desc = mco_desc_init(_cold_child_entry, 128U * 1024U);
+    _ordered_fixture_t fixture = {
+        .arena = arena_create(desc.coro_size),
+    };
+    _cold_child_ctx_t child_ctx = {
+        .fixture        = &fixture,
+        .create_result  = MCO_GENERIC_ERROR,
+        .destroy_result = MCO_GENERIC_ERROR,
+    };
+    mco_coro* parent = NULL;
+
+    ASSERT(fixture.arena != NULL);
+    ASSERT(arena_alloc(fixture.arena, fixture.slots, 2) == 2);
+    if ((uintptr_t)fixture.slots[0] > (uintptr_t)fixture.slots[1]) {
+        void* slot       = fixture.slots[0];
+        fixture.slots[0] = fixture.slots[1];
+        fixture.slots[1] = slot;
+    }
+    desc.user_data      = &child_ctx;
+    desc.alloc_cb       = _ordered_alloc_cb;
+    desc.dealloc_cb     = _ordered_dealloc_cb;
+    desc.allocator_data = &fixture;
+
+    ASSERT(mco_create(&parent, &desc) == MCO_SUCCESS);
+    ASSERT(mco_resume(parent) == MCO_SUCCESS);
+    ASSERT(mco_status(parent) == MCO_DEAD);
+    ASSERT(mco_destroy(parent) == MCO_SUCCESS);
+    arena_free(fixture.arena, fixture.slots, 2);
+    arena_destroy(fixture.arena);
+
+    ASSERT(child_ctx.create_result == MCO_SUCCESS);
+    ASSERT(child_ctx.destroy_result == MCO_SUCCESS);
+    ASSERT(child_ctx.stack_base_before == child_ctx.stack_base_after);
+    ASSERT(child_ctx.stack_limit_before == child_ctx.stack_limit_after);
 }
 #endif
 
@@ -904,6 +1004,7 @@ int main(void) {
     test_create_prepared_allocator();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_initial_teb_state();
+    test_cold_child_creation_preserves_parent_teb();
 #endif
     test_create_destroy_reuse();
     test_cross_thread_stack_migration();
