@@ -27,7 +27,9 @@
 #include "platform/platform-vmem.h"
 #include "runtime/precond.h"
 
-#define MCO_GET_PAGE_SIZE() platform_vmem_page_size()
+#define MCO_GET_PAGE_SIZE()          platform_vmem_page_size()
+#define MCO_VMEM_COMMIT(ptr, size)   platform_vmem_commit((ptr), (size))
+#define MCO_VMEM_DECOMMIT(ptr, size) platform_vmem_decommit((ptr), (size))
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
 

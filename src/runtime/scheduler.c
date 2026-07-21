@@ -58,9 +58,10 @@
 #include "container/list.h"
 #include "container/mpsc.h"
 #include "container/queue.h"
+#include "arena.h"
 #include "copool.h"
-#include "coro.h"
 #include "iowait.h"
+#include "minicoro/minicoro.h"
 #include "platform/platform-cpu.h"
 #include "platform/platform-info.h"
 #include "platform/platform-sem.h"
@@ -83,7 +84,9 @@
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
 
-#define SCHED_CORO_STACK_SIZE (128 * 1024)
+#define SCHED_CORO_STACK_SIZE   (128 * 1024)
+#define SCHED_CORO_POOL_BATCH   (COPOOL_LOCAL_DEFAULT_CAP / 2)
+#define SCHED_CORO_POOL_IDLE_MS 10000
 
 typedef enum {
     WORKER_RUNNING,
@@ -117,6 +120,7 @@ typedef struct _sched_worker_s {
     void*                           park_arg;
     _Atomic(_sched_worker_state_t)  state;
     _Atomic(mco_coro*)              runnext;
+    copool_local_t*                 coro_pool;
 
     uint32_t                        sched_tick;
     uint32_t                        credit;
@@ -152,7 +156,8 @@ struct scheduler_s {
     _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
     _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
     mco_desc              coro_desc;
-    copool_t*             coro_pool;
+    arena_t*              coro_arena;
+    copool_shared_t*      coro_pool;
 };
 
 typedef enum _timer_state_e {
@@ -232,26 +237,161 @@ static void _sched_coro_entry_cb(mco_coro* co) {
     fn(arg);
 }
 
-static int32_t _sched_current_worker_index(scheduler_t* sched) {
+static _sched_worker_t* _sched_current_worker(scheduler_t* sched) {
     if (!_tls_worker || _tls_worker->sched != sched) {
-        return -1;
+        return NULL;
     }
-    return (int32_t)_tls_worker->index;
+    return _tls_worker;
 }
 
-static void* _sched_coro_alloc_cb(size_t size, void* allocator_data) {
-    (void)size;
-    scheduler_t* sched = (scheduler_t*)allocator_data;
-    int32_t      local_index = _sched_current_worker_index(sched);
-    return copool_acquire(sched->coro_pool, local_index);
+static int _sched_coro_arena_acquire(
+    scheduler_t*  sched,
+    copool_slot_t* slots,
+    int            count) {
+    void* ptrs[SCHED_CORO_POOL_BATCH];
+    if (count > SCHED_CORO_POOL_BATCH) {
+        count = SCHED_CORO_POOL_BATCH;
+    }
+
+    int acquire_count = arena_alloc(sched->coro_arena, ptrs, count);
+    for (int i = 0; i < acquire_count; i++) {
+        slots[i].ptr   = ptrs[i];
+        slots[i].state = COPOOL_SLOT_COLD;
+    }
+    return acquire_count;
 }
 
-static void
-_sched_coro_dealloc_cb(void* ptr, size_t size, void* allocator_data) {
+static void _sched_coro_arena_release(
+    scheduler_t*        sched,
+    const copool_slot_t* slots,
+    int                  count) {
+    while (count > 0) {
+        void* ptrs[SCHED_CORO_POOL_BATCH];
+        int release_count = count;
+        if (release_count > SCHED_CORO_POOL_BATCH) {
+            release_count = SCHED_CORO_POOL_BATCH;
+        }
+        for (int i = 0; i < release_count; i++) {
+            ptrs[i] = slots[i].ptr;
+        }
+        arena_free(sched->coro_arena, ptrs, release_count);
+        slots += release_count;
+        count -= release_count;
+    }
+}
+
+static void _sched_coro_shared_release(
+    scheduler_t*        sched,
+    const copool_slot_t* slots,
+    int                  count) {
+    if (count <= 0) {
+        return;
+    }
+    uint64_t deadline_ms =
+        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) +
+        SCHED_CORO_POOL_IDLE_MS;
+    int release_count = copool_shared_release(
+        sched->coro_pool,
+        slots,
+        count,
+        deadline_ms);
+    if (release_count < count) {
+        _sched_coro_arena_release(
+            sched,
+            &slots[release_count],
+            count - release_count);
+    }
+}
+
+static void* _sched_coro_alloc_cb(
+    size_t             size,
+    void*              allocator_data,
+    mco_storage_state* storage_state) {
     (void)size;
-    scheduler_t* sched = (scheduler_t*)allocator_data;
-    int32_t      local_index = _sched_current_worker_index(sched);
-    copool_release(sched->coro_pool, local_index, ptr);
+    scheduler_t*     sched  = (scheduler_t*)allocator_data;
+    _sched_worker_t* worker = _sched_current_worker(sched);
+    copool_slot_t     slot;
+
+    if (worker && copool_local_acquire(worker->coro_pool, &slot, 1) == 1) {
+        *storage_state =
+            slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+        return slot.ptr;
+    }
+
+    copool_slot_t slots[SCHED_CORO_POOL_BATCH];
+    int count = copool_shared_acquire(
+        sched->coro_pool,
+        slots,
+        worker ? SCHED_CORO_POOL_BATCH : 1);
+    if (count == 0) {
+        count = _sched_coro_arena_acquire(
+            sched,
+            slots,
+            SCHED_CORO_POOL_BATCH);
+    }
+    if (count == 0) {
+        return NULL;
+    }
+
+    slot = slots[0];
+    if (worker && count > 1) {
+        int release_count =
+            copool_local_release(worker->coro_pool, &slots[1], count - 1);
+        if (release_count < count - 1) {
+            _sched_coro_shared_release(
+                sched,
+                &slots[1 + release_count],
+                count - 1 - release_count);
+        }
+    } else if (count > 1) {
+        _sched_coro_shared_release(sched, &slots[1], count - 1);
+    }
+    *storage_state =
+        slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+    return slot.ptr;
+}
+
+static void _sched_coro_dealloc_cb(
+    void*             ptr,
+    size_t            size,
+    void*             allocator_data,
+    mco_storage_state storage_state) {
+    (void)size;
+    scheduler_t*     sched  = (scheduler_t*)allocator_data;
+    _sched_worker_t* worker = _sched_current_worker(sched);
+    copool_slot_t     slot = {
+        .ptr   = ptr,
+        .state = COPOOL_SLOT_HOT,
+    };
+
+    if (storage_state == MCO_STORAGE_COLD) {
+        slot.state = COPOOL_SLOT_COLD;
+        _sched_coro_arena_release(sched, &slot, 1);
+        return;
+    }
+    if (storage_state != MCO_STORAGE_HOT) {
+        xylem_loge("<sched> invalid coroutine storage state=%d", storage_state);
+        abort();
+    }
+
+    if (!worker) {
+        _sched_coro_shared_release(sched, &slot, 1);
+        return;
+    }
+    if (copool_local_release(worker->coro_pool, &slot, 1) == 1) {
+        return;
+    }
+
+    copool_slot_t slots[SCHED_CORO_POOL_BATCH];
+    int count = copool_local_acquire(
+        worker->coro_pool,
+        slots,
+        SCHED_CORO_POOL_BATCH);
+    _sched_coro_shared_release(sched, slots, count);
+    if (copool_local_release(worker->coro_pool, &slot, 1) != 1) {
+        xylem_loge("<sched> local coroutine pool release failed");
+        abort();
+    }
 }
 
 static void _sched_timer_ref(scheduler_timer_t* timer) {
@@ -626,7 +766,7 @@ int scheduler_coro_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
     desc.user_data = ctx;
 
     mco_coro* co = NULL;
-    if (coro_create(&co, &desc) != MCO_SUCCESS) {
+    if (mco_create(&co, &desc) != MCO_SUCCESS) {
         free(ctx);
         return -1;
     }
@@ -880,7 +1020,7 @@ static void _sched_coro_exit(_sched_worker_t* w, mco_coro* co) {
     spin_unlock(&owner->registry_lock);
 
     free(ctx);
-    coro_destroy(co);
+    mco_destroy(co);
 
     scheduler_t* sched = w->sched;
     int64_t      prev  = atomic_fetch_sub(&sched->alive, 1);
@@ -1176,6 +1316,7 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
             if (w->sem) {
                 platform_sem_destroy(w->sem);
             }
+            copool_local_destroy(w->coro_pool);
             {
                 heap_node_t* node;
                 while ((node = heap_peek(&w->timers)) != NULL) {
@@ -1206,7 +1347,8 @@ static void _sched_cleanup(scheduler_t* sched, int32_t started_count) {
         platform_poller_deinit(&sched->poller);
     }
 
-    copool_destroy(sched->coro_pool);
+    copool_shared_destroy(sched->coro_pool);
+    arena_destroy(sched->coro_arena);
     free(sched);
 }
 
@@ -1221,7 +1363,6 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
 
     int32_t           worker_count = (int32_t)platform_info_getcpus();
     size_t            stack_size   = SCHED_CORO_STACK_SIZE;
-    copool_slot_ops_t slot_ops;
 
     if (worker_count < 1) {
         worker_count = 4;
@@ -1289,12 +1430,9 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
     sched->coro_desc.alloc_cb       = _sched_coro_alloc_cb;
     sched->coro_desc.dealloc_cb     = _sched_coro_dealloc_cb;
     sched->coro_desc.allocator_data = sched;
-    slot_ops = coro_get_slot_ops(&sched->coro_desc);
-    sched->coro_pool = copool_create(
-        sched->coro_desc.coro_size,
-        worker_count,
-        &slot_ops);
-    if (!sched->coro_pool) {
+    sched->coro_arena = arena_create(sched->coro_desc.coro_size);
+    sched->coro_pool  = copool_shared_create();
+    if (!sched->coro_arena || !sched->coro_pool) {
         _sched_cleanup(sched, 0);
         return NULL;
     }
@@ -1322,11 +1460,12 @@ scheduler_t* scheduler_create(scheduler_opts_t* opts) {
         }
         sched->worker_count = i + 1;
 
-        w->deque = wsq_create(SCHED_DEQUE_CAP);
-        w->sem = platform_sem_create(0);
+        w->deque     = wsq_create(SCHED_DEQUE_CAP);
+        w->sem       = platform_sem_create(0);
+        w->coro_pool = copool_local_create(0);
         atomic_init(&w->next_deadline_ms, UINT64_MAX);
 
-        if (!w->deque || !w->sem) {
+        if (!w->deque || !w->sem || !w->coro_pool) {
             _sched_cleanup(sched, 0);
             return NULL;
         }
@@ -1366,7 +1505,7 @@ void scheduler_destroy(scheduler_t* sched) {
 
             _sched_coro_ctx_t* ctx =
                 list_entry(node, _sched_coro_ctx_t, registry_node);
-            coro_destroy(ctx->co);
+            mco_destroy(ctx->co);
             free(ctx);
 
             spin_lock(&w->registry_lock);

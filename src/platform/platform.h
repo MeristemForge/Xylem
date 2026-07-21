@@ -22,7 +22,6 @@
 _Pragma("once")
 
 #include "platform-cpu.h"
-#include "platform-coro.h"
 #include "platform-futex.h"
 #include "platform-info.h"
 #include "platform-io.h"

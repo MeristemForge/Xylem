@@ -103,12 +103,6 @@ int platform_vmem_decommit(void* ptr, size_t size) {
 
 #endif
 
-int platform_vmem_guard(void* ptr, size_t size) {
-    (void)ptr;
-    (void)size;
-    return 0;
-}
-
 int platform_vmem_release(void* ptr, size_t size) {
     return munmap(ptr, size) == 0 ? 0 : -1;
 }

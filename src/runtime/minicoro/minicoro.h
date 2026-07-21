@@ -284,6 +284,12 @@ typedef enum mco_result {
   MCO_STACK_OVERFLOW
 } mco_result;
 
+/* Allocator storage states. */
+typedef enum mco_storage_state {
+  MCO_STORAGE_COLD = 0, /* Storage requires initial platform preparation. */
+  MCO_STORAGE_HOT       /* Storage is accessible and reusable. */
+} mco_storage_state;
+
 /* Coroutine structure. */
 typedef struct mco_coro mco_coro;
 struct mco_coro {
@@ -294,7 +300,7 @@ struct mco_coro {
   void* user_data;
   size_t coro_size;
   void* allocator_data;
-  void (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);
+  void (*dealloc_cb)(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state);
   void* stack_base; /* Stack base address, can be used to scan memory in a garbage collector. */
   size_t stack_size;
   unsigned char* storage;
@@ -311,8 +317,8 @@ typedef struct mco_desc {
   void (*func)(mco_coro* co); /* Entry point function for the coroutine. */
   void* user_data;            /* Coroutine user data, can be get with `mco_get_user_data`. */
   /* Custom allocation interface. */
-  void* (*alloc_cb)(size_t size, void* allocator_data); /* Custom allocation function. */
-  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data);     /* Custom deallocation function. */
+  void* (*alloc_cb)(size_t size, void* allocator_data, mco_storage_state* storage_state); /* Custom allocation function. */
+  void  (*dealloc_cb)(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state); /* Custom deallocation function. */
   void* allocator_data;       /* User data pointer passed to `alloc`/`dealloc` allocation functions. */
   size_t storage_size;        /* Coroutine storage size, to be used with the storage APIs. */
   /* These must be initialized only through `mco_init_desc`. */
@@ -322,17 +328,14 @@ typedef struct mco_desc {
 
 /* Coroutine functions. */
 MCO_API mco_desc mco_desc_init(void (*func)(mco_coro* co), size_t stack_size);  /* Initialize description of a coroutine. When stack size is 0 then MCO_DEFAULT_STACK_SIZE is used. */
-MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize the coroutine. */
+MCO_API mco_result mco_init(mco_coro* co, mco_desc* desc);                      /* Initialize a coroutine in caller-provided accessible storage. */
 MCO_API mco_result mco_uninit(mco_coro* co);                                    /* Uninitialize the coroutine, may fail if it's not dead or suspended. */
-MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               /* Allocates and initializes a new coroutine. */
+MCO_API mco_result mco_create(mco_coro** out_co, mco_desc* desc);               /* Allocate, prepare and initialize a new coroutine. */
 MCO_API mco_result mco_destroy(mco_coro* co);                                   /* Uninitialize and deallocate the coroutine, may fail if it's not dead or suspended. */
 MCO_API mco_result mco_resume(mco_coro* co);                                    /* Starts or continues the execution of the coroutine. */
 MCO_API mco_result mco_yield(mco_coro* co);                                     /* Suspends the execution of a coroutine. */
 MCO_API mco_state mco_status(mco_coro* co);                                     /* Returns the status of the coroutine. */
 MCO_API void* mco_get_user_data(mco_coro* co);                                  /* Get coroutine user data supplied on coroutine creation. */
-MCO_API size_t mco_desc_stack_offset(const mco_desc* desc);                      /* Get the platform-managed stack offset, or 0 when unavailable. */
-MCO_API void* mco_get_stack_limit(const mco_coro* co);                           /* Get the saved platform stack limit when available. */
-MCO_API void mco_set_stack_limit(mco_coro* co, void* stack_limit);               /* Set the saved platform stack limit when available. */
 
 /* Storage interface functions, used to pass values between yield and resume. */
 MCO_API mco_result mco_push(mco_coro* co, const void* src, size_t len); /* Push bytes to the coroutine storage. Use to send values between yield and resume. */
@@ -415,6 +418,13 @@ extern "C" {
   #endif
 #endif
 
+#if defined(MCO_VMEM_COMMIT) || defined(MCO_VMEM_DECOMMIT)
+  #if !defined(MCO_VMEM_COMMIT) || !defined(MCO_VMEM_DECOMMIT)
+    #error "MCO_VMEM_COMMIT and MCO_VMEM_DECOMMIT must be defined together"
+  #endif
+  #define _MCO_USE_VMEM_STORAGE
+#endif
+
 #define _MCO_UNUSED(x) (void)(x)
 
 #if !defined(MCO_NO_DEBUG) && !defined(NDEBUG) && !defined(MCO_DEBUG)
@@ -484,7 +494,9 @@ extern "C" {
   #endif
 #endif
 
-#if defined(_WIN32) && (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR))
+#if defined(_WIN32) && \
+    (defined(MCO_USE_FIBERS) || defined(MCO_USE_VMEM_ALLOCATOR) || \
+     (defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))))
   #ifndef _WIN32_WINNT
     #define _WIN32_WINNT 0x0400
   #endif
@@ -496,26 +508,30 @@ extern "C" {
 
 #ifndef MCO_NO_DEFAULT_ALLOCATOR
   #if defined(MCO_USE_VMEM_ALLOCATOR) && defined(_WIN32)
-    static void* mco_alloc(size_t size, void* allocator_data) {
+    static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
+      *storage_state = MCO_STORAGE_HOT;
       return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
-    static void mco_dealloc(void* ptr, size_t size, void* allocator_data) {
+    static void mco_dealloc(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state) {
       _MCO_UNUSED(allocator_data);
       _MCO_UNUSED(size);
+      _MCO_UNUSED(storage_state);
       int res = VirtualFree(ptr, 0, MEM_RELEASE);
       _MCO_UNUSED(res);
       MCO_ASSERT(res != 0);
     }
   #elif defined(MCO_USE_VMEM_ALLOCATOR) /* POSIX virtual memory allocator */
     #include <sys/mman.h>
-    static void* mco_alloc(size_t size, void* allocator_data) {
+    static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
+      *storage_state = MCO_STORAGE_HOT;
       void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       return ptr != MAP_FAILED ? ptr : NULL;
     }
-    static void mco_dealloc(void* ptr, size_t size, void* allocator_data) {
+    static void mco_dealloc(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state) {
       _MCO_UNUSED(allocator_data);
+      _MCO_UNUSED(storage_state);
       int res = munmap(ptr, size);
       _MCO_UNUSED(res);
       MCO_ASSERT(res == 0);
@@ -528,13 +544,15 @@ extern "C" {
       #define MCO_ALLOC(size) calloc(1, size)
       #define MCO_DEALLOC(ptr, size) free(ptr)
     #endif
-    static void* mco_alloc(size_t size, void* allocator_data) {
+    static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
+      *storage_state = MCO_STORAGE_HOT;
       return MCO_ALLOC(size);
     }
-    static void mco_dealloc(void* ptr, size_t size, void* allocator_data) {
+    static void mco_dealloc(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state) {
       _MCO_UNUSED(size);
       _MCO_UNUSED(allocator_data);
+      _MCO_UNUSED(storage_state);
       MCO_DEALLOC(ptr, size);
     }
   #endif /* MCO_USE_VMEM_ALLOCATOR */
@@ -1714,39 +1732,98 @@ static MCO_FORCE_INLINE void _mco_init_desc_sizes(mco_desc* desc, size_t stack_s
 
 /* ---------------------------------------------------------------------------------------------- */
 
-size_t mco_desc_stack_offset(const mco_desc* desc) {
-#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  if(!desc || desc->coro_size < desc->stack_size) {
-    return 0;
+typedef struct _mco_storage {
+  mco_storage_state state;
+  void* stack_limit;
+} _mco_storage;
+
+#if defined(_WIN32) && defined(MCO_USE_ASM) && \
+    (defined(__x86_64__) || defined(_M_X64)) && defined(_MCO_USE_VMEM_STORAGE)
+
+static MCO_FORCE_INLINE int _mco_guard_stack_page(void* ptr, size_t size) {
+  DWORD previous_protection;
+  return VirtualProtect(ptr, size, PAGE_READWRITE | PAGE_GUARD, &previous_protection) ? 0 : -1;
+}
+
+#endif
+
+static mco_result _mco_prepare_storage(mco_coro* co, const mco_desc* desc, _mco_storage* storage) {
+  storage->stack_limit = NULL;
+  if(storage->state != MCO_STORAGE_COLD && storage->state != MCO_STORAGE_HOT) {
+    return MCO_INVALID_ARGUMENTS;
   }
-  return desc->coro_size - desc->stack_size;
+#if defined(_WIN32) && defined(MCO_USE_ASM) && \
+    (defined(__x86_64__) || defined(_M_X64)) && defined(_MCO_USE_VMEM_STORAGE)
+#ifndef MCO_NO_DEFAULT_ALLOCATOR
+  if(desc->alloc_cb == mco_alloc) {
+    return MCO_SUCCESS;
+  }
+#endif
+  size_t page_size = MCO_GET_PAGE_SIZE();
+  if(page_size == 0 || desc->coro_size < desc->stack_size) {
+    return MCO_INVALID_ARGUMENTS;
+  }
+  size_t co_addr = (size_t)co;
+  size_t stack_offset = desc->coro_size - desc->stack_size;
+  size_t stack_low = co_addr + stack_offset;
+  size_t stack_high = stack_low + desc->stack_size;
+  if(co_addr % page_size != 0 || stack_offset % page_size != 0 ||
+     desc->stack_size < page_size * 2 || desc->stack_size % page_size != 0) {
+    return MCO_SUCCESS;
+  }
+  size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
+  _mco_context* context = (_mco_context*)context_addr;
+  if(storage->state == MCO_STORAGE_COLD) {
+    size_t guard_low = stack_high - page_size * 2;
+    if(MCO_VMEM_COMMIT(co, stack_offset) != 0) {
+      return MCO_OUT_OF_MEMORY;
+    }
+    if(MCO_VMEM_COMMIT((void*)guard_low, page_size * 2) != 0) {
+      (void)MCO_VMEM_DECOMMIT(co, desc->coro_size);
+      return MCO_OUT_OF_MEMORY;
+    }
+    if(_mco_guard_stack_page((void*)guard_low, page_size) != 0) {
+      (void)MCO_VMEM_DECOMMIT(co, desc->coro_size);
+      return MCO_MAKE_CONTEXT_ERROR;
+    }
+    storage->stack_limit = (void*)(stack_high - page_size);
+    return MCO_SUCCESS;
+  }
+
+  void* stack_limit = context->ctx.stack_limit;
+  size_t limit = (size_t)stack_limit;
+  if(limit <= stack_low || limit >= stack_high || limit % page_size != 0) {
+    return MCO_INVALID_COROUTINE;
+  }
+  storage->stack_limit = stack_limit;
+#elif defined(_WIN32) && defined(MCO_USE_FIBERS) && defined(_MCO_USE_VMEM_STORAGE)
+  if(storage->state == MCO_STORAGE_COLD) {
+    size_t page_size = MCO_GET_PAGE_SIZE();
+    if(page_size == 0) {
+      return MCO_INVALID_ARGUMENTS;
+    }
+    size_t commit_size = _mco_align_forward(desc->coro_size, page_size);
+    if(MCO_VMEM_COMMIT(co, commit_size) != 0) {
+      return MCO_OUT_OF_MEMORY;
+    }
+  }
 #else
+  _MCO_UNUSED(co);
   _MCO_UNUSED(desc);
-  return 0;
 #endif
+  return MCO_SUCCESS;
 }
 
-void* mco_get_stack_limit(const mco_coro* co) {
-#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  if(co && co->context) {
-    return ((_mco_context*)co->context)->ctx.stack_limit;
-  }
-  return NULL;
-#else
-  _MCO_UNUSED(co);
-  return NULL;
-#endif
-}
-
-void mco_set_stack_limit(mco_coro* co, void* stack_limit) {
-#if defined(_WIN32) && defined(MCO_USE_ASM) && (defined(__x86_64__) || defined(_M_X64))
-  if(co && co->context) {
+static void _mco_restore_storage(mco_coro* co, const _mco_storage* storage) {
+#if defined(_WIN32) && defined(MCO_USE_ASM) && \
+    (defined(__x86_64__) || defined(_M_X64)) && defined(_MCO_USE_VMEM_STORAGE)
+  if(storage->stack_limit) {
     _mco_context* context = (_mco_context*)co->context;
-    context->ctx.stack_limit = stack_limit;
+    context->ctx.stack_limit = storage->stack_limit;
   }
 #else
   _MCO_UNUSED(co);
-  _MCO_UNUSED(stack_limit);
+  _MCO_UNUSED(storage);
 #endif
 }
 
@@ -1798,11 +1875,11 @@ mco_result mco_init(mco_coro* co, mco_desc* desc) {
     MCO_LOG("attempt to initialize an invalid coroutine");
     return MCO_INVALID_COROUTINE;
   }
-  memset(co, 0, sizeof(mco_coro));
   /* Validate coroutine description. */
   mco_result res = _mco_validate_desc(desc);
   if(res != MCO_SUCCESS)
     return res;
+  memset(co, 0, sizeof(mco_coro));
   /* Create the coroutine. */
   res = _mco_create_context(co, desc);
   if(res != MCO_SUCCESS)
@@ -1853,20 +1930,48 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
     MCO_LOG("coroutine allocator description is not set");
     return MCO_INVALID_ARGUMENTS;
   }
+  mco_result res = _mco_validate_desc(desc);
+  if(res != MCO_SUCCESS) {
+    *out_co = NULL;
+    return res;
+  }
   /* Allocate the coroutine. */
-  mco_coro* co = (mco_coro*)desc->alloc_cb(desc->coro_size, desc->allocator_data);
+  _mco_storage storage = {
+    .state = MCO_STORAGE_COLD,
+    .stack_limit = NULL
+  };
+  mco_coro* co = (mco_coro*)desc->alloc_cb(
+    desc->coro_size,
+    desc->allocator_data,
+    &storage.state);
   if(!co) {
     MCO_LOG("coroutine allocation failed");
     *out_co = NULL;
     return MCO_OUT_OF_MEMORY;
   }
-  /* Initialize the coroutine. */
-  mco_result res = mco_init(co, desc);
+  /* Prepare allocator storage before clearing coroutine metadata. */
+  res = _mco_prepare_storage(co, desc, &storage);
   if(res != MCO_SUCCESS) {
-    desc->dealloc_cb(co, desc->coro_size, desc->allocator_data);
+    desc->dealloc_cb(
+      co,
+      desc->coro_size,
+      desc->allocator_data,
+      MCO_STORAGE_COLD);
     *out_co = NULL;
     return res;
   }
+  /* Initialize the coroutine. */
+  res = mco_init(co, desc);
+  if(res != MCO_SUCCESS) {
+    desc->dealloc_cb(
+      co,
+      desc->coro_size,
+      desc->allocator_data,
+      MCO_STORAGE_COLD);
+    *out_co = NULL;
+    return res;
+  }
+  _mco_restore_storage(co, &storage);
   *out_co = co;
   return MCO_SUCCESS;
 }
@@ -1885,7 +1990,11 @@ mco_result mco_destroy(mco_coro* co) {
     MCO_LOG("attempt destroy a coroutine that has no free callback");
     return MCO_INVALID_POINTER;
   }
-  co->dealloc_cb(co, co->coro_size, co->allocator_data);
+  co->dealloc_cb(
+    co,
+    co->coro_size,
+    co->allocator_data,
+    MCO_STORAGE_HOT);
   return MCO_SUCCESS;
 }
 

@@ -54,7 +54,6 @@ set(SRCS
 	src/runtime/dynpool.c
 	src/runtime/arena.c
 	src/runtime/copool.c
-	src/runtime/coro.c
 	src/runtime/scheduler.c
 	src/runtime/iowait.c
 	src/sync/xylem-waitgroup.c
@@ -131,7 +130,6 @@ set(SRCS
 
 if(WIN32)
 	list(APPEND SRCS
-		src/platform/win/platform-coro.c
 		src/platform/win/platform-info.c
 		src/platform/win/platform-io.c
 		src/platform/win/platform-poller.c
@@ -147,7 +145,6 @@ endif()
 
 if(UNIX)
 	list(APPEND SRCS
-		src/platform/unix/platform-coro.c
 		src/platform/unix/platform-info.c
 		src/platform/unix/platform-io.c
 		src/platform/unix/platform-poller.c

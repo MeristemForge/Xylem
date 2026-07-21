@@ -21,78 +21,133 @@
 
 _Pragma("once")
 
-#include <stddef.h>
 #include <stdint.h>
 
-/* Opaque fixed-slot coroutine pool. */
-typedef struct copool_s copool_t;
+#define COPOOL_LOCAL_DEFAULT_CAP 64
 
-/* Cold-slot initialization callback. It may run concurrently. */
-typedef struct copool_slot_ops_s {
-    int (*init)(void* ptr, size_t size, void* ud);
-    void* ud;
-} copool_slot_ops_t;
+typedef struct copool_local_s  copool_local_t;
+typedef struct copool_shared_s copool_shared_t;
+
+typedef enum copool_slot_state_e {
+    COPOOL_SLOT_COLD,
+    COPOOL_SLOT_HOT,
+} copool_slot_state_t;
+
+typedef struct copool_slot_s {
+    void*               ptr;
+    copool_slot_state_t state;
+} copool_slot_t;
 
 /**
- * @brief Create a fixed-slot coroutine pool.
+ * @brief Create a worker-local coroutine slot pool.
  *
- * The required ops structure and init callback are copied by the pool. The
- * caller must keep ops->ud valid until copool_destroy() returns and synchronize
- * access to callback state. init may run concurrently and is called only for a
- * cold slot refilled from the backing arena. Local and shared caches retain hot
- * slot state. Each local pool holds 64 slots; the shared pool holds
- * local_pool_count * 64 slots. Callback size is the page-aligned arena slot
- * size.
+ * @param capacity  Maximum number of slots, or 0 for the default of 64.
  *
- * @param slot_size         Required slot size in bytes, aligned internally.
- * @param local_pool_count  Number of worker-local pools.
- * @param ops               Required cold-slot initializer copied by the pool.
- *
- * @return Pool handle, or NULL for invalid arguments or allocation failure.
+ * @return Pool handle, or NULL for an invalid capacity or allocation failure.
  */
-extern copool_t* copool_create(
-    size_t                   slot_size,
-    int32_t                  local_pool_count,
-    const copool_slot_ops_t* ops);
+extern copool_local_t* copool_local_create(int capacity);
 
 /**
- * @brief Destroy a coroutine pool and release its arena.
+ * @brief Destroy a worker-local coroutine slot pool.
+ *
+ * Stored slot addresses are discarded; the pool does not own slot memory.
+ *
+ * @param pool  Pool handle, or NULL.
+ */
+extern void copool_local_destroy(copool_local_t* pool);
+
+/**
+ * @brief Return the capacity of a worker-local pool.
+ *
+ * @param pool  Pool handle, or NULL.
+ *
+ * @return Slot capacity, or 0 for NULL.
+ */
+extern int copool_local_capacity(const copool_local_t* pool);
+
+/**
+ * @brief Acquire up to count slots from a worker-local pool.
+ *
+ * Slots are removed in LIFO order. A local pool may be accessed only by its
+ * owning worker.
+ *
+ * @param pool   Pool handle.
+ * @param slots  Output array with capacity for count entries.
+ * @param count  Maximum number of slots to acquire.
+ *
+ * @return Number of slots acquired, from 0 through count.
+ */
+extern int copool_local_acquire(
+    copool_local_t* pool,
+    copool_slot_t*  slots,
+    int             count);
+
+/**
+ * @brief Release up to count slots into a worker-local pool.
+ *
+ * A local pool may be accessed only by its owning worker.
+ *
+ * @param pool   Pool handle.
+ * @param slots  Slot entries to store.
+ * @param count  Number of entries available in slots.
+ *
+ * @return Number of slots stored, from 0 through count.
+ */
+extern int copool_local_release(
+    copool_local_t*      pool,
+    const copool_slot_t* slots,
+    int                  count);
+
+/**
+ * @brief Create an unbounded shared coroutine slot pool.
+ *
+ * @return Pool handle, or NULL on allocation failure.
+ */
+extern copool_shared_t* copool_shared_create(void);
+
+/**
+ * @brief Destroy a shared coroutine slot pool.
+ *
+ * Stored slot addresses are discarded; the pool does not own slot memory.
  *
  * @param pool  Pool handle, or NULL.
  *
  * @note The caller must ensure no pool operations are in flight.
  */
-extern void copool_destroy(copool_t* pool);
+extern void copool_shared_destroy(copool_shared_t* pool);
 
 /**
- * @brief Allocate a committed slot.
+ * @brief Acquire up to count slots from the shared pool.
+ *
+ * Slots are removed in LIFO order. The oldest entries remain at the list head
+ * for deadline-based reclamation. This operation is thread-safe.
+ *
+ * @param pool   Pool handle.
+ * @param slots  Output array with capacity for count entries.
+ * @param count  Maximum number of slots to acquire.
+ *
+ * @return Number of slots acquired, from 0 through count.
+ */
+extern int copool_shared_acquire(
+    copool_shared_t* pool,
+    copool_slot_t*   slots,
+    int              count);
+
+/**
+ * @brief Release up to count slots into the shared pool.
+ *
+ * A metadata node is allocated for each stored slot. This operation is
+ * thread-safe and may store fewer than count entries on allocation failure.
  *
  * @param pool         Pool handle.
- * @param local_index  Local cache index, or -1 for the shared path.
+ * @param slots        Slot entries to store.
+ * @param count        Number of entries available in slots.
+ * @param deadline_ms  Absolute idle-expiration deadline for all entries.
  *
- * @return Slot address, or NULL for invalid arguments or allocation failure.
- *
- * @note A nonnegative local_index must not be used concurrently by multiple
- * threads.
+ * @return Number of slots stored, from 0 through count.
  */
-extern void* copool_acquire(
-    copool_t* pool,
-    int32_t local_index);
-
-/**
- * @brief Return a hot slot to a cache or the backing arena.
- *
- * Local and shared caches preserve the slot's committed pages and other hot
- * state. Only slots that spill to the backing arena are decommitted.
- *
- * @param pool         Pool handle, or NULL.
- * @param local_index  Local cache index, or -1 for the shared path.
- * @param ptr          Slot address, or NULL.
- *
- * @note A nonnegative local_index must not be used concurrently by multiple
- * threads.
- */
-extern void copool_release(
-    copool_t* pool,
-    int32_t local_index,
-    void* ptr);
+extern int copool_shared_release(
+    copool_shared_t*     pool,
+    const copool_slot_t* slots,
+    int                  count,
+    uint64_t             deadline_ms);

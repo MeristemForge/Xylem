@@ -77,18 +77,6 @@ extern void* platform_vmem_reserve(size_t size);
 extern int platform_vmem_commit(void* ptr, size_t size);
 
 /**
- * @brief Mark a committed range as a coroutine stack guard.
- *
- * @param ptr   Page-aligned committed address.
- * @param size  Number of page-aligned bytes to guard.
- *
- * @return 0 on success, -1 on platform failure.
- *
- * @note Windows guard protection is one-shot. Unix implementations are no-ops.
- */
-extern int platform_vmem_guard(void* ptr, size_t size);
-
-/**
  * @brief Make a range reusable while preserving its reservation.
  *
  * Previous contents become unspecified. The range must not be accessed until

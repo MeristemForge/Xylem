@@ -98,21 +98,22 @@ that can't be made non-blocking) is offloaded to the **dynpool** via
 
 Coroutine allocation has two ownership paths:
 
-- **scheduler -> coro -> minicoro / platform-coro** owns coroutine creation and
-  backend-specific initial stack layout.
-- **scheduler -> copool -> arena -> platform-vmem** owns reusable fixed-slot
-  storage, all worker-local/shared caches, and its virtual-memory reservations.
+- **scheduler -> minicoro** owns coroutine construction and backend-specific
+  storage preparation.
+- **scheduler -> copool / arena -> platform-vmem** owns worker-local/shared
+  caches and virtual-memory reservations.
 
-The coro adapter supplies copool's cold-slot initialization callback without
-making arena depend on coroutine internals. A cold arena address becomes a hot
-reusable slot only after initial layout preparation succeeds. Used slots retain
-their committed stack state in the worker-local and shared hot caches. Cache
-overflow returns complete slots to arena for full decommit, and only successful
-decommit republishes a cold address. Complete regions remain reserved until
-arena destruction, so many slots share one mapping and Unix VMA usage grows
-with regions instead of coroutines. The Windows Fiber stack remains external to
-the slot and is owned by `CreateFiberEx()` / `DeleteFiber()` (see
-[`design/runtime.md`](design/runtime.md) §6).
+The scheduler exposes its allocator callbacks to minicoro and coordinates three
+independent objects: one arena, one unbounded shared pool, and one fixed local
+pool per worker. Copool stores slot addresses and their cold/hot state but does
+not own or initialize slot memory. The allocator returns that state alongside
+the slot: cold storage receives the backend layout, while hot storage retains
+its committed stack extent and saved `StackLimit`. Complete regions remain
+reserved until arena destruction, so many slots share one mapping and Unix VMA
+usage grows with regions instead of coroutines. The Windows Fiber stack remains
+external to the slot and is owned by
+`CreateFiberEx()` / `DeleteFiber()` (see [`design/runtime.md`](design/runtime.md)
+§6).
 
 ## 5. How a network call flows
 
@@ -174,8 +175,6 @@ backends in `unix/` and `win/`:
   on Unix).
 - **vmem** — reserve/commit/decommit/release lifecycle for reusable virtual
   memory regions.
-- **coro** — cold-slot preparation on Unix and Windows, including the Windows
-  ASM lazy-stack initial layout.
 - **sem / info / string / serial** — semaphores, CPU count, string helpers,
   and serial-port I/O.
 

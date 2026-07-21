@@ -59,30 +59,6 @@ static void test_reserve_commit_decommit_release(void) {
     ASSERT(platform_vmem_release(ptr, size) == 0);
 }
 
-static void test_guard(void) {
-    size_t   page_size = platform_vmem_page_size();
-    uint8_t* ptr;
-#if defined(_WIN32)
-    MEMORY_BASIC_INFORMATION info;
-#endif
-
-    ASSERT(page_size > 0);
-    ptr = (uint8_t*)platform_vmem_reserve(page_size);
-    ASSERT(ptr != NULL);
-    VMEM_ASAN_UNPOISON(ptr, page_size);
-    ASSERT(platform_vmem_commit(ptr, page_size) == 0);
-    ASSERT(platform_vmem_guard(ptr, page_size) == 0);
-#if defined(_WIN32)
-    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
-    ASSERT((info.Protect & 0xffU) == PAGE_READWRITE);
-    ASSERT((info.Protect & PAGE_GUARD) != 0);
-#else
-    ptr[0] = 0x5a;
-    ASSERT(ptr[0] == 0x5a);
-#endif
-    ASSERT(platform_vmem_release(ptr, page_size) == 0);
-}
-
 #ifdef VMEM_ASAN
 static void test_shadow_state_is_caller_owned(void) {
     size_t   page_size = platform_vmem_page_size();
@@ -146,7 +122,6 @@ static void test_page_size_lookup_is_cached(void) {
 
 int main(void) {
     test_reserve_commit_decommit_release();
-    test_guard();
 #ifdef VMEM_ASAN
     test_shadow_state_is_caller_owned();
 #endif

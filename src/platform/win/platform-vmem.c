@@ -55,18 +55,6 @@ int platform_vmem_commit(void* ptr, size_t size) {
     return 0;
 }
 
-int platform_vmem_guard(void* ptr, size_t size) {
-    DWORD previous_protection;
-
-    return VirtualProtect(
-               ptr,
-               size,
-               PAGE_READWRITE | PAGE_GUARD,
-               &previous_protection)
-               ? 0
-               : -1;
-}
-
 int platform_vmem_decommit(void* ptr, size_t size) {
     if (!VirtualFree(ptr, size, MEM_DECOMMIT)) {
         return -1;

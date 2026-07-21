@@ -21,271 +21,186 @@
 
 #include "copool.h"
 
-#include "xylem/xylem-logger.h"
-
-#include "arena.h"
+#include "container/list.h"
 #include "sync/spin.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 
-#define COPOOL_LOCAL_CAP 64
-
-typedef struct {
-    int32_t count;
-    int32_t cap;
-    void*   slots[];
-} copool_cache_t;
-
-struct copool_s {
-    copool_cache_t**  local_pools;
-    int32_t           local_pool_count;
-    spin_t            shared_lock;
-    copool_cache_t*   shared_pool;
-    size_t            slot_size;
-    copool_slot_ops_t ops;
-    arena_t*          arena;
+struct copool_local_s {
+    int           count;
+    int           capacity;
+    copool_slot_t slots[];
 };
 
-static copool_cache_t* _copool_cache_create(int32_t cap) {
-    if (cap < 0 || (size_t)cap >
-        (SIZE_MAX - sizeof(copool_cache_t)) / sizeof(void*)) {
+typedef struct _copool_shared_node_s {
+    list_node_t   node;
+    copool_slot_t slot;
+    uint64_t      deadline_ms;
+} _copool_shared_node_t;
+
+struct copool_shared_s {
+    list_t slots;
+    spin_t lock;
+};
+
+static int _copool_slot_valid(const copool_slot_t* slot) {
+    return slot->ptr &&
+           (slot->state == COPOOL_SLOT_COLD || slot->state == COPOOL_SLOT_HOT);
+}
+
+static void _copool_destroy_entries(list_t* entries) {
+    list_node_t* node;
+    while ((node = list_head(entries)) != NULL) {
+        list_remove(entries, node);
+        free(list_entry(node, _copool_shared_node_t, node));
+    }
+}
+
+copool_local_t* copool_local_create(int capacity) {
+    if (capacity == 0) {
+        capacity = COPOOL_LOCAL_DEFAULT_CAP;
+    }
+    if (capacity < 0 ||
+        (size_t)capacity > (SIZE_MAX - sizeof(copool_local_t)) /
+                               sizeof(copool_slot_t)) {
         return NULL;
     }
 
-    size_t size = sizeof(copool_cache_t) + (size_t)cap * sizeof(void*);
-    copool_cache_t* cache = (copool_cache_t*)calloc(1, size);
-    if (!cache) {
-        return NULL;
-    }
-    cache->cap = cap;
-    return cache;
-}
-
-static void _copool_cache_destroy(copool_cache_t* cache) {
-    free(cache);
-}
-
-static int _copool_cache_take(
-    copool_cache_t* cache,
-    void** slots,
-    int count) {
-    int take_count = cache->count;
-    if (take_count > count) {
-        take_count = count;
-    }
-    for (int i = 0; i < take_count; i++) {
-        slots[i] = cache->slots[--cache->count];
-    }
-    return take_count;
-}
-
-static int _copool_cache_put(
-    copool_cache_t* cache,
-    void** slots,
-    int count) {
-    int put_count = cache->cap - cache->count;
-    if (put_count > count) {
-        put_count = count;
-    }
-    for (int i = 0; i < put_count; i++) {
-        cache->slots[cache->count++] = slots[i];
-    }
-    return put_count;
-}
-
-static int _copool_shared_take(copool_t* pool, void** slots, int count) {
-    spin_lock(&pool->shared_lock);
-    int take_count = _copool_cache_take(pool->shared_pool, slots, count);
-    spin_unlock(&pool->shared_lock);
-    return take_count;
-}
-
-static int _copool_shared_put(copool_t* pool, void** slots, int count) {
-    spin_lock(&pool->shared_lock);
-    int put_count = _copool_cache_put(pool->shared_pool, slots, count);
-    spin_unlock(&pool->shared_lock);
-    return put_count;
-}
-
-static int _copool_init_slots(copool_t* pool, void** slots, int count) {
-    int success_count = 0;
-    for (int i = 0; i < count; i++) {
-        if (pool->ops.init(slots[i], pool->slot_size, pool->ops.ud) == 0) {
-            slots[success_count++] = slots[i];
-            continue;
-        }
-        arena_free(pool->arena, &slots[i], 1);
-    }
-    return success_count;
-}
-
-copool_t* copool_create(
-    size_t                   slot_size,
-    int32_t                  local_pool_count,
-    const copool_slot_ops_t* ops) {
-    if (slot_size == 0 || local_pool_count < 0 || !ops || !ops->init) {
-        return NULL;
-    }
-    if (local_pool_count > INT32_MAX / COPOOL_LOCAL_CAP) {
-        return NULL;
-    }
-    int32_t shared_cap = local_pool_count * COPOOL_LOCAL_CAP;
-
-    arena_t* arena = arena_create(slot_size);
-    if (!arena) {
-        return NULL;
-    }
-
-    copool_t* pool = (copool_t*)calloc(1, sizeof(copool_t));
+    size_t size =
+        sizeof(copool_local_t) + (size_t)capacity * sizeof(copool_slot_t);
+    copool_local_t* pool = (copool_local_t*)calloc(1, size);
     if (!pool) {
-        arena_destroy(arena);
         return NULL;
     }
-
-    if (local_pool_count > 0) {
-        pool->local_pools = (copool_cache_t**)calloc(
-            (size_t)local_pool_count,
-            sizeof(copool_cache_t*));
-        if (!pool->local_pools) {
-            free(pool);
-            arena_destroy(arena);
-            return NULL;
-        }
-    }
-
-    pool->shared_pool = _copool_cache_create(shared_cap);
-    if (!pool->shared_pool) {
-        free(pool->local_pools);
-        free(pool);
-        arena_destroy(arena);
-        return NULL;
-    }
-    for (int32_t i = 0; i < local_pool_count; i++) {
-        pool->local_pools[i] = _copool_cache_create(COPOOL_LOCAL_CAP);
-        if (!pool->local_pools[i]) {
-            for (int32_t j = 0; j < i; j++) {
-                _copool_cache_destroy(pool->local_pools[j]);
-            }
-            _copool_cache_destroy(pool->shared_pool);
-            free(pool->local_pools);
-            free(pool);
-            arena_destroy(arena);
-            return NULL;
-        }
-    }
-
-    spin_init(&pool->shared_lock);
-    pool->local_pool_count = local_pool_count;
-    pool->slot_size        = arena_slot_size(arena);
-    pool->arena            = arena;
-    pool->ops              = *ops;
+    pool->capacity = capacity;
     return pool;
 }
 
-void copool_destroy(copool_t* pool) {
-    if (!pool) {
-        return;
-    }
-
-    for (int32_t i = 0; i < pool->local_pool_count; i++) {
-        _copool_cache_destroy(pool->local_pools[i]);
-    }
-    _copool_cache_destroy(pool->shared_pool);
-    free(pool->local_pools);
-    arena_destroy(pool->arena);
+void copool_local_destroy(copool_local_t* pool) {
     free(pool);
 }
 
-void* copool_acquire(copool_t* pool, int32_t local_index) {
-    if (!pool || local_index < -1 ||
-        local_index >= pool->local_pool_count) {
-        return NULL;
-    }
-
-    if (local_index >= 0) {
-        copool_cache_t* local_pool = pool->local_pools[local_index];
-
-        void* slot;
-        if (_copool_cache_take(local_pool, &slot, 1) == 1) {
-            return slot;
-        }
-
-        local_pool->count = _copool_shared_take(
-            pool,
-            local_pool->slots,
-            COPOOL_LOCAL_CAP / 2);
-        if (local_pool->count == 0) {
-            local_pool->count = arena_alloc(
-                pool->arena,
-                local_pool->slots,
-                COPOOL_LOCAL_CAP / 2);
-            local_pool->count = _copool_init_slots(
-                pool,
-                local_pool->slots,
-                local_pool->count);
-        }
-        if (local_pool->count == 0) {
-            return NULL;
-        }
-        return local_pool->slots[--local_pool->count];
-    }
-
-    void* batch[COPOOL_LOCAL_CAP / 2];
-    if (_copool_shared_take(pool, batch, 1) == 1) {
-        return batch[0];
-    }
-
-    int alloc_count =
-        arena_alloc(pool->arena, batch, COPOOL_LOCAL_CAP / 2);
-    alloc_count = _copool_init_slots(pool, batch, alloc_count);
-    if (alloc_count == 0) {
-        return NULL;
-    }
-
-    int put_count  = _copool_shared_put(pool, &batch[1], alloc_count - 1);
-    int free_count = alloc_count - 1 - put_count;
-    if (free_count > 0) {
-        arena_free(pool->arena, &batch[1 + put_count], free_count);
-    }
-    return batch[0];
+int copool_local_capacity(const copool_local_t* pool) {
+    return pool ? pool->capacity : 0;
 }
 
-void copool_release(
-    copool_t* pool,
-    int32_t local_index,
-    void* ptr) {
-    if (!pool || !ptr) {
+int copool_local_acquire(
+    copool_local_t* pool,
+    copool_slot_t*  slots,
+    int             count) {
+    if (!pool || !slots || count <= 0) {
+        return 0;
+    }
+
+    int acquire_count = pool->count;
+    if (acquire_count > count) {
+        acquire_count = count;
+    }
+    for (int i = 0; i < acquire_count; i++) {
+        slots[i] = pool->slots[--pool->count];
+    }
+    return acquire_count;
+}
+
+int copool_local_release(
+    copool_local_t*      pool,
+    const copool_slot_t* slots,
+    int                  count) {
+    if (!pool || !slots || count <= 0) {
+        return 0;
+    }
+
+    int release_count = pool->capacity - pool->count;
+    if (release_count > count) {
+        release_count = count;
+    }
+    int i = 0;
+    while (i < release_count && _copool_slot_valid(&slots[i])) {
+        pool->slots[pool->count++] = slots[i++];
+    }
+    return i;
+}
+
+copool_shared_t* copool_shared_create(void) {
+    copool_shared_t* pool =
+        (copool_shared_t*)calloc(1, sizeof(copool_shared_t));
+    if (!pool) {
+        return NULL;
+    }
+    list_init(&pool->slots);
+    spin_init(&pool->lock);
+    return pool;
+}
+
+void copool_shared_destroy(copool_shared_t* pool) {
+    if (!pool) {
         return;
     }
-    if (local_index < -1 || local_index >= pool->local_pool_count) {
-        xylem_loge("<copool> invalid release local=%d", (int)local_index);
-        abort();
+    _copool_destroy_entries(&pool->slots);
+    free(pool);
+}
+
+int copool_shared_acquire(
+    copool_shared_t* pool,
+    copool_slot_t*   slots,
+    int              count) {
+    if (!pool || !slots || count <= 0) {
+        return 0;
     }
 
-    if (local_index >= 0) {
-        copool_cache_t* local_pool = pool->local_pools[local_index];
+    list_t removed;
+    list_init(&removed);
 
-        if (_copool_cache_put(local_pool, &ptr, 1) == 1) {
-            return;
+    spin_lock(&pool->lock);
+    int acquire_count = 0;
+    while (acquire_count < count) {
+        list_node_t* node = list_tail(&pool->slots);
+        if (!node) {
+            break;
         }
+        _copool_shared_node_t* entry =
+            list_entry(node, _copool_shared_node_t, node);
+        list_remove(&pool->slots, node);
+        slots[acquire_count++] = entry->slot;
+        list_insert_tail(&removed, node);
+    }
+    spin_unlock(&pool->lock);
 
-        void* batch[COPOOL_LOCAL_CAP / 2];
-        int take_count =
-            _copool_cache_take(local_pool, batch, COPOOL_LOCAL_CAP / 2);
+    _copool_destroy_entries(&removed);
+    return acquire_count;
+}
 
-        int put_count = _copool_shared_put(pool, batch, take_count);
-        if (put_count < take_count) {
-            arena_free(
-                pool->arena,
-                &batch[put_count],
-                take_count - put_count);
+int copool_shared_release(
+    copool_shared_t*     pool,
+    const copool_slot_t* slots,
+    int                  count,
+    uint64_t             deadline_ms) {
+    if (!pool || !slots || count <= 0) {
+        return 0;
+    }
+
+    list_t pending;
+    list_init(&pending);
+
+    int release_count = 0;
+    while (release_count < count && _copool_slot_valid(&slots[release_count])) {
+        _copool_shared_node_t* entry =
+            (_copool_shared_node_t*)calloc(1, sizeof(_copool_shared_node_t));
+        if (!entry) {
+            break;
         }
-        (void)_copool_cache_put(local_pool, &ptr, 1);
-        return;
+        entry->slot        = slots[release_count++];
+        entry->deadline_ms = deadline_ms;
+        list_insert_tail(&pending, &entry->node);
     }
 
-    void* slot = ptr;
-    if (_copool_shared_put(pool, &slot, 1) == 0) {
-        arena_free(pool->arena, &slot, 1);
+    spin_lock(&pool->lock);
+    list_node_t* node;
+    while ((node = list_head(&pending)) != NULL) {
+        list_remove(&pending, node);
+        list_insert_tail(&pool->slots, node);
     }
+    spin_unlock(&pool->lock);
+    return release_count;
 }
