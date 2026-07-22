@@ -62,7 +62,7 @@ cannot make progress *parks* (yields to its worker); a wake source later
 | Global run queue | `runq.c` | Mutex-protected intrusive singly linked MPMC FIFO. |
 | I/O wait | `iowait.c` | Per-fd, per-direction coroutine parking on the poller. |
 | Blocking pool | `dynpool.c` | Elastic thread pool for blocking work. |
-| Coroutine pool | `copool.c`, `arena.c` | Hot-slot caches over cold region-based virtual memory. |
+| Coroutine pool | `copool.c`, `arena.c` | Reusable-slot caches over fresh arena storage. |
 | Coroutines | `minicoro/` | Bundled stackful coroutine primitive and backend storage layout. |
 
 ## 3. Boot and shutdown (`runtime.c`)
@@ -324,9 +324,10 @@ scheduler -> arena -> platform-vmem
 
 Minicoro owns descriptor layout, coroutine construction, and backend-specific
 storage preparation. Local and shared copools are independent containers that
-store slot addresses plus cold/hot state without owning slot memory. Arena owns
-page-aligned addresses, reservations, and full-slot decommit. Scheduler connects
-the paths through the persistent minicoro descriptor's allocator callbacks.
+store slot addresses plus fresh/reusable state without owning slot memory.
+Arena owns page-aligned addresses, reservations, and full-slot decommit.
+Scheduler connects the paths through the persistent minicoro descriptor's
+allocator callbacks.
 
 The public `coro_stack_size` configuration flow is unchanged. Runtime options
 copy it into `scheduler_opts_t`; scheduler creation passes the selected value to
@@ -339,30 +340,32 @@ directly inside minicoro without exposing stack-layout accessors to Xylem.
 Each spawn copies the persistent descriptor, changes only `user_data`, and
 calls `mco_create()` directly. Its allocator callback first checks the current
 worker's local pool and then the shared pool or arena. The callback returns the
-slot together with its explicit `MCO_STORAGE_COLD` or `MCO_STORAGE_HOT` state.
-A cold slot receives the backend-specific commit and guard layout; a hot slot
-skips VM preparation and restores its saved state. The lower-level `mco_init()`
+slot together with its explicit `MCO_STORAGE_FRESH` or `MCO_STORAGE_REUSABLE`
+state. A fresh slot receives the backend-specific commit and guard layout; a
+reusable slot skips VM preparation and restores its saved state. The lower-level
+`mco_init()`
 path assumes its caller already supplied accessible storage and performs no VM
 preparation. The persistent descriptor outlives every coroutine pool. Teardown
 destroys registered coroutines, worker-local pools, and the shared pool before
 destroying the arena.
 
-Successful `mco_destroy()` returns storage as `MCO_STORAGE_HOT`. A failure while
-preparing or initializing a coroutine returns it as `MCO_STORAGE_COLD`, so the
-scheduler bypasses both caches and returns the slot to arena for full decommit.
+Successful `mco_destroy()` returns storage as `MCO_STORAGE_REUSABLE`. A failure
+while preparing or initializing a coroutine returns it as `MCO_STORAGE_FRESH`,
+so the scheduler bypasses both caches and returns the slot to arena for full
+decommit.
 
 On return to copool, the slot enters the worker-local or shared cache unchanged.
 Windows ASM therefore retains its committed stack extent, moving guard, and
 saved `StackLimit`. Minicoro reads and validates that saved limit before
 reinitializing the context, then restores it after context creation. Windows
-Fiber and Unix likewise retain their hot state.
+Fiber and Unix likewise retain their reusable state.
 
 Slot state follows three transitions:
 
 ```
-cold arena slot -> local/shared cache or mco_create -> runnable coroutine
-used coroutine  -> local/shared cache               -> hot reusable slot
-cache fallback  -> arena full decommit               -> cold slot
+fresh arena slot -> local/shared cache or mco_create -> runnable coroutine
+used coroutine   -> local/shared cache               -> reusable slot
+cache fallback   -> arena full decommit              -> fresh slot
 ```
 
 Local and shared pools have separate ownership and APIs. Each worker owns one
@@ -374,13 +377,12 @@ pool knows the slot size or calls virtual-memory operations:
   empty local pool takes up to 32 slots from shared, then from arena. A full
   local pool moves 32 slots to shared before retaining the newly freed slot.
 - The shared pool is an unbounded `list_t` protected by a spinlock. Every active
-  entry has an external metadata node containing the slot, its cold/hot state,
-  and idle deadline. Nodes are allocated on release and freed on acquire; empty
-  nodes are not cached. Release appends at the tail and acquire removes from the
-  tail, prioritizing recently returned hot slots while leaving the oldest
-  deadlines at the head.
+  entry has an external metadata node containing the slot and its
+  fresh/reusable state. Nodes are allocated on put and freed on take; empty nodes
+  are not cached. Put appends at the tail and take removes from the tail,
+  prioritizing recently returned reusable slots.
 - An external allocator caller takes one shared slot. If shared is empty, the
-  scheduler allocates up to 32 cold arena slots, returns one, and places the
+  scheduler allocates up to 32 fresh arena slots, returns one, and places the
   surplus in shared. A shared-node allocation failure returns unstored slots to
   arena for decommit. Shared locking and arena locking are never nested.
 
@@ -390,9 +392,9 @@ size may not exceed 1 MiB. Creating an arena eagerly reserves its first region.
 Each region contains at least 64 slots and is at most 64 MiB: reservation starts
 at `floor(64 MiB / slot_size)` slots and halves on failure until a 64-slot
 attempt. The new region is fully decommitted before any address is published.
-An allocation attempts at most one region growth and removes cold addresses
+An allocation attempts at most one region growth and removes fresh addresses
 from the free array without touching their pages, so it may return a partial
-batch when growth fails. Local and shared pools may cache those cold addresses
+batch when growth fails. Local and shared pools may cache those fresh addresses
 without touching their pages; minicoro prepares one only when it is selected for
 a coroutine.
 
@@ -407,10 +409,11 @@ with region reservations rather than coroutine count.
 For embedded-stack backends, minicoro places the coroutine object, context,
 storage, and stack in the arena slot. Windows x64 ASM additionally page-aligns
 the embedded stack after metadata and prepares the initial guard/top pages when
-a cold slot becomes hot. Later reuse preserves the current guard and committed
-extent. Unix mappings remain accessible while cold and hot. On the Windows
-Fiber backend, the slot holds only the coroutine object, context, and storage;
-`CreateFiberEx()` and `DeleteFiber()` own the external Fiber stack.
+a fresh slot becomes reusable. Later reuse preserves the current guard and
+committed extent. Unix mappings remain addressable in both states; macOS fresh
+slots leave `MADV_FREE_REUSABLE` through `MADV_FREE_REUSE` before initialization.
+On the Windows Fiber backend, the slot holds only the coroutine object, context,
+and storage; `CreateFiberEx()` and `DeleteFiber()` own the external Fiber stack.
 
 Minicoro retains its delayed range checks on backends that use them. ASAN builds
 also use minicoro's sanitizer fiber-switch integration, while arena explicitly

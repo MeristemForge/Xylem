@@ -86,7 +86,6 @@
 
 #define SCHED_CORO_STACK_SIZE   (128 * 1024)
 #define SCHED_CORO_POOL_BATCH   (COPOOL_LOCAL_DEFAULT_CAP / 2)
-#define SCHED_CORO_POOL_IDLE_MS 10000
 
 typedef enum {
     WORKER_RUNNING,
@@ -244,7 +243,7 @@ static _sched_worker_t* _sched_current_worker(scheduler_t* sched) {
     return _tls_worker;
 }
 
-static int _sched_coro_arena_acquire(
+static int _sched_coro_take_from_arena(
     scheduler_t*  sched,
     copool_slot_t* slots,
     int            count) {
@@ -253,53 +252,49 @@ static int _sched_coro_arena_acquire(
         count = SCHED_CORO_POOL_BATCH;
     }
 
-    int acquire_count = arena_alloc(sched->coro_arena, ptrs, count);
-    for (int i = 0; i < acquire_count; i++) {
+    int take_count = arena_alloc(sched->coro_arena, ptrs, count);
+    for (int i = 0; i < take_count; i++) {
         slots[i].ptr   = ptrs[i];
-        slots[i].state = COPOOL_SLOT_COLD;
+        slots[i].state = COPOOL_SLOT_FRESH;
     }
-    return acquire_count;
+    return take_count;
 }
 
-static void _sched_coro_arena_release(
+static void _sched_coro_put_to_arena(
     scheduler_t*        sched,
     const copool_slot_t* slots,
     int                  count) {
     while (count > 0) {
         void* ptrs[SCHED_CORO_POOL_BATCH];
-        int release_count = count;
-        if (release_count > SCHED_CORO_POOL_BATCH) {
-            release_count = SCHED_CORO_POOL_BATCH;
+        int put_count = count;
+        if (put_count > SCHED_CORO_POOL_BATCH) {
+            put_count = SCHED_CORO_POOL_BATCH;
         }
-        for (int i = 0; i < release_count; i++) {
+        for (int i = 0; i < put_count; i++) {
             ptrs[i] = slots[i].ptr;
         }
-        arena_free(sched->coro_arena, ptrs, release_count);
-        slots += release_count;
-        count -= release_count;
+        arena_free(sched->coro_arena, ptrs, put_count);
+        slots += put_count;
+        count -= put_count;
     }
 }
 
-static void _sched_coro_shared_release(
+static void _sched_coro_put_to_shared(
     scheduler_t*        sched,
     const copool_slot_t* slots,
     int                  count) {
     if (count <= 0) {
         return;
     }
-    uint64_t deadline_ms =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) +
-        SCHED_CORO_POOL_IDLE_MS;
-    int release_count = copool_shared_release(
+    int put_count = copool_shared_put(
         sched->coro_pool,
         slots,
-        count,
-        deadline_ms);
-    if (release_count < count) {
-        _sched_coro_arena_release(
+        count);
+    if (put_count < count) {
+        _sched_coro_put_to_arena(
             sched,
-            &slots[release_count],
-            count - release_count);
+            &slots[put_count],
+            count - put_count);
     }
 }
 
@@ -312,19 +307,20 @@ static void* _sched_coro_alloc_cb(
     _sched_worker_t* worker = _sched_current_worker(sched);
     copool_slot_t     slot;
 
-    if (worker && copool_local_acquire(worker->coro_pool, &slot, 1) == 1) {
+    if (worker && copool_local_take(worker->coro_pool, &slot, 1) == 1) {
         *storage_state =
-            slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+            slot.state == COPOOL_SLOT_FRESH ? MCO_STORAGE_FRESH
+                                            : MCO_STORAGE_REUSABLE;
         return slot.ptr;
     }
 
     copool_slot_t slots[SCHED_CORO_POOL_BATCH];
-    int count = copool_shared_acquire(
+    int count = copool_shared_take(
         sched->coro_pool,
         slots,
         worker ? SCHED_CORO_POOL_BATCH : 1);
     if (count == 0) {
-        count = _sched_coro_arena_acquire(
+        count = _sched_coro_take_from_arena(
             sched,
             slots,
             SCHED_CORO_POOL_BATCH);
@@ -334,20 +330,24 @@ static void* _sched_coro_alloc_cb(
     }
 
     slot = slots[0];
-    if (worker && count > 1) {
-        int release_count =
-            copool_local_release(worker->coro_pool, &slots[1], count - 1);
-        if (release_count < count - 1) {
-            _sched_coro_shared_release(
-                sched,
-                &slots[1 + release_count],
-                count - 1 - release_count);
-        }
-    } else if (count > 1) {
-        _sched_coro_shared_release(sched, &slots[1], count - 1);
-    }
     *storage_state =
-        slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+        slot.state == COPOOL_SLOT_FRESH ? MCO_STORAGE_FRESH
+                                        : MCO_STORAGE_REUSABLE;
+
+    if (count == 1) {
+        return slot.ptr;
+    }
+    if (!worker) {
+        _sched_coro_put_to_shared(sched, &slots[1], count - 1);
+        return slot.ptr;
+    }
+
+    int put_count =
+        copool_local_put(worker->coro_pool, &slots[1], count - 1);
+    _sched_coro_put_to_shared(
+        sched,
+        &slots[1 + put_count],
+        count - 1 - put_count);
     return slot.ptr;
 }
 
@@ -361,35 +361,35 @@ static void _sched_coro_dealloc_cb(
     _sched_worker_t* worker = _sched_current_worker(sched);
     copool_slot_t     slot = {
         .ptr   = ptr,
-        .state = COPOOL_SLOT_HOT,
+        .state = COPOOL_SLOT_REUSABLE,
     };
 
-    if (storage_state == MCO_STORAGE_COLD) {
-        slot.state = COPOOL_SLOT_COLD;
-        _sched_coro_arena_release(sched, &slot, 1);
+    if (storage_state == MCO_STORAGE_FRESH) {
+        slot.state = COPOOL_SLOT_FRESH;
+        _sched_coro_put_to_arena(sched, &slot, 1);
         return;
     }
-    if (storage_state != MCO_STORAGE_HOT) {
+    if (storage_state != MCO_STORAGE_REUSABLE) {
         xylem_loge("<sched> invalid coroutine storage state=%d", storage_state);
         abort();
     }
 
     if (!worker) {
-        _sched_coro_shared_release(sched, &slot, 1);
+        _sched_coro_put_to_shared(sched, &slot, 1);
         return;
     }
-    if (copool_local_release(worker->coro_pool, &slot, 1) == 1) {
+    if (copool_local_put(worker->coro_pool, &slot, 1) == 1) {
         return;
     }
 
     copool_slot_t slots[SCHED_CORO_POOL_BATCH];
-    int count = copool_local_acquire(
+    int count = copool_local_take(
         worker->coro_pool,
         slots,
         SCHED_CORO_POOL_BATCH);
-    _sched_coro_shared_release(sched, slots, count);
-    if (copool_local_release(worker->coro_pool, &slot, 1) != 1) {
-        xylem_loge("<sched> local coroutine pool release failed");
+    _sched_coro_put_to_shared(sched, slots, count);
+    if (copool_local_put(worker->coro_pool, &slot, 1) != 1) {
+        xylem_loge("<sched> local coroutine pool put failed");
         abort();
     }
 }

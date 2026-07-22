@@ -35,13 +35,12 @@ typedef struct {
     int              count;
 } _shared_worker_t;
 
-static int _shared_release_thread(void* arg) {
+static int _shared_put_thread(void* arg) {
     _shared_worker_t* worker = (_shared_worker_t*)arg;
-    int count = copool_shared_release(
+    int count = copool_shared_put(
         worker->pool,
         worker->slots,
-        worker->count,
-        1234);
+        worker->count);
     return count == worker->count ? 0 : -1;
 }
 
@@ -54,18 +53,19 @@ static void test_local_default_capacity(void) {
     copool_slot_t slots[COPOOL_LOCAL_DEFAULT_CAP + 1];
     for (int i = 0; i < COPOOL_LOCAL_DEFAULT_CAP + 1; i++) {
         slots[i].ptr   = &values[i];
-        slots[i].state = (i & 1) ? COPOOL_SLOT_HOT : COPOOL_SLOT_COLD;
+        slots[i].state =
+            (i & 1) ? COPOOL_SLOT_REUSABLE : COPOOL_SLOT_FRESH;
     }
 
     ASSERT(
-        copool_local_release(
+        copool_local_put(
             pool,
             slots,
             COPOOL_LOCAL_DEFAULT_CAP + 1) == COPOOL_LOCAL_DEFAULT_CAP);
 
     copool_slot_t acquired[COPOOL_LOCAL_DEFAULT_CAP];
     ASSERT(
-        copool_local_acquire(
+        copool_local_take(
             pool,
             acquired,
             COPOOL_LOCAL_DEFAULT_CAP) == COPOOL_LOCAL_DEFAULT_CAP);
@@ -85,17 +85,17 @@ static void test_local_custom_capacity(void) {
 
     int values[4];
     copool_slot_t slots[4] = {
-        {.ptr = &values[0], .state = COPOOL_SLOT_COLD},
-        {.ptr = &values[1], .state = COPOOL_SLOT_HOT},
-        {.ptr = &values[2], .state = COPOOL_SLOT_COLD},
-        {.ptr = &values[3], .state = COPOOL_SLOT_HOT},
+        {.ptr = &values[0], .state = COPOOL_SLOT_FRESH},
+        {.ptr = &values[1], .state = COPOOL_SLOT_REUSABLE},
+        {.ptr = &values[2], .state = COPOOL_SLOT_FRESH},
+        {.ptr = &values[3], .state = COPOOL_SLOT_REUSABLE},
     };
-    ASSERT(copool_local_release(pool, slots, 4) == 3);
+    ASSERT(copool_local_put(pool, slots, 4) == 3);
 
     copool_slot_t acquired;
-    ASSERT(copool_local_acquire(pool, &acquired, 1) == 1);
+    ASSERT(copool_local_take(pool, &acquired, 1) == 1);
     ASSERT(acquired.ptr == slots[2].ptr);
-    ASSERT(acquired.state == COPOOL_SLOT_COLD);
+    ASSERT(acquired.state == COPOOL_SLOT_FRESH);
 
     copool_local_destroy(pool);
     ASSERT(copool_local_create(-1) == NULL);
@@ -109,18 +109,18 @@ static void test_shared_unbounded_lifo(void) {
     copool_slot_t slots[TEST_SHARED_SLOTS * 2];
     for (int i = 0; i < TEST_SHARED_SLOTS * 2; i++) {
         slots[i].ptr   = &values[i];
-        slots[i].state = (i & 1) ? COPOOL_SLOT_HOT : COPOOL_SLOT_COLD;
+        slots[i].state =
+            (i & 1) ? COPOOL_SLOT_REUSABLE : COPOOL_SLOT_FRESH;
     }
     ASSERT(
-        copool_shared_release(
+        copool_shared_put(
             pool,
             slots,
-            TEST_SHARED_SLOTS * 2,
-            5678) == TEST_SHARED_SLOTS * 2);
+            TEST_SHARED_SLOTS * 2) == TEST_SHARED_SLOTS * 2);
 
     copool_slot_t acquired[TEST_SHARED_SLOTS * 2];
     ASSERT(
-        copool_shared_acquire(
+        copool_shared_take(
             pool,
             acquired,
             TEST_SHARED_SLOTS * 2) == TEST_SHARED_SLOTS * 2);
@@ -129,12 +129,12 @@ static void test_shared_unbounded_lifo(void) {
         ASSERT(acquired[i].ptr == slots[source].ptr);
         ASSERT(acquired[i].state == slots[source].state);
     }
-    ASSERT(copool_shared_acquire(pool, acquired, 1) == 0);
+    ASSERT(copool_shared_take(pool, acquired, 1) == 0);
 
     copool_shared_destroy(pool);
 }
 
-static void test_shared_concurrent_release(void) {
+static void test_shared_concurrent_put(void) {
     copool_shared_t* pool = copool_shared_create();
     ASSERT(pool != NULL);
 
@@ -146,7 +146,8 @@ static void test_shared_concurrent_release(void) {
     for (int i = 0; i < TEST_SHARED_THREADS; i++) {
         for (int j = 0; j < TEST_SHARED_SLOTS; j++) {
             slots[i][j].ptr   = &values[i][j];
-            slots[i][j].state = (j & 1) ? COPOOL_SLOT_HOT : COPOOL_SLOT_COLD;
+            slots[i][j].state =
+                (j & 1) ? COPOOL_SLOT_REUSABLE : COPOOL_SLOT_FRESH;
         }
         workers[i].pool  = pool;
         workers[i].slots = slots[i];
@@ -154,7 +155,7 @@ static void test_shared_concurrent_release(void) {
         ASSERT(
             thrd_create(
                 &threads[i],
-                _shared_release_thread,
+                _shared_put_thread,
                 &workers[i]) == thrd_success);
     }
     for (int i = 0; i < TEST_SHARED_THREADS; i++) {
@@ -164,7 +165,7 @@ static void test_shared_concurrent_release(void) {
     }
 
     copool_slot_t acquired[TEST_SHARED_THREADS * TEST_SHARED_SLOTS];
-    int count = copool_shared_acquire(
+    int count = copool_shared_take(
         pool,
         acquired,
         TEST_SHARED_THREADS * TEST_SHARED_SLOTS);
@@ -179,13 +180,16 @@ static void test_shared_concurrent_release(void) {
 }
 
 static void test_null_arguments(void) {
-    copool_slot_t slot = {.ptr = (void*)(uintptr_t)1, .state = COPOOL_SLOT_HOT};
+    copool_slot_t slot = {
+        .ptr   = (void*)(uintptr_t)1,
+        .state = COPOOL_SLOT_REUSABLE,
+    };
 
     ASSERT(copool_local_capacity(NULL) == 0);
-    ASSERT(copool_local_acquire(NULL, &slot, 1) == 0);
-    ASSERT(copool_local_release(NULL, &slot, 1) == 0);
-    ASSERT(copool_shared_acquire(NULL, &slot, 1) == 0);
-    ASSERT(copool_shared_release(NULL, &slot, 1, 0) == 0);
+    ASSERT(copool_local_take(NULL, &slot, 1) == 0);
+    ASSERT(copool_local_put(NULL, &slot, 1) == 0);
+    ASSERT(copool_shared_take(NULL, &slot, 1) == 0);
+    ASSERT(copool_shared_put(NULL, &slot, 1) == 0);
     copool_local_destroy(NULL);
     copool_shared_destroy(NULL);
 }
@@ -194,7 +198,7 @@ int main(void) {
     test_local_default_capacity();
     test_local_custom_capacity();
     test_shared_unbounded_lifo();
-    test_shared_concurrent_release();
+    test_shared_concurrent_put();
     test_null_arguments();
     return 0;
 }

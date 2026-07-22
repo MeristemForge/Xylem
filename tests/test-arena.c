@@ -51,7 +51,7 @@ typedef struct {
 } _concurrent_worker_t;
 
 #if defined(_WIN32)
-static void _assert_cold_slot(const void* ptr) {
+static void _assert_fresh_slot(const void* ptr) {
     MEMORY_BASIC_INFORMATION info;
 
     ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
@@ -110,15 +110,7 @@ static void test_create_limits(void) {
 
     arena_t* arena = arena_create(MIB);
     ASSERT(arena != NULL);
-    size_t page_size = platform_vmem_page_size();
-    ASSERT(page_size > 0);
-    ASSERT(arena_slot_size(arena) == MIB);
     arena_destroy(arena);
-
-    arena_t* aligned = arena_create(page_size + 1U);
-    ASSERT(aligned != NULL);
-    ASSERT(arena_slot_size(aligned) == page_size * 2U);
-    arena_destroy(aligned);
 }
 
 static void test_alloc_free_realloc(void) {
@@ -160,7 +152,6 @@ static void test_alloc_free_realloc(void) {
 static void test_null_args(void) {
     void* slots[1] = {NULL};
 
-    ASSERT(arena_slot_size(NULL) == 0);
     ASSERT(arena_alloc(NULL, slots, 1) == 0);
 
     arena_t* arena = arena_create(1);
@@ -203,7 +194,7 @@ static void test_destroy_with_allocated_slot(void) {
     arena_destroy(arena);
 }
 
-static void test_alloc_returns_cold_slot(void) {
+static void test_alloc_returns_fresh_slot(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
@@ -214,7 +205,7 @@ static void test_alloc_returns_cold_slot(void) {
     ASSERT(arena_alloc(arena, &slot, 1) == 1);
     ASSERT(slot != NULL);
 #if defined(_WIN32)
-    _assert_cold_slot(slot);
+    _assert_fresh_slot(slot);
 #endif
 
     arena_free(arena, &slot, 1);
@@ -254,7 +245,7 @@ int main(void) {
     test_null_args();
     test_growth();
     test_destroy_with_allocated_slot();
-    test_alloc_returns_cold_slot();
+    test_alloc_returns_fresh_slot();
     test_concurrent_alloc_free();
     return 0;
 }

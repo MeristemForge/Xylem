@@ -162,7 +162,7 @@ Windows reserves address space with `PAGE_NOACCESS`, commits individual ranges
 as `PAGE_READWRITE`, and decommits them with `MEM_DECOMMIT`. Decommitted pages no
 longer consume system commit charge, while the containing address range remains
 reserved. The system page size is immutable for the process and is cached after
-the first `GetSystemInfo` query so cold-slot initialization does not repeat that
+the first `GetSystemInfo` query so fresh-slot initialization does not repeat that
 query.
 
 The vmem operations do not change ASAN shadow state. Callers use
@@ -174,8 +174,9 @@ decommit. Non-ASAN builds compile these macros to no-ops.
 
 Coroutine layout belongs to minicoro. `runtime.c` supplies `MCO_GET_PAGE_SIZE`
 and the commit/decommit hooks using `platform-vmem`. The scheduler allocator
-returns each slot with explicit cold/hot state, so minicoro can prepare cold
-storage or restore hot storage without querying its virtual-memory mapping.
+returns each slot with explicit fresh/reusable state, so minicoro can prepare
+fresh storage or restore reusable storage without querying its virtual-memory
+mapping.
 Arena and copool therefore do not depend on minicoro's metadata, context, or
 stack layout.
 
@@ -203,7 +204,7 @@ downward while the coroutine runs, and minicoro saves the current limit in its
 context so a coroutine may resume on another worker. Minicoro's delayed
 stack-range and magic-number check remains the overflow fallback.
 
-For a cold Windows x64 ASM slot, `mco_create()` validates the page-aligned layout
+For a fresh Windows x64 ASM slot, `mco_create()` validates the page-aligned layout
 after its allocator returns, commits metadata and the initial guard/top pair,
 applies `PAGE_GUARD` directly through `VirtualProtect()`, and installs the initial
 `StackLimit`. If stack commit or guard setup fails after metadata commit,
@@ -212,17 +213,18 @@ does not catch `EXCEPTION_STACK_OVERFLOW` or call `_resetstkoflw()`. Code that
 catches that exception and intends to continue on the native thread must restore
 the thread's overflow state itself before normal execution resumes.
 
-Cold Windows ASM initialization still requires separate metadata and initial
+Fresh Windows ASM initialization still requires separate metadata and initial
 stack commits plus guard protection. A producer that outpaces all workers can
-therefore measure cold-slot setup rather than hot reuse. Once slots circulate
-through worker-local or shared caches, allocation and return perform no VM
-operation. A hot slot retains its current committed stack extent and moving
-guard until it spills back to arena.
+therefore measure fresh-slot setup rather than reusable-slot reuse. Once slots
+circulate through worker-local or shared caches, allocation and return perform
+no VM operation. A reusable slot retains its current committed stack extent and
+moving guard until it spills back to arena.
 
 Windows Fiber commits the arena slot as one block before minicoro writes its
 metadata; `CreateFiberEx()` / `DeleteFiber()` own the separate Fiber stack. Unix
-uses whole-slot policy for ASM/ucontext-style embedded layouts. Both remain hot
-without a platform reuse operation.
+uses whole-slot policy for ASM/ucontext-style embedded layouts. Linux commit is
+a no-op, while macOS activates fresh slots with `MADV_FREE_REUSE`. Reusable
+copool slots skip the platform operation on both systems.
 
 The arena owns ASAN shadow transitions for coroutine storage. It unpoisons a
 complete slot before returning it from `arena_alloc()`, allowing Windows moving
@@ -233,7 +235,7 @@ reservation before `platform_vmem_release()` and restores poison on failure.
 ### Coroutine arena lifecycle
 
 The scheduler owns the arena independently from the local and shared copools.
-Its minicoro allocator callback checks those pools before requesting cold slots
+Its minicoro allocator callback checks those pools before requesting fresh slots
 from `arena -> platform-vmem`. Minicoro prepares allocator storage inside
 `mco_create()` after the callback returns a slot. The lower-level `mco_init()`
 requires caller-provided storage to already be accessible and only initializes
@@ -241,11 +243,11 @@ coroutine metadata and context. An arena eagerly reserves and fully decommits
 its first complete multi-slot region, then grows when its free-slot array cannot
 satisfy an allocation.
 
-Cold arena addresses may enter worker-local or shared caches unchanged. Minicoro
-prepares a cold slot when it is first used; completed coroutines return as hot
-slots without a VM operation. Cache overflow returns a complete slot to arena,
-whose successful full decommit makes it cold and republishes the address. A
-failed decommit is logged but not added to the free array.
+Fresh arena addresses may enter worker-local or shared caches unchanged. Minicoro
+prepares a fresh slot when it is first used; completed coroutines return as
+reusable slots without a VM operation. Cache overflow returns a complete slot to
+arena, whose successful full decommit makes it fresh and republishes the address.
+A failed decommit is logged but not added to the free array.
 
 Neither cache eviction nor slot decommit releases part of a reservation.
 Scheduler teardown destroys each worker-local pool and the shared pool before

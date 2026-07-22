@@ -286,8 +286,8 @@ typedef enum mco_result {
 
 /* Allocator storage states. */
 typedef enum mco_storage_state {
-  MCO_STORAGE_COLD = 0, /* Storage requires initial platform preparation. */
-  MCO_STORAGE_HOT       /* Storage is accessible and reusable. */
+  MCO_STORAGE_FRESH = 0,
+  MCO_STORAGE_REUSABLE
 } mco_storage_state;
 
 /* Coroutine structure. */
@@ -510,7 +510,7 @@ extern "C" {
   #if defined(MCO_USE_VMEM_ALLOCATOR) && defined(_WIN32)
     static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
-      *storage_state = MCO_STORAGE_HOT;
+      *storage_state = MCO_STORAGE_REUSABLE;
       return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     }
     static void mco_dealloc(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state) {
@@ -525,7 +525,7 @@ extern "C" {
     #include <sys/mman.h>
     static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
-      *storage_state = MCO_STORAGE_HOT;
+      *storage_state = MCO_STORAGE_REUSABLE;
       void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       return ptr != MAP_FAILED ? ptr : NULL;
     }
@@ -546,7 +546,7 @@ extern "C" {
     #endif
     static void* mco_alloc(size_t size, void* allocator_data, mco_storage_state* storage_state) {
       _MCO_UNUSED(allocator_data);
-      *storage_state = MCO_STORAGE_HOT;
+      *storage_state = MCO_STORAGE_REUSABLE;
       return MCO_ALLOC(size);
     }
     static void mco_dealloc(void* ptr, size_t size, void* allocator_data, mco_storage_state storage_state) {
@@ -1754,7 +1754,7 @@ static MCO_FORCE_INLINE int _mco_guard_stack_page(void* ptr, size_t size) {
 
 static mco_result _mco_prepare_storage(mco_coro* co, const mco_desc* desc, _mco_storage* storage) {
   storage->stack_limit = NULL;
-  if(storage->state != MCO_STORAGE_COLD && storage->state != MCO_STORAGE_HOT) {
+  if(storage->state != MCO_STORAGE_FRESH && storage->state != MCO_STORAGE_REUSABLE) {
     return MCO_INVALID_ARGUMENTS;
   }
 #if defined(_WIN32) && defined(MCO_USE_ASM) && \
@@ -1774,11 +1774,11 @@ static mco_result _mco_prepare_storage(mco_coro* co, const mco_desc* desc, _mco_
   size_t stack_high = stack_low + desc->stack_size;
   if(co_addr % page_size != 0 || stack_offset % page_size != 0 ||
      desc->stack_size < page_size * 2 || desc->stack_size % page_size != 0) {
-    return MCO_SUCCESS;
+    return storage->state == MCO_STORAGE_FRESH ? MCO_INVALID_ARGUMENTS : MCO_SUCCESS;
   }
   size_t context_addr = _mco_align_forward(co_addr + sizeof(mco_coro), 16);
   _mco_context* context = (_mco_context*)context_addr;
-  if(storage->state == MCO_STORAGE_COLD) {
+  if(storage->state == MCO_STORAGE_FRESH) {
     size_t guard_low = stack_high - page_size * 2;
     if(MCO_VMEM_COMMIT(co, stack_offset) != 0) {
       return MCO_OUT_OF_MEMORY;
@@ -1802,13 +1802,19 @@ static mco_result _mco_prepare_storage(mco_coro* co, const mco_desc* desc, _mco_
   }
   storage->stack_limit = stack_limit;
 #elif defined(_WIN32) && defined(MCO_USE_FIBERS) && defined(_MCO_USE_VMEM_STORAGE)
-  if(storage->state == MCO_STORAGE_COLD) {
+  if(storage->state == MCO_STORAGE_FRESH) {
     size_t page_size = MCO_GET_PAGE_SIZE();
     if(page_size == 0) {
       return MCO_INVALID_ARGUMENTS;
     }
     size_t commit_size = _mco_align_forward(desc->coro_size, page_size);
     if(MCO_VMEM_COMMIT(co, commit_size) != 0) {
+      return MCO_OUT_OF_MEMORY;
+    }
+  }
+#elif defined(_MCO_USE_VMEM_STORAGE)
+  if(storage->state == MCO_STORAGE_FRESH) {
+    if(MCO_VMEM_COMMIT(co, desc->coro_size) != 0) {
       return MCO_OUT_OF_MEMORY;
     }
   }
@@ -1942,7 +1948,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
   }
   /* Allocate the coroutine. */
   _mco_storage storage = {
-    .state = MCO_STORAGE_COLD,
+    .state = MCO_STORAGE_FRESH,
     .stack_limit = NULL
   };
   mco_coro* co = (mco_coro*)desc->alloc_cb(
@@ -1961,7 +1967,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
       co,
       desc->coro_size,
       desc->allocator_data,
-      MCO_STORAGE_COLD);
+      MCO_STORAGE_FRESH);
     *out_co = NULL;
     return res;
   }
@@ -1972,7 +1978,7 @@ mco_result mco_create(mco_coro** out_co, mco_desc* desc) {
       co,
       desc->coro_size,
       desc->allocator_data,
-      MCO_STORAGE_COLD);
+      MCO_STORAGE_FRESH);
     *out_co = NULL;
     return res;
   }
@@ -1999,7 +2005,7 @@ mco_result mco_destroy(mco_coro* co) {
     co,
     co->coro_size,
     co->allocator_data,
-    MCO_STORAGE_HOT);
+    MCO_STORAGE_REUSABLE);
   return MCO_SUCCESS;
 }
 

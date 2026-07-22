@@ -136,7 +136,7 @@ typedef struct {
     void*               stack_limit_after;
     mco_result          create_result;
     mco_result          destroy_result;
-} _cold_child_ctx_t;
+} _fresh_child_ctx_t;
 #endif
 
 #if defined(TEST_MCO_WINDOWS_SEH) && !defined(TEST_MCO_ASAN)
@@ -164,14 +164,14 @@ static void* _arena_alloc_cb(
     size_t             size,
     void*              allocator_data,
     mco_storage_state* storage_state) {
+    (void)size;
     _arena_fixture_t* fixture = (_arena_fixture_t*)allocator_data;
     void*             slot    = NULL;
 
-    ASSERT(size <= arena_slot_size(fixture->arena));
     if (arena_alloc(fixture->arena, &slot, 1) != 1) {
         return NULL;
     }
-    *storage_state = MCO_STORAGE_COLD;
+    *storage_state = MCO_STORAGE_FRESH;
     return slot;
 }
 
@@ -307,15 +307,17 @@ static void* _coro_alloc_cb(
     atomic_fetch_add(&fixture->alloc_calls, 1);
     copool_slot_t slot;
     if (fixture->local_pool &&
-        copool_local_acquire(fixture->local_pool, &slot, 1) == 1) {
+        copool_local_take(fixture->local_pool, &slot, 1) == 1) {
         *storage_state =
-            slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+            slot.state == COPOOL_SLOT_FRESH ? MCO_STORAGE_FRESH
+                                            : MCO_STORAGE_REUSABLE;
         return slot.ptr;
     }
     if (fixture->shared_pool &&
-        copool_shared_acquire(fixture->shared_pool, &slot, 1) == 1) {
+        copool_shared_take(fixture->shared_pool, &slot, 1) == 1) {
         *storage_state =
-            slot.state == COPOOL_SLOT_COLD ? MCO_STORAGE_COLD : MCO_STORAGE_HOT;
+            slot.state == COPOOL_SLOT_FRESH ? MCO_STORAGE_FRESH
+                                            : MCO_STORAGE_REUSABLE;
         return slot.ptr;
     }
 
@@ -323,7 +325,7 @@ static void* _coro_alloc_cb(
     if (arena_alloc(fixture->arena, &ptr, 1) != 1) {
         return NULL;
     }
-    *storage_state = MCO_STORAGE_COLD;
+    *storage_state = MCO_STORAGE_FRESH;
     return ptr;
 }
 
@@ -336,18 +338,18 @@ static void _coro_dealloc_cb(
     _coro_fixture_t* fixture = (_coro_fixture_t*)allocator_data;
 
     atomic_fetch_add(&fixture->dealloc_calls, 1);
-    if (storage_state == MCO_STORAGE_COLD) {
+    if (storage_state == MCO_STORAGE_FRESH) {
         arena_free(fixture->arena, &ptr, 1);
         return;
     }
-    ASSERT(storage_state == MCO_STORAGE_HOT);
-    copool_slot_t slot = {.ptr = ptr, .state = COPOOL_SLOT_HOT};
+    ASSERT(storage_state == MCO_STORAGE_REUSABLE);
+    copool_slot_t slot = {.ptr = ptr, .state = COPOOL_SLOT_REUSABLE};
     if (fixture->local_pool &&
-        copool_local_release(fixture->local_pool, &slot, 1) == 1) {
+        copool_local_put(fixture->local_pool, &slot, 1) == 1) {
         return;
     }
     if (fixture->shared_pool &&
-        copool_shared_release(fixture->shared_pool, &slot, 1, UINT64_MAX) == 1) {
+        copool_shared_put(fixture->shared_pool, &slot, 1) == 1) {
         return;
     }
     arena_free(fixture->arena, &ptr, 1);
@@ -407,7 +409,7 @@ static void* _ordered_alloc_cb(
     if (fixture->next_slot >= 2) {
         return NULL;
     }
-    *storage_state = MCO_STORAGE_COLD;
+    *storage_state = MCO_STORAGE_FRESH;
     return fixture->slots[fixture->next_slot++];
 }
 
@@ -422,8 +424,8 @@ static void _ordered_dealloc_cb(
     (void)storage_state;
 }
 
-static void _cold_child_entry(mco_coro* co) {
-    _cold_child_ctx_t* ctx = (_cold_child_ctx_t*)mco_get_user_data(co);
+static void _fresh_child_entry(mco_coro* co) {
+    _fresh_child_ctx_t* ctx = (_fresh_child_ctx_t*)mco_get_user_data(co);
     NT_TIB*            tib = (NT_TIB*)NtCurrentTeb();
     mco_desc           child_desc = mco_desc_init(_empty_entry, 128U * 1024U);
     mco_coro*          child      = NULL;
@@ -587,7 +589,7 @@ static void test_create_rejects_invalid_desc_before_allocation(void) {
     _coro_fixture_destroy(&fixture);
 }
 
-static void test_minicoro_prepares_cold_arena_slot(void) {
+static void test_minicoro_prepares_fresh_arena_slot(void) {
     mco_desc        desc = mco_desc_init(_empty_entry, 128U * 1024U);
     _arena_fixture_t fixture = {
         .arena = arena_create(desc.coro_size),
@@ -607,6 +609,27 @@ static void test_minicoro_prepares_cold_arena_slot(void) {
 
     arena_destroy(fixture.arena);
 }
+
+#if defined(TEST_MCO_WINDOWS_ASM)
+static void test_create_rejects_invalid_fresh_layout(void) {
+    mco_desc        desc = mco_desc_init(_empty_entry, 128U * 1024U);
+    _arena_fixture_t fixture = {
+        .arena = arena_create(desc.coro_size),
+    };
+    ASSERT(fixture.arena != NULL);
+
+    desc.stack_size -= 16U;
+    desc.alloc_cb       = _arena_alloc_cb;
+    desc.dealloc_cb     = _arena_dealloc_cb;
+    desc.allocator_data = &fixture;
+
+    mco_coro* co = NULL;
+    ASSERT(mco_create(&co, &desc) == MCO_INVALID_ARGUMENTS);
+    ASSERT(co == NULL);
+
+    arena_destroy(fixture.arena);
+}
+#endif
 
 static void test_create_prepared_allocator(void) {
     mco_desc          desc      = mco_desc_init(_empty_entry, 128U * 1024U);
@@ -677,12 +700,12 @@ static void test_initial_teb_state(void) {
     _coro_fixture_destroy(&fixture);
 }
 
-static void test_cold_child_creation_preserves_parent_teb(void) {
-    mco_desc          desc = mco_desc_init(_cold_child_entry, 128U * 1024U);
+static void test_fresh_child_creation_preserves_parent_teb(void) {
+    mco_desc          desc = mco_desc_init(_fresh_child_entry, 128U * 1024U);
     _ordered_fixture_t fixture = {
         .arena = arena_create(desc.coro_size),
     };
-    _cold_child_ctx_t child_ctx = {
+    _fresh_child_ctx_t child_ctx = {
         .fixture        = &fixture,
         .create_result  = MCO_GENERIC_ERROR,
         .destroy_result = MCO_GENERIC_ERROR,
@@ -822,7 +845,7 @@ static void test_cross_thread_stack_migration(void) {
     ASSERT(atomic_load(&fixture.dealloc_calls) == 1);
 }
 
-static void test_hot_stack_limit_reuse(void) {
+static void test_reusable_stack_limit(void) {
     mco_desc          desc      = mco_desc_init(_stack_entry, 128U * 1024U);
     _coro_fixture_t   fixture = {0};
     _stack_entry_ctx_t deep = {
@@ -1000,15 +1023,18 @@ int main(void) {
     test_stack_layout();
     test_init_accessible_storage();
     test_create_rejects_invalid_desc_before_allocation();
-    test_minicoro_prepares_cold_arena_slot();
+    test_minicoro_prepares_fresh_arena_slot();
+#if defined(TEST_MCO_WINDOWS_ASM)
+    test_create_rejects_invalid_fresh_layout();
+#endif
     test_create_prepared_allocator();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_initial_teb_state();
-    test_cold_child_creation_preserves_parent_teb();
+    test_fresh_child_creation_preserves_parent_teb();
 #endif
     test_create_destroy_reuse();
     test_cross_thread_stack_migration();
-    test_hot_stack_limit_reuse();
+    test_reusable_stack_limit();
 #if defined(TEST_MCO_WINDOWS_ASM)
     test_arena_spill_restores_initial_stack();
 #endif

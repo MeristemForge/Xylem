@@ -179,10 +179,6 @@ void arena_destroy(arena_t* arena) {
     free(arena);
 }
 
-size_t arena_slot_size(const arena_t* arena) {
-    return arena ? arena->slot_size : 0;
-}
-
 int arena_alloc(arena_t* arena, void** slots, int count) {
     if (!arena || !slots || count <= 0) {
         return 0;
@@ -209,26 +205,26 @@ void arena_free(arena_t* arena, void** slots, int count) {
         return;
     }
 
-    int cold_count = 0;
+    int fresh_count = 0;
     for (int i = 0; i < count; i++) {
         void* slot = slots[i];
         if (platform_vmem_decommit(slot, arena->slot_size) == 0) {
             VMEM_ASAN_POISON(slot, arena->slot_size);
-            slots[cold_count++] = slot;
+            slots[fresh_count++] = slot;
         } else {
             xylem_loge("<arena> decommit failed ptr=%p", slot);
         }
     }
-    if (cold_count == 0) {
+    if (fresh_count == 0) {
         return;
     }
 
     mtx_lock(&arena->lock);
-    if ((size_t)cold_count > arena->free_cap - arena->free_count) {
+    if ((size_t)fresh_count > arena->free_cap - arena->free_count) {
         xylem_loge("<arena> free slot overflow");
         abort();
     }
-    for (int i = 0; i < cold_count; i++) {
+    for (int i = 0; i < fresh_count; i++) {
         arena->free_slots[arena->free_count++] = slots[i];
     }
     mtx_unlock(&arena->lock);

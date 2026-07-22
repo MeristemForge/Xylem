@@ -21,16 +21,14 @@
 
 _Pragma("once")
 
-#include <stdint.h>
-
 #define COPOOL_LOCAL_DEFAULT_CAP 64
 
 typedef struct copool_local_s  copool_local_t;
 typedef struct copool_shared_s copool_shared_t;
 
 typedef enum copool_slot_state_e {
-    COPOOL_SLOT_COLD,
-    COPOOL_SLOT_HOT,
+    COPOOL_SLOT_FRESH,
+    COPOOL_SLOT_REUSABLE,
 } copool_slot_state_t;
 
 typedef struct copool_slot_s {
@@ -66,24 +64,24 @@ extern void copool_local_destroy(copool_local_t* pool);
 extern int copool_local_capacity(const copool_local_t* pool);
 
 /**
- * @brief Acquire up to count slots from a worker-local pool.
+ * @brief Take up to count slots from a worker-local pool.
  *
  * Slots are removed in LIFO order. A local pool may be accessed only by its
  * owning worker.
  *
  * @param pool   Pool handle.
  * @param slots  Output array with capacity for count entries.
- * @param count  Maximum number of slots to acquire.
+ * @param count  Maximum number of slots to take.
  *
- * @return Number of slots acquired, from 0 through count.
+ * @return Number of slots taken, from 0 through count.
  */
-extern int copool_local_acquire(
+extern int copool_local_take(
     copool_local_t* pool,
     copool_slot_t*  slots,
     int             count);
 
 /**
- * @brief Release up to count slots into a worker-local pool.
+ * @brief Put up to count slots into a worker-local pool.
  *
  * A local pool may be accessed only by its owning worker.
  *
@@ -93,7 +91,7 @@ extern int copool_local_acquire(
  *
  * @return Number of slots stored, from 0 through count.
  */
-extern int copool_local_release(
+extern int copool_local_put(
     copool_local_t*      pool,
     const copool_slot_t* slots,
     int                  count);
@@ -117,37 +115,34 @@ extern copool_shared_t* copool_shared_create(void);
 extern void copool_shared_destroy(copool_shared_t* pool);
 
 /**
- * @brief Acquire up to count slots from the shared pool.
+ * @brief Take up to count slots from the shared pool.
  *
- * Slots are removed in LIFO order. The oldest entries remain at the list head
- * for deadline-based reclamation. This operation is thread-safe.
+ * Slots are removed in LIFO order. This operation is thread-safe.
  *
  * @param pool   Pool handle.
  * @param slots  Output array with capacity for count entries.
- * @param count  Maximum number of slots to acquire.
+ * @param count  Maximum number of slots to take.
  *
- * @return Number of slots acquired, from 0 through count.
+ * @return Number of slots taken, from 0 through count.
  */
-extern int copool_shared_acquire(
+extern int copool_shared_take(
     copool_shared_t* pool,
     copool_slot_t*   slots,
     int              count);
 
 /**
- * @brief Release up to count slots into the shared pool.
+ * @brief Put up to count slots into the shared pool.
  *
  * A metadata node is allocated for each stored slot. This operation is
  * thread-safe and may store fewer than count entries on allocation failure.
  *
- * @param pool         Pool handle.
- * @param slots        Slot entries to store.
- * @param count        Number of entries available in slots.
- * @param deadline_ms  Absolute idle-expiration deadline for all entries.
+ * @param pool   Pool handle.
+ * @param slots  Slot entries to store.
+ * @param count  Number of entries available in slots.
  *
  * @return Number of slots stored, from 0 through count.
  */
-extern int copool_shared_release(
+extern int copool_shared_put(
     copool_shared_t*     pool,
     const copool_slot_t* slots,
-    int                  count,
-    uint64_t             deadline_ms);
+    int                  count);

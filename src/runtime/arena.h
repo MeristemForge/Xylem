@@ -48,16 +48,7 @@ extern arena_t* arena_create(size_t slot_size);
 extern void arena_destroy(arena_t* arena);
 
 /**
- * @brief Get the page-aligned slot size.
- *
- * @param arena  Arena handle, or NULL.
- *
- * @return Page-aligned slot size, or 0 for NULL.
- */
-extern size_t arena_slot_size(const arena_t* arena);
-
-/**
- * @brief Allocate fixed-size cold slots.
+ * @brief Allocate fixed-size fresh slots.
  *
  * Returned addresses are fully decommitted and must be initialized before any
  * access. At most one region is added per call.
@@ -66,7 +57,7 @@ extern size_t arena_slot_size(const arena_t* arena);
  * @param slots  Output array with capacity for count pointers.
  * @param count  Maximum number of slots to allocate.
  *
- * @return Number of cold slot addresses written to slots, from 0 through
+ * @return Number of fresh slot addresses written to slots, from 0 through
  *         count.
  */
 extern int arena_alloc(arena_t* arena, void** slots, int count);
