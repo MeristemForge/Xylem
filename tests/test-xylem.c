@@ -114,10 +114,7 @@ typedef struct {
 
 static void _ext_coro(void* arg) {
     _ext_ctx_t* ctx = (_ext_ctx_t*)arg;
-    if (atomic_fetch_add(&ctx->count, 1) == ctx->target - 1) {
-        _utils_watchdog_stop();
-        xylem_shutdown();
-    }
+    atomic_fetch_add(&ctx->count, 1);
 }
 
 static int _ext_thread_fn(void* arg) {
@@ -134,6 +131,11 @@ static void _ext_main(void* arg) {
     thrd_t th;
     ASSERT(thrd_create(&th, _ext_thread_fn, ctx) == thrd_success);
     ASSERT(thrd_join(th, NULL) == thrd_success);
+    while (atomic_load(&ctx->count) != ctx->target) {
+        xylem_sleep(0);
+    }
+    _utils_watchdog_stop();
+    xylem_shutdown();
 }
 
 static void test_spawn_from_external_thread(void) {

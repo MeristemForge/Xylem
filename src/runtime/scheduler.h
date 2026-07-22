@@ -105,6 +105,7 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
  *
  * Signals shutdown, wakes all workers, waits for them to stop,
  * then frees all resources.
+ * Must not be called from one of this scheduler's workers.
  * Must not race with scheduler_stop() or scheduler_destroy() on the
  * same scheduler; runtime teardown serializes those calls.
  *
@@ -113,14 +114,22 @@ extern scheduler_t* scheduler_create(scheduler_opts_t* opts);
 extern void scheduler_destroy(scheduler_t* sched);
 
 /**
- * @brief Stop the scheduler and join its workers, without freeing.
+ * @brief Stop the scheduler without freeing its resources.
  *
- * Sets the running flag to false, wakes every worker, and joins
- * each one. After this call returns, no coroutine scheduled on this
- * scheduler can run, but the scheduler's runq, poller, and worker
- * structures remain allocated so late cross-thread callers (for
- * instance dynpool threads finishing a blocking task with
- * scheduler_coro_ready) can still touch the scheduler without UAF.
+ * Sets the running flag to false and wakes every worker. A caller outside this
+ * scheduler then joins every worker; after that call returns, no coroutine on
+ * the scheduler can run. A caller on one of this scheduler's workers only
+ * initiates the stop and returns without joining, so that call is not a
+ * teardown barrier; a later non-worker stop or destroy must join the workers.
+ *
+ * The scheduler's runq, poller, and worker structures remain allocated so late
+ * cross-thread callers (for instance dynpool threads finishing a blocking task
+ * with scheduler_coro_ready) can safely observe the stopped state and return
+ * without UAF.
+ *
+ * Once stopping begins, coroutine spawn/ready and timer create/start/reset
+ * reject or ignore new work. Timer stop/destroy remain valid until the
+ * scheduler is destroyed.
  * scheduler_destroy() must still be called afterwards to free the
  * memory. Idempotent for sequential callers: calling it a second time
  * (or calling scheduler_destroy without calling stop first) is safe.
@@ -143,20 +152,27 @@ extern void scheduler_stop(scheduler_t* sched);
  *
  * @param sched  Scheduler handle.
  * @param co     Waiting coroutine to make runnable.
+ *
+ * @note No-op after scheduler_stop() begins. Must not race with
+ *       scheduler_destroy().
  */
 extern void scheduler_coro_ready(scheduler_t* sched, mco_coro* co);
 
 /**
  * @brief Make a batch of waiting coroutines runnable with a single wake.
  *
- * Pushes the whole batch to the global runq and performs at most
- * one wake, amortising lock + signal costs.
+ * Normally pushes the whole batch to the global runq and performs at most one
+ * wake, amortising lock + signal costs. On a single-worker scheduler, a call
+ * from that worker uses its local queue directly.
  *
  * Thread-safe. For a single coroutine, use scheduler_coro_ready.
  *
  * @param sched  Scheduler handle.
  * @param coros  Array of waiting coroutines. Must not be NULL when count > 0.
  * @param count  Number of coroutines in @p coros. No-op when count <= 0.
+ *
+ * @note No-op after scheduler_stop() begins. Must not race with
+ *       scheduler_destroy().
  */
 extern void scheduler_coro_ready_batch(
     scheduler_t* sched,
@@ -174,6 +190,11 @@ extern void scheduler_coro_ready_batch(
  * @param sched  Scheduler handle.
  * @param fn     Coroutine entry function.
  * @param arg    Opaque argument.
+ *
+ * @return 0 on success, or -1 for an invalid entry, allocation failure, or a
+ *         stopped scheduler.
+ *
+ * @note Must not race with scheduler_stop() or scheduler_destroy().
  */
 extern int scheduler_coro_spawn(
     scheduler_t* sched,
@@ -247,6 +268,8 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
  * @param sched  Scheduler handle.
  *
  * @return Timer handle, or NULL on failure.
+ *
+ * @note Returns NULL after scheduler_stop() begins.
  */
 extern scheduler_timer_t* scheduler_timer_create(scheduler_t* sched);
 
@@ -312,6 +335,8 @@ extern void scheduler_timer_destroy(scheduler_timer_t* timer);
  * @param ud          User data for callback.
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
+ *
+ * @note No-op after scheduler_stop() begins.
  */
 extern void scheduler_timer_start(
     scheduler_timer_t*   timer,
@@ -363,6 +388,7 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  *
  * @return true if a queued fire was cancelled before it ran, or if an
  *         earlier deferred reset from the current fire was overwritten.
+ *         Returns false after scheduler_stop() begins.
  */
 extern bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms);
 

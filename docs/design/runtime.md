@@ -79,23 +79,34 @@ cannot make progress *parks* (yields to its worker); a wake source later
    coroutine count hits zero, then spawn `main_fn` as the root coroutine.
 6. Block the calling thread on a stop semaphore.
 
-`runtime_shutdown()` is a thread-safe one-shot: a CAS on `g_shutdown` ensures
-the stop semaphore is posted exactly once. It is called either explicitly by
-the user or automatically by the idle callback when the last coroutine exits.
+While `runtime_run()` is fully active, the `runtime_shutdown()` signalling path
+is a thread-safe one-shot: a CAS on `g_shutdown` ensures the stop semaphore is
+posted exactly once. Calls during initialization or teardown are outside that
+contract. Shutdown is requested either explicitly by the user or automatically
+by the idle callback when the last coroutine exits.
+
+External runtime users are owned by a live coroutine. That owner remains alive
+until every external thread has stopped and been joined, with no external
+runtime call still in flight. Consequently `xylem_shutdown()` and automatic
+shutdown do not race with external `xylem_spawn()` calls. After scheduler stop
+begins, spawn, ready, and timer submission reject or ignore new work; cleanup
+operations remain available until scheduler destruction.
 
 **Teardown order matters** and is fixed to avoid use-after-free:
 
 ```
-scheduler_stop()     // stop + join workers, but keep memory allocated
+scheduler_stop()     // non-worker caller stops + joins; memory stays allocated
 dynpool_destroy()    // join blocking threads; late scheduler_coro_ready() calls
                      // from finishing tasks still see a valid scheduler
 scheduler_destroy()  // now free scheduler memory
 ```
 
-`scheduler_stop()` joins workers without freeing, so a dynpool thread that
-finishes a blocking task and calls `scheduler_coro_ready()` to resume its
-coroutine can still touch the scheduler safely. Only after the dynpool is fully
-drained does `scheduler_destroy()` release memory.
+On the runtime teardown path, the non-worker `scheduler_stop()` caller joins
+workers without freeing scheduler memory. A dynpool thread that finishes a
+blocking task afterward can still call `scheduler_coro_ready()` safely; it
+observes the stopped scheduler and returns without requeueing the coroutine.
+Only after the dynpool is fully drained does `scheduler_destroy()` release
+memory.
 
 ## 4. The runnable pool: three tiers
 
@@ -148,7 +159,8 @@ useful work without taking the victim's entire queue.
 
 ### `scheduler_coro_ready(sched, co)`
 
-Wake sources first perform `WAITING -> RUNNABLE`, then publish the coroutine:
+While the scheduler is running, wake sources first perform
+`WAITING -> RUNNABLE`, then publish the coroutine:
 
 - **From a worker of this scheduler:** push to `runnext`; if `runnext` was
   occupied, push the evicted coroutine to the local deque. If the deque is
@@ -160,6 +172,9 @@ The transition uses a strong CAS. A duplicate wake, wake-before-commit, or
 attempt to ready a running coroutine is a protocol bug and aborts instead of
 silently adding a duplicate runq entry.
 
+After scheduler stop begins, `scheduler_coro_ready()` returns before the state
+transition and publication.
+
 After publication, `_sched_wake_worker()` does nothing while another worker is
 already searching. Otherwise it reserves one parked or polling worker as
 searching before signalling it, so concurrent producers coalesce into one wake.
@@ -168,9 +183,11 @@ signalled through the poller wakeup fd.
 
 ### `scheduler_coro_ready_batch(sched, coros, count)`
 
-Transitions every coroutine from `WAITING` to `RUNNABLE`, appends runq nodes in
-fixed-size batches, and performs **one** wake. This amortizes lock and signal
-cost when one poll pass releases many waiters.
+Normally transitions every coroutine from `WAITING` to `RUNNABLE`, appends runq
+nodes in fixed-size batches, and performs **one** wake. This amortizes lock and
+signal cost when one poll pass releases many waiters. A call from the sole
+worker of a single-worker scheduler instead queues each coroutine locally.
+After scheduler stop begins, the whole operation is a no-op.
 
 ### Coroutine lifecycle and park commit
 
@@ -704,8 +721,11 @@ is offloaded to the **dynamic thread pool**.
    `dynpool_submit()` is the final publication operation. If submission fails,
    the callback returns `false` so the coroutine is rescheduled immediately and
    `runtime_submit()` reports `-1`.
-3. A pool thread runs `fn(arg)`, then calls `scheduler_coro_ready()` to resume the
-   coroutine — a cross-thread wakeup that lands on the global runq.
+3. A pool thread runs `fn(arg)`, then calls `scheduler_coro_ready()`. While the
+   scheduler is running, this resumes the coroutine through a cross-thread
+   wakeup that lands on the global runq. After scheduler stop begins, the call
+   is a no-op and the parked coroutine remains registered for scheduler
+   destruction.
    If shutdown destroys the pool before a queued task runs, process-exit
    teardown owns the remaining submit context.
 
@@ -733,10 +753,11 @@ The cross-thread handoff (top to bottom is time):
      v                 (may resume on a DIFFERENT worker than A)  v
 ```
 
-Note the coroutine can resume on **any** worker, not necessarily the one it
-parked on — the wakeup is a plain cross-thread `scheduler_coro_ready()` into the
-global runq. If `dynpool_submit()` fails, the commit callback returns `false`, the
-coroutine is rescheduled immediately, and `runtime_submit()` returns `-1`.
+While the scheduler is running, the coroutine can resume on **any** worker, not
+necessarily the one it parked on — the wakeup is a plain cross-thread
+`scheduler_coro_ready()` into the global runq. If `dynpool_submit()` fails, the
+commit callback returns `false`, the coroutine is rescheduled immediately, and
+`runtime_submit()` returns `-1`.
 
 The pool spawns threads on demand up to `max_threads` (default 512) and lets
 idle threads exit after `idle_timeout` (default 10 s). Task submission holds
@@ -760,7 +781,8 @@ The losing source only drops its reference.
 
 ## 10. Concurrency invariants
 
-- **A parked coroutine is requeued exactly once after waiter publication.**
+- **While the scheduler is running, a parked coroutine is requeued exactly once
+  after waiter publication.**
   The worker performs `RUNNING -> WAITING` before the commit callback. A
   successful callback publishes the waiter as its final shared operation;
   the single winning wake source then performs `WAITING -> RUNNABLE`.

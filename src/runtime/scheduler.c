@@ -152,8 +152,8 @@ struct scheduler_s {
     _Atomic int64_t       alive;
 
     _Atomic uint32_t      timer_rr;
-    _Atomic uint32_t      wake_rr; /* round-robin start for wake_worker scan. */
-    _Atomic uint32_t spawn_rr;     /* round-robin for non-worker spawn owner. */
+    _Atomic uint32_t      wake_rr;      /* round-robin start for wake_worker scan. */
+    _Atomic uint32_t      spawn_rr;     /* round-robin for non-worker spawn owner. */
     mco_desc              coro_desc;
     arena_t*              coro_arena;
     copool_shared_t*      coro_pool;
@@ -749,7 +749,7 @@ static void _sched_coro_start(scheduler_t* sched, mco_coro* co) {
 }
 
 int scheduler_coro_spawn(scheduler_t* sched, void (*fn)(void*), void* arg) {
-    if (!fn) {
+    if (!fn || !atomic_load(&sched->running)) {
         return -1;
     }
 
@@ -1541,6 +1541,9 @@ void scheduler_stop(scheduler_t* sched) {
 }
 
 void scheduler_coro_ready(scheduler_t* sched, mco_coro* co) {
+    if (!atomic_load(&sched->running)) {
+        return;
+    }
     _sched_coro_transition(co, SCHED_CORO_WAITING, SCHED_CORO_RUNNABLE);
     _sched_enqueue_runnable(sched, co);
 }
@@ -1549,7 +1552,7 @@ void scheduler_coro_ready_batch(
     scheduler_t* sched,
     mco_coro**   coros,
     int          count) {
-    if (count <= 0) {
+    if (count <= 0 || !atomic_load(&sched->running)) {
         return;
     }
 
@@ -1639,6 +1642,9 @@ iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched) {
 }
 
 scheduler_timer_t* scheduler_timer_create(scheduler_t* sched) {
+    if (!atomic_load(&sched->running)) {
+        return NULL;
+    }
     scheduler_timer_t* t = (scheduler_timer_t*)calloc(1, sizeof(*t));
     if (!t) {
         return NULL;
@@ -1680,6 +1686,9 @@ void scheduler_timer_start(
     void*                ud,
     uint64_t             timeout_ms,
     uint64_t             repeat_ms) {
+    if (!atomic_load(&timer->sched->running)) {
+        return;
+    }
     uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
 
     _sched_worker_t* owner = &timer->sched->workers[timer->owner];
@@ -1741,7 +1750,7 @@ bool scheduler_timer_stop(scheduler_timer_t* timer) {
 }
 
 bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
-    if (!timer) {
+    if (!timer || !atomic_load(&timer->sched->running)) {
         return false;
     }
 

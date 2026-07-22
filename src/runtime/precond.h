@@ -32,9 +32,11 @@ _Pragma("once")
  * any API that may park the calling coroutine (I/O, sleep, blocking
  * lock/wait): such an API on a non-coroutine thread cannot suspend and
  * would corrupt the scheduler, so fail fast at the misuse site rather
- * than at some later contended park. Do NOT use on the any-thread-safe
- * path (close that only wakes, unlock, spawn, schedule, deadline
- * setters) -- those are designed to be called from any thread.
+ * than at some later contended park. Do NOT use on an any-thread-safe
+ * low-level path (an internal close that only wakes, unlock, spawn, schedule,
+ * or iowait deadline setter). A public protocol API may still require a
+ * coroutine for handle ownership even when its low-level operation cannot
+ * park.
  *
  * mod and api are string literals naming the module and the API for the
  * diagnostic, e.g. RUNTIME_REQUIRE_COROUTINE("tls", "tls_dial").

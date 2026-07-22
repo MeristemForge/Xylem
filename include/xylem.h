@@ -104,6 +104,10 @@ typedef struct xylem_opts_s {
  * external threads associated with the finished run before starting another
  * runtime. Leak detectors such as ASAN may report those resources if the
  * caller intentionally leaves them for process exit cleanup.
+ * If an external OS thread may call xylem_spawn() or use runtime-backed
+ * objects, the root coroutine must remain alive until that thread has stopped
+ * and been joined. Returning the root while an external producer is still
+ * active may trigger automatic shutdown.
  *
  * @param main_fn  Initial coroutine entry point.
  * @param arg      Opaque argument passed to main_fn.
@@ -130,11 +134,11 @@ extern void xylem_run(
  * their runtime-backed resources before shutdown or before starting the next
  * run if leak-free reports are required.
  *
- * After shutdown is requested, external OS threads must not keep using
- * runtime-backed objects such as channels, mutexes, conds, semaphores,
- * waitgroups, timers, or tickers. Stop and join those threads before
- * calling xylem_shutdown(), or make sure they return without touching
- * Xylem objects once shutdown begins.
+ * xylem_shutdown() must not race with an external xylem_spawn(). Stop and join
+ * external OS threads before calling it, with no external runtime operation
+ * still in flight. After shutdown is requested, external threads must not use
+ * channels, mutexes, conds, semaphores, waitgroups, timers, tickers, or other
+ * runtime-backed objects.
  */
 extern void xylem_shutdown(void);
 
@@ -146,6 +150,8 @@ extern void xylem_shutdown(void);
  * A call from a runtime coroutine may cooperatively yield before returning
  * after its spawn credit is exhausted. A spawned coroutine may therefore begin
  * before this function returns. Calls from plain OS threads only enqueue it.
+ * An external thread may call this only while an owner coroutine remains alive,
+ * and the call must not race with xylem_shutdown() or xylem_run() returning.
  *
  * @param fn   Coroutine entry function.
  * @param arg  Opaque argument.

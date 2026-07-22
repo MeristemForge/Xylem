@@ -51,21 +51,23 @@ extern void runtime_run(
     void (*main_fn)(void*), void* arg, runtime_opts_t* opts);
 
 /**
- * @brief Force the runtime to shut down immediately.
+ * @brief Request early runtime shutdown.
  *
- * Safe to call from another thread while runtime_run() is active.
- * Calls before runtime_run() finishes initialization, or during teardown,
- * are not synchronized. Unblocks runtime_run() without waiting for
- * coroutines to finish naturally.
+ * Safe to call from another thread only while runtime_run() is fully active.
+ * Calls before initialization completes or during teardown are not
+ * synchronized. This unblocks runtime_run() without waiting for coroutines to
+ * finish naturally, but teardown still waits for blocking-pool jobs that are
+ * already running.
  */
 extern void runtime_shutdown(void);
 
 /**
- * @brief Spawn a new coroutine. Thread-safe.
+ * @brief Spawn a new coroutine while the runtime is active.
  *
  * A successful call from a runtime coroutine consumes cooperative credit and
  * may yield before returning when that credit is exhausted. Calls from plain
- * OS threads only enqueue the new coroutine.
+ * OS threads only enqueue the new coroutine. An external-thread call must not
+ * race with runtime_shutdown() or runtime_run() returning.
  *
  * @param fn   Coroutine entry function.
  * @param arg  Argument passed to fn.

@@ -105,13 +105,14 @@ Coroutine allocation has two ownership paths:
 
 The scheduler exposes its allocator callbacks to minicoro and coordinates three
 independent objects: one arena, one unbounded shared pool, and one fixed local
-pool per worker. Copool stores slot addresses and their cold/hot state but does
-not own or initialize slot memory. The allocator returns that state alongside
-the slot: cold storage receives the backend layout, while hot storage retains
-its committed stack extent and saved `StackLimit`. Complete regions remain
-reserved until arena destruction, so many slots share one mapping and Unix VMA
-usage grows with regions instead of coroutines. The Windows Fiber stack remains
-external to the slot and is owned by
+pool per worker. Copool stores slot addresses and their fresh/reusable state but
+does not own or initialize slot memory. The allocator returns that state
+alongside the slot: fresh storage receives backend preparation, while reusable
+storage skips VM preparation. Windows ASM reusable storage retains its committed
+stack extent and saved `StackLimit`. Complete regions remain reserved until
+arena destruction, so many slots share one mapping and Unix VMA usage grows with
+regions instead of coroutines. The Windows Fiber stack remains external to the
+slot and is owned by
 `CreateFiberEx()` / `DeleteFiber()` (see [`design/runtime.md`](design/runtime.md)
 §6).
 

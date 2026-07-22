@@ -52,6 +52,11 @@ typedef struct {
 } _spawn_ctx_t;
 
 typedef struct {
+    scheduler_t*       sched;
+    _Atomic(mco_coro*) waiter;
+} _stopped_ready_ctx_t;
+
+typedef struct {
     xylem_waitgroup_t*  wg;
     _Atomic(mco_coro*) waiter;
     atomic_int          runs;
@@ -93,6 +98,13 @@ static bool _park_decline_commit_cb(mco_coro* co, void* arg) {
     (void)co;
     (void)arg;
     return false;
+}
+
+static bool _stopped_ready_commit_cb(mco_coro* co, void* arg) {
+    _stopped_ready_ctx_t* ctx = (_stopped_ready_ctx_t*)arg;
+
+    atomic_store(&ctx->waiter, co);
+    return true;
 }
 
 static void _run_once(void* arg) {
@@ -161,6 +173,19 @@ static void _mark_done(void* arg) {
     _spawn_ctx_t* ctx = (_spawn_ctx_t*)arg;
 
     atomic_store(&ctx->done, 1);
+}
+
+static void _park_until_stopped(void* arg) {
+    _stopped_ready_ctx_t* ctx = (_stopped_ready_ctx_t*)arg;
+
+    scheduler_coro_park(ctx->sched, _stopped_ready_commit_cb, ctx);
+    ASSERT(0 && "coroutine resumed after scheduler stop");
+}
+
+static void _timer_after_stop_cb(scheduler_timer_t* timer, void* ud) {
+    (void)timer;
+    (void)ud;
+    ASSERT(0 && "timer fired after scheduler stop");
 }
 
 static void _churn_arrive_start(_churn_ctx_t* ctx) {
@@ -460,6 +485,115 @@ static void test_external_spawn_after_create(void) {
     }
 }
 
+static void test_spawn_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+    _spawn_ctx_t     ctx;
+
+    ASSERT(sched != NULL);
+    atomic_init(&ctx.done, 0);
+    scheduler_stop(sched);
+
+    ASSERT(scheduler_coro_spawn(sched, _mark_done, &ctx) == -1);
+    ASSERT(atomic_load(&ctx.done) == 0);
+    scheduler_destroy(sched);
+}
+
+static void test_ready_after_stop(void) {
+    scheduler_opts_t    opts  = {.worker_count = 1};
+    scheduler_t*        sched = scheduler_create(&opts);
+    _stopped_ready_ctx_t ctx  = {.sched = sched};
+
+    ASSERT(sched != NULL);
+    atomic_init(&ctx.waiter, NULL);
+    ASSERT(scheduler_coro_spawn(sched, _park_until_stopped, &ctx) == 0);
+
+    mco_coro* co;
+    while (!(co = atomic_load(&ctx.waiter))) {
+        thrd_yield();
+    }
+    scheduler_stop(sched);
+    scheduler_coro_ready(sched, co);
+    scheduler_coro_ready(sched, co);
+    scheduler_destroy(sched);
+}
+
+static void test_batch_ready_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+    _stopped_ready_ctx_t ctx[SCHED_BATCH_COUNT];
+    mco_coro*             coros[SCHED_BATCH_COUNT];
+
+    ASSERT(sched != NULL);
+    for (int i = 0; i < SCHED_BATCH_COUNT; i++) {
+        ctx[i].sched = sched;
+        atomic_init(&ctx[i].waiter, NULL);
+        ASSERT(scheduler_coro_spawn(sched, _park_until_stopped, &ctx[i]) == 0);
+    }
+    for (int i = 0; i < SCHED_BATCH_COUNT; i++) {
+        while (!(coros[i] = atomic_load(&ctx[i].waiter))) {
+            thrd_yield();
+        }
+    }
+
+    scheduler_stop(sched);
+    scheduler_coro_ready_batch(sched, coros, SCHED_BATCH_COUNT);
+    scheduler_coro_ready_batch(sched, coros, SCHED_BATCH_COUNT);
+    scheduler_destroy(sched);
+}
+
+static void test_timer_create_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+
+    ASSERT(sched != NULL);
+    scheduler_stop(sched);
+    ASSERT(scheduler_timer_create(sched) == NULL);
+    scheduler_destroy(sched);
+}
+
+static void test_timer_start_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+
+    ASSERT(sched != NULL);
+    scheduler_timer_t* timer = scheduler_timer_create(sched);
+    ASSERT(timer != NULL);
+    scheduler_stop(sched);
+    scheduler_timer_start(timer, _timer_after_stop_cb, NULL, 1, 0);
+    ASSERT(!scheduler_timer_stop(timer));
+    scheduler_timer_destroy(timer);
+    scheduler_destroy(sched);
+}
+
+static void test_timer_reset_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+
+    ASSERT(sched != NULL);
+    scheduler_timer_t* timer = scheduler_timer_create(sched);
+    ASSERT(timer != NULL);
+    scheduler_stop(sched);
+    ASSERT(!scheduler_timer_reset(timer, 1));
+    ASSERT(!scheduler_timer_stop(timer));
+    scheduler_timer_destroy(timer);
+    scheduler_destroy(sched);
+}
+
+static void test_armed_timer_cleanup_after_stop(void) {
+    scheduler_opts_t opts  = {.worker_count = 1};
+    scheduler_t*     sched = scheduler_create(&opts);
+
+    ASSERT(sched != NULL);
+    scheduler_timer_t* timer = scheduler_timer_create(sched);
+    ASSERT(timer != NULL);
+    scheduler_timer_start(timer, _timer_after_stop_cb, NULL, 60000, 0);
+    scheduler_stop(sched);
+    ASSERT(scheduler_timer_stop(timer));
+    scheduler_timer_destroy(timer);
+    scheduler_destroy(sched);
+}
+
 static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
@@ -483,6 +617,13 @@ int main(void) {
     xylem_run(_test_run_all, NULL, &one_worker);
     xylem_run(_test_run_all, &many_workers, &many_workers);
     test_external_spawn_after_create();
+    test_spawn_after_stop();
+    test_ready_after_stop();
+    test_batch_ready_after_stop();
+    test_timer_create_after_stop();
+    test_timer_start_after_stop();
+    test_timer_reset_after_stop();
+    test_armed_timer_cleanup_after_stop();
     test_backend_final_slot_limit();
     return 0;
 }
