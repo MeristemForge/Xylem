@@ -20,7 +20,6 @@
  */
 
 #include "xylem.h"
-#include "sync/sem.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -44,8 +43,8 @@ static struct {
     _mode_t     mode;
     const char* mode_name;
 
-    sem_t*             sem_a;
-    sem_t*             sem_b;
+    xylem_sem_t*       sem_a;
+    xylem_sem_t*       sem_b;
     xylem_waitgroup_t* wg;
 
     volatile int       running;
@@ -91,8 +90,8 @@ static void _producer(void* arg) {
     (void)arg;
 
     for (;;) {
-        sem_wait(G.sem_a);
-        sem_post(G.sem_b);
+        xylem_sem_wait(G.sem_a);
+        xylem_sem_post(G.sem_b);
         G.counter++;
         if (!G.running) {
             break;
@@ -105,8 +104,8 @@ static void _consumer(void* arg) {
     (void)arg;
 
     for (;;) {
-        sem_wait(G.sem_b);
-        sem_post(G.sem_a);
+        xylem_sem_wait(G.sem_b);
+        xylem_sem_post(G.sem_a);
         G.counter++;
         if (!G.running) {
             break;
@@ -118,8 +117,8 @@ static void _consumer(void* arg) {
 static void _run(void* arg) {
     (void)arg;
 
-    G.sem_a = sem_create(1);
-    G.sem_b = sem_create(0);
+    G.sem_a = xylem_sem_create(1);
+    G.sem_b = xylem_sem_create(0);
     G.wg = xylem_waitgroup_create();
     G.counter = 0;
 
@@ -150,8 +149,8 @@ static void _run(void* arg) {
     xylem_sleep((uint64_t)BENCH_DURATION_MS);
     G.running = 0;
 
-    sem_post(G.sem_a);
-    sem_post(G.sem_b);
+    xylem_sem_post(G.sem_a);
+    xylem_sem_post(G.sem_b);
 
     xylem_waitgroup_wait(G.wg);
     uint64_t t1 = _now_ns();
@@ -160,8 +159,8 @@ static void _run(void* arg) {
     G.total_ops = G.counter;
 
     xylem_waitgroup_destroy(G.wg);
-    sem_destroy(G.sem_b);
-    sem_destroy(G.sem_a);
+    xylem_sem_destroy(G.sem_b);
+    xylem_sem_destroy(G.sem_a);
 }
 
 static void _print_result(void) {
