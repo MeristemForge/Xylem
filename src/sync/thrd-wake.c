@@ -30,17 +30,29 @@
 #include <stdlib.h>
 
 struct thrd_wake_s {
-    _Atomic uint32_t count; /* token count; the futex word for blocked waits */
+    _Atomic uint32_t count;  /* token count; the futex word for blocked waits */
+    _Atomic uint32_t refcnt; /* TLS owner plus in-flight signals */
 };
 
-/* Thread-local; created lazily, freed by the TLS destructor on exit. */
+/* Thread-local; created lazily, with one owner reference held by TLS. */
 
 static tss_t     _thrd_wake_key;
 static once_flag _thrd_wake_once = ONCE_FLAG_INIT;
 static bool      _thrd_wake_ready;
 
+static void _thrd_wake_ref(thrd_wake_t* w) {
+    atomic_fetch_add(&w->refcnt, 1);
+}
+
+static void _thrd_wake_unref(thrd_wake_t* w) {
+    if (atomic_fetch_sub(&w->refcnt, 1) != 1) {
+        return;
+    }
+    free(w);
+}
+
 static void _thrd_wake_dtor(void* p) {
-    free(p);
+    _thrd_wake_unref((thrd_wake_t*)p);
 }
 
 static void _thrd_wake_init(void) {
@@ -61,6 +73,7 @@ thrd_wake_t* thrd_wake_self(void) {
             abort();
         }
         atomic_init(&w->count, 0);
+        atomic_init(&w->refcnt, 1);
         if (tss_set(_thrd_wake_key, w) != thrd_success) {
             free(w);
             abort();
@@ -109,6 +122,8 @@ bool thrd_wake_timedwait(thrd_wake_t* w, uint64_t timeout_ms) {
 }
 
 void thrd_wake_signal(thrd_wake_t* w) {
+    _thrd_wake_ref(w);
     atomic_fetch_add(&w->count, 1);
     platform_futex_signal(&w->count);
+    _thrd_wake_unref(w);
 }

@@ -32,12 +32,11 @@ _Pragma("once")
  * counting wake object -- a signal landing before the wait banks a token
  * the next wait consumes -- so it closes signal-before-wait races.
  *
- * The token count is thread-local and lives for the thread's lifetime, so
- * a waker holding only a pointer to it can signal safely even after the
- * waiter's call frame is gone. The blocking backend is platform_futex
- * (WaitOnAddress on Windows, SYS_futex on Linux), markedly cheaper than a
- * kernel semaphore on Windows. Coroutines never use this; they park on
- * the scheduler.
+ * The token count is thread-local. TLS owns the wake object until thread
+ * exit, and an in-flight signal keeps it alive through the platform wake.
+ * The blocking backend is platform_futex (WaitOnAddress on Windows,
+ * SYS_futex on Linux), markedly cheaper than a kernel semaphore on Windows.
+ * Coroutines never use this; they park on the scheduler.
  */
 
 typedef struct thrd_wake_s thrd_wake_t;
@@ -70,8 +69,8 @@ extern bool thrd_wake_timedwait(thrd_wake_t* w, uint64_t timeout_ms);
 /**
  * @brief Release a token and wake the thread if it is blocked.
  *
- * Safe to call on another thread's wake object through a pointer captured
- * earlier, since the object outlives any single wait.
+ * The caller must ensure @p w is valid when the call begins. Once entered,
+ * the signal holds a reference through the platform wake.
  *
  * @param w  Wake object to signal.
  */
