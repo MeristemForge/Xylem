@@ -39,6 +39,12 @@ typedef void (*xylem_timer_fn_t)(xylem_timer_t* t, void* ud);
  * caller. xylem_timer_stop() and xylem_timer_reset() do not consume the
  * handle and may be called from its callback. xylem_timer_destroy() consumes
  * the handle and must not be called from its callback.
+ *
+ * Timer callbacks run in newly spawned coroutines. Dispatch is best-effort
+ * under allocation failure: if the runtime cannot allocate the per-fire
+ * context or callback coroutine, that fire is dropped without an asynchronous
+ * error. A one-shot fire is not retried; a periodic timer continues with its
+ * next interval.
  */
 
 /**

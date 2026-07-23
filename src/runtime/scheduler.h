@@ -76,10 +76,14 @@ typedef void (*scheduler_timer_fn_t)(scheduler_timer_t* timer, void* ud);
  * use-after-free window where a concurrent teardown on another thread
  * could free ud after dispatch but before the callback first touches it.
  *
- * The hooks run on the scheduler's hot path, and ud_ref additionally
- * runs under timer_lock. They MUST be trivial and non-reentrant -- a
- * plain atomic refcount bump/drop. They must not take locks, arm or stop
- * timers, or otherwise re-enter the scheduler.
+ * ud_ref runs on the scheduler's hot path under timer_lock. It MUST be a
+ * trivial, non-reentrant reference acquisition: it must not take locks or
+ * otherwise re-enter the scheduler.
+ *
+ * ud_unref runs after timer_lock has been released, while the scheduler still
+ * holds the fire reference on the timer. It may perform final reference-count
+ * teardown, including destroying the firing timer and resources owned by ud.
+ * It must not re-arm the timer or retain ud after releasing its reference.
  */
 typedef void (*scheduler_timer_ud_fn_t)(void* ud);
 
@@ -291,7 +295,7 @@ extern void scheduler_timer_set_spawn(scheduler_timer_t* timer, bool spawn);
  *
  * @param timer  Timer handle.
  * @param ref    Invoked under timer_lock at dispatch to pin ud.
- * @param unref  Invoked after the callback returns to release ud.
+ * @param unref  Invoked outside timer_lock after fire completion.
  */
 extern void scheduler_timer_set_ud_guard(
     scheduler_timer_t*      timer,

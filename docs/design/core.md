@@ -68,6 +68,10 @@ Semantics and the lifetime gotcha:
 - `after(delay_ms, cb, ud)` arms a **one-shot** timer and returns a handle.
 - `every(interval_ms, cb, ud)` arms a **periodic callback** timer. It is
   fixed-delay: the next fire is scheduled after the previous callback returns.
+- Callback dispatch requires allocating a fire context and coroutine. Under
+  allocation failure, dispatch is best-effort: a one-shot fire is dropped and
+  not retried; a periodic timer skips that fire and continues with its next
+  interval. No asynchronous error is reported.
 - **The handle must always be released with `destroy()`**, even after the
   callback has already fired. `stop`/`reset` return `true` when they removed a
   queued fire or cancelled/overwrote a deferred reset from the current in-flight

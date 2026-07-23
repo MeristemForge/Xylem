@@ -627,6 +627,11 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
   it in a fresh coroutine. If spawning that coroutine fails, the fire is
   completed without invoking the callback, and the normal completion/ud_unref
   path still runs.
+- Optional userdata guards pin callback state across dispatch. `ud_ref` runs
+  under `timer_lock` and must be a trivial reference acquisition. `ud_unref`
+  runs after the lock is released while the timer fire reference is still held;
+  it may therefore perform final userdata teardown, including destroying the
+  firing timer, but must not re-arm it or retain userdata after release.
 - Periodic timers (`repeat > 0`) are reinserted only after the fired callback
   completes. A timer in `FIRING` state records stop/reset/start requests as
   pending flags (`stop_pending`, `reset_pending`) and applies them in the
@@ -675,6 +680,10 @@ not be called from the callback or race with another operation on the same
 handle. Destroy is not a callback completion barrier: a callback dispatched
 before stop/destroy may still run afterward, so the caller must keep its
 callback and user-data resources alive until that callback returns.
+Public timer callbacks use the spawned path. If allocation of the per-fire
+context or callback coroutine fails, that fire is dropped without an
+asynchronous error: a one-shot is not retried, while a periodic timer continues
+with its next interval.
 
 `xylem_ticker` is the pull-based counterpart to `xylem_timer_every()`. It uses
 an inline scheduler timer callback that never runs user code: the callback only
