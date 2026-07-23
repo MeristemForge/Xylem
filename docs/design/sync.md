@@ -63,11 +63,15 @@ parked coroutine or a blocked OS thread. Coroutine waiters store the `mco_coro*`
 to reschedule with `scheduler_coro_ready()`; OS-thread waiters store a
 `thrd_wake_t*`, a per-thread wake object created lazily and cached in TLS.
 
-The waker selects or drains waiter records under the guard, releases the guard,
-then wakes. Stack waiter records may vanish as soon as the blocked caller
-resumes, so wakers do not touch a waiter after signaling it. The channel keeps
-specialized machinery instead of a FIFO waiter list, because it has a
-single-receiver wake slot and a different timed-wait path.
+The waker selects or drains waiter records under the guard and copies out each
+wake target before releasing the guard. This keeps a stack waiter valid until
+the waker has entered `thrd_wake_signal()`, which takes an in-flight reference
+before publishing the wake token. The target thread may then resume, return, and
+release its TLS owner while the wake object remains alive through the platform
+wake. The waker never accesses the stack waiter after handing the target to
+`thrd_wake_signal()`. The channel keeps specialized machinery instead of a FIFO
+waiter list, because it has a single-receiver wake slot and a different
+timed-wait path.
 
 ### Cross-context wake cost
 
@@ -308,11 +312,14 @@ hands the token to it.
 
 ### Timeout and waiter lifetime
 
-Most waiters live on the blocked caller's stack: an infinite coroutine wait
-stays valid because the coroutine is suspended, and an OS-thread waiter stays
-valid while that thread is blocked on its per-thread wake object. `post()` copies
-the wake target out under the guard and never touches the record again, so stack
-waiters are safe.
+Most waiters live on the blocked caller's stack. An infinite coroutine waiter
+stays valid while the coroutine is suspended. For an OS-thread waiter, `post()`
+copies the TLS wake-object target under the guard and enters
+`thrd_wake_signal()` before the stack record can disappear. The signal path
+takes an in-flight reference before publishing the token, so the target thread
+may resume and release its TLS owner while the wake object remains alive through
+the platform wake. `post()` never touches the stack waiter after handing off the
+wake target.
 
 A **timed coroutine wait** is the exception. It arms a scheduler timer that can
 pull the waiter out of the FIFO from another worker, and that timer callback may

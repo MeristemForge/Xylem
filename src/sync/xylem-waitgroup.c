@@ -35,10 +35,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/**
- * count and waiters share a guard so wait() cannot return and free wg
- * while done() is still draining the latch.
- */
+/* count and waiter transfer share a guard; wake draining no longer touches wg. */
 struct xylem_waitgroup_s {
     size_t       count;
     spin_t       guard;
