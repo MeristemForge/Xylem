@@ -41,7 +41,6 @@ typedef struct {
 } _reset_ctx_t;
 
 typedef struct {
-    xylem_timer_t*     timer;
     atomic_int         fires;
     atomic_int         in_cb;
     atomic_int         reentered;
@@ -82,8 +81,8 @@ static void _after_main(void* arg) {
     xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(30, _after_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
 
     ASSERT(atomic_load(&ctx.fires) == 1);
 
@@ -94,24 +93,25 @@ static void test_after(void) {
     _after_main(NULL);
 }
 
-static void _cancel_cb(xylem_timer_t* t, void* ud) {
+static void _stop_cb(xylem_timer_t* t, void* ud) {
     (void)t;
     (void)ud;
-    ASSERT(0 && "callback fired despite cancel");
+    ASSERT(0 && "callback fired despite stop");
 }
 
-static void _cancel_main(void* arg) {
+static void _stop_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
-    xylem_timer_t* t  = xylem_timer_after(1000, _cancel_cb, NULL);
-    ASSERT(xylem_timer_cancel(t));
+    xylem_timer_t* t  = xylem_timer_after(1000, _stop_cb, NULL);
+    ASSERT(xylem_timer_stop(t));
     xylem_sleep(50);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
 }
 
-static void test_cancel(void) {
-    _cancel_main(NULL);
+static void test_stop(void) {
+    _stop_main(NULL);
 }
 
 static void _repeat_cb(xylem_timer_t* t, void* ud) {
@@ -131,15 +131,15 @@ static void _repeat_main(void* arg) {
     xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(10, _repeat_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(t);
+    xylem_timer_destroy(t);
 
-    int at_cancel = atomic_load(&ctx.fires);
+    int at_destroy = atomic_load(&ctx.fires);
     xylem_sleep(60);
     int after = atomic_load(&ctx.fires);
-    ASSERT(after - at_cancel <= 2);
+    ASSERT(after - at_destroy <= 2);
     ASSERT(after >= FIRE_TARGET);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -164,15 +164,15 @@ static void _every_main(void* arg) {
     xylem_timer_t* t  = xylem_timer_every(10, _every_cb, &ctx);
     ASSERT(t != NULL);
     xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(t);
+    xylem_timer_destroy(t);
 
-    int at_cancel = atomic_load(&ctx.fires);
+    int at_destroy = atomic_load(&ctx.fires);
     xylem_sleep(60);
     int after = atomic_load(&ctx.fires);
-    ASSERT(after - at_cancel <= 1);
+    ASSERT(after - at_destroy <= 1);
     ASSERT(after >= FIRE_TARGET);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -206,8 +206,8 @@ static void _reset_main(void* arg) {
     ASSERT(elapsed >= 30);
     ASSERT(elapsed < 900);
 
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -265,8 +265,8 @@ static void _reset_repeat_main(void* arg) {
     ASSERT(first_elapsed < 400);
     ASSERT(atomic_load(&ctx.fires) >= FIRE_TARGET);
 
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -290,8 +290,8 @@ static void _blocking_main(void* arg) {
     xylem_timer_t* wd = _arm_watchdog();
     xylem_timer_t* t  = xylem_timer_after(10, _blocking_cb, &ctx);
     xylem_waitgroup_wait(ctx.wg);
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
 
     ASSERT(atomic_load(&ctx.fires) == 1);
 
@@ -303,8 +303,8 @@ static void test_blocking_cb(void) {
 }
 
 static void _every_overlap_cb(xylem_timer_t* timer, void* ud) {
+    (void)timer;
     _every_overlap_ctx_t* ctx = (_every_overlap_ctx_t*)ud;
-    ASSERT(timer == ctx->timer);
 
     if (atomic_fetch_add(&ctx->in_cb, 1) != 0) {
         atomic_store(&ctx->reentered, 1);
@@ -317,7 +317,6 @@ static void _every_overlap_cb(xylem_timer_t* timer, void* ud) {
     xylem_sleep(20);
 
     if (n >= 3 && atomic_exchange(&ctx->done, 1) == 0) {
-        ASSERT(xylem_timer_cancel(timer) == false);
         xylem_waitgroup_done(ctx->wg);
     }
     atomic_fetch_sub(&ctx->in_cb, 1);
@@ -328,11 +327,12 @@ static void _every_overlap_main(void* arg) {
     _every_overlap_ctx_t ctx = { .wg = xylem_waitgroup_create() };
     xylem_waitgroup_add(ctx.wg, 1);
 
-    xylem_timer_t* wd = _arm_watchdog();
-    ctx.timer         = xylem_timer_every(1, _every_overlap_cb, &ctx);
-    ASSERT(ctx.timer != NULL);
+    xylem_timer_t* wd    = _arm_watchdog();
+    xylem_timer_t* timer = xylem_timer_every(1, _every_overlap_cb, &ctx);
+    ASSERT(timer != NULL);
 
     xylem_waitgroup_wait(ctx.wg);
+    xylem_timer_destroy(timer);
     while (atomic_load(&ctx.in_cb) != 0) {
         xylem_sleep(1);
     }
@@ -340,7 +340,7 @@ static void _every_overlap_main(void* arg) {
     ASSERT(atomic_load(&ctx.reentered) == 0);
     ASSERT(atomic_load(&ctx.fires) >= 3);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -358,7 +358,7 @@ static void _every_reset_cb(xylem_timer_t* timer, void* ud) {
     } else if (n == 2) {
         atomic_store(&ctx->second_fire_ms, now);
     } else if (n == 3) {
-        ASSERT(xylem_timer_cancel(timer) == false);
+        ASSERT(xylem_timer_stop(timer) == false);
         xylem_waitgroup_done(ctx->wg);
     }
 }
@@ -381,11 +381,12 @@ static void _every_reset_main(void* arg) {
     ASSERT(second - first >= 25);
     ASSERT(atomic_load(&ctx.fires) == 3);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
-static void test_every_reset_and_cancel_from_callback(void) {
+static void test_every_reset_and_stop_from_callback(void) {
     _every_reset_main(NULL);
 }
 
@@ -420,8 +421,8 @@ static void _double_reset_main(void* arg) {
     ASSERT(second >= first);
     ASSERT(second - first >= 45);
 
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -442,8 +443,8 @@ static void _every_reset_zero_main(void* arg) {
     xylem_waitgroup_wait(ctx.wg);
     ASSERT(atomic_load(&ctx.fires) >= FIRE_TARGET);
 
-    xylem_timer_cancel(t);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(t);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -454,13 +455,14 @@ static void test_every_reset_rejects_zero_interval(void) {
 static void _reset_zero_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
-    xylem_timer_t* t  = xylem_timer_after(1000, _cancel_cb, NULL);
+    xylem_timer_t* t  = xylem_timer_after(1000, _stop_cb, NULL);
     ASSERT(t != NULL);
 
     ASSERT(xylem_timer_reset(t, 0) == false);
-    ASSERT(xylem_timer_cancel(t) == true);
+    ASSERT(xylem_timer_stop(t) == true);
+    xylem_timer_destroy(t);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
 }
 
 static void test_reset_rejects_zero_delay(void) {
@@ -474,9 +476,10 @@ static void _null_main(void* arg) {
     ASSERT(xylem_timer_after(10, NULL, NULL) == NULL);
     ASSERT(xylem_timer_every(0, _every_cb, NULL) == NULL);
     ASSERT(xylem_timer_every(10, NULL, NULL) == NULL);
-    ASSERT(xylem_timer_cancel(NULL) == false);
+    ASSERT(xylem_timer_stop(NULL) == false);
+    xylem_timer_destroy(NULL);
     ASSERT(xylem_timer_reset(NULL, 10) == false);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
 }
 
 static void test_null(void) {
@@ -488,14 +491,14 @@ static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     test_after();
-    test_cancel();
+    test_stop();
     test_repeat();
     test_every();
     test_reset();
     test_reset_repeat();
     test_blocking_cb();
     test_every_callbacks_do_not_overlap();
-    test_every_reset_and_cancel_from_callback();
+    test_every_reset_and_stop_from_callback();
     test_reset_overwrites_deferred_reset_from_callback();
     test_every_reset_rejects_zero_interval();
     test_reset_rejects_zero_delay();

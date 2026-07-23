@@ -67,7 +67,7 @@ static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b) {
     xylem_spawn(a, ctx);
     xylem_spawn(b, ctx);
     xylem_waitgroup_wait(ctx->wg);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->done);
     xylem_channel_destroy(ctx->ready);

@@ -63,7 +63,7 @@ static void _pair_main(void* arg) {
     xylem_spawn(ctx->server, ctx);
     xylem_spawn(ctx->client, ctx);
     xylem_waitgroup_wait(ctx->wg);
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx->wg);
     xylem_channel_destroy(ctx->ready);
 }

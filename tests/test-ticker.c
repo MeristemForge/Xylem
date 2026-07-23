@@ -58,7 +58,7 @@ static void _tick_main(void* arg) {
         prev = now;
     }
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_ticker_destroy(tk);
 }
 
@@ -83,7 +83,7 @@ static void _coalesce_main(void* arg) {
     ASSERT(second >= first);
     ASSERT(before - second >= COALESCE_SLEEP_MS / 2);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_ticker_destroy(tk);
 }
 
@@ -136,7 +136,7 @@ static void _close_main(void* arg) {
     ASSERT(atomic_load(&ctx.ended));
     ASSERT(atomic_load(&ctx.ticks) >= 1);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_ticker_destroy(ctx.tk);
     xylem_waitgroup_destroy(ctx.wg);
 }
@@ -156,7 +156,7 @@ static void _close_recv_main(void* arg) {
     xylem_ticker_close(tk);
     ASSERT(xylem_ticker_recv(tk) == 0);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_ticker_destroy(tk);
 }
 
@@ -212,7 +212,7 @@ static void _thread_consumer_main(void* arg) {
     ASSERT(atomic_load(&ctx->ordered));
     ASSERT(atomic_load(&ctx->ticks) >= TICK_TARGET);
 
-    xylem_timer_cancel(wd);
+    xylem_timer_destroy(wd);
     xylem_ticker_destroy(ctx->tk);
 }
 

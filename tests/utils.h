@@ -57,7 +57,7 @@ static inline void _utils_watchdog_start(uint64_t timeout_ms) {
 static inline void _utils_watchdog_stop(void) {
     xylem_timer_t* timer = _utils_watchdog_timer;
     _utils_watchdog_timer = NULL;
-    xylem_timer_cancel(timer);
+    xylem_timer_destroy(timer);
 }
 
 #ifdef TEST_WITH_TLS

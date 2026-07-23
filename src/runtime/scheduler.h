@@ -269,7 +269,8 @@ extern iowait_slab_t* scheduler_get_iowait_slab(scheduler_t* sched);
  *
  * @return Timer handle, or NULL on failure.
  *
- * @note Returns NULL after scheduler_stop() begins.
+ * @note Returns NULL after scheduler_stop() begins. Must not race with
+ *       scheduler_stop() or scheduler_destroy().
  */
 extern scheduler_timer_t* scheduler_timer_create(scheduler_t* sched);
 
@@ -336,7 +337,8 @@ extern void scheduler_timer_destroy(scheduler_timer_t* timer);
  * @param timeout_ms  Delay in milliseconds.
  * @param repeat_ms   Repeat interval, 0 for one-shot.
  *
- * @note No-op after scheduler_stop() begins.
+ * @note No-op after scheduler_stop() begins. Must not race with
+ *       scheduler_stop() or scheduler_destroy().
  */
 extern void scheduler_timer_start(
     scheduler_timer_t*   timer,
@@ -389,6 +391,8 @@ extern bool scheduler_timer_stop(scheduler_timer_t* timer);
  * @return true if a queued fire was cancelled before it ran, or if an
  *         earlier deferred reset from the current fire was overwritten.
  *         Returns false after scheduler_stop() begins.
+ *
+ * @note Must not race with scheduler_stop() or scheduler_destroy().
  */
 extern bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms);
 

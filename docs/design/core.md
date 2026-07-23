@@ -58,7 +58,9 @@ worker.
 xylem_timer_t* t = xylem_timer_after(500, on_fire, ud);  /* one-shot, 500 ms */
 xylem_timer_t* e = xylem_timer_every(1000, on_tick, ud); /* periodic callback */
 xylem_timer_reset(t, 1000);   /* re-arm 1000 ms from now, same cb/ud */
-xylem_timer_cancel(t);        /* cancel + release the handle */
+xylem_timer_stop(e);          /* callback-safe; keeps the handle alive */
+xylem_timer_destroy(e);       /* final owner release */
+xylem_timer_destroy(t);       /* destroy also stops as a fallback */
 ```
 
 Semantics and the lifetime gotcha:
@@ -66,16 +68,20 @@ Semantics and the lifetime gotcha:
 - `after(delay_ms, cb, ud)` arms a **one-shot** timer and returns a handle.
 - `every(interval_ms, cb, ud)` arms a **periodic callback** timer. It is
   fixed-delay: the next fire is scheduled after the previous callback returns.
-- **The handle must always be released with `cancel()`**, even after the
-  callback has already fired. `cancel`/`reset` return `true` when they removed a
+- **The handle must always be released with `destroy()`**, even after the
+  callback has already fired. `stop`/`reset` return `true` when they removed a
   queued fire or cancelled/overwrote a deferred reset from the current in-flight
   callback. The boolean is not a general "callback will not run" signal: an
   already dispatched callback may still complete, and `reset` may still re-arm
-  the timer.
+  the timer. `destroy` stops the timer as a cleanup fallback.
 - Calls on different timer handles may run concurrently. Operations on the same
-  public timer handle, including `cancel`/`cancel`, `reset`/`reset`, and
-  `cancel`/`reset`, require external synchronization. `cancel` consumes the
-  handle.
+  public timer handle, including `stop`/`stop`, `reset`/`reset`, and
+  `stop`/`reset`, require external synchronization. `stop` and `reset` may be
+  called from the timer callback and do not consume the handle. `destroy`
+  consumes the handle and must be called by the owner after any callback-side
+  timer operations have finished, never from the callback itself. It does not
+  wait for an already dispatched callback, so callback and user-data resources
+  must remain alive until that callback returns.
 - `ticker` remains the pull-based periodic API: it produces coalesced ticks for
   a consumer to receive, while `every` runs user callback code on each fire.
 

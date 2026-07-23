@@ -642,9 +642,12 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
      reset was requested.
 
 - Operations on the same internal scheduler timer handle are serialized by the
-  owner worker's `timer_lock`; `start`, `reset`, and `stop` are thread-safe.
-  An already dispatched callback cannot be withdrawn by `stop()`, but `stop()`
-  does prevent a repeat requeue or a deferred reset from the same firing round.
+  owner worker's `timer_lock`; `start`, `reset`, and `stop` are thread-safe while
+  the scheduler is running. Timer `create`, `start`, and `reset` must not race
+  with `scheduler_stop()` or `scheduler_destroy()`; sequential calls after stop
+  are rejected or ignored. An already dispatched callback cannot be withdrawn
+  by `stop()`, but `stop()` does prevent a repeat requeue or a deferred reset
+  from the same firing round.
 - Timers are reference counted so `scheduler_timer_destroy()` is safe to call
   concurrently with an in-flight fire. `scheduler_timer_stop()` returns true
   when it removes a queued timer or cancels a deferred reset from a callback
@@ -658,12 +661,20 @@ armed with `scheduler_timer_start(cb, ud, timeout_ms, repeat_ms)`.
   dispatched before a clear/reset can become a harmless spurious wake.
 
 The public `xylem_timer_*` wrapper exposes those same lifetime rules with an
-opaque, cancel-consumed handle. `xylem_timer_after()` is one-shot;
+opaque, single-owner handle. `xylem_timer_after()` is one-shot;
 `xylem_timer_every()` repeats only after the previous callback returns, and
 `xylem_timer_reset()` preserves the callback/user data while re-arming the next
-fire. Resetting a timer from inside its own callback schedules a deferred
-re-arm; resetting it again before the callback returns overwrites that deferred
-re-arm and reports cancellation.
+fire. `xylem_timer_stop()` and `xylem_timer_reset()` do not consume the handle
+and may be called from its callback. Resetting a timer from inside its own
+callback schedules a deferred re-arm; resetting it again before the callback
+returns overwrites that deferred re-arm and reports cancellation. Stop takes
+priority over a reset requested from the same callback. The owner must release
+the handle exactly once with `xylem_timer_destroy()` after any callback-side
+timer operations have finished; destroy stops the timer as a fallback but must
+not be called from the callback or race with another operation on the same
+handle. Destroy is not a callback completion barrier: a callback dispatched
+before stop/destroy may still run afterward, so the caller must keep its
+callback and user-data resources alive until that callback returns.
 
 `xylem_ticker` is the pull-based counterpart to `xylem_timer_every()`. It uses
 an inline scheduler timer callback that never runs user code: the callback only

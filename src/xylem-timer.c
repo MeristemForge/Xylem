@@ -105,15 +105,11 @@ xylem_timer_t* xylem_timer_every(
     return _timer_create(interval_ms, interval_ms, cb, ud);
 }
 
-bool xylem_timer_cancel(xylem_timer_t* timer) {
+bool xylem_timer_stop(xylem_timer_t* timer) {
     if (!timer) {
         return false;
     }
-    scheduler_timer_t* t = timer->internal;
-    bool stopped = scheduler_timer_stop(t);
-    scheduler_timer_destroy(t);
-    _timer_unref(timer);
-    return stopped;
+    return scheduler_timer_stop(timer->internal);
 }
 
 bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
@@ -121,4 +117,12 @@ bool xylem_timer_reset(xylem_timer_t* timer, uint64_t delay_ms) {
         return false;
     }
     return scheduler_timer_reset(timer->internal, delay_ms);
+}
+
+void xylem_timer_destroy(xylem_timer_t* timer) {
+    if (!timer) {
+        return;
+    }
+    scheduler_timer_destroy(timer->internal);
+    _timer_unref(timer);
 }
