@@ -147,7 +147,10 @@ xylem_ticker_t* xylem_ticker_create(uint64_t interval_ms) {
         return NULL;
     }
 
-    atomic_store(&t->refcnt, 1);
+    atomic_init(&t->closed, false);
+    atomic_init(&t->pending, 0);
+    atomic_init(&t->last_tick, 0);
+    atomic_init(&t->refcnt, 1);
 
     /* Native repeat on the inline path; the callback is small and ordered. */
     scheduler_timer_set_ud_guard(t->timer, _ticker_ref, _ticker_unref);

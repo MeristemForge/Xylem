@@ -1656,7 +1656,7 @@ scheduler_timer_t* scheduler_timer_create(scheduler_t* sched) {
         uint32_t rr = atomic_fetch_add(&sched->timer_rr, 1);
         t->owner = rr % (uint32_t)sched->worker_count;
     }
-    _sched_timer_ref(t);
+    atomic_init(&t->refcnt, 1);
     return t;
 }
 
