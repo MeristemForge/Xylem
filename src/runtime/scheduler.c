@@ -1162,10 +1162,10 @@ static mco_coro* _sched_worker_poll_runnable(
     _sched_worker_state_t state =
         _sched_worker_transition(w, WORKER_RUNNING);
     spin_unlock(&sched->worker_state_lock);
+    atomic_store(&sched->poller_running, false);
     if (state != WORKER_RUNNING) {
         _sched_wake_worker(sched);
     }
-    atomic_store(&sched->poller_running, false);
     return co;
 }
 
