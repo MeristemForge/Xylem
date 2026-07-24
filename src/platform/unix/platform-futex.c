@@ -114,9 +114,16 @@ void platform_futex_broadcast(_Atomic uint32_t* addr) {
 
 #else
 
-#include <sys/ulock.h>
+/* Private SPI fallback for SDKs predating the public address-wait API.
+   <sys/ulock.h> is not shipped in the public SDK — declare what we need. */
 
-/* Private SPI fallback for SDKs predating the public address-wait API. */
+#define UL_COMPARE_AND_WAIT  0x01
+#define ULF_WAKE_ALL         0x00000100
+
+extern int __ulock_wait2(
+    uint32_t operation, void *addr, uint64_t value,
+    uint64_t timeout_ns, uint32_t flags);
+extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 
 void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
     __ulock_wait2(
