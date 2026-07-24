@@ -24,6 +24,8 @@
 #include "xylem/xylem-threads.h"
 #include "utils.h"
 
+#include "runtime/runtime.h"
+
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>

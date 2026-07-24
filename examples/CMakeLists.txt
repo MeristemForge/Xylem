@@ -5,10 +5,10 @@ project(examples LANGUAGES C)
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
 # TCP example (always available)
-add_executable(tcp-echo example-tcp.c)
-target_link_libraries(tcp-echo PRIVATE xylem)
+add_executable(example-tcp example-tcp.c)
+target_link_libraries(example-tcp PRIVATE xylem)
 
-# Serial example (disabled -- uses thrd_t directly, needs C11 threads header)
-# add_executable(serial-terminal example-serial.c)
-# target_link_libraries(serial-terminal PRIVATE xylem)
+# Serial example
+add_executable(example-serial example-serial.c)
+target_link_libraries(example-serial PRIVATE xylem)
 
