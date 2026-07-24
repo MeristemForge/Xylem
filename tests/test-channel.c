@@ -471,7 +471,7 @@ static void _precommit_close_coro(void* arg) {
 
 static void test_thread_close_precommit_race(void) {
     fprintf(stderr, "=== test_thread_close_precommit_race\n");
-    _precommit_close_ctx_t ctx = {0};
+    _precommit_close_ctx_t ctx = {NULL};
     xylem_spawn(_precommit_close_coro, &ctx);
     while (atomic_load(&ctx.tested) == 0) {
         runtime_yield();
