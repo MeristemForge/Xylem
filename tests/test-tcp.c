@@ -218,8 +218,8 @@ static void test_dial_refused(void) {
     ASSERT(getsockname(blocker, (struct sockaddr*)&addr, &addrlen) == 0);
 
     uint16_t port = ntohs(addr.sin_port);
-    ASSERT(xylem_tcp_dial(TCP_HOST, port, NULL) == NULL);
     platform_socket_close(blocker);
+    ASSERT(xylem_tcp_dial(TCP_HOST, port, NULL) == NULL);
 }
 
 static void _timeout_main(void* arg) {

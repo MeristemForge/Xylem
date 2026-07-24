@@ -81,6 +81,9 @@ void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
 
 bool platform_futex_timedwait(
     _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms) {
+    if (timeout_ms == 0) {
+        return atomic_load(addr) != expected;
+    }
     /* Relative timeout in ns against the mach absolute clock; ETIMEDOUT = deadline. */
     int r = os_sync_wait_on_address_with_timeout(
         (void*)addr,
@@ -90,7 +93,7 @@ bool platform_futex_timedwait(
         OS_CLOCK_MACH_ABSOLUTE_TIME,
         timeout_ms * 1000000ULL
     );
-    return r != ETIMEDOUT;
+    return !(r == -1 && errno == ETIMEDOUT);
 }
 
 void platform_futex_signal(_Atomic uint32_t* addr) {
