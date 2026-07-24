@@ -33,6 +33,13 @@ _Pragma("once")
 #include "assert.h"
 
 #define SAFETY_TIMEOUT_MS 10000
+/* ASAN can 2-5x slow down; bump watchdog when instrumented. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#undef SAFETY_TIMEOUT_MS
+#define SAFETY_TIMEOUT_MS 60000
+#endif
+#endif
 
 /**
  * Watchdog for public timers. Pass this as the callback; it aborts the
