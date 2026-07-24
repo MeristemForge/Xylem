@@ -535,6 +535,11 @@ static void _sched_wake_worker(scheduler_t* sched) {
     }
 }
 
+static void _sched_poller_handoff(scheduler_t* sched) {
+    atomic_store(&sched->poller_running, false);
+    _sched_wake_worker(sched);
+}
+
 static bool _sched_worker_try_begin_search(_sched_worker_t* w) {
     scheduler_t* sched = w->sched;
 
@@ -1159,13 +1164,9 @@ static mco_coro* _sched_worker_poll_runnable(
         return NULL;
     }
     spin_lock(&sched->worker_state_lock);
-    _sched_worker_state_t state =
-        _sched_worker_transition(w, WORKER_RUNNING);
+    _sched_worker_transition(w, WORKER_RUNNING);
     spin_unlock(&sched->worker_state_lock);
-    atomic_store(&sched->poller_running, false);
-    if (state != WORKER_RUNNING) {
-        _sched_wake_worker(sched);
-    }
+    _sched_poller_handoff(sched);
     return co;
 }
 
@@ -1215,10 +1216,11 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
             co = n > 0
                 ? _sched_worker_dispatch_poller_runnables(w, cqes, n)
                 : NULL;
-            atomic_store(&sched->poller_running, false);
             if (co) {
+                _sched_poller_handoff(sched);
                 break;
             }
+            atomic_store(&sched->poller_running, false);
         }
 
         if (_sched_worker_try_begin_search(w)) {
@@ -1236,7 +1238,7 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
             return _sched_worker_poll_runnable(w, cqes);
         }
 
-        /* Publish the wait state before the final runnable recheck. */
+        /* Publish WAITING before the final work and poller rechecks. */
         spin_lock(&sched->worker_state_lock);
         _sched_worker_transition(w, WORKER_WAITING);
         spin_unlock(&sched->worker_state_lock);
@@ -1255,6 +1257,14 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
         }
         if (co) {
             break;
+        }
+
+        expected = false;
+        if (atomic_compare_exchange_strong(
+                &sched->poller_running,
+                &expected,
+                true)) {
+            return _sched_worker_poll_runnable(w, cqes);
         }
 
         _sched_worker_wait(w);
