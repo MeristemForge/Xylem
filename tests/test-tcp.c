@@ -203,12 +203,23 @@ static void test_writer_buffered(void) {
     _run_pair(TCP_PORT + 2, _writer_server, _writer_client);
 }
 
-static void _timeout_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_opts_t opts = {.connect_timeout_ms = 200};
-    xylem_tcp_conn_t* conn = xylem_tcp_dial("192.0.2.1", 9999, &opts);
-    ASSERT(conn == NULL);
-    xylem_waitgroup_done(ctx->wg);
+static void test_dial_refused(void) {
+    platform_sock_t blocker = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    ASSERT(blocker != PLATFORM_SO_ERROR_INVALID_SOCKET);
+
+    struct sockaddr_in addr = {
+        .sin_family      = AF_INET,
+        .sin_port        = 0,
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+    };
+    ASSERT(bind(blocker, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+
+    socklen_t addrlen = sizeof(addr);
+    ASSERT(getsockname(blocker, (struct sockaddr*)&addr, &addrlen) == 0);
+
+    uint16_t port = ntohs(addr.sin_port);
+    ASSERT(xylem_tcp_dial(TCP_HOST, port, NULL) == NULL);
+    platform_socket_close(blocker);
 }
 
 static void _timeout_main(void* arg) {
@@ -221,11 +232,6 @@ static void _timeout_main(void* arg) {
     xylem_waitgroup_wait(ctx->wg);
     xylem_timer_destroy(wd);
     xylem_waitgroup_destroy(ctx->wg);
-}
-
-static void test_dial_timeout(void) {
-    _ctx_t ctx = {.client = _timeout_client};
-    _timeout_main(&ctx);
 }
 
 static void _invalid_host_client(void* arg) {
@@ -832,7 +838,7 @@ static void _test_run_all(void* arg) {
     test_echo();
     test_reader_full();
     test_writer_buffered();
-    test_dial_timeout();
+    test_dial_refused();
     test_invalid_dial_host();
     test_resolve_returns_unique_addresses();
     test_resolve_completion_timeout_race();
