@@ -90,10 +90,7 @@ bool platform_futex_timedwait(
         OS_CLOCK_MACH_ABSOLUTE_TIME,
         timeout_ms * 1000000ULL
     );
-    if (r == -1 && errno == ETIMEDOUT) {
-        return false;
-    }
-    return true;
+    return r != ETIMEDOUT;
 }
 
 void platform_futex_signal(_Atomic uint32_t* addr) {
@@ -121,9 +118,13 @@ void platform_futex_broadcast(_Atomic uint32_t* addr) {
 #define ULF_WAKE_ALL         0x00000100
 
 extern int __ulock_wait2(
-    uint32_t operation, void *addr, uint64_t value,
-    uint64_t timeout_ns, uint32_t flags);
-extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+    uint32_t operation,
+    void*    addr,
+    uint64_t value,
+    uint64_t timeout_ns,
+    uint64_t value2);
+extern int __ulock_wake(
+    uint32_t operation, void* addr, uint64_t wake_value);
 
 void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
     __ulock_wait2(
