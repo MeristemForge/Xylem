@@ -79,6 +79,7 @@
 
 #define SCHED_DEQUE_CAP          256
 #define SCHED_RUNQ_BATCH_CAP     256
+#define SCHED_TIMER_BATCH_CAP    64
 
 #define SCHED_STEP_CREDIT        128u
 #define SCHED_TIME_CREDIT_NS     (1ULL * 1000 * 1000)
@@ -842,7 +843,7 @@ static int _sched_timer_process_due(_sched_worker_t* w) {
         return -1;
     }
 
-    for (;;) {
+    for (int i = 0; i < SCHED_TIMER_BATCH_CAP; i++) {
         _sched_timer_fire_t fire = {0};
 
         mtx_lock(&w->timer_lock);

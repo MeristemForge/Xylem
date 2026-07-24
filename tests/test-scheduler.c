@@ -40,6 +40,8 @@
 #define SCHED_IDLE_SPAWN_ROUNDS 1024
 #define SCHED_REUSE_COUNT       128
 #define SCHED_STACK_TOUCH_LEN   (16 * 1024)
+#define SCHED_TIMER_DUE_COUNT   65
+#define SCHED_TIMER_FIRST_BATCH 64
 #define SCHED_TIME_EXPIRE_NS    (2ULL * 1000 * 1000)
 #define SCHED_YIELD_COUNT       64
 
@@ -625,6 +627,37 @@ static void test_armed_timer_cleanup_after_stop(void) {
     scheduler_destroy(sched);
 }
 
+static void _timer_batch_cb(scheduler_timer_t* timer, void* ud) {
+    (void)timer;
+    int* fires = (int*)ud;
+    (*fires)++;
+}
+
+static void test_timer_due_batch_limit(void) {
+    scheduler_t* sched = runtime_get_scheduler();
+    scheduler_timer_t* timers[SCHED_TIMER_DUE_COUNT];
+    int                fires = 0;
+
+    for (int i = 0; i < SCHED_TIMER_DUE_COUNT; i++) {
+        timers[i] = scheduler_timer_create(sched);
+        ASSERT(timers[i] != NULL);
+        scheduler_timer_start(timers[i], _timer_batch_cb, &fires, 1, 0);
+    }
+
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    while (xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - start < 2) {
+    }
+
+    runtime_yield();
+    ASSERT(fires == SCHED_TIMER_FIRST_BATCH);
+    runtime_yield();
+    ASSERT(fires == SCHED_TIMER_DUE_COUNT);
+
+    for (int i = 0; i < SCHED_TIMER_DUE_COUNT; i++) {
+        scheduler_timer_destroy(timers[i]);
+    }
+}
+
 static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
@@ -635,6 +668,9 @@ static void _test_run_all(void* arg) {
     test_declined_park();
     test_external_ready();
     test_batch_ready();
+    if (!arg) {
+        test_timer_due_batch_limit();
+    }
     if (arg) {
         test_concurrent_spawn_churn();
     }

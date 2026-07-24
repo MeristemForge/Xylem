@@ -164,6 +164,19 @@ static void test_close_is_idempotent_and_recv_returns_zero(void) {
     _close_recv_main(NULL);
 }
 
+static void test_recv_consumes_step_credit(void) {
+    xylem_ticker_t* ticker = xylem_ticker_create(1);
+    ASSERT(ticker != NULL);
+
+    xylem_sleep(10);
+    while (!runtime_consume_step()) {
+    }
+    ASSERT(xylem_ticker_recv(ticker) != 0);
+    ASSERT(!runtime_consume_step());
+
+    xylem_ticker_destroy(ticker);
+}
+
 typedef struct {
     xylem_ticker_t* tk;
     atomic_int      ticks;
@@ -304,6 +317,7 @@ static void _test_run_all(void* arg) {
     test_invalid();
     test_close_wakes_recv();
     test_close_is_idempotent_and_recv_returns_zero();
+    test_recv_consumes_step_credit();
     test_thread_consumer();
     test_destroy_race();
     _utils_watchdog_stop();

@@ -847,6 +847,12 @@ void tls_backend_conn_configure(
     }
 }
 
+static void _tlsb_clear_error(void) {
+    if (ERR_peek_error() != 0) {
+        ERR_clear_error();
+    }
+}
+
 static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
     /**
      * Handshake success: SSL_do_handshake returns 1 (read/write map
@@ -879,7 +885,7 @@ static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
 }
 
 tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c) {
-    ERR_clear_error();
+    _tlsb_clear_error();
     int ret = SSL_do_handshake(c->ssl);
     return _tlsb_state(c->ssl, ret);
 }
@@ -889,7 +895,7 @@ tls_backend_state_t tls_backend_conn_read(
     void*               buf,
     int                 len,
     int*                out_n) {
-    ERR_clear_error();
+    _tlsb_clear_error();
     int n = SSL_read(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;
@@ -904,7 +910,7 @@ tls_backend_state_t tls_backend_conn_write(
     const void*         buf,
     int                 len,
     int*                out_n) {
-    ERR_clear_error();
+    _tlsb_clear_error();
     int n = SSL_write(c->ssl, buf, len);
     if (n > 0) {
         *out_n = n;

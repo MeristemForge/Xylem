@@ -184,6 +184,9 @@ uint64_t xylem_ticker_recv(xylem_ticker_t* ticker) {
     atomic_store(&ticker->pending, 0);
 
     _ticker_unref(ticker);
+    if (tick != 0 && runtime_consume_step()) {
+        runtime_yield();
+    }
     return tick;
 }
 

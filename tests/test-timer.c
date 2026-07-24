@@ -469,6 +469,32 @@ static void test_reset_rejects_zero_delay(void) {
     _reset_zero_main(NULL);
 }
 
+static void _noop_cb(xylem_timer_t* timer, void* ud) {
+    (void)timer;
+    (void)ud;
+}
+
+static void _exhaust_step_credit(void) {
+    while (!runtime_consume_step()) {
+    }
+}
+
+static void test_after_consumes_step_credit(void) {
+    _exhaust_step_credit();
+    xylem_timer_t* timer = xylem_timer_after(1000, _noop_cb, NULL);
+    ASSERT(timer != NULL);
+    ASSERT(!runtime_consume_step());
+    xylem_timer_destroy(timer);
+}
+
+static void test_every_consumes_step_credit(void) {
+    _exhaust_step_credit();
+    xylem_timer_t* timer = xylem_timer_every(1000, _noop_cb, NULL);
+    ASSERT(timer != NULL);
+    ASSERT(!runtime_consume_step());
+    xylem_timer_destroy(timer);
+}
+
 static void _null_main(void* arg) {
     (void)arg;
     xylem_timer_t* wd = _arm_watchdog();
@@ -502,6 +528,8 @@ static void _test_run_all(void* arg) {
     test_reset_overwrites_deferred_reset_from_callback();
     test_every_reset_rejects_zero_interval();
     test_reset_rejects_zero_delay();
+    test_after_consumes_step_credit();
+    test_every_consumes_step_credit();
     test_null();
     _utils_watchdog_stop();
     xylem_shutdown();
