@@ -1006,6 +1006,30 @@ static mco_coro* _sched_worker_dispatch_poller_runnables(
     return run_now;
 }
 
+static inline mco_coro* _sched_worker_try_poll_runnable(
+    _sched_worker_t*       w,
+    platform_poller_cqe_t* cqes) {
+    scheduler_t* sched    = w->sched;
+    bool         expected = false;
+    if (!atomic_compare_exchange_strong(
+            &sched->poller_running,
+            &expected,
+            true)) {
+        return NULL;
+    }
+
+    int n = platform_poller_wait(&sched->poller, cqes, 0);
+    mco_coro* co = n > 0
+        ? _sched_worker_dispatch_poller_runnables(w, cqes, n)
+        : NULL;
+    if (co) {
+        _sched_poller_handoff(sched);
+    } else {
+        atomic_store(&sched->poller_running, false);
+    }
+    return co;
+}
+
 static void _sched_worker_enqueue_runnable(_sched_worker_t* w, mco_coro* co) {
     if (wsq_push(w->deque, co) != 0) {
         _sched_coro_ctx_t* ctx = (_sched_coro_ctx_t*)mco_get_user_data(co);
@@ -1207,20 +1231,9 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
             break;
         }
 
-        bool expected = false;
-        if (atomic_compare_exchange_strong(
-                &sched->poller_running,
-                &expected,
-                true)) {
-            int n = platform_poller_wait(&sched->poller, cqes, 0);
-            co = n > 0
-                ? _sched_worker_dispatch_poller_runnables(w, cqes, n)
-                : NULL;
-            if (co) {
-                _sched_poller_handoff(sched);
-                break;
-            }
-            atomic_store(&sched->poller_running, false);
+        co = _sched_worker_try_poll_runnable(w, cqes);
+        if (co) {
+            break;
         }
 
         if (_sched_worker_try_begin_search(w)) {
@@ -1230,7 +1243,7 @@ static mco_coro* _sched_worker_find_runnable(_sched_worker_t* w) {
             }
         }
 
-        expected = false;
+        bool expected = false;
         if (atomic_compare_exchange_strong(
                 &sched->poller_running,
                 &expected,
