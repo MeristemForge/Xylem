@@ -57,8 +57,8 @@ static xylem_udp_chan_t* _udp_chan_create(
     return udp;
 }
 
-static void _udp_consume_io_credit(void) {
-    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+static void _udp_consume_io_budget(void) {
+    if (runtime_consume_time()) {
         runtime_yield();
     }
 }
@@ -128,7 +128,7 @@ int xylem_udp_recv(
 
         int n = datagram_recv(udp->datagram, buf, len, from_ptr);
         if (n >= 0) {
-            _udp_consume_io_credit();
+            _udp_consume_io_budget();
             if (from_ptr) {
                 (void)addr_ntop(from_ptr, host, host_len, port);
             }
@@ -179,7 +179,7 @@ int xylem_udp_send(
             len,
             udp->connected ? NULL : &dest);
         if (n >= 0) {
-            _udp_consume_io_credit();
+            _udp_consume_io_budget();
             return 0;
         }
         if (n != DATAGRAM_IO_AGAIN

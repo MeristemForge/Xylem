@@ -352,7 +352,7 @@ void xylem_sem_post(xylem_sem_t* s) {
     if (target) {
         _sem_wake(s, target);
     }
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
 }

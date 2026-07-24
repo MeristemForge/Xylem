@@ -225,16 +225,25 @@ extern void scheduler_coro_park(
     void* arg);
 
 /**
- * @brief Consume cooperative scheduler credit for the current coroutine.
+ * @brief Consume cooperative scheduler steps for the current coroutine.
  *
- * Credit is refilled each time a coroutine is resumed. Long loops call this
- * after cooperative operations and yield when it returns true.
- *
- * @param cost  Operation cost to charge.
+ * The step budget is refilled each time a coroutine is resumed. Long loops
+ * call this after cooperative operations and yield when it returns true.
  *
  * @return true when the caller should yield, false otherwise.
  */
-extern bool scheduler_coro_consume_credit(uint32_t cost);
+extern bool scheduler_coro_consume_step(void);
+
+/**
+ * @brief Check the cooperative time slice for the current coroutine.
+ *
+ * The slice starts each time the coroutine is resumed. A UTC rollback before
+ * that start time exhausts the current slice conservatively.
+ *
+ * @return true after the 1 ms slice is exhausted, false otherwise or when
+ *         called outside a scheduler coroutine.
+ */
+extern bool scheduler_coro_consume_time(void);
 
 /**
  * @brief Yield the current coroutine and requeue it immediately.

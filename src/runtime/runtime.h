@@ -28,9 +28,6 @@ _Pragma("once")
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RUNTIME_CREDIT_COST    1u
-#define RUNTIME_IO_CREDIT_COST 4u
-
 /* Runtime configuration options. */
 typedef struct runtime_opts_s {
     int32_t workers;  /* Thread pool size, 0 for default. */
@@ -64,10 +61,10 @@ extern void runtime_shutdown(void);
 /**
  * @brief Spawn a new coroutine while the runtime is active.
  *
- * A successful call from a runtime coroutine consumes cooperative credit and
- * may yield before returning when that credit is exhausted. Calls from plain
- * OS threads only enqueue the new coroutine. An external-thread call must not
- * race with runtime_shutdown() or runtime_run() returning.
+ * A successful call from a runtime coroutine consumes a cooperative step and
+ * may yield before returning when the step budget is exhausted. Calls from
+ * plain OS threads only enqueue the new coroutine. An external-thread call
+ * must not race with runtime_shutdown() or runtime_run() returning.
  *
  * @param fn   Coroutine entry function.
  * @param arg  Argument passed to fn.
@@ -86,16 +83,22 @@ extern int runtime_spawn(void (*fn)(void*), void* arg);
 extern void runtime_sleep(uint64_t ms);
 
 /**
- * @brief Consume cooperative runtime credit for the current coroutine.
- *
- * @param cost  Operation cost to charge.
+ * @brief Consume one cooperative runtime step for the current coroutine.
  *
  * @return true when the caller should yield, false otherwise.
  */
-extern bool runtime_consume_credit(uint32_t cost);
+extern bool runtime_consume_step(void);
 
 /**
- * @brief Yield the current coroutine after exhausting cooperative credit.
+ * @brief Check the cooperative time slice for the current coroutine.
+ *
+ * @return true after the 1 ms slice is exhausted, false otherwise or when
+ *         called outside a runtime coroutine.
+ */
+extern bool runtime_consume_time(void);
+
+/**
+ * @brief Yield the current coroutine after exhausting a cooperative budget.
  *
  * No-op outside a runtime coroutine.
  */

@@ -167,7 +167,7 @@ yet parked sees the flag on its next predicate check.
   it takes its internal guard (later arrivals are unaffected). Waiter selection
   and broadcast wake order are FIFO, but each waiter re-locks `m`, so return
   order is not guaranteed to be FIFO. `signal()` and `broadcast()` consume one
-  cooperative runtime credit per call.
+  cooperative runtime step per call.
 - Destroying a cond that still has waiters is a caller bug (matches
   `pthread_cond_destroy`).
 

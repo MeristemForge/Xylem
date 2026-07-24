@@ -444,15 +444,17 @@ static void test_once_io_does_not_yield(void) {
     ASSERT(sender != NULL);
 
     char byte = 'x';
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     ASSERT(datagram_send(sender, &byte, 1, NULL) == 1);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     ASSERT(datagram_wait_read(receiver) == IOWAIT_READY);
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     ASSERT(datagram_recv(receiver, &byte, 1, NULL) == 1);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     datagram_destroy(sender);

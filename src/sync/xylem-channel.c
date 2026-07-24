@@ -438,7 +438,7 @@ static bool _channel_recv_enter(xylem_channel_t* ch) {
 static void* _channel_recv_leave(xylem_channel_t* ch, void* payload) {
     atomic_store(&ch->receiving, false);
     if (payload) {
-        if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+        if (runtime_consume_step()) {
             runtime_yield();
         }
     }
@@ -546,7 +546,7 @@ int xylem_channel_send(xylem_channel_t* ch, void* msg) {
         _channel_wake(ch, w);
     }
 
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
     return 0;

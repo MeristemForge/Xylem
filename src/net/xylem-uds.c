@@ -80,8 +80,8 @@ static xylem_uds_listener_t* _uds_listener_create(
     return uds_listener;
 }
 
-static void _uds_consume_io_credit(void) {
-    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+static void _uds_consume_io_budget(void) {
+    if (runtime_consume_time()) {
         runtime_yield();
     }
 }
@@ -191,7 +191,7 @@ int xylem_uds_read(xylem_uds_conn_t* uds, void* buf, int len) {
             return 0;
         }
         if (n > 0) {
-            _uds_consume_io_credit();
+            _uds_consume_io_budget();
             return n;
         }
         if (n != STREAM_IO_AGAIN
@@ -226,7 +226,7 @@ int xylem_uds_write(xylem_uds_conn_t* uds, const void* data, int len) {
         if (n > 0) {
             ptr += n;
             rem -= n;
-            _uds_consume_io_credit();
+            _uds_consume_io_budget();
             continue;
         }
         if (n != STREAM_IO_AGAIN

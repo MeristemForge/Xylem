@@ -187,7 +187,7 @@ void xylem_waitgroup_done(xylem_waitgroup_t* wg) {
     if (!list_empty(&wake_list)) {
         _wg_wake_all(sched, &wake_list);
     }
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
 }

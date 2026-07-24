@@ -175,9 +175,9 @@ silently adding a duplicate runq entry.
 After scheduler stop begins, `scheduler_coro_ready()` returns before the state
 transition and publication.
 
-After publication, `_sched_wake_worker()` does nothing while another worker is
-already searching. Otherwise it reserves one parked or polling worker as
-searching before signalling it, so concurrent producers coalesce into one wake.
+After publication, `_sched_wake_worker()` reserves one parked or polling worker
+as searching before signalling it. Up to `ceil(worker_count / 2)` workers may
+search concurrently; further producers coalesce once that limit is reached.
 Parked workers are signalled through their semaphore; a blocked poll owner is
 signalled through the poller wakeup fd.
 
@@ -242,15 +242,30 @@ record is published, the coroutine is stranded until teardown;
 `scheduler_coro_spawn()` is a scheduling primitive: it creates a coroutine,
 publishes it as runnable, and does not yield the caller. `runtime_spawn()` adds
 the runtime fairness policy. Each successful spawn from a runtime coroutine
-consumes one cooperative credit. When the current credit is exhausted, the
-caller yields after publishing the child and resumes with a fresh credit budget.
+consumes one cooperative step. When the current step budget is exhausted, the
+caller yields after publishing the child and resumes with a fresh step budget.
 This bounds runnable accumulation when a single worker repeatedly spawns
 without performing another cooperative operation. Calls from plain OS threads
-do not own worker credit and only enqueue the child.
+do not own a worker step budget and only enqueue the child.
 
 The API does not guarantee that a child starts after the spawn call returns.
-Other workers could already run it, and credit exhaustion gives a single worker
-the same opportunity. Failed spawns neither consume credit nor yield.
+Other workers could already run it, and step exhaustion gives a single worker
+the same opportunity. Failed spawns neither consume a step nor yield.
+
+### Cooperative time slice
+
+Each coroutine resume starts a new 1 ms UTC time slice.
+`runtime_consume_time()` reports whether that slice has elapsed; it does not
+preempt or yield the coroutine by itself. A caller that receives `true` must
+call `runtime_yield()`. A clock value earlier than the recorded resume time is
+treated as an exhausted slice so a UTC rollback cannot extend that run
+indefinitely.
+
+Successful network operations check the time budget and yield when it is
+exhausted. Synchronization operations and coroutine spawn use a step budget
+instead, avoiding a clock read on their short, fixed-cost paths. Pure
+computation must call `runtime_consume_time()` explicitly; the scheduler cannot
+preempt a coroutine that reaches no cooperative check point.
 
 ## 5. Worker loop (`_sched_worker_entry_cb`)
 
@@ -312,8 +327,8 @@ A producer that needs help takes the same lock, reserves one idle worker as
 Semaphore waiters receive a post; a polling worker receives a wakeup-fd event.
 Because reservation and idle publication are serialized, the worker either
 sees the work during its final recheck or the producer sees an idle state and
-wakes it. Existing searchers suppress redundant wakeups and extend the wake
-chain after finding work.
+wakes it. Searchers suppress redundant wakeups after half of the workers are
+searching and extend the wake chain after finding work.
 
 ## 6. Coroutines (minicoro + pooling)
 

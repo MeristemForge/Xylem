@@ -33,8 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define TCP_HOST          "127.0.0.1"
-#define TCP_PORT          18080
+#define TCP_HOST           "127.0.0.1"
+#define TCP_PORT           18080
+#define TCP_TIME_EXPIRE_NS (2ULL * 1000 * 1000)
 
 typedef void (*_coro_t)(void*);
 
@@ -201,6 +202,59 @@ static void _writer_client(void* arg) {
 
 static void test_writer_buffered(void) {
     _run_pair(TCP_PORT + 2, _writer_server, _writer_client);
+}
+
+static void _time_yield_observer(void* arg) {
+    atomic_int* observed = (atomic_int*)arg;
+    atomic_store(observed, 1);
+}
+
+static void _time_yield_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
+    ASSERT(listener != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
+    ASSERT(conn != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    char byte = 0;
+    ASSERT(xylem_tcp_read(conn, &byte, 1) == 1);
+    ASSERT(byte == 'x');
+
+    xylem_tcp_destroy(conn);
+    xylem_tcp_destroy_listener(listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _time_yield_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
+    ASSERT(conn != NULL);
+    xylem_channel_recv(ctx->ready);
+
+    atomic_int observed;
+    atomic_init(&observed, 0);
+    xylem_spawn(_time_yield_observer, &observed);
+    ASSERT(atomic_load(&observed) == 0);
+
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
+    while (xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC) - start
+           < TCP_TIME_EXPIRE_NS) {
+    }
+
+    ASSERT(xylem_tcp_write(conn, "x", 1) == 0);
+    ASSERT(atomic_load(&observed) == 1);
+
+    xylem_tcp_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_io_yields_on_time_exhaustion(void) {
+    _run_pair(TCP_PORT + 9, _time_yield_server, _time_yield_client);
 }
 
 static void test_dial_refused(void) {
@@ -407,10 +461,11 @@ static void _eof_client(void* arg) {
     n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n == 0);
 
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     n = xylem_tcp_read(conn, buf, sizeof(buf));
     ASSERT(n == 0);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     xylem_tcp_destroy(conn);
@@ -639,16 +694,18 @@ static void test_once_io_does_not_yield(void) {
     ASSERT(stream != NULL);
 
     char byte = 'x';
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     ASSERT(stream_write(stream, &byte, 1) == 1);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     ASSERT(platform_socket_send(socks[1], &byte, 1) == 1);
     ASSERT(stream_wait_read(stream) == IOWAIT_READY);
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     ASSERT(stream_read(stream, &byte, 1) == 1);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     stream_destroy(stream);
@@ -838,6 +895,7 @@ static void _test_run_all(void* arg) {
     test_echo();
     test_reader_full();
     test_writer_buffered();
+    test_io_yields_on_time_exhaustion();
     test_dial_refused();
     test_invalid_dial_host();
     test_resolve_returns_unique_addresses();

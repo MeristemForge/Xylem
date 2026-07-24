@@ -202,10 +202,11 @@ static void _eof_client(void* arg) {
     n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n == 0);
 
-    ASSERT(runtime_consume_credit(UINT32_MAX));
+    while (!runtime_consume_step()) {
+    }
     n = xylem_uds_read(uds, buf, sizeof(buf));
     ASSERT(n == 0);
-    ASSERT(runtime_consume_credit(1));
+    ASSERT(runtime_consume_step());
     runtime_yield();
 
     xylem_uds_destroy(uds);

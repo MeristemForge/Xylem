@@ -35,12 +35,12 @@
  * non-blocking poll + steal round. Exactly one idle worker becomes the
  * poller via CAS on poller_running: it owns the blocking poll that services
  * IO and timers. All other idle workers wait on a per-worker semaphore.
- * Work publication wakes one idle worker only when no worker is already
- * SEARCHING. The idle worker is reserved as SEARCHING before it is signalled,
- * so repeated spawn calls coalesce without repeated OS wakeups. A hand-off
- * into an empty local runnext slot wakes nobody -- the scheduling worker
- * usually consumes that coro itself. If the owner stalls and its FIFO queue
- * is empty, other workers may steal runnext as a last-resort rescue.
+ * Work publication may keep up to half of the workers, rounded up, SEARCHING.
+ * An idle worker is reserved as SEARCHING before it is signalled, so concurrent
+ * publications coalesce once the search limit is reached. A hand-off into an
+ * empty local runnext slot wakes nobody -- the scheduling worker usually
+ * consumes that coro itself. If the owner stalls and its FIFO queue is empty,
+ * other workers may steal runnext as a last-resort rescue.
  *
  * Coroutine parking flows through scheduler_coro_park. The worker changes
  * RUNNING to WAITING before invoking the commit callback. A successful
@@ -80,7 +80,8 @@
 #define SCHED_DEQUE_CAP          256
 #define SCHED_RUNQ_BATCH_CAP     256
 
-#define SCHED_CREDIT_DEFAULT     128u
+#define SCHED_STEP_CREDIT        128u
+#define SCHED_TIME_CREDIT_NS     (1ULL * 1000 * 1000)
 /* Prime: avoids sync with power-of-two deque sizes. */
 #define SCHED_FAIR_TICK_INTERVAL 61
 
@@ -122,7 +123,8 @@ typedef struct _sched_worker_s {
     copool_local_t*                 coro_pool;
 
     uint32_t                        sched_tick;
-    uint32_t                        credit;
+    uint32_t                        step_credit_remaining;
+    uint64_t                        time_credit_start_ns;
     heap_t                          timers;
     mtx_t                           timer_lock;
     /* Earliest timer deadline, UINT64_MAX if none. */
@@ -496,9 +498,13 @@ static _sched_worker_state_t _sched_worker_transition(
     return state;
 }
 
-/* Coalesced wake: no-op while a searcher already exists. */
+static int32_t _sched_max_searchers(const scheduler_t* sched) {
+    return sched->worker_count / 2 + sched->worker_count % 2;
+}
+
+/* Coalesced wake: no-op once half of the workers, rounded up, are searching. */
 static void _sched_wake_worker(scheduler_t* sched) {
-    if (atomic_load(&sched->num_searching) != 0
+    if (atomic_load(&sched->num_searching) >= _sched_max_searchers(sched)
      || atomic_load(&sched->num_idle) == 0) {
         return;
     }
@@ -508,7 +514,7 @@ static void _sched_wake_worker(scheduler_t* sched) {
 
     /* Reserve before signalling so concurrent producers coalesce here. */
     spin_lock(&sched->worker_state_lock);
-    if (atomic_load(&sched->num_searching) != 0
+    if (atomic_load(&sched->num_searching) >= _sched_max_searchers(sched)
      || atomic_load(&sched->num_idle) == 0) {
         spin_unlock(&sched->worker_state_lock);
         return;
@@ -546,7 +552,8 @@ static bool _sched_worker_try_begin_search(_sched_worker_t* w) {
     spin_lock(&sched->worker_state_lock);
     _sched_worker_state_t state = atomic_load(&w->state);
     bool                  searching = state == WORKER_SEARCHING;
-    if (!searching && atomic_load(&sched->num_searching) == 0) {
+    if (!searching
+     && atomic_load(&sched->num_searching) < _sched_max_searchers(sched)) {
         _sched_worker_transition(w, WORKER_SEARCHING);
         searching = true;
     }
@@ -1087,10 +1094,11 @@ static void _sched_coro_abort_on_error(mco_result result) {
 }
 
 static inline void _sched_worker_execute_runnable(_sched_worker_t* w, mco_coro* co) {
-    w->yield_reason = SCHED_YIELD_NONE;
-    w->park_commit  = NULL;
-    w->park_arg     = NULL;
-    w->credit       = SCHED_CREDIT_DEFAULT;
+    w->yield_reason          = SCHED_YIELD_NONE;
+    w->park_commit           = NULL;
+    w->park_arg              = NULL;
+    w->step_credit_remaining = SCHED_STEP_CREDIT;
+    w->time_credit_start_ns  = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
 
     _sched_coro_transition(co, SCHED_CORO_RUNNABLE, SCHED_CORO_RUNNING);
     _sched_coro_abort_on_error(mco_resume(co));
@@ -1636,16 +1644,26 @@ void scheduler_coro_park(
     _sched_coro_abort_on_error(mco_yield(mco_running()));
 }
 
-bool scheduler_coro_consume_credit(uint32_t cost) {
-    if (cost == 0 || !_tls_worker || !mco_running()) {
+bool scheduler_coro_consume_step(void) {
+    if (!_tls_worker || !mco_running()) {
         return false;
     }
-    if (_tls_worker->credit > cost) {
-        _tls_worker->credit -= cost;
+    if (_tls_worker->step_credit_remaining > 1) {
+        _tls_worker->step_credit_remaining--;
         return false;
     }
-    _tls_worker->credit = 0;
+    _tls_worker->step_credit_remaining = 0;
     return true;
+}
+
+bool scheduler_coro_consume_time(void) {
+    if (!_tls_worker || !mco_running()) {
+        return false;
+    }
+
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
+    return now < _tls_worker->time_credit_start_ns
+        || now - _tls_worker->time_credit_start_ns >= SCHED_TIME_CREDIT_NS;
 }
 
 void scheduler_coro_yield(void) {

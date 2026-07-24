@@ -148,7 +148,7 @@ extern void xylem_shutdown(void);
  * @note [CONTEXT-ADAPTIVE]
  *
  * A call from a runtime coroutine may cooperatively yield before returning
- * after its spawn credit is exhausted. A spawned coroutine may therefore begin
+ * after its spawn step budget is exhausted. A spawned coroutine may therefore
  * before this function returns. Calls from plain OS threads only enqueue it.
  * An external thread may call this only while an owner coroutine remains alive,
  * and the call must not race with xylem_shutdown() or xylem_run() returning.

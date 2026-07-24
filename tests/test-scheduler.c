@@ -40,6 +40,7 @@
 #define SCHED_IDLE_SPAWN_ROUNDS 1024
 #define SCHED_REUSE_COUNT       128
 #define SCHED_STACK_TOUCH_LEN   (16 * 1024)
+#define SCHED_TIME_EXPIRE_NS    (2ULL * 1000 * 1000)
 #define SCHED_YIELD_COUNT       64
 
 typedef struct {
@@ -132,6 +133,20 @@ static void _yield_repeatedly(void* arg) {
         atomic_fetch_add(&ctx->runs, 1);
         scheduler_coro_yield();
     }
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _consume_time_and_resume(void* arg) {
+    _run_ctx_t* ctx = (_run_ctx_t*)arg;
+
+    ASSERT(!runtime_consume_time());
+    uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
+    while (xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC) - start
+           < SCHED_TIME_EXPIRE_NS) {
+    }
+    ASSERT(runtime_consume_time());
+    runtime_yield();
+    ASSERT(!runtime_consume_time());
     xylem_waitgroup_done(ctx->wg);
 }
 
@@ -274,6 +289,22 @@ static void test_repeated_yield(void) {
            == 0);
     xylem_waitgroup_wait(ctx.wg);
     ASSERT(atomic_load(&ctx.runs) == SCHED_YIELD_COUNT);
+    xylem_waitgroup_destroy(ctx.wg);
+}
+
+static void test_time_slice_resets_after_resume(void) {
+    _run_ctx_t ctx = {
+        .wg = xylem_waitgroup_create(),
+    };
+    ASSERT(ctx.wg != NULL);
+    xylem_waitgroup_add(ctx.wg, 1);
+
+    ASSERT(scheduler_coro_spawn(
+               runtime_get_scheduler(),
+               _consume_time_and_resume,
+               &ctx)
+           == 0);
+    xylem_waitgroup_wait(ctx.wg);
     xylem_waitgroup_destroy(ctx.wg);
 }
 
@@ -599,6 +630,7 @@ static void _test_run_all(void* arg) {
 
     test_spawn_and_exit();
     test_repeated_yield();
+    test_time_slice_resets_after_resume();
     test_reuse_decommitted_stack();
     test_declined_park();
     test_external_ready();

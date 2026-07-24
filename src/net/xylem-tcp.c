@@ -68,8 +68,8 @@ static xylem_tcp_listener_t* _tcp_listener_create(listener_t* listener) {
     return tcp_listener;
 }
 
-static void _tcp_consume_io_credit(void) {
-    if (runtime_consume_credit(RUNTIME_IO_CREDIT_COST)) {
+static void _tcp_consume_io_budget(void) {
+    if (runtime_consume_time()) {
         runtime_yield();
     }
 }
@@ -179,7 +179,7 @@ int xylem_tcp_read(xylem_tcp_conn_t* tcp, void* buf, int len) {
             return 0;
         }
         if (n > 0) {
-            _tcp_consume_io_credit();
+            _tcp_consume_io_budget();
             return n;
         }
         if (n != STREAM_IO_AGAIN
@@ -214,7 +214,7 @@ int xylem_tcp_write(xylem_tcp_conn_t* tcp, const void* data, int len) {
         if (n > 0) {
             ptr += n;
             rem -= n;
-            _tcp_consume_io_credit();
+            _tcp_consume_io_budget();
             continue;
         }
         if (n != STREAM_IO_AGAIN

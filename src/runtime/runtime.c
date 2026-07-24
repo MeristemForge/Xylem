@@ -116,7 +116,7 @@ int runtime_spawn(void (*fn)(void*), void* arg) {
     if (rc != 0) {
         return rc;
     }
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
     return 0;
@@ -133,8 +133,12 @@ void runtime_sleep(uint64_t ms) {
     scheduler_coro_park(g_sched, _runtime_sleep_commit_cb, &park);
 }
 
-bool runtime_consume_credit(uint32_t cost) {
-    return scheduler_coro_consume_credit(cost);
+bool runtime_consume_step(void) {
+    return scheduler_coro_consume_step();
+}
+
+bool runtime_consume_time(void) {
+    return scheduler_coro_consume_time();
 }
 
 void runtime_yield(void) {

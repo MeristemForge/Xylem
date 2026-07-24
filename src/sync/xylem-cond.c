@@ -195,7 +195,7 @@ void xylem_cond_signal(xylem_cond_t* cond) {
     if (target) {
         _cond_wake(cond, target);
     }
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
 }
@@ -211,7 +211,7 @@ void xylem_cond_broadcast(xylem_cond_t* cond) {
     if (!list_empty(&drained)) {
         _cond_wake_all(cond, &drained);
     }
-    if (runtime_consume_credit(RUNTIME_CREDIT_COST)) {
+    if (runtime_consume_step()) {
         runtime_yield();
     }
 }
