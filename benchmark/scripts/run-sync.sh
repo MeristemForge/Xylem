@@ -34,8 +34,8 @@ IFS=',' read -ra LANGS <<< "${LANGS:-xylem,go,rust}"
 WORKERS="${WORKERS:-0}"
 REPEAT="${REPEAT:-3}"
 
-declare -A P_TASKS=( [mutex]=8 [cond]=2 [channel]=4 )
-declare -A P_ITERS=( [mutex]=1000000 [cond]=1000 [channel]=1000000 )
+_p_tasks() { case "$1" in mutex) echo 8;; cond) echo 2;; channel) echo 4;; *) echo 8;; esac; }
+_p_iters() { case "$1" in mutex) echo 1000000;; cond) echo 1000;; channel) echo 1000000;; *) echo 1000000;; esac; }
 P_PERMITS="${PERMITS:-4}"
 
 CFLAGS="-std=gnu11 -O3 -DNDEBUG -flto -Wall -Wextra"
@@ -475,7 +475,7 @@ cmd_bench() {
             continue
         fi
 
-        local tasks="${P_TASKS[$prim]}"
+        local tasks="$(_p_tasks "$prim")"
         info "=== ${prim}  (tasks=${tasks}) ==="
         printf "  %-7s %10s %10s %14s  %s\n" \
             "LANG" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
@@ -485,7 +485,7 @@ cmd_bench() {
             local bin; bin="$(bin_for "$lang")"
             [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
-            local iters="${P_ITERS[$prim]}"
+            local iters="$(_p_iters "$prim")"
             local args=(--tasks "$tasks" --iters "$iters" --workers "$WORKERS")
 
             local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
