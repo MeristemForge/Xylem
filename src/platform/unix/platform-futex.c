@@ -64,6 +64,8 @@ void platform_futex_broadcast(_Atomic uint32_t* addr) {
 #if defined(__APPLE__)
 
 #include <errno.h>
+
+#if __has_include(<os/os_sync_wait_on_address.h>)
 #include <os/os_sync_wait_on_address.h>
 
 /* os_sync_wait_on_address is the public address-wait API (macOS 14.4+). */
@@ -109,5 +111,49 @@ void platform_futex_broadcast(_Atomic uint32_t* addr) {
         OS_SYNC_WAKE_BY_ADDRESS_NONE
     );
 }
+
+#else
+
+#include <sys/ulock.h>
+
+/* Private SPI fallback for SDKs predating the public address-wait API. */
+
+void platform_futex_wait(_Atomic uint32_t* addr, uint32_t expected) {
+    __ulock_wait2(
+        UL_COMPARE_AND_WAIT,
+        (void*)addr,
+        (uint64_t)expected,
+        0,
+        0
+    );
+}
+
+bool platform_futex_timedwait(
+    _Atomic uint32_t* addr, uint32_t expected, uint64_t timeout_ms) {
+    if (timeout_ms == 0) {
+        return atomic_load(addr) != expected;
+    }
+    uint64_t timeout_ns = timeout_ms > UINT64_MAX / 1000000ULL
+        ? UINT64_MAX
+        : timeout_ms * 1000000ULL;
+    int r = __ulock_wait2(
+        UL_COMPARE_AND_WAIT,
+        (void*)addr,
+        (uint64_t)expected,
+        timeout_ns,
+        0
+    );
+    return !(r == -1 && errno == ETIMEDOUT);
+}
+
+void platform_futex_signal(_Atomic uint32_t* addr) {
+    __ulock_wake(UL_COMPARE_AND_WAIT, (void*)addr, 0);
+}
+
+void platform_futex_broadcast(_Atomic uint32_t* addr) {
+    __ulock_wake(UL_COMPARE_AND_WAIT | ULF_WAKE_ALL, (void*)addr, 0);
+}
+
+#endif
 
 #endif
