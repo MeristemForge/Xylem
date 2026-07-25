@@ -35,12 +35,13 @@
  * non-blocking poll + steal round. Exactly one idle worker becomes the
  * poller via CAS on poller_running: it owns the blocking poll that services
  * IO and timers. All other idle workers wait on a per-worker semaphore.
- * Work publication may keep up to half of the workers, rounded up, SEARCHING.
- * An idle worker is reserved as SEARCHING before it is signalled, so concurrent
- * publications coalesce once the search limit is reached. A hand-off into an
- * empty local runnext slot wakes nobody -- the scheduling worker usually
- * consumes that coro itself. If the owner stalls and its FIFO queue is empty,
- * other workers may steal runnext as a last-resort rescue.
+ * Work publication wakes one idle worker only when no worker is already
+ * SEARCHING. Already-running workers may search concurrently up to half of the
+ * worker count. An idle worker is reserved as SEARCHING before it is signalled,
+ * so concurrent publications coalesce. A hand-off into an empty local runnext
+ * slot wakes nobody -- the scheduling worker usually consumes that coro itself.
+ * If the owner stalls and its FIFO queue is empty, other workers may steal
+ * runnext as a last-resort rescue.
  *
  * Coroutine parking flows through scheduler_coro_park. The worker changes
  * RUNNING to WAITING before invoking the commit callback. A successful
@@ -503,9 +504,9 @@ static int32_t _sched_max_searchers(const scheduler_t* sched) {
     return sched->worker_count / 2 + sched->worker_count % 2;
 }
 
-/* Coalesced wake: no-op once half of the workers, rounded up, are searching. */
+/* Coalesced wake: no-op while a searcher already exists. */
 static void _sched_wake_worker(scheduler_t* sched) {
-    if (atomic_load(&sched->num_searching) >= _sched_max_searchers(sched)
+    if (atomic_load(&sched->num_searching) != 0
      || atomic_load(&sched->num_idle) == 0) {
         return;
     }
@@ -515,7 +516,7 @@ static void _sched_wake_worker(scheduler_t* sched) {
 
     /* Reserve before signalling so concurrent producers coalesce here. */
     spin_lock(&sched->worker_state_lock);
-    if (atomic_load(&sched->num_searching) >= _sched_max_searchers(sched)
+    if (atomic_load(&sched->num_searching) != 0
      || atomic_load(&sched->num_idle) == 0) {
         spin_unlock(&sched->worker_state_lock);
         return;

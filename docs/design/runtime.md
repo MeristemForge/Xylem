@@ -176,10 +176,10 @@ After scheduler stop begins, `scheduler_coro_ready()` returns before the state
 transition and publication.
 
 After publication, `_sched_wake_worker()` reserves one parked or polling worker
-as searching before signalling it. Up to `ceil(worker_count / 2)` workers may
-search concurrently; further producers coalesce once that limit is reached.
-Parked workers are signalled through their semaphore; a blocked poll owner is
-signalled through the poller wakeup fd.
+as searching before signalling it, but only when no worker is already
+searching. Already-running workers may search concurrently up to
+`ceil(worker_count / 2)`. Parked workers are signalled through their semaphore;
+a blocked poll owner is signalled through the poller wakeup fd.
 
 ### `scheduler_coro_ready_batch(sched, coros, count)`
 
@@ -327,8 +327,9 @@ A producer that needs help takes the same lock, reserves one idle worker as
 Semaphore waiters receive a post; a polling worker receives a wakeup-fd event.
 Because reservation and idle publication are serialized, the worker either
 sees the work during its final recheck or the producer sees an idle state and
-wakes it. Searchers suppress redundant wakeups after half of the workers are
-searching and extend the wake chain after finding work.
+wakes it. Any existing searcher suppresses redundant publication wakeups.
+Already-running workers may search concurrently up to half of the worker count,
+and a searcher that finds work extends the wake chain.
 
 ## 6. Coroutines (minicoro + pooling)
 
