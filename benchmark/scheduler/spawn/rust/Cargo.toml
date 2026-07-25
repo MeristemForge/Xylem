@@ -1,0 +1,15 @@
+[package]
+name = "xylem-bench-scheduler-spawn"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "spawn-rust"
+path = "src/spawn.rs"
+
+[[bin]]
+name = "spawn-rust-mt"
+path = "src/spawn_mt.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }

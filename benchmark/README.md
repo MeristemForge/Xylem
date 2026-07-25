@@ -1,6 +1,7 @@
 # Xylem Benchmark Suite
 
-Echo server benchmark comparing Xylem against popular networking libraries across multiple protocols.
+Benchmark suites for Xylem networking, synchronization primitives, and
+scheduler task creation.
 
 ## Competitors
 
@@ -19,20 +20,29 @@ socket level, which is not a comparison Xylem can join through its public API.
 
 ## Runner Scripts
 
-Two platform-specific drivers live in `benchmark/scripts/`:
+Platform-specific drivers live in `benchmark/scripts/`:
 
 | Script | Platform | Toolchain |
 |--------|----------|-----------|
 | `run-net.sh` | Linux + macOS | GCC/Clang, auto-detected via `uname` |
 | `run-net.bat` | Windows | MSVC (`cl.exe`), auto-initialized via `vcvars64.bat` |
+| `run-scheduler.sh` | Linux + macOS | GCC/Clang, Go, Rust |
+| `run-scheduler.bat` | Windows | MSVC (`cl.exe`), Go, Rust |
 
-Each script exposes the same subcommands: `install`, `build`, `bench`, and
-`all` (default). The benchmark matrix is fixed in the `NET_BENCH_*` constants
-inside each script.
+The network drivers expose `install`, `build`, `bench`, and `all` (default).
+The scheduler drivers expose `build`, `bench`, and `all`; their workload is
+fixed at one million tasks. The network benchmark matrix is fixed in the
+`NET_BENCH_*` constants inside the network scripts.
 
 ```bash
 ./run-net.sh build
 ./run-net.sh bench
+```
+
+Scheduler spawn benchmark:
+
+```bash
+./run-scheduler.sh all
 ```
 
 When `tls` is among the protocols, xylem is built with
@@ -141,16 +151,19 @@ benchmark/
                               file per protocol (epoll/kqueue readiness on
                               POSIX, IOCP completion on Windows)
   sync/                       sync-primitive microbenchmarks (separate suite)
+  scheduler/                  scheduler spawn microbenchmarks (ST + MT)
   scripts/
     run-net.sh                Linux/macOS net driver (install/build/bench)
     run-net.bat               Windows net driver (install/build/bench)
     run-sync.sh               Linux/macOS sync driver
     run-sync.bat              Windows sync driver
+    run-scheduler.sh          Linux/macOS scheduler driver
+    run-scheduler.bat         Windows scheduler driver
     plot_results.py           render charts from an out/results/<ts>/ directory
   out/                        all build output (gitignored)
     <proto>-<family>-echo[-mt], <proto>-bench   compiled binaries
     build/                    xylem CMake build tree
-    results/<ts>/             per-run JSON (prefixed <proto>-...)
+    results/<ts>/             per-run JSON (prefixed <proto>-... or scheduler-...)
 ```
 
 The xylem/go/rust families each live in a single per-family directory that
