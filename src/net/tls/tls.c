@@ -1472,18 +1472,16 @@ void tls_close(tls_conn_t* tls) {
     }
 
     /**
-     * Graceful close_notify parks on the write direction and needs
-     * exclusive ownership of wr_mu. Acquire wr_mu with trylock, never a
-     * blocking lock: another coroutine (possibly on a different worker)
-     * parked in tls_write holds wr_mu across its (possibly unbounded)
-     * park, and a blocking lock here would wait behind the very
-     * coroutine that stream_close must wake -- a teardown deadlock. A
-     * busy wr_mu means a writer is active, so skip the notify and go
-     * straight to the hard close, whose stream interrupt wakes any parked
-     * reader/writer. This mirrors Go's tls.Conn.Close, which skips
-     * close_notify when a Write is in flight.
+     * An incomplete handshake cannot send close_notify safely; hard-close
+     * the stream to interrupt it without racing backend setup. After the
+     * handshake, close_notify needs exclusive ownership of wr_mu. Acquire
+     * it with trylock because a writer may hold it while parked, waiting
+     * for the stream interrupt below. This mirrors Go's tls.Conn.Close,
+     * which skips close_notify before handshake completion or while a
+     * Write is in flight.
      */
-    if (xylem_mutex_trylock(tls->wr_mu)) {
+    if (atomic_load(&tls->hs_state) == HS_DONE
+        && xylem_mutex_trylock(tls->wr_mu)) {
         _tls_flush_close_notify(tls);
         xylem_mutex_unlock(tls->wr_mu);
     }

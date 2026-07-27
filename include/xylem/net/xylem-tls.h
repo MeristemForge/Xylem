@@ -327,6 +327,10 @@ extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
  *
  * @note [COROUTINE-ONLY]
  *
+ * Applies to transport reads, including reads needed by a handshake or
+ * xylem_tls_write(). It does not limit transport writes needed by TLS
+ * protocol processing; set both deadlines to bound the whole operation.
+ *
  * @param tls          Connection handle.
  * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear. If a
  *                     lazy server handshake is in progress, this replaces
@@ -340,6 +344,10 @@ extern void xylem_tls_set_read_deadline(
  * @brief Set the write deadline for the connection.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * Applies to transport writes, including writes needed by a handshake or
+ * xylem_tls_read(). It does not limit transport reads needed by TLS protocol
+ * processing; set both deadlines to bound the whole operation.
  *
  * @param tls          Connection handle.
  * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear. If a
@@ -360,6 +368,10 @@ extern void xylem_tls_set_write_deadline(
  * returned; the actual count may be less.
  * A connection has a single logical reader. Concurrent read
  * calls on the same connection are unsupported.
+ * TLS protocol processing may also perform transport writes, so either
+ * direction's deadline can make this call fail. After an I/O, TLS, or timeout
+ * failure returns -1, close or destroy the connection instead of reusing it.
+ * Invalid arguments rejected before I/O starts do not affect the connection.
  *
  * @param tls  Connection handle.
  * @param buf  Destination buffer.
@@ -381,6 +393,10 @@ extern int xylem_tls_read(
  * an error occurs. Suspends the calling coroutine as needed.
  * A connection has a single logical writer. Concurrent write
  * calls on the same connection are unsupported.
+ * TLS protocol processing may also perform transport reads, so either
+ * direction's deadline can make this call fail. After an I/O, TLS, or timeout
+ * failure returns -1, close or destroy the connection instead of reusing it.
+ * Invalid arguments rejected before I/O starts do not affect the connection.
  *
  * @param tls   Connection handle.
  * @param data  Source buffer.
@@ -527,6 +543,8 @@ extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
  * ALPN (xylem_tls_get_alpn) or the peer certificate, which are empty
  * until the handshake completes. No-op (returns 0) for dialed client
  * connections and for server connections already handshaked.
+ * After a handshake failure or timeout returns -1, close or destroy the
+ * connection instead of reusing it.
  *
  * @param tls  Connection handle.
  *
