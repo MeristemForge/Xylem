@@ -1032,7 +1032,7 @@ static void _sni_sel_server(void* arg) {
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 3; i++) {
         xylem_tls_conn_t* conn = xylem_tls_accept(ln);
         ASSERT(conn != NULL);
 
@@ -1069,6 +1069,11 @@ static void _sni_sel_client(void* arg) {
     xylem_channel_recv(ctx->ready);
 
     _sni_sel_roundtrip(ctx->cli_ctx, ctx->port, "sni.example", "host-cert");
+    _sni_sel_roundtrip(
+        ctx->cli_ctx,
+        ctx->port,
+        "sni.example.",
+        "absolute-name");
     _sni_sel_roundtrip(ctx->good_ctx, ctx->port, "localhost", "default-cert");
 
     xylem_waitgroup_done(ctx->wg);

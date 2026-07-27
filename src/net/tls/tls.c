@@ -1660,7 +1660,11 @@ int tls_listener_addr(
 }
 
 const char* tls_get_alpn(tls_conn_t* tls) {
-    return !atomic_load(&tls->closed) && tls->alpn[0] ? tls->alpn : NULL;
+    if (atomic_load(&tls->closed)
+        || atomic_load(&tls->hs_state) != HS_DONE) {
+        return NULL;
+    }
+    return tls->alpn[0] ? tls->alpn : NULL;
 }
 
 tls_conn_t* tls_client_handshake_fd(

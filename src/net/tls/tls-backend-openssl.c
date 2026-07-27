@@ -47,6 +47,7 @@
 
 #define TLSB_COOKIE_SIZE        32
 #define TLSB_DEFAULT_DGRAM_MTU  1500
+#define TLSB_DNS_NAME_CAP       256
 
 /**
  * The engine (tls.c) chunks plaintext writes to a backend-neutral 16 KiB
@@ -58,7 +59,7 @@ _Static_assert(SSL3_RT_MAX_PLAIN_LENGTH == 16 * 1024,
                "TLS_MAX_PLAINTEXT must match OpenSSL record plaintext cap");
 
 typedef struct _tlsb_sni_entry_s {
-    char            hostname[256];
+    char            hostname[TLSB_DNS_NAME_CAP];
     X509*           cert;
     EVP_PKEY*       key;
     STACK_OF(X509)* chain;
@@ -575,6 +576,31 @@ static int _tlsb_cookie_verify_cb(
     return CRYPTO_memcmp(cookie, expected, TLSB_COOKIE_SIZE) == 0 ? 1 : 0;
 }
 
+static int _tlsb_normalize_dns_name(
+    const char*  name,
+    char*        buf,
+    size_t       cap,
+    const char** out) {
+    *out = name;
+    if (!name) {
+        return 0;
+    }
+
+    size_t len = strlen(name);
+    if (len <= 1 || name[len - 1] != '.') {
+        return 0;
+    }
+    if (len > cap) {
+        return -1;
+    }
+
+    /* SNI and certificate matching omit the absolute name's root label. */
+    memcpy(buf, name, len - 1);
+    buf[len - 1] = '\0';
+    *out         = buf;
+    return 0;
+}
+
 tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {
     tls_backend_ctx_t* ctx = (tls_backend_ctx_t*)calloc(1, sizeof(*ctx));
     if (!ctx) {
@@ -899,12 +925,27 @@ int tls_backend_conn_configure(
     }
     SSL_set_verify(c->ssl, mode, NULL);
 
-    if (cfg->sni_name
-        && SSL_set_tlsext_host_name(c->ssl, cfg->sni_name) != 1) {
+    char        sni_buf[TLSB_DNS_NAME_CAP];
+    const char* sni_name;
+    if (_tlsb_normalize_dns_name(
+            cfg->sni_name, sni_buf, sizeof(sni_buf), &sni_name)
+        != 0) {
         return -1;
     }
-    if (cfg->verify_dns_name
-        && SSL_set1_host(c->ssl, cfg->verify_dns_name) != 1) {
+    if (sni_name && SSL_set_tlsext_host_name(c->ssl, sni_name) != 1) {
+        return -1;
+    }
+
+    char        verify_buf[TLSB_DNS_NAME_CAP];
+    const char* verify_dns_name;
+    if (_tlsb_normalize_dns_name(cfg->verify_dns_name,
+                                 verify_buf,
+                                 sizeof(verify_buf),
+                                 &verify_dns_name)
+        != 0) {
+        return -1;
+    }
+    if (verify_dns_name && SSL_set1_host(c->ssl, verify_dns_name) != 1) {
         return -1;
     }
     if (cfg->verify_ip_address) {
