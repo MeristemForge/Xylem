@@ -531,6 +531,46 @@ static void test_lazy_handshake_preserves_read_deadline(void) {
                            _lazy_deadline_client});
 }
 
+static void _connect_timeout_ignored_server(void* arg) {
+    _ctx_t*             ctx = (_ctx_t*)arg;
+    xylem_tls_opts_t    opts = {.connect_timeout_ms = 500};
+    xylem_tls_listener_t* ln
+        = xylem_tls_listen(TLS_HOST, ctx->port, ctx->srv_ctx, &opts);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tls_handshake(conn) == 0);
+
+    xylem_sleep(700);
+    ASSERT(xylem_tls_write(conn, "late", 4) == 0);
+
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _connect_timeout_ignored_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn != NULL);
+
+    xylem_sleep(1000);
+    xylem_tls_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_listener_connect_timeout_is_ignored(void) {
+    _run_default((_plan_t){"test_tls_server_to_cert.pem",
+                           "test_tls_server_to_key.pem",
+                           TLS_PORT + 17, 2, _connect_timeout_ignored_server,
+                           _connect_timeout_ignored_client});
+}
+
 static void _stale_errq_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln =
@@ -1361,6 +1401,7 @@ static void _test_run_all(void* arg) {
     test_alpn_negotiation();
     test_read_deadline();
     test_lazy_handshake_preserves_read_deadline();
+    test_listener_connect_timeout_is_ignored();
     test_stale_error_queue_before_read();
     test_expired_read_deadline_blocks_ready_tls_data();
     test_close();

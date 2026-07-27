@@ -77,8 +77,8 @@ xylem_ws_conn_t* ws_tls_dial(const char* host, uint16_t port,
     }
 
     xylem_tls_opts_t tls_opts = {0};
-    tls_opts.server_name          = host;
-    tls_opts.handshake_timeout_ms = timeout;
+    tls_opts.server_name        = host;
+    tls_opts.connect_timeout_ms = timeout;
 
     xylem_tls_conn_t* conn = xylem_tls_dial(host, port, ctx, &tls_opts);
     xylem_tls_ctx_destroy(ctx);

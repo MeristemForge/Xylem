@@ -109,6 +109,11 @@ extern tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto);
 /**
  * @brief Destroy a backend context. NULL-safe.
  *
+ * Backend listeners and connections borrow the context and do not retain a
+ * reference. The context must outlive every object created from it and all
+ * operations on those objects. Complete configuration before creating those
+ * objects and do not modify it after handing it to the engine.
+ *
  * @param ctx  Context handle.
  */
 extern void               tls_backend_ctx_destroy(tls_backend_ctx_t* ctx);

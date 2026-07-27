@@ -27,6 +27,12 @@ A single `ctx` is reused for both the client (`xylem_tls_dial`) and server
 on the ctx and applied per connection by role (see §4), rather than baked into
 the shared `SSL_CTX`.
 
+Listeners and connections borrow their context; they do not retain a context
+reference. The context must remain alive until all listeners and connections
+created from it have been destroyed and all operations on them have returned.
+Finish context configuration before creating those objects, and do not change
+configuration after passing the context to dial or listen.
+
 ## 2. Decoupling the SSL state machine from socket I/O
 
 The central design choice: each connection drives OpenSSL through a pair of
@@ -203,13 +209,14 @@ with no lock and no OpenSSL call.
 result) -> non-blocking `connect`, parking on the write direction until writable
 -> `_tls_client_handshake` (set connect state, apply verify, apply expected
 identity/SNI, drive handshake) -> cache ALPN. A single deadline derived from
-`handshake_timeout_ms` bounds connect + handshake together.
+`connect_timeout_ms` bounds DNS, TCP connect, and TLS handshake together. The
+option is ignored by listeners.
 
 **Accept (server):** `_tls_accept_fd` parks on the listener's read direction and
 backs off on transient accept errors, then `xylem_tls_accept` returns the
-connection **without running its handshake** -- it only records the peer
-address and the handshake timeout and marks the connection `HS_PENDING`. The
-handshake is driven lazily on the first `tls_read`/`tls_write`, or eagerly via
+connection **without running its handshake** and marks the connection
+`HS_PENDING`. The handshake is driven lazily on the first
+`tls_read`/`tls_write`, or eagerly via
 `tls_handshake`, inside the per-connection handler coroutine. This is the key
 scalability change: handshakes (a multi-round-trip, CPU-heavy exchange) run in
 the handler and parallelize across the scheduler instead of serializing every
@@ -222,9 +229,10 @@ Consequences of deferring:
   timeout) surfaces as `-1` from the first `tls_read`/`tls_write`/`tls_handshake`,
   so a handler treats a read error as "drop this connection and keep accepting"
   -- one bad client still cannot tear down the accept loop.
-- `handshake_timeout_ms` is measured from when the handshake begins (first I/O),
-  not from accept. A handler that accepts but never reads is not bounded by it;
-  rely on prompt handler reads plus fd/backlog limits.
+- No server handshake timeout is installed automatically. To bound only the
+  handshake, set both connection deadlines, call `tls_handshake`, then replace
+  or clear the deadlines. If the handshake remains lazy, existing read/write
+  deadlines also cover the first application I/O that triggered it.
 - The negotiated ALPN (`tls_get_alpn`) and the peer certificate are empty until
   the handshake completes, so call `tls_handshake` first if you need them before
   any read/write.
@@ -503,7 +511,6 @@ struct tls_conn_s {
     xylem_mutex_t *ssl_mu, *rd_mu, *wr_mu, *hs_mu;
     iowait_t* waiter; platform_sock_t fd; tls_ctx_t* ctx;
     addr_t peer_addr; char alpn[32];
-    uint64_t hs_timeout_ms;          /* copied from listener opts at accept */
     _Atomic int hs_state;            /* HS_DONE / HS_PENDING / HS_FAILED */
     _Atomic int32_t refcnt; _Atomic bool closed;
 };

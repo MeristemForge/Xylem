@@ -138,16 +138,6 @@ static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
     return xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
 }
 
-static uint64_t _tls_min_deadline(uint64_t a, uint64_t b) {
-    if (a == 0) {
-        return b;
-    }
-    if (b == 0) {
-        return a;
-    }
-    return a < b ? a : b;
-}
-
 /* Apply the same deadline to both stream directions (0 clears it). */
 static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
     atomic_store(&tls->rd_deadline, deadline);
@@ -159,36 +149,6 @@ static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
 static bool _tls_deadline_expired(_Atomic uint64_t* deadline) {
     uint64_t d = atomic_load(deadline);
     return d > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= d;
-}
-
-static void _tls_set_handshake_deadline(
-    tls_conn_t* tls,
-    uint64_t    rd_deadline,
-    uint64_t    wr_deadline) {
-    atomic_store(&tls->rd_deadline, rd_deadline);
-    atomic_store(&tls->wr_deadline, wr_deadline);
-    stream_set_read_deadline(tls->stream, rd_deadline);
-    stream_set_write_deadline(tls->stream, wr_deadline);
-}
-
-static void _tls_restore_handshake_deadline(
-    tls_conn_t* tls,
-    uint64_t    old_rd,
-    uint64_t    old_wr,
-    uint64_t    hs_rd,
-    uint64_t    hs_wr) {
-    uint64_t rd = atomic_load(&tls->rd_deadline);
-    uint64_t wr = atomic_load(&tls->wr_deadline);
-    if (rd == hs_rd) {
-        rd = old_rd;
-        atomic_store(&tls->rd_deadline, rd);
-    }
-    if (wr == hs_wr) {
-        wr = old_wr;
-        atomic_store(&tls->wr_deadline, wr);
-    }
-    stream_set_read_deadline(tls->stream, rd);
-    stream_set_write_deadline(tls->stream, wr);
 }
 
 /**
@@ -464,15 +424,7 @@ static int _tls_server_handshake(tls_conn_t* tls) {
         return -1;
     }
 
-    uint64_t old_rd = atomic_load(&tls->rd_deadline);
-    uint64_t old_wr = atomic_load(&tls->wr_deadline);
-    uint64_t hs_deadline = _tls_make_deadline(tls->hs_timeout_ms);
-    uint64_t hs_rd = _tls_min_deadline(old_rd, hs_deadline);
-    uint64_t hs_wr = _tls_min_deadline(old_wr, hs_deadline);
-
-    _tls_set_handshake_deadline(tls, hs_rd, hs_wr);
     int rc = _tls_do_handshake(tls);
-    _tls_restore_handshake_deadline(tls, old_rd, old_wr, hs_rd, hs_wr);
 
     if (rc == 0) {
         tls_backend_conn_get_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
@@ -1482,7 +1434,7 @@ tls_conn_t* tls_dial(
     uint16_t          port,
     tls_ctx_t*        ctx,
     xylem_tls_opts_t* opts) {
-    uint64_t timeout_ms = opts ? opts->handshake_timeout_ms : 0;
+    uint64_t timeout_ms = opts ? opts->connect_timeout_ms : 0;
     uint64_t deadline   = _tls_make_deadline(timeout_ms);
     stream_t* stream
         = stream_dial(host, port, timeout_ms, opts && opts->enable_mss_clamp);
@@ -1565,9 +1517,6 @@ tls_listener_t* tls_listen(
 
     ln->listener = listener;
     ln->ctx      = ctx;
-    if (opts) {
-        ln->opts = *opts;
-    }
 
     return ln;
 }
@@ -1596,7 +1545,6 @@ tls_conn_t* tls_accept(tls_listener_t* ln) {
          * coroutine and parallelizes, instead of serializing every
          * client's multi-round-trip handshake behind this acceptor.
          */
-        conn->hs_timeout_ms = ln->opts.handshake_timeout_ms;
         atomic_store(&conn->hs_state, HS_PENDING);
 
         return conn;
@@ -1742,7 +1690,7 @@ tls_conn_t* tls_client_handshake_fd(
 
     /* Arm the handshake deadline; disarm on success. */
     _tls_set_deadline(tls,
-                      _tls_make_deadline(opts ? opts->handshake_timeout_ms
+                      _tls_make_deadline(opts ? opts->connect_timeout_ms
                                               : 0));
 
     if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {

@@ -33,14 +33,10 @@ typedef struct xylem_tls_opts_s {
     bool        enable_mss_clamp; /* Clamp socket MSS to the minimum; default
                                      off, so the socket uses the path MTU. */
     /**
-     * Timeout in milliseconds for completing the connection.
-     *
-     * - Dial: bounds TCP connect and the TLS handshake together.
-     * - Accept: per-session handshake timeout on the server side.
-     *
-     * 0 means no timeout.
+     * Total DNS, TCP connect, and TLS handshake timeout for dial. Ignored by
+     * listen. 0 means no timeout.
      */
-    uint64_t    handshake_timeout_ms;
+    uint64_t    connect_timeout_ms;
     /**
      * Expected server identity, used by the client role (dial) only
      * and ignored when listening. Accepts a DNS hostname or numeric
@@ -70,6 +66,12 @@ extern xylem_tls_ctx_t* xylem_tls_ctx_create(void);
  * @brief Destroy a TLS context. NULL-safe.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * Listeners and connections borrow the context; they do not retain a
+ * reference. Destroy the context only after every listener and connection
+ * using it has been destroyed and all operations on them have returned.
+ * Complete all context configuration before creating listeners or
+ * connections, and do not modify it after passing it to dial or listen.
  *
  * @param ctx  Context handle.
  */
@@ -244,7 +246,7 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
  * @note [COROUTINE-ONLY]
  *
  * Suspends the calling coroutine until the TCP connection is established
- * and the TLS handshake completes, or handshake_timeout_ms elapses.
+ * and the TLS handshake completes, or connect_timeout_ms elapses.
  *
  * The host parameter is the network destination and, by default, the
  * identity checked against the peer certificate. Set opts->server_name
@@ -294,6 +296,11 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  * handler and parallelize across cores rather than serializing behind
  * the acceptor.
  *
+ * No server handshake deadline is installed automatically. To bound the
+ * handshake, set both connection deadlines before xylem_tls_handshake()
+ * or the first read/write. Clear or replace them afterward when they are
+ * intended to cover only the handshake.
+ *
  * NULL is returned only once the listener is closed -- callers can treat
  * NULL as "stop accepting". A handshake failure is no longer reported
  * here; it surfaces as -1 from the first read/write or from
@@ -320,7 +327,9 @@ extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * @param tls          Connection handle.
- * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear. If a
+ *                     lazy server handshake is in progress, this replaces
+ *                     its current read deadline.
  */
 extern void xylem_tls_set_read_deadline(
     xylem_tls_conn_t* tls,
@@ -332,7 +341,9 @@ extern void xylem_tls_set_read_deadline(
  * @note [COROUTINE-ONLY]
  *
  * @param tls          Connection handle.
- * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
+ * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear. If a
+ *                     lazy server handshake is in progress, this replaces
+ *                     its current write deadline.
  */
 extern void xylem_tls_set_write_deadline(
     xylem_tls_conn_t* tls,

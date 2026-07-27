@@ -79,7 +79,6 @@ struct tls_conn_s {
     stream_t*           stream;
     tls_ctx_t*          ctx;
     char                alpn[32];
-    uint64_t            hs_timeout_ms;  /* copied from ln->opts at accept */
     _Atomic uint64_t    rd_deadline;
     _Atomic uint64_t    wr_deadline;
     _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
@@ -87,10 +86,9 @@ struct tls_conn_s {
 };
 
 struct tls_listener_s {
-    listener_t*      listener;
-    tls_ctx_t*       ctx;
-    xylem_tls_opts_t opts;
-    _Atomic bool     closed;
+    listener_t*  listener;
+    tls_ctx_t*   ctx;
+    _Atomic bool closed;
 };
 
 struct dtls_conn_s {
@@ -312,10 +310,9 @@ extern tls_listener_t* tls_listen(
  *    signals a handshake failure.
  *  - A handshake failure (bad cert, protocol mismatch, timeout) surfaces
  *    as -1 from the first tls_read/tls_write/tls_handshake, not here.
- *  - handshake_timeout_ms is measured from when the handshake begins
- *    (first I/O), not from accept. A handler that never reads is not
- *    bounded by it until then; rely on prompt handler reads plus
- *    transport/backlog limits.
+ *  - No server handshake timeout is installed automatically. Set both
+ *    read and write deadlines before tls_handshake or the first I/O when
+ *    the application needs to bound the handshake.
  *
  * Must be called from a single coroutine per listener: the accept parks
  * on the listener stream core, which permits only one accept parker (a
@@ -371,7 +368,11 @@ extern int tls_read(tls_conn_t* tls, void* buf, int len);
 extern int tls_write(tls_conn_t* tls, const void* data, int len);
 
 /**
- * @brief Set the read deadline in xylem_utils_getnow(MSEC) milliseconds.
+ * @brief Set the absolute read deadline.
+ *
+ * The deadline applies to subsequent reads and to a lazy server handshake
+ * that is already in progress. Calling this function during that handshake
+ * replaces the handshake's current read deadline.
  *
  * @param tls          Connection handle.
  * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
@@ -379,7 +380,11 @@ extern int tls_write(tls_conn_t* tls, const void* data, int len);
 extern void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms);
 
 /**
- * @brief Set the write deadline in xylem_utils_getnow(MSEC) milliseconds.
+ * @brief Set the absolute write deadline.
+ *
+ * The deadline applies to subsequent writes and to a lazy server handshake
+ * that is already in progress. Calling this function during that handshake
+ * replaces the handshake's current write deadline.
  *
  * @param tls          Connection handle.
  * @param deadline_ms  xylem_utils_getnow(MSEC) deadline, or 0 to clear.
@@ -473,13 +478,15 @@ extern int tls_handshake(tls_conn_t* tls);
  * use opts->server_name, which need not match the address the fd is
  * connected to -- exactly the proxy case (connect to proxy, verify the
  * target).
+ * opts->connect_timeout_ms bounds only the TLS handshake because the
+ * transport connection is already established.
  *
  * On success ownership of @p fd is transferred to the returned
  * connection; on failure @p fd is closed.
  *
  * @param fd   Connected socket (ownership transferred on success).
  * @param ctx  TLS context.
- * @param opts TLS options (server_name, handshake_timeout_ms, etc.).
+ * @param opts TLS options (server_name, connect_timeout_ms, etc.).
  *
  * @return TLS connection handle, or NULL on failure (fd is closed).
  */

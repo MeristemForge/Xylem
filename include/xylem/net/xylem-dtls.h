@@ -80,6 +80,12 @@ extern xylem_dtls_ctx_t* xylem_dtls_ctx_create(void);
  *
  * @note [COROUTINE-ONLY]
  *
+ * Listeners and connections borrow the context; they do not retain a
+ * reference. Destroy the context only after every listener and connection
+ * using it has been destroyed and all operations on them have returned.
+ * Complete all context configuration before creating listeners or
+ * connections, and do not modify it after passing it to dial or listen.
+ *
  * @param ctx  Context handle.
  */
 extern void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx);
