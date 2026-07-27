@@ -996,7 +996,8 @@ tls_backend_state_t tls_backend_conn_write(
 void tls_backend_conn_shutdown(tls_backend_conn_t* c) {
     if (c->ssl && !c->fatal) {
         ERR_clear_error();
-        SSL_shutdown(c->ssl);   /* best-effort close_notify */
+        (void)SSL_shutdown(c->ssl);   /* best-effort close_notify */
+        ERR_clear_error();
     }
 }
 
