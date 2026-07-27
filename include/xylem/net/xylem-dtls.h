@@ -229,7 +229,8 @@ extern void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable);
  * @note [COROUTINE-ONLY]
  *
  * @param ctx        Context handle.
- * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
+ * @param protocols  Array of non-empty protocol strings, each at most
+ *                   255 bytes (e.g. "h2", "http/1.1").
  * @param count      Number of protocols.
  *
  * @return 0 on success, -1 on failure.

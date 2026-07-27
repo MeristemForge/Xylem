@@ -78,7 +78,7 @@ struct tls_conn_s {
     xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
     stream_t*           stream;
     tls_ctx_t*          ctx;
-    char                alpn[32];
+    char                alpn[256];
     _Atomic uint64_t    rd_deadline;
     _Atomic uint64_t    wr_deadline;
     _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
@@ -94,7 +94,7 @@ struct tls_listener_s {
 struct dtls_conn_s {
     tls_backend_conn_t*  be;
     addr_t               peer_addr;
-    char                 alpn[32];
+    char                 alpn[256];
     _Atomic bool         closed;
     _Atomic bool         closing;
     _Atomic int32_t      refcnt;
@@ -306,8 +306,9 @@ extern tls_listener_t* tls_listen(
  * the scheduler instead of serializing behind this acceptor.
  *
  * Consequences:
- *  - NULL is returned only when the listener is closed; it no longer
- *    signals a handshake failure.
+ *  - NULL is returned when the listener is closed or an unrecoverable
+ *    accept or allocation error occurs. It does not signal a handshake
+ *    failure.
  *  - A handshake failure (bad cert, protocol mismatch, timeout) surfaces
  *    as -1 from the first tls_read/tls_write/tls_handshake, not here.
  *  - No server handshake timeout is installed automatically. Set both
@@ -323,7 +324,7 @@ extern tls_listener_t* tls_listen(
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL when the listener is closed.
+ * @return Accepted connection, or NULL when closed or on accept error.
  */
 extern tls_conn_t*     tls_accept(tls_listener_t* ln);
 

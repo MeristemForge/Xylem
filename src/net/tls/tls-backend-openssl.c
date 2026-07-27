@@ -33,9 +33,11 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/pemerr.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -245,10 +247,13 @@ static int _tlsb_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
         if (SSL_use_certificate(ssl, e->cert) != 1
             || SSL_use_PrivateKey(ssl, e->key) != 1) {
             xylem_loge("<tls> sni apply cert failed host=%s", e->hostname);
-            return SSL_TLSEXT_ERR_OK;
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
         }
-        if (e->chain) {
-            SSL_set1_chain(ssl, e->chain);
+        int chain_rc = e->chain ? SSL_set1_chain(ssl, e->chain)
+                                : SSL_clear_chain_certs(ssl);
+        if (chain_rc != 1) {
+            xylem_loge("<tls> sni apply cert failed host=%s", e->hostname);
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
         }
         return SSL_TLSEXT_ERR_OK;
     }
@@ -309,11 +314,20 @@ static int _tlsb_parse_pem_identity(
 
     STACK_OF(X509)* chain = NULL;
     for (;;) {
+        ERR_clear_error();
         X509* extra = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
         if (!extra) {
-            /* EOF is the only expected stop; clear the residual error. */
+            unsigned long err = ERR_peek_last_error();
+            if (ERR_GET_LIB(err) == ERR_LIB_PEM
+                && ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
+                ERR_clear_error();
+                break;
+            }
+            xylem_loge("<tls> parse certificate chain failed");
             ERR_clear_error();
-            break;
+            sk_X509_pop_free(chain, X509_free);
+            X509_free(leaf);
+            return -1;
         }
         if (!chain) {
             chain = sk_X509_new_null();
@@ -387,6 +401,9 @@ static int _tlsb_load_pem_identity_mem(
     X509**           out_cert,
     EVP_PKEY**       out_key,
     STACK_OF(X509)** out_chain) {
+    if (cert_len > INT_MAX || key_len > INT_MAX) {
+        return -1;
+    }
     BIO* cbio = BIO_new_mem_buf(cert_pem, (int)cert_len);
     BIO* kbio = BIO_new_mem_buf(key_pem, (int)key_len);
     if (!cbio || !kbio) {
@@ -448,7 +465,9 @@ static int _tlsb_apply_default_identity(
         || SSL_CTX_use_PrivateKey(ctx->ssl_ctx, key) != 1) {
         return -1;
     }
-    if (chain && SSL_CTX_set1_chain(ctx->ssl_ctx, chain) != 1) {
+    int chain_rc = chain ? SSL_CTX_set1_chain(ctx->ssl_ctx, chain)
+                         : SSL_CTX_clear_chain_certs(ctx->ssl_ctx);
+    if (chain_rc != 1) {
         return -1;
     }
     return 0;
@@ -706,13 +725,21 @@ int tls_backend_ctx_set_alpn(
     tls_backend_ctx_t* ctx,
     const char**       protocols,
     size_t             count) {
-    if (count == 0) {
+    if (!protocols || count == 0) {
         return -1;
     }
 
     size_t total = 0;
     for (size_t i = 0; i < count; i++) {
-        total += 1 + strlen(protocols[i]);
+        if (!protocols[i]) {
+            return -1;
+        }
+        size_t plen = strlen(protocols[i]);
+        if (plen == 0 || plen > UINT8_MAX
+            || total > UINT_MAX - 1 - plen) {
+            return -1;
+        }
+        total += 1 + plen;
     }
 
     uint8_t* wire = (uint8_t*)malloc(total);
@@ -728,15 +755,18 @@ int tls_backend_ctx_set_alpn(
         off += plen;
     }
 
-    free(ctx->alpn_wire);
-    ctx->alpn_wire     = wire;
-    ctx->alpn_wire_len = total;
-
     /**
      * One list serves both roles: the client offers it, the server uses
      * the select cb to pick from it. The unused half is inert per role.
      */
-    SSL_CTX_set_alpn_protos(ctx->ssl_ctx, wire, (unsigned int)total);
+    if (SSL_CTX_set_alpn_protos(ctx->ssl_ctx, wire, (unsigned int)total) != 0) {
+        free(wire);
+        return -1;
+    }
+
+    free(ctx->alpn_wire);
+    ctx->alpn_wire     = wire;
+    ctx->alpn_wire_len = total;
     SSL_CTX_set_alpn_select_cb(ctx->ssl_ctx, _tlsb_alpn_select_cb, ctx);
 
     return 0;

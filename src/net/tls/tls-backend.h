@@ -192,7 +192,8 @@ extern int tls_backend_ctx_load_system_ca(
  *        servers).
  *
  * @param ctx        Context handle.
- * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
+ * @param protocols  Array of non-empty protocol strings, each at most
+ *                   255 bytes (e.g. "h2", "http/1.1").
  * @param count      Number of protocols.
  *
  * @return 0 on success, -1 on failure.

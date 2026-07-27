@@ -510,7 +510,7 @@ struct tls_conn_s {
     char* rbuf; char* wbuf;          /* pump scratch (unchanged) */
     xylem_mutex_t *ssl_mu, *rd_mu, *wr_mu, *hs_mu;
     iowait_t* waiter; platform_sock_t fd; tls_ctx_t* ctx;
-    addr_t peer_addr; char alpn[32];
+    addr_t peer_addr; char alpn[256];
     _Atomic int hs_state;            /* HS_DONE / HS_PENDING / HS_FAILED */
     _Atomic int32_t refcnt; _Atomic bool closed;
 };

@@ -28,6 +28,7 @@
 #include <openssl/err.h>
 #include <openssl/sslerr.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ typedef struct {
     xylem_tls_ctx_t*   srv_ctx;
     xylem_tls_ctx_t*   cli_ctx;
     xylem_tls_ctx_t*   good_ctx;
+    const char*        alpn;
     uint16_t           port;
 } _ctx_t;
 
@@ -172,6 +174,20 @@ static void test_set_alpn(void) {
     ASSERT(ctx != NULL);
     const char* protos[] = {"h2", "http/1.1"};
     ASSERT(xylem_tls_ctx_set_alpn(ctx, protos, 2) == 0);
+
+    const char* empty[] = {""};
+    ASSERT(xylem_tls_ctx_set_alpn(ctx, empty, 1) == -1);
+
+    char too_long[257];
+    memset(too_long, 'a', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    const char* oversized[] = {too_long};
+    ASSERT(xylem_tls_ctx_set_alpn(ctx, oversized, 1) == -1);
+
+    const char* null_protocol[] = {NULL};
+    ASSERT(xylem_tls_ctx_set_alpn(ctx, null_protocol, 1) == -1);
+    ASSERT(xylem_tls_ctx_set_alpn(ctx, NULL, 1) == -1);
+
     xylem_tls_ctx_destroy(ctx);
 }
 
@@ -216,8 +232,28 @@ static void test_load_cert_mem(void) {
                                        key_buf, key_len) == 0);
     ASSERT(xylem_tls_ctx_load_cert_mem(ctx, NULL, cert_buf, cert_len,
                                        NULL, 0) == -1);
+
+    char* terminated = (char*)malloc(cert_len + 1);
+    ASSERT(terminated != NULL);
+    memcpy(terminated, cert_buf, cert_len);
+    terminated[cert_len] = '\0';
+    ASSERT(xylem_tls_ctx_load_cert_mem(ctx, NULL, terminated,
+                                       (size_t)UINT_MAX, key_buf,
+                                       key_len) == -1);
+
+    const char corrupt[] = "\n-----BEGIN CERTIFICATE-----\ninvalid\n"
+                           "-----END CERTIFICATE-----\n";
+    size_t bad_len = cert_len + sizeof(corrupt) - 1;
+    char*  bad_cert = (char*)malloc(bad_len);
+    ASSERT(bad_cert != NULL);
+    memcpy(bad_cert, cert_buf, cert_len);
+    memcpy(bad_cert + cert_len, corrupt, sizeof(corrupt) - 1);
+    ASSERT(xylem_tls_ctx_load_cert_mem(ctx, NULL, bad_cert, bad_len,
+                                       key_buf, key_len) == -1);
     xylem_tls_ctx_destroy(ctx);
 
+    free(bad_cert);
+    free(terminated);
     free(cert_buf);
     free(key_buf);
     remove(cert);
@@ -382,7 +418,7 @@ static void _alpn_server(void* arg) {
 
     const char* alpn = xylem_tls_get_alpn(conn);
     ASSERT(alpn != NULL);
-    ASSERT(strcmp(alpn, "h2") == 0);
+    ASSERT(strcmp(alpn, ctx->alpn) == 0);
 
     char buf[8];
     int  n = xylem_tls_read(conn, buf, sizeof(buf));
@@ -405,7 +441,7 @@ static void _alpn_client(void* arg) {
 
     const char* alpn = xylem_tls_get_alpn(conn);
     ASSERT(alpn != NULL);
-    ASSERT(strcmp(alpn, "h2") == 0);
+    ASSERT(strcmp(alpn, ctx->alpn) == 0);
 
     ASSERT(xylem_tls_write(conn, "ok", 2) == 0);
     char buf[8];
@@ -415,24 +451,26 @@ static void _alpn_client(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _alpn_main(void* arg) {
-    (void)arg;
+static void _run_alpn(
+    const char** protocols,
+    size_t       count,
+    const char*  expected,
+    uint16_t     port) {
     const char* cert = "test_tls_alpn_cert.pem";
     const char* key  = "test_tls_alpn_key.pem";
     ASSERT(_utils_cert_gen(cert, key) == 0);
 
-    const char* protos[] = {"h2", "http/1.1"};
-
     xylem_tls_ctx_t* srv_ctx = _srv_ctx(cert, key);
-    ASSERT(xylem_tls_ctx_set_alpn(srv_ctx, protos, 2) == 0);
+    ASSERT(xylem_tls_ctx_set_alpn(srv_ctx, protocols, count) == 0);
 
     xylem_tls_ctx_t* cli_ctx = _cli_ctx();
-    ASSERT(xylem_tls_ctx_set_alpn(cli_ctx, protos, 2) == 0);
+    ASSERT(xylem_tls_ctx_set_alpn(cli_ctx, protocols, count) == 0);
 
     _ctx_t ctx = {
         .srv_ctx = srv_ctx,
         .cli_ctx = cli_ctx,
-        .port    = TLS_PORT + 2,
+        .alpn    = expected,
+        .port    = port,
     };
     _drive(&ctx, 2, _alpn_server, _alpn_client, NULL);
 
@@ -443,7 +481,16 @@ static void _alpn_main(void* arg) {
 }
 
 static void test_alpn_negotiation(void) {
-    _alpn_main(NULL);
+    const char* protocols[] = {"h2", "http/1.1"};
+    _run_alpn(protocols, 2, "h2", TLS_PORT + 2);
+}
+
+static void test_long_alpn_negotiation(void) {
+    char protocol[256];
+    memset(protocol, 'a', sizeof(protocol) - 1);
+    protocol[sizeof(protocol) - 1] = '\0';
+    const char* protocols[] = {protocol};
+    _run_alpn(protocols, 1, protocol, TLS_PORT + 18);
 }
 
 static void _deadline_server(void* arg) {
@@ -1399,6 +1446,7 @@ static void _test_run_all(void* arg) {
     test_handshake_and_echo();
     test_handshake_failure();
     test_alpn_negotiation();
+    test_long_alpn_negotiation();
     test_read_deadline();
     test_lazy_handshake_preserves_read_deadline();
     test_listener_connect_timeout_is_ignored();

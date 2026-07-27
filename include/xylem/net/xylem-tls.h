@@ -179,10 +179,10 @@ extern int xylem_tls_ctx_load_system_ca(xylem_tls_ctx_t* ctx,
  * @note [COROUTINE-ONLY]
  *
  * Applies to the client role (xylem_tls_dial). When enabled (the
- * default) the server certificate chain is validated and, if
- * opts.server_name is set, its identity is checked. Disabling it makes
- * the client accept any certificate, which exposes it to MITM attacks;
- * use only for tests or trusted networks.
+ * default) the server certificate chain and identity are validated.
+ * Identity is checked against opts.server_name when set, otherwise
+ * against the dial host. Disabling verification exposes the connection
+ * to MITM attacks; use only for tests or trusted networks.
  *
  * Has no effect on the server role. A context may be reused as both
  * client and server; this setting only changes client dials.
@@ -218,7 +218,8 @@ extern void xylem_tls_ctx_verify_client(xylem_tls_ctx_t* ctx, bool enable);
  * @note [COROUTINE-ONLY]
  *
  * @param ctx        Context handle.
- * @param protocols  Array of protocol strings (e.g. "h2", "http/1.1").
+ * @param protocols  Array of non-empty protocol strings, each at most
+ *                   255 bytes (e.g. "h2", "http/1.1").
  * @param count      Number of protocols.
  *
  * @return 0 on success, -1 on failure.
@@ -301,11 +302,11 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  * or the first read/write. Clear or replace them afterward when they are
  * intended to cover only the handshake.
  *
- * NULL is returned only once the listener is closed -- callers can treat
- * NULL as "stop accepting". A handshake failure is no longer reported
- * here; it surfaces as -1 from the first read/write or from
- * xylem_tls_handshake(). Call xylem_tls_handshake() before reading the
- * negotiated ALPN or the peer certificate.
+ * NULL is returned when the listener is closed or an unrecoverable accept
+ * or allocation error occurs. A handshake failure is not reported here;
+ * it surfaces as -1 from the first read/write or from xylem_tls_handshake().
+ * Call xylem_tls_handshake() before reading the negotiated ALPN or the peer
+ * certificate.
  *
  * Call from a single coroutine per listener (a second concurrent accept
  * on the same listener is not allowed). To spread accept across cores,
@@ -317,7 +318,7 @@ extern xylem_tls_listener_t* xylem_tls_listen(
  *
  * @param ln  Listener handle.
  *
- * @return Accepted connection, or NULL when the listener is closed.
+ * @return Accepted connection, or NULL when closed or on accept error.
  */
 extern xylem_tls_conn_t* xylem_tls_accept(xylem_tls_listener_t* ln);
 
