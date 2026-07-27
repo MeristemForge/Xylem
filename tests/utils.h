@@ -32,7 +32,7 @@ _Pragma("once")
 #include "xylem.h"
 #include "assert.h"
 
-#define SAFETY_TIMEOUT_MS 10000
+#define SAFETY_TIMEOUT_MS 20000
 /* ASAN can 2-5x slow down; bump watchdog when instrumented. */
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)

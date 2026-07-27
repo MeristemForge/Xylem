@@ -80,6 +80,7 @@ struct tls_backend_conn_s {
     SSL*                    ssl;
     tls_backend_io_t        io;
     uint16_t                mtu;
+    bool                    fatal;
     struct sockaddr_storage peer;     /* DTLS server cookie binding */
     size_t                  peer_len;
 };
@@ -289,6 +290,18 @@ static int _tlsb_alpn_select_cb(
     return SSL_TLSEXT_ERR_OK;
 }
 
+static int _tlsb_pem_password_cb(
+    char* buf,
+    int   size,
+    int   rwflag,
+    void* user) {
+    (void)buf;
+    (void)size;
+    (void)rwflag;
+    (void)user;
+    return -1;
+}
+
 /**
  * Parse a TLS identity (leaf cert + intermediate chain + matching key)
  * from two already-open PEM BIOs. The cert BIO holds the leaf first,
@@ -346,7 +359,8 @@ static int _tlsb_parse_pem_identity(
         }
     }
 
-    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(kbio, NULL, NULL, NULL);
+    EVP_PKEY* pkey = PEM_read_bio_PrivateKey(
+        kbio, NULL, _tlsb_pem_password_cb, NULL);
     if (!pkey) {
         xylem_loge("<tls> parse private key failed");
         sk_X509_pop_free(chain, X509_free);
@@ -429,6 +443,21 @@ static int _tlsb_store_sni_identity(
     X509*              leaf,
     EVP_PKEY*          key,
     STACK_OF(X509)*    chain) {
+    for (size_t i = 0; i < ctx->sni_count; i++) {
+        _tlsb_sni_entry_t* entry = &ctx->sni_entries[i];
+        if (platform_strcasecmp(hostname, entry->hostname) != 0) {
+            continue;
+        }
+        X509_free(entry->cert);
+        EVP_PKEY_free(entry->key);
+        sk_X509_pop_free(entry->chain, X509_free);
+        snprintf(entry->hostname, sizeof(entry->hostname), "%s", hostname);
+        entry->cert  = leaf;
+        entry->key   = key;
+        entry->chain = chain;
+        return 0;
+    }
+
     if (ctx->sni_count == ctx->sni_cap) {
         size_t new_cap = ctx->sni_cap == 0 ? 4 : ctx->sni_cap * 2;
         _tlsb_sni_entry_t* entries = (_tlsb_sni_entry_t*)realloc(
@@ -822,14 +851,14 @@ tls_backend_conn_t* tls_backend_conn_create(
 
     c->io    = *io;
     BIO* bio = BIO_new(method);
-    if (!bio || BIO_up_ref(bio) != 1) {
-        BIO_free(bio);
+    if (!bio) {
         SSL_free(c->ssl);
         free(c);
         return NULL;
     }
     BIO_set_data(bio, c);
-    SSL_set_bio(c->ssl, bio, bio);   /* SSL owns both BIO refs now */
+    /* With the same new BIO for read and write, SSL_set_bio takes one ref. */
+    SSL_set_bio(c->ssl, bio, bio);
 
     /* DTLS server cookie path needs SSL -> conn lookup. */
     SSL_set_ex_data(c->ssl, _tlsb_conn_ex_idx, c);
@@ -897,7 +926,7 @@ static void _tlsb_clear_error(void) {
     }
 }
 
-static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
+static tls_backend_state_t _tlsb_state(tls_backend_conn_t* c, int ret) {
     /**
      * Handshake success: SSL_do_handshake returns 1 (read/write map
      * their own >0 before this). Else ret==1 -> SSL_ERROR_NONE -> false
@@ -906,32 +935,32 @@ static tls_backend_state_t _tlsb_state(SSL* ssl, int ret) {
     if (ret == 1) {
         return TLS_BACKEND_OK;
     }
-    int err = SSL_get_error(ssl, ret);
+    int err = SSL_get_error(c->ssl, ret);
     switch (err) {
         case SSL_ERROR_WANT_READ:   return TLS_BACKEND_WANT_READ;
         case SSL_ERROR_WANT_WRITE:  return TLS_BACKEND_WANT_WRITE;
         case SSL_ERROR_ZERO_RETURN: return TLS_BACKEND_CLOSED;
-        default: {
-            unsigned long e = ERR_peek_error();
-            xylem_loge("<tls> ssl op failed ssl_err=%d reason=%s", err,
-                       ERR_reason_error_string(e)
-                           ? ERR_reason_error_string(e) : "unknown");
-            /**
-             * Drain the queue on the error path so it is empty again for
-             * the next op. Read/write still clear before entry because the
-             * thread-local queue may contain errors from unrelated OpenSSL
-             * calls made on the same thread.
-             */
-            ERR_clear_error();
-            return TLS_BACKEND_ERROR;
-        }
+        case SSL_ERROR_SSL:
+        case SSL_ERROR_SYSCALL: c->fatal = true; break;
+        default: break;
     }
+    unsigned long e = ERR_peek_error();
+    xylem_loge("<tls> ssl op failed ssl_err=%d reason=%s", err,
+               ERR_reason_error_string(e) ? ERR_reason_error_string(e)
+                                          : "unknown");
+    /**
+     * Drain the queue on the error path so it is empty again for the next
+     * op. Read/write still clear before entry because the thread-local queue
+     * may contain errors from unrelated OpenSSL calls on the same thread.
+     */
+    ERR_clear_error();
+    return TLS_BACKEND_ERROR;
 }
 
 tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c) {
     _tlsb_clear_error();
     int ret = SSL_do_handshake(c->ssl);
-    return _tlsb_state(c->ssl, ret);
+    return _tlsb_state(c, ret);
 }
 
 tls_backend_state_t tls_backend_conn_read(
@@ -946,7 +975,7 @@ tls_backend_state_t tls_backend_conn_read(
         return TLS_BACKEND_OK;
     }
     *out_n = 0;
-    return _tlsb_state(c->ssl, n);
+    return _tlsb_state(c, n);
 }
 
 tls_backend_state_t tls_backend_conn_write(
@@ -961,11 +990,11 @@ tls_backend_state_t tls_backend_conn_write(
         return TLS_BACKEND_OK;
     }
     *out_n = 0;
-    return _tlsb_state(c->ssl, n);
+    return _tlsb_state(c, n);
 }
 
 void tls_backend_conn_shutdown(tls_backend_conn_t* c) {
-    if (c->ssl) {
+    if (c->ssl && !c->fatal) {
         ERR_clear_error();
         SSL_shutdown(c->ssl);   /* best-effort close_notify */
     }

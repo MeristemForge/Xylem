@@ -135,7 +135,8 @@ static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
     if (timeout_ms == 0) {
         return 0;
     }
-    return xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    return timeout_ms >= UINT64_MAX - now ? UINT64_MAX : now + timeout_ms;
 }
 
 /* Apply the same deadline to both stream directions (0 clears it). */
@@ -1661,14 +1662,7 @@ int tls_listener_addr(
 }
 
 const char* tls_get_alpn(tls_conn_t* tls) {
-    static _Thread_local char alpn[sizeof(tls->alpn)];
-    const char* ret = NULL;
-    if (!atomic_load(&tls->closed)
-        && tls->alpn[0]) {
-        memcpy(alpn, tls->alpn, sizeof(alpn));
-        ret = alpn;
-    }
-    return ret;
+    return !atomic_load(&tls->closed) && tls->alpn[0] ? tls->alpn : NULL;
 }
 
 tls_conn_t* tls_client_handshake_fd(

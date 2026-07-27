@@ -222,17 +222,21 @@ stream_t* stream_dial(
 
     uint64_t connect_deadline_ms = 0;
     if (connect_timeout_ms > 0) {
-        connect_deadline_ms
-            = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-              + connect_timeout_ms;
+        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        connect_deadline_ms = connect_timeout_ms >= UINT64_MAX - now
+            ? UINT64_MAX
+            : now + connect_timeout_ms;
     }
 
     addr_t* addrs = NULL;
     size_t  count = 0;
+    uint64_t resolve_timeout_ms = connect_deadline_ms == UINT64_MAX
+        ? 0
+        : connect_timeout_ms;
     if (addr_lookup(
             host,
             port,
-            connect_timeout_ms,
+            resolve_timeout_ms,
             &addrs,
             &count)
         != 0) {

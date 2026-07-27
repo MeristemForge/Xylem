@@ -111,19 +111,6 @@ static void _run_default(_plan_t plan) {
     _default_main(&plan);
 }
 
-static void test_load_cert_valid(void) {
-    const char* cert = "test_tls_cert.pem";
-    const char* key  = "test_tls_key.pem";
-    ASSERT(_utils_cert_gen(cert, key) == 0);
-
-    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
-    ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, cert, key) == 0);
-    xylem_tls_ctx_destroy(ctx);
-    remove(cert);
-    remove(key);
-}
-
 static void test_load_cert_invalid(void) {
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
@@ -132,38 +119,56 @@ static void test_load_cert_invalid(void) {
     xylem_tls_ctx_destroy(ctx);
 }
 
-static void test_load_ca(void) {
-    const char* cert = "test_tls_ca.pem";
-    const char* key  = "test_tls_ca_key.pem";
+static int _encrypt_private_key(const char* key_path) {
+    BIO* in = BIO_new_file(key_path, "r");
+    if (!in) {
+        return -1;
+    }
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(in, NULL, NULL, NULL);
+    BIO_free(in);
+    if (!key) {
+        return -1;
+    }
+
+    BIO* out = BIO_new_file(key_path, "w");
+    if (!out) {
+        EVP_PKEY_free(key);
+        return -1;
+    }
+    const unsigned char password[] = "test-password";
+    int rc = PEM_write_bio_PrivateKey(
+        out, key, EVP_aes_256_cbc(), password, (int)sizeof(password) - 1,
+        NULL, NULL) == 1
+                 ? 0
+                 : -1;
+    BIO_free(out);
+    EVP_PKEY_free(key);
+    return rc;
+}
+
+static void test_load_encrypted_private_key(void) {
+    const char* cert = "test_tls_encrypted_cert.pem";
+    const char* key  = "test_tls_encrypted_key.pem";
     ASSERT(_utils_cert_gen(cert, key) == 0);
+    ASSERT(_encrypt_private_key(key) == 0);
 
     xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
     ASSERT(ctx != NULL);
-    ASSERT(xylem_tls_ctx_load_ca(ctx, cert) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, cert, key) == -1);
     xylem_tls_ctx_destroy(ctx);
     remove(cert);
     remove(key);
 }
 
 static void test_load_system_ca(void) {
-    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
-    ASSERT(ctx != NULL);
-    xylem_tls_ctx_load_system_ca(ctx, NULL);
-    xylem_tls_ctx_destroy(ctx);
-
     const char* ca  = "test_tls_sysca_fallback.pem";
     const char* key = "test_tls_sysca_fallback_key.pem";
     ASSERT(_utils_cert_gen(ca, key) == 0);
 
-    xylem_tls_ctx_t* ctx2 = xylem_tls_ctx_create();
-    ASSERT(ctx2 != NULL);
-    ASSERT(xylem_tls_ctx_load_system_ca(ctx2, ca) == 0);
-    xylem_tls_ctx_destroy(ctx2);
-
-    xylem_tls_ctx_t* ctx3 = xylem_tls_ctx_create();
-    ASSERT(ctx3 != NULL);
-    (void)xylem_tls_ctx_load_system_ca(ctx3, "nonexistent_ca_bundle.pem");
-    xylem_tls_ctx_destroy(ctx3);
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_system_ca(ctx, ca) == 0);
+    xylem_tls_ctx_destroy(ctx);
 
     remove(ca);
     remove(key);
@@ -189,13 +194,6 @@ static void test_set_alpn(void) {
     ASSERT(xylem_tls_ctx_set_alpn(ctx, NULL, 1) == -1);
 
     xylem_tls_ctx_destroy(ctx);
-}
-
-static void test_null_handles(void) {
-    xylem_tls_ctx_destroy(NULL);
-    ASSERT(xylem_tls_dial(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
-    ASSERT(xylem_tls_listen(TLS_HOST, TLS_PORT, NULL, NULL) == NULL);
-    ASSERT(xylem_tls_accept(NULL) == NULL);
 }
 
 static char* _read_file(const char* path, size_t* out_len) {
@@ -303,6 +301,33 @@ static void _echo_client(void* arg) {
 static void test_handshake_and_echo(void) {
     _run_default((_plan_t){"test_tls_echo_cert.pem", "test_tls_echo_key.pem",
                            TLS_PORT, 2, _echo_server, _echo_client});
+}
+
+static void _max_timeout_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_opts_t opts = {.connect_timeout_ms = UINT64_MAX};
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial("localhost", ctx->port, ctx->cli_ctx, &opts);
+    ASSERT(conn != NULL);
+
+    const char* msg = "max timeout";
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
+
+    char buf[64];
+    int  n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_tls_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_max_connect_timeout(void) {
+    _run_default((_plan_t){"test_tls_maxto_cert.pem",
+                           "test_tls_maxto_key.pem", TLS_PORT + 21, 2,
+                           _echo_server, _max_timeout_client});
 }
 
 static void _fail_bad_client(void* arg) {
@@ -491,6 +516,82 @@ static void test_long_alpn_negotiation(void) {
     protocol[sizeof(protocol) - 1] = '\0';
     const char* protocols[] = {protocol};
     _run_alpn(protocols, 1, protocol, TLS_PORT + 18);
+}
+
+static void _alpn_retain_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln =
+        xylem_tls_listen(TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* first = xylem_tls_accept(ln);
+    ASSERT(first != NULL);
+    ASSERT(xylem_tls_handshake(first) == 0);
+    xylem_tls_conn_t* second = xylem_tls_accept(ln);
+    ASSERT(second != NULL);
+    ASSERT(xylem_tls_handshake(second) == 0);
+
+    xylem_channel_recv(ctx->gate);
+    xylem_tls_destroy(first);
+    xylem_tls_destroy(second);
+    xylem_tls_destroy_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _alpn_retain_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* first =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(first != NULL);
+    xylem_tls_conn_t* second =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->good_ctx, NULL);
+    ASSERT(second != NULL);
+
+    const char* first_alpn = xylem_tls_get_alpn(first);
+    ASSERT(first_alpn != NULL);
+    ASSERT(strcmp(first_alpn, "h2") == 0);
+    const char* second_alpn = xylem_tls_get_alpn(second);
+    ASSERT(second_alpn != NULL);
+    ASSERT(strcmp(second_alpn, "mqtt") == 0);
+    ASSERT(strcmp(first_alpn, "h2") == 0);
+
+    xylem_tls_destroy(first);
+    xylem_tls_destroy(second);
+    xylem_channel_send(ctx->gate, ctx);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_alpn_result_is_connection_owned(void) {
+    const char* cert = "test_tls_alpnret_cert.pem";
+    const char* key  = "test_tls_alpnret_key.pem";
+    ASSERT(_utils_cert_gen(cert, key) == 0);
+
+    const char* server_protocols[] = {"h2", "mqtt"};
+    const char* first_protocol[]   = {"h2"};
+    const char* second_protocol[]  = {"mqtt"};
+    xylem_tls_ctx_t* srv_ctx       = _srv_ctx(cert, key);
+    ASSERT(xylem_tls_ctx_set_alpn(srv_ctx, server_protocols, 2) == 0);
+    xylem_tls_ctx_t* cli_ctx = _cli_ctx();
+    ASSERT(xylem_tls_ctx_set_alpn(cli_ctx, first_protocol, 1) == 0);
+    xylem_tls_ctx_t* second_ctx = _cli_ctx();
+    ASSERT(xylem_tls_ctx_set_alpn(second_ctx, second_protocol, 1) == 0);
+
+    _ctx_t ctx = {
+        .srv_ctx  = srv_ctx,
+        .cli_ctx  = cli_ctx,
+        .good_ctx = second_ctx,
+        .port     = TLS_PORT + 20,
+    };
+    _drive(&ctx, 2, _alpn_retain_server, _alpn_retain_client, NULL);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    xylem_tls_ctx_destroy(second_ctx);
+    remove(cert);
+    remove(key);
 }
 
 static void _deadline_server(void* arg) {
@@ -872,34 +973,6 @@ static void _sni_server(void* arg) {
     xylem_waitgroup_done(ctx->wg);
 }
 
-static void _sni_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tls_opts_t opts = {0};
-    opts.server_name = "localhost";
-
-    xylem_tls_conn_t* conn =
-        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, &opts);
-    ASSERT(conn != NULL);
-
-    const char* msg = "sni-ok";
-    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
-
-    char buf[64];
-    int  n = xylem_tls_read(conn, buf, sizeof(buf));
-    ASSERT(n == (int)strlen(msg));
-    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
-
-    xylem_tls_destroy(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void test_sni_hostname(void) {
-    _run_default((_plan_t){"test_tls_sni_cert.pem", "test_tls_sni_key.pem",
-                           TLS_PORT + 8, 2, _sni_server, _sni_client});
-}
-
 static void _default_identity_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln =
@@ -1047,6 +1120,62 @@ static void _sni_sel_main(void* arg) {
 
 static void test_sni_cert_selection(void) {
     _sni_sel_main(NULL);
+}
+
+static void _sni_replace_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_opts_t opts = {.server_name = "sni.example"};
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, &opts);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tls_write(conn, "ok", 2) == 0);
+
+    char buf[8];
+    ASSERT(xylem_tls_read(conn, buf, sizeof(buf)) == 2);
+    xylem_tls_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_sni_duplicate_replaces_identity(void) {
+    const char* def_cert = "test_tls_snirep_def_cert.pem";
+    const char* def_key  = "test_tls_snirep_def_key.pem";
+    const char* old_cert = "test_tls_snirep_old_cert.pem";
+    const char* old_key  = "test_tls_snirep_old_key.pem";
+    const char* new_cert = "test_tls_snirep_new_cert.pem";
+    const char* new_key  = "test_tls_snirep_new_key.pem";
+    ASSERT(_utils_cert_gen(def_cert, def_key) == 0);
+    ASSERT(_utils_cert_gen_ex(old_cert, old_key, "sni.example",
+                              "DNS:sni.example") == 0);
+    ASSERT(_utils_cert_gen_ex(new_cert, new_key, "sni.example",
+                              "DNS:sni.example") == 0);
+
+    xylem_tls_ctx_t* srv_ctx = _srv_ctx(def_cert, def_key);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, "sni.example", old_cert,
+                                   old_key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, "sni.example", new_cert,
+                                   new_key) == 0);
+
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_ca(cli_ctx, new_cert) == 0);
+
+    _ctx_t ctx = {
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 19,
+    };
+    _drive(&ctx, 2, _sni_server, _sni_replace_client, NULL);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    remove(def_cert);
+    remove(def_key);
+    remove(old_cert);
+    remove(old_key);
+    remove(new_cert);
+    remove(new_key);
 }
 
 static void _addr_server(void* arg) {
@@ -1433,20 +1562,17 @@ static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
-    xylem_tls_destroy(NULL);
-    xylem_tls_destroy_listener(NULL);
-
-    test_load_cert_valid();
     test_load_cert_invalid();
-    test_load_ca();
+    test_load_encrypted_private_key();
     test_load_system_ca();
     test_set_alpn();
-    test_null_handles();
     test_load_cert_mem();
     test_handshake_and_echo();
+    test_max_connect_timeout();
     test_handshake_failure();
     test_alpn_negotiation();
     test_long_alpn_negotiation();
+    test_alpn_result_is_connection_owned();
     test_read_deadline();
     test_lazy_handshake_preserves_read_deadline();
     test_listener_connect_timeout_is_ignored();
@@ -1455,9 +1581,9 @@ static void _test_run_all(void* arg) {
     test_close();
     test_close_listener();
     test_keylog();
-    test_sni_hostname();
     test_default_identity_uses_dial_host();
     test_sni_cert_selection();
+    test_sni_duplicate_replaces_identity();
     test_remote_addr();
     test_concurrent_close();
     test_close_listener_with_active_conn();

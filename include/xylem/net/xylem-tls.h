@@ -510,7 +510,10 @@ extern int xylem_tls_listener_addr(
  *
  * @param tls  Connection handle.
  *
- * @return Protocol string, or NULL if none negotiated.
+ * @return Negotiated protocol string, or NULL before negotiation, after close,
+ *         or when no protocol was negotiated. The returned pointer belongs to
+ *         the connection, remains valid until xylem_tls_destroy(), and must
+ *         not be modified or freed.
  */
 extern const char* xylem_tls_get_alpn(xylem_tls_conn_t* tls);
 
