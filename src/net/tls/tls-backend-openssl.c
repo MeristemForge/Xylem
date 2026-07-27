@@ -67,19 +67,19 @@ typedef struct _tlsb_sni_entry_s {
 struct tls_backend_ctx_s {
     SSL_CTX*            ssl_ctx;
     tls_backend_proto_t proto;
-    uint8_t*           alpn_wire;
-    size_t             alpn_wire_len;
-    FILE*              keylog_file;
-    _tlsb_sni_entry_t* sni_entries;
-    size_t             sni_count;
-    size_t             sni_cap;
-    uint8_t            cookie_secret[TLSB_COOKIE_SIZE]; /* DTLS only */
+    uint8_t*            alpn_wire;
+    size_t              alpn_wire_len;
+    FILE*               keylog_file;
+    _tlsb_sni_entry_t*  sni_entries;
+    size_t              sni_count;
+    size_t              sni_cap;
+    uint8_t             cookie_secret[TLSB_COOKIE_SIZE]; /* DTLS only */
 };
 
 struct tls_backend_conn_s {
-    SSL*             ssl;
-    tls_backend_io_t io;
-    uint16_t         mtu;
+    SSL*                    ssl;
+    tls_backend_io_t        io;
+    uint16_t                mtu;
     struct sockaddr_storage peer;     /* DTLS server cookie binding */
     size_t                  peer_len;
 };
@@ -317,6 +317,7 @@ static int _tlsb_parse_pem_identity(
         ERR_clear_error();
         X509* extra = PEM_read_bio_X509(cbio, NULL, NULL, NULL);
         if (!extra) {
+            /* NULL also reports parse errors; only NO_START_LINE ends the chain. */
             unsigned long err = ERR_peek_last_error();
             if (ERR_GET_LIB(err) == ERR_LIB_PEM
                 && ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
