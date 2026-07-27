@@ -822,7 +822,7 @@ void tls_backend_conn_destroy(tls_backend_conn_t* c) {
     free(c);
 }
 
-void tls_backend_conn_configure(
+int tls_backend_conn_configure(
     tls_backend_conn_t*                c,
     const tls_backend_handshake_cfg_t* cfg) {
     int mode;
@@ -839,12 +839,25 @@ void tls_backend_conn_configure(
     }
     SSL_set_verify(c->ssl, mode, NULL);
 
-    if (cfg->sni_name) {
-        SSL_set_tlsext_host_name(c->ssl, cfg->sni_name);
+    if (cfg->sni_name
+        && SSL_set_tlsext_host_name(c->ssl, cfg->sni_name) != 1) {
+        return -1;
     }
-    if (cfg->verify_host) {
-        SSL_set1_host(c->ssl, cfg->verify_host);   /* copies */
+    if (cfg->verify_dns_name
+        && SSL_set1_host(c->ssl, cfg->verify_dns_name) != 1) {
+        return -1;
     }
+    if (cfg->verify_ip_address) {
+        X509_VERIFY_PARAM* param = SSL_get0_param(c->ssl);
+        if (!param
+            || X509_VERIFY_PARAM_set1_ip_asc(
+                   param,
+                   cfg->verify_ip_address)
+                   != 1) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static void _tlsb_clear_error(void) {

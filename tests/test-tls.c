@@ -813,6 +813,58 @@ static void test_sni_hostname(void) {
                            TLS_PORT + 8, 2, _sni_server, _sni_client});
 }
 
+static void _default_identity_server(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_tls_listener_t* ln =
+        xylem_tls_listen(TLS_HOST, ctx->port, ctx->srv_ctx, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tls_conn_t* conn = xylem_tls_accept(ln);
+    ASSERT(conn != NULL);
+
+    char buf[8];
+    ASSERT(xylem_tls_read(conn, buf, sizeof(buf)) == -1);
+
+    xylem_tls_destroy(conn);
+    xylem_tls_destroy_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _default_identity_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, NULL);
+    ASSERT(conn == NULL);
+
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_default_identity_uses_dial_host(void) {
+    const char* cert = "test_tls_default_identity_cert.pem";
+    const char* key  = "test_tls_default_identity_key.pem";
+    ASSERT(_utils_cert_gen_ex(cert, key, "localhost", "DNS:localhost") == 0);
+
+    xylem_tls_ctx_t* srv_ctx = _srv_ctx(cert, key);
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_ca(cli_ctx, cert) == 0);
+
+    _ctx_t ctx = {
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 17,
+    };
+    _drive(&ctx, 2, _default_identity_server, _default_identity_client, NULL);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    remove(cert);
+    remove(key);
+}
+
 static void _sni_sel_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln =
@@ -1315,6 +1367,7 @@ static void _test_run_all(void* arg) {
     test_close_listener();
     test_keylog();
     test_sni_hostname();
+    test_default_identity_uses_dial_host();
     test_sni_cert_selection();
     test_remote_addr();
     test_concurrent_close();

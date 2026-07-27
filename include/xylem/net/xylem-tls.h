@@ -45,7 +45,9 @@ typedef struct xylem_tls_opts_s {
      * Expected server identity, used by the client role (dial) only
      * and ignored when listening. Accepts a DNS hostname or numeric
      * IP literal. Drives SNI (only sent for DNS names; RFC 6066) and
-     * certificate identity verification. NULL skips both.
+     * certificate identity verification. For TLS, NULL uses the dial
+     * host as the expected identity and, for DNS hosts, as SNI. DTLS
+     * does not infer an identity.
      */
     const char* server_name;
 } xylem_tls_opts_t;
@@ -244,11 +246,10 @@ extern int xylem_tls_ctx_set_keylog(xylem_tls_ctx_t* ctx, const char* path);
  * Suspends the calling coroutine until the TCP connection is established
  * and the TLS handshake completes, or handshake_timeout_ms elapses.
  *
- * The host parameter is the network destination to connect to; it is
- * not used for certificate verification. To verify the peer's
- * identity, set opts->server_name. These can differ -- e.g. dialing
- * a load balancer IP while expecting a certificate for the backend
- * service hostname.
+ * The host parameter is the network destination and, by default, the
+ * identity checked against the peer certificate. Set opts->server_name
+ * to override that identity -- e.g. when dialing a load balancer IP
+ * while expecting a certificate for the backend service hostname.
  *
  * @param host  Remote hostname or IP address to connect to.
  * @param port  Remote port.

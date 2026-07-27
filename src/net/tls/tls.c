@@ -257,31 +257,33 @@ static int _tls_do_handshake(tls_conn_t* tls) {
 
 static void _tls_configure_client(
     tls_ctx_t*                   ctx,
-    const char*                  server_name,
+    const char*                  identity,
     const char*                  module,
-    const char*                  verify_label,
     tls_backend_handshake_cfg_t* cfg) {
     cfg->verify =
         ctx->verify_server ? TLS_BACKEND_VERIFY_PEER : TLS_BACKEND_VERIFY_NONE;
     bool verify_peer = (cfg->verify != TLS_BACKEND_VERIFY_NONE);
 
-    if (!server_name && verify_peer) {
+    if (!identity && verify_peer) {
         xylem_loge(
-            "<%s> dial server_name=NULL with %s; "
-            "peer identity unchecked (MITM risk)",
-            module,
-            verify_label);
+            "<%s> peer identity unchecked verify=enabled risk=mitm",
+            module);
     }
-    if (!server_name) {
+    if (!identity) {
         return;
     }
 
     addr_t tmp;
-    if (addr_pton(server_name, 0, &tmp) != 0) {
-        cfg->sni_name = server_name;
+    if (addr_pton(identity, 0, &tmp) == 0) {
+        if (verify_peer) {
+            cfg->verify_ip_address = identity;
+        }
+        return;
     }
+
+    cfg->sni_name = identity;
     if (verify_peer) {
-        cfg->verify_host = server_name;
+        cfg->verify_dns_name = identity;
     }
 }
 
@@ -312,8 +314,10 @@ static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
     tls->be = be;
 
     tls_backend_handshake_cfg_t cfg = {0};
-    _tls_configure_client(tls->ctx, server_name, "tls", "verify_peer", &cfg);
-    tls_backend_conn_configure(tls->be, &cfg);
+    _tls_configure_client(tls->ctx, server_name, "tls", &cfg);
+    if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
+        return -1;
+    }
 
     if (_tls_do_handshake(tls) != 0) {
         return -1;
@@ -456,7 +460,9 @@ static int _tls_server_handshake(tls_conn_t* tls) {
     tls->be = be;
     tls_backend_handshake_cfg_t cfg = {0};
     _tls_configure_server(tls->ctx, &cfg);
-    tls_backend_conn_configure(tls->be, &cfg);
+    if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
+        return -1;
+    }
 
     uint64_t old_rd = atomic_load(&tls->rd_deadline);
     uint64_t old_wr = atomic_load(&tls->wr_deadline);
@@ -1111,7 +1117,11 @@ static void _dtls_handshake_coro(void* arg) {
 
     tls_backend_handshake_cfg_t cfg = {0};
     _tls_configure_server(ln->ctx, &cfg);
-    tls_backend_conn_configure(dtls->be, &cfg);
+    if (tls_backend_conn_configure(dtls->be, &cfg) != 0) {
+        _dtls_server_shutdown(dtls);
+        _dtls_conn_unref(dtls);
+        return;
+    }
 
     uint64_t hs_timeout = ln->opts.handshake_timeout_ms > 0
                               ? ln->opts.handshake_timeout_ms
@@ -1490,7 +1500,10 @@ tls_conn_t* tls_dial(
 
     /* The same absolute deadline bounds connect plus handshake. */
     _tls_set_deadline(tls, deadline);
-    if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {
+    const char* server_name = (opts && opts->server_name)
+                                  ? opts->server_name
+                                  : host;
+    if (_tls_client_handshake(tls, server_name) != 0) {
         xylem_loge("<tls> dial handshake failed host=%s port=%u", host, port);
         _tls_conn_destroy(tls);
         return NULL;
@@ -1791,8 +1804,11 @@ dtls_conn_t* dtls_dial(
 
     tls_backend_handshake_cfg_t cfg         = {0};
     const char*                 server_name = opts ? opts->server_name : NULL;
-    _tls_configure_client(ctx, server_name, "dtls", "verify_server", &cfg);
-    tls_backend_conn_configure(dtls->be, &cfg);
+    _tls_configure_client(ctx, server_name, "dtls", &cfg);
+    if (tls_backend_conn_configure(dtls->be, &cfg) != 0) {
+        _dtls_conn_unref(dtls);
+        return NULL;
+    }
 
     if (_dtls_client_do_handshake(dtls, deadline) != 0) {
         _dtls_conn_unref(dtls);

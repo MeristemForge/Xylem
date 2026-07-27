@@ -111,12 +111,13 @@ same ctx also accepts connections that request no client cert. Defaults are
 secure-by-default for the common case (clients verify servers; plain servers do
 not challenge clients).
 
-Peer **identity** is separate from chain trust. `opts->server_name` drives both
-the SNI extension sent by a client and the hostname/IP checked against the peer
-certificate (`SSL_set1_host`). IP literals are not sent as SNI (RFC 6066) but
-are still used for identity verification. A verified client with no
-`server_name` is logged as a MITM risk: the chain is trusted but the identity is
-unchecked.
+Peer **identity** is separate from chain trust. For `tls_dial`, the expected
+identity defaults to the dial host; `opts->server_name` overrides it when the
+network destination and certificate identity differ. A DNS identity drives the
+SNI extension and hostname verification (`SSL_set1_host`). An IP identity is
+not sent as SNI (RFC 6066) and is verified with
+`X509_VERIFY_PARAM_set1_ip_asc`. Other client-handshake entry points that have
+no identity log a MITM risk: the chain is trusted but the identity is unchecked.
 
 ## 5. Trust anchors
 
@@ -200,8 +201,8 @@ with no lock and no OpenSSL call.
 
 **Dial (client):** resolve host (numeric literal used as-is, else DNS first
 result) -> non-blocking `connect`, parking on the write direction until writable
--> `_tls_client_handshake` (set connect state, apply verify, apply server_name,
-drive handshake) -> cache ALPN. A single deadline derived from
+-> `_tls_client_handshake` (set connect state, apply verify, apply expected
+identity/SNI, drive handshake) -> cache ALPN. A single deadline derived from
 `handshake_timeout_ms` bounds connect + handshake together.
 
 **Accept (server):** `_tls_accept_fd` parks on the listener's read direction and
@@ -266,8 +267,10 @@ the client handshake, verifying `server_name` rather than the proxy address.
 - **Secure by default for clients.** A freshly created ctx verifies server
   certificates; you only weaken this explicitly with
   `xylem_tls_ctx_verify_server(ctx, false)` (tests / trusted networks only).
-- **Always set `opts->server_name` on a verifying client.** Chain trust without
-  identity verification accepts any trusted-CA cert and is a MITM risk.
+- **Identity verification is enabled by default for `tls_dial`.** The dial host
+  is checked unless `opts->server_name` supplies a different expected identity.
+  Chain trust without identity verification accepts any trusted-CA cert and is
+  a MITM risk for lower-level client-handshake entry points.
 - **TLS 1.2 is the floor.** `SSL_CTX_set_min_proto_version(TLS1_2_VERSION)` is
   set at ctx creation; there is no public knob to lower it.
 - **Classic key exchange by default.** At ctx creation the backend pins the
@@ -367,14 +370,15 @@ typedef enum {
 
 /* One-shot, pre-handshake connection configuration snapshot. The engine
  * fills this from neutral decisions it already owns (role -> verify, and
- * whether server_name is an IP literal / whether the peer is verified,
+ * whether the expected identity is an IP literal / whether the peer is verified,
  * both decided with the project's own addr_pton, not OpenSSL). The
  * backend must COPY any string it needs (e.g. SSL_set1_host copies):
  * the pointers reference engine-owned temporaries. */
 typedef struct {
     tls_backend_verify_t verify;
-    const char*          sni_name;     /* client, non-IP only; else NULL */
-    const char*          verify_host;  /* set only when verify != NONE;  else NULL */
+    const char*          sni_name;          /* Client DNS SNI, or NULL. */
+    const char*          verify_dns_name;   /* DNS identity, or NULL. */
+    const char*          verify_ip_address; /* Numeric IP identity, or NULL. */
 } tls_backend_handshake_cfg_t;
 ```
 
@@ -419,9 +423,9 @@ tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
                                             bool is_server);
 void tls_backend_conn_destroy(tls_backend_conn_t* c);
 
-/* One-shot pre-handshake config (verify + SNI + verify_host). See §11.3. */
-void tls_backend_conn_configure(tls_backend_conn_t* c,
-                                const tls_backend_handshake_cfg_t* cfg);
+/* One-shot pre-handshake config (verify + SNI + identity). See §11.3. */
+int tls_backend_conn_configure(tls_backend_conn_t* c,
+                               const tls_backend_handshake_cfg_t* cfg);
 
 /* Ciphertext transfer to/from the backend's inbound/outbound buffers.
  * feed: hand inbound ciphertext to the state machine (was BIO_write).
@@ -511,7 +515,7 @@ struct tls_conn_s {
   `tls_backend_conn_handshake/read/write` returning `tls_backend_state_t`. The
   `WANT_READ`/`WANT_WRITE`/`OK`/`CLOSED`/`ERROR` arms map 1:1 to the existing
   branches.
-- `_tls_apply_verify` + `_tls_apply_server_name` → build a
+- `_tls_configure_client` -> build a
   `tls_backend_handshake_cfg_t` and call `tls_backend_conn_configure` once,
   after `conn_create`, before the first `handshake`.
 

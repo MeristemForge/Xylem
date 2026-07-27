@@ -92,9 +92,9 @@ typedef enum {
  */
 typedef struct {
     tls_backend_verify_t verify;
-    const char*          sni_name;  /* client, non-IP only; else NULL */
-    /** Verify-against hostname; set only when verify != NONE, else NULL. */
-    const char*          verify_host;
+    const char*          sni_name;          /* Client DNS SNI, or NULL. */
+    const char*          verify_dns_name;   /* DNS identity, or NULL. */
+    const char*          verify_ip_address; /* Numeric IP identity, or NULL. */
 } tls_backend_handshake_cfg_t;
 
 /**
@@ -238,8 +238,10 @@ extern void tls_backend_conn_destroy(tls_backend_conn_t* c);
  *
  * @param c    Connection handle.
  * @param cfg  Handshake configuration.
+ *
+ * @return 0 on success, -1 when SNI or identity setup fails.
  */
-extern void tls_backend_conn_configure(
+extern int tls_backend_conn_configure(
     tls_backend_conn_t*                c,
     const tls_backend_handshake_cfg_t* cfg);
 
