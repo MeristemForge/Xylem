@@ -35,11 +35,12 @@ typedef struct xylem_http_hdr_s {
 typedef struct xylem_http_req_s xylem_http_req_t;
 typedef struct xylem_http_res_s xylem_http_res_t;
 typedef struct xylem_http_srv_s xylem_http_srv_t;
+typedef struct xylem_http_writer_s xylem_http_writer_t;
 
 typedef void (*xylem_http_handler_fn_t)(
-    xylem_http_res_t* res,
-    xylem_http_req_t* req,
-    void*             userdata);
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    void*                userdata);
 
 typedef struct xylem_http_tls_s {
     const char* cert;        /* PEM certificate path. */
@@ -230,74 +231,95 @@ extern int xylem_http_req_remote_addr(
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res   Response handle.
- * @param code  HTTP status code.
+ * @param writer  Response writer.
+ * @param code    HTTP status code.
  *
  * @return 0 on success, -1 if headers already sent.
  */
-extern int xylem_http_res_set_status(xylem_http_res_t* res, int code);
+extern int xylem_http_writer_set_status(
+    xylem_http_writer_t* writer,
+    int                  code);
 
 /**
  * @brief Buffer a response header.
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res    Response handle.
- * @param name   Header name.
- * @param value  Header value.
+ * @param writer  Response writer.
+ * @param name    Header name.
+ * @param value   Header value.
  *
  * @return 0 on success, -1 if headers already sent.
  */
-extern int xylem_http_res_set_header(xylem_http_res_t* res,
-                                     const char* name, const char* value);
+extern int xylem_http_writer_set_header(
+    xylem_http_writer_t* writer,
+    const char*          name,
+    const char*          value);
 
 /**
  * @brief Write response body data.
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res   Response handle.
- * @param data  Body data.
- * @param len   Data length in bytes.
+ * @param writer  Response writer.
+ * @param data    Body data.
+ * @param len     Data length in bytes.
  *
  * @return 0 on success, -1 on error.
  */
-extern int xylem_http_res_write(xylem_http_res_t* res,
-                                const void* data, size_t len);
+extern int xylem_http_writer_write(
+    xylem_http_writer_t* writer,
+    const void*          data,
+    size_t               len);
+
+/**
+ * @brief Flush buffered response data when supported.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * @param writer  Response writer.
+ *
+ * @return 0 on success, -1 if unsupported or on error.
+ */
+extern int xylem_http_writer_flush(xylem_http_writer_t* writer);
 
 /**
  * @brief Accept an HTTP Upgrade request.
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res        Response handle.
+ * @param writer     Response writer.
  * @param transport  Output: underlying connection handle.
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_res_upgrade(xylem_http_res_t* res, void** transport);
+extern int xylem_http_writer_upgrade(
+    xylem_http_writer_t* writer,
+    void**               transport);
 
 /**
  * @brief Detach the underlying connection without sending any response.
  *
  * @note [COROUTINE-ONLY]
  *
- * Unlike xylem_http_res_upgrade(), this writes no status line or headers:
+ * Unlike xylem_http_writer_upgrade(), this writes no status line or headers:
  * the engine simply relinquishes the connection and the caller owns every
  * subsequent byte. Use it to implement CONNECT-style proxying, where the
  * response (200 Connection Established vs. 502) must be decided only after
  * dialing the upstream, or any custom protocol takeover.
  *
  * Must be called before any header or body byte has been sent. After a
- * successful call the response handle no longer owns the connection;
+ * successful call the writer no longer owns the connection;
  * the caller is responsible for reading, writing, and closing it.
  *
- * @param res        Response handle.
+ * @param writer     Response writer.
  * @param transport  Output: underlying connection handle (caller owns it).
  *
  * @return 0 on success, -1 on failure.
  */
-extern int xylem_http_res_hijack(xylem_http_res_t* res, void** transport);
+extern int xylem_http_writer_hijack(
+    xylem_http_writer_t* writer,
+    void**               transport);
 
 /**
  * @brief Get the response status code.
@@ -504,14 +526,15 @@ extern xylem_http_res_t* xylem_http_patch(const char* url,
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res           Response writer.
+ * @param writer        Response writer.
  * @param req           Request (for Range/If-None-Match headers).
  * @param data          Content bytes.
  * @param data_len      Content length.
  * @param content_type  MIME type (e.g. "text/html").
  */
-extern void xylem_http_serve_content(xylem_http_res_t* res,
-                                     xylem_http_req_t* req,
-                                     const void* data,
-                                     size_t data_len,
-                                     const char* content_type);
+extern void xylem_http_serve_content(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    const void*          data,
+    size_t               data_len,
+    const char*          content_type);

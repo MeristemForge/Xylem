@@ -24,6 +24,13 @@ _Pragma("once")
 #include "xylem/net/http/xylem-http.h"
 
 typedef struct xylem_http_router_s xylem_http_router_t;
+typedef struct xylem_http_next_s   xylem_http_next_t;
+
+typedef void (*xylem_http_middleware_fn_t)(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    xylem_http_next_t*   next,
+    void*                userdata);
 
 /**
  * @brief Create a new router.
@@ -69,10 +76,9 @@ extern int xylem_http_router_handle(
  *
  * @note [COROUTINE-ONLY]
  *
- * Middleware executes in registration order. Call xylem_http_router_next() to
- * pass control to the next middleware / route handler. Code after
- * xylem_http_router_next() runs on the way back out (post-handler phase).
- * Not calling xylem_http_router_next() short-circuits the chain.
+ * Middleware executes in registration order. Call xylem_http_next_run() to
+ * pass control to the next middleware or route handler. Code after the call
+ * runs on the way back out. Not calling it short-circuits the chain.
  *
  * @param router      Router handle.
  * @param middleware  Middleware handler function.
@@ -81,9 +87,9 @@ extern int xylem_http_router_handle(
  * @return 0 on success, -1 on error.
  */
 extern int xylem_http_router_use(
-    xylem_http_router_t*    router,
-    xylem_http_handler_fn_t middleware,
-    void*                   userdata);
+    xylem_http_router_t*       router,
+    xylem_http_middleware_fn_t middleware,
+    void*                      userdata);
 
 /**
  * @brief Create a route group with a shared prefix.
@@ -111,10 +117,11 @@ extern xylem_http_router_t* xylem_http_router_group(
  * call executes on the way back out (post-handler phase, onion model).
  * Not calling next() aborts the chain (short-circuit).
  *
- * @param res  Response handle.
- * @param req  Request handle.
+ * A next handle may be run at most once. Additional calls are ignored.
+ *
+ * @param next  Next middleware handle.
  */
-extern void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req);
+extern void xylem_http_next_run(xylem_http_next_t* next);
 
 /**
  * @brief Get a path parameter value from a matched route.

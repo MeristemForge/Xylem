@@ -157,7 +157,7 @@ xylem_http_srv_t* http_tcp_listen(
         return NULL;
     }
 
-    return (xylem_http_srv_t*)srv;
+    return srv;
 }
 
 xylem_http_res_t* http_tcp_request(

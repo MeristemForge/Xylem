@@ -112,21 +112,22 @@ xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
 }
 
 
-xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
-                                  struct xylem_http_req_s* req,
-                                  const xylem_ws_opts_t* opts) {
+xylem_ws_conn_t* xylem_ws_accept(
+    struct xylem_http_writer_s* writer,
+    struct xylem_http_req_s*    req,
+    const xylem_ws_opts_t*      opts) {
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_accept");
 
-    return ws_accept_impl(res, req, opts);
+    return ws_accept_impl(writer, req, opts);
 }
 
 
-typedef struct ws_listener_s {
-    xylem_http_srv_t*      http_srv;
-    xylem_ws_handler_fn_t  handler;
-    void*                  userdata;
-    xylem_ws_opts_t        opts;
-} ws_listener_t;
+struct xylem_ws_listener_s {
+    xylem_http_srv_t*     http_srv;
+    xylem_ws_handler_fn_t handler;
+    void*                 userdata;
+    xylem_ws_opts_t       opts;
+};
 
 typedef struct _ws_conn_ctx_s {
     xylem_ws_conn_t*       conn;
@@ -145,10 +146,12 @@ static void _ws_conn_coroutine(void* arg) {
     free(ctx);
 }
 
-static void _ws_upgrade_handler(xylem_http_res_t* res, xylem_http_req_t* req,
-                                void* ud) {
-    ws_listener_t* l = (ws_listener_t*)ud;
-    xylem_ws_conn_t* conn = ws_accept_impl(res, req, &l->opts);
+static void _ws_upgrade_handler(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    void*                ud) {
+    xylem_ws_listener_t* l = (xylem_ws_listener_t*)ud;
+    xylem_ws_conn_t* conn = ws_accept_impl(writer, req, &l->opts);
     if (!conn) {
         return;
     }
@@ -176,7 +179,8 @@ xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
     }
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_listen");
 
-    ws_listener_t* l = (ws_listener_t*)calloc(1, sizeof(*l));
+    xylem_ws_listener_t* l =
+        (xylem_ws_listener_t*)calloc(1, sizeof(*l));
     if (!l) {
         return NULL;
     }
@@ -206,9 +210,12 @@ xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
     }
 
     l->http_srv = xylem_http_listen(host, port, NULL, NULL, &srv_opts);
-    if (!l->http_srv) { free(l); return NULL; }
+    if (!l->http_srv) {
+        free(l);
+        return NULL;
+    }
 
-    return (xylem_ws_listener_t*)l;
+    return l;
 }
 
 void xylem_ws_close_listener(xylem_ws_listener_t* listener) {
@@ -217,9 +224,8 @@ void xylem_ws_close_listener(xylem_ws_listener_t* listener) {
     }
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_close_listener");
 
-    ws_listener_t* l = (ws_listener_t*)listener;
-    xylem_http_close(l->http_srv);
-    free(l);
+    xylem_http_close(listener->http_srv);
+    free(listener);
 }
 
 uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener) {
@@ -228,8 +234,7 @@ uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener) {
     }
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_listener_port");
 
-    ws_listener_t* l = (ws_listener_t*)listener;
     uint16_t port = 0;
-    xylem_http_srv_addr(l->http_srv, NULL, 0, &port);
+    xylem_http_srv_addr(listener->http_srv, NULL, 0, &port);
     return port;
 }

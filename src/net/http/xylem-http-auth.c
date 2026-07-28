@@ -107,9 +107,11 @@ static bool _basic_auth_ok(const xylem_http_basic_auth_cfg_t* cfg,
     return cfg->check(user, pass, cfg->userdata) != 0;
 }
 
-void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
-                                     xylem_http_req_t* req,
-                                     void*             userdata) {
+void xylem_http_basic_auth_middleware(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    xylem_http_next_t*   next,
+    void*                userdata) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_basic_auth_middleware");
 
     const xylem_http_basic_auth_cfg_t* cfg =
@@ -118,13 +120,13 @@ void xylem_http_basic_auth_middleware(xylem_http_res_t* res,
 
     const char* auth = xylem_http_req_header(req, "Authorization");
     if (_basic_auth_ok(cfg, auth)) {
-        xylem_http_router_next(res, req);
+        xylem_http_next_run(next);
         return;
     }
 
     char hdr[128];
     snprintf(hdr, sizeof(hdr), "Basic realm=\"%s\"", realm);
-    xylem_http_res_set_status(res, 401);
-    xylem_http_res_set_header(res, "WWW-Authenticate", hdr);
-    xylem_http_res_write(res, "Unauthorized", 12);
+    xylem_http_writer_set_status(writer, 401);
+    xylem_http_writer_set_header(writer, "WWW-Authenticate", hdr);
+    xylem_http_writer_write(writer, "Unauthorized", 12);
 }

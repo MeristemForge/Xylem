@@ -60,9 +60,10 @@ struct xylem_ws_conn_s {
     bool              frag_compressed;
 };
 
-extern xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
-                                       struct xylem_http_req_s* req,
-                                       const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t* ws_accept_impl(
+    xylem_http_writer_t*   writer,
+    xylem_http_req_t*      req,
+    const xylem_ws_opts_t* opts);
 
 extern xylem_ws_conn_t* ws_conn_create(http_transport_t transport,
                                         bool is_client,

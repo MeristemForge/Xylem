@@ -99,9 +99,10 @@ static bool _has_path_traversal(const char* path) {
     return false;
 }
 
-static void _fileserver_handler(xylem_http_res_t* res,
-                                xylem_http_req_t* req,
-                                void* userdata) {
+static void _fileserver_handler(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    void*                userdata) {
     _fileserver_ctx_t* ctx = (_fileserver_ctx_t*)userdata;
     const char* filepath = xylem_http_router_param(req, "filepath");
     if (!filepath) {
@@ -109,8 +110,8 @@ static void _fileserver_handler(xylem_http_res_t* res,
     }
 
     if (_has_path_traversal(filepath)) {
-        xylem_http_res_set_status(res, 403);
-        xylem_http_res_write(res, "Forbidden", 9);
+        xylem_http_writer_set_status(writer, 403);
+        xylem_http_writer_write(writer, "Forbidden", 9);
         return;
     }
 
@@ -119,8 +120,8 @@ static void _fileserver_handler(xylem_http_res_t* res,
     size_t idx_len  = ctx->index_file ? strlen(ctx->index_file) : 0;
     char* full_path = (char*)malloc(root_len + 1 + file_len + 1 + idx_len + 1);
     if (!full_path) {
-        xylem_http_res_set_status(res, 500);
-        xylem_http_res_write(res, "Internal Server Error", 21);
+        xylem_http_writer_set_status(writer, 500);
+        xylem_http_writer_write(writer, "Internal Server Error", 21);
         return;
     }
 
@@ -139,8 +140,8 @@ static void _fileserver_handler(xylem_http_res_t* res,
 
     if (!f) {
         free(full_path);
-        xylem_http_res_set_status(res, 404);
-        xylem_http_res_write(res, "Not Found", 9);
+        xylem_http_writer_set_status(writer, 404);
+        xylem_http_writer_write(writer, "Not Found", 9);
         return;
     }
 
@@ -151,7 +152,7 @@ static void _fileserver_handler(xylem_http_res_t* res,
     if (size <= 0) {
         fclose(f);
         free(full_path);
-        xylem_http_res_set_status(res, 204);
+        xylem_http_writer_set_status(writer, 204);
         return;
     }
 
@@ -159,8 +160,8 @@ static void _fileserver_handler(xylem_http_res_t* res,
     if (!data) {
         fclose(f);
         free(full_path);
-        xylem_http_res_set_status(res, 500);
-        xylem_http_res_write(res, "Internal Server Error", 21);
+        xylem_http_writer_set_status(writer, 500);
+        xylem_http_writer_write(writer, "Internal Server Error", 21);
         return;
     }
 
@@ -170,13 +171,13 @@ static void _fileserver_handler(xylem_http_res_t* res,
     if (nread != (size_t)size) {
         free(data);
         free(full_path);
-        xylem_http_res_set_status(res, 500);
-        xylem_http_res_write(res, "Internal Server Error", 21);
+        xylem_http_writer_set_status(writer, 500);
+        xylem_http_writer_write(writer, "Internal Server Error", 21);
         return;
     }
 
     const char* mime = _mime_type(full_path);
-    xylem_http_serve_content(res, req, data, (size_t)size, mime);
+    xylem_http_serve_content(writer, req, data, (size_t)size, mime);
 
     free(data);
     free(full_path);

@@ -214,7 +214,7 @@ xylem_http_srv_t* http_tls_listen(
         free(srv);
         return NULL;
     }
-    return (xylem_http_srv_t*)srv;
+    return srv;
 }
 
 xylem_http_res_t* http_tls_request(

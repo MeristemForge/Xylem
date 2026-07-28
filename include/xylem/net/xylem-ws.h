@@ -73,7 +73,7 @@ typedef struct {
     const xylem_ws_tls_t* tls;
 } xylem_ws_opts_t;
 
-struct xylem_http_res_s;
+struct xylem_http_writer_s;
 struct xylem_http_req_s;
 
 /**
@@ -81,15 +81,16 @@ struct xylem_http_req_s;
  *
  * @note [COROUTINE-ONLY]
  *
- * @param res   HTTP response handle.
- * @param req   HTTP request handle.
- * @param opts  WebSocket options, or NULL for defaults.
+ * @param writer  HTTP response writer.
+ * @param req     HTTP request handle.
+ * @param opts    WebSocket options, or NULL for defaults.
  *
  * @return WebSocket connection, or NULL on failure.
  */
-extern xylem_ws_conn_t* xylem_ws_accept(struct xylem_http_res_s* res,
-                                         struct xylem_http_req_s* req,
-                                         const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t* xylem_ws_accept(
+    struct xylem_http_writer_s* writer,
+    struct xylem_http_req_s*    req,
+    const xylem_ws_opts_t*      opts);
 
 /**
  * @brief Start a standalone WebSocket server (ws or wss).

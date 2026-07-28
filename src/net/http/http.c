@@ -29,10 +29,8 @@
  * http-transport-tls.c); choosing between them happens in the public dispatch
  * layer (xylem-http.c), never via a macro inside the engine.
  *
- * The engine works exclusively on the internal http_req_t / http_res_t
- * structures. The public opaque wrappers live in xylem-http.c; this file
- * crosses to them only with a first-member pointer cast when invoking a
- * user callback.
+ * The internal http_req_t / http_res_t names alias the public opaque types,
+ * so engine objects pass directly to public callbacks.
  */
 
 #include "http.h"
@@ -204,18 +202,26 @@ static void _pool_release(const http_url_t* url, http_transport_t* t) {
     xylem_mutex_unlock(_pool_mu);
 }
 
-static int _emit_response_head(http_res_t* res, const char* extra_hdr) {
-    if (!res->_transport) {
+static http1_response_t* _http1_response(http_writer_t* writer) {
+    return (http1_response_t*)writer->impl;
+}
+
+static int _http1_emit_response_head(
+    http_writer_t* writer,
+    const char*    extra_hdr) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
         return -1;
     }
 
-    int status = res->status_code ? res->status_code : 200;
+    int status = writer->status_code ? writer->status_code : 200;
     const char* reason = http_reason_phrase(status);
     size_t extra_len = extra_hdr ? strlen(extra_hdr) : 0;
 
     size_t est = 64 + strlen(reason) + extra_len;
-    for (size_t i = 0; i < res->header_count; i++) {
-        est += strlen(res->headers[i].name) + strlen(res->headers[i].value) + 4;
+    for (size_t i = 0; i < writer->header_count; i++) {
+        est += strlen(writer->headers[i].name)
+            + strlen(writer->headers[i].value) + 4;
     }
     est += 2;
 
@@ -226,9 +232,9 @@ static int _emit_response_head(http_res_t* res, const char* extra_hdr) {
 
     int off = snprintf(buf, est, "HTTP/1.1 %d %s\r\n", status, reason);
 
-    for (size_t i = 0; i < res->header_count; i++) {
+    for (size_t i = 0; i < writer->header_count; i++) {
         off += snprintf(buf + off, est - (size_t)off, "%s: %s\r\n",
-                        res->headers[i].name, res->headers[i].value);
+                        writer->headers[i].name, writer->headers[i].value);
     }
     if (extra_hdr) {
         memcpy(buf + off, extra_hdr, extra_len);
@@ -237,22 +243,27 @@ static int _emit_response_head(http_res_t* res, const char* extra_hdr) {
     buf[off++] = '\r';
     buf[off++] = '\n';
 
-    int rc = _transport_write(res->_transport, buf, off);
+    int rc = _transport_write(response->transport, buf, off);
     free(buf);
     return rc;
 }
 
 /* Lazily called on first write; emits chunked encoding header. */
-static int _flush_headers(http_res_t* res) {
-    int rc = _emit_response_head(res, "Transfer-Encoding: chunked\r\n");
+static int _http1_flush_headers(http_writer_t* writer) {
+    int rc = _http1_emit_response_head(
+        writer, "Transfer-Encoding: chunked\r\n");
     if (rc != 0) {
         return -1;
     }
-    res->_headers_sent = true;
+    writer->headers_sent = true;
     return 0;
 }
 
-static int _write_chunk(http_res_t* res, const void* data, size_t len) {
+static int _http1_write_chunk(
+    http_writer_t* writer,
+    const void*    data,
+    size_t         len) {
+    http1_response_t* response = _http1_response(writer);
     char hdr[24];
     int hdr_len = snprintf(hdr, sizeof(hdr), "%zx\r\n", len);
 
@@ -264,113 +275,147 @@ static int _write_chunk(http_res_t* res, const void* data, size_t len) {
         memcpy(buf + hdr_len, data, len);
         buf[hdr_len + (int)len] = '\r';
         buf[hdr_len + (int)len + 1] = '\n';
-        return _transport_write(res->_transport, buf, (int)frame_len);
+        return _transport_write(response->transport, buf, (int)frame_len);
     }
 
-    if (_transport_write(res->_transport, hdr, hdr_len) != 0) {
+    if (_transport_write(response->transport, hdr, hdr_len) != 0) {
         return -1;
     }
-    if (_transport_write(res->_transport, data, (int)len) != 0) {
+    if (_transport_write_bytes(response->transport, data, len) != 0) {
         return -1;
     }
-    return _transport_write(res->_transport, "\r\n", 2);
+    return _transport_write(response->transport, "\r\n", 2);
 }
 
-int http_res_write(http_res_t* res, const void* data, size_t len) {
-    if (!res->_transport) {
+static int _http1_writer_flush(http_writer_t* writer) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
         return -1;
     }
-    if (len == 0) {
-        return 0;
+
+    if (!writer->headers_sent && _http1_flush_headers(writer) != 0) {
+        return -1;
     }
 
-    /* Already streaming (chunked mode). */
-    if (res->_headers_sent) {
-        return _write_chunk(res, data, len);
+    if (response->body_buf) {
+        int rc = 0;
+        if (response->body_buf_len > 0) {
+            rc = _http1_write_chunk(
+                writer, response->body_buf, response->body_buf_len);
+        }
+        free(response->body_buf);
+        response->body_buf     = NULL;
+        response->body_buf_len = 0;
+        if (rc != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int _http1_writer_write(
+    http_writer_t* writer,
+    const void*    data,
+    size_t         len) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
+        return -1;
+    }
+
+    if (writer->headers_sent) {
+        return _http1_write_chunk(writer, data, len);
     }
 
     /* First write: buffer it for potential Content-Length mode. */
-    if (!res->_body_buf) {
-        res->_body_buf = (uint8_t*)malloc(len);
-        if (!res->_body_buf) {
+    if (!response->body_buf) {
+        response->body_buf = (uint8_t*)malloc(len);
+        if (!response->body_buf) {
             return -1;
         }
-        memcpy(res->_body_buf, data, len);
-        res->_body_buf_len = len;
+        memcpy(response->body_buf, data, len);
+        response->body_buf_len = len;
         return 0;
     }
 
     /* Second write: switch to chunked mode. */
-    if (_flush_headers(res) != 0) {
+    if (_http1_writer_flush(writer) != 0) {
         return -1;
     }
+    return _http1_write_chunk(writer, data, len);
+}
 
-    /* Write buffered data as first chunk. */
-    if (res->_body_buf_len > 0) {
-        if (_write_chunk(res, res->_body_buf, res->_body_buf_len) != 0) {
-            free(res->_body_buf);
-            res->_body_buf = NULL;
-            res->_body_buf_len = 0;
-            return -1;
-        }
+static int _http1_emit_fixed_headers(http_writer_t* writer) {
+    int rc = _http1_emit_response_head(writer, NULL);
+    if (rc == 0) {
+        writer->headers_sent = true;
     }
-    free(res->_body_buf);
-    res->_body_buf = NULL;
-    res->_body_buf_len = 0;
-
-    /* Write current data. */
-    return _write_chunk(res, data, len);
+    return rc;
 }
 
-static int _emit_fixed_headers(http_res_t* res) {
-    return _emit_response_head(res, NULL);
-}
-
-void http_res_finalize(http_res_t* res) {
-    if (!res->_transport) {
-        return;
+static int _http1_writer_finish(http_writer_t* writer) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
+        return -1;
     }
 
     /* Single-write response: use Content-Length mode. */
-    if (!res->_headers_sent && res->_body_buf) {
+    if (!writer->headers_sent && response->body_buf) {
         char cl_str[24];
-        int cl_n = snprintf(cl_str, sizeof(cl_str), "%zu", res->_body_buf_len);
-        http_header_add(&res->headers, &res->header_count, &res->header_cap,
-                        "Content-Length", 14, cl_str, (size_t)cl_n);
-
-        _emit_fixed_headers(res);
-
-        if (res->_body_buf_len > 0) {
-            _transport_write(res->_transport, res->_body_buf,
-                             (int)res->_body_buf_len);
+        int cl_n = snprintf(
+            cl_str, sizeof(cl_str), "%zu", response->body_buf_len);
+        if (http_header_add(&writer->headers, &writer->header_count,
+                            &writer->header_cap, "Content-Length", 14,
+                            cl_str, (size_t)cl_n)
+            != 0) {
+            return -1;
         }
-        free(res->_body_buf);
-        res->_body_buf = NULL;
-        res->_body_buf_len = 0;
-        return;
+
+        if (_http1_emit_fixed_headers(writer) != 0) {
+            return -1;
+        }
+
+        if (response->body_buf_len > 0
+            && _transport_write_bytes(
+                   response->transport,
+                   response->body_buf,
+                   response->body_buf_len)
+                != 0) {
+            return -1;
+        }
+        free(response->body_buf);
+        response->body_buf     = NULL;
+        response->body_buf_len = 0;
+        return 0;
     }
 
     /* No-body response (status set but no write called). */
-    if (!res->_headers_sent && !res->_body_buf) {
-        http_header_add(&res->headers, &res->header_count, &res->header_cap,
-                        "Content-Length", 14, "0", 1);
-        _emit_fixed_headers(res);
-        return;
+    if (!writer->headers_sent && !response->body_buf) {
+        if (http_header_add(&writer->headers, &writer->header_count,
+                            &writer->header_cap, "Content-Length", 14,
+                            "0", 1)
+                != 0
+            || _http1_emit_fixed_headers(writer) != 0) {
+            return -1;
+        }
+        return 0;
     }
 
     /* Chunked mode: finalize with 0-chunk. */
-    if (!res->_headers_sent) {
-        _flush_headers(res);
-    }
-
-    _transport_write(res->_transport, "0\r\n\r\n", 5);
-}
-
-int http_res_hijack(http_res_t* res, void** transport) {
-    if (!res->_transport) {
+    if (!writer->headers_sent && _http1_writer_flush(writer) != 0) {
         return -1;
     }
-    if (res->_headers_sent) {
+
+    return _transport_write(response->transport, "0\r\n\r\n", 5);
+}
+
+static int _http1_writer_hijack(
+    http_writer_t* writer,
+    void**         transport) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
+        return -1;
+    }
+    if (writer->headers_sent) {
         return -1;
     }
 
@@ -379,40 +424,45 @@ int http_res_hijack(http_res_t* res, void** transport) {
      * the caller controls every byte from here on (status line, framing,
      * raw tunnel, etc.).
      */
-    *transport = res->_transport;
-    res->_transport = NULL;
-    res->_headers_sent = true;
+    *transport          = response->transport;
+    response->transport = NULL;
 
     return 0;
 }
 
-int http_res_upgrade(http_res_t* res, void** transport) {
-    if (!res->_transport) {
+static int _http1_writer_upgrade(
+    http_writer_t* writer,
+    void**         transport) {
+    http1_response_t* response = _http1_response(writer);
+    if (!response->transport) {
         return -1;
     }
-    if (res->_headers_sent) {
+    if (writer->headers_sent) {
         return -1;
     }
 
     const char* resp = "HTTP/1.1 101 Switching Protocols\r\n"
                        "Upgrade: websocket\r\n"
                        "Connection: Upgrade\r\n";
-    if (_transport_write_bytes(res->_transport, resp, strlen(resp)) != 0) {
+    if (_transport_write_bytes(response->transport, resp, strlen(resp)) != 0) {
         return -1;
     }
 
-    for (size_t i = 0; i < res->header_count; i++) {
-        const char* name  = res->headers[i].name;
-        const char* value = res->headers[i].value;
-        if (_transport_write_bytes(res->_transport, name, strlen(name)) != 0
-            || _transport_write_bytes(res->_transport, ": ", 2) != 0
-            || _transport_write_bytes(res->_transport, value, strlen(value)) != 0
-            || _transport_write_bytes(res->_transport, "\r\n", 2) != 0) {
+    for (size_t i = 0; i < writer->header_count; i++) {
+        const char* name  = writer->headers[i].name;
+        const char* value = writer->headers[i].value;
+        if (_transport_write_bytes(response->transport, name, strlen(name))
+                != 0
+            || _transport_write_bytes(response->transport, ": ", 2) != 0
+            || _transport_write_bytes(
+                   response->transport, value, strlen(value))
+                != 0
+            || _transport_write_bytes(response->transport, "\r\n", 2) != 0) {
             return -1;
         }
     }
 
-    if (_transport_write_bytes(res->_transport, "\r\n", 2) != 0) {
+    if (_transport_write_bytes(response->transport, "\r\n", 2) != 0) {
         return -1;
     }
 
@@ -420,8 +470,16 @@ int http_res_upgrade(http_res_t* res, void** transport) {
      * 101 + headers are on the wire; hand the live connection to the
      * caller via the shared detach primitive.
      */
-    return http_res_hijack(res, transport);
+    return _http1_writer_hijack(writer, transport);
 }
+
+const http_writer_ops_t http1_writer_ops = {
+    .write   = _http1_writer_write,
+    .flush   = _http1_writer_flush,
+    .finish  = _http1_writer_finish,
+    .upgrade = _http1_writer_upgrade,
+    .hijack  = _http1_writer_hijack,
+};
 
 static int _hdr_field_append(char** name, size_t* name_len, size_t* name_cap,
                              const char* at, size_t len) {
@@ -706,20 +764,30 @@ void http_srv_conn_coroutine(void* arg) {
                sizeof(ctx->remote_host));
         sp.req.remote_port = ctx->remote_port;
 
-        http_res_t res;
-        memset(&res, 0, sizeof(res));
-        res._transport = &ctx->transport;
-        res.status_code = 200;
+        http1_response_t response = {
+            .transport = &ctx->transport,
+        };
+        http_writer_t writer = {
+            .ops         = &http1_writer_ops,
+            .impl        = &response,
+            .status_code = 200,
+            .state       = HTTP_WRITER_OPEN,
+        };
 
         bool is_upgrade = llhttp_get_upgrade(&sp.parser) != 0;
 
         if (is_upgrade && ctx->srv->on_upgrade) {
-            ctx->srv->on_upgrade((xylem_http_res_t*)&res,
-                                 (xylem_http_req_t*)&sp.req,
+            ctx->srv->on_upgrade(&writer,
+                                 &sp.req,
                                  ctx->srv->upgrade_userdata);
-            http_headers_free(res.headers, res.header_count);
+            if (writer.state == HTTP_WRITER_OPEN
+                && http_writer_started(&writer)) {
+                http_writer_finish(&writer);
+            }
+            http_headers_free(writer.headers, writer.header_count);
+            free(response.body_buf);
             _srv_parser_destroy(&sp);
-            if (res._transport) {
+            if (response.transport) {
                 _transport_close(&ctx->transport);
             }
             free(readbuf);
@@ -728,14 +796,30 @@ void http_srv_conn_coroutine(void* arg) {
             return;
         }
 
-        ctx->srv->handler((xylem_http_res_t*)&res,
-                          (xylem_http_req_t*)&sp.req,
-                          ctx->srv->userdata);
+        if (ctx->srv->handler) {
+            ctx->srv->handler(&writer, &sp.req, ctx->srv->userdata);
+        } else {
+            xylem_http_writer_set_status(&writer, 404);
+            xylem_http_writer_write(&writer, "Not Found", 9);
+        }
 
-        http_res_finalize(&res);
-        free(res._body_buf); /* safety: in case finalize did not handle it */
+        if (writer.state == HTTP_WRITER_OPEN
+            && http_writer_finish(&writer) != 0) {
+            keep_alive = false;
+        } else if (writer.state == HTTP_WRITER_ABORTED) {
+            keep_alive = false;
+        }
 
-        http_headers_free(res.headers, res.header_count);
+        http_headers_free(writer.headers, writer.header_count);
+        free(response.body_buf);
+
+        if (!response.transport) {
+            _srv_parser_destroy(&sp);
+            free(readbuf);
+            free(ctx);
+            http_srv_unref(srv);
+            return;
+        }
 
         _srv_parser_reset(&sp);
     }
@@ -837,11 +921,7 @@ static void _cli_parser_destroy(_cli_parser_t* cp) {
     free(cp->cur_hdr_name);
 }
 
-/**
- * Frees an internally-allocated response (mirrors xylem_http_res_destroy
- * but operates on the engine's http_res_t, which is layout-compatible
- * with the public wrapper allocated here).
- */
+/* Frees a response before ownership reaches the caller. */
 static void _cli_res_destroy(http_res_t* res) {
     if (!res) {
         return;
@@ -972,196 +1052,202 @@ xylem_http_res_t* http_do_request(
 
     for (;;) {
 
-    http_transport_t transport;
-    if (!_http_acquire_conn(&parsed, opts, dial_fn, dial_ctx, &transport)) {
-        free(readbuf);
-        return NULL;
-    }
-
-    uint64_t deadline_ms = 0;
-    if (opts && opts->timeout_ms > 0) {
-        deadline_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)
-                      + opts->timeout_ms;
-    }
-    if (transport.set_rd_deadline) {
-        transport.set_rd_deadline(transport.conn, deadline_ms);
-    }
-    if (transport.set_wr_deadline) {
-        transport.set_wr_deadline(transport.conn, deadline_ms);
-    }
-
-    const xylem_http_hdr_t* custom_hdrs = headers;
-    size_t custom_hdr_count = header_count;
-
-    bool use_expect = cur_body_len > 0;
-
-    size_t req_len = 0;
-    char* req_buf = http_req_serialize(
-        cur_method, &parsed, cur_body, cur_body_len, cur_content_type,
-        use_expect, absolute_form, &req_len, custom_hdrs, custom_hdr_count);
-
-    if (!req_buf) {
-        _transport_close(&transport);
-        free(readbuf);
-        return NULL;
-    }
-
-    int wrc = _transport_write(&transport, req_buf, (int)req_len);
-    free(req_buf);
-    if (wrc != 0) {
-        _transport_close(&transport);
-        free(readbuf);
-        return NULL;
-    }
-
-    /* Expect/100-Continue: wait up to 1s for an interim response. */
-    if (use_expect) {
-        uint64_t expect_deadline =
-            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000;
-        if (transport.set_rd_deadline) {
-            transport.set_rd_deadline(transport.conn, expect_deadline);
+        http_transport_t transport;
+        if (!_http_acquire_conn(&parsed, opts, dial_fn, dial_ctx, &transport)) {
+            free(readbuf);
+            return NULL;
         }
 
-        http_res_t* interim = (http_res_t*)calloc(1, sizeof(*interim));
-        if (!interim) {
+        uint64_t deadline_ms = 0;
+        if (opts && opts->timeout_ms > 0) {
+            deadline_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) +
+                          opts->timeout_ms;
+        }
+        if (transport.set_rd_deadline) {
+            transport.set_rd_deadline(transport.conn, deadline_ms);
+        }
+        if (transport.set_wr_deadline) {
+            transport.set_wr_deadline(transport.conn, deadline_ms);
+        }
+
+        const xylem_http_hdr_t* custom_hdrs      = headers;
+        size_t                  custom_hdr_count = header_count;
+
+        bool use_expect = cur_body_len > 0;
+
+        size_t req_len = 0;
+        char*  req_buf = http_req_serialize(
+            cur_method,
+            &parsed,
+            cur_body,
+            cur_body_len,
+            cur_content_type,
+            use_expect,
+            absolute_form,
+            &req_len,
+            custom_hdrs,
+            custom_hdr_count);
+
+        if (!req_buf) {
             _transport_close(&transport);
             free(readbuf);
             return NULL;
         }
 
-        _cli_parser_t ecp;
-        _cli_parser_init(&ecp, interim);
-
-        bool got_response = false;
-        while (!ecp.complete) {
-            int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
-            if (n <= 0) {
-                /* Timeout or error -- send body anyway per RFC 7231. */
-                break;
-            }
-            llhttp_errno_t err =
-                llhttp_execute(&ecp.parser, readbuf, (size_t)n);
-            if (err == HPE_PAUSED) {
-                llhttp_resume(&ecp.parser);
-            } else if (err != HPE_OK) {
-                break;
-            }
-        }
-        got_response = ecp.complete;
-
-        if (got_response && interim->status_code != 100) {
-            /* Final error response (e.g. 413, 417) -- return it. */
-            bool ka = llhttp_should_keep_alive(&ecp.parser) != 0;
-            _cli_parser_destroy(&ecp);
-
-            if (ka) {
-                if (transport.set_rd_deadline) {
-                    transport.set_rd_deadline(transport.conn, 0);
-                }
-                if (transport.set_wr_deadline) {
-                    transport.set_wr_deadline(transport.conn, 0);
-                }
-                _pool_release(&parsed, &transport);
-            } else {
-                _transport_close(&transport);
-            }
-
-            free(readbuf);
-            return (xylem_http_res_t*)interim;
-        }
-
-        /* 100-Continue received OR timeout -- send body per RFC 7231. */
-        _cli_parser_destroy(&ecp);
-        _cli_res_destroy(interim);
-
-        if (transport.set_rd_deadline) {
-            transport.set_rd_deadline(transport.conn, deadline_ms);
-        }
-
-        wrc = _transport_write(&transport, cur_body, (int)cur_body_len);
+        int wrc = _transport_write(&transport, req_buf, (int)req_len);
+        free(req_buf);
         if (wrc != 0) {
             _transport_close(&transport);
             free(readbuf);
             return NULL;
         }
-    }
 
-    http_res_t* res = (http_res_t*)calloc(1, sizeof(*res));
-    if (!res) {
-        _transport_close(&transport);
-        free(readbuf);
-        return NULL;
-    }
+        /* Expect/100-Continue: wait up to 1s for an interim response. */
+        if (use_expect) {
+            uint64_t expect_deadline =
+                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000;
+            if (transport.set_rd_deadline) {
+                transport.set_rd_deadline(transport.conn, expect_deadline);
+            }
 
-    _cli_parser_t cp;
-    _cli_parser_init(&cp, res);
+            http_res_t* interim = (http_res_t*)calloc(1, sizeof(*interim));
+            if (!interim) {
+                _transport_close(&transport);
+                free(readbuf);
+                return NULL;
+            }
 
-    while (!cp.complete) {
-        int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
-        if (n <= 0) {
-            if (n == 0) {
-                llhttp_finish(&cp.parser);
-                if (cp.complete) {
+            _cli_parser_t ecp;
+            _cli_parser_init(&ecp, interim);
+
+            bool got_response = false;
+            while (!ecp.complete) {
+                int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
+                if (n <= 0) {
+                    /* Timeout or error -- send body anyway per RFC 7231. */
+                    break;
+                }
+                llhttp_errno_t err =
+                    llhttp_execute(&ecp.parser, readbuf, (size_t)n);
+                if (err == HPE_PAUSED) {
+                    llhttp_resume(&ecp.parser);
+                } else if (err != HPE_OK) {
                     break;
                 }
             }
-            _cli_parser_destroy(&cp);
-            _transport_close(&transport);
-            _cli_res_destroy(res);
-            free(readbuf);
-            return NULL;
-        }
+            got_response = ecp.complete;
 
-        llhttp_errno_t err = llhttp_execute(&cp.parser, readbuf, (size_t)n);
-        if (err == HPE_PAUSED) {
-            llhttp_resume(&cp.parser);
-        } else if (err != HPE_OK) {
-            _cli_parser_destroy(&cp);
-            _transport_close(&transport);
-            _cli_res_destroy(res);
-            free(readbuf);
-            return NULL;
-        }
-    }
+            if (got_response && interim->status_code != 100) {
+                /* Final error response (e.g. 413, 417) -- return it. */
+                bool ka = llhttp_should_keep_alive(&ecp.parser) != 0;
+                _cli_parser_destroy(&ecp);
 
-    bool keep_alive = llhttp_should_keep_alive(&cp.parser) != 0;
-    _cli_parser_destroy(&cp);
-
-    if (keep_alive) {
-        _pool_release(&parsed, &transport);
-    } else {
-        _transport_close(&transport);
-    }
-
-    int status = res->status_code;
-    if (redirects_left > 0 &&
-        (status == 301 || status == 302 || status == 303 ||
-         status == 307 || status == 308)) {
-
-        const char* location = http_header_find(res->headers,
-                                                res->header_count,
-                                                "Location");
-        if (location) {
-            http_url_t next_url;
-            if (_resolve_redirect_url(location, &parsed, &next_url) == 0) {
-                if (status != 307 && status != 308) {
-                    cur_method = "GET";
-                    cur_body = NULL;
-                    cur_body_len = 0;
-                    cur_content_type = NULL;
+                if (ka) {
+                    if (transport.set_rd_deadline) {
+                        transport.set_rd_deadline(transport.conn, 0);
+                    }
+                    if (transport.set_wr_deadline) {
+                        transport.set_wr_deadline(transport.conn, 0);
+                    }
+                    _pool_release(&parsed, &transport);
+                } else {
+                    _transport_close(&transport);
                 }
 
-                _cli_res_destroy(res);
-                parsed = next_url;
-                redirects_left--;
-                continue;
+                free(readbuf);
+                return interim;
+            }
+
+            /* 100-Continue received OR timeout -- send body per RFC 7231. */
+            _cli_parser_destroy(&ecp);
+            _cli_res_destroy(interim);
+
+            if (transport.set_rd_deadline) {
+                transport.set_rd_deadline(transport.conn, deadline_ms);
+            }
+
+            wrc = _transport_write(&transport, cur_body, (int)cur_body_len);
+            if (wrc != 0) {
+                _transport_close(&transport);
+                free(readbuf);
+                return NULL;
             }
         }
+
+        http_res_t* res = (http_res_t*)calloc(1, sizeof(*res));
+        if (!res) {
+            _transport_close(&transport);
+            free(readbuf);
+            return NULL;
+        }
+
+        _cli_parser_t cp;
+        _cli_parser_init(&cp, res);
+
+        while (!cp.complete) {
+            int n = _transport_read(&transport, readbuf, HTTP_IO_BUF_SIZE);
+            if (n <= 0) {
+                if (n == 0) {
+                    llhttp_finish(&cp.parser);
+                    if (cp.complete) {
+                        break;
+                    }
+                }
+                _cli_parser_destroy(&cp);
+                _transport_close(&transport);
+                _cli_res_destroy(res);
+                free(readbuf);
+                return NULL;
+            }
+
+            llhttp_errno_t err = llhttp_execute(&cp.parser, readbuf, (size_t)n);
+            if (err == HPE_PAUSED) {
+                llhttp_resume(&cp.parser);
+            } else if (err != HPE_OK) {
+                _cli_parser_destroy(&cp);
+                _transport_close(&transport);
+                _cli_res_destroy(res);
+                free(readbuf);
+                return NULL;
+            }
+        }
+
+        bool keep_alive = llhttp_should_keep_alive(&cp.parser) != 0;
+        _cli_parser_destroy(&cp);
+
+        if (keep_alive) {
+            _pool_release(&parsed, &transport);
+        } else {
+            _transport_close(&transport);
+        }
+
+        int status = res->status_code;
+        if (redirects_left > 0 &&
+            (status == 301 || status == 302 || status == 303 || status == 307 ||
+             status == 308)) {
+
+            const char* location =
+                http_header_find(res->headers, res->header_count, "Location");
+            if (location) {
+                http_url_t next_url;
+                if (_resolve_redirect_url(location, &parsed, &next_url) == 0) {
+                    if (status != 307 && status != 308) {
+                        cur_method       = "GET";
+                        cur_body         = NULL;
+                        cur_body_len     = 0;
+                        cur_content_type = NULL;
+                    }
+
+                    _cli_res_destroy(res);
+                    parsed = next_url;
+                    redirects_left--;
+                    continue;
+                }
+            }
+        }
+
+        _http_decompress_body(res);
+        free(readbuf);
+        return res;
     }
-
-    _http_decompress_body(res);
-    free(readbuf);
-    return (xylem_http_res_t*)res;
-
-    } /* for (;;) */
 }

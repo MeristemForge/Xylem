@@ -37,8 +37,8 @@ typedef struct _route_s {
 } _route_t;
 
 typedef struct _middleware_s {
-    xylem_http_handler_fn_t handler;
-    void*                   userdata;
+    xylem_http_middleware_fn_t handler;
+    void*                      userdata;
 } _middleware_t;
 
 struct xylem_http_router_s {
@@ -143,9 +143,9 @@ int xylem_http_router_handle(
 }
 
 int xylem_http_router_use(
-    xylem_http_router_t*    router,
-    xylem_http_handler_fn_t middleware,
-    void*                   userdata) {
+    xylem_http_router_t*       router,
+    xylem_http_middleware_fn_t middleware,
+    void*                      userdata) {
     if (!router || !middleware) {
         return -1;
     }
@@ -296,37 +296,43 @@ static void _free_params(http_router_param_t* params, size_t count) {
     }
 }
 
-typedef struct _mw_chain_s {
+struct xylem_http_next_s {
     _middleware_t*          middlewares;
-    size_t                  mw_count;
+    size_t                  middleware_count;
     size_t                  index;
     xylem_http_handler_fn_t handler;
     void*                   handler_userdata;
-} _mw_chain_t;
+    xylem_http_writer_t*    writer;
+    xylem_http_req_t*       req;
+    bool                    called;
+};
 
-void xylem_http_router_next(xylem_http_res_t* res, xylem_http_req_t* req_pub) {
-    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_router_next");
-
-    http_req_t* req = (http_req_t*)req_pub;
-    _mw_chain_t* chain = (_mw_chain_t*)req->_mw_chain;
-    if (!chain) {
+void xylem_http_next_run(xylem_http_next_t* next) {
+    if (!next || next->called) {
         return;
     }
-    if (chain->index < chain->mw_count) {
-        _middleware_t* mw = &chain->middlewares[chain->index++];
-        mw->handler(res, req_pub, mw->userdata);
-    } else if (chain->handler) {
-        chain->handler(res, req_pub, chain->handler_userdata);
+    RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_next_run");
+
+    next->called = true;
+    if (next->index < next->middleware_count) {
+        _middleware_t* middleware = &next->middlewares[next->index];
+        xylem_http_next_t child = *next;
+        child.index++;
+        child.called = false;
+        middleware->handler(
+            next->writer, next->req, &child, middleware->userdata);
+    } else if (next->handler) {
+        next->handler(next->writer, next->req, next->handler_userdata);
     }
 }
 
-static void _router_dispatch(xylem_http_res_t* res,
-                             xylem_http_req_t* req_pub,
-                             void* userdata) {
-    http_req_t* req = (http_req_t*)req_pub;
+static void _router_dispatch(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    void*                userdata) {
     xylem_http_router_t* router = (xylem_http_router_t*)userdata;
-    const char* method = xylem_http_req_method(req_pub);
-    const char* url    = xylem_http_req_url(req_pub);
+    const char* method = xylem_http_req_method(req);
+    const char* url    = xylem_http_req_url(req);
 
     /* match route */
     http_router_param_t params[ROUTER_MAX_PARAMS];
@@ -346,35 +352,30 @@ static void _router_dispatch(xylem_http_res_t* res,
         _free_params(params, param_count);
     }
 
-    /* build middleware chain: middlewares -> final handler */
-    _mw_chain_t chain;
-    chain.middlewares     = router->middlewares;
-    chain.mw_count       = router->mw_count;
-    chain.index          = 0;
+    xylem_http_next_t next = {
+        .middlewares      = router->middlewares,
+        .middleware_count = router->mw_count,
+        .writer           = writer,
+        .req              = req,
+    };
 
     if (matched) {
-        chain.handler          = matched->handler;
-        chain.handler_userdata = matched->userdata;
+        next.handler           = matched->handler;
+        next.handler_userdata  = matched->userdata;
         req->router_params      = params;
         req->router_param_count = param_count;
     } else {
-        chain.handler          = router->not_found_handler;
-        chain.handler_userdata = router->not_found_userdata;
+        next.handler          = router->not_found_handler;
+        next.handler_userdata = router->not_found_userdata;
     }
 
-    void* prev_chain = req->_mw_chain;
-    req->_mw_chain = &chain;
+    xylem_http_next_run(&next);
 
-    /* kick off the chain */
-    xylem_http_router_next(res, req_pub);
-
-    /* if no middleware/handler responded and no route matched, send default 404 */
-    if (!matched && !chain.handler && !((http_res_t*)res)->_headers_sent) {
-        xylem_http_res_set_status(res, 404);
-        xylem_http_res_write(res, "Not Found", 9);
+    if (!matched && !next.handler && !http_writer_started(writer)) {
+        xylem_http_writer_set_status(writer, 404);
+        xylem_http_writer_write(writer, "Not Found", 9);
     }
 
-    req->_mw_chain = prev_chain;
     if (matched) {
         req->router_params      = NULL;
         req->router_param_count = 0;

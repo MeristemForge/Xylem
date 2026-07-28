@@ -21,7 +21,7 @@
 
 _Pragma("once")
 
-#include "xylem/net/http/xylem-http.h"
+#include "xylem/net/http/xylem-http-router.h"
 
 #include <stdbool.h>
 
@@ -45,6 +45,8 @@ typedef struct {
  * Handles OPTIONS preflight (responds 204, short-circuits) and injects
  * Access-Control-* headers on normal requests before calling next.
  */
-extern void xylem_http_cors_middleware(xylem_http_res_t* res,
-                                      xylem_http_req_t* req,
-                                      void*             userdata);
+extern void xylem_http_cors_middleware(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    xylem_http_next_t*   next,
+    void*                userdata);

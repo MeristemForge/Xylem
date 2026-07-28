@@ -92,7 +92,35 @@ typedef struct http_router_param_s {
     char* value;
 } http_router_param_t;
 
-typedef struct http_req_s {
+typedef xylem_http_req_t http_req_t;
+typedef xylem_http_res_t http_res_t;
+typedef xylem_http_srv_t http_srv_t;
+typedef xylem_http_writer_t http_writer_t;
+
+typedef enum http_writer_state_e {
+    HTTP_WRITER_OPEN,
+    HTTP_WRITER_FINISHED,
+    HTTP_WRITER_HIJACKED,
+    HTTP_WRITER_ABORTED,
+} http_writer_state_t;
+
+typedef struct http_writer_ops_s {
+    int (*write)(http_writer_t* writer, const void* data, size_t len);
+    int (*flush)(http_writer_t* writer);
+    int (*finish)(http_writer_t* writer);
+    int (*upgrade)(http_writer_t* writer, void** transport);
+    int (*hijack)(http_writer_t* writer, void** transport);
+} http_writer_ops_t;
+
+typedef struct http1_response_s {
+    http_transport_t* transport;
+    uint8_t*          body_buf;
+    size_t            body_buf_len;
+} http1_response_t;
+
+extern const http_writer_ops_t http1_writer_ops;
+
+struct xylem_http_req_s {
     char              method[16];
     char*             url;
     size_t            url_len;
@@ -106,10 +134,9 @@ typedef struct http_req_s {
     uint16_t          remote_port;
     http_router_param_t* router_params;
     size_t               router_param_count;
-    void*                _mw_chain;
-} http_req_t;
+};
 
-typedef struct http_res_s {
+struct xylem_http_res_s {
     int            status_code;
     http_header_t* headers;
     size_t         header_count;
@@ -117,13 +144,21 @@ typedef struct http_res_s {
     uint8_t*       body;
     size_t         body_len;
     size_t         body_cap;
-    http_transport_t* _transport;
-    bool              _headers_sent;
-    uint8_t*       _body_buf;
-    size_t         _body_buf_len;
-} http_res_t;
+};
 
-typedef struct http_srv_s {
+struct xylem_http_writer_s {
+    const http_writer_ops_t* ops;
+    void*                    impl;
+    int                      status_code;
+    http_header_t*           headers;
+    size_t                   header_count;
+    size_t                   header_cap;
+    http_writer_state_t      state;
+    bool                     started;
+    bool                     headers_sent;
+};
+
+struct xylem_http_srv_s {
     void*                   listener;
     void                    (*close_listener)(void* listener);
     void                    (*destroy_listener)(void* listener);
@@ -140,7 +175,7 @@ typedef struct http_srv_s {
     uint64_t                write_timeout_ms;
     _Atomic int32_t         active_conns; /* refcount: owner + accept + conns */
     _Atomic bool            closing;
-} http_srv_t;
+};
 
 typedef struct http_srv_conn_ctx_s {
     http_srv_t*      srv;
@@ -152,47 +187,20 @@ typedef struct http_srv_conn_ctx_s {
 /* Protocol engine (http.c) */
 
 /**
- * @brief Write response body data (Content-Length or chunked).
+ * @brief Finalize a server response.
  *
- * @param res   Internal response.
- * @param data  Body bytes.
- * @param len   Number of bytes.
+ * @param writer  Response writer.
  *
  * @return 0 on success, -1 on error.
  */
-extern int http_res_write(http_res_t* res, const void* data, size_t len);
+extern int http_writer_finish(http_writer_t* writer);
 
 /**
- * @brief Finalize a response, emitting any buffered body and terminator.
+ * @brief Report whether a handler has started constructing a response.
  *
- * @param res  Internal response.
+ * @param writer  Response writer.
  */
-extern void http_res_finalize(http_res_t* res);
-
-/**
- * @brief Detach the underlying transport without writing any bytes.
- *
- * The engine relinquishes ownership of the connection and emits nothing;
- * the caller controls every subsequent byte (status line, framing, or a
- * raw tunnel). This is the shared primitive behind protocol upgrades and
- * CONNECT-style proxying.
- *
- * @param res        Internal response.
- * @param transport  Out: the detached transport handle (caller owns it).
- *
- * @return 0 on success, -1 on error.
- */
-extern int http_res_hijack(http_res_t* res, void** transport);
-
-/**
- * @brief Emit a 101 Switching Protocols response and detach the transport.
- *
- * @param res        Internal response.
- * @param transport  Out: the detached transport handle (caller owns it).
- *
- * @return 0 on success, -1 on error.
- */
-extern int http_res_upgrade(http_res_t* res, void** transport);
+extern bool http_writer_started(const http_writer_t* writer);
 
 /**
  * @brief Apply server options onto a freshly allocated server, filling

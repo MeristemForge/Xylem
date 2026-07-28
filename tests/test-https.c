@@ -37,31 +37,32 @@ static uint16_t _srv_port(xylem_http_srv_t* srv) {
     return port;
 }
 
-static void _hello_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _hello_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                            void* userdata) {
     (void)req;
     (void)userdata;
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "text/plain");
-    xylem_http_res_write(res, "hello", 5);
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
+    xylem_http_writer_write(writer, "hello", 5);
 }
 
-static void _echo_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _echo_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                           void* userdata) {
     (void)userdata;
     const void* body = xylem_http_req_body(req);
     size_t      len  = xylem_http_req_body_len(req);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "application/octet-stream");
-    xylem_http_res_write(res, body, len);
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(
+        writer, "Content-Type", "application/octet-stream");
+    xylem_http_writer_write(writer, body, len);
 }
 
-static void _path_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _path_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                           void* userdata) {
     (void)userdata;
     const char* url = xylem_http_req_url(req);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_write(res, url, strlen(url));
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_write(writer, url, strlen(url));
 }
 
 static xylem_http_srv_t* _listen_tls(xylem_http_handler_fn_t handler) {

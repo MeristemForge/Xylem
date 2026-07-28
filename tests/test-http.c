@@ -30,7 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef void (*_handler_t)(xylem_http_res_t*, xylem_http_req_t*, void*);
+typedef void (*_handler_t)(xylem_http_writer_t*, xylem_http_req_t*, void*);
 typedef void (*_body_t)(uint16_t port);
 
 typedef struct {
@@ -179,16 +179,16 @@ static void test_req_accessors_null(void) {
     ASSERT(xylem_http_req_body_len(NULL) == 0);
 }
 
-static void test_res_set_status_null(void) {
-    ASSERT(xylem_http_res_set_status(NULL, 200) == -1);
+static void test_writer_set_status_null(void) {
+    ASSERT(xylem_http_writer_set_status(NULL, 200) == -1);
 }
 
-static void test_res_set_header_null(void) {
-    ASSERT(xylem_http_res_set_header(NULL, "X-Foo", "bar") == -1);
+static void test_writer_set_header_null(void) {
+    ASSERT(xylem_http_writer_set_header(NULL, "X-Foo", "bar") == -1);
 }
 
-static void test_res_write_null(void) {
-    ASSERT(xylem_http_res_write(NULL, "data", 4) == -1);
+static void test_writer_write_null(void) {
+    ASSERT(xylem_http_writer_write(NULL, "data", 4) == -1);
 }
 
 static void test_upgrade_long_header(void) {
@@ -204,37 +204,43 @@ static void test_upgrade_long_header(void) {
         .write = _upgrade_write,
         .close = _upgrade_close,
     };
-    http_res_t res = {
-        ._transport = &transport,
+    http1_response_t response = {
+        .transport = &transport,
+    };
+    http_writer_t writer = {
+        .ops         = &http1_writer_ops,
+        .impl        = &response,
+        .status_code = 200,
+        .state       = HTTP_WRITER_OPEN,
     };
     char value[509];
     memset(value, 'a', sizeof(value) - 1);
     value[sizeof(value) - 1] = '\0';
 
-    ASSERT(http_header_add(&res.headers, &res.header_count,
-                           &res.header_cap, "X-Long", 6,
+    ASSERT(http_header_add(&writer.headers, &writer.header_count,
+                           &writer.header_cap, "X-Long", 6,
                            value, strlen(value)) == 0);
 
     void* detached = NULL;
-    ASSERT(http_res_upgrade(&res, &detached) == 0);
+    ASSERT(xylem_http_writer_upgrade(&writer, &detached) == 0);
     ASSERT(detached == &transport);
-    ASSERT(res._transport == NULL);
+    ASSERT(response.transport == NULL);
     ASSERT(!fake.oversized_write);
     ASSERT(strstr(out, "X-Long: ") != NULL);
     ASSERT(strstr(out, value) != NULL);
     ASSERT(strstr(out, "\r\n\r\n") != NULL);
     ASSERT(!fake.closed);
 
-    http_headers_free(res.headers, res.header_count);
+    http_headers_free(writer.headers, writer.header_count);
 }
 
-static void _hello_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _hello_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                            void* userdata) {
     (void)req;
     (void)userdata;
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "text/plain");
-    xylem_http_res_write(res, "hello", 5);
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
+    xylem_http_writer_write(writer, "hello", 5);
 }
 
 static void _integration_body(uint16_t port) {
@@ -258,13 +264,13 @@ static void test_http_integration(void) {
     _serve(_hello_handler, NULL, _integration_body);
 }
 
-static void _pool_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _pool_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                           void* userdata) {
     (void)userdata;
     const char* url = xylem_http_req_url(req);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "text/plain");
-    xylem_http_res_write(res, url, strlen(url));
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
+    xylem_http_writer_write(writer, url, strlen(url));
 }
 
 static void _pool_body(uint16_t port) {
@@ -290,37 +296,39 @@ static void test_pool_reuse(void) {
     _serve(_pool_handler, NULL, _pool_body);
 }
 
-static void _test_redirect_handler(xylem_http_res_t* res, xylem_http_req_t* req,
-                                   void* ud) {
+static void _test_redirect_handler(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    void*                ud) {
     (void)ud;
     const char* url = xylem_http_req_url(req);
 
     if (strcmp(url, "/old") == 0) {
-        xylem_http_res_set_status(res, 301);
-        xylem_http_res_set_header(res, "Location", "/new");
-        xylem_http_res_write(res, "", 0);
+        xylem_http_writer_set_status(writer, 301);
+        xylem_http_writer_set_header(writer, "Location", "/new");
+        xylem_http_writer_write(writer, "", 0);
     } else if (strcmp(url, "/new") == 0) {
-        xylem_http_res_write(res, "arrived", 7);
+        xylem_http_writer_write(writer, "arrived", 7);
     } else if (strcmp(url, "/chain1") == 0) {
-        xylem_http_res_set_status(res, 302);
-        xylem_http_res_set_header(res, "Location", "/chain2");
-        xylem_http_res_write(res, "", 0);
+        xylem_http_writer_set_status(writer, 302);
+        xylem_http_writer_set_header(writer, "Location", "/chain2");
+        xylem_http_writer_write(writer, "", 0);
     } else if (strcmp(url, "/chain2") == 0) {
-        xylem_http_res_set_status(res, 302);
-        xylem_http_res_set_header(res, "Location", "/chain3");
-        xylem_http_res_write(res, "", 0);
+        xylem_http_writer_set_status(writer, 302);
+        xylem_http_writer_set_header(writer, "Location", "/chain3");
+        xylem_http_writer_write(writer, "", 0);
     } else if (strcmp(url, "/chain3") == 0) {
-        xylem_http_res_write(res, "end", 3);
+        xylem_http_writer_write(writer, "end", 3);
     } else if (strcmp(url, "/see-other") == 0) {
-        xylem_http_res_set_status(res, 303);
-        xylem_http_res_set_header(res, "Location", "/get-only");
-        xylem_http_res_write(res, "", 0);
+        xylem_http_writer_set_status(writer, 303);
+        xylem_http_writer_set_header(writer, "Location", "/get-only");
+        xylem_http_writer_write(writer, "", 0);
     } else if (strcmp(url, "/get-only") == 0) {
         const char* method = xylem_http_req_method(req);
-        xylem_http_res_write(res, method, strlen(method));
+        xylem_http_writer_write(writer, method, strlen(method));
     } else {
-        xylem_http_res_set_status(res, 404);
-        xylem_http_res_write(res, "not found", 9);
+        xylem_http_writer_set_status(writer, 404);
+        xylem_http_writer_write(writer, "not found", 9);
     }
 }
 
@@ -374,25 +382,25 @@ static void test_redirect_following(void) {
     _serve(_test_redirect_handler, NULL, _redirect_body);
 }
 
-static void _auth_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _auth_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                           void* ud) {
     (void)ud;
     const char* auth = xylem_http_req_header(req, "Authorization");
     if (!auth) {
-        xylem_http_res_set_status(res, 401);
-        xylem_http_res_write(res, "unauthorized", 12);
+        xylem_http_writer_set_status(writer, 401);
+        xylem_http_writer_write(writer, "unauthorized", 12);
         return;
     }
 
     if (strncmp(auth, "Basic ", 6) != 0) {
-        xylem_http_res_set_status(res, 401);
-        xylem_http_res_write(res, "bad scheme", 10);
+        xylem_http_writer_set_status(writer, 401);
+        xylem_http_writer_write(writer, "bad scheme", 10);
         return;
     }
 
     const char* b64 = auth + 6;
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_write(res, b64, strlen(b64));
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_write(writer, b64, strlen(b64));
 }
 
 static void _auth_body(uint16_t port) {
@@ -425,15 +433,15 @@ static void test_basic_auth(void) {
     _serve(_auth_handler, NULL, _auth_body);
 }
 
-static void _expect_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _expect_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                             void* userdata) {
     (void)userdata;
     size_t blen = xylem_http_req_body_len(req);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "text/plain");
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
     char buf[32];
     int  n = snprintf(buf, sizeof(buf), "%zu", blen);
-    xylem_http_res_write(res, buf, (size_t)n);
+    xylem_http_writer_write(writer, buf, (size_t)n);
 }
 
 static void _expect_body(uint16_t port) {
@@ -474,13 +482,13 @@ static void test_content_length_mode(void) {
     _serve(_hello_handler, NULL, _content_length_body);
 }
 
-static void _proxy_handler(xylem_http_res_t* res, xylem_http_req_t* req,
+static void _proxy_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
                            void* userdata) {
     (void)userdata;
     const char* url = xylem_http_req_url(req);
-    xylem_http_res_set_status(res, 200);
-    xylem_http_res_set_header(res, "Content-Type", "text/plain");
-    xylem_http_res_write(res, url, strlen(url));
+    xylem_http_writer_set_status(writer, 200);
+    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
+    xylem_http_writer_write(writer, url, strlen(url));
 }
 
 static void _proxy_body(uint16_t port) {
@@ -520,9 +528,9 @@ static void _test_run_all(void* arg) {
     test_res_destroy_null();
     test_res_accessors_null();
     test_req_accessors_null();
-    test_res_set_status_null();
-    test_res_set_header_null();
-    test_res_write_null();
+    test_writer_set_status_null();
+    test_writer_set_header_null();
+    test_writer_write_null();
     test_upgrade_long_header();
 
     test_http_integration();

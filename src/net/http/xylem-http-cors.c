@@ -57,86 +57,89 @@ static void _join(const char** list, const char* fallback,
     }
 }
 
-static void _set_common_headers(xylem_http_res_t* res,
+static void _set_common_headers(xylem_http_writer_t* writer,
                                 const xylem_http_cors_t* cfg,
                                 const char* origin) {
     if (cfg->allowed_origins && cfg->allowed_origins[0] &&
         strcmp(cfg->allowed_origins[0], "*") == 0 && !cfg->allow_credentials) {
-        xylem_http_res_set_header(res, "Access-Control-Allow-Origin", "*");
+        xylem_http_writer_set_header(
+            writer, "Access-Control-Allow-Origin", "*");
     } else {
-        xylem_http_res_set_header(res, "Access-Control-Allow-Origin", origin);
-        xylem_http_res_set_header(res, "Vary", "Origin");
+        xylem_http_writer_set_header(
+            writer, "Access-Control-Allow-Origin", origin);
+        xylem_http_writer_set_header(writer, "Vary", "Origin");
     }
 
     if (cfg->allow_credentials) {
-        xylem_http_res_set_header(
-            res, "Access-Control-Allow-Credentials", "true");
+        xylem_http_writer_set_header(
+            writer, "Access-Control-Allow-Credentials", "true");
     }
 
     if (cfg->exposed_headers) {
         char buf[1024];
         _join(cfg->exposed_headers, "", buf, sizeof(buf));
         if (buf[0]) {
-            xylem_http_res_set_header(
-                res, "Access-Control-Expose-Headers", buf);
+            xylem_http_writer_set_header(
+                writer, "Access-Control-Expose-Headers", buf);
         }
     }
 }
 
-void xylem_http_cors_middleware(xylem_http_res_t* res,
-                               xylem_http_req_t* req,
-                               void*             userdata) {
+void xylem_http_cors_middleware(
+    xylem_http_writer_t* writer,
+    xylem_http_req_t*    req,
+    xylem_http_next_t*   next,
+    void*                userdata) {
     RUNTIME_REQUIRE_COROUTINE("http", "xylem_http_cors_middleware");
 
     const xylem_http_cors_t* cfg = (const xylem_http_cors_t*)userdata;
     const char* origin = xylem_http_req_header(req, "Origin");
 
     if (!origin || !origin[0]) {
-        xylem_http_router_next(res, req);
+        xylem_http_next_run(next);
         return;
     }
 
     if (!_origin_allowed(cfg, origin)) {
-        xylem_http_router_next(res, req);
+        xylem_http_next_run(next);
         return;
     }
 
     const char* method = xylem_http_req_method(req);
     if (strcmp(method, "OPTIONS") == 0) {
         /* preflight */
-        _set_common_headers(res, cfg, origin);
+        _set_common_headers(writer, cfg, origin);
 
         char buf[1024];
         _join(cfg->allowed_methods, _default_methods, buf, sizeof(buf));
-        xylem_http_res_set_header(
-            res, "Access-Control-Allow-Methods", buf);
+        xylem_http_writer_set_header(
+            writer, "Access-Control-Allow-Methods", buf);
 
         const char* req_headers =
             xylem_http_req_header(req, "Access-Control-Request-Headers");
         if (cfg->allowed_headers) {
             _join(cfg->allowed_headers, "", buf, sizeof(buf));
-            xylem_http_res_set_header(
-                res, "Access-Control-Allow-Headers", buf);
+            xylem_http_writer_set_header(
+                writer, "Access-Control-Allow-Headers", buf);
         } else if (req_headers) {
             /* reflect requested headers */
-            xylem_http_res_set_header(
-                res, "Access-Control-Allow-Headers", req_headers);
+            xylem_http_writer_set_header(
+                writer, "Access-Control-Allow-Headers", req_headers);
         }
 
         if (cfg->max_age > 0) {
             char age_buf[16];
             snprintf(age_buf, sizeof(age_buf), "%d", cfg->max_age);
-            xylem_http_res_set_header(
-                res, "Access-Control-Max-Age", age_buf);
+            xylem_http_writer_set_header(
+                writer, "Access-Control-Max-Age", age_buf);
         }
 
-        xylem_http_res_set_status(res, 204);
-        xylem_http_res_write(res, NULL, 0);
+        xylem_http_writer_set_status(writer, 204);
         /* no next() -- short-circuit */
         return;
     }
 
     /* normal cross-origin request */
-    _set_common_headers(res, cfg, origin);
-    xylem_http_router_next(res, req);
+    _set_common_headers(writer, cfg, origin);
+    xylem_http_next_run(next);
 }

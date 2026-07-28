@@ -523,10 +523,11 @@ int xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
 }
 
 
-xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
-                                 struct xylem_http_req_s* req,
-                                 const xylem_ws_opts_t* opts) {
-    if (!res || !req) {
+xylem_ws_conn_t* ws_accept_impl(
+    xylem_http_writer_t*   writer,
+    xylem_http_req_t*      req,
+    const xylem_ws_opts_t* opts) {
+    if (!writer || !req) {
         return NULL;
     }
 
@@ -541,7 +542,8 @@ xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
         return NULL;
     }
 
-    xylem_http_res_set_header(res, "Sec-WebSocket-Accept", accept_val);
+    xylem_http_writer_set_header(
+        writer, "Sec-WebSocket-Accept", accept_val);
 
     /* Negotiate permessage-deflate if server opts request it. */
     bool             deflate_agreed = false;
@@ -558,14 +560,15 @@ xylem_ws_conn_t* ws_accept_impl(struct xylem_http_res_s* res,
             char ext_resp[128];
             if (ws_deflate_build_server_accept(&deflate_offer, ext_resp,
                                                sizeof(ext_resp)) == 0) {
-                xylem_http_res_set_header(res, "Sec-WebSocket-Extensions", ext_resp);
+                xylem_http_writer_set_header(
+                    writer, "Sec-WebSocket-Extensions", ext_resp);
                 deflate_agreed = true;
             }
         }
     }
 
     void* transport_ptr = NULL;
-    if (xylem_http_res_upgrade(res, &transport_ptr) != 0) {
+    if (xylem_http_writer_upgrade(writer, &transport_ptr) != 0) {
         return NULL;
     }
 
