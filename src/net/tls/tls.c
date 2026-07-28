@@ -23,13 +23,17 @@
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
+#include "xylem/sync/xylem-channel.h"
 #include "xylem/sync/xylem-mutex.h"
 
+#include "container/rbtree.h"
 #include "net/addr.h"
+#include "net/datagram.h"
 #include "net/stream.h"
 #include "net/tls/tls-backend.h"
 #include "platform/platform-socket.h"
 #include "runtime/runtime.h"
+#include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -55,6 +59,75 @@
 #define DTLS_INBOX_CAP           64
 #define DTLS_DEFAULT_MTU         1500
 #define DTLS_DGRAM_POOL_CAP      1024
+
+typedef struct _dtls_dgram_s _dtls_dgram_t;
+
+struct xylem_tls_ctx_s {
+    tls_backend_ctx_t* be;
+    bool               verify_server;
+    bool               verify_client;
+};
+
+struct xylem_tls_conn_s {
+    tls_backend_conn_t* be;
+    xylem_mutex_t*      ssl_mu;
+    xylem_mutex_t*      rd_mu;
+    xylem_mutex_t*      wr_mu;
+    xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
+    stream_t*           stream;
+    tls_ctx_t*          ctx;
+    char                alpn[256];
+    _Atomic uint64_t    rd_deadline;
+    _Atomic uint64_t    wr_deadline;
+    _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
+    _Atomic bool        closed;
+};
+
+struct xylem_tls_listener_s {
+    listener_t*  listener;
+    tls_ctx_t*   ctx;
+    _Atomic bool closed;
+};
+
+struct xylem_dtls_conn_s {
+    tls_backend_conn_t* be;
+    addr_t              peer_addr;
+    char                alpn[256];
+    _Atomic bool        closed;
+    _Atomic bool        closing;
+    _Atomic int32_t     refcnt;
+    bool                handshake_done;
+    _dtls_dgram_t*      pending_dgram;
+    datagram_t*         datagram;
+    xylem_mutex_t*      ssl_mu;
+    xylem_mutex_t*      rd_mu;
+    xylem_mutex_t*      wr_mu;
+    xylem_channel_t*    inbox;
+    _Atomic int32_t     inbox_len;
+    scheduler_timer_t*  handshake_timer;
+    dtls_listener_t*    listener;
+    rbtree_node_t       server_node;
+    bool                in_sessions;
+    uint64_t            rd_deadline_ms;
+    uint64_t            wr_deadline_ms;
+};
+
+struct xylem_dtls_listener_s {
+    datagram_t*        datagram;
+    tls_ctx_t*         ctx;
+    xylem_dtls_opts_t  opts;
+    rbtree_t           sessions;
+    xylem_mutex_t*     sessions_mu;
+    xylem_mutex_t*     write_mu;
+    xylem_mutex_t*     dgram_pool_mu;
+    scheduler_t*       sched;
+    _dtls_dgram_t*     dgram_pool;
+    size_t             dgram_pool_len;
+    size_t             dgram_bufsz;
+    xylem_channel_t*   accept_ch;
+    _Atomic bool       closed;
+    _Atomic int32_t    refcnt;
+};
 
 /**
  * Effective datagram receive buffer size. The backend sizes DTLS records

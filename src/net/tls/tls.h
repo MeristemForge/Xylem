@@ -36,100 +36,18 @@ _Pragma("once")
 
 #include "xylem/net/xylem-dtls.h"
 #include "xylem/net/xylem-tls.h"
-#include "xylem/sync/xylem-channel.h"
-#include "xylem/sync/xylem-mutex.h"
 
-#include "container/rbtree.h"
-#include "net/addr.h"
-#include "net/datagram.h"
-#include "net/stream.h"
-#include "net/tls/tls-backend.h"
-#include "runtime/scheduler.h"
+#include "platform/platform-socket.h"
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-/**
- * The public headers declare opaque TLS/DTLS handles. Each public shim
- * wraps the corresponding concrete internal type as its first member.
- * The option structs are transparent value types used directly by the
- * engines.
- */
-typedef struct tls_ctx_s       tls_ctx_t;
-typedef struct tls_conn_s      tls_conn_t;
-typedef struct tls_listener_s  tls_listener_t;
-typedef struct dtls_conn_s     dtls_conn_t;
-typedef struct dtls_listener_s dtls_listener_t;
-typedef struct _dtls_dgram_s   _dtls_dgram_t;
-
-struct tls_ctx_s {
-    tls_backend_ctx_t* be;
-    bool               verify_server;
-    bool               verify_client;
-};
-
-struct tls_conn_s {
-    tls_backend_conn_t* be;
-    xylem_mutex_t*      ssl_mu;
-    xylem_mutex_t*      rd_mu;
-    xylem_mutex_t*      wr_mu;
-    xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
-    stream_t*           stream;
-    tls_ctx_t*          ctx;
-    char                alpn[256];
-    _Atomic uint64_t    rd_deadline;
-    _Atomic uint64_t    wr_deadline;
-    _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
-    _Atomic bool        closed;
-};
-
-struct tls_listener_s {
-    listener_t*  listener;
-    tls_ctx_t*   ctx;
-    _Atomic bool closed;
-};
-
-struct dtls_conn_s {
-    tls_backend_conn_t*  be;
-    addr_t               peer_addr;
-    char                 alpn[256];
-    _Atomic bool         closed;
-    _Atomic bool         closing;
-    _Atomic int32_t      refcnt;
-    bool                 handshake_done;
-    _dtls_dgram_t*       pending_dgram;
-    datagram_t*          datagram;
-    xylem_mutex_t*       ssl_mu;
-    xylem_mutex_t*       rd_mu;
-    xylem_mutex_t*       wr_mu;
-    xylem_channel_t*     inbox;
-    _Atomic int32_t      inbox_len;
-    scheduler_timer_t*   handshake_timer;
-    dtls_listener_t*     listener;
-    rbtree_node_t        server_node;
-    bool                 in_sessions;
-    uint64_t             rd_deadline_ms;
-    uint64_t             wr_deadline_ms;
-};
-
-struct dtls_listener_s {
-    datagram_t*        datagram;
-    tls_ctx_t*         ctx;
-    xylem_dtls_opts_t  opts;
-    rbtree_t           sessions;
-    xylem_mutex_t*     sessions_mu;
-    xylem_mutex_t*     write_mu;
-    xylem_mutex_t*     dgram_pool_mu;
-    scheduler_t*       sched;
-    _dtls_dgram_t*     dgram_pool;
-    size_t             dgram_pool_len;
-    size_t             dgram_bufsz;
-    xylem_channel_t*   accept_ch;
-    _Atomic bool       closed;
-    _Atomic int32_t    refcnt;
-};
+typedef xylem_tls_ctx_t       tls_ctx_t;
+typedef xylem_tls_conn_t      tls_conn_t;
+typedef xylem_tls_listener_t  tls_listener_t;
+typedef xylem_dtls_conn_t     dtls_conn_t;
+typedef xylem_dtls_listener_t dtls_listener_t;
 
 /**
  * @brief Create a TLS engine context.

@@ -22,10 +22,9 @@
 /**
  * DTLS public API surface.
  *
- * Thin opaque-handle shim over the internal DTLS engine in tls.c. Each
- * public handle wraps the engine's concrete struct as its sole, offset-0
- * member, so C first-member address equivalence permits direct casts
- * between the public and internal handles.
+ * Thin opaque-handle shim over the internal DTLS engine in tls.c. DTLS
+ * connections and listeners use the public opaque types directly. The
+ * context converts to the shared TLS/DTLS engine context at the boundary.
  */
 
 #include "xylem/net/xylem-dtls.h"
@@ -34,33 +33,10 @@
 
 #include "runtime/precond.h"
 
-#include <stddef.h>
-
-struct xylem_dtls_ctx_s {
-    tls_ctx_t internal;
-};
-
-struct xylem_dtls_conn_s {
-    dtls_conn_t internal;
-};
-
-struct xylem_dtls_listener_s {
-    dtls_listener_t internal;
-};
-
-_Static_assert(offsetof(struct xylem_dtls_ctx_s, internal) == 0,
-               "tls_ctx_t must remain the first member of xylem_dtls_ctx_s");
-_Static_assert(offsetof(struct xylem_dtls_conn_s, internal) == 0,
-               "dtls_conn_t must remain the first member of "
-               "xylem_dtls_conn_s");
-_Static_assert(offsetof(struct xylem_dtls_listener_s, internal) == 0,
-               "dtls_listener_t must remain the first member of "
-               "xylem_dtls_listener_s");
-
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_create");
 
-    return (xylem_dtls_ctx_t*)dtls_ctx_create();
+    return (xylem_dtls_ctx_t*)(void*)dtls_ctx_create();
 }
 
 void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
@@ -69,7 +45,7 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_destroy");
 
-    tls_ctx_destroy(&ctx->internal);
+    tls_ctx_destroy((tls_ctx_t*)(void*)ctx);
 }
 
 int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
@@ -78,7 +54,7 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_keylog");
 
-    return tls_ctx_set_keylog(&ctx->internal, path);
+    return tls_ctx_set_keylog((tls_ctx_t*)(void*)ctx, path);
 }
 
 int xylem_dtls_ctx_load_cert(
@@ -88,7 +64,7 @@ int xylem_dtls_ctx_load_cert(
     const char*       key) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert");
 
-    return tls_ctx_load_cert(&ctx->internal, hostname, cert, key);
+    return tls_ctx_load_cert((tls_ctx_t*)(void*)ctx, hostname, cert, key);
 }
 
 int xylem_dtls_ctx_load_cert_mem(
@@ -103,14 +79,14 @@ int xylem_dtls_ctx_load_cert_mem(
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert_mem");
 
-    return tls_ctx_load_cert_mem(&ctx->internal, hostname, cert_pem, cert_len,
-                                 key_pem, key_len);
+    return tls_ctx_load_cert_mem((tls_ctx_t*)(void*)ctx, hostname, cert_pem,
+                                 cert_len, key_pem, key_len);
 }
 
 int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_ca");
 
-    return tls_ctx_load_ca(&ctx->internal, ca_file);
+    return tls_ctx_load_ca((tls_ctx_t*)(void*)ctx, ca_file);
 }
 
 int xylem_dtls_ctx_load_system_ca(
@@ -118,19 +94,20 @@ int xylem_dtls_ctx_load_system_ca(
     const char*       fallback_ca_file) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_system_ca");
 
-    return tls_ctx_load_system_ca(&ctx->internal, fallback_ca_file);
+    return tls_ctx_load_system_ca(
+        (tls_ctx_t*)(void*)ctx, fallback_ca_file);
 }
 
 void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_server");
 
-    tls_ctx_verify_server(&ctx->internal, enable);
+    tls_ctx_verify_server((tls_ctx_t*)(void*)ctx, enable);
 }
 
 void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_client");
 
-    tls_ctx_verify_client(&ctx->internal, enable);
+    tls_ctx_verify_client((tls_ctx_t*)(void*)ctx, enable);
 }
 
 int xylem_dtls_ctx_set_alpn(
@@ -139,7 +116,7 @@ int xylem_dtls_ctx_set_alpn(
     size_t            count) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_alpn");
 
-    return tls_ctx_set_alpn(&ctx->internal, protocols, count);
+    return tls_ctx_set_alpn((tls_ctx_t*)(void*)ctx, protocols, count);
 }
 
 xylem_dtls_conn_t* xylem_dtls_dial(
@@ -149,8 +126,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_dial");
 
-    return (xylem_dtls_conn_t*)dtls_dial(
-        host, port, &ctx->internal, opts);
+    return dtls_dial(host, port, (tls_ctx_t*)(void*)ctx, opts);
 }
 
 xylem_dtls_listener_t* xylem_dtls_listen(
@@ -160,14 +136,13 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listen");
 
-    return (xylem_dtls_listener_t*)dtls_listen(
-        host, port, &ctx->internal, opts);
+    return dtls_listen(host, port, (tls_ctx_t*)(void*)ctx, opts);
 }
 
 xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_accept");
 
-    return (xylem_dtls_conn_t*)dtls_accept(&ln->internal);
+    return dtls_accept(ln);
 }
 
 int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
@@ -176,7 +151,7 @@ int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
     if (!buf || len <= 0) {
         return -1;
     }
-    return dtls_read(&dtls->internal, buf, len);
+    return dtls_read(dtls, buf, len);
 }
 
 int xylem_dtls_write(
@@ -194,13 +169,13 @@ int xylem_dtls_write(
     if (!data) {
         return -1;
     }
-    return dtls_write(&dtls->internal, data, len);
+    return dtls_write(dtls, data, len);
 }
 
 void xylem_dtls_close(xylem_dtls_conn_t* dtls) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_close");
 
-    dtls_close(&dtls->internal);
+    dtls_close(dtls);
 }
 
 void xylem_dtls_destroy(xylem_dtls_conn_t* dtls) {
@@ -209,13 +184,13 @@ void xylem_dtls_destroy(xylem_dtls_conn_t* dtls) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_destroy");
 
-    dtls_destroy(&dtls->internal);
+    dtls_destroy(dtls);
 }
 
 void xylem_dtls_close_listener(xylem_dtls_listener_t* ln) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_close_listener");
 
-    dtls_close_listener(&ln->internal);
+    dtls_close_listener(ln);
 }
 
 void xylem_dtls_destroy_listener(xylem_dtls_listener_t* ln) {
@@ -224,7 +199,7 @@ void xylem_dtls_destroy_listener(xylem_dtls_listener_t* ln) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_destroy_listener");
 
-    dtls_destroy_listener(&ln->internal);
+    dtls_destroy_listener(ln);
 }
 
 void xylem_dtls_set_read_deadline(
@@ -232,7 +207,7 @@ void xylem_dtls_set_read_deadline(
     uint64_t           deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_set_read_deadline");
 
-    dtls_set_read_deadline(&dtls->internal, deadline_ms);
+    dtls_set_read_deadline(dtls, deadline_ms);
 }
 
 void xylem_dtls_set_write_deadline(
@@ -240,13 +215,13 @@ void xylem_dtls_set_write_deadline(
     uint64_t           deadline_ms) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_set_write_deadline");
 
-    dtls_set_write_deadline(&dtls->internal, deadline_ms);
+    dtls_set_write_deadline(dtls, deadline_ms);
 }
 
 const char* xylem_dtls_get_alpn(xylem_dtls_conn_t* dtls) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_get_alpn");
 
-    return dtls_get_alpn(&dtls->internal);
+    return dtls_get_alpn(dtls);
 }
 
 int xylem_dtls_remote_addr(
@@ -256,7 +231,7 @@ int xylem_dtls_remote_addr(
     uint16_t*          port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_remote_addr");
 
-    return dtls_remote_addr(&dtls->internal, host, host_len, port);
+    return dtls_remote_addr(dtls, host, host_len, port);
 }
 
 int xylem_dtls_local_addr(
@@ -266,7 +241,7 @@ int xylem_dtls_local_addr(
     uint16_t*          port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_local_addr");
 
-    return dtls_local_addr(&dtls->internal, host, host_len, port);
+    return dtls_local_addr(dtls, host, host_len, port);
 }
 
 int xylem_dtls_listener_addr(
@@ -276,5 +251,5 @@ int xylem_dtls_listener_addr(
     uint16_t*              port) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listener_addr");
 
-    return dtls_listener_addr(&ln->internal, host, host_len, port);
+    return dtls_listener_addr(ln, host, host_len, port);
 }
