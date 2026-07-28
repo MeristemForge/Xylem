@@ -35,33 +35,28 @@ configuration after passing the context to dial or listen.
 
 ## 2. Decoupling the SSL state machine from socket I/O
 
-The central design choice: each connection drives OpenSSL through a pair of
-in-memory BIOs, never letting OpenSSL touch the socket directly.
+The central design choice: each connection drives OpenSSL through a custom
+transport BIO. Its callbacks delegate ciphertext I/O to the engine's stream or
+datagram transport, so OpenSSL never touches the socket directly.
 
 ```
    application                OpenSSL                 socket
-  xylem_tls_read  <--  SSL_read(ssl)  <-- rbio <-- _tls_pump_in  <-- recv()
-  xylem_tls_write -->  SSL_write(ssl) --> wbio --> _tls_pump_out --> send()
+   xylem_tls_read  <--  SSL_read(ssl)  <-- transport BIO <-- stream read
+   xylem_tls_write -->  SSL_write(ssl) --> transport BIO --> stream write
 ```
 
-- `SSL_new` is bound to two memory BIOs (`rbio`, `wbio`) via `SSL_set_bio`.
-  OpenSSL only ever reads/writes plaintext to the application and ciphertext
-  to/from these memory buffers; it issues no syscalls of its own.
-- `_tls_pump_in` moves inbound ciphertext `recv() -> rbio`; `_tls_pump_out`
-  drains outbound ciphertext `wbio -> send()`. These are the only functions
-  that touch the socket. (The `BIO_write`/`BIO_read` into those memory buffers
-  now go through the backend as `tls_backend_conn_feed`/`drain`; see §11.)
-- When `SSL_read` / `SSL_write` / `SSL_do_handshake` return `WANT_READ` /
-  `WANT_WRITE`, the driver loops: pump the socket in the requested direction
-  (parking the coroutine via `iowait` if the kernel buffer is empty/full), then
-  retry the SSL call.
+- `SSL_new` is bound to one custom transport BIO via `SSL_set_bio`. Each BIO
+  callback performs one non-blocking stream read or write; OpenSSL issues no
+  socket syscalls of its own.
+- When a callback reports `EAGAIN`, OpenSSL returns `WANT_READ` or `WANT_WRITE`.
+  The engine releases `ssl_mu`, parks on that stream direction, then retries
+  the SSL call after the scheduler resumes.
 
 This is what lets a blocking-looking `SSL_read` cooperate with the coroutine
-scheduler: the suspend point is the socket pump, not OpenSSL.
+scheduler: the suspend point is the engine's stream wait, not OpenSSL.
 
-A `TLS_IO_CHUNK` (16 KiB) scratch buffer per direction matches the TLS record
-cap, so a full record moves per pump; OpenSSL reassembles records that span
-chunks.
+`TLS_MAX_PLAINTEXT` limits each application write step to 16 KiB, the maximum
+TLS record plaintext size. OpenSSL owns record assembly and buffering.
 
 ## 3. Concurrency: the three locks
 
@@ -70,17 +65,17 @@ the same connection. Three locks make that safe:
 
 | Lock | Guards | Granularity |
 |------|--------|-------------|
-| `ssl_mu` | the `SSL` object and both memory BIOs | short: held only across a single SSL/BIO call |
-| `rd_mu` | the iowait **read** direction | long: held for an entire `_tls_pump_in` |
-| `wr_mu` | the iowait **write** direction | long: held for an entire `_tls_pump_out` |
+| `ssl_mu` | the `SSL` object and its transport BIO | short: held only across a single SSL/BIO call |
+| `rd_mu` | the stream **read** direction | long: held across a complete read-side wait |
+| `wr_mu` | the stream **write** direction | long: held across a complete write operation |
 
 Rationale:
 
 - **`ssl_mu` exists because a single OpenSSL `SSL` object is not thread-safe.**
-  `SSL_read`, `SSL_write`, `SSL_do_handshake`, and the `BIO_read`/`BIO_write` on
-  its memory BIOs all mutate one shared state machine, so they are serialized.
-- **`ssl_mu` is never held across a socket park.** The pumps take `ssl_mu` only
-  for the instantaneous `BIO_read`/`BIO_write`, then release it before
+  `SSL_read`, `SSL_write`, `SSL_do_handshake`, and the transport BIO callbacks
+  all mutate one shared state machine, so they are serialized.
+- **`ssl_mu` is never held across a socket park.** The engine takes `ssl_mu` only
+  for the instantaneous backend/BIO call, then releases it before
   `iowait_read`/`iowait_write` (which may suspend indefinitely). If a single
   lock were held across the park, a reader waiting for inbound data would block
   the writer forever -- a deadlock, since the data may only arrive in response
@@ -95,16 +90,15 @@ A fourth lock, `hs_mu`, is unrelated to duplex I/O: it elects the single driver
 of the lazy server handshake and is described in §8. It is taken on its own,
 never nested inside the three locks above.
 
-Note that `_tls_pump_out` is called from the read path too (to flush a TLS 1.3
-KeyUpdate or renegotiation message surfaced as `WANT_WRITE` during `SSL_read`),
-and `_tls_pump_in` from the write path, so both pumps are reachable from either
-coroutine -- the lock split keeps that safe.
+Note that a read can require transport writes (for example, a TLS 1.3 KeyUpdate
+surfaced as `WANT_WRITE`), and a write can require transport reads. Both paths
+can therefore wait on either socket direction; the lock split keeps that safe.
 
 ## 4. Verification policy (per role, per connection)
 
 `SSL_VERIFY_*` has opposite meaning on each side, and the ctx is shared, so the
-policy is stored as two booleans and applied to each new `SSL` at handshake time
-by `_tls_apply_verify`:
+policy is stored as two booleans and applied to each new `SSL` during connection
+configuration:
 
 | Setter | Role | Default | Applied mode |
 |--------|------|---------|--------------|
@@ -254,21 +248,14 @@ the client handshake, verifying `server_name` rather than the proxy address.
 
 ## 9. Shutdown and teardown safety
 
-- `xylem_tls_close` and `xylem_tls_close_listener` consume their handles: after
-  either function returns, the passed handle is invalid. The atomic `closed`
-  flag (`atomic_exchange`) only protects concurrent close attempts while another
-  reference still keeps the object alive.
-- Connections are reference counted. `xylem_tls_read` / `write` take a reference
-  **before** testing `closed`, closing the race where a concurrent `close` on
-  another thread could free the connection between the test and use; the final
-  unref does teardown.
-- `_tls_conn_free` disarms the deadline timer before destroying the waiter --
-  an armed timer holds an iowait reference, so skipping this would keep a
-  connection alive until the timer fires (e.g. a failed handshake lingering for
-  the whole handshake timeout).
-- Teardown distinguishes a graceful path (`_tls_conn_unref` does `SSL_shutdown`
-  to send `close_notify`) from a plain destroy (`_tls_conn_destroy`, used on
-  handshake failure where no clean shutdown is owed).
+- `xylem_tls_close` and `xylem_tls_close_listener` are idempotent and do not
+  free their handles. Close interrupts blocked I/O; after all operations return,
+  call the matching destroy function.
+- `xylem_tls_destroy` and `xylem_tls_destroy_listener` must not race with any
+  other operation. They close an open handle before releasing its resources.
+- A completed TLS connection attempts a best-effort `close_notify` while close
+  owns the write direction. Incomplete handshakes and busy writers are closed
+  at the transport level instead.
 
 ## 10. Security notes and boundaries
 
@@ -426,32 +413,26 @@ int tls_backend_ctx_set_alpn      (tls_backend_ctx_t* ctx,
 int tls_backend_ctx_set_kx_groups (tls_backend_ctx_t* ctx, const char* groups);
 int tls_backend_ctx_set_keylog    (tls_backend_ctx_t* ctx, const char* path);
 
-/* ---- connection: one SSL state machine over memory buffers ---- */
+/* ---- connection: one SSL state machine over transport callbacks ---- */
 tls_backend_conn_t* tls_backend_conn_create(tls_backend_ctx_t* ctx,
-                                            bool is_server);
+                                             bool is_server,
+                                             const tls_backend_io_t* io);
 void tls_backend_conn_destroy(tls_backend_conn_t* c);
 
 /* One-shot pre-handshake config (verify + SNI + identity). See §11.3. */
 int tls_backend_conn_configure(tls_backend_conn_t* c,
                                const tls_backend_handshake_cfg_t* cfg);
 
-/* Ciphertext transfer to/from the backend's inbound/outbound buffers.
- * feed: hand inbound ciphertext to the state machine (was BIO_write).
- * drain: take pending outbound ciphertext (was BIO_read); returns the
- *        byte count (>0), 0 when empty, -1 on error. */
-int tls_backend_conn_feed (tls_backend_conn_t* c, const void* buf, int len);
-int tls_backend_conn_drain(tls_backend_conn_t* c, void* buf, int cap);
-
-/* State-machine steps. The engine pumps the socket in the requested
- * direction on WANT_READ/WANT_WRITE, then retries. read/write report the
- * plaintext byte count through out_n on TLS_BACKEND_OK. */
+/* State-machine steps. The transport BIO invokes io as needed. The engine
+ * parks in the requested direction on WANT_READ/WANT_WRITE, then retries.
+ * read/write report the plaintext byte count through out_n on OK. */
 tls_backend_state_t tls_backend_conn_handshake(tls_backend_conn_t* c);
 tls_backend_state_t tls_backend_conn_read (tls_backend_conn_t* c,
                                            void* buf, int len, int* out_n);
 tls_backend_state_t tls_backend_conn_write(tls_backend_conn_t* c,
                                            const void* buf, int len, int* out_n);
 
-/* Best-effort close_notify into the outbound buffer (engine drains it). */
+/* Best-effort close_notify through the transport BIO; never parks. */
 void tls_backend_conn_shutdown(tls_backend_conn_t* c);
 
 /* Copy the negotiated ALPN protocol into a caller buffer (NUL-terminated,
@@ -489,11 +470,11 @@ backend can reuse verbatim.
 The backend does **no locking of its own**. The engine continues to hold
 `ssl_mu` across every `tls_backend_conn_*` / `dtls_backend_conn_*` call that
 touches the state machine, exactly as it holds it across the OpenSSL calls
-today (see §3). `ssl_mu` is never held across a socket park; `feed`/`drain` are
-the only ops called under it from the pump paths, and they never block
-(memory-buffer transfers). This contract is documented in `tls-backend.h` as a
-precondition every backend implementation may assume — it lets the backend use
-a plain, non-thread-safe state-machine object (an OpenSSL `SSL`, an mbedTLS
+today (see §3). A transport callback may attempt immediate non-blocking I/O
+under `ssl_mu`, but it never parks. On `TLS_BACKEND_IO_AGAIN`, the backend
+returns a WANT state; the engine releases `ssl_mu`, parks in that socket
+direction, then retries. This contract lets the backend use a plain,
+non-thread-safe state-machine object (an OpenSSL `SSL`, an mbedTLS
 `mbedtls_ssl_context`) without internal synchronization.
 
 ### 11.6 Engine-side structures after the cut
@@ -506,18 +487,18 @@ struct tls_ctx_s {
     bool verify_client;
 };
 struct tls_conn_s {
-    tls_backend_conn_t* be;          /* replaces SSL*/rbio/wbio */
-    char* rbuf; char* wbuf;          /* pump scratch (unchanged) */
+    tls_backend_conn_t* be;          /* replaces direct SSL/BIO fields */
     xylem_mutex_t *ssl_mu, *rd_mu, *wr_mu, *hs_mu;
-    iowait_t* waiter; platform_sock_t fd; tls_ctx_t* ctx;
-    addr_t peer_addr; char alpn[256];
+    stream_t* stream; tls_ctx_t* ctx;
+    char alpn[256];
+    _Atomic uint64_t rd_deadline, wr_deadline;
     _Atomic int hs_state;            /* HS_DONE / HS_PENDING / HS_FAILED */
-    _Atomic int32_t refcnt; _Atomic bool closed;
+    _Atomic bool closed;
 };
 ```
 
-- `_tls_pump_in`/`_tls_pump_out`: `BIO_write`/`BIO_read` → `tls_backend_conn_feed`/
-  `tls_backend_conn_drain`. Socket I/O and parking unchanged.
+- Transport BIO callbacks invoke the backend-neutral `tls_backend_io_t` read and
+  write functions. Socket I/O and parking remain in the engine.
 - handshake/read/write loops: `SSL_*` + `SSL_get_error` switch →
   `tls_backend_conn_handshake/read/write` returning `tls_backend_state_t`. The
   `WANT_READ`/`WANT_WRITE`/`OK`/`CLOSED`/`ERROR` arms map 1:1 to the existing

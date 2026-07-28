@@ -24,6 +24,7 @@
 #include "xylem/encoding/xylem-base64.h"
 #include "xylem/xylem-utils.h"
 
+#include "net/addr.h"
 #include "runtime/iowait.h"
 
 #include <limits.h>
@@ -34,6 +35,20 @@
 static bool _http_tunnel_is_again(int err) {
     return err == PLATFORM_SO_ERROR_EAGAIN
            || err == PLATFORM_SO_ERROR_EWOULDBLOCK;
+}
+
+static int _http_tunnel_wait_connect(iowait_t* w, platform_sock_t fd) {
+    if (iowait_write(w) != IOWAIT_READY) {
+        return -1;
+    }
+
+    int       err     = 0;
+    socklen_t err_len = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*)&err, &err_len) != 0
+        || err != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 static int _http_tunnel_write_all(
@@ -253,52 +268,92 @@ static int _http_tunnel_handshake(iowait_t* w, platform_sock_t fd,
     return 0;
 }
 
-platform_sock_t http_tunnel_connect(const char* proxy_host,
-                                uint16_t proxy_port,
-                                const char* target_host,
-                                uint16_t target_port,
-                                uint64_t timeout_ms,
-                                const char* username,
-                                const char* password) {
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", proxy_port);
-
-    bool connected = false;
-    platform_sock_t fd = platform_socket_dial(
-        proxy_host, port_str, SOCK_STREAM, &connected, true, false);
-    if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-        return PLATFORM_SO_ERROR_INVALID_SOCKET;
-    }
-
-    iowait_t* w = iowait_create(fd);
-    if (!w) {
-        platform_socket_close(fd);
-        return PLATFORM_SO_ERROR_INVALID_SOCKET;
-    }
-
+platform_sock_t http_tunnel_connect(
+    const char* proxy_host,
+    uint16_t    proxy_port,
+    const char* target_host,
+    uint16_t    target_port,
+    uint64_t    timeout_ms,
+    const char* username,
+    const char* password) {
+    uint64_t deadline_ms = 0;
     if (timeout_ms > 0) {
-        uint64_t deadline =
-            xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
-        iowait_set_wr_deadline(w, deadline);
-        iowait_set_rd_deadline(w, deadline);
+        uint64_t now_ms = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        deadline_ms = timeout_ms >= UINT64_MAX - now_ms
+            ? UINT64_MAX
+            : now_ms + timeout_ms;
     }
 
-    if (!connected) {
-        iowait_result_t r = iowait_write(w);
-        if (r != IOWAIT_READY) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    uint64_t resolve_timeout_ms = deadline_ms == UINT64_MAX ? 0 : timeout_ms;
+    if (addr_lookup(
+            proxy_host,
+            proxy_port,
+            resolve_timeout_ms,
+            &addrs,
+            &count)
+        != 0) {
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (deadline_ms > 0
+            && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms) {
+            break;
+        }
+
+        socklen_t addr_len = addr_socklen(&addrs[i]);
+        if (addr_len == 0) {
+            continue;
+        }
+
+        bool connected = false;
+        platform_sock_t fd = platform_socket_dial(
+            (const struct sockaddr*)&addrs[i].storage,
+            addr_len,
+            SOCK_STREAM,
+            &connected,
+            true,
+            false);
+        if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
+            continue;
+        }
+
+        iowait_t* w = iowait_create(fd);
+        if (!w) {
+            platform_socket_close(fd);
+            break;
+        }
+        if (deadline_ms > 0) {
+            iowait_set_wr_deadline(w, deadline_ms);
+            iowait_set_rd_deadline(w, deadline_ms);
+        }
+
+        if (!connected && _http_tunnel_wait_connect(w, fd) != 0) {
+            iowait_destroy(w);
+            platform_socket_close(fd);
+            continue;
+        }
+
+        free(addrs);
+        if (_http_tunnel_handshake(
+                w,
+                fd,
+                target_host,
+                target_port,
+                username,
+                password)
+            != 0) {
             iowait_destroy(w);
             platform_socket_close(fd);
             return PLATFORM_SO_ERROR_INVALID_SOCKET;
         }
-    }
 
-    if (_http_tunnel_handshake(w, fd, target_host, target_port,
-                                      username, password) != 0) {
         iowait_destroy(w);
-        platform_socket_close(fd);
-        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+        return fd;
     }
 
-    iowait_destroy(w);
-    return fd;
+    free(addrs);
+    return PLATFORM_SO_ERROR_INVALID_SOCKET;
 }

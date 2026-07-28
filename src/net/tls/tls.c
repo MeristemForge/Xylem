@@ -225,6 +225,8 @@ static void _tls_configure_client(
     tls_ctx_t*                   ctx,
     const char*                  identity,
     const char*                  module,
+    char*                         ip_buf,
+    size_t                        ip_buf_len,
     tls_backend_handshake_cfg_t* cfg) {
     cfg->verify =
         ctx->verify_server ? TLS_BACKEND_VERIFY_PEER : TLS_BACKEND_VERIFY_NONE;
@@ -240,9 +242,31 @@ static void _tls_configure_client(
     }
 
     addr_t tmp;
-    if (addr_pton(identity, 0, &tmp) == 0) {
+    const char* ip_identity = identity;
+    if (addr_pton(identity, 0, &tmp) != 0) {
+        /* A scope selects an interface, not a certificate identity. */
+        const char* zone = strchr(identity, '%');
+        if (!zone || zone == identity || !zone[1]
+            || !strchr(identity, ':')) {
+            ip_identity = NULL;
+        } else {
+            size_t ip_len = (size_t)(zone - identity);
+            if (ip_len >= ip_buf_len) {
+                ip_identity = NULL;
+            } else {
+                memcpy(ip_buf, identity, ip_len);
+                ip_buf[ip_len] = '\0';
+                if (addr_pton(ip_buf, 0, &tmp) != 0) {
+                    ip_identity = NULL;
+                } else {
+                    ip_identity = ip_buf;
+                }
+            }
+        }
+    }
+    if (ip_identity) {
         if (verify_peer) {
-            cfg->verify_ip_address = identity;
+            cfg->verify_ip_address = ip_identity;
         }
         return;
     }
@@ -280,7 +304,9 @@ static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
     tls->be = be;
 
     tls_backend_handshake_cfg_t cfg = {0};
-    _tls_configure_client(tls->ctx, server_name, "tls", &cfg);
+    char ip_buf[INET6_ADDRSTRLEN];
+    _tls_configure_client(
+        tls->ctx, server_name, "tls", ip_buf, sizeof(ip_buf), &cfg);
     if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
         return -1;
     }
@@ -1755,7 +1781,9 @@ dtls_conn_t* dtls_dial(
 
     tls_backend_handshake_cfg_t cfg         = {0};
     const char*                 server_name = opts ? opts->server_name : NULL;
-    _tls_configure_client(ctx, server_name, "dtls", &cfg);
+    char                        ip_buf[INET6_ADDRSTRLEN];
+    _tls_configure_client(
+        ctx, server_name, "dtls", ip_buf, sizeof(ip_buf), &cfg);
     if (tls_backend_conn_configure(dtls->be, &cfg) != 0) {
         _dtls_conn_unref(dtls);
         return NULL;

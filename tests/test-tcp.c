@@ -358,6 +358,22 @@ static void test_lookup_numeric_address(void) {
     free(addrs);
 }
 
+static void test_lookup_scoped_numeric_address(void) {
+    addr_t* addrs = NULL;
+    size_t  count = 0;
+    ASSERT(addr_lookup("fe80::1%3", 1234, 1000, &addrs, &count) == 0);
+    ASSERT(count == 1);
+    ASSERT(addr_socklen(&addrs[0]) == sizeof(struct sockaddr_in6));
+
+    char     host[ADDR_TEXT_MAX];
+    uint16_t port = 0;
+    ASSERT(addr_ntop(&addrs[0], host, sizeof(host), &port) == 0);
+    ASSERT(strcmp(host, "fe80::1%3") == 0);
+    ASSERT(port == 1234);
+
+    free(addrs);
+}
+
 static void test_lookup_hostname(void) {
     addr_t* addrs = NULL;
     size_t  count = 0;
@@ -901,6 +917,7 @@ static void _test_run_all(void* arg) {
     test_resolve_returns_unique_addresses();
     test_resolve_completion_timeout_race();
     test_lookup_numeric_address();
+    test_lookup_scoped_numeric_address();
     test_lookup_hostname();
     test_lookup_rejects_invalid_args();
     test_accept_error_classification();

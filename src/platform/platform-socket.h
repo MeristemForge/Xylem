@@ -228,25 +228,25 @@ extern platform_sock_t platform_socket_listen(
     bool                 enable_mss_clamp);
 
 /**
- * @brief Create a client socket and connect to a remote host.
+ * @brief Create a client socket and connect to a socket address.
  *
- * @param host              Remote host address.
- * @param port              Remote port.
+ * @param addr              Remote socket address.
+ * @param addr_len          Length of addr.
  * @param socktype          SOCK_STREAM or SOCK_DGRAM.
  * @param connected         Pointer to receive connection status (true if
  *                          connected immediately, false if in progress).
  * @param nonblocking       If true, set the socket to non-blocking mode.
  * @param enable_mss_clamp  If true, clamp MSS before connecting a stream socket.
  *
- * @return Connected socket, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
+ * @return Socket handle, or PLATFORM_SO_ERROR_INVALID_SOCKET on failure.
  */
 extern platform_sock_t platform_socket_dial(
-    const char* restrict host,
-    const char* restrict port,
-    int                  socktype,
-    bool*                connected,
-    bool                 nonblocking,
-    bool                 enable_mss_clamp);
+    const struct sockaddr* addr,
+    socklen_t              addr_len,
+    int                    socktype,
+    bool*                  connected,
+    bool                   nonblocking,
+    bool                   enable_mss_clamp);
 
 /**
  * @brief Set the receive timeout on a socket.

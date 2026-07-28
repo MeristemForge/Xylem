@@ -26,6 +26,8 @@ _Pragma("once")
 #include <stddef.h>
 #include <stdint.h>
 
+#define ADDR_TEXT_MAX 64
+
 typedef struct addr_s {
     struct sockaddr_storage storage;
 } addr_t;
@@ -33,6 +35,7 @@ typedef struct addr_s {
 /**
  * @brief Parse a numeric IP address string into an addr_t.
  *
+ * IPv6 addresses may include a decimal scope ID, such as fe80::1%3.
  * Does not perform DNS resolution.
  *
  * @param src   Numeric IP string (IPv4 or IPv6).
@@ -44,6 +47,15 @@ typedef struct addr_s {
 extern int addr_pton(const char* src, uint16_t port, addr_t* dst);
 
 /**
+ * @brief Return the socket address length for an addr_t.
+ *
+ * @param addr  Source addr_t.
+ *
+ * @return Socket address length, or 0 for NULL or an unsupported family.
+ */
+extern socklen_t addr_socklen(const addr_t* addr);
+
+/**
  * @brief Convert an addr_t to a printable IP string and port.
  *
  * Either dst or port may be NULL to skip that output. If both are
@@ -51,7 +63,7 @@ extern int addr_pton(const char* src, uint16_t port, addr_t* dst);
  *
  * @param addr     Source addr_t.
  * @param dst      Destination buffer for IP string, or NULL.
- * @param dst_len  Size of dst buffer (INET6_ADDRSTRLEN recommended).
+ * @param dst_len  Size of dst buffer (64 bytes recommended).
  *                 Must be large enough to hold the textual address;
  *                 ignored when dst is NULL.
  * @param port     Receives the port number, or NULL.

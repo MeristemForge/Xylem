@@ -410,7 +410,7 @@ extern int xylem_tls_write(
     int               len);
 
 /**
- * @brief Close a connection and release its handle.
+ * @brief Close a connection.
  *
  * @note [COROUTINE-ONLY]
  *
@@ -472,7 +472,7 @@ extern void xylem_tls_destroy_listener(xylem_tls_listener_t* ln);
  *
  * @param tls       Connection handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the remote port.
  *
  * @return 0 on success, -1 on error.
@@ -490,7 +490,7 @@ extern int xylem_tls_remote_addr(
  *
  * @param tls       Connection handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the local port.
  *
  * @return 0 on success, -1 on error.
@@ -508,7 +508,7 @@ extern int xylem_tls_local_addr(
  *
  * @param ln        Listener handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the local port.
  *
  * @return 0 on success, -1 on error.

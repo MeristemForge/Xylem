@@ -28,7 +28,9 @@
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
+#include <errno.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -190,6 +192,36 @@ static void _addr_resolve_work(void* arg) {
     _addr_ctx_unref(ctx);
 }
 
+static int _addr_parse_ipv6(
+    const char*          src,
+    struct sockaddr_in6* sin6) {
+    const char* zone = strrchr(src, '%');
+    if (!zone) {
+        return inet_pton(AF_INET6, src, &sin6->sin6_addr) == 1 ? 0 : -1;
+    }
+
+    size_t ip_len = (size_t)(zone - src);
+    if (ip_len == 0 || ip_len >= INET6_ADDRSTRLEN
+        || zone[1] < '0' || zone[1] > '9') {
+        return -1;
+    }
+
+    char ip[INET6_ADDRSTRLEN];
+    memcpy(ip, src, ip_len);
+    ip[ip_len] = '\0';
+
+    errno = 0;
+    char*         end      = NULL;
+    unsigned long scope_id = strtoul(zone + 1, &end, 10);
+    if (errno == ERANGE || *end != '\0' || scope_id > UINT32_MAX
+        || inet_pton(AF_INET6, ip, &sin6->sin6_addr) != 1) {
+        return -1;
+    }
+
+    sin6->sin6_scope_id = (uint32_t)scope_id;
+    return 0;
+}
+
 int addr_pton(const char* src, uint16_t port, addr_t* dst) {
     if (!src || !dst) {
         return -1;
@@ -208,7 +240,7 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
 
     {
         struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&dst->storage;
-        if (inet_pton(AF_INET6, src, &sin6->sin6_addr) == 1) {
+        if (_addr_parse_ipv6(src, sin6) == 0) {
             sin6->sin6_family = AF_INET6;
             sin6->sin6_port   = htons(port);
             return 0;
@@ -216,6 +248,21 @@ int addr_pton(const char* src, uint16_t port, addr_t* dst) {
     }
 
     return -1;
+}
+
+socklen_t addr_socklen(const addr_t* addr) {
+    if (!addr) {
+        return 0;
+    }
+
+    switch (addr->storage.ss_family) {
+    case AF_INET:
+        return sizeof(struct sockaddr_in);
+    case AF_INET6:
+        return sizeof(struct sockaddr_in6);
+    default:
+        return 0;
+    }
 }
 
 int addr_ntop(
@@ -227,9 +274,10 @@ int addr_ntop(
         return -1;
     }
 
-    int            af;
-    const void*    in_addr;
-    uint16_t       net_port;
+    int          af;
+    const void*  in_addr;
+    uint16_t     net_port;
+    uint32_t     scope_id = 0;
 
     switch (addr->storage.ss_family) {
     case AF_INET: {
@@ -246,6 +294,7 @@ int addr_ntop(
         af       = AF_INET6;
         in_addr  = &sin6->sin6_addr;
         net_port = sin6->sin6_port;
+        scope_id = sin6->sin6_scope_id;
         break;
     }
     default:
@@ -254,6 +303,19 @@ int addr_ntop(
 
     if (dst && !inet_ntop(af, in_addr, dst, (socklen_t)dst_len)) {
         return -1;
+    }
+    if (dst && scope_id != 0) {
+        size_t offset = strlen(dst);
+        if (offset >= dst_len) {
+            return -1;
+        }
+        int written = snprintf(dst + offset,
+                               dst_len - offset,
+                               "%%%u",
+                               (unsigned int)scope_id);
+        if (written < 0 || (size_t)written >= dst_len - offset) {
+            return -1;
+        }
     }
     if (port) {
         *port = ntohs(net_port);

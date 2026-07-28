@@ -221,7 +221,7 @@ extern void xylem_tcp_destroy(xylem_tcp_conn_t* tcp);
  *
  * @param tcp       Connection handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the remote port.
  *
  * @return 0 on success, -1 on error.
@@ -239,7 +239,7 @@ extern int xylem_tcp_remote_addr(
  *
  * @param tcp       Connection handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the local port.
  *
  * @return 0 on success, -1 on error.
@@ -259,7 +259,7 @@ extern int xylem_tcp_local_addr(
  *
  * @param ln        Listener handle.
  * @param host      Buffer to receive the address string.
- * @param host_len  Size of host buffer (46 bytes recommended).
+ * @param host_len  Size of host buffer (64 bytes recommended).
  * @param port      Receives the local port.
  *
  * @return 0 on success, -1 on error.

@@ -183,7 +183,7 @@ extern iowait_result_t stream_wait_write(stream_t* stream);
  *
  * @param stream    Stream handle.
  * @param host      Output host buffer.
- * @param host_len  Output host buffer length.
+ * @param host_len  Output host buffer length (64 bytes recommended).
  * @param port      Output port pointer.
  *
  * @return 0 on success, -1 on failure.
@@ -199,7 +199,7 @@ extern int stream_remote_addr(
  *
  * @param stream    Stream handle.
  * @param host      Output host buffer.
- * @param host_len  Output host buffer length.
+ * @param host_len  Output host buffer length (64 bytes recommended).
  * @param port      Output port pointer.
  *
  * @return 0 on success, -1 on failure.
@@ -309,7 +309,7 @@ extern void listener_destroy(listener_t* listener);
  *
  * @param listener  Listener handle.
  * @param host      Output host buffer.
- * @param host_len  Output host buffer length.
+ * @param host_len  Output host buffer length (64 bytes recommended).
  * @param port      Output port pointer.
  *
  * @return 0 on success, -1 on failure.

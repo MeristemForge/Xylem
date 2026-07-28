@@ -117,9 +117,6 @@ datagram_t* datagram_dial(const char* host, uint16_t port) {
         return NULL;
     }
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
     addr_t* addrs = NULL;
     size_t  count = 0;
     if (addr_lookup(host, port, 0, &addrs, &count) != 0) {
@@ -128,15 +125,15 @@ datagram_t* datagram_dial(const char* host, uint16_t port) {
     }
 
     for (size_t i = 0; i < count; i++) {
-        char resolved_ip[INET6_ADDRSTRLEN];
-        if (addr_ntop(&addrs[i], resolved_ip, sizeof(resolved_ip), NULL) != 0) {
+        socklen_t addr_len = addr_socklen(&addrs[i]);
+        if (addr_len == 0) {
             continue;
         }
 
         bool connected = false;
         platform_sock_t fd = platform_socket_dial(
-            resolved_ip,
-            port_str,
+            (const struct sockaddr*)&addrs[i].storage,
+            addr_len,
             SOCK_DGRAM,
             &connected,
             true,
@@ -156,7 +153,10 @@ datagram_t* datagram_dial(const char* host, uint16_t port) {
     }
 
     free(addrs);
-    xylem_loge("<datagram> dial failed host=%s port=%s", host, port_str);
+    xylem_loge(
+        "<datagram> dial failed host=%s port=%u",
+        host,
+        (unsigned int)port);
     return NULL;
 }
 

@@ -410,55 +410,43 @@ platform_sock_t platform_socket_listen(
 }
 
 platform_sock_t platform_socket_dial(
-    const char* restrict host,
-    const char* restrict port,
-    int   socktype,
-    bool* connected,
-    bool  nonblocking,
-    bool  enable_mss_clamp) {
-    platform_sock_t  sock = PLATFORM_SO_ERROR_INVALID_SOCKET;
-    struct addrinfo* res;
-    struct addrinfo* rp;
-    struct addrinfo  hints = {
-        .ai_family   = AF_UNSPEC,
-        .ai_socktype = socktype,
-    };
-    if (getaddrinfo(host, port, &hints, &res)) {
+    const struct sockaddr* addr,
+    socklen_t              addr_len,
+    int                    socktype,
+    bool*                  connected,
+    bool                   nonblocking,
+    bool                   enable_mss_clamp) {
+    if (!addr || !connected) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
-    *connected = false;
-    for (rp = res; rp != NULL; rp = rp->ai_next) {
-        sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
-            continue;
-        }
-        platform_socket_enable_nonblocking(sock, nonblocking);
 
-        if (socktype == SOCK_STREAM) {
-            if (enable_mss_clamp) {
-                platform_socket_enable_mss_clamp(sock, true);
-            }
-            platform_socket_enable_nodelay(sock, true);
-            platform_socket_enable_keepalive(sock, true);
-        }
-        if (socktype == SOCK_DGRAM) {
-            _socket_disable_udp_connreset(sock);
-        }
-        if (connect(sock, rp->ai_addr, (int)rp->ai_addrlen)) {
-            if (WSAGetLastError() != WSAEWOULDBLOCK) {
-                platform_socket_close(sock);
-                continue;
-            }
-            break;
-        }
-        *connected = true;
-        break;
-    }
-    if (rp == NULL) {
-        freeaddrinfo(res);
+    platform_sock_t sock = socket(addr->sa_family, socktype, 0);
+    if (sock == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         return PLATFORM_SO_ERROR_INVALID_SOCKET;
     }
-    freeaddrinfo(res);
+
+    platform_socket_enable_nonblocking(sock, nonblocking);
+    if (socktype == SOCK_STREAM) {
+        if (enable_mss_clamp) {
+            platform_socket_enable_mss_clamp(sock, true);
+        }
+        platform_socket_enable_nodelay(sock, true);
+        platform_socket_enable_keepalive(sock, true);
+    }
+    if (socktype == SOCK_DGRAM) {
+        _socket_disable_udp_connreset(sock);
+    }
+
+    *connected = false;
+    if (connect(sock, addr, (int)addr_len) != 0) {
+        if (WSAGetLastError() == WSAEWOULDBLOCK) {
+            return sock;
+        }
+        platform_socket_close(sock);
+        return PLATFORM_SO_ERROR_INVALID_SOCKET;
+    }
+
+    *connected = true;
     return sock;
 }
 

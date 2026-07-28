@@ -217,9 +217,6 @@ stream_t* stream_dial(
         return NULL;
     }
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
     uint64_t connect_deadline_ms = 0;
     if (connect_timeout_ms > 0) {
         uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
@@ -261,16 +258,15 @@ stream_t* stream_dial(
             attempt_deadline_ms = now_ms + attempt_ms;
         }
 
-        char resolved_ip[INET6_ADDRSTRLEN];
-        if (addr_ntop(&addrs[i], resolved_ip, sizeof(resolved_ip), NULL)
-            != 0) {
+        socklen_t addr_len = addr_socklen(&addrs[i]);
+        if (addr_len == 0) {
             continue;
         }
 
         bool connected = false;
         platform_sock_t fd = platform_socket_dial(
-            resolved_ip,
-            port_str,
+            (const struct sockaddr*)&addrs[i].storage,
+            addr_len,
             SOCK_STREAM,
             &connected,
             true,

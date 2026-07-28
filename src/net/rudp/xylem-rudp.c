@@ -1242,9 +1242,6 @@ xylem_rudp_conn_t* xylem_rudp_dial(
         return NULL;
     }
 
-    char port_str[8];
-    snprintf(port_str, sizeof(port_str), "%u", port);
-
     addr_t* addrs = NULL;
     size_t  count = 0;
     uint64_t resolve_timeout = opts ? opts->connect_timeout_ms : 0;
@@ -1256,19 +1253,19 @@ xylem_rudp_conn_t* xylem_rudp_dial(
     addr_t resolved_addr = addrs[0];
     free(addrs);
 
-    char resolved_ip[INET6_ADDRSTRLEN];
-    if (addr_ntop(
-            &resolved_addr,
-            resolved_ip,
-            sizeof(resolved_ip),
-            NULL)
-        != 0) {
+    socklen_t addr_len = addr_socklen(&resolved_addr);
+    if (addr_len == 0) {
         return NULL;
     }
 
     bool connected = false;
     platform_sock_t fd = platform_socket_dial(
-        resolved_ip, port_str, SOCK_DGRAM, &connected, true, false);
+        (const struct sockaddr*)&resolved_addr.storage,
+        addr_len,
+        SOCK_DGRAM,
+        &connected,
+        true,
+        false);
     if (fd == PLATFORM_SO_ERROR_INVALID_SOCKET) {
         xylem_loge("rudp dial: socket creation failed for %s:%u", host, port);
         return NULL;
