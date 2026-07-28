@@ -164,7 +164,9 @@ if(XYLEM_ENABLE_TLS)
 	list(APPEND SRCS src/net/tls/tls-backend-openssl.c)
 
 	list(APPEND SRCS
-		src/net/tls/tls.c
+		src/net/tls/tls-context.c
+		src/net/tls/tls-stream.c
+		src/net/tls/tls-datagram.c
 		src/net/tls/xylem-tls.c
 		src/net/tls/xylem-dtls.c
 		src/net/http/http-transport-tls.c

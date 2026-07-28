@@ -28,7 +28,8 @@
 
 #include "xylem/net/xylem-dtls.h"
 
-#include "tls.h"
+#include "tls-context.h"
+#include "tls-datagram.h"
 
 #include "runtime/precond.h"
 

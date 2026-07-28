@@ -34,7 +34,8 @@
 #include "http-utils.h"
 #include "http-tunnel.h"
 
-#include "net/tls/tls.h"
+#include "net/tls/tls-context.h"
+#include "net/tls/tls-stream.h"
 #include "runtime/runtime.h"
 
 #include <stdlib.h>

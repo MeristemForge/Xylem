@@ -19,7 +19,7 @@
  *  IN THE SOFTWARE.
  */
 
-#include "tls.h"
+#include "tls-datagram.h"
 
 #include "xylem/xylem-logger.h"
 #include "xylem/xylem-utils.h"
@@ -29,31 +29,16 @@
 #include "container/rbtree.h"
 #include "net/addr.h"
 #include "net/datagram.h"
-#include "net/stream.h"
 #include "net/tls/tls-backend.h"
-#include "platform/platform-socket.h"
+#include "net/tls/tls-context.h"
 #include "runtime/runtime.h"
 #include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/**
- * TLS protocol invariant: the maximum *plaintext* a single record can
- * carry (2^14, mandated by every TLS version; OpenSSL spells it
- * SSL3_RT_MAX_PLAIN_LENGTH, mbedTLS MBEDTLS_SSL_IN_CONTENT_LEN -- the
- * value is the same backend-neutral constant, so no SSL header leaks
- * into the engine).
- *
- * The write path feeds the backend at most this many plaintext bytes per
- * step. Direct transport BIOs write ciphertext to the stream during the
- * backend call, so chunking keeps one record at a time in flight.
- */
-#define TLS_MAX_PLAINTEXT (16 * 1024)
 
 #define DTLS_DEFAULT_TIMEOUT_MS  30000
 #define DTLS_INBOX_CAP           64
@@ -61,41 +46,6 @@
 #define DTLS_DGRAM_POOL_CAP      1024
 
 typedef struct _dtls_dgram_s _dtls_dgram_t;
-
-typedef struct {
-    tls_backend_ctx_t* be;
-    bool               verify_server;
-    bool               verify_client;
-} _tls_ctx_base_t;
-
-struct xylem_tls_ctx_s {
-    _tls_ctx_base_t base;
-};
-
-struct xylem_dtls_ctx_s {
-    _tls_ctx_base_t base;
-};
-
-struct xylem_tls_conn_s {
-    tls_backend_conn_t* be;
-    xylem_mutex_t*      ssl_mu;
-    xylem_mutex_t*      rd_mu;
-    xylem_mutex_t*      wr_mu;
-    xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
-    stream_t*           stream;
-    _tls_ctx_base_t*    ctx;
-    char                alpn[256];
-    _Atomic uint64_t    rd_deadline;
-    _Atomic uint64_t    wr_deadline;
-    _Atomic int         hs_state;       /* HS_DONE / HS_PENDING / HS_FAILED */
-    _Atomic bool        closed;
-};
-
-struct xylem_tls_listener_s {
-    listener_t*      listener;
-    _tls_ctx_base_t* ctx;
-    _Atomic bool     closed;
-};
 
 struct xylem_dtls_conn_s {
     tls_backend_conn_t* be;
@@ -122,7 +72,7 @@ struct xylem_dtls_conn_s {
 
 struct xylem_dtls_listener_s {
     datagram_t*        datagram;
-    _tls_ctx_base_t*   ctx;
+    dtls_ctx_t*        ctx;
     xylem_dtls_opts_t  opts;
     rbtree_t           sessions;
     xylem_mutex_t*     sessions_mu;
@@ -154,447 +104,10 @@ struct _dtls_dgram_s {
     char                  data[];
 };
 
-/* Lazy server-handshake state; client connections are eagerly handshaked. */
-typedef enum _tls_hs_state_e {
-    HS_DONE    = 0,
-    HS_PENDING = 1,
-    HS_FAILED  = 2
-} _tls_hs_state_t;
-
-static void _tls_consume_io_budget(void) {
+static void _dtls_consume_io_budget(void) {
     if (runtime_consume_time()) {
         runtime_yield();
     }
-}
-
-static int _tls_stream_io_read(
-    void* user,
-    void* buf,
-    int   len) {
-    tls_conn_t* tls = (tls_conn_t*)user;
-    int         n   = stream_read(tls->stream, buf, len);
-    return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
-}
-
-static int _tls_stream_io_write(
-    void*       user,
-    const void* buf,
-    int         len) {
-    tls_conn_t* tls = (tls_conn_t*)user;
-    int         n   = stream_write(tls->stream, buf, len);
-    return n == STREAM_IO_AGAIN ? TLS_BACKEND_IO_AGAIN : n;
-}
-
-static tls_conn_t* _tls_conn_create(stream_t* stream) {
-    tls_conn_t* tls = (tls_conn_t*)calloc(1, sizeof(tls_conn_t));
-    if (!tls) {
-        return NULL;
-    }
-
-    atomic_init(&tls->rd_deadline, 0);
-    atomic_init(&tls->wr_deadline, 0);
-    atomic_init(&tls->hs_state, HS_DONE);
-    atomic_init(&tls->closed, false);
-
-    tls->stream = stream;
-    tls->ssl_mu = xylem_mutex_create();
-    tls->rd_mu  = xylem_mutex_create();
-    tls->wr_mu  = xylem_mutex_create();
-    tls->hs_mu  = xylem_mutex_create();
-    if (!tls->ssl_mu || !tls->rd_mu || !tls->wr_mu || !tls->hs_mu) {
-        xylem_mutex_destroy(tls->ssl_mu);
-        xylem_mutex_destroy(tls->rd_mu);
-        xylem_mutex_destroy(tls->wr_mu);
-        xylem_mutex_destroy(tls->hs_mu);
-        free(tls);
-        return NULL;
-    }
-
-    return tls;
-}
-
-/**
- * Convert a timeout in milliseconds to an absolute deadline. Returns 0
- * (no deadline) when timeout_ms is 0, matching the stream convention.
- */
-static uint64_t _tls_make_deadline(uint64_t timeout_ms) {
-    if (timeout_ms == 0) {
-        return 0;
-    }
-    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    return timeout_ms >= UINT64_MAX - now ? UINT64_MAX : now + timeout_ms;
-}
-
-/* Apply the same deadline to both stream directions (0 clears it). */
-static void _tls_set_deadline(tls_conn_t* tls, uint64_t deadline) {
-    atomic_store(&tls->rd_deadline, deadline);
-    atomic_store(&tls->wr_deadline, deadline);
-    stream_set_read_deadline(tls->stream, deadline);
-    stream_set_write_deadline(tls->stream, deadline);
-}
-
-static bool _tls_deadline_expired(_Atomic uint64_t* deadline) {
-    uint64_t d = atomic_load(deadline);
-    return d > 0 && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= d;
-}
-
-/**
- * Release every resource except the backend connection, which the
- * callers tear down differently (graceful shutdown vs. plain free)
- * before delegating here. Frees tls itself.
- */
-static void _tls_conn_free(tls_conn_t* tls) {
-    if (tls->stream) {
-        _tls_set_deadline(tls, 0);
-        stream_destroy(tls->stream);
-    }
-    xylem_mutex_destroy(tls->ssl_mu);
-    xylem_mutex_destroy(tls->rd_mu);
-    xylem_mutex_destroy(tls->wr_mu);
-    xylem_mutex_destroy(tls->hs_mu);
-    free(tls);
-}
-
-static void _tls_conn_destroy(tls_conn_t* tls) {
-    if (tls->be) {
-        tls_backend_conn_destroy(tls->be);
-    }
-    _tls_conn_free(tls);
-}
-
-static int _tls_wait_write(tls_conn_t* tls) {
-    xylem_mutex_lock(tls->wr_mu);
-    int rc = stream_wait_write(tls->stream) == IOWAIT_READY ? 0 : -1;
-    xylem_mutex_unlock(tls->wr_mu);
-    return rc;
-}
-
-static int _tls_wait_read(tls_conn_t* tls) {
-    xylem_mutex_lock(tls->rd_mu);
-    int rc = stream_wait_read(tls->stream) == IOWAIT_READY ? 0 : -1;
-    xylem_mutex_unlock(tls->rd_mu);
-    return rc;
-}
-
-static int _tls_do_handshake(tls_conn_t* tls) {
-    for (;;) {
-        xylem_mutex_lock(tls->ssl_mu);
-        tls_backend_state_t st = tls_backend_conn_handshake(tls->be);
-        xylem_mutex_unlock(tls->ssl_mu);
-
-        switch (st) {
-            case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
-                return 0;
-            case TLS_BACKEND_WANT_READ:
-                if (_tls_wait_read(tls) != 0) {
-                    return -1;
-                }
-                continue;
-            case TLS_BACKEND_WANT_WRITE:
-                if (_tls_wait_write(tls) != 0) {
-                    return -1;
-                }
-                continue;
-            default:
-                return -1;
-        }
-    }
-}
-
-static int _tls_configure_client(
-    _tls_ctx_base_t*             ctx,
-    const char*                  identity,
-    const char*                  module,
-    tls_backend_handshake_cfg_t* cfg) {
-    cfg->verify =
-        ctx->verify_server ? TLS_BACKEND_VERIFY_PEER : TLS_BACKEND_VERIFY_NONE;
-    bool verify_peer = (cfg->verify != TLS_BACKEND_VERIFY_NONE);
-
-    if (!identity && verify_peer) {
-        xylem_loge(
-            "<%s> peer identity unchecked verify=enabled risk=mitm",
-            module);
-    }
-    if (!identity) {
-        return 0;
-    }
-
-    size_t identity_len = strlen(identity);
-    if (identity_len >= sizeof(cfg->identity)) {
-        return -1;
-    }
-    memcpy(cfg->identity, identity, identity_len + 1);
-    cfg->identity_type = TLS_BACKEND_IDENTITY_DNS;
-
-    addr_t tmp;
-    char*  zone = strchr(cfg->identity, '%');
-    if (!zone || zone == cfg->identity || !zone[1]
-        || !strchr(cfg->identity, ':')) {
-        zone = NULL;
-    }
-    if (zone) {
-        /* A scope selects an interface, not a certificate identity. */
-        *zone = '\0';
-    }
-    if (addr_pton(cfg->identity, 0, &tmp) == 0) {
-        cfg->identity_type = TLS_BACKEND_IDENTITY_IP;
-        return 0;
-    }
-    if (zone) {
-        *zone = '%';
-    }
-    if (identity_len > 1 && cfg->identity[identity_len - 1] == '.') {
-        cfg->identity[identity_len - 1] = '\0';
-    }
-    return 0;
-}
-
-static void _tls_configure_server(
-    _tls_ctx_base_t*             ctx,
-    tls_backend_handshake_cfg_t* cfg) {
-    cfg->verify = ctx->verify_client ? TLS_BACKEND_VERIFY_REQUIRE
-                                     : TLS_BACKEND_VERIFY_NONE;
-}
-
-static void _tls_cache_alpn(
-    tls_backend_conn_t* be,
-    char*               alpn,
-    size_t              alpn_len) {
-    tls_backend_conn_get_alpn(be, alpn, alpn_len);
-}
-
-static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
-    tls_backend_io_t io = {
-        .user  = tls,
-        .read  = _tls_stream_io_read,
-        .write = _tls_stream_io_write,
-    };
-    tls_backend_conn_t* be = tls_backend_conn_create(tls->ctx->be, false, &io);
-    if (!be) {
-        return -1;
-    }
-    tls->be = be;
-
-    tls_backend_handshake_cfg_t cfg = {0};
-    if (_tls_configure_client(tls->ctx, server_name, "tls", &cfg) != 0) {
-        return -1;
-    }
-    if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
-        return -1;
-    }
-
-    if (_tls_do_handshake(tls) != 0) {
-        return -1;
-    }
-    _tls_cache_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
-    return 0;
-}
-
-/**
- * Drive the backend read to completion. The backend owns stream ciphertext
- * I/O through its transport BIO; this loop only parks on WANT states.
- * Returns bytes read (>0), 0 on clean peer shutdown, or -1 on error/close.
- */
-static int _tls_read_loop(tls_conn_t* tls, void* buf, int len) {
-    if (!buf || len <= 0) {
-        return -1;
-    }
-
-    for (;;) {
-        if (_tls_deadline_expired(&tls->rd_deadline)) {
-            return -1;
-        }
-
-        int n = 0;
-        xylem_mutex_lock(tls->ssl_mu);
-        tls_backend_state_t st = tls_backend_conn_read(tls->be, buf, len, &n);
-        xylem_mutex_unlock(tls->ssl_mu);
-
-        switch (st) {
-            case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
-                return n;
-            case TLS_BACKEND_CLOSED:
-                return 0;
-            case TLS_BACKEND_WANT_READ:
-                if (_tls_wait_read(tls) != 0) {
-                    return -1;
-                }
-                continue;
-            case TLS_BACKEND_WANT_WRITE:
-                if (_tls_wait_write(tls) != 0) {
-                    return -1;
-                }
-                continue;
-            default:
-                return -1;
-        }
-    }
-}
-
-/**
- * Drive the backend write of the whole buffer to completion. The backend
- * writes ciphertext through its transport BIO during each accepted chunk.
- * Returns 0 once all len bytes are written, -1 on error/close.
- */
-static int _tls_write_loop(
-    tls_conn_t* tls,
-    const void* data,
-    int         len) {
-    if (len < 0) {
-        return -1;
-    }
-    if (len == 0) {
-        return 0;
-    }
-    if (!data) {
-        return -1;
-    }
-
-    const char* ptr = (const char*)data;
-    int         rem = len;
-    int         ret = -1;
-
-    /**
-     * One public write owns the TLS write side until its whole buffer is
-     * accepted. Otherwise two coroutines can interleave plaintext chunks
-     * into the same TLS record stream. WANT_WRITE waits below keep this
-     * lock held, so that path waits on stream_wait_write() directly instead
-     * of calling _tls_wait_write(), which would lock wr_mu again.
-     */
-    xylem_mutex_lock(tls->wr_mu);
-    while (rem > 0) {
-        if (_tls_deadline_expired(&tls->wr_deadline)) {
-            break;
-        }
-
-        int chunk = rem < TLS_MAX_PLAINTEXT ? rem : TLS_MAX_PLAINTEXT;
-        int n     = 0;
-        xylem_mutex_lock(tls->ssl_mu);
-        tls_backend_state_t st = tls_backend_conn_write(tls->be, ptr, chunk, &n);
-        xylem_mutex_unlock(tls->ssl_mu);
-
-        if (st == TLS_BACKEND_OK) {
-            _tls_consume_io_budget();
-            ptr += n;
-            rem -= n;
-            continue;
-        }
-        if (st == TLS_BACKEND_WANT_WRITE) {
-            if (stream_wait_write(tls->stream) != IOWAIT_READY) {
-                break;
-            }
-            continue;
-        }
-        if (st == TLS_BACKEND_WANT_READ) {
-            if (_tls_wait_read(tls) != 0) {
-                break;
-            }
-            continue;
-        }
-        break;
-    }
-    if (rem == 0) {
-        ret = 0;
-    }
-
-    xylem_mutex_unlock(tls->wr_mu);
-    return ret;
-}
-
-/**
- * Drive the server-side TLS handshake on an accepted stream.
- * Unlike the eager path, this does NOT tear the connection down on
- * failure: it runs under a ref held by tls_read/tls_write/tls_handshake,
- * and the owning handler's tls_close performs teardown. Returns 0 on a
- * completed handshake, -1 on failure (bad cert, protocol mismatch, peer
- * disconnect, or handshake timeout).
- */
-static int _tls_server_handshake(tls_conn_t* tls) {
-    tls_backend_io_t io = {
-        .user  = tls,
-        .read  = _tls_stream_io_read,
-        .write = _tls_stream_io_write,
-    };
-    tls_backend_conn_t* be = tls_backend_conn_create(tls->ctx->be, true, &io);
-    if (!be) {
-        xylem_loge("<tls> accept ssl init failed");
-        return -1;
-    }
-    tls->be = be;
-    tls_backend_handshake_cfg_t cfg = {0};
-    _tls_configure_server(tls->ctx, &cfg);
-    if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
-        return -1;
-    }
-
-    int rc = _tls_do_handshake(tls);
-
-    if (rc == 0) {
-        tls_backend_conn_get_alpn(tls->be, tls->alpn, sizeof(tls->alpn));
-    }
-    return rc;
-}
-
-/**
- * Ensure the (lazy server) handshake has completed before app I/O.
- *
- * Fast path: HS_DONE (every client conn, and any server conn already
- * handshaked) returns immediately without locking.
- *
- * Otherwise exactly one coroutine must drive the handshake: it is a
- * single state machine pumping BOTH stream directions, and stream parks allow
- * only one parker per direction, so two drivers would double-step the
- * backend and double-park a direction. hs_mu elects that driver; a
- * second coroutine (xylem permits one reader + one writer on a conn) just
- * blocks on the lock until the driver publishes the result, then reads
- * it. hs_mu is a coroutine mutex (a contended lock yields), and the
- * non-driver takes only hs_mu -- never nested inside ssl_mu/rd_mu/wr_mu
- * -- so there is no lock-order inversion against the driver's inner
- * locks. Holding hs_mu across the handshake's stream parks is therefore
- * fine. Returns 0 once handshaked, -1 on failure.
- */
-static int _tls_ensure_handshake(tls_conn_t* tls) {
-    /* Lock-free fast path: avoid locking once handshaked. */
-    int st = atomic_load(&tls->hs_state);
-    if (st == HS_DONE) {
-        return 0;
-    }
-    if (st == HS_FAILED) {
-        return -1;
-    }
-
-    /* Re-check under hs_mu: a concurrent driver may have finished meanwhile. */
-    xylem_mutex_lock(tls->hs_mu);
-    st = atomic_load(&tls->hs_state);
-    if (st == HS_DONE) {
-        xylem_mutex_unlock(tls->hs_mu);
-        return 0;
-    }
-    if (st == HS_FAILED) {
-        xylem_mutex_unlock(tls->hs_mu);
-        return -1;
-    }
-
-    int rc = _tls_server_handshake(tls);
-    atomic_store(&tls->hs_state, rc == 0 ? HS_DONE : HS_FAILED);
-    xylem_mutex_unlock(tls->hs_mu);
-    return rc;
-}
-
-/**
- * Best-effort close_notify so the peer can tell a clean close from a
- * truncation. Direct BIO shutdown may write immediately, but does not park:
- * a slow/stalled peer can never pin teardown.
- */
-static void _tls_flush_close_notify(tls_conn_t* tls) {
-    if (!tls->be) {
-        return;
-    }
-    xylem_mutex_lock(tls->ssl_mu);
-    tls_backend_conn_shutdown(tls->be);
-    xylem_mutex_unlock(tls->ssl_mu);
 }
 
 static void _dtls_listener_ref(dtls_listener_t* ln) {
@@ -942,7 +455,7 @@ static int _dtls_server_send_record(
             tls_backend_conn_write(dtls->be, data, len, &n);
         switch (st) {
             case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 return 0;
             case TLS_BACKEND_WANT_WRITE: {
                 if (datagram_wait_write(dtls->listener->datagram) !=
@@ -971,7 +484,7 @@ static int _dtls_client_do_handshake(dtls_conn_t* dtls, uint64_t deadline) {
 
         switch (st) {
             case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 return 0;
             case TLS_BACKEND_WANT_READ: {
                 uint64_t rd_dl = deadline;
@@ -1033,7 +546,7 @@ static int _dtls_client_recv_loop(dtls_conn_t* dtls, void* buf, int len) {
 
         switch (st) {
             case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 return n;
             case TLS_BACKEND_CLOSED:
                 return 0;
@@ -1090,7 +603,7 @@ static int _dtls_client_send_loop(
 
         switch (st) {
             case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 return 0;
             case TLS_BACKEND_WANT_WRITE:
                 if (_dtls_client_wait_write(dtls) != 0) {
@@ -1155,7 +668,7 @@ static void _dtls_handshake_coro(void* arg) {
         .read  = _dtls_server_io_read,
         .write = _dtls_server_io_write,
     };
-    dtls->be = tls_backend_conn_create(ln->ctx->be, true, &io);
+    dtls->be = tls_backend_conn_create(dtls_ctx_get_backend(ln->ctx), true, &io);
     if (!dtls->be) {
         _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
@@ -1173,7 +686,7 @@ static void _dtls_handshake_coro(void* arg) {
     dtls_backend_conn_set_mtu(dtls->be, ln->opts.mtu);
 
     tls_backend_handshake_cfg_t cfg = {0};
-    _tls_configure_server(ln->ctx, &cfg);
+    dtls_ctx_build_server_config(ln->ctx, &cfg);
     if (tls_backend_conn_configure(dtls->be, &cfg) != 0) {
         _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
@@ -1214,7 +727,7 @@ static void _dtls_handshake_coro(void* arg) {
 
         tls_backend_state_t st = tls_backend_conn_handshake(dtls->be);
         if (st == TLS_BACKEND_OK) {
-            _tls_consume_io_budget();
+            _dtls_consume_io_budget();
             dtls->handshake_done = true;
             success              = true;
             break;
@@ -1256,7 +769,7 @@ static void _dtls_handshake_coro(void* arg) {
         return;
     }
 
-    _tls_cache_alpn(dtls->be, dtls->alpn, sizeof(dtls->alpn));
+    tls_backend_conn_get_alpn(dtls->be, dtls->alpn, sizeof(dtls->alpn));
     xylem_mutex_lock(ln->sessions_mu);
     if (atomic_load(&ln->closed)) {
         xylem_mutex_unlock(ln->sessions_mu);
@@ -1293,7 +806,7 @@ static void _dtls_dispatcher(void* arg) {
                 (int)ln->dgram_bufsz,
                 &from_addr);
             if (n >= 0) {
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 break;
             }
             if (n != DATAGRAM_IO_AGAIN
@@ -1371,7 +884,7 @@ static int _dtls_server_recv_loop(dtls_conn_t* dtls, void* buf, int len) {
         tls_backend_state_t st = tls_backend_conn_read(dtls->be, buf, len, &n);
         switch (st) {
             case TLS_BACKEND_OK:
-                _tls_consume_io_budget();
+                _dtls_consume_io_budget();
                 return n;
             case TLS_BACKEND_CLOSED:
                 return 0;
@@ -1454,483 +967,6 @@ static void _dtls_server_close(dtls_conn_t* dtls) {
     _dtls_server_shutdown(dtls);
 }
 
-static int _tls_ctx_base_init(
-    _tls_ctx_base_t*    base,
-    tls_backend_proto_t proto) {
-    base->be = tls_backend_ctx_create(proto);
-    if (!base->be) {
-        return -1;
-    }
-    base->verify_server = true;
-    base->verify_client = false;
-    return 0;
-}
-
-static void _tls_ctx_base_deinit(_tls_ctx_base_t* base) {
-    tls_backend_ctx_destroy(base->be);
-}
-
-static int _tls_ctx_base_set_keylog(
-    _tls_ctx_base_t* base,
-    const char*      path) {
-    return tls_backend_ctx_set_keylog(base->be, path);
-}
-
-static int _tls_ctx_base_load_cert(
-    _tls_ctx_base_t* base,
-    const char*      hostname,
-    const char*      cert,
-    const char*      key) {
-    return tls_backend_ctx_load_cert_file(base->be, hostname, cert, key);
-}
-
-static int _tls_ctx_base_load_cert_mem(
-    _tls_ctx_base_t* base,
-    const char*      hostname,
-    const void*      cert_pem,
-    size_t           cert_len,
-    const void*      key_pem,
-    size_t           key_len) {
-    if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
-        return -1;
-    }
-    return tls_backend_ctx_load_cert_mem(base->be, hostname, cert_pem, cert_len,
-                                         key_pem, key_len);
-}
-
-static int _tls_ctx_base_load_ca(
-    _tls_ctx_base_t* base,
-    const char*      ca_file) {
-    return tls_backend_ctx_load_ca_file(base->be, ca_file);
-}
-
-static int _tls_ctx_base_load_system_ca(
-    _tls_ctx_base_t* base,
-    const char*      fallback_ca_file) {
-    return tls_backend_ctx_load_system_ca(base->be, fallback_ca_file);
-}
-
-static void _tls_ctx_base_verify_server(
-    _tls_ctx_base_t* base,
-    bool             enable) {
-    base->verify_server = enable;
-}
-
-static void _tls_ctx_base_verify_client(
-    _tls_ctx_base_t* base,
-    bool             enable) {
-    base->verify_client = enable;
-}
-
-static int _tls_ctx_base_set_alpn(
-    _tls_ctx_base_t* base,
-    const char**     protocols,
-    size_t           count) {
-    return tls_backend_ctx_set_alpn(base->be, protocols, count);
-}
-
-tls_ctx_t* tls_ctx_create(void) {
-    tls_ctx_t* ctx = (tls_ctx_t*)calloc(1, sizeof(tls_ctx_t));
-    if (!ctx) {
-        return NULL;
-    }
-    if (_tls_ctx_base_init(&ctx->base, TLS_BACKEND_PROTO_TLS) != 0) {
-        free(ctx);
-        return NULL;
-    }
-    return ctx;
-}
-
-dtls_ctx_t* dtls_ctx_create(void) {
-    dtls_ctx_t* ctx = (dtls_ctx_t*)calloc(1, sizeof(dtls_ctx_t));
-    if (!ctx) {
-        return NULL;
-    }
-    if (_tls_ctx_base_init(&ctx->base, TLS_BACKEND_PROTO_DTLS) != 0) {
-        free(ctx);
-        return NULL;
-    }
-    return ctx;
-}
-
-void tls_ctx_destroy(tls_ctx_t* ctx) {
-    if (!ctx) {
-        return;
-    }
-    _tls_ctx_base_deinit(&ctx->base);
-    free(ctx);
-}
-
-void dtls_ctx_destroy(dtls_ctx_t* ctx) {
-    if (!ctx) {
-        return;
-    }
-    _tls_ctx_base_deinit(&ctx->base);
-    free(ctx);
-}
-
-int tls_ctx_set_keylog(tls_ctx_t* ctx, const char* path) {
-    return ctx ? _tls_ctx_base_set_keylog(&ctx->base, path) : -1;
-}
-
-int dtls_ctx_set_keylog(dtls_ctx_t* ctx, const char* path) {
-    return ctx ? _tls_ctx_base_set_keylog(&ctx->base, path) : -1;
-}
-
-int tls_ctx_load_cert(
-    tls_ctx_t*  ctx,
-    const char* hostname,
-    const char* cert,
-    const char* key) {
-    return _tls_ctx_base_load_cert(&ctx->base, hostname, cert, key);
-}
-
-int dtls_ctx_load_cert(
-    dtls_ctx_t* ctx,
-    const char* hostname,
-    const char* cert,
-    const char* key) {
-    return _tls_ctx_base_load_cert(&ctx->base, hostname, cert, key);
-}
-
-int tls_ctx_load_cert_mem(
-    tls_ctx_t*  ctx,
-    const char* hostname,
-    const void* cert_pem,
-    size_t      cert_len,
-    const void* key_pem,
-    size_t      key_len) {
-    return _tls_ctx_base_load_cert_mem(&ctx->base, hostname, cert_pem, cert_len,
-                                       key_pem, key_len);
-}
-
-int dtls_ctx_load_cert_mem(
-    dtls_ctx_t* ctx,
-    const char* hostname,
-    const void* cert_pem,
-    size_t      cert_len,
-    const void* key_pem,
-    size_t      key_len) {
-    return _tls_ctx_base_load_cert_mem(&ctx->base, hostname, cert_pem, cert_len,
-                                       key_pem, key_len);
-}
-
-int tls_ctx_load_ca(tls_ctx_t* ctx, const char* ca_file) {
-    return _tls_ctx_base_load_ca(&ctx->base, ca_file);
-}
-
-int dtls_ctx_load_ca(dtls_ctx_t* ctx, const char* ca_file) {
-    return _tls_ctx_base_load_ca(&ctx->base, ca_file);
-}
-
-int tls_ctx_load_system_ca(tls_ctx_t* ctx, const char* fallback_ca_file) {
-    return _tls_ctx_base_load_system_ca(&ctx->base, fallback_ca_file);
-}
-
-int dtls_ctx_load_system_ca(
-    dtls_ctx_t* ctx,
-    const char* fallback_ca_file) {
-    return _tls_ctx_base_load_system_ca(&ctx->base, fallback_ca_file);
-}
-
-void tls_ctx_verify_server(tls_ctx_t* ctx, bool enable) {
-    _tls_ctx_base_verify_server(&ctx->base, enable);
-}
-
-void dtls_ctx_verify_server(dtls_ctx_t* ctx, bool enable) {
-    _tls_ctx_base_verify_server(&ctx->base, enable);
-}
-
-void tls_ctx_verify_client(tls_ctx_t* ctx, bool enable) {
-    _tls_ctx_base_verify_client(&ctx->base, enable);
-}
-
-void dtls_ctx_verify_client(dtls_ctx_t* ctx, bool enable) {
-    _tls_ctx_base_verify_client(&ctx->base, enable);
-}
-
-int tls_ctx_set_alpn(tls_ctx_t* ctx, const char** protocols, size_t count) {
-    return _tls_ctx_base_set_alpn(&ctx->base, protocols, count);
-}
-
-int dtls_ctx_set_alpn(
-    dtls_ctx_t* ctx,
-    const char** protocols,
-    size_t       count) {
-    return _tls_ctx_base_set_alpn(&ctx->base, protocols, count);
-}
-
-tls_conn_t* tls_dial(
-    const char*       host,
-    uint16_t          port,
-    tls_ctx_t*        ctx,
-    xylem_tls_opts_t* opts) {
-    uint64_t timeout_ms = opts ? opts->connect_timeout_ms : 0;
-    uint64_t deadline   = _tls_make_deadline(timeout_ms);
-    stream_t* stream
-        = stream_dial(host, port, timeout_ms, opts && opts->enable_mss_clamp);
-    if (!stream) {
-        return NULL;
-    }
-
-    tls_conn_t* tls = _tls_conn_create(stream);
-    if (!tls) {
-        stream_destroy(stream);
-        return NULL;
-    }
-
-    tls->ctx = &ctx->base;
-
-    /* The same absolute deadline bounds connect plus handshake. */
-    _tls_set_deadline(tls, deadline);
-    const char* server_name = (opts && opts->server_name)
-                                  ? opts->server_name
-                                  : host;
-    if (_tls_client_handshake(tls, server_name) != 0) {
-        xylem_loge("<tls> dial handshake failed host=%s port=%u", host, port);
-        _tls_conn_destroy(tls);
-        return NULL;
-    }
-
-    _tls_set_deadline(tls, 0);
-    return tls;
-}
-
-void tls_close(tls_conn_t* tls) {
-    if (atomic_exchange(&tls->closed, true)) {
-        return;
-    }
-
-    /**
-     * An incomplete handshake cannot send close_notify safely; hard-close
-     * the stream to interrupt it without racing backend setup. After the
-     * handshake, close_notify needs exclusive ownership of wr_mu. Acquire
-     * it with trylock because a writer may hold it while parked, waiting
-     * for the stream interrupt below. This mirrors Go's tls.Conn.Close,
-     * which skips close_notify before handshake completion or while a
-     * Write is in flight.
-     */
-    if (atomic_load(&tls->hs_state) == HS_DONE
-        && xylem_mutex_trylock(tls->wr_mu)) {
-        _tls_flush_close_notify(tls);
-        xylem_mutex_unlock(tls->wr_mu);
-    }
-
-    stream_close(tls->stream);
-}
-
-void tls_destroy(tls_conn_t* tls) {
-    if (!tls) {
-        return;
-    }
-    tls_close(tls);
-    _tls_conn_destroy(tls);
-}
-
-tls_listener_t* tls_listen(
-    const char*       host,
-    uint16_t          port,
-    tls_ctx_t*        ctx,
-    xylem_tls_opts_t* opts) {
-    listener_t* listener
-        = listener_listen(host, port, opts && opts->enable_mss_clamp);
-    if (!listener) {
-        return NULL;
-    }
-
-    tls_listener_t* ln = (tls_listener_t*)calloc(1, sizeof(tls_listener_t));
-    if (!ln) {
-        listener_destroy(listener);
-        return NULL;
-    }
-
-    atomic_init(&ln->closed, false);
-
-    ln->listener = listener;
-    ln->ctx      = &ctx->base;
-
-    return ln;
-}
-
-tls_conn_t* tls_accept(tls_listener_t* ln) {
-    for (;;) {
-        if (atomic_load(&ln->closed)) {
-            break;
-        }
-
-        stream_t* stream = listener_accept(ln->listener);
-        if (!stream) {
-            break;
-        }
-
-        tls_conn_t* conn = _tls_conn_create(stream);
-        if (!conn) {
-            stream_destroy(stream);
-            break;
-        }
-
-        conn->ctx = ln->ctx;
-
-        /**
-         * Defer the handshake to first I/O so it runs in the handler
-         * coroutine and parallelizes, instead of serializing every
-         * client's multi-round-trip handshake behind this acceptor.
-         */
-        atomic_store(&conn->hs_state, HS_PENDING);
-
-        return conn;
-    }
-
-    return NULL;
-}
-
-void tls_close_listener(tls_listener_t* ln) {
-    if (atomic_exchange(&ln->closed, true)) {
-        return;
-    }
-
-    listener_close(ln->listener);
-}
-
-void tls_destroy_listener(tls_listener_t* ln) {
-    if (!ln) {
-        return;
-    }
-    tls_close_listener(ln);
-    listener_destroy(ln->listener);
-    free(ln);
-}
-
-int tls_read(tls_conn_t* tls, void* buf, int len) {
-    if (!buf || len <= 0) {
-        return -1;
-    }
-
-    int ret = -1;
-    if (!atomic_load(&tls->closed)
-        && _tls_ensure_handshake(tls) == 0) {
-        ret = _tls_read_loop(tls, buf, len);
-    }
-    return ret;
-}
-
-int tls_write(tls_conn_t* tls, const void* data, int len) {
-    if (len < 0) {
-        return -1;
-    }
-    if (len == 0) {
-        return 0;
-    }
-    if (!data) {
-        return -1;
-    }
-
-    int ret = -1;
-    if (!atomic_load(&tls->closed)
-        && _tls_ensure_handshake(tls) == 0) {
-        ret = _tls_write_loop(tls, data, len);
-    }
-    return ret;
-}
-
-int tls_handshake(tls_conn_t* tls) {
-    int ret = -1;
-    if (!atomic_load(&tls->closed)) {
-        ret = _tls_ensure_handshake(tls);
-    }
-    return ret;
-}
-
-void tls_set_read_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    if (!atomic_load(&tls->closed)) {
-        atomic_store(&tls->rd_deadline, deadline_ms);
-        stream_set_read_deadline(tls->stream, deadline_ms);
-    }
-}
-
-void tls_set_write_deadline(tls_conn_t* tls, uint64_t deadline_ms) {
-    if (!atomic_load(&tls->closed)) {
-        atomic_store(&tls->wr_deadline, deadline_ms);
-        stream_set_write_deadline(tls->stream, deadline_ms);
-    }
-}
-
-int tls_remote_addr(
-    tls_conn_t* tls,
-    char*       host,
-    size_t      host_len,
-    uint16_t*   port) {
-    int ret = -1;
-    if (!atomic_load(&tls->closed)) {
-        ret = stream_remote_addr(tls->stream, host, host_len, port);
-    }
-    return ret;
-}
-
-int tls_local_addr(
-    tls_conn_t* tls,
-    char*       host,
-    size_t      host_len,
-    uint16_t*   port) {
-    int ret = -1;
-    if (!atomic_load(&tls->closed)) {
-        ret = stream_local_addr(tls->stream, host, host_len, port);
-    }
-    return ret;
-}
-
-int tls_listener_addr(
-    tls_listener_t* ln,
-    char*           host,
-    size_t          host_len,
-    uint16_t*       port) {
-    int ret = -1;
-    if (!atomic_load(&ln->closed)) {
-        ret = listener_addr(ln->listener, host, host_len, port);
-    }
-    return ret;
-}
-
-const char* tls_get_alpn(tls_conn_t* tls) {
-    if (atomic_load(&tls->closed)
-        || atomic_load(&tls->hs_state) != HS_DONE) {
-        return NULL;
-    }
-    return tls->alpn[0] ? tls->alpn : NULL;
-}
-
-tls_conn_t* tls_client_handshake_fd(
-    platform_sock_t   fd,
-    tls_ctx_t*        ctx,
-    xylem_tls_opts_t* opts) {
-    stream_t* stream = stream_from_fd(fd);
-    if (!stream) {
-        platform_socket_close(fd);
-        return NULL;
-    }
-
-    tls_conn_t* tls = _tls_conn_create(stream);
-    if (!tls) {
-        stream_destroy(stream);
-        return NULL;
-    }
-    tls->ctx = &ctx->base;
-
-    /* Arm the handshake deadline; disarm on success. */
-    _tls_set_deadline(tls,
-                      _tls_make_deadline(opts ? opts->connect_timeout_ms
-                                              : 0));
-
-    if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("<tls> client handshake failed");
-        _tls_conn_destroy(tls);
-        return NULL;
-    }
-
-    _tls_set_deadline(tls, 0);
-    return tls;
-}
-
 dtls_conn_t* dtls_dial(
     const char*        host,
     uint16_t           port,
@@ -1971,7 +1007,7 @@ dtls_conn_t* dtls_dial(
         .read  = _dtls_client_io_read,
         .write = _dtls_client_io_write,
     };
-    dtls->be = tls_backend_conn_create(ctx->base.be, false, &io);
+    dtls->be = tls_backend_conn_create(dtls_ctx_get_backend(ctx), false, &io);
     if (!dtls->be) {
         _dtls_conn_unref(dtls);
         return NULL;
@@ -1980,7 +1016,7 @@ dtls_conn_t* dtls_dial(
 
     tls_backend_handshake_cfg_t cfg         = {0};
     const char*                 server_name = opts ? opts->server_name : NULL;
-    if (_tls_configure_client(&ctx->base, server_name, "dtls", &cfg) != 0) {
+    if (dtls_ctx_build_client_config(ctx, server_name, "dtls", &cfg) != 0) {
         _dtls_conn_unref(dtls);
         return NULL;
     }
@@ -1997,7 +1033,7 @@ dtls_conn_t* dtls_dial(
     datagram_set_read_deadline(dtls->datagram, 0);
     datagram_set_write_deadline(dtls->datagram, 0);
 
-    _tls_cache_alpn(dtls->be, dtls->alpn, sizeof(dtls->alpn));
+    tls_backend_conn_get_alpn(dtls->be, dtls->alpn, sizeof(dtls->alpn));
     return dtls;
 }
 
@@ -2019,7 +1055,7 @@ dtls_listener_t* dtls_listen(
     }
 
     ln->datagram = datagram;
-    ln->ctx      = &ctx->base;
+    ln->ctx      = ctx;
     ln->sched    = runtime_get_scheduler();
     if (opts) {
         ln->opts = *opts;

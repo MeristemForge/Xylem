@@ -29,7 +29,8 @@
 
 #include "xylem/net/xylem-tls.h"
 
-#include "tls.h"
+#include "tls-context.h"
+#include "tls-stream.h"
 
 #include "runtime/precond.h"
 
