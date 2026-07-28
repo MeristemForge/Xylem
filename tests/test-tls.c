@@ -1085,14 +1085,15 @@ static void _sni_sel_main(void* arg) {
     const char* def_key   = "test_tls_snisel_def_key.pem";
     const char* host_cert = "test_tls_snisel_host_cert.pem";
     const char* host_key  = "test_tls_snisel_host_key.pem";
-    ASSERT(_utils_cert_gen(def_cert, def_key) == 0);
+    ASSERT(_utils_cert_gen_ec_ex(def_cert, def_key, "localhost",
+                                 "DNS:localhost,IP:127.0.0.1") == 0);
     ASSERT(_utils_cert_gen_ex(host_cert, host_key, "sni.example",
                               "DNS:sni.example") == 0);
 
     xylem_tls_ctx_t* srv_ctx = xylem_tls_ctx_create();
     ASSERT(srv_ctx != NULL);
     ASSERT(xylem_tls_ctx_load_cert(srv_ctx, NULL, def_cert, def_key) == 0);
-    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, "sni.example", host_cert,
+    ASSERT(xylem_tls_ctx_load_cert(srv_ctx, "sni.example.", host_cert,
                                    host_key) == 0);
     xylem_tls_ctx_verify_client(srv_ctx, false);
 
@@ -1181,6 +1182,27 @@ static void test_sni_duplicate_replaces_identity(void) {
     remove(old_key);
     remove(new_cert);
     remove(new_key);
+}
+
+static void test_default_identity_rejects_different_key_type(void) {
+    const char* rsa_cert = "test_tls_defrsa_cert.pem";
+    const char* rsa_key  = "test_tls_defrsa_key.pem";
+    const char* ec_cert  = "test_tls_defec_cert.pem";
+    const char* ec_key   = "test_tls_defec_key.pem";
+    ASSERT(_utils_cert_gen(rsa_cert, rsa_key) == 0);
+    ASSERT(_utils_cert_gen_ec_ex(
+               ec_cert, ec_key, "localhost", "DNS:localhost") == 0);
+
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, rsa_cert, rsa_key) == 0);
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, ec_cert, ec_key) == -1);
+
+    xylem_tls_ctx_destroy(ctx);
+    remove(rsa_cert);
+    remove(rsa_key);
+    remove(ec_cert);
+    remove(ec_key);
 }
 
 static void _addr_server(void* arg) {
@@ -1589,6 +1611,7 @@ static void _test_run_all(void* arg) {
     test_default_identity_uses_dial_host();
     test_sni_cert_selection();
     test_sni_duplicate_replaces_identity();
+    test_default_identity_rejects_different_key_type();
     test_remote_addr();
     test_concurrent_close();
     test_close_listener_with_active_conn();

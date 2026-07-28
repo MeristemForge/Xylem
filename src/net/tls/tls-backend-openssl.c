@@ -241,11 +241,8 @@ static int _tlsb_ctx_sni_cb(SSL* ssl, int* al, void* arg) {
         if (platform_strcasecmp(name, e->hostname) != 0) {
             continue;
         }
-        /**
-         * use/set1 variants bump the refcount on the stored objects,
-         * so the ctx keeps ownership and each connection holds its own
-         * reference. Validated key/cert pairing at load time.
-         */
+        /* Remove inherited key-type slots before selecting this identity. */
+        SSL_certs_clear(ssl);
         if (SSL_use_certificate(ssl, e->cert) != 1
             || SSL_use_PrivateKey(ssl, e->key) != 1) {
             xylem_loge("<tls> sni apply cert failed host=%s", e->hostname);
@@ -433,6 +430,31 @@ static int _tlsb_load_pem_identity_mem(
     return rc;
 }
 
+static int _tlsb_normalize_dns_name(
+    const char*  name,
+    char*        buf,
+    size_t       cap,
+    const char** out) {
+    *out = name;
+    if (!name) {
+        return 0;
+    }
+
+    size_t len = strlen(name);
+    if (len <= 1 || name[len - 1] != '.') {
+        return 0;
+    }
+    if (len > cap) {
+        return -1;
+    }
+
+    /* SNI and certificate matching omit the absolute name's root label. */
+    memcpy(buf, name, len - 1);
+    buf[len - 1] = '\0';
+    *out         = buf;
+    return 0;
+}
+
 /**
  * Take ownership of (leaf, key, chain) into a new SNI entry bound to
  * hostname. On allocation failure the identity is freed and -1 is
@@ -492,6 +514,16 @@ static int _tlsb_apply_default_identity(
     X509*              leaf,
     EVP_PKEY*          key,
     STACK_OF(X509)*    chain) {
+    X509* current = SSL_CTX_get0_certificate(ctx->ssl_ctx);
+    if (current) {
+        EVP_PKEY* current_key = X509_get0_pubkey(current);
+        int       key_type    = EVP_PKEY_get_base_id(key);
+        if (!current_key || key_type == EVP_PKEY_NONE
+            || EVP_PKEY_get_base_id(current_key) != key_type) {
+            return -1;
+        }
+    }
+
     if (SSL_CTX_use_certificate(ctx->ssl_ctx, leaf) != 1
         || SSL_CTX_use_PrivateKey(ctx->ssl_ctx, key) != 1) {
         return -1;
@@ -517,7 +549,20 @@ static int _tlsb_install_identity(
     EVP_PKEY*          key,
     STACK_OF(X509)*    chain) {
     if (hostname) {
-        return _tlsb_store_sni_identity(ctx, hostname, leaf, key, chain);
+        char        hostname_buf[TLSB_DNS_NAME_CAP];
+        const char* normalized_hostname;
+        if (_tlsb_normalize_dns_name(hostname,
+                                     hostname_buf,
+                                     sizeof(hostname_buf),
+                                     &normalized_hostname)
+            == 0) {
+            return _tlsb_store_sni_identity(
+                ctx, normalized_hostname, leaf, key, chain);
+        }
+        EVP_PKEY_free(key);
+        sk_X509_pop_free(chain, X509_free);
+        X509_free(leaf);
+        return -1;
     }
     int rc = _tlsb_apply_default_identity(ctx, leaf, key, chain);
     EVP_PKEY_free(key);
@@ -574,31 +619,6 @@ static int _tlsb_cookie_verify_cb(
         return 0;
     }
     return CRYPTO_memcmp(cookie, expected, TLSB_COOKIE_SIZE) == 0 ? 1 : 0;
-}
-
-static int _tlsb_normalize_dns_name(
-    const char*  name,
-    char*        buf,
-    size_t       cap,
-    const char** out) {
-    *out = name;
-    if (!name) {
-        return 0;
-    }
-
-    size_t len = strlen(name);
-    if (len <= 1 || name[len - 1] != '.') {
-        return 0;
-    }
-    if (len > cap) {
-        return -1;
-    }
-
-    /* SNI and certificate matching omit the absolute name's root label. */
-    memcpy(buf, name, len - 1);
-    buf[len - 1] = '\0';
-    *out         = buf;
-    return 0;
 }
 
 tls_backend_ctx_t* tls_backend_ctx_create(tls_backend_proto_t proto) {

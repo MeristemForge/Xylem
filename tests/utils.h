@@ -75,6 +75,7 @@ static inline void _utils_watchdog_stop(void) {
 #include <openssl/x509v3.h>
 
 #include <stdio.h>
+#include <string.h>
 
 /**
  * Write PEM data to a file via a memory BIO instead of passing FILE*
@@ -118,25 +119,31 @@ static inline int _utils_cert_write_key(BIO* bio, void* obj) {
 }
 
 /**
- * Generate a self-signed cert/key pair with the given subject common name
- * and subjectAltName (e.g. "DNS:localhost,IP:127.0.0.1"). Returns 0 on
- * success, -1 on failure.
+ * Generate a self-signed cert/key pair with the requested OpenSSL key type,
+ * subject common name, and subjectAltName. Returns 0 on success, -1 on failure.
  */
-static inline int _utils_cert_gen_ex(const char* cert_path,
-                                     const char* key_path,
-                                     const char* cn, const char* san) {
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    if (!pkey) {
+static inline int _utils_cert_gen_type_ex(
+    const char* cert_path,
+    const char* key_path,
+    const char* cn,
+    const char* san,
+    const char* key_type) {
+    EVP_PKEY*     pkey = NULL;
+    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_from_name(NULL, key_type, NULL);
+    if (!pctx) {
         return -1;
     }
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
-    if (!pctx) {
+    int rc = EVP_PKEY_keygen_init(pctx);
+    if (strcmp(key_type, "RSA") == 0) {
+        rc = rc > 0 ? EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048) : rc;
+    } else {
+        rc = rc > 0 ? EVP_PKEY_CTX_set_group_name(pctx, "P-256") : rc;
+    }
+    if (rc <= 0 || EVP_PKEY_keygen(pctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(pctx);
         EVP_PKEY_free(pkey);
         return -1;
     }
-    EVP_PKEY_keygen_init(pctx);
-    EVP_PKEY_CTX_set_rsa_keygen_bits(pctx, 2048);
-    EVP_PKEY_keygen(pctx, &pkey);
     EVP_PKEY_CTX_free(pctx);
 
     X509* x509 = X509_new();
@@ -161,7 +168,7 @@ static inline int _utils_cert_gen_ex(const char* cert_path,
 
     X509_sign(x509, pkey, EVP_sha256());
 
-    int rc = 0;
+    rc = 0;
     if (_utils_cert_write_pem(cert_path, _utils_cert_write_x509, x509) != 0) {
         rc = -1;
     }
@@ -173,6 +180,18 @@ static inline int _utils_cert_gen_ex(const char* cert_path,
     X509_free(x509);
     EVP_PKEY_free(pkey);
     return rc;
+}
+
+static inline int _utils_cert_gen_ex(const char* cert_path,
+                                     const char* key_path,
+                                     const char* cn, const char* san) {
+    return _utils_cert_gen_type_ex(cert_path, key_path, cn, san, "RSA");
+}
+
+static inline int _utils_cert_gen_ec_ex(const char* cert_path,
+                                        const char* key_path,
+                                        const char* cn, const char* san) {
+    return _utils_cert_gen_type_ex(cert_path, key_path, cn, san, "EC");
 }
 
 /**

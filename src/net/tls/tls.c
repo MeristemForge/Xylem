@@ -110,6 +110,11 @@ static tls_conn_t* _tls_conn_create(stream_t* stream) {
         return NULL;
     }
 
+    atomic_init(&tls->rd_deadline, 0);
+    atomic_init(&tls->wr_deadline, 0);
+    atomic_init(&tls->hs_state, HS_DONE);
+    atomic_init(&tls->closed, false);
+
     tls->stream = stream;
     tls->ssl_mu = xylem_mutex_create();
     tls->rd_mu  = xylem_mutex_create();
@@ -1513,6 +1518,8 @@ tls_listener_t* tls_listen(
         listener_destroy(listener);
         return NULL;
     }
+
+    atomic_init(&ln->closed, false);
 
     ln->listener = listener;
     ln->ctx      = ctx;
