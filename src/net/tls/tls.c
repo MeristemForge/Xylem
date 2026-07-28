@@ -62,10 +62,18 @@
 
 typedef struct _dtls_dgram_s _dtls_dgram_t;
 
-struct xylem_tls_ctx_s {
+typedef struct {
     tls_backend_ctx_t* be;
     bool               verify_server;
     bool               verify_client;
+} _tls_ctx_base_t;
+
+struct xylem_tls_ctx_s {
+    _tls_ctx_base_t base;
+};
+
+struct xylem_dtls_ctx_s {
+    _tls_ctx_base_t base;
 };
 
 struct xylem_tls_conn_s {
@@ -75,7 +83,7 @@ struct xylem_tls_conn_s {
     xylem_mutex_t*      wr_mu;
     xylem_mutex_t*      hs_mu;          /* elects one lazy-handshake driver */
     stream_t*           stream;
-    tls_ctx_t*          ctx;
+    _tls_ctx_base_t*    ctx;
     char                alpn[256];
     _Atomic uint64_t    rd_deadline;
     _Atomic uint64_t    wr_deadline;
@@ -84,9 +92,9 @@ struct xylem_tls_conn_s {
 };
 
 struct xylem_tls_listener_s {
-    listener_t*  listener;
-    tls_ctx_t*   ctx;
-    _Atomic bool closed;
+    listener_t*      listener;
+    _tls_ctx_base_t* ctx;
+    _Atomic bool     closed;
 };
 
 struct xylem_dtls_conn_s {
@@ -114,7 +122,7 @@ struct xylem_dtls_conn_s {
 
 struct xylem_dtls_listener_s {
     datagram_t*        datagram;
-    tls_ctx_t*         ctx;
+    _tls_ctx_base_t*   ctx;
     xylem_dtls_opts_t  opts;
     rbtree_t           sessions;
     xylem_mutex_t*     sessions_mu;
@@ -295,7 +303,7 @@ static int _tls_do_handshake(tls_conn_t* tls) {
 }
 
 static int _tls_configure_client(
-    tls_ctx_t*                   ctx,
+    _tls_ctx_base_t*             ctx,
     const char*                  identity,
     const char*                  module,
     tls_backend_handshake_cfg_t* cfg) {
@@ -343,7 +351,7 @@ static int _tls_configure_client(
 }
 
 static void _tls_configure_server(
-    tls_ctx_t*                   ctx,
+    _tls_ctx_base_t*             ctx,
     tls_backend_handshake_cfg_t* cfg) {
     cfg->verify = ctx->verify_client ? TLS_BACKEND_VERIFY_REQUIRE
                                      : TLS_BACKEND_VERIFY_NONE;
@@ -1446,42 +1454,127 @@ static void _dtls_server_close(dtls_conn_t* dtls) {
     _dtls_server_shutdown(dtls);
 }
 
-static tls_ctx_t* _tls_ctx_create(tls_backend_proto_t proto) {
+static int _tls_ctx_base_init(
+    _tls_ctx_base_t*    base,
+    tls_backend_proto_t proto) {
+    base->be = tls_backend_ctx_create(proto);
+    if (!base->be) {
+        return -1;
+    }
+    base->verify_server = true;
+    base->verify_client = false;
+    return 0;
+}
+
+static void _tls_ctx_base_deinit(_tls_ctx_base_t* base) {
+    tls_backend_ctx_destroy(base->be);
+}
+
+static int _tls_ctx_base_set_keylog(
+    _tls_ctx_base_t* base,
+    const char*      path) {
+    return tls_backend_ctx_set_keylog(base->be, path);
+}
+
+static int _tls_ctx_base_load_cert(
+    _tls_ctx_base_t* base,
+    const char*      hostname,
+    const char*      cert,
+    const char*      key) {
+    return tls_backend_ctx_load_cert_file(base->be, hostname, cert, key);
+}
+
+static int _tls_ctx_base_load_cert_mem(
+    _tls_ctx_base_t* base,
+    const char*      hostname,
+    const void*      cert_pem,
+    size_t           cert_len,
+    const void*      key_pem,
+    size_t           key_len) {
+    if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
+        return -1;
+    }
+    return tls_backend_ctx_load_cert_mem(base->be, hostname, cert_pem, cert_len,
+                                         key_pem, key_len);
+}
+
+static int _tls_ctx_base_load_ca(
+    _tls_ctx_base_t* base,
+    const char*      ca_file) {
+    return tls_backend_ctx_load_ca_file(base->be, ca_file);
+}
+
+static int _tls_ctx_base_load_system_ca(
+    _tls_ctx_base_t* base,
+    const char*      fallback_ca_file) {
+    return tls_backend_ctx_load_system_ca(base->be, fallback_ca_file);
+}
+
+static void _tls_ctx_base_verify_server(
+    _tls_ctx_base_t* base,
+    bool             enable) {
+    base->verify_server = enable;
+}
+
+static void _tls_ctx_base_verify_client(
+    _tls_ctx_base_t* base,
+    bool             enable) {
+    base->verify_client = enable;
+}
+
+static int _tls_ctx_base_set_alpn(
+    _tls_ctx_base_t* base,
+    const char**     protocols,
+    size_t           count) {
+    return tls_backend_ctx_set_alpn(base->be, protocols, count);
+}
+
+tls_ctx_t* tls_ctx_create(void) {
     tls_ctx_t* ctx = (tls_ctx_t*)calloc(1, sizeof(tls_ctx_t));
     if (!ctx) {
         return NULL;
     }
-    ctx->be = tls_backend_ctx_create(proto);
-    if (!ctx->be) {
+    if (_tls_ctx_base_init(&ctx->base, TLS_BACKEND_PROTO_TLS) != 0) {
         free(ctx);
         return NULL;
     }
-    ctx->verify_server = true;
-    ctx->verify_client = false;
     return ctx;
 }
 
-tls_ctx_t* tls_ctx_create(void) {
-    return _tls_ctx_create(TLS_BACKEND_PROTO_TLS);
-}
-
-tls_ctx_t* dtls_ctx_create(void) {
-    return _tls_ctx_create(TLS_BACKEND_PROTO_DTLS);
+dtls_ctx_t* dtls_ctx_create(void) {
+    dtls_ctx_t* ctx = (dtls_ctx_t*)calloc(1, sizeof(dtls_ctx_t));
+    if (!ctx) {
+        return NULL;
+    }
+    if (_tls_ctx_base_init(&ctx->base, TLS_BACKEND_PROTO_DTLS) != 0) {
+        free(ctx);
+        return NULL;
+    }
+    return ctx;
 }
 
 void tls_ctx_destroy(tls_ctx_t* ctx) {
     if (!ctx) {
         return;
     }
-    tls_backend_ctx_destroy(ctx->be);
+    _tls_ctx_base_deinit(&ctx->base);
+    free(ctx);
+}
+
+void dtls_ctx_destroy(dtls_ctx_t* ctx) {
+    if (!ctx) {
+        return;
+    }
+    _tls_ctx_base_deinit(&ctx->base);
     free(ctx);
 }
 
 int tls_ctx_set_keylog(tls_ctx_t* ctx, const char* path) {
-    if (!ctx) {
-        return -1;
-    }
-    return tls_backend_ctx_set_keylog(ctx->be, path);
+    return ctx ? _tls_ctx_base_set_keylog(&ctx->base, path) : -1;
+}
+
+int dtls_ctx_set_keylog(dtls_ctx_t* ctx, const char* path) {
+    return ctx ? _tls_ctx_base_set_keylog(&ctx->base, path) : -1;
 }
 
 int tls_ctx_load_cert(
@@ -1489,7 +1582,15 @@ int tls_ctx_load_cert(
     const char* hostname,
     const char* cert,
     const char* key) {
-    return tls_backend_ctx_load_cert_file(ctx->be, hostname, cert, key);
+    return _tls_ctx_base_load_cert(&ctx->base, hostname, cert, key);
+}
+
+int dtls_ctx_load_cert(
+    dtls_ctx_t* ctx,
+    const char* hostname,
+    const char* cert,
+    const char* key) {
+    return _tls_ctx_base_load_cert(&ctx->base, hostname, cert, key);
 }
 
 int tls_ctx_load_cert_mem(
@@ -1499,31 +1600,64 @@ int tls_ctx_load_cert_mem(
     size_t      cert_len,
     const void* key_pem,
     size_t      key_len) {
-    if (!cert_pem || cert_len == 0 || !key_pem || key_len == 0) {
-        return -1;
-    }
-    return tls_backend_ctx_load_cert_mem(ctx->be, hostname, cert_pem, cert_len,
-                                         key_pem, key_len);
+    return _tls_ctx_base_load_cert_mem(&ctx->base, hostname, cert_pem, cert_len,
+                                       key_pem, key_len);
+}
+
+int dtls_ctx_load_cert_mem(
+    dtls_ctx_t* ctx,
+    const char* hostname,
+    const void* cert_pem,
+    size_t      cert_len,
+    const void* key_pem,
+    size_t      key_len) {
+    return _tls_ctx_base_load_cert_mem(&ctx->base, hostname, cert_pem, cert_len,
+                                       key_pem, key_len);
 }
 
 int tls_ctx_load_ca(tls_ctx_t* ctx, const char* ca_file) {
-    return tls_backend_ctx_load_ca_file(ctx->be, ca_file);
+    return _tls_ctx_base_load_ca(&ctx->base, ca_file);
+}
+
+int dtls_ctx_load_ca(dtls_ctx_t* ctx, const char* ca_file) {
+    return _tls_ctx_base_load_ca(&ctx->base, ca_file);
 }
 
 int tls_ctx_load_system_ca(tls_ctx_t* ctx, const char* fallback_ca_file) {
-    return tls_backend_ctx_load_system_ca(ctx->be, fallback_ca_file);
+    return _tls_ctx_base_load_system_ca(&ctx->base, fallback_ca_file);
+}
+
+int dtls_ctx_load_system_ca(
+    dtls_ctx_t* ctx,
+    const char* fallback_ca_file) {
+    return _tls_ctx_base_load_system_ca(&ctx->base, fallback_ca_file);
 }
 
 void tls_ctx_verify_server(tls_ctx_t* ctx, bool enable) {
-    ctx->verify_server = enable;
+    _tls_ctx_base_verify_server(&ctx->base, enable);
+}
+
+void dtls_ctx_verify_server(dtls_ctx_t* ctx, bool enable) {
+    _tls_ctx_base_verify_server(&ctx->base, enable);
 }
 
 void tls_ctx_verify_client(tls_ctx_t* ctx, bool enable) {
-    ctx->verify_client = enable;
+    _tls_ctx_base_verify_client(&ctx->base, enable);
+}
+
+void dtls_ctx_verify_client(dtls_ctx_t* ctx, bool enable) {
+    _tls_ctx_base_verify_client(&ctx->base, enable);
 }
 
 int tls_ctx_set_alpn(tls_ctx_t* ctx, const char** protocols, size_t count) {
-    return tls_backend_ctx_set_alpn(ctx->be, protocols, count);
+    return _tls_ctx_base_set_alpn(&ctx->base, protocols, count);
+}
+
+int dtls_ctx_set_alpn(
+    dtls_ctx_t* ctx,
+    const char** protocols,
+    size_t       count) {
+    return _tls_ctx_base_set_alpn(&ctx->base, protocols, count);
 }
 
 tls_conn_t* tls_dial(
@@ -1545,7 +1679,7 @@ tls_conn_t* tls_dial(
         return NULL;
     }
 
-    tls->ctx = ctx;
+    tls->ctx = &ctx->base;
 
     /* The same absolute deadline bounds connect plus handshake. */
     _tls_set_deadline(tls, deadline);
@@ -1613,7 +1747,7 @@ tls_listener_t* tls_listen(
     atomic_init(&ln->closed, false);
 
     ln->listener = listener;
-    ln->ctx      = ctx;
+    ln->ctx      = &ctx->base;
 
     return ln;
 }
@@ -1780,7 +1914,7 @@ tls_conn_t* tls_client_handshake_fd(
         stream_destroy(stream);
         return NULL;
     }
-    tls->ctx = ctx;
+    tls->ctx = &ctx->base;
 
     /* Arm the handshake deadline; disarm on success. */
     _tls_set_deadline(tls,
@@ -1800,7 +1934,7 @@ tls_conn_t* tls_client_handshake_fd(
 dtls_conn_t* dtls_dial(
     const char*        host,
     uint16_t           port,
-    tls_ctx_t*         ctx,
+    dtls_ctx_t*        ctx,
     xylem_dtls_opts_t* opts) {
     datagram_t* datagram = datagram_dial(host, port);
     if (!datagram) {
@@ -1837,7 +1971,7 @@ dtls_conn_t* dtls_dial(
         .read  = _dtls_client_io_read,
         .write = _dtls_client_io_write,
     };
-    dtls->be = tls_backend_conn_create(ctx->be, false, &io);
+    dtls->be = tls_backend_conn_create(ctx->base.be, false, &io);
     if (!dtls->be) {
         _dtls_conn_unref(dtls);
         return NULL;
@@ -1846,7 +1980,7 @@ dtls_conn_t* dtls_dial(
 
     tls_backend_handshake_cfg_t cfg         = {0};
     const char*                 server_name = opts ? opts->server_name : NULL;
-    if (_tls_configure_client(ctx, server_name, "dtls", &cfg) != 0) {
+    if (_tls_configure_client(&ctx->base, server_name, "dtls", &cfg) != 0) {
         _dtls_conn_unref(dtls);
         return NULL;
     }
@@ -1870,7 +2004,7 @@ dtls_conn_t* dtls_dial(
 dtls_listener_t* dtls_listen(
     const char*        host,
     uint16_t           port,
-    tls_ctx_t*         ctx,
+    dtls_ctx_t*        ctx,
     xylem_dtls_opts_t* opts) {
     datagram_t* datagram = datagram_listen(host, port);
     if (!datagram) {
@@ -1885,7 +2019,7 @@ dtls_listener_t* dtls_listen(
     }
 
     ln->datagram = datagram;
-    ln->ctx      = ctx;
+    ln->ctx      = &ctx->base;
     ln->sched    = runtime_get_scheduler();
     if (opts) {
         ln->opts = *opts;

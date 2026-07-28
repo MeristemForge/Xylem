@@ -46,6 +46,7 @@ _Pragma("once")
 typedef xylem_tls_ctx_t       tls_ctx_t;
 typedef xylem_tls_conn_t      tls_conn_t;
 typedef xylem_tls_listener_t  tls_listener_t;
+typedef xylem_dtls_ctx_t      dtls_ctx_t;
 typedef xylem_dtls_conn_t     dtls_conn_t;
 typedef xylem_dtls_listener_t dtls_listener_t;
 
@@ -419,7 +420,112 @@ extern tls_conn_t* tls_client_handshake_fd(
  *
  * @return Context handle, or NULL on failure.
  */
-extern tls_ctx_t* dtls_ctx_create(void);
+extern dtls_ctx_t* dtls_ctx_create(void);
+
+/**
+ * @brief Destroy a DTLS engine context. NULL-safe.
+ *
+ * @param ctx  Context handle.
+ */
+extern void dtls_ctx_destroy(dtls_ctx_t* ctx);
+
+/**
+ * @brief Enable NSS key-log output for a DTLS context.
+ *
+ * @param ctx   Context handle.
+ * @param path  Output file path, or NULL to disable.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dtls_ctx_set_keylog(dtls_ctx_t* ctx, const char* path);
+
+/**
+ * @brief Load a DTLS certificate chain and key from files.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  SNI hostname, or NULL for the default identity.
+ * @param cert      Path to the PEM certificate chain.
+ * @param key       Path to the PEM private key.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dtls_ctx_load_cert(
+    dtls_ctx_t* ctx,
+    const char* hostname,
+    const char* cert,
+    const char* key);
+
+/**
+ * @brief Load a DTLS certificate chain and key from memory.
+ *
+ * @param ctx       Context handle.
+ * @param hostname  SNI hostname, or NULL for the default identity.
+ * @param cert_pem  PEM certificate chain bytes.
+ * @param cert_len  Length of cert_pem in bytes.
+ * @param key_pem   PEM private key bytes.
+ * @param key_len   Length of key_pem in bytes.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dtls_ctx_load_cert_mem(
+    dtls_ctx_t* ctx,
+    const char* hostname,
+    const void* cert_pem,
+    size_t      cert_len,
+    const void* key_pem,
+    size_t      key_len);
+
+/**
+ * @brief Add a CA certificate file to a DTLS context.
+ *
+ * @param ctx      Context handle.
+ * @param ca_file  Path to a PEM CA certificate or bundle.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dtls_ctx_load_ca(dtls_ctx_t* ctx, const char* ca_file);
+
+/**
+ * @brief Load system and fallback trust anchors for a DTLS context.
+ *
+ * @param ctx               Context handle.
+ * @param fallback_ca_file  PEM CA bundle path, or NULL for none.
+ *
+ * @return 0 if at least one source loaded, -1 otherwise.
+ */
+extern int dtls_ctx_load_system_ca(
+    dtls_ctx_t* ctx,
+    const char* fallback_ca_file);
+
+/**
+ * @brief Set whether a DTLS client verifies the server certificate.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to verify, false to skip.
+ */
+extern void dtls_ctx_verify_server(dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set whether a DTLS server requires a client certificate.
+ *
+ * @param ctx     Context handle.
+ * @param enable  true to require and verify, false to request none.
+ */
+extern void dtls_ctx_verify_client(dtls_ctx_t* ctx, bool enable);
+
+/**
+ * @brief Set the DTLS ALPN protocol list.
+ *
+ * @param ctx        Context handle.
+ * @param protocols  Array of protocol strings.
+ * @param count      Number of protocols.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int dtls_ctx_set_alpn(
+    dtls_ctx_t* ctx,
+    const char** protocols,
+    size_t       count);
 
 /**
  * @brief Dial and handshake a DTLS connection.
@@ -434,7 +540,7 @@ extern tls_ctx_t* dtls_ctx_create(void);
 extern dtls_conn_t* dtls_dial(
     const char*        host,
     uint16_t           port,
-    tls_ctx_t*         ctx,
+    dtls_ctx_t*        ctx,
     xylem_dtls_opts_t* opts);
 
 /**
@@ -450,7 +556,7 @@ extern dtls_conn_t* dtls_dial(
 extern dtls_listener_t* dtls_listen(
     const char*        host,
     uint16_t           port,
-    tls_ctx_t*         ctx,
+    dtls_ctx_t*        ctx,
     xylem_dtls_opts_t* opts);
 
 /**

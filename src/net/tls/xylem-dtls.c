@@ -22,9 +22,8 @@
 /**
  * DTLS public API surface.
  *
- * Thin opaque-handle shim over the internal DTLS engine in tls.c. DTLS
- * connections and listeners use the public opaque types directly. The
- * context converts to the shared TLS/DTLS engine context at the boundary.
+ * Thin opaque-handle shim over the internal DTLS engine in tls.c. Every
+ * public opaque type aliases its matching internal engine type.
  */
 
 #include "xylem/net/xylem-dtls.h"
@@ -36,7 +35,7 @@
 xylem_dtls_ctx_t* xylem_dtls_ctx_create(void) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_create");
 
-    return (xylem_dtls_ctx_t*)(void*)dtls_ctx_create();
+    return dtls_ctx_create();
 }
 
 void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
@@ -45,7 +44,7 @@ void xylem_dtls_ctx_destroy(xylem_dtls_ctx_t* ctx) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_destroy");
 
-    tls_ctx_destroy((tls_ctx_t*)(void*)ctx);
+    dtls_ctx_destroy(ctx);
 }
 
 int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
@@ -54,7 +53,7 @@ int xylem_dtls_ctx_set_keylog(xylem_dtls_ctx_t* ctx, const char* path) {
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_keylog");
 
-    return tls_ctx_set_keylog((tls_ctx_t*)(void*)ctx, path);
+    return dtls_ctx_set_keylog(ctx, path);
 }
 
 int xylem_dtls_ctx_load_cert(
@@ -64,7 +63,7 @@ int xylem_dtls_ctx_load_cert(
     const char*       key) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert");
 
-    return tls_ctx_load_cert((tls_ctx_t*)(void*)ctx, hostname, cert, key);
+    return dtls_ctx_load_cert(ctx, hostname, cert, key);
 }
 
 int xylem_dtls_ctx_load_cert_mem(
@@ -79,14 +78,14 @@ int xylem_dtls_ctx_load_cert_mem(
     }
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_cert_mem");
 
-    return tls_ctx_load_cert_mem((tls_ctx_t*)(void*)ctx, hostname, cert_pem,
-                                 cert_len, key_pem, key_len);
+    return dtls_ctx_load_cert_mem(ctx, hostname, cert_pem, cert_len, key_pem,
+                                  key_len);
 }
 
 int xylem_dtls_ctx_load_ca(xylem_dtls_ctx_t* ctx, const char* ca_file) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_ca");
 
-    return tls_ctx_load_ca((tls_ctx_t*)(void*)ctx, ca_file);
+    return dtls_ctx_load_ca(ctx, ca_file);
 }
 
 int xylem_dtls_ctx_load_system_ca(
@@ -94,20 +93,19 @@ int xylem_dtls_ctx_load_system_ca(
     const char*       fallback_ca_file) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_load_system_ca");
 
-    return tls_ctx_load_system_ca(
-        (tls_ctx_t*)(void*)ctx, fallback_ca_file);
+    return dtls_ctx_load_system_ca(ctx, fallback_ca_file);
 }
 
 void xylem_dtls_ctx_verify_server(xylem_dtls_ctx_t* ctx, bool enable) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_server");
 
-    tls_ctx_verify_server((tls_ctx_t*)(void*)ctx, enable);
+    dtls_ctx_verify_server(ctx, enable);
 }
 
 void xylem_dtls_ctx_verify_client(xylem_dtls_ctx_t* ctx, bool enable) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_verify_client");
 
-    tls_ctx_verify_client((tls_ctx_t*)(void*)ctx, enable);
+    dtls_ctx_verify_client(ctx, enable);
 }
 
 int xylem_dtls_ctx_set_alpn(
@@ -116,7 +114,7 @@ int xylem_dtls_ctx_set_alpn(
     size_t            count) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_ctx_set_alpn");
 
-    return tls_ctx_set_alpn((tls_ctx_t*)(void*)ctx, protocols, count);
+    return dtls_ctx_set_alpn(ctx, protocols, count);
 }
 
 xylem_dtls_conn_t* xylem_dtls_dial(
@@ -126,7 +124,7 @@ xylem_dtls_conn_t* xylem_dtls_dial(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_dial");
 
-    return dtls_dial(host, port, (tls_ctx_t*)(void*)ctx, opts);
+    return dtls_dial(host, port, ctx, opts);
 }
 
 xylem_dtls_listener_t* xylem_dtls_listen(
@@ -136,7 +134,7 @@ xylem_dtls_listener_t* xylem_dtls_listen(
     xylem_dtls_opts_t* opts) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_listen");
 
-    return dtls_listen(host, port, (tls_ctx_t*)(void*)ctx, opts);
+    return dtls_listen(host, port, ctx, opts);
 }
 
 xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
