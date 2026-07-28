@@ -47,6 +47,7 @@ typedef struct tls_backend_ctx_s  tls_backend_ctx_t;
 typedef struct tls_backend_conn_s tls_backend_conn_t;
 
 #define TLS_BACKEND_IO_AGAIN (-2)
+#define TLS_BACKEND_IDENTITY_CAP 256
 
 typedef int (*tls_backend_io_read_fn_t)(
     void* user,
@@ -85,16 +86,17 @@ typedef enum {
     TLS_BACKEND_PROTO_DTLS
 } tls_backend_proto_t;
 
-/**
- * One-shot pre-handshake connection configuration. Filled by the engine
- * from neutral decisions it already owns. The backend MUST copy any string
- * it retains -- the pointers reference engine-owned temporaries.
- */
+typedef enum {
+    TLS_BACKEND_IDENTITY_NONE,
+    TLS_BACKEND_IDENTITY_DNS,
+    TLS_BACKEND_IDENTITY_IP
+} tls_backend_identity_t;
+
+/* One-shot pre-handshake connection configuration owned by the engine. */
 typedef struct {
-    tls_backend_verify_t verify;
-    const char*          sni_name;          /* Client DNS SNI, or NULL. */
-    const char*          verify_dns_name;   /* DNS identity, or NULL. */
-    const char*          verify_ip_address; /* Numeric IP identity, or NULL. */
+    tls_backend_verify_t   verify;
+    tls_backend_identity_t identity_type;
+    char                   identity[TLS_BACKEND_IDENTITY_CAP];
 } tls_backend_handshake_cfg_t;
 
 /**

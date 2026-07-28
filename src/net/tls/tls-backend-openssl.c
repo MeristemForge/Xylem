@@ -945,38 +945,30 @@ int tls_backend_conn_configure(
     }
     SSL_set_verify(c->ssl, mode, NULL);
 
-    char        sni_buf[TLSB_DNS_NAME_CAP];
-    const char* sni_name;
-    if (_tlsb_normalize_dns_name(
-            cfg->sni_name, sni_buf, sizeof(sni_buf), &sni_name)
-        != 0) {
-        return -1;
-    }
-    if (sni_name && SSL_set_tlsext_host_name(c->ssl, sni_name) != 1) {
-        return -1;
-    }
-
-    char        verify_buf[TLSB_DNS_NAME_CAP];
-    const char* verify_dns_name;
-    if (_tlsb_normalize_dns_name(cfg->verify_dns_name,
-                                 verify_buf,
-                                 sizeof(verify_buf),
-                                 &verify_dns_name)
-        != 0) {
-        return -1;
-    }
-    if (verify_dns_name && SSL_set1_host(c->ssl, verify_dns_name) != 1) {
-        return -1;
-    }
-    if (cfg->verify_ip_address) {
-        X509_VERIFY_PARAM* param = SSL_get0_param(c->ssl);
-        if (!param
-            || X509_VERIFY_PARAM_set1_ip_asc(
-                   param,
-                   cfg->verify_ip_address)
-                   != 1) {
+    switch (cfg->identity_type) {
+        case TLS_BACKEND_IDENTITY_NONE:
+            break;
+        case TLS_BACKEND_IDENTITY_DNS:
+            if (SSL_set_tlsext_host_name(c->ssl, cfg->identity) != 1) {
+                return -1;
+            }
+            if (cfg->verify != TLS_BACKEND_VERIFY_NONE
+                && SSL_set1_host(c->ssl, cfg->identity) != 1) {
+                return -1;
+            }
+            break;
+        case TLS_BACKEND_IDENTITY_IP:
+            if (cfg->verify == TLS_BACKEND_VERIFY_NONE) {
+                break;
+            }
+            X509_VERIFY_PARAM* param = SSL_get0_param(c->ssl);
+            if (!param
+                || X509_VERIFY_PARAM_set1_ip_asc(param, cfg->identity) != 1) {
+                return -1;
+            }
+            break;
+        default:
             return -1;
-        }
     }
     return 0;
 }

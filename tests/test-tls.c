@@ -1025,6 +1025,49 @@ static void test_default_identity_uses_dial_host(void) {
     remove(key);
 }
 
+static void _scoped_identity_client(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tls_opts_t opts = {.server_name = "fe80::1%3"};
+    xylem_tls_conn_t* conn =
+        xylem_tls_dial(TLS_HOST, ctx->port, ctx->cli_ctx, &opts);
+    ASSERT(conn != NULL);
+
+    const char* msg = "scoped-ip";
+    ASSERT(xylem_tls_write(conn, msg, (int)strlen(msg)) == 0);
+    char buf[16];
+    int  n = xylem_tls_read(conn, buf, sizeof(buf));
+    ASSERT(n == (int)strlen(msg));
+    ASSERT(memcmp(buf, msg, (size_t)n) == 0);
+
+    xylem_tls_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_scoped_ipv6_identity(void) {
+    const char* cert = "test_tls_scoped_ip_cert.pem";
+    const char* key  = "test_tls_scoped_ip_key.pem";
+    ASSERT(_utils_cert_gen_ex(cert, key, "fe80::1", "IP:fe80::1") == 0);
+
+    xylem_tls_ctx_t* srv_ctx = _srv_ctx(cert, key);
+    xylem_tls_ctx_t* cli_ctx = xylem_tls_ctx_create();
+    ASSERT(cli_ctx != NULL);
+    ASSERT(xylem_tls_ctx_load_ca(cli_ctx, cert) == 0);
+
+    _ctx_t ctx = {
+        .srv_ctx = srv_ctx,
+        .cli_ctx = cli_ctx,
+        .port    = TLS_PORT + 18,
+    };
+    _drive(&ctx, 2, _echo_server, _scoped_identity_client, NULL);
+
+    xylem_tls_ctx_destroy(srv_ctx);
+    xylem_tls_ctx_destroy(cli_ctx);
+    remove(cert);
+    remove(key);
+}
+
 static void _sni_sel_server(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tls_listener_t* ln =
@@ -1609,6 +1652,7 @@ static void _test_run_all(void* arg) {
     test_close_listener();
     test_keylog();
     test_default_identity_uses_dial_host();
+    test_scoped_ipv6_identity();
     test_sni_cert_selection();
     test_sni_duplicate_replaces_identity();
     test_default_identity_rejects_different_key_type();

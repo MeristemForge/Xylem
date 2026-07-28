@@ -221,12 +221,10 @@ static int _tls_do_handshake(tls_conn_t* tls) {
     }
 }
 
-static void _tls_configure_client(
+static int _tls_configure_client(
     tls_ctx_t*                   ctx,
     const char*                  identity,
     const char*                  module,
-    char*                         ip_buf,
-    size_t                        ip_buf_len,
     tls_backend_handshake_cfg_t* cfg) {
     cfg->verify =
         ctx->verify_server ? TLS_BACKEND_VERIFY_PEER : TLS_BACKEND_VERIFY_NONE;
@@ -238,43 +236,37 @@ static void _tls_configure_client(
             module);
     }
     if (!identity) {
-        return;
+        return 0;
     }
+
+    size_t identity_len = strlen(identity);
+    if (identity_len >= sizeof(cfg->identity)) {
+        return -1;
+    }
+    memcpy(cfg->identity, identity, identity_len + 1);
+    cfg->identity_type = TLS_BACKEND_IDENTITY_DNS;
 
     addr_t tmp;
-    const char* ip_identity = identity;
-    if (addr_pton(identity, 0, &tmp) != 0) {
+    char*  zone = strchr(cfg->identity, '%');
+    if (!zone || zone == cfg->identity || !zone[1]
+        || !strchr(cfg->identity, ':')) {
+        zone = NULL;
+    }
+    if (zone) {
         /* A scope selects an interface, not a certificate identity. */
-        const char* zone = strchr(identity, '%');
-        if (!zone || zone == identity || !zone[1]
-            || !strchr(identity, ':')) {
-            ip_identity = NULL;
-        } else {
-            size_t ip_len = (size_t)(zone - identity);
-            if (ip_len >= ip_buf_len) {
-                ip_identity = NULL;
-            } else {
-                memcpy(ip_buf, identity, ip_len);
-                ip_buf[ip_len] = '\0';
-                if (addr_pton(ip_buf, 0, &tmp) != 0) {
-                    ip_identity = NULL;
-                } else {
-                    ip_identity = ip_buf;
-                }
-            }
-        }
+        *zone = '\0';
     }
-    if (ip_identity) {
-        if (verify_peer) {
-            cfg->verify_ip_address = ip_identity;
-        }
-        return;
+    if (addr_pton(cfg->identity, 0, &tmp) == 0) {
+        cfg->identity_type = TLS_BACKEND_IDENTITY_IP;
+        return 0;
     }
-
-    cfg->sni_name = identity;
-    if (verify_peer) {
-        cfg->verify_dns_name = identity;
+    if (zone) {
+        *zone = '%';
     }
+    if (identity_len > 1 && cfg->identity[identity_len - 1] == '.') {
+        cfg->identity[identity_len - 1] = '\0';
+    }
+    return 0;
 }
 
 static void _tls_configure_server(
@@ -304,9 +296,9 @@ static int _tls_client_handshake(tls_conn_t* tls, const char* server_name) {
     tls->be = be;
 
     tls_backend_handshake_cfg_t cfg = {0};
-    char ip_buf[INET6_ADDRSTRLEN];
-    _tls_configure_client(
-        tls->ctx, server_name, "tls", ip_buf, sizeof(ip_buf), &cfg);
+    if (_tls_configure_client(tls->ctx, server_name, "tls", &cfg) != 0) {
+        return -1;
+    }
     if (tls_backend_conn_configure(tls->be, &cfg) != 0) {
         return -1;
     }
@@ -1781,9 +1773,10 @@ dtls_conn_t* dtls_dial(
 
     tls_backend_handshake_cfg_t cfg         = {0};
     const char*                 server_name = opts ? opts->server_name : NULL;
-    char                        ip_buf[INET6_ADDRSTRLEN];
-    _tls_configure_client(
-        ctx, server_name, "dtls", ip_buf, sizeof(ip_buf), &cfg);
+    if (_tls_configure_client(ctx, server_name, "dtls", &cfg) != 0) {
+        _dtls_conn_unref(dtls);
+        return NULL;
+    }
     if (tls_backend_conn_configure(dtls->be, &cfg) != 0) {
         _dtls_conn_unref(dtls);
         return NULL;

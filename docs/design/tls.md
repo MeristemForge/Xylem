@@ -363,17 +363,19 @@ typedef enum {
     TLS_BACKEND_PROTO_DTLS
 } tls_backend_proto_t;
 
-/* One-shot, pre-handshake connection configuration snapshot. The engine
- * fills this from neutral decisions it already owns (role -> verify, and
- * whether the expected identity is an IP literal / whether the peer is verified,
- * both decided with the project's own addr_pton, not OpenSSL). The
- * backend must COPY any string it needs (e.g. SSL_set1_host copies):
- * the pointers reference engine-owned temporaries. */
+/* One-shot, pre-handshake connection configuration snapshot. */
+#define TLS_BACKEND_IDENTITY_CAP 256
+
+typedef enum {
+    TLS_BACKEND_IDENTITY_NONE,
+    TLS_BACKEND_IDENTITY_DNS,
+    TLS_BACKEND_IDENTITY_IP
+} tls_backend_identity_t;
+
 typedef struct {
-    tls_backend_verify_t verify;
-    const char*          sni_name;          /* Client DNS SNI, or NULL. */
-    const char*          verify_dns_name;   /* DNS identity, or NULL. */
-    const char*          verify_ip_address; /* Numeric IP identity, or NULL. */
+    tls_backend_verify_t   verify;
+    tls_backend_identity_t identity_type;
+    char                   identity[TLS_BACKEND_IDENTITY_CAP];
 } tls_backend_handshake_cfg_t;
 ```
 
