@@ -73,7 +73,7 @@ struct _dtls_dgram_s {
     char                  data[];
 };
 
-/* Lazy server-handshake state; calloc 0-value HS_DONE = no handshake needed. */
+/* Lazy server-handshake state; client connections are eagerly handshaked. */
 typedef enum _tls_hs_state_e {
     HS_DONE    = 0,
     HS_PENDING = 1,
