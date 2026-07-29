@@ -32,7 +32,6 @@
 #include "net/tls/tls-backend.h"
 #include "net/tls/tls-context.h"
 #include "runtime/runtime.h"
-#include "runtime/scheduler.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -52,7 +51,6 @@ struct xylem_dtls_conn_s {
     addr_t              peer_addr;
     char                alpn[256];
     _Atomic bool        closed;
-    _Atomic bool        closing;
     _Atomic int32_t     refcnt;
     bool                handshake_done;
     _dtls_dgram_t*      pending_dgram;
@@ -62,7 +60,6 @@ struct xylem_dtls_conn_s {
     xylem_mutex_t*      wr_mu;
     xylem_channel_t*    inbox;
     _Atomic int32_t     inbox_len;
-    scheduler_timer_t*  handshake_timer;
     dtls_listener_t*    listener;
     rbtree_node_t       server_node;
     bool                in_sessions;
@@ -78,7 +75,6 @@ struct xylem_dtls_listener_s {
     xylem_mutex_t*     sessions_mu;
     xylem_mutex_t*     write_mu;
     xylem_mutex_t*     dgram_pool_mu;
-    scheduler_t*       sched;
     _dtls_dgram_t*     dgram_pool;
     size_t             dgram_pool_len;
     size_t             dgram_bufsz;
@@ -155,7 +151,6 @@ static void _dtls_conn_unref(dtls_conn_t* dtls) {
     xylem_mutex_destroy(dtls->rd_mu);
     xylem_mutex_destroy(dtls->wr_mu);
     free(dtls->pending_dgram);
-    scheduler_timer_destroy(dtls->handshake_timer);
     if (dtls->inbox) {
         /**
          * Drain residual datagrams (freeing their payloads, which the
@@ -298,12 +293,8 @@ static bool _dtls_server_unlink(dtls_conn_t* dtls) {
 }
 
 static void _dtls_server_shutdown(dtls_conn_t* dtls) {
-    if (atomic_exchange(&dtls->closing, true)) {
+    if (atomic_exchange(&dtls->closed, true)) {
         return;
-    }
-    atomic_store(&dtls->closed, true);
-    if (dtls->handshake_timer) {
-        scheduler_timer_stop(dtls->handshake_timer);
     }
 
     bool drop_session_ref = _dtls_server_unlink(dtls);
@@ -760,9 +751,6 @@ static void _dtls_handshake_coro(void* arg) {
         }
     }
 
-    scheduler_timer_destroy(dtls->handshake_timer);
-    dtls->handshake_timer = NULL;
-
     if (!success) {
         _dtls_server_shutdown(dtls);
         _dtls_conn_unref(dtls);
@@ -842,15 +830,10 @@ static void _dtls_dispatcher(void* arg) {
             continue;
         }
         atomic_store(&dtls->refcnt, 1);
-        dtls->peer_addr       = from_addr;
-        dtls->inbox           = xylem_channel_create();
-        dtls->handshake_timer = scheduler_timer_create(ln->sched);
+        dtls->peer_addr = from_addr;
+        dtls->inbox     = xylem_channel_create();
 
-        if (!dtls->inbox || !dtls->handshake_timer) {
-            scheduler_timer_destroy(dtls->handshake_timer);
-            if (dtls->inbox) {
-                xylem_channel_destroy(dtls->inbox);
-            }
+        if (!dtls->inbox) {
             free(dtls);
             _dtls_dgram_release(ln, dgram);
             continue;
@@ -1056,7 +1039,6 @@ dtls_listener_t* dtls_listen(
 
     ln->datagram = datagram;
     ln->ctx      = ctx;
-    ln->sched    = runtime_get_scheduler();
     if (opts) {
         ln->opts = *opts;
     }
