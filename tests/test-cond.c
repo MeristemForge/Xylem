@@ -28,8 +28,252 @@
 #include <stdio.h>
 
 #define CREDIT_WAKE_COUNT 129
+#define TIMED_BROADCAST_WAITERS 1024
 
 static xylem_opts_t _rt_opts = { .workers = 1 };
+
+static void test_timedwait_zero(void) {
+    fprintf(stderr, "=== test_timedwait_zero\n");
+
+    xylem_mutex_t* mtx  = xylem_mutex_create();
+    xylem_cond_t*  cond = xylem_cond_create();
+    ASSERT(mtx != NULL);
+    ASSERT(cond != NULL);
+
+    xylem_mutex_lock(mtx);
+    ASSERT(xylem_cond_timedwait(cond, mtx, 0) == false);
+    ASSERT(xylem_mutex_trylock(mtx) == false);
+    xylem_mutex_unlock(mtx);
+
+    xylem_cond_destroy(cond);
+    xylem_mutex_destroy(mtx);
+}
+
+static void test_timedwait_coro_timeout(void) {
+    fprintf(stderr, "=== test_timedwait_coro_timeout\n");
+
+    xylem_mutex_t* mtx  = xylem_mutex_create();
+    xylem_cond_t*  cond = xylem_cond_create();
+    ASSERT(mtx != NULL);
+    ASSERT(cond != NULL);
+
+    xylem_mutex_lock(mtx);
+    ASSERT(xylem_cond_timedwait(cond, mtx, 20) == false);
+    ASSERT(xylem_mutex_trylock(mtx) == false);
+    xylem_mutex_unlock(mtx);
+
+    xylem_cond_destroy(cond);
+    xylem_mutex_destroy(mtx);
+}
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    xylem_sem_t*   ready;
+    xylem_sem_t*   done;
+    uint64_t       timeout_ms;
+    bool           result;
+    bool           mutex_held;
+} _timed_coro_ctx_t;
+
+static void _timed_coro_waiter(void* arg) {
+    _timed_coro_ctx_t* ctx = (_timed_coro_ctx_t*)arg;
+
+    xylem_mutex_lock(ctx->mtx);
+    xylem_sem_post(ctx->ready);
+    ctx->result = xylem_cond_timedwait(ctx->cond, ctx->mtx, ctx->timeout_ms);
+    ctx->mutex_held = !xylem_mutex_trylock(ctx->mtx);
+    xylem_mutex_unlock(ctx->mtx);
+    xylem_sem_post(ctx->done);
+}
+
+static void test_timedwait_coro_signal(void) {
+    fprintf(stderr, "=== test_timedwait_coro_signal\n");
+
+    _timed_coro_ctx_t ctx = {0};
+    ctx.mtx               = xylem_mutex_create();
+    ctx.cond              = xylem_cond_create();
+    ctx.ready             = xylem_sem_create(0);
+    ctx.done              = xylem_sem_create(0);
+    ctx.timeout_ms        = UINT64_MAX;
+    ASSERT(ctx.mtx != NULL);
+    ASSERT(ctx.cond != NULL);
+    ASSERT(ctx.ready != NULL);
+    ASSERT(ctx.done != NULL);
+
+    xylem_spawn(_timed_coro_waiter, &ctx);
+    xylem_sem_wait(ctx.ready);
+    xylem_mutex_lock(ctx.mtx);
+    xylem_cond_signal(ctx.cond);
+    xylem_mutex_unlock(ctx.mtx);
+    xylem_sem_wait(ctx.done);
+
+    ASSERT(ctx.result == true);
+    ASSERT(ctx.mutex_held == true);
+    xylem_sem_destroy(ctx.done);
+    xylem_sem_destroy(ctx.ready);
+    xylem_cond_destroy(ctx.cond);
+    xylem_mutex_destroy(ctx.mtx);
+}
+
+typedef struct {
+    xylem_mutex_t* mtx;
+    xylem_cond_t*  cond;
+    xylem_sem_t*   ready;
+    uint64_t       timeout_ms;
+    bool           result;
+    bool           mutex_held;
+} _timed_thrd_ctx_t;
+
+static int _timed_thrd_waiter(void* arg) {
+    _timed_thrd_ctx_t* ctx = (_timed_thrd_ctx_t*)arg;
+
+    xylem_mutex_lock(ctx->mtx);
+    xylem_sem_post(ctx->ready);
+    ctx->result =
+        xylem_cond_timedwait(ctx->cond, ctx->mtx, ctx->timeout_ms);
+    ctx->mutex_held = !xylem_mutex_trylock(ctx->mtx);
+    xylem_mutex_unlock(ctx->mtx);
+    return 0;
+}
+
+static void test_timedwait_thread_timeout(void) {
+    fprintf(stderr, "=== test_timedwait_thread_timeout\n");
+
+    _timed_thrd_ctx_t ctx = { .timeout_ms = 20 };
+    ctx.mtx   = xylem_mutex_create();
+    ctx.cond  = xylem_cond_create();
+    ctx.ready = xylem_sem_create(0);
+    ASSERT(ctx.mtx != NULL);
+    ASSERT(ctx.cond != NULL);
+    ASSERT(ctx.ready != NULL);
+
+    thrd_t th;
+    ASSERT(thrd_create(&th, _timed_thrd_waiter, &ctx) == thrd_success);
+    xylem_sem_wait(ctx.ready);
+    ASSERT(thrd_join(th, NULL) == thrd_success);
+
+    ASSERT(ctx.result == false);
+    ASSERT(ctx.mutex_held == true);
+    xylem_sem_destroy(ctx.ready);
+    xylem_cond_destroy(ctx.cond);
+    xylem_mutex_destroy(ctx.mtx);
+}
+
+static void test_timedwait_thread_signal(void) {
+    fprintf(stderr, "=== test_timedwait_thread_signal\n");
+
+    _timed_thrd_ctx_t ctx = { .timeout_ms = UINT64_MAX };
+    ctx.mtx   = xylem_mutex_create();
+    ctx.cond  = xylem_cond_create();
+    ctx.ready = xylem_sem_create(0);
+    ASSERT(ctx.mtx != NULL);
+    ASSERT(ctx.cond != NULL);
+    ASSERT(ctx.ready != NULL);
+
+    thrd_t th;
+    ASSERT(thrd_create(&th, _timed_thrd_waiter, &ctx) == thrd_success);
+    xylem_sem_wait(ctx.ready);
+    xylem_mutex_lock(ctx.mtx);
+    xylem_cond_signal(ctx.cond);
+    xylem_mutex_unlock(ctx.mtx);
+    ASSERT(thrd_join(th, NULL) == thrd_success);
+
+    ASSERT(ctx.result == true);
+    ASSERT(ctx.mutex_held == true);
+    xylem_sem_destroy(ctx.ready);
+    xylem_cond_destroy(ctx.cond);
+    xylem_mutex_destroy(ctx.mtx);
+}
+
+static void test_timedwait_thread_race(void) {
+    fprintf(stderr, "=== test_timedwait_thread_race\n");
+
+    for (int round = 0; round < 100; round++) {
+        _timed_thrd_ctx_t ctx = { .timeout_ms = 1 };
+        ctx.mtx   = xylem_mutex_create();
+        ctx.cond  = xylem_cond_create();
+        ctx.ready = xylem_sem_create(0);
+        ASSERT(ctx.mtx != NULL);
+        ASSERT(ctx.cond != NULL);
+        ASSERT(ctx.ready != NULL);
+
+        thrd_t th;
+        ASSERT(thrd_create(&th, _timed_thrd_waiter, &ctx) == thrd_success);
+        xylem_sem_wait(ctx.ready);
+        xylem_mutex_lock(ctx.mtx);
+        xylem_cond_signal(ctx.cond);
+        xylem_mutex_unlock(ctx.mtx);
+        ASSERT(thrd_join(th, NULL) == thrd_success);
+        ASSERT(ctx.mutex_held == true);
+
+        xylem_sem_destroy(ctx.ready);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
+    }
+}
+
+typedef struct {
+    xylem_mutex_t* cond_mtx;
+    xylem_cond_t*  cond;
+    xylem_sem_t*   done;
+    atomic_int     ready;
+} _timed_broadcast_ctx_t;
+
+static void _timed_broadcast_waiter(void* arg) {
+    _timed_broadcast_ctx_t* ctx = (_timed_broadcast_ctx_t*)arg;
+
+    xylem_mutex_lock(ctx->cond_mtx);
+    atomic_fetch_add(&ctx->ready, 1);
+    xylem_cond_timedwait(ctx->cond, ctx->cond_mtx, 2);
+    xylem_mutex_unlock(ctx->cond_mtx);
+    xylem_sem_post(ctx->done);
+}
+
+static int _timed_broadcast_thread(void* arg) {
+    _timed_broadcast_ctx_t* ctx = (_timed_broadcast_ctx_t*)arg;
+
+    while (atomic_load(&ctx->ready) < TIMED_BROADCAST_WAITERS) {
+        thrd_yield();
+    }
+    xylem_cond_broadcast(ctx->cond);
+    return 0;
+}
+
+static void test_timedwait_coro_broadcast_race(void) {
+    fprintf(stderr, "=== test_timedwait_coro_broadcast_race\n");
+
+    for (int round = 0; round < 20; round++) {
+        _timed_broadcast_ctx_t ctx = {0};
+        ctx.cond_mtx               = xylem_mutex_create();
+        ctx.cond                   = xylem_cond_create();
+        ctx.done                   = xylem_sem_create(0);
+        atomic_init(&ctx.ready, 0);
+        ASSERT(ctx.cond_mtx != NULL);
+        ASSERT(ctx.cond != NULL);
+        ASSERT(ctx.done != NULL);
+
+        thrd_t broadcaster;
+        ASSERT(
+            thrd_create(&broadcaster, _timed_broadcast_thread, &ctx) ==
+            thrd_success);
+        for (int i = 0; i < TIMED_BROADCAST_WAITERS; i++) {
+            xylem_spawn(_timed_broadcast_waiter, &ctx);
+        }
+        for (int i = 0; i < TIMED_BROADCAST_WAITERS; i++) {
+            xylem_sem_wait(ctx.done);
+        }
+        ASSERT(thrd_join(broadcaster, NULL) == thrd_success);
+
+        xylem_mutex_lock(ctx.cond_mtx);
+        ASSERT(xylem_cond_timedwait(ctx.cond, ctx.cond_mtx, 1) == false);
+        xylem_mutex_unlock(ctx.cond_mtx);
+
+        xylem_sem_destroy(ctx.done);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.cond_mtx);
+    }
+}
 
 typedef struct {
     xylem_mutex_t* mtx;
@@ -269,13 +513,16 @@ typedef struct {
     xylem_cond_t*  cond;
     xylem_cond_t*  parked_cond;
     int            parked;
-    atomic_int     ready;
+    int            ready;
     int            tested;
 } _c_ext_ctx_t;
 
 static void _c_ext_external(void* arg) {
     _c_ext_ctx_t* ctx = (_c_ext_ctx_t*)arg;
-    atomic_store(&ctx->ready, 1);
+    xylem_mutex_lock(ctx->mtx);
+    ctx->ready = 1;
+    xylem_cond_signal(ctx->cond);
+    xylem_mutex_unlock(ctx->mtx);
 }
 
 static void _c_ext_waiter(void* arg) {
@@ -283,7 +530,7 @@ static void _c_ext_waiter(void* arg) {
     xylem_mutex_lock(ctx->mtx);
     ctx->parked = 1;
     xylem_cond_signal(ctx->parked_cond);
-    while (atomic_load(&ctx->ready) == 0) {
+    while (!ctx->ready) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
     xylem_mutex_unlock(ctx->mtx);
@@ -305,7 +552,6 @@ static void _c_ext_submitter(void* arg) {
     xylem_mutex_unlock(ctx->mtx);
     int rc = xylem_await(_c_ext_external, ctx);
     ASSERT(rc == 0);
-    xylem_cond_broadcast(ctx->cond);
 }
 
 static void _test_c_ext_main(void* arg) {
@@ -570,6 +816,13 @@ static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
+    test_timedwait_zero();
+    test_timedwait_coro_timeout();
+    test_timedwait_coro_signal();
+    test_timedwait_thread_timeout();
+    test_timedwait_thread_signal();
+    test_timedwait_thread_race();
+    test_timedwait_coro_broadcast_race();
     test_signal_one();
     test_broadcast();
     test_bounded_queue();

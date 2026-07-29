@@ -107,13 +107,14 @@ void thrd_wake_wait(thrd_wake_t* w) {
 }
 
 bool thrd_wake_timedwait(thrd_wake_t* w, uint64_t timeout_ms) {
+    uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
     uint64_t deadline =
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout_ms;
+        timeout_ms > UINT64_MAX - now ? UINT64_MAX : now + timeout_ms;
     for (;;) {
         if (_thrd_wake_try(w)) {
             return true;
         }
-        uint64_t now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+        now = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
         if (now >= deadline) {
             return false;
         }

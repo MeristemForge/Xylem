@@ -682,14 +682,17 @@ static bool _sched_timer_finish_fire(
         return false;
     }
     if (timer->reset_pending) {
-        timer->timeout       = now + timer->timeout;
+        timer->timeout       = timer->timeout > UINT64_MAX - now
+                                   ? UINT64_MAX
+                                   : now + timer->timeout;
         timer->reset_pending = false;
         timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         return true;
     }
     if (timer->repeat > 0) {
-        timer->timeout = now + timer->repeat;
+        timer->timeout =
+            timer->repeat > UINT64_MAX - now ? UINT64_MAX : now + timer->repeat;
         timer->state   = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
         return true;
@@ -1751,7 +1754,8 @@ void scheduler_timer_start(
         heap_remove(&owner->timers, &timer->heap_node);
         /* fallthrough */
     case TIMER_IDLE:
-        timer->timeout       = now + timeout_ms;
+        timer->timeout =
+            timeout_ms > UINT64_MAX - now ? UINT64_MAX : now + timeout_ms;
         timer->reset_pending = false;
         timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);
@@ -1819,7 +1823,8 @@ bool scheduler_timer_reset(scheduler_timer_t* timer, uint64_t timeout_ms) {
         heap_remove(&owner->timers, &timer->heap_node);
         /* fallthrough */
     case TIMER_IDLE:
-        timer->timeout       = now + timeout_ms;
+        timer->timeout =
+            timeout_ms > UINT64_MAX - now ? UINT64_MAX : now + timeout_ms;
         timer->reset_pending = false;
         timer->state         = TIMER_QUEUED;
         heap_insert(&owner->timers, &timer->heap_node);

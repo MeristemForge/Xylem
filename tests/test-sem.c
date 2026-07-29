@@ -112,7 +112,7 @@ typedef struct {
 
 static int _ct_thread_fn(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
-    xylem_sem_wait(ctx->sem);
+    ASSERT(xylem_sem_timedwait(ctx->sem, UINT64_MAX) == true);
     atomic_store(&ctx->thread_done, 1);
     return 0;
 }
@@ -235,7 +235,7 @@ typedef struct {
 
 static void _win_waiter(void* arg) {
     _win_ctx_t* ctx = (_win_ctx_t*)arg;
-    bool ok = xylem_sem_timedwait(ctx->sem, 5000);
+    bool        ok  = xylem_sem_timedwait(ctx->sem, UINT64_MAX);
     ASSERT(ok == true);
     while (atomic_load(&ctx->poster_done) == 0) {
         xylem_sleep(1);

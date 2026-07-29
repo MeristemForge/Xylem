@@ -50,7 +50,7 @@ All five public primitives share one shape:
 | Primitive | Blocking op (any context) | Other context-adaptive ops | Pattern |
 |-----------|---------------------------|----------------------------|---------|
 | `xylem_mutex` | `lock` | `unlock`, `trylock`, create/destroy | cross-context lock |
-| `xylem_cond` | `wait` | `signal`, `broadcast`, c/d | paired with a mutex |
+| `xylem_cond` | `wait` / `timedwait` | `signal`, `broadcast`, c/d | paired with a mutex |
 | `xylem_waitgroup` | `wait` | `add`, `done`, c/d | countdown latch |
 | `xylem_channel` | `recv` / `recv_timeout` | `send`, `close`, c/d | MPSC message passing |
 | `xylem_sem` | `wait` / `timedwait` | `post`, c/d | counting semaphore |
@@ -154,14 +154,23 @@ prevents a lost wakeup:
 
 Because a signaler is serialized through `m`, it cannot observe the released
 mutex until the waiter is already linked on `c` and therefore visible to
-`signal()`/`broadcast()`. A signal sent while no one is parked is simply
+`signal()` or `broadcast()`.
+
+`timedwait()` preserves the same enqueue-before-unlock ordering and always
+re-acquires the mutex before returning. Timeout, signal, and broadcast
+serialize waiter removal through the condition variable's waiter-list guard;
+the operation that removes a waiter determines whether `timedwait()` reports
+notification or timeout. A signal sent while no one is parked is simply
 dropped (edge-triggered) — which is exactly why the predicate `while`-loop is
 mandatory.
 
-A signaler that does **not** take `m` (for instance an external thread that
-only flips an atomic flag) must avoid lost wakeups out of band: set the
-predicate flag *before* calling `signal`/`broadcast`, so a waiter that has not
-yet parked sees the flag on its next predicate check.
+External OS threads use the same protocol: lock `m`, change the predicate,
+call `signal()` or `broadcast()`, then unlock `m`. The notification functions
+can be called without `m`, but doing so does not close the gap between a
+waiter's predicate check and its call to `wait()`, so it does not by itself
+prevent lost wakeups. A protocol that cannot take `m` needs separate
+synchronization, such as an accumulating semaphore/channel notification or an
+explicit generation handshake.
 
 - `signal()` wakes one waiter; `broadcast()` wakes everyone parked at the moment
   it takes its internal guard (later arrivals are unaffected). Waiter selection

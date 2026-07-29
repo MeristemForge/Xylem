@@ -21,6 +21,9 @@
 
 _Pragma("once")
 
+#include <stdbool.h>
+#include <stdint.h>
+
 typedef struct xylem_cond_s  xylem_cond_t;
 typedef struct xylem_mutex_s xylem_mutex_t;
 
@@ -66,10 +69,11 @@ typedef struct xylem_mutex_s xylem_mutex_t;
  *     xylem_cond_signal(c);
  *     xylem_mutex_unlock(m);
  *
- * A signaler normally holds the same mutex as the waiter, giving the
- * standard lost-wakeup-free ordering. An external thread that cannot
- * take the mutex must avoid lost wakeups out of band: set an atomic
- * predicate flag *before* calling signal()/broadcast().
+ * Every signaler that changes the predicate must hold the same mutex as
+ * the waiter to preserve the standard lost-wakeup-free ordering. This
+ * includes external OS threads. Calling signal()/broadcast() without
+ * the mutex is permitted, but does not close the predicate-check-to-wait
+ * gap; such protocols require separate synchronization.
  *
  * Lifetime:
  *   - This object may wake coroutine waiters through the runtime
@@ -122,6 +126,28 @@ extern void xylem_cond_destroy(xylem_cond_t* cond);
  * @param mtx   Mutex currently held by the caller.
  */
 extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
+
+/**
+ * @brief Atomically release `mtx` and suspend the caller until the cond is
+ *        signalled or the timeout elapses.
+ *
+ * @note [CONTEXT-ADAPTIVE]
+ *
+ * Callable from any context while holding `mtx`. On every return path, `mtx`
+ * is held again. A timeout of 0 is an immediate attempt that leaves `mtx`
+ * held. Callers must re-check the predicate in a while-loop.
+ *
+ * @param cond        Pointer to the cond.
+ * @param mtx         Mutex currently held by the caller.
+ * @param timeout_ms  Maximum time to wait in milliseconds. 0 returns
+ *                    immediately.
+ * @return true if signal or broadcast selected this waiter; false if the
+ *         timeout elapsed or timed coroutine setup failed.
+ */
+extern bool xylem_cond_timedwait(
+    xylem_cond_t*  cond,
+    xylem_mutex_t* mtx,
+    uint64_t       timeout_ms);
 
 /**
  * @brief Wake one waiter, if any.
