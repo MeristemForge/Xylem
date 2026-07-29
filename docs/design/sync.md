@@ -160,9 +160,11 @@ mutex until the waiter is already linked on `c` and therefore visible to
 re-acquires the mutex before returning. Timeout, signal, and broadcast
 serialize waiter removal through the condition variable's waiter-list guard;
 the operation that removes a waiter determines whether `timedwait()` reports
-notification or timeout. A signal sent while no one is parked is simply
-dropped (edge-triggered) — which is exactly why the predicate `while`-loop is
-mandatory.
+notification or timeout. Timeout expiry follows
+`xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC)`; system clock adjustments may
+shorten or extend the real elapsed wait. A signal sent while no one is parked
+is simply dropped (edge-triggered) — which is exactly why the predicate
+`while`-loop is mandatory.
 
 External OS threads use the same protocol: lock `m`, change the predicate,
 call `signal()` or `broadcast()`, then unlock `m`. The notification functions

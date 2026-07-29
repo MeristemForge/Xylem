@@ -135,7 +135,10 @@ extern void xylem_cond_wait(xylem_cond_t* cond, xylem_mutex_t* mtx);
  *
  * Callable from any context while holding `mtx`. On every return path, `mtx`
  * is held again. A timeout of 0 is an immediate attempt that leaves `mtx`
- * held. Callers must re-check the predicate in a while-loop.
+ * held. Timeout expiry is measured according to xylem_utils_getnow(MSEC).
+ * Because this is wall-clock based, system clock adjustments may shorten or
+ * extend the real elapsed wait. Callers must re-check the predicate in a
+ * while-loop.
  *
  * @param cond        Pointer to the cond.
  * @param mtx         Mutex currently held by the caller.

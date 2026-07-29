@@ -30,7 +30,8 @@
 #define CREDIT_WAKE_COUNT 129
 #define TIMED_BROADCAST_WAITERS 1024
 
-static xylem_opts_t _rt_opts = { .workers = 1 };
+static xylem_opts_t _functional_rt_opts = { .workers = 4 };
+static xylem_opts_t _credit_rt_opts     = { .workers = 1 };
 
 static void test_timedwait_zero(void) {
     fprintf(stderr, "=== test_timedwait_zero\n");
@@ -70,7 +71,7 @@ typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
     xylem_sem_t*   ready;
-    xylem_sem_t*   done;
+    atomic_int     finished;
     uint64_t       timeout_ms;
     bool           result;
     bool           mutex_held;
@@ -84,7 +85,7 @@ static void _timed_coro_waiter(void* arg) {
     ctx->result = xylem_cond_timedwait(ctx->cond, ctx->mtx, ctx->timeout_ms);
     ctx->mutex_held = !xylem_mutex_trylock(ctx->mtx);
     xylem_mutex_unlock(ctx->mtx);
-    xylem_sem_post(ctx->done);
+    atomic_store(&ctx->finished, 1);
 }
 
 static void test_timedwait_coro_signal(void) {
@@ -94,23 +95,23 @@ static void test_timedwait_coro_signal(void) {
     ctx.mtx               = xylem_mutex_create();
     ctx.cond              = xylem_cond_create();
     ctx.ready             = xylem_sem_create(0);
-    ctx.done              = xylem_sem_create(0);
     ctx.timeout_ms        = UINT64_MAX;
+    atomic_init(&ctx.finished, 0);
     ASSERT(ctx.mtx != NULL);
     ASSERT(ctx.cond != NULL);
     ASSERT(ctx.ready != NULL);
-    ASSERT(ctx.done != NULL);
 
     xylem_spawn(_timed_coro_waiter, &ctx);
     xylem_sem_wait(ctx.ready);
     xylem_mutex_lock(ctx.mtx);
     xylem_cond_signal(ctx.cond);
     xylem_mutex_unlock(ctx.mtx);
-    xylem_sem_wait(ctx.done);
+    while (atomic_load(&ctx.finished) == 0) {
+        xylem_sleep(1);
+    }
 
     ASSERT(ctx.result == true);
     ASSERT(ctx.mutex_held == true);
-    xylem_sem_destroy(ctx.done);
     xylem_sem_destroy(ctx.ready);
     xylem_cond_destroy(ctx.cond);
     xylem_mutex_destroy(ctx.mtx);
@@ -216,8 +217,8 @@ static void test_timedwait_thread_race(void) {
 typedef struct {
     xylem_mutex_t* cond_mtx;
     xylem_cond_t*  cond;
-    xylem_sem_t*   done;
     atomic_int     ready;
+    atomic_int     finished;
 } _timed_broadcast_ctx_t;
 
 static void _timed_broadcast_waiter(void* arg) {
@@ -227,7 +228,7 @@ static void _timed_broadcast_waiter(void* arg) {
     atomic_fetch_add(&ctx->ready, 1);
     xylem_cond_timedwait(ctx->cond, ctx->cond_mtx, 2);
     xylem_mutex_unlock(ctx->cond_mtx);
-    xylem_sem_post(ctx->done);
+    atomic_fetch_add(&ctx->finished, 1);
 }
 
 static int _timed_broadcast_thread(void* arg) {
@@ -247,11 +248,10 @@ static void test_timedwait_coro_broadcast_race(void) {
         _timed_broadcast_ctx_t ctx = {0};
         ctx.cond_mtx               = xylem_mutex_create();
         ctx.cond                   = xylem_cond_create();
-        ctx.done                   = xylem_sem_create(0);
         atomic_init(&ctx.ready, 0);
+        atomic_init(&ctx.finished, 0);
         ASSERT(ctx.cond_mtx != NULL);
         ASSERT(ctx.cond != NULL);
-        ASSERT(ctx.done != NULL);
 
         thrd_t broadcaster;
         ASSERT(
@@ -260,8 +260,8 @@ static void test_timedwait_coro_broadcast_race(void) {
         for (int i = 0; i < TIMED_BROADCAST_WAITERS; i++) {
             xylem_spawn(_timed_broadcast_waiter, &ctx);
         }
-        for (int i = 0; i < TIMED_BROADCAST_WAITERS; i++) {
-            xylem_sem_wait(ctx.done);
+        while (atomic_load(&ctx.finished) < TIMED_BROADCAST_WAITERS) {
+            xylem_sleep(1);
         }
         ASSERT(thrd_join(broadcaster, NULL) == thrd_success);
 
@@ -269,7 +269,6 @@ static void test_timedwait_coro_broadcast_race(void) {
         ASSERT(xylem_cond_timedwait(ctx.cond, ctx.cond_mtx, 1) == false);
         xylem_mutex_unlock(ctx.cond_mtx);
 
-        xylem_sem_destroy(ctx.done);
         xylem_cond_destroy(ctx.cond);
         xylem_mutex_destroy(ctx.cond_mtx);
     }
@@ -280,16 +279,11 @@ typedef struct {
     xylem_cond_t*  cond;
     int            flag;
     atomic_int     finished;
-    int            tested;
+    atomic_int     tested;
 } _c_one_ctx_t;
 
 static void _c_one_finish(_c_one_ctx_t* ctx) {
-    if (atomic_fetch_add(&ctx->finished, 1) == 1) {
-        xylem_cond_destroy(ctx->cond);
-        ctx->cond = NULL;
-        xylem_mutex_destroy(ctx->mtx);
-        ctx->mtx = NULL;
-    }
+    atomic_fetch_add(&ctx->finished, 1);
 }
 
 static void _c_one_waiter(void* arg) {
@@ -298,8 +292,8 @@ static void _c_one_waiter(void* arg) {
     while (!ctx->flag) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
-    ctx->tested = 1;
     xylem_mutex_unlock(ctx->mtx);
+    atomic_store(&ctx->tested, 1);
     _c_one_finish(ctx);
 }
 
@@ -324,11 +318,15 @@ static void test_signal_one(void) {
     fprintf(stderr, "=== test_signal_one\n");
     for (int round = 0; round < 20; round++) {
         _c_one_ctx_t ctx = {0};
+        atomic_init(&ctx.finished, 0);
+        atomic_init(&ctx.tested, 0);
         _test_c_one_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.finished) < 2) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -341,7 +339,7 @@ typedef struct {
     int            flag;
     int            parked;
     atomic_int     released;
-    int            tested;
+    atomic_int     signaler_done;
 } _c_bcast_ctx_t;
 
 static void _c_bcast_waiter(void* arg) {
@@ -355,15 +353,7 @@ static void _c_bcast_waiter(void* arg) {
     }
     xylem_mutex_unlock(ctx->mtx);
 
-    if (atomic_fetch_add(&ctx->released, 1) + 1 == BCAST_WAITERS) {
-        ctx->tested = 1;
-        xylem_cond_destroy(ctx->all_parked);
-        ctx->all_parked = NULL;
-        xylem_cond_destroy(ctx->cond);
-        ctx->cond = NULL;
-        xylem_mutex_destroy(ctx->mtx);
-        ctx->mtx = NULL;
-    }
+    atomic_fetch_add(&ctx->released, 1);
 }
 
 static void _c_bcast_signaler(void* arg) {
@@ -375,6 +365,7 @@ static void _c_bcast_signaler(void* arg) {
     ctx->flag = 1;
     xylem_cond_broadcast(ctx->cond);
     xylem_mutex_unlock(ctx->mtx);
+    atomic_store(&ctx->signaler_done, 1);
 }
 
 static void _test_c_bcast_main(void* arg) {
@@ -392,12 +383,17 @@ static void test_broadcast(void) {
     fprintf(stderr, "=== test_broadcast\n");
     for (int round = 0; round < 10; round++) {
         _c_bcast_ctx_t ctx = {0};
+        atomic_init(&ctx.released, 0);
+        atomic_init(&ctx.signaler_done, 0);
         _test_c_bcast_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.released) < BCAST_WAITERS ||
+               atomic_load(&ctx.signaler_done) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
         ASSERT(atomic_load(&ctx.released) == BCAST_WAITERS);
+        xylem_cond_destroy(ctx.all_parked);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -416,9 +412,9 @@ typedef struct {
     int            count;
     int            closed;
     atomic_int     produced;
+    atomic_int     producers_done;
     atomic_int     consumed;
     atomic_int     sum;
-    int            tested;
 } _c_bq_ctx_t;
 
 static void _c_bq_push(_c_bq_ctx_t* ctx, int v) {
@@ -461,6 +457,7 @@ static void _c_bq_producer(void* arg) {
         xylem_cond_broadcast(ctx->not_empty);
         xylem_mutex_unlock(ctx->mtx);
     }
+    atomic_fetch_add(&ctx->producers_done, 1);
 }
 
 static void _c_bq_consumer(void* arg) {
@@ -471,16 +468,7 @@ static void _c_bq_consumer(void* arg) {
         local += v;
     }
     atomic_fetch_add(&ctx->sum, local);
-    if (atomic_fetch_add(&ctx->consumed, 1) + 1 == BQ_CONSUMERS) {
-        ASSERT(atomic_load(&ctx->sum) == BQ_PRODUCERS * BQ_PER_PROD);
-        ctx->tested = 1;
-        xylem_cond_destroy(ctx->not_full);
-        ctx->not_full = NULL;
-        xylem_cond_destroy(ctx->not_empty);
-        ctx->not_empty = NULL;
-        xylem_mutex_destroy(ctx->mtx);
-        ctx->mtx = NULL;
-    }
+    atomic_fetch_add(&ctx->consumed, 1);
 }
 
 static void _test_c_bq_main(void* arg) {
@@ -500,11 +488,19 @@ static void test_bounded_queue(void) {
     fprintf(stderr, "=== test_bounded_queue\n");
     for (int round = 0; round < 5; round++) {
         _c_bq_ctx_t ctx = {0};
+        atomic_init(&ctx.produced, 0);
+        atomic_init(&ctx.producers_done, 0);
+        atomic_init(&ctx.consumed, 0);
+        atomic_init(&ctx.sum, 0);
         _test_c_bq_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.producers_done) < BQ_PRODUCERS ||
+               atomic_load(&ctx.consumed) < BQ_CONSUMERS) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.sum) == BQ_PRODUCERS * BQ_PER_PROD);
+        xylem_cond_destroy(ctx.not_full);
+        xylem_cond_destroy(ctx.not_empty);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -514,7 +510,8 @@ typedef struct {
     xylem_cond_t*  parked_cond;
     int            parked;
     int            ready;
-    int            tested;
+    atomic_int     finished;
+    atomic_int     tested;
 } _c_ext_ctx_t;
 
 static void _c_ext_external(void* arg) {
@@ -534,13 +531,8 @@ static void _c_ext_waiter(void* arg) {
         xylem_cond_wait(ctx->cond, ctx->mtx);
     }
     xylem_mutex_unlock(ctx->mtx);
-    ctx->tested = 1;
-    xylem_cond_destroy(ctx->parked_cond);
-    ctx->parked_cond = NULL;
-    xylem_cond_destroy(ctx->cond);
-    ctx->cond = NULL;
-    xylem_mutex_destroy(ctx->mtx);
-    ctx->mtx = NULL;
+    atomic_store(&ctx->tested, 1);
+    atomic_fetch_add(&ctx->finished, 1);
 }
 
 static void _c_ext_submitter(void* arg) {
@@ -552,6 +544,7 @@ static void _c_ext_submitter(void* arg) {
     xylem_mutex_unlock(ctx->mtx);
     int rc = xylem_await(_c_ext_external, ctx);
     ASSERT(rc == 0);
+    atomic_fetch_add(&ctx->finished, 1);
 }
 
 static void _test_c_ext_main(void* arg) {
@@ -567,20 +560,26 @@ static void test_external_signal(void) {
     fprintf(stderr, "=== test_external_signal\n");
     for (int round = 0; round < 10; round++) {
         _c_ext_ctx_t ctx = {0};
+        atomic_init(&ctx.finished, 0);
+        atomic_init(&ctx.tested, 0);
         _test_c_ext_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.finished) < 2) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
+        xylem_cond_destroy(ctx.parked_cond);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
+    thrd_t         thread;
     int            flag;
     atomic_int     thread_released;
-    int            tested;
+    atomic_int     tested;
 } _ctw_ctx_t;
 
 static int _ctw_thread_waiter(void* arg) {
@@ -604,20 +603,16 @@ static void _ctw_signaler(void* arg) {
     while (atomic_load(&ctx->thread_released) == 0) {
         xylem_sleep(2);
     }
-    ctx->tested = 1;
-    xylem_cond_destroy(ctx->cond);
-    ctx->cond = NULL;
-    xylem_mutex_destroy(ctx->mtx);
-    ctx->mtx = NULL;
+    ASSERT(thrd_join(ctx->thread, NULL) == thrd_success);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_ctw_main(void* arg) {
     _ctw_ctx_t* ctx = (_ctw_ctx_t*)arg;
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
-    thrd_t th;
-    ASSERT(thrd_create(&th, _ctw_thread_waiter, ctx) == thrd_success);
-    thrd_detach(th);
+    ASSERT(
+        thrd_create(&ctx->thread, _ctw_thread_waiter, ctx) == thrd_success);
     xylem_spawn(_ctw_signaler, ctx);
 }
 
@@ -626,11 +621,14 @@ static void test_thread_waiter(void) {
     for (int round = 0; round < 10; round++) {
         _ctw_ctx_t ctx = {0};
         atomic_init(&ctx.thread_released, 0);
+        atomic_init(&ctx.tested, 0);
         _test_ctw_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -639,12 +637,13 @@ static void test_thread_waiter(void) {
 typedef struct {
     xylem_mutex_t* mtx;
     xylem_cond_t*  cond;
+    thrd_t         thread;
     int            flag;
     atomic_int     coro_parked;
     atomic_int     thread_parked;
     atomic_int     coro_released;
     atomic_int     thread_released;
-    int            tested;
+    atomic_int     tested;
 } _mixb_ctx_t;
 
 static int _mixb_thread_waiter(void* arg) {
@@ -684,20 +683,16 @@ static void _mixb_driver(void* arg) {
            atomic_load(&ctx->thread_released) < 1) {
         xylem_sleep(2);
     }
-    ctx->tested = 1;
-    xylem_cond_destroy(ctx->cond);
-    ctx->cond = NULL;
-    xylem_mutex_destroy(ctx->mtx);
-    ctx->mtx = NULL;
+    ASSERT(thrd_join(ctx->thread, NULL) == thrd_success);
+    atomic_store(&ctx->tested, 1);
 }
 
 static void _test_mixb_main(void* arg) {
     _mixb_ctx_t* ctx = (_mixb_ctx_t*)arg;
     ctx->mtx  = xylem_mutex_create();
     ctx->cond = xylem_cond_create();
-    thrd_t th;
-    ASSERT(thrd_create(&th, _mixb_thread_waiter, ctx) == thrd_success);
-    thrd_detach(th);
+    ASSERT(
+        thrd_create(&ctx->thread, _mixb_thread_waiter, ctx) == thrd_success);
     for (int i = 0; i < MIXB_CORO_WAITERS; i++) {
         xylem_spawn(_mixb_coro_waiter, ctx);
     }
@@ -712,11 +707,14 @@ static void test_mixed_broadcast(void) {
         atomic_init(&ctx.thread_parked, 0);
         atomic_init(&ctx.coro_released, 0);
         atomic_init(&ctx.thread_released, 0);
+        atomic_init(&ctx.tested, 0);
         _test_mixb_main(&ctx);
-        while (ctx.tested == 0) {
+        while (atomic_load(&ctx.tested) == 0) {
             xylem_sleep(1);
         }
-        ASSERT(ctx.tested == 1);
+        ASSERT(atomic_load(&ctx.tested) == 1);
+        xylem_cond_destroy(ctx.cond);
+        xylem_mutex_destroy(ctx.mtx);
     }
 }
 
@@ -812,7 +810,7 @@ static void test_signal_consumes_credit(void) {
     ASSERT(ctx.tested == 1);
 }
 
-static void _test_run_all(void* arg) {
+static void _test_run_functional(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
@@ -829,12 +827,21 @@ static void _test_run_all(void* arg) {
     test_external_signal();
     test_thread_waiter();
     test_mixed_broadcast();
+    _utils_watchdog_stop();
+    xylem_shutdown();
+}
+
+static void _test_run_credit(void* arg) {
+    (void)arg;
+    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
     test_signal_consumes_credit();
     _utils_watchdog_stop();
     xylem_shutdown();
 }
 
 int main(void) {
-    xylem_run(_test_run_all, NULL, &_rt_opts);
+    xylem_run(_test_run_functional, NULL, &_functional_rt_opts);
+    xylem_run(_test_run_credit, NULL, &_credit_rt_opts);
     return 0;
 }
