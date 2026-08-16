@@ -2,8 +2,15 @@
 setlocal EnableDelayedExpansion
 
 REM Xylem scheduler spawn benchmark (Windows, native cmd.exe)
+REM ----------------------------------------------------------------------------
+REM   st|mt - build + run the spawn matrix in that mode (xylem vs go vs rust)
+REM   (no argument) - both ST and MT                           [default]
+REM
 REM The benchmark executables have no command-line parameters. The workload is
-REM fixed at one million tasks in each ST/MT source file.
+REM fixed at one million tasks in each ST/MT source file, and each cell runs
+REM once (no repeat). Fixed matrix (edit the defaults below to change):
+REM   langs: xylem,go,rust   modes: st+mt   tasks: 1,000,000
+REM ----------------------------------------------------------------------------
 
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_NAME=%~nx0"
@@ -15,36 +22,40 @@ set "BIN_DIR=%OUT_DIR%"
 set "BUILD_DIR=%OUT_DIR%\scheduler-build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
 
-if not defined LANGS set "LANGS=xylem,go,rust"
-if not defined REPEAT set "REPEAT=3"
+REM Fixed matrix (no CLI options -- edit these to change the suite).
+set "LANGS=xylem,go,rust"
 set "CMD=%~1"
-if "%CMD%"=="" set "CMD=all"
 if not "%~1"=="" shift
 
-if /I "%CMD%"=="build" goto :do_build
-if /I "%CMD%"=="bench" goto :do_bench
-if /I "%CMD%"=="all" goto :do_all
+if /I "%CMD%"=="st"  goto :do_mode
+if /I "%CMD%"=="mt"  goto :do_mode
 if /I "%CMD%"=="help" goto :usage
 if /I "%CMD%"=="-h" goto :usage
 if /I "%CMD%"=="--help" goto :usage
-call :err "unknown command: %CMD%"
-goto :usage
+if not "%CMD%"=="" (
+    call :err "unknown target: %CMD% (must be st^|mt^|help)"
+    goto :usage
+)
+goto :do_all
 
-:do_build
-call :parse_opts %*
-call :validate_opts || exit /b 1
-call :cmd_build
-goto :eof
-
-:do_bench
-call :parse_opts %*
-call :validate_opts || exit /b 1
+:do_mode
+if not "%~1"=="" (
+    call :err "unexpected extra arguments: %*"
+    exit /b 1
+)
+set "MODES=%CMD%"
+call :ensure_deps || exit /b 1
+call :cmd_build || exit /b 1
 call :cmd_bench
 goto :eof
 
 :do_all
-call :parse_opts %*
-call :validate_opts || exit /b 1
+if not "%~1"=="" (
+    call :err "unexpected extra arguments: %*"
+    exit /b 1
+)
+set "MODES=st,mt"
+call :ensure_deps || exit /b 1
 call :cmd_build || exit /b 1
 call :cmd_bench
 goto :eof
@@ -57,6 +68,9 @@ echo [ok] %~1
 goto :eof
 :err
 echo [err] %~1 1>&2
+goto :eof
+:warn
+echo [warn] %~1
 goto :eof
 
 :ensure_msvc
@@ -74,6 +88,42 @@ if not defined VSPATH (
 )
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 where cl >nul 2>&1 || (call :err "cl.exe unavailable after vcvars64.bat" & exit /b 1)
+goto :eof
+
+REM ============================================================================
+REM dependencies (guidance printed automatically when tools are missing)
+REM ============================================================================
+
+REM ensure_deps -- abort with setup guidance when cmake is missing; the build
+REM step itself reports missing ninja/python/go/cargo/cl with clear errors.
+:ensure_deps
+where cmake >nul 2>&1 || (
+    call :err "required tool missing: cmake"
+    call :cmd_install
+    exit /b 1
+)
+goto :eof
+
+:cmd_install
+call :info "Windows dependency setup"
+echo   Required toolchain (run from an elevated PowerShell / cmd):
+echo.
+echo     winget install Kitware.CMake
+echo     winget install Ninja-build.Ninja
+echo     winget install Python.Python.3.12
+echo     winget install GoLang.Go
+echo     winget install Rustlang.Rustup
+echo.
+echo   Visual Studio 2022 (MSVC C/C++ toolset) must be installed. The build
+echo   step auto-detects it via vswhere and initializes vcvars64.bat, so a
+echo   plain terminal works; a "Developer Command Prompt" also works.
+echo.
+where cl >nul 2>&1
+if errorlevel 1 (
+    call :warn "cl.exe not on PATH now; build will auto-init MSVC via vcvars64.bat."
+) else (
+    call :ok "cl.exe detected"
+)
 goto :eof
 
 :cmd_build
@@ -124,10 +174,10 @@ where python >nul 2>&1 || (call :err "python not found" & exit /b 1)
 for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "TS=%%T"
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
-call :info "results: %RUN_DIR% (repeat=%REPEAT%)"
+call :info "results: %RUN_DIR%"
 
 for %%L in (%LANGS:,= %) do (
-    for %%M in (st mt) do (
+    for %%M in (%MODES:,= %) do (
         set "BIN="
         if /I "%%L"=="xylem" if /I "%%M"=="st" set "BIN=%BIN_DIR%\spawn-xylem.exe"
         if /I "%%L"=="xylem" if /I "%%M"=="mt" set "BIN=%BIN_DIR%\spawn-xylem-mt.exe"
@@ -136,13 +186,11 @@ for %%L in (%LANGS:,= %) do (
         if /I "%%L"=="rust" if /I "%%M"=="st" set "BIN=%BIN_DIR%\spawn-rust.exe"
         if /I "%%L"=="rust" if /I "%%M"=="mt" set "BIN=%BIN_DIR%\spawn-rust-mt.exe"
         if not exist "!BIN!" (call :err "missing binary: !BIN!" & exit /b 1)
-        for /l %%R in (1,1,%REPEAT%) do (
-            set "RESULT=%RUN_DIR%\scheduler-spawn-%%L-%%M-r%%R.json"
-            "!BIN!" > "!RESULT!"
-            call :verify_result "!RESULT!" %%L %%M
-            if errorlevel 1 exit /b 1
-        )
-        call :print_summary "%RUN_DIR%" %%L %%M
+        set "RESULT=%RUN_DIR%\scheduler-spawn-%%L-%%M.json"
+        "!BIN!" > "!RESULT!"
+        call :verify_result "!RESULT!" %%L %%M
+        if errorlevel 1 exit /b 1
+        call :print_summary "!RESULT!" %%L %%M
     )
 )
 call :ok "scheduler benchmarks complete"
@@ -150,7 +198,7 @@ exit /b 0
 
 :print_summary
 set "SUMMARY="
-for /f "tokens=1-3" %%A in ('python -c "import json,os,sys; d,l,m,n=sys.argv[1:]; a=[json.load(open(os.path.join(d,'scheduler-spawn-'+l+'-'+m+'-r'+str(i)+'.json'))) for i in range(1,int(n)+1)]; print('%%.6f %%.0f %%.2f' %% (sum(x['elapsed_sec'] for x in a)/len(a),sum(x['tasks_per_sec'] for x in a)/len(a),sum(x['ns_per_task'] for x in a)/len(a)))" "%~1" "%~2" "%~3" "%REPEAT%"') do (
+for /f "tokens=1-3" %%A in ('python -c "import json,sys; r=json.load(open(sys.argv[1])); print('%%.6f %%.0f %%.2f' %% (r['elapsed_sec'],r['tasks_per_sec'],r['ns_per_task']))" "%~1"') do (
     set "SUMMARY=%%A %%B %%C"
 )
 if not defined SUMMARY (call :err "failed to summarize scheduler results" & exit /b 1)
@@ -165,83 +213,14 @@ python -c "import json,math,os,sys; p,l,m=sys.argv[1:]; r=json.load(open(p)); t=
 if errorlevel 1 exit /b 1
 goto :eof
 
-:parse_opts
-if "%~1"=="" (
-    set "READ_LANGS="
-    goto :eof
-)
-if defined READ_LANGS (
-    set "_LANG_TOKEN=%~1"
-    if "!_LANG_TOKEN:~0,1!"=="-" (
-        set "READ_LANGS="
-        goto :parse_opts
-    )
-    if defined LANGS (set "LANGS=!LANGS!,%~1") else (set "LANGS=%~1")
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="build" (
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="bench" (
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="all" (
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="--langs" (
-    set "LANGS="
-    set "READ_LANGS=1"
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="-l" (
-    set "LANGS="
-    set "READ_LANGS=1"
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="--repeat" (
-    set "REPEAT=%~2"
-    shift
-    shift
-    goto :parse_opts
-)
-if /I "%~1"=="-r" (
-    set "REPEAT=%~2"
-    shift
-    shift
-    goto :parse_opts
-)
-call :err "unknown option: %~1"
-exit /b 1
-
-:validate_opts
-if not defined REPEAT (call :err "repeat must be a positive integer" & exit /b 1)
-for /f "delims=0123456789" %%A in ("%REPEAT%") do if not "%%A"=="" (call :err "repeat must be a positive integer" & exit /b 1)
-if %REPEAT% LEQ 0 (call :err "repeat must be a positive integer" & exit /b 1)
-for %%L in (%LANGS:,= %) do (
-    if /I not "%%L"=="xylem" if /I not "%%L"=="go" if /I not "%%L"=="rust" (
-        call :err "unsupported language: %%L"
-        exit /b 1
-    )
-)
-goto :eof
-
 :usage
-echo usage: %SCRIPT_NAME% [build^|bench^|all] [options...]
+echo usage: %SCRIPT_NAME% [st^|mt^|help]
 echo.
-echo Commands:
-echo   build             build the six scheduler benchmark binaries
-echo   bench             run both ST and MT modes and write results/%%timestamp%%/
-echo   all               build + bench (default)
+echo Arguments:
+echo   st^|mt    build + run the spawn matrix in that mode (xylem vs go vs rust)
+echo   help      this help
+echo   (none)    both ST and MT   (default)
 echo.
-echo Options:
-echo   --langs, -l LIST  comma-separated subset of xylem,go,rust
-echo   --repeat, -r N    runs per language/mode (default: 3)
-echo.
-echo The workload is fixed at 1,000,000 tasks. Benchmark executables take no args.
+echo The workload is fixed at 1,000,000 tasks and each cell runs once (no
+echo repeat). Edit the defaults at the top of this script to change the matrix.
 exit /b 0

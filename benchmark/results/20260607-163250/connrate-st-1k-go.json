@@ -1,0 +1,8 @@
+{
+  "benchmark": "connrate",
+  "duration_sec": 10.30,
+  "concurrency": 1000,
+  "total_connects": 36979,
+  "failed_connects": 0,
+  "connects_per_sec": 3589
+}

@@ -1,0 +1,11 @@
+{
+  "connections": 9998,
+  "duration_sec": 10.05,
+  "messages_sent": 318039,
+  "messages_recv": 308041,
+  "throughput_msg_per_sec": 30659,
+  "latency_p50_us": 332425,
+  "latency_p99_us": 540309,
+  "latency_max_us": 566480,
+  "memory_rss_kb": 3592
+}

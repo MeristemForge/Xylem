@@ -8,12 +8,12 @@ REM Run from any terminal (cmd.exe / PowerShell). The build step auto-detects
 REM Visual Studio via vswhere and initializes vcvars64.bat, so cl.exe is set up
 REM automatically (cmake / ninja must be on PATH). See docs\build.md.
 REM
-REM   build  - build xylem static lib + C/Go/Rust sync-bench binaries
-REM   bench  - run each primitive across xylem/go/rust, write out\results\<ts>\
-REM   all    - build + bench                                         [default]
+REM   mutex|cond|sem|channel - build + run the full comparison matrix for that
+REM                           primitive (xylem vs go vs rust, all modes)
+REM   all                   - same, for every primitive   [default]
 REM
-REM Primitives (--prims): mutex,cond,sem,channel
-REM Languages  (--langs): xylem,go,rust
+REM Fixed matrix (edit the defaults below to change the suite):
+REM   prims: mutex,cond,sem,channel   langs: xylem,go,rust   repeat: 1
 REM ============================================================================
 
 set "SCRIPT_DIR=%~dp0"
@@ -26,39 +26,36 @@ set "BIN_DIR=%OUT_DIR%"
 set "BUILD_DIR=%OUT_DIR%\build"
 set "RESULTS_ROOT=%OUT_DIR%\results"
 
-if not defined PRIMS   set "PRIMS=mutex,cond,sem,channel"
-if not defined LANGS   set "LANGS=xylem,go,rust"
-if not defined MODES   set "MODES=coro,thread,mixed"
-if not defined WORKERS set "WORKERS=0"
-if not defined REPEAT  set "REPEAT=3"
-if not defined PERMITS set "PERMITS=4"
+REM Fixed matrix (no CLI options -- edit these to change the suite).
+set "PRIMS=mutex,cond,sem,channel"
+set "LANGS=xylem,go,rust"
+set "WORKERS=0"
 
 if not defined NUMBER_OF_PROCESSORS set "NUMBER_OF_PROCESSORS=4"
 set "NCPU=%NUMBER_OF_PROCESSORS%"
 
 set "CMD=%~1"
-if "%CMD%"=="" set "CMD=all"
 if not "%CMD%"=="" shift
 
-if /I "%CMD%"=="build" goto :do_build
-if /I "%CMD%"=="bench" goto :do_bench
-if /I "%CMD%"=="all"   goto :do_all
-if /I "%CMD%"=="-h"     goto :usage
-if /I "%CMD%"=="--help" goto :usage
-if /I "%CMD%"=="help"   goto :usage
-call :err "unknown command: %CMD%"
-goto :usage
+if /I "%CMD%"=="mutex"   goto :do_prim
+if /I "%CMD%"=="cond"    goto :do_prim
+if /I "%CMD%"=="sem"     goto :do_prim
+if /I "%CMD%"=="channel" goto :do_prim
+if /I "%CMD%"=="-h"       goto :usage
+if /I "%CMD%"=="--help"   goto :usage
+if /I "%CMD%"=="help"     goto :usage
+if not "%CMD%"=="" (
+    call :err "unknown target: %CMD% (must be mutex^|cond^|sem^|channel^|help)"
+    goto :usage
+)
 
-:do_build
-call :parse_opts %*
-call :cmd_build
-goto :eof
-:do_bench
-call :parse_opts %*
-call :cmd_bench
-goto :eof
-:do_all
-call :parse_opts %*
+:do_prim
+if not "%~1"=="" (
+    call :err "unexpected extra arguments: %*"
+    exit /b 1
+)
+if not "%CMD%"=="" set "PRIMS=%CMD%"
+call :ensure_deps || exit /b 1
 call :cmd_build || exit /b 1
 call :cmd_bench
 goto :eof
@@ -99,6 +96,41 @@ if not exist "%_VCVARS%" (
 call :info "initializing MSVC x64 environment (vcvars64.bat)..."
 call "%_VCVARS%" >nul
 where cl >nul 2>&1 || (call :err "cl.exe still not found after vcvars64.bat" & exit /b 1)
+goto :eof
+
+REM ============================================================================
+REM dependencies (guidance printed automatically when tools are missing)
+REM ============================================================================
+
+REM ensure_deps -- abort with setup guidance when cmake is missing; the build
+REM step itself reports missing go/rust/cl (ensure_msvc) with clear errors.
+:ensure_deps
+where cmake >nul 2>&1 || (
+    call :err "required tool missing: cmake"
+    call :cmd_install
+    exit /b 1
+)
+goto :eof
+
+:cmd_install
+call :info "Windows dependency setup"
+echo   Required toolchain (run from an elevated PowerShell / cmd):
+echo.
+echo     winget install Kitware.CMake
+echo     winget install Ninja-build.Ninja
+echo     winget install GoLang.Go
+echo     winget install Rustlang.Rustup
+echo.
+echo   Visual Studio 2022 (MSVC C/C++ toolset) must be installed. The build
+echo   step auto-detects it via vswhere and initializes vcvars64.bat, so a
+echo   plain terminal works; a "Developer Command Prompt" also works.
+echo.
+where cl >nul 2>&1
+if errorlevel 1 (
+    call :warn "cl.exe not on PATH now; build will auto-init MSVC via vcvars64.bat."
+) else (
+    call :ok "cl.exe detected"
+)
 goto :eof
 
 :cmd_build
@@ -213,32 +245,8 @@ echo %LANGS% | findstr /I "go" >nul && (
             go build -ldflags="-s -w" -o "%BIN_DIR%\channel-go.exe" . && (call :ok "channel-go built") || (popd & call :err "channel-go build failed" & exit /b 1)
             popd
         )
-        if exist "%SYNC_DIR%\go-sync" (
-            if exist "%BIN_DIR%\sync-go.exe" del /q "%BIN_DIR%\sync-go.exe"
-            call :info "building go sync-bench..."
-            pushd "%SYNC_DIR%\go-sync"
-            set "CGO_ENABLED=0"
-            go build -ldflags="-s -w" -o "%BIN_DIR%\sync-go.exe" . && (call :ok "sync-go built") || (popd & call :err "sync-go build failed" & exit /b 1)
-            popd
-        )
     ) else (
         call :err "go not found"
-        exit /b 1
-    )
-)
-
-echo %LANGS% | findstr /I "rust" >nul && (
-    where cargo >nul 2>&1
-    if not errorlevel 1 (
-        if exist "%SYNC_DIR%\rust-sync" (
-            if exist "%BIN_DIR%\sync-rust.exe" del /q "%BIN_DIR%\sync-rust.exe"
-            call :info "building rust sync-bench..."
-            pushd "%SYNC_DIR%\rust-sync"
-            cargo build --release -q --target-dir "%BIN_DIR%\cargo" && copy /Y "%BIN_DIR%\cargo\release\sync-rust.exe" "%BIN_DIR%\" >nul && (call :ok "sync-rust built") || (popd & call :err "sync-rust build failed" & exit /b 1)
-            popd
-        )
-    ) else (
-        call :err "cargo not found"
         exit /b 1
     )
 )
@@ -263,7 +271,7 @@ set "TS=%_DT:~0,8%-%_DT:~8,6%"
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 
-call :info "results: %RUN_DIR%   workers=%WORKERS% repeat=%REPEAT%"
+call :info "results: %RUN_DIR%   workers=%WORKERS%"
 call :info "prims: %PRIMS%   langs: %LANGS%"
 echo.
 
@@ -271,36 +279,6 @@ for %%P in (%PRIMS:,= %) do call :bench_prim %%P
 
 call :ok "sync benchmarks complete"
 call :info "results written to %RUN_DIR%"
-goto :eof
-
-REM bin_for <lang> -> BIN
-:bin_for
-if /I "%~1"=="xylem" set "BIN=%BIN_DIR%\sync-xylem.exe"
-if /I "%~1"=="go"    set "BIN=%BIN_DIR%\sync-go.exe"
-if /I "%~1"=="rust"  set "BIN=%BIN_DIR%\sync-rust.exe"
-goto :eof
-
-REM prim_params <prim> -> TASKS / ITERS (coro) / ITERS_T (thread+mixed, lighter)
-:prim_params
-set "TASKS=8"
-set "ITERS=1000000"
-set "ITERS_T=1000000"
-if /I "%~1"=="mutex"     (set "TASKS=8" & set "ITERS=1000000" & set "ITERS_T=1000000")
-if /I "%~1"=="cond"      (set "TASKS=2" & set "ITERS=2000000" & set "ITERS_T=2000000")
-if /I "%~1"=="waitgroup" (set "TASKS=8" & set "ITERS=50000"  & set "ITERS_T=2000")
-if /I "%~1"=="channel"   (set "TASKS=4" & set "ITERS=1000000" & set "ITERS_T=1000000")
-if /I "%~1"=="handoff"   (set "TASKS=2" & set "ITERS=500000"  & set "ITERS_T=500000")
-goto :eof
-
-REM supported <lang> <mode> <prim> -> _SUP=1/0
-:supported
-set "_SUP=0"
-if /I "%~1"=="go"    ( if /I "%~2"=="coro" set "_SUP=1" )
-if /I "%~1"=="rust"  ( if /I "%~2"=="coro" set "_SUP=1"
-                       if /I "%~2"=="thread" set "_SUP=1"
-                       if /I "%~2"=="mixed" ( if /I "%~3"=="channel" set "_SUP=1" )
-                       if /I "%~3"=="handoff" set "_SUP=1" )
-if /I "%~1"=="xylem" set "_SUP=1"
 goto :eof
 
 REM bench_prim <prim>
@@ -322,102 +300,6 @@ if /I "%PRIM%"=="channel" (
     call :bench_channel
     goto :eof
 )
-call :prim_params "%PRIM%"
-call :info "=== %PRIM%  (tasks=%TASKS%) ==="
-echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s)
-echo   -------------------------------------------------------------------------------
-
-for %%L in (%LANGS:,= %) do (
-    set "lang=%%L"
-    call :bin_for !lang!
-    if not exist "!BIN!" (
-        call :warn "skip !lang! (no binary)"
-    ) else (
-        for %%M in (%MODES:,= %) do (
-            set "mode=%%M"
-            call :supported !lang! !mode! %PRIM%
-            if "!_SUP!"=="1" (
-                set "ITERS_USE=%ITERS%"
-                if /I not "!mode!"=="coro" set "ITERS_USE=%ITERS_T%"
-                set "EXTRA="
-                if /I "%PRIM%"=="sem" set "EXTRA=--permits %PERMITS%"
-
-                set /a ops_sum=0, nspo_sum=0, valid=0
-                set "ops_vals="
-                set "nspo_avg=0.00"
-                set "total_last=0"
-
-                for /l %%R in (1,1,%REPEAT%) do (
-                    set "out=%RUN_DIR%\sync-%PRIM%-!lang!-!mode!-r%%R.json"
-                    "!BIN!" %PRIM% --mode !mode! --workers %WORKERS% --tasks %TASKS% --iters !ITERS_USE! !EXTRA! > "!out!" 2>nul
-
-                    for %%F in ("!out!") do set "_sz=%%~zF"
-                    if defined _sz if !_sz! GTR 0 (
-                        call :extract_json "!out!" ops_per_sec
-                        set "ops=!_JVAL!"
-                        call :extract_json "!out!" ns_per_op
-                        set "nspo=!_JVAL!"
-                        call :extract_json "!out!" total_ops
-                        set "total=!_JVAL!"
-                        call :extract_json_string "!out!" mode
-                        set "reported_mode=!_JVAL!"
-                        if defined reported_mode if /I not "!reported_mode!"=="!mode!" (
-                            set "renamed=%RUN_DIR%\sync-%PRIM%-!lang!-!reported_mode!-r%%R.json"
-                            move /Y "!out!" "!renamed!" >nul
-                            set "out=!renamed!"
-                        )
-                        for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
-                        if defined ops if !ops! GTR 0 (
-                            set /a ops_sum+=ops, valid+=1
-                            call :nspo_to_x100 "!nspo!"
-                            set /a nspo_sum+=_NSPO_X100
-                            set "total_last=!total!"
-                            if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
-                        )
-                    )
-                    set "_sz="
-                )
-
-                if !valid! GTR 0 (
-                    set /a ops_avg=ops_sum/valid
-                    set /a nspo_avg_x100=nspo_sum/valid
-                    set /a nspo_avg_i=nspo_avg_x100/100
-                    set /a nspo_avg_f=nspo_avg_x100%%100
-                    if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
-                    echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
-                ) else (
-                    call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
-                )
-            )
-        )
-    )
-)
-echo.
-goto :eof
-
-REM extract_json <file> <key> -> _JVAL
-:extract_json
-set "_JVAL="
-for /f "tokens=2 delims=:" %%A in ('findstr /C:"\"%~2\"" "%~1" 2^>nul') do set "_raw=%%A"
-if defined _raw (
-    set "_raw=!_raw: =!"
-    set "_raw=!_raw:,=!"
-    set "_JVAL=!_raw!"
-)
-set "_raw="
-goto :eof
-
-REM extract_json_string <file> <key> -> _JVAL
-:extract_json_string
-set "_JVAL="
-for /f "tokens=2 delims=:" %%A in ('findstr /C:"\"%~2\"" "%~1" 2^>nul') do set "_raw=%%A"
-if defined _raw (
-    set "_raw=!_raw: =!"
-    set "_raw=!_raw:,=!"
-    set "_raw=!_raw:"=!"
-    set "_JVAL=!_raw!"
-)
-set "_raw="
 goto :eof
 
 REM nspo_to_x100 <decimal> -> _NSPO_X100
@@ -434,45 +316,10 @@ set "_nspo_f=!_nspo_f:~0,2!"
 set /a _NSPO_X100=_nspo_i*100+_nspo_f
 goto :eof
 
-REM ----------------------------------------------------------- option parse
-:parse_opts
-if "%~1"=="" goto :eof
-set "_opt=%~1"
-if /I "%_opt%"=="build" (shift & goto :parse_opts)
-if /I "%_opt%"=="bench" (shift & goto :parse_opts)
-if /I "%_opt%"=="all"   (shift & goto :parse_opts)
-if /I "%_opt%"=="--prims"   (set "PRIMS=" & shift & set "_LV=PRIMS" & goto :collect_list)
-if /I "%_opt%"=="-p"        (set "PRIMS=" & shift & set "_LV=PRIMS" & goto :collect_list)
-if /I "%_opt%"=="--langs"   (set "LANGS=" & shift & set "_LV=LANGS" & goto :collect_list)
-if /I "%_opt%"=="-l"        (set "LANGS=" & shift & set "_LV=LANGS" & goto :collect_list)
-if /I "%_opt%"=="--modes"   (set "MODES=" & shift & set "_LV=MODES" & goto :collect_list)
-if /I "%_opt%"=="-m"        (set "MODES=" & shift & set "_LV=MODES" & goto :collect_list)
-if /I "%_opt%"=="--workers" (set "WORKERS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="-w"        (set "WORKERS=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="--repeat"  (set "REPEAT=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="-r"        (set "REPEAT=%~2" & shift & shift & goto :parse_opts)
-if /I "%_opt%"=="--permits" (set "PERMITS=%~2" & shift & shift & goto :parse_opts)
-call :err "unknown option: %_opt%"
-exit /b 1
-
-REM Collect a comma/space-separated list into the variable named by _LV,
-REM consuming value tokens until the next option (starts with '-') or end of
-REM args. cmd splits an unquoted `xylem,rust` into separate tokens on the
-REM comma, so we rejoin them here -- this makes `--langs xylem,rust`,
-REM `--langs xylem rust`, and a quoted "xylem,rust" all work.
-:collect_list
-if "%~1"=="" goto :parse_opts
-set "_lt=%~1"
-if "%_lt:~0,1%"=="-" goto :parse_opts
-call set "_cur=%%%_LV%%%"
-if defined _cur (call set "%_LV%=%%%_LV%%%,%_lt%") else (set "%_LV%=%_lt%")
-shift
-goto :collect_list
-
 :bench_mutex
 call :info "=== mutex  (tasks=2*workers, 5s) ==="
-echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
-echo   -------------------------------------------------------------------------------
+echo   LANG    MODE        ops/s        ns/op     total_ops
+echo   ----------------------------------------------------
 
 for %%L in (%LANGS:,= %) do (
     set "lang=%%L"
@@ -488,46 +335,33 @@ for %%L in (%LANGS:,= %) do (
     ) else (
         for %%M in (!modes!) do (
             set "mode=%%M"
-            set /a ops_sum=0, nspo_sum=0, valid=0
-            set "ops_vals="
-            set "total_last=0"
+            set "out=%RUN_DIR%\sync-mutex-!lang!-!mode!.json"
+            "!BIN!" > "!out!" 2>nul
 
-            for /l %%R in (1,1,%REPEAT%) do (
-                set "out=%RUN_DIR%\sync-mutex-!lang!-r%%R.json"
-                if not exist "!out!.done" (
-                    "!BIN!" > "!out!" 2>nul
-                    type nul > "!out!.done"
+            set "ops="
+            set "nspo="
+            set "total="
+            for %%F in ("!out!") do set "_sz=%%~zF"
+            if defined _sz if !_sz! GTR 0 (
+                for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                    set "ops=%%A"
+                    set "nspo=%%B"
+                    set "total=%%C"
                 )
-
-                for %%F in ("!out!") do set "_sz=%%~zF"
-                if defined _sz if !_sz! GTR 0 (
-                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
-                        set "ops=%%A"
-                        set "nspo=%%B"
-                        set "total=%%C"
-                    )
-                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
-                    if defined ops if !ops! GTR 0 (
-                        set /a ops_sum+=ops, valid+=1
-                        call :nspo_to_x100 "!nspo!"
-                        set /a nspo_sum+=_NSPO_X100
-                        set "total_last=!total!"
-                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
-                    )
+                for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                if defined ops if !ops! GTR 0 (
+                    call :nspo_to_x100 "!nspo!"
+                    set /a nspo_i=_NSPO_X100/100
+                    set /a nspo_f=_NSPO_X100%%100
+                    if !nspo_f! LSS 10 (set "nspo_fmt=!nspo_i!.0!nspo_f!") else (set "nspo_fmt=!nspo_i!.!nspo_f!")
+                    echo   !lang!    !mode!    !ops!    !nspo_fmt!    !total!
+                ) else (
+                    call :warn "!lang!/!mode!: no valid output"
                 )
-                set "_sz="
-            )
-
-            if !valid! GTR 0 (
-                set /a ops_avg=ops_sum/valid
-                set /a nspo_avg_x100=nspo_sum/valid
-                set /a nspo_avg_i=nspo_avg_x100/100
-                set /a nspo_avg_f=nspo_avg_x100%%100
-                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
-                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
             ) else (
-                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+                call :warn "!lang!/!mode!: no valid output"
             )
+            set "_sz="
         )
     )
 )
@@ -537,8 +371,8 @@ goto :eof
 REM ------------------------------------------------------------------ cond
 :bench_cond
 call :info "=== cond  (ping-pong, 5s) ==="
-echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
-echo   -------------------------------------------------------------------------------
+echo   LANG    MODE        ops/s        ns/op     total_ops
+echo   ----------------------------------------------------
 
 for %%L in (%LANGS:,= %) do (
     set "lang=%%L"
@@ -554,43 +388,33 @@ for %%L in (%LANGS:,= %) do (
     ) else (
         for %%M in (!modes!) do (
             set "mode=%%M"
-            set /a ops_sum=0, nspo_sum=0, valid=0
-            set "ops_vals="
-            set "total_last=0"
+            set "out=%RUN_DIR%\sync-cond-!lang!-!mode!.json"
+            "!BIN!" > "!out!" 2>nul
 
-            for /l %%R in (1,1,%REPEAT%) do (
-                set "out=%RUN_DIR%\sync-cond-!lang!-!mode!-r%%R.json"
-                "!BIN!" > "!out!" 2>nul
-
-                for %%F in ("!out!") do set "_sz=%%~zF"
-                if defined _sz if !_sz! GTR 0 (
-                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
-                        set "ops=%%A"
-                        set "nspo=%%B"
-                        set "total=%%C"
-                    )
-                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
-                    if defined ops if !ops! GTR 0 (
-                        set /a ops_sum+=ops, valid+=1
-                        call :nspo_to_x100 "!nspo!"
-                        set /a nspo_sum+=_NSPO_X100
-                        set "total_last=!total!"
-                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
-                    )
+            set "ops="
+            set "nspo="
+            set "total="
+            for %%F in ("!out!") do set "_sz=%%~zF"
+            if defined _sz if !_sz! GTR 0 (
+                for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                    set "ops=%%A"
+                    set "nspo=%%B"
+                    set "total=%%C"
                 )
-                set "_sz="
-            )
-
-            if !valid! GTR 0 (
-                set /a ops_avg=ops_sum/valid
-                set /a nspo_avg_x100=nspo_sum/valid
-                set /a nspo_avg_i=nspo_avg_x100/100
-                set /a nspo_avg_f=nspo_avg_x100%%100
-                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
-                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
+                for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                if defined ops if !ops! GTR 0 (
+                    call :nspo_to_x100 "!nspo!"
+                    set /a nspo_i=_NSPO_X100/100
+                    set /a nspo_f=_NSPO_X100%%100
+                    if !nspo_f! LSS 10 (set "nspo_fmt=!nspo_i!.0!nspo_f!") else (set "nspo_fmt=!nspo_i!.!nspo_f!")
+                    echo   !lang!    !mode!    !ops!    !nspo_fmt!    !total!
+                ) else (
+                    call :warn "!lang!/!mode!: no valid output"
+                )
             ) else (
-                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+                call :warn "!lang!/!mode!: no valid output"
             )
+            set "_sz="
         )
     )
 )
@@ -600,8 +424,8 @@ goto :eof
 REM ------------------------------------------------------------------ sem
 :bench_sem
 call :info "=== sem  (handoff, 5s) ==="
-echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
-echo   -------------------------------------------------------------------------------
+echo   LANG    MODE        ops/s        ns/op     total_ops
+echo   ----------------------------------------------------
 
 for %%L in (%LANGS:,= %) do (
     set "lang=%%L"
@@ -615,47 +439,33 @@ for %%L in (%LANGS:,= %) do (
 
         for %%M in (!modes!) do (
             set "mode=%%M"
-            set /a ops_sum=0, nspo_sum=0, valid=0
-            set "ops_vals="
-            set "total_last=0"
+            set "out=%RUN_DIR%\sync-sem-!lang!-!mode!.json"
+            "!BIN!" > "!out!" 2>nul
 
-            for /l %%R in (1,1,%REPEAT%) do (
-                set "out=%RUN_DIR%\sync-sem-!lang!-!mode!-r%%R.json"
-                if /I "!lang!"=="xylem" (
-                    "%BIN_DIR%\sem-xylem.exe" > "!out!" 2>nul
+            set "ops="
+            set "nspo="
+            set "total="
+            for %%F in ("!out!") do set "_sz=%%~zF"
+            if defined _sz if !_sz! GTR 0 (
+                for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                    set "ops=%%A"
+                    set "nspo=%%B"
+                    set "total=%%C"
+                )
+                for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                if defined ops if !ops! GTR 0 (
+                    call :nspo_to_x100 "!nspo!"
+                    set /a nspo_i=_NSPO_X100/100
+                    set /a nspo_f=_NSPO_X100%%100
+                    if !nspo_f! LSS 10 (set "nspo_fmt=!nspo_i!.0!nspo_f!") else (set "nspo_fmt=!nspo_i!.!nspo_f!")
+                    echo   !lang!    !mode!    !ops!    !nspo_fmt!    !total!
                 ) else (
-                    "%BIN_DIR%\sem-rust.exe" > "!out!" 2>nul
+                    call :warn "!lang!/!mode!: no valid output"
                 )
-
-                for %%F in ("!out!") do set "_sz=%%~zF"
-                if defined _sz if !_sz! GTR 0 (
-                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
-                        set "ops=%%A"
-                        set "nspo=%%B"
-                        set "total=%%C"
-                    )
-                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
-                    if defined ops if !ops! GTR 0 (
-                        set /a ops_sum+=ops, valid+=1
-                        call :nspo_to_x100 "!nspo!"
-                        set /a nspo_sum+=_NSPO_X100
-                        set "total_last=!total!"
-                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
-                    )
-                )
-                set "_sz="
-            )
-
-            if !valid! GTR 0 (
-                set /a ops_avg=ops_sum/valid
-                set /a nspo_avg_x100=nspo_sum/valid
-                set /a nspo_avg_i=nspo_avg_x100/100
-                set /a nspo_avg_f=nspo_avg_x100%%100
-                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
-                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
             ) else (
-                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+                call :warn "!lang!/!mode!: no valid output"
             )
+            set "_sz="
         )
     )
 :sem_skip
@@ -665,8 +475,8 @@ goto :eof
 
 :bench_channel
 call :info "=== channel  (one-way, 5s) ==="
-echo   LANG    MODE      ops/s(avg)        ns/op      total_ops  runs(ops/s^)
-echo   -------------------------------------------------------------------------------
+echo   LANG    MODE        ops/s        ns/op     total_ops
+echo   ----------------------------------------------------
 
 for %%L in (%LANGS:,= %) do (
     set "lang=%%L"
@@ -682,43 +492,33 @@ for %%L in (%LANGS:,= %) do (
     ) else (
         for %%M in (!modes!) do (
             set "mode=%%M"
-            set /a ops_sum=0, nspo_sum=0, valid=0
-            set "ops_vals="
-            set "total_last=0"
+            set "out=%RUN_DIR%\sync-channel-!lang!-!mode!.json"
+            "!BIN!" > "!out!" 2>nul
 
-            for /l %%R in (1,1,%REPEAT%) do (
-                set "out=%RUN_DIR%\sync-channel-!lang!-!mode!-r%%R.json"
-                "!BIN!" > "!out!" 2>nul
-
-                for %%F in ("!out!") do set "_sz=%%~zF"
-                if defined _sz if !_sz! GTR 0 (
-                    for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
-                        set "ops=%%A"
-                        set "nspo=%%B"
-                        set "total=%%C"
-                    )
-                    for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
-                    if defined ops if !ops! GTR 0 (
-                        set /a ops_sum+=ops, valid+=1
-                        call :nspo_to_x100 "!nspo!"
-                        set /a nspo_sum+=_NSPO_X100
-                        set "total_last=!total!"
-                        if defined ops_vals (set "ops_vals=!ops_vals!,!ops!") else (set "ops_vals=!ops!")
-                    )
+            set "ops="
+            set "nspo="
+            set "total="
+            for %%F in ("!out!") do set "_sz=%%~zF"
+            if defined _sz if !_sz! GTR 0 (
+                for /f "tokens=1-3" %%A in ('powershell -NoProfile -Command "$m='!mode!'; $txt=gc '!out!' -Raw; $blocks=$txt -split '(?<=\})\s*\r?\n\s*(?=\{)'; foreach($b in $blocks){if($b -match ('\"mode\":\s*\"' + $m + '\"')){$o='';$n='';$t='';if($b -match '\"ops_per_sec\":\s*([0-9.]+)'){$o=$Matches[1]};if($b -match '\"ns_per_op\":\s*([0-9.]+)'){$n=$Matches[1]};if($b -match '\"total_ops\":\s*([0-9]+)'){$t=$Matches[1]};Write-Output ($o + ' ' + $n + ' ' + $t)}}"') do (
+                    set "ops=%%A"
+                    set "nspo=%%B"
+                    set "total=%%C"
                 )
-                set "_sz="
-            )
-
-            if !valid! GTR 0 (
-                set /a ops_avg=ops_sum/valid
-                set /a nspo_avg_x100=nspo_sum/valid
-                set /a nspo_avg_i=nspo_avg_x100/100
-                set /a nspo_avg_f=nspo_avg_x100%%100
-                if !nspo_avg_f! LSS 10 (set "nspo_avg=!nspo_avg_i!.0!nspo_avg_f!") else (set "nspo_avg=!nspo_avg_i!.!nspo_avg_f!")
-                echo   !lang!    !mode!    !ops_avg!    !nspo_avg!    !total_last!  [!ops_vals!]
+                for /f "delims=." %%X in ("!ops!") do set "ops=%%X"
+                if defined ops if !ops! GTR 0 (
+                    call :nspo_to_x100 "!nspo!"
+                    set /a nspo_i=_NSPO_X100/100
+                    set /a nspo_f=_NSPO_X100%%100
+                    if !nspo_f! LSS 10 (set "nspo_fmt=!nspo_i!.0!nspo_f!") else (set "nspo_fmt=!nspo_i!.!nspo_f!")
+                    echo   !lang!    !mode!    !ops!    !nspo_fmt!    !total!
+                ) else (
+                    call :warn "!lang!/!mode!: no valid output"
+                )
             ) else (
-                call :warn "!lang!/!mode!: no valid output from %REPEAT% runs"
+                call :warn "!lang!/!mode!: no valid output"
             )
+            set "_sz="
         )
     )
 )
@@ -726,21 +526,17 @@ echo.
 goto :eof
 
 :usage
-echo usage: %SCRIPT_NAME% [build^|bench^|all] [options]
+echo usage: %SCRIPT_NAME% [mutex^|cond^|sem^|channel^|help]
 echo.
 echo Windows sync-primitive benchmark. Build auto-inits MSVC via vcvars64.bat.
 echo.
-echo Commands:
-echo   build   build xylem static lib + C/Go/Rust sync-bench binaries
-echo   bench   run each primitive across languages, write out\results\^<ts^>\
-echo   all     build + bench   (default)
+echo Arguments:
+echo   mutex^|cond^|sem^|channel   build + run the full comparison matrix for
+echo                             that primitive (xylem vs go vs rust, all
+echo                             supported modes)
+echo   help                      this help
+echo   (none)                    every primitive   (default)
 echo.
-echo Options:
-echo   --prims, -p    mutex,cond,sem,channel             primitives to run
-echo   --langs, -l    xylem,go,rust                       languages to compare
-echo   --repeat, -r   3                                   repeat each cell N times
-echo.
-echo Examples:
-echo   %SCRIPT_NAME%
-echo   %SCRIPT_NAME% bench --prims mutex,channel --langs xylem,rust --repeat 1
+echo The matrix is fixed: langs=xylem,go,rust, each cell runs once (no
+echo repeat). Edit the defaults at the top of this script to change it.
 goto :eof

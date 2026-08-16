@@ -4,12 +4,13 @@ set -euo pipefail
 # =============================================================================
 # Xylem sync-primitive benchmark (per-primitive, fixed-duration)
 # -----------------------------------------------------------------------------
-#   build  - build xylem static lib + C/Go/Rust sync-bench binaries
-#   bench  - run every primitive across xylem/go/rust, write out/results/<ts>/
-#   all    - build + bench                                          [default]
+#   mutex|cond|sem|channel - build + run the full comparison matrix for that
+#                            primitive (xylem vs go vs rust, all supported
+#                            modes)
+#   (no argument)         - every primitive                     [default]
 #
-# Primitives (--prims, comma-separated): mutex,cond,sem,channel
-# Languages  (--langs, comma-separated): xylem,go,rust
+# Fixed matrix -- no options; edit the constants below to change the suite:
+#   prims: mutex,cond,sem,channel   langs: xylem,go,rust
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,20 +27,83 @@ ok()   { printf "\033[1;32m[ok]\033[0m %s\n" "$1"; }
 warn() { printf "\033[1;33m[warn]\033[0m %s\n" "$1"; }
 err()  { printf "\033[1;31m[err]\033[0m %s\n" "$1" >&2; }
 
-if [ "$(uname -s)" = "Darwin" ]; then ncpu() { sysctl -n hw.ncpu; }
-else ncpu() { nproc; }; fi
+if [ "$(uname -s)" = "Darwin" ]; then
+    PLATFORM="macos"
+    ncpu() { sysctl -n hw.ncpu; }
+else
+    PLATFORM="linux"
+    ncpu() { nproc; }
+fi
 
-IFS=',' read -ra PRIMS <<< "${PRIMS:-mutex,cond,sem,channel}"
-IFS=',' read -ra LANGS <<< "${LANGS:-xylem,go,rust}"
-WORKERS="${WORKERS:-0}"
-REPEAT="${REPEAT:-3}"
-
-_p_tasks() { case "$1" in mutex) echo 8;; cond) echo 2;; channel) echo 4;; *) echo 8;; esac; }
-_p_iters() { case "$1" in mutex) echo 1000000;; cond) echo 1000;; channel) echo 1000000;; *) echo 1000000;; esac; }
-P_PERMITS="${PERMITS:-4}"
+# Fixed matrix (no CLI options -- edit these constants to change the suite).
+PRIMS=(mutex cond sem channel)
+LANGS=(xylem go rust)
 
 CFLAGS="-std=gnu11 -O3 -DNDEBUG -flto -Wall -Wextra"
 LDFLAGS="-s -flto"
+
+# =============================================================================
+# dependencies (auto-installed at run time when missing)
+# =============================================================================
+
+# Fill MISSING_DEPS with anything not installed. Tools are probed with
+# command -v so installs via brew, official installers, or rustup are all
+# recognized; Linux additionally needs a C toolchain (build-essential).
+find_missing_deps() {
+    MISSING_DEPS=()
+    local tool
+    for tool in cmake ninja go; do
+        command -v "$tool" >/dev/null 2>&1 || MISSING_DEPS+=("$tool")
+    done
+    command -v cargo >/dev/null 2>&1 || MISSING_DEPS+=("rust")
+    if [ "$PLATFORM" != "macos" ]; then
+        dpkg -s build-essential >/dev/null 2>&1 || MISSING_DEPS+=("build-essential")
+    fi
+    [ "${#MISSING_DEPS[@]}" -eq 0 ]
+}
+
+# Install MISSING_DEPS. Names are brew formulas on macOS and apt packages on
+# Linux (with a few renames: ninja->ninja-build, go->golang-go, rust->rustup);
+# apt needs root, rust installs as the invoking user.
+install_missing() {
+    info "installing missing dependencies: ${MISSING_DEPS[*]}"
+    if [ "$PLATFORM" = "macos" ]; then
+        brew install "${MISSING_DEPS[@]}"
+        ok "all dependencies ready (macOS)"
+        return
+    fi
+
+    local apt_pkgs=() rust_needed=false d
+    for d in "${MISSING_DEPS[@]}"; do
+        case "$d" in
+            rust)  rust_needed=true ;;
+            ninja) apt_pkgs+=("ninja-build") ;;
+            go)    apt_pkgs+=("golang-go") ;;
+            *)     apt_pkgs+=("$d") ;;
+        esac
+    done
+    if [ "${#apt_pkgs[@]}" -gt 0 ]; then
+        if [ "$(id -u)" -ne 0 ]; then
+            sudo -E apt-get update -qq
+            sudo -E apt-get install -y -qq "${apt_pkgs[@]}"
+        else
+            apt-get update -qq
+            apt-get install -y -qq "${apt_pkgs[@]}"
+        fi
+        ok "apt packages ready"
+    fi
+    if [ "$rust_needed" = true ]; then
+        # shellcheck disable=SC2016
+        curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+        ok "rust ready"
+    fi
+    ok "all dependencies ready"
+}
+
+# Called at the start of every run; installs anything that is missing.
+ensure_deps() {
+    find_missing_deps || install_missing
+}
 
 # =============================================================================
 # build
@@ -47,13 +111,6 @@ LDFLAGS="-s -flto"
 
 cmd_build() {
     mkdir -p "$BIN_DIR"
-
-    if ! command -v cmake >/dev/null 2>&1; then
-        err "cmake not found"; exit 1
-    fi
-    if ! command -v ninja >/dev/null 2>&1; then
-        err "ninja not found"; exit 1
-    fi
 
     info "building xylem static library..."
     cmake -S "$PROJECT_ROOT" -B "$BUILD_DIR" \
@@ -114,11 +171,6 @@ cmd_build() {
             ( cd "$SYNC_DIR/channel/go" && CGO_ENABLED=0 go build -ldflags="-s -w" \
                 -o "$BIN_DIR/channel-go" . ) || warn "skip channel-go (build failed)"
         fi
-        if [ -d "$SYNC_DIR/go-sync" ]; then
-            info "building go sync-bench..."
-            ( cd "$SYNC_DIR/go-sync" && CGO_ENABLED=0 go build -ldflags="-s -w" \
-                -o "$BIN_DIR/sync-go" . ) || warn "skip go (build failed)"
-        fi
     else
         warn "go not found; skipping"
     fi
@@ -155,19 +207,6 @@ cmd_build() {
           2>/dev/null && ok "channel-rust built" || warn "skip channel-rust"
     fi
 
-    if command -v cargo >/dev/null 2>&1; then
-        if [ -d "$SYNC_DIR/rust-sync" ]; then
-            info "building rust sync-bench..."
-            ( cd "$SYNC_DIR/rust-sync" && cargo build --release -q \
-                --target-dir "$BIN_DIR/cargo" && \
-              cp "$BIN_DIR/cargo/release/sync-rust" "$BIN_DIR/" && \
-              strip "$BIN_DIR/sync-rust" ) \
-              || warn "skip rust (build failed)"
-        fi
-    else
-        warn "cargo not found; skipping"
-    fi
-
     echo ""
     ls -lh "$BIN_DIR"
 }
@@ -176,25 +215,14 @@ cmd_build() {
 # bench
 # =============================================================================
 
-bin_for() {
-    case "$1" in
-        xylem) echo "$BIN_DIR/sync-xylem";;
-        go)    echo "$BIN_DIR/sync-go";;
-        rust)  echo "$BIN_DIR/sync-rust";;
-    esac
-}
-
-extract_json() {
-    grep "\"$2\"" "$1" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1
-}
 
 bench_mutex() {
     local run_dir="$1"
 
     info "=== mutex  (tasks=2*workers, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s  %s\n" \
-        "LANG" "MODE" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
-    printf "  %s\n" "-----------------------------------------------------------------"
+    printf "  %-7s %-7s %10s %10s %14s\n" \
+        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
+    printf "  %s\n" "------------------------------------------------------"
 
     for lang in "${LANGS[@]}"; do
         local bin=""
@@ -208,44 +236,31 @@ bench_mutex() {
         [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
         for mode in "${modes[@]}"; do
-            local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
-            for run in $(seq 1 "$REPEAT"); do
-                local out="$run_dir/sync-mutex-${lang}-r${run}.json"
-                [ -s "$out" ] || "$bin" > "$out" 2>/dev/null || true
+            local out="$run_dir/sync-mutex-${lang}-${mode}.json"
+            "$bin" > "$out" 2>/dev/null || true
 
-                if [ -s "$out" ]; then
-                    local block
-                    block=$(awk -v m="$mode" '
-                        /^{/ { in_obj=1; buf=$0; next }
-                        in_obj { buf=buf "\n" $0 }
-                        /^}/ {
-                            if (buf ~ "\"mode\": \"" m "\"") print buf
-                            in_obj=0; buf=""
-                        }' "$out")
-                    if [ -n "$block" ]; then
-                        local ops nspo total
-                        ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        ops=${ops%%.*}
-                        if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                            ops_sum=$((ops_sum + ops))
-                            nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
-                            total_last="$total"
-                            valid=$((valid + 1))
-                            ops_vals="${ops_vals:+$ops_vals,}$ops"
-                        fi
-                    fi
+            local ops="" nspo="" total=""
+            if [ -s "$out" ]; then
+                local block
+                block=$(awk -v m="$mode" '
+                    /^{/ { in_obj=1; buf=$0; next }
+                    in_obj { buf=buf "\n" $0 }
+                    /^}/ {
+                        if (buf ~ "\"mode\": \"" m "\"") print buf
+                        in_obj=0; buf=""
+                    }' "$out")
+                if [ -n "$block" ]; then
+                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    ops=${ops%%.*}
                 fi
-            done
-
-            if [ "$valid" -gt 0 ]; then
-                local ops_avg=$((ops_sum / valid))
-                local nspo_avg; nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
-                printf "  %-7s %-7s %10s %10s %14s  [%s]\n" \
-                    "$lang" "$mode" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
+            fi
+            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
+                printf "  %-7s %-7s %10s %10s %14s\n" \
+                    "$lang" "$mode" "$ops" "$nspo" "$total"
             else
-                warn "$lang/$mode: no valid output from $REPEAT runs"
+                warn "$lang/$mode: no valid output"
             fi
         done
     done
@@ -256,9 +271,9 @@ bench_cond() {
     local run_dir="$1"
 
     info "=== cond  (ping-pong, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s  %s\n" \
-        "LANG" "MODE" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
-    printf "  %s\n" "-----------------------------------------------------------------"
+    printf "  %-7s %-7s %10s %10s %14s\n" \
+        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
+    printf "  %s\n" "------------------------------------------------------"
 
     for lang in "${LANGS[@]}"; do
         local bin=""
@@ -273,44 +288,31 @@ bench_cond() {
         [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
         for mode in "${modes[@]}"; do
-            local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
-            for run in $(seq 1 "$REPEAT"); do
-                local out="$run_dir/sync-cond-${lang}-${mode}-r${run}.json"
-                "$bin" > "$out" 2>/dev/null || true
+            local out="$run_dir/sync-cond-${lang}-${mode}.json"
+            "$bin" > "$out" 2>/dev/null || true
 
-                if [ -s "$out" ]; then
-                    local block
-                    block=$(awk -v m="$mode" '
-                        /^{/ { in_obj=1; buf=$0; next }
-                        in_obj { buf=buf "\n" $0 }
-                        /^}/ {
-                            if (buf ~ "\"mode\": \"" m "\"") print buf
-                            in_obj=0; buf=""
-                        }' "$out")
-                    if [ -n "$block" ]; then
-                        local ops nspo total
-                        ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        ops=${ops%%.*}
-                        if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                            ops_sum=$((ops_sum + ops))
-                            nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
-                            total_last="$total"
-                            valid=$((valid + 1))
-                            ops_vals="${ops_vals:+$ops_vals,}$ops"
-                        fi
-                    fi
+            local ops="" nspo="" total=""
+            if [ -s "$out" ]; then
+                local block
+                block=$(awk -v m="$mode" '
+                    /^{/ { in_obj=1; buf=$0; next }
+                    in_obj { buf=buf "\n" $0 }
+                    /^}/ {
+                        if (buf ~ "\"mode\": \"" m "\"") print buf
+                        in_obj=0; buf=""
+                    }' "$out")
+                if [ -n "$block" ]; then
+                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    ops=${ops%%.*}
                 fi
-            done
-
-            if [ "$valid" -gt 0 ]; then
-                local ops_avg=$((ops_sum / valid))
-                local nspo_avg; nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
-                printf "  %-7s %-7s %10s %10s %14s  [%s]\n" \
-                    "$lang" "$mode" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
+            fi
+            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
+                printf "  %-7s %-7s %10s %10s %14s\n" \
+                    "$lang" "$mode" "$ops" "$nspo" "$total"
             else
-                warn "$lang/$mode: no valid output from $REPEAT runs"
+                warn "$lang/$mode: no valid output"
             fi
         done
     done
@@ -321,62 +323,46 @@ bench_sem() {
     local run_dir="$1"
 
     info "=== sem  (handoff, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s  %s\n" \
-        "LANG" "MODE" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
-    printf "  %s\n" "-----------------------------------------------------------------"
+    printf "  %-7s %-7s %10s %10s %14s\n" \
+        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
+    printf "  %s\n" "------------------------------------------------------"
 
     for lang in "${LANGS[@]}"; do
-        local bin; bin="$(bin_for "$lang")"
-        [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
-        local modes=()
+        local bin="" modes=()
         case "$lang" in
-            xylem) modes=(cc tt ct tc);;
-            rust)  modes=(coro);;
+            xylem) bin="$BIN_DIR/sem-xylem"; modes=(cc tt ct tc);;
+            go)    warn "skip go (sem unsupported)"; continue;;
+            rust)  bin="$BIN_DIR/sem-rust";  modes=(coro);;
+            *)     warn "skip $lang (sem unsupported)"; continue;;
         esac
+        [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
         for mode in "${modes[@]}"; do
-            local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
-            for run in $(seq 1 "$REPEAT"); do
-                local out="$run_dir/sync-sem-${lang}-${mode}-r${run}.json"
-                if [ "$lang" = "xylem" ]; then
-                    "$BIN_DIR/sem-xylem" > "$out" 2>/dev/null || true
-                else
-                    "$BIN_DIR/sem-rust" > "$out" 2>/dev/null || true
-                fi
+            local out="$run_dir/sync-sem-${lang}-${mode}.json"
+            "$bin" > "$out" 2>/dev/null || true
 
-                if [ -s "$out" ]; then
-                    local block
-                    block=$(awk -v m="$mode" '
-                        /^{/ { in_obj=1; buf=$0; next }
-                        in_obj { buf=buf "\n" $0 }
-                        /^}/ {
-                            if (buf ~ "\"mode\": \"" m "\"") print buf
-                            in_obj=0; buf=""
-                        }' "$out")
-                    if [ -n "$block" ]; then
-                        local ops nspo total
-                        ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        ops=${ops%%.*}
-                        if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                            ops_sum=$((ops_sum + ops))
-                            nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
-                            total_last="$total"
-                            valid=$((valid + 1))
-                            ops_vals="${ops_vals:+$ops_vals,}$ops"
-                        fi
-                    fi
+            local ops="" nspo="" total=""
+            if [ -s "$out" ]; then
+                local block
+                block=$(awk -v m="$mode" '
+                    /^{/ { in_obj=1; buf=$0; next }
+                    in_obj { buf=buf "\n" $0 }
+                    /^}/ {
+                        if (buf ~ "\"mode\": \"" m "\"") print buf
+                        in_obj=0; buf=""
+                    }' "$out")
+                if [ -n "$block" ]; then
+                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    ops=${ops%%.*}
                 fi
-            done
-
-            if [ "$valid" -gt 0 ]; then
-                local ops_avg=$((ops_sum / valid))
-                local nspo_avg; nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
-                printf "  %-7s %-7s %10s %10s %14s  [%s]\n" \
-                    "$lang" "$mode" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
+            fi
+            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
+                printf "  %-7s %-7s %10s %10s %14s\n" \
+                    "$lang" "$mode" "$ops" "$nspo" "$total"
             else
-                warn "$lang/$mode: no valid output from $REPEAT runs"
+                warn "$lang/$mode: no valid output"
             fi
         done
     done
@@ -387,9 +373,9 @@ bench_channel() {
     local run_dir="$1"
 
     info "=== channel  (one-way, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s  %s\n" \
-        "LANG" "MODE" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
-    printf "  %s\n" "-----------------------------------------------------------------"
+    printf "  %-7s %-7s %10s %10s %14s\n" \
+        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
+    printf "  %s\n" "------------------------------------------------------"
 
     for lang in "${LANGS[@]}"; do
         local bin=""
@@ -404,44 +390,31 @@ bench_channel() {
         [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
         for mode in "${modes[@]}"; do
-            local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
-            for run in $(seq 1 "$REPEAT"); do
-                local out="$run_dir/sync-channel-${lang}-${mode}-r${run}.json"
-                "$bin" > "$out" 2>/dev/null || true
+            local out="$run_dir/sync-channel-${lang}-${mode}.json"
+            "$bin" > "$out" 2>/dev/null || true
 
-                if [ -s "$out" ]; then
-                    local block
-                    block=$(awk -v m="$mode" '
-                        /^{/ { in_obj=1; buf=$0; next }
-                        in_obj { buf=buf "\n" $0 }
-                        /^}/ {
-                            if (buf ~ "\"mode\": \"" m "\"") print buf
-                            in_obj=0; buf=""
-                        }' "$out")
-                    if [ -n "$block" ]; then
-                        local ops nspo total
-                        ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                        ops=${ops%%.*}
-                        if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                            ops_sum=$((ops_sum + ops))
-                            nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
-                            total_last="$total"
-                            valid=$((valid + 1))
-                            ops_vals="${ops_vals:+$ops_vals,}$ops"
-                        fi
-                    fi
+            local ops="" nspo="" total=""
+            if [ -s "$out" ]; then
+                local block
+                block=$(awk -v m="$mode" '
+                    /^{/ { in_obj=1; buf=$0; next }
+                    in_obj { buf=buf "\n" $0 }
+                    /^}/ {
+                        if (buf ~ "\"mode\": \"" m "\"") print buf
+                        in_obj=0; buf=""
+                    }' "$out")
+                if [ -n "$block" ]; then
+                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
+                    ops=${ops%%.*}
                 fi
-            done
-
-            if [ "$valid" -gt 0 ]; then
-                local ops_avg=$((ops_sum / valid))
-                local nspo_avg; nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
-                printf "  %-7s %-7s %10s %10s %14s  [%s]\n" \
-                    "$lang" "$mode" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
+            fi
+            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
+                printf "  %-7s %-7s %10s %10s %14s\n" \
+                    "$lang" "$mode" "$ops" "$nspo" "$total"
             else
-                warn "$lang/$mode: no valid output from $REPEAT runs"
+                warn "$lang/$mode: no valid output"
             fi
         done
     done
@@ -453,71 +426,20 @@ cmd_bench() {
     local run_dir="$RESULTS_ROOT/$ts"
     mkdir -p "$run_dir"
 
-    info "results -> $run_dir   repeat=${REPEAT}"
+    info "results -> $run_dir"
     info "prims: ${PRIMS[*]}   langs: ${LANGS[*]}"
     echo ""
 
     for prim in "${PRIMS[@]}"; do
         if [ "$prim" = "mutex" ]; then
             bench_mutex "$run_dir"
-            continue
-        fi
-        if [ "$prim" = "cond" ]; then
+        elif [ "$prim" = "cond" ]; then
             bench_cond "$run_dir"
-            continue
-        fi
-        if [ "$prim" = "sem" ]; then
+        elif [ "$prim" = "sem" ]; then
             bench_sem "$run_dir"
-            continue
-        fi
-        if [ "$prim" = "channel" ]; then
+        elif [ "$prim" = "channel" ]; then
             bench_channel "$run_dir"
-            continue
         fi
-
-        local tasks="$(_p_tasks "$prim")"
-        info "=== ${prim}  (tasks=${tasks}) ==="
-        printf "  %-7s %10s %10s %14s  %s\n" \
-            "LANG" "ops/s(avg)" "ns/op" "total_ops" "runs(ops/s)"
-        printf "  %s\n" "---------------------------------------------------------------------"
-
-        for lang in "${LANGS[@]}"; do
-            local bin; bin="$(bin_for "$lang")"
-            [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
-
-            local iters="$(_p_iters "$prim")"
-            local args=(--tasks "$tasks" --iters "$iters" --workers "$WORKERS")
-
-            local ops_sum=0 nspo_sum=0 total_last=0 valid=0 ops_vals=""
-            for run in $(seq 1 "$REPEAT"); do
-                local out="$run_dir/sync-${prim}-${lang}-r${run}.json"
-                "$bin" "$prim" "${args[@]}" > "$out" 2>/dev/null || true
-                if [ -s "$out" ]; then
-                    local ops nspo total
-                    ops=$(extract_json "$out" ops_per_sec)
-                    nspo=$(extract_json "$out" ns_per_op)
-                    total=$(extract_json "$out" total_ops)
-                    ops=${ops%%.*}
-                    if [ -n "$ops" ] && [ "$ops" -gt 0 ]; then
-                        ops_sum=$((ops_sum + ops))
-                        nspo_sum=$(awk -v a="$nspo_sum" -v b="$nspo" 'BEGIN { printf "%.6f", a + b }')
-                        total_last="$total"
-                        valid=$((valid + 1))
-                        ops_vals="${ops_vals:+$ops_vals,}$ops"
-                    fi
-                fi
-            done
-
-            if [ "$valid" -gt 0 ]; then
-                local ops_avg=$((ops_sum / valid))
-                local nspo_avg; nspo_avg=$(awk -v s="$nspo_sum" -v n="$valid" 'BEGIN { printf "%.2f", s / n }')
-                printf "  %-7s %10s %10s %14s  [%s]\n" \
-                    "$lang" "$ops_avg" "$nspo_avg" "$total_last" "$ops_vals"
-            else
-                warn "$lang: no valid output from $REPEAT runs"
-            fi
-        done
-        echo ""
     done
 
     ok "sync benchmarks complete"
@@ -530,46 +452,44 @@ cmd_bench() {
 
 usage() {
     cat <<EOF
-usage: $0 [build|bench|all] [options...]
+usage: $0 [mutex|cond|sem|channel|help]
 
-Commands:
-  build     xylem static lib + per-language sync-bench binaries
-  bench     run comparison benchmarks, write benchmark/out/results/<ts>/
-  all       build + bench   (default)
+Arguments:
+  mutex|cond|sem|channel   build + run the full comparison matrix for that
+                           primitive (xylem vs go vs rust, all supported modes)
+  help                     this help
+  (none)                   every primitive   [default]
 
-Options (env vars seed defaults):
-  --prims, -p    mutex,cond,sem,channel             (default: all)
-  --langs, -l    xylem,go,rust                       (default: all)
-  --repeat, -r   3                                   repeat each test N times
-
-Examples:
-  $0 bench --prims mutex,channel --langs xylem,rust --repeat 1
+The matrix is fixed: langs=xylem,go,rust, each cell runs once (no repeat).
+Edit the constants at the top of this script to change it.
 EOF
 }
 
-parse_opts() {
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --prims|-p) shift; IFS=',' read -ra PRIMS <<< "$1" ;;
-            --langs|-l) shift; IFS=',' read -ra LANGS <<< "$1" ;;
-            --repeat|-r) shift; REPEAT="$1" ;;
-            --workers|-w) shift; WORKERS="$1" ;;
-            *) err "unknown option: $1"; usage; exit 1 ;;
-        esac
-        shift
-    done
-}
-
 main() {
-    local cmd="${1:-all}"
-    shift || true
+    # stdbuf re-exec guard: when stdout is not a tty (piped/redirected),
+    # re-exec under stdbuf -oL so progress lines flush as they are written.
+    if [ ! -t 1 ] && command -v stdbuf >/dev/null 2>&1 && [ "${STDBUF_RERUN:-}" != "1" ]; then
+        STDBUF_RERUN=1 exec stdbuf -oL "$0" "$@"
+    fi
 
-    case "$cmd" in
-        build) parse_opts "$@"; cmd_build ;;
-        bench) parse_opts "$@"; cmd_bench ;;
-        all)   parse_opts "$@"; cmd_build; cmd_bench ;;
+    local target="${1:-}"
+    if [ "$#" -gt 1 ]; then
+        err "unexpected extra arguments: ${*:2}"
+        usage
+        exit 1
+    fi
+    case "$target" in
         -h|--help|help) usage ;;
-        *) err "unknown command: $cmd"; usage; exit 1 ;;
+        ""|mutex|cond|sem|channel)
+            [ -n "$target" ] && PRIMS=("$target")
+            ensure_deps
+            cmd_build
+            cmd_bench
+            ;;
+        *)
+            err "unknown target: $target (must be mutex|cond|sem|channel|help)"
+            usage
+            exit 1 ;;
     esac
 }
 

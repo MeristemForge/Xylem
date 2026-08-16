@@ -4,17 +4,22 @@ set -euo pipefail
 # =============================================================================
 # Xylem benchmark suite (cross-platform: Linux + macOS)
 # -----------------------------------------------------------------------------
-#   install  - install system dependencies (Linux: sudo apt + source builds;
-#              macOS: guidance via brew)
-#   build    - build xylem + echo servers + bench client for each protocol
-#   bench    - run comparison benchmarks and write out/results/<ts>/
-#   all      - install + build + bench                             [default]
+# Usage:  ./run-net.sh <proto>     - build + run the full comparison matrix
+#                                     for one protocol, e.g.:
+#        ./run-net.sh tcp     TCP:   stream echo,  ports from 9000,
+#                                    ST + MT, throughput + connrate
+#        ./run-net.sh udp     UDP:   datagram echo, ports from 9001,
+#                                    ST only, throughput
+#        ./run-net.sh tls     TLS:   TLS-over-TCP, ports from 9443,
+#                                    ST + MT, throughput + connrate
+#                                    (xylem built with -DXYLEM_ENABLE_TLS=ON;
+#                                    servers link OpenSSL)
+#        ./run-net.sh              - same, all protocols (tcp,udp,tls)
+#        ./run-net.sh help         - usage
 #
-# Default protocol matrix: tcp, udp, tls (override via: bench tls, bench tcp, etc.)
-#   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
-#   udp : datagram echo, ports from 9001, ST only, throughput
-#   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
-#         (xylem built with -DXYLEM_ENABLE_TLS=ON; servers link OpenSSL)
+# Missing dependencies are installed automatically when the run starts
+# (Linux: sudo apt + rust, macOS: brew; openssl/libssl-dev only when tls is
+# among the requested protocols).
 #
 # Compared servers: xylem, go, rust. Missing binaries are skipped automatically.
 # UDP has no MT row (the public UDP API exposes no SO_REUSEPORT, so a single
@@ -128,64 +133,78 @@ protos_need_tls() {
 }
 
 # =============================================================================
-# install
+# dependencies (auto-installed at run time when missing)
 # =============================================================================
 
-cmd_install() {
+# Fill MISSING_DEPS with anything not installed. Tools are probed with
+# command -v so installs via brew, official installers, or rustup are all
+# recognized; libraries (libssl-dev, brew openssl) are checked only when tls
+# is among the requested protocols (and no OPENSSL_ROOT override is set).
+find_missing_deps() {
+    MISSING_DEPS=()
+    local tool
+    for tool in cmake ninja pkg-config go; do
+        command -v "$tool" >/dev/null 2>&1 || MISSING_DEPS+=("$tool")
+    done
+    command -v cargo >/dev/null 2>&1 || MISSING_DEPS+=("rust")
     if [ "$PLATFORM" = "macos" ]; then
-        info "macOS detected; installing deps via Homebrew..."
-        if ! command -v brew >/dev/null 2>&1; then
-            err "Homebrew not found. Install it from https://brew.sh then re-run."
-            exit 1
+        if protos_need_tls && [ -z "${OPENSSL_ROOT:-}" ] \
+           && ! brew list openssl >/dev/null 2>&1; then
+            MISSING_DEPS+=("openssl")
         fi
-        local BREW_PKGS=(cmake ninja pkg-config openssl go rust)
-        local missing=()
-        local pkg
-        for pkg in "${BREW_PKGS[@]}"; do
-            brew list "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    else
+        for tool in autoconf automake libtool curl git; do
+            command -v "$tool" >/dev/null 2>&1 || MISSING_DEPS+=("$tool")
         done
-        if [ "${#missing[@]}" -gt 0 ]; then
-            brew install "${missing[@]}"
+        dpkg -s build-essential >/dev/null 2>&1 || MISSING_DEPS+=("build-essential")
+        if protos_need_tls; then
+            dpkg -s libssl-dev >/dev/null 2>&1 || MISSING_DEPS+=("libssl-dev")
         fi
+    fi
+    [ "${#MISSING_DEPS[@]}" -eq 0 ]
+}
+
+# Install MISSING_DEPS. Names are brew formulas on macOS and apt packages on
+# Linux (with a few renames: ninja->ninja-build, go->golang-go, rust->rustup);
+# apt needs root, rust installs as the invoking user.
+install_missing() {
+    info "installing missing dependencies: ${MISSING_DEPS[*]}"
+    if [ "$PLATFORM" = "macos" ]; then
+        brew install "${MISSING_DEPS[@]}"
         ok "all dependencies ready (macOS)"
         return
     fi
 
-    if [ "$(id -u)" -ne 0 ]; then
-        info "escalating to root for dependency install..."
-        sudo -E "$0" install
-        return
-    fi
-
-    info "apt base packages..."
-    local APT_PKGS=(
-        build-essential cmake ninja-build pkg-config
-        autoconf automake libtool
-        libssl-dev
-        golang-go
-        curl git
-    )
-    local missing=()
-    for pkg in "${APT_PKGS[@]}"; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    local apt_pkgs=() rust_needed=false d
+    for d in "${MISSING_DEPS[@]}"; do
+        case "$d" in
+            rust)  rust_needed=true ;;
+            ninja) apt_pkgs+=("ninja-build") ;;
+            go)    apt_pkgs+=("golang-go") ;;
+            *)     apt_pkgs+=("$d") ;;
+        esac
     done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        apt-get update -qq
-        apt-get install -y -qq "${missing[@]}"
+    if [ "${#apt_pkgs[@]}" -gt 0 ]; then
+        if [ "$(id -u)" -ne 0 ]; then
+            sudo -E apt-get update -qq
+            sudo -E apt-get install -y -qq "${apt_pkgs[@]}"
+        else
+            apt-get update -qq
+            apt-get install -y -qq "${apt_pkgs[@]}"
+        fi
+        ok "apt packages ready"
     fi
-    ok "apt packages ready"
-
-    info "rust..."
-    if ! command -v cargo >/dev/null 2>&1; then
+    if [ "$rust_needed" = true ]; then
         # shellcheck disable=SC2016
-        sudo -u "${SUDO_USER:-$USER}" bash -c '
-            curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs |
-                sh -s -- -y --quiet
-        '
+        curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+        ok "rust ready"
     fi
-    ok "rust ready"
-
     ok "all dependencies ready"
+}
+
+# Called at the start of every run; installs anything that is missing.
+ensure_deps() {
+    find_missing_deps || install_missing
 }
 
 # =============================================================================
@@ -518,15 +537,10 @@ bench_throughput() {
     if [ "$BENCH_WARMUP_RUNS" -gt 0 ]; then
         warmup_label=" (+${BENCH_WARMUP_RUNS} warmup)"
     fi
-    info "=== [${CUR_PROTO}] ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s x${REPEAT}${warmup_label} ==="
+    info "=== [${CUR_PROTO}] ${row_label} Throughput: c${conns_lbl} payload=${size_lbl} ${DURATION}s${warmup_label} ==="
 
-    if [ "$REPEAT" -gt 1 ]; then
-        printf "  %-10s %12s %8s %10s %10s %10s  %s\n" \
-            "SERVER" "msg/s(avg)" "MB/s" "p50(us)" "p99(us)" "max(us)" "runs"
-    else
-        printf "  %-10s %12s %8s %10s %10s %10s\n" \
-            "SERVER" "msg/s" "MB/s" "p50(us)" "p99(us)" "max(us)"
-    fi
+    printf "  %-10s %12s %8s %10s %10s %10s\n" \
+        "SERVER" "msg/s" "MB/s" "p50(us)" "p99(us)" "max(us)"
     printf "  %s\n" "------------------------------------------------------------------------"
 
     local offset=0
@@ -545,11 +559,10 @@ bench_throughput() {
         sleep 2
 
         local tp_sum=0 p50_sum=0 p99_sum=0 max_sum=0 valid_runs=0
-        local tp_vals=""
         local cpu_usage_last=""
         local srv_cpu_last=""
 
-        local total_runs=$((REPEAT + BENCH_WARMUP_RUNS))
+        local total_runs=$((BENCH_WARMUP_RUNS + 1))
         for run in $(seq 1 "$total_runs"); do
             local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
             local measured_run=$((run - BENCH_WARMUP_RUNS))
@@ -602,7 +615,6 @@ bench_throughput() {
                     p99_sum=$((p99_sum + p99))
                     max_sum=$((max_sum + lat_max))
                     valid_runs=$((valid_runs + 1))
-                    tp_vals="${tp_vals:+$tp_vals,}$tp"
                 fi
             fi
 
@@ -621,13 +633,8 @@ bench_throughput() {
             local p99_avg=$((p99_sum / valid_runs))
             local max_avg=$((max_sum / valid_runs))
             local mbps=$((tp_avg * payload / 1048576))
-            if [ "$REPEAT" -gt 1 ]; then
-                printf "  %-10s %12s %8s %10s %10s %10s  [%s]\n" \
-                    "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg" "$tp_vals"
-            else
-                printf "  %-10s %12s %8s %10s %10s %10s\n" \
-                    "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
-            fi
+            printf "  %-10s %12s %8s %10s %10s %10s\n" \
+                "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             printf "  %10s srv: peak_rss=%s  cpu=%s (cores %s)\n" "" \
                 "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)" \
                 "$srv_cpu_last" "$(server_core_spec "$row_label")"
@@ -635,7 +642,7 @@ bench_throughput() {
                 printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
             fi
         else
-            warn "$name: no valid output from $REPEAT runs"
+            warn "$name: no valid output"
         fi
     done
     echo ""
@@ -776,10 +783,10 @@ cmd_bench() {
 # fixed bench matrix
 # =============================================================================
 
-# Default benchmark matrix constants.  Override protocols on the CLI:
-#   $0 bench tcp        # single protocol
-#   $0 bench tcp,tls     # multiple
-#   $0 bench             # all defaults (below)
+# Default benchmark matrix constants.  The CLI argument selects one protocol
+# (tcp|udp|tls); with no argument every protocol runs. The matrix below is
+# fixed and applies to every run. Edit the NET_BENCH_* constants to change
+# the standard suite.
 
 NET_BENCH_PROTOS="tcp,udp,tls"
 NET_BENCH_SERVERS="xylem,go,rust"
@@ -787,7 +794,6 @@ NET_BENCH_CONNS="1000,10000"
 NET_BENCH_PAYLOADS="64,4096,65536"
 NET_BENCH_DURATION=10
 NET_BENCH_MODE="both"
-NET_BENCH_REPEAT=1
 NET_BENCH_WARMUP_RUNS=1
 NET_BENCH_RUN_CONNRATE=true
 
@@ -800,32 +806,20 @@ split_bench_matrix() {
     IFS=',' read -ra PAYLOADS  <<< "$NET_BENCH_PAYLOADS"
     DURATION="$NET_BENCH_DURATION"
     MODE="$NET_BENCH_MODE"
-    REPEAT="$NET_BENCH_REPEAT"
     BENCH_WARMUP_RUNS="$NET_BENCH_WARMUP_RUNS"
     RUN_CONNRATE="$NET_BENCH_RUN_CONNRATE"
 }
 
 parse_bench_opts() {
-    # Optional first arg overrides NET_BENCH_PROTOS
-    if [ "$#" -gt 0 ]; then
-        NET_BENCH_PROTOS="$1"
-        shift
-    fi
-
     split_bench_matrix
 
-    if [ "$#" -gt 0 ]; then
-        err "unexpected extra arguments: $*"
-        exit 1
-    fi
-
+    # Validate the protocol list and fixed matrix settings.
+    local p
+    for p in "${PROTOS[@]}"; do proto_config "$p"; done
     if [[ "$MODE" != "st" && "$MODE" != "mt" && "$MODE" != "both" ]]; then
         err "invalid fixed mode: $MODE (must be st|mt|both)"
         exit 1
     fi
-
-    local p
-    for p in "${PROTOS[@]}"; do proto_config "$p"; done
 }
 
 # =============================================================================
@@ -834,43 +828,38 @@ parse_bench_opts() {
 
 usage() {
     cat <<EOF
-usage: $0 [install|build|bench|all] [protos]
+usage: $0 [tcp|udp|tls|help]
 
 Cross-platform (Linux + macOS). Current platform: $PLATFORM
 
-Commands:
-  install   Linux: apt + rust (needs sudo)
-            macOS: Homebrew packages
-  build     xylem static lib + per-protocol servers + bench clients
-  bench     run comparison benchmarks, write benchmark/out/results/<ts>/
-  all       install + build + bench   (default)
-
-Optional [protos] overrides the protocol list (comma-separated: tcp,udp,tls).
-  Default (no argument): $NET_BENCH_PROTOS
+Arguments:
+  tcp|udp|tls   build + run the full comparison matrix for that protocol
+                (xylem vs go vs rust; ST, and MT where the protocol has it)
+  help          this help
+  (none)        run every protocol: $NET_BENCH_PROTOS   [default]
 
 Fixed matrix (edit NET_BENCH_* constants in this script to change defaults):
-  protocols:  $NET_BENCH_PROTOS
   servers:    $NET_BENCH_SERVERS
   conns:      $NET_BENCH_CONNS
   payloads:   $NET_BENCH_PAYLOADS
   duration:   ${NET_BENCH_DURATION}s
   mode:       $NET_BENCH_MODE
-  repeat:     $NET_BENCH_REPEAT
   connrate:   $NET_BENCH_RUN_CONNRATE
 
 Notes:
-  TLS requires OpenSSL; xylem is built with -DXYLEM_ENABLE_TLS=ON when tls is
-  among the protocols. UDP has no MT row.
+  Missing dependencies are installed automatically at run start (Linux:
+  sudo apt + rust, macOS: brew; openssl/libssl-dev only when tls is requested).
+  TLS builds xylem with -DXYLEM_ENABLE_TLS=ON.
+  UDP has no MT row.
   Throughput runs $NET_BENCH_WARMUP_RUNS uncounted warmup pass(es).
   macOS uses kqueue and lacks SO_REUSEPORT / /proc; numbers are NOT comparable
   to the Linux suite.
 
 Examples:
-  $0 build
-  $0 bench
-  $0 bench tls
-  $0 bench tcp,tls
-  $0 all
+  $0 tcp          # full TCP matrix (ST + MT, throughput + connrate)
+  $0 udp          # UDP matrix (ST only)
+  $0 tls          # TLS matrix (requires OpenSSL)
+  $0              # all protocols
 EOF
 }
 
@@ -880,27 +869,27 @@ main() {
         STDBUF_RERUN=1 exec stdbuf -oL "$0" "$@"
     fi
 
-    local cmd="${1:-all}"
-    shift || true
+    local target="${1:-}"
 
-    case "$cmd" in
-        install) cmd_install ;;
-        build)
-            parse_bench_opts "$@"
-            cmd_build
-            ;;
-        bench)
-            parse_bench_opts "$@"
-            cmd_bench
-            ;;
-        all)
-            parse_bench_opts "$@"
-            cmd_install
-            cmd_build
-            cmd_bench
-            ;;
+    if [ "$#" -gt 1 ]; then
+        err "unexpected extra arguments: ${*:2}"
+        usage
+        exit 1
+    fi
+
+    case "$target" in
         -h|--help|help) usage ;;
-        *) err "unknown command: $cmd"; usage; exit 1 ;;
+        ""|tcp|udp|tls)
+            [ -n "$target" ] && NET_BENCH_PROTOS="$target"
+            parse_bench_opts
+            ensure_deps
+            cmd_build
+            cmd_bench
+            ;;
+        *)
+            err "unknown target: $target (must be tcp|udp|tls|help)"
+            usage
+            exit 1 ;;
     esac
 }
 

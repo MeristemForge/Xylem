@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# =============================================================================
+# Xylem scheduler spawn benchmark (fixed workload: 1,000,000 tasks)
+# -----------------------------------------------------------------------------
+#   st|mt - build + run the spawn matrix in that mode (xylem vs go vs rust)
+#   (no argument) - both ST and MT                           [default]
+#
+# Fixed matrix -- no options; edit the constants below to change the suite:
+#   langs: xylem,go,rust   modes: st+mt   tasks: 1,000,000
+# =============================================================================
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BENCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$BENCH_DIR/.." && pwd)"
@@ -11,75 +21,97 @@ BIN_DIR="$OUT_DIR"
 BUILD_DIR="$OUT_DIR/build"
 RESULTS_ROOT="$OUT_DIR/results"
 
-LANGS_TEXT="${LANGS:-xylem,go,rust}"
-REPEAT="${REPEAT:-3}"
+# Fixed matrix (no CLI options -- edit these constants to change the suite).
+LANGS=(xylem go rust)
 
 info() { printf "[scheduler] %s\n" "$1"; }
 ok() { printf "[ok] %s\n" "$1"; }
 err() { printf "[err] %s\n" "$1" >&2; }
 
-ncpu() {
-    if [ "$(uname -s)" = "Darwin" ]; then
-        sysctl -n hw.ncpu
-    else
-        nproc
-    fi
-}
+if [ "$(uname -s)" = "Darwin" ]; then
+    PLATFORM="macos"
+    ncpu() { sysctl -n hw.ncpu; }
+else
+    PLATFORM="linux"
+    ncpu() { nproc; }
+fi
 
 usage() {
     cat <<EOF
-usage: $0 [build|bench|all] [options...]
+usage: $0 [st|mt|help]
 
-Commands:
-  build             build the six scheduler benchmark binaries
-  bench             run both ST and MT modes and write results/<timestamp>/
-  all               build + bench (default)
+Arguments:
+  st|mt    build + run the spawn matrix in that mode (xylem vs go vs rust)
+  help     this help
+  (none)   both ST and MT   [default]
 
-Options:
-  --langs, -l LIST  comma-separated subset of xylem,go,rust
-  --repeat, -r N    runs per language/mode (default: 3)
-
-The workload is fixed at 1,000,000 tasks. Benchmark executables take no args.
+The workload is fixed at 1,000,000 tasks and each cell runs once (no repeat).
+Benchmark executables take no args. Edit the constants at the top of this
+script to change the matrix.
 EOF
 }
 
-parse_opts() {
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --langs|-l)
-                [ $# -ge 2 ] || { err "--langs requires a value"; exit 1; }
-                LANGS_TEXT="$2"
-                shift 2
-                ;;
-            --repeat|-r)
-                [ $# -ge 2 ] || { err "--repeat requires a value"; exit 1; }
-                REPEAT="$2"
-                shift 2
-                ;;
-            *)
-                err "unknown option: $1"
-                usage
-                exit 1
-                ;;
-        esac
+# =============================================================================
+# dependencies (auto-installed at run time when missing)
+# =============================================================================
+
+# Fill MISSING_DEPS with anything not installed. Tools are probed with
+# command -v so installs via brew, official installers, or rustup are all
+# recognized; Linux additionally needs a C toolchain (build-essential).
+find_missing_deps() {
+    MISSING_DEPS=()
+    local tool
+    for tool in cmake ninja python3 go; do
+        command -v "$tool" >/dev/null 2>&1 || MISSING_DEPS+=("$tool")
     done
-    case "$REPEAT" in
-        ''|*[!0-9]*) err "repeat must be a positive integer"; exit 1 ;;
-    esac
-    [ "$REPEAT" -gt 0 ] || { err "repeat must be a positive integer"; exit 1; }
-    IFS=',' read -r -a LANGS <<< "$LANGS_TEXT"
-    for lang in "${LANGS[@]}"; do
-        case "$lang" in
-            xylem|go|rust) ;;
-            *) err "unsupported language: $lang"; exit 1 ;;
-        esac
-    done
+    command -v cargo >/dev/null 2>&1 || MISSING_DEPS+=("rust")
+    if [ "$PLATFORM" != "macos" ]; then
+        dpkg -s build-essential >/dev/null 2>&1 || MISSING_DEPS+=("build-essential")
+    fi
+    [ "${#MISSING_DEPS[@]}" -eq 0 ]
 }
 
-require_tools() {
-    for tool in cmake ninja python3; do
-        command -v "$tool" >/dev/null 2>&1 || { err "$tool not found"; exit 1; }
+# Install MISSING_DEPS. Names are brew formulas on macOS and apt packages on
+# Linux (with a few renames: ninja->ninja-build, go->golang-go, rust->rustup);
+# apt needs root, rust installs as the invoking user.
+install_missing() {
+    info "installing missing dependencies: ${MISSING_DEPS[*]}"
+    if [ "$PLATFORM" = "macos" ]; then
+        brew install "${MISSING_DEPS[@]}"
+        ok "all dependencies ready (macOS)"
+        return
+    fi
+
+    local apt_pkgs=() rust_needed=false d
+    for d in "${MISSING_DEPS[@]}"; do
+        case "$d" in
+            rust)  rust_needed=true ;;
+            ninja) apt_pkgs+=("ninja-build") ;;
+            go)    apt_pkgs+=("golang-go") ;;
+            *)     apt_pkgs+=("$d") ;;
+        esac
     done
+    if [ "${#apt_pkgs[@]}" -gt 0 ]; then
+        if [ "$(id -u)" -ne 0 ]; then
+            sudo -E apt-get update -qq
+            sudo -E apt-get install -y -qq "${apt_pkgs[@]}"
+        else
+            apt-get update -qq
+            apt-get install -y -qq "${apt_pkgs[@]}"
+        fi
+        ok "apt packages ready"
+    fi
+    if [ "$rust_needed" = true ]; then
+        # shellcheck disable=SC2016
+        curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+        ok "rust ready"
+    fi
+    ok "all dependencies ready"
+}
+
+# Called at the start of every run; installs anything that is missing.
+ensure_deps() {
+    find_missing_deps || install_missing
 }
 
 verify_result() {
@@ -126,26 +158,14 @@ PY
 }
 
 summarize_results() {
-    local results_dir="$1" lang="$2" mode="$3" repeat="$4"
-    python3 - "$results_dir" "$lang" "$mode" "$repeat" <<'PY'
+    local result_file="$1"
+    python3 - "$result_file" <<'PY'
 import json
 import sys
-from pathlib import Path
 
-results_dir = Path(sys.argv[1])
-lang, mode, repeat = sys.argv[2], sys.argv[3], int(sys.argv[4])
-results = []
-for run in range(1, repeat + 1):
-    path = results_dir / f"scheduler-spawn-{lang}-{mode}-r{run}.json"
-    with path.open(encoding="utf-8") as result_file:
-        results.append(json.load(result_file))
-
-count = len(results)
-values = [
-    sum(result[key] for result in results) / count
-    for key in ("elapsed_sec", "tasks_per_sec", "ns_per_task")
-]
-print(f"{values[0]:.6f} {values[1]:.0f} {values[2]:.2f}")
+with open(sys.argv[1], encoding="utf-8") as result_file:
+    result = json.load(result_file)
+print(f"{result['elapsed_sec']:.6f} {result['tasks_per_sec']:.0f} {result['ns_per_task']:.2f}")
 PY
 }
 
@@ -196,7 +216,6 @@ build_rust() {
 }
 
 cmd_build() {
-    require_tools
     mkdir -p "$BIN_DIR"
     for lang in "${LANGS[@]}"; do
         case "$lang" in
@@ -221,24 +240,21 @@ binary_for() {
 }
 
 cmd_bench() {
-    require_tools
-    local timestamp run_dir lang mode run bin result elapsed tasks_per_sec ns_per_task
+    local timestamp run_dir lang mode bin result elapsed tasks_per_sec ns_per_task
     timestamp="$(date +%Y%m%d-%H%M%S)"
     run_dir="$RESULTS_ROOT/$timestamp"
     mkdir -p "$run_dir"
-    info "results: $run_dir (repeat=$REPEAT)"
+    info "results: $run_dir"
 
     for lang in "${LANGS[@]}"; do
-        for mode in st mt; do
+        for mode in "${MODES[@]}"; do
             bin="$(binary_for "$lang" "$mode")"
             [ -x "$bin" ] || { err "missing binary: $bin (run build first)"; exit 1; }
-            for run in $(seq 1 "$REPEAT"); do
-                result="$run_dir/scheduler-spawn-$lang-$mode-r$run.json"
-                "$bin" > "$result"
-                verify_result "$result" "$lang" "$mode"
-            done
+            result="$run_dir/scheduler-spawn-$lang-$mode.json"
+            "$bin" > "$result"
+            verify_result "$result" "$lang" "$mode"
             read -r elapsed tasks_per_sec ns_per_task < <(
-                summarize_results "$run_dir" "$lang" "$mode" "$REPEAT"
+                summarize_results "$result"
             )
             printf "%-6s %-2s  elapsed=%ss  tasks/s=%s  ns/task=%s\n" \
                 "$lang" "$mode" "$elapsed" "$tasks_per_sec" "$ns_per_task"
@@ -248,19 +264,31 @@ cmd_bench() {
 }
 
 main() {
-    local command="${1:-all}"
-    shift || true
-    case "$command" in
+    # stdbuf re-exec guard: when stdout is not a tty (piped/redirected),
+    # re-exec under stdbuf -oL so progress lines flush as they are written.
+    if [ ! -t 1 ] && command -v stdbuf >/dev/null 2>&1 && [ "${STDBUF_RERUN:-}" != "1" ]; then
+        STDBUF_RERUN=1 exec stdbuf -oL "$0" "$@"
+    fi
+
+    local target="${1:-}"
+    if [ "$#" -gt 1 ]; then
+        err "unexpected extra arguments: ${*:2}"
+        usage
+        exit 1
+    fi
+    case "$target" in
         -h|--help|help) usage ;;
-        build|bench|all)
-            parse_opts "$@"
-            case "$command" in
-                build) cmd_build ;;
-                bench) cmd_bench ;;
-                all) cmd_build; cmd_bench ;;
-            esac
+        ""|st|mt)
+            MODES=(st mt)
+            [ -n "$target" ] && MODES=("$target")
+            ensure_deps
+            cmd_build
+            cmd_bench
             ;;
-        *) err "unknown command: $command"; usage; exit 1 ;;
+        *)
+            err "unknown target: $target (must be st|mt|help)"
+            usage
+            exit 1 ;;
     esac
 }
 

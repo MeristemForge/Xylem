@@ -4,21 +4,26 @@ setlocal EnableDelayedExpansion
 REM ============================================================================
 REM Xylem benchmark suite (Windows, native cmd.exe)
 REM ----------------------------------------------------------------------------
+REM Usage:  run-net.bat <proto>   - build + run the full comparison matrix
+REM                                  for one protocol, e.g.:
+REM     run-net.bat tcp     TCP:   stream echo,  ports from 9000,
+REM                                 ST + MT, throughput + connrate
+REM     run-net.bat udp     UDP:   datagram echo, ports from 9001,
+REM                                 ST only, throughput
+REM     run-net.bat tls     TLS:   TLS-over-TCP, ports from 9443,
+REM                                 ST + MT, throughput + connrate
+REM                                 (xylem built -DXYLEM_ENABLE_TLS=ON;
+REM                                  needs OpenSSL via vcpkg)
+REM     run-net.bat              - same, all protocols (tcp,udp,tls)
+REM     run-net.bat help         - usage
+REM
+REM Missing toolchain pieces print setup guidance automatically when the run
+REM starts (cl.exe is auto-initialized by the build step via vcvars64.bat).
+REM
 REM Run from any terminal (cmd.exe / PowerShell). The build step auto-detects
 REM Visual Studio via vswhere and initializes vcvars64.bat, so cl.exe is set up
 REM automatically; running from a "Developer Command Prompt" also works. cmake
 REM and ninja must be on PATH (winget installs put them there).
-REM
-REM   install  - guidance for installing deps via winget (Go, Rust, CMake, Ninja)
-REM   build    - build xylem + echo servers (per protocol) + bench client
-REM   bench    - run comparison benchmarks and write out\results\<ts>\
-REM   all      - build + bench                                       [default]
-REM
-REM Fixed protocol matrix: tcp, udp, tls
-REM   tcp : stream echo,   ports from 9000, ST + MT, throughput + connrate
-REM   udp : datagram echo, ports from 9001, ST only, throughput
-REM   tls : TLS-over-TCP,  ports from 9443, ST + MT, throughput + connrate
-REM         (xylem built with -DXYLEM_ENABLE_TLS=ON; needs OpenSSL via vcpkg)
 REM
 REM Compared servers: xylem, go, rust. The Windows driver builds only these
 REM three families for every protocol; missing binaries are skipped
@@ -54,7 +59,6 @@ set "NET_BENCH_CONNS=1000,10000"
 set "NET_BENCH_PAYLOADS=64,4096,65536"
 set "NET_BENCH_DURATION=10"
 set "NET_BENCH_MODE=both"
-set "NET_BENCH_REPEAT=1"
 set "NET_BENCH_WARMUP_RUNS=1"
 set "NET_BENCH_RUN_CONNRATE=true"
 
@@ -64,7 +68,6 @@ set "CONNS=%NET_BENCH_CONNS%"
 set "PAYLOADS=%NET_BENCH_PAYLOADS%"
 set "DURATION=%NET_BENCH_DURATION%"
 set "MODE=%NET_BENCH_MODE%"
-set "REPEAT=%NET_BENCH_REPEAT%"
 set "BENCH_WARMUP_RUNS=%NET_BENCH_WARMUP_RUNS%"
 set "RUN_CONNRATE=%NET_BENCH_RUN_CONNRATE%"
 
@@ -94,32 +97,30 @@ if "%PIN_ENABLE%"=="true" (
 )
 
 REM ---- dispatch --------------------------------------------------------------
+REM One argument selects the protocol: run-net.bat tcp|udp|tls builds and runs
+REM the full comparison matrix for that protocol. No argument runs all
+REM protocols. Missing toolchain pieces print setup guidance automatically.
 set "CMD=%~1"
-if "%CMD%"=="" set "CMD=all"
 if not "%CMD%"=="" shift
 
-if /I "%CMD%"=="install" goto :cmd_install
-if /I "%CMD%"=="build"   goto :do_build
-if /I "%CMD%"=="bench"   goto :do_bench
-if /I "%CMD%"=="all"     goto :do_all
-if /I "%CMD%"=="-h"      goto :usage
-if /I "%CMD%"=="--help"  goto :usage
-if /I "%CMD%"=="help"    goto :usage
-call :err "unknown command: %CMD%"
-goto :usage
+if /I "%CMD%"=="tcp"    goto :do_proto
+if /I "%CMD%"=="udp"    goto :do_proto
+if /I "%CMD%"=="tls"    goto :do_proto
+if /I "%CMD%"=="-h"     goto :usage
+if /I "%CMD%"=="--help" goto :usage
+if /I "%CMD%"=="help"   goto :usage
+if not "%CMD%"=="" (
+    call :err "unknown target: %CMD% (must be tcp|udp|tls|help)"
+    goto :usage
+)
 
-:do_build
-call :check_no_bench_opts %* || exit /b 1
-call :cmd_build
-goto :eof
-
-:do_bench
-call :check_no_bench_opts %* || exit /b 1
-call :cmd_bench
-goto :eof
-
-:do_all
-call :check_no_bench_opts %* || exit /b 1
+:do_proto
+if not "%~1"=="" (
+    call :err "unexpected extra arguments: %*"
+    goto :usage
+)
+if not "%CMD%"=="" set "PROTO=%CMD%"
+call :ensure_deps || exit /b 1
 call :cmd_build || exit /b 1
 call :cmd_bench
 goto :eof
@@ -176,8 +177,24 @@ call :err "unknown protocol: %_p% (must be tcp|udp|tls)"
 exit /b 1
 
 REM ============================================================================
-REM install (guidance only)
+REM dependencies (guidance printed automatically when tools are missing)
 REM ============================================================================
+
+REM ensure_deps -- warn on optional (go/rust) gaps, print guidance + abort on
+REM required (cmake/ninja) gaps. cl.exe is handled by ensure_msvc at build time.
+:ensure_deps
+set "_MISSING="
+where cmake >nul 2>&1 || set "_MISSING=%_MISSING% cmake"
+where ninja >nul 2>&1 || set "_MISSING=%_MISSING% ninja"
+if not "%_MISSING%"=="" (
+    call :err "required tools missing:%_MISSING%"
+    call :cmd_install
+    exit /b 1
+)
+where go >nul 2>&1 || call :warn "go not found; go server rows will be skipped"
+where cargo >nul 2>&1 || call :warn "rust not found; rust server rows will be skipped"
+goto :eof
+
 :cmd_install
 call :info "Windows dependency setup"
 echo   Required toolchain (run from an elevated PowerShell / cmd):
@@ -534,9 +551,8 @@ set "SIZE_LBL=%_FMT%"
 
 set "WARMUP_LABEL="
 if %BENCH_WARMUP_RUNS% GTR 0 set "WARMUP_LABEL= (+%BENCH_WARMUP_RUNS% warmup)"
-call :info "=== [%CUR_PROTO%] %ROW% Throughput: c%CONNS_LBL% payload=%SIZE_LBL% %DURATION%s x%REPEAT%%WARMUP_LABEL% ==="
-if %REPEAT% GTR 1 echo   SERVER       msg/s^(avg^)     MB/s    p50^(us^)    p99^(us^)    max^(us^)  runs
-if not %REPEAT% GTR 1 echo   SERVER            msg/s     MB/s    p50^(us^)    p99^(us^)    max^(us^)
+call :info "=== [%CUR_PROTO%] %ROW% Throughput: c%CONNS_LBL% payload=%SIZE_LBL% %DURATION%s%WARMUP_LABEL% ==="
+echo   SERVER            msg/s     MB/s    p50^(us^)    p99^(us^)    max^(us^)
 echo   ------------------------------------------------------------------------
 
 set /a _offset=0
@@ -553,9 +569,8 @@ for %%N in (%SERVERS:,= %) do (
         ping -n 3 127.0.0.1 >nul
 
         set /a tp_sum=0, p50_sum=0, p99_sum=0, max_sum=0, valid_runs=0
-        set "tp_vals="
 
-        set /a total_runs=%REPEAT% + %BENCH_WARMUP_RUNS%
+        set /a total_runs=%BENCH_WARMUP_RUNS% + 1
         for /l %%R in (1,1,!total_runs!) do (
             set /a measured_run=%%R - %BENCH_WARMUP_RUNS%
             if !measured_run! LEQ 0 (set "run_name=warmup%%R") else (set "run_name=r!measured_run!")
@@ -594,7 +609,6 @@ for %%N in (%SERVERS:,= %) do (
                 for /f "delims=." %%X in ("!lat_max!") do set "lat_max=%%X"
                 if defined tp if !tp! GTR 0 (
                     set /a tp_sum+=tp, p50_sum+=p50, p99_sum+=p99, max_sum+=lat_max, valid_runs+=1
-                    if defined tp_vals (set "tp_vals=!tp_vals!,!tp!") else (set "tp_vals=!tp!")
                 )
             )
             set "_sz="
@@ -610,15 +624,11 @@ for %%N in (%SERVERS:,= %) do (
             set /a tp_avg=tp_sum/valid_runs, p50_avg=p50_sum/valid_runs, p99_avg=p99_sum/valid_runs, max_avg=max_sum/valid_runs
             call :calc_mib_per_sec !tp_avg! !PAYLOAD_V!
             set "mbps=!_MIBPS!"
-            if %REPEAT% GTR 1 (
-                echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!  [!tp_vals!]
-            ) else (
-                echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!
-            )
+            echo   !name!    !tp_avg!    !mbps!    !p50_avg!    !p99_avg!    !max_avg!
             if defined srv_peak (echo              srv: peak_rss=!srv_peak!MB) else (echo              srv: peak_rss=n/a)
             if defined srv_cpu_line if not "!srv_cpu_line!"=="" echo              cpu: !srv_cpu_line!
         ) else (
-            call :warn "!name!: no valid output from %REPEAT% runs"
+            call :warn "!name!: no valid output"
         )
     )
 )
@@ -712,56 +722,40 @@ taskkill /F /IM %CUR_PROTO%-rust-echo-mt.exe  1>nul 2>nul
 goto :eof
 
 REM ============================================================================
-REM fixed matrix validation
-REM ============================================================================
-:check_no_bench_opts
-if "%~1"=="" goto :eof
-set "_opt=%~1"
-call :err "run-net uses a fixed benchmark matrix; edit NET_BENCH_* constants in %SCRIPT_NAME% instead of passing CLI options"
-exit /b 1
-
-:set_mode
-set "MODE=%~1"
-if /I "%MODE%"=="st"   goto :eof
-if /I "%MODE%"=="mt"   goto :eof
-if /I "%MODE%"=="both" goto :eof
-call :err "invalid mode: %MODE% (must be st|mt|both)"
-exit /b 1
-
-REM ============================================================================
 REM usage
 REM ============================================================================
 :usage
-echo usage: %SCRIPT_NAME% [install^|build^|bench^|all]
+echo usage: %SCRIPT_NAME% [tcp^|udp^|tls^|help]
 echo.
 echo Windows benchmark driver. Build auto-inits MSVC via vcvars64.bat (vswhere).
 echo.
-echo Commands:
-echo   install   print winget/vcpkg setup guidance, verify cl.exe
-echo   build     xylem static lib + per-protocol servers + bench clients
-echo   bench     run comparison benchmarks, write benchmark\out\results\^<ts^>\
-echo   all       build + bench   (default)
+echo Arguments:
+echo   tcp^|udp^|tls   build + run the full comparison matrix for that protocol
+echo                  (xylem vs go vs rust; ST, and MT where the protocol has it)
+echo   help           this help
+echo   (none)         run every protocol: %NET_BENCH_PROTO%   [default]
 echo.
 echo Fixed matrix (edit NET_BENCH_* constants in this script to change it):
-echo   protocols:  %NET_BENCH_PROTO%
 echo   servers:    %NET_BENCH_SERVERS%
 echo   conns:      %NET_BENCH_CONNS%
 echo   payloads:   %NET_BENCH_PAYLOADS%
 echo   duration:   %NET_BENCH_DURATION%s
 echo   mode:       %NET_BENCH_MODE%
-echo   repeat:     %NET_BENCH_REPEAT%
 echo   connrate:   %NET_BENCH_RUN_CONNRATE%
 echo.
 echo Notes:
-echo   TLS needs OpenSSL (vcpkg); xylem is built with -DXYLEM_ENABLE_TLS=ON when
-echo   tls is among the protocols. UDP has no MT row. The Windows client uses
-echo   IOCP; numbers are NOT comparable to Unix runs.
+echo   Missing toolchain pieces (cmake/ninja/go/rust) print setup guidance
+echo   automatically when the run starts.
+echo   TLS needs OpenSSL (vcpkg); xylem is built with -DXYLEM_ENABLE_TLS=ON.
+echo   UDP has no MT row. The Windows client uses IOCP; numbers are NOT
+echo   comparable to Unix runs.
 echo   Throughput runs %NET_BENCH_WARMUP_RUNS% uncounted warmup pass(es).
 echo.
 echo Examples:
-echo   %SCRIPT_NAME% build
-echo   %SCRIPT_NAME% bench
-echo   %SCRIPT_NAME% all
+echo   %SCRIPT_NAME% tcp
+echo   %SCRIPT_NAME% udp
+echo   %SCRIPT_NAME% tls
+echo   %SCRIPT_NAME%            all protocols
 goto :eof
 
 ::WINCLIENT::# Internal Windows helper extracted by run-net.bat.

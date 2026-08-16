@@ -1,0 +1,16 @@
+# CodeFactor configuration
+# https://docs.codefactor.io/configuration
+#
+# Exclude third-party vendored sources from analysis. These are upstream
+# libraries bundled into the tree as-is; their style/issues are not ours
+# to fix and would otherwise drown out findings in first-party code.
+
+exclude:
+  - "src/crypto/aes256/tiny-AES-c/**"
+  - "src/encoding/fec/reedsolomon-c/**"
+  - "src/encoding/gzip/miniz/**"
+  - "src/encoding/json/yyjson/**"
+  - "src/net/http/llhttp/**"
+  - "src/net/rudp/kcp/**"
+  - "src/runtime/minicoro/**"
+  - "src/platform/win/wepoll/**"

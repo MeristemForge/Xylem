@@ -29,20 +29,31 @@ Platform-specific drivers live in `benchmark/scripts/`:
 | `run-scheduler.sh` | Linux + macOS | GCC/Clang, Go, Rust |
 | `run-scheduler.bat` | Windows | MSVC (`cl.exe`), Go, Rust |
 
-The network drivers expose `install`, `build`, `bench`, and `all` (default).
-The scheduler drivers expose `build`, `bench`, and `all`; their workload is
-fixed at one million tasks. The network benchmark matrix is fixed in the
-`NET_BENCH_*` constants inside the network scripts.
+The net drivers take a single argument selecting the protocol — `tcp`, `udp`,
+or `tls` — and build + run the full comparison matrix for it; no argument runs
+every protocol. The sync drivers work the same way, taking a single primitive
+— `mutex`, `cond`, `sem`, or `channel`; the scheduler drivers take a single
+mode — `st` or `mt`. Missing dependencies are installed automatically when
+the run starts.
+
+The matrices are fixed: the net matrix lives in the `NET_BENCH_*` constants
+inside the network scripts, the sync matrix (langs `xylem,go,rust`) and the
+scheduler matrix at the top of their drivers. Every cell runs once (no
+repeat).
 
 ```bash
-./run-net.sh build
-./run-net.sh bench
-```
+./run-net.sh tcp    # full TCP matrix: xylem vs go vs rust (ST + MT)
+./run-net.sh udp    # UDP matrix (ST only)
+./run-net.sh tls    # TLS matrix (ST + MT, links OpenSSL)
+./run-net.sh        # all three protocols
 
-Scheduler spawn benchmark:
+./run-sync.sh mutex     # full mutex matrix: xylem vs go vs rust
+./run-sync.sh sem       # sem matrix (xylem vs rust; go has no sem)
+./run-sync.sh           # all four primitives
 
-```bash
-./run-scheduler.sh all
+./run-scheduler.sh st   # spawn matrix, single-threaded
+./run-scheduler.sh mt   # spawn matrix, multi-threaded
+./run-scheduler.sh      # both modes
 ```
 
 When `tls` is among the protocols, xylem is built with
@@ -55,13 +66,28 @@ When `tls` is among the protocols, xylem is built with
 ```bash
 cd benchmark/scripts
 
-# One command to install deps + build + run all benchmarks:
-./run-net.sh
+# One command: build + run the full TCP comparison matrix:
+./run-net.sh tcp
 
-# Or step by step:
-./run-net.sh install   # install dependencies (Linux: apt + source; macOS: brew)
-./run-net.sh build     # compile all binaries (Release, stripped)
-./run-net.sh bench     # run benchmarks, write out/results/<timestamp>/
+# Or any other protocol — or all of them at once:
+./run-net.sh udp
+./run-net.sh tls
+./run-net.sh            # all protocols (tcp,udp,tls)
+
+# Missing dependencies (cmake, go, rust, openssl, ...) are installed
+# automatically when the run starts (Linux: sudo apt + rust; macOS: brew).
+
+# Sync primitives are driven the same way, one per run:
+./run-sync.sh mutex     # mutex matrix: xylem vs go vs rust
+./run-sync.sh cond      # cond matrix
+./run-sync.sh sem       # sem matrix (xylem vs rust; go has no sem impl)
+./run-sync.sh channel   # channel matrix
+./run-sync.sh           # all four primitives
+
+# Scheduler spawn benchmark (1,000,000 tasks), by mode:
+./run-scheduler.sh st   # single-threaded
+./run-scheduler.sh mt   # multi-threaded
+./run-scheduler.sh      # both modes
 ```
 
 ### Windows
@@ -73,10 +99,18 @@ so no "Developer Command Prompt" is required:
 ```bat
 cd benchmark\scripts
 
-run-net.bat install    :: print winget/vcpkg setup guidance, verify cl.exe
-run-net.bat build      :: build servers + native Win32 (IOCP) clients
-run-net.bat bench      :: run benchmarks, write out\results\<timestamp>\
+run-net.bat tcp    :: build + run the full TCP matrix
+run-net.bat udp    :: UDP matrix
+run-net.bat tls    :: TLS matrix (needs OpenSSL via vcpkg)
+run-net.bat        :: all protocols
+
+run-sync.bat mutex    :: mutex matrix: xylem vs go vs rust
+run-sync.bat channel  :: channel matrix
+run-sync.bat          :: all four primitives
 ```
+
+Missing toolchain pieces (cmake/ninja/go/rust) print setup guidance
+automatically when the run starts.
 
 (TLS on Windows needs OpenSSL via vcpkg. The Windows driver builds only the
 xylem/go/rust families.)
@@ -84,15 +118,34 @@ xylem/go/rust families.)
 ## Usage
 
 ```bash
-./run-net.sh build
-./run-net.sh bench
-./run-net.sh all
+./run-net.sh tcp    # build + run the full TCP matrix
+./run-net.sh udp    # build + run the full UDP matrix
+./run-net.sh tls    # build + run the full TLS matrix
+./run-net.sh        # all protocols   (default)
+
+./run-sync.sh mutex     # build + run the full mutex matrix
+./run-sync.sh cond      # build + run the full cond matrix
+./run-sync.sh sem       # build + run the full sem matrix
+./run-sync.sh channel   # build + run the full channel matrix
+./run-sync.sh           # all primitives   (default)
+
+./run-scheduler.sh st   # build + run the spawn matrix, single-threaded
+./run-scheduler.sh mt   # build + run the spawn matrix, multi-threaded
+./run-scheduler.sh      # both modes   (default)
 ```
 
 The net driver uses a fixed matrix: `tcp,udp,tls`, `xylem,go,rust`,
 connections `1000,10000`, payloads `64,4096,65536`, duration `10s`, and
 ST+MT where the protocol supports it. Edit the `NET_BENCH_*` constants in
 `run-net.sh` / `run-net.bat` to change the standard suite.
+
+The sync driver uses a fixed matrix: prims `mutex,cond,sem,channel`,
+langs `xylem,go,rust`, 5s per test, once each. Edit the constants at the top
+of `run-sync.sh` / `run-sync.bat` to change the suite. Not every primitive
+exists in every language: `sem` is xylem+rust only.
+
+The scheduler driver uses a fixed matrix: modes `st,mt`, langs
+`xylem,go,rust`, 1,000,000 tasks, once each.
 
 ### Platform notes
 
@@ -153,12 +206,12 @@ benchmark/
   sync/                       sync-primitive microbenchmarks (separate suite)
   scheduler/                  scheduler spawn microbenchmarks (ST + MT)
   scripts/
-    run-net.sh                Linux/macOS net driver (install/build/bench)
-    run-net.bat               Windows net driver (install/build/bench)
-    run-sync.sh               Linux/macOS sync driver
-    run-sync.bat              Windows sync driver
-    run-scheduler.sh          Linux/macOS scheduler driver
-    run-scheduler.bat         Windows scheduler driver
+    run-net.sh                Linux/macOS net driver (tcp|udp|tls|help)
+    run-net.bat               Windows net driver (tcp|udp|tls|help)
+    run-sync.sh               Linux/macOS sync driver (mutex|cond|sem|channel|help)
+    run-sync.bat              Windows sync driver (mutex|cond|sem|channel|help)
+    run-scheduler.sh          Linux/macOS scheduler driver (st|mt|help)
+    run-scheduler.bat         Windows scheduler driver (st|mt|help)
     plot_results.py           render charts from an out/results/<ts>/ directory
   out/                        all build output (gitignored)
     <proto>-<family>-echo[-mt], <proto>-bench   compiled binaries
