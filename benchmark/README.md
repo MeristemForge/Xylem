@@ -129,9 +129,8 @@ The scheduler driver uses a fixed matrix: modes `st,mt`, langs
 - **Client**: independent Go load generator (goroutine-per-connection, multi-core, never caps client-side load), one per protocol under `net/<proto>/client/`; the Go runtime netpoller maps onto
   epoll (Linux) / kqueue (macOS) readiness model, IOCP completion model on
   Windows. Each protocol's client is a small Go module (`client-mt.go`); TLS
-  uses the standard `crypto/tls` (no OpenSSL). Modes:
-  `throughput`, `memory`, and `connrate`
-  (TCP/TLS only; TLS connrate = full handshakes/sec).
+  uses the standard `crypto/tls` (no OpenSSL). Modes: `throughput` and
+  `connrate` (TCP/TLS only; TLS connrate = full handshakes/sec).
 
 ## Output Format
 

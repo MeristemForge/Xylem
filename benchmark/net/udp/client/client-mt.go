@@ -7,7 +7,6 @@
 // Modes (drop-in CLI + JSON compatible with the old C client):
 //
 //	throughput -n conns -d sec -s payload -h host -p port
-//	memory     -n conns -w hold_sec -h host -p port
 //
 // (UDP has no connrate mode.)
 package main
@@ -40,14 +39,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: udp-bench <mode> [options]")
 		fmt.Fprintln(os.Stderr, "modes:")
 		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port")
-		fmt.Fprintln(os.Stderr, "  memory      -n conns -w hold_sec -h host -p port")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
 	case "throughput":
 		runThroughput(os.Args[2:])
-	case "memory":
-		runMemory(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s\n", os.Args[1])
 		os.Exit(1)
@@ -55,12 +51,12 @@ func main() {
 }
 
 type opts struct {
-	conns, duration, payload, hold, port int
+	conns, duration, payload, port int
 	host                                 string
 }
 
 func parseOpts(args []string) opts {
-	o := opts{conns: 1000, duration: 30, payload: 64, hold: 5, host: "127.0.0.1", port: 9001}
+	o := opts{conns: 1000, duration: 30, payload: 64, host: "127.0.0.1", port: 9001}
 	for i := 0; i < len(args); i++ {
 		next := func() string {
 			if i+1 < len(args) {
@@ -76,8 +72,6 @@ func parseOpts(args []string) opts {
 			o.duration = atoiDef(next(), o.duration)
 		case "-s":
 			o.payload = atoiDef(next(), o.payload)
-		case "-w":
-			o.hold = atoiDef(next(), o.hold)
 		case "-h":
 			o.host = next()
 		case "-p":
@@ -267,31 +261,3 @@ func runThroughput(args []string) {
 	fmt.Printf("}\n")
 }
 
-func runMemory(args []string) {
-	o := parseOpts(args)
-	addr := net.JoinHostPort(o.host, strconv.Itoa(o.port))
-	fmt.Fprintf(os.Stderr, "memory: creating %d udp sockets to %s...\n", o.conns, addr)
-
-	conns := make([]net.Conn, 0, o.conns)
-	for i := 0; i < o.conns; i++ {
-		c, err := net.Dial("udp", addr)
-		if err != nil {
-			continue
-		}
-		conns = append(conns, c)
-	}
-	established := len(conns)
-	fmt.Fprintf(os.Stderr, "READY %d/%d\n", established, o.conns)
-	time.Sleep(time.Duration(o.hold) * time.Second)
-
-	fmt.Printf("{\n")
-	fmt.Printf("  \"benchmark\": \"memory\",\n")
-	fmt.Printf("  \"target_connections\": %d,\n", o.conns)
-	fmt.Printf("  \"established_connections\": %d,\n", established)
-	fmt.Printf("  \"client_rss_kb\": %d\n", rssKB())
-	fmt.Printf("}\n")
-
-	for _, c := range conns {
-		c.Close()
-	}
-}

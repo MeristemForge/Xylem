@@ -8,7 +8,6 @@
 //
 //	throughput -n conns -d sec -s payload -h host -p port
 //	connrate   -c concurrency -d sec -h host -p port   (full TLS handshakes/sec)
-//	memory     -n conns -w hold_sec -h host -p port
 package main
 
 import (
@@ -41,7 +40,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "modes:")
 		fmt.Fprintln(os.Stderr, "  throughput  -n conns -d sec -s payload -h host -p port")
 		fmt.Fprintln(os.Stderr, "  connrate    -c concurrency -d sec -h host -p port")
-		fmt.Fprintln(os.Stderr, "  memory      -n conns -w hold_sec -h host -p port")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
@@ -49,8 +47,6 @@ func main() {
 		runThroughput(os.Args[2:])
 	case "connrate":
 		runConnrate(os.Args[2:])
-	case "memory":
-		runMemory(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown mode: %s\n", os.Args[1])
 		os.Exit(1)
@@ -58,12 +54,12 @@ func main() {
 }
 
 type opts struct {
-	conns, duration, payload, concur, hold, port int
+	conns, duration, payload, concur, port int
 	host                                         string
 }
 
 func parseOpts(args []string) opts {
-	o := opts{conns: 1000, duration: 30, payload: 64, concur: 256, hold: 5, host: "127.0.0.1", port: 9443}
+	o := opts{conns: 1000, duration: 30, payload: 64, concur: 256, host: "127.0.0.1", port: 9443}
 	for i := 0; i < len(args); i++ {
 		next := func() string {
 			if i+1 < len(args) {
@@ -81,8 +77,6 @@ func parseOpts(args []string) opts {
 			o.payload = atoiDef(next(), o.payload)
 		case "-c":
 			o.concur = atoiDef(next(), o.concur)
-		case "-w":
-			o.hold = atoiDef(next(), o.hold)
 		case "-h":
 			o.host = next()
 		case "-p":
@@ -218,22 +212,10 @@ func runThroughput(args []string) {
 	o := parseOpts(args)
 	addr := net.JoinHostPort(o.host, strconv.Itoa(o.port))
 
-	type slot struct {
-		c  *tls.Conn
-		ok bool
-	}
-	slots := make([]slot, o.conns)
+	// establishTLSConnections retries until every dial succeeds, so all
+	// connections are always usable.
 	conns := establishTLSConnections(addr, o.conns)
-	for i, c := range conns {
-		slots[i] = slot{c: c, ok: true}
-	}
-
-	established := 0
-	for i := range slots {
-		if slots[i].ok {
-			established++
-		}
-	}
+	established := len(conns)
 	fmt.Fprintf(os.Stderr, "tls connected %d / %d, running %ds...\n",
 		established, o.conns, o.duration)
 
@@ -246,16 +228,13 @@ func runThroughput(args []string) {
 	var rwg sync.WaitGroup
 	var warmwg sync.WaitGroup
 	for i := 0; i < o.conns; i++ {
-		if !slots[i].ok {
-			continue
-		}
 		rwg.Add(1)
 		if warmupRounds > 0 {
 			warmwg.Add(1)
 		}
 		go func(idx int) {
 			defer rwg.Done()
-			c := slots[idx].c
+			c := conns[idx]
 			defer c.Close()
 			out := make([]byte, o.payload)
 			for j := range out {
@@ -404,44 +383,3 @@ func runConnrate(args []string) {
 	fmt.Printf("}\n")
 }
 
-func runMemory(args []string) {
-	o := parseOpts(args)
-	addr := net.JoinHostPort(o.host, strconv.Itoa(o.port))
-	fmt.Fprintf(os.Stderr, "memory: connecting %d tls to %s...\n", o.conns, addr)
-
-	conns := make([]*tls.Conn, 0, o.conns)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 512)
-	for i := 0; i < o.conns; i++ {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-			c, err := dialTLS(addr, 15*time.Second)
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			conns = append(conns, c)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	established := len(conns)
-	fmt.Fprintf(os.Stderr, "READY %d/%d\n", established, o.conns)
-	time.Sleep(time.Duration(o.hold) * time.Second)
-
-	fmt.Printf("{\n")
-	fmt.Printf("  \"benchmark\": \"memory\",\n")
-	fmt.Printf("  \"target_connections\": %d,\n", o.conns)
-	fmt.Printf("  \"established_connections\": %d,\n", established)
-	fmt.Printf("  \"client_rss_kb\": %d\n", rssKB())
-	fmt.Printf("}\n")
-
-	for _, c := range conns {
-		c.Close()
-	}
-}

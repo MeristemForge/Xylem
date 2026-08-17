@@ -402,11 +402,6 @@ start_server() {
     SRV_PID=$!
 }
 
-snapshot_cpu() {
-    [ "$CPU_SAMPLING" = true ] || { : > "$1"; return; }
-    grep '^cpu[0-9]' /proc/stat > "$1" || true
-}
-
 # Average busy% and per-core busy% for the cores in a spec ("0-7" or single
 # "0") between two /proc/stat snapshots, in one awk pass. With pinning on the
 # spec is the server's core set, so this reads as "how saturated is the server
@@ -536,30 +531,21 @@ bench_throughput() {
                 run_name="warmup$run"
             fi
             local out="$RUN_DIR/${CUR_PROTO}-throughput-${row_lc}-c${conns_lbl}-${size_lbl}-${name}-${run_name}.json"
-            local cpu_before="$RUN_DIR/.cpu-before-${name}-${run_name}"
-            local cpu_after="$RUN_DIR/.cpu-after-${name}-${run_name}"
-            local cpu_client_before="$RUN_DIR/.cpu-window-before-${name}-${run_name}"
-            local cpu_client_after="$RUN_DIR/.cpu-window-after-${name}-${run_name}"
-            rm -f "$cpu_client_before" "$cpu_client_after"
+            # The bench client snapshots /proc/stat itself at the measurement
+            # window edges into these files; a missing pair just yields n/a.
+            local cpu_before="$RUN_DIR/.cpu-window-before-${name}-${run_name}"
+            local cpu_after="$RUN_DIR/.cpu-window-after-${name}-${run_name}"
+            rm -f "$cpu_before" "$cpu_after"
 
-            snapshot_cpu "$cpu_before"
-
-            export BENCH_CPU_BEFORE_FILE="$cpu_client_before"
-            export BENCH_CPU_AFTER_FILE="$cpu_client_after"
+            export BENCH_CPU_BEFORE_FILE="$cpu_before"
+            export BENCH_CPU_AFTER_FILE="$cpu_after"
             run_client "$BIN_DIR/${CUR_PROTO}-bench" throughput \
                 -n "$conns" -d "$DURATION" -s "$payload" -p "$port" \
                 > "$out" 2>/dev/null || true
             unset BENCH_CPU_BEFORE_FILE BENCH_CPU_AFTER_FILE
 
-            snapshot_cpu "$cpu_after"
-            local cpu_calc_before="$cpu_before"
-            local cpu_calc_after="$cpu_after"
-            if [ -s "$cpu_client_before" ] && [ -s "$cpu_client_after" ]; then
-                cpu_calc_before="$cpu_client_before"
-                cpu_calc_after="$cpu_client_after"
-            fi
-            read -r cpu_usage_last srv_cpu_last < <(calc_cpu_stats "$cpu_calc_before" "$cpu_calc_after" "$spec")
-            rm -f "$cpu_before" "$cpu_after" "$cpu_client_before" "$cpu_client_after"
+            read -r cpu_usage_last srv_cpu_last < <(calc_cpu_stats "$cpu_before" "$cpu_after" "$spec")
+            rm -f "$cpu_before" "$cpu_after"
             if [ "$measured_run" -le 0 ]; then
                 [ "$run" -lt "$total_runs" ] && sleep 1
                 continue
