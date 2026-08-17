@@ -42,6 +42,7 @@ typedef void (*_coro_t)(void*);
 typedef struct {
     xylem_channel_t*   ready;
     xylem_channel_t*   gate;
+    xylem_channel_t*   hs_done;  /* server finished its handshake */
     xylem_waitgroup_t* wg;
     xylem_tls_ctx_t*   srv_ctx;
     xylem_tls_ctx_t*   cli_ctx;
@@ -66,9 +67,10 @@ static xylem_tls_ctx_t* _cli_ctx(void) {
 }
 
 static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b, _coro_t c) {
-    ctx->ready = xylem_channel_create();
-    ctx->gate  = xylem_channel_create();
-    ctx->wg    = xylem_waitgroup_create();
+    ctx->ready   = xylem_channel_create();
+    ctx->gate    = xylem_channel_create();
+    ctx->hs_done = xylem_channel_create();
+    ctx->wg      = xylem_waitgroup_create();
     xylem_waitgroup_add(ctx->wg, n);
     xylem_spawn(a, ctx);
     xylem_spawn(b, ctx);
@@ -77,6 +79,7 @@ static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b, _coro_t c) {
     }
     xylem_waitgroup_wait(ctx->wg);
     xylem_waitgroup_destroy(ctx->wg);
+    xylem_channel_destroy(ctx->hs_done);
     xylem_channel_destroy(ctx->gate);
     xylem_channel_destroy(ctx->ready);
 }
@@ -532,6 +535,13 @@ static void _alpn_retain_server(void* arg) {
     ASSERT(second != NULL);
     ASSERT(xylem_tls_handshake(second) == 0);
 
+    /**
+     * Tell the client our second handshake is complete before it closes
+     * its sockets: the client side may finish its dial first, and tearing
+     * down would RST the read our handshake still needs.
+     */
+    xylem_channel_send(ctx->hs_done, ctx);
+
     xylem_channel_recv(ctx->gate);
     xylem_tls_destroy(first);
     xylem_tls_destroy(second);
@@ -558,9 +568,14 @@ static void _alpn_retain_client(void* arg) {
     ASSERT(strcmp(second_alpn, "mqtt") == 0);
     ASSERT(strcmp(first_alpn, "h2") == 0);
 
+    /**
+     * Wait for the server's second handshake before closing: it runs
+     * after ours, and closing first would RST the read it still needs.
+     */
+    xylem_channel_recv(ctx->hs_done);
+    xylem_channel_send(ctx->gate, ctx);
     xylem_tls_destroy(first);
     xylem_tls_destroy(second);
-    xylem_channel_send(ctx->gate, ctx);
     xylem_waitgroup_done(ctx->wg);
 }
 
