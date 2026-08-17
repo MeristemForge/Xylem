@@ -689,9 +689,10 @@ bench_proto() {
 
     local row row_label suffix workers
     for row in "${rows[@]}"; do
-        row_label="ST"; suffix=""; workers=""
         if [ "$row" = "mt" ]; then
             row_label="MT"; suffix="-echo-mt"; workers="$SERVER_NCPU"
+        else
+            row_label="ST"; suffix="-echo"; workers=""
         fi
         for payload in "${PAYLOADS[@]}"; do
             for conns in "${CONNS[@]}"; do
