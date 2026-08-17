@@ -60,21 +60,26 @@ POSIX:
 
 ```bash
 cd benchmark/scripts
-./run-scheduler.sh build
-./run-scheduler.sh bench --repeat 3
+./run-scheduler.sh st   # spawn matrix, single-threaded
+./run-scheduler.sh mt   # spawn matrix, multi-threaded
+./run-scheduler.sh      # both modes
 ```
 
 Windows:
 
 ```bat
 cd benchmark\scripts
-run-scheduler.bat build
-run-scheduler.bat bench --repeat 3
+run-scheduler.bat st
+run-scheduler.bat mt
+run-scheduler.bat
 ```
 
-Both runners support `--langs xylem,go,rust` and `--repeat N`. They write raw
-JSON and print a summary under `benchmark/out/results/<timestamp>/`. The
-executables themselves do not accept workload or mode arguments.
+The driver takes one mode name (`st`, `mt`) or nothing for both, and always
+builds and runs in one invocation. The matrix is fixed at the top of the
+script: modes `st,mt`, langs `xylem,go,rust`, 1,000,000 tasks, one run per
+cell. It writes raw JSON and prints a summary under
+`benchmark/out/results/<timestamp>/`. The executables themselves do not
+accept workload or mode arguments.
 
 Results are comparable only on the same machine, operating system, compiler,
 runtime versions, and CPU allocation.

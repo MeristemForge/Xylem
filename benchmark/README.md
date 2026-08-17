@@ -63,32 +63,10 @@ When `tls` is among the protocols, xylem is built with
 
 ### Linux / macOS
 
-```bash
-cd benchmark/scripts
-
-# One command: build + run the full TCP comparison matrix:
-./run-net.sh tcp
-
-# Or any other protocol — or all of them at once:
-./run-net.sh udp
-./run-net.sh tls
-./run-net.sh            # all protocols (tcp,udp,tls)
-
-# Missing dependencies (cmake, go, rust, openssl, ...) are installed
-# automatically when the run starts (Linux: sudo apt + rust; macOS: brew).
-
-# Sync primitives are driven the same way, one per run:
-./run-sync.sh mutex     # mutex matrix: xylem vs go vs rust
-./run-sync.sh cond      # cond matrix
-./run-sync.sh sem       # sem matrix (xylem vs rust; go has no sem impl)
-./run-sync.sh channel   # channel matrix
-./run-sync.sh           # all four primitives
-
-# Scheduler spawn benchmark (1,000,000 tasks), by mode:
-./run-scheduler.sh st   # single-threaded
-./run-scheduler.sh mt   # multi-threaded
-./run-scheduler.sh      # both modes
-```
+One command builds and runs a whole matrix; the examples under
+[Runner Scripts](#runner-scripts) cover every target. Missing dependencies
+(cmake, go, rust, openssl, ...) are installed automatically when the run
+starts (Linux: sudo apt + rust; macOS: brew).
 
 ### Windows
 
@@ -115,24 +93,7 @@ automatically when the run starts.
 (TLS on Windows needs OpenSSL via vcpkg. The Windows driver builds only the
 xylem/go/rust families.)
 
-## Usage
-
-```bash
-./run-net.sh tcp    # build + run the full TCP matrix
-./run-net.sh udp    # build + run the full UDP matrix
-./run-net.sh tls    # build + run the full TLS matrix
-./run-net.sh        # all protocols   (default)
-
-./run-sync.sh mutex     # build + run the full mutex matrix
-./run-sync.sh cond      # build + run the full cond matrix
-./run-sync.sh sem       # build + run the full sem matrix
-./run-sync.sh channel   # build + run the full channel matrix
-./run-sync.sh           # all primitives   (default)
-
-./run-scheduler.sh st   # build + run the spawn matrix, single-threaded
-./run-scheduler.sh mt   # build + run the spawn matrix, multi-threaded
-./run-scheduler.sh      # both modes   (default)
-```
+## Fixed Matrices
 
 The net driver uses a fixed matrix: `tcp,udp,tls`, `xylem,go,rust`,
 connections `1000,10000`, payloads `64,4096,65536`, duration `10s`, and

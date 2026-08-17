@@ -7,7 +7,7 @@ context pairing.
 Each benchmark program is self-contained: it takes no command-line parameters,
 runs a fixed 5-second timed window, prints one or more JSON objects, and exits.
 The driver scripts build the per-primitive binaries, run them, collect the JSON,
-and print an averaged comparison table.
+and print a comparison table.
 
 ## Current Suite
 
@@ -87,29 +87,24 @@ Linux / macOS:
 
 ```bash
 cd benchmark/scripts
-./run-sync.sh build --prims channel
-./run-sync.sh bench --prims channel --langs xylem,go,rust --repeat 1
+./run-sync.sh mutex     # mutex matrix: xylem vs go vs rust
+./run-sync.sh channel   # channel matrix
+./run-sync.sh           # all four primitives
 ```
 
 Windows:
 
 ```bat
 cd benchmark\scripts
-run-sync.bat build --prims channel
-run-sync.bat bench --prims channel --langs xylem,go,rust --repeat 1
+run-sync.bat mutex
+run-sync.bat channel
+run-sync.bat
 ```
 
-## Driver Options
-
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `--prims`, `-p` | `mutex,cond,sem,channel` | Primitive list |
-| `--langs`, `-l` | `xylem,go,rust` | Language list |
-| `--repeat`, `-r` | `3` | Runs per cell |
-
-The drivers still accept a few legacy options for compatibility with older
-scripts, but the current per-primitive programs do not take benchmark
-parameters.
+The driver takes one primitive name (`mutex`, `cond`, `sem`, `channel`) or
+nothing for the full suite, and always builds and runs in one invocation.
+The matrix is fixed at the top of the script: prims `mutex,cond,sem,channel`,
+langs `xylem,go,rust`, 5s per cell, one run per cell.
 
 ## Output
 
@@ -132,8 +127,8 @@ Example:
 }
 ```
 
-The driver also prints a comparison table with average `ops/s`, `ns/op`, and
-the per-run `ops/s` values.
+The driver also prints a comparison table with each cell's `ops/s`, `ns/op`,
+and `total_ops`.
 
 ## Caveats
 

@@ -14,3 +14,4 @@ build.log
 # Benchmark build artifacts
 *.obj
 *.exe
+__pycache__/

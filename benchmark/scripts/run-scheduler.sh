@@ -114,6 +114,9 @@ ensure_deps() {
     find_missing_deps || install_missing
 }
 
+# Verify one result file against the fixed workload, then print the summary
+# line the driver prints per cell. One python invocation does both, so a
+# failing check (nonzero exit) still aborts the run under set -e.
 verify_result() {
     local result="$1" lang="$2" mode="$3"
     python3 - "$result" "$lang" "$mode" <<'PY'
@@ -154,17 +157,7 @@ for key in ("elapsed_sec", "tasks_per_sec", "ns_per_task"):
         or value <= 0
     ):
         raise SystemExit(f"{key} must be positive")
-PY
-}
 
-summarize_results() {
-    local result_file="$1"
-    python3 - "$result_file" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as result_file:
-    result = json.load(result_file)
 print(f"{result['elapsed_sec']:.6f} {result['tasks_per_sec']:.0f} {result['ns_per_task']:.2f}")
 PY
 }
@@ -240,7 +233,7 @@ binary_for() {
 }
 
 cmd_bench() {
-    local timestamp run_dir lang mode bin result elapsed tasks_per_sec ns_per_task
+    local timestamp run_dir lang mode bin result summary elapsed tasks_per_sec ns_per_task
     timestamp="$(date +%Y%m%d-%H%M%S)"
     run_dir="$RESULTS_ROOT/$timestamp"
     mkdir -p "$run_dir"
@@ -252,10 +245,9 @@ cmd_bench() {
             [ -x "$bin" ] || { err "missing binary: $bin (run build first)"; exit 1; }
             result="$run_dir/scheduler-spawn-$lang-$mode.json"
             "$bin" > "$result"
-            verify_result "$result" "$lang" "$mode"
-            read -r elapsed tasks_per_sec ns_per_task < <(
-                summarize_results "$result"
-            )
+            # A failing verify_result (nonzero exit) aborts the run.
+            summary="$(verify_result "$result" "$lang" "$mode")"
+            read -r elapsed tasks_per_sec ns_per_task <<< "$summary"
             printf "%-6s %-2s  elapsed=%ss  tasks/s=%s  ns/task=%s\n" \
                 "$lang" "$mode" "$elapsed" "$tasks_per_sec" "$ns_per_task"
         done

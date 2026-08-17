@@ -122,90 +122,33 @@ cmd_build() {
     XYLEM_LIB="$BUILD_DIR/libxylem.a"
     ok "xylem built"
 
-    info "building xylem sync-bench..."
-    if [[ " ${PRIMS[*]} " == *" mutex "* ]]; then
-        src="$SYNC_DIR/mutex/xylem/main.c"
+    # One directory per primitive; each has xylem (always) plus go and rust
+    # where the language has that primitive (sem has no go implementation).
+    local prim
+    for prim in "${PRIMS[@]}"; do
+        info "building ${prim}-xylem..."
         gcc $CFLAGS -I"$PROJECT_ROOT/include" -I"$PROJECT_ROOT/src" \
-            "$src" "$XYLEM_LIB" -lpthread $LDFLAGS \
-            -o "$BIN_DIR/mutex-xylem" || { err "mutex-xylem build failed"; exit 1; }
-        ok "mutex-xylem built"
-    fi
+            "$SYNC_DIR/$prim/xylem/main.c" "$XYLEM_LIB" -lpthread $LDFLAGS \
+            -o "$BIN_DIR/$prim-xylem" \
+            || { err "$prim-xylem build failed"; exit 1; }
+        ok "$prim-xylem built"
 
-    if [[ " ${PRIMS[*]} " == *" cond "* ]]; then
-        src="$SYNC_DIR/cond/xylem/main.c"
-        gcc $CFLAGS -I"$PROJECT_ROOT/include" -I"$PROJECT_ROOT/src" \
-            "$src" "$XYLEM_LIB" -lpthread $LDFLAGS \
-            -o "$BIN_DIR/cond-xylem" || { err "cond-xylem build failed"; exit 1; }
-        ok "cond-xylem built"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" sem "* ]]; then
-        src="$SYNC_DIR/sem/xylem/main.c"
-        gcc $CFLAGS -I"$PROJECT_ROOT/include" -I"$PROJECT_ROOT/src" \
-            "$src" "$XYLEM_LIB" -lpthread $LDFLAGS \
-            -o "$BIN_DIR/sem-xylem" || { err "sem-xylem build failed"; exit 1; }
-        ok "sem-xylem built"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" channel "* ]]; then
-        src="$SYNC_DIR/channel/xylem/main.c"
-        gcc $CFLAGS -I"$PROJECT_ROOT/include" -I"$PROJECT_ROOT/src" \
-            "$src" "$XYLEM_LIB" -lpthread $LDFLAGS \
-            -o "$BIN_DIR/channel-xylem" || { err "channel-xylem build failed"; exit 1; }
-        ok "channel-xylem built"
-    fi
-
-    if command -v go >/dev/null 2>&1; then
-        if [[ " ${PRIMS[*]} " == *" mutex "* ]]; then
-            info "building mutex-go..."
-            ( cd "$SYNC_DIR/mutex/go" && CGO_ENABLED=0 go build -ldflags="-s -w" \
-                -o "$BIN_DIR/mutex-go" . ) || warn "skip mutex-go (build failed)"
+        local godir="$SYNC_DIR/$prim/go"
+        if [ -d "$godir" ] && command -v go >/dev/null 2>&1; then
+            info "building ${prim}-go..."
+            ( cd "$godir" && CGO_ENABLED=0 go build -ldflags="-s -w" \
+                -o "$BIN_DIR/$prim-go" . ) || warn "skip $prim-go (build failed)"
         fi
-        if [[ " ${PRIMS[*]} " == *" cond "* ]]; then
-            info "building cond-go..."
-            ( cd "$SYNC_DIR/cond/go" && CGO_ENABLED=0 go build -ldflags="-s -w" \
-                -o "$BIN_DIR/cond-go" . ) || warn "skip cond-go (build failed)"
+
+        local rustdir="$SYNC_DIR/$prim/rust"
+        if [ -d "$rustdir" ]; then
+            info "building ${prim}-rust..."
+            ( cd "$rustdir" && cargo build --release -q \
+                --target-dir "$BIN_DIR/cargo" && \
+              cp "$BIN_DIR/cargo/release/$prim-rust" "$BIN_DIR/" ) \
+              2>/dev/null && ok "$prim-rust built" || warn "skip $prim-rust"
         fi
-        if [[ " ${PRIMS[*]} " == *" channel "* ]]; then
-            info "building channel-go..."
-            ( cd "$SYNC_DIR/channel/go" && CGO_ENABLED=0 go build -ldflags="-s -w" \
-                -o "$BIN_DIR/channel-go" . ) || warn "skip channel-go (build failed)"
-        fi
-    else
-        warn "go not found; skipping"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" mutex "* ]]; then
-        info "building mutex-rust..."
-        ( cd "$SYNC_DIR/mutex/rust" && cargo build --release -q \
-            --target-dir "$BIN_DIR/cargo" && \
-          cp "$BIN_DIR/cargo/release/mutex-rust" "$BIN_DIR/" ) \
-          2>/dev/null && ok "mutex-rust built" || warn "skip mutex-rust"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" cond "* ]]; then
-        info "building cond-rust..."
-        ( cd "$SYNC_DIR/cond/rust" && cargo build --release -q \
-            --target-dir "$BIN_DIR/cargo" && \
-          cp "$BIN_DIR/cargo/release/cond-rust" "$BIN_DIR/" ) \
-          2>/dev/null && ok "cond-rust built" || warn "skip cond-rust"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" sem "* ]]; then
-        info "building sem-rust..."
-        ( cd "$SYNC_DIR/sem/rust" && cargo build --release -q \
-            --target-dir "$BIN_DIR/cargo" && \
-          cp "$BIN_DIR/cargo/release/sem-rust" "$BIN_DIR/" ) \
-          2>/dev/null && ok "sem-rust built" || warn "skip sem-rust"
-    fi
-
-    if [[ " ${PRIMS[*]} " == *" channel "* ]]; then
-        info "building channel-rust..."
-        ( cd "$SYNC_DIR/channel/rust" && cargo build --release -q \
-            --target-dir "$BIN_DIR/cargo" && \
-          cp "$BIN_DIR/cargo/release/channel-rust" "$BIN_DIR/" ) \
-          2>/dev/null && ok "channel-rust built" || warn "skip channel-rust"
-    fi
+    done
 
     echo ""
     ls -lh "$BIN_DIR"
@@ -216,198 +159,78 @@ cmd_build() {
 # =============================================================================
 
 
-bench_mutex() {
-    local run_dir="$1"
-
-    info "=== mutex  (tasks=2*workers, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s\n" \
-        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
-    printf "  %s\n" "------------------------------------------------------"
-
-    for lang in "${LANGS[@]}"; do
-        local bin=""
-        local modes=()
-        case "$lang" in
-            xylem) bin="$BIN_DIR/mutex-xylem"; modes=(cc tt ct tc);;
-            go)    bin="$BIN_DIR/mutex-go";    modes=(cc);;
-            rust)  bin="$BIN_DIR/mutex-rust";  modes=(cc tt);;
-            *)     warn "skip $lang (mutex unsupported)"; continue;;
-        esac
-        [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
-
-        for mode in "${modes[@]}"; do
-            local out="$run_dir/sync-mutex-${lang}-${mode}.json"
-            "$bin" > "$out" 2>/dev/null || true
-
-            local ops="" nspo="" total=""
-            if [ -s "$out" ]; then
-                local block
-                block=$(awk -v m="$mode" '
-                    /^{/ { in_obj=1; buf=$0; next }
-                    in_obj { buf=buf "\n" $0 }
-                    /^}/ {
-                        if (buf ~ "\"mode\": \"" m "\"") print buf
-                        in_obj=0; buf=""
-                    }' "$out")
-                if [ -n "$block" ]; then
-                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    ops=${ops%%.*}
-                fi
-            fi
-            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                printf "  %-7s %-7s %10s %10s %14s\n" \
-                    "$lang" "$mode" "$ops" "$nspo" "$total"
-            else
-                warn "$lang/$mode: no valid output"
-            fi
-        done
-    done
-    echo ""
+# The four primitives share one bench loop; only the header label and the
+# per-language mode lists differ. The mode lists are bash-3.2-safe case tables
+# (no associative arrays) keyed by "prim:lang"; returning 1 means the language
+# has no implementation of that primitive.
+prim_label() {
+    case "$1" in
+        mutex)   echo "tasks=2*workers, 5s" ;;
+        cond)    echo "ping-pong, 5s" ;;
+        sem)     echo "handoff, 5s" ;;
+        channel) echo "one-way, 5s" ;;
+    esac
 }
 
-bench_cond() {
-    local run_dir="$1"
-
-    info "=== cond  (ping-pong, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s\n" \
-        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
-    printf "  %s\n" "------------------------------------------------------"
-
-    for lang in "${LANGS[@]}"; do
-        local bin=""
-        local modes=()
-        case "$lang" in
-            xylem) bin="$BIN_DIR/cond-xylem"; modes=(cc tt ct tc);;
-            go)    bin="$BIN_DIR/cond-go";    modes=(cc);;
-            rust)  bin="$BIN_DIR/cond-rust";  modes=(tt);;
-            *) warn "skip $lang (cond unsupported)"; continue;;
-        esac
-
-        [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
-
-        for mode in "${modes[@]}"; do
-            local out="$run_dir/sync-cond-${lang}-${mode}.json"
-            "$bin" > "$out" 2>/dev/null || true
-
-            local ops="" nspo="" total=""
-            if [ -s "$out" ]; then
-                local block
-                block=$(awk -v m="$mode" '
-                    /^{/ { in_obj=1; buf=$0; next }
-                    in_obj { buf=buf "\n" $0 }
-                    /^}/ {
-                        if (buf ~ "\"mode\": \"" m "\"") print buf
-                        in_obj=0; buf=""
-                    }' "$out")
-                if [ -n "$block" ]; then
-                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    ops=${ops%%.*}
-                fi
-            fi
-            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                printf "  %-7s %-7s %10s %10s %14s\n" \
-                    "$lang" "$mode" "$ops" "$nspo" "$total"
-            else
-                warn "$lang/$mode: no valid output"
-            fi
-        done
-    done
-    echo ""
+prim_modes() {
+    case "$1:$2" in
+        mutex:xylem|cond:xylem|sem:xylem|channel:xylem) echo "cc tt ct tc" ;;
+        mutex:go|cond:go|channel:go) echo "cc" ;;
+        mutex:rust|channel:rust) echo "cc tt" ;;
+        cond:rust) echo "tt" ;;
+        sem:rust) echo "coro" ;;
+        *) return 1 ;;
+    esac
 }
 
-bench_sem() {
-    local run_dir="$1"
-
-    info "=== sem  (handoff, 5s) ==="
-    printf "  %-7s %-7s %10s %10s %14s\n" \
-        "LANG" "MODE" "ops/s" "ns/op" "total_ops"
-    printf "  %s\n" "------------------------------------------------------"
-
-    for lang in "${LANGS[@]}"; do
-        local bin="" modes=()
-        case "$lang" in
-            xylem) bin="$BIN_DIR/sem-xylem"; modes=(cc tt ct tc);;
-            go)    warn "skip go (sem unsupported)"; continue;;
-            rust)  bin="$BIN_DIR/sem-rust";  modes=(coro);;
-            *)     warn "skip $lang (sem unsupported)"; continue;;
-        esac
-        [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
-
-        for mode in "${modes[@]}"; do
-            local out="$run_dir/sync-sem-${lang}-${mode}.json"
-            "$bin" > "$out" 2>/dev/null || true
-
-            local ops="" nspo="" total=""
-            if [ -s "$out" ]; then
-                local block
-                block=$(awk -v m="$mode" '
-                    /^{/ { in_obj=1; buf=$0; next }
-                    in_obj { buf=buf "\n" $0 }
-                    /^}/ {
-                        if (buf ~ "\"mode\": \"" m "\"") print buf
-                        in_obj=0; buf=""
-                    }' "$out")
-                if [ -n "$block" ]; then
-                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    ops=${ops%%.*}
-                fi
-            fi
-            if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
-                printf "  %-7s %-7s %10s %10s %14s\n" \
-                    "$lang" "$mode" "$ops" "$nspo" "$total"
-            else
-                warn "$lang/$mode: no valid output"
-            fi
-        done
-    done
-    echo ""
+# Extract the JSON object whose "mode" matches $2 from a result file. The
+# binaries emit one flat object per mode, with braces only at line starts.
+extract_mode_block() {
+    local file="$1" mode="$2"
+    awk -v m="$mode" '
+        /^{/ { in_obj=1; buf=$0; next }
+        in_obj { buf=buf "\n" $0 }
+        /^}/ {
+            if (buf ~ "\"mode\": \"" m "\"") print buf
+            in_obj=0; buf=""
+        }' "$file"
 }
 
-bench_channel() {
-    local run_dir="$1"
+bench_prim() {
+    local prim="$1" run_dir="$2"
 
-    info "=== channel  (one-way, 5s) ==="
+    info "=== ${prim}  ($(prim_label "$prim")) ==="
     printf "  %-7s %-7s %10s %10s %14s\n" \
         "LANG" "MODE" "ops/s" "ns/op" "total_ops"
     printf "  %s\n" "------------------------------------------------------"
 
     for lang in "${LANGS[@]}"; do
-        local bin=""
-        local modes=()
-        case "$lang" in
-            xylem) bin="$BIN_DIR/channel-xylem"; modes=(cc tt ct tc);;
-            go)    bin="$BIN_DIR/channel-go";    modes=(cc);;
-            rust)  bin="$BIN_DIR/channel-rust";  modes=(cc tt ct tc);;
-            *) warn "skip $lang (channel unsupported)"; continue;;
-        esac
-
+        local modes
+        modes="$(prim_modes "$prim" "$lang")" || {
+            warn "skip $lang ($prim unsupported)"
+            continue
+        }
+        local bin="$BIN_DIR/${prim}-${lang}"
         [ -x "$bin" ] || { warn "skip $lang (no binary)"; continue; }
 
-        for mode in "${modes[@]}"; do
-            local out="$run_dir/sync-channel-${lang}-${mode}.json"
+        for mode in $modes; do
+            local out="$run_dir/sync-${prim}-${lang}-${mode}.json"
             "$bin" > "$out" 2>/dev/null || true
 
             local ops="" nspo="" total=""
             if [ -s "$out" ]; then
                 local block
-                block=$(awk -v m="$mode" '
-                    /^{/ { in_obj=1; buf=$0; next }
-                    in_obj { buf=buf "\n" $0 }
-                    /^}/ {
-                        if (buf ~ "\"mode\": \"" m "\"") print buf
-                        in_obj=0; buf=""
-                    }' "$out")
+                block="$(extract_mode_block "$out" "$mode")"
                 if [ -n "$block" ]; then
-                    ops=$(echo "$block" | grep "\"ops_per_sec\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    nspo=$(echo "$block" | grep "\"ns_per_op\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    total=$(echo "$block" | grep "\"total_ops\"" | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1)
-                    ops=${ops%%.*}
+                    # One awk pass over the block extracts all three numbers
+                    # (each is the only digit run on its line), replacing the
+                    # three grep|grep|tail pipelines.
+                    read -r ops nspo total < <(printf '%s\n' "$block" | awk '
+                        /"ops_per_sec"/ { if (match($0, /[0-9]+([.][0-9]+)?/)) o = substr($0, RSTART, RLENGTH) }
+                        /"ns_per_op"/  { if (match($0, /[0-9]+([.][0-9]+)?/)) n = substr($0, RSTART, RLENGTH) }
+                        /"total_ops"/  { if (match($0, /[0-9]+([.][0-9]+)?/)) t = substr($0, RSTART, RLENGTH) }
+                        END { print o, n, t }') || true
+                    ops="${ops%%.*}"
                 fi
             fi
             if [ -n "$ops" ] && [ "$ops" -gt 0 ] 2>/dev/null; then
@@ -430,16 +253,9 @@ cmd_bench() {
     info "prims: ${PRIMS[*]}   langs: ${LANGS[*]}"
     echo ""
 
+    local prim
     for prim in "${PRIMS[@]}"; do
-        if [ "$prim" = "mutex" ]; then
-            bench_mutex "$run_dir"
-        elif [ "$prim" = "cond" ]; then
-            bench_cond "$run_dir"
-        elif [ "$prim" = "sem" ]; then
-            bench_sem "$run_dir"
-        elif [ "$prim" = "channel" ]; then
-            bench_channel "$run_dir"
-        fi
+        bench_prim "$prim" "$run_dir"
     done
 
     ok "sync benchmarks complete"

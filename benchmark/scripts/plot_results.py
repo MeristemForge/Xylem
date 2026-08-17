@@ -52,6 +52,12 @@ CR_RE = re.compile(
 )
 
 
+def avg(field, runs):
+    """Average a numeric field over runs that report it (0 when none do)."""
+    vals = [r.get(field, 0) for r in runs if r.get(field)]
+    return sum(vals) / len(vals) if vals else 0
+
+
 def find_results_dir():
     if len(sys.argv) > 1:
         return os.path.abspath(sys.argv[1])
@@ -100,14 +106,11 @@ def load(results_dir):
         for mode, scenarios in modes.items():
             for key, servers in scenarios.items():
                 for srv, runs in servers.items():
-                    def avg(field):
-                        vals = [r.get(field, 0) for r in runs if r.get(field)]
-                        return sum(vals) / len(vals) if vals else 0
                     tp[proto][mode][key][srv] = {
-                        "throughput": avg("throughput_msg_per_sec"),
-                        "p50": avg("latency_p50_us"),
-                        "p99": avg("latency_p99_us"),
-                        "max": avg("latency_max_us"),
+                        "throughput": avg("throughput_msg_per_sec", runs),
+                        "p50": avg("latency_p50_us", runs),
+                        "p99": avg("latency_p99_us", runs),
+                        "max": avg("latency_max_us", runs),
                     }
     return tp, connrate
 
@@ -188,11 +191,10 @@ def plot_connrate(connrate, out_dir, proto):
                 cats.append(f"{mode.upper()}\nc{conns}")
                 col_keys.append((mode, conns))
     servers = []
-    for mode, conns in col_keys:
-        for srv in connrate[mode][conns]:
+    for mode in modes:
+        for srv in present_servers(connrate[mode]):
             if srv not in servers:
                 servers.append(srv)
-    servers = [s for s in SERVERS if s in servers]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     series = []

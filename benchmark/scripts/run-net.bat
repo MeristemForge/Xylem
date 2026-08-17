@@ -381,7 +381,7 @@ if not exist "%_DIR%" goto :eof
 pushd "%_DIR%"
 set "_OLD_RUSTFLAGS=%RUSTFLAGS%"
 if defined RUSTFLAGS (set "RUSTFLAGS=%RUSTFLAGS% -C strip=symbols") else (set "RUSTFLAGS=-C strip=symbols")
-cargo build --release -q --bin %CUR_PROTO%-rust-echo%_SUF% && copy /Y "target\release\%CUR_PROTO%-rust-echo%_SUF%.exe" "%BIN_DIR%\" >nul && (call :ok "%CUR_PROTO%-rust-echo%_SUF% built") || (call :warn "skip rust %CUR_PROTO%%_SUF% (build failed)")
+cargo build --release -q --target-dir "%BIN_DIR%\cargo" --bin %CUR_PROTO%-rust-echo%_SUF% && copy /Y "%BIN_DIR%\cargo\release\%CUR_PROTO%-rust-echo%_SUF%.exe" "%BIN_DIR%\" >nul && (call :ok "%CUR_PROTO%-rust-echo%_SUF% built") || (call :warn "skip rust %CUR_PROTO%%_SUF% (build failed)")
 if defined _OLD_RUSTFLAGS (set "RUSTFLAGS=%_OLD_RUSTFLAGS%") else (set "RUSTFLAGS=")
 popd
 goto :eof

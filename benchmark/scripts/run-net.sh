@@ -287,11 +287,12 @@ build_proto() {
               || warn "skip go ${label} (build failed)"
         fi
 
-        # rust (single crate with per-bin targets)
+        # rust (single crate with per-bin targets; shared build cache in out/)
         if [ -d "$NET_DIR/${proto}/server/rust-echo" ] && command -v cargo >/dev/null 2>&1; then
             ( cd "$NET_DIR/${proto}/server/rust-echo" && \
-              cargo build --release -q --bin "${proto}-rust-echo${suf}" && \
-              cp "target/release/${proto}-rust-echo${suf}" "$BIN_DIR/" && \
+              cargo build --release -q --target-dir "$BIN_DIR/cargo" \
+                  --bin "${proto}-rust-echo${suf}" && \
+              cp "$BIN_DIR/cargo/release/${proto}-rust-echo${suf}" "$BIN_DIR/" && \
               strip "$BIN_DIR/${proto}-rust-echo${suf}" ) \
               || warn "skip rust ${label} (build failed)"
         fi
@@ -343,8 +344,6 @@ cmd_build() {
 # =============================================================================
 # bench
 # =============================================================================
-
-PORT_BASE="${PORT_BASE:-9000}"   # overridden per-proto during bench
 
 ensure_bin() {
     local proto
@@ -399,45 +398,15 @@ snapshot_cpu() {
     grep '^cpu[0-9]' /proc/stat > "$1" || true
 }
 
-calc_cpu_usage() {
-    local before="$1" after="$2"
-    if [ ! -s "$before" ] || [ ! -s "$after" ]; then
-        echo "n/a"
-        return
-    fi
-    local result=""
-    while IFS= read -r line_after; do
-        local cpuname
-        cpuname=$(awk '{print $1}' <<< "$line_after")
-        local line_before
-        line_before=$(grep "^${cpuname} " "$before")
-        [ -z "$line_before" ] && continue
-
-        local idle1 total1 idle2 total2
-        idle1=$(awk '{print $5}' <<< "$line_before")
-        total1=$(awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}' <<< "$line_before")
-        idle2=$(awk '{print $5}' <<< "$line_after")
-        total2=$(awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}' <<< "$line_after")
-
-        local idle_d=$((idle2 - idle1))
-        local total_d=$((total2 - total1))
-
-        local pct=0
-        if [ "$total_d" -gt 0 ]; then
-            pct=$(( (total_d - idle_d) * 100 / total_d ))
-        fi
-        local cpunum="${cpuname#cpu}"
-        result="${result:+$result }cpu${cpunum}:${pct}%"
-    done < "$after"
-    echo "${result:-n/a}"
-}
-
-# Average busy% across a core spec ("0-7" or single "0") between two
-# /proc/stat snapshots. With pinning on, the spec is the server's core set, so
-# this reads as "how saturated is the server on its own cores".
-calc_cores_avg() {
+# Average busy% and per-core busy% for the cores in a spec ("0-7" or single
+# "0") between two /proc/stat snapshots, in one awk pass. With pinning on the
+# spec is the server's core set, so this reads as "how saturated is the server
+# on its own cores". Prints two lines: the per-core list ("cpu0:95% cpu1:.."),
+# then the average ("NN%"); both are "n/a" when either snapshot is unusable.
+calc_cpu_stats() {
     local before="$1" after="$2" spec="$3"
     if [ ! -s "$before" ] || [ ! -s "$after" ]; then
+        echo "n/a"
         echo "n/a"
         return
     fi
@@ -447,57 +416,39 @@ calc_cores_avg() {
     else
         lo="$spec"; hi="$spec"
     fi
-    local sum_busy=0 sum_total=0 i
-    for (( i = lo; i <= hi; i++ )); do
-        local lb la
-        lb="$(grep "^cpu${i} " "$before")"
-        la="$(grep "^cpu${i} " "$after")"
-        [ -n "$lb" ] && [ -n "$la" ] || continue
-        local idle1 total1 idle2 total2
-        idle1=$(awk '{print $5}' <<< "$lb")
-        total1=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$lb")
-        idle2=$(awk '{print $5}' <<< "$la")
-        total2=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$la")
-        sum_busy=$(( sum_busy + (total2 - total1) - (idle2 - idle1) ))
-        sum_total=$(( sum_total + (total2 - total1) ))
-    done
-    if [ "$sum_total" -gt 0 ]; then
-        echo "$(( sum_busy * 100 / sum_total ))%"
-    else
-        echo "n/a"
-    fi
-}
-
-# Per-core busy% for the cores in a spec ("0-7" or single "0"), formatted like
-# the old all-core line but limited to the server's cores: "cpu0:95% cpu1:..".
-calc_cores_percpu() {
-    local before="$1" after="$2" spec="$3"
-    if [ ! -s "$before" ] || [ ! -s "$after" ]; then
-        echo "n/a"
-        return
-    fi
-    local lo hi
-    if [[ "$spec" == *-* ]]; then
-        lo="${spec%-*}"; hi="${spec#*-}"
-    else
-        lo="$spec"; hi="$spec"
-    fi
-    local result="" i
-    for (( i = lo; i <= hi; i++ )); do
-        local lb la
-        lb="$(grep "^cpu${i} " "$before")"
-        la="$(grep "^cpu${i} " "$after")"
-        [ -n "$lb" ] && [ -n "$la" ] || continue
-        local idle1 total1 idle2 total2
-        idle1=$(awk '{print $5}' <<< "$lb")
-        total1=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$lb")
-        idle2=$(awk '{print $5}' <<< "$la")
-        total2=$(awk '{s=0; for(j=2;j<=NF;j++) s+=$j; print s}' <<< "$la")
-        local idle_d=$((idle2 - idle1)) total_d=$((total2 - total1)) pct=0
-        [ "$total_d" -gt 0 ] && pct=$(( (total_d - idle_d) * 100 / total_d ))
-        result="${result:+$result }cpu${i}:${pct}%"
-    done
-    echo "${result:-n/a}"
+    awk -v lo="$lo" -v hi="$hi" '
+        NR == FNR {                       # first file: per-cpu totals + idle
+            t1[$1] = 0
+            for (i = 2; i <= NF; i++) t1[$1] += $i
+            i1[$1] = $5
+            next
+        }
+        {                                 # second file: same fields
+            t2[$1] = 0
+            for (i = 2; i <= NF; i++) t2[$1] += $i
+            i2[$1] = $5
+        }
+        END {
+            line = ""
+            sbusy = 0
+            stotal = 0
+            for (c = lo; c <= hi; c++) {
+                name = "cpu" c
+                if (!(name in t1) || !(name in t2)) continue
+                td = t2[name] - t1[name]
+                busy = td - (i2[name] - i1[name])
+                pct = 0
+                if (td > 0) pct = int(busy * 100 / td)
+                line = (line == "") ? name ":" pct "%" : line " " name ":" pct "%"
+                sbusy += busy
+                stotal += td
+            }
+            if (line == "") line = "n/a"
+            avg = "n/a"
+            if (stotal > 0) avg = int(sbusy * 100 / stotal) "%"
+            print line
+            print avg
+        }' "$before" "$after"
 }
 
 # Core spec the server is (or would be) running on, for the given row.
@@ -533,6 +484,12 @@ bench_throughput() {
     conns_lbl="$(format_conns "$conns")"
     size_lbl="$(format_size "$payload")"
 
+    # Loop-invariant for this row: the lowercase run name and the core spec
+    # the server runs on (both depend only on the row label).
+    local row_lc spec
+    row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
+    spec="$(server_core_spec "$row_label")"
+
     local warmup_label=""
     if [ "$BENCH_WARMUP_RUNS" -gt 0 ]; then
         warmup_label=" (+${BENCH_WARMUP_RUNS} warmup)"
@@ -564,7 +521,6 @@ bench_throughput() {
 
         local total_runs=$((BENCH_WARMUP_RUNS + 1))
         for run in $(seq 1 "$total_runs"); do
-            local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
             local measured_run=$((run - BENCH_WARMUP_RUNS))
             local run_name="r${measured_run}"
             if [ "$measured_run" -le 0 ]; then
@@ -593,10 +549,7 @@ bench_throughput() {
                 cpu_calc_before="$cpu_client_before"
                 cpu_calc_after="$cpu_client_after"
             fi
-            cpu_usage_last="$(calc_cores_percpu "$cpu_calc_before" "$cpu_calc_after" \
-                              "$(server_core_spec "$row_label")")"
-            srv_cpu_last="$(calc_cores_avg "$cpu_calc_before" "$cpu_calc_after" \
-                             "$(server_core_spec "$row_label")")"
+            read -r cpu_usage_last srv_cpu_last < <(calc_cpu_stats "$cpu_calc_before" "$cpu_calc_after" "$spec")
             rm -f "$cpu_before" "$cpu_after" "$cpu_client_before" "$cpu_client_after"
             if [ "$measured_run" -le 0 ]; then
                 [ "$run" -lt "$total_runs" ] && sleep 1
@@ -637,7 +590,7 @@ bench_throughput() {
                 "$name" "$tp_avg" "$mbps" "$p50_avg" "$p99_avg" "$max_avg"
             printf "  %10s srv: peak_rss=%s  cpu=%s (cores %s)\n" "" \
                 "$([ -n "$srv_peak_rss" ] && echo "$((srv_peak_rss / 1024))MB" || echo n/a)" \
-                "$srv_cpu_last" "$(server_core_spec "$row_label")"
+                "$srv_cpu_last" "$spec"
             if [ "$CPU_SAMPLING" = true ]; then
                 printf "  %10s cpu: %s\n" "" "$cpu_usage_last"
             fi
@@ -710,8 +663,6 @@ bench_proto() {
     IFS=',' read -ra CONNS <<< "$PROTO_CONNS"
     IFS=',' read -ra PAYLOADS <<< "$PROTO_PAYLOADS"
 
-    local nproc_val; nproc_val="$(ncpu)"
-
     kill_servers
 
     info "=== protocol: ${CUR_PROTO}  (port base ${PORT_BASE}) ==="
@@ -719,36 +670,36 @@ bench_proto() {
     info "conns: ${CONNS[*]}  payload: ${PAYLOADS[*]}  duration: ${DURATION}s  mode: ${MODE}"
     echo ""
 
-    # ---- Single-thread row --------------------------------------------------
-    if [[ "$MODE" == "st" || "$MODE" == "both" ]]; then
-        for payload in "${PAYLOADS[@]}"; do
-            for conns in "${CONNS[@]}"; do
-                bench_throughput ST -echo "" "$conns" "$payload"
-            done
-        done
-        if [ "$RUN_CONNRATE" = true ] && [ "$PROTO_HAS_CONNRATE" = true ]; then
-            for conns in "${CONNS[@]}"; do
-                bench_connrate ST -echo "" "$conns"
-            done
+    # Row loop: ST always (per the mode), MT only for protocols that have it
+    # (udp has no SO_REUSEPORT, so a single bound port cannot fan out).
+    local rows=()
+    [[ "$MODE" == "st" || "$MODE" == "both" ]] && rows+=("st")
+    if [[ "$MODE" == "mt" || "$MODE" == "both" ]]; then
+        if [ "$PROTO_HAS_MT" = true ]; then
+            rows+=("mt")
+        else
+            info "[${CUR_PROTO}] no MT row for this protocol; skipping."
+            echo ""
         fi
     fi
 
-    # ---- Multi-thread row (skipped for protocols without MT, e.g. udp) ------
-    if [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = true ]; then
+    local row row_label suffix workers
+    for row in "${rows[@]}"; do
+        row_label="ST"; suffix=""; workers=""
+        if [ "$row" = "mt" ]; then
+            row_label="MT"; suffix="-echo-mt"; workers="$SERVER_NCPU"
+        fi
         for payload in "${PAYLOADS[@]}"; do
             for conns in "${CONNS[@]}"; do
-                bench_throughput MT -echo-mt "$SERVER_NCPU" "$conns" "$payload"
+                bench_throughput "$row_label" "$suffix" "$workers" "$conns" "$payload"
             done
         done
         if [ "$RUN_CONNRATE" = true ] && [ "$PROTO_HAS_CONNRATE" = true ]; then
             for conns in "${CONNS[@]}"; do
-                bench_connrate MT -echo-mt "$SERVER_NCPU" "$conns"
+                bench_connrate "$row_label" "$suffix" "$workers" "$conns"
             done
         fi
-    elif [[ "$MODE" == "mt" || "$MODE" == "both" ]] && [ "$PROTO_HAS_MT" = false ]; then
-        info "[${CUR_PROTO}] no MT row for this protocol; skipping."
-        echo ""
-    fi
+    done
 }
 
 cmd_bench() {
@@ -760,7 +711,6 @@ cmd_bench() {
     RUN_DIR="$RESULTS_ROOT/$ts"
     mkdir -p "$RUN_DIR"
 
-    local nproc_val; nproc_val="$(ncpu)"
     info "results -> $RUN_DIR   (MT workers = ${SERVER_NCPU})"
     info "protocols: ${PROTOS[*]}"
     if [ "$PIN_ENABLE" = true ]; then

@@ -60,7 +60,6 @@ func main() {
 type opts struct {
 	conns, duration, payload, concur, hold, port int
 	host                                         string
-	strict                                       bool
 }
 
 func parseOpts(args []string) opts {
@@ -88,8 +87,6 @@ func parseOpts(args []string) opts {
 			o.host = next()
 		case "-p":
 			o.port = atoiDef(next(), o.port)
-		case "-strict":
-			o.strict = true
 		}
 	}
 	if o.payload < 1 {
