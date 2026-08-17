@@ -358,7 +358,7 @@ set "_SRC=%NET_DIR%\%CUR_PROTO%\server\xylem-echo\server%_SUF%.c"
 set "_OUT=%BIN_DIR%\%CUR_PROTO%-xylem-echo%_SUF%.exe"
 if not exist "%_SRC%" goto :eof
 call :info "building %CUR_PROTO%-xylem-echo%_SUF%..."
-cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" /link /LTCG >nul 2>&1
+cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /Fo:"%BIN_DIR%\\" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" /link /LTCG >nul 2>&1
 if errorlevel 1 (
     call :warn "skip xylem %CUR_PROTO%%_SUF% (build failed)"
 ) else (
@@ -708,11 +708,16 @@ set "_aff="
 if "%PIN_ENABLE%"=="true" (
     if "%_workers%"=="" (set "_aff=/affinity %SRV_ST_MASK%") else (set "_aff=/affinity %SRV_MASK%")
 )
+REM Servers that generate files (the TLS certs) write them relative to their
+REM working directory; start from BIN_DIR so they land in out\ instead of
+REM wherever the driver was invoked from.
+pushd "%BIN_DIR%"
 if "%_workers%"=="" (
     start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% 1>nul 2>nul
 ) else (
     start "xylem-bench-srv" %_aff% /b "%_bin%" %_port% %_workers% 1>nul 2>nul
 )
+popd
 goto :eof
 
 REM stop_server -- kill the bench server processes for the current protocol

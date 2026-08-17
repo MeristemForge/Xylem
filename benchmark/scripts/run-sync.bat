@@ -175,22 +175,22 @@ echo %LANGS% | findstr /I "xylem" >nul && (
     call :info "building xylem sync-bench..."
     echo %PRIMS% | findstr /I "mutex" >nul && (
         if exist "%BIN_DIR%\mutex-xylem.exe" del /q "%BIN_DIR%\mutex-xylem.exe"
-        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\mutex\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\mutex-xylem.exe" >nul 2>&1
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SYNC_DIR%\mutex\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\mutex-xylem.exe" >nul 2>&1
         if errorlevel 1 (call :err "mutex-xylem build failed" & exit /b 1) else (call :ok "mutex-xylem built")
     )
     echo %PRIMS% | findstr /I "cond" >nul && (
         if exist "%BIN_DIR%\cond-xylem.exe" del /q "%BIN_DIR%\cond-xylem.exe"
-        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\cond\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\cond-xylem.exe" >nul 2>&1
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SYNC_DIR%\cond\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\cond-xylem.exe" >nul 2>&1
         if errorlevel 1 (call :err "cond-xylem build failed" & exit /b 1) else (call :ok "cond-xylem built")
     )
     echo %PRIMS% | findstr /I "sem" >nul && (
         if exist "%BIN_DIR%\sem-xylem.exe" del /q "%BIN_DIR%\sem-xylem.exe"
-        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\sem\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SYNC_DIR%\sem\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\sem-xylem.exe" >nul 2>&1
         if errorlevel 1 (call :err "sem-xylem build failed" & exit /b 1) else (call :ok "sem-xylem built")
     )
     echo %PRIMS% | findstr /I "channel" >nul && (
         if exist "%BIN_DIR%\channel-xylem.exe" del /q "%BIN_DIR%\channel-xylem.exe"
-        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SYNC_DIR%\channel\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\channel-xylem.exe" >nul 2>&1
+        cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SYNC_DIR%\channel\xylem\main.c" "%XYLEM_LIB%" %SYS_LIBS% /Fe:"%BIN_DIR%\channel-xylem.exe" >nul 2>&1
         if errorlevel 1 (call :err "channel-xylem build failed" & exit /b 1) else (call :ok "channel-xylem built")
     )
 )

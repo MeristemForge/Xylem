@@ -146,9 +146,9 @@ if not defined XYLEM_LIB (call :err "xylem.lib not found" & exit /b 1)
 
 echo %LANGS% | findstr /I "xylem" >nul && (
     call :info "building xylem ST"
-    cl /nologo /std:c11 /experimental:c11atomics /O2 /DNDEBUG /MD /W3 /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SPAWN_DIR%\xylem\spawn.c" "%XYLEM_LIB%" ws2_32.lib mswsock.lib psapi.lib /Fe:"%BIN_DIR%\spawn-xylem.exe" || exit /b 1
+    cl /nologo /std:c11 /experimental:c11atomics /O2 /DNDEBUG /MD /W3 /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SPAWN_DIR%\xylem\spawn.c" "%XYLEM_LIB%" ws2_32.lib mswsock.lib psapi.lib /Fe:"%BIN_DIR%\spawn-xylem.exe" || exit /b 1
     call :info "building xylem MT"
-    cl /nologo /std:c11 /experimental:c11atomics /O2 /DNDEBUG /MD /W3 /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" "%SPAWN_DIR%\xylem\spawn-mt.c" "%XYLEM_LIB%" ws2_32.lib mswsock.lib psapi.lib /Fe:"%BIN_DIR%\spawn-xylem-mt.exe" || exit /b 1
+    cl /nologo /std:c11 /experimental:c11atomics /O2 /DNDEBUG /MD /W3 /I"%PROJECT_ROOT%\include" /I"%PROJECT_ROOT%\src" /Fo:"%BIN_DIR%\\" "%SPAWN_DIR%\xylem\spawn-mt.c" "%XYLEM_LIB%" ws2_32.lib mswsock.lib psapi.lib /Fe:"%BIN_DIR%\spawn-xylem-mt.exe" || exit /b 1
 )
 
 echo %LANGS% | findstr /I "go" >nul && (

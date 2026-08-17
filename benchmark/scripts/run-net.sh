@@ -380,6 +380,11 @@ extract_json() {
     grep "\"$2\"" "$1" 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)?' | tail -1
 }
 
+# Start a server in the background and leave its PID in SRV_PID. Run it from
+# BIN_DIR: servers that generate files (the TLS certs) write them relative to
+# their working directory, so they land in out/ instead of wherever the driver
+# was invoked from. Must not be called inside $() -- backgrounding within a
+# command substitution reaps the job when the substitution shell exits.
 start_server() {
     local bin="$1" port="$2" workers="${3:-}"
     local pin=""
@@ -390,11 +395,11 @@ start_server() {
         pin="taskset -c $cores"
     fi
     if [ -n "$workers" ]; then
-        $pin "$bin" "$port" "$workers" >/dev/null 2>&1 &
+        ( cd "$BIN_DIR" && $pin "$bin" "$port" "$workers" >/dev/null 2>&1 ) &
     else
-        $pin "$bin" "$port" >/dev/null 2>&1 &
+        ( cd "$BIN_DIR" && $pin "$bin" "$port" >/dev/null 2>&1 ) &
     fi
-    echo $!
+    SRV_PID=$!
 }
 
 snapshot_cpu() {
@@ -515,8 +520,8 @@ bench_throughput() {
             continue
         fi
 
-        local pid
-        pid="$(start_server "$bin" "$port" "$workers")"
+        start_server "$bin" "$port" "$workers"
+        local pid="$SRV_PID"
         sleep 2
 
         local tp_sum=0 p50_sum=0 p99_sum=0 max_sum=0 valid_runs=0
@@ -630,8 +635,8 @@ bench_connrate() {
             continue
         fi
 
-        local pid
-        pid="$(start_server "$bin" "$port" "$workers")"
+        start_server "$bin" "$port" "$workers"
+        local pid="$SRV_PID"
         sleep 2
 
         local row_lc; row_lc="$(printf '%s' "$row_label" | tr 'A-Z' 'a-z')"
