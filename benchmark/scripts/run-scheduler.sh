@@ -243,6 +243,9 @@ cmd_bench() {
     mkdir -p "$run_dir"
     info "results: $run_dir"
 
+    printf "  %-7s %-7s %12s %12s %10s\n" "LANG" "MODE" "elapsed(s)" "tasks/s" "ns/task"
+    printf "  %s\n" "------------------------------------------------------"
+
     for lang in "${LANGS[@]}"; do
         for mode in "${MODES[@]}"; do
             bin="$(binary_for "$lang" "$mode")"
@@ -252,7 +255,7 @@ cmd_bench() {
             # A failing verify_result (nonzero exit) aborts the run.
             summary="$(verify_result "$result" "$lang" "$mode")"
             read -r elapsed tasks_per_sec ns_per_task <<< "$summary"
-            printf "%-6s %-2s  elapsed=%ss  tasks/s=%s  ns/task=%s\n" \
+            printf "  %-7s %-7s %12s %12s %10s\n" \
                 "$lang" "$mode" "$elapsed" "$tasks_per_sec" "$ns_per_task"
         done
     done

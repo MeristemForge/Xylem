@@ -179,6 +179,8 @@ for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyM
 set "RUN_DIR=%RESULTS_ROOT%\%TS%"
 if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
 call :info "results: %RUN_DIR%"
+echo   LANG    MODE      elapsed(s)      tasks/s    ns/task
+echo   -----   ----      ----------      -------    -------
 
 for %%L in (%LANGS:,= %) do (
     for %%M in (%MODES:,= %) do (
@@ -201,12 +203,8 @@ call :ok "scheduler benchmarks complete"
 exit /b 0
 
 :print_summary
-set "SUMMARY="
-for /f "tokens=1-3" %%A in ('python -c "import json,sys; r=json.load(open(sys.argv[1])); print('%%.6f %%.0f %%.2f' %% (r['elapsed_sec'],r['tasks_per_sec'],r['ns_per_task']))" "%~1"') do (
-    set "SUMMARY=%%A %%B %%C"
-)
-if not defined SUMMARY (call :err "failed to summarize scheduler results" & exit /b 1)
-echo %2 %3 elapsed/tasks-per-sec/ns-per-task: !SUMMARY!
+python -c "import json,sys; r=json.load(open(sys.argv[1])); print('  %%-7s %%-7s %%12s %%12s %%10s' %% (sys.argv[2],sys.argv[3],'%%.6f' %% r['elapsed_sec'],'%%.0f' %% r['tasks_per_sec'],'%%.2f' %% r['ns_per_task']))" "%~1" %2 %3
+if errorlevel 1 (call :err "failed to summarize scheduler results" & exit /b 1)
 goto :eof
 
 :verify_result
