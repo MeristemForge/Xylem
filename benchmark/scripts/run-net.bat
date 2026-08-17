@@ -212,6 +212,7 @@ echo   For TLS, OpenSSL via vcpkg:
 echo     git clone https://github.com/microsoft/vcpkg
 echo     .\vcpkg\bootstrap-vcpkg.bat
 echo     .\vcpkg\vcpkg install openssl
+echo     set "OPENSSL_ROOT=C:\vcpkg\installed\x64-windows"
 echo.
 where cl >nul 2>&1
 if errorlevel 1 (
@@ -313,7 +314,30 @@ if errorlevel 1 (
 )
 
 set "EXTRA_LIBS="
-if "%IS_TLS%"=="true" set "EXTRA_LIBS=libssl.lib libcrypto.lib"
+set "EXTRA_INC="
+set "EXTRA_LIBPATH="
+if "%IS_TLS%"=="true" (
+    set "EXTRA_LIBS=libssl.lib libcrypto.lib"
+    REM Locate an OpenSSL tree: an explicit OPENSSL_ROOT (vcpkg triplet dir,
+    REM a slproweb-style install like %ProgramFiles%\OpenSSL-Win64, or any
+    REM self-built tree) wins; otherwise probe the common install locations.
+    REM With none found, rely on INCLUDE/LIB being set up in the environment.
+    if not defined OPENSSL_ROOT (
+        for %%R in ("%LOCALAPPDATA%\vcpkg\installed\x64-windows" "C:\vcpkg\installed\x64-windows" "%ProgramFiles%\OpenSSL-Win64" "C:\OpenSSL-Win64") do (
+            if not defined OPENSSL_ROOT if exist "%%~R\include\openssl\ssl.h" set "OPENSSL_ROOT=%%~R"
+        )
+    )
+    if defined OPENSSL_ROOT (
+        set "EXTRA_INC=/I"!OPENSSL_ROOT!\include""
+        for %%D in ("!OPENSSL_ROOT!\lib64" "!OPENSSL_ROOT!\lib") do (
+            if exist "%%~D\libssl.lib" set "EXTRA_LIBPATH=/libpath:"%%~D""
+        )
+        if not defined EXTRA_LIBPATH if exist "!OPENSSL_ROOT!\libssl.lib" set "EXTRA_LIBPATH=/libpath:"!OPENSSL_ROOT!""
+        if not defined EXTRA_LIBPATH call :warn "OPENSSL_ROOT set but no libssl.lib found under it"
+    )
+)
+REM DLL-based installs (slproweb) need their bin dir on PATH at run time too.
+if defined OPENSSL_ROOT if exist "%OPENSSL_ROOT%\bin\libssl-3-x64.dll" set "PATH=%OPENSSL_ROOT%\bin;%PATH%"
 
 REM ---- xylem echo servers (ST always; MT only if protocol has it) -----------
 call :build_xylem_server "" 
@@ -358,7 +382,7 @@ set "_SRC=%NET_DIR%\%CUR_PROTO%\server\xylem-echo\server%_SUF%.c"
 set "_OUT=%BIN_DIR%\%CUR_PROTO%-xylem-echo%_SUF%.exe"
 if not exist "%_SRC%" goto :eof
 call :info "building %CUR_PROTO%-xylem-echo%_SUF%..."
-cl %CL_FLAGS% /I"%PROJECT_ROOT%\include" /Fo:"%BIN_DIR%\\" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" /link /LTCG >nul 2>&1
+cl %CL_FLAGS% %EXTRA_INC% /I"%PROJECT_ROOT%\include" /Fo:"%BIN_DIR%\\" "%_SRC%" "%XYLEM_LIB%" %SYS_LIBS% %EXTRA_LIBS% /Fe:"%_OUT%" /link /LTCG %EXTRA_LIBPATH% >nul 2>&1
 if errorlevel 1 (
     call :warn "skip xylem %CUR_PROTO%%_SUF% (build failed)"
 ) else (
