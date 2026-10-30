@@ -21,234 +21,235 @@
 
 #include "xylem.h"
 #include "assert.h"
+
 #define TEST_WITH_TLS
+
+#include "http-fixture.h"
 #include "utils.h"
 
 #include <stdio.h>
+
 #include <stdlib.h>
+
 #include <string.h>
 
 #define HTTPS_CERT "test_https_cert.pem"
 #define HTTPS_KEY  "test_https_key.pem"
 
-static uint16_t _srv_port(xylem_http_srv_t* srv) {
-    uint16_t port = 0;
-    xylem_http_srv_addr(srv, NULL, 0, &port);
-    return port;
-}
+typedef struct {
+    xylem_tcp_conn_t*  from;
+    xylem_tcp_conn_t*  to;
+    xylem_waitgroup_t* wg;
+} _tunnel_copy_t;
 
-static void _hello_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
-                           void* userdata) {
-    (void)req;
-    (void)userdata;
-    xylem_http_writer_set_status(writer, 200);
-    xylem_http_writer_set_header(writer, "Content-Type", "text/plain");
-    xylem_http_writer_write(writer, "hello", 5);
-}
+typedef struct {
+    xylem_tcp_listener_t* listener;
+    uint16_t              target_port;
+    xylem_waitgroup_t*    wg;
+    char                  request[2048];
+} _tunnel_proxy_t;
 
-static void _echo_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
-                          void* userdata) {
-    (void)userdata;
-    const void* body = xylem_http_req_body(req);
-    size_t      len  = xylem_http_req_body_len(req);
-    xylem_http_writer_set_status(writer, 200);
-    xylem_http_writer_set_header(
-        writer, "Content-Type", "application/octet-stream");
-    xylem_http_writer_write(writer, body, len);
-}
-
-static void _path_handler(xylem_http_writer_t* writer, xylem_http_req_t* req,
-                          void* userdata) {
-    (void)userdata;
-    const char* url = xylem_http_req_url(req);
-    xylem_http_writer_set_status(writer, 200);
-    xylem_http_writer_write(writer, url, strlen(url));
-}
-
-static xylem_http_srv_t* _listen_tls(xylem_http_handler_fn_t handler) {
-    static const xylem_http_tls_t tls = {
-        .cert = HTTPS_CERT,
-        .key  = HTTPS_KEY,
-    };
-    xylem_http_srv_opts_t opts = {0};
-    opts.tls             = &tls;
-    opts.idle_timeout_ms = 100;
-    return xylem_http_listen("127.0.0.1", 0, handler, NULL, &opts);
-}
-
-static void _test_get_main(void* arg) {
-    (void)arg;
+static xylem_tls_ctx_t* _srv_create_ctx(void) {
     ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
+    xylem_tls_ctx_t* ctx = xylem_tls_ctx_create();
+    ASSERT(ctx);
+    ASSERT(xylem_tls_ctx_load_cert(ctx, NULL, HTTPS_CERT, HTTPS_KEY) == 0);
+    return ctx;
+}
 
-    xylem_http_srv_t* srv = _listen_tls(_hello_handler);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-    ASSERT(port != 0);
-
-    char url[64];
-    snprintf(url, sizeof(url), "https://127.0.0.1:%u/test", (unsigned)port);
-
-    xylem_http_tls_t      cli_tls = {.skip_verify = true};
-    xylem_http_cli_opts_t opts    = {0};
-    opts.tls = &cli_tls;
-
-    xylem_http_res_t* res = xylem_http_get(url, NULL, 0, &opts);
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    ASSERT(xylem_http_res_body_len(res) == 5);
-    ASSERT(memcmp(xylem_http_res_body(res), "hello", 5) == 0);
-
-    const char* ct = xylem_http_res_header(res, "Content-Type");
-    ASSERT(ct != NULL);
-    ASSERT(strcmp(ct, "text/plain") == 0);
-    xylem_http_res_destroy(res);
-
-    xylem_http_shutdown(srv, 5000);
+static void test_https_and_pool_policy(void) {
+    xylem_tls_ctx_t*     ctx     = _srv_create_ctx();
+    _http_fixture_step_t steps[] = {
+        {.response   = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+         .keep_alive = true},
+        {.response = HTTP_OK}};
+    _http_fixture_t f;
+    _fixture_init(&f, steps, 2, ctx);
+    char url[256];
+    _fixture_url(&f, true, "/api", url);
+    xylem_http_tls_t      insecure = {.skip_verify = true};
+    xylem_http_cli_opts_t opts     = {.tls = &insecure, .timeout_ms = 3000};
+    _check_hello(
+        xylem_http_post(url, "{}", 2, "application/json", NULL, 0, &opts));
+    /* A strict call must not reuse an insecure connection. */
+    opts.tls = NULL;
+    ASSERT(!xylem_http_get(url, NULL, 0, &opts));
+    xylem_http_tls_t verified = {.ca = HTTPS_CERT};
+    opts.tls                  = &verified;
+    _check_hello(xylem_http_get(url, NULL, 0, &opts));
+    ASSERT(atomic_load(&f.accepted) >= 3);
+    xylem_http_pool_clear();
+    _fixture_deinit(&f);
+    xylem_tls_ctx_destroy(ctx);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
 }
 
-static void test_https_get(void) {
-    _test_get_main(NULL);
-}
+static void test_cross_scheme_redirects(void) {
+    xylem_tls_ctx_t*     ctx    = _srv_create_ctx();
+    _http_fixture_step_t target = {.response = HTTP_OK};
+    _http_fixture_t      secure;
+    _fixture_init(&secure, &target, 1, ctx);
+    char next[256], response[512];
+    _fixture_url(&secure, true, "/secure", next);
+    snprintf(
+        response,
+        sizeof(response),
+        "HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: "
+        "0\r\nConnection: close\r\n\r\n",
+        next);
+    _http_fixture_step_t step = {.response = response};
+    _http_fixture_t      plain;
+    _fixture_init(&plain, &step, 1, NULL);
+    char url[256];
+    _fixture_url(&plain, false, "/start", url);
+    xylem_http_tls_t      tls  = {.ca = HTTPS_CERT};
+    xylem_http_cli_opts_t opts = {
+        .tls           = &tls,
+        .timeout_ms    = 3000,
+        .max_redirects = 5};
+    xylem_http_hdr_t hdr = {.name = "Authorization", .value = "Bearer secret"};
+    _check_hello(xylem_http_get(url, &hdr, 1, &opts));
+    ASSERT(!strstr(target.request, "Authorization:"));
+    _fixture_deinit(&plain);
+    _fixture_deinit(&secure);
 
-static void _test_pinned_ca_main(void* arg) {
-    (void)arg;
-    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
-
-    xylem_http_srv_t* srv = _listen_tls(_hello_handler);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
-    char url[64];
-    snprintf(url, sizeof(url), "https://127.0.0.1:%u/", (unsigned)port);
-
-    xylem_http_tls_t      cli_tls = {.ca = HTTPS_CERT};
-    xylem_http_cli_opts_t opts    = {0};
-    opts.tls = &cli_tls;
-
-    xylem_http_res_t* res = xylem_http_get(url, NULL, 0, &opts);
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    ASSERT(memcmp(xylem_http_res_body(res), "hello", 5) == 0);
-    xylem_http_res_destroy(res);
-
-    xylem_http_shutdown(srv, 5000);
+    target = (_http_fixture_step_t){.response = HTTP_OK};
+    _fixture_init(&plain, &target, 1, NULL);
+    _fixture_url(&plain, false, "/plain", next);
+    snprintf(
+        response,
+        sizeof(response),
+        "HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: "
+        "0\r\nConnection: close\r\n\r\n",
+        next);
+    _http_fixture_step_t steps[] = {
+        {.response = response},
+        {.response = response}};
+    _fixture_init(&secure, steps, 2, ctx);
+    _fixture_url(&secure, true, "/start", url);
+    ASSERT(!xylem_http_get(url, &hdr, 1, &opts));
+    ASSERT(atomic_load(&plain.next) == 0);
+    opts.allow_https_downgrade = true;
+    _check_hello(xylem_http_get(url, &hdr, 1, &opts));
+    ASSERT(!strstr(target.request, "Authorization:"));
+    _fixture_deinit(&secure);
+    _fixture_deinit(&plain);
+    xylem_tls_ctx_destroy(ctx);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
 }
 
-static void test_https_pinned_ca(void) {
-    _test_pinned_ca_main(NULL);
-}
-
-static void _test_verify_fail_main(void* arg) {
-    (void)arg;
-    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
-
-    xylem_http_srv_t* srv = _listen_tls(_hello_handler);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
-    char url[64];
-    snprintf(url, sizeof(url), "https://127.0.0.1:%u/", (unsigned)port);
-
-    xylem_http_res_t* res = xylem_http_get(url, NULL, 0, NULL);
-    ASSERT(res == NULL);
-
-    xylem_http_shutdown(srv, 5000);
-    remove(HTTPS_CERT);
-    remove(HTTPS_KEY);
-}
-
-static void test_https_verify_fail(void) {
-    _test_verify_fail_main(NULL);
-}
-
-static void _test_post_main(void* arg) {
-    (void)arg;
-    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
-
-    xylem_http_srv_t* srv = _listen_tls(_echo_handler);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
-    char url[64];
-    snprintf(url, sizeof(url), "https://127.0.0.1:%u/upload", (unsigned)port);
-
-    char body[4096];
-    memset(body, 'Z', sizeof(body));
-
-    xylem_http_tls_t      cli_tls = {.skip_verify = true};
-    xylem_http_cli_opts_t opts    = {0};
-    opts.tls = &cli_tls;
-
-    xylem_http_res_t* res = xylem_http_post(
-        url, body, sizeof(body), "application/octet-stream", NULL, 0, &opts);
-    ASSERT(res != NULL);
-    ASSERT(xylem_http_res_status(res) == 200);
-    ASSERT(xylem_http_res_body_len(res) == sizeof(body));
-    ASSERT(memcmp(xylem_http_res_body(res), body, sizeof(body)) == 0);
-    xylem_http_res_destroy(res);
-
-    xylem_http_shutdown(srv, 5000);
-    remove(HTTPS_CERT);
-    remove(HTTPS_KEY);
-}
-
-static void test_https_post(void) {
-    _test_post_main(NULL);
-}
-
-static void _test_pool_main(void* arg) {
-    (void)arg;
-    ASSERT(_utils_cert_gen(HTTPS_CERT, HTTPS_KEY) == 0);
-
-    xylem_http_srv_t* srv = _listen_tls(_path_handler);
-    ASSERT(srv != NULL);
-    uint16_t port = _srv_port(srv);
-
-    xylem_http_tls_t      cli_tls = {.skip_verify = true};
-    xylem_http_cli_opts_t opts    = {0};
-    opts.tls = &cli_tls;
-
-    const char* paths[] = {"/a", "/b", "/c"};
-    for (int i = 0; i < 3; i++) {
-        char url[64];
-        snprintf(url, sizeof(url), "https://127.0.0.1:%u%s", (unsigned)port,
-                 paths[i]);
-        xylem_http_res_t* res = xylem_http_get(url, NULL, 0, &opts);
-        ASSERT(res != NULL);
-        ASSERT(xylem_http_res_status(res) == 200);
-        ASSERT(xylem_http_res_body_len(res) == 2);
-        ASSERT(memcmp(xylem_http_res_body(res), paths[i], 2) == 0);
-        xylem_http_res_destroy(res);
+static void _srv_tunnel_copy_cb(void* arg) {
+    _tunnel_copy_t* c = arg;
+    char            buf[4096];
+    int             n;
+    while ((n = xylem_tcp_read(c->from, buf, sizeof(buf))) > 0) {
+        if (xylem_tcp_write(c->to, buf, n)) {
+            break;
+        }
     }
+    xylem_tcp_shutdown_wr(c->to);
+    xylem_waitgroup_done(c->wg);
+}
 
-    xylem_http_shutdown(srv, 5000);
+static void _srv_tunnel_proxy_cb(void* arg) {
+    _tunnel_proxy_t*  p      = arg;
+    xylem_tcp_conn_t* client = xylem_tcp_accept(p->listener);
+    ASSERT(client);
+    size_t have = 0;
+    for (;;) {
+        int n = xylem_tcp_read(
+            client,
+            p->request + have,
+            (int)(sizeof(p->request) - have - 1));
+        ASSERT(n > 0);
+        have += (size_t)n;
+        p->request[have] = 0;
+        if (strstr(p->request, "\r\n\r\n")) {
+            break;
+        }
+    }
+    ASSERT(!strncmp(p->request, "CONNECT ", 8));
+    xylem_tcp_conn_t* target =
+        xylem_tcp_dial("127.0.0.1", p->target_port, NULL);
+    ASSERT(target);
+    ASSERT(
+        xylem_tcp_write(
+            client,
+            "HTTP/1.1 200 Connection Established\r\n\r\n",
+            39) == 0);
+    xylem_waitgroup_t* wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(wg, 2);
+    _tunnel_copy_t up   = {.from = client, .to = target, .wg = wg};
+    _tunnel_copy_t down = {.from = target, .to = client, .wg = wg};
+    xylem_spawn(_srv_tunnel_copy_cb, &up);
+    _srv_tunnel_copy_cb(&down);
+    xylem_waitgroup_wait(wg);
+    xylem_waitgroup_destroy(wg);
+    xylem_tcp_destroy(client);
+    xylem_tcp_destroy(target);
+    xylem_waitgroup_done(p->wg);
+}
+
+static void test_connect_proxy(void) {
+    xylem_tls_ctx_t*     ctx  = _srv_create_ctx();
+    _http_fixture_step_t step = {.response = HTTP_OK};
+    _http_fixture_t      server;
+    _fixture_init(&server, &step, 1, ctx);
+    _tunnel_proxy_t proxy = {.target_port = server.port};
+    proxy.listener        = xylem_tcp_listen("127.0.0.1", 0, NULL);
+    ASSERT(proxy.listener);
+    uint16_t port;
+    ASSERT(xylem_tcp_listener_addr(proxy.listener, NULL, 0, &port) == 0);
+    proxy.wg = xylem_waitgroup_create();
+    xylem_waitgroup_add(proxy.wg, 1);
+    xylem_spawn(_srv_tunnel_proxy_cb, &proxy);
+    xylem_http_proxy_t config = {
+        .host     = "127.0.0.1",
+        .port     = port,
+        .username = "user",
+        .password = "pass"};
+    xylem_http_tls_t      tls  = {.ca = HTTPS_CERT};
+    xylem_http_cli_opts_t opts = {
+        .proxy      = &config,
+        .tls        = &tls,
+        .timeout_ms = 3000};
+    char url[256];
+    _fixture_url(&server, true, "/api", url);
+    _check_hello(xylem_http_get(url, NULL, 0, &opts));
+    xylem_waitgroup_wait(proxy.wg);
+    ASSERT(strstr(proxy.request, "Proxy-Authorization: Basic dXNlcjpwYXNz"));
+    ASSERT(!strstr(step.request, "Proxy-Authorization:"));
+    xylem_tcp_destroy_listener(proxy.listener);
+    xylem_waitgroup_destroy(proxy.wg);
+    _fixture_deinit(&server);
+    xylem_tls_ctx_destroy(ctx);
     remove(HTTPS_CERT);
     remove(HTTPS_KEY);
 }
 
-static void test_https_pool_reuse(void) {
-    _test_pool_main(NULL);
+static void test_bad_configuration(void) {
+    xylem_http_tls_t      tls  = {.ca = "missing-xylem-ca.pem"};
+    xylem_http_cli_opts_t opts = {.tls = &tls, .timeout_ms = 100};
+    ASSERT(!xylem_http_get("https://127.0.0.1:1", NULL, 0, &opts));
 }
 
-static void _test_run_all(void* arg) {
+static void _test_run_cb(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-
-    test_https_get();
-    test_https_pinned_ca();
-    test_https_verify_fail();
-    test_https_post();
-    test_https_pool_reuse();
-    printf("All HTTPS tests passed.\n");
+    test_https_and_pool_policy();
+    test_cross_scheme_redirects();
+    test_connect_proxy();
+    test_bad_configuration();
+    xylem_http_pool_clear();
+    puts("All HTTPS client tests passed.");
     _utils_watchdog_stop();
     xylem_shutdown();
 }
 
 int main(void) {
-    xylem_run(_test_run_all, NULL, NULL);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    xylem_run(_test_run_cb, NULL, NULL);
     return 0;
 }

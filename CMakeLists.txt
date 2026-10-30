@@ -109,13 +109,6 @@ set(SRCS
 	src/net/http/http.c
 	src/net/http/xylem-http.c
 	src/net/http/http-transport-tcp.c
-	src/net/http/xylem-http-auth.c
-	src/net/http/xylem-http-cookie.c
-	src/net/http/xylem-http-form.c
-	src/net/http/xylem-http-multipart.c
-	src/net/http/xylem-http-router.c
-	src/net/http/xylem-http-cors.c
-	src/net/http/xylem-http-fileserver.c
 	src/net/http/llhttp/llhttp.c
 	src/net/http/llhttp/http.c
 	src/net/http/llhttp/api.c

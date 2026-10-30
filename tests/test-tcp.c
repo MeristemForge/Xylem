@@ -29,6 +29,7 @@
 #include "assert.h"
 #include "utils.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,10 @@ typedef struct {
     _coro_t            server;
     _coro_t            client;
 } _ctx_t;
+
+typedef struct {
+    _Atomic int32_t observed;
+} _time_yield_ctx_t;
 
 typedef struct {
     stream_t*          stream;
@@ -204,9 +209,9 @@ static void test_writer_buffered(void) {
     _run_pair(TCP_PORT + 2, _writer_server, _writer_client);
 }
 
-static void _time_yield_observer(void* arg) {
-    atomic_int* observed = (atomic_int*)arg;
-    atomic_store(observed, 1);
+static void _time_yield_observer_cb(void* arg) {
+    _time_yield_ctx_t* ctx = (_time_yield_ctx_t*)arg;
+    atomic_store(&ctx->observed, 1);
 }
 
 static void _time_yield_server(void* arg) {
@@ -236,10 +241,10 @@ static void _time_yield_client(void* arg) {
     ASSERT(conn != NULL);
     xylem_channel_recv(ctx->ready);
 
-    atomic_int observed;
-    atomic_init(&observed, 0);
-    xylem_spawn(_time_yield_observer, &observed);
-    ASSERT(atomic_load(&observed) == 0);
+    _time_yield_ctx_t yield_ctx;
+    atomic_init(&yield_ctx.observed, 0);
+    xylem_spawn(_time_yield_observer_cb, &yield_ctx);
+    ASSERT(atomic_load(&yield_ctx.observed) == 0);
 
     uint64_t start = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
     while (xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC) - start
@@ -247,7 +252,7 @@ static void _time_yield_client(void* arg) {
     }
 
     ASSERT(xylem_tcp_write(conn, "x", 1) == 0);
-    ASSERT(atomic_load(&observed) == 1);
+    ASSERT(atomic_load(&yield_ctx.observed) == 1);
 
     xylem_tcp_destroy(conn);
     xylem_waitgroup_done(ctx->wg);

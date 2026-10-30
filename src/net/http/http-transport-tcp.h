@@ -19,56 +19,25 @@
  *  IN THE SOFTWARE.
  */
 
-/**
- * Plain-TCP HTTP transport factory (http-transport-tcp.c, always built).
- *
- * Builds an http_transport_t over a raw TCP connection for the server
- * (listen) and client (request) paths. Not part of the public API.
- */
-
 _Pragma("once")
 
 #include "http.h"
 
 /**
- * @brief Start an HTTP server over plain TCP.
+ * @brief Create a TCP transport for the origin or selected HTTP proxy.
  *
- * @param host      Bind host.
- * @param port      Bind port.
- * @param handler   Request handler.
- * @param userdata  Opaque pointer passed to handler.
- * @param opts      Server options, or NULL for defaults.
+ * @param host        Host name or numeric address.
+ * @param port        TCP port.
+ * @param timeout_ms  Connection time budget in milliseconds; 0 disables the
+ * limit.
+ * @param opts        Options, or NULL for defaults.
  *
- * @return Server handle, or NULL on failure.
+ * @return Owned transport on success, an empty transport on failure.
+ *
+ * @note The returned connection owns its transport and configuration resources.
  */
-extern xylem_http_srv_t* http_tcp_listen(
+extern http_transport_t http_tcp_dial(
     const char*                  host,
     uint16_t                     port,
-    xylem_http_handler_fn_t      handler,
-    void*                        userdata,
-    const xylem_http_srv_opts_t* opts);
-
-/**
- * @brief Perform an HTTP client request over plain TCP.
- *
- * @param method        HTTP method string.
- * @param url           Full URL.
- * @param body          Request body, or NULL.
- * @param body_len      Body length in bytes.
- * @param content_type  Content-Type value, or NULL.
- * @param headers       Custom headers, or NULL.
- * @param header_count  Number of custom headers.
- * @param opts          Client options, or NULL.
- *
- * @return Response object, or NULL on failure. Caller frees via
- *         xylem_http_res_destroy().
- */
-extern xylem_http_res_t* http_tcp_request(
-    const char*                  method,
-    const char*                  url,
-    const void*                  body,
-    size_t                       body_len,
-    const char*                  content_type,
-    const xylem_http_hdr_t*      headers,
-    size_t                       header_count,
+    uint64_t                     timeout_ms,
     const xylem_http_cli_opts_t* opts);

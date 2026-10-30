@@ -29,21 +29,13 @@ typedef struct xylem_ws_conn_s     xylem_ws_conn_t;
 typedef struct xylem_ws_listener_s xylem_ws_listener_t;
 
 typedef enum xylem_ws_opcode_e {
-    XYLEM_WS_TEXT   = 0x1,
-    XYLEM_WS_BINARY = 0x2,
+    XYLEM_WS_TEXT,
+    XYLEM_WS_BINARY,
 } xylem_ws_opcode_t;
-
-typedef struct {
-    xylem_ws_opcode_t opcode;
-    void*             data;
-    size_t            len;
-} xylem_ws_msg_t;
-
-typedef void (*xylem_ws_handler_fn_t)(xylem_ws_conn_t* conn, void* userdata);
 
 /**
  * TLS configuration for secure WebSocket (wss), by certificate/CA files;
- * no tls context is exposed. Mirrors the HTTP server/client TLS config:
+ * no TLS context is exposed:
  *   - server (xylem_ws_listen with a wss listener): cert + key are
  *     required; ca enables client-certificate verification (mTLS).
  *   - client (xylem_ws_dial of a wss:// URL): ca pins a private CA
@@ -57,11 +49,11 @@ typedef struct xylem_ws_tls_s {
     bool        skip_verify; /* true = skip peer cert verification (client). */
 } xylem_ws_tls_t;
 
-typedef struct {
+typedef struct xylem_ws_opts_s {
     size_t   max_msg_size;
     size_t   fragment_threshold;
-    uint64_t handshake_timeout_ms;
-    uint64_t close_timeout_ms;
+    uint64_t handshake_timeout_ms; /* Total handshake budget, 0 = 10 seconds. */
+    uint64_t close_timeout_ms;     /* Close handshake budget, 0 = 5 seconds. */
     bool     permessage_deflate;
     bool     deflate_context_takeover;
     /**
@@ -73,66 +65,71 @@ typedef struct {
     const xylem_ws_tls_t* tls;
 } xylem_ws_opts_t;
 
-struct xylem_http_writer_s;
-struct xylem_http_req_s;
-
 /**
- * @brief Upgrade an HTTP request to a WebSocket connection (server side).
+ * @brief Bind a standalone ws or wss listener.
  *
- * @note [COROUTINE-ONLY]
+ * @note [COROUTINE-ONLY] Set opts->tls (cert + key) to serve wss.
  *
- * @param writer  HTTP response writer.
- * @param req     HTTP request handle.
- * @param opts    WebSocket options, or NULL for defaults.
+ * @param host  Bind address, or NULL for any.
+ * @param port  Bind port, or 0 for an assigned port.
+ * @param opts  Options, or NULL for defaults.
  *
- * @return WebSocket connection, or NULL on failure.
+ * @return Owned listener, or NULL on failure.
  */
-extern xylem_ws_conn_t* xylem_ws_accept(
-    struct xylem_http_writer_s* writer,
-    struct xylem_http_req_s*    req,
-    const xylem_ws_opts_t*      opts);
+extern xylem_ws_listener_t*
+xylem_ws_listen(const char* host, uint16_t port, const xylem_ws_opts_t* opts);
 
 /**
- * @brief Start a standalone WebSocket server (ws or wss).
+ * @brief Accept a connection and complete its TLS and WS handshakes.
  *
- * @note [COROUTINE-ONLY]
- *
- * Plain ws by default; set opts->tls (cert + key) to serve wss over TLS.
- *
- * @param host      Bind address, or NULL for any.
- * @param port      Bind port.
- * @param handler   Connection handler invoked per accepted client.
- * @param userdata  Opaque pointer passed to handler.
- * @param opts      WebSocket options (opts->tls selects wss), or NULL.
- *
- * @return Listener handle, or NULL on failure.
- */
-extern xylem_ws_listener_t* xylem_ws_listen(const char* host, uint16_t port,
-                                             xylem_ws_handler_fn_t handler,
-                                             void* userdata,
-                                             const xylem_ws_opts_t* opts);
-
-/**
- * @brief Close a WebSocket listener and stop accepting connections.
- *
- * @note [COROUTINE-ONLY]
- *
- * The listener handle is invalid after this function returns.
+ * @note [COROUTINE-ONLY] One accepting coroutine per listener. Handshakes
+ * run serially with handshake_timeout_ms (0 selects 10 seconds). Invalid
+ * or timed-out peers are discarded before accepting the next peer.
+ * The caller owns the returned connection and chooses whether to spawn
+ * a coroutine. Closing the listener also cancels an in-flight handshake.
  *
  * @param listener  Listener handle.
+ *
+ * @return Owned connection, or NULL on listener close or accept failure.
  */
-extern void     xylem_ws_close_listener(xylem_ws_listener_t* listener);
+extern xylem_ws_conn_t* xylem_ws_accept(xylem_ws_listener_t* listener);
 
 /**
- * @brief Return the port the listener is bound to.
+ * @brief Stop accepting connections and cancel a pending handshake.
+ *
+ * @note [COROUTINE-ONLY] Idempotent; may race with accept. Existing
+ * returned connections remain usable. The listener handle stays alive.
+ *
+ * @param listener  Listener handle, or NULL.
+ */
+extern void xylem_ws_close_listener(xylem_ws_listener_t* listener);
+
+/**
+ * @brief Release a listener after all its operations have returned.
+ *
+ * @note [COROUTINE-ONLY] Final, non-concurrent operation on the handle.
+ *
+ * @param listener  Listener handle, or NULL.
+ */
+extern void xylem_ws_destroy_listener(xylem_ws_listener_t* listener);
+
+/**
+ * @brief Get the bound listener address, including an assigned port.
  *
  * @note [COROUTINE-ONLY]
  *
  * @param listener  Listener handle.
+ * @param host      Address output buffer, or NULL.
+ * @param host_len  Output buffer capacity.
+ * @param port      Port output, or NULL.
  *
- * @return Bound port number.
+ * @return 0 on success, -1 on failure.
  */
-extern uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener);
+extern int xylem_ws_listener_addr(
+    xylem_ws_listener_t* listener,
+    char*                host,
+    size_t               host_len,
+    uint16_t*            port);
 
 /**
  * @brief Connect to a WebSocket server (ws or wss).
@@ -147,35 +144,114 @@ extern uint16_t xylem_ws_listener_port(xylem_ws_listener_t* listener);
  *
  * @return WebSocket connection, or NULL on failure.
  */
-extern xylem_ws_conn_t* xylem_ws_dial(const char* url,
-                                       const xylem_ws_opts_t* opts);
+extern xylem_ws_conn_t*
+xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts);
 
 /**
- * @brief Send a message on the connection.
+ * @brief Set an absolute read deadline for complete messages.
  *
- * @note [COROUTINE-ONLY]
+ * @note [COROUTINE-ONLY] Uses xylem_utils_getnow(MSEC) timestamps, as TCP
+ * does. Applies to in-flight and subsequent recv calls, including buffered
+ * messages and all fragments. I/O/protocol failures permanently close the
+ * connection; clearing the deadline does not recover it. A buffer-size
+ * error retains the message and does not close the connection.
  *
- * @param conn    Connection handle.
- * @param opcode  Message type (text or binary).
- * @param data    Payload bytes.
- * @param len     Payload length.
- *
- * @return 0 on success, -1 on error.
+ * @param conn         Connection handle.
+ * @param deadline_ms  Absolute deadline, or 0 to clear.
  */
-extern int  xylem_ws_send(xylem_ws_conn_t* conn, xylem_ws_opcode_t opcode,
-                          const void* data, size_t len);
+extern void
+xylem_ws_set_read_deadline(xylem_ws_conn_t* conn, uint64_t deadline_ms);
 
 /**
- * @brief Receive the next message (blocks until available).
+ * @brief Set an absolute write deadline for messages and control frames.
+ *
+ * @note [COROUTINE-ONLY] Same clock and clearing rule as the read deadline.
+ * Covers the whole message, not each fragment separately. A failed write
+ * permanently closes the connection.
+ *
+ * @param conn         Connection handle.
+ * @param deadline_ms  Absolute deadline, or 0 to clear.
+ */
+extern void
+xylem_ws_set_write_deadline(xylem_ws_conn_t* conn, uint64_t deadline_ms);
+
+/**
+ * @brief Get the remote connection address.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * @param conn      Connection handle.
+ * @param host      Address output buffer, or NULL.
+ * @param host_len  Output buffer capacity.
+ * @param port      Port output, or NULL.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_ws_remote_addr(
+    xylem_ws_conn_t* conn,
+    char*            host,
+    size_t           host_len,
+    uint16_t*        port);
+
+/**
+ * @brief Get the local connection address.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * @param conn      Connection handle.
+ * @param host      Address output buffer, or NULL.
+ * @param host_len  Output buffer capacity.
+ * @param port      Port output, or NULL.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+extern int xylem_ws_local_addr(
+    xylem_ws_conn_t* conn,
+    char*            host,
+    size_t           host_len,
+    uint16_t*        port);
+
+/**
+ * @brief Send one complete text or binary message.
+ *
+ * @note [COROUTINE-ONLY] One sending coroutine per connection, shared
+ * by send and ping. The type is mapped to its protocol opcode internally.
  *
  * @param conn  Connection handle.
- * @param msg   Output message structure.
+ * @param data  Payload bytes, or NULL for an empty message.
+ * @param len   Payload length in bytes (>= 0).
+ * @param type  Message type.
  *
- * @return 0 on success, -1 on error or connection closed.
+ * @return 0 on success, -1 on invalid arguments, I/O error or timeout.
  */
-extern int  xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg);
+extern int xylem_ws_send(
+    xylem_ws_conn_t*  conn,
+    const void*       data,
+    int               len,
+    xylem_ws_opcode_t type);
+
+/**
+ * @brief Receive one complete message into a caller-owned buffer.
+ *
+ * @note [COROUTINE-ONLY] One receiving coroutine per connection; one
+ * sender may run concurrently. Never truncates or combines messages.
+ * A short buffer returns -1 without modifying buf or type; the message
+ * remains pending for a retry with a larger buffer. I/O/protocol errors
+ * and timeouts permanently close the connection. Text is not terminated.
+ *
+ * @param conn  Connection handle.
+ * @param buf   Output buffer, or NULL when len is 0.
+ * @param len   Buffer capacity in bytes (>= 0).
+ * @param type  Receives the message type on success, or NULL.
+ *
+ * @return Message length (>= 0), including 0 for an empty message;
+ *         -1 on invalid arguments, short buffer, close, error or timeout.
+ */
+extern int xylem_ws_recv(
+    xylem_ws_conn_t*   conn,
+    void*              buf,
+    int                len,
+    xylem_ws_opcode_t* type);
 
 /**
  * @brief Send a ping frame.
@@ -188,12 +264,17 @@ extern int  xylem_ws_recv(xylem_ws_conn_t* conn, xylem_ws_msg_t* msg);
  *
  * @return 0 on success, -1 on error.
  */
-extern int  xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len);
+extern int xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len);
 
 /**
- * @brief Initiate a close handshake.
+ * @brief Close a connection without releasing its handle.
  *
  * @note [COROUTINE-ONLY]
+ *
+ * When no send/recv/ping is active, attempts a close handshake bounded by
+ * close_timeout_ms and any earlier read/write deadlines. When I/O is active,
+ * cancels it immediately instead. Idempotent and safe to race with I/O.
+ * Wait for all operations to return before calling xylem_ws_destroy().
  *
  * @param conn        Connection handle.
  * @param code        Close status code (RFC 6455).
@@ -202,28 +283,21 @@ extern int  xylem_ws_ping(xylem_ws_conn_t* conn, const void* data, size_t len);
  *
  * @return 0 on success, -1 on error.
  */
-extern int  xylem_ws_close(xylem_ws_conn_t* conn, uint16_t code,
-                           const char* reason, size_t reason_len);
+extern int xylem_ws_close(
+    xylem_ws_conn_t* conn,
+    uint16_t         code,
+    const char*      reason,
+    size_t           reason_len);
 
 /**
- * @brief Free resources owned by a received message.
+ * @brief Release a connection after all its operations have returned.
  *
- * @note [COROUTINE-ONLY]
+ * @note [COROUTINE-ONLY] Final, non-concurrent call. Cancels communication
+ * if needed; call close first when a graceful handshake is desired.
  *
- * @param msg  Message to free.
+ * @param conn  Connection handle, or NULL.
  */
-extern void xylem_ws_msg_free(xylem_ws_msg_t* msg);
-
-/**
- * @brief Return the close code received from the peer.
- *
- * @note [COROUTINE-ONLY]
- *
- * @param conn  Connection handle.
- *
- * @return Close code, or 0 if not yet received.
- */
-extern uint16_t xylem_ws_close_code(xylem_ws_conn_t* conn);
+extern void xylem_ws_destroy(xylem_ws_conn_t* conn);
 
 /**
  * @brief Get the user data pointer attached to the connection.
@@ -234,7 +308,7 @@ extern uint16_t xylem_ws_close_code(xylem_ws_conn_t* conn);
  *
  * @return User data pointer.
  */
-extern void*    xylem_ws_get_userdata(xylem_ws_conn_t* conn);
+extern void* xylem_ws_get_userdata(xylem_ws_conn_t* conn);
 
 /**
  * @brief Set the user data pointer attached to the connection.
@@ -244,4 +318,4 @@ extern void*    xylem_ws_get_userdata(xylem_ws_conn_t* conn);
  * @param conn  Connection handle.
  * @param ud    User data pointer.
  */
-extern void     xylem_ws_set_userdata(xylem_ws_conn_t* conn, void* ud);
+extern void xylem_ws_set_userdata(xylem_ws_conn_t* conn, void* ud);

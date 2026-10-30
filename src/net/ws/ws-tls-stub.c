@@ -19,23 +19,34 @@
  *  IN THE SOFTWARE.
  */
 
+#include "xylem/net/xylem-ws.h"
+
+#include "ws-tls.h"
+#include "ws.h"
+
 /**
  * Stub wss dial factory for builds without TLS support. Returns NULL so a
  * wss:// dial degrades to "not available" with no TLS symbols linked.
  */
 
-#include "ws-tls.h"
-
-#include "ws.h"
-
-xylem_ws_conn_t* ws_tls_dial(const char* host, uint16_t port,
-                             const char* path,
-                             const xylem_ws_tls_t* tls,
-                             const xylem_ws_opts_t* opts) {
+xylem_ws_conn_t* ws_tls_dial(
+    const char*            host,
+    uint16_t               port,
+    const char*            path,
+    const xylem_ws_tls_t*  tls,
+    const xylem_ws_opts_t* opts) {
     (void)host;
     (void)port;
     (void)path;
     (void)tls;
+    (void)opts;
+    return NULL;
+}
+
+xylem_ws_listener_t*
+ws_tls_listen(const char* host, uint16_t port, const xylem_ws_opts_t* opts) {
+    (void)host;
+    (void)port;
     (void)opts;
     return NULL;
 }

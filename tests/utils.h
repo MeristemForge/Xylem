@@ -146,17 +146,36 @@ static inline int _utils_cert_gen_type_ex(
     }
     EVP_PKEY_CTX_free(pctx);
 
-    X509* x509 = X509_new();
+    X509*      x509 = X509_new();
+    X509_NAME* name = X509_NAME_new();
+    if (!x509 || !name) {
+        X509_NAME_free(name);
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
     X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
     X509_gmtime_adj(X509_get_notAfter(x509), 365 * 24 * 3600);
     X509_set_pubkey(x509, pkey);
 
-    X509_NAME* name = X509_get_subject_name(x509);
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               (const unsigned char*)cn, -1, -1, 0);
-    X509_set_issuer_name(x509, name);
+    if (X509_NAME_add_entry_by_txt(
+            name,
+            "CN",
+            MBSTRING_ASC,
+            (const unsigned char*)cn,
+            -1,
+            -1,
+            0) != 1 ||
+        X509_set_subject_name(x509, name) != 1 ||
+        X509_set_issuer_name(x509, name) != 1) {
+        X509_NAME_free(name);
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        return -1;
+    }
+    X509_NAME_free(name);
 
     /* SAN required by OpenSSL 3.x for hostname verification. */
     X509_EXTENSION* ext_san = X509V3_EXT_nconf_nid(

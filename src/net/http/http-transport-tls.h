@@ -19,59 +19,25 @@
  *  IN THE SOFTWARE.
  */
 
-/**
- * TLS HTTP transport factory.
- *
- * Builds an http_transport_t over a TLS connection for the server
- * (listen) and client (request) paths. The real implementation lives in
- * http-transport-tls.c when XYLEM_ENABLE_TLS is set; otherwise http-
- * transport-tls-stub.c provides stubs that return NULL. Not part of the
- * public API.
- */
-
 _Pragma("once")
 
 #include "http.h"
 
 /**
- * @brief Start an HTTP server over TLS (HTTPS).
+ * @brief Create a verified TLS transport, using CONNECT when configured.
  *
- * @param host      Bind host.
- * @param port      Bind port.
- * @param handler   Request handler.
- * @param userdata  Opaque pointer passed to handler.
- * @param opts      Server options (opts->tls selects the certificate).
+ * @param host        Host name or numeric address.
+ * @param port        TCP port.
+ * @param timeout_ms  Connection time budget in milliseconds; 0 disables the
+ * limit.
+ * @param opts        Options, or NULL for defaults.
  *
- * @return Server handle, or NULL on failure (or always NULL in the stub).
+ * @return Owned transport on success, an empty transport on failure.
+ *
+ * @note The returned connection owns its transport and configuration resources.
  */
-extern xylem_http_srv_t* http_tls_listen(
+extern http_transport_t http_tls_dial(
     const char*                  host,
     uint16_t                     port,
-    xylem_http_handler_fn_t      handler,
-    void*                        userdata,
-    const xylem_http_srv_opts_t* opts);
-
-/**
- * @brief Perform an HTTPS client request.
- *
- * @param method        HTTP method string.
- * @param url           Full URL.
- * @param body          Request body, or NULL.
- * @param body_len      Body length in bytes.
- * @param content_type  Content-Type value, or NULL.
- * @param headers       Custom headers, or NULL.
- * @param header_count  Number of custom headers.
- * @param opts          Client options, or NULL.
- *
- * @return Response object, or NULL on failure (or always NULL in the stub).
- *         Caller frees via xylem_http_res_destroy().
- */
-extern xylem_http_res_t* http_tls_request(
-    const char*                  method,
-    const char*                  url,
-    const void*                  body,
-    size_t                       body_len,
-    const char*                  content_type,
-    const xylem_http_hdr_t*      headers,
-    size_t                       header_count,
+    uint64_t                     timeout_ms,
     const xylem_http_cli_opts_t* opts);

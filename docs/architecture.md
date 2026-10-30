@@ -17,7 +17,8 @@ Xylem is a cross-platform C11 **static library** (optionally shared) that
 - **Data structures** — intrusive and non-intrusive containers.
 - **Crypto / encoding** — SHA, HMAC, AES, Base64, varint, JSON, gzip, FEC.
 - **Concurrency** — mutex, cond, channel, wait-group, plus the coroutine runtime.
-- **Async networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, HTTP/1.1, WebSocket.
+- **Async networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, HTTP/1.1 clients, WebSocket clients and servers.
+  See [HTTP/HTTPS and WebSocket](design/http.md) for module boundaries and API migration.
 
 The networking modules are the reason the runtime exists: they are written in a
 **synchronous, blocking style** but run on coroutines so that thousands of

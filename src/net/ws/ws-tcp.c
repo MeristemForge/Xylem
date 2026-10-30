@@ -19,6 +19,14 @@
  *  IN THE SOFTWARE.
  */
 
+#include "xylem/net/xylem-ws.h"
+
+#include "xylem/net/xylem-tcp.h"
+#include "xylem/xylem-utils.h"
+
+#include "ws-tcp.h"
+#include "ws.h"
+
 /**
  * Plain WebSocket (ws) dial factory. Establishes a plain-TCP client
  * connection and runs the WebSocket handshake over it. Always built; the
@@ -27,44 +35,79 @@
  * ws:// or to ws_tls_dial() for wss://.
  */
 
-#include "ws-tcp.h"
-
-#include "ws.h"
-
-#include "xylem/net/xylem-tcp.h"
-
-static void _ws_tcp_close(void* conn) {
-    xylem_tcp_destroy((xylem_tcp_conn_t*)conn);
+static void _ws_tcp_conn_close_cb(void* conn) {
+    xylem_tcp_close((xylem_tcp_conn_t*)conn);
 }
 
-static http_transport_t _ws_make_tcp_transport(xylem_tcp_conn_t* conn) {
-    return (http_transport_t){
-        .conn            = conn,
-        .read            = (int (*)(void*, void*, int))xylem_tcp_read,
-        .write           = (int (*)(void*, const void*, int))xylem_tcp_write,
-        .close           = _ws_tcp_close,
-        .set_rd_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
-        .set_wr_deadline = (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
-        .remote_addr     = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
-        .local_addr      = (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
-        .shutdown_wr     = (int (*)(void*))xylem_tcp_shutdown_wr,
+static ws_transport_t _ws_tcp_create_transport(xylem_tcp_conn_t* conn) {
+    return (ws_transport_t){
+        .conn    = conn,
+        .read    = (int (*)(void*, void*, int))xylem_tcp_read,
+        .write   = (int (*)(void*, const void*, int))xylem_tcp_write,
+        .close   = _ws_tcp_conn_close_cb,
+        .destroy = (void (*)(void*))xylem_tcp_destroy,
+        .set_rd_deadline =
+            (void (*)(void*, uint64_t))xylem_tcp_set_read_deadline,
+        .set_wr_deadline =
+            (void (*)(void*, uint64_t))xylem_tcp_set_write_deadline,
+        .remote_addr =
+            (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_remote_addr,
+        .local_addr =
+            (int (*)(void*, char*, size_t, uint16_t*))xylem_tcp_local_addr,
     };
 }
 
+static ws_transport_t _ws_tcp_listener_accept_cb(void* handle) {
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(handle);
+    return conn ? _ws_tcp_create_transport(conn) : (ws_transport_t){0};
+}
 
-xylem_ws_conn_t* ws_tcp_dial(const char* host, uint16_t port,
-                             const char* path,
-                             const xylem_ws_opts_t* opts) {
+static void _ws_tcp_listener_close_cb(void* handle) {
+    xylem_tcp_close_listener(handle);
+}
+
+static void _ws_tcp_listener_destroy_cb(void* handle) {
+    xylem_tcp_destroy_listener(handle);
+}
+
+xylem_ws_conn_t* ws_tcp_dial(
+    const char*            host,
+    uint16_t               port,
+    const char*            path,
+    const xylem_ws_opts_t* opts) {
     uint64_t timeout = (opts && opts->handshake_timeout_ms)
-                       ? opts->handshake_timeout_ms
-                       : WS_DEFAULT_HANDSHAKE_TIMEOUT;
+                           ? opts->handshake_timeout_ms
+                           : WS_DEFAULT_HANDSHAKE_TIMEOUT;
 
-    xylem_tcp_opts_t tcp_opts = {.connect_timeout_ms = timeout};
-    xylem_tcp_conn_t* tcp = xylem_tcp_dial(host, port, &tcp_opts);
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout;
+    xylem_tcp_opts_t  tcp_opts = {.connect_timeout_ms = timeout};
+    xylem_tcp_conn_t* tcp      = xylem_tcp_dial(host, port, &tcp_opts);
     if (!tcp) {
         return NULL;
     }
 
-    http_transport_t transport = _ws_make_tcp_transport(tcp);
-    return ws_dial_impl(transport, host, port, path, opts);
+    ws_transport_t transport = _ws_tcp_create_transport(tcp);
+    uint64_t       now       = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
+    if (now >= deadline) {
+        transport.destroy(transport.conn);
+        return NULL;
+    }
+    xylem_ws_opts_t remaining      = opts ? *opts : (xylem_ws_opts_t){0};
+    remaining.handshake_timeout_ms = deadline - now;
+    return ws_dial_impl(transport, host, port, path, &remaining);
+}
+
+xylem_ws_listener_t*
+ws_tcp_listen(const char* host, uint16_t port, const xylem_ws_opts_t* opts) {
+    xylem_tcp_listener_t* ln = xylem_tcp_listen(host, port, NULL);
+    if (!ln) {
+        return NULL;
+    }
+    return ws_listener_create(
+        ln,
+        _ws_tcp_listener_accept_cb,
+        _ws_tcp_listener_close_cb,
+        _ws_tcp_listener_destroy_cb,
+        (ws_listener_addr_fn_t)xylem_tcp_listener_addr,
+        opts);
 }

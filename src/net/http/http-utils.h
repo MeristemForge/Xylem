@@ -21,9 +21,9 @@
 
 /**
  * Stateless HTTP helpers: URL parsing/serialization, request
- * serialization, header array utilities, status reason phrases, and
+ * serialization, header array utilities and
  * proxy support. Implemented in http-utils.c (proxy tunnel dialing in
- * http-proxy.c). Not part of the public API.
+ * http-tunnel.c). Not part of the public API.
  *
  * The shared value types http_url_t and http_header_t are defined in
  * http.h, which this header pulls in.
@@ -57,8 +57,8 @@ extern int http_url_parse(const char* url, http_url_t* out);
  *
  * @return 0 on success, -1 on truncation.
  */
-extern int http_url_serialize(const http_url_t* url, char* buf,
-                              size_t buf_size);
+extern int
+http_url_serialize(const http_url_t* url, char* buf, size_t buf_size);
 
 /**
  * @brief Build an HTTP/1.1 request into a malloc'd buffer.
@@ -84,13 +84,17 @@ extern int http_url_serialize(const http_url_t* url, char* buf,
  *
  * @return Allocated buffer on success, NULL on failure. Caller frees.
  */
-extern char* http_req_serialize(const char* method, const http_url_t* url,
-                                const void* body, size_t body_len,
-                                const char* content_type,
-                                bool expect_continue, bool absolute_form,
-                                size_t* out_len,
-                                const xylem_http_hdr_t* custom_headers,
-                                size_t custom_header_count);
+extern char* http_req_serialize(
+    const char*             method,
+    const http_url_t*       url,
+    const void*             body,
+    size_t                  body_len,
+    const char*             content_type,
+    bool                    expect_continue,
+    bool                    absolute_form,
+    size_t*                 out_len,
+    const xylem_http_hdr_t* custom_headers,
+    size_t                  custom_header_count);
 
 /**
  * @brief Case-insensitive ASCII comparison of two strings.
@@ -111,8 +115,8 @@ extern bool http_header_eq(const char* a, const char* b);
  *
  * @return Header value string, or NULL if not found.
  */
-extern const char* http_header_find(const http_header_t* headers,
-                                    size_t count, const char* name);
+extern const char*
+http_header_find(const http_header_t* headers, size_t count, const char* name);
 
 /**
  * @brief Append a header to a growable array.
@@ -129,9 +133,14 @@ extern const char* http_header_find(const http_header_t* headers,
  *
  * @return 0 on success, -1 on allocation failure.
  */
-extern int http_header_add(http_header_t** headers, size_t* count,
-                           size_t* cap, const char* name, size_t name_len,
-                           const char* value, size_t value_len);
+extern int http_header_add(
+    http_header_t** headers,
+    size_t*         count,
+    size_t*         cap,
+    const char*     name,
+    size_t          name_len,
+    const char*     value,
+    size_t          value_len);
 
 /**
  * @brief Free all name/value strings and the header array itself.
@@ -156,9 +165,12 @@ extern void http_headers_free(http_header_t* headers, size_t count);
  *
  * @return Total estimated byte size of all custom headers.
  */
-extern size_t http_header_scan(const xylem_http_hdr_t* headers, size_t count,
-                               const char** check_names, bool* overridden,
-                               size_t check_count);
+extern size_t http_header_scan(
+    const xylem_http_hdr_t* headers,
+    size_t                  count,
+    const char**            check_names,
+    bool*                   overridden,
+    size_t                  check_count);
 
 /**
  * @brief Write a size_t value as decimal digits into a buffer.
@@ -179,15 +191,6 @@ extern size_t http_write_uint(char* buf, size_t val);
  * Used for fast case-insensitive comparisons without calling tolower().
  */
 extern const uint8_t http_lower_table[256];
-
-/**
- * @brief Map an HTTP status code to its standard reason phrase.
- *
- * @param status  HTTP status code (e.g. 200, 404).
- *
- * @return Reason phrase string, or "" for unknown codes.
- */
-extern const char* http_reason_phrase(int status);
 
 /**
  * @brief Build a proxy descriptor from the environment for a target URL.
