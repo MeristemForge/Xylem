@@ -24,6 +24,9 @@
 #include "xylem/xylem-threads.h"
 #include "utils.h"
 
+#include "runtime/runtime.h"
+#include "sync/sync-test.h"
+
 #include <stdatomic.h>
 #include <stdio.h>
 
@@ -106,6 +109,7 @@ static void test_coro_pair(void) {
 
 typedef struct {
     xylem_sem_t* sem;
+    thrd_t       thread;
     atomic_int   thread_done;
     atomic_int   tested;
 } _ct_ctx_t;
@@ -119,11 +123,12 @@ static int _ct_thread_fn(void* arg) {
 
 static void _ct_poster(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
-    xylem_sleep(50);
-    xylem_sem_post(ctx->sem);
-    while (atomic_load(&ctx->thread_done) == 0) {
-        xylem_sleep(5);
+    while (!sem_test_has_waiter(ctx->sem)) {
+        runtime_yield();
     }
+    xylem_sem_post(ctx->sem);
+    ASSERT(thrd_join(ctx->thread, NULL) == thrd_success);
+    ASSERT(atomic_load(&ctx->thread_done) == 1);
     xylem_sem_destroy(ctx->sem);
     atomic_store(&ctx->tested, 1);
 }
@@ -131,9 +136,8 @@ static void _ct_poster(void* arg) {
 static void _ct_main(void* arg) {
     _ct_ctx_t* ctx = (_ct_ctx_t*)arg;
     ctx->sem = xylem_sem_create(0);
-    thrd_t th;
-    thrd_create(&th, _ct_thread_fn, ctx);
-    thrd_detach(th);
+    ASSERT(ctx->sem != NULL);
+    ASSERT(thrd_create(&ctx->thread, _ct_thread_fn, ctx) == thrd_success);
     xylem_spawn(_ct_poster, ctx);
 }
 
@@ -150,14 +154,16 @@ static void test_coro_posts_thread(void) {
 
 typedef struct {
     xylem_sem_t* sem;
+    thrd_t       thread;
     atomic_int   thread_done;
     atomic_int   tested;
 } _tc_ctx_t;
 
 static int _tc_thread_fn(void* arg) {
     _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
-    thrd_sleep(&ts, NULL);
+    while (!sem_test_has_waiter(ctx->sem)) {
+        thrd_yield();
+    }
     xylem_sem_post(ctx->sem);
     atomic_store(&ctx->thread_done, 1);
     return 0;
@@ -165,14 +171,11 @@ static int _tc_thread_fn(void* arg) {
 
 static void _tc_waiter(void* arg) {
     _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
-    thrd_t th;
-    thrd_create(&th, _tc_thread_fn, ctx);
-    thrd_detach(th);
+    ASSERT(thrd_create(&ctx->thread, _tc_thread_fn, ctx) == thrd_success);
 
     xylem_sem_wait(ctx->sem);
-    while (atomic_load(&ctx->thread_done) == 0) {
-        xylem_sleep(1);
-    }
+    ASSERT(thrd_join(ctx->thread, NULL) == thrd_success);
+    ASSERT(atomic_load(&ctx->thread_done) == 1);
     xylem_sem_destroy(ctx->sem);
     atomic_store(&ctx->tested, 1);
 }
@@ -180,6 +183,7 @@ static void _tc_waiter(void* arg) {
 static void _tc_main(void* arg) {
     _tc_ctx_t* ctx = (_tc_ctx_t*)arg;
     ctx->sem = xylem_sem_create(0);
+    ASSERT(ctx->sem != NULL);
     xylem_spawn(_tc_waiter, ctx);
 }
 
@@ -414,8 +418,7 @@ static int _mix_thread_poster(void* arg) {
     for (int i = 0; i < MIX_PER_POSTER; i++) {
         xylem_sem_post(ctx->sem);
         if ((i & 7) == 0) {
-            struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000 * 1000 };
-            thrd_sleep(&ts, NULL);
+            thrd_yield();
         }
     }
     atomic_fetch_add(&ctx->posters_done, 1);

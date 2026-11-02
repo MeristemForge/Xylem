@@ -71,6 +71,10 @@ static void _drive(_ctx_t* ctx, int n, _coro_t a, _coro_t b, _coro_t c) {
     ctx->gate    = xylem_channel_create();
     ctx->hs_done = xylem_channel_create();
     ctx->wg      = xylem_waitgroup_create();
+    ASSERT(ctx->ready != NULL);
+    ASSERT(ctx->gate != NULL);
+    ASSERT(ctx->hs_done != NULL);
+    ASSERT(ctx->wg != NULL);
     xylem_waitgroup_add(ctx->wg, n);
     xylem_spawn(a, ctx);
     xylem_spawn(b, ctx);
@@ -200,19 +204,61 @@ static void test_set_alpn(void) {
 }
 
 static char* _read_file(const char* path, size_t* out_len) {
+    *out_len = 0;
     FILE* f = fopen(path, "rb");
     if (!f) {
         return NULL;
     }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = (char*)malloc((size_t)sz);
-    if (buf) {
-        *out_len = fread(buf, 1, (size_t)sz, f);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
     }
-    fclose(f);
+    long sz = ftell(f);
+    if (sz < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    size_t size = (size_t)sz;
+    char*  buf  = (char*)malloc(size > 0 ? size : 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t read_size    = fread(buf, 1, size, f);
+    int    read_failed  = read_size != size || ferror(f);
+    int    close_result = fclose(f);
+    if (read_failed || close_result != 0) {
+        free(buf);
+        return NULL;
+    }
+    *out_len = size;
     return buf;
+}
+
+static void test_certificate_write_failure(void) {
+    const char* path = "test_tls_write_failure.pem";
+    FILE*       file = fopen(path, "wb");
+    ASSERT(file != NULL);
+    ASSERT(fclose(file) == 0);
+
+    file = fopen(path, "rb");
+    ASSERT(file != NULL);
+    ASSERT(_utils_cert_write_stream(file, "x", 1) == -1);
+    ASSERT(remove(path) == 0);
+}
+
+static void test_read_empty_file(void) {
+    const char* path = "test_tls_empty.pem";
+    FILE*       file = fopen(path, "wb");
+    ASSERT(file != NULL);
+    ASSERT(fclose(file) == 0);
+
+    size_t size = 1;
+    char*  data = _read_file(path, &size);
+    ASSERT(data != NULL);
+    ASSERT(size == 0);
+    free(data);
+    ASSERT(remove(path) == 0);
 }
 
 static void test_load_cert_mem(void) {
@@ -660,7 +706,8 @@ static void _lazy_deadline_server(void* arg) {
     xylem_tls_conn_t* conn = xylem_tls_accept(ln);
     ASSERT(conn != NULL);
 
-    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 100;
+    /* The deadline includes certificate processing in instrumented builds. */
+    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 3000;
     xylem_tls_set_read_deadline(conn, deadline);
     ASSERT(xylem_tls_handshake(conn) == 0);
 
@@ -1646,6 +1693,9 @@ static void test_close_with_parked_writer(void) {
 static void _test_run_all(void* arg) {
     (void)arg;
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+
+    test_certificate_write_failure();
+    test_read_empty_file();
 
     test_load_cert_invalid();
     test_load_encrypted_private_key();

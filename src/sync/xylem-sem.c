@@ -27,6 +27,10 @@
 #include "sync/spin.h"
 #include "sync/thrd-wake.h"
 
+#ifdef XYLEM_TESTING
+#include "sync-test.h"
+#endif
+
 #include "runtime/minicoro/minicoro.h"
 
 #include <stdatomic.h>
@@ -356,3 +360,12 @@ void xylem_sem_post(xylem_sem_t* s) {
         runtime_yield();
     }
 }
+
+#ifdef XYLEM_TESTING
+bool sem_test_has_waiter(xylem_sem_t* s) {
+    spin_lock(&s->guard);
+    bool waiting = list_head(&s->waiters) != NULL;
+    spin_unlock(&s->guard);
+    return waiting;
+}
+#endif

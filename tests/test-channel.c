@@ -26,6 +26,7 @@
 #include "utils.h"
 
 #include "runtime/runtime.h"
+#include "sync/sync-test.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -487,9 +488,10 @@ typedef struct {
 
 static int _ts_send_thread(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 30 * 1000 * 1000 };
-    thrd_sleep(&ts, NULL);
-    xylem_channel_send(ctx->ch, &ctx->payload);
+    while (!channel_test_has_waiter(ctx->ch)) {
+        thrd_yield();
+    }
+    ASSERT(xylem_channel_send(ctx->ch, &ctx->payload) == 0);
     return 0;
 }
 
@@ -497,7 +499,7 @@ static void _ts_recv_coro(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
     void* msg = xylem_channel_recv(ctx->ch);
     ASSERT(msg == &ctx->payload);
-    thrd_join(ctx->thr, NULL);
+    ASSERT(thrd_join(ctx->thr, NULL) == thrd_success);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
     atomic_store(&ctx->tested, 1);
@@ -506,6 +508,7 @@ static void _ts_recv_coro(void* arg) {
 static void _ts_main(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
     ctx->ch = xylem_channel_create();
+    ASSERT(ctx->ch != NULL);
     ASSERT(thrd_create(&ctx->thr, _ts_send_thread, ctx) == thrd_success);
     xylem_spawn(_ts_recv_coro, ctx);
 }

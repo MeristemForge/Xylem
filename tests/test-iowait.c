@@ -25,6 +25,7 @@
 
 #include "platform/platform-socket.h"
 #include "runtime/iowait.h"
+#include "runtime/iowait-test.h"
 #include "runtime/runtime.h"
 #include "xylem/xylem-threads.h"
 
@@ -36,7 +37,6 @@
 #define DEADLINE_RACE_ITERS   2000
 #define WAIT_RACE_ITERS       500
 #define TIMEOUT_RACE_ITERS    100
-#define EVENT_LOCK_YIELDS     1000
 
 enum {
     TEST_IOWAIT_WAITER_NONE  = 0,
@@ -50,33 +50,6 @@ enum {
     TEST_IOWAIT_INFO_WR_TIMEOUT = 1u << 2,
     TEST_IOWAIT_INFO_RD_ERROR   = 1u << 3,
     TEST_IOWAIT_INFO_WR_ERROR   = 1u << 4,
-};
-
-typedef struct _test_iowait_dir_s {
-    iowait_t*          w;
-    _Atomic uintptr_t  waiter;
-    scheduler_timer_t* timer;
-    mtx_t              deadline_lock;
-    _Atomic uint64_t   deadline;
-} _test_iowait_dir_t;
-
-struct iowait_s {
-    platform_poller_sq_t* poller;
-    platform_poller_sqe_t sqe;
-    platform_sock_t       fd;
-
-    _test_iowait_dir_t    rd;
-    _test_iowait_dir_t    wr;
-
-    mtx_t                 poll_lock;
-
-    _Atomic int32_t       refcnt;
-    _Atomic uint16_t      gen;
-    _Atomic int           interest;
-    _Atomic uint32_t      poll_info;
-
-    iowait_slab_t*        slab;
-    uint32_t              slot_index;
 };
 
 typedef struct {
@@ -149,11 +122,10 @@ static void _iowait_inject_stale_read(void* ud) {
 static size_t _iowait_collect_read(
     iowait_t*  w,
     mco_coro** runnables) {
-    return iowait_process_event(
-        runtime_get_scheduler(),
-        PLATFORM_POLLER_RD_OP,
-        w->sqe.ud,
-        runnables);
+    return iowait_process_event(runtime_get_scheduler(),
+                                PLATFORM_POLLER_RD_OP,
+                                iowait_test_event_data(w),
+                                runnables);
 }
 
 static void _iowait_inject_read(iowait_t* w) {
@@ -234,15 +206,15 @@ static void _iowait_wrap_coro(void* arg) {
 
     iowait_t* stale = iowait_create(ctx->socks[0]);
     ASSERT(stale != NULL);
-    ctx->stale_ud = stale->sqe.ud;
+    ctx->stale_ud = iowait_test_event_data(stale);
     iowait_destroy(stale);
 
     ctx->active = iowait_create(ctx->socks[0]);
     ASSERT(ctx->active != NULL);
 
     xylem_spawn(_iowait_wait_coro, ctx);
-    while (atomic_load(&ctx->active->rd.waiter)
-           <= TEST_IOWAIT_WAITER_READY) {
+    while (iowait_test_get_waiter(ctx->active, false) <=
+           TEST_IOWAIT_WAITER_READY) {
         runtime_yield();
     }
     _iowait_inject_stale_read(ctx->stale_ud);
@@ -266,8 +238,8 @@ static void _iowait_closed_before_event_coro(void* arg) {
     waiter.active = ctx->active;
 
     xylem_spawn(_single_wait_coro, &waiter);
-    while (atomic_load(&ctx->active->rd.waiter)
-           <= TEST_IOWAIT_WAITER_READY) {
+    while (iowait_test_get_waiter(ctx->active, false) <=
+           TEST_IOWAIT_WAITER_READY) {
         runtime_yield();
     }
 
@@ -326,11 +298,11 @@ static void test_readiness_is_retained_before_wait(void) {
     _iowait_open(&ctx);
     size_t runnable_count = _iowait_collect_read(ctx.active, runnables);
     ASSERT(runnable_count == 0);
-    ASSERT(atomic_load(&ctx.active->rd.waiter)
-           == TEST_IOWAIT_WAITER_READY);
+    ASSERT(iowait_test_get_waiter(ctx.active, false) ==
+           TEST_IOWAIT_WAITER_READY);
     ASSERT(iowait_read(ctx.active) == IOWAIT_READY);
-    ASSERT(atomic_load(&ctx.active->rd.waiter)
-           == TEST_IOWAIT_WAITER_NONE);
+    ASSERT(iowait_test_get_waiter(ctx.active, false) ==
+           TEST_IOWAIT_WAITER_NONE);
 
     iowait_close(ctx.active);
     _iowait_dispose(&ctx);
@@ -346,11 +318,11 @@ static void test_readiness_resolves_wait_reservation(void) {
     mco_coro* runnables[IOWAIT_EVENT_RUNNABLE_CAP];
 
     _iowait_open(&ctx);
-    atomic_store(&ctx.active->rd.waiter, TEST_IOWAIT_WAITER_WAIT);
+    iowait_test_set_read_waiter(ctx.active, TEST_IOWAIT_WAITER_WAIT);
     size_t runnable_count = _iowait_collect_read(ctx.active, runnables);
     ASSERT(runnable_count == 0);
-    ASSERT(atomic_load(&ctx.active->rd.waiter)
-           == TEST_IOWAIT_WAITER_READY);
+    ASSERT(iowait_test_get_waiter(ctx.active, false) ==
+           TEST_IOWAIT_WAITER_READY);
 
     iowait_close(ctx.active);
     _iowait_dispose(&ctx);
@@ -364,10 +336,10 @@ static void test_close_cancels_wait_reservation(void) {
         },
     };
     _iowait_open(&ctx);
-    atomic_store(&ctx.active->rd.waiter, TEST_IOWAIT_WAITER_WAIT);
+    iowait_test_set_read_waiter(ctx.active, TEST_IOWAIT_WAITER_WAIT);
     iowait_close(ctx.active);
-    ASSERT(atomic_load(&ctx.active->rd.waiter)
-           == TEST_IOWAIT_WAITER_NONE);
+    ASSERT(iowait_test_get_waiter(ctx.active, false) ==
+           TEST_IOWAIT_WAITER_NONE);
     _iowait_dispose(&ctx);
 }
 
@@ -485,13 +457,15 @@ static void test_timeout_wins_over_internal_error(void) {
     };
 
     _iowait_open(&ctx);
-    atomic_fetch_or(
-        &ctx.active->poll_info,
-        TEST_IOWAIT_INFO_RD_TIMEOUT | TEST_IOWAIT_INFO_RD_ERROR);
+    iowait_test_update_poll_info(ctx.active,
+                                 TEST_IOWAIT_INFO_RD_TIMEOUT |
+                                     TEST_IOWAIT_INFO_RD_ERROR,
+                                 0);
     ASSERT(iowait_read(ctx.active) == IOWAIT_TIMEOUT);
-    atomic_fetch_and(
-        &ctx.active->poll_info,
-        ~(TEST_IOWAIT_INFO_RD_TIMEOUT | TEST_IOWAIT_INFO_RD_ERROR));
+    iowait_test_update_poll_info(ctx.active,
+                                 0,
+                                 TEST_IOWAIT_INFO_RD_TIMEOUT |
+                                     TEST_IOWAIT_INFO_RD_ERROR);
     iowait_close(ctx.active);
     _iowait_dispose(&ctx);
 }
@@ -508,12 +482,11 @@ static void test_timeout_updates_poll_info(void) {
     iowait_set_rd_deadline(
         ctx.active, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
     ASSERT(iowait_read_deadline_expired(ctx.active));
-    ASSERT(atomic_load(&ctx.active->poll_info)
-           & TEST_IOWAIT_INFO_RD_TIMEOUT);
+    ASSERT(iowait_test_get_poll_info(ctx.active) & TEST_IOWAIT_INFO_RD_TIMEOUT);
 
     iowait_set_rd_deadline(ctx.active, 0);
-    ASSERT(!(atomic_load(&ctx.active->poll_info)
-             & TEST_IOWAIT_INFO_RD_TIMEOUT));
+    ASSERT(
+        !(iowait_test_get_poll_info(ctx.active) & TEST_IOWAIT_INFO_RD_TIMEOUT));
     iowait_close(ctx.active);
     _iowait_dispose(&ctx);
 }
@@ -528,23 +501,23 @@ static void test_poll_info_isolates_directions(void) {
     uint32_t info;
 
     _iowait_open(&ctx);
-    atomic_fetch_or(&ctx.active->poll_info, TEST_IOWAIT_INFO_WR_ERROR);
+    iowait_test_update_poll_info(ctx.active, TEST_IOWAIT_INFO_WR_ERROR, 0);
 
     iowait_set_rd_deadline(
         ctx.active, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
-    info = atomic_load(&ctx.active->poll_info);
+    info = iowait_test_get_poll_info(ctx.active);
     ASSERT(info & TEST_IOWAIT_INFO_RD_TIMEOUT);
     ASSERT(info & TEST_IOWAIT_INFO_WR_ERROR);
 
     iowait_set_rd_deadline(ctx.active, 0);
-    info = atomic_load(&ctx.active->poll_info);
+    info = iowait_test_get_poll_info(ctx.active);
     ASSERT(!(info & (TEST_IOWAIT_INFO_RD_TIMEOUT
                      | TEST_IOWAIT_INFO_RD_ERROR)));
     ASSERT(info & TEST_IOWAIT_INFO_WR_ERROR);
 
     iowait_set_wr_deadline(
         ctx.active, xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC));
-    info = atomic_load(&ctx.active->poll_info);
+    info = iowait_test_get_poll_info(ctx.active);
     ASSERT(info & TEST_IOWAIT_INFO_WR_TIMEOUT);
     ASSERT(!(info & TEST_IOWAIT_INFO_WR_ERROR));
 
@@ -566,8 +539,8 @@ static void test_event_runnables_have_no_duplicate_coroutine(void) {
     _iowait_open(&owner);
     ctx.active = owner.active;
     xylem_spawn(_single_wait_coro, &ctx);
-    while (atomic_load(&owner.active->rd.waiter)
-           <= TEST_IOWAIT_WAITER_READY) {
+    while (iowait_test_get_waiter(owner.active, false) <=
+           TEST_IOWAIT_WAITER_READY) {
         runtime_yield();
     }
 
@@ -626,19 +599,22 @@ static void test_event_returns_both_direction_runnables(void) {
     wr.active = owner.active;
     xylem_spawn(_single_wait_coro, &rd);
     xylem_spawn(_single_write_wait_coro, &wr);
-    for (int i = 0; i < EVENT_LOCK_YIELDS; i++) {
+    while (iowait_test_get_waiter(owner.active, false) <=
+               TEST_IOWAIT_WAITER_READY ||
+           iowait_test_get_waiter(owner.active, true) <=
+               TEST_IOWAIT_WAITER_READY) {
         runtime_yield();
     }
-    ASSERT(atomic_load(&owner.active->rd.waiter)
-           > TEST_IOWAIT_WAITER_READY);
-    ASSERT(atomic_load(&owner.active->wr.waiter)
-           > TEST_IOWAIT_WAITER_READY);
+    ASSERT(iowait_test_get_waiter(owner.active, false) >
+           TEST_IOWAIT_WAITER_READY);
+    ASSERT(iowait_test_get_waiter(owner.active, true) >
+           TEST_IOWAIT_WAITER_READY);
 
-    size_t runnable_count = iowait_process_event(
-        runtime_get_scheduler(),
-        PLATFORM_POLLER_RD_OP | PLATFORM_POLLER_WR_OP,
-        owner.active->sqe.ud,
-        runnables);
+    size_t runnable_count =
+        iowait_process_event(runtime_get_scheduler(),
+                             PLATFORM_POLLER_RD_OP | PLATFORM_POLLER_WR_OP,
+                             iowait_test_event_data(owner.active),
+                             runnables);
     ASSERT(runnable_count == IOWAIT_EVENT_RUNNABLE_CAP);
     ASSERT(runnables[0] != runnables[1]);
     scheduler_coro_ready_batch(

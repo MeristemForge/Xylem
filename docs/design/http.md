@@ -106,7 +106,8 @@ HTTP uploads/downloads are outside this client scope.
 
 ## Tests
 
-http-fixture.h is a test-only scripted peer built on public TCP/TLS
-connections. It supplies wire responses for client tests without exposing
-an HTTP server API in the library. HTTPS tests include a TCP CONNECT
-fixture with authenticated proxy negotiation and end-to-end TLS.
+test-http.c contains the HTTP client tests and a scripted peer built on
+public TCP/TLS connections. It supplies wire responses without exposing
+an HTTP server API in the library. With XYLEM_ENABLE_TLS=ON, the same test
+also covers HTTPS, including a TCP CONNECT fixture with authenticated
+proxy negotiation and end-to-end TLS.

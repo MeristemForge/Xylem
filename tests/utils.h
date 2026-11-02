@@ -41,6 +41,11 @@ _Pragma("once")
 #endif
 #endif
 
+#if defined(__SANITIZE_ADDRESS__)
+#undef SAFETY_TIMEOUT_MS
+#define SAFETY_TIMEOUT_MS 60000
+#endif
+
 /**
  * Watchdog for public timers. Pass this as the callback; it aborts the
  * test if the deadline is reached. The caller keeps the returned handle
@@ -77,6 +82,16 @@ static inline void _utils_watchdog_stop(void) {
 #include <stdio.h>
 #include <string.h>
 
+static inline int
+_utils_cert_write_stream(FILE* file, const void* data, size_t size) {
+    int result = fwrite(data, 1, size, file) == size ? 0 : -1;
+    /* Buffered write errors can surface only when closing the file. */
+    if (fclose(file) != 0) {
+        result = -1;
+    }
+    return result;
+}
+
 /**
  * Write PEM data to a file via a memory BIO instead of passing FILE*
  * directly to OpenSSL (e.g. PEM_write_X509). On Windows the OpenSSL DLL
@@ -98,15 +113,18 @@ static inline int _utils_cert_write_pem(const char* path,
     }
     char* data = NULL;
     long  len  = BIO_get_mem_data(bio, &data);
+    if (len <= 0) {
+        BIO_free(bio);
+        return -1;
+    }
     FILE* f    = fopen(path, "wb");
     if (!f) {
         BIO_free(bio);
         return -1;
     }
-    fwrite(data, 1, (size_t)len, f);
-    fclose(f);
+    int result = _utils_cert_write_stream(f, data, (size_t)len);
     BIO_free(bio);
-    return 0;
+    return result;
 }
 
 static inline int _utils_cert_write_x509(BIO* bio, void* obj) {
