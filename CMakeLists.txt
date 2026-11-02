@@ -205,7 +205,6 @@ install(TARGETS xylem DESTINATION lib)
 add_subdirectory(examples)
 
 if(XYLEM_ENABLE_TESTING)
-	target_compile_definitions(xylem PRIVATE XYLEM_TESTING)
 	enable_testing()
 	add_subdirectory(tests)
 endif()

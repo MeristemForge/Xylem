@@ -25,9 +25,6 @@
 #include "assert.h"
 #include "utils.h"
 
-#include "runtime/runtime.h"
-#include "sync/sync-test.h"
-
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -422,7 +419,7 @@ static void test_thread_send_precommit_race(void) {
     _precommit_send_ctx_t ctx = {0};
     xylem_spawn(_precommit_send_coro, &ctx);
     while (atomic_load(&ctx.tested) == 0) {
-        runtime_yield();
+        xylem_sleep(0);
     }
 }
 
@@ -475,12 +472,13 @@ static void test_thread_close_precommit_race(void) {
     _precommit_close_ctx_t ctx = {NULL};
     xylem_spawn(_precommit_close_coro, &ctx);
     while (atomic_load(&ctx.tested) == 0) {
-        runtime_yield();
+        xylem_sleep(0);
     }
 }
 
 typedef struct {
     xylem_channel_t* ch;
+    xylem_sem_t*     start;
     int              payload;
     thrd_t           thr;
     atomic_int       tested;
@@ -488,18 +486,18 @@ typedef struct {
 
 static int _ts_send_thread(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
-    while (!channel_test_has_waiter(ctx->ch)) {
-        thrd_yield();
-    }
+    xylem_sem_wait(ctx->start);
     ASSERT(xylem_channel_send(ctx->ch, &ctx->payload) == 0);
     return 0;
 }
 
 static void _ts_recv_coro(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
+    xylem_sem_post(ctx->start);
     void* msg = xylem_channel_recv(ctx->ch);
     ASSERT(msg == &ctx->payload);
     ASSERT(thrd_join(ctx->thr, NULL) == thrd_success);
+    xylem_sem_destroy(ctx->start);
     xylem_channel_destroy(ctx->ch);
     ctx->ch = NULL;
     atomic_store(&ctx->tested, 1);
@@ -509,6 +507,8 @@ static void _ts_main(void* arg) {
     _ts_ctx_t* ctx = (_ts_ctx_t*)arg;
     ctx->ch = xylem_channel_create();
     ASSERT(ctx->ch != NULL);
+    ctx->start = xylem_sem_create(0);
+    ASSERT(ctx->start != NULL);
     ASSERT(thrd_create(&ctx->thr, _ts_send_thread, ctx) == thrd_success);
     xylem_spawn(_ts_recv_coro, ctx);
 }

@@ -30,10 +30,6 @@
 #include "runtime/scheduler.h"
 #include "sync/thrd-wake.h"
 
-#ifdef XYLEM_TESTING
-#include "sync-test.h"
-#endif
-
 #include "runtime/minicoro/minicoro.h"
 
 #include <inttypes.h>
@@ -574,9 +570,3 @@ size_t xylem_channel_len(xylem_channel_t* ch) {
     }
     return atomic_load(&ch->count);
 }
-
-#ifdef XYLEM_TESTING
-bool channel_test_has_waiter(xylem_channel_t* ch) {
-    return atomic_load(&ch->waiter) > CHANNEL_WAITER_CLOSED;
-}
-#endif

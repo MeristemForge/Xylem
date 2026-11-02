@@ -28,10 +28,6 @@
 #include "runtime.h"
 #include "scheduler.h"
 
-#ifdef XYLEM_TESTING
-#include "iowait-test.h"
-#endif
-
 #include "minicoro/minicoro.h"
 
 #include <inttypes.h>
@@ -716,26 +712,3 @@ size_t iowait_process_event(
     _iowait_unref(w);
     return count;
 }
-
-#ifdef XYLEM_TESTING
-uintptr_t iowait_test_get_waiter(iowait_t* w, bool write) {
-    return atomic_load(write ? &w->wr.waiter : &w->rd.waiter);
-}
-
-void iowait_test_set_read_waiter(iowait_t* w, uintptr_t state) {
-    atomic_store(&w->rd.waiter, state);
-}
-
-uint32_t iowait_test_get_poll_info(iowait_t* w) {
-    return atomic_load(&w->poll_info);
-}
-
-void iowait_test_update_poll_info(iowait_t* w, uint32_t set, uint32_t clear) {
-    atomic_fetch_or(&w->poll_info, set);
-    atomic_fetch_and(&w->poll_info, ~clear);
-}
-
-void* iowait_test_event_data(iowait_t* w) {
-    return w->sqe.ud;
-}
-#endif
