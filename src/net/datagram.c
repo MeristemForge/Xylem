@@ -22,6 +22,7 @@
 #include "net/datagram.h"
 
 #include "xylem/xylem-logger.h"
+#include "xylem/xylem-utils.h"
 
 #include "runtime/iowait.h"
 
@@ -253,11 +254,12 @@ iowait_result_t datagram_wait_read(datagram_t* datagram) {
     return _datagram_wait(datagram, false);
 }
 
-int datagram_send(
+int datagram_send_with_deadline(
     datagram_t*   datagram,
     const void*   data,
     int           len,
-    const addr_t* to) {
+    const addr_t* to,
+    uint64_t      deadline_ms) {
     if (len < 0 || (len > 0 && !data)) {
         return -1;
     }
@@ -269,7 +271,8 @@ int datagram_send(
     }
 
     if (atomic_load(&datagram->closed)
-        || iowait_write_deadline_expired(datagram->waiter)) {
+        || (deadline_ms > 0
+            && xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= deadline_ms)) {
         return -1;
     }
 
@@ -300,6 +303,17 @@ int datagram_send(
         (int)datagram->fd,
         platform_socket_tostring(err));
     return -1;
+}
+
+int datagram_send(
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
+    const addr_t* to) {
+    if (len > 0 && iowait_write_deadline_expired(datagram->waiter)) {
+        return -1;
+    }
+    return datagram_send_with_deadline(datagram, data, len, to, 0);
 }
 
 iowait_result_t datagram_wait_write(datagram_t* datagram) {

@@ -163,6 +163,28 @@ extern int datagram_send(
     const addr_t* to);
 
 /**
+ * @brief Send once using a per-operation deadline on a shared UDP endpoint.
+ *
+ * Does not park or change the endpoint's write deadline. This keeps one
+ * session's deadline independent of other sessions sharing the socket.
+ * The caller serializes write-side readiness waits separately.
+ *
+ * @param datagram     Datagram handle.
+ * @param data         Source buffer.
+ * @param len          Datagram size.
+ * @param to           Destination, or NULL for a connected endpoint.
+ * @param deadline_ms  Absolute deadline in milliseconds, or 0 for none.
+ *
+ * @return Bytes sent, DATAGRAM_IO_AGAIN on EAGAIN, or -1 on error/timeout.
+ */
+extern int datagram_send_with_deadline(
+    datagram_t*   datagram,
+    const void*   data,
+    int           len,
+    const addr_t* to,
+    uint64_t      deadline_ms);
+
+/**
  * @brief Wait until the datagram socket becomes writable.
  *
  * Only one write-side waiter may be active per datagram.

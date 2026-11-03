@@ -564,6 +564,44 @@ session machinery as-is, plus `xylem_hmac256` for cookies where applicable.
 System-CA loading remains a backend responsibility rather than a leaked
 `SSL_CTX*` platform shim.
 
+### 11.10 DTLS accept, handshake, and transport lifetime
+
+`xylem_dtls_accept()` returns a connection after an initial ClientHello,
+without completing the handshake. The first read/write drives the handshake;
+`xylem_dtls_handshake()` drives it explicitly. A per-connection handshake mutex
+elects one driver when the first reader and writer run concurrently. Dial
+still completes the client handshake before returning. Negotiated ALPN is
+available only after handshake completion.
+
+The listener handle and shared UDP transport have separate lifetimes. The
+transport owns the dispatcher, session table, pending queue, and receive-buffer
+pool. The listener, dispatcher, and each server connection retain transport
+references. The session table owns a connection reference; accept adds a
+separate caller reference. There is no background handshake coroutine.
+
+Closing a listener stops new admission, wakes accept, and discards pending
+sessions. Accepted connections remain usable even if their handshake has not
+started or the listener handle has been destroyed. Once admission has stopped
+and the last active session is removed, the UDP endpoint is closed to wake the
+dispatcher. Final transport release destroys the endpoint after its users exit.
+The context remains caller-owned and must outlive its listeners, connections,
+and operations; the dispatcher never performs context or handshake operations.
+
+New peers must send a plausible initial ClientHello. The pending queue is
+bounded independently of each session's datagram inbox. Cookie verification
+and full protocol validation remain backend responsibilities.
+
+The server handshake timeout starts when the handshake driver runs. Earlier
+connection read/write deadlines also bound it, and deadline changes wake a
+parked receiver or writer. Each backend step is serialized per connection.
+Shared-socket write waits are serialized separately, while non-blocking sends
+use per-session deadlines without changing the endpoint deadline. Different
+connections can drive their handshakes concurrently. Callbacks only perform
+non-blocking I/O; consumed receive buffers return to the pool after the backend
+step. Retransmit deadlines are queried after stepping the handshake. A
+retransmit wait must not leave the client's transport read deadline expired
+when the next backend step starts.
+
 ## 12. Related docs
 
 - Park/resume and per-direction arbitration: [`../architecture.md`](../architecture.md) §6,

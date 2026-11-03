@@ -34,7 +34,7 @@ typedef struct xylem_dtls_opts_s {
      * Timeout in milliseconds for completing the DTLS handshake.
      *
      * - Dial: covers the handshake (with retransmissions).
-     * - Accept: per-session handshake timeout on the server side.
+     * - Server: starts when handshake or the first read/write is called.
      *
      * 0 means default (30s).
      */
@@ -298,7 +298,15 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
  *
  * @note [COROUTINE-ONLY]
  *
- * Suspends until a client completes the handshake.
+ * Returns a connection after receiving an initial ClientHello, without
+ * completing its handshake. The first read/write completes the handshake
+ * automatically; xylem_dtls_handshake() can complete it explicitly.
+ * Handshake errors are reported by those operations, not by accept.
+ *
+ * Use one acceptor per listener and a handler coroutine per connection so
+ * a slow handshake does not block accepting other clients. Unaccepted
+ * sessions are bounded; excess new sessions are dropped until space is
+ * available. Closing the listener discards unaccepted sessions.
  *
  * @param ln  Listener handle.
  *
@@ -307,12 +315,34 @@ extern xylem_dtls_listener_t* xylem_dtls_listen(
 extern xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln);
 
 /**
+ * @brief Complete the DTLS handshake explicitly.
+ *
+ * @note [COROUTINE-ONLY]
+ *
+ * The first read/write also calls this automatically. For dialed or
+ * already handshaked connections this returns 0 without another handshake.
+ * Concurrent first read/write calls share a single handshake driver.
+ * The options handshake timeout and any earlier read/write deadline bound
+ * the server handshake. Set deadlines before starting the operation.
+ * After a handshake failure or timeout, close or destroy the connection.
+ * Complete the handshake before reading the negotiated ALPN.
+ *
+ * @param dtls  Connection handle.
+ *
+ * @return 0 on success, or -1 on failure, timeout, close, or NULL.
+ */
+extern int xylem_dtls_handshake(xylem_dtls_conn_t* dtls);
+
+/**
  * @brief Read a datagram from the connection.
  *
  * @note [COROUTINE-ONLY]
  *
  * Suspends until data arrives, the read deadline passes, or
  * the connection is closed.
+ * The first read on an accepted connection completes its handshake.
+ * One reader and one writer may operate concurrently; multiple readers
+ * on the same connection are unsupported.
  *
  * @param dtls  Connection handle.
  * @param buf   Destination buffer.
@@ -348,6 +378,8 @@ extern int xylem_dtls_write(
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_dtls_read() calls return -1.
+ * On accepted connections this also bounds handshake progress, including
+ * a handshake started by the first write. Updates wake an active wait.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
@@ -364,6 +396,8 @@ extern void xylem_dtls_set_read_deadline(
  *
  * Once the clock passes the deadline, in-flight and subsequent
  * xylem_dtls_write() calls return -1.
+ * On accepted connections this also bounds handshake progress, including
+ * a handshake started by the first read. Updates wake an active wait.
  *
  * @param dtls         Connection handle.
  * @param deadline_ms  Absolute xylem_utils_getnow(MSEC) timestamp, or 0
@@ -400,13 +434,15 @@ extern void xylem_dtls_close(xylem_dtls_conn_t* dtls);
 extern void xylem_dtls_destroy(xylem_dtls_conn_t* dtls);
 
 /**
- * @brief Close a listener and stop its dispatcher.
+ * @brief Stop accepting new DTLS connections.
  *
  * @note [COROUTINE-ONLY]
  *
- * Closes all active sessions, stops the dispatcher coroutine, and wakes
- * blocked accept without releasing the owner handle. After user operations
- * have returned, call xylem_dtls_destroy_listener().
+ * Wakes blocked accept and discards unaccepted sessions without releasing
+ * the owner handle. Already accepted connections remain usable, including
+ * those whose handshake has not started. The shared UDP transport and
+ * dispatcher remain alive for those connections.
+ * After listener operations return, call xylem_dtls_destroy_listener().
  *
  * @param ln  Listener handle.
  */
@@ -418,8 +454,9 @@ extern void xylem_dtls_close_listener(xylem_dtls_listener_t* ln);
  * @note [COROUTINE-ONLY]
  *
  * This must be the final call on the listener and must not race with any
- * user operation. Internal dispatcher references may defer the actual free.
- * It closes the listener if needed. Passing NULL is safe.
+ * listener operation. It closes the listener if needed, then frees its
+ * handle. Accepted connections independently retain the shared UDP
+ * transport and must be destroyed separately. Passing NULL is safe.
  *
  * @param ln  Listener handle, or NULL.
  */

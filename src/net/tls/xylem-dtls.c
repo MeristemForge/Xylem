@@ -144,6 +144,15 @@ xylem_dtls_conn_t* xylem_dtls_accept(xylem_dtls_listener_t* ln) {
     return dtls_accept(ln);
 }
 
+int xylem_dtls_handshake(xylem_dtls_conn_t* dtls) {
+    if (!dtls) {
+        return -1;
+    }
+    RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_handshake");
+
+    return dtls_handshake(dtls);
+}
+
 int xylem_dtls_read(xylem_dtls_conn_t* dtls, void* buf, int len) {
     RUNTIME_REQUIRE_COROUTINE("dtls", "xylem_dtls_read");
 

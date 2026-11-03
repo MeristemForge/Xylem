@@ -63,13 +63,22 @@ extern dtls_listener_t* dtls_listen(
     xylem_dtls_opts_t* opts);
 
 /**
- * @brief Accept a handshaked DTLS connection.
+ * @brief Accept a DTLS connection with its handshake deferred.
  *
  * @param ln  Listener handle.
  *
  * @return Connection handle, or NULL when the listener is closed.
  */
 extern dtls_conn_t* dtls_accept(dtls_listener_t* ln);
+
+/**
+ * @brief Complete the DTLS handshake, or return its previous result.
+ *
+ * @param dtls  Connection handle.
+ *
+ * @return 0 on success, or -1 on failure or close.
+ */
+extern int dtls_handshake(dtls_conn_t* dtls);
 
 /**
  * @brief Read one DTLS application datagram.
@@ -111,7 +120,7 @@ extern void dtls_close(dtls_conn_t* dtls);
 extern void dtls_destroy(dtls_conn_t* dtls);
 
 /**
- * @brief Close a DTLS listener.
+ * @brief Stop accepting new sessions without closing accepted connections.
  *
  * @param ln  Listener handle.
  */
@@ -120,8 +129,8 @@ extern void dtls_close_listener(dtls_listener_t* ln);
 /**
  * @brief Destroy a DTLS listener. NULL-safe.
  *
- * Closes the listener if needed, then releases the owner reference.
- * Internal references may defer the actual free.
+ * Closes the listener if needed. Accepted connections retain the shared
+ * UDP transport independently of the listener handle.
  *
  * @param ln  Listener handle, or NULL.
  */
