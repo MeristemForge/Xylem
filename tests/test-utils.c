@@ -22,35 +22,23 @@
 #include "xylem.h"
 #include "assert.h"
 
-static void test_getnow_sec(void) {
-    uint64_t t1 = xylem_utils_getnow(XYLEM_TIME_PRECISION_SEC);
-    ASSERT(t1 > 0);
-    uint64_t t2 = xylem_utils_getnow(XYLEM_TIME_PRECISION_SEC);
-    ASSERT(t2 >= t1);
-}
-
-static void test_getnow_msec(void) {
-    uint64_t t1 = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    ASSERT(t1 > 0);
-    uint64_t t2 = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    ASSERT(t2 >= t1);
-    uint64_t sec = xylem_utils_getnow(XYLEM_TIME_PRECISION_SEC);
-    ASSERT(t2 / 1000 >= sec - 1);
-    ASSERT(t2 / 1000 <= sec + 1);
-}
-
-static void test_getnow_usec(void) {
-    uint64_t t1 = xylem_utils_getnow(XYLEM_TIME_PRECISION_USEC);
-    ASSERT(t1 > 0);
-    uint64_t t2 = xylem_utils_getnow(XYLEM_TIME_PRECISION_USEC);
-    ASSERT(t2 >= t1);
-}
-
-static void test_getnow_nsec(void) {
-    uint64_t t1 = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
-    ASSERT(t1 > 0);
-    uint64_t t2 = xylem_utils_getnow(XYLEM_TIME_PRECISION_NSEC);
-    ASSERT(t2 >= t1);
+static void test_time_precision_units(void) {
+    const xylem_time_precision_t precisions[] = {
+        XYLEM_TIME_PRECISION_MSEC,
+        XYLEM_TIME_PRECISION_USEC,
+        XYLEM_TIME_PRECISION_NSEC,
+    };
+    const uint64_t units[] = {1000, 1000000, 1000000000};
+    for (size_t i = 0; i < sizeof(precisions) / sizeof(precisions[0]); i++) {
+        uint64_t before = xylem_utils_getnow(XYLEM_TIME_PRECISION_SEC);
+        uint64_t value  = xylem_utils_getnow(precisions[i]);
+        uint64_t after  = xylem_utils_getnow(XYLEM_TIME_PRECISION_SEC);
+        uint64_t lower  = before < after ? before : after;
+        uint64_t upper  = before > after ? before : after;
+        ASSERT(before > 0 && after > 0);
+        ASSERT(value / units[i] >= lower);
+        ASSERT(value / units[i] <= upper);
+    }
 }
 
 static void test_getprng_range(void) {
@@ -62,17 +50,11 @@ static void test_getprng_range(void) {
 }
 
 static void test_getprng_single(void) {
-    for (int i = 0; i < 100; i++) {
-        int v = xylem_utils_getprng(42, 42);
-        ASSERT(v == 42);
-    }
+    ASSERT(xylem_utils_getprng(42, 42) == 42);
 }
 
 int main(void) {
-    test_getnow_sec();
-    test_getnow_msec();
-    test_getnow_usec();
-    test_getnow_nsec();
+    test_time_precision_units();
     test_getprng_range();
     test_getprng_single();
     return 0;

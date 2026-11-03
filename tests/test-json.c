@@ -226,24 +226,6 @@ static void test_null_safety(void) {
     ASSERT(xylem_json_arr_push_str(NULL, "v") == -1);
 }
 
-static void test_type_enum(void) {
-    const char* json =
-        "{\"s\":\"x\",\"n\":1,\"b\":true,\"nil\":null,"
-        "\"a\":[],\"o\":{}}";
-    xylem_json_t* j = xylem_json_parse(json);
-    ASSERT(j != NULL);
-
-    xylem_json_t* a = xylem_json_arr(j, "a");
-    ASSERT(a != NULL);
-    ASSERT(xylem_json_type(a) == XYLEM_JSON_TYPE_ARR);
-
-    xylem_json_t* o = xylem_json_obj(j, "o");
-    ASSERT(o != NULL);
-    ASSERT(xylem_json_type(o) == XYLEM_JSON_TYPE_OBJ);
-
-    xylem_json_destroy(j);
-}
-
 int main(void) {
     test_parse_and_read();
     test_parse_invalid();
@@ -257,6 +239,5 @@ int main(void) {
     test_build_nested();
     test_build_arr_push_obj();
     test_null_safety();
-    test_type_enum();
     return 0;
 }

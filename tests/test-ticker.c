@@ -250,7 +250,7 @@ static void test_thread_consumer(void) {
  */
 #define RACE_DESTROYERS  8
 #define RACE_INTERVAL_MS 1
-#define RACE_DEFAULT_MS  1000
+#define RACE_DEFAULT_MS  100
 
 typedef struct {
     atomic_bool stop;

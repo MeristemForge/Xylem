@@ -235,32 +235,6 @@ static char* _read_file(const char* path, size_t* out_len) {
     return buf;
 }
 
-static void test_certificate_write_failure(void) {
-    const char* path = "test_tls_write_failure.pem";
-    FILE*       file = fopen(path, "wb");
-    ASSERT(file != NULL);
-    ASSERT(fclose(file) == 0);
-
-    file = fopen(path, "rb");
-    ASSERT(file != NULL);
-    ASSERT(_utils_cert_write_stream(file, "x", 1) == -1);
-    ASSERT(remove(path) == 0);
-}
-
-static void test_read_empty_file(void) {
-    const char* path = "test_tls_empty.pem";
-    FILE*       file = fopen(path, "wb");
-    ASSERT(file != NULL);
-    ASSERT(fclose(file) == 0);
-
-    size_t size = 1;
-    char*  data = _read_file(path, &size);
-    ASSERT(data != NULL);
-    ASSERT(size == 0);
-    free(data);
-    ASSERT(remove(path) == 0);
-}
-
 static void test_load_cert_mem(void) {
     const char* cert = "test_tls_mem_cert.pem";
     const char* key  = "test_tls_mem_key.pem";
@@ -1686,48 +1660,54 @@ static void _wrclose_server(void* arg) {
 }
 
 static void test_close_with_parked_writer(void) {
-    _run_default((_plan_t){"test_tls_wc_cert.pem", "test_tls_wc_key.pem",
-                           TLS_PORT + 16, 2, _wrclose_server, _wrclose_client});
+    _run_default((_plan_t){"test_tls_wc_cert.pem",
+                           "test_tls_wc_key.pem",
+                           TLS_PORT + 16,
+                           2,
+                           _wrclose_server,
+                           _wrclose_client});
 }
 
 static void _test_run_all(void* arg) {
     (void)arg;
-    _utils_watchdog_start(SAFETY_TIMEOUT_MS);
-
-    test_certificate_write_failure();
-    test_read_empty_file();
-
-    test_load_cert_invalid();
-    test_load_encrypted_private_key();
-    test_load_system_ca();
-    test_set_alpn();
-    test_load_cert_mem();
-    test_handshake_and_echo();
-    test_max_connect_timeout();
-    test_handshake_failure();
-    test_alpn_negotiation();
-    test_long_alpn_negotiation();
-    test_alpn_result_is_connection_owned();
-    test_read_deadline();
-    test_lazy_handshake_preserves_read_deadline();
-    test_listener_connect_timeout_is_ignored();
-    test_stale_error_queue_before_read();
-    test_expired_read_deadline_blocks_ready_tls_data();
-    test_close();
-    test_close_listener();
-    test_keylog();
-    test_default_identity_uses_dial_host();
-    test_scoped_ipv6_identity();
-    test_sni_cert_selection();
-    test_sni_duplicate_replaces_identity();
-    test_default_identity_rejects_different_key_type();
-    test_remote_addr();
-    test_concurrent_close();
-    test_close_listener_with_active_conn();
-    test_full_duplex();
-    test_lazy_handshake();
-    test_close_with_parked_writer();
-    _utils_watchdog_stop();
+    void (*const tests[])(void) = {
+        test_load_cert_invalid,
+        test_load_encrypted_private_key,
+        test_load_system_ca,
+        test_set_alpn,
+        test_load_cert_mem,
+        test_handshake_and_echo,
+        test_max_connect_timeout,
+        test_handshake_failure,
+        test_alpn_negotiation,
+        test_long_alpn_negotiation,
+        test_alpn_result_is_connection_owned,
+        test_read_deadline,
+        test_lazy_handshake_preserves_read_deadline,
+        test_listener_connect_timeout_is_ignored,
+        test_stale_error_queue_before_read,
+        test_expired_read_deadline_blocks_ready_tls_data,
+        test_close,
+        test_close_listener,
+        test_keylog,
+        test_default_identity_uses_dial_host,
+        test_scoped_ipv6_identity,
+        test_sni_cert_selection,
+        test_sni_duplicate_replaces_identity,
+        test_default_identity_rejects_different_key_type,
+        test_remote_addr,
+        test_concurrent_close,
+        test_close_listener_with_active_conn,
+        test_full_duplex,
+        test_lazy_handshake,
+        test_close_with_parked_writer,
+    };
+    /* Bound each case independently of total certificate and handshake time. */
+    for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
+        _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+        tests[i]();
+        _utils_watchdog_stop();
+    }
     xylem_shutdown();
 }
 

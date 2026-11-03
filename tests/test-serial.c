@@ -22,83 +22,33 @@
 #include "xylem.h"
 #include "assert.h"
 
-static void _assert_open_fails(xylem_serial_opts_t* opts) {
-    xylem_serial_t* s = xylem_serial_open(opts);
-    ASSERT(s == NULL);
-}
-
-static void test_open_null_opts(void) {
-    _assert_open_fails(NULL);
-}
-
-static void test_open_null_device(void) {
-    xylem_serial_opts_t opts = {.device = NULL};
-    _assert_open_fails(&opts);
-}
-
-static void test_open_invalid_baudrate(void) {
-    xylem_serial_opts_t opts = {
-        .device   = "/dev/null",
-        .baudrate = (xylem_serial_baudrate_t)99,
+static void test_invalid_options(void) {
+    ASSERT(xylem_serial_open(NULL) == NULL);
+    /* Keep rejection checks independent of attached serial hardware. */
+    const char*         missing_device = "xylem-test-missing-serial-device";
+    xylem_serial_opts_t cases[]        = {
+        {.device = NULL},
+        {.device = missing_device, .baudrate = (xylem_serial_baudrate_t)99},
+        {.device = missing_device, .parity = (xylem_serial_parity_t)99},
+        {.device = missing_device, .databits = (xylem_serial_databits_t)99},
+        {.device = missing_device, .stopbits = (xylem_serial_stopbits_t)99},
+        {.device      = missing_device,
+         .flowcontrol = (xylem_serial_flowcontrol_t)99},
     };
-    _assert_open_fails(&opts);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        ASSERT(xylem_serial_open(&cases[i]) == NULL);
+    }
 }
 
-static void test_open_invalid_parity(void) {
-    xylem_serial_opts_t opts = {
-        .device = "/dev/null",
-        .parity = (xylem_serial_parity_t)99,
-    };
-    _assert_open_fails(&opts);
-}
-
-static void test_open_invalid_databits(void) {
-    xylem_serial_opts_t opts = {
-        .device   = "/dev/null",
-        .databits = (xylem_serial_databits_t)99,
-    };
-    _assert_open_fails(&opts);
-}
-
-static void test_open_invalid_stopbits(void) {
-    xylem_serial_opts_t opts = {
-        .device   = "/dev/null",
-        .stopbits = (xylem_serial_stopbits_t)99,
-    };
-    _assert_open_fails(&opts);
-}
-
-static void test_open_invalid_flowcontrol(void) {
-    xylem_serial_opts_t opts = {
-        .device      = "/dev/null",
-        .flowcontrol = (xylem_serial_flowcontrol_t)99,
-    };
-    _assert_open_fails(&opts);
-}
-
-static void test_close_null(void) {
-    xylem_serial_close(NULL);
-}
-
-static void test_read_null(void) {
+static void test_null_handles(void) {
     char buf[16];
+    xylem_serial_close(NULL);
     ASSERT(xylem_serial_read(NULL, buf, sizeof(buf)) == -1);
-}
-
-static void test_write_null(void) {
     ASSERT(xylem_serial_write(NULL, "x", 1) == -1);
 }
 
 int main(void) {
-    test_open_null_opts();
-    test_open_null_device();
-    test_open_invalid_baudrate();
-    test_open_invalid_parity();
-    test_open_invalid_databits();
-    test_open_invalid_stopbits();
-    test_open_invalid_flowcontrol();
-    test_close_null();
-    test_read_null();
-    test_write_null();
+    test_invalid_options();
+    test_null_handles();
     return 0;
 }

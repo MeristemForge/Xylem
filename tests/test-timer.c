@@ -103,13 +103,24 @@ static void _stop_cb(xylem_timer_t* t, void* ud) {
 
 static void _stop_main(void* arg) {
     (void)arg;
-    xylem_timer_t* wd = _arm_watchdog();
-    xylem_timer_t* t  = xylem_timer_after(1000, _stop_cb, NULL);
-    ASSERT(xylem_timer_stop(t));
-    xylem_sleep(50);
+    _fire_ctx_t ctx = {.wg = xylem_waitgroup_create()};
+    ASSERT(ctx.wg != NULL);
+    xylem_waitgroup_add(ctx.wg, 1);
+    xylem_timer_t* wd    = _arm_watchdog();
+    xylem_timer_t* timer = xylem_timer_after(10, _stop_cb, NULL);
+    ASSERT(timer != NULL);
+    ASSERT(xylem_timer_stop(timer));
 
-    xylem_timer_destroy(t);
+    /* A later fire proves that the cancelled deadline was reached. */
+    xylem_timer_t* later = xylem_timer_after(30, _after_cb, &ctx);
+    ASSERT(later != NULL);
+    xylem_waitgroup_wait(ctx.wg);
+    ASSERT(atomic_load(&ctx.fires) == 1);
+
+    xylem_timer_destroy(later);
+    xylem_timer_destroy(timer);
     xylem_timer_destroy(wd);
+    xylem_waitgroup_destroy(ctx.wg);
 }
 
 static void test_stop(void) {

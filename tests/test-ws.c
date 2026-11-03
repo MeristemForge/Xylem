@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+
 typedef struct {
     char     response[1024];
     size_t   len, offset;
@@ -64,6 +65,7 @@ static const char* const _upgrade_request =
     "Connection: keep-alive, Upgrade\r\nSec-WebSocket-Key: "
     "dGhlIHNhbXBsZSBub25jZQ==\r\n"
     "Sec-WebSocket-Version: 13\r\n\r\n";
+
 
 static void _srv_echo_cb(xylem_ws_conn_t* ws, void* ud) {
     uint8_t* buf = (uint8_t*)malloc(65536);
@@ -153,43 +155,24 @@ static void _echo_roundtrip(
     free(buf);
 }
 
-static void test_text_echo(void* arg) {
+static void test_message_roundtrips(void* arg) {
     (void)arg;
-    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
-    xylem_ws_listener_t* l  = _listen(_srv_echo_cb, NULL, wg);
+    xylem_waitgroup_t* wg = xylem_waitgroup_create();
+    ASSERT(wg != NULL);
+    xylem_ws_listener_t* listener = _listen(_srv_echo_cb, NULL, wg);
+    xylem_ws_conn_t*     conn     = _connect(listener, NULL);
 
-    xylem_ws_conn_t* c    = _connect(l, NULL);
-    const char*      text = "hello websocket";
-    _echo_roundtrip(c, XYLEM_WS_TEXT, text, strlen(text));
-
-    _drain(c, l, wg);
-}
-
-static void test_binary_echo(void* arg) {
-    (void)arg;
-    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
-    xylem_ws_listener_t* l  = _listen(_srv_echo_cb, NULL, wg);
-
-    xylem_ws_conn_t* c      = _connect(l, NULL);
-    uint8_t          data[] = {0x00, 0x01, 0x02, 0xFF, 0xFE};
-    _echo_roundtrip(c, XYLEM_WS_BINARY, data, sizeof(data));
-
-    _drain(c, l, wg);
-}
-
-static void test_multiple_messages(void* arg) {
-    (void)arg;
-    xylem_waitgroup_t*   wg = xylem_waitgroup_create();
-    xylem_ws_listener_t* l  = _listen(_srv_echo_cb, NULL, wg);
-
-    xylem_ws_conn_t* c = _connect(l, NULL);
+    const char* text = "hello websocket";
+    _echo_roundtrip(conn, XYLEM_WS_TEXT, text, strlen(text));
+    const uint8_t binary[] = {0x00, 0x01, 0x02, 0xff, 0xfe};
+    _echo_roundtrip(conn, XYLEM_WS_BINARY, binary, sizeof(binary));
     for (int i = 0; i < 10; i++) {
-        char buf[32];
-        int  len = snprintf(buf, sizeof(buf), "msg-%d", i);
-        _echo_roundtrip(c, XYLEM_WS_TEXT, buf, (size_t)len);
+        char message[32];
+        int  len = snprintf(message, sizeof(message), "msg-%d", i);
+        ASSERT(len > 0 && (size_t)len < sizeof(message));
+        _echo_roundtrip(conn, XYLEM_WS_TEXT, message, (size_t)len);
     }
-
-    _drain(c, l, wg);
+    _drain(conn, listener, wg);
 }
 
 static void test_large_message(void* arg) {
@@ -795,6 +778,7 @@ static void test_destroy_with_pending_message(void* arg) {
     xylem_waitgroup_destroy(wg);
 }
 
+
 static void _test_run_all_cb(void* arg) {
     (void)arg;
     const _test_fn_t tests[] = {
@@ -814,9 +798,7 @@ static void _test_run_all_cb(void* arg) {
         test_client_handshake_parser,
         test_upgrade_with_first_frame,
         test_close_listener_with_connection,
-        test_text_echo,
-        test_binary_echo,
-        test_multiple_messages,
+        test_message_roundtrips,
         test_large_message,
         test_server_close,
         test_deflate_text_echo,

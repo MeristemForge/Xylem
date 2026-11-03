@@ -20,20 +20,18 @@
  */
 
 #include "xylem.h"
-#include "assert.h"
-
 #include "xylem/net/xylem-ws.h"
 
+#include "assert.h"
 #define TEST_WITH_TLS
-
 #include "utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define WSS_CERT "test_cert.pem"
-#define WSS_KEY  "test_key.pem"
+#define WSS_CERT "xylem-test-wss-cert.pem"
+#define WSS_KEY  "xylem-test-wss-key.pem"
 
 typedef void (*_test_fn_t)(void*);
 typedef void (*_handler_fn_t)(xylem_ws_conn_t*, void*);
@@ -44,9 +42,9 @@ typedef struct {
     xylem_waitgroup_t*   wg;
 } _accept_ctx_t;
 
-static const xylem_ws_tls_t _srv_tls = {.cert = WSS_CERT, .key = WSS_KEY};
+static const xylem_ws_tls_t _wss_srv_tls = {.cert = WSS_CERT, .key = WSS_KEY};
 
-static const xylem_ws_tls_t _cli_tls = {.skip_verify = true};
+static const xylem_ws_tls_t _wss_cli_tls = {.skip_verify = true};
 
 static void _srv_echo_cb(xylem_ws_conn_t* ws, void* ud) {
     uint8_t* buf = (uint8_t*)malloc(65536);
@@ -82,8 +80,9 @@ static uint16_t _listener_port(xylem_ws_listener_t* listener) {
     return port;
 }
 
-static xylem_ws_listener_t*
-_listen(const xylem_ws_opts_t* opts, xylem_waitgroup_t* wg) {
+static xylem_ws_listener_t* _listen(
+    const xylem_ws_opts_t* opts,
+    xylem_waitgroup_t*     wg) {
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0, opts);
     ASSERT(l != NULL);
     _accept_ctx_t* ctx = (_accept_ctx_t*)malloc(sizeof(_accept_ctx_t));
@@ -94,20 +93,21 @@ _listen(const xylem_ws_opts_t* opts, xylem_waitgroup_t* wg) {
     return l;
 }
 
-static void
-_drain(xylem_ws_conn_t* c, xylem_ws_listener_t* l, xylem_waitgroup_t* wg) {
+static void _drain(
+    xylem_ws_conn_t* c,
+    xylem_ws_listener_t* l,
+    xylem_waitgroup_t* wg) {
     xylem_ws_close(c, 1000, NULL, 0);
     xylem_ws_destroy(c);
     xylem_waitgroup_wait(wg);
     xylem_ws_close_listener(l);
     xylem_ws_destroy_listener(l);
     xylem_waitgroup_destroy(wg);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
 }
 
-static xylem_ws_conn_t*
-_connect(xylem_ws_listener_t* l, const xylem_ws_opts_t* cli_opts) {
+static xylem_ws_conn_t* _connect(
+    xylem_ws_listener_t*   l,
+    const xylem_ws_opts_t* cli_opts) {
     uint16_t port = _listener_port(l);
     ASSERT(port != 0);
 
@@ -136,15 +136,27 @@ static void _echo_roundtrip(
     free(buf);
 }
 
+static void _accept_cancel_cb(void* arg) {
+    _accept_ctx_t* ctx = arg;
+    ASSERT(xylem_ws_accept(ctx->listener) == NULL);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _listener_cancel_timer_cb(xylem_timer_t* timer, void* arg) {
+    (void)timer;
+    _accept_ctx_t* ctx = arg;
+    xylem_ws_close_listener(ctx->listener);
+    xylem_waitgroup_done(ctx->wg);
+}
+
 static void test_text_echo(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
-    xylem_ws_opts_t      srv_opts = {.tls = &_srv_tls};
+    xylem_ws_opts_t      srv_opts = {.tls = &_wss_srv_tls};
     xylem_waitgroup_t*   wg       = xylem_waitgroup_create();
     xylem_ws_listener_t* l        = _listen(&srv_opts, wg);
 
-    xylem_ws_opts_t  cli_opts = {.tls = &_cli_tls};
+    xylem_ws_opts_t  cli_opts = {.tls = &_wss_cli_tls};
     xylem_ws_conn_t* c        = _connect(l, &cli_opts);
 
     const char* text = "hello secure websocket";
@@ -155,13 +167,14 @@ static void test_text_echo(void* arg) {
 
 static void test_large_message(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
-    xylem_ws_opts_t srv_opts = {.fragment_threshold = 1024, .tls = &_srv_tls};
-    xylem_waitgroup_t*   wg  = xylem_waitgroup_create();
-    xylem_ws_listener_t* l   = _listen(&srv_opts, wg);
+    xylem_ws_opts_t      srv_opts = {.fragment_threshold = 1024,
+                                     .tls                = &_wss_srv_tls};
+    xylem_waitgroup_t*   wg       = xylem_waitgroup_create();
+    xylem_ws_listener_t* l        = _listen(&srv_opts, wg);
 
-    xylem_ws_opts_t  cli_opts = {.fragment_threshold = 1024, .tls = &_cli_tls};
+    xylem_ws_opts_t  cli_opts = {.fragment_threshold = 1024,
+                                 .tls                = &_wss_cli_tls};
     xylem_ws_conn_t* c        = _connect(l, &cli_opts);
 
     size_t   big_len = 8192;
@@ -179,18 +192,17 @@ static void test_large_message(void* arg) {
 
 static void test_deflate(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     xylem_ws_opts_t srv_opts = {
         .permessage_deflate = true,
-        .tls                = &_srv_tls,
+        .tls                = &_wss_srv_tls,
     };
     xylem_waitgroup_t*   wg = xylem_waitgroup_create();
     xylem_ws_listener_t* l  = _listen(&srv_opts, wg);
 
     xylem_ws_opts_t cli_opts = {
         .permessage_deflate = true,
-        .tls                = &_cli_tls,
+        .tls                = &_wss_cli_tls,
     };
     xylem_ws_conn_t* c = _connect(l, &cli_opts);
 
@@ -202,11 +214,10 @@ static void test_deflate(void* arg) {
 
 static void test_close_listener_with_connection(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t      opts   = {.tls = &_srv_tls};
+    xylem_ws_opts_t      opts   = {.tls = &_wss_srv_tls};
     xylem_waitgroup_t*   wg     = xylem_waitgroup_create();
     xylem_ws_listener_t* l      = _listen(&opts, wg);
-    xylem_ws_opts_t      client = {.tls = &_cli_tls};
+    xylem_ws_opts_t      client = {.tls = &_wss_cli_tls};
     xylem_ws_conn_t*     c      = _connect(l, &client);
     xylem_ws_close_listener(l);
     xylem_ws_destroy_listener(l);
@@ -215,18 +226,15 @@ static void test_close_listener_with_connection(void* arg) {
     xylem_ws_destroy(c);
     xylem_waitgroup_wait(wg);
     xylem_waitgroup_destroy(wg);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
 }
 
 static void test_deadlines_and_addresses(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t    opts = {.tls = &_srv_tls};
+    xylem_ws_opts_t    opts = {.tls = &_wss_srv_tls};
     xylem_waitgroup_t* wg   = xylem_waitgroup_create();
     ASSERT(wg);
     xylem_ws_listener_t* l      = _listen(&opts, wg);
-    xylem_ws_opts_t      client = {.tls = &_cli_tls};
+    xylem_ws_opts_t      client = {.tls = &_wss_cli_tls};
     xylem_ws_conn_t*     c      = _connect(l, &client);
     char                 host[64];
     uint16_t             port = 0;
@@ -241,9 +249,9 @@ static void test_deadlines_and_addresses(void* arg) {
     xylem_ws_set_read_deadline(c, 0);
     xylem_ws_set_write_deadline(c, 0);
     _echo_roundtrip(c, XYLEM_WS_TEXT, "cleared", 7);
-    xylem_ws_set_read_deadline(
-        c,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 40);
+    xylem_ws_set_read_deadline(c,
+                               xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) +
+                                   40);
     char buf[16] = "unchanged";
     ASSERT(xylem_ws_recv(c, buf, sizeof(buf), NULL) == -1);
     xylem_ws_set_read_deadline(c, 0);
@@ -253,39 +261,24 @@ static void test_deadlines_and_addresses(void* arg) {
 
 static void test_write_timeout(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t    opts = {.tls = &_srv_tls};
+    xylem_ws_opts_t    opts = {.tls = &_wss_srv_tls};
     xylem_waitgroup_t* wg   = xylem_waitgroup_create();
     ASSERT(wg);
     xylem_ws_listener_t* l      = _listen(&opts, wg);
-    xylem_ws_opts_t      client = {.tls = &_cli_tls};
+    xylem_ws_opts_t      client = {.tls = &_wss_cli_tls};
     xylem_ws_conn_t*     c      = _connect(l, &client);
-    xylem_ws_set_write_deadline(
-        c,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) - 1);
+    xylem_ws_set_write_deadline(c,
+                                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) -
+                                    1);
     ASSERT(xylem_ws_ping(c, NULL, 0) == -1);
     xylem_ws_set_write_deadline(c, 0);
     ASSERT(xylem_ws_send(c, "x", 1, XYLEM_WS_TEXT) == -1);
     _drain(c, l, wg);
 }
 
-static void _accept_cancel_cb(void* arg) {
-    _accept_ctx_t* ctx = arg;
-    ASSERT(xylem_ws_accept(ctx->listener) == NULL);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _listener_cancel_timer_cb(xylem_timer_t* timer, void* arg) {
-    (void)timer;
-    _accept_ctx_t* ctx = arg;
-    xylem_ws_close_listener(ctx->listener);
-    xylem_waitgroup_done(ctx->wg);
-}
-
 static void test_cancel_tls_handshake(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t opts   = {.tls = &_srv_tls, .handshake_timeout_ms = 5000};
+    xylem_ws_opts_t opts = {.tls = &_wss_srv_tls, .handshake_timeout_ms = 5000};
     xylem_ws_listener_t* l = xylem_ws_listen("127.0.0.1", 0, &opts);
     ASSERT(l);
     xylem_waitgroup_t* wg = xylem_waitgroup_create();
@@ -299,9 +292,9 @@ static void test_cancel_tls_handshake(void* arg) {
     xylem_timer_t* timer =
         xylem_timer_after(40, _listener_cancel_timer_cb, &ctx);
     ASSERT(timer);
-    xylem_tcp_set_read_deadline(
-        peer,
-        xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + 1000);
+    xylem_tcp_set_read_deadline(peer,
+                                xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) +
+                                    1000);
     char byte;
     ASSERT(xylem_tcp_read(peer, &byte, 1) <= 0);
     xylem_waitgroup_wait(wg);
@@ -309,23 +302,19 @@ static void test_cancel_tls_handshake(void* arg) {
     xylem_tcp_destroy(peer);
     xylem_ws_destroy_listener(l);
     xylem_waitgroup_destroy(wg);
-    remove(WSS_CERT);
-    remove(WSS_KEY);
 }
 
 static void test_short_buffer_retry(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t opts = {
-        .tls                      = &_srv_tls,
-        .fragment_threshold       = 3,
-        .permessage_deflate       = true,
-        .deflate_context_takeover = true};
-    xylem_waitgroup_t* wg = xylem_waitgroup_create();
+    xylem_ws_opts_t    opts = {.tls                      = &_wss_srv_tls,
+                               .fragment_threshold       = 3,
+                               .permessage_deflate       = true,
+                               .deflate_context_takeover = true};
+    xylem_waitgroup_t* wg   = xylem_waitgroup_create();
     ASSERT(wg);
     xylem_ws_listener_t* l      = _listen(&opts, wg);
     xylem_ws_opts_t      client = opts;
-    client.tls                  = &_cli_tls;
+    client.tls                  = &_wss_cli_tls;
     xylem_ws_conn_t* c          = _connect(l, &client);
     ASSERT(xylem_ws_send(c, "secure retry", 12, XYLEM_WS_TEXT) == 0);
     const uint8_t binary[] = {0x00, 0xFF, 0x02};
@@ -349,13 +338,12 @@ static void test_short_buffer_retry(void* arg) {
 
 static void test_empty_messages(void* arg) {
     (void)arg;
-    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
-    xylem_ws_opts_t    opts = {.tls = &_srv_tls, .permessage_deflate = true};
-    xylem_waitgroup_t* wg   = xylem_waitgroup_create();
+    xylem_ws_opts_t opts  = {.tls = &_wss_srv_tls, .permessage_deflate = true};
+    xylem_waitgroup_t* wg = xylem_waitgroup_create();
     ASSERT(wg);
-    xylem_ws_listener_t* l  = _listen(&opts, wg);
-    xylem_ws_opts_t  client = {.tls = &_cli_tls, .permessage_deflate = true};
-    xylem_ws_conn_t* c      = _connect(l, &client);
+    xylem_ws_listener_t* l = _listen(&opts, wg);
+    xylem_ws_opts_t client = {.tls = &_wss_cli_tls, .permessage_deflate = true};
+    xylem_ws_conn_t* c     = _connect(l, &client);
     ASSERT(xylem_ws_send(c, NULL, 0, XYLEM_WS_TEXT) == 0);
     xylem_ws_opcode_t type = XYLEM_WS_BINARY;
     ASSERT(xylem_ws_recv(c, NULL, 0, &type) == 0);
@@ -381,10 +369,13 @@ static void _test_run_all_cb(void* arg) {
     };
     const size_t test_count = sizeof(tests) / sizeof(tests[0]);
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
+    ASSERT(_utils_cert_gen(WSS_CERT, WSS_KEY) == 0);
 
     for (size_t i = 0; i < test_count; i++) {
         tests[i](NULL);
     }
+    remove(WSS_CERT);
+    remove(WSS_KEY);
     printf("All %zu WSS tests passed.\n", test_count);
     _utils_watchdog_stop();
     xylem_shutdown();

@@ -163,7 +163,9 @@ static void _srv_full(void* arg) {
     ASSERT(conn != NULL);
 
     const char* data = "0123456789ABCDEF";
-    xylem_tcp_write(conn, data, 16);
+    ASSERT(xylem_tcp_write(conn, data, 8) == 0);
+    xylem_sleep(30);
+    ASSERT(xylem_tcp_write(conn, data + 8, 8) == 0);
 
     xylem_tcp_destroy(conn);
     xylem_tcp_destroy_listener(ln);

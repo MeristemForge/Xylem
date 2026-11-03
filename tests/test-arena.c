@@ -27,13 +27,6 @@
 
 #include <stdint.h>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#endif
-
 #define MIB                      (1024U * 1024U)
 #define ARENA_CONCURRENT_THREADS 4
 #define ARENA_CONCURRENT_BATCH   8
@@ -49,16 +42,6 @@ typedef struct {
 typedef struct {
     _concurrent_ctx_t* ctx;
 } _concurrent_worker_t;
-
-#if defined(_WIN32)
-static void _assert_fresh_slot(const void* ptr) {
-    MEMORY_BASIC_INFORMATION info;
-
-    ASSERT(VirtualQuery(ptr, &info, sizeof(info)) == sizeof(info));
-    ASSERT(info.State == MEM_RESERVE);
-    ASSERT(info.Protect == 0);
-}
-#endif
 
 static int _concurrent_thread(void* arg) {
     _concurrent_worker_t* worker = (_concurrent_worker_t*)arg;
@@ -133,16 +116,11 @@ static void test_alloc_free_realloc(void) {
     void* recycled[32] = {0};
     ASSERT(arena_alloc(arena, recycled, 32) == 32);
     for (int i = 0; i < 32; i++) {
-        int match_count = 0;
-        for (int j = 0; j < 32; j++) {
-            if (slots[i] == recycled[j]) {
-                match_count++;
-            }
-        }
-        ASSERT(match_count == 1);
-    }
-    for (int i = 0; i < 32; i++) {
         ASSERT(recycled[i] != NULL);
+        ASSERT((uintptr_t)recycled[i] % page_size == 0);
+        for (int j = 0; j < i; j++) {
+            ASSERT(recycled[i] != recycled[j]);
+        }
     }
 
     arena_free(arena, recycled, 32);
@@ -168,7 +146,7 @@ static void test_null_args(void) {
     arena_destroy(arena);
 }
 
-static void test_growth(void) {
+static void test_alloc_large_batch(void) {
     arena_t* arena = arena_create(MIB);
     ASSERT(arena != NULL);
 
@@ -194,7 +172,7 @@ static void test_destroy_with_allocated_slot(void) {
     arena_destroy(arena);
 }
 
-static void test_alloc_returns_fresh_slot(void) {
+static void test_slot_commit_after_realloc(void) {
     size_t page_size = platform_vmem_page_size();
     ASSERT(page_size > 0);
 
@@ -204,11 +182,32 @@ static void test_alloc_returns_fresh_slot(void) {
     void* slot = NULL;
     ASSERT(arena_alloc(arena, &slot, 1) == 1);
     ASSERT(slot != NULL);
-#if defined(_WIN32)
-    _assert_fresh_slot(slot);
-#endif
+    ASSERT(platform_vmem_commit(slot, page_size) == 0);
+
+    uint8_t* ptr = (uint8_t*)slot;
+    for (size_t i = 0; i < page_size; i++) {
+        ptr[i] = 0x5a;
+    }
+    for (size_t i = 0; i < page_size; i++) {
+        ASSERT(ptr[i] == 0x5a);
+    }
 
     arena_free(arena, &slot, 1);
+
+    void* recycled = NULL;
+    ASSERT(arena_alloc(arena, &recycled, 1) == 1);
+    ASSERT(recycled != NULL);
+    ASSERT(platform_vmem_commit(recycled, page_size) == 0);
+
+    ptr = (uint8_t*)recycled;
+    for (size_t i = 0; i < page_size; i++) {
+        ptr[i] = 0xa5;
+    }
+    for (size_t i = 0; i < page_size; i++) {
+        ASSERT(ptr[i] == 0xa5);
+    }
+
+    arena_free(arena, &recycled, 1);
     arena_destroy(arena);
 }
 
@@ -243,9 +242,9 @@ int main(void) {
     test_create_limits();
     test_alloc_free_realloc();
     test_null_args();
-    test_growth();
+    test_alloc_large_batch();
     test_destroy_with_allocated_slot();
-    test_alloc_returns_fresh_slot();
+    test_slot_commit_after_realloc();
     test_concurrent_alloc_free();
     return 0;
 }

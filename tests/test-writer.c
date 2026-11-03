@@ -71,8 +71,8 @@ static int _drain(xylem_tcp_conn_t* conn, char* buf, int cap) {
 }
 
 static void _srv_recv(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    _ctx_t*               ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* ln  = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 
@@ -80,9 +80,16 @@ static void _srv_recv(void* arg) {
     ASSERT(conn != NULL);
 
     char buf[256];
-    int  total = _drain(conn, buf, (int)sizeof(buf));
-    ASSERT(total == 9);
-    ASSERT(memcmp(buf, "aaabbbccc", 9) == 0);
+    int  total = 0;
+    while (total < 6) {
+        int n = xylem_tcp_read(conn, buf + total, 6 - total);
+        ASSERT(n > 0);
+        total += n;
+    }
+    ASSERT(memcmp(buf, "aaabbb", 6) == 0);
+    ASSERT(xylem_tcp_write(conn, "x", 1) == 0);
+    ASSERT(_drain(conn, buf, (int)sizeof(buf)) == 3);
+    ASSERT(memcmp(buf, "ccc", 3) == 0);
 
     xylem_tcp_destroy(conn);
     xylem_tcp_destroy_listener(ln);
@@ -101,6 +108,10 @@ static void _cli_write(void* arg) {
 
     ASSERT(xylem_writer_write(wr, "aaa", 3) == 0);
     ASSERT(xylem_writer_write(wr, "bbb", 3) == 0);
+    ASSERT(xylem_writer_flush(wr) == 0);
+    char ack = 0;
+    ASSERT(xylem_tcp_read(conn, &ack, 1) == 1);
+    ASSERT(ack == 'x');
     ASSERT(xylem_writer_write(wr, "ccc", 3) == 0);
 
     xylem_writer_destroy(wr);
@@ -113,8 +124,8 @@ static void test_writer_batched(void) {
 }
 
 static void _srv_recv_large(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    _ctx_t*               ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* ln  = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
     ASSERT(ln != NULL);
     xylem_channel_send(ctx->ready, ctx);
 

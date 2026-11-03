@@ -85,11 +85,13 @@ static void test_long_key(void) {
 }
 
 static void test_empty_message(void) {
-    const uint8_t key[] = "secret";
-    uint8_t out[32];
-    xylem_hmac256_compute(key, 6, NULL, 0, out);
-    uint8_t zero[32] = {0};
-    ASSERT(memcmp(out, zero, 32) != 0);
+    const uint8_t key[]        = "secret";
+    const uint8_t expected[32] = {
+        0xf9, 0xe6, 0x6e, 0x17, 0x9b, 0x67, 0x47, 0xae, 0x54, 0x10, 0x8f,
+        0x82, 0xf8, 0xad, 0xe8, 0xb3, 0xc2, 0x5d, 0x76, 0xfd, 0x30, 0xaf,
+        0xde, 0x6c, 0x39, 0x58, 0x22, 0xc5, 0x30, 0x19, 0x61, 0x69,
+    };
+    _check(key, sizeof(key) - 1, NULL, 0, expected);
 }
 
 int main(void) {

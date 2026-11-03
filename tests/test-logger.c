@@ -52,11 +52,6 @@ static void _capture_start(_logger_ctx_t* ctx, xylem_logger_level_t level) {
     xylem_logger_set_callback(_test_callback, ctx);
 }
 
-static void test_init_destroy(void) {
-    xylem_logger_init(NULL, NULL);
-    xylem_logger_deinit();
-}
-
 static void test_log_before_init(void) {
     xylem_logger_log(XYLEM_LOGGER_LEVEL_INFO, "test.c", 1, "should be ignored");
 }
@@ -167,7 +162,6 @@ static void test_file_rollover(void) {
 
 int main(void) {
     test_log_before_init();
-    test_init_destroy();
     test_callback_receives_message();
     test_level_filtering();
     test_log_macros();

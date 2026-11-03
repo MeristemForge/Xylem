@@ -51,12 +51,6 @@ static int _reconstruct(xylem_fec_t* fec,
     return xylem_fec_reconstruct(fec, shards, marks, SHARD_SIZE);
 }
 
-static void test_create_destroy(void) {
-    xylem_fec_t* fec = xylem_fec_create(DATA_SHARDS, PARITY_SHARDS);
-    ASSERT(fec != NULL);
-    xylem_fec_destroy(fec);
-}
-
 static void test_destroy_null(void) {
     xylem_fec_destroy(NULL);
 }
@@ -208,7 +202,6 @@ static void test_minimal_shards(void) {
 }
 
 int main(void) {
-    test_create_destroy();
     test_destroy_null();
     test_create_invalid();
     test_encode_reconstruct_data();

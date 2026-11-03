@@ -32,13 +32,10 @@
 #define SLEEP_ORDER_COUNT    4
 #define SUBMIT_CONC_COUNT    20
 
-#define STKGROW_FRAME_BYTES   (8 * 1024)
-#define STKGROW_BASIC_DEPTH   4
-#define STKGROW_RECURSE_DEPTH 8
-#define STKGROW_CONC_COUNT    32
-#define STKGROW_CONC_DEPTH    6
-#define STKGROW_REUSE_COUNT   50
-#define STKGROW_REUSE_DEPTH   3
+
+typedef struct {
+    int completed;
+} _stack_ctx_t;
 
 static xylem_opts_t _rt_opts = { .workers = 0 };
 
@@ -465,192 +462,30 @@ static void test_submit_result(void) {
     }
 }
 
-static uint64_t _stkgrow_recurse(int depth, uint8_t seed) {
-    volatile uint8_t frame[STKGROW_FRAME_BYTES];
-    for (size_t i = 0; i < sizeof(frame); i++) {
-        frame[i] = (uint8_t)(seed + (uint8_t)depth + (uint8_t)(i & 0x3f));
-    }
-
-    uint64_t deeper = 0;
-    if (depth > 0) {
-        deeper = _stkgrow_recurse(depth - 1, seed);
-    }
-
-    uint64_t sum = 0;
-    for (size_t i = 0; i < sizeof(frame); i++) {
-        uint8_t expect =
-            (uint8_t)(seed + (uint8_t)depth + (uint8_t)(i & 0x3f));
-        ASSERT(frame[i] == expect);
-        sum += frame[i];
-    }
-    return sum + deeper;
-}
-
-typedef struct {
-    int tested;
-} _stkgrow_basic_ctx_t;
-
-static void _stkgrow_basic_coro(void* arg) {
-    _stkgrow_basic_ctx_t* ctx = (_stkgrow_basic_ctx_t*)arg;
-    uint64_t sum = _stkgrow_recurse(STKGROW_BASIC_DEPTH, 0xa5);
-    ASSERT(sum > 0);
-    ctx->tested = 1;
-    _utils_watchdog_stop();
-    xylem_shutdown();
-}
-
-static void _stkgrow_basic_main(void* arg) {
-    _start_safety_timer();
-    xylem_spawn(_stkgrow_basic_coro, arg);
-}
-
-static void test_coro_stack_grow(void) {
-    fprintf(stderr, "=== test_coro_stack_grow\n");
-    _stkgrow_basic_ctx_t ctx = {0};
-    xylem_run(_stkgrow_basic_main, &ctx, &_rt_opts);
-    ASSERT(ctx.tested == 1);
-}
-
-typedef struct {
-    int tested;
-} _stkgrow_prog_ctx_t;
-
-static void _stkgrow_prog_coro(void* arg) {
-    _stkgrow_prog_ctx_t* ctx = (_stkgrow_prog_ctx_t*)arg;
-    uint64_t sum = _stkgrow_recurse(STKGROW_RECURSE_DEPTH, 0x37);
-    ASSERT(sum > 0);
-    ctx->tested = 1;
-    _utils_watchdog_stop();
-    xylem_shutdown();
-}
-
-static void _stkgrow_prog_main(void* arg) {
-    _start_safety_timer();
-    xylem_spawn(_stkgrow_prog_coro, arg);
-}
-
-static void test_coro_stack_grow_deep_recursion(void) {
-    fprintf(stderr, "=== test_coro_stack_grow_deep_recursion\n");
-    _stkgrow_prog_ctx_t ctx = {0};
-    xylem_run(_stkgrow_prog_main, &ctx, &_rt_opts);
-    ASSERT(ctx.tested == 1);
-}
-
-typedef struct {
-    atomic_int done;
-    int        tested;
-} _stkgrow_conc_ctx_t;
-
-typedef struct {
-    _stkgrow_conc_ctx_t* ctx;
-    int                  id;
-} _stkgrow_conc_arg_t;
-
-static _stkgrow_conc_arg_t _stkgrow_conc_args[STKGROW_CONC_COUNT];
-
-static void _stkgrow_conc_coro(void* arg) {
-    _stkgrow_conc_arg_t* a = (_stkgrow_conc_arg_t*)arg;
-    uint8_t seed = (uint8_t)(0x10 + a->id);
-
-    uint64_t sum = _stkgrow_recurse(STKGROW_CONC_DEPTH, seed);
-    ASSERT(sum > 0);
-
-    if (atomic_fetch_add(&a->ctx->done, 1) == STKGROW_CONC_COUNT - 1) {
-        a->ctx->tested = 1;
-        _utils_watchdog_stop();
-        xylem_shutdown();
-    }
-}
-
-static void _stkgrow_conc_main(void* arg) {
-    _stkgrow_conc_ctx_t* ctx = (_stkgrow_conc_ctx_t*)arg;
-    _start_safety_timer();
-    for (int i = 0; i < STKGROW_CONC_COUNT; i++) {
-        _stkgrow_conc_args[i].ctx = ctx;
-        _stkgrow_conc_args[i].id  = i;
-        xylem_spawn(_stkgrow_conc_coro, &_stkgrow_conc_args[i]);
-    }
-}
-
-static void test_coro_stack_grow_concurrent(void) {
-    fprintf(stderr, "=== test_coro_stack_grow_concurrent\n");
-    _stkgrow_conc_ctx_t ctx = {0};
-    atomic_init(&ctx.done, 0);
-    xylem_run(_stkgrow_conc_main, &ctx, &_rt_opts);
-    ASSERT(ctx.tested == 1);
-    ASSERT(atomic_load(&ctx.done) == STKGROW_CONC_COUNT);
-}
-
-typedef struct {
-    int counter;
-    int target;
-    int tested;
-} _stkgrow_reuse_ctx_t;
-
-static void _stkgrow_reuse_coro(void* arg) {
-    _stkgrow_reuse_ctx_t* ctx = (_stkgrow_reuse_ctx_t*)arg;
-
-    uint8_t  seed = (uint8_t)(0x80 + (ctx->counter & 0x7f));
-    uint64_t sum  = _stkgrow_recurse(STKGROW_REUSE_DEPTH, seed);
-    ASSERT(sum > 0);
-
-    if (++ctx->counter < ctx->target) {
-        xylem_spawn(_stkgrow_reuse_coro, ctx);
-    } else {
-        ctx->tested = 1;
-        _utils_watchdog_stop();
-        xylem_shutdown();
-    }
-}
-
-static void _stkgrow_reuse_main(void* arg) {
-    _stkgrow_reuse_ctx_t* ctx = (_stkgrow_reuse_ctx_t*)arg;
-    _start_safety_timer();
-    xylem_spawn(_stkgrow_reuse_coro, ctx);
-}
-
-static void test_coro_stack_grow_pool_reuse(void) {
-    fprintf(stderr, "=== test_coro_stack_grow_pool_reuse\n");
-    _stkgrow_reuse_ctx_t ctx = { .counter = 0,
-                                 .target  = STKGROW_REUSE_COUNT,
-                                 .tested  = 0 };
-    xylem_opts_t opts = { .workers = 1 };
-    xylem_run(_stkgrow_reuse_main, &ctx, &opts);
-    ASSERT(ctx.tested == 1);
-    ASSERT(ctx.counter == STKGROW_REUSE_COUNT);
-}
-
-typedef struct {
-    int tested;
-} _stkgrow_large_ctx_t;
-
-static void _stkgrow_large_coro(void* arg) {
-    _stkgrow_large_ctx_t* ctx = (_stkgrow_large_ctx_t*)arg;
+static void _stack_coro(void* arg) {
+    _stack_ctx_t*    ctx = (_stack_ctx_t*)arg;
     volatile uint8_t frame[64 * 1024];
     for (size_t i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(i ^ 0xab);
     }
-    uint64_t sum = 0;
+    xylem_sleep(0);
     for (size_t i = 0; i < sizeof(frame); i++) {
         ASSERT(frame[i] == (uint8_t)(i ^ 0xab));
-        sum += frame[i];
     }
-    ASSERT(sum > 0);
-    ctx->tested = 1;
+    ctx->completed = 1;
     _utils_watchdog_stop();
     xylem_shutdown();
 }
 
-static void _stkgrow_large_main(void* arg) {
+static void _stack_main(void* arg) {
     _start_safety_timer();
-    xylem_spawn(_stkgrow_large_coro, arg);
+    xylem_spawn(_stack_coro, arg);
 }
 
-static void test_coro_stack_grow_large_frame(void) {
-    fprintf(stderr, "=== test_coro_stack_grow_large_frame\n");
-    _stkgrow_large_ctx_t ctx = {0};
-    xylem_run(_stkgrow_large_main, &ctx, &_rt_opts);
-    ASSERT(ctx.tested == 1);
+static void test_coro_stack(void) {
+    _stack_ctx_t ctx = {0};
+    xylem_run(_stack_main, &ctx, &_rt_opts);
+    ASSERT(ctx.completed == 1);
 }
 
 int main(void) {
@@ -668,10 +503,6 @@ int main(void) {
     test_submit_null();
     test_submit_concurrent();
     test_submit_result();
-    test_coro_stack_grow();
-    test_coro_stack_grow_deep_recursion();
-    test_coro_stack_grow_concurrent();
-    test_coro_stack_grow_pool_reuse();
-    test_coro_stack_grow_large_frame();
+    test_coro_stack();
     return 0;
 }

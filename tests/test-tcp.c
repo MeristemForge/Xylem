@@ -123,92 +123,6 @@ static void test_echo(void) {
     _run_pair(TCP_PORT, _echo_server, _echo_client);
 }
 
-static void _reader_server(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
-    ASSERT(listener != NULL);
-    xylem_channel_send(ctx->ready, ctx);
-
-    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
-    ASSERT(conn != NULL);
-
-    ASSERT(xylem_tcp_write(conn, "ABCD", 4) == 0);
-    xylem_sleep(30);
-    ASSERT(xylem_tcp_write(conn, "EFGH", 4) == 0);
-    xylem_tcp_destroy(conn);
-    xylem_tcp_destroy_listener(listener);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _reader_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
-    ASSERT(conn != NULL);
-
-    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
-    ASSERT(rd != NULL);
-
-    char result[8];
-    ASSERT(xylem_reader_read_full(rd, result, 8) == 8);
-    ASSERT(memcmp(result, "ABCDEFGH", 8) == 0);
-
-    xylem_reader_destroy(rd);
-    xylem_tcp_destroy(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void test_reader_full(void) {
-    _run_pair(TCP_PORT + 1, _reader_server, _reader_client);
-}
-
-static void _writer_server(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, ctx->port, NULL);
-    ASSERT(listener != NULL);
-    xylem_channel_send(ctx->ready, ctx);
-
-    xylem_tcp_conn_t* conn = xylem_tcp_accept(listener);
-    ASSERT(conn != NULL);
-
-    xylem_writer_t* wr = xylem_writer_create(conn, XYLEM_WRITER_TCP, 256);
-    ASSERT(wr != NULL);
-
-    ASSERT(xylem_writer_write(wr, "hello", 5) == 0);
-    ASSERT(xylem_writer_write(wr, " ", 1) == 0);
-    ASSERT(xylem_writer_write(wr, "world", 5) == 0);
-    ASSERT(xylem_writer_flush(wr) == 0);
-
-    xylem_writer_destroy(wr);
-    xylem_tcp_destroy(conn);
-    xylem_tcp_destroy_listener(listener);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void _writer_client(void* arg) {
-    _ctx_t* ctx = (_ctx_t*)arg;
-    xylem_channel_recv(ctx->ready);
-
-    xylem_tcp_conn_t* conn = xylem_tcp_dial(TCP_HOST, ctx->port, NULL);
-    ASSERT(conn != NULL);
-
-    xylem_reader_t* rd = xylem_reader_create(conn, XYLEM_READER_TCP, 256);
-    ASSERT(rd != NULL);
-
-    char result[11];
-    ASSERT(xylem_reader_read_full(rd, result, 11) == 11);
-    ASSERT(memcmp(result, "hello world", 11) == 0);
-
-    xylem_reader_destroy(rd);
-    xylem_tcp_destroy(conn);
-    xylem_waitgroup_done(ctx->wg);
-}
-
-static void test_writer_buffered(void) {
-    _run_pair(TCP_PORT + 2, _writer_server, _writer_client);
-}
-
 static void _time_yield_observer_cb(void* arg) {
     _time_yield_ctx_t* ctx = (_time_yield_ctx_t*)arg;
     atomic_store(&ctx->observed, 1);
@@ -263,21 +177,12 @@ static void test_io_yields_on_time_exhaustion(void) {
 }
 
 static void test_dial_refused(void) {
-    platform_sock_t blocker = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    ASSERT(blocker != PLATFORM_SO_ERROR_INVALID_SOCKET);
+    xylem_tcp_listener_t* listener = xylem_tcp_listen(TCP_HOST, 0, NULL);
+    ASSERT(listener != NULL);
 
-    struct sockaddr_in addr = {
-        .sin_family      = AF_INET,
-        .sin_port        = 0,
-        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
-    };
-    ASSERT(bind(blocker, (struct sockaddr*)&addr, sizeof(addr)) == 0);
-
-    socklen_t addrlen = sizeof(addr);
-    ASSERT(getsockname(blocker, (struct sockaddr*)&addr, &addrlen) == 0);
-
-    uint16_t port = ntohs(addr.sin_port);
-    platform_socket_close(blocker);
+    uint16_t port = 0;
+    ASSERT(xylem_tcp_listener_addr(listener, NULL, 0, &port) == 0);
+    xylem_tcp_destroy_listener(listener);
     ASSERT(xylem_tcp_dial(TCP_HOST, port, NULL) == NULL);
 }
 
@@ -914,8 +819,6 @@ static void _test_run_all(void* arg) {
     _utils_watchdog_start(SAFETY_TIMEOUT_MS);
 
     test_echo();
-    test_reader_full();
-    test_writer_buffered();
     test_io_yields_on_time_exhaustion();
     test_dial_refused();
     test_invalid_dial_host();

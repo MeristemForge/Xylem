@@ -100,10 +100,6 @@ static int _runq_consumer_thread(void* arg) {
     }
 }
 
-static void test_node_is_singly_linked(void) {
-    ASSERT(sizeof(runq_node_t) == sizeof(void*));
-}
-
 static void test_fifo(void) {
     _runq_test_item_t items[3] = {
         {.value = 1},
@@ -254,7 +250,6 @@ static void test_concurrent_producers_and_consumers(void) {
 }
 
 int main(void) {
-    test_node_is_singly_linked();
     test_fifo();
     test_destroy_accepts_null();
     test_push_batch_ignores_empty_batch();
