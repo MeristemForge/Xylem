@@ -193,7 +193,7 @@ int xylem_reader_read_until(
             return pos + n;
         }
 
-        if (pos + avail > len) {
+        if (avail >= len - pos) {
             return -1;
         }
         memcpy(dst + pos, rd->buf + rd->r, (size_t)avail);

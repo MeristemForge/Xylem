@@ -42,9 +42,11 @@ typedef struct xylem_writer_s xylem_writer_t;
  *
  * @note [COROUTINE-ONLY]
  *
+ * Borrows conn; destroy the writer before destroying the connection.
+ *
  * @param conn       Transport connection handle.
  * @param transport  Transport type (determines write function).
- * @param size   Internal buffer size in bytes. Must be > 0.
+ * @param size       Internal buffer size; <= 0 selects 4096 bytes.
  *
  * @return Writer handle, or NULL on failure.
  */
@@ -58,7 +60,9 @@ extern xylem_writer_t* xylem_writer_create(
  *
  * @note [COROUTINE-ONLY]
  *
- * Flushes pending data before releasing resources.
+ * Attempts to flush pending data, then releases resources. Flush errors
+ * cannot be reported here; call flush and check its result before destroy
+ * when delivery errors must be detected. Does not destroy the connection.
  *
  * @param wr  Writer to destroy.
  */
@@ -69,9 +73,10 @@ extern void xylem_writer_destroy(xylem_writer_t* wr);
  *
  * @note [COROUTINE-ONLY]
  *
- * Small writes are buffered. When the buffer is full it is
- * flushed automatically. Writes larger than the buffer
- * bypass it entirely (after flushing pending data).
+ * Small writes are buffered. Pending data is flushed before a write
+ * would exceed the buffer capacity. An exactly full buffer may remain
+ * pending. Writes at least as large as the buffer bypass it after
+ * flushing pending data. Call flush when data must be sent immediately.
  * A writer has a single logical owner; concurrent calls on the same
  * writer are not supported.
  *
@@ -79,7 +84,7 @@ extern void xylem_writer_destroy(xylem_writer_t* wr);
  * @param data  Source buffer.
  * @param len   Number of bytes to write.
  *
- * @return 0 on success, -1 on error.
+ * @return 0 when data is buffered or written, -1 on error.
  */
 extern int xylem_writer_write(
     xylem_writer_t* wr,
@@ -92,6 +97,9 @@ extern int xylem_writer_write(
  * @note [COROUTINE-ONLY]
  *
  * No-op if the buffer is empty.
+ * The buffer is cleared even on failure. The transport may have sent
+ * a prefix, so retrying the original data can duplicate bytes. Discard
+ * the writer and connection after a transport write failure.
  * A writer has a single logical owner; concurrent calls on the same
  * writer are not supported.
  *

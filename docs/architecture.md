@@ -18,7 +18,8 @@ Xylem is a cross-platform C11 **static library** (optionally shared) that
 - **Crypto / encoding** — SHA, HMAC, AES, Base64, varint, JSON, gzip, FEC.
 - **Concurrency** — mutex, cond, channel, wait-group, plus the coroutine runtime.
 - **Async networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, WebSocket clients and servers.
-  See [WebSocket](design/ws.md) for module boundaries and API migration.
+  See [WebSocket](design/ws.md) for module boundaries and API migration, and
+  [buffered I/O](design/buffered-io.md) for optional Reader/Writer helpers.
 
 The networking modules are the reason the runtime exists: they are written in a
 **synchronous, blocking style** but run on coroutines so that thousands of
@@ -33,11 +34,11 @@ Higher layers depend on lower layers; lower layers never depend up.
  App        |                  user coroutines                    |
             +-----------------------------------------------------+
  Protocols  |  WebSocket (HTTP/1.1 Upgrade + WS frames)           |
-            |     |                                               |
             |     +--- transport iface (TCP | TLS-or-stub)        |
-            |   TLS / DTLS (OpenSSL, optional)                    |
-            |   RUDP (KCP + Reed-Solomon FEC)                     |
-            |   TCP    UDP    UDS                                 |
+            |  Reader / Writer (optional buffered stream I/O)     |
+            |  TLS / DTLS (OpenSSL, optional)                     |
+            |  RUDP (KCP + Reed-Solomon FEC)                      |
+            |  TCP    UDP    UDS                                  |
             +-----------------------------------------------------+
  Runtime    |  scheduler (work-stealing) | iowait | dynpool |     |
             |  timers | minicoro coroutines                       |
@@ -62,6 +63,9 @@ presenting blocking-style APIs.
 Connection multiplexing can be implemented by external libraries using
 Xylem's public transport, coroutine, and synchronization APIs. The former
 `xylem_mux_*` API and Reader/Writer MUX transport adapters are removed.
+General-purpose HTTP clients and servers are also outside the library's
+scope. The HTTP/1.1 parser in the WebSocket module handles only the opening
+handshake; it is not a public HTTP transport or server.
 
 ## 3. Source map
 
@@ -74,6 +78,7 @@ Xylem's public transport, coroutine, and synchronization APIs. The former
 | Encoding | `include/xylem/encoding/` | `src/encoding/` |
 | Core utils | `include/xylem/xylem-*.h` | `src/xylem-*.c` |
 | Net (transport) | `include/xylem/net/` | `src/net/` |
+| Buffered I/O | `include/xylem/net/xylem-reader.h`, `xylem-writer.h` | `src/net/xylem-reader.c`, `xylem-writer.c` |
 | WebSocket | `include/xylem/net/xylem-ws*.h` | `src/net/ws/` |
 | Platform | `src/platform/*.h` | `src/platform/{unix,win}/` |
 

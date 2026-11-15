@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="220" viewBox="0 0 840 220" role="img" aria-labelledby="title description">
+  <title id="title">Xylem — C utility library</title>
+  <desc id="description">A green branching tree beside Xylem. TCP, UDP, TLS, DTLS, RUDP, WebSocket, UDS, and FEC.</desc>
+  <defs>
+    <linearGradient id="sap" gradientUnits="userSpaceOnUse" x1="135" y1="196" x2="135" y2="30">
+      <stop stop-color="#087765"/>
+      <stop offset="1" stop-color="#32ed8d"/>
+    </linearGradient>
+    <style>
+      .flow { animation: flow 4s ease-in-out infinite; }
+      .flow.b { animation-delay: -1.3s; }
+      .flow.c { animation-delay: -2.6s; }
+      @keyframes flow {
+        0%, 100% { opacity: .25; transform: translateY(6px); }
+        50% { opacity: 1; transform: translateY(-5px); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .flow { animation: none; }
+      }
+    </style>
+  </defs>
+  <rect x=".5" y=".5" width="839" height="219" rx="12" fill="#071c17" stroke="#10bba4" stroke-width=".7"/>
+  <g fill="none" stroke="url(#sap)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M135 196V48" stroke-width="3.5"/>
+    <path d="M135 175Q109 199 84 191M135 175Q162 199 186 191" stroke-width="3"/>
+    <path d="M135 132L94 101L75 92M94 101L89 81M135 128L175 101L196 91M175 101L182 80M135 86L107 58L97 42M135 88L164 59L173 42M135 48L126 30M135 48L144 30" stroke-width="1.5"/>
+  </g>
+  <g fill="#2beb8f">
+    <circle cx="135" cy="48" r="2.5"/>
+    <circle cx="135" cy="86" r="2.5"/>
+    <circle cx="135" cy="132" r="2.5"/>
+    <circle cx="97" cy="42" r="1.8"/>
+    <circle cx="89" cy="81" r="1.8"/>
+    <circle cx="75" cy="92" r="1.8"/>
+    <circle cx="173" cy="42" r="1.8"/>
+    <circle cx="182" cy="80" r="2.4"/>
+    <circle cx="196" cy="91" r="2.1"/>
+    <circle class="flow" cx="135" cy="154" r="2.3"/>
+    <circle class="flow b" cx="107" cy="110" r="2"/>
+    <circle class="flow c" cx="153" cy="76" r="2"/>
+  </g>
+  <g fill="#12baa2" font-family="Consolas, 'Liberation Mono', monospace">
+    <text x="310" y="105" font-size="64" letter-spacing="12">XYLEM</text>
+    <text x="313" y="138" font-size="14" letter-spacing="4">PURE C UTILITY LIBRARY</text>
+    <path d="M313 149H655" stroke="#12baa2" stroke-width=".6"/>
+    <text x="313" y="171" font-size="10">TCP · UDP · TLS · DTLS · RUDP · WS · UDS · FEC</text>
+  </g>
+</svg>

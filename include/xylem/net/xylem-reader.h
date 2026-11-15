@@ -43,9 +43,11 @@ typedef struct xylem_reader_s xylem_reader_t;
  *
  * @note [COROUTINE-ONLY]
  *
+ * Borrows conn; destroy the reader before destroying the connection.
+ *
  * @param conn       Transport connection handle.
  * @param transport  Transport type (determines read function).
- * @param size   Internal buffer size in bytes. Must be > 0.
+ * @param size       Internal buffer size; <= 0 selects 4096 bytes.
  *
  * @return Reader handle, or NULL on failure.
  */
@@ -91,6 +93,8 @@ extern int xylem_reader_read(
  *
  * Drains internal buffer first, then calls read_fn repeatedly
  * until len bytes are filled, EOF, or error.
+ * On failure, a prefix may have been consumed and copied to buf;
+ * its length is not returned.
  * A reader has a single logical owner; concurrent calls on the same
  * reader are not supported.
  *
@@ -111,9 +115,11 @@ extern int xylem_reader_read_full(
  *
  * @note [COROUTINE-ONLY]
  *
- * Scans for delim in the stream. The output includes the
- * delimiter byte. Returns -1 if len bytes are consumed
- * without finding the delimiter.
+ * Scans for delim in the stream. The output includes the delimiter.
+ * Returns -1 as soon as the delimiter cannot fit within len bytes,
+ * without waiting for more input. A delimiter at byte len is accepted.
+ * On failure, a prefix may have been consumed and copied to buf;
+ * its length is not returned.
  * A reader has a single logical owner; concurrent calls on the same
  * reader are not supported.
  *
@@ -124,8 +130,7 @@ extern int xylem_reader_read_full(
  *
  * @return Bytes written to buf (including delimiter) on success,
  *         0 on EOF before the delimiter, negative on transport
- *         error, or -1 if len bytes are consumed without finding
- *         the delimiter (overflow).
+ *         error, or -1 if the delimiter cannot fit (overflow).
  */
 extern int xylem_reader_read_until(
     xylem_reader_t* rd,

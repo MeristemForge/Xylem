@@ -36,6 +36,9 @@ typedef struct {
     uint16_t           port;
     _coro_t            server;
     _coro_t            client;
+    const char*        data;
+    size_t             reader_size;
+    bool               wait_for_result;
 } _ctx_t;
 
 static void _pair_main(void* arg) {
@@ -153,6 +156,107 @@ static void test_reader_read_until(void) {
     _run_pair(TEST_PORT + 1, _srv_lines, _cli_read_until);
 }
 
+static void _srv_until_boundary(void* arg) {
+    _ctx_t*               ctx = (_ctx_t*)arg;
+    xylem_tcp_listener_t* ln  = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
+    ASSERT(ln != NULL);
+    xylem_channel_send(ctx->ready, ctx);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_accept(ln);
+    ASSERT(conn != NULL);
+    ASSERT(xylem_tcp_write(conn, ctx->data, 8) == 0);
+    if (ctx->wait_for_result) {
+        xylem_channel_recv(ctx->ready);
+    }
+
+    xylem_tcp_destroy(conn);
+    xylem_tcp_destroy_listener(ln);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _cli_until_overflow(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
+    ASSERT(conn != NULL);
+    xylem_reader_t* rd =
+        xylem_reader_create(conn, XYLEM_READER_TCP, (int)ctx->reader_size);
+    ASSERT(rd != NULL);
+
+    char buf[8];
+    ASSERT(xylem_reader_read_until(rd, '\n', buf, sizeof(buf)) == -1);
+    if (ctx->wait_for_result) {
+        xylem_channel_send(ctx->ready, ctx);
+    }
+
+    xylem_reader_destroy(rd);
+    xylem_tcp_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void _cli_until_delimiter_at_capacity(void* arg) {
+    _ctx_t* ctx = (_ctx_t*)arg;
+    xylem_channel_recv(ctx->ready);
+
+    xylem_tcp_conn_t* conn = xylem_tcp_dial(TEST_HOST, ctx->port, NULL);
+    ASSERT(conn != NULL);
+    xylem_reader_t* rd =
+        xylem_reader_create(conn, XYLEM_READER_TCP, (int)ctx->reader_size);
+    ASSERT(rd != NULL);
+
+    char buf[8];
+    ASSERT(xylem_reader_read_until(rd, '\n', buf, sizeof(buf)) == (int)sizeof(buf));
+    ASSERT(memcmp(buf, ctx->data, sizeof(buf)) == 0);
+
+    xylem_reader_destroy(rd);
+    xylem_tcp_destroy(conn);
+    xylem_waitgroup_done(ctx->wg);
+}
+
+static void test_read_until_overflow_at_eof(void) {
+    const size_t sizes[] = {1, 4, 8, 16};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        _ctx_t ctx = {
+            .port        = (uint16_t)(TEST_PORT + 3 + i),
+            .server      = _srv_until_boundary,
+            .client      = _cli_until_overflow,
+            .data        = "abcdefgh",
+            .reader_size = sizes[i],
+        };
+        _pair_main(&ctx);
+    }
+}
+
+static void test_read_until_overflow_before_eof(void) {
+    const size_t sizes[] = {1, 4, 8, 16};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        _ctx_t ctx = {
+            .port            = (uint16_t)(TEST_PORT + 7 + i),
+            .server          = _srv_until_boundary,
+            .client          = _cli_until_overflow,
+            .data            = "abcdefgh",
+            .reader_size     = sizes[i],
+            .wait_for_result = true,
+        };
+        _pair_main(&ctx);
+    }
+}
+
+static void test_read_until_delimiter_at_capacity(void) {
+    const size_t sizes[] = {1, 4, 8, 16};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        _ctx_t ctx = {
+            .port        = (uint16_t)(TEST_PORT + 11 + i),
+            .server      = _srv_until_boundary,
+            .client      = _cli_until_delimiter_at_capacity,
+            .data        = "abcdefg\n",
+            .reader_size = sizes[i],
+        };
+        _pair_main(&ctx);
+    }
+}
+
 static void _srv_full(void* arg) {
     _ctx_t* ctx = (_ctx_t*)arg;
     xylem_tcp_listener_t* ln = xylem_tcp_listen(TEST_HOST, ctx->port, NULL);
@@ -206,6 +310,9 @@ static void _test_run_all(void* arg) {
     test_destroy_null();
     test_reader_read();
     test_reader_read_until();
+    test_read_until_overflow_at_eof();
+    test_read_until_overflow_before_eof();
+    test_read_until_delimiter_at_capacity();
     test_reader_read_full();
     _utils_watchdog_stop();
     xylem_shutdown();

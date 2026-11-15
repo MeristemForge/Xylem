@@ -1,4 +1,4 @@
-![logo](https://github.com/MeristemForge/Xylem/blob/main/docs/images/xylem-banner-animated.png)
+![Xylem — C utility library with coroutines and networking](docs/images/xylem-banner.svg)
 [![CMake on multiple platforms](https://github.com/MeristemForge/Xylem/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/MeristemForge/Xylem/actions/workflows/cmake-multi-platform.yml)
 [![CodeQL Advanced](https://github.com/MeristemForge/Xylem/actions/workflows/codeql.yml/badge.svg)](https://github.com/MeristemForge/Xylem/actions/workflows/codeql.yml)
 [![CodeFactor](https://www.codefactor.io/repository/github/meristemforge/xylem/badge)](https://www.codefactor.io/repository/github/meristemforge/xylem)
@@ -15,8 +15,14 @@ and foundational utilities.
 - **Coroutines** — First-class citizens by design
 - **Platforms** — Windows, Linux, macOS, Android, and iOS
 - **Simplicity** — Concurrent code reads like ordinary blocking code
-- **Networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, WebSocket (ws/wss clients and servers)
-- **Dependencies** — No required external dependencies; OpenSSL optional for TLS
+- **Transports** — TCP, UDP, UDS, TLS, DTLS, and RUDP
+- **WebSocket** — ws/wss clients and standalone servers
+- **Buffered I/O** — Reader/Writer helpers for TCP, TLS, UDS, and RUDP streams
+- **Dependencies** — No required external dependencies; OpenSSL optional for TLS/DTLS/WSS
+
+WebSocket uses HTTP/1.1 Upgrade for its opening handshake. General-purpose
+HTTP clients and servers, and connection multiplexing, are outside Xylem's
+scope; applications can use dedicated libraries alongside its public APIs.
 
 
 # Build
@@ -31,7 +37,11 @@ See [docs/build.md](docs/build.md) for detailed instructions on generators, sani
 
 # Documentation
 
-See the [docs/](docs/) directory for design documents and build instructions.
+- [Architecture](docs/architecture.md)
+- [WebSocket](docs/design/ws.md)
+- [Buffered Reader/Writer](docs/design/buffered-io.md)
+- [Build and test instructions](docs/build.md)
+- [Module design documents](docs/design/)
 
 
 # License
