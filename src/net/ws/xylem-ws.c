@@ -29,9 +29,11 @@
 #include "ws-utils.h"
 #include "ws.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Preserve the dial limit independently of the URL parser's storage size. */
+#define WS_DIAL_PATH_CAPACITY 1024
 
 struct xylem_ws_listener_s {
     void*          handle;
@@ -46,50 +48,22 @@ struct xylem_ws_listener_s {
     _Atomic bool          closing;
 };
 
-static int _ws_parse_url(
-    const char* url,
-    bool*       secure,
-    char*       host,
-    size_t      host_cap,
-    uint16_t*   port,
-    char*       path,
-    size_t      path_cap) {
-    ws_url_t parsed;
-    if (ws_url_parse(url, &parsed) || strlen(parsed.host) >= host_cap ||
-        strlen(parsed.path) >= path_cap) {
-        return -1;
-    }
-    *secure = parsed.secure;
-    snprintf(host, host_cap, "%s", parsed.host);
-    snprintf(path, path_cap, "%s", parsed.path);
-    *port = parsed.port;
-    return 0;
-}
-
 xylem_ws_conn_t* xylem_ws_dial(const char* url, const xylem_ws_opts_t* opts) {
-    char     host[256], path[1024];
-    uint16_t port;
-    bool     is_tls;
-    if (_ws_parse_url(
-            url,
-            &is_tls,
-            host,
-            sizeof(host),
-            &port,
-            path,
-            sizeof(path)) != 0) {
+    ws_url_t parsed;
+    if (ws_url_parse(url, &parsed) ||
+        strlen(parsed.path) >= WS_DIAL_PATH_CAPACITY) {
         return NULL;
     }
     RUNTIME_REQUIRE_COROUTINE("ws", "xylem_ws_dial");
-
-    /**
-     * Dispatch on scheme to the matching dial factory: wss -> ws_tls_dial
-     * (ws-tls.c, NULL stub when TLS is off), ws -> ws_tcp_dial (ws-tcp.c).
-     */
-    if (is_tls) {
-        return ws_tls_dial(host, port, path, opts ? opts->tls : NULL, opts);
+    if (parsed.secure) {
+        return ws_tls_dial(
+            parsed.host,
+            parsed.port,
+            parsed.path,
+            opts ? opts->tls : NULL,
+            opts);
     }
-    return ws_tcp_dial(host, port, path, opts);
+    return ws_tcp_dial(parsed.host, parsed.port, parsed.path, opts);
 }
 
 xylem_ws_listener_t* ws_listener_create(

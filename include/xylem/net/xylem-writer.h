@@ -27,8 +27,7 @@ typedef enum xylem_writer_transport_e {
     XYLEM_WRITER_TCP,
     XYLEM_WRITER_TLS,
     XYLEM_WRITER_UDS,
-    XYLEM_WRITER_RUDP_STREAM,
-    XYLEM_WRITER_MUX
+    XYLEM_WRITER_RUDP_STREAM
 } xylem_writer_transport_t;
 
 /**

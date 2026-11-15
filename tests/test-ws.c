@@ -34,13 +34,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+typedef struct {
+    char        response[1024];
+    size_t      len, offset;
+    bool        built, closed, invalid;
+    uint64_t    read_deadline, write_deadline;
+    uint64_t    first_read_deadline, first_write_deadline;
+    const char* expected_host_header;
+    bool        expect_extensions;
+} _handshake_peer_t;
 
 typedef struct {
-    char     response[1024];
-    size_t   len, offset;
-    bool     built, closed, invalid;
-    uint64_t read_deadline, write_deadline;
-} _handshake_peer_t;
+    const char* request;
+    size_t      len, offset;
+    char        response[512];
+    size_t      writes, closes, destroys;
+    bool        fail_write;
+    uint64_t    read_deadline, write_deadline;
+} _server_handshake_peer_t;
 
 typedef void (*_test_fn_t)(void*);
 typedef void (*_handler_fn_t)(xylem_ws_conn_t*, void*);
@@ -479,7 +490,16 @@ static int _cli_peer_write_cb(void* arg, const void* data, int len) {
         ASSERT(len < (int)sizeof(request));
         memcpy(request, data, (size_t)len);
         request[len] = 0;
-        char* value  = strstr(request, "Sec-WebSocket-Key: ");
+        if (p->expected_host_header) {
+            const char* line = "GET /chat?room=1 HTTP/1.1\r\n";
+            ASSERT(!strncmp(request, line, strlen(line)));
+            ASSERT(strstr(request, p->expected_host_header));
+            ASSERT(
+                (strstr(request, "Sec-WebSocket-Extensions:") != NULL) ==
+                p->expect_extensions);
+            ASSERT(!memcmp(request + len - 4, "\r\n\r\n", 4));
+        }
+        char* value = strstr(request, "Sec-WebSocket-Key: ");
         ASSERT(value);
         char key[25], accept[29];
         memcpy(key, value + 19, 24);
@@ -524,11 +544,230 @@ static void _cli_peer_close_cb(void* arg) {
 }
 
 static void _cli_peer_read_deadline_cb(void* arg, uint64_t ms) {
-    ((_handshake_peer_t*)arg)->read_deadline = ms;
+    _handshake_peer_t* p = arg;
+    p->read_deadline     = ms;
+    if (ms && !p->first_read_deadline) {
+        p->first_read_deadline = ms;
+    }
 }
 
 static void _cli_peer_write_deadline_cb(void* arg, uint64_t ms) {
-    ((_handshake_peer_t*)arg)->write_deadline = ms;
+    _handshake_peer_t* p = arg;
+    p->write_deadline    = ms;
+    if (ms && !p->first_write_deadline) {
+        p->first_write_deadline = ms;
+    }
+}
+
+static void test_handshake_accept_vector(void* arg) {
+    (void)arg;
+    /* RFC 6455 section 1.3: independently specified Key/Accept pair. */
+    const char* key      = "dGhlIHNhbXBsZSBub25jZQ==";
+    const char* expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+    char        accept[29];
+    ASSERT(ws_handshake_compute_accept(key, accept, sizeof(accept)) == 0);
+    ASSERT(!strcmp(accept, expected));
+    ASSERT(ws_handshake_validate_accept(key, expected) == 0);
+    ASSERT(
+        ws_handshake_validate_accept(key, "a6mgPHlqzRgZe/6MrAQKXgJ7ACc=") ==
+        -1);
+}
+
+static void test_client_handshake_request_variants(void* arg) {
+    (void)arg;
+    const struct {
+        uint16_t    port;
+        const char* host_header;
+        bool        extensions;
+    } cases[] = {
+        {.port = 80, .host_header = "Host: localhost\r\n"},
+        {.port = 443, .host_header = "Host: localhost\r\n"},
+        {.port = 8080, .host_header = "Host: localhost:8080\r\n"},
+        {.port        = 8080,
+         .host_header = "Host: localhost:8080\r\n",
+         .extensions  = true},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        _handshake_peer_t peer = {
+            .expected_host_header = cases[i].host_header,
+            .expect_extensions    = cases[i].extensions};
+        ws_transport_t t = {
+            .conn            = &peer,
+            .read            = _cli_peer_read_cb,
+            .write           = _cli_peer_write_cb,
+            .close           = _cli_peer_close_cb,
+            .destroy         = _cli_peer_close_cb,
+            .set_rd_deadline = _cli_peer_read_deadline_cb,
+            .set_wr_deadline = _cli_peer_write_deadline_cb};
+        xylem_ws_opts_t opts = {.permessage_deflate = cases[i].extensions};
+        ws_handshake_result_t result;
+        ASSERT(
+            ws_handshake_client(
+                &t,
+                "localhost",
+                cases[i].port,
+                "/chat?room=1",
+                &opts,
+                &result) == 0);
+        ASSERT(!peer.closed);
+        ASSERT(peer.built);
+        t.destroy(t.conn);
+    }
+}
+
+static void test_client_handshake_borrows_transport(void* arg) {
+    (void)arg;
+    for (int invalid = 0; invalid < 2; ++invalid) {
+        _handshake_peer_t peer = {.invalid = invalid != 0};
+        ws_transport_t    t    = {
+            .conn            = &peer,
+            .read            = _cli_peer_read_cb,
+            .write           = _cli_peer_write_cb,
+            .close           = _cli_peer_close_cb,
+            .destroy         = _cli_peer_close_cb,
+            .set_rd_deadline = _cli_peer_read_deadline_cb,
+            .set_wr_deadline = _cli_peer_write_deadline_cb};
+        ws_handshake_result_t result;
+        ASSERT(
+            ws_handshake_client(&t, "localhost", 80, "/", NULL, &result) ==
+            (invalid ? -1 : 0));
+        ASSERT(!peer.closed);
+        ASSERT(peer.first_write_deadline != 0);
+        ASSERT(peer.first_read_deadline == peer.first_write_deadline);
+        if (!invalid) {
+            const uint8_t frame[] = {0x81, 2, 'h', 'i'};
+            ASSERT(result.pending_len == sizeof(frame));
+            ASSERT(!memcmp(result.pending, frame, sizeof(frame)));
+            ASSERT(!result.deflate);
+            ASSERT(peer.read_deadline == 0 && peer.write_deadline == 0);
+        }
+        t.destroy(t.conn);
+        ASSERT(peer.closed);
+    }
+}
+
+static int _srv_peer_read_cb(void* arg, void* data, int cap) {
+    _server_handshake_peer_t* p = arg;
+    size_t                    n = p->len - p->offset;
+    if (!p->offset && n > 75) {
+        n = 75;
+    }
+    if (n > (size_t)cap) {
+        n = (size_t)cap;
+    }
+    memcpy(data, p->request + p->offset, n);
+    p->offset += n;
+    return (int)n;
+}
+
+static int _srv_peer_write_cb(void* arg, const void* data, int len) {
+    _server_handshake_peer_t* p = arg;
+    ++p->writes;
+    if (p->fail_write) {
+        return -1;
+    }
+    ASSERT(len > 0 && (size_t)len < sizeof(p->response));
+    memcpy(p->response, data, (size_t)len);
+    p->response[len] = 0;
+    return 0;
+}
+
+static void _srv_peer_close_cb(void* arg) {
+    ++((_server_handshake_peer_t*)arg)->closes;
+}
+
+static void _srv_peer_destroy_cb(void* arg) {
+    ++((_server_handshake_peer_t*)arg)->destroys;
+}
+
+static void _srv_peer_read_deadline_cb(void* arg, uint64_t ms) {
+    ((_server_handshake_peer_t*)arg)->read_deadline = ms;
+}
+
+static void _srv_peer_write_deadline_cb(void* arg, uint64_t ms) {
+    ((_server_handshake_peer_t*)arg)->write_deadline = ms;
+}
+
+static ws_transport_t _srv_peer_transport(_server_handshake_peer_t* peer) {
+    return (ws_transport_t){
+        .conn            = peer,
+        .read            = _srv_peer_read_cb,
+        .write           = _srv_peer_write_cb,
+        .close           = _srv_peer_close_cb,
+        .destroy         = _srv_peer_destroy_cb,
+        .set_rd_deadline = _srv_peer_read_deadline_cb,
+        .set_wr_deadline = _srv_peer_write_deadline_cb};
+}
+
+static void test_server_handshake_stages(void* arg) {
+    (void)arg;
+    const char request[] =
+        "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: "
+        "dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+        "Sec-WebSocket-Extensions: permessage-deflate; "
+        "client_no_context_takeover\r\n\r\n"
+        "\x81\x80\x01\x02\x03\x04";
+    const uint8_t frame[] = {0x81, 0x80, 1, 2, 3, 4};
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        _server_handshake_peer_t peer = {
+            .request = request,
+            .len     = sizeof(request) - 1};
+        ws_transport_t  t    = _srv_peer_transport(&peer);
+        xylem_ws_opts_t opts = {
+            .permessage_deflate       = scenario != 2,
+            .deflate_context_takeover = scenario == 0};
+        ws_handshake_result_t result;
+        ws_handshake_reply_t  reply;
+        ASSERT(ws_handshake_server_prepare(&t, &opts, &result, &reply) == 0);
+        ASSERT(peer.writes == 0);
+        ASSERT(peer.read_deadline != 0);
+        ASSERT(peer.read_deadline == peer.write_deadline);
+        ASSERT(peer.read_deadline == reply.deadline);
+        ASSERT(result.pending_len == sizeof(frame));
+        ASSERT(!memcmp(result.pending, frame, sizeof(frame)));
+        ASSERT(result.deflate == (scenario != 2));
+        ASSERT(result.no_context_takeover == (scenario == 1));
+        ASSERT(ws_handshake_server_finish(&t, &reply) == 0);
+        ASSERT(peer.writes == 1);
+        ASSERT(strstr(peer.response, "HTTP/1.1 101 Switching Protocols\r\n"));
+        ASSERT(strstr(peer.response, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        ASSERT(
+            (strstr(peer.response, "Sec-WebSocket-Extensions:") != NULL) ==
+            (scenario != 2));
+        ASSERT(peer.read_deadline == 0 && peer.write_deadline == 0);
+        ASSERT(peer.closes == 0 && peer.destroys == 0);
+    }
+}
+
+static void test_server_handshake_failure_ownership(void* arg) {
+    (void)arg;
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        const char* request = scenario == 0
+                                  ? "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                                  : _upgrade_request;
+        _server_handshake_peer_t peer = {
+            .request    = request,
+            .len        = strlen(request),
+            .fail_write = scenario == 1};
+        ws_transport_t t = _srv_peer_transport(&peer);
+        if (scenario < 2) {
+            ASSERT(ws_accept_impl(t, NULL) == NULL);
+            ASSERT(peer.writes == (scenario == 1 ? 1u : 0u));
+        } else {
+            xylem_ws_opts_t       opts = {.handshake_timeout_ms = 20};
+            ws_handshake_result_t result;
+            ws_handshake_reply_t  reply;
+            ASSERT(
+                ws_handshake_server_prepare(&t, &opts, &result, &reply) == 0);
+            xylem_sleep(30);
+            ASSERT(ws_handshake_server_finish(&t, &reply) == -1);
+            ASSERT(peer.writes == 0);
+        }
+        ASSERT(peer.closes == 0 && peer.destroys == 0);
+        t.destroy(t.conn);
+        ASSERT(peer.destroys == 1);
+    }
 }
 
 static void test_client_handshake_parser(void* arg) {
@@ -863,6 +1102,11 @@ static void _test_run_all_cb(void* arg) {
         test_write_timeout,
         test_close_with_blocked_receive,
         test_bad_handshakes,
+        test_handshake_accept_vector,
+        test_client_handshake_request_variants,
+        test_client_handshake_borrows_transport,
+        test_server_handshake_stages,
+        test_server_handshake_failure_ownership,
         test_client_handshake_parser,
         test_upgrade_with_first_frame,
         test_close_listener_with_connection,

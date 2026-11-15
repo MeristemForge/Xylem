@@ -824,9 +824,6 @@ The losing source only drops its reference.
   the single winning wake source then performs `WAITING -> RUNNABLE`.
 - **At most one reader and one writer per `iowait` direction.** Enforced by the
   exchange-on-publish check; violations `abort()`.
-- **Mux stream conditions and waiters share one lock.** Receive data, send-window
-  updates, FIN/reset/close, and waiter commit all inspect or detach the waiter
-  under the stream lock, then ready it after unlocking.
 - **Stale completion events are rejected**, not tolerated — via generation tags.
 - **No lost wakeups against idle workers.** Idle publication and wake reservation
   are serialized by `worker_state_lock`; polling workers are signalled through

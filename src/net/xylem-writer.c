@@ -25,7 +25,6 @@
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-uds.h"
 #include "xylem/net/xylem-rudp.h"
-#include "xylem/net/xylem-mux.h"
 
 #include "runtime/precond.h"
 
@@ -50,7 +49,6 @@ static _writer_fn _writer_resolve_transport(xylem_writer_transport_t transport) 
     case XYLEM_WRITER_TLS:         return (_writer_fn)xylem_tls_write;
     case XYLEM_WRITER_UDS:         return (_writer_fn)xylem_uds_write;
     case XYLEM_WRITER_RUDP_STREAM: return (_writer_fn)xylem_rudp_write;
-    case XYLEM_WRITER_MUX:         return (_writer_fn)xylem_mux_write;
     default:                       return NULL;
     }
 }

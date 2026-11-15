@@ -92,9 +92,6 @@ set(SRCS
 	src/net/xylem-uds.c
 	src/net/xylem-reader.c
 	src/net/xylem-writer.c
-	src/net/mux/mux-frame.c
-	src/net/mux/mux-stream.c
-	src/net/mux/xylem-mux.c
 	src/net/rudp/xylem-rudp.c
 	src/net/rudp/rudp-fec.c
 	src/net/rudp/kcp/ikcp.c

@@ -46,7 +46,6 @@ xylem_add_test(iowait)
 xylem_add_test(scheduler)
 xylem_add_test(timer)
 xylem_add_test(ticker)
-xylem_add_test(mux)
 xylem_add_test(reader)
 xylem_add_test(writer)
 

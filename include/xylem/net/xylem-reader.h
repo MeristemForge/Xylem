@@ -27,8 +27,7 @@ typedef enum xylem_reader_transport_e {
     XYLEM_READER_TCP,
     XYLEM_READER_TLS,
     XYLEM_READER_UDS,
-    XYLEM_READER_RUDP_STREAM,
-    XYLEM_READER_MUX
+    XYLEM_READER_RUDP_STREAM
 } xylem_reader_transport_t;
 
 /**

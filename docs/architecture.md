@@ -36,7 +36,7 @@ Higher layers depend on lower layers; lower layers never depend up.
             |     |                                               |
             |     +--- transport iface (TCP | TLS-or-stub)        |
             |   TLS / DTLS (OpenSSL, optional)                    |
-            |   RUDP (KCP + Reed-Solomon FEC)   MUX               |
+            |   RUDP (KCP + Reed-Solomon FEC)                     |
             |   TCP    UDP    UDS                                 |
             +-----------------------------------------------------+
  Runtime    |  scheduler (work-stealing) | iowait | dynpool |     |
@@ -58,6 +58,10 @@ channel park on the scheduler, so they do depend on the runtime — see
 behind a uniform interface. The **runtime** turns the platform poller plus
 coroutines into a scheduler. The **protocol layer** builds on the runtime,
 presenting blocking-style APIs.
+
+Connection multiplexing can be implemented by external libraries using
+Xylem's public transport, coroutine, and synchronization APIs. The former
+`xylem_mux_*` API and Reader/Writer MUX transport adapters are removed.
 
 ## 3. Source map
 

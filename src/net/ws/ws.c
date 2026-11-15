@@ -21,7 +21,6 @@
 
 #include "xylem/net/xylem-ws.h"
 
-#include "xylem/encoding/xylem-base64.h"
 #include "xylem/sync/xylem-mutex.h"
 #include "xylem/xylem-utils.h"
 
@@ -30,13 +29,9 @@
 #include "ws-frame.h"
 #include "ws-handshake.h"
 #include "ws-utf8.h"
-#include "ws-utils.h"
 #include "ws.h"
 
-#include "llhttp/llhttp.h"
-
 #include <limits.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,21 +66,8 @@ struct xylem_ws_conn_s {
     xylem_ws_opcode_t msg_type;
     bool              msg_ready;
     ws_deflate_ctx_t  deflate_ctx;
-    bool              deflate_requested;
-    bool              deflate_context_takeover;
     bool              frag_compressed;
 };
-
-/* Only an Upgrade handshake: no HTTP server, routing or response writer. */
-typedef struct {
-    llhttp_t          parser;
-    llhttp_settings_t settings;
-    ws_header_t*      headers;
-    size_t            count, cap;
-    uint64_t          deadline;
-    char              name[256], value[4096];
-    size_t            name_len, value_len;
-} _ws_handshake_t;
 
 static void _ws_opts_apply(xylem_ws_conn_t* conn, const xylem_ws_opts_t* opts) {
     if (opts) {
@@ -97,10 +79,6 @@ static void _ws_opts_apply(xylem_ws_conn_t* conn, const xylem_ws_opts_t* opts) {
         conn->close_timeout_ms   = opts->close_timeout_ms
                                        ? opts->close_timeout_ms
                                        : WS_DEFAULT_CLOSE_TIMEOUT;
-        if (opts->permessage_deflate) {
-            conn->deflate_requested        = true;
-            conn->deflate_context_takeover = opts->deflate_context_takeover;
-        }
     } else {
         conn->max_msg_size       = WS_DEFAULT_MAX_MSG_SIZE;
         conn->fragment_threshold = WS_DEFAULT_FRAGMENT_THRESHOLD;
@@ -332,252 +310,24 @@ static void _ws_recv_consume(xylem_ws_conn_t* conn, size_t frame_total) {
     conn->recv_len = remaining;
 }
 
-static int
-_ws_handshake_header_field_cb(llhttp_t* p, const char* at, size_t n) {
-    _ws_handshake_t* h = p->data;
-    if (n >= sizeof(h->name) - h->name_len) {
-        return -1;
-    }
-    memcpy(h->name + h->name_len, at, n);
-    h->name_len += n;
-    return 0;
-}
-
-static int
-_ws_handshake_header_value_cb(llhttp_t* p, const char* at, size_t n) {
-    _ws_handshake_t* h = p->data;
-    if (n >= sizeof(h->value) - h->value_len) {
-        return -1;
-    }
-    memcpy(h->value + h->value_len, at, n);
-    h->value_len += n;
-    return 0;
-}
-
-static int _ws_handshake_header_complete_cb(llhttp_t* p) {
-    _ws_handshake_t* h     = p->data;
-    h->name[h->name_len]   = 0;
-    h->value[h->value_len] = 0;
-    if (h->count >= 64 || ws_header_find(h->headers, h->count, h->name)) {
-        return -1;
-    }
-    int rc = ws_header_add(
-        &h->headers,
-        &h->count,
-        &h->cap,
-        h->name,
-        h->name_len,
-        h->value,
-        h->value_len);
-    h->name_len = h->value_len = 0;
-    return rc;
-}
-
-static int _ws_handshake_headers_complete_cb(llhttp_t* p) {
-    (void)p;
-    return 2;
-}
-
-static bool _ws_handshake_has_token(const char* value, const char* token) {
-    if (!value) {
-        return false;
-    }
-    size_t wanted = strlen(token);
-    while (*value) {
-        while (*value == ' ' || *value == '\t' || *value == ',') {
-            ++value;
-        }
-        const char* end = strchr(value, ',');
-        if (!end) {
-            end = value + strlen(value);
-        }
-        const char* trim = end;
-        while (trim > value && (trim[-1] == ' ' || trim[-1] == '\t')) {
-            --trim;
-        }
-        if ((size_t)(trim - value) == wanted) {
-            size_t i = 0;
-            for (; i < wanted; ++i) {
-                if (ws_lower_table[(uint8_t)value[i]] !=
-                    ws_lower_table[(uint8_t)token[i]]) {
-                    break;
-                }
-            }
-            if (i == wanted) {
-                return true;
-            }
-        }
-        value = *end ? end + 1 : end;
-    }
-    return false;
-}
-
-static const char*
-_ws_handshake_get_header(_ws_handshake_t* h, const char* name) {
-    return ws_header_find(h->headers, h->count, name);
-}
-
-static int _ws_handshake_read(
-    ws_transport_t*        t,
-    bool                   server,
-    _ws_handshake_t*       h,
-    char                   buf[16384],
-    size_t*                used,
-    size_t*                total,
-    const xylem_ws_opts_t* opts) {
-    memset(h, 0, sizeof(*h));
-    *total = 0;
-    llhttp_settings_init(&h->settings);
-    h->settings.on_header_field          = _ws_handshake_header_field_cb;
-    h->settings.on_header_value          = _ws_handshake_header_value_cb;
-    h->settings.on_header_value_complete = _ws_handshake_header_complete_cb;
-    h->settings.on_headers_complete      = _ws_handshake_headers_complete_cb;
-    llhttp_init(
-        &h->parser,
-        server ? HTTP_REQUEST : HTTP_RESPONSE,
-        &h->settings);
-    h->parser.data    = h;
-    uint64_t timeout  = opts && opts->handshake_timeout_ms
-                            ? opts->handshake_timeout_ms
-                            : WS_DEFAULT_HANDSHAKE_TIMEOUT;
-    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout;
-    h->deadline       = deadline;
-    t->set_rd_deadline(t->conn, deadline);
-    t->set_wr_deadline(t->conn, deadline);
-    while (*total < 16384) {
-        int n = t->read(t->conn, buf + *total, (int)(16384 - *total));
-        if (n <= 0) {
-            return -1;
-        }
-        llhttp_errno_t err =
-            llhttp_execute(&h->parser, buf + *total, (size_t)n);
-        *total += (size_t)n;
-        if (err == HPE_PAUSED_UPGRADE) {
-            *used = (size_t)(llhttp_get_error_pos(&h->parser) - buf);
-            return 0;
-        }
-        if (err != HPE_OK) {
-            return -1;
-        }
-    }
-    return -1;
-}
-
-static void _ws_handshake_deinit(_ws_handshake_t* h) {
-    ws_headers_free(h->headers, h->count);
-}
-
-static xylem_ws_conn_t* _ws_handshake_create_conn(
-    ws_transport_t         t,
-    bool                   client,
-    const xylem_ws_opts_t* opts,
-    const char*            buf,
-    size_t                 used,
-    size_t                 total) {
+static xylem_ws_conn_t* _ws_conn_from_handshake(
+    ws_transport_t               t,
+    bool                         client,
+    const xylem_ws_opts_t*       opts,
+    const ws_handshake_result_t* result) {
     xylem_ws_conn_t* c = _ws_conn_create(t, client, opts);
     if (!c) {
         return NULL;
     }
-    size_t n = total - used;
-    if (n && _ws_ensure_recv_buf(c, n)) {
+    if (_ws_ensure_recv_buf(c, result->pending_len) ||
+        (result->deflate &&
+         ws_deflate_init(&c->deflate_ctx, result->no_context_takeover))) {
         _ws_conn_destroy(c);
         return NULL;
     }
-    if (n) {
-        memcpy(c->recv_buf, buf + used, n);
-    }
-    c->recv_len = n;
+    memcpy(c->recv_buf, result->pending, result->pending_len);
+    c->recv_len = result->pending_len;
     return c;
-}
-
-static xylem_ws_conn_t*
-_ws_accept_handshake(ws_transport_t t, const xylem_ws_opts_t* opts) {
-    _ws_handshake_t  h;
-    char             buf[16384];
-    size_t           used = 0, total = 0;
-    xylem_ws_conn_t* c = NULL;
-    if (_ws_handshake_read(&t, true, &h, buf, &used, &total, opts)) {
-        goto fail;
-    }
-    const char* key     = _ws_handshake_get_header(&h, "Sec-WebSocket-Key");
-    const char* version = _ws_handshake_get_header(&h, "Sec-WebSocket-Version");
-    const char* length  = _ws_handshake_get_header(&h, "Content-Length");
-    uint8_t     decoded[32];
-    if (h.parser.method != HTTP_GET || h.parser.http_major != 1 ||
-        h.parser.http_minor != 1 || !_ws_handshake_get_header(&h, "Host") ||
-        !_ws_handshake_has_token(
-            _ws_handshake_get_header(&h, "Upgrade"),
-            "websocket") ||
-        !_ws_handshake_has_token(
-            _ws_handshake_get_header(&h, "Connection"),
-            "upgrade") ||
-        !version || strcmp(version, "13") || !key || strlen(key) != 24 ||
-        xylem_base64_decode_std(
-            (const uint8_t*)key,
-            24,
-            decoded,
-            sizeof(decoded)) != 16 ||
-        _ws_handshake_get_header(&h, "Transfer-Encoding") ||
-        (length && strcmp(length, "0"))) {
-        goto fail;
-    }
-    char accept[29], extensions[160] = "", ext[128];
-    if (ws_handshake_compute_accept(key, accept, sizeof(accept))) {
-        goto fail;
-    }
-    ws_deflate_offer_t offer   = {0};
-    bool               deflate = false;
-    if (opts && opts->permessage_deflate) {
-        const char* value =
-            _ws_handshake_get_header(&h, "Sec-WebSocket-Extensions");
-        if (value && !ws_deflate_parse_offer(value, &offer)) {
-            if (!opts->deflate_context_takeover) {
-                offer.server_no_context_takeover = true;
-                offer.client_no_context_takeover = true;
-            }
-            if (!ws_deflate_build_server_accept(&offer, ext, sizeof(ext))) {
-                snprintf(
-                    extensions,
-                    sizeof(extensions),
-                    "Sec-WebSocket-Extensions: %s\r\n",
-                    ext);
-                deflate = true;
-            }
-        }
-    }
-    c = _ws_handshake_create_conn(t, false, opts, buf, used, total);
-    if (!c) {
-        goto fail;
-    }
-    if (deflate &&
-        ws_deflate_init(&c->deflate_ctx, offer.server_no_context_takeover)) {
-        goto fail;
-    }
-    char response[512];
-    int  n = snprintf(
-        response,
-        sizeof(response),
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
-        "%s\r\n%s\r\n",
-        accept,
-        extensions);
-    if (xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) >= h.deadline) {
-        goto fail;
-    }
-    if (n < 0 || n >= sizeof(response) || t.write(t.conn, response, n)) {
-        goto fail;
-    }
-    t.set_rd_deadline(t.conn, 0);
-    t.set_wr_deadline(t.conn, 0);
-    _ws_handshake_deinit(&h);
-    return c;
-fail:
-    if (c) {
-        _ws_conn_destroy(c);
-    }
-    _ws_handshake_deinit(&h);
-    return NULL;
 }
 
 static int _ws_send_impl(
@@ -1074,9 +824,18 @@ int ws_addr(
                : -1;
 }
 
-xylem_ws_conn_t*
-ws_accept_impl(ws_transport_t transport, const xylem_ws_opts_t* opts) {
-    return _ws_accept_handshake(transport, opts);
+xylem_ws_conn_t* ws_accept_impl(ws_transport_t t, const xylem_ws_opts_t* opts) {
+    ws_handshake_result_t result;
+    ws_handshake_reply_t  reply;
+    if (ws_handshake_server_prepare(&t, opts, &result, &reply)) {
+        return NULL;
+    }
+    xylem_ws_conn_t* c = _ws_conn_from_handshake(t, false, opts, &result);
+    if (c && ws_handshake_server_finish(&t, &reply)) {
+        _ws_conn_destroy(c);
+        c = NULL;
+    }
+    return c;
 }
 
 xylem_ws_conn_t* ws_dial_impl(
@@ -1085,90 +844,15 @@ xylem_ws_conn_t* ws_dial_impl(
     uint16_t               port,
     const char*            path,
     const xylem_ws_opts_t* opts) {
-    char        key[25], offer[128];
-    const char* extension = NULL;
-    if (ws_handshake_gen_key(key, sizeof(key))) {
-        t.destroy(t.conn);
-        return NULL;
+    ws_handshake_result_t result;
+    xylem_ws_conn_t*      c = NULL;
+    if (!ws_handshake_client(&t, host, port, path, opts, &result)) {
+        c = _ws_conn_from_handshake(t, true, opts, &result);
     }
-    if (opts && opts->permessage_deflate &&
-        !ws_deflate_build_client_offer(
-            opts->deflate_context_takeover,
-            offer,
-            sizeof(offer))) {
-        extension = offer;
-    }
-    size_t len;
-    char*  request =
-        ws_handshake_build_request_ext(host, port, path, key, extension, &len);
-    if (!request) {
-        t.destroy(t.conn);
-        return NULL;
-    }
-    uint64_t timeout  = opts && opts->handshake_timeout_ms
-                            ? opts->handshake_timeout_ms
-                            : WS_DEFAULT_HANDSHAKE_TIMEOUT;
-    uint64_t deadline = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC) + timeout;
-    t.set_wr_deadline(t.conn, deadline);
-    int rc = t.write(t.conn, request, (int)len);
-    free(request);
-    if (rc) {
-        t.destroy(t.conn);
-        return NULL;
-    }
-    _ws_handshake_t  h;
-    char             buf[16384];
-    size_t           used = 0, total = 0;
-    xylem_ws_conn_t* c         = NULL;
-    xylem_ws_opts_t  remaining = opts ? *opts : (xylem_ws_opts_t){0};
-    uint64_t         now       = xylem_utils_getnow(XYLEM_TIME_PRECISION_MSEC);
-    if (now >= deadline) {
-        t.destroy(t.conn);
-        return NULL;
-    }
-    remaining.handshake_timeout_ms = deadline - now;
-    if (_ws_handshake_read(&t, false, &h, buf, &used, &total, &remaining)) {
-        goto fail;
-    }
-    const char* accept = _ws_handshake_get_header(&h, "Sec-WebSocket-Accept");
-    if (h.parser.status_code != 101 || h.parser.http_major != 1 ||
-        h.parser.http_minor != 1 ||
-        !_ws_handshake_has_token(
-            _ws_handshake_get_header(&h, "Upgrade"),
-            "websocket") ||
-        !_ws_handshake_has_token(
-            _ws_handshake_get_header(&h, "Connection"),
-            "upgrade") ||
-        !accept || ws_handshake_validate_accept(key, accept)) {
-        goto fail;
-    }
-    const char* value =
-        _ws_handshake_get_header(&h, "Sec-WebSocket-Extensions");
-    ws_deflate_offer_t server = {0};
-    if (value && (!extension || ws_deflate_parse_offer(value, &server))) {
-        goto fail;
-    }
-    c = _ws_handshake_create_conn(t, true, opts, buf, used, total);
     if (!c) {
-        goto fail;
+        t.destroy(t.conn);
     }
-    if (value && ws_deflate_init(
-                     &c->deflate_ctx,
-                     server.server_no_context_takeover ||
-                         !opts->deflate_context_takeover)) {
-        goto fail;
-    }
-    t.set_rd_deadline(t.conn, 0);
-    t.set_wr_deadline(t.conn, 0);
-    _ws_handshake_deinit(&h);
     return c;
-fail:
-    if (c) {
-        _ws_conn_destroy(c);
-    }
-    _ws_handshake_deinit(&h);
-    t.destroy(t.conn);
-    return NULL;
 }
 
 void* ws_get_userdata(xylem_ws_conn_t* conn) {

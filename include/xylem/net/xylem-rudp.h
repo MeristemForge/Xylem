@@ -28,7 +28,7 @@ typedef struct xylem_rudp_conn_s     xylem_rudp_conn_t;
 typedef struct xylem_rudp_listener_s xylem_rudp_listener_t;
 
 typedef enum xylem_rudp_mode_e {
-    XYLEM_RUDP_STREAM,  /* Byte stream, compatible with mux/reader/writer. */
+    XYLEM_RUDP_STREAM,  /* Byte stream, compatible with reader/writer. */
     XYLEM_RUDP_MESSAGE  /* Preserves message boundaries. */
 } xylem_rudp_mode_t;
 

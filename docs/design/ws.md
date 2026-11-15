@@ -25,6 +25,23 @@ only ws/wss URL parsing and opening-handshake header helpers. The bundled
 retained for interoperability; HTTP/2 and HTTP/3 extended CONNECT are not
 implemented. Ordinary HTTP request/response bodies are not exposed.
 
+`ws-handshake.c` owns the Upgrade exchange: bounded llhttp parsing, header
+validation, extension negotiation, wire messages, and handshake deadlines.
+It returns negotiated compression settings and any bytes following the
+headers; it borrows the transport and never closes or destroys it.
+The server exchange has prepare/finish stages: validate and negotiate first,
+then let `ws.c` prepare connection buffers and compression resources before
+sending 101 within the original deadline. The client exchange uses one
+absolute deadline for writing its request and reading the response. Successful
+exchanges clear the transport deadlines.
+
+`ws.c` owns connection resources, message/framing state, and close handling.
+Its establishment entry points consume the handshake result, including any
+already-read frame bytes. Failed client establishment destroys its owned
+transport; failed server establishment leaves destruction to the listener's
+accept loop, preserving cancellation ownership. The third-party llhttp sources
+are unchanged by this separation.
+
 ## Connection and listener lifetime
 
 Create a listener with xylem_ws_listen(host, port, opts), then call
@@ -67,6 +84,11 @@ The xylem_http_* API and include/xylem/net/http/xylem-http.h have been removed,
 along with the HTTP transports, proxies, redirects, response-body decoding,
 and connection pool. Use a dedicated HTTP library for these features.
 The WebSocket public API is unchanged by this removal.
+
+The opening-handshake GUID is corrected to the RFC 6455 value
+`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`, verified against its Key/Accept
+example. Older Xylem peers using the previous incorrect GUID must be updated
+together to use the standard handshake.
 
 ## Tests
 
