@@ -35,7 +35,6 @@ See [docs/build.md](docs/build.md) for detailed instructions on generators, sani
 
 - [Architecture](docs/architecture.md) — Layers, dependencies, and source layout
 - [Build and test](docs/build.md) — Configuration, testing, sanitizers, and coverage
-- [Conventions](docs/conventions.md) — API contracts, ownership, threading, and code style
 - [Module design](docs/design/) — Runtime, networking, synchronization, and utilities
 
 

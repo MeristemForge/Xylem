@@ -148,7 +148,5 @@ internally synchronized, so don't share one across threads mid-call.
 
 ## 10. Related docs
 
-- Conventions (sizing, `0`/`-1`/`NULL`): [`../conventions.md`](../conventions.md)
 - FEC consumer: RUDP (design doc deferred).
 - DEFLATE consumer: [WebSocket](ws.md) (`permessage-deflate`).
-- Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

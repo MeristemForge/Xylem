@@ -852,4 +852,3 @@ The losing source only drops its reference.
 - Platform poller / socket / vmem details:
   [`platform.md`](platform.md).
 - Per-protocol designs (TCP, UDP, TLS, …): [`../design/`](.).
-- Runtime test design: `../test/runtime.md` *(planned)*.

@@ -113,7 +113,5 @@ feature-gate overview, and [`tls.md`](tls.md) for the TLS/DTLS design.
 
 ## 6. Related docs
 
-- Buffer/size conventions: [`encoding.md`](encoding.md) §1,
-  [`../conventions.md`](../conventions.md) §3.
+- Buffer sizing: [`encoding.md`](encoding.md) §1.
 - CSPRNG source: [`platform.md`](platform.md) §7 (`platform_info_getrandom`).
-- Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

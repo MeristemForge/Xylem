@@ -30,7 +30,7 @@ xylem_logger_deinit();
   dropped.
 - **Options have no "zero means default" rule** (the level enum starts at
   `DEBUG = 0`): when you pass a non-NULL `xylem_logger_opts_t`, every field is
-  taken verbatim — see [`../conventions.md`](../conventions.md) §4. Fields are
+  taken verbatim. Fields are
   `level` and `max_file_size` (rollover threshold in bytes; `0` = no limit;
   ignored for stdout).
 
@@ -146,5 +146,3 @@ combine serial with coroutine networking.
 - Runtime timer heaps and blocking offload: [`runtime.md`](runtime.md)
 - Endianness companion: [`encoding.md`](encoding.md) §5
 - CSPRNG / serial backends: [`platform.md`](platform.md)
-- Conventions (options, lifetime, threading): [`../conventions.md`](../conventions.md)
-- Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

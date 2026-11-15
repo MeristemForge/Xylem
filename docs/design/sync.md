@@ -385,5 +385,3 @@ preferred when a coroutine is (or may be) involved.
 ## 9. Related docs
 
 - Parking / scheduling model: [`runtime.md`](runtime.md)
-- Conventions (context annotations, abort policy): [`../conventions.md`](../conventions.md)
-- Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

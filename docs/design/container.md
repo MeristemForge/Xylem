@@ -8,9 +8,6 @@ how they relate, and the rationale for keeping two flavors.
 Sources: public headers in `include/xylem/container/`, implementations in
 `src/container/xylem-*.c`; internal intrusive headers in `src/container/`.
 
-Background on the public/internal split and the `*_entry()` convention:
-[`../conventions.md`](../conventions.md) §7.
-
 ## 1. Two flavors, one idea
 
 | | Intrusive (internal) | Non-intrusive (public) |
@@ -58,8 +55,7 @@ the channel message queue).
 
 ## 3. Public (non-intrusive) API shape
 
-All public containers follow the same lifecycle and error conventions
-(see [`../conventions.md`](../conventions.md) §3, §5):
+All public containers follow the same lifecycle and error conventions:
 
 - `xylem_<c>_create(...)` → handle or `NULL`; `xylem_<c>_destroy(h)` frees node
   memory (not the user's `data`).
@@ -155,6 +151,4 @@ worker, or guarding them with a lock/spinlock as in the timer heaps).
 
 ## 8. Related docs
 
-- Conventions (public/internal, `*_entry`): [`../conventions.md`](../conventions.md)
 - Runtime consumers (runq, timer heap, registry, posts): [`runtime.md`](runtime.md)
-- Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

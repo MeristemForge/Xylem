@@ -5,9 +5,7 @@ how they depend on each other, and how the networking stack is built on the
 coroutine runtime. Read this first, then drop into a per-module design doc
 under [`docs/design/`](design/) for the details of any one component.
 
-For library-wide naming, error, and data-structure rules, see
-[`conventions.md`](conventions.md). For build, test, and coverage instructions,
-see [`build.md`](build.md).
+For build, test, and coverage instructions, see [`build.md`](build.md).
 
 ## 1. What Xylem is
 
@@ -205,6 +203,4 @@ See [`build.md`](build.md) for the full option matrix and per-platform notes.
 ## 9. Where to go next
 
 - Runtime internals: [`docs/design/runtime.md`](design/runtime.md)
-- Library-wide conventions: [`conventions.md`](conventions.md)
 - Per-module designs: [`docs/design/`](design/)
-- Test strategy: `docs/test/strategy.md` *(planned)*

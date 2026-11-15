@@ -33,7 +33,7 @@ One header per concern, two backend implementations:
 
 Design rules:
 - **No `xylem_` prefix.** The platform layer is internal; symbols are
-  `platform_<concern>_<verb>()` (see [`conventions.md`](../conventions.md) §1).
+  `platform_<concern>_<verb>()`.
 - **Compile-time dispatch.** Backends are selected with `#if defined(__linux__)
   / __APPLE__ / _WIN32`, not function pointers — there is no runtime indirection
   on the hot path.
@@ -290,4 +290,3 @@ worker can still wake to service its next due timer.
 
 - Runtime (primary consumer): [`runtime.md`](runtime.md)
 - System overview: [`../architecture.md`](../architecture.md)
-- Conventions: [`../conventions.md`](../conventions.md)
