@@ -43,12 +43,28 @@ struct xylem_writer_s {
     uint8_t    buf[];
 };
 
+static int _writer_tcp_write(void* ctx, const void* data, int len) {
+    return xylem_tcp_write((xylem_tcp_conn_t*)ctx, data, len);
+}
+
+static int _writer_tls_write(void* ctx, const void* data, int len) {
+    return xylem_tls_write((xylem_tls_conn_t*)ctx, data, len);
+}
+
+static int _writer_uds_write(void* ctx, const void* data, int len) {
+    return xylem_uds_write((xylem_uds_conn_t*)ctx, data, len);
+}
+
+static int _writer_rudp_write(void* ctx, const void* data, int len) {
+    return xylem_rudp_write((xylem_rudp_conn_t*)ctx, data, len);
+}
+
 static _writer_fn _writer_resolve_transport(xylem_writer_transport_t transport) {
     switch (transport) {
-    case XYLEM_WRITER_TCP:         return (_writer_fn)xylem_tcp_write;
-    case XYLEM_WRITER_TLS:         return (_writer_fn)xylem_tls_write;
-    case XYLEM_WRITER_UDS:         return (_writer_fn)xylem_uds_write;
-    case XYLEM_WRITER_RUDP_STREAM: return (_writer_fn)xylem_rudp_write;
+    case XYLEM_WRITER_TCP:         return _writer_tcp_write;
+    case XYLEM_WRITER_TLS:         return _writer_tls_write;
+    case XYLEM_WRITER_UDS:         return _writer_uds_write;
+    case XYLEM_WRITER_RUDP_STREAM: return _writer_rudp_write;
     default:                       return NULL;
     }
 }
