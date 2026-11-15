@@ -33,11 +33,10 @@ See [docs/build.md](docs/build.md) for detailed instructions on generators, sani
 
 # Documentation
 
-- [Architecture](docs/architecture.md)
-- [WebSocket](docs/design/ws.md)
-- [Buffered Reader/Writer](docs/design/buffered-io.md)
-- [Build and test instructions](docs/build.md)
-- [Module design documents](docs/design/)
+- [Architecture](docs/architecture.md) — Layers, dependencies, and source layout
+- [Build and test](docs/build.md) — Configuration, testing, sanitizers, and coverage
+- [Conventions](docs/conventions.md) — API contracts, ownership, threading, and code style
+- [Module design](docs/design/) — Runtime, networking, synchronization, and utilities
 
 
 # License
