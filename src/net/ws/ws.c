@@ -25,15 +25,15 @@
 #include "xylem/sync/xylem-mutex.h"
 #include "xylem/xylem-utils.h"
 
-#include "net/http/http-utils.h"
 #include "runtime/precond.h"
 #include "ws-deflate.h"
 #include "ws-frame.h"
 #include "ws-handshake.h"
 #include "ws-utf8.h"
+#include "ws-utils.h"
 #include "ws.h"
 
-#include "net/http/llhttp/llhttp.h"
+#include "llhttp/llhttp.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -80,7 +80,7 @@ struct xylem_ws_conn_s {
 typedef struct {
     llhttp_t          parser;
     llhttp_settings_t settings;
-    http_header_t*    headers;
+    ws_header_t*      headers;
     size_t            count, cap;
     uint64_t          deadline;
     char              name[256], value[4096];
@@ -358,10 +358,10 @@ static int _ws_handshake_header_complete_cb(llhttp_t* p) {
     _ws_handshake_t* h     = p->data;
     h->name[h->name_len]   = 0;
     h->value[h->value_len] = 0;
-    if (h->count >= 64 || http_header_find(h->headers, h->count, h->name)) {
+    if (h->count >= 64 || ws_header_find(h->headers, h->count, h->name)) {
         return -1;
     }
-    int rc = http_header_add(
+    int rc = ws_header_add(
         &h->headers,
         &h->count,
         &h->cap,
@@ -398,8 +398,8 @@ static bool _ws_handshake_has_token(const char* value, const char* token) {
         if ((size_t)(trim - value) == wanted) {
             size_t i = 0;
             for (; i < wanted; ++i) {
-                if (http_lower_table[(uint8_t)value[i]] !=
-                    http_lower_table[(uint8_t)token[i]]) {
+                if (ws_lower_table[(uint8_t)value[i]] !=
+                    ws_lower_table[(uint8_t)token[i]]) {
                     break;
                 }
             }
@@ -414,7 +414,7 @@ static bool _ws_handshake_has_token(const char* value, const char* token) {
 
 static const char*
 _ws_handshake_get_header(_ws_handshake_t* h, const char* name) {
-    return http_header_find(h->headers, h->count, name);
+    return ws_header_find(h->headers, h->count, name);
 }
 
 static int _ws_handshake_read(
@@ -464,7 +464,7 @@ static int _ws_handshake_read(
 }
 
 static void _ws_handshake_deinit(_ws_handshake_t* h) {
-    http_headers_free(h->headers, h->count);
+    ws_headers_free(h->headers, h->count);
 }
 
 static xylem_ws_conn_t* _ws_handshake_create_conn(

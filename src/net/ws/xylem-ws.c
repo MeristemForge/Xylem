@@ -23,10 +23,10 @@
 
 #include "xylem/sync/xylem-mutex.h"
 
-#include "net/http/http-utils.h"
 #include "runtime/precond.h"
 #include "ws-tcp.h"
 #include "ws-tls.h"
+#include "ws-utils.h"
 #include "ws.h"
 
 #include <stdio.h>
@@ -54,31 +54,12 @@ static int _ws_parse_url(
     uint16_t*   port,
     char*       path,
     size_t      path_cap) {
-    if (!url) {
+    ws_url_t parsed;
+    if (ws_url_parse(url, &parsed) || strlen(parsed.host) >= host_cap ||
+        strlen(parsed.path) >= path_cap) {
         return -1;
     }
-    const char* rest;
-    if (!strncmp(url, "wss://", 6)) {
-        *secure = true;
-        rest    = url + 6;
-    } else if (!strncmp(url, "ws://", 5)) {
-        *secure = false;
-        rest    = url + 5;
-    } else {
-        return -1;
-    }
-    char converted[4096];
-    int  n = snprintf(
-        converted,
-        sizeof(converted),
-        "%s://%s",
-        *secure ? "https" : "http",
-        rest);
-    http_url_t parsed;
-    if (n < 0 || n >= sizeof(converted) || http_url_parse(converted, &parsed) ||
-        strlen(parsed.host) >= host_cap || strlen(parsed.path) >= path_cap) {
-        return -1;
-    }
+    *secure = parsed.secure;
     snprintf(host, host_cap, "%s", parsed.host);
     snprintf(path, path_cap, "%s", parsed.path);
     *port = parsed.port;

@@ -26,6 +26,7 @@
 
 #include "net/ws/ws-frame.h"
 #include "net/ws/ws-handshake.h"
+#include "net/ws/ws-utils.h"
 #include "net/ws/ws.h"
 #include "utils.h"
 
@@ -216,6 +217,72 @@ static void test_server_close(void* arg) {
     ASSERT(xylem_ws_recv(c, buf, sizeof(buf), NULL) == -1);
 
     _drain(c, l, wg);
+}
+
+static void test_url_parsing(void* arg) {
+    (void)arg;
+    const struct {
+        const char* url;
+        const char* host;
+        const char* path;
+        uint16_t    port;
+        bool        secure;
+    } cases[] = {
+        {"ws://Example.COM", "example.com", "/", 80, false},
+        {"wss://Example.COM/chat?token=a%20b",
+         "example.com",
+         "/chat?token=a%20b",
+         443,
+         true},
+        {"ws://localhost:8080?room=1", "localhost", "/?room=1", 8080, false},
+        {"wss://[::1]:8443/chat", "::1", "/chat", 8443, true},
+        {"ws://[::1]", "::1", "/", 80, false},
+        {"ws://localhost/chat#fragment", "localhost", "/chat", 80, false},
+    };
+    ws_url_t parsed;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        ASSERT(ws_url_parse(cases[i].url, &parsed) == 0);
+        ASSERT(!strcmp(parsed.host, cases[i].host));
+        ASSERT(!strcmp(parsed.path, cases[i].path));
+        ASSERT(parsed.port == cases[i].port);
+        ASSERT(parsed.secure == cases[i].secure);
+    }
+    const char* invalid[] = {
+        "http://localhost",
+        "https://localhost",
+        "ws://",
+        "ws:///chat",
+        "ws://user@localhost",
+        "ws://local\\host",
+        "ws://localhost:0",
+        "ws://localhost:65536",
+        "ws://localhost:-1",
+        "ws://localhost:abc",
+        "ws://localhost:",
+        "ws://[::1",
+        "ws://[::1]extra",
+        "ws://localhost/a b",
+        "ws://localhost/\r\nInjected:yes",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        ASSERT(ws_url_parse(invalid[i], &parsed) == -1);
+        ASSERT(xylem_ws_dial(invalid[i], NULL) == NULL);
+    }
+    ASSERT(ws_url_parse(NULL, &parsed) == -1);
+    ASSERT(ws_url_parse("ws://localhost", NULL) == -1);
+
+    char long_url[4096];
+    memcpy(long_url, "ws://", 5);
+    memset(long_url + 5, 'a', 256);
+    long_url[261] = 0;
+    ASSERT(ws_url_parse(long_url, &parsed) == -1);
+    ASSERT(xylem_ws_dial(long_url, NULL) == NULL);
+
+    memcpy(long_url, "ws://localhost/", 15);
+    memset(long_url + 15, 'a', 2047);
+    long_url[2062] = 0;
+    ASSERT(ws_url_parse(long_url, &parsed) == -1);
+    ASSERT(xylem_ws_dial(long_url, NULL) == NULL);
 }
 
 static void test_null_guards(void* arg) {
@@ -782,6 +849,7 @@ static void test_destroy_with_pending_message(void* arg) {
 static void _test_run_all_cb(void* arg) {
     (void)arg;
     const _test_fn_t tests[] = {
+        test_url_parsing,
         test_null_guards,
         test_short_buffer_retry,
         test_empty_messages,

@@ -70,7 +70,6 @@ _Pragma("once")
 #include "xylem/net/xylem-writer.h"
 #include "xylem/net/xylem-tls.h"
 #include "xylem/net/xylem-dtls.h"
-#include "xylem/net/http/xylem-http.h"
 #include "xylem/net/xylem-ws.h"
 
 /* runtime */

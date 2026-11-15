@@ -11,7 +11,7 @@ option(XYLEM_ENABLE_TSAN  "enable data race detection" OFF)
 option(XYLEM_ENABLE_UBSAN "enable undefined behavior detection" OFF)
 option(XYLEM_ENABLE_DYNAMIC_LIBRARY "build dynamic library" OFF)
 option(XYLEM_ENABLE_COVERAGE "enable code coverage reporting" OFF)
-option(XYLEM_ENABLE_TLS "enable TLS/DTLS/HTTPS/WSS support (requires OpenSSL)" OFF)
+option(XYLEM_ENABLE_TLS "enable TLS/DTLS/WSS support (requires OpenSSL)" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -104,14 +104,10 @@ set(SRCS
 	src/encoding/gzip/miniz/miniz.c
 	src/encoding/fec/reedsolomon-c/rs.c
 	src/encoding/fec/xylem-fec.c
-	src/net/http/http-utils.c
-	src/net/http/http-tunnel.c
-	src/net/http/http.c
-	src/net/http/xylem-http.c
-	src/net/http/http-transport-tcp.c
-	src/net/http/llhttp/llhttp.c
-	src/net/http/llhttp/http.c
-	src/net/http/llhttp/api.c
+	src/net/ws/llhttp/llhttp.c
+	src/net/ws/llhttp/http.c
+	src/net/ws/llhttp/api.c
+	src/net/ws/ws-utils.c
 	src/net/ws/ws.c
 	src/net/ws/xylem-ws.c
 	src/net/ws/ws-tcp.c
@@ -162,12 +158,10 @@ if(XYLEM_ENABLE_TLS)
 		src/net/tls/tls-datagram.c
 		src/net/tls/xylem-tls.c
 		src/net/tls/xylem-dtls.c
-		src/net/http/http-transport-tls.c
 		src/net/ws/ws-tls.c
 	)
 else()
 	list(APPEND SRCS
-		src/net/http/http-transport-tls-stub.c
 		src/net/tls/xylem-tls-stub.c
 		src/net/ws/ws-tls-stub.c
 	)

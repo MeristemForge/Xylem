@@ -23,8 +23,6 @@ _Pragma("once")
 
 #include "xylem/net/xylem-tls.h"
 
-#include "platform/platform-socket.h"
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -255,29 +253,3 @@ extern const char* tls_get_alpn(tls_conn_t* tls);
  *         timeout, or a closed connection.
  */
 extern int tls_handshake(tls_conn_t* tls);
-
-/**
- * @brief Perform a client-side TLS handshake on an already-connected fd.
- *
- * Wraps a socket whose transport connection is already established (e.g.
- * one obtained from an HTTP CONNECT proxy tunnel) and drives the TLS
- * client handshake to completion. SNI and certificate identity checks
- * use opts->server_name, which need not match the address the fd is
- * connected to -- exactly the proxy case (connect to proxy, verify the
- * target).
- * opts->connect_timeout_ms bounds only the TLS handshake because the
- * transport connection is already established.
- *
- * On success ownership of @p fd is transferred to the returned
- * connection; on failure @p fd is closed.
- *
- * @param fd   Connected socket (ownership transferred on success).
- * @param ctx  TLS context.
- * @param opts TLS options (server_name, connect_timeout_ms, etc.).
- *
- * @return TLS connection handle, or NULL on failure (fd is closed).
- */
-extern tls_conn_t* tls_client_handshake_fd(
-    platform_sock_t   fd,
-    tls_ctx_t*        ctx,
-    xylem_tls_opts_t* opts);

@@ -684,35 +684,3 @@ const char* tls_get_alpn(tls_conn_t* tls) {
     }
     return tls->alpn[0] ? tls->alpn : NULL;
 }
-
-tls_conn_t* tls_client_handshake_fd(
-    platform_sock_t   fd,
-    tls_ctx_t*        ctx,
-    xylem_tls_opts_t* opts) {
-    stream_t* stream = stream_from_fd(fd);
-    if (!stream) {
-        platform_socket_close(fd);
-        return NULL;
-    }
-
-    tls_conn_t* tls = _tls_conn_create(stream);
-    if (!tls) {
-        stream_destroy(stream);
-        return NULL;
-    }
-    tls->ctx = ctx;
-
-    /* Arm the handshake deadline; disarm on success. */
-    _tls_set_deadline(tls,
-                      _tls_make_deadline(opts ? opts->connect_timeout_ms
-                                              : 0));
-
-    if (_tls_client_handshake(tls, opts ? opts->server_name : NULL) != 0) {
-        xylem_loge("<tls> client handshake failed");
-        _tls_conn_destroy(tls);
-        return NULL;
-    }
-
-    _tls_set_deadline(tls, 0);
-    return tls;
-}

@@ -15,7 +15,7 @@ and foundational utilities.
 - **Coroutines** — First-class citizens by design
 - **Platforms** — Windows, Linux, macOS, Android, and iOS
 - **Simplicity** — Concurrent code reads like ordinary blocking code
-- **Networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, HTTP/1.1, WebSocket
+- **Networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, WebSocket (ws/wss clients and servers)
 - **Dependencies** — No required external dependencies; OpenSSL optional for TLS
 
 

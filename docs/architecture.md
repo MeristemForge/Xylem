@@ -17,8 +17,8 @@ Xylem is a cross-platform C11 **static library** (optionally shared) that
 - **Data structures** — intrusive and non-intrusive containers.
 - **Crypto / encoding** — SHA, HMAC, AES, Base64, varint, JSON, gzip, FEC.
 - **Concurrency** — mutex, cond, channel, wait-group, plus the coroutine runtime.
-- **Async networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, HTTP/1.1 clients, WebSocket clients and servers.
-  See [HTTP/HTTPS and WebSocket](design/http.md) for module boundaries and API migration.
+- **Async networking** — TCP, UDP, UDS, TLS, DTLS, RUDP, WebSocket clients and servers.
+  See [WebSocket](design/ws.md) for module boundaries and API migration.
 
 The networking modules are the reason the runtime exists: they are written in a
 **synchronous, blocking style** but run on coroutines so that thousands of
@@ -32,22 +32,20 @@ Higher layers depend on lower layers; lower layers never depend up.
             +-----------------------------------------------------+
  App        |                  user coroutines                    |
             +-----------------------------------------------------+
- Protocols  |  HTTP/1.1   WebSocket    (router, cookie, cors,     |
-            |     |          |          auth, form, multipart,    |
-            |     |          |          fileserver, proxy)        |
-            |     +----+-----+                                    |
-            |          | transport iface (TCP | TLS-or-stub)      |
+ Protocols  |  WebSocket (HTTP/1.1 Upgrade + WS frames)           |
+            |     |                                               |
+            |     +--- transport iface (TCP | TLS-or-stub)        |
             |   TLS / DTLS (OpenSSL, optional)                    |
             |   RUDP (KCP + Reed-Solomon FEC)   MUX               |
             |   TCP    UDP    UDS                                 |
             +-----------------------------------------------------+
- Runtime    |  scheduler (work-stealing) | iowait | dynpool |    |
+ Runtime    |  scheduler (work-stealing) | iowait | dynpool |     |
             |  timers | minicoro coroutines                       |
             +-----------------------------------------------------+
- Platform   |  poller (epoll/kqueue/wepoll) | socket | vmem |    |
+ Platform   |  poller (epoll/kqueue/wepoll) | socket | vmem |     |
             |  sem | string | info | serial                       |
             +-----------------------------------------------------+
- Base       |  containers | sync | crypto | encoding | logger |  |
+ Base       |  containers | sync | crypto | encoding | logger |   |
             |  utils | timer | serial                             |
             +-----------------------------------------------------+
 ```
@@ -72,13 +70,12 @@ presenting blocking-style APIs.
 | Encoding | `include/xylem/encoding/` | `src/encoding/` |
 | Core utils | `include/xylem/xylem-*.h` | `src/xylem-*.c` |
 | Net (transport) | `include/xylem/net/` | `src/net/` |
-| HTTP | `include/xylem/net/http/` | `src/net/http/` |
 | WebSocket | `include/xylem/net/xylem-ws*.h` | `src/net/ws/` |
 | Platform | `src/platform/*.h` | `src/platform/{unix,win}/` |
 
 Bundled third-party code lives next to its consumer: `src/runtime/minicoro/`
-(coroutines), `src/net/http/llhttp/` (HTTP parser), `src/net/rudp/kcp/`
-(reliable UDP), and the Windows `wepoll` poller backend.
+(coroutines), `src/net/ws/llhttp/` (WebSocket opening-handshake parser),
+`src/net/rudp/kcp/` (reliable UDP), and the Windows `wepoll` poller backend.
 
 ## 4. The runtime in one paragraph
 
@@ -188,7 +185,7 @@ platform-agnostic.
 
 | Gate | Effect |
 |------|--------|
-| `XYLEM_ENABLE_TLS` | Compiles TLS/DTLS against OpenSSL ≥ 3.5. When off, the HTTP transport links a TLS stub and `wss://` is unavailable. |
+| `XYLEM_ENABLE_TLS` | Compiles TLS/DTLS against OpenSSL ≥ 3.5. When off, WebSocket links a TLS stub and `wss://` is unavailable. |
 | `XYLEM_ENABLE_TESTING` | Builds the `tests/` suite. |
 | `XYLEM_ENABLE_DYNAMIC_LIBRARY` | Builds a shared library instead of static. |
 | `XYLEM_ENABLE_ASAN` / `XYLEM_ENABLE_TSAN` / `XYLEM_ENABLE_UBSAN` | Sanitizer builds. |

@@ -10,7 +10,7 @@ exclude:
   - "src/encoding/fec/reedsolomon-c/**"
   - "src/encoding/gzip/miniz/**"
   - "src/encoding/json/yyjson/**"
-  - "src/net/http/llhttp/**"
+  - "src/net/ws/llhttp/**"
   - "src/net/rudp/kcp/**"
   - "src/runtime/minicoro/**"
   - "src/platform/win/wepoll/**"

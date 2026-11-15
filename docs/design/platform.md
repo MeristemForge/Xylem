@@ -265,12 +265,12 @@ worker can still wake to service its next due timer.
 ## 7. Info, I/O, string, serial
 
 - **`platform-info`** — `getcpus()` (default worker count), `gettid`/`getpid`,
-  `getlocaltime`/`gmtime`/`mkgmtime` (logger timestamps, HTTP dates), and
+  `getlocaltime`/`gmtime`/`mkgmtime` (time conversion and logger timestamps), and
   `getrandom()` for CSPRNG bytes (`BCryptGenRandom` / `/dev/urandom`). Note the
   per-OS `platform_tid_t`/`platform_pid_t` typedefs.
 - **`platform-io`** — `fopen`/`vsprintf`/`stat` wrappers that pick the MSVC
   `*_s` / `_stat64` forms where required. `platform_io_stat_t` is the trimmed
-  stat used by the HTTP file server. `PLATFORM_PATH_SEPARATOR` abstracts `/` vs
+  stat structure for file metadata. `PLATFORM_PATH_SEPARATOR` abstracts `/` vs
   `\`.
 - **`platform-string`** — safe string helpers normalizing the `*_s` MSVC
   variants.

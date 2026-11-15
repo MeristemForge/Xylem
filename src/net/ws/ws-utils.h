@@ -19,25 +19,41 @@
  *  IN THE SOFTWARE.
  */
 
+/* Internal URL and header helpers for the WebSocket opening handshake. */
+
 _Pragma("once")
 
-#include "http.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
-/**
- * @brief Create a verified TLS transport, using CONNECT when configured.
- *
- * @param host        Host name or numeric address.
- * @param port        TCP port.
- * @param timeout_ms  Connection time budget in milliseconds; 0 disables the
- * limit.
- * @param opts        Options, or NULL for defaults.
- *
- * @return Owned transport on success, an empty transport on failure.
- *
- * @note The returned connection owns its transport and configuration resources.
- */
-extern http_transport_t http_tls_dial(
-    const char*                  host,
-    uint16_t                     port,
-    uint64_t                     timeout_ms,
-    const xylem_http_cli_opts_t* opts);
+typedef struct ws_url_s {
+    bool     secure;
+    char     host[256];
+    uint16_t port;
+    char     path[2048];
+} ws_url_t;
+
+typedef struct ws_header_s {
+    char* name;
+    char* value;
+} ws_header_t;
+
+/* Accept ws/wss URLs; default ports are 80/443 and the default path is /. */
+extern int ws_url_parse(const char* url, ws_url_t* out);
+
+extern bool ws_header_eq(const char* a, const char* b);
+extern const char*
+ws_header_find(const ws_header_t* headers, size_t count, const char* name);
+/* Copies name/value; release the array with ws_headers_free(). */
+extern int ws_header_add(
+    ws_header_t** headers,
+    size_t*       count,
+    size_t*       cap,
+    const char*   name,
+    size_t        name_len,
+    const char*   value,
+    size_t        value_len);
+extern void ws_headers_free(ws_header_t* headers, size_t count);
+
+extern const uint8_t ws_lower_table[256];

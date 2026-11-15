@@ -9,7 +9,7 @@ The exact commands depend on whether your CMake generator is single-config (e.g.
 - A C11-compatible compiler:
   - Windows: MSVC (Visual Studio 2022+) or Clang-cl
   - Linux/macOS: GCC >= 7 or Clang >= 6
-- (Optional) For TLS/DTLS support: OpenSSL >= 3.5
+- (Optional) For TLS/DTLS/WSS support: OpenSSL >= 3.5
 - (Optional) For code coverage:
   - Linux: `lcov` and `genhtml` (`sudo apt install lcov`)
   - Windows: OpenCppCoverage (`winget install OpenCppCoverage.OpenCppCoverage`)
@@ -64,7 +64,7 @@ Common values for `CMAKE_BUILD_TYPE`: Debug, Release, RelWithDebInfo, MinSizeRel
 | Option | Default | Description |
 |--------|---------|-------------|
 | `XYLEM_ENABLE_TESTING` | OFF | Enable unit tests |
-| `XYLEM_ENABLE_TLS` | OFF | Enable TLS/DTLS support (requires OpenSSL >= 3.5) |
+| `XYLEM_ENABLE_TLS` | OFF | Enable TLS/DTLS/WSS support (requires OpenSSL >= 3.5) |
 | `XYLEM_ENABLE_DYNAMIC_LIBRARY` | OFF | Build shared library instead of static |
 | `XYLEM_ENABLE_ASAN` | OFF | Address sanitizer |
 | `XYLEM_ENABLE_TSAN` | OFF | Thread sanitizer |

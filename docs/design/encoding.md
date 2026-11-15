@@ -113,7 +113,7 @@ Two framing levels over the same compressor:
 Each has its own `*_size()` upper bound. `level` is `0`=none, `1`=fastest,
 `9`=best, `-1`=default. `decompress` verifies the CRC-32 and returns `-1` on
 mismatch / invalid data / short buffer. Raw DEFLATE is what the WebSocket
-`permessage-deflate` extension and HTTP content-encoding build on.
+`permessage-deflate` extension builds on.
 
 ## 8. Reed-Solomon FEC (`xylem-fec`)
 
@@ -150,5 +150,5 @@ internally synchronized, so don't share one across threads mid-call.
 
 - Conventions (sizing, `0`/`-1`/`NULL`): [`../conventions.md`](../conventions.md)
 - FEC consumer: RUDP (design doc deferred).
-- DEFLATE consumers: WebSocket / HTTP (design docs deferred).
+- DEFLATE consumer: [WebSocket](ws.md) (`permessage-deflate`).
 - Tests: [`../test/strategy.md`](../test/strategy.md) *(planned)*

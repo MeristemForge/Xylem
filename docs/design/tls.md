@@ -4,7 +4,7 @@ The TLS module wraps OpenSSL (>= 3.5) in the same coroutine-friendly,
 park/resume networking model as TCP, so `xylem_tls_read` / `xylem_tls_write` /
 `xylem_tls_accept` suspend the calling coroutine instead of blocking a thread.
 It is an optional layer gated by `XYLEM_ENABLE_TLS`; when that is off the module
-is replaced by a stub and `https://` / `wss://` are unavailable.
+is replaced by a stub and `wss://` is unavailable.
 
 Sources: public API in `include/xylem/net/xylem-tls.h`, implementation in
 `src/net/tls/tls.c` (engine) and `src/net/tls/xylem-tls.c` (public shim).
@@ -242,10 +242,6 @@ published, then reads it. `hs_mu` is taken alone, never nested inside
 fast path skips the lock entirely once handshaked, so every client connection
 and every already-handshaked server connection pays no extra cost.
 
-**Proxy / upgrade:** `tls_client_handshake_fd` (internal, in `tls.h`)
-wraps an already-connected fd -- e.g. after an HTTP CONNECT tunnel -- and runs
-the client handshake, verifying `server_name` rather than the proxy address.
-
 ## 9. Shutdown and teardown safety
 
 - `xylem_tls_close` and `xylem_tls_close_listener` are idempotent and do not
@@ -302,10 +298,9 @@ Before this change OpenSSL was reached directly from three places:
   certificate loading, whose signature took a raw `SSL_CTX*` and whose
   mechanism was OpenSSL-specific.
 
-The layers *above* the engine were already clean: `http-transport-tls.c` talks
-to the internal `tls_*` engine API and `ws-tls.c` to the public `xylem_tls_*`
-shim; neither includes OpenSSL. So the abstraction boundary is drawn at the
-engine, not above it.
+The WebSocket adapter `ws-tls.c` uses the public `xylem_tls_*` API and
+does not include OpenSSL. The abstraction boundary is drawn at the TLS
+engine, below the WebSocket transport.
 
 **Scope (agreed):** TLS, DTLS, and system-CA loading all move behind the
 backend interface. After this change, exactly one source file
