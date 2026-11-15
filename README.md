@@ -20,10 +20,6 @@ and foundational utilities.
 - **Buffered I/O** — Reader/Writer helpers for TCP, TLS, UDS, and RUDP streams
 - **Dependencies** — No required external dependencies; OpenSSL optional for TLS/DTLS/WSS
 
-WebSocket uses HTTP/1.1 Upgrade for its opening handshake. General-purpose
-HTTP clients and servers, and connection multiplexing, are outside Xylem's
-scope; applications can use dedicated libraries alongside its public APIs.
-
 
 # Build
 
