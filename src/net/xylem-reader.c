@@ -44,12 +44,28 @@ struct xylem_reader_s {
     uint8_t    buf[];
 };
 
+static int _reader_tcp_read(void* ctx, void* buf, int len) {
+    return xylem_tcp_read((xylem_tcp_conn_t*)ctx, buf, len);
+}
+
+static int _reader_tls_read(void* ctx, void* buf, int len) {
+    return xylem_tls_read((xylem_tls_conn_t*)ctx, buf, len);
+}
+
+static int _reader_uds_read(void* ctx, void* buf, int len) {
+    return xylem_uds_read((xylem_uds_conn_t*)ctx, buf, len);
+}
+
+static int _reader_rudp_read(void* ctx, void* buf, int len) {
+    return xylem_rudp_read((xylem_rudp_conn_t*)ctx, buf, len);
+}
+
 static _reader_fn _reader_resolve_transport(xylem_reader_transport_t transport) {
     switch (transport) {
-    case XYLEM_READER_TCP:         return (_reader_fn)xylem_tcp_read;
-    case XYLEM_READER_TLS:         return (_reader_fn)xylem_tls_read;
-    case XYLEM_READER_UDS:         return (_reader_fn)xylem_uds_read;
-    case XYLEM_READER_RUDP_STREAM: return (_reader_fn)xylem_rudp_read;
+    case XYLEM_READER_TCP:         return _reader_tcp_read;
+    case XYLEM_READER_TLS:         return _reader_tls_read;
+    case XYLEM_READER_UDS:         return _reader_uds_read;
+    case XYLEM_READER_RUDP_STREAM: return _reader_rudp_read;
     default:                       return NULL;
     }
 }
